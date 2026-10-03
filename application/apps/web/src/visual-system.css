@@ -440,118 +440,21 @@
     gap: 2px;
   }
 }
-
-/* Work canvases keep their size. The shared input and its history float above
-   every cognitive application; pinning only prevents automatic collapse. */
-.primary-panel {
-  position: relative;
-}
-.exchange-surface {
-  position: relative;
-  z-index: 4;
-}
-.exchange-panel {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 0 1 auto;
-  width: min(var(--ui-reading-width), calc(100% - 48px));
-  min-height: 0;
-  max-height: 100%;
-  margin: 0 auto 10px;
-  container: exchange / inline-size;
-}
-/* The panel arranges reading and writing; it is not an extra input frame. */
-.exchange-panel[data-open] {
-  --exchange-controls-width: 124px;
-}
-.exchange-panel-header {
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  gap: 8px;
-  min-width: 0;
-  padding: 8px 12px 0;
-}
-.exchange-panel-header:not(:has(.conversation-scope)) {
-  display: none;
-}
-.exchange-scope {
-  flex: 1;
-  min-width: 0;
-}
 .exchange-scope .conversation-scope {
-  max-width: 100%;
-  margin: 0;
-  padding: 4px 8px;
   font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 .exchange-panel > .conversation {
-  width: 100%;
-  margin: 0;
-  /* Apply Dock clearance once here; the sticky return control uses bottom: 0. */
-  padding: 16px 20px calc(var(--composer-tools-height, 32px) + 12px);
-  flex: 0 1 auto;
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--paper);
   box-shadow: none;
-  scrollbar-gutter: auto;
-}
-.exchange-panel > .conversation:has(.conversation-empty) {
-  flex-basis: auto;
-  padding: 8px 16px calc(var(--composer-tools-height, 32px) + 12px);
-}
-/* Reading owns the upper-right controls; text must not run under them. This
-   clearance disappears with reading, never becoming an input-only header. */
-.exchange-panel:has(> .exchange-controls-slot) > .conversation {
-  padding-top: 44px;
-}
-.exchange-panel:has(> .exchange-controls-slot) > .exchange-panel-header {
-  padding-right: calc(var(--exchange-controls-width) + 24px);
-}
-.exchange-panel:has(.exchange-panel-header .conversation-scope)
-  > .conversation {
-  padding-top: 16px;
-}
-.exchange-panel .conversation-empty {
-  padding: 0;
 }
 .exchange-panel .conversation-empty p {
-  margin: 0;
   font-size: 13px;
   line-height: 24px;
 }
 .exchange-panel .composer-dock {
-  position: relative;
-  padding: 0;
   background: transparent;
-}
-.exchange-panel:has(> .conversation) > .composer-dock {
-  margin-top: 8px;
-}
-/* Only the actual groups form a hover bridge. The unused width remains canvas. */
-.exchange-controls-slot {
-  position: absolute;
-  right: 16px;
-  bottom: 100%;
-  padding-bottom: 8px;
-  width: max-content;
-  /* Keep the full button hit area above the reading-edge resize strip. */
-  z-index: 6;
-}
-/* Keep the smaller local tools on the app Dock's bottom edge. */
-.exchange-panel:not(:has(> .conversation)) > .exchange-controls-slot {
-  padding-bottom: 8px;
-}
-.exchange-panel:has(> .conversation) > .exchange-controls-slot {
-  top: 8px;
-  right: 12px;
-  bottom: auto;
-  padding-bottom: 0;
 }
 .app .composer {
   position: relative;
@@ -750,14 +653,6 @@
     grid-column: 2;
     grid-row: 2;
   }
-  .exchange-panel-header {
-    flex-wrap: wrap;
-  }
-}
-@container exchange (max-width: 620px) {
-  .composer-dock {
-    --exchange-controls-width: 92px;
-  }
 }
 .app .composer-preferences {
   display: flex;
@@ -829,24 +724,6 @@
     min-width: 44px;
     min-height: 44px;
   }
-  .exchange-panel[data-open] {
-    --exchange-controls-width: 176px;
-  }
-  .exchange-panel:not(:has(> .conversation)) > .exchange-controls-slot {
-    padding-bottom: 8px;
-  }
-  .exchange-panel:has(> .exchange-controls-slot) > .conversation {
-    padding-top: 60px;
-  }
-  .exchange-panel:has(.exchange-panel-header .conversation-scope)
-    > .conversation {
-    padding-top: 16px;
-  }
-  @container exchange (max-width: 620px) {
-    .composer-dock {
-      --exchange-controls-width: 132px;
-    }
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   .app .composer-floating-tools {
@@ -870,10 +747,6 @@
   -webkit-backdrop-filter: var(--material-blur);
   backdrop-filter: var(--material-blur);
   box-shadow: var(--elevation-floating);
-}
-.primary-panel[data-interaction="history"] .exchange-panel,
-.primary-panel[data-interaction="history"] .exchange-panel > .conversation {
-  flex: 1 1 0;
 }
 /* An edge affordance, not another toolbar or a row above the messages. It stays
    inside the frame, clear of the floating Dock just outside the input edge. */
@@ -915,65 +788,8 @@
   border-radius: 0;
   background: transparent;
 }
-.primary-panel[data-dialogue-canvas]
-  .exchange-panel:has(> .conversation)
-  > .composer-dock {
-  margin-top: 0;
-}
 .app .primary-panel[data-dialogue-canvas] .composer:focus-within {
   border-color: color-mix(in srgb, var(--accent) 38%, var(--line-strong));
-}
-@media (max-width: 850px) {
-  .exchange-panel {
-    width: calc(100% - 24px);
-  }
-}
-.primary-panel:not([data-dialogue-canvas]):not([data-interaction="history"])
-  > .exchange-surface {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  max-height: 100%;
-  pointer-events: none;
-}
-.primary-panel:not([data-dialogue-canvas]):not([data-interaction="history"])
-  .exchange-panel {
-  max-height: calc(100dvh - 80px);
-}
-.primary-panel:not([data-dialogue-canvas]):not([data-interaction="history"])
-  :is(
-    .exchange-panel[data-open],
-    .composer-reopen,
-    .archived-conversation-note
-  ) {
-  /* The collapsed Dock's transparent margins must not block canvas actions. */
-  pointer-events: auto;
-}
-@media (min-height: 650px) {
-  .primary-panel[data-interaction="recent"] .exchange-panel > .conversation {
-    height: auto;
-    max-height: min(34dvh, 360px);
-    flex-basis: auto;
-  }
-  .primary-panel[data-interaction="recent"]
-    .conversation:has(.conversation-empty) {
-    height: auto;
-  }
-}
-.primary-panel .exchange-panel[data-resized] {
-  flex: 0 1 auto;
-  height: var(--exchange-height);
-  max-height: var(--exchange-max-height);
-}
-.primary-panel .exchange-panel[data-resized] > .conversation {
-  flex: 1 1 0;
-  height: auto;
-  max-height: none;
-  min-height: 0;
-}
-.exchange-panel[data-resized] > .composer-dock {
-  flex: 0 0 auto;
 }
 .conversation .human-message {
   background: var(--human-message-fill);

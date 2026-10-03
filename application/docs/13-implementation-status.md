@@ -1,5 +1,63 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端重构第十二阶段：交流 frame 样式唯一 owner
+
+`exchange-layout.css` 实际承接原 56 条规则／144 项声明（包括已迁的 23 项
+伸缩几何），统一画布避让、阅读／输入排列、控制区与 Dock 外部锚点、断点
+和伸缩命中几何。选定声明的值、important、条件及实际旧编译相对顺序均
+保留。Dock 内部显隐／8px 悬停桥／拖拽／放大、材质／运动、通知、截图及
+基础控件仍归原 owner；没有修改 JSX、hook、state、effect、协议或入口。
+
+根线程直接读取 `b9906e0c` Git，独立核对固定 56／144 tuple、36 条保留
+规则及五份旧源码 SHA；另对四来源完整 PostCSS 语义树做批准减法核对，
+所有其余规则／条件／声明及顺序不变，main.tsx 字节相同。长期门禁只治理
+有限 frame／已知例外及实际入口，不锁四份 CSS 全源，也允许消息与 Dock
+无关后代演进。六项门禁通过，原 33 条负例保留，加 32 条，合计 65；违规
+反例只接受 AssertionError，不把 parser／程序异常当成拒绝成功。
+
+旧生产 JS／CSS 的原七文件 26 项为 25 通过、1 个系统前台窗口前置失败；
+原 Dock 两类挂载合计 29/29。新真实 Host 合并矩阵 61 项为 60 通过、同一
+原生前置失败；原 55 项逐项身份／结果匹配，新增六项自然活动波形、四主题
+明暗消息按压／悬停与主体图形运动回归通过。没有删除或弱化原断言／预算，
+原生红项尚未到实际 guest 输入交互，不能称 E2E 全绿。
+
+新增 opt-in compiled Host 对照消费保留旧资产与实际 HTTP 新资产，不是
+用新组件生成假旧 oracle。合成数据仅为消息，没有模型请求；检查草稿、
+input／delivery 权威前后相同、零发送／应用写入、原节点与滚动 identity、
+几何／绘制 computed 值、canvas clearance、真实命中及实际响应 SHA。
+代表场景含桌面／窄屏／coarse、项目／工作台／对话、长消息／草稿及明暗，
+不是全排列或原生 zoom。760×540 的 200% CSS zoom 另标已知旧限制，
+只核对原裁切／遮挡事实，不 force click 或把它称为可用性通过。
+
+首轮 raw RGBA 零差检查失败；相同旧 JS／CSS 的 old/old 六例也有四例
+同样失败，边缘出现一阶 RGB 量化与 AA 栅格波动。有限动画完成、持续动画
+暂停就绪及两帧后仍复现。新图像 oracle 明确使用原 PNG 的 AA 分类及同
+alpha／每 RGB 通道至多 1 LSB 的量化校准，原始截图／差异摘要均保留；
+非 AA 其他差异、尺寸和 alpha 变化仍拒绝。校准不能代替固定源码与严格
+computed 检查，更不能声称所有真实边缘变化必拒或 raw RGBA 全同。
+内部 comparator 依赖固定 Playwright 1.63.0，升级须重核，不进入生产。
+原生 resize 先完成再施 fixture CSS zoom，避免旧 sidebar 的 innerWidth／
+root.clientWidth 测量交错；不改 sidebar、min-height 或原生产 motion。
+
+最终真实旧新对照 **14/14**，零跳过／重试：12 项支持场景加两项明确的旧
+限制比较，64 对阶段截图与严格 snapshot。九项图像合同测试通过，包含
+实色两阶／十阶、alpha、尺寸、1px 平移拒绝及 AA 盲区；另证明预归一邻域
+会改变 AA 分类，因此生产测试 helper 始终先比较未修改原 PNG。
+最终全量 Node **1541 项：1377 通过、164 条原有可选集成跳过、零失败**，
+69.7 秒；跳过项不是 Runtime、模型或原生通过证明。typecheck／build、
+受影响文件格式及空白检查通过，仅保留原大 chunk 提示。最后构建 HTML
+及三份入口资产与对照 manifest 的字节再次核同，每个渲染场景实读响应
+200／SHA，而不是只检查磁盘包。新 JS `app-BpOObY8v.js` SHA256
+`703fcfb3094e95372764c7a84b448a5fa6a89cece9df5958d4df478917ac351a`；
+新 CSS `app-B_zOsesV.css` SHA256
+`552d58cb432d3559ca7b754f8839ca2e9305c2ce726543970e6005c25841f3d9`。
+初轮失败、同资产诊断、旧／新回归、校准前后与最终 traces／报告分别保留，
+不覆盖旧红项或以最终通过抹掉测量边界。
+
+证据独立保留于 `/tmp/morphz-exchange-frame-owner.huXprX`。原 App 只读
+复验仍为系统锁屏，没有解锁、改设置、替换 profile 或重启用户 Runtime；
+原窗口验收与整体架构目标尚未完成，本批不是新视觉规范。
+
 ## 2026-10-04 前端重构第十一阶段：Thread 状态图形共享组件
 
 `ExecutionStatusIcon.tsx` 实际接管活动列表与执行详情两处重复的图形映射。

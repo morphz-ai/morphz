@@ -1,14 +1,7 @@
 .application-dock-slot {
-  position: absolute;
-  left: 50%;
-  bottom: 100%;
-  transform: translateX(-50%);
-  width: max-content;
-  max-width: calc(100% - 32px);
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
-  z-index: 3;
 }
 .application-dock-slot[data-expanded],
 .application-dock-slot:has(.application-dock-menu:popover-open),
@@ -48,24 +41,8 @@
 .application-dock-pins:empty {
   display: none;
 }
-/* Reserve symmetrical room for the right-side exchange controls, so the app
-   group remains centred without ever scrolling its Launcher out of reach. */
-.exchange-panel:has(> .exchange-controls-slot):not(:has(> .conversation))
-  > .composer-dock
-  > .application-dock-slot {
-  max-width: calc(100% - 2 * (var(--exchange-controls-width) + 24px));
-}
 .application-dock[data-compact] .application-dock-pins {
   display: none;
-}
-@container exchange (max-width: 360px) {
-  .exchange-panel:has(> .exchange-controls-slot):not(:has(> .conversation))
-    > .composer-dock
-    > .application-dock-slot {
-    left: 16px;
-    transform: none;
-    max-width: calc(100% - var(--exchange-controls-width) - 48px);
-  }
 }
 .app .application-dock-shortcut {
   flex: 0 0 32px;

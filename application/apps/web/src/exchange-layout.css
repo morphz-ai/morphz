@@ -1,5 +1,289 @@
-/* The exchange owns resize geometry and hit surfaces. Its drawing, interaction
-   feedback and motion remain in visual-system.css. */
+/* Exchange frame geometry owns canvas clearance, reading/writing arrangement,
+   control/Dock anchors and resize hit geometry. Preserve the pre-migration
+   compiled order: compact composer, Dock, UI, visual-system, resize edge.
+   Paint, control internals, Dock reveal/drag/magnification, notice layout and
+   screenshot lifecycle remain with their existing owners. */
+.app .exchange-panel .composer-dock:has(.composer-action-bar) {
+  /* The canvas can be much shorter than the window (mobile navigation/zoom).
+     Shrink writing/preview areas, not the persistent send row. */
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+.application-dock-slot {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - 32px);
+  z-index: 3;
+}
+/* Reserve symmetrical room for the right-side exchange controls, so the app
+   group remains centred without ever scrolling its Launcher out of reach. */
+.exchange-panel:has(> .exchange-controls-slot):not(:has(> .conversation))
+  > .composer-dock
+  > .application-dock-slot {
+  max-width: calc(100% - 2 * (var(--exchange-controls-width) + 24px));
+}
+@container exchange (max-width: 360px) {
+  .exchange-panel:has(> .exchange-controls-slot):not(:has(> .conversation))
+    > .composer-dock
+    > .application-dock-slot {
+    left: 16px;
+    transform: none;
+    max-width: calc(100% - var(--exchange-controls-width) - 48px);
+  }
+}
+.primary-panel:not([data-dialogue-canvas]):not([data-interaction="history"])
+  .library-results {
+  padding-bottom: calc(20px + max(56px, var(--exchange-overlay-height, 0px)));
+}
+.exchange-surface {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+.conversation {
+  width: min(var(--ui-reading-width), calc(100% - 48px));
+  margin: 0 auto;
+  padding: 0 12px 12px;
+  flex: 0 1 30dvh;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  position: relative;
+  container-type: inline-size;
+}
+.primary-panel[data-interaction="history"] > .exchange-surface,
+.primary-panel[data-interaction="history"] .exchange-surface > .conversation {
+  flex: 1 1 0;
+}
+.primary-panel[data-interaction="recent"]
+  .conversation:has(.conversation-empty) {
+  flex-basis: auto;
+}
+.composer-dock {
+  padding: 6px 24px 10px;
+}
+@media (max-height: 650px) {
+  .composer-dock {
+    padding-bottom: 8px;
+  }
+  .conversation {
+    flex-basis: 24dvh;
+  }
+}
+@media (max-width: 850px) {
+  .conversation {
+    width: calc(100% - 24px);
+  }
+  .composer-dock {
+    padding-inline: 12px;
+  }
+}
+
+/* Work canvases keep their size. The shared input and its history float above
+   every cognitive application; pinning only prevents automatic collapse. */
+.primary-panel {
+  position: relative;
+}
+.exchange-surface {
+  position: relative;
+  z-index: 4;
+}
+.exchange-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  width: min(var(--ui-reading-width), calc(100% - 48px));
+  min-height: 0;
+  max-height: 100%;
+  margin: 0 auto 10px;
+  container: exchange / inline-size;
+}
+/* The panel arranges reading and writing; it is not an extra input frame. */
+.exchange-panel[data-open] {
+  --exchange-controls-width: 124px;
+}
+.exchange-panel-header {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 12px 0;
+}
+.exchange-panel-header:not(:has(.conversation-scope)) {
+  display: none;
+}
+.exchange-scope {
+  flex: 1;
+  min-width: 0;
+}
+.exchange-scope .conversation-scope {
+  max-width: 100%;
+  margin: 0;
+  padding: 4px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.exchange-panel > .conversation {
+  width: 100%;
+  margin: 0;
+  /* Apply Dock clearance once here; the sticky return control uses bottom: 0. */
+  padding: 16px 20px calc(var(--composer-tools-height, 32px) + 12px);
+  flex: 0 1 auto;
+  scrollbar-gutter: auto;
+}
+.exchange-panel > .conversation:has(.conversation-empty) {
+  flex-basis: auto;
+  padding: 8px 16px calc(var(--composer-tools-height, 32px) + 12px);
+}
+/* Reading owns the upper-right controls; text must not run under them. This
+   clearance disappears with reading, never becoming an input-only header. */
+.exchange-panel:has(> .exchange-controls-slot) > .conversation {
+  padding-top: 44px;
+}
+.exchange-panel:has(> .exchange-controls-slot) > .exchange-panel-header {
+  padding-right: calc(var(--exchange-controls-width) + 24px);
+}
+.exchange-panel:has(.exchange-panel-header .conversation-scope)
+  > .conversation {
+  padding-top: 16px;
+}
+.exchange-panel .conversation-empty {
+  padding: 0;
+}
+.exchange-panel .conversation-empty p {
+  margin: 0;
+}
+.exchange-panel .composer-dock {
+  position: relative;
+  padding: 0;
+}
+.exchange-panel:has(> .conversation) > .composer-dock {
+  margin-top: 8px;
+}
+/* Only the actual groups form a hover bridge. The unused width remains canvas. */
+.exchange-controls-slot {
+  position: absolute;
+  right: 16px;
+  bottom: 100%;
+  padding-bottom: 8px;
+  width: max-content;
+  /* Keep the full button hit area above the reading-edge resize strip. */
+  z-index: 6;
+}
+/* Keep the smaller local tools on the app Dock's bottom edge. */
+.exchange-panel:not(:has(> .conversation)) > .exchange-controls-slot {
+  padding-bottom: 8px;
+}
+.exchange-panel:has(> .conversation) > .exchange-controls-slot {
+  top: 8px;
+  right: 12px;
+  bottom: auto;
+  padding-bottom: 0;
+}
+@container exchange (max-width: 540px) {
+  .exchange-panel-header {
+    flex-wrap: wrap;
+  }
+}
+@container exchange (max-width: 620px) {
+  .composer-dock {
+    --exchange-controls-width: 92px;
+  }
+}
+@media (pointer: coarse) {
+  .exchange-panel[data-open] {
+    --exchange-controls-width: 176px;
+  }
+  .exchange-panel:not(:has(> .conversation)) > .exchange-controls-slot {
+    padding-bottom: 8px;
+  }
+  .exchange-panel:has(> .exchange-controls-slot) > .conversation {
+    padding-top: 60px;
+  }
+  .exchange-panel:has(.exchange-panel-header .conversation-scope)
+    > .conversation {
+    padding-top: 16px;
+  }
+  @container exchange (max-width: 620px) {
+    .composer-dock {
+      --exchange-controls-width: 132px;
+    }
+  }
+}
+.primary-panel[data-interaction="history"] .exchange-panel,
+.primary-panel[data-interaction="history"] .exchange-panel > .conversation {
+  flex: 1 1 0;
+}
+.primary-panel[data-dialogue-canvas]
+  .exchange-panel:has(> .conversation)
+  > .composer-dock {
+  margin-top: 0;
+}
+@media (max-width: 850px) {
+  .exchange-panel {
+    width: calc(100% - 24px);
+  }
+}
+.primary-panel:not([data-dialogue-canvas]):not([data-interaction="history"])
+  > .exchange-surface {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  max-height: 100%;
+  pointer-events: none;
+}
+.primary-panel:not([data-dialogue-canvas]):not([data-interaction="history"])
+  .exchange-panel {
+  max-height: calc(100dvh - 80px);
+}
+.primary-panel:not([data-dialogue-canvas]):not([data-interaction="history"])
+  :is(
+    .exchange-panel[data-open],
+    .composer-reopen,
+    .archived-conversation-note
+  ) {
+  /* The collapsed Dock's transparent margins must not block canvas actions. */
+  pointer-events: auto;
+}
+@media (min-height: 650px) {
+  .primary-panel[data-interaction="recent"] .exchange-panel > .conversation {
+    height: auto;
+    max-height: min(34dvh, 360px);
+    flex-basis: auto;
+  }
+  .primary-panel[data-interaction="recent"]
+    .conversation:has(.conversation-empty) {
+    height: auto;
+  }
+}
+.primary-panel .exchange-panel[data-resized] {
+  flex: 0 1 auto;
+  height: var(--exchange-height);
+  max-height: var(--exchange-max-height);
+}
+.primary-panel .exchange-panel[data-resized] > .conversation {
+  flex: 1 1 0;
+  height: auto;
+  max-height: none;
+  min-height: 0;
+}
+.exchange-panel[data-resized] > .composer-dock {
+  flex: 0 0 auto;
+}
+
+/* Resize geometry and hit surfaces. Drawing, interaction feedback and motion
+   remain in visual-system.css. */
 .exchange-resizer {
   position: absolute;
   z-index: 5;

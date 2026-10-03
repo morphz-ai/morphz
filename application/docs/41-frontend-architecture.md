@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-03 · 版本：1.1 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-03 · 版本：1.2 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -23,7 +23,13 @@
 | 登记图形与透明按钮   | `design/control-icons.tsx`、`ui/IconButton.tsx`；SidebarToggle、ComposerToolButtons、ExchangeControls | 原七图形／两 role、单 native button、原 props/ref/key/compact 焦点。13 项 Node／门禁与 5 项实际隔离挂载通过；当前契约的相关矩阵 60/60 通过，有限治理，不包含全部菜单／按钮或原窗最终验收。 |
 | 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`                 | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                                                |
 
-交流伸缩的首段样式 owner 也已迁入 `exchange-layout.css`，原 23 项几何与 9 项绘制声明保持；`exchange-css-ownership.test.ts` 治理唯一入口与已知竞争规则，非全产品 CSS 门禁。该阶段的原 App 原生命中复验仍待系统解锁。
+交流 frame 的样式 owner 现为 `exchange-layout.css`：原 56 条规则、144 项
+声明的上下文、值、权重及选定的实际编译顺序保留，统一承载画布避让、阅读／
+输入排列、控制区与 Dock 外部锚点、断点和伸缩命中几何。Dock 内部显隐、
+拖拽／放大、材质／运动、通知和截图生命周期仍归原 owner；不是把全部交流
+CSS 归入一个大文件。`exchange-css-ownership.test.ts` 使用固定旧版本 tuple
+约束这条有限边界及实际入口，不能据此宣称全产品 CSS 完成。原 App 原生
+命中复验仍待系统解锁，具体旧新资产与渲染证据见实施记录。
 
 当前 Task batch、目录分页和 Profile 已有真实共享 owner；Schedules 与 TaskList
 的 deadline／重试／取消及 Boot 发布合同不同，不新增一层 broker 强并。

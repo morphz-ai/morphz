@@ -2,7 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
-import postcss, { type Rule, type Root } from "postcss";
+import postcss, { type AtRule, type Rule, type Root } from "postcss";
+import {
+  selectedFrameRules,
+  retainedFrameRules,
+  type FrozenRule,
+} from "./fixtures/exchange-frame-b9906e0c.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -15,9 +20,10 @@ import {
   type Node,
 } from "typescript/unstable/ast";
 
-// This first CSS boundary governs only the existing resize edge and its shield.
-// The literals below are the pre-extraction production rules, not a new visual
-// standard. Other exchange geometry and other features remain with their owners.
+// Finite Exchange frame contract. The resizer literals retain the first-stage
+// 23/9 contract; frame tuples come from fixed b9906e0c, not the new owner. Known
+// primitive/focus/Dock-reveal/notice/capture competitors retain their owners.
+// This is not a generic CSS matcher or whole-product cascade/visual proof.
 const layoutFile = "exchange-layout.css";
 const visualFile = "visual-system.css";
 const legacyResize = `
@@ -124,7 +130,7 @@ type Signature = {
   context: string[];
   declarations: Declaration[];
 };
-function signature(rule: Rule): Signature {
+function contexts(rule: Rule | AtRule) {
   const context: string[] = [];
   for (let node = rule.parent; node && node.type !== "root"; node = node.parent)
     context.unshift(
@@ -132,9 +138,12 @@ function signature(rule: Rule): Signature {
         ? `@${node.name} ${node.params}`.trim()
         : `nested:${key(node.selector)}`,
     );
+  return context;
+}
+function signature(rule: Rule): Signature {
   return {
     selector: key(rule.selector),
-    context,
+    context: contexts(rule),
     declarations: rule.nodes
       .filter((node) => node.type !== "comment")
       .map((node) =>
@@ -169,13 +178,22 @@ function partition(layout: boolean) {
     return declarations.length ? [{ ...rule, declarations }] : [];
   });
 }
-const expectedLayout = partition(true);
+const expectedResizeLayout = partition(true);
+function frozenSignature(rule: FrozenRule): Signature {
+  return {
+    selector: rule[2],
+    context: [...rule[3]],
+    declarations: rule[4].map(([property, value, important]) => ({
+      property,
+      value,
+      important,
+    })),
+  };
+}
+const expectedLayout = selectedFrameRules.map(frozenSignature);
 const expectedVisual = partition(false);
-function governed(selector: string) {
-  // Recognize the same named boundary when CSS spells it as an attribute or
-  // escaped identifier; do not mistake an unrelated -demo class for this owner.
-  // This is deliberately bounded, not a general selector-matching engine.
-  const decoded = selector.replace(
+function decodedSelector(selector: string) {
+  return selector.replace(
     /\\([\da-f]{1,6})(?:\s)?|\\([^\n\r\f])/gi,
     (_, hex: string | undefined, character: string | undefined) => {
       if (!hex) return character!;
@@ -185,7 +203,14 @@ function governed(selector: string) {
       );
     },
   );
-  if (/\.(?:exchange-resizer|exchange-resize-shield)(?![\w-])/.test(decoded))
+}
+function governed(
+  selector: string,
+  classes: readonly string[] = ["exchange-resizer", "exchange-resize-shield"],
+) {
+  // Bounded class/attribute aliases, not a general selector-matching engine.
+  const decoded = decodedSelector(selector);
+  if (classes.some((name) => new RegExp(`\\.${name}(?![\\w-])`).test(decoded)))
     return true;
   const attributes = new Map<string, string>();
   for (const match of decoded.matchAll(
@@ -196,12 +221,7 @@ function governed(selector: string) {
     attributes.set(name, value);
     if (
       name === "class" &&
-      value
-        .split(/\s+/)
-        .some(
-          (token) =>
-            token === "exchange-resizer" || token === "exchange-resize-shield",
-        )
+      value.split(/\s+/).some((token) => classes.includes(token))
     )
       return true;
   }
@@ -211,6 +231,55 @@ function governed(selector: string) {
     (attributes.get("role") === "separator" &&
       attributes.get("aria-label") === "调整消息区高度")
   );
+}
+const frameSelectors = new Set([
+  ...expectedLayout.map((rule) => rule.selector),
+  ...retainedFrameRules.map((rule) => rule[2]),
+]);
+const frameClasses = [
+  "exchange-resizer",
+  "exchange-resize-shield",
+  "exchange-surface",
+  "exchange-panel",
+  "exchange-panel-header",
+  "exchange-controls-slot",
+  "exchange-scope",
+  "application-dock-slot",
+];
+const frameExceptions = new Set([
+  ".conversation::-webkit-scrollbar",
+  ".app .application-dock",
+]);
+function frameGoverned(selector: string) {
+  // Plain terminal reading/writing roots may be qualified; their message/control
+  // descendants do not acquire frame ownership just from an ancestor class.
+  // PostCSS's existing comma splitter respects quoted/functional commas; this
+  // terminal-compound check deliberately does not interpret arbitrary :is/has.
+  return (
+    governed(selector) ||
+    frameSelectors.has(key(selector)) ||
+    frameExceptions.has(key(selector)) ||
+    postcss.list.comma(decodedSelector(selector)).some((branch) => {
+      const terminal =
+        /(?:^|[\s>+~])((?:[a-zA-Z][\w-]*|\*)?(?:\.[\w-]+|\[[^\]]+\])(?:\.[\w-]+|\[[^\]]+\]|:[\w-]+(?:\([^()]*\))?)*)$/.exec(
+          branch,
+        )?.[1];
+      return !!(
+        terminal &&
+        governed(terminal.split(":", 1)[0]!, [
+          ...frameClasses,
+          "conversation",
+          "composer-dock",
+        ])
+      );
+    })
+  );
+}
+const expectedRetained = new Map<string, Signature[]>();
+for (const tuple of retainedFrameRules) {
+  const signatures = expectedRetained.get(tuple[0]) ?? [];
+  signatures.push(frozenSignature(tuple));
+  expectedRetained.set(tuple[0], signatures);
 }
 
 // Preserve the actual competing rules, including the higher-specificity shared
@@ -244,6 +313,14 @@ function isLayoutSpecifier(specifier: string) {
 type Sources = { css: Map<string, string>; modules: Map<string, string> };
 function violations(sources: Sources) {
   const result: string[] = [];
+  function contract(name: string, check: () => void) {
+    try {
+      check();
+    } catch (error) {
+      if (!(error instanceof assert.AssertionError)) throw error;
+      result.push(name);
+    }
+  }
   const parsed = new Map<string, Root>();
   for (const [file, source] of sources.css) {
     try {
@@ -255,13 +332,38 @@ function violations(sources: Sources) {
   const layout = parsed.get(layoutFile);
   const visual = parsed.get(visualFile);
   if (!layout || !visual) return [...result, "missing-owner"];
-  if (
-    layout.nodes.some(
-      (node) => node.type !== "rule" && node.type !== "comment",
-    ) ||
-    JSON.stringify(rules(layout)) !== JSON.stringify(expectedLayout)
-  )
-    result.push("layout-exact-geometry");
+  contract("layout-exact-geometry", () => {
+    assert.deepEqual(rules(layout), expectedLayout);
+    assert.ok(
+      layout.nodes.every((node) =>
+        ["rule", "comment", "atrule"].includes(node.type),
+      ),
+    );
+    const allowedContexts = new Set(
+      expectedLayout.flatMap((rule) =>
+        rule.context.map((_, index) =>
+          JSON.stringify(rule.context.slice(0, index + 1)),
+        ),
+      ),
+    );
+    layout.walkAtRules((node) => {
+      const path = [...contexts(node), `@${node.name} ${node.params}`.trim()];
+      assert.ok(
+        allowedContexts.has(JSON.stringify(path)),
+        "only fixed old media/container paths",
+      );
+      assert.ok(
+        node.nodes?.every((child) =>
+          ["rule", "comment", "atrule"].includes(child.type),
+        ),
+        "wrapper declarations cannot hide outside a rule",
+      );
+      assert.ok(
+        node.nodes?.some((child) => child.type !== "comment"),
+        "no empty wrapper, including empty layer",
+      );
+    });
+  });
   if (
     JSON.stringify(rules(visual).filter((rule) => governed(rule.selector))) !==
     JSON.stringify(expectedVisual)
@@ -271,18 +373,27 @@ function violations(sources: Sources) {
     root.walkAtRules("import", (node) => {
       if (node.params.includes(layoutFile)) result.push(`css-import:${file}`);
     });
+    if (file !== layoutFile)
+      contract(`frame-retained:${file}`, () => {
+        assert.deepEqual(
+          rules(root).filter((rule) => frameGoverned(rule.selector)),
+          expectedRetained.get(file) ?? [],
+        );
+      });
     if (file === layoutFile || file === visualFile) continue;
     if (rules(root).some((rule) => governed(rule.selector)))
       result.push(`foreign-owner:${file}`);
     if (rules(root).some((rule) => competitorSelectors.has(rule.selector)))
       result.push(`foreign-competitor:${file}`);
   }
-  if (
-    JSON.stringify(
-      rules(visual).filter((rule) => competitorSelectors.has(rule.selector)),
-    ) !== JSON.stringify(competitorRules)
-  )
-    result.push("original-competitors");
+  contract("original-competitors", () => {
+    assert.deepEqual(
+      [...rules(visual), ...rules(layout)].filter((rule) =>
+        competitorSelectors.has(rule.selector),
+      ),
+      competitorRules,
+    );
+  });
 
   // A single direct side-effect import fixes composition independently of which
   // feature happens to be visited. Additional literal static/dynamic imports
@@ -312,6 +423,30 @@ function violations(sources: Sources) {
             ? [statement]
             : [],
         );
+        if (file === "main.tsx")
+          contract("known-composition-order", () => {
+            // Actual old bundle placed App's compact/Dock dependencies before
+            // main's UI/visual overrides. Preserve this finite import seam and
+            // primitive padding precedence, not every unrelated import or CSS.
+            const known = [
+              "./App.js",
+              "./styles.css",
+              "./ui.css",
+              "./workflow.css",
+              `./${visualFile}`,
+              `./${layoutFile}`,
+              "./inspector.css",
+            ];
+            assert.deepEqual(
+              direct.flatMap((statement) =>
+                isStringLiteral(statement.moduleSpecifier) &&
+                known.includes(statement.moduleSpecifier.text)
+                  ? [statement.moduleSpecifier.text]
+                  : [],
+              ),
+              known,
+            );
+          });
         for (const statement of direct) {
           const specifier = statement.moduleSpecifier;
           if (!isStringLiteral(specifier)) continue;
@@ -395,8 +530,17 @@ function cloneSources(): Sources {
 
 test("交流伸缩的首个 CSS owner 精确保存原23项几何与9项绘制声明", () => {
   assert.deepEqual(violations(production), []);
+  assert.deepEqual(
+    rules(postcss.parse(production.css.get(layoutFile)!)).filter((rule) =>
+      governed(rule.selector),
+    ),
+    expectedResizeLayout,
+  );
   assert.equal(
-    expectedLayout.reduce((sum, rule) => sum + rule.declarations.length, 0),
+    expectedResizeLayout.reduce(
+      (sum, rule) => sum + rule.declarations.length,
+      0,
+    ),
     23,
   );
   assert.equal(
@@ -684,9 +828,9 @@ test("AST所有权门禁拒绝几何、绘制、上下文与第二owner的真实
       "changed-header-base",
       (s) =>
         s.css.set(
-          visualFile,
+          layoutFile,
           s.css
-            .get(visualFile)!
+            .get(layoutFile)!
             .replace("padding: 8px 12px 0", "padding: 8px 20px 0"),
         ),
       "original-competitors",
@@ -709,7 +853,13 @@ test("AST所有权门禁拒绝几何、绘制、上下文与第二owner的真实
   ];
   for (const [name, change, expected] of fixtures) {
     const source = cloneSources();
+    const previous = [...source.css];
     change(source);
+    assert.notDeepEqual(
+      [...source.css],
+      previous,
+      `${name} must alter actual CSS`,
+    );
     assert.ok(
       violations(source).includes(expected),
       `${name} must be rejected`,
@@ -719,6 +869,29 @@ test("AST所有权门禁拒绝几何、绘制、上下文与第二owner的真实
 
 test("入口AST拒绝顺序漂移、重复及组件或延迟加载", () => {
   const fixtures: [string, (sources: Sources) => void, string][] = [
+    ...["./styles.css", "./App.js"].map(
+      (specifier): [string, (sources: Sources) => void, string] => [
+        `known-composition-${specifier}`,
+        (sources) =>
+          sources.modules.set(
+            "main.tsx",
+            sources.modules
+              .get("main.tsx")!
+              .replace(
+                new RegExp(
+                  `^import [^\\n]*${specifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\\n]*\\n`,
+                  "m",
+                ),
+                "",
+              )
+              .replace(
+                'import "./inspector.css";',
+                `import "./inspector.css";\n${specifier === "./App.js" ? 'import { App } from "./App.js";' : 'import "./styles.css";'}`,
+              ),
+          ),
+        "known-composition-order",
+      ],
+    ),
     [
       "wrong-order",
       (s) =>
@@ -790,7 +963,13 @@ test("入口AST拒绝顺序漂移、重复及组件或延迟加载", () => {
   ];
   for (const [name, change, expected] of fixtures) {
     const source = cloneSources();
+    const previous = [...source.modules];
     change(source);
+    assert.notDeepEqual(
+      [...source.modules],
+      previous,
+      `${name} must alter actual modules`,
+    );
     assert.ok(
       violations(source).includes(expected),
       `${name} must be rejected`,
@@ -806,4 +985,276 @@ test("入口AST拒绝顺序漂移、重复及组件或延迟加载", () => {
     `/* unrelated whitespace is not a declaration */\n${allowed.css.get(layoutFile)}`,
   );
   assert.deepEqual(violations(allowed), []);
+});
+
+function changeDeclaration(
+  sources: Sources,
+  file: string,
+  selector: string,
+  property: string,
+  value: string,
+  context: readonly string[] = [],
+) {
+  const root = postcss.parse(sources.css.get(file)!);
+  let matches = 0;
+  root.walkRules((rule) => {
+    if (
+      key(rule.selector) !== selector ||
+      JSON.stringify(contexts(rule)) !== JSON.stringify(context)
+    )
+      return;
+    rule.walkDecls(property, (declaration) => {
+      declaration.value = value;
+      matches++;
+    });
+  });
+  assert.equal(
+    matches,
+    1,
+    `${file}:${selector}:${property} fixture must target one actual declaration`,
+  );
+  sources.css.set(file, root.toString());
+}
+
+test("完整frame owner固定旧56规则144声明，已知例外不冒领，无关后代可演进", () => {
+  assert.equal(expectedLayout.length, 56);
+  assert.equal(
+    expectedLayout.reduce((sum, rule) => sum + rule.declarations.length, 0),
+    144,
+  );
+  assert.deepEqual(expectedLayout.slice(-4), expectedResizeLayout);
+  assert.equal(retainedFrameRules.length, 36);
+  assert.deepEqual(violations(production), []);
+  const allowed = cloneSources();
+  allowed.css.set(
+    "unrelated-feature.css",
+    `.conversation .human-message { color: red; }
+    .app .exchange-panel .human-message { color: red; }
+    .composer-dock .new-feature { width: 123px; }
+    .conversation-demo { overflow: hidden; }
+    [class~="composer-dock-demo"] { position: fixed; }`,
+  );
+  allowed.css.set(
+    layoutFile,
+    postcss.parse(allowed.css.get(layoutFile)!).toString() +
+      "\n/* formatting and comments are not new declarations */",
+  );
+  assert.deepEqual(violations(allowed), []);
+});
+
+test("frame有限反例拒绝几何重归属、条件包裹、已知paint与竞争例外漂移", () => {
+  const append = (file: string, css: string) => (sources: Sources) =>
+    sources.css.set(file, (sources.css.get(file) ?? "") + css);
+  const declaration =
+    (
+      file: string,
+      selector: string,
+      property: string,
+      value: string,
+      context: readonly string[] = [],
+    ) =>
+    (sources: Sources) =>
+      changeDeclaration(sources, file, selector, property, value, context);
+  const fixtures: [string, (sources: Sources) => void, string][] = [
+    [
+      "frame-width",
+      declaration(layoutFile, ".conversation", "width", "100%"),
+      "layout-exact-geometry",
+    ],
+    [
+      "frame-important",
+      (sources) => {
+        const root = postcss.parse(sources.css.get(layoutFile)!);
+        const rule = root.nodes.find(
+          (node) =>
+            node.type === "rule" && node.selector === ".exchange-surface",
+        );
+        assert.ok(rule && rule.type === "rule");
+        rule.walkDecls("flex", (node) => {
+          node.important = true;
+        });
+        sources.css.set(layoutFile, root.toString());
+      },
+      "layout-exact-geometry",
+    ],
+    [
+      "container-threshold",
+      (sources) =>
+        sources.css.set(
+          layoutFile,
+          sources.css
+            .get(layoutFile)!
+            .replace("(max-width: 360px)", "(max-width: 361px)"),
+        ),
+      "layout-exact-geometry",
+    ],
+    [
+      "context-nesting",
+      append(
+        layoutFile,
+        "@media (pointer: coarse) { @container exchange (max-width: 360px) { .application-dock-slot { left: 16px; } } }",
+      ),
+      "layout-exact-geometry",
+    ],
+    [
+      "empty-layer",
+      append(layoutFile, "@layer unknown {}"),
+      "layout-exact-geometry",
+    ],
+    [
+      "empty-known-media",
+      append(layoutFile, "@media (max-width: 850px) { /* empty */ }"),
+      "layout-exact-geometry",
+    ],
+    [
+      "direct-media-declaration",
+      append(layoutFile, "@media (max-width: 850px) { --foreign: 1; }"),
+      "layout-exact-geometry",
+    ],
+    [
+      "direct-container-declaration",
+      append(
+        layoutFile,
+        "@container exchange (max-width: 360px) { --foreign: 1; }",
+      ),
+      "layout-exact-geometry",
+    ],
+    [
+      "frame-new-paint",
+      append(layoutFile, ".exchange-panel { background: red; }"),
+      "layout-exact-geometry",
+    ],
+    [
+      "ui-duplicate-reading-geometry",
+      append("ui.css", ".conversation { overflow: hidden; }"),
+      "frame-retained:ui.css",
+    ],
+    [
+      "dock-duplicate-anchor",
+      append(
+        "application-dock.css",
+        ".application-dock-slot { bottom: 101%; }",
+      ),
+      "frame-retained:application-dock.css",
+    ],
+    [
+      "mixed-survivor-paint",
+      declaration(visualFile, ".exchange-panel>.conversation", "border", "0"),
+      `frame-retained:${visualFile}`,
+    ],
+    [
+      "mixed-survivor-font",
+      declaration(
+        visualFile,
+        ".exchange-scope .conversation-scope",
+        "font-size",
+        "13px",
+      ),
+      `frame-retained:${visualFile}`,
+    ],
+    [
+      "dock-reveal",
+      declaration(
+        "application-dock.css",
+        retainedFrameRules[1]![2],
+        "pointer-events",
+        "none",
+      ),
+      "frame-retained:application-dock.css",
+    ],
+    [
+      "dock-hover-bridge",
+      declaration(
+        "application-dock.css",
+        ".app .application-dock",
+        "padding",
+        "7px 0",
+      ),
+      "frame-retained:application-dock.css",
+    ],
+    [
+      "primitive-reading-padding",
+      declaration("styles.css", ".conversation", "padding", "0"),
+      "frame-retained:styles.css",
+    ],
+    [
+      "primitive-small-padding",
+      declaration("styles.css", ".composer-dock", "padding", "0", [
+        "@media (max-width: 560px)",
+      ]),
+      "frame-retained:styles.css",
+    ],
+    [
+      "scroll-appearance",
+      declaration("ui.css", ".conversation", "scrollbar-width", "auto"),
+      "frame-retained:ui.css",
+    ],
+    [
+      "capture-display",
+      declaration(
+        "workflow.css",
+        retainedFrameRules.find((rule) => rule[0] === "workflow.css")![2],
+        "display",
+        "block",
+      ),
+      "frame-retained:workflow.css",
+    ],
+    ...(
+      [
+        ["notice-inset", [], "44px"],
+        ["notice-coarse-inset", ["@media (pointer: coarse)"], "60px"],
+      ] as const
+    ).map(
+      ([name, context, value]): [
+        string,
+        (sources: Sources) => void,
+        string,
+      ] => [
+        name,
+        declaration(
+          "workspace-notice.css",
+          retainedFrameRules.find(
+            (rule) =>
+              rule[0] === "workspace-notice.css" &&
+              rule[4].some((decl) => decl[0] === "top" && decl[1] === value),
+          )![2],
+          "top",
+          "0",
+          context,
+        ),
+        "frame-retained:workspace-notice.css",
+      ],
+    ),
+    ...[
+      ".app .conversation { overflow: hidden; }",
+      ".app .composer-dock { position: fixed; }",
+      ".app section.conversation { overflow: hidden; }",
+      ".app div.composer-dock { position: fixed; }",
+      ".app .conversation, .legacy-feature { overflow: hidden; }",
+      ".app .composer-dock, .legacy-feature { position: fixed; }",
+      '[class~="conversation"] { overflow: hidden; }',
+      ".app .exchange\\2d panel[data-open] { position: fixed; }",
+      ".app .conversation:hover { overflow: hidden; }",
+    ].map((css, index): [string, (sources: Sources) => void, string] => [
+      `qualified-root-${index}`,
+      append("foreign-frame.css", css),
+      "frame-retained:foreign-frame.css",
+    ]),
+  ];
+  for (const [name, change, expected] of fixtures) {
+    const source = cloneSources();
+    const previous = [...source.css];
+    change(source);
+    assert.notDeepEqual(
+      [...source.css],
+      previous,
+      `${name} must alter actual CSS`,
+    );
+    // Each frame violation is produced only by contract's AssertionError path;
+    // unexpected parser/programming exceptions are not converted into success.
+    assert.ok(
+      violations(source).includes(expected),
+      `${name} must be rejected by ${expected}`,
+    );
+  }
 });
