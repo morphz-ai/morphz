@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-03 · 版本：0.3 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-03 · 版本：0.4 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -14,6 +14,7 @@
 | 交流意图与焦点       | `host/use-exchange-controller.ts`；App 保留发送、草稿及页面组合                          | `exchange-controller-boundary.test.ts` 与 controller 回归约束显隐、固定、伸缩预览和焦点恢复；不更改 Runtime 输入或权限。提交 `b1e37aa2`。                          |
 | 导航状态与回执       | `host/use-workspace-navigation.ts` 的 state／commands／commit；App 保留唯一 prefs writer | 四个原导航命令、同一 generation 与原 trail／焦点顺序；76 项相关 Node／门禁、44 项 Host 浏览器回归通过。只迁已审查边界，不把保留的其他业务入口称为已拆完；原窗复验待解锁。 |
 | 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费 | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。 |
+| 登记图形与透明按钮   | `design/control-icons.tsx`、`ui/IconButton.tsx`；SidebarToggle、ComposerToolButtons、ExchangeControls | 原七图形／两 role、单 native button、原 props/ref/key/compact 焦点。13 项 Node／门禁与 5 项实际隔离挂载通过；有限治理，不包含全部菜单／按钮，扩大旧回归的失败仍在排查。 |
 | 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`    | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                        |
 
 交流伸缩的首段样式 owner 也已迁入 `exchange-layout.css`，原 23 项几何与 9 项绘制声明保持；`exchange-css-ownership.test.ts` 治理唯一入口与已知竞争规则，非全产品 CSS 门禁。该阶段的原 App 原生命中复验仍待系统解锁。
@@ -193,6 +194,13 @@ UI 可组合紧凑 ActivityRow 与展开 ThreadGroup，复用相同模型；消�
 
 提案 IconButton 输入为登记的 icon／role，组合 selected、pending、disabled、focus 与读屏属性。其业务动作由调用方提供，基础控件不获取 activity；StatusMark 可以显示非按钮图形，不能为统一外观全做成可点击按钮。
 
+首批已实际迁移七个旧控制图形和两类 role：登记只返回原 Lucide 构造器；
+IconButton 是不加默认属性或样式的透明原生按钮，原 pressed/disabled/ARIA
+由消费方显式提供。afterIcon 当前只保留原未读标记，不是绕过图形登记的入口。
+ComposerOptions 的默认、自定义、空 ReactNode 触发器与复合菜单仍沿用原接口；
+不按图形来源切换 renderer，以保留实际 button 身份。没有借此实现新的 pending、
+视觉密度、材质或辅助模式策略，其他控件仍需逐批迁移和验证。
+
 UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套一层就变尺寸或变色。主题／motion／contrast 在根策略统一决议，循环动效由事实 presentation 明确激活，基础样式不偷偷决定是否运行。
 
 ### 6.2 依赖门禁（拟实现）
@@ -202,7 +210,7 @@ UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套�
 - 契约检查：图标 role／可访问名称、状态槽完整性、无回复样例、motion 开停及 fallback 必须进入测试矩阵。
 - 旧模块有确切 allowlist，门禁先作用于新／已迁移区域；每批缩小债务清单，不以全量报错迫使删除合法局部 state。
 
-工作面、交流 controller 与首段导航 owner 的 AST 门禁已随各自阶段实现；其他条目仍是迁移目标。已治理范围必须由具体测试登记，未迁移模块不能因这份文档存在就被描述为已有 CI 约束。
+工作面、交流 controller、首段导航 owner 与首批登记图形／透明按钮的有限 AST 门禁已随各自阶段实现；其他条目仍是迁移目标。已治理范围必须由具体测试登记，未迁移模块不能因这份文档存在就被描述为已有 CI 约束。
 
 ## 7. 渐进迁移与证明责任
 
@@ -233,7 +241,7 @@ UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套�
 
 采纳与迁移完成后，应能做到：一个组件语义变化有唯一 owner；一个状态规则变化无需修改五个消费页面；一个角色尺寸变化由 component token 控制；每项活动 prose 能追溯来源，缺失不造消息；新 feature 默认复用宿主与 UI primitives，同时保留领域画布自由。
 
-当前已有工作面解析、交流意图／焦点、回应等待事实、首段导航 owner 和对应有限门禁的生产迁移；App 尚未完成整体拆分，新 query facade、跨领域 presentation、role 型组件和全产品 token／样式迁移也未完成。图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美改善。每一批需要分别记录代码实现、自动回归、原 App 验收与未完成边界。
+当前已有工作面解析、交流意图／焦点、回应等待事实、首段导航 owner、首批登记图形／透明按钮和对应有限门禁的生产迁移；App 尚未完成整体拆分，新 query facade、跨领域 presentation、全产品 role 型组件和 token／样式迁移也未完成。图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美改善。每一批需要分别记录代码实现、自动回归、原 App 验收与未完成边界。
 
 ## 9. 源码审计入口
 

@@ -1,13 +1,11 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import {
-  ChevronDown,
-  Maximize2,
-  MessageSquareText,
-  Minimize2,
-  Pin,
-} from "lucide-react";
+import { ControlIcon } from "./design/control-icons.js";
+import { IconButton } from "./ui/IconButton.js";
 import { ComposerOptions } from "./ComposerOptions.js";
-import { ComposerToolButtons } from "./ComposerToolButtons.js";
+import {
+  ComposerToolButtons,
+  type ComposerTool,
+} from "./ComposerToolButtons.js";
 import type { InteractionMode } from "./interaction.js";
 import {
   ExchangeResizeHandle,
@@ -144,18 +142,18 @@ export function ExchangeControls({
     measure();
     return () => observer.disconnect();
   }, []);
-  const secondaryOptions = [
+  const secondaryOptions: ComposerTool[] = [
     {
       id: "history-size",
       label: historyVisible ? "返回工作内容" : "展开完整记录",
-      icon: historyVisible ? <Minimize2 /> : <Maximize2 />,
+      iconId: historyVisible ? "minimize" : "maximize",
       pressed: historyVisible,
       onSelect: () => onInteraction(historyVisible ? "recent" : "history"),
     },
     {
       id: "pin",
       label: pinned ? "取消固定输入框" : "固定输入框",
-      icon: <Pin />,
+      iconId: "pin",
       pressed: pinned,
       onSelect: onPin,
     },
@@ -174,7 +172,7 @@ export function ExchangeControls({
           {
             id: "history-visibility",
             label: conversationVisible ? "收起交流记录" : "查看交流记录",
-            icon: <MessageSquareText />,
+            iconId: "message-square-text",
             pressed: conversationVisible,
             onSelect: () =>
               onInteraction(conversationVisible ? "input" : "recent"),
@@ -186,20 +184,23 @@ export function ExchangeControls({
           label="更多交流选项"
           menuLabel="交流选项"
           below={conversationVisible}
-          options={secondaryOptions}
+          options={secondaryOptions.map(({ iconId, ...option }) => ({
+            ...option,
+            icon: <ControlIcon name={iconId} />,
+          }))}
         />
       ) : (
         <ComposerToolButtons options={secondaryOptions} />
       )}
-      <button
+      <IconButton
+        controlRole="exchange-operation"
+        iconId="chevron-down"
         ref={hide}
         className="icon-button"
         aria-label="收起 AI 输入框"
         title="收起 AI 输入框"
         onClick={onHide}
-      >
-        <ChevronDown />
-      </button>
+      />
     </div>
   );
 }

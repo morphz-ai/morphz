@@ -1,4 +1,4 @@
-import { PanelLeft, PanelRight } from "lucide-react";
+import { IconButton } from "./ui/IconButton.js";
 
 /** The same visibility control for the two sides of the Host window. */
 export function SidebarToggle({
@@ -24,17 +24,16 @@ export function SidebarToggle({
       : expanded
         ? "隐藏右侧栏"
         : "显示右侧栏";
-  const Icon = side === "left" ? PanelLeft : PanelRight;
   return (
-    <button
+    <IconButton
+      controlRole="sidebar-visibility"
+      iconId={side === "left" ? "panel-left" : "panel-right"}
       className={`icon-button sidebar-visibility-toggle ${className}`}
       aria-label={label}
       title={title ?? label}
       aria-expanded={expanded}
       aria-controls={controls}
       onClick={onClick}
-    >
-      <Icon />
-    </button>
+    />
   );
 }

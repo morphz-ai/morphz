@@ -1,5 +1,45 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端重构第六阶段：登记图形与透明原生按钮
+
+`design/control-icons.tsx` 登记原有七个 Lucide 构造器与两类控件语义，
+`ui/IconButton.tsx` 提供一个透明的原生 button 边界。SidebarToggle、
+ComposerToolButtons 和 ExchangeControls 的收起按钮实际消费它；不增加
+DOM 包装、默认 class/type/ARIA、SVG 属性、尺寸、材质或业务读取。
+原生 props、事件与 React 19 ref 原样转发，未知／prototype 图形及角色错配
+拒绝；afterIcon 仅供原未读 span 装饰，不是任意图形的替代入口。
+
+原 key=id??label（包括空 ID）、属性存在性、标签、pressed、未读、disabled、
+refs 及 620px 紧凑模式焦点顺序保留。紧凑菜单只将登记 ID 适配回原 ReactNode
+接口；ComposerOptions 全部触发器、App、Dock 手势及全部 CSS 不变。不会按
+default/custom 图形切换 button renderer，从而丢失原节点与焦点。
+
+新增 Node／SSR／门禁 13/13、零跳过；39 个违规反例拒绝。门禁只治理这批
+登记／控件／消费 seam 及确切旧 compact effect，不是任意 React 或全产品证明。
+独立固定 `bb8a1f35` 对照 1533 个正向场景与 14 个运行期负例通过；它们是
+oracle 场景数，不冒充 CI 用例数或 mounted 验证。另有相关 27 项 Node／门禁
+全部通过。真实隔离 React 挂载 5/5、零跳过／重试，验证实际按钮身份、空 ID／
+nullish key、对象／cleanup ref、更新后的焦点、621→620→619px 实际 observer、
+secondary 卸载与 history/hide 焦点例外及紧凑菜单键盘行为；未挂业务 Host。
+
+冻结生产构建 `app-DnkpJ-BV.js / app-5L3clyL9.css` 的 typecheck／build 通过；
+CSS 摘要与前阶段相同。全量 Node 1394 项中 1231 通过、163 条现有可选集成
+跳过、零失败。首次门禁红记录保留：TypeScript JSXText.getText 丢前导换行，
+现用原 source slice 判断真正格式换行，不改生产或删除反例；修复后重新全量跑。
+
+扩大浏览器矩阵 59 项为 47 通过、12 失败，不能称 E2E 全绿。Dock 拖拽／固定／
+放大、交流显隐／焦点／悬浮／伸缩均通过；失败落在 composer-layout、
+composer-tool-state 与 inspector 的旧测试。已定位其过时菜单、常驻模型控件、
+focus 自动展开记录、inset 材质等假设；另有 seed 夹具的事件刷新前置需核对。
+正在独立核对旧构建并修复测试契约，不把所有失败未经验证归为旧测问题，也不
+改回用户已确认 UI。完整红／绿输出、两个不同浏览器报告、冻结对照见
+`/tmp/morphz-control-owner-verification.LhN5kb`；独立审阅
+`/tmp/morphz-control-icon-audit.W7OPQK/review.md`。
+
+本机界面技能只读检查仍确认 Mac 锁屏；原 App 最终坐标命中、焦点、动效及
+200% 复验未完成，没有替换 App/profile、重启 Runtime 或改锁屏设置。
+本阶段是有限生产组件迁移，不是全产品基础控件、查询层或整体架构完成。
+
 ## 2026-10-04 前端重构第五阶段：导航状态、回执与历史的单一所有权
 
 `host/use-workspace-navigation.ts` 将原导航状态与 generation 收到一个无 effect

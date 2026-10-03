@@ -1,9 +1,10 @@
-import type { ReactNode } from "react";
+import type { ControlIconForRole } from "./design/control-icons.js";
+import { IconButton } from "./ui/IconButton.js";
 
-type Tool = {
+export type ComposerTool = {
   id?: string;
   label: string;
-  icon: ReactNode;
+  iconId: ControlIconForRole<"exchange-operation">;
   onSelect(): void;
   disabled?: boolean;
   title?: string;
@@ -17,12 +18,14 @@ export function ComposerToolButtons({
   options,
   unread,
 }: {
-  options: Tool[];
+  options: ComposerTool[];
   unread?: boolean;
 }) {
   return options.map((option) => (
-    <button
+    <IconButton
       key={option.id ?? option.label}
+      controlRole="exchange-operation"
+      iconId={option.iconId}
       className={
         "icon-button composer-tool" +
         (option.groupStart ? " composer-tool-group-start" : "") +
@@ -37,11 +40,12 @@ export function ComposerToolButtons({
       title={option.title ?? option.label}
       disabled={option.disabled || option.reserveOnly}
       onClick={option.onSelect}
-    >
-      {option.icon}
-      {unread && option.id === "history-visibility" && (
-        <span className="composer-unread" aria-hidden="true" />
-      )}
-    </button>
+      afterIcon={
+        unread &&
+        option.id === "history-visibility" && (
+          <span className="composer-unread" aria-hidden="true" />
+        )
+      }
+    />
   ));
 }
