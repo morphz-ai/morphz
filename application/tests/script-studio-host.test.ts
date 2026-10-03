@@ -619,17 +619,19 @@ test("普通聊天准备拒绝过期、撤权、取消与越过私有项目范�
       /已过期/,
     );
     await f.metadata({ modelProcessingAllowed: false });
-    await assert.rejects(
-      f.call(
-        { action: "prepare-workflow", ...(await f.generation()) },
-        personal,
-      ),
-      /获准/,
-    );
-    await f.metadata({ modelProcessingAllowed: true });
     await f.call(
       { action: "prepare-workflow", ...(await f.generation()) },
       personal,
+    );
+    assert.equal((await f.overview()).brief.modelProcessingAllowed, false);
+    assert.equal(
+      (
+        await f.call<{ generating: boolean }>(
+          { action: "read-workflow" },
+          personal,
+        )
+      ).generating,
+      true,
     );
     const submitted = await f.call<{ candidateId: string; contentId: string }>(
       {
@@ -782,8 +784,9 @@ test("Yao 材料包和每次阶段检查均使用真实根、固定版本与当�
     );
     assert.deepEqual(await f.production(), before);
     await f.metadata({ modelProcessingAllowed: false });
-    await assert.rejects(read(), /许可/);
+    assert.deepEqual(await read(), packet);
     await f.metadata({ modelProcessingAllowed: true });
+    assert.deepEqual(await read(), packet);
     await f.revise(f.targetId, { text: "人工新稿" });
     await assert.rejects(read(), /固定剧本资料已变化/);
     f.host.forgetInput(f.host.route);
@@ -1390,13 +1393,13 @@ test("结果恢复只读本次持久候选/意见：目录和正文分页、重�
   }
 });
 
-test("结果恢复不绕过停止、成员撤权、模型许可或原作迁出", async () => {
+test("结果恢复不绕过停止、成员撤权或原作迁出；旧模型开关不阻断", async () => {
   for (const revoke of [
     "cancel",
     "completed",
     "human",
     "agent",
-    "model",
+    "legacy-model-flag",
     "source",
   ] as const) {
     const f = await sourceFixture();
@@ -1415,7 +1418,7 @@ test("结果恢复不绕过停止、成员撤权、模型许可或原作迁出",
       });
       if (revoke === "cancel") f.host.setInputExecution("running", true);
       else if (revoke === "completed") f.host.setInputExecution("completed");
-      else if (revoke === "model")
+      else if (revoke === "legacy-model-flag")
         await f.metadata({ modelProcessingAllowed: false });
       else if (revoke === "source")
         await moveOriginalOutsideScope(f, source.contentId);
@@ -1437,11 +1440,25 @@ test("结果恢复不绕过停止、成员撤权、模型许可或原作迁出",
         }
       }
       const denied = /未获准|访问|许可|原作|身份|权限|授权|范围/;
-      await assert.rejects(f.call({ action: "read-results" }), denied);
-      await assert.rejects(
-        f.call({ action: "read-result", resultId: candidate.candidateId }),
-        denied,
-      );
+      if (revoke === "legacy-model-flag") {
+        assert.equal((await f.overview()).brief.modelProcessingAllowed, false);
+        assert.equal(
+          (await f.call<{ total: number }>({ action: "read-results" })).total,
+          1,
+        );
+        const recovered = await f.call<{ kind: string; resultJson: string }>({
+          action: "read-result",
+          resultId: candidate.candidateId,
+        });
+        assert.equal(recovered.kind, "candidate");
+        assert.equal(JSON.parse(recovered.resultJson).id, candidate.candidateId);
+      } else {
+        await assert.rejects(f.call({ action: "read-results" }), denied);
+        await assert.rejects(
+          f.call({ action: "read-result", resultId: candidate.candidateId }),
+          denied,
+        );
+      }
       const database = new DatabaseSync(
         join(f.host.directory, "script-studio.sqlite"),
         { readOnly: true },
@@ -1755,19 +1772,20 @@ test("发送和运行中允许候选；排队、无投递、停止或终态拒�
   }
 });
 
-test("固定生成的 read-input 不能绕过取消、原 Human 撤权或模型许可撤销", async () => {
+test("固定生成的 read-input 保留取消和原 Human 撤权保护，不受旧模型开关阻断", async () => {
   for (const revoke of [
     "cancel",
     "human-membership",
-    "model-permission",
+    "legacy-model-flag",
   ] as const) {
     const f = await domainFixture();
     try {
       await f.call({ action: "prepare-workflow", ...(await f.generation()) });
       const read = () => f.host.call({ action: "read-input" });
-      assert.ok(await read());
+      const original = await read();
+      assert.ok(original);
       if (revoke === "cancel") f.host.setInputExecution("running", true);
-      else if (revoke === "model-permission")
+      else if (revoke === "legacy-model-flag")
         await f.metadata({ modelProcessingAllowed: false });
       else
         await f
@@ -1779,7 +1797,12 @@ test("固定生成的 read-input 不能绕过取消、原 Human 撤权或模型�
               enabled: false,
             },
           ]);
-      await assert.rejects(read(), /未获准继续读取|访问|许可|授权|身份/);
+      if (revoke === "legacy-model-flag") {
+        assert.equal((await f.overview()).brief.modelProcessingAllowed, false);
+        assert.deepEqual(await read(), original);
+      } else {
+        await assert.rejects(read(), /未获准继续读取|访问|许可|授权|身份/);
+      }
       f.host.assertNoLegacyData();
     } finally {
       await f.close();
@@ -1887,28 +1910,41 @@ test("回执重放也重新核验 Agent 与发起 Human 的实时项目成员资
   }
 });
 
-test("人工撤销模型处理许可立即阻止继续读取、提交候选和审查意见", async () => {
+test("legacy false 可准备、读取并提交候选或审查意见；仅旧开关往返不使固定范围失效", async () => {
   for (const purpose of ["rewrite", "continuity"] as const) {
     const f = await domainFixture();
     try {
+      await f.metadata({ modelProcessingAllowed: false });
       await f.call({
         action: "prepare-workflow",
         ...(await f.generation({ purpose })),
       });
+      const fixedGeneration = await f.call({ action: "read-generation" });
+      await f.metadata({ modelProcessingAllowed: true });
       await f.metadata({ modelProcessingAllowed: false });
-      await assert.rejects(f.call({ action: "read-generation" }), /许可/);
-      await assert.rejects(
-        f.call({
-          action: "read-item",
-          productionId: f.productionId,
-          itemId: f.targetId,
-          revision: 1,
-        }),
-        /许可/,
+      assert.equal((await f.overview()).brief.modelProcessingAllowed, false);
+      assert.deepEqual(
+        await f.call({ action: "read-generation" }),
+        fixedGeneration,
       );
+      const original = await f.item();
+      const fixedItem = await f.call<{
+        draftJson: string;
+        hasMore: boolean;
+        revision: number;
+      }>({
+        action: "read-item",
+        productionId: f.productionId,
+        itemId: f.targetId,
+        revision: 1,
+        limit: 5000,
+      });
+      assert.equal(fixedItem.hasMore, false);
+      assert.equal(fixedItem.revision, 1);
+      assert.deepEqual(JSON.parse(fixedItem.draftJson), original.draft);
       const payload =
         purpose === "rewrite"
-          ? f.draft("撤销许可后的候选")
+          ? f.draft("旧开关关闭时的候选")
           : [
               {
                 action: "add-review",
@@ -1916,22 +1952,35 @@ test("人工撤销模型处理许可立即阻止继续读取、提交候选和�
                 itemId: f.targetId,
                 itemRevision: 1,
                 quote: "人工原稿",
-                body: "撤销许可后的意见",
+                body: "旧开关关闭时的意见",
                 severity: "note",
               },
             ];
-      await assert.rejects(
-        f.call({
-          action: "submit-workflow",
-          payload,
-          explanation: "合成检查",
-          checks: workflowChecks(),
-        }),
-        /许可/,
+      const saved = await f.call<{
+        candidateId?: string;
+        kind?: string;
+        reviewIds?: string[];
+      }>({
+        action: "submit-workflow",
+        payload,
+        explanation: "合成检查",
+        checks: workflowChecks(),
+      });
+      if (purpose === "rewrite") assert.ok(saved.candidateId);
+      else {
+        assert.equal(saved.kind, "review");
+        assert.equal(saved.reviewIds?.length, 1);
+      }
+      assert.equal(
+        (await f.production()).candidates.length,
+        purpose === "rewrite" ? 1 : 0,
       );
-      assert.equal((await f.production()).candidates.length, 0);
-      assert.equal((await f.production()).reviews.length, 0);
+      assert.equal(
+        (await f.production()).reviews.length,
+        purpose === "continuity" ? 1 : 0,
+      );
       assert.equal((await f.item()).headRevision, 1);
+      assert.deepEqual((await f.item()).draft, original.draft);
       f.host.assertNoLegacyData();
     } finally {
       await f.close();
@@ -1939,7 +1988,7 @@ test("人工撤销模型处理许可立即阻止继续读取、提交候选和�
   }
 });
 
-test("read-source 分页读取确切原作；引文不扩大范围，后台改版不替换原文，取消、撤回许可与迁出立即拒绝", async () => {
+test("read-source 分页读取确切原作；引文不扩大范围，后台改版和旧开关不替换原文，取消与迁出立即拒绝", async () => {
   const f = await sourceFixture();
   try {
     const text = "完整合成原作：" + "甲乙丙丁".repeat(120);
@@ -2001,7 +2050,8 @@ test("read-source 分页读取确切原作；引文不扩大范围，后台改�
     await assert.rejects(read(0), /未获准继续读取/);
     f.host.setInputExecution("running");
     await f.metadata({ modelProcessingAllowed: false });
-    await assert.rejects(read(0), /许可/);
+    assert.equal((await read(0)).text, text.slice(0, 41));
+    assert.equal((await read(0)).revision, 1);
     await f.metadata({ modelProcessingAllowed: true });
     assert.equal((await read(0)).text, text.slice(0, 41));
     await moveOriginalOutsideScope(f, source.contentId);

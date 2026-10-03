@@ -707,16 +707,16 @@ for (const backend of ["sqlite", "postgres"] as const) {
             template: currentHead.template,
           }),
         );
-        await assert.rejects(
-          f.withAgent((actor) =>
-            shared().studio.readCandidate({
-              credential: actor.credential,
-              productionId: original.productionId,
-              candidateId: candidateIds[0]!,
-            }),
-          ),
-          /模型处理许可/,
+        assert.equal((await head()).brief.modelProcessingAllowed, false);
+        const legacyCandidate = await f.withAgent((actor) =>
+          shared().studio.readCandidate({
+            credential: actor.credential,
+            productionId: original.productionId,
+            candidateId: candidateIds[0]!,
+          }),
         );
+        assert.equal(legacyCandidate.id, candidateIds[0]);
+        assert.equal(legacyCandidate.draft.text, "汉😀e\u0301");
         await f.identity!.replaceConfiguration(
           {
             version: 1,

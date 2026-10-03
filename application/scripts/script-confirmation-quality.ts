@@ -38,7 +38,7 @@ import {
 import type { Receipt } from "../packages/core/src/model.js";
 
 const MAX_CALLS = 16;
-const LIVE_HARNESS_VERSION = "1.4.3";
+const LIVE_HARNESS_VERSION = "1.4.4";
 const bridgeMessage = z.object({
   role: z.string(),
   content: z.string(),
@@ -462,7 +462,7 @@ export function verifyExistingPositiveRun(path: string) {
   );
   for (const plan of plans) {
     assert.ok(
-      ["1.4.2", "1.4.3"].includes(plan.harness_version),
+      ["1.4.2", "1.4.3", "1.4.4"].includes(plan.harness_version),
       "Read-only reassessment retains each run's actual immutable package version",
     );
     assert.equal(plan.status, "succeeded");

@@ -825,12 +825,10 @@ export class PlatformAgentTools {
         if (!preparation)
           throw new DomainError("invalid", "本次输入尚未固定剧本生成范围。");
         const generation = preparation.generation;
-        const overview = await studio.readProductionOverview({
+        await studio.readProductionOverview({
           credential: actor.credential,
           productionId: generation.productionId,
         });
-        if (!overview.brief.modelProcessingAllowed)
-          throw new DomainError("forbidden", "剧本范围或模型处理许可已变化。");
         const context = await studio.readCreativeContextVersion({
           credential: actor.credential,
           productionId: generation.productionId,
@@ -1368,12 +1366,10 @@ export class PlatformAgentTools {
           const generation = preparation.generation;
           if (request.productionId !== generation.productionId)
             throw new DomainError("forbidden", "只能读取本次固定资料的剧本。");
-          const overview = await studio.readProductionOverview({
+          await studio.readProductionOverview({
             credential: actor.credential,
             productionId: generation.productionId,
           });
-          if (!overview.brief.modelProcessingAllowed)
-            throw new DomainError("forbidden", "剧本模型处理许可已变化。");
           const context = await studio.readCreativeContextVersion({
             credential: actor.credential,
             productionId: generation.productionId,

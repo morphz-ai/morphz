@@ -70,7 +70,10 @@ async function fixture(withSource = false) {
         productionId,
       }),
     );
-  const metadata = async (modelProcessingAllowed: boolean) => {
+  const metadata = async (
+    modelProcessingAllowed: boolean,
+    changes: Partial<Awaited<ReturnType<typeof overview>>["brief"]> = {},
+  ) => {
     const current = await overview();
     return host.withHuman((actor) =>
       updateScriptProduction({
@@ -81,6 +84,7 @@ async function fixture(withSource = false) {
         title: current.title,
         brief: {
           ...current.brief,
+          ...changes,
           modelProcessingAllowed,
           rightsStatement: "合成验收素材",
         },
@@ -596,22 +600,97 @@ test("Host 串行批次阶段间取消：保留已保存第一项，后续写入
   }
 });
 
-for (const kind of ["cancel", "consent"] as const) {
-  test(`Host 三目标提交后续撤销${kind === "cancel" ? "执行" : "模型许可"}，不得写候选`, async () => {
+test("Host 三目标 legacy false 可准备、读取与提交；仅旧开关往返保留固定范围及冷恢复幂等", async () => {
+  const f = await fixture();
+  try {
+    await f.metadata(false);
+    const prepared = await f.prepare();
+    assert.equal(prepared.prepared, true);
+    assert.equal(prepared.generations.length, 3);
+    const fixed = await f.call<{
+      generating: boolean;
+      targets: Array<{
+        generation: { targetId: string; baseRevision: number };
+        target: { itemId: string; draft: LiveScriptDraft };
+      }>;
+    }>({ action: "read-workflow" });
+    assert.equal(fixed.generating, true);
+    assert.deepEqual(
+      fixed.targets.map((target) => target.generation.targetId),
+      f.targetIds,
+    );
+    assert.ok(
+      fixed.targets.every(
+        (target) =>
+          target.generation.baseRevision === 1 &&
+          target.target.draft.text === "",
+      ),
+    );
+    await f.metadata(true);
+    await f.metadata(false);
+    assert.equal((await f.overview()).brief.modelProcessingAllowed, false);
+    assert.deepEqual(await f.call({ action: "read-workflow" }), fixed);
+    const envelope = f.host.envelope(f.submitArgs(), f.route);
+    const saved = (await f.host.tools.call(envelope)) as BatchReceipt;
+    assert.equal(saved.ok, true);
+    assert.equal(saved.kind, "candidates");
+    assert.equal(saved.savedCount, 3);
+    assert.deepEqual(
+      saved.results.map((result) => result.status),
+      ["saved", "saved", "saved"],
+    );
+    assert.equal(
+      new Set(saved.results.map((result) => result.candidateId)).size,
+      3,
+    );
+    assert.ok(
+      saved.results.every(
+        (result) => result.receipt?.entityId === result.candidateId,
+      ),
+    );
+    await f.host.reopen();
+    assert.deepEqual(await f.host.tools.call(envelope), saved);
+    assert.equal(
+      (await f.call<{ total: number }>({ action: "read-results" })).total,
+      3,
+    );
+    const state = await f.production();
+    assert.equal(state.brief.modelProcessingAllowed, false);
+    assert.equal(state.candidates.length, 3);
+    assert.ok(
+      state.items.every(
+        (item) => item.revision === 1 && item.versions[0]!.draft.text === "",
+      ),
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+for (const kind of ["cancel", "creative-context"] as const) {
+  test(`Host 三目标提交前${kind === "cancel" ? "取消执行" : "变更实际创作风格"}，不得写候选`, async () => {
     const f = await fixture();
     try {
       await f.prepare();
       if (kind === "cancel") f.host.setInputExecution("running", true, f.route);
-      else await f.metadata(false);
+      else await f.metadata(true, { style: "实际变更后的创作风格" });
       const rejected = await f.host.call<BatchReceipt>(f.submitArgs(), f.route);
       assert.equal(rejected.ok, false);
       assert.equal(rejected.savedCount, 0);
       assert.deepEqual(
         rejected.results.map((entry) => entry.status),
-        ["unknown", "not-run", "not-run"],
+        [kind === "cancel" ? "unknown" : "failed", "not-run", "not-run"],
       );
-      assert.equal(rejected.results[0]!.saved, null);
-      assert.match(rejected.results[0]!.error!, /未获准|停止|许可|模型|取消/);
+      assert.equal(
+        rejected.results[0]!.saved,
+        kind === "cancel" ? null : false,
+      );
+      assert.match(
+        rejected.results[0]!.error!,
+        kind === "cancel"
+          ? /未获准|停止|取消/
+          : /剧本创作要求已变化，请重新准备/,
+      );
       assert.equal((await f.production()).candidates.length, 0);
     } finally {
       await f.close();

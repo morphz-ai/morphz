@@ -68,7 +68,7 @@ test("Runtime 投递存储只有连接／关系投递，不创建旧工作空间
 test("剧本工作室正式入口固定编剧 Harness，冷重开不重写已排队输入", async () => {
   const f = await platformRuntimeHostFixture();
   try {
-    const harness = { id: "morphz.script-studio", version: "1.4.3" };
+    const harness = { id: "morphz.script-studio", version: "1.4.4" };
     assert.deepEqual(scriptStudioApplication.harness, harness);
     const command = message(f.projectId, scriptStudioApplication);
     const receipt = await f.session().platformMessage(command);

@@ -1,6 +1,6 @@
 (manifest
   (id morphz.script-studio)
-  (version "1.4.4")
+  (version "1.4.3")
   (title "剧本工作室 · 编剧与审稿")
   (capabilities (tools host_morphz)))
 (contract
@@ -53,7 +53,7 @@ characters 是角色条目ID而非姓名，只可使用本次授权的已有角�
 固定引用和不可改动字段不猜值。
 Yao在未阻塞时调用script/submit-workflow，Host按本次purpose校验完整ScriptDraft或add-review数组、版本、来源、字数、次数和领域权限，返回持久回执。
 模型子步骤不能自行提交或决定采纳。
-资料来源与使用说明不作为Agent创作开关，不伪造权利声明。正式稿、采纳、批准、锁稿和导出仍由Human控制。""")
+正式稿、权利确认、采纳、批准、锁稿和导出仍由Human控制。""")
   (review
     """add-review 必须指向本次范围内的确切 itemRevision。
 quote 是该版 text 的真实连续片段；跨条目对照证据写在 body 并标明条目及版本，不能拿另一个条目的句子当目标 quote。
@@ -212,7 +212,7 @@ input.body始终是本次原文；本次执行范围同时由intent.task显式�
 ID与版本来自真实读取，purpose按draft/rewrite/continuity/impact选取。依赖由Host自动闭包；各目标需要的其他条目使用各自references。默认每目标1个候选、全部交付合计24000字符、批次1轮自审；用户明确要求不同预算才调整。targets用于多条目draft/rewrite；continuity/impact使用固定references，不伪装成创作数组。
 input.target只是发送时的选择线索，不能覆盖用户明确指定的另一目标，也不是执行授权。
 多部同名或多个可能条目时，只问一个具体选择问题；未授权材料或真实冲突如实报告。不猜ID、不把目录名称拼成路径、不要求用户先点生成按钮、不要求同一句再发。
-无需额外启用Agent或确认模型处理许可；旧modelProcessingAllowed=false不阻止创作。真实项目、原作版本访问权限与取消校验仍适用，不伪造资料来源或权利声明。command只允许上述create-production/create-item，不允许其他命令或submit-workflow，也不能重新选择Harness或启动第二套流程。
+不代替用户确认资料可交给模型。command只允许上述create-production/create-item，不允许其他命令或submit-workflow，也不能重新选择Harness或启动第二套流程。
 工具ok=true且prepared=true只代表准备好；返回简短准备结果，接下来的Yao会重新读取并继续。未准备成功时返回可直接给用户的具体缺口。"""))))
 (fn initial-script
   (params (context (Map Json)))

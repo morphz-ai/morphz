@@ -74,7 +74,7 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
   );
   assert.deepEqual(scriptStudioApplication.harness, {
     id: "morphz.script-studio",
-    version: "1.4.3",
+    version: "1.4.4",
   });
   assert.equal(
     createHash("sha256")
@@ -102,7 +102,7 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
       .digest("hex"),
     "31118476c3dedef7c95a18d2b1545b9c8ed749f7fca113e1258fe8c941246aaa",
   );
-  assert.match(source, /\(version "1\.4\.3"\)/);
+  assert.match(source, /\(version "1\.4\.4"\)/);
   for (const [version, hash] of [
     [
       "1.4.0",
@@ -111,6 +111,10 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
     [
       "1.4.2",
       "4295fd7197f9c0b4a82c8aef946af199d82c5c66ab68d0d8f9278ade216b0224",
+    ],
+    [
+      "1.4.3",
+      "b2539bab37bf101894bfba3542d4ebe75d82b58e6a5266d553ff158e43cdb9ff",
     ],
   ] as const) {
     const archived = readFileSync(
@@ -184,7 +188,10 @@ test("准备阶段允许明确新建空对象，未绑定目标不再被误当�
   assert.match(prepare, /只要求创建时.*不调用prepare-workflow/);
   assert.match(prepare, /command只允许上述create-production\/create-item/);
   assert.match(prepare, /只有明确新建意图才允许/);
-  assert.match(prepare, /不代替用户确认资料可交给模型/);
+  assert.match(prepare, /无需额外启用Agent或确认模型处理许可/);
+  assert.match(prepare, /旧modelProcessingAllowed=false不阻止创作/);
+  assert.match(prepare, /真实项目、原作版本访问权限与取消校验仍适用/);
+  assert.doesNotMatch(prepare, /不代替用户确认资料可交给模型/);
   assert.doesNotMatch(prepare, /不能调用command或submit-workflow/);
 });
 
@@ -210,7 +217,7 @@ test("交付提示按逐项事实汇报部分保存，不用批次失败推断�
   assert.doesNotMatch(delivery, /已执行自审次数；ok=false/);
 });
 
-test("新输入绑定 1.4.3；历史请求和回执重试保留原 Harness 版本", async () => {
+test("新输入绑定 1.4.4；历史请求和回执重试保留原 Harness 版本", async () => {
   const f = await platformRuntimeHostFixture();
   try {
     const command = {
@@ -268,6 +275,7 @@ test("新输入绑定 1.4.3；历史请求和回执重试保留原 Harness 版�
       "1.3.0",
       "1.4.0",
       "1.4.2",
+      "1.4.3",
     ]) {
       const historical = structuredClone(input);
       historical.application!.harness = { id: "morphz.script-studio", version };

@@ -630,7 +630,7 @@ domainTest(
 );
 
 domainTest(
-  "普通 Agent 空条目白名单不受模型许可影响，Human许可与锁稿正式写边界保持",
+  "普通 Agent 创作不受旧模型字段影响，设置与锁稿正式写边界保持",
   async (f) => {
     const parent = await f.create("episode", { text: "父集正文" });
     const character = await f.create("character", { text: "角色" });
@@ -654,10 +654,13 @@ domainTest(
         ),
       /人工/,
     );
-    await f.unchanged(
-      async () => f.prepare(await f.generation(parent)),
-      /尚未获准/,
-    );
+    const prepared = await f.prepare(await f.generation(parent));
+    assert.equal((await f.read()).brief.modelProcessingAllowed, false);
+    const candidate = await f.candidate(prepared, {
+      text: "旧false字段下的候选",
+    });
+    assert.ok(candidate.original.candidateId);
+    assert.equal((await f.draft(parent)).text, "父集正文");
     for (const allowed of [false, true]) {
       if (allowed) await f.allow();
       const empty = await f.create(
@@ -807,9 +810,7 @@ domainTest(
       );
       await f.unchanged(
         () => f.candidate(prepared, { text: "迟到候选不能留下新提案" }),
-        change === "context"
-          ? /剧本创作要求或模型许可已变化/
-          : /目标或上游引用已过期/,
+        change === "context" ? /剧本创作要求已变化/ : /目标或上游引用已过期/,
       );
       assert.equal(
         currentScriptDraft(await f.item(target)).text,

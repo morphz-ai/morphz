@@ -1438,10 +1438,6 @@ function GenerationDialog({
         onSubmit={async (e) => {
           e.preventDefault();
           try {
-            if (!p.brief.modelProcessingAllowed)
-              throw new Error(
-                "请先由人工在剧本设置中确认资料可以交给当前模型服务处理。",
-              );
             const generation = prepareScriptGeneration(
               { head: p, items: p.items },
               {
@@ -1552,16 +1548,9 @@ function GenerationDialog({
           材料上限 200 项 / 120000
           字符；候选与提交字数受校验，最多执行一轮语义自审。不自动批准，暂不支持单次费用硬限额。
         </p>
-        {!p.brief.modelProcessingAllowed && (
-          <p className="script-warning">尚未确认模型处理许可。</p>
-        )}
         {error && <p role="alert">{error}</p>}
         <footer>
-          <button
-            className="primary"
-            type="submit"
-            disabled={!p.brief.modelProcessingAllowed}
-          >
+          <button className="primary" type="submit">
             准备到输入框
           </button>
           <button className="secondary-action" type="button" onClick={onClose}>

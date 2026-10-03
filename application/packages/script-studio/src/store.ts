@@ -898,7 +898,9 @@ export class ScriptStudioStore {
       >,
     ) => Promise<T>,
     options: {
-      modelData?: boolean | ((result: T) => boolean);
+      // Manuscript reads recheck the actual initiating execution, not the
+      // retired modelProcessingAllowed metadata flag.
+      modelData?: boolean;
       sources?: (result: T) => LiveScriptDraft["sources"];
     } = {},
   ): Promise<T> {
@@ -927,28 +929,8 @@ export class ScriptStudioStore {
       throw new Error("Agent 读取剧本缺少已持久化的发起来源。");
     if (actor.runtimeTaskRunEventId)
       requireDomainId(actor.runtimeTaskRunEventId, "事项执行 ID");
-    let modelData = options.modelData === true;
-    const checkDataPermission = async (q: SqlQuery) => {
-      if (actor.kind !== "agent" || !modelData) return;
-      const row = (
-        await q.all<Row>(
-          "SELECT model_processing_allowed FROM script_productions WHERE tenant_id=? AND production_id=? AND deleted_at IS NULL",
-          [actor.tenantId, productionId],
-        )
-      )[0];
-      if (!row || !readBool(row.model_processing_allowed as number | string))
-        throw new DomainError("forbidden", "剧本模型处理许可已撤销。");
-    };
     if (options.modelData) await this.assertActiveInput(actor);
-    const result = await this.transaction(async (q) => {
-      await checkDataPermission(q);
-      const value = await read(q, actor);
-      if (typeof options.modelData === "function") {
-        modelData = options.modelData(value);
-        await checkDataPermission(q);
-      }
-      return value;
-    }, true);
+    const result = await this.transaction((q) => read(q, actor), true);
     if (actor.kind === "agent" && options.sources) {
       for (const source of options.sources(result))
         if (
@@ -982,8 +964,6 @@ export class ScriptStudioStore {
       current.projectId !== actor.projectId
     )
       throw new Error("剧本读取期间权限或所属项目已变化。");
-    if (actor.kind === "agent" && modelData)
-      await this.transaction(checkDataPermission, true);
     if (options.modelData) await this.assertActiveInput(actor);
     return result;
   }
@@ -1043,7 +1023,7 @@ export class ScriptStudioStore {
     }));
   }
 
-  /** Recheck execution, model consent and all pinned original-source grants
+  /** Recheck execution and all pinned original-source grants
    * without loading the manuscript bodies. */
   async assertPreparedInputReadable(request: {
     credential: string;
@@ -1769,22 +1749,7 @@ export class ScriptStudioStore {
         };
       },
       {
-        // Empty scaffolding is not manuscript data: an Agent can read the
-        // title and structure it just created without authorizing material
-        // processing. Any body, citation or creative detail requires consent.
-        modelData: ({ draft }) =>
-          [
-            draft.text,
-            draft.location,
-            draft.storyTime,
-            draft.audienceKnowledge,
-            draft.characterKnowledge,
-            draft.setupPayoff,
-            draft.productionNotes,
-          ].some((value) => value.length > 0) ||
-          draft.sources.length > 0 ||
-          draft.dependencies.length > 0 ||
-          draft.characters.length > 0,
+        modelData: true,
         sources: (result) => result.draft.sources,
       },
     );
@@ -3232,8 +3197,7 @@ export class ScriptStudioStore {
             ].some(
               (ref) =>
                 ref.itemId === itemId && ref.revision === request.itemRevision,
-            ) ||
-            !production.brief.modelProcessingAllowed
+            )
           )
             throw new DomainError(
               "forbidden",
@@ -3585,16 +3549,12 @@ export class ScriptStudioStore {
         true,
       );
       if (
-        !production.brief.modelProcessingAllowed ||
         production.reviews.filter((review) => review.inputId === inputId)
           .length +
           reviews.length >
-          100
+        100
       )
-        throw new DomainError(
-          "forbidden",
-          "模型处理许可已撤销或本次审阅已达上限。",
-        );
+        throw new DomainError("forbidden", "本次审阅已达上限。");
       for (const review of reviews) {
         if (
           !pinned.some(
@@ -3909,8 +3869,6 @@ export class ScriptStudioStore {
         productionId,
         actor.projectId,
       );
-      if (!production.brief.modelProcessingAllowed)
-        throw new Error("剧本资料尚未获准交给当前模型处理。");
       const generations = submitted.map((generation) =>
         prepareScriptGeneration(production, generation),
       );
@@ -4155,11 +4113,8 @@ export class ScriptStudioStore {
         productionId,
         actor.projectId,
       );
-      if (
-        !production.brief.modelProcessingAllowed ||
-        !scriptContextCurrent(production, generation.contextRevision)
-      )
-        throw new Error("剧本创作要求或模型许可已变化，请重新准备。");
+      if (!scriptContextCurrent(production, generation.contextRevision))
+        throw new Error("剧本创作要求已变化，请重新准备。");
       const refreshed = prepareScriptGeneration(production, generation);
       if (JSON.stringify(refreshed) !== JSON.stringify(generation))
         throw new Error("固定资料已变化，请重新准备。");
@@ -4751,6 +4706,7 @@ export class ScriptStudioStore {
         scriptCreativeContext({ brief, reviewerPrincipalIds: reviewers });
       const changed =
         creativeChanged ||
+        JSON.stringify(brief) !== JSON.stringify(readBrief(row)) ||
         title !== row.title ||
         JSON.stringify(template) !== JSON.stringify(readTemplate(row));
       const activityRevision =

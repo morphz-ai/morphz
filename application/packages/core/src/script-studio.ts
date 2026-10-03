@@ -46,6 +46,8 @@ export const scriptBriefSchema = z
     style: z.string().max(5000),
     constraints: z.string().max(10_000),
     rightsStatement: z.string().max(5000),
+    // Deprecated metadata retained for existing records and typed clients.
+    // It is not an Agent read/creation permission; real domain ACLs apply.
     modelProcessingAllowed: z.boolean(),
   })
   .strict();
@@ -353,7 +355,8 @@ export type ScriptProduction = z.infer<typeof scriptProductionSchema>;
 export function scriptCreativeContext(
   value: Pick<ScriptProduction, "brief" | "reviewerPrincipalIds">,
 ) {
-  return JSON.stringify([value.brief, [...value.reviewerPrincipalIds].sort()]);
+  const { modelProcessingAllowed: _legacy, ...brief } = value.brief;
+  return JSON.stringify([brief, [...value.reviewerPrincipalIds].sort()]);
 }
 
 /** Presentation changes keep evidence valid. An intervening creative change,

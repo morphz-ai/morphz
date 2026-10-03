@@ -1063,10 +1063,7 @@ export function ScriptStudio({
                     disabled={!canWrite}
                     onClick={() => setDialog("settings")}
                   >
-                    {production.brief.modelProcessingAllowed &&
-                    production.brief.rightsStatement.trim()
-                      ? "资料权利与模型处理许可：已声明，可查看"
-                      : "资料权利与模型处理许可：生成前需确认"}
+                    资料来源与使用说明：查看
                   </button>
                 </section>
                 <details
@@ -1603,7 +1600,7 @@ function ProductionSettings({
         }}
       >
         <p className="script-hint">
-          创作要求、资料许可或审阅人变更需要重新审阅；改名和 Word
+          创作要求、资料说明或审阅人变更需要重新审阅；改名和 Word
           排版不影响已批准的稿件。
         </p>
         <label>
@@ -1671,7 +1668,7 @@ function ProductionSettings({
             ["genre", "题材", 500],
             ["style", "风格", 5000],
             ["constraints", "制作约束", 10000],
-            ["rightsStatement", "资料权利与使用范围", 5000],
+            ["rightsStatement", "资料来源与使用说明", 5000],
           ] as const
         ).map(([field, label, max]) => (
           <label key={field}>
@@ -1689,19 +1686,6 @@ function ProductionSettings({
             />
           </label>
         ))}
-        <label className="script-checkbox">
-          <input
-            type="checkbox"
-            checked={brief.modelProcessingAllowed}
-            onChange={(e) =>
-              setValue({
-                ...value,
-                brief: { ...brief, modelProcessingAllowed: e.target.checked },
-              })
-            }
-          />
-          我确认本剧本所选资料允许交给当前模型服务处理
-        </label>
         <fieldset>
           <legend>指定审阅人（人工）</legend>
           {people.map((a) => (

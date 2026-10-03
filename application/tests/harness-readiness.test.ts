@@ -120,6 +120,7 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
       [{ id: "morphz.script-studio", version: "1.2.1" }],
       [{ id: "morphz.script-studio", version: "1.4.0" }],
       [{ id: "morphz.script-studio", version: "1.4.2" }],
+      [{ id: "morphz.script-studio", version: "1.4.3" }],
     ]) {
       harnesses = loaded;
       if (outboxDelivery().state === "failed")

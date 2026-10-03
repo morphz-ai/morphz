@@ -308,7 +308,11 @@ async function exerciseFreshProduction(store: ScriptStudioStore) {
     productionId: "production-one",
     expectedRevision: 1,
     title: "渡河",
-    brief: { ...emptyScriptBrief, modelProcessingAllowed: true },
+    brief: {
+      ...emptyScriptBrief,
+      modelProcessingAllowed: true,
+      style: "固定风格",
+    },
     reviewerPrincipalIds: ["alice"],
     template: defaultScriptExportTemplate,
   };
@@ -517,7 +521,11 @@ async function exerciseFreshProduction(store: ScriptStudioStore) {
     ...settings,
     commandId: "settings-two",
     expectedRevision: 2,
-    brief: { ...emptyScriptBrief, modelProcessingAllowed: false },
+    brief: {
+      ...emptyScriptBrief,
+      modelProcessingAllowed: false,
+      style: "新的创作要求",
+    },
   });
   assert.equal(later.activityRevision, 5);
   assert.equal(
@@ -819,10 +827,124 @@ test("SQLite 剧本固定生成与候选：实际输入绑定、幂等、人工�
   }
 });
 
-test("SQLite 新建剧本设置：许可、生效、候选失效与幂等", async () => {
+test("SQLite 新建剧本设置：历史字段往返、真实创作变化、候选失效与幂等", async () => {
   const store = await ScriptStudioStore.sqlite(":memory:", authority);
   try {
     await exerciseFreshProduction(store);
+  } finally {
+    await store.close();
+  }
+});
+
+test("SQLite 已建剧本保留legacy false；历史字段往返不使固定创作与候选失效", async () => {
+  const store = await ScriptStudioStore.sqlite(":memory:", authority);
+  try {
+    const created = await store.createProduction({
+      credential: "alice",
+      commandId: "legacy-create",
+      productionId: "production-one",
+      requestedProjectId: "project-one",
+      title: "TEST 既有原创",
+    });
+    await store.markDirectoryProjected(created.tenantId, created.eventId);
+    const manuscript = {
+      ...emptyScriptDraft("第一集"),
+      sources: [],
+      text: "原稿。",
+    };
+    const item = await store.createItem({
+      credential: "alice",
+      commandId: "legacy-item",
+      productionId: "production-one",
+      itemId: "episode-one",
+      expectedActivityRevision: 1,
+      kind: "episode",
+      draft: manuscript,
+    });
+    await store.markDirectoryProjected(item.tenantId, item.eventId);
+    const request = {
+      credential: "agent",
+      commandId: "legacy-prepare",
+      productionId: "production-one",
+      inputId: "input-one",
+      generation: {
+        productionId: "production-one",
+        targetId: "episode-one",
+        baseRevision: 1,
+        contextRevision: 1,
+        purpose: "rewrite" as const,
+        references: [],
+        maxCandidates: 1,
+        maxOutputCharacters: 2000,
+        maxReviewPasses: 0,
+      },
+    };
+    const prepared = await store.prepareGeneration(request);
+    for (const [expectedRevision, modelProcessingAllowed] of [
+      [1, true],
+      [2, false],
+    ] as const) {
+      const settings = await store.updateProduction({
+        credential: "alice",
+        commandId: `legacy-settings-${expectedRevision}`,
+        productionId: "production-one",
+        expectedRevision,
+        title: "TEST 既有原创",
+        brief: { ...emptyScriptBrief, modelProcessingAllowed },
+        reviewerPrincipalIds: ["alice"],
+        template: defaultScriptExportTemplate,
+      });
+      assert.equal(settings.metadataRevision, expectedRevision + 1);
+      await store.markDirectoryProjected(settings.tenantId, settings.eventId!);
+      assert.equal(
+        await store.creativeContextCurrent({
+          credential: "agent",
+          productionId: "production-one",
+          revision: 1,
+        }),
+        true,
+      );
+      assert.deepEqual(await store.prepareGeneration(request), prepared);
+      assert.equal(
+        (
+          await store.readItemVersion({
+            credential: "agent",
+            productionId: "production-one",
+            itemId: "episode-one",
+            revision: 1,
+          })
+        ).draft.text,
+        "原稿。",
+      );
+    }
+    const submission = {
+      credential: "agent",
+      commandId: "legacy-candidate",
+      productionId: "production-one",
+      inputId: "input-one",
+      draft: { ...manuscript, text: "TEST 正常候选。" },
+      explanation: "合成回归，无模型请求。",
+    };
+    const candidate = await store.submitCandidate(submission);
+    assert.deepEqual(await store.submitCandidate(submission), candidate);
+    const snapshot = await store.readProduction({
+      credential: "alice",
+      productionId: "production-one",
+    });
+    assert.equal(snapshot.brief.modelProcessingAllowed, false);
+    assert.equal(snapshot.brief.rightsStatement, "");
+    assert.equal(snapshot.candidates[0]?.status, "pending");
+    assert.equal(snapshot.items[0]?.versions[0]?.draft.text, "原稿。");
+    assert.equal(
+      (
+        await store.readCandidate({
+          credential: "agent",
+          productionId: "production-one",
+          candidateId: candidate.candidateId,
+        })
+      ).draft.text,
+      "TEST 正常候选。",
+    );
   } finally {
     await store.close();
   }

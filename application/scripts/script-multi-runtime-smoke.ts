@@ -85,9 +85,9 @@ const harnessFile = fileURLToPath(
 );
 assert.equal(
   /\(version "([^"]+)"\)/.exec(readFileSync(harnessFile, "utf8"))?.[1],
-  "1.4.3",
+  "1.4.4",
 );
-assert.equal(scriptStudioApplication.harness?.version, "1.4.3");
+assert.equal(scriptStudioApplication.harness?.version, "1.4.4");
 const directory = mkdtempSync(join(tmpdir(), "morphz-script-multi-runtime-"));
 const runtimeDirectory = join(directory, "runtime"),
   appDirectory = join(directory, "application");
@@ -528,7 +528,7 @@ try {
   );
   assert.equal(installed.status, 0, installed.stderr);
   const archivedInstalls: { version: string; output: string }[] = [];
-  for (const version of ["1.4.0", "1.4.2"]) {
+  for (const version of ["1.4.0", "1.4.2", "1.4.3"]) {
     const archived = spawnSync(
       binary,
       [
@@ -571,7 +571,7 @@ try {
     { env, encoding: "utf8", timeout: 25_000 },
   );
   assert.equal(registered.status, 0, registered.stderr);
-  for (const version of ["1.4.0", "1.4.2", "1.4.3"])
+  for (const version of ["1.4.0", "1.4.2", "1.4.3", "1.4.4"])
     assert.ok(
       registered.stdout.includes(version),
       `Frozen package ${version} stays registered`,
