@@ -11,6 +11,7 @@
   z-index: 3;
 }
 .application-dock-slot[data-expanded],
+.application-dock-slot:has(.application-dock-menu:popover-open),
 .exchange-surface:hover .application-dock-slot,
 .exchange-surface:focus-within .application-dock-slot {
   visibility: visible;

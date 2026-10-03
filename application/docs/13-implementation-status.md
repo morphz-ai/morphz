@@ -1,5 +1,28 @@
 # 桌面能力实施记录
 
+## 2026-10-04 收起 Dock 的键盘 Launcher 与真实底栏回归
+
+收起输入后，原生 popover 转移焦点会使交流祖先不再匹配 `:focus-within`；
+菜单虽已打开且非 inert，却继承隐藏状态。独立隔离 Host 的原样／临时选择器／
+撤回三次因果检查复现，几何不变。生产只在原显示规则加
+`.application-dock-slot:has(.application-dock-menu:popover-open)`，不新增状态、
+包装、尺寸或动效。永久回归检查实际 Enter、菜单焦点／原生打开状态、Esc 返回、
+草稿及画布不动；五项 composer-layout 契约改为当前真实底栏与菜单入口。
+
+冻结构建 `app-BZ2_5hyB.js` 的 typecheck／build 通过；相关 Node 19/19、
+完整相关浏览器矩阵 60/60，均零跳过／自动重试。包含独立生产 Dock 手势 23 项、
+真实临时 Host 拖入／排序／拖出、八种主题及隔离生产 Electron 的实际 200% zoom。
+原先复用诊断 Host 的矩阵因恢复 Browser 而在启动台前置失败并中断，原红记录保留；
+最终矩阵按项目正常流程创建新临时 Host，一次完整运行 57.2 秒退出 0，自动收尾。
+输出 `/tmp/morphz-control-owner-verification.LhN5kb/dock-fresh-final.log`；
+因果诊断 `/tmp/morphz-collapsed-dock-diagnostic.0W58qj/review.md`。
+
+测试不引入新的审美或触控宽度：原三常驻图标仍 44×44，执行设置原为可收缩摘要，
+窄触控 Browser 状态实测 23×44，仍实际 tap／Esc 可达；现有媒体／次级菜单最小
+32px。另记录既有连接提示与设置在该状态重叠 12px，未借本批改变已确认布局，
+不把有限四按钮断言称为全底栏无重叠。原 App 最终实机复验仍待解锁；隔离夹具
+及此前原窗记录不替代最终原窗或整个前端目标验收。
+
 ## 2026-10-04 交流控件回归契约修正
 
 组件重构已提交 `7f1584b7`，本批只修 `composer-tool-state.spec.ts`，
