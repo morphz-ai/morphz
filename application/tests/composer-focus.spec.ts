@@ -152,7 +152,27 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   page,
 }) => {
   await page.goto("/");
-  const input = page.getByLabel("AI 输入内容");
+  // This case checks an implicit personal scope. A previous suite can leave a
+  // real artifact open in the shared Host; do not mistake that restored
+  // association for an extra row in the ordinary canvas composer. Dedicated
+  // dialogue intentionally has a different history/collapse contract.
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "工作台", exact: true })
+    .click();
+  const home = page.getByRole("button", {
+    name: "返回工作空间",
+    exact: true,
+  });
+  if (await home.isVisible()) await home.click();
+  // Built-in content tabs preserve their own original object on navigation and
+  // do not expose the immersive return control. Select the actual launcher,
+  // rather than assuming a workbench click clears an open application's scope.
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "应用", exact: true }),
+  ).toBeVisible();
+  const input = await openInput(page);
   await input.fill("在控件与弹窗之间保留输入");
   await composerAction(page, "查看交流记录");
   await input.focus();

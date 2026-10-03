@@ -1,5 +1,59 @@
 # 桌面能力实施记录
 
+## 2026-10-04 现有回归契约校准：保留真实红项
+
+发送／顶栏阶段已提交 `d45cf84d`；未知补充回执另以 `28cecd4a` 修复。本批
+只校准测试的实际入口和已确认产品合同，不改变生产 UI、CSS、授权或投递。
+固定旧 renderer 的首次失败与后续实测证据保留，不以“旧测试”笼统解释红项。
+
+- supplement 先 hover 实际消息操作区，再普通点击；查看使用确切卡片及
+  input／Thread 来源。Session 原读取、授权和不改补充目标断言保留；模型
+  description 改为当前“用于后续新输入，不改变已提交工作”，不恢复发送后清空选择。
+- 浏览器 offline 标记及断开的事件提示流并不等于 Host RPC 已不可用。测试
+  等待原 foreground reconcile 的 bootstrap HTTP 实际失败，再检查原禁发、
+  输入法、键盘及草稿断言；不伪造成功或改变 Desktop bridge 的可用性规则。
+- 普通画布焦点测试先选择工作台的真实“应用启动台”。共享临时 Host 会保留
+  内容应用的原文，工作台导航与 immersive 返回都不能冒充该前置；新增实际
+  应用标题断言，原 scope=0、Tab、焦点、弹窗、草稿及历史全部检查保留。
+- 应用测试先显式进入交流阅读态再收起，shell 搜索限定真实可见侧栏入口，
+  typed fixture Client 使用本页面身份／Host。没有补点项目、删除 iframe
+  连续性或标题断言来绕过创建后的真实问题。
+- Profile CAS 测试先截住已发出且 expectedRevision=1 的原 UI POST，再由
+  独立真实 writer 提交 revision=2，放行未改写的 POST，获得真实 409。
+  原丢回执／同 command 重试／草稿／持久化及 receipt 数量检查保留；不是伪造冲突。
+- 剧本移除意图改走现有“输入关联”菜单；已撤回的 Agent 创作开关不重新
+  建立。创建默认的 legacy false 是兼容资料，不是权限。资料来源说明另以
+  保存／版本／作者／历史／刷新且零新输入、会话的完整用例验证；原准备、
+  候选、全文、版本冲突、Human 审阅、锁稿、Word 导出断言保留。
+
+最终实际生产资源仍为 `app-DhicvD4e.js`／`app-Bl-K6QYD.css`，摘要见下节。
+正常原 `test-server.mjs` 的 21 文件 84 项矩阵一次完整 **81 通过、3 失败**，
+107.1 秒、零跳过／重试；不能称 E2E 全绿。三个红项是 applications 的原
+iframe 连续性，以及 navigation／shell 创建项目后的自动进入／标题；此前
+固定旧 renderer 也真实复现，未以改断言算修好。另一次把随机 Host 用于仍含
+固定 fixture 入口的矩阵得到 63/84，是测试环境误配，原日志保留但不算产品
+结果；正常 Host 的第一轮 80/84 及焦点前置诊断也保留。
+
+已经查明项目新增引发 `workspaceChangeVersion.accessVersion` 改变，workspace
+推送被标为 accessChanged；Client 清权限投影并 setBoot(null)，卸载页面，
+打断原创建回调和已挂应用。identity／CSRF 和实际 access revision 不变，
+POST 成功且项目真实持久化；不能把它说成项目没保存或正常留在工作台。
+这涉及权限失效合同，不在“外观及交互不变”重构中悄悄绕过撤权守门；已单独
+向用户提出修复范围选择，尚未改生产。真正撤权的即时保护必须保留。
+
+相同最终资产的原 Profile 五项完整 5/5，真实 SQL／Rust Runtime、确定性
+本机 provider；私有 Host 的等价剧本选定六项 6/6，全部原 test body 与 helper
+只归一私有 fixture discovery 后匹配。11 个 test page 的实际 HTML／JS／CSS
+响应核对通过。不是全剧本原 spec、付费模型或 Electron 验收；Electron 旧
+菜单入口仅静态校准，本轮未运行。typecheck、受影响格式及空白检查通过。
+
+根线程完整原日志与 traces：`/tmp/morphz-existing-regression-contracts.5Ne96P`；
+Profile／剧本最终复验：`/tmp/morphz-final-Dhicv-fixtures-20261004.GhMyhK/RESULT.md`；
+固定旧 renderer 后续问题对照：`/tmp/morphz-shell-contract.okrEDB/REVIEW.md`；
+焦点只读因果审查：`/tmp/morphz-mixed-focus-audit.TisJng/REVIEW.md`。
+原 Mac 本轮只读检查仍锁屏，最终原 App 复验未完成；所有隔离 fixture 已收尾，
+未换用户 profile、改锁屏设置或重启用户 Runtime。整体前端目标仍未完成。
+
 ## 2026-10-04 未知补充回执：刷新重试沿用原命令
 
 恢复当前真实补充入口后，旧完整回归继续暴露一个生产问题：Client 首发保存的

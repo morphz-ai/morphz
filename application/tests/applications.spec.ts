@@ -1,4 +1,8 @@
-import { composerAction, openInput } from "./interaction-helpers.js";
+import {
+  composerAction,
+  openExchangeReading,
+  openInput,
+} from "./interaction-helpers.js";
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 
@@ -158,7 +162,13 @@ test("多应用启动、对象协作及状态恢复；创建项目不转换工�
   await expect(page.locator(".object-paper > h1")).toHaveText("空间原文");
   await (await openInput(page)).fill("围绕原文的消息");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
-  const content = () => composerAction(page, "收起交流记录");
+  const content = async () => {
+    // Focus and quote removal restore writing, not reading. Enter the actual
+    // reading state before exercising its collapse action.
+    await openExchangeReading(page);
+    await composerAction(page, "收起交流记录");
+    await expect(page.locator(".exchange-panel > .conversation")).toBeHidden();
+  };
   await content();
   await page
     .getByRole("navigation", { name: "主导航" })
@@ -330,9 +340,7 @@ test("多应用启动、对象协作及状态恢复；创建项目不转换工�
   await expect(
     page.getByRole("region", { name: "应用", exact: true }),
   ).toBeVisible();
-  await openInput(page);
-  if (await page.getByLabel("查看交流记录", { exact: true }).isVisible())
-    await composerAction(page, "查看交流记录");
+  await openExchangeReading(page);
   await expect(
     page
       .locator(".human-message")

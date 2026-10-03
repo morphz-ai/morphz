@@ -1,4 +1,10 @@
-import { test, expect, type Page, type Locator } from "@playwright/test";
+import {
+  test,
+  expect,
+  type Page,
+  type Locator,
+  type Route,
+} from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { profileActualTransportFixture } from "./profile-actual-transport-fixture.js";
 import {
@@ -685,36 +691,71 @@ test("真实Host提交后丢回执沿用command重试；真实Rust CAS冲突不�
   ).toHaveLength(1);
   expect((await fixture.read()).agent.revision).toBe(1);
 
-  await fixture.update({
-    subject: "agent",
-    commandId: randomUUID(),
-    expectedRevision: 1,
-    enabled: false,
-    data: {
-      ...defaultAgentProfile,
-      traits: { ...defaultAgentProfile.traits, warmth: 5 },
-    },
+  let releasePost!: () => void;
+  const held = new Promise<void>((resolve) => {
+    releasePost = resolve;
   });
+  let capturePost!: (command: ProfileUpdate) => void;
+  const posted = new Promise<ProfileUpdate>((resolve) => {
+    capturePost = resolve;
+  });
+  let holdNextPost = true;
+  const holdPost = async (route: Route) => {
+    if (route.request().method() !== "POST" || !holdNextPost)
+      return route.fallback();
+    holdNextPost = false;
+    capturePost(profileUpdateSchema.parse(route.request().postDataJSON()));
+    await held;
+    // Forward the original browser request, including its original headers/body,
+    // to the real Host. Only the external writer creates the CAS conflict.
+    return route.continue();
+  };
+  await page.route(fixture.origin + "/api/profile", holdPost);
   const conflict = page.waitForResponse(
     (response) =>
       response.url() === fixture.origin + "/api/profile" &&
       response.request().method() === "POST" &&
       response.status() === 409,
   );
-  await level(editor, "严谨", 0);
-  await conflict;
-  await expect(name).toHaveValue("ReceiptName");
-  await expect(
-    editor.getByRole("slider", { name: "严谨程度", exact: true }),
-  ).toHaveValue("0");
-  expect((await fixture.read()).agent).toMatchObject({
-    revision: 2,
-    enabled: false,
-    data: { traits: { humor: null, rigor: null, warmth: 5, verbosity: null } },
-  });
-  expect(
-    fixture.sql("SELECT command_id FROM agent_rom_command_receipts"),
-  ).toHaveLength(2);
+  void conflict.catch(() => {});
+  try {
+    await level(editor, "严谨", 0);
+    expect(await posted).toMatchObject({
+      subject: "agent",
+      expectedRevision: 1,
+    });
+    // Establish a stale *already posted* command, not a race against a healthy
+    // background read which is allowed to hydrate the newest saved Profile.
+    await fixture.update({
+      subject: "agent",
+      commandId: randomUUID(),
+      expectedRevision: 1,
+      enabled: false,
+      data: {
+        ...defaultAgentProfile,
+        traits: { ...defaultAgentProfile.traits, warmth: 5 },
+      },
+    });
+    releasePost();
+    await conflict;
+    await expect(name).toHaveValue("ReceiptName");
+    await expect(
+      editor.getByRole("slider", { name: "严谨程度", exact: true }),
+    ).toHaveValue("0");
+    expect((await fixture.read()).agent).toMatchObject({
+      revision: 2,
+      enabled: false,
+      data: {
+        traits: { humor: null, rigor: null, warmth: 5, verbosity: null },
+      },
+    });
+    expect(
+      fixture.sql("SELECT command_id FROM agent_rom_command_receipts"),
+    ).toHaveLength(2);
+  } finally {
+    releasePost();
+    await page.unroute(fixture.origin + "/api/profile", holdPost);
+  }
 });
 
 test("实际Inplace名字/称呼结束空值写null且请求省略；临时空名保护、默认零写、风格null与Human停用保持", async ({

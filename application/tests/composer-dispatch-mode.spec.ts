@@ -110,6 +110,16 @@ test("并发手势也保留输入法、重复键及多修饰键守门，断线�
   }
   await page.context().setOffline(true);
   try {
+    // A browser network flag / lost change-hint stream is not proof that the
+    // Host RPC channel is unavailable (Desktop can still use its local bridge).
+    // Foreground reconciliation performs the actual failed HTTP read first;
+    // it must preserve this draft and gate subsequent keyboard submissions.
+    const failedHostRead = page.waitForEvent("requestfailed", {
+      predicate: (request) =>
+        new URL(request.url()).pathname === "/api/platform/bootstrap",
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await failedHostRead;
     await expect(
       page.getByRole("button", { name: "发送消息", exact: true }),
     ).toBeDisabled();

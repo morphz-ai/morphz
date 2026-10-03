@@ -3,8 +3,7 @@ import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { openLibrary } from "./application-helpers.js";
 import { randomUUID } from "node:crypto";
-import { PlatformClient } from "../apps/web/src/platform-client.js";
-import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { conversationClient } from "./project-conversation-fixture.js";
 
 test("折叠按钮位于侧栏右缘，搜索始终按内容区居中", async ({ page }) => {
   await page.goto("/");
@@ -44,7 +43,12 @@ test("折叠按钮位于侧栏右缘，搜索始终按内容区居中", async ({
     );
     await expect(page.getByLabel("全文搜索")).toBeFocused();
   };
-  await page.getByLabel("搜索资料", { exact: true }).click();
+  // The same operation also exists in closed user menus. Use the existing
+  // visible sidebar entry rather than matching their hidden menu rows.
+  await page
+    .locator(".sidebar-navigation")
+    .getByRole("button", { name: "搜索资料", exact: true })
+    .click();
   await assertCentered();
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 760, height: 540 });
@@ -105,9 +109,9 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   expect(before.y).toBe(actions.y + actions.height);
   expect(before.height).toBeLessThan(110);
 
-  const source = await PlatformClient.connect(
-    new HttpApplicationClient("http://127.0.0.1:65421"),
-  );
+  // Fixture writes use this page's authenticated Host, not a fixed shared
+  // center or a separate service authority.
+  const source = await conversationClient(page);
   const projectId = (await source.allProjects()).find(
     (project) => project.title === "紧凑工作空间验收",
   )!.id;

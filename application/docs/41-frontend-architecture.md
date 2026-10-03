@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-03 · 版本：0.7 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-03 · 版本：0.8 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -21,6 +21,13 @@
 | 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`                 | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                                                |
 
 交流伸缩的首段样式 owner 也已迁入 `exchange-layout.css`，原 23 项几何与 9 项绘制声明保持；`exchange-css-ownership.test.ts` 治理唯一入口与已知竞争规则，非全产品 CSS 门禁。该阶段的原 App 原生命中复验仍待系统解锁。
+
+发送协议与共享顶栏阶段已提交 `d45cf84d`。补充重试的原命令匹配修复另以
+`28cecd4a` 提交：`local-saved-inputs.ts` 仅在双方 supplement 时认可候选省略
+原已保存 parallel 标记，
+严格全字段比较后返回原 operation；不更改首发默认、权限、发送入口或 UI。
+该修复不是新持久化格式或整层 query facade。当前原页面矩阵仍有三条真实
+项目新增／权限失效红项，完整前端工程及原 App 最终验收不能据此称为完成。
 
 详细测试、原 App 验收与尚未验证的边界见[实施记录](./13-implementation-status.md)。上述提交只证明对应阶段，尚未替代下文所有目标；完整 query facade、跨领域 presentation 和全产品样式 owner 仍未完成。本文未规定新的图标尺寸、间距、色彩或动效审美标准。
 

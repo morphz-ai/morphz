@@ -18,6 +18,7 @@ import {
 import { agentDomainFixture } from "../agent-domain-fixture.js";
 import {
   currentScriptDraft,
+  emptyScriptBrief,
   type ScriptProduction,
   type ScriptCommand,
 } from "../../packages/core/src/script-studio.js";
@@ -173,6 +174,18 @@ async function clickStudioAction(page: Page, name: string) {
   if (!(await button(page, name).isVisible()))
     await button(page, "剧本选项").click();
   await button(page, name).click();
+}
+
+async function removeInputIntent(page: Page) {
+  await button(page, "输入关联").click();
+  const associations = page.getByRole("group", {
+    name: "本次输入关联",
+    exact: true,
+  });
+  await expect(associations).toBeVisible();
+  await associations
+    .getByRole("button", { name: "移除输入意图", exact: true })
+    .click();
 }
 
 async function assertLibraryControls(page: Page) {
@@ -510,21 +523,6 @@ async function saveText(page: Page, text: string) {
     page.locator(".script-editor [data-script-focus-anchor]"),
   ).toBeFocused();
 }
-async function permitModel(page: Page) {
-  await button(page, "剧本设置").click();
-  const dialog = page.getByRole("dialog", {
-    name: "剧本设置",
-    exact: true,
-  });
-  await dialog
-    .getByLabel("资料权利与使用范围", { exact: true })
-    .fill("TEST 合成原创资料，仅用于隔离自动化验证，不是合作方授权。");
-  await dialog
-    .getByLabel("我确认本剧本所选资料允许交给当前模型服务处理", { exact: true })
-    .check();
-  await dialog.getByRole("button", { name: "保存规范", exact: true }).click();
-  await expect(dialog).not.toBeVisible();
-}
 async function approveAndLock(page: Page) {
   await page.getByRole("tab", { name: /^审阅/ }).click();
   await button(page, "提交审阅").click();
@@ -626,11 +624,60 @@ async function syntheticCandidate(
   }
 }
 
+test("资料来源与使用说明独立持久化，不成为Agent创作许可或新增输入", async ({
+  page,
+}) => {
+  const p = await setup(page);
+  expect(p.brief).toEqual(emptyScriptBrief);
+  const before = await state(page);
+  const statement = "TEST 合成原创资料，仅用于隔离自动化验证，不是合作方授权。";
+  await button(page, "剧本设置").click();
+  const dialog = page.getByRole("dialog", { name: "剧本设置", exact: true });
+  await dialog
+    .getByRole("textbox", { name: "资料来源与使用说明", exact: true })
+    .fill(statement);
+  await expect(
+    dialog.getByLabel("我确认本剧本所选资料允许交给当前模型服务处理", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await dialog.getByRole("button", { name: "保存规范", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  const saved = await production(page, p.id);
+  expect(saved.revision).toBe(p.revision + 1);
+  expect(saved.brief).toEqual({
+    ...emptyScriptBrief,
+    rightsStatement: statement,
+  });
+  expect(saved.metadataHistory.at(-1)).toMatchObject({
+    revision: saved.revision,
+    brief: { rightsStatement: statement, modelProcessingAllowed: false },
+    author: saved.createdBy,
+  });
+  const after = await state(page);
+  expect(after.inputs).toEqual(before.inputs);
+  expect(after.conversations).toEqual(before.conversations);
+  await page.reload();
+  await button(page, "剧本设置").click();
+  // A restored textarea has initial textContent inside its wrapping label;
+  // match its accessible textbox name, not that label's aggregate text.
+  await expect(
+    dialog.getByRole("textbox", {
+      name: "资料来源与使用说明",
+      exact: true,
+    }),
+  ).toHaveValue(statement);
+  expect((await production(page, p.id)).brief).toEqual(saved.brief);
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+});
+
 test("准备失败保留要求和限制，取消后重开可继续，空的新剧意图不阻止准备", async ({
   page,
 }) => {
   const p = await setup(page);
-  await permitModel(page);
+  // Legacy false is retained metadata, not an Agent creation/read permission.
+  // The actual preparation below must work with the untouched creation default.
+  expect(p.brief).toEqual(emptyScriptBrief);
   await createItem(page, "请求准备回归");
   await saveText(page, "TEST 原创正文");
   const before = (await state(page)).inputs;
@@ -1273,7 +1320,7 @@ test("构思新剧只切换意图：重复点击、附件、移除和刷新不�
   expect(prepared.conversations).toEqual(before.conversations);
   expect(prepared.scriptProductions).toEqual(before.scriptProductions);
   expect(prepared.applicationInstances).toEqual(before.applicationInstances);
-  await button(page, "移除输入意图").click();
+  await removeInputIntent(page);
   await expect(intent).toHaveCount(0);
   await expect(input).toHaveValue(body);
   await expect(input).toBeFocused();
@@ -1308,7 +1355,8 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
 }, testInfo) => {
   test.setTimeout(90000);
   const p = await setup(page);
-  await permitModel(page);
+  // Creation works without an opt-in: false is only legacy compatibility data.
+  expect(p.brief).toEqual(emptyScriptBrief);
   await createItem(page, "第一集 车站");
   await saveText(page, "车站。林舟拿起信封。\n他决定返回故乡。");
   const first = (await production(page, p.id)).items[0]!;
@@ -1896,7 +1944,7 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     await page.screenshot({
       path: testInfo.outputPath("script-conceive-native.png"),
     });
-    await button(page, "移除输入意图").click();
+    await removeInputIntent(page);
     await expect(input).toBeFocused();
     await expect(input).toHaveValue("TEST 原生构思草稿，不自动发送。");
     await input.fill("");

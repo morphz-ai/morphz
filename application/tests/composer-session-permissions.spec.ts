@@ -23,6 +23,7 @@ import {
 } from "./project-conversation-fixture.js";
 import { platformMessageFixture } from "./platform-message-fixture.js";
 import { chooseReasoning } from "./reasoning-helpers.js";
+import { supplementExchangeWork } from "./exchange-action-helpers.js";
 import {
   openInput,
   openComposerSettings,
@@ -637,12 +638,15 @@ test("未发送的命名草稿不调用 Session API，不预存权限；模型�
     exact: true,
   });
   await expect(trigger).toHaveAccessibleDescription(
-    /模型与推理用于下一次新输入/,
+    /模型与推理用于后续新输入，不改变已提交工作/,
   );
-  await expect(trigger).toHaveAttribute("title", /用于下一次新输入/);
+  await expect(trigger).toHaveAttribute(
+    "title",
+    /用于后续新输入，不改变已提交工作/,
+  );
   await expect(
     settings.getByLabel("本次输入模型", { exact: true }),
-  ).toHaveAttribute("title", /仅用于下一次发送/);
+  ).toHaveAttribute("title", /用于后续新输入，不改变已提交工作/);
   expect(f.reads()).toHaveLength(readCount);
   expect(f.updates()).toHaveLength(0);
   expect((await conversationState(page)).conversations).toEqual(
@@ -1245,10 +1249,11 @@ test("补充工作沿用原授权，不因当前范围打开设置而读取或�
     .getByRole("button", { name: "对话", exact: true })
     .click();
   await openInput(page);
-  await page
-    .locator(`.human-message[data-input-id="${id}"]`)
-    .getByRole("button", { name: "补充要求", exact: true })
-    .click();
+  await supplementExchangeWork(
+    page,
+    page.locator(`.human-message[data-input-id="${id}"]`),
+    { inputId: id, body: "TEST 原工作执行中，只验证补充入口" },
+  );
   const input = await openInput(page);
   await input.fill("TEST 保持原工作补充草稿");
   await expect(page.locator(".composer-scope-label")).toContainText(
