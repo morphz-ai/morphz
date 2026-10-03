@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { Grid2X2, Pin, PinOff } from "lucide-react";
 import type { ApplicationCatalogEntry } from "../../../packages/core/src/applications.js";
 import { ComposerOptions } from "./ComposerOptions.js";
-import { AppIcon } from "./ApplicationHost.js";
+import { AppIcon } from "./ApplicationIcon.js";
 import {
   applicationKey,
   pinnedApplications,
@@ -129,7 +129,7 @@ export function ApplicationDock({
                         }}
                       >
                         <span className="application-dock-app-icon">
-                          <AppIcon app={app} />
+                          <AppIcon app={app} presentation="tile" />
                         </span>
                         <span className="application-dock-app-name">
                           {app.title}

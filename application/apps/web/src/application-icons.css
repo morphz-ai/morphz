@@ -1,0 +1,23 @@
+/* Application artwork owns only its paint, never launcher/Dock geometry.
+   Identity colors do not follow the host's four interaction accent palettes. */
+.app .application-symbol {
+  color: light-dark(var(--application-symbol-light), var(--application-symbol-dark));
+  stroke-width: 1.8;
+}
+.app
+  :is(.application-icon, .application-dock-app-icon):has(
+    > .application-emblem
+  ) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.app .application-tile:hover .application-icon:has(> .application-emblem) {
+  border-color: transparent;
+}
+.app :is(.application-icon, .application-dock-app-icon) > .application-emblem {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  stroke-width: 0;
+}

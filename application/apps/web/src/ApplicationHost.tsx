@@ -7,13 +7,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
-  BookOpen,
-  Braces,
-  FileText,
   Film,
-  Globe,
   Grid2X2,
-  Layers2,
   Upload,
   X,
   PanelLeftClose,
@@ -56,22 +51,7 @@ import { Reader, type ReadingCompose } from "./Reader.js";
 import { authorizedApplications } from "./application-dock-model.js";
 import type { ReadingContextChange } from "./ReadingContext.js";
 import type { ReaderTarget } from "../../../packages/core/src/reader.js";
-
-export function AppIcon({ app }: { app: ApplicationCatalogEntry }) {
-  const Icon = {
-    layers: Layers2,
-    document: FileText,
-    globe: Globe,
-    code: Braces,
-    book: BookOpen,
-    film: Film,
-  }[app.icon];
-  return app.iconImage ? (
-    <img src={app.iconImage} alt="" />
-  ) : (
-    <Icon aria-hidden />
-  );
-}
+import { AppIcon } from "./ApplicationIcon.js";
 
 export function ApplicationHost({
   client,
@@ -422,7 +402,7 @@ export function ApplicationHost({
                     onClick={() => void launch(app)}
                   >
                     <span className="application-icon">
-                      <AppIcon app={app} />
+                      <AppIcon app={app} presentation="tile" />
                     </span>
                     <strong>{app.title}</strong>
                     <small>{applicationDescription(app)}</small>
