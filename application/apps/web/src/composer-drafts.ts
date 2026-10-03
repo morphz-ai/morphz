@@ -6,6 +6,72 @@ type ComposerExecutionChoice = {
   model?: string;
   reasoningEffort?: ReasoningEffort;
 };
+type ArtifactComposeDraft = QuotedDraft &
+  ComposerExecutionChoice & {
+    body: string;
+    selection: string;
+    revision: number | null;
+    reading?: unknown;
+    page?: number;
+    continuation?: unknown;
+    continuationFailure?: unknown;
+    pendingSupplement?: unknown;
+    annotation?: boolean;
+    taskResult?: unknown;
+    scriptGeneration?: unknown;
+  };
+
+/** Embedded compose prepares ordinary input on the destination surface. It
+ * must not consume that surface's settings or repurpose a bound operation. */
+export function composeArtifactDrafts<T extends ArtifactComposeDraft>(
+  previous: Record<string, T>,
+  key: string,
+  empty: T,
+  text: string,
+  revision: number | null,
+  legacyKey?: string,
+):
+  | { ok: true; drafts: Record<string, T>; bodyChanged: boolean }
+  | { ok: false; error: string } {
+  const current =
+    previous[key] ?? (legacyKey ? previous[legacyKey] : undefined) ?? empty;
+  if (
+    current.continuation ||
+    current.continuationFailure ||
+    current.pendingSupplement ||
+    current.annotation ||
+    current.taskResult ||
+    current.scriptGeneration
+  )
+    return {
+      ok: false,
+      error: "目标输入中已有专用请求，请先处理原请求；原输入已保留。",
+    };
+  const body = [current.body, text].filter(Boolean).join("\n");
+  if (body.length > 30000)
+    return {
+      ok: false,
+      error: "追加后正文超过 30000 字，请缩短文字；原输入已保留。",
+    };
+  return {
+    ok: true,
+    drafts: {
+      ...previous,
+      [key]: {
+        ...current,
+        body,
+        // Keep the exact old source even if the object head has advanced.
+        // A legacy unbound selection is not authority to guess a new version.
+        revision:
+          current.revision ??
+          (current.selection || current.reading || current.page !== undefined
+            ? null
+            : revision),
+      },
+    },
+    bodyChanged: body !== current.body,
+  };
+}
 
 /** Sending consumes contents and exact source bindings, not the user's choice
  * for subsequent inputs on this work surface. The admitted payload is already

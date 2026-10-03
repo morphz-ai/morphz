@@ -534,6 +534,7 @@ export function ApplicationHost({
                   instance={instance}
                   manifest={app}
                   active={foreground && active?.id === instance.id}
+                  navigationId={navigationId}
                   onOpen={onOpen}
                   onCompose={onCompose}
                   onNotice={onNotice}
@@ -666,6 +667,7 @@ function SandboxApplication({
   instance,
   manifest,
   active,
+  navigationId,
   onOpen,
   onCompose,
   onNotice,
@@ -674,12 +676,13 @@ function SandboxApplication({
   instance: ApplicationInstance;
   manifest: ApplicationCatalogEntry;
   active: boolean;
+  navigationId: number;
   onOpen: (id: string) => void;
   onCompose: (
     text: string,
     artifactId?: string,
     scriptGeneration?: ScriptGeneration,
-  ) => void;
+  ) => ScriptComposeResult;
   onNotice: (text: string) => void;
 }) {
   const textQuotes = useTextQuotes();
@@ -694,10 +697,19 @@ function SandboxApplication({
     instance,
     manifest,
     active,
+    navigationId,
     onOpen,
     onCompose,
   });
-  latest.current = { client, instance, manifest, active, onOpen, onCompose };
+  latest.current = {
+    client,
+    instance,
+    manifest,
+    active,
+    navigationId,
+    onOpen,
+    onCompose,
+  };
   const pending = useRef(new Set<string>());
   function context() {
     const { client, instance, manifest, active } = latest.current;
@@ -806,8 +818,21 @@ function SandboxApplication({
       pending.current.add(requestId);
       const source = event.source as Window;
       try {
-        const { client, instance, manifest, active, onOpen, onCompose } =
+        const { client, instance, manifest, active, navigationId, onOpen } =
           latest.current;
+        const identity = {
+          centerId: client.boot?.centerId,
+          principalId: client.boot?.principalId,
+          actantId: client.boot?.actantId,
+          generation: client.boot?.csrfToken,
+        };
+        const composeScope = {
+          instanceId: instance.id,
+          workspaceId: instance.workspaceId,
+          applicationId: instance.applicationId,
+          applicationVersion: instance.applicationVersion,
+          format: manifest.format,
+        };
         if (
           !active ||
           !client.boot?.workspace.applicationInstances.some(
@@ -912,12 +937,53 @@ function SandboxApplication({
             await artifact(request.artifactId);
             onOpen(request.artifactId);
             break;
-          case "compose":
+          case "compose": {
             if (!manifest.permissions.includes("input.compose"))
               throw new Error("应用没有输入权限。");
             if (request.artifactId) await artifact(request.artifactId);
-            onCompose(request.text, request.artifactId);
+            const current = latest.current;
+            const boot = current.client.boot;
+            const liveInstance = boot?.workspace.applicationInstances.find(
+              (i) => i.id === composeScope.instanceId && i.status === "open",
+            );
+            if (
+              frame.current?.contentWindow !== source ||
+              !current.active ||
+              current.navigationId !== navigationId ||
+              boot?.centerId !== identity.centerId ||
+              boot?.principalId !== identity.principalId ||
+              boot?.actantId !== identity.actantId ||
+              boot?.csrfToken !== identity.generation ||
+              current.instance.id !== composeScope.instanceId ||
+              current.instance.workspaceId !== composeScope.workspaceId ||
+              current.instance.applicationId !== composeScope.applicationId ||
+              current.instance.applicationVersion !==
+                composeScope.applicationVersion ||
+              current.manifest.id !== composeScope.applicationId ||
+              current.manifest.version !== composeScope.applicationVersion ||
+              current.manifest.format !== composeScope.format ||
+              !liveInstance ||
+              liveInstance.workspaceId !== composeScope.workspaceId ||
+              liveInstance.applicationId !== composeScope.applicationId ||
+              liveInstance.applicationVersion !==
+                composeScope.applicationVersion
+            )
+              throw new Error(
+                "应用或输入范围已切换，请重新准备输入；原草稿已保留。",
+              );
+            if (
+              !current.manifest.permissions.includes("input.compose") ||
+              (request.artifactId &&
+                !current.manifest.permissions.includes("artifacts.read"))
+            )
+              throw new Error("应用当前没有准备该输入的权限。");
+            const composed = current.onCompose(
+              request.text,
+              request.artifactId,
+            );
+            if (!composed.ok) throw new Error(composed.error);
             break;
+          }
           case "command":
             if (!manifest.permissions.includes("artifacts.write"))
               throw new Error("应用没有写入权限。");

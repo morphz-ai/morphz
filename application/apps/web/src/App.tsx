@@ -9,7 +9,7 @@ import {
   type FormEvent,
   type CSSProperties,
 } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { replaceDictationTail } from "./live-dictation.js";
 import {
   ArrowUp,
@@ -66,6 +66,7 @@ import {
 import { Conversation, type ExchangePosition } from "./Conversation.js";
 import { TextQuoteDrafts, TextQuoteProvider } from "./TextQuotes.js";
 import {
+  composeArtifactDrafts,
   consumeComposerDraft,
   replaceComposerSurface,
   updateComposerDraft,
@@ -3081,19 +3082,48 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                       );
                       if (!target && !catalogTarget)
                         return { ok: false, error: "引用的内容已不可用。" };
-                      prefer({ artifactId });
                       const key = conversationId + ":" + artifactId;
-                      setDraft(key, {
-                        body: [drafts[key]?.body, text]
-                          .filter(Boolean)
-                          .join("\n"),
-                        selection: "",
-                        revision:
-                          target?.revision ??
-                          (catalogTarget?.observedVersionRef
-                            ? Number(catalogTarget.observedVersionRef)
-                            : null),
-                      });
+                      const observedRevision =
+                        target?.revision ??
+                        Number(catalogTarget?.observedVersionRef);
+                      const revision =
+                        Number.isSafeInteger(observedRevision) &&
+                        observedRevision > 0
+                          ? observedRevision
+                          : null;
+                      let composed:
+                        | ReturnType<typeof composeArtifactDrafts<InputDraft>>
+                        | undefined;
+                      // This iframe event must ACK the actual latest-state
+                      // guard, not a render snapshot or an unexecuted updater.
+                      flushSync(() =>
+                        writeDrafts((previous) => {
+                          composed = composeArtifactDrafts(
+                            previous,
+                            key,
+                            emptyDraft,
+                            text,
+                            revision,
+                            conversationId === defaultConversation
+                              ? project.id + ":" + artifactId
+                              : undefined,
+                          );
+                          return composed.ok ? composed.drafts : previous;
+                        }),
+                      );
+                      if (!composed || !composed.ok)
+                        return {
+                          ok: false,
+                          error:
+                            composed?.error ??
+                            "暂时无法准备输入，原草稿已保留。",
+                        };
+                      if (
+                        key === currentContext.current &&
+                        composed.bodyChanged
+                      )
+                        dictationControls.current?.interrupt();
+                      prefer({ artifactId });
                     } else
                       setDraft(contextKey, {
                         ...draft,

@@ -1,5 +1,15 @@
 # 桌面能力实施记录
 
+## 2026-10-03 认知应用准备输入时保留模型与草稿
+
+既有 `compose({ artifactId, text })` 入口在目标 surface 重建草稿时仅写 body／selection／revision，丢掉已选模型、effort、附件等字段；普通发送与刷新已有的修复并未覆盖这个分支。现在以 functional 最新状态追加目标正文，保留目标模型／effort／附件与原 selection／reading／page／revision，不搬移来源应用草稿。旧 key 仅在默认会话承接对应 project＋artifact 草稿；有专用补充、批注、事项结果或剧本生成绑定时明确拒绝，原输入不变。超出既有正文上限则拒绝，不截断。
+
+Sandbox 在对象读取之后调用最新回调，按真实身份代际、navigationId、应用实例／版本／权限及仍存活的原 iframe 守门，并返回消费端的真实错误 ACK。独立审查补正实际卸载后迟到回调仍可操作旧页面的问题，以及把 `useWorkspace` 每次重建的 client 对象误当成身份变化的问题；同身份正常刷新不误拒。App 仅在这一准备入口用 `flushSync` 确认最新草稿守门后再导航，不改发送、Session、Runtime、目录授权或审批。仍只是本地准备，由用户决定发送；本地存储失败沿用原可见错误，不宣称发送成功。
+
+冻结后专项回归 28/28、零跳过，严格类型和 diff 检查通过；主代理独立复跑草稿／真实 Sandbox 桥 21 项与相邻摘要／refresh-drain 7 项均通过。保留旧桥正文回滚／假 ACK／迟到范围的行为 RED、实际卸载与 client wrapper 误拒的 RED；早期缺 helper export 和夹具缺字段不是行为 RED。日志 `/tmp/morphz-artifact-compose-final-frozen.log` 与对应 `*-red.log`。真实桥在 StrictMode 中覆盖读取期间编辑、当前回调、错误 ACK、导航变化、同 Human 新身份代际、client wrapper 重建及真正卸载／跨工作空间；不冒称完成了真实 A→B→A 登录流程。
+
+以上分别是生产纯合并 helper 与实际 `ApplicationHost`／opaque Sandbox iframe＋fixture consumer 的验证，不是原 App 的 `WorkspaceApp` 自动保存分支端到端或原窗口验收。测试使用现有 1228 headless 浏览器，无付费模型、原库或用户浏览器操作；未构建／发布原 App、未推送。磁盘不足 200 MiB，不开启 Cargo／整应用大构建，不为本项删除资料或运行产物。之前两项总目标仍 blocked，待原窗恢复后继续其严格验收，本项不关闭它。
+
 ## 2026-10-03 事项 Markdown 解析一致性补修
 
 用户转为先处理不依赖解锁的既有反馈后，源码审查发现事项正文独立使用 `react-markdown`，只接原始换行插件，漏掉聊天／文档已有的 GFM 和中文标点强调规则。真实 `TaskSummary` SSR 先复现表格、任务清单、中文强调三项失败；不是声称此前换行修复全部失效。
