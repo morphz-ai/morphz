@@ -46,6 +46,7 @@ import { authorizedApplications } from "./application-dock-model.js";
 import type { ReadingContextChange } from "./ReadingContext.js";
 import type { ReaderTarget } from "../../../packages/core/src/reader.js";
 import { AppIcon, ApplicationLauncherIcon } from "./ApplicationIcon.js";
+import type { ApplicationNavigationActions } from "./host/use-workspace-navigation.js";
 
 export function ApplicationHost({
   client,
@@ -58,10 +59,9 @@ export function ApplicationHost({
   globalLibrary = false,
   recentContentVisits = [],
   children,
-  onActivate,
+  applicationActions,
   navigationId,
   onOpen,
-  onOpenContents,
   onCompose,
   onComposeIntent,
   onNotice,
@@ -110,9 +110,8 @@ export function ApplicationHost({
   recentContentVisits?: ContentVisit[];
   children: ReactNode;
   navigationId: number;
-  onActivate: (id: string | null, expectedNavigation?: number) => void;
+  applicationActions: ApplicationNavigationActions;
   onOpen: (id: string) => void;
-  onOpenContents: () => Promise<void>;
   onCompose: (
     text: string,
     artifactId?: string,
@@ -130,6 +129,8 @@ export function ApplicationHost({
   const instances = state.applicationInstances.filter(
     (i) => i.workspaceId === workspaceId && i.status === "open",
   );
+  const navigationSnapshot = { workspaceId, navigationId, activeId, instances };
+  const onActivate = applicationActions.activate;
   const active = instances.find((i) => i.id === activeId);
   const recent = recentContent(
     recentContentVisits,
@@ -187,19 +188,16 @@ export function ApplicationHost({
     launching.current = true;
     setBusy(true);
     try {
-      if (contents) {
-        await onOpenContents();
+      const action = applicationActions.launch(
+        app,
+        navigationSnapshot,
+        contents,
+      );
+      if (action.kind === "contents") {
+        await action.pending;
         return;
       }
-      const receipt = await client.execute({
-        type: "launch-application",
-        workspaceId,
-        applicationId: app.id,
-        applicationVersion: app.version,
-      });
-      // Persisting an application may finish after the user has chosen another
-      // tab or document. Its receipt must not take over that newer navigation.
-      onActivate(receipt.entityId, navigationId);
+      action.commit(await action.pending);
     } catch (error) {
       onNotice((error as Error).message);
     } finally {
@@ -209,18 +207,9 @@ export function ApplicationHost({
   }
   async function close(instance: ApplicationInstance) {
     try {
-      await client.execute({
-        type: "close-application",
-        instanceId: instance.id,
-        expectedRevision: instance.revision,
-      });
-      if (activeId === instance.id) {
-        const index = instances.findIndex((i) => i.id === instance.id);
-        onActivate(
-          instances[index + 1]?.id ?? instances[index - 1]?.id ?? null,
-          navigationId,
-        );
-      }
+      const action = applicationActions.close(instance, navigationSnapshot);
+      await action.pending;
+      action.commit();
     } catch (error) {
       onNotice((error as Error).message);
     }

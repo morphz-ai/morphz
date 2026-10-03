@@ -12,6 +12,7 @@ import {
   isFunctionDeclaration,
   isIdentifier,
   isImportDeclaration,
+  isMethodDeclaration,
   isNamedImports,
   isObjectBindingPattern,
   isObjectLiteralExpression,
@@ -211,6 +212,7 @@ function ownership(ownerText: string, appText: string): string[] {
       "../../../../packages/core/src/applications.js",
       new Set([
         "objectsApplication",
+        "browserApplication",
         "readerApplication",
         "scriptStudioApplication",
       ]),
@@ -302,10 +304,11 @@ function ownership(ownerText: string, appText: string): string[] {
     const statements = factory[0].body.statements;
     check(
       factory.length === 1 &&
-        statements.length === 6 &&
+        statements.length === 13 &&
         isVariableStatement(statements[0]!) &&
-        statements.slice(1, 5).every(isFunctionDeclaration) &&
-        isReturnStatement(statements[5]!),
+        statements.slice(1, 11).every(isFunctionDeclaration) &&
+        isVariableStatement(statements[11]!) &&
+        isReturnStatement(statements[12]!),
       "factory-no-hooks-or-construction-effects",
     );
     const first = isVariableStatement(statements[0]!)
@@ -316,7 +319,7 @@ function ownership(ownerText: string, appText: string): string[] {
       "factory-captures-one-surface",
     );
     const names = statements
-      .slice(1, 5)
+      .slice(1, 11)
       .filter(isFunctionDeclaration)
       .map((fn) => fn.name?.text);
     check(
@@ -326,32 +329,73 @@ function ownership(ownerText: string, appText: string): string[] {
           "openScriptLocation",
           "openObject",
           "launchDockApplication",
+          "readingLibrary",
+          "openScriptLibrary",
+          "openWorkspaceContents",
+          "activateApplication",
+          "navigate",
+          "openBrowser",
         ]),
-      "only-four-navigation-commands",
+      "only-reviewed-navigation-commands",
     );
-    const returned = isReturnStatement(statements[5]!)
-      ? properties(statements[5].expression)
+    const prepared = isVariableStatement(statements[11]!)
+      ? statements[11].declarationList.declarations[0]
+      : undefined;
+    check(
+      prepared?.name.getText() === "applicationActions" &&
+        prepared.initializer !== undefined &&
+        isObjectLiteralExpression(prepared.initializer),
+      "prepared-application-actions-without-construction-work",
+    );
+    if (
+      prepared?.initializer &&
+      isObjectLiteralExpression(prepared.initializer)
+    ) {
+      const fields = prepared.initializer.properties;
+      check(
+        fields.length === 3 &&
+          isPropertyAssignment(fields[0]!) &&
+          fields[0].name.getText() === "activate" &&
+          fields[0].initializer.getText() === "activateApplication" &&
+          fields
+            .slice(1)
+            .every(
+              (field, index) =>
+                isMethodDeclaration(field) &&
+                field.name.getText() === ["launch", "close"][index] &&
+                !field.modifiers?.some(
+                  (modifier) => modifier.kind === SyntaxKind.AsyncKeyword,
+                ),
+            ),
+        "prepared-actions-are-synchronous-declarations-not-eager-or-async-bridges",
+      );
+    }
+    const returned = isReturnStatement(statements[12]!)
+      ? properties(statements[12].expression)
       : new Map<string, Node>();
     check(
       [...returned.keys()].join(",") ===
-        "travel,openObject,openScriptLocation,launchDockApplication" &&
+        "travel,openObject,openScriptLocation,launchDockApplication,readingLibrary,openScriptLibrary,openWorkspaceContents,activateApplication,navigate,openBrowser,applicationActions" &&
         [...returned].every(
           ([name, value]) => isIdentifier(value) && value.text === name,
         ),
       "named-command-seam-no-setter-bag",
     );
     const executed = calls(factory[0], "client.execute");
+    const operationTypes = executed
+      .map((call) => {
+        const type = properties(call.arguments[0]).get("type");
+        return type && isStringLiteral(type) ? type.text : "unreviewed";
+      })
+      .sort();
     check(
-      executed.length === 3 &&
-        executed.every((call) => {
-          const type = properties(call.arguments[0]).get("type");
-          return (
-            !!type &&
-            isStringLiteral(type) &&
-            type.text === "launch-application"
-          );
-        }),
-      "navigation-launch-only-no-input-session",
+      JSON.stringify(operationTypes) ===
+        JSON.stringify([
+          "close-application",
+          ...Array<string>(7).fill("launch-application"),
+          ...Array<string>(2).fill("set-application-state"),
+        ]),
+      "navigation-reviewed-instance-operations-no-input-session",
     );
     const travel = functions(factory[0], "travel")[0];
     const restoration = travel && calls(travel, "owner.restorePlace")[0];
@@ -560,7 +604,7 @@ function ownership(ownerText: string, appText: string): string[] {
     onNotice: "setNotice",
   };
   check(
-    options.size === 10 &&
+    options.size === 11 &&
       Object.entries(expected).every(
         ([key, value]) => options.get(key)?.getText() === value,
       ),
@@ -575,6 +619,27 @@ function ownership(ownerText: string, appText: string): string[] {
         "()=>setExecutions(null)",
     "only-two-named-shell-actions",
   );
+  const application = properties(options.get("application"));
+  check(
+    application.size === 4 &&
+      application.get("historyVisible")?.getText() === "historyVisible" &&
+      application.get("personalDesk")?.getText().replace(/\s+/g, "") ===
+        '()=>personalSpace("desk")' &&
+      application.get("readCapturedInstance")?.getText().replace(/\s+/g, "") ===
+        "(id)=>client.boot?.workspace.applicationInstances.find((i)=>i.id===id)" &&
+      application.get("selectAllContent")?.getText().replace(/\s+/g, "") ===
+        '()=>setContentScope("all")',
+    "application-actions-use-explicit-captured-facts-not-latest-snapshots",
+  );
+  for (const name of [
+    "readingLibrary",
+    "openScriptLibrary",
+    "openWorkspaceContents",
+    "activateApplication",
+    "navigate",
+    "openBrowser",
+  ])
+    check(functions(app.source, name).length === 0, "no-copied-app-navigation");
   check(
     !!factoryEntry && !!controller && controller.pos < factoryEntry.pos,
     "factory-after-exchange-clear-preview-bridge",
@@ -764,13 +829,13 @@ test("navigation gate rejects constructor work, extra writer, setter bag and bro
     'import { WorkspaceApp } from "../App.js";\n' + owner,
     changed(
       owner,
-      "  const { project, applicationWorkspaceOpen, exchangeKey } = surface;",
-      "  client.execute({ type: 'launch-application' });\n  const { project, applicationWorkspaceOpen, exchangeKey } = surface;",
+      "  const { project, applicationWorkspaceOpen, exchangeKey, activeInstance } =",
+      "  client.execute({ type: 'launch-application' });\n  const { project, applicationWorkspaceOpen, exchangeKey, activeInstance } =",
     ),
     changed(
       owner,
-      "  const { project, applicationWorkspaceOpen, exchangeKey } = surface;",
-      "  useEffect(() => {});\n  const { project, applicationWorkspaceOpen, exchangeKey } = surface;",
+      "  const { project, applicationWorkspaceOpen, exchangeKey, activeInstance } =",
+      "  useEffect(() => {});\n  const { project, applicationWorkspaceOpen, exchangeKey, activeInstance } =",
     ),
     changed(
       owner,
@@ -778,6 +843,22 @@ test("navigation gate rejects constructor work, extra writer, setter bag and bro
       "    setRestoredPlace,\n    resetPreferenceNavigation,",
     ),
     changed(owner, 'type: "launch-application",', 'type: "record-input",'),
+    changed(
+      owner,
+      "    launch(app, captured, contents = false) {",
+      "    async launch(app, captured, contents = false) {",
+    ),
+    changed(
+      owner,
+      "    close(instance, captured) {",
+      "    async close(instance, captured) {",
+    ),
+    changed(
+      owner,
+      "    activate: activateApplication,",
+      "    activate: client.execute({ type: 'launch-application' }),",
+    ),
+    changed(owner, 'type: "close-application",', 'type: "launch-application",'),
     changed(
       owner,
       "return owner.navigationGeneration.current;",
@@ -793,6 +874,11 @@ test("navigation gate rejects constructor work, extra writer, setter bag and bro
   for (const candidate of [
     app + "\nsetPrefs({});",
     app + '\nwriteLocal("preferences", {});',
+    changed(
+      app,
+      "(id) =>\n        client.boot?.workspace.applicationInstances.find((i) => i.id === id)",
+      "(id) => client.getSnapshot().workspace.applicationInstances.find((i) => i.id === id)",
+    ),
     changed(
       app,
       "onLaunch={launchDockApplication}",

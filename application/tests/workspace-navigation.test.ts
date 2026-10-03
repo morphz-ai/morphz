@@ -172,6 +172,7 @@ function fixture(change: Partial<NavigationPreferences> = {}) {
       project: initialWorkspace(now).projects[0],
       applicationWorkspaceOpen: true,
       exchangeKey: "exchange-A",
+      activeInstance: undefined,
     },
     preferences,
     prefer(change) {
@@ -201,6 +202,14 @@ function fixture(change: Partial<NavigationPreferences> = {}) {
     onNotice(message) {
       notices.push(message);
       events.push(["notice", message]);
+    },
+    application: {
+      historyVisible: false,
+      personalDesk: () => undefined,
+      readCapturedInstance: () => undefined,
+      selectAllContent() {
+        events.push(["all-content"]);
+      },
     },
   };
   return {
@@ -365,6 +374,13 @@ test("factory construction performs zero reads, writes, lifecycle transitions or
     "openObject",
     "openScriptLocation",
     "launchDockApplication",
+    "readingLibrary",
+    "openScriptLibrary",
+    "openWorkspaceContents",
+    "activateApplication",
+    "navigate",
+    "openBrowser",
+    "applicationActions",
   ]);
   assert.deepEqual(f.events, []);
   assert.deepEqual(f.patches, []);

@@ -63,6 +63,7 @@ const governedFiles = {
   consumer: "apps/web/src/App.tsx",
 } as const;
 const appModule = "./host/work-surface.js";
+const navigationModule = "./host/use-workspace-navigation.js";
 const core = "../../../../packages/core/src/";
 const runtimeImports = new Map([
   [core + "model.js", new Set(["spaceKind", "applicationFor"])],
@@ -679,7 +680,7 @@ function appConsumerViolations({ source, symbols }: Parsed): Violation[] {
     if (
       !isImportDeclaration(statement) ||
       !isStringLiteral(statement.moduleSpecifier) ||
-      statement.moduleSpecifier.text !== appModule
+      ![appModule, navigationModule].includes(statement.moduleSpecifier.text)
     )
       continue;
     const clause = statement.importClause;
@@ -687,7 +688,10 @@ function appConsumerViolations({ source, symbols }: Parsed): Violation[] {
       for (const item of clause.namedBindings.elements)
         if (
           clause.phaseModifier !== SyntaxKind.TypeKeyword &&
-          !item.isTypeOnly
+          !item.isTypeOnly &&
+          (statement.moduleSpecifier.text === appModule ||
+            (item.propertyName ?? item.name).text ===
+              "createWorkspaceNavigationCommands")
         ) {
           imports.set((item.propertyName ?? item.name).text, item.name.text);
           const id = symbols.get(item.name);
@@ -730,12 +734,20 @@ function appConsumerViolations({ source, symbols }: Parsed): Violation[] {
   }
   const connected = new Set<string>();
   const drafts = new Set<string>();
+  let surfaceBinding: number | undefined;
   for (const statement of workspace.body.statements) {
     if (!isVariableStatement(statement)) continue;
     for (const declaration of statement.declarationList.declarations) {
       const names = identifiers(declaration.name).map((node) => node.text);
       const initializer =
         declaration.initializer && unwrap(declaration.initializer);
+      if (
+        isIdentifier(declaration.name) &&
+        declaration.name.text === "workSurface" &&
+        initializer &&
+        called(initializer, "deriveWorkSurface")
+      )
+        surfaceBinding = symbols.get(declaration.name);
       if (
         names.includes("workSurface") &&
         (!initializer || !called(initializer, "deriveWorkSurface"))
@@ -783,8 +795,35 @@ function appConsumerViolations({ source, symbols }: Parsed): Violation[] {
       }
     }
   }
+  // exchangeKey moved out of App into the existing navigation owner. It may
+  // stay a direct read in legacy fixtures, or be delegated once via the same
+  // real workSurface binding; other projections cannot disappear. The owner's
+  // actual exchangeKey read is governed by workspace-navigation-boundary.
+  const navigationCalls: CallExpression[] = [];
+  walk(
+    workspace.body,
+    (node) => {
+      if (called(node, "createWorkspaceNavigationCommands"))
+        navigationCalls.push(node);
+    },
+    true,
+  );
+  const options = navigationCalls[0]?.arguments[0];
+  const surfacePort =
+    options && isObjectLiteralExpression(options)
+      ? options.properties
+          .filter(isPropertyAssignment)
+          .find((property) => property.name.getText() === "surface")
+          ?.initializer
+      : undefined;
+  const delegatedExchange =
+    navigationCalls.length === 1 &&
+    surfaceBinding !== undefined &&
+    surfacePort &&
+    isIdentifier(surfacePort) &&
+    symbols.get(surfacePort) === surfaceBinding;
   for (const name of surfaceFields)
-    if (!connected.has(name))
+    if (!connected.has(name) && !(name === "exchangeKey" && delegatedExchange))
       report(workspace, "consumer", `Missing workSurface projection: ${name}`);
   for (const name of ["surfaceDraft", "draft"])
     if (!drafts.has(name))
@@ -919,6 +958,60 @@ test("the boundary gate permits local computation, type-only dependencies and ex
   assert.deepEqual(pureModelViolations(parsed.get("model.ts")!), []);
   assert.deepEqual(appConsumerViolations(parsed.get("App.tsx")!), []);
   assert.deepEqual(appConsumerViolations(parsed.get("AliasedApp.tsx")!), []);
+});
+
+test("exchangeKey delegation accepts only one real navigation owner consuming the same derived workSurface", () => {
+  const delegated = validApp
+    .replace(
+      `const { ${surfaceFields.join(", ")} }`,
+      `const { ${surfaceFields.filter((name) => name !== "exchangeKey").join(", ")} }`,
+    )
+    .replace(
+      "function WorkspaceApp",
+      `import { createWorkspaceNavigationCommands } from "${navigationModule}";\nfunction WorkspaceApp`,
+    )
+    .replace(
+      "const [legacyDialogOpen",
+      "const commands = createWorkspaceNavigationCommands({ surface: workSurface });\nconst [legacyDialogOpen",
+    );
+  const candidates = {
+    good: delegated,
+    missing: delegated.replace(
+      "const commands = createWorkspaceNavigationCommands({ surface: workSurface });",
+      "",
+    ),
+    other: delegated.replace(
+      "{ surface: workSurface }",
+      "{ surface: otherSurface }",
+    ),
+    copied: delegated.replace(
+      "{ surface: workSurface }",
+      "{ surface: { ...workSurface } }",
+    ),
+    shadow: delegated.replace(
+      "const commands =",
+      "const createWorkspaceNavigationCommands = () => ({});\nconst commands =",
+    ),
+    duplicate: delegated.replace(
+      "const [legacyDialogOpen",
+      "createWorkspaceNavigationCommands({ surface: workSurface });\nconst [legacyDialogOpen",
+    ),
+    copiedKey: delegated.replace(
+      "const commands =",
+      'const exchangeKey = "copied-scope";\nconst commands =',
+    ),
+  };
+  const parsed = parseSources(
+    Object.fromEntries(
+      Object.entries(candidates).map(([name, code]) => [`${name}.tsx`, code]),
+    ),
+  );
+  assert.deepEqual(appConsumerViolations(parsed.get("good.tsx")!), []);
+  for (const name of Object.keys(candidates).filter((name) => name !== "good"))
+    assert.ok(
+      appConsumerViolations(parsed.get(`${name}.tsx`)!).length > 0,
+      name,
+    );
 });
 
 test("invalid model fixtures are rejected by the same gate used on production source", () => {

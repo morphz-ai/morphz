@@ -6,9 +6,11 @@ import {
 } from "../../../../packages/core/src/model.js";
 import {
   objectsApplication,
+  browserApplication,
   readerApplication,
   scriptStudioApplication,
   type ApplicationCatalogEntry,
+  type ApplicationInstance,
 } from "../../../../packages/core/src/applications.js";
 import { contentText } from "../../../../packages/core/src/retrieval.js";
 import type {
@@ -204,12 +206,40 @@ export function useWorkspaceNavigationState() {
 export type NavigationOwner = ReturnType<typeof useWorkspaceNavigationState>;
 type NavigationSurface = Pick<
   ReturnType<typeof deriveWorkSurface>,
-  "project" | "applicationWorkspaceOpen" | "exchangeKey"
+  "project" | "applicationWorkspaceOpen" | "exchangeKey" | "activeInstance"
 >;
 type NavigationClient = Pick<
   WorkspaceClient,
   "resolveArtifact" | "resolveScriptLocation" | "execute"
 >;
+type ApplicationReceipt = Awaited<ReturnType<NavigationClient["execute"]>>;
+
+/** Facts captured by ApplicationHost's render, not a refreshed projection or
+ * an invocation-time generation. Closing only changes the visible selection. */
+export type ApplicationNavigationSnapshot = {
+  readonly workspaceId: string;
+  readonly navigationId: number;
+  readonly activeId: string | null;
+  readonly instances: readonly ApplicationInstance[];
+};
+export type ApplicationNavigationActions = {
+  activate(id: string | null, expectedNavigation?: number): void;
+  launch(
+    app: Pick<ApplicationCatalogEntry, "id" | "version">,
+    captured: ApplicationNavigationSnapshot,
+    contents?: boolean,
+  ):
+    | { kind: "contents"; pending: Promise<void> }
+    | {
+        kind: "application";
+        pending: Promise<ApplicationReceipt>;
+        commit(receipt: ApplicationReceipt): void;
+      };
+  close(
+    instance: ApplicationInstance,
+    captured: ApplicationNavigationSnapshot,
+  ): { pending: Promise<ApplicationReceipt>; commit(): void };
+};
 
 /** A render-local command closure, not a hook or a store. Construction only
  * captures the existing authorized client/surface; effects start on invocation. */
@@ -226,6 +256,7 @@ export function createWorkspaceNavigationCommands<
   shell,
   recordContentVisit,
   onNotice,
+  application,
 }: {
   owner: NavigationOwner;
   client: NavigationClient;
@@ -237,8 +268,15 @@ export function createWorkspaceNavigationCommands<
   shell: { finishCreation(): void; dismissExecutionInspector(): void };
   recordContentVisit: (id: string) => void;
   onNotice: (message: string) => void;
+  application: {
+    historyVisible: boolean;
+    personalDesk(): Workspace["projects"][number] | undefined;
+    readCapturedInstance(id: string): ApplicationInstance | undefined;
+    selectAllContent(): void;
+  };
 }) {
-  const { project, applicationWorkspaceOpen, exchangeKey } = surface;
+  const { project, applicationWorkspaceOpen, exchangeKey, activeInstance } =
+    surface;
   async function travel(direction: number) {
     const current = owner.trail.current,
       index = current.index + direction,
@@ -420,7 +458,192 @@ export function createWorkspaceNavigationCommands<
       },
     });
   }
-  return { travel, openObject, openScriptLocation, launchDockApplication };
+  async function readingLibrary() {
+    if (
+      !activeInstance ||
+      activeInstance.applicationId !== readerApplication.id
+    ) {
+      prefer({ artifactId: null, readerMode: false, readingTarget: null });
+      return;
+    }
+    try {
+      await client.execute({
+        type: "set-application-state",
+        instanceId: activeInstance.id,
+        expectedRevision: activeInstance.revision,
+        state: { ...activeInstance.state, artifactId: "" },
+      });
+      activateApplication(activeInstance.id);
+    } catch (e) {
+      onNotice((e as Error).message);
+    }
+  }
+  async function openScriptLibrary() {
+    const desk = application.personalDesk();
+    if (!desk) return;
+    const generation = owner.beginIntent();
+    try {
+      const receipt = await client.execute({
+        type: "launch-application",
+        workspaceId: desk.id,
+        applicationId: scriptStudioApplication.id,
+        applicationVersion: scriptStudioApplication.version,
+        scriptTarget: null,
+      });
+      if (!owner.isCurrent(generation)) return;
+      prefer({
+        view: "desk",
+        scriptLocation: null,
+        artifactId: null,
+        applications: { ...prefs.applications, [desk.id]: receipt.entityId },
+      });
+    } catch (e) {
+      if (owner.isCurrent(generation)) onNotice((e as Error).message);
+    }
+  }
+  async function openWorkspaceContents() {
+    if (project && spaceKind(project) !== "project") {
+      application.selectAllContent();
+      navigate("content");
+      return;
+    }
+    if (!project) return;
+    const generation = owner.beginOpen();
+    try {
+      const receipt = await client.execute({
+        type: "launch-application",
+        workspaceId: project.id,
+        applicationId: objectsApplication.id,
+        applicationVersion: objectsApplication.version,
+        artifactId: null,
+      });
+      if (!owner.isCurrent(generation)) return;
+      activateApplication(receipt.entityId);
+    } catch (error) {
+      if (owner.isCurrent(generation)) onNotice((error as Error).message);
+    } finally {
+      owner.finishOpen(generation);
+    }
+  }
+  function activateApplication(
+    id: string | null,
+    expectedNavigation = owner.navigationGeneration.current,
+  ) {
+    if (!owner.isCurrent(expectedNavigation)) return;
+    if (!project) return;
+    owner.setExplicitWebsiteIntent(null);
+    shell.finishCreation();
+    prefer({
+      applications: { ...prefs.applications, [project.id]: id },
+      readerMode:
+        workspace?.applicationInstances.find((i) => i.id === id)
+          ?.applicationId === readerApplication.id,
+      artifactId: null,
+      artifactRevision: null,
+      readingTarget: null,
+      ...(id === null ? { scriptLocation: null } : {}),
+      ...(application.historyVisible
+        ? { interactions: { [exchangeKey]: "recent" as const } }
+        : {}),
+    });
+  }
+  function navigate(view: NavigationPreferences["view"]) {
+    owner.setExplicitWebsiteIntent(null);
+    shell.finishCreation();
+    shell.dismissExecutionInspector();
+    prefer({ view, artifactId: null, projectOpen: false });
+  }
+  async function openBrowser(url?: string) {
+    if (!project) return;
+    const generation = owner.beginIntent();
+    try {
+      const result = await client.execute({
+        type: "launch-application",
+        workspaceId: project.id,
+        applicationId: browserApplication.id,
+        applicationVersion: browserApplication.version,
+      });
+      if (!owner.isCurrent(generation)) return;
+      if (url) {
+        // The port retains App's captured client.boot lookup. It is not a
+        // refreshed Client snapshot or a second authorization read.
+        const instance = application.readCapturedInstance(result.entityId);
+        if (instance)
+          await client.execute({
+            type: "set-application-state",
+            instanceId: instance.id,
+            expectedRevision: instance.revision,
+            state: { ...instance.state, url },
+          });
+      }
+      prefer({
+        view: spaceKind(project) === "project" ? "projects" : "desk",
+        projectId: project.id,
+        projectOpen: true,
+        artifactId: null,
+        applications: { ...prefs.applications, [project.id]: result.entityId },
+      });
+    } catch (e) {
+      onNotice(e instanceof Error ? e.message : "浏览器未能打开。");
+    }
+  }
+  // Host keeps its original await/catch/finally and local busy lifecycle. These
+  // synchronous preparations return the original command promise, so commit
+  // and Host cleanup still share the original execute continuation.
+  const applicationActions: ApplicationNavigationActions = {
+    activate: activateApplication,
+    launch(app, captured, contents = false) {
+      if (contents)
+        return { kind: "contents", pending: openWorkspaceContents() };
+      return {
+        kind: "application",
+        pending: client.execute({
+          type: "launch-application",
+          workspaceId: captured.workspaceId,
+          applicationId: app.id,
+          applicationVersion: app.version,
+        }),
+        commit(receipt) {
+          activateApplication(receipt.entityId, captured.navigationId);
+        },
+      };
+    },
+    close(instance, captured) {
+      return {
+        pending: client.execute({
+          type: "close-application",
+          instanceId: instance.id,
+          expectedRevision: instance.revision,
+        }),
+        commit() {
+          if (captured.activeId === instance.id) {
+            const index = captured.instances.findIndex(
+              (i) => i.id === instance.id,
+            );
+            activateApplication(
+              captured.instances[index + 1]?.id ??
+                captured.instances[index - 1]?.id ??
+                null,
+              captured.navigationId,
+            );
+          }
+        },
+      };
+    },
+  };
+  return {
+    travel,
+    openObject,
+    openScriptLocation,
+    launchDockApplication,
+    readingLibrary,
+    openScriptLibrary,
+    openWorkspaceContents,
+    activateApplication,
+    navigate,
+    openBrowser,
+    applicationActions,
+  };
 }
 
 /** Register at the original trail/keyboard seam, after canvas restoration and

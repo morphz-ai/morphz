@@ -103,8 +103,6 @@ import { taskListOptions, type TaskListOptions } from "./task-list.js";
 import { ApplicationHost } from "./ApplicationHost.js";
 import { AgentDirectories, type DirectoryState } from "./AgentDirectories.js";
 import {
-  objectsApplication,
-  scriptStudioApplication,
   browserApplication,
   readerApplication,
 } from "../../../packages/core/src/applications.js";
@@ -557,7 +555,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     conversationProjectId,
     directoryScope,
     contextKey,
-    exchangeKey,
     dialogueCanvas,
   } = workSurface;
   const [readingSurface, setReadingSurface] = useState<ReadingSurface | null>(
@@ -674,22 +671,39 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     resize: exchangeResize,
     sentInputFocusPending,
   } = exchangeController;
-  const { travel, openObject, openScriptLocation, launchDockApplication } =
-    createWorkspaceNavigationCommands({
-      owner: navigation,
-      client,
-      workspace: state,
-      surface: workSurface,
-      preferences: prefs,
-      prefer,
-      writePreferences,
-      shell: {
-        finishCreation: () => setCreating(null),
-        dismissExecutionInspector: () => setExecutions(null),
-      },
-      recordContentVisit,
-      onNotice: setNotice,
-    });
+  const {
+    travel,
+    openObject,
+    openScriptLocation,
+    launchDockApplication,
+    readingLibrary,
+    openScriptLibrary,
+    activateApplication,
+    navigate,
+    openBrowser,
+    applicationActions,
+  } = createWorkspaceNavigationCommands({
+    owner: navigation,
+    client,
+    workspace: state,
+    surface: workSurface,
+    preferences: prefs,
+    prefer,
+    writePreferences,
+    shell: {
+      finishCreation: () => setCreating(null),
+      dismissExecutionInspector: () => setExecutions(null),
+    },
+    recordContentVisit,
+    onNotice: setNotice,
+    application: {
+      historyVisible,
+      personalDesk: () => personalSpace("desk"),
+      readCapturedInstance: (id) =>
+        client.boot?.workspace.applicationInstances.find((i) => i.id === id),
+      selectAllContent: () => setContentScope("all"),
+    },
+  });
   const positions = useRef(new Map<string, number>());
   const exchangePositions = useRef(new Map<string, ExchangePosition>());
   const [revealedInputs, setRevealedInputs] = useState<Record<string, string>>(
@@ -1049,26 +1063,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     if (generation !== navigationGeneration.current) return;
     if (a) await openObject(a.projectId, id, undefined, undefined, true);
   }
-  async function readingLibrary() {
-    if (
-      !activeInstance ||
-      activeInstance.applicationId !== readerApplication.id
-    ) {
-      prefer({ artifactId: null, readerMode: false, readingTarget: null });
-      return;
-    }
-    try {
-      await client.execute({
-        type: "set-application-state",
-        instanceId: activeInstance.id,
-        expectedRevision: activeInstance.revision,
-        state: { ...activeInstance.state, artifactId: "" },
-      });
-      activateApplication(activeInstance.id);
-    } catch (e) {
-      setNotice((e as Error).message);
-    }
-  }
   function readingTargetConsumed(requestId: string) {
     if (prefs.readingTarget?.requestId === requestId)
       prefer({ readingTarget: null });
@@ -1108,83 +1102,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   };
   async function openScript(output: ScriptOutput) {
     return openScriptLocation(scriptOutputLocation(output));
-  }
-  async function openScriptLibrary() {
-    const owner = personalSpace("desk");
-    if (!owner) return;
-    const generation = navigation.beginIntent();
-    try {
-      const receipt = await client.execute({
-        type: "launch-application",
-        workspaceId: owner.id,
-        applicationId: scriptStudioApplication.id,
-        applicationVersion: scriptStudioApplication.version,
-        scriptTarget: null,
-      });
-      if (generation !== navigationGeneration.current) return;
-      prefer({
-        view: "desk",
-        scriptLocation: null,
-        artifactId: null,
-        applications: { ...prefs.applications, [owner.id]: receipt.entityId },
-      });
-    } catch (e) {
-      if (generation === navigationGeneration.current)
-        setNotice((e as Error).message);
-    }
-  }
-  async function openWorkspaceContents() {
-    if (project && spaceKind(project) !== "project") {
-      setContentScope("all");
-      navigate("content");
-      return;
-    }
-    if (!project) return;
-    const generation = navigation.beginOpen();
-    try {
-      const receipt = await client.execute({
-        type: "launch-application",
-        workspaceId: project.id,
-        applicationId: objectsApplication.id,
-        applicationVersion: objectsApplication.version,
-        artifactId: null,
-      });
-      if (generation !== navigationGeneration.current) return;
-      activateApplication(receipt.entityId);
-    } catch (error) {
-      if (generation === navigationGeneration.current)
-        setNotice((error as Error).message);
-    } finally {
-      navigation.finishOpen(generation);
-    }
-  }
-  function activateApplication(
-    id: string | null,
-    expectedNavigation = navigationGeneration.current,
-  ) {
-    if (expectedNavigation !== navigationGeneration.current) return;
-    if (!project) return;
-    setWebsiteIntent(null);
-    setCreating(null);
-    prefer({
-      applications: { ...prefs.applications, [project.id]: id },
-      readerMode:
-        state?.applicationInstances.find((i) => i.id === id)?.applicationId ===
-        readerApplication.id,
-      artifactId: null,
-      artifactRevision: null,
-      readingTarget: null,
-      ...(id === null ? { scriptLocation: null } : {}),
-      ...(historyVisible
-        ? { interactions: { [exchangeKey]: "recent" as const } }
-        : {}),
-    });
-  }
-  function navigate(view: View) {
-    setWebsiteIntent(null);
-    setCreating(null);
-    setExecutions(null);
-    prefer({ view, artifactId: null, projectOpen: false });
   }
   function selectContentScope(scope: string) {
     setContentScope(scope);
@@ -1294,40 +1211,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       taskResult: undefined,
     });
     showInput();
-  }
-  async function openBrowser(url?: string) {
-    if (!project) return;
-    const generation = navigation.beginIntent();
-    try {
-      const result = await client.execute({
-        type: "launch-application",
-        workspaceId: project.id,
-        applicationId: browserApplication.id,
-        applicationVersion: browserApplication.version,
-      });
-      if (generation !== navigationGeneration.current) return;
-      if (url) {
-        const instance = client.boot?.workspace.applicationInstances.find(
-          (i) => i.id === result.entityId,
-        );
-        if (instance)
-          await client.execute({
-            type: "set-application-state",
-            instanceId: instance.id,
-            expectedRevision: instance.revision,
-            state: { ...instance.state, url },
-          });
-      }
-      prefer({
-        view: spaceKind(project) === "project" ? "projects" : "desk",
-        projectId: project.id,
-        projectOpen: true,
-        artifactId: null,
-        applications: { ...prefs.applications, [project.id]: result.entityId },
-      });
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : "浏览器未能打开。");
-    }
   }
   function closeSpeech() {
     dictationControls.current?.interrupt();
@@ -2222,7 +2105,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   recentContentVisits={recentContentVisits}
                   enabled={applicationWorkspaceOpen}
                   navigationId={navigationGeneration.current}
-                  onActivate={activateApplication}
+                  applicationActions={applicationActions}
                   onOpen={open}
                   readingTarget={prefs.readingTarget}
                   readingRevision={prefs.artifactRevision}
@@ -2239,7 +2122,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                     )
                   }
                   onReadingTargetConsumed={readingTargetConsumed}
-                  onOpenContents={openWorkspaceContents}
                   onNotice={setNotice}
                   onComposeIntent={composeIntent}
                   onCompose={(text, artifactId, scriptGeneration) => {

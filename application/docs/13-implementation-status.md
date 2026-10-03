@@ -1,5 +1,66 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端重构第十阶段：应用导航与实例切换 owner
+
+在已有 `host/use-workspace-navigation.ts` 内继续迁移 App 六个入口：Reader
+书库、剧本库、内容、Browser、激活与普通导航；ApplicationHost 的启动与
+关闭邻居决策也消费同一 typed actions。不是另添 hook、全局 store、effect、
+持久键或协议。App 保留唯一 prefs writer；Host 保留原本地启动锁、busy、
+await／catch／finally。同步 prepared operation 返回原 execute Promise，
+同步 commit 不插入额外 await；关闭仍用原 render 捕获的列表，下一项→上一项→null。
+
+各分支原代次／错误语义保留，不借重构修复迟到行为：Dock 建新 intent，
+Launcher 保留 render 捕获代次；Reader 清空后使用调用时 current 激活；
+Browser 使用捕获的 `client.boot`，第二次 await 后仍无额外 generation guard。
+本批未迁 `openUser`／`openReading` 的上游授权读取／意图 adapter，不称导航
+整体完成。没有 UI、CSS、图标、布局或动效变更，不新增 LLM 请求。
+
+独立旧实现 oracle 固定 `cb7246a2` 的 App 六函数及 Host 两函数，生产算法不
+作为 oracle。根线程完整 AST 逐函数实核相等；CI 固定完整语法摘要，不依赖
+历史 Git。临时摘要生成器首版曾因 forEachChild 返回 push 的数值只遍历首项，
+已改为 void 回调并重新核验全部子节点，不采用首版摘要。25 项旧实现对照、
+原导航单元与门禁 25 项均通过，保留原零构造读取／写入断言；原 Promise 引用、
+首个 reaction 内激活／报错→finally→外部 observer 均有明确时序断言。
+
+六项实际消费门禁另含 32 个仅接受 AssertionError 的违规反例，核对真实
+App import→owner actions→typed Host port，原局部等待／清理、捕获实例和
+prepared 原 Promise；固定旧 JSX／React hook／effects 完整树一致。它只
+归一批准的两个 Host props，不是视觉证明。原工作面门禁也随消费迁移：
+exchangeKey 必须仍直接读同一派生值，或由一个真实导航 owner 接收同一
+workSurface；缺 owner、另一 scope、复制对象、shadow、重复 owner 及复制
+key 均拒绝，原其他投影和所有旧反例保留。根线程合并相关单元／门禁 **61/61**。
+
+首次全量 Node 1516 项因上述旧工作面消费门禁得到 1352 通过、1 失败、
+163 跳过；没有用无意义的 unused 读取恢复门禁。迁移合同及反例校准后，
+最终全量 **1523 项：1360 通过、163 条现有可选集成跳过、零失败**，69.8 秒。
+跳过项不作真实 Runtime、模型或原生通过证明。根线程最终 typecheck／build、
+受影响源码格式和空白检查通过；build 保留原大 chunk 提示，没有新构建错误。
+
+原 reader 用例在收起记录时直接点击历史引用，迁移前真实失败。只补既有
+显式阅读入口，原断言与预算保留，独立测试提交 `e78fe64e`。校准后同一旧
+JS 与新 JS 的原 14 文件 43 项均为 **41 通过、2 失败**，逐项身份及结果相等，
+零跳过／重试。失败仍是项目创建误触权限失效导致 iframe 卸载，以及隔离
+Electron 未获得前台焦点；后者尚未到实际网页交互。没有删除 iframe 断言、
+补点项目或绕过真正撤权保护，不能称 E2E 全绿或原生验收完成。
+
+新的原生产 Host Dock 两项及真实生产 Dock 隔离挂载 23 项，完整 **25/25**，
+14.9 秒，零跳过／重试；覆盖拖入、拖出、排序、取消、原点击、刷新与 scope、
+键盘、触控、缩放及减少动态。只因用户此前明确要求才有 Dock 交互增强，本
+阶段不再改变它。真实 Sandbox compose 挂载回归 **10/10**，零跳过；仅更新
+新 typed Host 端口夹具，原断言／读回调／拒绝／身份与迟到范围保护均保留。
+
+实际新页面 HTTP 核对 HTML、JS／CSS 均 200：`app-Ctge3DoT.js`，SHA256
+`263d615a35ffe0d1e850e89beef148c88b95cef1255729ea86e038c9c2c0066f`；
+CSS 仍 `app-Bl-K6QYD.css`，SHA256
+`0a46e4301841e99b7c688123e4a07ff83e8ebd6b33918325331294aaad442648`。
+证据 `/tmp/morphz-application-navigation-owner.B45r1q`，旧／新／Dock traces
+使用独立目录保留。最初未校准 43 项的完整日志及 report 保留，其 traces 后被
+独立 reader 运行清理，不能声称该初轮全部 traces 仍在。
+
+原 App 最终复验尚未完成；自动化是原 test-server 的隔离 Host 与真实组件，
+不是付费模型或用户窗口验收。未更换用户 profile、重启用户 Runtime 或修改
+锁屏设置。项目新增权限失效修复仍待范围确认；整体架构目标继续。
+
 ## 2026-10-04 前端重构第九阶段：会话历史查询唯一 owner
 
 `data/conversation-history.ts` 实际接管原 Client 的范围选择、历史缓存和

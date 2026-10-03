@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-03 · 版本：0.9 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-03 · 版本：1.0 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -13,6 +13,7 @@
 | 工作面解析           | `host/work-surface.ts` 的 `deriveWorkSurface`；`App.tsx` 消费只读派生值                               | `frontend-architecture.test.ts` 检查类型与依赖、禁止消费方重新计算 scope/key；保留原持久键、领域归属与 default/named 会话区别。提交 `10b19994`。                                           |
 | 交流意图与焦点       | `host/use-exchange-controller.ts`；App 保留发送、草稿及页面组合                                       | `exchange-controller-boundary.test.ts` 与 controller 回归约束显隐、固定、伸缩预览和焦点恢复；不更改 Runtime 输入或权限。提交 `b1e37aa2`。                                                  |
 | 导航状态与回执       | `host/use-workspace-navigation.ts` 的 state／commands／commit；App 保留唯一 prefs writer              | 四个原导航命令、同一 generation 与原 trail／焦点顺序；76 项相关 Node／门禁、44 项 Host 浏览器回归通过。只迁已审查边界，不把保留的其他业务入口称为已拆完；原窗复验待解锁。                  |
+| 应用导航与实例切换   | 同一 navigation commands owner；App 的应用入口与 ApplicationHost 的启动／关闭消费 typed actions     | Reader／剧本库／内容／Browser／激活／普通导航及原捕获邻居迁入；同步 prepared operation 保留原 Promise、Host 等待和 busy 清理，不新增状态、存储或 effect。有限旧实现对照与实际消费门禁。 |
 | 草稿生命周期         | `host/exchange-drafts.ts` 的三 state hooks／五 local commands；App 保留发送、导航与原退休 effect      | 原本机键、初始化位置、ref／render snapshot、逐步写入失败及 ID 保留；16 项逻辑、6 项有限 AST、4 项实际 React 挂载、31 项未改旧 Host 回归。不是新 store 或原子事务，原窗复验待解锁。         |
 | 发送协议编排         | `host/submit-exchange-draft.ts`；App 保留准备锁、草稿反馈与焦点                                       | 原四分支、Profile flush→scope→当前工作面复核、补充原身份与冻结重试字节、同步 receipt/catch/finally 端口；有限协议与实际接线门禁，不新增授权或发送入口。                                    |
 | 共享工作区顶栏       | `shell/WorkspaceTopbar.tsx`；App 保留原三个 portal target state/ref 与语义动作                        | 一个原生 header、原面包屑／显隐／导航按钮与三个常驻插槽，无新包装／key／样式；固定旧 markup、实际挂载及真实 App 导入／消费门禁，不接管领域画布或路由。                                     |
@@ -147,12 +148,27 @@ Client 仍拥有 typed gateway、实际授权、outbox、首次会话事务与�
 统一导航意图、打开成功回执、返回现场及 generation 竞争。实例恢复与显式打开内容分开；全局目录与项目目录不创建 Session；来源版本引用与 live head 不混用。
 
 首段生产迁移已落地：`useWorkspaceNavigationState` 只拥有原状态／ref，无 effects；
-`createWorkspaceNavigationCommands` 是无构造副作用的四命令闭包；
+`createWorkspaceNavigationCommands` 是无构造副作用的 render-local 命令闭包；
 `useWorkspaceNavigationCommit` 在原 trail／快捷键位置注册原 effects。
 同一 generation 仍由 exchange 与 ApplicationHost 消费，原 prefs writer 仍在 App；
 不通过整个 setter bag、latest 快照或新增 store 镜像宿主。偏好 patch 与返回的
 raw spread 语义分开。`workspace-navigation-boundary.test.ts` 约束这条真实 seam，
 `workspace-navigation.test.ts` 验证原回执／错误／历史契约，不覆盖所有 App 业务入口。
+
+应用入口现继续迁入这同一 owner，而不是新建第二个 navigation hook。App 的
+Reader 书库、剧本库、内容、Browser、激活及普通导航使用已有 owner；Host 的
+启动／关闭接受 typed `ApplicationNavigationActions`。它同步准备原 execute
+Promise 与同步 commit，Host 在原 await continuation 内激活／报错并清 busy，
+不插入异步 wrapper。Host 仍持有原本地启动锁及捕获实例列表，关闭顺序仍是
+下一项、上一项、null；实例命令仍由原 Client 校验授权及版本。
+
+统一 owner 不统一旧分支策略：Dock 新建 intent，Launcher 使用 render 捕获的
+generation；Reader 清空后激活仍读取当时 current generation；Browser 保留
+捕获 `client.boot` 查询及第二次 await 后原来没有额外 guard 的行为。迟到语义
+修正应另做显式行为变更，不能混在外观／交互不变迁移里。`openUser`、
+`openReading` 的授权读取／意图仍是上游 adapter，不声称所有导航已迁完。
+固定旧 `cb7246a2` 八函数作为独立测试 oracle；有限 AST 门禁核对实际 App／Host
+消费、旧 JSX／effects 和原等待结构，不代替真实浏览器或原 App 验收。
 
 页面局部选择如果要持久化，声明唯一 owner 和恢复顺序，例如显式新 navigation intent → 对象确切引用 → 既有持久视图；不能 App、实例状态、localStorage 三处互相回写。迁移前需逐个确认当前优先顺序，不使用新 key 默认覆盖旧用户偏好。
 
