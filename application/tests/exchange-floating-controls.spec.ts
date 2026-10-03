@@ -526,6 +526,172 @@ test("输入卡片零占位，交流控制随阅读置顶并以同一节点返�
   expect(writes).toEqual([]);
 });
 
+test("阅读操作半透明中性底面与实底回退不改变位置、图标和输入", async ({
+  page,
+  context,
+}) => {
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/api\/platform\/(?:messages|projects\/[^/]+\/conversations)(?:\?|$)/.test(
+        request.url(),
+      )
+    )
+      writes.push(request.url());
+  });
+  const input = await workbench(page);
+  await exchangeAction(page, "固定输入框");
+  const controls = exchangeControls(page);
+  await controls.evaluate((element) => {
+    element.dataset.materialMount = "original";
+  });
+  const cdp = await context.newCDPSession(page);
+  const layout = (geometry: Awaited<ReturnType<typeof floatGeometry>>) => ({
+    panel: geometry.panel,
+    composer: geometry.composer,
+    dock: geometry.dock,
+    reading: geometry.reading,
+    controls: geometry.controls,
+    buttons: geometry.buttons.map(({ x, y, width, height, icon, group }) => ({
+      x,
+      y,
+      width,
+      height,
+      icon,
+      group,
+    })),
+  });
+  for (const mode of ["recent", "history", "input"]) {
+    // Browser-host styling has an existing immersive layout of its own. Reset
+    // host/media state before taking this ordinary-workspace mode's baseline.
+    await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+    await page.evaluate(() => {
+      document.documentElement.dataset.reducedTransparency = "false";
+      document.documentElement.dataset.nativeContrast = "no-preference";
+      document
+        .querySelector(".app")!
+        .classList.remove("application-browser-workspace");
+    });
+    if (mode === "history") await exchangeAction(page, "展开完整记录");
+    if (mode === "input") await exchangeAction(page, "收起交流记录");
+    await expect(page.locator(".primary-panel")).toHaveAttribute(
+      "data-interaction",
+      mode,
+    );
+    const baseline = layout(await expectFloats(page));
+    let browserBaseline: ReturnType<typeof layout> | null = null;
+    for (const appearance of ["light", "dark"]) {
+      await page.locator(".app").evaluate((element, appearance) => {
+        element.setAttribute("data-appearance", appearance);
+      }, appearance);
+      for (const fallback of [
+        "none",
+        "transparency",
+        "contrast",
+        "native-transparency",
+        "native-contrast",
+        "native-browser",
+      ]) {
+        await cdp.send("Emulation.setEmulatedMedia", {
+          features: [
+            { name: "prefers-color-scheme", value: appearance },
+            {
+              name: "prefers-reduced-transparency",
+              value: fallback === "transparency" ? "reduce" : "no-preference",
+            },
+            {
+              name: "prefers-contrast",
+              value: fallback === "contrast" ? "more" : "no-preference",
+            },
+          ],
+        });
+        // Use the existing native-host state contract, not OS settings or a
+        // fake backdrop. Original-window acceptance separately covers real text.
+        await page.evaluate((fallback) => {
+          document.documentElement.dataset.reducedTransparency = String(
+            fallback === "native-transparency",
+          );
+          document.documentElement.dataset.nativeContrast =
+            fallback === "native-contrast" ? "more" : "no-preference";
+          document
+            .querySelector(".app")!
+            .classList.toggle(
+              "application-browser-workspace",
+              fallback === "native-browser",
+            );
+        }, fallback);
+        const reading = mode !== "input";
+        const solid = fallback !== "none";
+        const fill = !reading
+          ? "rgba(0, 0, 0, 0)"
+          : solid
+            ? appearance === "light"
+              ? "rgb(255, 255, 255)"
+              : "rgb(39, 39, 39)"
+            : appearance === "light"
+              ? "rgba(255, 255, 255, 0.95)"
+              : "rgba(38, 38, 38, 0.95)";
+        await expect(controls).toHaveCSS("background-color", fill);
+        await expect(controls).toHaveCSS(
+          "backdrop-filter",
+          reading && !solid ? "blur(20px)" : "none",
+        );
+        if (
+          await page.evaluate(() =>
+            CSS.supports("-webkit-backdrop-filter", "blur(20px)"),
+          )
+        ) {
+          await expect(controls).toHaveCSS(
+            "-webkit-backdrop-filter",
+            reading && !solid ? "blur(20px)" : "none",
+          );
+        } else {
+          // Newer Chromium can omit the WebKit alias. The supported standard
+          // property and its actual blur/opaque fallback remain mandatory.
+          expect(
+            await page.evaluate(() =>
+              CSS.supports("backdrop-filter", "blur(20px)"),
+            ),
+          ).toBe(true);
+        }
+        await expect(controls).toHaveCSS(
+          "border-radius",
+          reading ? "8px" : "0px",
+        );
+        for (const property of ["padding", "border-width"])
+          await expect(controls).toHaveCSS(property, "0px");
+        await expect(controls).toHaveCSS("box-shadow", "none");
+        await expect(controls).toHaveAttribute(
+          "data-material-mount",
+          "original",
+        );
+        expect(
+          await controls.evaluate((element) =>
+            [element, ...element.querySelectorAll("button, svg")].map(
+              (element) => getComputedStyle(element).opacity,
+            ),
+          ),
+        ).toEqual(
+          Array((await controls.locator("button, svg").count()) + 1).fill("1"),
+        );
+        if (fallback === "native-browser") {
+          // Keep every original relative-position/size/hit gate in this host.
+          // Compare both palettes within it, not against non-browser chrome.
+          const browserLayout = layout(await expectFloats(page));
+          if (browserBaseline) expect(browserLayout).toEqual(browserBaseline);
+          else browserBaseline = browserLayout;
+        } else {
+          expect(layout(await floatGeometry(page))).toEqual(baseline);
+        }
+        await expect(input).toHaveValue(draft);
+      }
+    }
+    await expectFloats(page);
+  }
+  expect(writes).toEqual([]);
+});
+
 test("窄宽与 CSS 200% 下悬浮两组不碰撞，更多菜单和 Launcher 持续可操作", async ({
   page,
 }) => {

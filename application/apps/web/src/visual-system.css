@@ -646,6 +646,17 @@
   flex: 0 0 auto;
   flex-wrap: nowrap;
 }
+/* Reading text may scroll beneath these local controls. Only the group gets
+   a material surface; input-only tools keep their clear floating treatment. */
+.app
+  .exchange-panel:has(> .conversation)
+  > .exchange-controls-slot
+  .exchange-view-tools {
+  background: var(--surface-popover);
+  border-radius: 8px;
+  -webkit-backdrop-filter: var(--popup-blur);
+  backdrop-filter: var(--popup-blur);
+}
 .app .composer-unread {
   position: absolute;
   top: 3px;

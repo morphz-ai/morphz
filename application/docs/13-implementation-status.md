@@ -1,5 +1,29 @@
 # 桌面能力实施记录
 
+## 2026-10-03 阅读按钮组半透明材质修正
+
+按用户截图，仅当前交流／完整记录展开时，右上角交流按钮组使用既有
+`--surface-popover` 中性半透明表面（约 95%）和 `--popup-blur` 磨砂；图标仍完全不透明。
+不增加内距、描边、阴影、整行底板或布局高度，未改位置、尺寸、DOM 与状态；
+仅输入状态仍透明并保持与中间 Dock 底边对齐。现有系统减少透明度、增强对比度和
+原生网页画布的共享材质回退自动生效，使用实底、无模糊。
+
+新回归在旧生产准确 RED：期望半透明背景，实际完全透明。测试本身随后修正两项
+兼容假设：新版 Chromium 不支持的 WebKit 别名不作为有效 computed 属性；浏览器
+宿主既有沉浸布局使用自身几何基线，不与普通工作区强行比较绝对位置。标准模糊、
+材料回退、原尺寸／命中／相对位置门禁均保留。最终 build／typecheck 与两完整定向
+套件 13/13 通过、零跳过，输出 `/tmp/morphz-reading-controls-material-green-v3`；
+旧生产 RED `/tmp/morphz-reading-controls-material-red`，构建
+`/tmp/morphz-reading-controls-material-build.log`。
+
+Computer Use 在同一原 Morphz App 真实长正文上复现并验证叠字处图标可辨；正常刷新
+前端后回到原事项页，展开阅读检查材质，收起阅读检查透明悬浮状态。原窗截图
+`/tmp/morphz-reading-controls-material-original-reading-before.jpg`、
+`/tmp/morphz-reading-controls-material-original-reading-after.jpg`、
+`/tmp/morphz-reading-controls-material-original-input-after.jpg`。
+恢复原事项页、右侧活动栏、项目折叠与隐藏输入；未发送、改稿、改资料或重启 Runtime。
+原窗只验收当前深色表现；明暗及辅助功能回退由隔离回归验证，不作为更改系统设置的证明。
+
 ## 2026-10-03 局部动作与中间应用 Dock 底边对齐试用
 
 按用户纠正，仅输入时右侧交流按钮与中间 Dock 的按钮底边对齐，不是移到输入底栏。
