@@ -230,6 +230,13 @@
     --launcher-width: 248px;
   }
 }
+@media (pointer: coarse) {
+  .app .application-dock-shortcut {
+    flex-basis: 44px;
+    width: 44px;
+    height: 44px;
+  }
+}
 @media (hover: none), (pointer: coarse) {
   .app .application-dock-pin {
     width: 36px;

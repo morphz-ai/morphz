@@ -1,0 +1,56 @@
+/* Reading keeps the notice inside its existing scroll surface. Its own content
+   width allows normal wrapping; no new panel sibling alters resize geometry.
+   The sticky inset matches the reading padding, so scrolling to the latest
+   message cannot move an alert over the upper-right controls. */
+.exchange-panel > .conversation > .workspace-notice {
+  position: sticky;
+  z-index: 1;
+  top: 16px;
+  right: auto;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+  max-height: var(--workspace-notice-max-height, 100%);
+  margin: 0 0 12px;
+  align-items: stretch;
+  overflow: hidden;
+}
+
+.exchange-panel > .conversation > .workspace-notice > span {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.exchange-panel > .conversation > .workspace-notice > span:focus-visible {
+  outline: 2px solid var(--line-strong);
+  outline-offset: -2px;
+}
+
+.exchange-panel > .conversation > .workspace-notice > .icon-button {
+  align-self: flex-start;
+}
+
+.exchange-panel:has(> .exchange-controls-slot):not(
+    :has(.exchange-panel-header .conversation-scope)
+  )
+  > .conversation
+  > .workspace-notice {
+  top: 44px;
+}
+
+.workspace-notice > span {
+  min-width: 0;
+}
+
+@media (pointer: coarse) {
+  .exchange-panel:has(> .exchange-controls-slot):not(
+      :has(.exchange-panel-header .conversation-scope)
+    )
+    > .conversation
+    > .workspace-notice {
+    top: 60px;
+  }
+}

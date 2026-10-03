@@ -64,6 +64,7 @@ import {
   type InputIntent,
 } from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
+import { WorkspaceNotice } from "./WorkspaceNotice.js";
 import { TextQuoteDrafts, TextQuoteProvider } from "./TextQuotes.js";
 import {
   composeArtifactDrafts,
@@ -2214,7 +2215,9 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       }
       // The acknowledged input consumed this conversation's references.
       if (!staged)
-        updateDraft(key, (current) => consumeComposerDraft(current, emptyDraft));
+        updateDraft(key, (current) =>
+          consumeComposerDraft(current, emptyDraft),
+        );
       if (!staged && currentContext.current === key) {
         if (asAnnotation) {
           openCollaboration();
@@ -3344,6 +3347,26 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
               >
                 {conversationVisible && (
                   <Conversation
+                    notice={
+                      notice ? (
+                        <WorkspaceNotice
+                          message={notice}
+                          scrollable
+                          onDismiss={() => {
+                            // Removing the focused close button must not look
+                            // like leaving this still-open reading surface.
+                            keepExchangeOpen();
+                            (input.current && !input.current.disabled
+                              ? input.current
+                              : exchange.current?.querySelector<HTMLElement>(
+                                  ".exchange-view-tools > button, .conversation",
+                                )
+                            )?.focus({ preventScroll: true });
+                            setNotice("");
+                          }}
+                        />
+                      ) : undefined
+                    }
                     hasEarlierHistory={!!client.olderHistoryCursor}
                     onLoadEarlierHistory={client.loadEarlierHistory}
                     onOpenQuote={(quote) => void openTextQuote(quote)}
@@ -3643,9 +3666,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                           maxLength={30000}
                           value={draft.body}
                           disabled={sending || !!draft.pendingSupplement}
-                          onFocus={() => {
-                            if (!conversationVisible) setInteraction("recent");
-                          }}
                           onChange={(e) => {
                             setDraft(contextKey, {
                               ...draft,
@@ -4287,17 +4307,8 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
             </div>
           </InspectorPanel>
         )}
-        {notice && (
-          <div className="workspace-notice">
-            <span role="alert">{notice}</span>
-            <button
-              className="icon-button"
-              aria-label="关闭提示"
-              onClick={() => setNotice("")}
-            >
-              <X />
-            </button>
-          </div>
+        {notice && !conversationVisible && (
+          <WorkspaceNotice message={notice} onDismiss={() => setNotice("")} />
         )}
       </div>
       <input

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { openInput } from "./interaction-helpers.js";
 
 const draft = "TEST 悬浮操作层：保留原草稿，不发送。\n第二行也不改变。";
@@ -11,6 +11,11 @@ async function workbench(page: Page) {
     .click();
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   const input = await openInput(page);
+  const show = page.getByRole("button", {
+    name: "查看交流记录",
+    exact: true,
+  });
+  if (await show.isVisible()) await show.click();
   await input.fill(draft);
   await input.evaluate(
     (element) => (element.dataset.floatingMount = "original"),
@@ -128,6 +133,7 @@ async function floatGeometry(page: Page) {
       })
       .map((button) => {
         const box = rect(button);
+        const appearance = getComputedStyle(button);
         const hit = document.elementFromPoint(
           box.x + box.width / 2,
           box.y + box.height / 2,
@@ -146,6 +152,16 @@ async function floatGeometry(page: Page) {
           icon: button.querySelector("svg")
             ? rect(button.querySelector("svg")!)
             : null,
+          appearance: {
+            radius: appearance.borderRadius,
+            shadow: appearance.boxShadow,
+            border: [
+              appearance.borderTopWidth,
+              appearance.borderRightWidth,
+              appearance.borderBottomWidth,
+              appearance.borderLeftWidth,
+            ],
+          },
           label: button.getAttribute("aria-label"),
           hit: !!hit && button.contains(hit),
           upperEdgePoint,
@@ -243,7 +259,35 @@ async function expectFloats(page: Page) {
       expect(button.right).toBeLessThanOrEqual(geometry.viewport.width + 1);
       expect(button.y).toBeGreaterThanOrEqual(-1);
       expect(button.bottom).toBeLessThanOrEqual(geometry.viewport.height + 1);
+      const desktopSize = button.group === "dock" ? 32 : 28;
+      const iconSize = button.group === "dock" ? 14 : 13;
+      expect(button.width).toBeCloseTo(
+        (geometry.coarse ? 44 : desktopSize) * geometry.zoom,
+        0,
+      );
+      expect(button.height).toBeCloseTo(
+        (geometry.coarse ? 44 : desktopSize) * geometry.zoom,
+        0,
+      );
+      expect(button.icon?.width).toBeCloseTo(iconSize * geometry.zoom, 0);
+      expect(button.icon?.height).toBeCloseTo(iconSize * geometry.zoom, 0);
+      expect(button.appearance.border).toEqual(["0px", "0px", "0px", "0px"]);
+      if (button.group === "dock") {
+        expect(button.appearance.radius).toBe("9px");
+        expect(button.appearance.shadow).toContain("inset");
+      } else {
+        expect(button.appearance.radius).toBe("8px");
+        expect(button.appearance.shadow).toBe("none");
+      }
     }
+    expect(
+      await exchangeControls(page)
+        .locator(".lucide-message-square-text")
+        .count(),
+    ).toBe(1);
+    expect(
+      await exchangeControls(page).locator(".lucide-history").count(),
+    ).toBe(0);
     for (const button of dockButtons) {
       expect(button.bottom).toBeCloseTo(dockButtons[0]!.bottom, 0);
       expect(geometry.composer.y - button.bottom).toBeCloseTo(
@@ -253,16 +297,6 @@ async function expectFloats(page: Page) {
     }
     for (const button of controlButtons) {
       expect(button.y).toBeCloseTo(geometry.controls.y, 0);
-      expect(button.width).toBeCloseTo(
-        (geometry.coarse ? 44 : 32) * geometry.zoom,
-        0,
-      );
-      expect(button.height).toBeCloseTo(
-        (geometry.coarse ? 44 : 32) * geometry.zoom,
-        0,
-      );
-      expect(button.icon?.width).toBeCloseTo(14 * geometry.zoom, 0);
-      expect(button.icon?.height).toBeCloseTo(14 * geometry.zoom, 0);
       if (geometry.reading) {
         // The resizer's hit surface reaches below the panel top. A successful
         // centre click must not mask it intercepting the button's upper edge.
@@ -272,9 +306,13 @@ async function expectFloats(page: Page) {
         ).toBe(true);
       }
       if (!geometry.reading) {
-        expect(button.bottom).toBeCloseTo(dockButtons[0]!.bottom, 0);
+        const dockIcon = dockButtons[0]!.icon!;
+        expect(button.icon!.y + button.icon!.height / 2).toBeCloseTo(
+          dockIcon.y + dockIcon.height / 2,
+          0,
+        );
         expect(geometry.composer.y - button.bottom).toBeCloseTo(
-          8 * geometry.zoom,
+          (geometry.coarse ? 8 : 10) * geometry.zoom,
           0,
         );
       }
@@ -321,6 +359,73 @@ async function expectFloats(page: Page) {
     });
   }).toPass();
   return floatGeometry(page);
+}
+
+async function expectFlatNeutralFill(button: Locator) {
+  await expect(button).toHaveCSS("box-shadow", "none");
+  await expect(async () => {
+    const color = await button.evaluate(
+      (element) => getComputedStyle(element).backgroundColor,
+    );
+    const channels = color.match(/[\d.]+/g)?.map(Number) ?? [];
+    expect(channels.length).toBeGreaterThanOrEqual(3);
+    if (channels.length === 4) expect(channels[3]).toBe(1);
+    const rgb = channels.slice(0, 3);
+    expect(Math.max(...rgb) - Math.min(...rgb)).toBeLessThanOrEqual(12);
+  }).toPass({ timeout: 5000 });
+}
+
+async function expectLayeredButtonMaterials(page: Page, input: Locator) {
+  const history = exchangeControls(page).getByRole("button", {
+    name: "查看交流记录",
+    exact: true,
+  });
+  const dock = page.getByRole("button", { name: "全部应用", exact: true });
+  // The pinned input keeps this same work surface open while pointer feedback
+  // is inspected. No focus or hover may implicitly reopen reading.
+  await page.mouse.move(1, 1);
+  await input.focus();
+  await expect(history).toHaveAttribute("aria-pressed", "false");
+  await expect(history).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(history).toHaveCSS("box-shadow", "none");
+  await expect(dock).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect
+    .poll(() => dock.evaluate((element) => getComputedStyle(element).boxShadow))
+    .toContain("inset");
+  const bounds = await history.boundingBox();
+  await history.hover();
+  await expectFlatNeutralFill(history);
+  expect(await history.boundingBox()).toEqual(bounds);
+  await page.mouse.move(1, 1);
+  await expect(history).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  // Real keyboard navigation must still reveal an accessible focus outline;
+  // removing persistent button frames does not remove keyboard feedback.
+  await history.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(history).toBeFocused();
+  expect(
+    await history.evaluate((element) => element.matches(":focus-visible")),
+  ).toBe(true);
+  await expect(history).toHaveCSS("outline-style", "solid");
+  await expect(history).not.toHaveCSS("outline-width", "0px");
+  await expect(history).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(history).toHaveCSS("box-shadow", "none");
+  await history.press("Enter");
+  const selected = exchangeControls(page).getByRole("button", {
+    name: "收起交流记录",
+    exact: true,
+  });
+  await expect(selected).toHaveAttribute("aria-pressed", "true");
+  await expectFlatNeutralFill(selected);
+  await selected.press("Enter");
+  await input.focus();
+  await expect(history).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(page.locator(".primary-panel")).toHaveAttribute(
+    "data-interaction",
+    "input",
+  );
+  await expect(input).toHaveValue(draft);
 }
 
 test("输入卡片零占位，交流控制随阅读置顶并以同一节点返回输入上方", async ({
@@ -379,6 +484,7 @@ test("输入卡片零占位，交流控制随阅读置顶并以同一节点返�
   expect(collapsed.panel.height).toBeCloseTo(collapsed.dock.height, 0);
   expect(collapsed.dock.y).toBeCloseTo(collapsed.panel.y, 0);
   expect(collapsed.composer.y).toBeCloseTo(collapsed.panel.y, 0);
+  await expectLayeredButtonMaterials(page, input);
   for (const corner of ["top-left", "top-right", "bottom-left", "bottom-right"])
     await expect(page.locator(".composer")).toHaveCSS(
       `border-${corner}-radius`,

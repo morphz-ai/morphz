@@ -18,6 +18,7 @@ test("记录与输入同属交流面板且各有独立边界，空态紧凑，�
   });
   const input = await openInput(page);
   await input.fill("TEST 面板草稿，不发送");
+  await composerAction(page, "查看交流记录");
   const panel = page.locator(".exchange-panel");
   const history = page.locator(".conversation");
   const composer = page.locator(".composer");

@@ -115,6 +115,7 @@ test.beforeEach(async ({ page }) => {
     .click();
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await openInput(page);
+  await composerAction(page, "查看交流记录");
 });
 
 test("拖动连续调高低且只在松开时保存；阈值收起和展开不丢草稿、不挪 Dock、不挤画布", async ({
@@ -273,6 +274,8 @@ test("键盘可伸缩，调整高度按工作页面保存，刷新和切换仍�
   await resizeTo(page, 180);
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
   await openInput(page);
+  await expect(handle(page)).toHaveCount(0);
+  await composerAction(page, "查看交流记录");
   await expect(handle(page)).toHaveAttribute("aria-valuenow", "280");
   await page.reload();
   await openInput(page);
@@ -280,6 +283,8 @@ test("键盘可伸缩，调整高度按工作页面保存，刷新和切换仍�
   await composerAction(page, "收起 AI 输入框");
   await expect(handle(page)).toHaveCount(0);
   await openInput(page);
+  await expect(handle(page)).toHaveCount(0);
+  await composerAction(page, "查看交流记录");
   await expect(handle(page)).toHaveAttribute("aria-valuenow", "280");
   await nav.getByRole("button", { name: "对话", exact: true }).click();
   await expect(handle(page)).toHaveCount(0);
@@ -371,6 +376,8 @@ test("拖动期间导航或收起输入会取消手势，不把旧高度写进�
   await expect(page.locator(".composer-reopen")).toBeVisible();
   expect((await preferences(page)).exchangeHeights).toEqual(heights);
   await openInput(page);
+  await expect(handle(page)).toHaveCount(0);
+  await composerAction(page, "查看交流记录");
   await expect(handle(page)).toHaveAttribute("aria-valuenow", "200");
   await startDrag(page, 120);
   const tasks = page

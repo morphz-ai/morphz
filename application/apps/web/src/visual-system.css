@@ -463,7 +463,7 @@
 }
 /* The panel arranges reading and writing; it is not an extra input frame. */
 .exchange-panel[data-open] {
-  --exchange-controls-width: 140px;
+  --exchange-controls-width: 124px;
 }
 .exchange-panel-header {
   display: flex;
@@ -508,7 +508,7 @@
 /* Reading owns the upper-right controls; text must not run under them. This
    clearance disappears with reading, never becoming an input-only header. */
 .exchange-panel:has(> .exchange-controls-slot) > .conversation {
-  padding-top: 48px;
+  padding-top: 44px;
 }
 .exchange-panel:has(> .exchange-controls-slot) > .exchange-panel-header {
   padding-right: calc(var(--exchange-controls-width) + 24px);
@@ -542,6 +542,10 @@
   width: max-content;
   /* Keep the full button hit area above the reading-edge resize strip. */
   z-index: 6;
+}
+/* The 28px local tools share the 32px app buttons' optical centre, not edge. */
+.exchange-panel:not(:has(> .conversation)) > .exchange-controls-slot {
+  padding-bottom: 10px;
 }
 .exchange-panel:has(> .conversation) > .exchange-controls-slot {
   top: 8px;
@@ -663,6 +667,18 @@
   background: var(--surface-raised);
   box-shadow: inset 0 0 0 1px var(--line);
 }
+/* Panel-local tools are quiet chrome, not application-launch surfaces. */
+.app .exchange-view-tools > .icon-button {
+  flex-basis: 28px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 7px;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+}
 .app
   :is(.composer-media-tools, .exchange-view-tools)
   > .composer-tool-group-start {
@@ -680,8 +696,8 @@
   height: 16px;
 }
 .app .exchange-view-tools > .icon-button > svg {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
 }
 .app
   :is(.composer-media-tools, .exchange-view-tools)
@@ -698,6 +714,7 @@
 }
 .app .exchange-view-tools > .icon-button[aria-pressed="true"]:not(:disabled) {
   color: var(--ink);
+  box-shadow: none;
 }
 .app
   :is(.composer-media-tools, .exchange-view-tools)
@@ -728,7 +745,7 @@
 }
 @container exchange (max-width: 620px) {
   .composer-dock {
-    --exchange-controls-width: 104px;
+    --exchange-controls-width: 92px;
   }
 }
 .app .composer-preferences {
@@ -798,9 +815,14 @@
     flex-basis: 44px;
     width: 44px;
     height: 44px;
+    min-width: 44px;
+    min-height: 44px;
   }
   .exchange-panel[data-open] {
     --exchange-controls-width: 176px;
+  }
+  .exchange-panel:not(:has(> .conversation)) > .exchange-controls-slot {
+    padding-bottom: 8px;
   }
   .exchange-panel:has(> .exchange-controls-slot) > .conversation {
     padding-top: 60px;

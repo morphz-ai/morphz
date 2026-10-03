@@ -15,8 +15,9 @@ test("交流状态只由显式动作展开；迟到的发送回执不重新打�
   assert.equal(afterSend("recent"), "recent");
   assert.equal(afterSend("history"), "history");
   assert.equal(afterSend("hidden"), "hidden");
-  assert.equal(revealInput("hidden"), "recent");
-  assert.equal(revealInput("input"), "recent");
+  assert.equal(revealInput("hidden"), "input");
+  assert.equal(revealInput("input"), "input");
+  assert.equal(revealInput("recent"), "recent");
   assert.equal(revealInput("history"), "history");
   assert.equal(shouldFollow(40), true);
   assert.equal(shouldFollow(120), false);

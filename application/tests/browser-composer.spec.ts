@@ -5,6 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { openInput } from "./interaction-helpers.js";
+import {
+  sidebarLayout,
+  sidebarPreference,
+} from "../apps/web/src/sidebar-layout.js";
 
 test("认知应用的交流面板悬浮，不改变画布尺寸；固定和收起均保留草稿", async ({
   page,
@@ -184,16 +188,37 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     const address = page.getByRole("textbox", { name: "网站地址" });
     await address.fill("https://browser-overlay.invalid/");
     await address.press("Enter");
+    const siteStateExpression =
+      "({width:innerWidth,height:innerHeight,scroll:scrollY,form:document.querySelector('#form').value,instance:window.instance,node:typeof require,bridge:typeof window.morphzDesktop,button:document.querySelector('#page-button').textContent})";
     const siteState = () =>
-      desktop.evaluate(async ({ webContents }) => {
+      desktop.evaluate(async ({ webContents }, expression) => {
         const site = webContents
           .getAllWebContents()
           .find((c) => c.getURL() === "https://browser-overlay.invalid/");
         if (!site) return null;
-        return site.executeJavaScript(
-          "({width:innerWidth,height:innerHeight,scroll:scrollY,form:document.querySelector('#form').value,instance:window.instance,node:typeof require,bridge:typeof window.morphzDesktop,button:document.querySelector('#page-button').textContent})",
-        );
-      });
+        return site.executeJavaScript(expression);
+      }, siteStateExpression);
+    const browserViewportSnapshot = () =>
+      page.evaluate(async (expression) => {
+        const slot = document.querySelector<HTMLElement>(".browser-slot")!;
+        const guest = slot.querySelector<
+          HTMLElement & {
+            executeJavaScript: (code: string) => Promise<unknown>;
+          }
+        >("webview.browser-guest")!;
+        const host = () => ({
+          viewport: { width: innerWidth, height: innerHeight },
+          sidebar: document
+            .querySelector(".sidebar")!
+            .getBoundingClientRect()
+            .toJSON(),
+          slot: slot.getBoundingClientRect().toJSON(),
+          guest: guest.getBoundingClientRect().toJSON(),
+        });
+        const before = host();
+        const site = await guest.executeJavaScript(expression);
+        return { before, site, after: host() };
+      }, siteStateExpression);
     await expect
       .poll(async () => (await siteState())?.form)
       .toBe("TEST 网页未提交表单");
@@ -300,6 +325,9 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     await expect.poll(siteState).toEqual(before);
     await page.getByRole("button", { name: "固定输入框", exact: true }).click();
     await expect.poll(siteState).toEqual(before);
+    await page
+      .getByRole("button", { name: "查看交流记录", exact: true })
+      .click();
     await page
       .getByRole("button", { name: "收起交流记录", exact: true })
       .click();
@@ -536,9 +564,329 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
           "TEST 网页悬浮输入，不发送",
         );
     };
+    const notice = page.locator(".workspace-notice");
+    const noticeMessage =
+      "TEST 原生阅读提示：应用窗口已变化，请刷新后重试。" +
+      "这条实际保存失败提示应完整换行，同时保持交流操作、输入草稿和原网页不变。".repeat(
+        3,
+      ) +
+      " https://browser-overlay.invalid/" +
+      "long-unbroken-reference-".repeat(4) +
+      " TEST 提示尾句";
+    const captureNative = async (name: string) => {
+      const png = await desktop.evaluate(async ({ BrowserWindow }) => {
+        const window = BrowserWindow.getAllWindows().find(
+          (w) => w.webContents.getURL() === "morphz://app/",
+        )!;
+        return (await window.webContents.capturePage())
+          .toPNG()
+          .toString("base64");
+      });
+      await writeFile(info.outputPath(name), Buffer.from(png, "base64"));
+    };
+    const readingSnapshot = () =>
+      page.evaluate(() => {
+        const panel = document.querySelector<HTMLElement>(".exchange-panel")!;
+        const reading = panel.querySelector<HTMLElement>(
+          ":scope > .conversation",
+        )!;
+        const handle = panel.querySelector<HTMLElement>(".exchange-resizer")!;
+        const header = panel.querySelector<HTMLElement>(
+          ".exchange-panel-header",
+        );
+        const notice = reading.querySelector<HTMLElement>(".workspace-notice");
+        const text = notice?.querySelector<HTMLElement>('[role="alert"]');
+        return {
+          aria: Number(handle.getAttribute("aria-valuenow")),
+          actual: reading.getBoundingClientRect().height,
+          reading: reading.getBoundingClientRect().toJSON(),
+          panel: panel.getBoundingClientRect().toJSON(),
+          handle: handle.getBoundingClientRect().toJSON(),
+          resized: panel.hasAttribute("data-resized"),
+          header: header?.getBoundingClientRect().toJSON() ?? null,
+          paddingTop: getComputedStyle(reading).paddingTop,
+          paddingBottom: getComputedStyle(reading).paddingBottom,
+          notice: notice
+            ? {
+                bounds: notice.getBoundingClientRect().toJSON(),
+                maxHeight: getComputedStyle(notice).maxHeight,
+                text: text
+                  ? {
+                      bounds: text.getBoundingClientRect().toJSON(),
+                      scrollHeight: text.scrollHeight,
+                      clientHeight: text.clientHeight,
+                      scrollTop: text.scrollTop,
+                    }
+                  : null,
+              }
+            : null,
+        };
+      });
+    const settledReading = async () => {
+      let snapshot = await readingSnapshot();
+      await expect(async () => {
+        snapshot = await readingSnapshot();
+        expect(
+          snapshot.actual,
+          "同一布局快照中的实际阅读高度与ARIA必须一致",
+        ).toBeCloseTo(snapshot.aria, 0);
+      }).toPass({ timeout: 5000 });
+      return snapshot;
+    };
+    const injectNotice = async (label: string, expectedSite: typeof before) => {
+      const noticeURL = `https://browser-overlay.invalid/?notice-probe=${label}`;
+      await desktop.evaluate(
+        async ({ webContents }, { url, message }) => {
+          (
+            globalThis as unknown as {
+              __fixtureAppViewSaveConflict: {
+                url: string;
+                message: string;
+                remaining: number;
+                requests: unknown[];
+              };
+            }
+          ).__fixtureAppViewSaveConflict = {
+            url,
+            message,
+            remaining: 1,
+            requests: [],
+          };
+          const site = webContents
+            .getAllWebContents()
+            .find((c) => c.getURL() === "https://browser-overlay.invalid/")!;
+          await site.executeJavaScript(
+            `history.pushState(null, "", ${JSON.stringify(url)})`,
+          );
+        },
+        { url: noticeURL, message: noticeMessage },
+      );
+      await expect(notice.getByRole("alert")).toHaveText(noticeMessage);
+      await expect(
+        page.locator(".exchange-panel > .conversation > .workspace-notice"),
+      ).toHaveCount(1);
+      await expect(notice).toHaveCount(1);
+      const injected = await desktop.evaluate(
+        () =>
+          (
+            globalThis as unknown as {
+              __fixtureAppViewSaveConflict: {
+                remaining: number;
+                requests: {
+                  method: string;
+                  params: {
+                    commandId: string;
+                    viewId: string;
+                    expectedRevision: number;
+                    state: { url: string };
+                  };
+                }[];
+              };
+            }
+          ).__fixtureAppViewSaveConflict,
+      );
+      expect(injected.remaining).toBe(0);
+      expect(injected.requests).toHaveLength(1);
+      expect(injected.requests[0]!.method).toBe("app-views.save");
+      expect(injected.requests[0]!.params.state.url).toBe(noticeURL);
+      expect(injected.requests[0]!.params.commandId).toBeTruthy();
+      expect(injected.requests[0]!.params.viewId).toBeTruthy();
+      expect(injected.requests[0]!.params.expectedRevision).toBeGreaterThan(0);
+      await desktop.evaluate(async ({ webContents }, url) => {
+        const site = webContents
+          .getAllWebContents()
+          .find((c) => c.getURL() === url)!;
+        await site.executeJavaScript('history.replaceState(null, "", "/")');
+      }, noticeURL);
+      await expect.poll(siteState).toEqual(expectedSite);
+      await expect(notice.getByRole("alert")).toHaveText(noticeMessage);
+      await expectDraft(
+        `native 200 percent ${label} real save conflict notice`,
+      );
+    };
+    const expectReadableNoticeTail = async (
+      expectedSite: typeof before,
+      expectedHeight?: string,
+    ) => {
+      const text = notice.getByRole("alert");
+      await expect(text).toHaveAttribute("tabindex", "0");
+      const maximum = await text.evaluate(
+        (element) => element.scrollHeight - element.clientHeight,
+      );
+      expect(
+        maximum,
+        "长提示使用内部滚动而不是越过阅读/Dock边界",
+      ).toBeGreaterThan(expectedHeight === undefined ? -1 : 0);
+      await text.focus();
+      await text.press("End");
+      await expect
+        .poll(() => text.evaluate((element) => element.scrollTop))
+        .toBeGreaterThanOrEqual(maximum - 1);
+      await text.press("Home");
+      await expect
+        .poll(() => text.evaluate((element) => element.scrollTop))
+        .toBe(0);
+      // The same tail must also be reachable with real pointer scrolling.
+      await text.hover();
+      const nativeZoom = await desktop.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()
+          .find((window) => window.webContents.getURL() === "morphz://app/")!
+          .webContents.getZoomFactor(),
+      );
+      // Native Chromium wheel deltas use viewport pixels, while scrollTop and
+      // the text's maximum are CSS layout pixels (59 / 2 = 29.5 at 200%).
+      await page.mouse.wheel(0, (maximum + 1) * nativeZoom);
+      await expect
+        .poll(() => text.evaluate((element) => element.scrollTop))
+        .toBeGreaterThanOrEqual(maximum - 1);
+      const visibleTail = await text.evaluate((element) => {
+        const viewport = element.getBoundingClientRect();
+        const reading = element
+          .closest(".conversation")!
+          .getBoundingClientRect();
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        let node: Node | null;
+        while ((node = walker.nextNode())) {
+          const start = node.textContent!.indexOf("TEST 提示尾句");
+          if (start < 0) continue;
+          const range = document.createRange();
+          range.setStart(node, start);
+          range.setEnd(node, start + "TEST 提示尾句".length);
+          return {
+            viewport: viewport.toJSON(),
+            reading: reading.toJSON(),
+            lines: [...range.getClientRects()]
+              .filter((bounds) => bounds.width > 0)
+              .map((bounds) => {
+                const hit = document.elementFromPoint(
+                  bounds.x + bounds.width / 2,
+                  bounds.y + bounds.height / 2,
+                );
+                return {
+                  bounds: bounds.toJSON(),
+                  hit: !!hit && element.contains(hit),
+                };
+              }),
+          };
+        }
+        throw new Error("真实提示尾句的文本节点不存在");
+      });
+      expect(visibleTail.lines.length).toBeGreaterThan(0);
+      for (const line of visibleTail.lines) {
+        expect(line.bounds.y).toBeGreaterThanOrEqual(
+          visibleTail.viewport.y - 1,
+        );
+        expect(line.bounds.bottom).toBeLessThanOrEqual(
+          Math.min(visibleTail.viewport.bottom, visibleTail.reading.bottom) + 1,
+        );
+        expect(line.bounds.x).toBeGreaterThanOrEqual(
+          visibleTail.viewport.x - 1,
+        );
+        expect(line.bounds.right).toBeLessThanOrEqual(
+          visibleTail.viewport.right + 1,
+        );
+        expect(line.hit, "提示尾句真实可见，不能被Dock遮住").toBe(true);
+      }
+      const close = notice.getByRole("button", {
+        name: "关闭提示",
+        exact: true,
+      });
+      const closeGeometry = await close.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          bounds.x + bounds.width / 2,
+          bounds.y + bounds.height / 2,
+        );
+        const upper = document.elementFromPoint(
+          bounds.x + bounds.width / 2,
+          bounds.y + 2,
+        );
+        return {
+          bounds: bounds.toJSON(),
+          hit: !!hit && element.contains(hit),
+          upperHit: !!upper && element.contains(upper),
+        };
+      });
+      expect(closeGeometry.bounds.y).toBeGreaterThanOrEqual(
+        visibleTail.reading.y,
+      );
+      expect(closeGeometry.bounds.bottom).toBeLessThanOrEqual(
+        visibleTail.reading.bottom,
+      );
+      expect(closeGeometry.hit, "滚到尾句后关闭按钮仍可点击").toBe(true);
+      expect(closeGeometry.upperHit).toBe(true);
+      const current = await settledReading();
+      if (expectedHeight !== undefined)
+        await expect(resize).toHaveAttribute("aria-valuenow", expectedHeight);
+      else expect(current.resized).toBe(false);
+      await expectDraft(
+        "native 200 percent notice tail reached by keyboard/mouse",
+      );
+      await expect.poll(siteState).toEqual(expectedSite);
+    };
+    const expectNoticeSafeArea = async () => {
+      const noticeGeometry = await page.evaluate(() => {
+        const notice =
+          document.querySelector<HTMLElement>(".workspace-notice")!;
+        const reading = document.querySelector<HTMLElement>(
+          ".exchange-panel > .conversation",
+        )!;
+        const bounds = notice.getBoundingClientRect();
+        const readingBounds = reading.getBoundingClientRect();
+        return {
+          notice: bounds.toJSON(),
+          reading: readingBounds.toJSON(),
+          overflow: notice.scrollWidth - notice.clientWidth,
+          controls: [
+            ...document.querySelectorAll<HTMLButtonElement>(
+              ".exchange-view-tools > button",
+            ),
+          ]
+            .filter((button) => button.getBoundingClientRect().width > 0)
+            .map((button) => {
+              const box = button.getBoundingClientRect();
+              const hit = document.elementFromPoint(
+                box.x + box.width / 2,
+                box.y + box.height / 2,
+              );
+              const upper = document.elementFromPoint(
+                box.x + box.width / 2,
+                box.y + 2,
+              );
+              return {
+                label: button.getAttribute("aria-label"),
+                bounds: box.toJSON(),
+                hit: !!hit && button.contains(hit),
+                upperHit: !!upper && button.contains(upper),
+              };
+            }),
+        };
+      });
+      expect(noticeGeometry.notice.x).toBeGreaterThanOrEqual(
+        noticeGeometry.reading.x,
+      );
+      expect(noticeGeometry.notice.right).toBeLessThanOrEqual(
+        noticeGeometry.reading.right,
+      );
+      expect(noticeGeometry.notice.bottom).toBeLessThanOrEqual(
+        noticeGeometry.reading.bottom + 1,
+      );
+      expect(noticeGeometry.overflow).toBeLessThanOrEqual(1);
+      expect(noticeGeometry.controls.length).toBeGreaterThanOrEqual(3);
+      for (const button of noticeGeometry.controls) {
+        expect(
+          noticeGeometry.notice.y,
+          `提示应位于 ${button.label} 的内容安全区下方`,
+        ).toBeGreaterThanOrEqual(button.bounds.bottom);
+        expect(button.hit, `${button.label} 中心仍可点击`).toBe(true);
+        expect(button.upperHit, `${button.label} 上沿仍可点击`).toBe(true);
+      }
+      return noticeGeometry;
+    };
     const dragTo = async (height: number) => {
-      const reading = Number(await resize.getAttribute("aria-valuenow"));
-      const r = (await resize.boundingBox())!;
+      const baseline = await settledReading();
+      const reading = baseline.aria;
+      const r = baseline.handle;
       dragRequests.push({
         at: Date.now(),
         reading,
@@ -558,10 +906,50 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       );
       await page.mouse.up();
       await expect(page.locator(".exchange-resize-shield")).toHaveCount(0);
+      return baseline;
     };
-    const readingBefore = Number(await resize.getAttribute("aria-valuenow"));
-    const panelBefore = (await page.locator(".exchange-panel").boundingBox())!;
-    await dragTo(200);
+    // Before any gesture saves a height, prove the real automatic recent layout
+    // can contain a long error at native 200%, without inventing a resize pref.
+    expect((await settledReading()).resized).toBe(false);
+    await desktop.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()
+        .find((window) => window.webContents.getURL() === "morphz://app/")!
+        .webContents.setZoomFactor(2);
+    });
+    await expect(input).toBeInViewport();
+    await expect(resize).toBeInViewport();
+    expect((await settledReading()).resized).toBe(false);
+    const automaticSite = await siteState();
+    await injectNotice("automatic", automaticSite);
+    await info.attach("browser-automatic-notice-geometry", {
+      body: JSON.stringify(await settledReading(), null, 2),
+      contentType: "application/json",
+    });
+    await captureNative("browser-automatic-notice-200.png");
+    await expectReadableNoticeTail(automaticSite);
+    await expectNoticeSafeArea();
+    expect((await settledReading()).resized).toBe(false);
+    await notice.getByRole("button", { name: "关闭提示", exact: true }).click();
+    await expect(notice).toHaveCount(0);
+    await expect(input).toBeFocused();
+    await expect(page.locator(".primary-panel")).toHaveAttribute(
+      "data-interaction",
+      "recent",
+    );
+    expect((await settledReading()).resized).toBe(false);
+    await expectDraft(
+      "native 200 percent automatic notice close preserves draft",
+    );
+    await expect.poll(siteState).toEqual(automaticSite);
+    await desktop.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()
+        .find((window) => window.webContents.getURL() === "morphz://app/")!
+        .webContents.setZoomFactor(1);
+    });
+    await expect.poll(siteState).toEqual(before);
+    const firstDrag = await dragTo(200);
+    const readingBefore = firstDrag.aria;
+    const panelBefore = firstDrag.panel;
     // The reading surface is already open, so its visible frame edge follows
     // the exact pointer delta without recreating a hidden input header.
     await expect
@@ -690,11 +1078,41 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       window.webContents.setZoomFactor(2);
     });
     await expect(reopen).toBeInViewport();
-    const zoomed = await siteState();
+    // Native zoom can paint the entry before the responsive sidebar and guest
+    // viewport catch up. Capture the pre-click baseline only after all three
+    // actual surfaces agree, not after opening input changes the canvas.
+    let zoomedSnapshot = await browserViewportSnapshot();
+    try {
+      await expect(async () => {
+        zoomedSnapshot = await browserViewportSnapshot();
+        expect(zoomedSnapshot.before).toEqual(zoomedSnapshot.after);
+        const host = zoomedSnapshot.after;
+        const expectedSidebar = sidebarLayout(
+          host.viewport.width,
+          sidebarPreference(),
+        );
+        expect(host.sidebar.width).toBeCloseTo(expectedSidebar.width, 0);
+        expect(host.slot).toEqual(host.guest);
+        const site = zoomedSnapshot.site as { width: number; height: number };
+        // The guest exposes an integer CSS viewport: native 200% can leave
+        // half-pixel layout bounds, whose fractional edge is not a whole pixel.
+        expect(site.width).toBe(Math.floor(host.guest.width));
+        expect(site.height).toBe(Math.floor(host.guest.height));
+      }).toPass({ timeout: 5000 });
+    } finally {
+      await info.attach("browser-native-zoom-settled-viewport", {
+        body: JSON.stringify(zoomedSnapshot, null, 2),
+        contentType: "application/json",
+      });
+    }
+    const zoomed = zoomedSnapshot.site;
     await reopen.click();
     await expect(input).toBeInViewport();
     await expectDraft("native 200 percent reopen before resize keys");
     await expect.poll(siteState).toEqual(zoomed);
+    await page
+      .getByRole("button", { name: "查看交流记录", exact: true })
+      .click();
     await expect(resize).toBeInViewport();
     await resize.focus();
     await page.keyboard.press("End");
@@ -721,20 +1139,62 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     expect(geometry.input.right).toBeLessThanOrEqual(geometry.width);
     expect(geometry.input.y).toBeGreaterThanOrEqual(0);
     expect(geometry.input.bottom).toBeLessThanOrEqual(geometry.height);
+    const readingHeight = await resize.getAttribute("aria-valuenow");
+    const readingBounds = (await page
+      .locator(".exchange-panel > .conversation")
+      .boundingBox())!;
+    // Keep the fixed-height 200% gate independent of the initial automatic
+    // recent-height gate: its original resize/close invariants stay exact.
+    await injectNotice("fixed", zoomed);
+    await expectReadableNoticeTail(zoomed, readingHeight!);
+    const noticeGeometry = await expectNoticeSafeArea();
+    await expect(resize).toHaveAttribute("aria-valuenow", readingHeight!);
+    expect(noticeGeometry.reading.height).toBeCloseTo(readingBounds.height, 0);
+    // Keep the notice in place while taking compositor evidence and clicking
+    // the actual toolbar. Do not dismiss it or force clicks to pass the gate.
     // Playwright's page screenshot clips Electron zoom coordinates; capture
     // the actual window compositor for the 200% visual evidence.
-    const png = await desktop.evaluate(async ({ BrowserWindow }) => {
-      const window = BrowserWindow.getAllWindows().find(
-        (w) => w.webContents.getURL() === "morphz://app/",
-      )!;
-      return (await window.webContents.capturePage())
-        .toPNG()
-        .toString("base64");
-    });
-    await writeFile(
-      info.outputPath("browser-overlay-200.png"),
-      Buffer.from(png, "base64"),
+    await captureNative("browser-overlay-200.png");
+    await page
+      .getByRole("button", { name: "收起 AI 输入框", exact: true })
+      .click();
+    await expect(page.locator(".primary-panel")).toHaveAttribute(
+      "data-interaction",
+      "hidden",
     );
+    await expectDraft("native 200 percent hide with retained notice", false);
+    await expect(notice.getByRole("alert")).toHaveText(noticeMessage);
+    await reopen.click();
+    await expectDraft("native 200 percent reopen with retained notice");
+    await expect(page.locator(".primary-panel")).toHaveAttribute(
+      "data-interaction",
+      "input",
+    );
+    await page
+      .getByRole("button", { name: "查看交流记录", exact: true })
+      .click();
+    await expect(
+      page.locator(".exchange-panel > .conversation > .workspace-notice"),
+    ).toHaveCount(1);
+    await expect(resize).toHaveAttribute("aria-valuenow", readingHeight!);
+    expect(
+      (await page.locator(".exchange-panel > .conversation").boundingBox())!
+        .height,
+    ).toBeCloseTo(readingBounds.height, 0);
+    await expectReadableNoticeTail(zoomed, readingHeight!);
+    await notice.getByRole("button", { name: "关闭提示", exact: true }).click();
+    await expect(notice).toHaveCount(0);
+    await expect(input).toBeFocused();
+    await expect(page.locator(".primary-panel")).toHaveAttribute(
+      "data-interaction",
+      "recent",
+    );
+    await expect(resize).toHaveAttribute("aria-valuenow", readingHeight!);
+    expect(
+      (await page.locator(".exchange-panel > .conversation").boundingBox())!
+        .height,
+    ).toBeCloseTo(readingBounds.height, 0);
+    await expectDraft("native 200 percent close notice without placeholder");
     await page
       .getByRole("button", { name: "收起 AI 输入框", exact: true })
       .click();

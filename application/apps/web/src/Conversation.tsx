@@ -95,7 +95,9 @@ export function Conversation({
   onQuoteUnavailable,
   hasEarlierHistory,
   onLoadEarlierHistory,
+  notice,
 }: {
+  notice?: ReactNode;
   onOpenQuote?: (quote: TextQuote) => void;
   quoteReveal?: { quote: TextQuote; token: string } | null;
   onQuoteUnavailable?: (reason?: string) => void;
@@ -529,6 +531,7 @@ export function Conversation({
         });
       }}
     >
+      {notice}
       {hasEarlierHistory && onLoadEarlierHistory && (
         <button
           type="button"
@@ -961,10 +964,11 @@ export function Conversation({
                       <div
                         className="message-meta"
                         data-work-actions={
-                          Boolean(item &&
+                          Boolean(
+                            item &&
                             ((onSupplement && targets.length > 0) ||
-                              (activeBranch && onInspect))) ||
-                          undefined
+                              (activeBranch && onInspect)),
+                          ) || undefined
                         }
                       >
                         <MessageActions

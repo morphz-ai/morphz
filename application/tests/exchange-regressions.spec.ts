@@ -33,6 +33,7 @@ test("消息显隐、展开与固定不挪动底栏和应用 Dock；面板控制
 }) => {
   const input = await openInput(page);
   await input.fill("TEST 操作位置保持稳定，不发送");
+  await composerAction(page, "查看交流记录");
   const buttons = page.locator(
     ".composer-action-leading > button, .composer-action-trailing > button, .application-dock-shortcut",
   );
@@ -96,6 +97,7 @@ test("从输入框连续 Tab 能到达底栏常用按钮，面板控制有独立
   for (const name of ["添加输入内容", "执行设置", "语音输入"])
     expect(visited, name).toContain(name);
   await openInput(page);
+  await composerAction(page, "查看交流记录");
   await page.getByRole("button", { name: "收起交流记录", exact: true }).focus();
   for (const name of ["展开完整记录", "固定输入框", "收起 AI 输入框"]) {
     await page.keyboard.press("Tab");
@@ -193,6 +195,7 @@ test("收起记录保留输入与交流控制；应用 Dock 悬浮不增加面�
   // This measures layout, not blur-to-collapse: removing the focused tool
   // group below would otherwise legitimately close an unpinned composer.
   await composerAction(page, "固定输入框");
+  await composerAction(page, "查看交流记录");
   await composerAction(page, "收起交流记录");
   await expect(page.locator(".conversation")).toHaveCount(0);
   const panel = page.locator(".exchange-panel");
@@ -225,7 +228,17 @@ test("收起记录保留输入与交流控制；应用 Dock 悬浮不增加面�
   expect(p.height).toBeCloseTo(c.height, 0);
   // Measure the actual button group, not the slot's transparent hover bridge.
   expect(c.y - d.y - d.height).toBeCloseTo(8, 0);
-  expect(t.y + t.height).toBeCloseTo(d.y + d.height, 0);
+  expect(c.y - t.y - t.height).toBeCloseTo(10, 0);
+  expect(t.y + t.height / 2).toBeCloseTo(d.y + d.height / 2, 0);
+  const dockIcon = (await dockButtons
+    .locator("svg,img")
+    .first()
+    .boundingBox())!;
+  const toolIcon = (await tools.locator("button > svg").first().boundingBox())!;
+  expect(toolIcon.y + toolIcon.height / 2).toBeCloseTo(
+    dockIcon.y + dockIcon.height / 2,
+    0,
+  );
   // Removing only the tool paint must not resize the input/frame.
   await dock.evaluate((el) => ((el as HTMLElement).style.display = "none"));
   expect((await composer.boundingBox())!.height).toBe(c.height);
@@ -266,8 +279,26 @@ test("收起记录保留输入与交流控制；应用 Dock 悬浮不增加面�
       if (mode === "input") {
         expect(currentComposer.y).toBeCloseTo(currentPanel.y, 0);
         expect(currentPanel.height).toBeCloseTo(currentComposer.height, 0);
-        expect(currentTools.y + currentTools.height).toBeCloseTo(
-          currentDock.y + currentDock.height,
+        expect(
+          currentComposer.y - currentDock.y - currentDock.height,
+        ).toBeCloseTo(8, 0);
+        expect(
+          currentComposer.y - currentTools.y - currentTools.height,
+        ).toBeCloseTo(10, 0);
+        expect(currentTools.y + currentTools.height / 2).toBeCloseTo(
+          currentDock.y + currentDock.height / 2,
+          0,
+        );
+        const currentDockIcon = (await dockButtons
+          .locator("svg,img")
+          .first()
+          .boundingBox())!;
+        const currentToolIcon = (await tools
+          .locator("button > svg")
+          .first()
+          .boundingBox())!;
+        expect(currentToolIcon.y + currentToolIcon.height / 2).toBeCloseTo(
+          currentDockIcon.y + currentDockIcon.height / 2,
           0,
         );
       } else {
@@ -297,6 +328,7 @@ test("独立读写卡片保留克制底色，文字可读且增强对比度仍�
   await page.emulateMedia({ reducedMotion: "reduce" });
   const input = await openInput(page);
   await input.fill("TEST 只调整读写衔接颜色，不发送");
+  await composerAction(page, "查看交流记录");
   // The input now owns a complete card boundary instead of a pseudo divider.
   // Focus a stable, internal float so its ordinary boundary is measured, not
   // the input's intentional keyboard-focus accent.
@@ -430,6 +462,7 @@ test("真实组件的明暗视觉样例保留消息、表格、输入和全部�
   );
   await page.reload();
   const input = await openInput(page);
+  await composerAction(page, "查看交流记录");
   await expect(page.locator(".conversation")).toContainText("确认交付时间");
   await input.fill("再帮我整理需要向供应商确认的问题。");
   await composerAction(page, "固定输入框");

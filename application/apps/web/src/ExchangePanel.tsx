@@ -1,5 +1,11 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, History, Maximize2, Minimize2, Pin } from "lucide-react";
+import {
+  ChevronDown,
+  Maximize2,
+  MessageSquareText,
+  Minimize2,
+  Pin,
+} from "lucide-react";
 import { ComposerOptions } from "./ComposerOptions.js";
 import { ComposerToolButtons } from "./ComposerToolButtons.js";
 import type { InteractionMode } from "./interaction.js";
@@ -168,7 +174,7 @@ export function ExchangeControls({
           {
             id: "history-visibility",
             label: conversationVisible ? "收起交流记录" : "查看交流记录",
-            icon: <History />,
+            icon: <MessageSquareText />,
             pressed: conversationVisible,
             onSelect: () =>
               onInteraction(conversationVisible ? "input" : "recent"),

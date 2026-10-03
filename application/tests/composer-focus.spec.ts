@@ -50,7 +50,7 @@ test.afterEach(async ({ page }, info) => {
     });
 });
 
-test("聚焦展开记录，离开自动收起；固定按空间保存且不影响手动收起", async ({
+test("主动打开记录，离开自动收起；固定按空间保存且不影响手动收起", async ({
   page,
 }) => {
   await page.goto("/");
@@ -60,6 +60,11 @@ test("聚焦展开记录，离开自动收起；固定按空间保存且不影�
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await openInput(page);
   await input.fill("暂不发送的工作台草稿");
+  await expect(page.locator(".primary-panel")).toHaveAttribute(
+    "data-interaction",
+    "input",
+  );
+  await composerAction(page, "查看交流记录");
   await expect(page.locator(".primary-panel")).toHaveAttribute(
     "data-interaction",
     "recent",
@@ -94,7 +99,7 @@ test("聚焦展开记录，离开自动收起；固定按空间保存且不影�
   await page.getByRole("button", { name: /向 Morphz 输入/ }).click();
   await expect(input).toBeFocused();
   await expect(input).toHaveValue("暂不发送的工作台草稿");
-  await expect(page.locator(".conversation")).toBeVisible();
+  await expect(page.locator(".conversation")).toHaveCount(0);
   await composerAction(page, "固定输入框");
   await page.getByLabel("收起 AI 输入框").click();
   await expect(input).toHaveCount(0);
@@ -149,6 +154,8 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   await page.goto("/");
   const input = page.getByLabel("AI 输入内容");
   await input.fill("在控件与弹窗之间保留输入");
+  await composerAction(page, "查看交流记录");
+  await input.focus();
   // This disconnected fixture exposes an actionable connection notice.
   await page.keyboard.press("Tab");
   await expect(
@@ -202,10 +209,16 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   await expect(
     page.getByRole("button", { name: "语音输入", exact: true }),
   ).toBeFocused();
+  await composerAction(page, "查看交流记录");
   await composerAction(page, "收起交流记录");
   await expect(page.locator(".conversation")).toHaveCount(0);
   await input.focus();
-  await expect(page.locator(".conversation")).toBeVisible();
+  await expect(page.locator(".conversation")).toHaveCount(0);
+  await expect(page.locator(".primary-panel")).toHaveAttribute(
+    "data-interaction",
+    "input",
+  );
+  await composerAction(page, "查看交流记录");
   await composerAction(page, "展开完整记录");
   await expect(page.getByRole("main", { name: "主工作区" })).toBeHidden();
   await composerAction(page, "返回工作内容");
@@ -253,6 +266,12 @@ test("单底栏；截图归添加菜单，语音常驻，窄窗口和空记录�
   for (const width of [1440, 760]) {
     await page.setViewportSize({ width, height: 800 });
     await page.getByLabel("AI 输入内容").focus();
+    const show = page.getByRole("button", {
+      name: "查看交流记录",
+      exact: true,
+    });
+    if (await show.isVisible()) await show.click();
+    await expect(page.locator(".exchange-panel > .conversation")).toBeVisible();
     await expect(page.locator(".exchange-header, .exchange-space")).toHaveCount(
       0,
     );
@@ -324,10 +343,34 @@ test("单底栏；截图归添加菜单，语音常驻，窄窗口和空记录�
       .boundingBox())!;
     const executionBounds = (await executions.boundingBox())!;
     expect(executionBounds.y).toBeLessThan(48);
-    const pin = (await panelControls
-      .getByLabel("固定输入框", { exact: true })
-      .boundingBox())!;
-    expect(collapse.x - pin.x - pin.width).toBeLessThanOrEqual(4);
+    const inlinePin = panelControls.getByLabel("固定输入框", { exact: true });
+    if (await inlinePin.isVisible()) {
+      const pin = (await inlinePin.boundingBox())!;
+      expect(collapse.x - pin.x - pin.width).toBeLessThanOrEqual(4);
+      expect(collapse.y).toBe(pin.y);
+    } else {
+      const more = panelControls.getByRole("button", {
+        name: "更多交流选项",
+        exact: true,
+      });
+      await more.click();
+      const pin = page
+        .getByRole("group", { name: "交流选项", exact: true })
+        .getByRole("button", { name: "固定输入框", exact: true });
+      await expect(pin).toBeInViewport();
+      expect(
+        await pin.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          const hit = document.elementFromPoint(
+            box.x + box.width / 2,
+            box.y + box.height / 2,
+          );
+          return !!hit && element.contains(hit);
+        }),
+      ).toBe(true);
+      await page.keyboard.press("Escape");
+      await expect(more).toBeFocused();
+    }
     expect(collapse.y + collapse.height).toBeLessThanOrEqual(outer.y);
     expect(
       await composer.evaluate((el) => el.scrollWidth <= el.clientWidth),
@@ -367,6 +410,7 @@ test("输入框和历史左右留白属于外部区域；固定时不收起", as
     await expect(input).toBeFocused();
     await expect(input).toHaveValue("点击两侧留白也保留草稿");
   }
+  await composerAction(page, "查看交流记录");
   const history = (await page.locator(".conversation").boundingBox())!;
   await page.mouse.click(history.x - 20, history.y + 10);
   await expect(input).toHaveCount(0);

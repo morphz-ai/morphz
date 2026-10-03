@@ -25,5 +25,35 @@ Server.prototype.listen = function (...args) {
     throw new Error("Desktop must not open a TCP application listener");
   return listen.apply(this, args);
 };
+// Test-only one-shot transport failure. It targets a real renderer app-view
+// save, after the production bridge's trusted-main check, rather than creating
+// a notice DOM node or invoking React state directly. Other calls use the real
+// embedded connection and store, with no application TCP listener.
+const applicationBridge = require("../../apps/desktop/application-bridge.cjs");
+const registerApplicationBridge = applicationBridge.registerApplicationBridge;
+applicationBridge.registerApplicationBridge = function (
+  ipcMain,
+  connection,
+  ...options
+) {
+  const invoke = connection.invoke.bind(connection);
+  connection.invoke = async function (request) {
+    const fault = globalThis.__fixtureAppViewSaveConflict;
+    if (
+      fault?.remaining === 1 &&
+      request?.method === "app-views.save" &&
+      request.params?.state?.url === fault.url
+    ) {
+      fault.remaining = 0;
+      fault.requests.push({ method: request.method, params: request.params });
+      return {
+        ok: false,
+        error: { status: 409, code: "conflict", message: fault.message },
+      };
+    }
+    return invoke(request);
+  };
+  return registerApplicationBridge(ipcMain, connection, ...options);
+};
 require("../../apps/desktop/main.cjs");
 globalThis.__fixturePreferences = require("../../apps/desktop/preferences.cjs");
