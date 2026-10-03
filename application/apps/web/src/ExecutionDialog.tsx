@@ -5,23 +5,10 @@ import {
   executionResultSummary,
 } from "./execution-presentation.js";
 import { useEffect, useRef, useState } from "react";
-import {
-  X,
-  RefreshCw,
-  Square,
-  Check,
-  FileText,
-  CircleCheck,
-  CircleX,
-  CircleSlash,
-  Clock3,
-  Activity,
-  Pause,
-  CircleHelp,
-} from "lucide-react";
+import { X, RefreshCw, Square, Check, FileText } from "lucide-react";
 import { executionThreadGroups } from "./execution-thread-groups.js";
 import { executionActivityStatus } from "./execution-activity.js";
-import { RunningActivityIcon } from "./RunningActivityIcon.js";
+import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { ApprovalDetails } from "./ApprovalCard.js";
 import {
   jobStatusLabel,
@@ -296,17 +283,6 @@ export function ExecutionDialog({
           const status = group.thread
             ? executionActivityStatus(group.thread, client.online && !error)
             : undefined;
-          const Icon = status
-            ? {
-                running: Activity,
-                waiting: Clock3,
-                paused: Pause,
-                ended: CircleCheck,
-                failed: CircleX,
-                cancelled: CircleSlash,
-                unknown: CircleHelp,
-              }[status.kind]
-            : CircleHelp;
           return (
             <section
               key={group.id}
@@ -326,11 +302,7 @@ export function ExecutionDialog({
                     data-status={status?.kind}
                     title={status?.label}
                   >
-                    {status?.kind === "running" ? (
-                      <RunningActivityIcon />
-                    ) : (
-                      <Icon size={18} aria-hidden="true" />
-                    )}
+                    <ExecutionStatusIcon kind={status?.kind} size={18} />
                   </span>
                   <div>
                     <small>{group.depth > 0 ? "子任务" : "主执行"}</small>

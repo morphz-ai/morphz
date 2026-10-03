@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-03 · 版本：1.0 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-03 · 版本：1.1 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -13,16 +13,22 @@
 | 工作面解析           | `host/work-surface.ts` 的 `deriveWorkSurface`；`App.tsx` 消费只读派生值                               | `frontend-architecture.test.ts` 检查类型与依赖、禁止消费方重新计算 scope/key；保留原持久键、领域归属与 default/named 会话区别。提交 `10b19994`。                                           |
 | 交流意图与焦点       | `host/use-exchange-controller.ts`；App 保留发送、草稿及页面组合                                       | `exchange-controller-boundary.test.ts` 与 controller 回归约束显隐、固定、伸缩预览和焦点恢复；不更改 Runtime 输入或权限。提交 `b1e37aa2`。                                                  |
 | 导航状态与回执       | `host/use-workspace-navigation.ts` 的 state／commands／commit；App 保留唯一 prefs writer              | 四个原导航命令、同一 generation 与原 trail／焦点顺序；76 项相关 Node／门禁、44 项 Host 浏览器回归通过。只迁已审查边界，不把保留的其他业务入口称为已拆完；原窗复验待解锁。                  |
-| 应用导航与实例切换   | 同一 navigation commands owner；App 的应用入口与 ApplicationHost 的启动／关闭消费 typed actions     | Reader／剧本库／内容／Browser／激活／普通导航及原捕获邻居迁入；同步 prepared operation 保留原 Promise、Host 等待和 busy 清理，不新增状态、存储或 effect。有限旧实现对照与实际消费门禁。 |
+| 应用导航与实例切换   | 同一 navigation commands owner；App 的应用入口与 ApplicationHost 的启动／关闭消费 typed actions       | Reader／剧本库／内容／Browser／激活／普通导航及原捕获邻居迁入；同步 prepared operation 保留原 Promise、Host 等待和 busy 清理，不新增状态、存储或 effect。有限旧实现对照与实际消费门禁。    |
 | 草稿生命周期         | `host/exchange-drafts.ts` 的三 state hooks／五 local commands；App 保留发送、导航与原退休 effect      | 原本机键、初始化位置、ref／render snapshot、逐步写入失败及 ID 保留；16 项逻辑、6 项有限 AST、4 项实际 React 挂载、31 项未改旧 Host 回归。不是新 store 或原子事务，原窗复验待解锁。         |
 | 发送协议编排         | `host/submit-exchange-draft.ts`；App 保留准备锁、草稿反馈与焦点                                       | 原四分支、Profile flush→scope→当前工作面复核、补充原身份与冻结重试字节、同步 receipt/catch/finally 端口；有限协议与实际接线门禁，不新增授权或发送入口。                                    |
 | 共享工作区顶栏       | `shell/WorkspaceTopbar.tsx`；App 保留原三个 portal target state/ref 与语义动作                        | 一个原生 header、原面包屑／显隐／导航按钮与三个常驻插槽，无新包装／key／样式；固定旧 markup、实际挂载及真实 App 导入／消费门禁，不接管领域画布或路由。                                     |
 | 会话历史查询         | `data/conversation-history.ts`；Client 持有唯一实例，workspace view 消费 head 策略                    | 原 scope／缓存／分页 promise、head 复用与合并实际迁入；身份、epoch、catalogVersion、授权清理及 Boot 发布仍在 Client。固定旧实现对照及有限依赖门禁，不是全查询层或新的授权 owner。          |
 | 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费              | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。                         |
+| Thread 状态图形      | `ExecutionStatusIcon.tsx`；ExecutionSidebar 与 ExecutionDialog 的原外层 span 消费                     | 七状态图形与缺省回退共用，原状态权威／标签／静态尺寸及运行波形保留，无新 DOM、effect 或请求；固定旧 oracle、实际 StrictMode 及有限门禁 7/7，原旧 Host 29/29，新合并回归 61/61。            |
 | 登记图形与透明按钮   | `design/control-icons.tsx`、`ui/IconButton.tsx`；SidebarToggle、ComposerToolButtons、ExchangeControls | 原七图形／两 role、单 native button、原 props/ref/key/compact 焦点。13 项 Node／门禁与 5 项实际隔离挂载通过；当前契约的相关矩阵 60/60 通过，有限治理，不包含全部菜单／按钮或原窗最终验收。 |
 | 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`                 | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                                                |
 
 交流伸缩的首段样式 owner 也已迁入 `exchange-layout.css`，原 23 项几何与 9 项绘制声明保持；`exchange-css-ownership.test.ts` 治理唯一入口与已知竞争规则，非全产品 CSS 门禁。该阶段的原 App 原生命中复验仍待系统解锁。
+
+当前 Task batch、目录分页和 Profile 已有真实共享 owner；Schedules 与 TaskList
+的 deadline／重试／取消及 Boot 发布合同不同，不新增一层 broker 强并。
+完整 query facade 目标需要按合同与实际请求测量推进，不等于每个页面都重造
+读取缓存。Thread 图形共享也不改变 Task／Job／消息 delivery 的独立语义。
 
 发送协议与共享顶栏阶段已提交 `d45cf84d`。补充重试的原命令匹配修复另以
 `28cecd4a` 提交：`local-saved-inputs.ts` 仅在双方 supplement 时认可候选省略

@@ -1,16 +1,5 @@
 import { useState, type ReactNode } from "react";
-import {
-  Activity,
-  ArrowLeft,
-  ChevronRight,
-  CircleCheck,
-  CircleHelp,
-  CircleSlash,
-  CircleX,
-  Clock3,
-  Pause,
-  Square,
-} from "lucide-react";
+import { ArrowLeft, ChevronRight, Square } from "lucide-react";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
@@ -35,7 +24,7 @@ import {
   type ActivityThread,
 } from "./execution-activity.js";
 import { projectDisplayLabel } from "./project-display-label.js";
-import { RunningActivityIcon } from "./RunningActivityIcon.js";
+import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 
 export function ExecutionSidebar({
   client,
@@ -204,15 +193,6 @@ export function ExecutionSidebar({
     );
     const children = executionActivityDescendants(t, activityThreads);
     const summary = executionActivitySummary(t, activityAvailable);
-    const Icon = {
-      running: Activity,
-      waiting: Clock3,
-      paused: Pause,
-      ended: CircleCheck,
-      failed: CircleX,
-      cancelled: CircleSlash,
-      unknown: CircleHelp,
-    }[status.kind];
     const project = state.projects.find((p) => p.id === t.projectId);
     const showProject = project && (allWork || t.projectId !== scope.projectId);
     return (
@@ -236,11 +216,7 @@ export function ExecutionSidebar({
           data-status={status.kind}
           title={status.label}
         >
-          {status.kind === "running" ? (
-            <RunningActivityIcon />
-          ) : (
-            <Icon size={19} aria-hidden="true" />
-          )}
+          <ExecutionStatusIcon kind={status.kind} size={19} />
         </span>
         <span className="execution-activity-body">
           <strong title={t.title}>{t.title || "执行事项"}</strong>

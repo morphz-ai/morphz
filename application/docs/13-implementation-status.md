@@ -1,5 +1,57 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端重构第十一阶段：Thread 状态图形共享组件
+
+`ExecutionStatusIcon.tsx` 实际接管活动列表与执行详情两处重复的图形映射。
+消费方保留原状态事实、查询、标签及外层 span；静态尺寸仍为列表 19／详情
+18，运行仍是原 `RunningActivityIcon` 的 24×24 双路径。缺省详情仍为
+CircleHelp。没有新增 DOM 包装、state、effect、请求、存储、CSS 或 LLM 调用。
+Task／Job／消息 delivery 的权威与显示合同不同，本批没有强并为通用状态。
+
+独立 oracle 固定 `14ae1de6` 的两个 map、两个 ternary 和运行图形；根线程
+另从 Git 读取旧实现，完整 AST 核验两个生产组件，仅归一批准的 map／内层
+glyph，包含原 hook、Job 正文／控制及 JSX 的其余函数均相同。固定 oracle
+的两个 map／ternary 与运行函数也逐项实核。不是让新算法验证自身。
+
+三项 SSR／结构对照涵盖七状态及缺省、两个静态尺寸和原可访问属性；一项
+真实 Chrome StrictMode 挂载比较旧／新外层节点、SVG／路径 identity，涵盖
+无关重绘、同状态／尺寸变化、状态切换及卸载，无 eager fetch／XHR。
+三项有限 AST 门禁校验真实 import binding／尺寸／原有限树及 hook 参数，
+包含 17 个只接受 AssertionError 的定向违规反例。根线程合并 **7/7**，零
+跳过；挂载 fixture 本身不加载执行 CSS，动画依据另见实际 Host 回归。
+
+首轮旧 JS 原九文件 29 项为 26 通过、3 失败：一项仍找“执行目标”旧称呼，
+两项直接点击按确认设计隐藏的消息 footer。仅改术语与真实 card hover
+前置，原断言／预算保留，以 `263f41bd` 独立提交。旧 JS 再跑 28/29，
+暴露暗色切换后约 59ms 就取色、尚未完成 110ms 颜色过渡的旧测量问题。
+将 footer 既有有限 CSSTransition settling 原样共享给颜色用例，既不等待
+持续光效、不固定 sleep，也不降低 4.5 门槛；独立提交 `7d407d17`。
+外置 footer 的祖先背景合成测量仍有局限，不宣称本批解决全部色彩 oracle。
+
+校准后再次消费保留的原生产 JS，而非重建假旧实现：隔离测试入口仅替换
+index 的脚本引用，每项记录实际加载的旧 JS 200 及完整 SHA256。原九文件
+**29/29** 通过；最终新 JS 同一 29 项逐项标题／结果匹配，另加原 Dock
+23 项及 footer 9 项，合并 **61/61**，104.3 秒，零跳过／重试。
+实际 Host 动画回归覆盖自然浏览器连续帧与减少动态；相关 Dock 25 项含
+原 Host 两项，仍保持排序／拖入／拖出／取消、刷新、触控／键盘和悬停放大。
+
+最终全量 Node **1530 项：1366 通过、164 条可选集成跳过、零失败**，67.8 秒。
+其中新增挂载在默认全量中跳过，已由上述安装浏览器的 7/7 单独实际执行；
+其他跳过不作真实 Runtime／模型或原生证据。typecheck／build、受影响源码
+格式和空白检查通过，保留原大 chunk 提示。新页面 HTTP 核对 HTML／JS／CSS
+均 200；`app-pazy4bUJ.js` SHA256
+`ce03c5e8f250f913b1ef6746e7d32f6030a6939a9f2ab553126282b29228a38b`。
+CSS 仍 `app-Bl-K6QYD.css`，字节摘要仍
+`0a46e4301841e99b7c688123e4a07ff83e8ebd6b33918325331294aaad442648`。
+原、新、交互及最终 traces／报告使用独立目录保留；测试服务正常关闭后
+第二次 HTTP 检查拒连不算资产通过，使用此前成功 HTTP 记录及最终字节核验。
+证据 `/tmp/morphz-execution-state-owner.UwWvkR`。
+
+原 App 只读检查仍为系统锁屏，最终原窗口验收未完成；没有解锁、改锁屏
+设置、换 profile 或重启用户 Runtime。整体架构目标仍继续。查询审计发现
+Task batch、目录分页、Profile 已有共享 owner，不为形式整齐再造 broker；
+下一真实边界是补齐交流 frame 的现有样式 owner，不是新增审美规范。
+
 ## 2026-10-04 前端重构第十阶段：应用导航与实例切换 owner
 
 在已有 `host/use-workspace-navigation.ts` 内继续迁移 App 六个入口：Reader
