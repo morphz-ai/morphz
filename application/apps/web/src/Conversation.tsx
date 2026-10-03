@@ -811,7 +811,28 @@ export function Conversation({
                     data-message-id={id}
                     data-starts-turn={startsTurn || undefined}
                     data-background-execution={activeBranch || undefined}
+                    data-execution-inspectable={
+                      (activeBranch && !!onInspect) || undefined
+                    }
                     data-supplement-target={targets.length > 0 || undefined}
+                    onClick={
+                      activeBranch && item && onInspect
+                        ? (event) => {
+                            // The card is a shortcut, not a wrapper button:
+                            // nested references/actions and selecting original
+                            // message text keep their own interaction.
+                            if (
+                              document.getSelection()?.isCollapsed === false ||
+                              (event.target instanceof Element &&
+                                event.target.closest(
+                                  "button, a, input, textarea, select, summary, [role=button], [contenteditable=true], [data-quote-ui], [data-quote-ignore]",
+                                ))
+                            )
+                              return;
+                            onInspect(item.id);
+                          }
+                        : undefined
+                    }
                     aria-description={
                       activeBranch ? "这条消息的后台执行仍在进行" : undefined
                     }

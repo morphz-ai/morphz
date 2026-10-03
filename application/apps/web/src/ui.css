@@ -1267,6 +1267,32 @@ body:has(dialog[open]) .cognitive-application-frame {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+}
+.conversation-message:hover .message-work-actions,
+.conversation-message:focus-within .message-work-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* A two-pixel bridge joins only this card's existing footer, so crossing its
+   gap cannot dismiss the actions; it does not extend into the reading column. */
+.conversation .human-message .message-meta[data-work-actions]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -2px;
+  height: 2px;
+}
+.conversation .human-message[data-execution-inspectable] {
+  cursor: pointer;
+}
+@media (hover: none), (any-pointer: coarse) {
+  .message-work-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 .app .conversation .message-meta .message-execution-link {
   display: inline-flex;

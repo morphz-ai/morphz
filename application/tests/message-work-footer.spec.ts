@@ -8,7 +8,7 @@ import {
 import { openInput } from "./interaction-helpers.js";
 import { openSettings } from "./settings-helpers.js";
 
-async function prepare(page: Page) {
+async function prepare(page: Page, { withQuote = false } = {}) {
   const inputs: PlatformHistory["inputs"] = [];
   let phase = "running",
     connected = true,
@@ -52,12 +52,14 @@ async function prepare(page: Page) {
               controlState,
               revision: 3,
               updatedAt: input.createdAt,
-              continuation: continuation ? {
-                mode: "supplement" as const,
-                inputId: input.id,
-                threadId: `${input.id}-thread-${index}`,
-                generation: 2,
-              } : undefined,
+              continuation: continuation
+                ? {
+                    mode: "supplement" as const,
+                    inputId: input.id,
+                    threadId: `${input.id}-thread-${index}`,
+                    generation: 2,
+                  }
+                : undefined,
             }),
           ),
         ),
@@ -73,6 +75,22 @@ async function prepare(page: Page) {
       "2026-10-02T09:31:00.000Z",
     ),
   );
+  if (withQuote)
+    inputs[0]!.textQuotes = [
+      {
+        id: "2157ef78-060e-4b91-9a3f-6ca9a924b447",
+        source: {
+          kind: "message",
+          ...fixture.scope,
+          messageId: "footer-b",
+          inputId: "footer-b",
+          title: "资料 B 原文",
+          createdAt: "2026-10-02T09:31:00.000Z",
+        },
+        text: "整理资料 B，保留与报告 A 独立的执行。",
+        comment: "这段引用只作为阅读依据，不选择报告 A 的工作。",
+      },
+    ];
   await page.route("**/api/platform/bootstrap", async (route) => {
     const response = await route.fetch();
     const body = await response.json();
@@ -206,33 +224,77 @@ async function settleTransitions(page: Page) {
   });
 }
 
+function information(page: Page) {
+  return page.getByRole("complementary", { name: "Morphz 信息", exact: true });
+}
+
+async function cardGeometry(message: Locator) {
+  return message.evaluate((element) => {
+    const rect = (node: Element) => {
+      const { x, y, width, height } = node.getBoundingClientRect();
+      return { x, y, width, height };
+    };
+    return {
+      card: rect(element),
+      text: rect(element.querySelector(":scope > p")!),
+      footer: rect(element.querySelector(".message-meta")!),
+    };
+  });
+}
+
+async function expectNoWorkSelection(
+  page: Page,
+  f: Awaited<ReturnType<typeof prepare>>,
+  draft: string,
+) {
+  await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
+  await expect(f.composer).toHaveValue(draft);
+  expect(f.sent).toHaveLength(0);
+}
+
 test.afterEach(async ({ page }) => page.unrouteAll({ behavior: "wait" }));
 
-test("仅可查看、没有补充目标的运行线程仍使用气泡外 footer", async ({ page }) => {
+test("仅可查看、没有补充目标的运行线程仍使用气泡外 footer", async ({
+  page,
+}) => {
   const f = await prepare(page);
   await f.update({ continuation: false });
   await expect(f.supplement).toHaveCount(0);
   await expect(f.status).toBeVisible();
-  await expect(f.message.locator(".message-meta")).toHaveAttribute("data-work-actions", "true");
+  await expect(f.message.locator(".message-meta")).toHaveAttribute(
+    "data-work-actions",
+    "true",
+  );
   const bubble = (await f.message.boundingBox())!;
   const footer = (await f.message.locator(".message-meta").boundingBox())!;
   expect(footer.y).toBeGreaterThanOrEqual(bubble.y + bubble.height);
+  await f.message.hover();
   await f.status.click();
-  await expect(page.getByRole("complementary", { name: "Morphz 信息", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("complementary", { name: "Morphz 信息", exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
 });
 
-test("工作动作在气泡外同一 footer：简短图标、真实状态、无外圈、窄窗与 200% 不遮正文", async ({
+test("工作动作在气泡外同一 footer：简短图标、真实状态、保留执行光效、窄窗与 200% 不遮正文", async ({
   page,
 }, info) => {
   const f = await prepare(page);
   await expect(f.supplement).toHaveText("补充");
   await expect(f.status).toHaveText("执行中");
   await expect(f.status.locator("svg")).toHaveCount(1);
-  await expect(f.message).toHaveCSS("box-shadow", "none");
+  await expect(f.message).toHaveAttribute("data-background-execution", "true");
   expect(
     await f.message.evaluate((el) => getComputedStyle(el, "::before").content),
-  ).toBe("none");
+  ).toBe('""');
+  expect(
+    await f.message.evaluate(
+      (el) => getComputedStyle(el, "::before").animationName,
+    ),
+  ).toBe("execution-halo-orbit");
+  expect(
+    await f.message.evaluate((el) => getComputedStyle(el).boxShadow),
+  ).not.toBe("none");
   await page.emulateMedia({ reducedMotion: "reduce" });
   expect(
     await f.message.evaluate(
@@ -309,6 +371,7 @@ test("四主题亮暗 hover、按下与键盘保持可读，不再强外框；�
         const normal = await appearance(button);
         expect(normal.contrast).toBeGreaterThanOrEqual(4.5);
         expect(normal.borderWidth).toBe("0px");
+        await f.message.hover();
         await button.hover();
         await settleTransitions(page);
         const hover = await appearance(button);
@@ -359,6 +422,23 @@ test("四主题亮暗 hover、按下与键盘保持可读，不再强外框；�
       t = await prepare(touchPage);
     await expect(t.supplement).toBeVisible();
     await expect(t.message.locator(".message-peek")).toHaveCSS("opacity", "1");
+    await expect(t.message.locator(".message-work-actions")).toHaveCSS(
+      "opacity",
+      "1",
+    );
+    await expect(t.message.locator(".message-work-actions")).toHaveCSS(
+      "pointer-events",
+      "auto",
+    );
+    const touchGeometry = await cardGeometry(t.message);
+    await t.status.tap();
+    await expect(
+      information(touchPage).locator(".execution-origin"),
+    ).toHaveText(/核对报告 A。/);
+    expect(await cardGeometry(t.message)).toEqual(touchGeometry);
+    await expectNoWorkSelection(touchPage, t, "");
+    await touchPage.keyboard.press("Escape");
+    await expect(information(touchPage)).toHaveCount(0);
     expect((await t.supplement.boundingBox())!.height).toBeGreaterThanOrEqual(
       44,
     );
@@ -377,6 +457,8 @@ test("等待/暂停/未知不冒称运行，断线、结束、旧类型撤下入
   page,
 }) => {
   const f = await prepare(page);
+  const draft = "断线和已结束消息仍不能改变这份草稿";
+  await f.composer.fill(draft);
   for (const [phase, text] of [
     ["waiting", "等待中"],
     ["runnable", "待执行"],
@@ -392,10 +474,24 @@ test("等待/暂停/未知不冒称运行，断线、结束、旧类型撤下入
   await expect(f.status).toHaveAttribute("data-status", "paused");
   await f.update({ connected: false });
   await expect(f.message.locator(".message-work-actions")).toHaveCount(0);
+  await expect(f.message).not.toHaveAttribute(
+    "data-execution-inspectable",
+    "true",
+  );
+  await f.message.locator(":scope > p").click();
+  await expect(information(page)).toHaveCount(0);
+  await expectNoWorkSelection(page, f, draft);
   await f.update({ connected: true, available: false });
   await expect(f.message.locator(".message-work-actions")).toHaveCount(0);
   await f.update({ available: true, lifecycle: "completed" });
   await expect(f.message.locator(".message-work-actions")).toHaveCount(0);
+  await expect(f.message).not.toHaveAttribute(
+    "data-execution-inspectable",
+    "true",
+  );
+  await f.message.locator(":scope > p").click();
+  await expect(information(page)).toHaveCount(0);
+  await expectNoWorkSelection(page, f, draft);
   await f.update({ lifecycle: "open", kind: null });
   await expect(f.message.locator(".message-work-actions")).toHaveCount(0);
   expect(f.sent).toHaveLength(0);
@@ -407,6 +503,7 @@ test("查看不选补充，多分支须选择，补充发送精确原线程且�
   const f = await prepare(page);
   const draft = "补充 A 的核对要求，B 保持不变";
   await f.composer.fill(draft);
+  await f.message.hover();
   await f.status.press("Enter");
   await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
   await expect(f.composer).toHaveValue(draft);
@@ -443,4 +540,195 @@ test("查看不选补充，多分支须选择，补充发送精确原线程且�
   await expect(
     page.locator('[data-input-id="footer-b"] .message-work-status'),
   ).toHaveText("执行中");
+});
+
+test("默认收起操作但执行光效持续，悬停与键盘焦点只显露而不跳布局", async ({
+  page,
+}) => {
+  const f = await prepare(page);
+  await f.composer.focus();
+  await page.mouse.move(0, 0);
+  const work = f.message.locator(".message-work-actions");
+  await expect(work).toHaveCSS("opacity", "0");
+  await expect(work).toHaveCSS("pointer-events", "none");
+  const geometry = await cardGeometry(f.message);
+  const halo = await f.message.evaluate((element) => {
+    const style = getComputedStyle(element, "::before");
+    const animation = element
+      .getAnimations({ subtree: true })
+      .find(
+        (candidate) =>
+          candidate instanceof CSSAnimation &&
+          candidate.animationName === "execution-halo-orbit",
+      );
+    return {
+      content: style.content,
+      name: style.animationName,
+      state: animation?.playState,
+      time: Number(animation?.currentTime),
+    };
+  });
+  expect(halo).toMatchObject({
+    content: '""',
+    name: "execution-halo-orbit",
+    state: "running",
+  });
+  await expect
+    .poll(() =>
+      f.message.evaluate((element) =>
+        Number(
+          element
+            .getAnimations({ subtree: true })
+            .find(
+              (candidate) =>
+                candidate instanceof CSSAnimation &&
+                candidate.animationName === "execution-halo-orbit",
+            )?.currentTime,
+        ),
+      ),
+    )
+    .toBeGreaterThan(halo.time);
+  await f.message.hover();
+  await expect(work).toHaveCSS("opacity", "1");
+  await expect(work).toHaveCSS("pointer-events", "auto");
+  expect(await cardGeometry(f.message)).toEqual(geometry);
+  await f.supplement.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(f.supplement).toBeFocused();
+  await page.mouse.move(0, 0);
+  await expect(work).toHaveCSS("opacity", "1");
+  expect(await cardGeometry(f.message)).toEqual(geometry);
+  await f.composer.focus();
+  await expect(work).toHaveCSS("opacity", "0");
+  expect(await cardGeometry(f.message)).toEqual(geometry);
+  expect(f.sent).toHaveLength(0);
+});
+
+test("从正文跨过两像素间隙到 footer 操作始终可点", async ({ page }) => {
+  const f = await prepare(page);
+  const bubble = (await f.message.boundingBox())!,
+    footer = (await f.message.locator(".message-meta").boundingBox())!,
+    target = (await f.status.boundingBox())!;
+  const x = Math.min(bubble.x + bubble.width - 4, footer.x + footer.width - 4);
+  await page.mouse.move(x, bubble.y + bubble.height - 4);
+  await expect(f.message.locator(".message-work-actions")).toHaveCSS(
+    "opacity",
+    "1",
+  );
+  for (const y of [
+    bubble.y + bubble.height,
+    bubble.y + bubble.height + 1,
+    footer.y + 1,
+  ]) {
+    await page.mouse.move(x, y);
+    await expect(f.message.locator(".message-work-actions")).toHaveCSS(
+      "opacity",
+      "1",
+    );
+    await expect(f.message.locator(".message-work-actions")).toHaveCSS(
+      "pointer-events",
+      "auto",
+    );
+  }
+  await page.mouse.move(
+    target.x + target.width / 2,
+    target.y + target.height / 2,
+    { steps: 8 },
+  );
+  await expect(f.message.locator(".message-work-actions")).toHaveCSS(
+    "opacity",
+    "1",
+  );
+  await page.mouse.click(
+    target.x + target.width / 2,
+    target.y + target.height / 2,
+  );
+  await expect(information(page).locator(".execution-origin")).toHaveText(
+    /核对报告 A。/,
+  );
+  expect(f.sent).toHaveLength(0);
+});
+
+test("点击活跃正文只打开该 input 的活动，不选补充、不发送、不改草稿", async ({
+  page,
+}) => {
+  const f = await prepare(page);
+  const draft = "保留原草稿，查看不会把它送到任何工作";
+  await f.composer.fill(draft);
+  const second = page.locator('.human-message[data-input-id="footer-b"]');
+  await second.locator(":scope > p").click();
+  const panel = information(page);
+  await expect(panel.locator(".execution-origin")).toHaveText(
+    /整理资料 B，保留与报告 A 独立的执行。/,
+  );
+  await expect(panel.getByRole("region", { name: "执行分支" })).toContainText(
+    "资料 B",
+  );
+  await expect(
+    panel.getByRole("region", { name: "执行分支" }),
+  ).not.toContainText("报告 A");
+  await expectNoWorkSelection(page, f, draft);
+  await f.message.locator(":scope > p").click();
+  await expect(panel.locator(".execution-origin")).toHaveText(/核对报告 A。/);
+  await expect(panel.getByRole("region", { name: "执行分支" })).toContainText(
+    "报告 A",
+  );
+  await expect(
+    panel.getByRole("region", { name: "执行分支" }),
+  ).not.toContainText("资料 B");
+  await expectNoWorkSelection(page, f, draft);
+});
+
+test("嵌套引用原文、全文和评论、复制与选中文字不触发卡片活动", async ({
+  page,
+}) => {
+  const f = await prepare(page, { withQuote: true });
+  const draft = "阅读与复制都保留原草稿";
+  await f.composer.fill(draft);
+  const quote = f.message.getByRole("button", {
+    name: "查看引用 1 的原文",
+    exact: true,
+  });
+  await quote.click();
+  await expect(information(page)).toHaveCount(0);
+  await expectNoWorkSelection(page, f, draft);
+  // Desktop previews use hover/focus; the explicit 全文 button is touch-only.
+  await page.mouse.move(0, 0);
+  await quote.hover();
+  const preview = f.message.getByRole("region", {
+    name: "引用 1 全文",
+    exact: true,
+  });
+  await expect(preview).toBeVisible();
+  await preview.locator(".sent-text-quote-preview-text").click();
+  await expect(information(page)).toHaveCount(0);
+  await expectNoWorkSelection(page, f, draft);
+  await preview
+    .getByRole("button", { name: "关闭引用全文", exact: true })
+    .click();
+  await f.message.locator(".text-quote-comment").click();
+  await expect(information(page)).toHaveCount(0);
+  await f.message.hover();
+  await f.message
+    .getByRole("button", { name: "复制消息", exact: true })
+    .click();
+  await expect(
+    f.message.getByRole("button", { name: "已复制消息", exact: true }),
+  ).toBeVisible();
+  await expect(information(page)).toHaveCount(0);
+  await expectNoWorkSelection(page, f, draft);
+  const text = f.message.locator(":scope > p"),
+    rect = (await text.boundingBox())!;
+  await page.mouse.move(rect.x + 1, rect.y + rect.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(rect.x + rect.width - 1, rect.y + rect.height / 2, {
+    steps: 12,
+  });
+  await page.mouse.up();
+  await expect
+    .poll(() => page.evaluate(() => document.getSelection()?.toString() ?? ""))
+    .not.toBe("");
+  await expect(information(page)).toHaveCount(0);
+  await expectNoWorkSelection(page, f, draft);
 });
