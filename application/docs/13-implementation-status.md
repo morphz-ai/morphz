@@ -1,5 +1,42 @@
 # 桌面能力实施记录
 
+## 2026-10-03 跨 Group 等待的注解回执：行为 RED 后请求链与实际 Store 通过
+
+重新检查时磁盘空间已恢复，未追加删除缓存。第一次成功编译后的新夹具因沿用
+`context_only` 模式而缺少它要求的 Recall，失败在工具断言，不算生产行为 RED。
+仅为新增读取链启用普通工具策略，原 8 请求等待用例保持不变。
+
+随后在未修改生产源码的情况下，原用例通过；新增 10 个业务请求真实完成两次读取、
+调度、已落盘等待、两级 Group 唤醒及四个 Thread 终态，最后在新 Activation 请求中的
+回执断言失败：`group-A-1` 已接受的原注解仍在 Store，但 canonical Context 中对应
+`response-annotation-receipt` 为零。日志
+`/tmp/morphz-annotation-receipt-regression.I9zEQX/old-runtime-red-fixture-corrected.log`，
+夹具 SHA256 `71d88764a10a01fd3f0a7296a30735844c516b2f2a0b56e28704fc1c802a8c49`。
+
+按 Proposal 接入生产后第一轮仍缺回执，进一步定位到 SQLite causal／scheduler 两处
+手写 Thread 快照遗漏冻结 `response_annotations`。各补一个真实列字段，不加查询、表或
+迁移；PostgreSQL 原 `to_jsonb(thread)` 已包含该字段，无需改其生产查询。
+修正后的真实 10 请求链与原 8 请求链 2/2 通过，前者确认实际 Group 唤醒的新 Activation
+仍看到早先接受的 intent／progress 及真实 call ID／generation／cutoff，不添加模型请求。
+日志 `receipt-runtime-snapshot-fixed-green.log`。
+
+实际 SQLite／PostgreSQL 快照合同 4/4、零跳过，Off／V1／V2 的 direct、causal、scheduler
+Thread 全等。日志 `receipt-store-sqlite-pg-green.log`；唯一生成 TEST PG 库核 owner、
+零连接与零生成 schema 后已精确删除，原用户库未改。新增 lib 门禁曾因测试模块缺导入
+未能编译，已只修测试接线；随后 7 项新增 pure／Context／cache 门禁全部通过，同次
+`receipt_` 筛选 11/11 与完整 annotations lib 34/34 通过（两组重叠，不相加计数）。
+实际 experimental Delta 1/1、准确 3 个原业务请求通过，严格要求真正 Delta，不接受 Full
+fallback 当通过；尚未端到端验证 Delta 跨等待／真实退休链，Off source batch 零查询是
+源码早退保证而非新增 SQL 计数。最后默认请求回归 32/32：ingress 3、Runtime 24、steer 3、
+真实等待 2；日志分别 `receipt-unit-gates-import-fixed.log`、
+`receipt-existing-annotation-lib.log`、`receipt-actual-delta-runtime.log` 和
+`receipt-final-default-request-regressions.log`。同原 App 真实模型语义复验仍待，不把机制
+通过写成两项总目标完成。
+成功的旧源码 Cargo 重试也重建了磁盘上的 `target/debug/morphz`，SHA256 为
+`28b56c2cf0cc9131036864b5286028d576a14a5a000b3fff81709ad880cf2fa0`，已保存为
+上述证据目录的 `pre-receipt-runtime`。原 Runtime 33840 未重启；不能把重新生成的磁盘
+文件哈希冒充原进程的已加载镜像哈希，尚未部署本次回执修复。
+
 ## 2026-10-03 原窗口四节点等待复验与注解事实缺口（目标仍进行中）
 
 当前同一原 App 可正常读取，不沿用早先锁屏或 Computer Use 工具故障猜测现场。

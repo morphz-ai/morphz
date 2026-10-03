@@ -13,6 +13,291 @@ pub mod stream;
 /// Stable payload key, separate from the scalar response_annotations protocol.
 pub const BUNDLE_PAYLOAD_KEY: &str = "response_annotation_bundle";
 
+/// Version of the model-visible, derived acceptance receipt, not the writer protocol.
+pub const RECEIPT_ENCODING_VERSION: u8 = 1;
+pub const RECEIPT_CONTRACT: &str = "Runtime response-annotation-receipt reports accepted field kinds for exactly its persisted source response, not generated prose. Accepted metadata is not a selected/effective title or final result, and never proves tool success. Working responses cannot establish execution.result. none_accepted means only zero accepted records in that source, not that metadata was never submitted. Missing, unknown or truncated receipts cannot prove missing annotations in this Execution; do not infer absence from cleaned business arguments. Receipt references grant no Recall access or permission. Do not add calls or model requests to repair metadata.";
+const RECEIPT_DETAIL_LIMIT: usize = 16;
+const RECEIPT_BYTE_LIMIT: usize = 2048;
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReceiptState {
+    Accepted,
+    NoneAccepted,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcceptedFieldReceipt {
+    pub kind: AnnotationKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_ref: Option<String>,
+}
+
+/// Bounded evidence of persisted acceptance only. This is neither a new ledger
+/// nor the selected execution projection. Unknown receipts do not bind a scope
+/// whose durable producer could not be verified by the Context caller.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnnotationReceipt {
+    pub protocol: Protocol,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_event_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ExecutionScope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_attempt_id: Option<String>,
+    pub state: ReceiptState,
+    pub accepted: Vec<AcceptedFieldReceipt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_diagnostics: Option<usize>,
+    pub truncated: bool,
+}
+
+fn receipt_identifier(value: &str) -> bool {
+    !value.is_empty() && value.is_ascii() && value.len() <= 128
+}
+
+impl AnnotationReceipt {
+    pub(crate) fn unknown(protocol: Protocol, event: &Event, truncated: bool) -> Self {
+        Self {
+            protocol,
+            source_event_id: receipt_identifier(&event.id).then(|| event.id.clone()),
+            source_sequence: event.sequence,
+            scope: None,
+            activation_id: None,
+            model_attempt_id: None,
+            state: ReceiptState::Unknown,
+            accepted: Vec::new(),
+            diagnostic_count: None,
+            omitted_diagnostics: None,
+            truncated: truncated || !receipt_identifier(&event.id),
+        }
+    }
+
+    /// Shared canonical form for both Full Inbox and Delta source evidence.
+    pub(crate) fn expression(&self) -> crate::sexpr::SExpr {
+        use crate::sexpr::SExpr;
+        let pair = |name: &str, value: String| {
+            SExpr::List(vec![SExpr::Atom(name.into()), SExpr::Atom(value)])
+        };
+        let mut fields = vec![
+            SExpr::Atom("response-annotation-receipt".into()),
+            pair("version", RECEIPT_ENCODING_VERSION.to_string()),
+            pair("protocol", self.protocol.as_str().into()),
+        ];
+        for (name, value) in [
+            ("source-event", self.source_event_id.as_ref()),
+            ("activation", self.activation_id.as_ref()),
+            ("model-attempt", self.model_attempt_id.as_ref()),
+        ] {
+            if let Some(value) = value {
+                fields.push(pair(name, value.clone()));
+            }
+        }
+        if let Some(sequence) = self.source_sequence {
+            fields.push(pair("source-seq", sequence.to_string()));
+        }
+        if let Some(scope) = &self.scope {
+            fields.push(pair("execution", scope.execution_id.clone()));
+            fields.push(pair("generation", scope.generation.to_string()));
+        }
+        fields.push(pair(
+            "state",
+            match self.state {
+                ReceiptState::Accepted => "accepted",
+                ReceiptState::NoneAccepted => "none_accepted",
+                ReceiptState::Unknown => "unknown",
+            }
+            .into(),
+        ));
+        let mut accepted = vec![SExpr::Atom("accepted".into())];
+        for record in &self.accepted {
+            let kind = match record.kind {
+                AnnotationKind::Title => "execution.title",
+                AnnotationKind::Progress => "execution.progress",
+                AnnotationKind::Result => "execution.result",
+                AnnotationKind::Intent => "intent",
+                AnnotationKind::ObservationResult => "observation.result",
+            };
+            let mut record_fields = vec![SExpr::Atom("record".into()), pair("kind", kind.into())];
+            if let Some(id) = &record.call_id {
+                record_fields.push(pair("call-id", id.clone()));
+            }
+            if let Some(reference) = &record.observation_ref {
+                record_fields.push(pair("observation-ref", reference.clone()));
+            }
+            accepted.push(SExpr::List(record_fields));
+        }
+        fields.push(SExpr::List(accepted));
+        if let Some(count) = self.diagnostic_count {
+            fields.push(pair("diagnostic-count", count.to_string()));
+        }
+        if let Some(count) = self.omitted_diagnostics {
+            fields.push(pair("omitted-diagnostics", count.to_string()));
+        }
+        fields.push(pair("truncated", self.truncated.to_string()));
+        SExpr::List(fields)
+    }
+
+    fn bounded(mut self) -> Self {
+        let invalid_identity = self
+            .source_event_id
+            .as_deref()
+            .is_none_or(|id| !receipt_identifier(id))
+            || self
+                .activation_id
+                .as_deref()
+                .is_none_or(|id| !receipt_identifier(id))
+            || self
+                .model_attempt_id
+                .as_deref()
+                .is_none_or(|id| !receipt_identifier(id))
+            || self
+                .scope
+                .as_ref()
+                .is_none_or(|scope| !receipt_identifier(&scope.execution_id));
+        if invalid_identity {
+            // Do not truncate an identity into a different identity or report
+            // zero accepted records when the carrier cannot be represented.
+            self.source_event_id = self.source_event_id.filter(|id| receipt_identifier(id));
+            self.activation_id = self.activation_id.filter(|id| receipt_identifier(id));
+            self.model_attempt_id = self.model_attempt_id.filter(|id| receipt_identifier(id));
+            self.scope = self
+                .scope
+                .filter(|scope| receipt_identifier(&scope.execution_id));
+            self.accepted.clear();
+            self.state = ReceiptState::Unknown;
+            self.truncated = true;
+        }
+        while self.expression().to_string().len() > RECEIPT_BYTE_LIMIT {
+            self.truncated = true;
+            if self.accepted.pop().is_some() {
+                if self.accepted.is_empty() {
+                    self.state = ReceiptState::Unknown;
+                }
+                continue;
+            }
+            self.state = ReceiptState::Unknown;
+            self.scope = None;
+            self.activation_id = None;
+            self.model_attempt_id = None;
+            break;
+        }
+        self
+    }
+}
+
+/// Pure read projection. The caller must first prove actual current and source
+/// Activation/Thread routes and visibility. These explicit IDs are host facts,
+/// not model fields. Missing/corrupt bundles are unknown, never absence proof.
+pub(crate) fn receipt_from_authorized_event(
+    event: &Event,
+    scope: &ExecutionScope,
+    protocol: Protocol,
+    activation_id: &str,
+    model_attempt_id: &str,
+) -> Option<AnnotationReceipt> {
+    if protocol.is_off() {
+        return None;
+    }
+    let mut receipt = AnnotationReceipt::unknown(protocol, event, false);
+    receipt.scope = Some(scope.clone());
+    receipt.activation_id = Some(activation_id.into());
+    receipt.model_attempt_id = Some(model_attempt_id.into());
+    let bundle = match annotations_from_authorized_event(event, scope) {
+        Ok(Some(bundle)) if bundle.protocol == protocol => bundle,
+        _ => return Some(receipt.bounded()),
+    };
+    receipt.diagnostic_count = Some(bundle.diagnostics.len());
+    receipt.omitted_diagnostics = Some(bundle.omitted_diagnostics);
+    receipt.truncated = bundle.omitted_diagnostics > 0;
+    let mut records = bundle.records.iter().collect::<Vec<_>>();
+    records.sort_by_key(|record| record.ordinal);
+    let is_final_reply = event
+        .payload
+        .get("terminal_outcome")
+        .and_then(Value::as_bool)
+        == Some(true)
+        && bundle.raw_response.tool_calls.len() == 1
+        && bundle.raw_response.tool_calls[0].func_name == "reply";
+    for record in records {
+        if receipt.accepted.len() >= RECEIPT_DETAIL_LIMIT {
+            receipt.truncated = true;
+            break;
+        }
+        let mut field = AcceptedFieldReceipt {
+            kind: record.kind,
+            call_id: None,
+            observation_ref: None,
+        };
+        match record.kind {
+            AnnotationKind::Intent => {
+                let Some(id) = record
+                    .call_id
+                    .as_deref()
+                    .filter(|id| receipt_identifier(id))
+                else {
+                    receipt.truncated = true;
+                    continue;
+                };
+                if bundle
+                    .raw_response
+                    .tool_calls
+                    .iter()
+                    .filter(|call| call.id == id)
+                    .count()
+                    != 1
+                {
+                    receipt.truncated = true;
+                    continue;
+                }
+                field.call_id = Some(id.into());
+            }
+            AnnotationKind::ObservationResult => {
+                let Some(reference) = record
+                    .observation_ref
+                    .as_deref()
+                    .filter(|id| receipt_identifier(id))
+                else {
+                    receipt.truncated = true;
+                    continue;
+                };
+                if record
+                    .observation_event_id
+                    .as_deref()
+                    .is_none_or(str::is_empty)
+                {
+                    receipt.truncated = true;
+                    continue;
+                }
+                field.observation_ref = Some(reference.into());
+            }
+            AnnotationKind::Result if !is_final_reply => {
+                receipt.truncated = true;
+                continue;
+            }
+            _ => {}
+        }
+        receipt.accepted.push(field);
+    }
+    receipt.state = if !receipt.accepted.is_empty() {
+        ReceiptState::Accepted
+    } else if bundle.records.is_empty() {
+        ReceiptState::NoneAccepted
+    } else {
+        ReceiptState::Unknown
+    };
+    Some(receipt.bounded())
+}
+
 /// Added only when the Execution has explicitly selected v1. Do not include in
 /// off or typed-infer prompts, and never request another response to repair it.
 pub const CONTRACT_V1: &str = r#"Response annotations v1 (optional display metadata):
@@ -190,7 +475,8 @@ pub fn augment_tools(
     if protocol == Protocol::V2 {
         reply_parameters["required"] = json!(["content", "annotations"]);
         reply_parameters["properties"]["annotations"]["required"] = json!(["execution"]);
-        let execution = &mut reply_parameters["properties"]["annotations"]["properties"]["execution"];
+        let execution =
+            &mut reply_parameters["properties"]["annotations"]["properties"]["execution"];
         execution["required"] = json!(["title", "result"]);
         for field in ["title", "result"] {
             execution["properties"][field]["minLength"] = json!(1);
@@ -410,9 +696,10 @@ pub fn annotations_from_authorized_event(
         .map_err(|_| error("Malformed persisted annotation bundle"))?;
     if bundle.protocol.is_off()
         || (bundle.protocol == Protocol::V2 && !event.payload.contains_key("response_annotations"))
-        || event.payload.get("response_annotations").is_some_and(|value| {
-            value.as_str() != Some(bundle.protocol.as_str())
-        })
+        || event
+            .payload
+            .get("response_annotations")
+            .is_some_and(|value| value.as_str() != Some(bundle.protocol.as_str()))
         || bundle.scope != *scope
         || event
             .payload
@@ -926,7 +1213,9 @@ pub fn normalize_response(
                 .iter()
                 .all(|kind| extraction.records.iter().any(|record| record.kind == *kind)))
     {
-        return Err(error("Required final reply title and result annotations are absent or invalid"));
+        return Err(error(
+            "Required final reply title and result annotations are absent or invalid",
+        ));
     }
     let dispatch_allowed = !context.execution_fact.as_ref().is_some_and(|fact| {
         Some(&fact.scope) == context.scope.as_ref() && fact.status == "cancelled"
@@ -1170,6 +1459,191 @@ mod tests {
         event.sequence = Some(sequence);
         event
     }
+    #[test]
+    fn acceptance_receipt_is_source_bound_not_selected_state_or_model_prose() {
+        let event = persisted_event(
+            10,
+            json!({"title":"DO_NOT_REPEAT_TITLE", "progress":"DO_NOT_REPEAT_STEP"}),
+            false,
+        );
+        let scope = context().scope.unwrap();
+        let receipt = receipt_from_authorized_event(
+            &event,
+            &scope,
+            Protocol::V1,
+            "actual-activation",
+            "model-10",
+        )
+        .unwrap();
+        assert_eq!(receipt.state, ReceiptState::Accepted);
+        assert_eq!(receipt.source_sequence, Some(10));
+        assert_eq!(receipt.accepted.len(), 2);
+        assert!(receipt
+            .accepted
+            .iter()
+            .any(|record| record.kind == AnnotationKind::Title));
+        assert!(receipt
+            .accepted
+            .iter()
+            .any(|record| record.kind == AnnotationKind::Progress));
+        let encoded = receipt.expression().to_string();
+        assert!(encoded.contains("(source-seq 10)"));
+        assert!(encoded.contains("(activation actual-activation)"));
+        assert!(!encoded.contains("DO_NOT_REPEAT"));
+        assert!(!encoded.contains("effective"));
+        assert!(!encoded.contains("tool-success"));
+        assert!(receipt_from_authorized_event(
+            &event,
+            &scope,
+            Protocol::Off,
+            "actual-activation",
+            "model-10"
+        )
+        .is_none());
+        let mut missing = event.clone();
+        missing.payload.remove(BUNDLE_PAYLOAD_KEY);
+        let unknown = receipt_from_authorized_event(
+            &missing,
+            &scope,
+            Protocol::V1,
+            "actual-activation",
+            "model-10",
+        )
+        .unwrap();
+        assert_eq!(unknown.state, ReceiptState::Unknown);
+        assert!(unknown.accepted.is_empty());
+        let mut broken = event;
+        broken
+            .payload
+            .insert(BUNDLE_PAYLOAD_KEY.into(), json!({"broken":true}));
+        assert_eq!(
+            receipt_from_authorized_event(
+                &broken,
+                &scope,
+                Protocol::V1,
+                "actual-activation",
+                "model-10"
+            )
+            .unwrap()
+            .state,
+            ReceiptState::Unknown
+        );
+    }
+
+    #[test]
+    fn acceptance_receipt_is_bounded_by_real_sexpr_bytes_and_precise_unique_call_id() {
+        let ctx = context();
+        let raw = response(
+            (0..18)
+                .map(|i| {
+                    call(
+                        &format!("{i}-{}", "\\\"".repeat(60)),
+                        "exec",
+                        json!({"command":"safe", "_annotations":{"intent":"accepted"}}),
+                    )
+                })
+                .collect(),
+        );
+        let normalized = normalize_response(&raw, &ctx).unwrap();
+        let mut event = Event::new("response-event".into(), "Agent-Morphz".into(), TYPE_AGENT_CALL.into(), "chat/assistant_call".into(), json!({"thread_id":"execution-1", "thread_generation":3, "model_attempt_id":"attempt", BUNDLE_PAYLOAD_KEY:PersistedAnnotations::from_normalized(ctx.scope.clone().unwrap(), &normalized)}).as_object().unwrap().clone());
+        event.sequence = Some(9);
+        let receipt = receipt_from_authorized_event(
+            &event,
+            ctx.scope.as_ref().unwrap(),
+            Protocol::V1,
+            "actual-activation",
+            "attempt",
+        )
+        .unwrap();
+        assert!(receipt.truncated);
+        assert!(receipt.accepted.len() <= RECEIPT_DETAIL_LIMIT);
+        assert!(receipt.expression().to_string().len() <= RECEIPT_BYTE_LIMIT);
+        for field in &receipt.accepted {
+            let id = field.call_id.as_deref().unwrap();
+            assert_eq!(
+                raw.tool_calls.iter().filter(|call| call.id == id).count(),
+                1
+            );
+        }
+        let mut bundle: PersistedAnnotations =
+            serde_json::from_value(event.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
+        bundle.raw_response.tool_calls[1].id = bundle.raw_response.tool_calls[0].id.clone();
+        let duplicate = bundle.raw_response.tool_calls[0].id.clone();
+        event.payload.insert(
+            BUNDLE_PAYLOAD_KEY.into(),
+            serde_json::to_value(bundle).unwrap(),
+        );
+        let rejected = receipt_from_authorized_event(
+            &event,
+            ctx.scope.as_ref().unwrap(),
+            Protocol::V1,
+            "actual-activation",
+            "attempt",
+        )
+        .unwrap();
+        assert!(rejected.truncated);
+        assert!(!rejected
+            .accepted
+            .iter()
+            .any(|field| field.call_id.as_deref() == Some(duplicate.as_str())));
+        let overlong = receipt_from_authorized_event(
+            &event,
+            ctx.scope.as_ref().unwrap(),
+            Protocol::V1,
+            &"x".repeat(129),
+            "attempt",
+        )
+        .unwrap();
+        assert_eq!(overlong.state, ReceiptState::Unknown);
+        assert!(overlong.activation_id.is_none());
+        assert!(overlong.accepted.is_empty());
+    }
+
+    #[test]
+    fn acceptance_receipt_none_is_per_source_and_work_result_is_not_final() {
+        let event = persisted_event(10, json!({"result":"REJECT_WORK_RESULT"}), false);
+        let scope = context().scope.unwrap();
+        let receipt =
+            receipt_from_authorized_event(&event, &scope, Protocol::V1, "activation", "model-10")
+                .unwrap();
+        assert_eq!(receipt.state, ReceiptState::NoneAccepted);
+        assert!(receipt.accepted.is_empty());
+        assert_eq!(receipt.diagnostic_count, Some(1));
+        assert!(!receipt
+            .expression()
+            .to_string()
+            .contains("execution.result"));
+        let mut terminal = persisted_event(11, json!({"result":"DO_NOT_REPEAT_RESULT"}), true);
+        terminal
+            .payload
+            .insert("terminal_outcome".into(), json!(true));
+        let final_receipt = receipt_from_authorized_event(
+            &terminal,
+            &scope,
+            Protocol::V1,
+            "activation",
+            "model-11",
+        )
+        .unwrap();
+        assert_eq!(final_receipt.accepted[0].kind, AnnotationKind::Result);
+        assert!(!final_receipt
+            .expression()
+            .to_string()
+            .contains("DO_NOT_REPEAT_RESULT"));
+        terminal.payload.remove("terminal_outcome");
+        assert!(!receipt_from_authorized_event(
+            &terminal,
+            &scope,
+            Protocol::V1,
+            "activation",
+            "model-11"
+        )
+        .unwrap()
+        .accepted
+        .iter()
+        .any(|record| record.kind == AnnotationKind::Result));
+    }
+
     #[test]
     fn host_title_revision_is_optional_and_does_not_change_model_schema_or_initial_shape() {
         let legacy = persisted_event(10, json!({"title":"原始整项工作"}), false);
@@ -1758,25 +2232,48 @@ mod tests {
             }
             let raw = response(vec![call("r", "reply", args)]);
             assert!(normalize_response(&raw, &ctx).is_err());
-            assert!(normalize_response(&raw, &context()).is_ok(), "V1 remains optional");
+            assert!(
+                normalize_response(&raw, &context()).is_ok(),
+                "V1 remains optional"
+            );
         }
-        let plain = Response {content:"正文".into(),tool_calls:vec![]};
+        let plain = Response {
+            content: "正文".into(),
+            tool_calls: vec![],
+        };
         assert!(normalize_response(&plain, &ctx).is_err());
         assert!(normalize_response(&plain, &context()).is_ok());
-        let valid = response(vec![call("r", "reply", json!({"content":"正文",
+        let valid = response(vec![call(
+            "r",
+            "reply",
+            json!({"content":"正文",
             "annotations":{"execution":{"title":"整项工作","result":"完成"},
-            "progress":null,"observations":[{"ref":"@other","result":"越界"}]}}))]);
+            "progress":null,"observations":[{"ref":"@other","result":"越界"}]}}),
+        )]);
         let normalized = normalize_response(&valid, &ctx).unwrap();
         assert_eq!(normalized.protocol, Protocol::V2);
-        assert!(normalized.records.iter().all(|record| record.protocol == Protocol::V2));
+        assert!(normalized
+            .records
+            .iter()
+            .all(|record| record.protocol == Protocol::V2));
         assert_eq!(normalized.records.len(), 2);
-        assert!(!normalized.diagnostics.is_empty(), "optional bad fields still downgrade locally");
+        assert!(
+            !normalized.diagnostics.is_empty(),
+            "optional bad fields still downgrade locally"
+        );
         assert_eq!(normalized.execution_response.content, "正文");
         assert!(normalized.execution_response.tool_calls.is_empty());
         for missing_scope in [true, false] {
             let mut unbound = ctx.clone();
-            if missing_scope { unbound.scope = None; } else { unbound.producer = None; }
-            assert!(normalize_response(&valid, &unbound).is_err(), "required records must actually bind");
+            if missing_scope {
+                unbound.scope = None;
+            } else {
+                unbound.producer = None;
+            }
+            assert!(
+                normalize_response(&valid, &unbound).is_err(),
+                "required records must actually bind"
+            );
         }
     }
 
@@ -1784,7 +2281,10 @@ mod tests {
     fn v2_schema_keeps_work_optional_but_terminal_metadata_required() {
         let original = tool();
         let augmented = augment_tools(&[original.clone()], Protocol::V2, false).unwrap();
-        assert_eq!(augmented[0].parameters["required"], original.parameters["required"]);
+        assert_eq!(
+            augmented[0].parameters["required"],
+            original.parameters["required"]
+        );
         let terminal = &augmented[1].parameters;
         assert_eq!(terminal["required"], json!(["content", "annotations"]));
         let annotations = &terminal["properties"]["annotations"];
@@ -1793,7 +2293,11 @@ mod tests {
         assert_eq!(execution["required"], json!(["title", "result"]));
         assert_eq!(execution["properties"]["title"]["minLength"], 1);
         assert_eq!(execution["properties"]["result"]["minLength"], 1);
-        assert_eq!(serde_json::to_value(augment_tools(&[original.clone()], Protocol::V2, true).unwrap()).unwrap(), serde_json::to_value(vec![original]).unwrap());
+        assert_eq!(
+            serde_json::to_value(augment_tools(&[original.clone()], Protocol::V2, true).unwrap())
+                .unwrap(),
+            serde_json::to_value(vec![original]).unwrap()
+        );
     }
 
     #[test]
@@ -1803,31 +2307,62 @@ mod tests {
         let work = response(vec![call("w", "exec", json!({"command":"unchanged"}))]);
         let normalized = normalize_response(&work, &ctx).unwrap();
         assert_eq!(normalized.protocol, Protocol::V2);
-        assert_eq!(serde_json::to_value(normalized.execution_response).unwrap(), serde_json::to_value(work).unwrap());
+        assert_eq!(
+            serde_json::to_value(normalized.execution_response).unwrap(),
+            serde_json::to_value(work).unwrap()
+        );
         assert!(normalized.records.is_empty() && normalized.terminal_decision.is_none());
-        for args in [json!({"mode":"silent"}),json!({"mode":"wait","wait_secs":u64::MAX})] {
+        for args in [
+            json!({"mode":"silent"}),
+            json!({"mode":"wait","wait_secs":u64::MAX}),
+        ] {
             let control = response(vec![call("n", "no_reply", args)]);
-            assert_eq!(serde_json::to_value(normalize_response(&control, &ctx).unwrap().execution_response).unwrap(), serde_json::to_value(control).unwrap());
+            assert_eq!(
+                serde_json::to_value(
+                    normalize_response(&control, &ctx)
+                        .unwrap()
+                        .execution_response
+                )
+                .unwrap(),
+                serde_json::to_value(control).unwrap()
+            );
         }
         ctx.typed_infer = true;
-        let raw = Response {content:"{\"business\":true}".into(),tool_calls:vec![]};
+        let raw = Response {
+            content: "{\"business\":true}".into(),
+            tool_calls: vec![],
+        };
         let typed = normalize_response(&raw, &ctx).unwrap();
         assert_eq!(typed.protocol, Protocol::Off);
-        assert_eq!(serde_json::to_value(typed.execution_response).unwrap(), serde_json::to_value(raw).unwrap());
+        assert_eq!(
+            serde_json::to_value(typed.execution_response).unwrap(),
+            serde_json::to_value(raw).unwrap()
+        );
     }
 
     #[test]
     fn v2_persisted_records_keep_actual_protocol_and_reject_source_mismatch() {
         let mut event = persisted_event(12, json!({"title":"完整工作","progress":"阶段"}), false);
-        event.payload.insert("response_annotations".into(), json!("v2"));
+        event
+            .payload
+            .insert("response_annotations".into(), json!("v2"));
         let value = event.payload.get_mut(BUNDLE_PAYLOAD_KEY).unwrap();
         value["protocol"] = json!("v2");
-        for record in value["records"].as_array_mut().unwrap() { record["protocol"] = json!("v2"); }
+        for record in value["records"].as_array_mut().unwrap() {
+            record["protocol"] = json!("v2");
+        }
         let scope = context().scope.unwrap();
-        let bundle = annotations_from_authorized_event(&event, &scope).unwrap().unwrap();
+        let bundle = annotations_from_authorized_event(&event, &scope)
+            .unwrap()
+            .unwrap();
         assert_eq!(bundle.protocol, Protocol::V2);
-        assert!(bundle.records.iter().all(|record| record.protocol == Protocol::V2));
-        event.payload.insert("response_annotations".into(), json!("v1"));
+        assert!(bundle
+            .records
+            .iter()
+            .all(|record| record.protocol == Protocol::V2));
+        event
+            .payload
+            .insert("response_annotations".into(), json!("v1"));
         assert!(annotations_from_authorized_event(&event, &scope).is_err());
         event.payload.remove("response_annotations");
         assert!(annotations_from_authorized_event(&event, &scope).is_err());

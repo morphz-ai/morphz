@@ -248,6 +248,40 @@ async fn assert_batch<S: RuntimeStore>(
         assert_eq!(owner.root_turn_id, activation.root_turn_id);
         assert_eq!(signal.thread_generation, activation.generation);
     }
+    // Context builders consume the single-statement snapshots, not only the
+    // direct Thread reader. Exercise the existing Off/V1/V2 batch owners so
+    // an omitted enabled protocol cannot silently deserialize as default Off.
+    let owner = store
+        .get_thread_by_root(&activation.root_turn_id)
+        .await?
+        .expect("the actual batch owner must remain persisted");
+    assert_eq!(owner.response_annotations, protocol);
+    let causality = store
+        .read_context_activation_causality_snapshot(
+            &activation.context_id,
+            &activation.id,
+            &activation.root_turn_id,
+            &activation.trigger_event_id,
+        )
+        .await?;
+    assert_eq!(
+        causality.thread.as_ref(),
+        Some(&owner),
+        "causal snapshot must preserve the complete frozen {protocol:?} Thread row"
+    );
+    let scheduler = store
+        .read_context_runtime_scheduler_snapshot(&activation.context_id, &[], 20, 32)
+        .await?;
+    let projected_owners = scheduler
+        .threads
+        .iter()
+        .filter(|thread| thread.id == owner.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        projected_owners,
+        vec![&owner],
+        "scheduler snapshot must contain exactly the complete frozen {protocol:?} Thread row"
+    );
     Ok(())
 }
 

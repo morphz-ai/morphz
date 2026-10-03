@@ -5679,6 +5679,7 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                    json_object(
                      'model_alias', thread.model_alias, 'reasoning_effort', thread.reasoning_effort,
                      'id', thread.id, 'revision', thread.revision,
+                     'response_annotations', thread.response_annotations,
                      'generation', thread.generation, 'agent_id', thread.agent_id,
                      'context_id', thread.context_id, 'session_id', thread.session_id,
                      'initiating_principal_id', thread.initiating_principal_id,
@@ -5880,6 +5881,7 @@ impl ContextRuntimeSnapshotStore for SqliteStore {
                  )), '[]') AS activation_signals_json,
                  COALESCE((SELECT json_object(
                    'id', thread.id, 'revision', thread.revision,
+                   'response_annotations', thread.response_annotations,
                    'model_alias', thread.model_alias, 'reasoning_effort', thread.reasoning_effort,
                    'generation', thread.generation, 'agent_id', thread.agent_id,
                    'context_id', thread.context_id, 'session_id', thread.session_id,

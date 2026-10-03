@@ -51,7 +51,7 @@ use crate::memory::{
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{
     attribute_prompt_components, render_context_delta_observation, ContextEngine,
-    ContextObservation, ContextView, ContextViewManifest,
+    ContextObservation, ContextPressure, ContextView, ContextViewManifest,
 };
 use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
 use crate::permission::{DurableApprovalGrant, PermissionBroker};
@@ -2908,6 +2908,9 @@ const STRUCTURED_CONTEXT_DELTA_VERSION: u8 = 1;
 struct PromptCacheStructuredDelta {
     source_sequence: u64,
     observation_id: String,
+    /// Optional receipt provenance. Off retains the original serialized bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_observation_id: Option<String>,
     text: String,
 }
 
@@ -3028,6 +3031,108 @@ fn prompt_cache_transport_contract_digest_with_custom(
     format!("sha256:{:x}", Sha256::digest(encoded))
 }
 
+fn receipt_cache_owner_binding(thread: &ThreadRecord) -> serde_json::Value {
+    json!({
+        "agent_id":thread.agent_id,"context_id":thread.context_id,
+        "session_id":thread.session_id,"root_turn_id":thread.root_turn_id,
+        "initiating_principal_id":thread.initiating_principal_id,
+    })
+}
+
+fn receipt_cache_contract_digest(
+    legacy: String,
+    protocol: ResponseAnnotationProtocol,
+    scope: &response_annotations::ExecutionScope,
+    owner: &serde_json::Value,
+) -> String {
+    if protocol.is_off() {
+        return legacy;
+    }
+    let encoded = serde_json::to_vec(&json!({
+        "base": legacy,
+        "response_annotation_receipt_encoding": response_annotations::RECEIPT_ENCODING_VERSION,
+        "protocol": protocol,
+        "scope": scope,
+        "owner": owner,
+    }))
+    .expect("Receipt cache contract serializes");
+    format!("sha256:{:x}", Sha256::digest(encoded))
+}
+
+fn receipt_cache_seed_sources_visible(
+    seed: &PromptCacheTransportSeed,
+    observations: &[ContextObservation],
+) -> bool {
+    let visible = observations
+        .iter()
+        .map(|observation| observation.id.as_str())
+        .collect::<HashSet<_>>();
+    seed.context_observation_ids
+        .iter()
+        .all(|id| visible.contains(id.as_str()))
+        && seed.initial_deltas.iter().all(|delta| {
+            delta
+                .source_observation_id
+                .as_deref()
+                .is_none_or(|id| visible.contains(id))
+        })
+}
+
+fn receipt_delta_candidate_measurement(
+    baseline: Option<&PromptTokenCount>,
+    mut candidate: PromptTokenCount,
+    pressure: &ContextPressure,
+) -> Option<PromptTokenCount> {
+    let baseline = baseline?;
+    if baseline.model != candidate.model
+        || local_counter_source(&baseline.source) != local_counter_source(&candidate.source)
+        || baseline.calibration_shape != candidate.calibration_shape
+    {
+        return None;
+    }
+    match (&baseline.accuracy, &candidate.accuracy) {
+        (PromptTokenAccuracy::Exact, PromptTokenAccuracy::Exact) => {}
+        (PromptTokenAccuracy::Exact, _) | (_, PromptTokenAccuracy::Exact) => return None,
+        _ => {
+            if baseline.base_estimate_tokens == 0 || candidate.base_estimate_tokens == 0 {
+                return None;
+            }
+            // Compare with the already measured Full request's calibration,
+            // not a different scope's provider/default-model estimate. Keep
+            // the candidate's own actual-request calibration identity.
+            candidate.tokens = apply_prompt_estimate_delta(
+                baseline.tokens,
+                candidate.base_estimate_tokens,
+                baseline.base_estimate_tokens,
+            );
+            candidate.source = baseline.source.clone();
+            candidate.accuracy = baseline.accuracy.clone();
+        }
+    }
+    let critical_at = pressure
+        .hard_limit
+        .saturating_sub(pressure.maintenance_reserve);
+    let notice_at = pressure.soft_limit.saturating_mul(3) / 4;
+    let rank = |tokens: usize| {
+        if tokens >= critical_at {
+            3
+        } else if tokens >= pressure.soft_limit {
+            2
+        } else if tokens >= notice_at {
+            1
+        } else {
+            0
+        }
+    };
+    // The optional transport may not expand Runtime admission/maintenance.
+    // If unmeasurable or stricter, retain the already measured Full/FC request.
+    // This local estimate is advisory; it never pretends to be Provider proof.
+    if rank(baseline.tokens) == 3 || rank(candidate.tokens) > rank(baseline.tokens) {
+        return None;
+    }
+    Some(candidate)
+}
+
 fn prompt_cache_transport_seed(
     contract_digest: String,
     context_message: &Message,
@@ -3128,8 +3233,15 @@ fn prompt_cache_structured_delta(
     assistant_call: &Event,
     call: &crate::llm::ToolCall,
     observation: &ContextObservation,
+    source_observation: Option<&ContextObservation>,
+    protocol: ResponseAnnotationProtocol,
 ) -> Option<PromptCacheStructuredDelta> {
     if !context_observation_supports_delta(observation) {
+        return None;
+    }
+    // Metadata cannot silently resurrect a retired or omitted call source.
+    // Falling back preserves the actual output in the ordinary Full/FC path.
+    if !protocol.is_off() && source_observation.is_none() {
         return None;
     }
     let attempt_id = assistant_call
@@ -3142,6 +3254,25 @@ fn prompt_cache_structured_delta(
         .get("text")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
+    let mut source_fields = vec![
+        delta_pair("attempt", delta_atom(attempt_id)),
+        delta_pair("assistant-text", delta_atom(assistant_text)),
+        delta_list(
+            "tool-call",
+            vec![
+                delta_pair("id", delta_atom(&call.id)),
+                delta_pair("name", delta_atom(&call.function.name)),
+                delta_pair("arguments", delta_atom(&call.function.arguments)),
+            ],
+        ),
+    ];
+    if !protocol.is_off() {
+        if let Some(receipt) =
+            source_observation.and_then(|source| source.response_annotation_receipt.as_ref())
+        {
+            source_fields.push(receipt.expression());
+        }
+    }
     let mut form = delta_list(
         "context-delta",
         vec![
@@ -3157,21 +3288,7 @@ fn prompt_cache_structured_delta(
                     ),
                 ],
             ),
-            delta_list(
-                "source",
-                vec![
-                    delta_pair("attempt", delta_atom(attempt_id)),
-                    delta_pair("assistant-text", delta_atom(assistant_text)),
-                    delta_list(
-                        "tool-call",
-                        vec![
-                            delta_pair("id", delta_atom(&call.id)),
-                            delta_pair("name", delta_atom(&call.function.name)),
-                            delta_pair("arguments", delta_atom(&call.function.arguments)),
-                        ],
-                    ),
-                ],
-            ),
+            delta_list("source", source_fields),
             delta_list(
                 "inbox-append",
                 vec![render_context_delta_observation(observation)],
@@ -3188,6 +3305,7 @@ fn prompt_cache_structured_delta(
     Some(PromptCacheStructuredDelta {
         source_sequence: observation.sequence,
         observation_id: observation.id.clone(),
+        source_observation_id: (!protocol.is_off()).then(|| source_observation.unwrap().id.clone()),
         text: form.to_string(),
     })
 }
@@ -9828,6 +9946,7 @@ impl Orchestrator {
         trigger_event_id: Option<&str>,
         retired_observation_ids: &BTreeSet<String>,
         context_observations: &[ContextObservation],
+        protocol: ResponseAnnotationProtocol,
     ) -> Result<ToolContinuationEnvelope, DynError> {
         let Some(trigger_event_id) = trigger_event_id else {
             return Ok(ToolContinuationEnvelope::default());
@@ -9964,7 +10083,13 @@ impl Orchestrator {
                 if let Some(delta) = observations
                     .get(output.id.as_str())
                     .and_then(|observation| {
-                        prompt_cache_structured_delta(event, &call, observation)
+                        prompt_cache_structured_delta(
+                            event,
+                            &call,
+                            observation,
+                            observations.get(event.id.as_str()).copied(),
+                            protocol,
+                        )
                     })
                 {
                     continuation.structured_deltas.push(delta);
@@ -10002,6 +10127,7 @@ impl Orchestrator {
         contract_digest: &str,
         retired_observation_ids: &BTreeSet<String>,
         context_observations: &[ContextObservation],
+        protocol: ResponseAnnotationProtocol,
     ) -> Result<Option<ToolContinuationEnvelope>, DynError> {
         let mut events = self
             .store
@@ -10041,6 +10167,9 @@ impl Orchestrator {
         let Some((seed_sequence, seed)) = selected_seed else {
             return Ok(None);
         };
+        if !protocol.is_off() && !receipt_cache_seed_sources_visible(&seed, context_observations) {
+            return Ok(None);
+        }
 
         let outputs = events
             .iter()
@@ -10124,7 +10253,13 @@ impl Orchestrator {
                     // safely invent a weaker delta. Fall back to a fresh seed.
                     return Ok(None);
                 };
-                let Some(delta) = prompt_cache_structured_delta(event, &call, observation) else {
+                let Some(delta) = prompt_cache_structured_delta(
+                    event,
+                    &call,
+                    observation,
+                    observations.get(event.id.as_str()).copied(),
+                    protocol,
+                ) else {
                     return Ok(None);
                 };
                 continuation.delivered_output_ids.insert(output.id.clone());
@@ -11571,6 +11706,39 @@ impl Orchestrator {
         Ok(measurement)
     }
 
+    /// Optional enabled-only transport candidate. This is a TokenCounter read,
+    /// not a model request or a new maintenance evaluation. No candidate is
+    /// adopted without a comparable measured Full baseline and safe pressure.
+    async fn measure_receipt_delta_candidate(
+        &self,
+        context: &ContextView,
+        messages: &[Message],
+        tools: &[crate::llm::ToolDefinition],
+        requested_model: &str,
+        baseline: Option<&PromptTokenCount>,
+    ) -> Option<PromptTokenCount> {
+        let baseline = baseline?;
+        let deadline = std::time::Duration::from_secs(
+            self.orchestrator_config
+                .model_provider_queue_timeout_secs
+                .clamp(1, 15),
+        );
+        let token_scope = format!("{}:{}", context.context_id, context.active_session_id);
+        let count = tokio::time::timeout(
+            deadline,
+            self.client.count_prompt_tokens_for_requested_model(
+                &token_scope,
+                Some(requested_model),
+                messages,
+                tools,
+            ),
+        )
+        .await
+        .ok()?
+        .ok()??;
+        receipt_delta_candidate_measurement(Some(baseline), count, &context.pressure)
+    }
+
     /// Count the physical request produced by a bounded recovery projection
     /// without replacing the logical pressure of the full active Context.
     async fn count_projected_prompt_tokens(
@@ -12948,6 +13116,7 @@ impl Orchestrator {
                     Some(&activation.trigger_event_id),
                     &context.state.retired,
                     &prompt_cache_context_observations,
+                    response_annotations,
                 ),
                 self.model_attachment_message(activation),
             )?
@@ -13145,8 +13314,9 @@ impl Orchestrator {
         };
         let stable_system_prompt = if let Some(contract) = response_annotations.contract() {
             std::borrow::Cow::Owned(format!(
-                "{stable_system_prompt}\n\n{}",
+                "{stable_system_prompt}\n\n{}\n\n{}",
                 contract,
+                response_annotations::RECEIPT_CONTRACT,
             ))
         } else {
             stable_system_prompt
@@ -13697,7 +13867,7 @@ impl Orchestrator {
                 initial_request_policy.model_alias.as_str(),
             ));
         if transport_shape_is_safe {
-            let contract_digest = prompt_cache_transport_contract_digest_with_custom(
+            let legacy_contract_digest = prompt_cache_transport_contract_digest_with_custom(
                 &initial_request_policy.model_alias,
                 &initial_request_policy.reasoning_effort,
                 &effective_phase,
@@ -13705,6 +13875,16 @@ impl Orchestrator {
                 &tools,
                 context.custom.as_ref(),
             );
+            let contract_digest = if response_annotations.is_off() {
+                legacy_contract_digest
+            } else {
+                receipt_cache_contract_digest(
+                    legacy_contract_digest,
+                    response_annotations,
+                    &response_annotations::ExecutionScope { execution_id: thread.id.clone(), generation: thread.generation },
+                    &receipt_cache_owner_binding(&thread),
+                )
+            };
             let current_context_message = messages[1].clone();
             let current_seed = prompt_cache_transport_seed(
                 contract_digest.clone(),
@@ -13724,6 +13904,7 @@ impl Orchestrator {
                     &contract_digest,
                     &context.state.retired,
                     &prompt_cache_context_observations,
+                    response_annotations,
                 )
                 .await?;
             if let Some(structured) = structured.filter(|candidate| {
@@ -13735,20 +13916,28 @@ impl Orchestrator {
                     .prompt_cache_transport_seed
                     .as_ref()
                     .expect("Structured ContextDelta transport must carry its Context seed");
-                messages = vec![
+                let candidate_messages = vec![
                     messages[0].clone(),
                     structured_context_delta_message(
                         &seed.context_message,
                         &structured.structured_deltas,
                     )?,
                 ];
+                let candidate_measurement = if response_annotations.is_off() {
+                    None
+                } else {
+                    self.measure_receipt_delta_candidate(&context, &candidate_messages, &tools,
+                        &initial_request_policy.model_alias, request_prompt_measurement.as_ref()).await
+                };
+                if response_annotations.is_off() || candidate_measurement.is_some() {
+                messages = candidate_messages;
                 continuation.delivered_output_ids = structured.delivered_output_ids;
                 continuation.delivered_output_sequence_upper_bound =
                     structured.delivered_output_sequence_upper_bound;
                 continuation.structured_deltas = structured.structured_deltas;
-                request_prompt_measurement = self
-                    .count_projected_prompt_tokens(&context, &messages, &tools)
-                    .await;
+                request_prompt_measurement = if response_annotations.is_off() {
+                    self.count_projected_prompt_tokens(&context, &messages, &tools).await
+                } else { candidate_measurement };
                 tracing::info!(
                     context_id = %context_id,
                     session_id,
@@ -13759,15 +13948,25 @@ impl Orchestrator {
                     event_code = "orchestrator.prompt_cache.structured_delta_reused",
                     "Reused one Event-backed canonical Context seed and projected ordered Structured ContextDelta blocks"
                 );
+                }
             } else {
-                messages = vec![
+                let candidate_messages = vec![
                     messages[0].clone(),
                     structured_context_delta_message(
                         &current_context_message,
                         &continuation.structured_deltas,
                     )?,
                 ];
+                let candidate_measurement = if response_annotations.is_off() {
+                    None
+                } else {
+                    self.measure_receipt_delta_candidate(&context, &candidate_messages, &tools,
+                        &initial_request_policy.model_alias, request_prompt_measurement.as_ref()).await
+                };
+                if response_annotations.is_off() || candidate_measurement.is_some() {
+                messages = candidate_messages;
                 prompt_cache_transport_seed_to_persist = Some(current_seed);
+                if !response_annotations.is_off() { request_prompt_measurement = candidate_measurement; }
                 tracing::info!(
                     context_id = %context_id,
                     session_id,
@@ -13777,6 +13976,7 @@ impl Orchestrator {
                     event_code = "orchestrator.prompt_cache.structured_delta_started",
                     "Started an experimental canonical Context plus Structured ContextDelta cache generation"
                 );
+                }
             }
         }
         let mut base_protocol_messages = messages;
@@ -24499,8 +24699,16 @@ fn normalize_context_tx_key(context_id: &str, arguments: &str) -> Result<String,
 
 #[cfg(test)]
 mod tests {
-    use super::persist_model_public_output;
-    use crate::response_annotations::Protocol as ResponseAnnotationProtocol;
+    use super::{
+        persist_model_public_output, prompt_cache_structured_delta, receipt_cache_contract_digest,
+        receipt_cache_seed_sources_visible, receipt_delta_candidate_measurement,
+        ContextObservation, ContextPressure, PromptCacheTransportSeed,
+        PROMPT_CACHE_TRANSPORT_SEED_VERSION,
+    };
+    use crate::event::TYPE_AGENT_CALL;
+    use crate::response_annotations::{
+        self, AnnotationKind, Protocol as ResponseAnnotationProtocol,
+    };
     use chrono::Utc;
     use serde_json::json;
 
@@ -25349,6 +25557,348 @@ mod tests {
         assert!(retained.is_empty());
     }
 
+    fn receipt_delta_test_observation(id: &str, sequence: u64) -> ContextObservation {
+        serde_json::from_value(json!({
+            "id":id,"reference":format!("@e{sequence}"),"session_id":"s","sequence":sequence,"turn":1,
+            "kind":"tool_output","topic":"chat/tool_output","actor":"Runtime","timestamp":"2026-10-03T00:00:00Z",
+            "preview":"KEEP_REAL_OUTPUT","truncated":false,"representation":"full","visible_chars":16,"total_chars":16,
+            "retrievable":true,"protected":false,"tool_name":"read","resource":null,
+            "freshness":{"latest":null,"supersedes":[],"superseded_by":[]},
+            "usage":{"recall_count_total":0,"recall_count_recent":0,"last_recalled_sequence":null,"reference_count_total":0,"reference_count_recent":0,"last_referenced_sequence":null,"referenced_by_active_frames":0}
+        })).unwrap()
+    }
+
+    #[test]
+    fn receipt_delta_cache_fences_scope_generation_and_retired_source_but_keeps_off_seed_bytes() {
+        let scope = response_annotations::ExecutionScope {
+            execution_id: "real-thread".into(),
+            generation: 1,
+        };
+        let legacy = "sha256:legacy".to_string();
+        let owner = json!({"agent_id":"a","context_id":"c","session_id":"s","root_turn_id":"r","initiating_principal_id":null});
+        assert_eq!(
+            receipt_cache_contract_digest(
+                legacy.clone(),
+                ResponseAnnotationProtocol::Off,
+                &scope,
+                &owner
+            ),
+            legacy
+        );
+        let enabled = receipt_cache_contract_digest(
+            legacy.clone(),
+            ResponseAnnotationProtocol::V2,
+            &scope,
+            &owner,
+        );
+        assert_ne!(enabled, legacy);
+        assert_ne!(
+            enabled,
+            receipt_cache_contract_digest(
+                legacy.clone(),
+                ResponseAnnotationProtocol::V1,
+                &scope,
+                &owner
+            )
+        );
+        assert_ne!(
+            enabled,
+            receipt_cache_contract_digest(
+                legacy.clone(),
+                ResponseAnnotationProtocol::V2,
+                &response_annotations::ExecutionScope {
+                    generation: 2,
+                    ..scope.clone()
+                },
+                &owner
+            )
+        );
+        assert_ne!(
+            enabled,
+            receipt_cache_contract_digest(
+                legacy.clone(),
+                ResponseAnnotationProtocol::V2,
+                &response_annotations::ExecutionScope {
+                    execution_id: "foreign-thread".into(),
+                    ..scope.clone()
+                },
+                &owner
+            )
+        );
+        for field in [
+            "agent_id",
+            "context_id",
+            "session_id",
+            "root_turn_id",
+            "initiating_principal_id",
+        ] {
+            let mut changed = owner.clone();
+            changed[field] = json!("new-real-owner-binding");
+            assert_ne!(
+                enabled,
+                receipt_cache_contract_digest(
+                    legacy.clone(),
+                    ResponseAnnotationProtocol::V2,
+                    &scope,
+                    &changed
+                )
+            );
+            assert_eq!(
+                legacy,
+                receipt_cache_contract_digest(
+                    legacy.clone(),
+                    ResponseAnnotationProtocol::Off,
+                    &scope,
+                    &changed
+                )
+            );
+        }
+        let plain = PromptCacheStructuredDelta {
+            source_sequence: 9,
+            observation_id: "output".into(),
+            source_observation_id: None,
+            text: "old-delta".into(),
+        };
+        assert_eq!(
+            serde_json::to_vec(&plain).unwrap(),
+            br#"{"source_sequence":9,"observation_id":"output","text":"old-delta"}"#
+        );
+        let source = receipt_delta_test_observation("actual-source", 8);
+        let output = receipt_delta_test_observation("output", 9);
+        let seed = PromptCacheTransportSeed {
+            version: PROMPT_CACHE_TRANSPORT_SEED_VERSION,
+            contract_digest: enabled,
+            context_message: Message {
+                role: "user".into(),
+                content: "old-context".into(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+            context_observation_ids: BTreeSet::from([source.id.clone()]),
+            initial_deltas: vec![PromptCacheStructuredDelta {
+                source_observation_id: Some(source.id.clone()),
+                ..plain
+            }],
+        };
+        assert!(receipt_cache_seed_sources_visible(
+            &seed,
+            &[source.clone(), output.clone()]
+        ));
+        assert!(!receipt_cache_seed_sources_visible(
+            &seed,
+            std::slice::from_ref(&output)
+        ));
+        assert!(seed.initial_deltas[0].text.contains("old-delta"));
+        assert_eq!(output.preview, "KEEP_REAL_OUTPUT");
+    }
+
+    #[test]
+    fn receipt_delta_uses_same_canonical_source_receipt_and_absent_source_falls_back_without_rewriting_output(
+    ) {
+        let source_event = Event::new(
+            "actual-source".into(),
+            "Agent-Morphz".into(),
+            TYPE_AGENT_CALL.into(),
+            "chat/assistant_call".into(),
+            json!({"attempt_id":"actual-activation","text":"stage"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let call = crate::llm::ToolCall {
+            id: "actual-call-id".into(),
+            r#type: "function".into(),
+            function: crate::llm::FunctionCall {
+                name: "read".into(),
+                arguments: r#"{"path":"safe"}"#.into(),
+            },
+        };
+        let output = receipt_delta_test_observation("actual-output", 9);
+        let mut source = receipt_delta_test_observation("actual-source", 8);
+        let receipt = response_annotations::AnnotationReceipt {
+            protocol: ResponseAnnotationProtocol::V2,
+            source_event_id: Some(source.id.clone()),
+            source_sequence: Some(8),
+            scope: Some(response_annotations::ExecutionScope {
+                execution_id: "real-thread".into(),
+                generation: 1,
+            }),
+            activation_id: Some("actual-activation".into()),
+            model_attempt_id: Some("actual-model".into()),
+            state: response_annotations::ReceiptState::Accepted,
+            accepted: vec![response_annotations::AcceptedFieldReceipt {
+                kind: AnnotationKind::Intent,
+                call_id: Some(call.id.clone()),
+                observation_ref: None,
+            }],
+            diagnostic_count: Some(0),
+            omitted_diagnostics: Some(0),
+            truncated: false,
+        };
+        source.response_annotation_receipt = Some(receipt.clone());
+        let delta = prompt_cache_structured_delta(
+            &source_event,
+            &call,
+            &output,
+            Some(&source),
+            ResponseAnnotationProtocol::V2,
+        )
+        .unwrap();
+        assert_eq!(
+            delta.source_observation_id.as_deref(),
+            Some("actual-source")
+        );
+        assert!(delta.text.contains(&receipt.expression().to_string()));
+        assert!(delta.text.contains("KEEP_REAL_OUTPUT"));
+        assert_eq!(delta.text.matches("response-annotation-receipt").count(), 1);
+        assert!(prompt_cache_structured_delta(
+            &source_event,
+            &call,
+            &output,
+            None,
+            ResponseAnnotationProtocol::V2
+        )
+        .is_none());
+        let off = prompt_cache_structured_delta(
+            &source_event,
+            &call,
+            &output,
+            Some(&source),
+            ResponseAnnotationProtocol::Off,
+        )
+        .unwrap();
+        let old_off = prompt_cache_structured_delta(
+            &source_event,
+            &call,
+            &output,
+            None,
+            ResponseAnnotationProtocol::Off,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_vec(&off).unwrap(),
+            serde_json::to_vec(&old_off).unwrap()
+        );
+        assert!(!off.text.contains("response-annotation-receipt"));
+        assert!(off.text.contains("KEEP_REAL_OUTPUT"));
+    }
+
+    #[test]
+    fn receipt_delta_measurement_is_an_adoption_gate_not_only_accounting() {
+        let pressure = ContextPressure {
+            level: "notice".into(),
+            estimated_tokens: 900,
+            token_source: "test".into(),
+            token_accuracy: "exact".into(),
+            token_scope: "full-work-prompt".into(),
+            token_model: Some("m".into()),
+            soft_limit: 1_000,
+            hard_limit: 2_000,
+            maintenance_reserve: 200,
+            active_frames: 0,
+            active_observations: 0,
+        };
+        let base = PromptTokenCount {
+            tokens: 900,
+            source: "counter".into(),
+            model: "m".into(),
+            accuracy: PromptTokenAccuracy::Exact,
+            base_estimate_tokens: 900,
+            calibration_key: Some(10),
+            calibration_shape: Some(7),
+        };
+        assert!(receipt_delta_candidate_measurement(None, base.clone(), &pressure).is_none());
+        let same_bucket = PromptTokenCount {
+            tokens: 999,
+            base_estimate_tokens: 999,
+            calibration_key: Some(11),
+            ..base.clone()
+        };
+        assert_eq!(
+            receipt_delta_candidate_measurement(Some(&base), same_bucket, &pressure)
+                .unwrap()
+                .calibration_key,
+            Some(11)
+        );
+        assert!(receipt_delta_candidate_measurement(
+            Some(&base),
+            PromptTokenCount {
+                tokens: 1_000,
+                ..base.clone()
+            },
+            &pressure
+        )
+        .is_none());
+        assert!(receipt_delta_candidate_measurement(
+            Some(&base),
+            PromptTokenCount {
+                tokens: 1_800,
+                ..base.clone()
+            },
+            &pressure
+        )
+        .is_none());
+        for candidate in [
+            PromptTokenCount {
+                model: "other".into(),
+                ..base.clone()
+            },
+            PromptTokenCount {
+                source: "other".into(),
+                ..base.clone()
+            },
+            PromptTokenCount {
+                calibration_shape: Some(8),
+                ..base.clone()
+            },
+            PromptTokenCount {
+                accuracy: PromptTokenAccuracy::HeuristicEstimate,
+                ..base.clone()
+            },
+        ] {
+            assert!(
+                receipt_delta_candidate_measurement(Some(&base), candidate, &pressure).is_none()
+            );
+        }
+        let calibrated = PromptTokenCount {
+            tokens: 900,
+            base_estimate_tokens: 800,
+            source: "counter+durable-usage-anchor".into(),
+            accuracy: PromptTokenAccuracy::UsageCalibratedEstimate,
+            ..base.clone()
+        };
+        let local = PromptTokenCount {
+            tokens: 850,
+            base_estimate_tokens: 850,
+            source: "counter".into(),
+            accuracy: PromptTokenAccuracy::LocalTokenizerEstimate,
+            calibration_key: Some(12),
+            ..base.clone()
+        };
+        let accepted =
+            receipt_delta_candidate_measurement(Some(&calibrated), local, &pressure).unwrap();
+        assert_eq!(accepted.tokens, 950);
+        assert_eq!(
+            accepted.accuracy,
+            PromptTokenAccuracy::UsageCalibratedEstimate
+        );
+        assert_eq!(accepted.calibration_key, Some(12));
+        let crosses_after_calibration = PromptTokenCount {
+            tokens: 900,
+            base_estimate_tokens: 900,
+            source: "counter".into(),
+            accuracy: PromptTokenAccuracy::LocalTokenizerEstimate,
+            ..base
+        };
+        assert!(receipt_delta_candidate_measurement(
+            Some(&calibrated),
+            crosses_after_calibration,
+            &pressure
+        )
+        .is_none());
+    }
+
     #[test]
     fn prompt_cache_transport_seed_round_trip_is_one_user_message_with_structured_blocks() {
         let context = segmented_text_message(
@@ -25371,6 +25921,7 @@ mod tests {
         )
         .unwrap();
         let delta = PromptCacheStructuredDelta {
+            source_observation_id: None,
             source_sequence: 9,
             observation_id: "output-9".to_string(),
             text: "(context-delta (protocol (version 1)) (inbox-append (observation (ref @e9))))"
@@ -25712,6 +26263,7 @@ mod tests {
             &context,
             BTreeSet::from(["seed-output".to_string()]),
             vec![PromptCacheStructuredDelta {
+                source_observation_id: None,
                 source_sequence: 7,
                 observation_id: "retired-output".to_string(),
                 text: "(context-delta (inbox-append (observation (ref @e7))))".to_string(),

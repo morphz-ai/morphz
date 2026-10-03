@@ -477,6 +477,9 @@ struct SnapshotMindRecovery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextObservation {
+    /// Derived only for a verified, already visible source in an opted-in Evaluation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_annotation_receipt: Option<crate::response_annotations::AnnotationReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub io_resources: Vec<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4399,6 +4402,18 @@ impl ContextEngine {
             )
         });
         let ready_set = current_session_ids.iter().cloned().collect::<HashSet<_>>();
+        let annotation_receipts = self
+            .visible_annotation_receipts(
+                context_id,
+                active_session_id,
+                activation_record,
+                activation_thread.as_ref(),
+                &events,
+                &state,
+                excluded_observation_ids,
+                causal_frontier,
+            )
+            .await;
         let (observations, estimated_tokens) = loop {
             let full_set = sessions
                 .iter()
@@ -4429,11 +4444,14 @@ impl ContextEngine {
                     event_visible_at_causal_frontier(event, activation, root_sequence)
                 })
                 .map(|event| {
-                    self.to_observation(
+                    let mut observation = self.to_observation(
                         event,
                         &state,
                         metadata.get(&event.id).cloned().unwrap_or_default(),
-                    )
+                    );
+                    observation.response_annotation_receipt =
+                        annotation_receipts.get(&event.id).cloned();
+                    observation
                 })
                 .collect::<Vec<_>>();
             let candidate_tokens = active_frames
@@ -4443,7 +4461,10 @@ impl ContextEngine {
                 + candidate_observations
                     .iter()
                     .map(|observation| {
-                        if observation.session_io.is_some() || observation.io_message.is_some() {
+                        if observation.session_io.is_some()
+                            || observation.io_message.is_some()
+                            || observation.response_annotation_receipt.is_some()
+                        {
                             estimate_text_tokens(&render_inbox_observation(observation).to_string())
                         } else {
                             estimate_text_tokens(&observation.preview) + 128
@@ -6025,6 +6046,148 @@ impl ContextEngine {
             .collect())
     }
 
+    /// Only already-selected Inbox sources participate. Never fetch missing or
+    /// retired Events to complete this optional metadata projection. The exact
+    /// Activation batch validates immutable source ownership; it is not a new
+    /// scheduler/cancellation authority or an atomic multi-row snapshot.
+    #[allow(clippy::too_many_arguments)]
+    async fn visible_annotation_receipts(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        current: Option<&ThreadActivationRecord>,
+        thread: Option<&ThreadRecord>,
+        events: &[Event],
+        state: &MindState,
+        excluded: &HashSet<String>,
+        frontier: Option<(&ThreadActivationRecord, u64)>,
+    ) -> HashMap<String, crate::response_annotations::AnnotationReceipt> {
+        use crate::response_annotations::{
+            receipt_from_authorized_event, AnnotationReceipt, ExecutionScope,
+        };
+        let (Some(current), Some(thread)) = (current, thread) else {
+            return HashMap::new();
+        };
+        if thread.response_annotations.is_off()
+            || thread.executor_kind == "plan_infer"
+            || thread.context_id != context_id
+            || thread.session_id != session_id
+            || !annotation_receipt_owner_matches(thread, current)
+        {
+            return HashMap::new();
+        }
+        let mut sources = events
+            .iter()
+            .filter(|event| {
+                event.topic == "chat/assistant_call"
+                    && event.event_type == crate::event::TYPE_AGENT_CALL
+                    && is_observation(event)
+                    && !state.retired.contains(&event.id)
+                    && !excluded.contains(&event.id)
+                    && event_session(event) == Some(thread.session_id.as_str())
+                    && event
+                        .payload
+                        .get("context_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(thread.context_id.as_str())
+                    && event
+                        .payload
+                        .get("root_turn_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(thread.root_turn_id.as_str())
+                    && event
+                        .payload
+                        .get("thread_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(thread.id.as_str())
+                    && event
+                        .payload
+                        .get("thread_generation")
+                        .is_none_or(|generation| generation.as_u64() == Some(thread.generation))
+                    && frontier.is_none_or(|(activation, root)| {
+                        event_visible_at_causal_frontier(event, activation, root)
+                    })
+            })
+            .collect::<Vec<_>>();
+        sources.sort_by(|a, b| b.sequence.cmp(&a.sequence).then_with(|| a.id.cmp(&b.id)));
+        const MAX_RECEIPT_SOURCES: usize = 32;
+        let source_ids = sources
+            .iter()
+            .take(MAX_RECEIPT_SOURCES)
+            .filter_map(|event| {
+                event
+                    .payload
+                    .get("activation_id")
+                    .and_then(serde_json::Value::as_str)
+            })
+            .filter(|id| *id != current.id)
+            .map(ToOwned::to_owned)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut source_activations = HashMap::from([(current.id.clone(), current.clone())]);
+        if !source_ids.is_empty() {
+            if let Some(store) = &self.session_store {
+                match store.list_thread_activations_by_ids(context_id, &source_ids).await {
+                    Ok(rows) => source_activations.extend(rows.into_iter().map(|row| (row.id.clone(), row))),
+                    Err(_) => tracing::warn!(event_code="context.annotation_receipts.owner_unverified", source_count=source_ids.len(), "Annotation receipt source owners could not be verified; metadata remains unknown"),
+                }
+            }
+        }
+        let scope = ExecutionScope {
+            execution_id: thread.id.clone(),
+            generation: thread.generation,
+        };
+        let mut receipts = HashMap::new();
+        for (index, event) in sources.into_iter().enumerate() {
+            if index >= MAX_RECEIPT_SOURCES {
+                receipts.insert(
+                    event.id.clone(),
+                    AnnotationReceipt::unknown(thread.response_annotations, event, true),
+                );
+                continue;
+            }
+            let activation_id = event
+                .payload
+                .get("activation_id")
+                .and_then(serde_json::Value::as_str);
+            let source = activation_id.and_then(|id| source_activations.get(id));
+            let Some(source) = source else {
+                receipts.insert(
+                    event.id.clone(),
+                    AnnotationReceipt::unknown(thread.response_annotations, event, false),
+                );
+                continue;
+            };
+            if !annotation_receipt_owner_matches(thread, source) {
+                // A visible foreign source never becomes this Execution's metadata.
+                continue;
+            }
+            if !annotation_receipt_source_matches(event, thread, source) {
+                receipts.insert(
+                    event.id.clone(),
+                    AnnotationReceipt::unknown(thread.response_annotations, event, false),
+                );
+                continue;
+            }
+            let model_attempt = event
+                .payload
+                .get("model_attempt_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap();
+            if let Some(receipt) = receipt_from_authorized_event(
+                event,
+                &scope,
+                thread.response_annotations,
+                &source.id,
+                model_attempt,
+            ) {
+                receipts.insert(event.id.clone(), receipt);
+            }
+        }
+        receipts
+    }
+
     fn to_observation(
         &self,
         event: &Event,
@@ -6075,6 +6238,7 @@ impl ContextEngine {
             "full"
         };
         ContextObservation {
+            response_annotation_receipt: None,
             io_resources: if self.typed_chat {
                 crate::session_io::resources::event_resources(event)
             } else {
@@ -10513,7 +10677,83 @@ fn render_inbox_observation(observation: &ContextObservation) -> SExpr {
         }
         fields.push(list("resource", resource_fields));
     }
+    if let Some(receipt) = &observation.response_annotation_receipt {
+        fields.push(receipt.expression());
+    }
     list("observation", fields)
+}
+
+fn annotation_receipt_owner_matches(
+    thread: &ThreadRecord,
+    activation: &ThreadActivationRecord,
+) -> bool {
+    thread.context_id == activation.context_id
+        && thread.session_id == activation.session_id
+        && thread.agent_id == activation.agent_id
+        && thread.root_turn_id == activation.root_turn_id
+        && thread.generation == activation.generation
+        && thread.initiating_principal_id == activation.initiating_principal_id
+}
+
+fn annotation_receipt_source_matches(
+    event: &Event,
+    thread: &ThreadRecord,
+    source: &ThreadActivationRecord,
+) -> bool {
+    event.sequence.is_some()
+        && annotation_receipt_owner_matches(thread, source)
+        && event
+            .payload
+            .get("context_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(thread.context_id.as_str())
+        && event_session(event) == Some(thread.session_id.as_str())
+        && event
+            .payload
+            .get("thread_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(thread.id.as_str())
+        && event
+            .payload
+            .get("root_turn_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(thread.root_turn_id.as_str())
+        && event
+            .payload
+            .get("activation_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(source.id.as_str())
+        && event
+            .payload
+            .get("attempt_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(source.id.as_str())
+        && event
+            .payload
+            .get("trigger_event_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(source.trigger_event_id.as_str())
+        && event
+            .payload
+            .get("trigger_sequence")
+            .and_then(serde_json::Value::as_u64)
+            == Some(source.trigger_sequence)
+        && event
+            .payload
+            .get("thread_generation")
+            .and_then(serde_json::Value::as_u64)
+            == Some(thread.generation)
+        && event
+            .payload
+            .get("response_annotations")
+            .and_then(serde_json::Value::as_str)
+            == Some(thread.response_annotations.as_str())
+        && event_principal(event) == thread.initiating_principal_id.as_deref()
+        && event
+            .payload
+            .get("model_attempt_id")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|id| !id.is_empty())
 }
 
 fn render_observation_state(
@@ -14504,9 +14744,413 @@ mod tests {
         assert!(!legacy.payload.contains_key("session_io"));
     }
 
+    #[tokio::test]
+    async fn accepted_receipt_owners_retirement_window_and_off_encoding_use_real_store_routes() {
+        use crate::response_annotations::{
+            self, ExecutionScope, NormalizationContext, PersistedAnnotations, Producer, Protocol,
+            ReceiptState,
+        };
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("receipt-context.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let (agent, context_id, session, root) = (
+            "receipt-agent",
+            "receipt-context",
+            "receipt-session",
+            "receipt-root",
+        );
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: agent.into(),
+                    title: "Agent".into(),
+                    root_context_id: context_id.into(),
+                },
+                NewCognitiveContext {
+                    id: context_id.into(),
+                    agent_id: agent.into(),
+                    title: "Context".into(),
+                },
+                NewSession {
+                    id: session.into(),
+                    agent_id: agent.into(),
+                    context_id: context_id.into(),
+                    parent_session_id: None,
+                    title: "Session".into(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .append(Event::new(
+                root.into(),
+                "User".into(),
+                TYPE_USER_MESSAGE.into(),
+                "chat/user_message".into(),
+                json!({"context_id":context_id,"session_id":session,"text":"work"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ))
+            .await
+            .unwrap();
+        let thread = store
+            .ensure_thread(NewThread {
+                response_annotations: Protocol::V2,
+                id: "true-explicit-thread-not-root-hash".into(),
+                agent_id: agent.into(),
+                context_id: context_id.into(),
+                session_id: session.into(),
+                initiating_principal_id: None,
+                root_turn_id: root.into(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".into(),
+                executor_id: None,
+                target_id: None,
+                supervision: ThreadSupervision::legacy(),
+                model_alias: None,
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+        let prior = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "receipt-prior-activation".into(),
+                agent_id: agent.into(),
+                context_id: context_id.into(),
+                session_id: session.into(),
+                initiating_principal_id: None,
+                trigger_event_id: root.into(),
+                trigger_sequence: 1,
+                trigger_kind: "chat/user_message".into(),
+                parent_activation_id: None,
+                root_turn_id: root.into(),
+            })
+            .await
+            .unwrap();
+        for index in 0..33 {
+            let id = format!("receipt-source-{index}");
+            let attempt = format!("receipt-model-{index}");
+            let scope = ExecutionScope {
+                execution_id: thread.id.clone(),
+                generation: thread.generation,
+            };
+            let normalized = response_annotations::normalize_response(&crate::llm::Response {
+                content: String::new(), tool_calls: vec![crate::llm::ToolCallRepr { id: format!("precise-call-{index}"), r#type: "function".into(), func_name: "read".into(), arguments: json!({"path":"safe", "_annotations":{"intent":"read", "execution":{"progress":"inspect"}}}).to_string() }],
+            }, &NormalizationContext { protocol: Protocol::V2, scope: Some(scope.clone()), producer: Some(Producer { event_id: id.clone(), attempt_id: attempt.clone(), sequence: None }), ..Default::default() }).unwrap();
+            let clean_calls = normalized
+                .execution_response
+                .tool_calls
+                .iter()
+                .map(|call| crate::llm::ToolCall {
+                    id: call.id.clone(),
+                    r#type: call.r#type.clone(),
+                    function: crate::llm::FunctionCall {
+                        name: call.func_name.clone(),
+                        arguments: call.arguments.clone(),
+                    },
+                })
+                .collect::<Vec<_>>();
+            store.append(Event::new(id, "Agent-Morphz".into(), TYPE_AGENT_CALL.into(), "chat/assistant_call".into(), json!({"context_id":context_id, "session_id":session, "thread_id":thread.id, "root_turn_id":root, "thread_generation":thread.generation, "response_annotations":"v2", "activation_id":prior.id, "attempt_id":prior.id, "trigger_event_id":prior.trigger_event_id, "trigger_sequence":prior.trigger_sequence, "model_attempt_id":attempt, "text":"preview-only ".repeat(8), "tool_calls":clean_calls, response_annotations::BUNDLE_PAYLOAD_KEY:PersistedAnnotations::from_normalized(scope, &normalized)}).as_object().unwrap().clone())).await.unwrap();
+        }
+        let trigger = Event::new("receipt-current-trigger".into(), "Runtime".into(), TYPE_TOOL_OUTPUT.into(), "chat/tool_output".into(), json!({"context_id":context_id,"session_id":session,"root_turn_id":root,"text":"continued"}).as_object().unwrap().clone());
+        store.append(trigger).await.unwrap();
+        let trigger = store
+            .query(QueryFilter {
+                event_id: Some("receipt-current-trigger".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let current = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: "receipt-current-activation".into(),
+                agent_id: agent.into(),
+                context_id: context_id.into(),
+                session_id: session.into(),
+                initiating_principal_id: None,
+                trigger_event_id: trigger.id,
+                trigger_sequence: trigger.sequence.unwrap(),
+                trigger_kind: "chat/tool_output".into(),
+                parent_activation_id: Some(prior.id.clone()),
+                root_turn_id: root.into(),
+            })
+            .await
+            .unwrap();
+        let causality = store
+            .read_context_activation_causality_snapshot(
+                context_id,
+                &current.id,
+                root,
+                &current.trigger_event_id,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            causality.thread.as_ref().unwrap().response_annotations,
+            Protocol::V2,
+            "the materialized actual owner must retain its frozen protocol, not serde-default Off"
+        );
+        let scheduler = store
+            .read_context_runtime_scheduler_snapshot(context_id, &[], 8, 8)
+            .await
+            .unwrap();
+        assert_eq!(
+            scheduler
+                .threads
+                .iter()
+                .find(|row| row.id == thread.id)
+                .unwrap()
+                .response_annotations,
+            Protocol::V2,
+            "scheduler and causality snapshots must agree on the actual frozen protocol"
+        );
+        let engine = ContextEngine::new(
+            store.clone(),
+            OrchestratorConfig {
+                observation_preview_chars: 32,
+                ..Default::default()
+            },
+        )
+        .with_session_store(store.clone());
+        let events = store
+            .query(QueryFilter {
+                context_id: Some(context_id.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let state = MindState::default();
+        let receipts = engine
+            .visible_annotation_receipts(
+                context_id,
+                session,
+                Some(&current),
+                Some(&thread),
+                &events,
+                &state,
+                &HashSet::new(),
+                None,
+            )
+            .await;
+        assert_eq!(receipts.len(), 33);
+        assert_eq!(
+            receipts
+                .values()
+                .filter(|receipt| receipt.state == ReceiptState::Accepted)
+                .count(),
+            32
+        );
+        let outside = &receipts["receipt-source-0"];
+        assert_eq!(outside.state, ReceiptState::Unknown);
+        assert!(outside.truncated);
+        let visible = &receipts["receipt-source-32"];
+        assert_eq!(visible.activation_id.as_deref(), Some(prior.id.as_str()));
+        assert_eq!(visible.scope.as_ref().unwrap().execution_id, thread.id);
+        assert!(visible
+            .accepted
+            .iter()
+            .any(|field| field.call_id.as_deref() == Some("precise-call-32")));
+        let mut retired = state.clone();
+        retired.retired.insert("receipt-source-32".into());
+        let excluded = HashSet::from(["receipt-source-31".into()]);
+        let filtered = engine
+            .visible_annotation_receipts(
+                context_id,
+                session,
+                Some(&current),
+                Some(&thread),
+                &events,
+                &retired,
+                &excluded,
+                None,
+            )
+            .await;
+        assert!(!filtered.contains_key("receipt-source-32"));
+        assert!(!filtered.contains_key("receipt-source-31"));
+        assert_eq!(filtered.len(), 31);
+        for mutation in 0..6 {
+            let mut wrong = prior.clone();
+            match mutation {
+                0 => wrong.context_id = "other-context".into(),
+                1 => wrong.session_id = "other-session".into(),
+                2 => wrong.agent_id = "other-agent".into(),
+                3 => wrong.root_turn_id = "other-root".into(),
+                4 => wrong.generation += 1,
+                _ => wrong.initiating_principal_id = Some("other-human".into()),
+            }
+            assert!(!annotation_receipt_owner_matches(&thread, &wrong));
+        }
+        let source = events
+            .iter()
+            .find(|event| event.id == "receipt-source-32")
+            .unwrap();
+        assert!(annotation_receipt_source_matches(source, &thread, &prior));
+        for field in [
+            "thread_id",
+            "root_turn_id",
+            "context_id",
+            "session_id",
+            "activation_id",
+            "attempt_id",
+            "trigger_event_id",
+            "model_attempt_id",
+        ] {
+            let mut wrong = source.clone();
+            wrong.payload.insert(
+                field.into(),
+                json!(if field == "model_attempt_id" {
+                    ""
+                } else {
+                    "foreign"
+                }),
+            );
+            assert!(!annotation_receipt_source_matches(&wrong, &thread, &prior));
+        }
+        let mut missing_generation = source.clone();
+        missing_generation.payload.remove("thread_generation");
+        assert!(!annotation_receipt_source_matches(
+            &missing_generation,
+            &thread,
+            &prior
+        ));
+        let unknown = engine
+            .visible_annotation_receipts(
+                context_id,
+                session,
+                Some(&current),
+                Some(&thread),
+                &[missing_generation],
+                &state,
+                &HashSet::new(),
+                None,
+            )
+            .await;
+        assert_eq!(unknown["receipt-source-32"].state, ReceiptState::Unknown);
+        let mut off = thread.clone();
+        off.response_annotations = Protocol::Off;
+        assert!(engine
+            .visible_annotation_receipts(
+                context_id,
+                session,
+                Some(&current),
+                Some(&off),
+                &events,
+                &state,
+                &HashSet::new(),
+                None
+            )
+            .await
+            .is_empty());
+        let mut typed = thread.clone();
+        typed.executor_kind = "plan_infer".into();
+        assert!(engine
+            .visible_annotation_receipts(
+                context_id,
+                session,
+                Some(&current),
+                Some(&typed),
+                &events,
+                &state,
+                &HashSet::new(),
+                None
+            )
+            .await
+            .is_empty());
+        let baseline = engine.to_observation(source, &state, ObservationMetadata::default());
+        let encoded = serde_json::to_value(&baseline).unwrap();
+        assert!(encoded.get("response_annotation_receipt").is_none());
+        let baseline_sexpr = render_inbox_observation(&baseline).to_string();
+        assert!(!baseline_sexpr.contains("response-annotation-receipt"));
+        let mut annotated = baseline;
+        annotated.response_annotation_receipt = Some(visible.clone());
+        assert_eq!(
+            render_inbox_observation(&annotated),
+            render_context_delta_observation(&annotated)
+        );
+        assert!(render_inbox_observation(&annotated)
+            .to_string()
+            .contains(&visible.expression().to_string()));
+        let view = engine
+            .build_context_encoding_for_activation(context_id, &current, &HashSet::new())
+            .await
+            .unwrap();
+        let resident_before = ContextViewManifest::from_view(&view, []).resident_event_ids;
+        let preview = view
+            .observations
+            .iter()
+            .find(|item| item.id == source.id)
+            .unwrap();
+        assert_eq!(preview.representation, "preview");
+        assert!(preview.response_annotation_receipt.is_some());
+        assert!(
+            !resident_before.contains(&source.id),
+            "receipt cannot promote preview bytes to full source residency"
+        );
+        let mut without_receipts = view;
+        for item in &mut without_receipts.observations {
+            item.response_annotation_receipt = None;
+        }
+        assert_eq!(
+            ContextViewManifest::from_view(&without_receipts, []).resident_event_ids,
+            resident_before
+        );
+        // No owner Store means prior producers cannot be verified. Disabled
+        // and typed paths still return without attempting owner resolution.
+        // The absence of added reads is also reviewed at the early-return
+        // boundary; this test does not claim to count SQL calls.
+        let disconnected = ContextEngine::new(store, OrchestratorConfig::default());
+        let unreadable = disconnected
+            .visible_annotation_receipts(
+                context_id,
+                session,
+                Some(&current),
+                Some(&thread),
+                &events,
+                &state,
+                &HashSet::new(),
+                None,
+            )
+            .await;
+        assert_eq!(unreadable["receipt-source-32"].state, ReceiptState::Unknown);
+        assert!(disconnected
+            .visible_annotation_receipts(
+                context_id,
+                session,
+                Some(&current),
+                Some(&off),
+                &events,
+                &state,
+                &HashSet::new(),
+                None
+            )
+            .await
+            .is_empty());
+        assert!(disconnected
+            .visible_annotation_receipts(
+                context_id,
+                session,
+                Some(&current),
+                Some(&typed),
+                &events,
+                &state,
+                &HashSet::new(),
+                None
+            )
+            .await
+            .is_empty());
+    }
+
     #[test]
     fn default_observation_projection_state_is_an_implicit_overlay() {
         let mut observation = ContextObservation {
+            response_annotation_receipt: None,
             io_resources: Vec::new(),
             io_page: None,
             io_limits: None,
@@ -16845,6 +17489,7 @@ mod tests {
             id_to_alias: HashMap::from([("user:1".to_string(), "@e7".to_string())]),
         };
         let observations = vec![ContextObservation {
+            response_annotation_receipt: None,
             io_resources: Vec::new(),
             io_page: None,
             io_limits: None,

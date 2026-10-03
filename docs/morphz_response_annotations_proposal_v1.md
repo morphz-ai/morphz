@@ -6,7 +6,9 @@
 
 2026-10-03 补充修复进行中：真实父子孙 Thread 的注解已保存，但跨工作轮次／等待恢复后，
 模型可见 Context 没有完整回显这些已接受的元数据事实，最终自评可能错误地报告“没有注解”。
-以下新增回执设计尚待生产实现与请求链验收；此前通过的展示、等待与持久验证不替代这项验证。
+以下新增回执已接入生产，真实 Runtime／SQLite 的跨 Group 唤醒请求链及 SQLite／PostgreSQL
+快照合同及 pure／Context／实际 Delta 门禁已通过；同一原窗口的真实模型语义复验仍待完成。
+此前通过的展示、等待与持久验证不替代这项语义验证。
 
 本文面向 Runtime 和调用方开发者，设计一种随既有模型响应提交的展示注解。目标是在不专门增加 LLM 请求的情况下，为一次 Execution 提供短标题、阶段说明、步骤意图和结果解读。先用隔离原型与真实模型验证，按验证发现修订本文，达标后再修改 Runtime。
 
@@ -147,7 +149,7 @@ title 按当前 generation 内的可信输入修订选择。初始修订为 0；
 
 展示选择最新已验证输入修订中的首个有效标题；若新修订没有有效标题，沿用已有标题。旧响应迟到或重放不得覆盖更新后的标题。阶段描述仍不能直接改名，补充输入也不自动新建活动、重跑已提交 Job 或扩大权限。progress 与 result 各按适用事实边界选最新有效值。
 
-## 已接受注解的模型可见回执（2026-10-03 修订，实施前设计）
+## 已接受注解的模型可见回执（2026-10-03 修订）
 
 原始 Provider 参数在即时工具 continuation 中保留，不表示每个后续 Activation 都重放了它。
 当前 compiled Inbox 的工作调用正文来自已清洗的业务参数；跨轮或 Group 等待恢复后的模型
@@ -170,7 +172,7 @@ title 按当前 generation 内的可信输入修订选择。初始修订为 0；
   “模型从未提交”。缺失、损坏、无法验证或范围不可见是 `unknown`；诊断省略／字段限额用
   明确 `truncated` 表示。无回执不构成历史注解缺失的证据，不要求模型补写。
 - 每个来源最多输出 16 项细节，引用沿用 128 ASCII 字符上限，整份回执最多 2 KiB。
-  不能可靠呈现的绑定标为未知／截断而非伪造空事实。新增字节进入实际 Context 的 token
+不能可靠呈现的绑定标为未知／截断而非伪造空事实。新增字节进入实际 Context 的 token
   测量与压力管理，不只更新 UI，也不能靠未计量的后置拼接绕过维护阈值。
 
 生产数据模型不增表、索引、账本或双写。回执是每次从已可见、已验证来源计算的有界
@@ -190,6 +192,12 @@ Full 重建，而不是为移除元数据连同合法业务工具结果一起丢
 启用新回执的编码版本／Thread／generation fence 不允许复用旧无回执或旧代 seed。
 原始 continuation 与执行参数剥离规则不变，不增加命名、摘要、修复或注解专用 LLM 请求。
 
+启用回执的 Delta 在替换已测量 Full／FC 请求前，须测量完整候选，使用同一实际模型、
+计数器及工具校准 shape；非精确计数沿用 Full 的既有校准和真实 base-estimate 差值。
+无法计量、比较来源不一致或候选升级压力等级时，保持原 Full／FC、业务结果及缓存状态，
+不另开维护／修复模型轮次。计数不是仅供记账的后置统计，也不声称本地估算是 Provider
+物理上限的最终证明。Off 不进入这项新增候选判断。
+
 实施门槛先用零付费真实 Runtime／Store 链验证：工作调用 → 后续工作／调度 → 已落盘等待
 → 真实子 Thread 完成／Group 唤醒 → 新 Activation 最终请求。捕获实际模型请求，确认后者
 仍含当前执行最早来源的 accepted intent／progress 回执，绑定真实 call ID、generation 和
@@ -197,6 +205,41 @@ manifest cutoff；同时核对旧／跨范围来源拒绝、截断语义、previ
 Full／Delta canonical 一致与旧 seed 失配、原业务请求数及物理参数不变。即时两轮 fixture
 或纯 JSON 测试不替代该门槛。最后再在同一原窗口检查真实模型是否按这些事实收尾；不改写
 此前错误输出，不将有回执说成所有模型永不作错误自评。
+
+### 当前实施证据与剩余门槛
+
+未修改生产源码的真实 10 个业务请求链已先红：两次只读 Recall、调度、两级实际等待／
+Group 唤醒及四个 Thread 终态完成后，新 Activation 的 canonical Context 缺少先前来源
+回执。首次夹具的工具策略冲突与更早 ENOSPC 编译失败均不算这项行为 RED。
+
+生产投影接入后第一轮仍红，定位到 SQLite 的 causal／scheduler 两处手写 Thread JSON
+快照遗漏冻结 `response_annotations`，使反序列化回到 Off。各补一个真实列字段后，新增
+10 请求链与原 8 请求链 2/2 通过，业务参数、原始 continuation 与模型请求数保持。
+PostgreSQL 原 `to_jsonb(thread)` 已包含该字段，不为对称性改动其生产查询。
+SQLite／实际 PostgreSQL 合同 4/4、零跳过，覆盖 Off／V1／V2 的 direct、causal 与
+scheduler Thread 全等；隔离 TEST PG 库在核对 owner、零连接与零生成 schema 后精确
+删除，原用户库未改。证据目录
+`/tmp/morphz-annotation-receipt-regression.I9zEQX`。
+
+测试导入缺失曾使新增 lib 门禁未能编译，已只修测试接线。随后新增 7 项 pure／Context／
+cache 门禁通过，同次 `receipt_` 筛选的 11 项及完整 annotations lib 的 34 项通过；两组
+有重叠，不相加冒充独立用例。覆盖 actual SExpr 字节限额、真实来源／范围／退休／preview、
+owner 五字段（含 principal None→Some）与 generation cache fence、不可比较或升压候选
+保留 Full／FC。Off 零新增 source batch 由源码早退及断开 Store 路径验证，未做 SQL
+计数，不称已量化零查询。
+
+experimental feature 的实际 SQLite／Runtime Delta 链 1/1 通过，完整实际 messages／tools
+参与本地非精确计数：两次物理只读 Recall 加一次最终 reply，准确 3 个原业务请求；第二、
+三次请求必须使用真正 Delta，Full／FC fallback 不能通过。真实来源 receipt、实际 Event／
+call ID／Activation／generation／cutoff、原参数／continuation 和业务结果均核验。
+这不是跨 Group 等待的 Delta 链或实际 Delta 来源退休链；后二者不冒称已端到端验证。
+
+最终默认配置请求回归 32/32：ingress 3、Runtime 24、steer 3、真实等待链 2；包含旧 Off
+提示／schema 字节、typed infer、等待／silent、取消、恢复、非法最终响应零修复请求及
+用户补充同执行更新标题等边界。日志 `receipt-final-default-request-regressions.log`。
+原 App 的活动不可用提示随后自行恢复，两个实际 scheduler GET 均 HTTP 200 且通过 Host
+schema；没有把短暂提示断言为 Runtime 离线。此时尚未部署本轮回执，旧错误正文保持
+不变，真实模型语义门槛和两项总目标仍未关闭。
 
 ## Yao 和 typed infer 的边界
 
