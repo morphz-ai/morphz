@@ -50,7 +50,6 @@ test("内容能直接找到对话和项目文档，长文滚动、返回和重�
   const initialRuntime = await source.navigationRuntime();
   const initialViews = await source.appViews();
   const initialConversations = await source.conversations(spaces.dialogueId);
-  await page.goto("/");
   const title = "对话中生成的现场清单-" + randomUUID();
   const doc = await createDocument(
     source,
@@ -64,6 +63,9 @@ test("内容能直接找到对话和项目文档，长文滚动、返回和重�
   await source.createProject(projectTitle, randomUUID(), projectId);
   const projectDoc = "项目自己的文档-" + randomUUID();
   await createDocument(source, projectId, projectDoc, "项目正文");
+  // Seed before bootstrap reads its revision-bound project directory. This
+  // scenario tests reading/return, not writes racing the initial page load.
+  await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "内容库", exact: true })
@@ -180,7 +182,6 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
   const spaces = await source.ensurePersonalSpaces();
   const initialViews = await source.appViews();
   const initialConversations = await source.conversations(spaces.dialogueId);
-  await page.goto("/");
   const title = "同一事项不同入口-" + randomUUID();
   const projectId = randomUUID();
   await source.createProject(
@@ -197,6 +198,7 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
     description: "这是同一个事项的正文，只记录，不执行。",
     assigneeId: source.boot.actantId,
   });
+  await page.goto("/");
   const nav = page.getByRole("navigation", { name: "主导航" });
   await nav.getByRole("button", { name: "内容库", exact: true }).click();
   await expect(
@@ -250,7 +252,9 @@ test("内容排除事项及其计数，事项入口仍能编辑和关联输入�
   await expect(page.getByLabel("事项说明")).toContainText("同一个事项的正文");
   const body = "从事项入口补充-" + randomUUID();
   await (await openInput(page)).fill(body);
-  await expect(page.locator(".composer .context-chip")).toContainText(title);
+  const inputScope = page.locator(".composer .composer-scope-label");
+  await expect(inputScope).toHaveText(title);
+  await expect(inputScope).toHaveAttribute("title", title + " · v2");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect.poll(() => savedInput(page, body)).not.toBeNull();
   const sent = (await savedInput(page, body))!;

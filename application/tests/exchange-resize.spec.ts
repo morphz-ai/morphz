@@ -305,6 +305,11 @@ test("长草稿和附件保留，窄短窗限制实际高度但不覆盖记忆�
     mimeType: "text/plain",
     buffer: Buffer.from("TEST 伸缩附件，不发送"),
   });
+  // Filechooser completion does not await the upload or its composer layout.
+  // Resize this completed draft, not a panel whose attachment is still arriving.
+  await expect(
+    page.getByRole("button", { name: "移除附件 resize.txt", exact: true }),
+  ).toBeVisible();
   await composerAction(page, "固定输入框");
   await resizeTo(page, 250);
   const prefs = await preferences(page);

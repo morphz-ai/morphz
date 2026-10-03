@@ -90,6 +90,15 @@ export async function composerAction(page: Page, name: string) {
   await menu.getByRole("button", { name, exact: true }).click();
 }
 
+/** Focus restores writing only; reading requires its explicit panel action. */
+export async function openExchangeReading(page: Page) {
+  await openInput(page);
+  const reading = page.locator(".exchange-panel > .conversation");
+  if (!(await reading.isVisible())) await composerAction(page, "查看交流记录");
+  await expect(reading).toBeVisible();
+  return reading;
+}
+
 /** Files and screenshots share the explicit + input menu, not the app Dock. */
 export async function openComposerMedia(page: Page) {
   const trigger = page.getByRole("button", {

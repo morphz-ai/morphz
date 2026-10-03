@@ -1,5 +1,9 @@
 import { test, expect } from "@playwright/test";
-import { openInput, composerAction } from "./interaction-helpers.js";
+import {
+  openInput,
+  composerAction,
+  openExchangeReading,
+} from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
 
@@ -23,14 +27,15 @@ test("半开历史透出真实画布，固定和短窗口仍然悬浮，不缩�
   // while a hosted application is establishing its compositor hit surface.
   await expect(page.locator(".composer")).toHaveCSS("animation-name", "none");
   await input.fill("视觉验收草稿，不发送");
-  const history = page.locator(".conversation");
-  const panel = page.locator(".exchange-panel");
+  const history = await openExchangeReading(page);
   const surface = page.locator(".exchange-surface");
   const main = page.getByRole("main", { name: "主工作区" });
   const composer = page.getByRole("region", { name: "AI 输入", exact: true });
   await expect(surface).toHaveCSS("position", "absolute");
   await expect(history).toHaveCSS("opacity", "1");
-  const backdrop = await panel.evaluate((el) => ({
+  // Reading owns the glass material; the outer panel only arranges the two
+  // accepted, separate reading and writing surfaces.
+  const backdrop = await history.evaluate((el) => ({
     fill: getComputedStyle(el).backgroundColor,
     blur: getComputedStyle(el).backdropFilter,
     opacity: getComputedStyle(el).opacity,
@@ -70,13 +75,13 @@ test("菜单入场不移动命中区域，关闭立即失去交互，动效不�
   const input = await openInput(page);
   await input.fill("动画期间保留草稿");
   const trigger = page.getByRole("button", {
-    name: "工作空间选项",
+    name: "添加输入内容",
     exact: true,
   });
   // Keep resolving the same node after inert removes it from the accessibility
   // tree, so the closed-state assertion tests the element rather than lookup.
   const menu = page.getByRole("group", {
-    name: "工作空间操作",
+    name: "添加到这条消息",
     exact: true,
     includeHidden: true,
   });
@@ -130,7 +135,7 @@ test("减少动态、减少透明和增强对比度保持所有操作及文本�
   await page.getByRole("button", { name: "工作台", exact: true }).click();
   const input = await openInput(page);
   await input.fill("减少动态效果仍可以正常工作");
-  const history = page.locator(".conversation");
+  const history = await openExchangeReading(page);
   await expect(history).toHaveCSS("animation-name", "none");
   await expect(page.locator(".composer")).toHaveCSS(
     "transition-duration",
@@ -143,14 +148,9 @@ test("减少动态、减少透明和增强对比度保持所有操作及文本�
       { name: "prefers-reduced-transparency", value: "reduce" },
     ],
   });
-  await expect(page.locator(".exchange-panel")).toHaveCSS(
-    "backdrop-filter",
-    "none",
-  );
+  await expect(history).toHaveCSS("backdrop-filter", "none");
   expect(
-    await page
-      .locator(".exchange-panel")
-      .evaluate((el) => getComputedStyle(el).backgroundColor),
+    await history.evaluate((el) => getComputedStyle(el).backgroundColor),
   ).not.toContain("rgba");
   await composerAction(page, "展开完整记录");
   await expect(input).toHaveValue("减少动态效果仍可以正常工作");

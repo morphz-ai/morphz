@@ -6,7 +6,11 @@ import {
   conversationState,
   seedConversationDocument,
 } from "./project-conversation-fixture.js";
-import { openInput, openExecutionPanel } from "./interaction-helpers.js";
+import {
+  openInput,
+  openExecutionPanel,
+  openExchangeReading,
+} from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
 import { applicationTokenHeader } from "../packages/core/src/application-names.js";
 
@@ -201,7 +205,9 @@ test("从项目搜索打开其他空间对象后，点击项目或草稿回到�
   await draft.click();
   await expect(page).toHaveTitle(title + " — Morphz");
   await expect(await openInput(page)).toHaveValue("命名会话草稿，不发送");
-  await expect(page.locator(".composer .context-chip")).toHaveText(title);
+  await expect(page.locator(".composer .composer-scope-label")).toHaveText(
+    title,
+  );
   await expect(page.locator(".object-paper > h1")).toHaveCount(0);
   await openOtherObject();
   await group.locator(".project-link").click();
@@ -387,6 +393,7 @@ test("项目本身选默认会话，子项只列显式 Session；折叠不切换
   await group.getByLabel("收起项目会话：" + title).click();
   await expect(group.locator(".conversation-choice")).toHaveCount(0);
   await expect(await openInput(page)).toHaveValue("独立会话草稿");
+  await openExchangeReading(page);
   await expect(page.getByRole("log")).toContainText("入口独立消息");
   await group.getByLabel("展开项目会话：" + title).click();
   await expect(child).toHaveAttribute("aria-current", "true");
@@ -397,6 +404,7 @@ test("项目本身选默认会话，子项只列显式 Session；折叠不切换
   await expect(parent).toHaveAttribute("aria-current", "true");
   await expect(child).not.toHaveAttribute("aria-current", "true");
   await expect(await openInput(page)).toHaveValue("项目默认草稿");
+  await openExchangeReading(page);
   await expect(page.getByRole("log")).toContainText("入口默认消息");
   await expect(page.getByRole("log")).not.toContainText("入口独立消息");
   await page.reload();
@@ -448,6 +456,7 @@ test("首位对话与工作台共享历史，场景草稿可恢复且没有全�
   await box.fill("全局待发送草稿");
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
   await expect(await openInput(page)).toHaveValue("未发送的工作台草稿");
+  await openExchangeReading(page);
   // A restored object can scope the workbench history; explicitly inspect the shared history.
   const allExchanges = page.getByRole("button", {
     name: "查看全部交流",
@@ -656,7 +665,6 @@ test("对象引用随对话草稿保存，切换不会把选区带到另一条�
 }) => {
   await page.goto("/");
   await newProject(page, "引用归属验收");
-  await openLibrary(page);
   const seedBoot = await conversationState(page);
   const project = seedBoot.projects.find((p) => p.title === "引用归属验收")!;
   await seedConversationDocument(
@@ -665,6 +673,9 @@ test("对象引用随对话草稿保存，切换不会把选区带到另一条�
     "跨对话引用原文",
     "上下文事务维护当前认知，保留可追溯的历史。",
   );
+  // The secondary fixture Host cannot publish through this UI Host's live
+  // change feed. Open the real directory after seeding so it reads the head.
+  await openLibrary(page);
   await page
     .locator(".artifact-card")
     .filter({ hasText: "跨对话引用原文" })

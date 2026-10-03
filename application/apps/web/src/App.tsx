@@ -153,6 +153,12 @@ import { sidebarPreference } from "./sidebar-layout.js";
 import { contentVisits, visitContent } from "./recent-content.js";
 import { useConversationStream } from "./useConversationStream.js";
 import {
+  deriveWorkSurface,
+  readWorkSurfaceDraft,
+  workSurfaceConversationId,
+  type WorkSurfaceView,
+} from "./host/work-surface.js";
+import {
   acknowledgeReplies,
   conversationMessages,
   focusedInputs,
@@ -163,7 +169,7 @@ import {
   type ReplyReceipt,
 } from "./conversation-read.js";
 
-type View = "dialogue" | "inbox" | "content" | "desk" | "projects";
+type View = WorkSurfaceView;
 type InspectorSelection =
   | { view: "execution"; scope: ExecutionScope }
   | { view: "understanding" | "collaboration" };
@@ -567,98 +573,36 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     state?.projects.find(
       (p) => p.kind === kind && p.ownerPrincipalId === client.boot!.principalId,
     );
-  const navigationProject =
-    prefs.view === "dialogue"
-      ? personalSpace("dialogue")
-      : prefs.view === "content"
-        ? (state?.projects.find((p) => p.id === contentScope) ??
-          personalSpace("desk"))
-        : prefs.view === "desk" ||
-            (prefs.view === "projects" && !prefs.projectOpen)
-          ? personalSpace("desk")
-          : prefs.view === "inbox"
-            ? personalSpace("inbox")
-            : (state?.projects.find(
-                (p) => p.id === prefs.projectId && spaceKind(p) === "project",
-              ) ??
-              state?.projects.find((p) => spaceKind(p) === "project") ??
-              personalSpace("desk"));
-  // Association scopes the next input, not the shared conversation or its
-  // in-flight activations. An open object wins; otherwise use the visible space.
-  const deliveredProduction = prefs.scriptLocation
-    ? client.boot!.scriptLibrary.find(
-        (entry) => entry.id === prefs.scriptLocation!.productionId,
-      )
-    : undefined;
-  const deliveredScript = deliveredProduction
-    ? { production: deliveredProduction }
-    : null;
-  const project =
-    state?.projects.find(
-      (p) => p.id === deliveredScript?.production?.projectId,
-    ) ??
-    state?.projects.find(
-      (p) =>
-        p.id ===
-        state.artifacts.find((a) => a.id === prefs.artifactId)?.projectId,
-    ) ??
-    (navigationProject &&
-    ["dialogue", "inbox"].includes(navigationProject.kind ?? "")
-      ? personalSpace("desk")
-      : navigationProject);
-  const sharedDefault = !client.boot!.capabilities.teamAuthentication;
-  const defaultConversation = sharedDefault
-    ? personalSpace("dialogue")?.id
-    : navigationProject?.id;
-  const applicationWorkspaceOpen =
-    (!!deliveredScript ||
-      prefs.view === "desk" ||
-      (prefs.view === "projects" && prefs.projectOpen)) &&
-    !!project &&
-    projectStatus(project) === "active";
-  const activeId =
-    project && applicationWorkspaceOpen
-      ? prefs.applications?.[project.id] === null
-        ? null
-        : (state?.applicationInstances.find(
-            (i) =>
-              i.id === prefs.applications?.[project.id] &&
-              i.workspaceId === project.id &&
-              i.status === "open",
-          )?.id ??
-          state?.applicationInstances.find(
-            (i) => i.workspaceId === project.id && i.status === "open",
-          )?.id ??
-          null)
-      : null;
-  const activeInstance = state?.applicationInstances.find(
-    (i) =>
-      i.id === activeId && i.workspaceId === project?.id && i.status === "open",
-  );
-  const immersiveApplication = !!(
-    state &&
-    activeInstance &&
-    applicationFor(
-      state,
-      activeInstance.applicationId,
-      activeInstance.applicationVersion,
-    ).ui.presentation === "immersive"
-  );
-  const artifact = state?.artifacts.find(
-    (a) =>
-      activeInstance?.applicationId !== "morphz.script-studio" &&
-      a.projectId === project?.id &&
-      a.id ===
-        (activeInstance?.applicationId === readerApplication.id
-          ? activeInstance.state.artifactId
-          : restoredPlace
-            ? restoredPlace.artifactId
-            : (prefs.artifactId ??
-              (prefs.view !== "inbox" &&
-              activeInstance?.applicationId === objectsApplication.id
-                ? activeInstance.state.artifactId
-                : null))),
-  );
+  const workSurface = deriveWorkSurface({
+    state,
+    prefs,
+    principalId: client.boot!.principalId,
+    teamAuthentication: client.boot!.capabilities.teamAuthentication,
+    scriptLibrary: client.boot!.scriptLibrary,
+    contentScope,
+    conversationDrafts,
+    restoredPlace,
+  });
+  const {
+    navigationProject,
+    deliveredScript,
+    project,
+    sharedDefault,
+    defaultConversation,
+    applicationWorkspaceOpen,
+    activeId,
+    activeInstance,
+    immersiveApplication,
+    artifact,
+    selectedConversation,
+    selectedDraft,
+    conversationId,
+    conversationProjectId,
+    directoryScope,
+    contextKey,
+    exchangeKey,
+    dialogueCanvas,
+  } = workSurface;
   const [readingSurface, setReadingSurface] = useState<ReadingSurface | null>(
     null,
   );
@@ -680,31 +624,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     readingSurface.revision === (prefs.artifactRevision ?? artifact.revision)
       ? readingSurface
       : null;
-  const selectedConversation =
-    state?.conversations.find(
-      (c) =>
-        prefs.view === "projects" &&
-        prefs.projectOpen &&
-        c.projectId === navigationProject?.id &&
-        c.id === prefs.selectedConversations?.[navigationProject?.id ?? ""] &&
-        (!sharedDefault || c.id !== navigationProject?.id),
-    ) ?? state?.conversations.find((c) => c.id === defaultConversation);
-  const pendingConversation =
-    prefs.view === "projects" && prefs.projectOpen
-      ? conversationDrafts[navigationProject?.id ?? ""]
-      : undefined;
-  const selectedDraft =
-    pendingConversation?.id ===
-    prefs.selectedConversations?.[navigationProject?.id ?? ""]
-      ? pendingConversation
-      : undefined;
-  const conversationId =
-    selectedDraft?.id ?? selectedConversation?.id ?? project?.id ?? "";
-  const conversationProjectId =
-    selectedDraft?.projectId ??
-    selectedConversation?.projectId ??
-    project?.id ??
-    "";
   useEffect(() => {
     // An unsent draft has no Platform conversation or Runtime Session yet.
     // Keep the last authorized history scope until its first send commits;
@@ -720,7 +639,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     // Fetch that view now instead of waiting for the next background poll.
     if (prefs.view === "inbox") void client.refreshView();
   }, [prefs.view]);
-  const directoryScope = `${project?.id}:${conversationId}`;
   const canAuthorizeDirectories =
     // The reserved ID of an unsent conversation is only a local draft. Its
     // first input creates the authorized conversation atomically; there are
@@ -738,27 +656,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   >(null);
   const [nativeExportDialog, setNativeExportDialog] = useState(false);
   function conversationKey(workspaceId: string) {
-    return workspaceId === project?.id
-      ? conversationId
-      : (prefs.selectedConversations?.[workspaceId] ??
-          defaultConversation ??
-          workspaceId);
+    return workSurfaceConversationId(
+      workSurface,
+      prefs.selectedConversations,
+      workspaceId,
+    );
   }
-  const contextKey =
-    conversationId +
-    ":" +
-    (artifact?.id ??
-      activeInstance?.id ??
-      (navigationProject?.id ?? "") + ":" + prefs.view);
   useEffect(() => setQuoteReveal(null), [conversationId]);
-  const exchangeKey =
-    conversationId === defaultConversation
-      ? prefs.view === "content"
-        ? `${navigationProject?.id ?? conversationId}:content`
-        : (navigationProject?.id ?? conversationId)
-      : conversationId;
-  const dialogueCanvas =
-    prefs.view === "dialogue" && !artifact && !applicationWorkspaceOpen;
   const [conversationToolbarTarget, setConversationToolbarTarget] =
     useState<HTMLDivElement | null>(null);
   const [exchangeResizePreview, setExchangeResizePreview] = useState<{
@@ -1150,22 +1054,11 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       else (input.current ?? toggle.current)?.focus();
     });
   }
-  const legacyContextKey =
-    (navigationProject?.id ?? "") +
-    ":" +
-    (artifact?.id ?? activeInstance?.id ?? prefs.view);
-  const surfaceDraft =
-    drafts[contextKey] ??
-    (conversationId === defaultConversation
-      ? drafts[legacyContextKey]
-      : undefined) ??
-    emptyDraft;
-  // Selections follow this conversation across work surfaces. Body, execution
-  // bindings and attachments remain in their existing surface-scoped drafts.
-  const draft = {
-    ...surfaceDraft,
-    textQuotes: drafts[conversationId + ":quotes"]?.textQuotes ?? [],
-  };
+  const { surfaceDraft, draft } = readWorkSurfaceDraft(
+    workSurface,
+    drafts,
+    emptyDraft,
+  );
   const mac = /Mac|iPhone|iPad/.test(navigator.platform),
     shortcut = mac ? "⌘J" : "Ctrl+J";
   function prefer(change: Partial<Preferences>) {
