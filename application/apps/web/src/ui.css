@@ -1305,14 +1305,8 @@ body:has(dialog[open]) .cognitive-application-frame {
 .conversation .message-work-actions svg {
   flex: 0 0 auto;
 }
-/* The factual status in the footer replaces the decorative running halo. */
-.app .conversation .human-message[data-background-execution]::before {
-  content: none;
-  animation: none;
-}
-.app .conversation .human-message[data-background-execution] {
-  box-shadow: none;
-}
+/* The footer reports factual status; the existing execution.css perimeter
+   remains a separate, confirmed visual cue. Neither replaces the other. */
 @container (max-width: 340px) {
   .conversation .human-message .message-meta[data-work-actions] {
     /* Keep the persistent work controls next to the body when the optional

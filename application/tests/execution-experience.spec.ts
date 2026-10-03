@@ -219,7 +219,7 @@ test("all-work overview includes authorized work whose source message is not loa
   await expect(page.locator(".human-message")).toHaveCount(1);
 });
 
-test("live execution status stays outside the bubble without a halo; status navigation stays separate from the fixed sidebar toggle", async ({
+test("live execution retains its animated perimeter and separate footer; status navigation stays separate from the fixed sidebar toggle", async ({
   page,
 }) => {
   let kind: string | undefined = "dialogue_turn";
@@ -316,10 +316,28 @@ test("live execution status stays outside the bubble without a halo; status navi
   const bubbleBefore = (await message.boundingBox())!;
   const halo = await message.evaluate((el) => {
     const style = getComputedStyle(el, "::before");
-    return { content: style.content, animation: style.animationName };
+    return {
+      content: style.content,
+      animation: style.animationName,
+      duration: style.animationDuration,
+      pointerEvents: style.pointerEvents,
+      angle: style.getPropertyValue("--execution-glow-angle"),
+    };
   });
-  expect(halo).toEqual({ content: "none", animation: "none" });
-  await page.waitForTimeout(130);
+  expect(halo.content).toBe('""');
+  expect(halo.animation).toBe("execution-halo-orbit");
+  expect(halo.duration).toBe("3.6s");
+  expect(halo.pointerEvents).toBe("none");
+  // Verify real progression across frames, not just an animation-name string.
+  await expect
+    .poll(() =>
+      message.evaluate((el) =>
+        getComputedStyle(el, "::before").getPropertyValue(
+          "--execution-glow-angle",
+        ),
+      ),
+    )
+    .not.toBe(halo.angle);
   expect((await message.boundingBox())!.height).toBe(bubbleBefore.height);
   const statusBounds = (await status.boundingBox())!;
   const bubbleBounds = (await message.boundingBox())!;
@@ -366,6 +384,27 @@ test("live execution status stays outside the bubble without a halo; status navi
     )
     .toBe("none");
   await expect(message).toHaveAttribute("data-background-execution", "true");
+  // Both system and explicit in-app reduced motion retain the status, but no
+  // perpetual movement. Restoring either preference does not restart work.
+  await page.emulateMedia({
+    colorScheme: "dark",
+    reducedMotion: "no-preference",
+  });
+  await page.evaluate(
+    () => (document.documentElement.dataset.appMotion = "reduce"),
+  );
+  await expect
+    .poll(() =>
+      message.evaluate((el) => getComputedStyle(el, "::before").animationName),
+    )
+    .toBe("none");
+  await page.evaluate(() => delete document.documentElement.dataset.appMotion);
+  await expect
+    .poll(() =>
+      message.evaluate((el) => getComputedStyle(el, "::before").animationName),
+    )
+    .toBe("execution-halo-orbit");
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   await page.screenshot({
     path: "test-results/execution-running-status-dark-reduced-motion.png",
   });
@@ -383,6 +422,15 @@ test("live execution status stays outside the bubble without a halo; status navi
     "true",
   );
   connected = true;
+  lifecycle = "completed";
+  await fixture.refresh();
+  await expect(message).not.toHaveAttribute(
+    "data-background-execution",
+    "true",
+  );
+  expect(
+    await message.evaluate((el) => getComputedStyle(el, "::before").content),
+  ).toBe("none");
   lifecycle = "cancelled";
   await fixture.refresh();
   await expect(message).not.toHaveAttribute(

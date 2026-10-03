@@ -1,5 +1,24 @@
 # 桌面能力实施记录
 
+## 2026-10-03 恢复已确认的执行消息环绕动效
+
+用户反馈执行中消息不再出现原环绕光效。确定回归来自 `371c7e5c` 在 `ui.css`
+新增的覆盖：将 `execution.css` 中仍存在的原环绕层设为 `content:none`、
+`animation:none`，并撤掉原光晕。本轮只移除这些覆盖，恢复原配方；脚注中真实执行
+状态、补充入口、右栏导航、气泡几何与执行判定均不改，不新设计另一套动效。
+
+更新原错误的 no-halo 回归，冻结旧构建准确 RED（content 应为 `""`，实际 `none`），
+证据 `/tmp/morphz-execution-halo-red`。当前 build／typecheck 通过，完整
+`execution-experience.spec.ts` 4/4 通过、零跳过，证据
+`/tmp/morphz-halo-green.uxvyNn`；检查实际帧间角度推进、不拦截点击、气泡高度不变、
+真实运行状态、完成／取消／断线／不可用时撤下，以及系统／应用减少动态效果。
+
+通过 Computer Use 正常刷新同一原 Morphz App 前端，在用户原有正在执行的消息上
+实见恢复后的环绕光效，原会话和内容仍在；未发送测试输入、改资料或重启 Runtime。
+原窗对照 `/tmp/morphz-halo-original-before-20261003.jpg`、
+`/tmp/morphz-halo-original-after-20261003.jpg`。自动测试使用隔离夹具；不以夹具
+截图冒充原窗。原窗只验证当前深色，其他状态与减少动态效果由自动回归覆盖。
+
 ## 2026-10-03 撤回未验证视觉规范与工程状态澄清
 
 按用户要求，本轮未经审美验证的全产品视觉规范已撤出正式入口，原稿改名为明确
