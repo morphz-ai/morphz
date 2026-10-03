@@ -14,6 +14,7 @@ import {
   readerSourceSpanAtPoint,
   readerViewport,
 } from "../../apps/web/src/reader-dom.js";
+import { openExchangeReading } from "../interaction-helpers.js";
 
 const platform = (page: Page) =>
   PlatformClient.connect(new HttpApplicationClient(new URL(page.url()).origin));
@@ -911,6 +912,9 @@ test("直接聊天只附带阅读位置，选文才附原文；可检查、移�
   if (await reopen.isVisible()) await reopen.click();
   await expect(context).toContainText("当前阅读 · 周纪二");
   expect((await findInput(sent.body)).reading).toEqual(sent.reading);
+  // Focusing input does not reopen a closed history. Read the saved message
+  // explicitly before following its original reference back to the book.
+  await openExchangeReading(page);
   await page
     .getByRole("button", { name: /周纪一 · 回到原文/ })
     .last()
