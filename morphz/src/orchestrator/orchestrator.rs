@@ -9219,8 +9219,7 @@ impl Orchestrator {
         // Startup redispatch of an already owned input is not a fresh signal.
         // In particular it must not cancel the fallback clock durably armed
         // by that same Activation immediately before the process exited.
-        let recovering_owned_input = if !thread.response_annotations.is_off()
-        {
+        let recovering_owned_input = if !thread.response_annotations.is_off() {
             if let Some(recovery_id) = event
                 .payload
                 .get("runtime_recovery_activation_id")
@@ -11765,7 +11764,9 @@ impl Orchestrator {
                 response_annotations::annotations_from_authorized_event(assistant_call, &scope)?
                     .ok_or("Annotated recovery boundary lacks source annotations")?;
             if bundle.protocol != route.response_annotations {
-                return Err("source annotation bundle differs from frozen Execution protocol".into());
+                return Err(
+                    "source annotation bundle differs from frozen Execution protocol".into(),
+                );
             }
             let store = self
                 .context_engine
@@ -12228,7 +12229,9 @@ impl Orchestrator {
                 .await?
         };
         if let Some(rom) = rom {
-            self.context_engine.mount_thread_custom(&mut view, rom)?;
+            self.context_engine
+                .mount_thread_custom(&mut view, rom)
+                .await?;
         }
         Ok(view)
     }

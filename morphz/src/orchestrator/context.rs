@@ -5079,7 +5079,7 @@ impl ContextEngine {
         (total, visible)
     }
 
-    pub(crate) fn mount_thread_custom(
+    pub(crate) async fn mount_thread_custom(
         &self,
         view: &mut ContextView,
         manifest: crate::context::ThreadCustomManifest,
@@ -5091,9 +5091,46 @@ impl ContextEngine {
         if compiled.is_none() {
             return Ok(());
         }
-        if view.activation.as_ref().is_none_or(|focus| {
-            crate::memory::stable_thread_id(&focus.root_turn_id) != manifest.thread_id
-        }) {
+        let focus = view
+            .activation
+            .as_ref()
+            .ok_or("Custom may only be mounted in its bound Thread's Evaluation Context")?;
+        let store = self
+            .session_store
+            .as_ref()
+            .ok_or("Custom mount requires a persistent SessionStore")?;
+        // Scheduled Threads have explicit durable IDs that are not hashes of
+        // their synthetic roots. Neither a root-derived guess nor the bounded
+        // model-facing Thread directory is an authorization source. Resolve
+        // the exact immutable identity and its current generation instead.
+        let (thread, activation) = tokio::try_join!(
+            store.get_thread_by_root(&focus.root_turn_id),
+            store.get_thread_activation(&focus.activation_id),
+        )?;
+        let thread = thread.ok_or("Custom mount Thread does not exist")?;
+        let activation = activation.ok_or("Custom mount Activation does not exist")?;
+        if manifest.thread_id != thread.id
+            || manifest.agent_id != thread.agent_id
+            || manifest.initiating_principal_id != thread.initiating_principal_id
+            || activation.agent_id != thread.agent_id
+            || activation.context_id != thread.context_id
+            || activation.session_id != thread.session_id
+            || activation.initiating_principal_id != thread.initiating_principal_id
+            || activation.root_turn_id != thread.root_turn_id
+            || activation.generation != thread.generation
+            || view.context_id != thread.context_id
+            || view.active_session_id != thread.session_id
+            || focus.session_id != activation.session_id
+            || focus.trigger_event_id != activation.trigger_event_id
+            || focus.trigger_kind != activation.trigger_kind
+            // A known persisted Principal is authoritative. Legacy unknown
+            // bindings may have model-visible Event attribution fallback, but
+            // that fallback never adds scoped Custom to the durable manifest.
+            || activation.initiating_principal_id.as_ref().is_some_and(|principal| {
+                focus.principal_id.as_ref() != Some(principal)
+                    || view.active_principal_id.as_ref() != Some(principal)
+            })
+        {
             return Err(
                 "Custom may only be mounted in its bound Thread's Evaluation Context".into(),
             );
@@ -20780,6 +20817,7 @@ mod tests {
                     entries: vec![],
                 },
             )
+            .await
             .unwrap();
         assert_eq!(
             view.sexpr, legacy,
@@ -20812,6 +20850,7 @@ mod tests {
         let stable_rom = manifest.context_custom().unwrap().unwrap().to_string();
         engine
             .mount_thread_custom(&mut view, manifest.clone())
+            .await
             .unwrap();
         let projected = serde_json::to_string(&view).unwrap();
         assert!(!projected.contains("DO_NOT_PROJECT_EDITOR_TEXT"));
@@ -20830,6 +20869,7 @@ mod tests {
         let mut historical_view = view.clone();
         engine
             .mount_thread_custom(&mut historical_view, historical)
+            .await
             .unwrap();
         assert_eq!(
             historical_view.sexpr,
@@ -21297,6 +21337,361 @@ mod tests {
             Some("thread-b"),
         );
         assert_eq!(denied.authorization_mode, "scoped_denied");
+    }
+
+    #[tokio::test]
+    async fn custom_guard_uses_exact_persisted_scope_even_when_current_thread_is_not_projected() {
+        use crate::context::{CustomKey, PutCustomCommand};
+        use crate::memory::{CustomStore as _, ThreadControlAction, ThreadMutation};
+
+        let directory = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(
+                directory
+                    .path()
+                    .join("custom-guard.sqlite")
+                    .to_str()
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        for (agent, context, session) in [
+            ("guard-agent", "guard-context", "guard-session"),
+            ("foreign-agent", "foreign-context", "foreign-session"),
+        ] {
+            store
+                .create_agent_bundle(
+                    NewAgent {
+                        id: agent.into(),
+                        title: agent.into(),
+                        root_context_id: context.into(),
+                    },
+                    NewCognitiveContext {
+                        id: context.into(),
+                        agent_id: agent.into(),
+                        title: context.into(),
+                    },
+                    NewSession {
+                        id: session.into(),
+                        agent_id: agent.into(),
+                        context_id: context.into(),
+                        parent_session_id: None,
+                        title: session.into(),
+                        mount_kind: SessionMountKind::NewBlankContext,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        for principal in ["guard-alice", "guard-bob"] {
+            store
+                .ensure_principal(NewPrincipal {
+                    id: principal.into(),
+                    provider_id: "test".into(),
+                    assurance: "verified".into(),
+                    display_name: None,
+                })
+                .await
+                .unwrap();
+        }
+        store
+            .put_custom(
+                PutCustomCommand {
+                    command_id: "guard-profile".into(),
+                    expected_revision: 0,
+                    key: CustomKey {
+                        agent_id: "guard-agent".into(),
+                        namespace: "example.agent".into(),
+                        principal_scope: None,
+                    },
+                    schema_tag: "example/v1".into(),
+                    body_sexpr: "(factory (name Echo))".into(),
+                    authoring_state_sexpr: None,
+                    enabled: true,
+                },
+                "trusted-test-host",
+            )
+            .await
+            .unwrap();
+
+        async fn new_activation(
+            store: &SqliteStore,
+            id: &str,
+            root: &str,
+            agent: &str,
+            context: &str,
+            session: &str,
+            principal: Option<&str>,
+        ) -> ThreadActivationRecord {
+            let trigger = format!("trigger-{id}");
+            store.append(Event::new(trigger.clone(), "Runtime-Scheduler".into(), TYPE_TOOL_OUTPUT.into(), "chat/schedule_due".into(),
+                json!({"context_id":context,"session_id":session,"root_turn_id":root,"principal_id":principal,"text":"Read only fixture"}).as_object().unwrap().clone(),
+            )).await.unwrap();
+            let event = store
+                .query(QueryFilter {
+                    event_id: Some(trigger.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .pop()
+                .unwrap();
+            store
+                .ensure_thread_activation(NewThreadActivation {
+                    id: id.into(),
+                    agent_id: agent.into(),
+                    context_id: context.into(),
+                    session_id: session.into(),
+                    initiating_principal_id: principal.map(str::to_owned),
+                    trigger_event_id: trigger,
+                    trigger_sequence: event.sequence.unwrap(),
+                    trigger_kind: "chat/schedule_due".into(),
+                    parent_activation_id: None,
+                    root_turn_id: root.into(),
+                })
+                .await
+                .unwrap()
+        }
+        for (thread, root, principal) in [
+            (
+                "explicit-guard-thread",
+                "scheduled_root_guard",
+                Some("guard-alice"),
+            ),
+            (
+                "foreign-guard-thread",
+                "scheduled_root_foreign_guard",
+                Some("guard-alice"),
+            ),
+            ("legacy-guard-thread", "scheduled_root_legacy_guard", None),
+        ] {
+            store
+                .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
+                    id: thread.into(),
+                    agent_id: "guard-agent".into(),
+                    context_id: "guard-context".into(),
+                    session_id: "guard-session".into(),
+                    initiating_principal_id: principal.map(str::to_owned),
+                    root_turn_id: root.into(),
+                    kind: ThreadKind::Execution,
+                    executor_kind: "self".into(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision: ThreadSupervision::legacy(),
+                    model_alias: None,
+                    reasoning_effort: None,
+                })
+                .await
+                .unwrap();
+        }
+        let activation = new_activation(
+            &store,
+            "guard-activation",
+            "scheduled_root_guard",
+            "guard-agent",
+            "guard-context",
+            "guard-session",
+            Some("guard-alice"),
+        )
+        .await;
+        let legacy = new_activation(
+            &store,
+            "legacy-guard-activation",
+            "scheduled_root_legacy_guard",
+            "guard-agent",
+            "guard-context",
+            "guard-session",
+            None,
+        )
+        .await;
+        let engine = ContextEngine::new(
+            store.clone() as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_session_store(store.clone() as Arc<dyn SessionStore>);
+        let view = engine
+            .build_context_encoding_for_activation("guard-context", &activation, &HashSet::new())
+            .await
+            .unwrap();
+        let manifest = store
+            .bind_thread_custom("explicit-guard-thread")
+            .await
+            .unwrap();
+        assert_ne!(
+            manifest.thread_id,
+            crate::memory::stable_thread_id(&activation.root_turn_id)
+        );
+        let mut unprojected = view.clone();
+        unprojected.threads.clear();
+        engine
+            .mount_thread_custom(&mut unprojected, manifest.clone())
+            .await
+            .unwrap();
+        assert!(unprojected.sexpr.contains("(factory (name Echo))"));
+
+        // Event attribution is not an additional grant. A legacy unbound
+        // Principal can still mount only its real agent-scoped manifest.
+        let mut legacy_view = engine
+            .build_context_encoding_for_activation("guard-context", &legacy, &HashSet::new())
+            .await
+            .unwrap();
+        legacy_view.activation.as_mut().unwrap().principal_id = Some("guard-bob".into());
+        legacy_view.active_principal_id = Some("guard-bob".into());
+        legacy_view.threads.clear();
+        let legacy_manifest = store
+            .bind_thread_custom("legacy-guard-thread")
+            .await
+            .unwrap();
+        assert!(legacy_manifest.initiating_principal_id.is_none());
+        assert!(legacy_manifest
+            .entries
+            .iter()
+            .all(|entry| entry.key.principal_scope.is_none()));
+        engine
+            .mount_thread_custom(&mut legacy_view, legacy_manifest)
+            .await
+            .unwrap();
+
+        let mut wrong_thread_view = view.clone();
+        let wrong_thread_manifest = store
+            .bind_thread_custom("foreign-guard-thread")
+            .await
+            .unwrap();
+        assert!(engine
+            .mount_thread_custom(&mut wrong_thread_view, wrong_thread_manifest)
+            .await
+            .is_err());
+        assert_eq!(wrong_thread_view.sexpr, view.sexpr);
+        assert!(wrong_thread_view.custom.is_none());
+        for (field, agent, context, session, principal) in [
+            (
+                "agent",
+                "foreign-agent",
+                "guard-context",
+                "guard-session",
+                "guard-alice",
+            ),
+            (
+                "context",
+                "guard-agent",
+                "foreign-context",
+                "guard-session",
+                "guard-alice",
+            ),
+            (
+                "session",
+                "guard-agent",
+                "guard-context",
+                "foreign-session",
+                "guard-alice",
+            ),
+            (
+                "principal",
+                "guard-agent",
+                "guard-context",
+                "guard-session",
+                "guard-bob",
+            ),
+        ] {
+            // Intentionally crossed durable rows model an embedded caller's
+            // mistaken route. They are isolated guard fixtures, not proof of
+            // successful Runtime admission for an invalid identity.
+            let crossed = new_activation(
+                &store,
+                &format!("crossed-{field}"),
+                &activation.root_turn_id,
+                agent,
+                context,
+                session,
+                Some(principal),
+            )
+            .await;
+            let mut crossed_view = view.clone();
+            let focus = crossed_view.activation.as_mut().unwrap();
+            focus.activation_id = crossed.id;
+            focus.session_id = crossed.session_id;
+            focus.principal_id = crossed.initiating_principal_id;
+            focus.trigger_event_id = crossed.trigger_event_id;
+            crossed_view.context_id = context.into();
+            crossed_view.active_session_id = session.into();
+            crossed_view.active_principal_id = Some(principal.into());
+            assert!(
+                engine
+                    .mount_thread_custom(&mut crossed_view, manifest.clone())
+                    .await
+                    .is_err(),
+                "foreign persisted {field} must not mount"
+            );
+            assert_eq!(crossed_view.sexpr, view.sexpr);
+            assert!(crossed_view.custom.is_none());
+        }
+        for field in [
+            "context",
+            "session",
+            "principal",
+            "trigger",
+            "activation",
+            "root",
+        ] {
+            let mut crossed_view = view.clone();
+            match field {
+                "context" => crossed_view.context_id = "foreign-context".into(),
+                "session" => crossed_view.active_session_id = "foreign-session".into(),
+                "principal" => crossed_view.active_principal_id = Some("guard-bob".into()),
+                "trigger" => {
+                    crossed_view.activation.as_mut().unwrap().trigger_event_id =
+                        "foreign-trigger".into()
+                }
+                "activation" => {
+                    crossed_view.activation.as_mut().unwrap().activation_id =
+                        "missing-activation".into()
+                }
+                "root" => {
+                    crossed_view.activation.as_mut().unwrap().root_turn_id = "missing-root".into()
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                engine
+                    .mount_thread_custom(&mut crossed_view, manifest.clone())
+                    .await
+                    .is_err(),
+                "foreign projected {field} must fail closed"
+            );
+            assert_eq!(crossed_view.sexpr, view.sexpr);
+            assert!(crossed_view.custom.is_none());
+        }
+        let current = store
+            .get_thread_by_root(&activation.root_turn_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let cancelled = store
+            .control_thread(
+                &current.id,
+                current.revision,
+                ThreadControlAction::Cancel,
+                Some("isolated generation guard"),
+                Some("test-host"),
+            )
+            .await
+            .unwrap();
+        let ThreadMutation::Updated(cancelled) = cancelled else {
+            panic!("actual generation fence did not advance")
+        };
+        assert_eq!(cancelled.generation, activation.generation + 1);
+        let mut stale_view = view.clone();
+        assert!(
+            engine
+                .mount_thread_custom(&mut stale_view, manifest)
+                .await
+                .is_err(),
+            "actual old Activation cannot mount after a real generation fence"
+        );
+        assert_eq!(stale_view.sexpr, view.sexpr);
+        assert!(stale_view.custom.is_none());
     }
 
     #[test]
