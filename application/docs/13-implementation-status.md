@@ -36,6 +36,12 @@ Timer 红测的首次编译被 ENOSPC 中断，尚未获得该负测的行为结
 
 新增 `ThreadGroupFilter.generation: Option<u64>` 不加表／列／迁移／HTTP 字段；外部 Rust 调用者若写满旧 struct literal 而未使用 `..Default::default()`，需补该可选字段，这是源码兼容边界，不冒称完全零 API 变化。该代码阶段已达到确定性行为门禁，下一阶段才是最终构建、同一原 Runtime 更新与原 UI 真实模型验收；两项目标仍未关闭。原 Runtime SQLite 已在线备份 `/tmp/morphz-owned-group-predeploy.rn4hZa/runtime.sqlite`，无在途执行且唯一原提醒仍在 2026-10-23T01:00:00Z。为新 integration 链接，仅另删本轮旧 10:56 静态编译缓存 `libmorphz-021d5f4da39a7917.rlib`，最新 library、所有测试可执行文件与日志保留。
 
+等待修复已聚焦本地提交 `07fc3b39`，未推送；递归 rustfmt 误带的四个无关纯格式文件已精确去掉，网站等原 dirty 工作保留。最终 binary 构建与 `remote-store` 编译均通过；原 `attempt_loop::test_no_reply_wait_without_pending_runtime_fact_is_corrected` 实际 Runtime 1/1 通过，现有 libtest 的语法／phase／owned Group 守门另 7/7 通过，不把它们冒称 Dialogue 专项端到端。日志分别为 `wait-final-build.log`、`wait-remote-store-check.log`、`wait-old-no-pending-green.log`、`wait-existing-boundaries-direct-binary-green.log`，均在上述 regression 目录。integration test 自动重链接后，最终部署 binary SHA256 为 `9901fef20c46affb779092d9efe73a7d7636ef9b1487cf9a905c9000f55cb56e`，不沿用先前独立 build 的映像哈希。
+
+再次核原在途 Job／Plan／Activation、pending Signal／recall outbox 均零后，正常 TERM 原 Runtime 24938；同一 launcher、原 root／配置／私有 key 源及 18089 重开为 33840，launcher 明确 ready、实际端口监听一致。原未来提醒 id／generation／due／pending 不变，重开后在途与 outbox 仍零，未发送新 Human 输入或模型验收任务。Computer Use 对原 App 的最新检查明确 Mac locked，已请求用户手动解锁，不修改锁屏设置、不经 API 构造 Human 输入。最后严格原窗口验收仍待，两个目标不关闭。
+
+独立审查发现准备的观察器只统计协议拒绝却未纳入最终 PASS，已补 rejected／invalid_wait／protocol repair 为零、真实请求与持久 Thread 的 v2／generation、正式注解的有效 producer scope、Group／Timer 等门禁；合法 reasoning continuation 的 request ID 后缀只报告，不误当协议修复或硬设总模型请求为 8。两份纯门禁自测经 root 独立执行 17/17 通过，非生产行为或原窗验收替身。新基线 `/tmp/morphz-original-four-node-wait-regression.euab8K/baseline-before-send.json` 时间为 `2026-10-03T03:38:53.020Z`，实际 Mind 28／14 Frames／6 protected／6244 Events／Profile 80 versions，旧部署前基线另存；授权 Session GET 200。观察器没有模型请求或直接原库写，GET 的服务端正常 due-Frame housekeeping 不能冒称绝对零副作用；尚未启动新输入的 observer。
+
 该首发守门的实际挂载 App／Human IPC／Host／Platform 回归 2/2、零跳过（`/tmp/morphz-draft-conversation-directories-verified.log`），验证逐字正文、稳定 input ID、低 effort、刷新恢复、旧授权不变和首次提交后恢复目录读取。真实 Platform 入口专项 1/1（`/tmp/morphz-draft-directory-ingress-test.log`）；生产构建与严格类型通过（`/tmp/morphz-draft-directory-original-build-fixed.log`）。首轮构建暴露 family 夹具的可选 Session ID 未收窄，已增加不存在时的 404 守门，不用断言强转。中间 UI 测试误把 effort／正文断言放到非权威投影字段，已改核实际 Runtime activation／text；失败日志保留，不降低生产授权检查。
 
 原 UI 提案请求已于本地 02:55 实际发送，保存了原正文、轻量 effort，进入 Script discussion；候选仍为零。内部模型请求认证失败，尚未收到唯一提案，因此尚未发送简短确认，不把新 TEST Session 的创建当作剧本交付完成。原窗口四节点工具活动验收仍未开始；两项完整验收前目标保持进行中。
