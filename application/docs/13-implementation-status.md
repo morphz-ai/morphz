@@ -1,5 +1,22 @@
 # 桌面能力实施记录
 
+## 2026-10-04 检查器回归接回当前实际界面
+
+本批只更新 `inspector.spec.ts`：真实对象创建及原文回读后显式刷新其受控 workspace
+事件夹具；种对象先进入实际应用 Host，恢复 Browser 则走真实返回入口，不重置数据库。
+原批注菜单、48／52px 标题、356／300px 调宽、340px overlay、639px 画布、
+键盘／焦点、两工作面的准确执行详情和各自草稿保留。设定页的唯一自定义讲话风格
+textarea 是实际 ProfileEditor，不是第二输入框；该页严格限定这一项，其余页面
+仍要求 textarea 为零，所有检查器均禁止 AI 输入及 composer。
+
+已撤回的理解入口不伪造恢复；主体 tab 本来是全局选择，两个现场的执行详情恢复
+不能冒称所有 tab 按现场隔离。显式打开批注也不证明通用右栏开关恢复批注选择。
+六项实际回归全部通过，属于同一次 60/60 完整相关矩阵；没有 skip、重试或延长
+timeout，没有生产界面变更。独立只读审查、冻结负基线及原红输出保留，见
+`/tmp/morphz-control-legacy-baseline.ohSJ7t/test-migration-freeze.md` 与
+`/tmp/morphz-control-owner-verification.LhN5kb`。当前原 App 最终复验仍待解锁，
+不把这些隔离测试称为整个前端架构完成。
+
 ## 2026-10-04 收起 Dock 的键盘 Launcher 与真实底栏回归
 
 收起输入后，原生 popover 转移焦点会使交流祖先不再匹配 `:focus-within`；
