@@ -7,6 +7,43 @@ import {
   type ApplicationIdentity,
 } from "./application-identity.js";
 
+/** One collection identity for both launch surfaces, distinct from workspace
+ * navigation. Its modules reuse app palettes, not a second color registry. */
+export function ApplicationLauncherIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="application-launcher-symbol"
+      fill="currentColor"
+      stroke="none"
+      aria-hidden="true"
+      focusable="false"
+    >
+      {(["reader", "studio", "browser"] as const).map((identity, index) => (
+        <rect
+          key={identity}
+          x={index === 2 ? "14" : "3.5"}
+          y={index === 0 ? "3.5" : "14"}
+          width="6.5"
+          height="6.5"
+          rx="1.8"
+          data-launcher-module={identity}
+          fill={`light-dark(${applicationIdentities[identity].symbol[0]}, ${applicationIdentities[identity].symbol[1]})`}
+        />
+      ))}
+      <rect
+        x="14"
+        y="3.5"
+        width="6.5"
+        height="6.5"
+        rx="1.8"
+        transform="rotate(45 17.25 6.75)"
+        fill="var(--accent-strong, currentColor)"
+      />
+    </svg>
+  );
+}
+
 function ApplicationSymbol({ identity }: { identity: ApplicationIdentity }) {
   const palette = applicationIdentities[identity];
   return (
@@ -18,10 +55,12 @@ function ApplicationSymbol({ identity }: { identity: ApplicationIdentity }) {
       strokeLinejoin="round"
       className="application-symbol"
       data-application-identity={identity}
-      style={{
-        "--application-symbol-light": palette.symbol[0],
-        "--application-symbol-dark": palette.symbol[1],
-      } as CSSProperties}
+      style={
+        {
+          "--application-symbol-light": palette.symbol[0],
+          "--application-symbol-dark": palette.symbol[1],
+        } as CSSProperties
+      }
       aria-hidden="true"
       focusable="false"
     >

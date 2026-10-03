@@ -1,13 +1,14 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import { Grid2X2, Pin, PinOff } from "lucide-react";
+import { Pin, PinOff } from "lucide-react";
 import type { ApplicationCatalogEntry } from "../../../packages/core/src/applications.js";
 import { ComposerOptions } from "./ComposerOptions.js";
-import { AppIcon } from "./ApplicationIcon.js";
+import { AppIcon, ApplicationLauncherIcon } from "./ApplicationIcon.js";
 import {
   applicationKey,
   pinnedApplications,
 } from "./application-dock-model.js";
 import "./application-dock.css";
+import { useApplicationDockInteraction } from "./use-application-dock.js";
 
 export function ApplicationDock({
   applications,
@@ -53,6 +54,17 @@ export function ApplicationDock({
   // A project-local catalog can hide pins belonging to another work scene.
   // Editing one visible shortcut must not remove those saved preferences.
   const keys = pinned ?? fixed.map(applicationKey);
+  const interaction = useApplicationDockInteraction({
+    keys,
+    available: applications.map(applicationKey),
+    busy,
+    compact,
+    shortcuts,
+    onPinned,
+  });
+  const insertionKeys = fixed
+    .map(applicationKey)
+    .filter((key) => key !== interaction.preview?.key);
   async function launch(app: ApplicationCatalogEntry) {
     if (launching.current) return;
     launching.current = true;
@@ -72,9 +84,17 @@ export function ApplicationDock({
       className="application-dock"
       aria-label="应用 Dock"
       data-compact={compact || undefined}
+      data-dragging={interaction.preview ? true : undefined}
+      {...interaction.handlers}
     >
       <div className="application-dock-buttons" ref={shortcuts}>
-        <div className="application-dock-pins" ref={pins}>
+        <div
+          className="application-dock-pins"
+          ref={pins}
+          data-drop-end={
+            interaction.preview?.index === insertionKeys.length || undefined
+          }
+        >
           {fixed.map((app) => (
             <button
               className="application-dock-shortcut"
@@ -83,6 +103,20 @@ export function ApplicationDock({
               title={app.title}
               disabled={busy}
               aria-pressed={activeKey === applicationKey(app)}
+              aria-description="拖动调整顺序，拖出仅移除快捷入口；也可按 Alt 加左右方向键排序，Delete 取消固定"
+              aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight Delete"
+              data-dock-key={applicationKey(app)}
+              data-dock-source="dock"
+              data-drag-source={
+                interaction.preview?.key === applicationKey(app) || undefined
+              }
+              data-drop-before={
+                interaction.preview?.index ===
+                  insertionKeys.indexOf(applicationKey(app)) || undefined
+              }
+              onKeyDown={(event) =>
+                interaction.keyboard(event, applicationKey(app))
+              }
               onClick={() => void launch(app)}
             >
               <AppIcon app={app} />
@@ -93,7 +127,7 @@ export function ApplicationDock({
           triggerRef={launcher}
           label="全部应用"
           menuLabel="选择应用"
-          triggerIcon={<Grid2X2 />}
+          triggerIcon={<ApplicationLauncherIcon />}
           triggerClassName="application-dock-shortcut"
           menuClassName={`application-dock-menu application-dock-menu-${Math.min(4, Math.max(1, applications.length))}`}
           // Opening the Launcher does not select the first app or reveal its
@@ -101,6 +135,7 @@ export function ApplicationDock({
           initialFocus="panel"
           align="center"
           horizontalAnchorRef={shortcuts}
+          onOpenChange={interaction.setMenuOpen}
           options={[]}
           content={(close) => (
             <>
@@ -123,6 +158,13 @@ export function ApplicationDock({
                         aria-label={`打开${app.title}`}
                         title={app.title}
                         disabled={busy}
+                        data-dock-key={key}
+                        data-dock-source="launcher"
+                        data-drag-source={
+                          interaction.preview?.key === key || undefined
+                        }
+                        aria-description="拖到 Dock 固定；也可使用旁边的图钉"
+                        onKeyDown={(event) => interaction.keyboard(event, key)}
                         onClick={() => {
                           close();
                           void launch(app);
@@ -172,6 +214,18 @@ export function ApplicationDock({
           {error}
         </p>
       )}
+      {interaction.preview && (
+        <span className="application-dock-drag-hint" aria-hidden="true">
+          {interaction.preview.removing
+            ? "移除快捷入口（保留应用）"
+            : interaction.preview.index !== null
+              ? "松开固定到此处"
+              : "拖到 Dock 固定"}
+        </span>
+      )}
+      <span className="application-dock-announcement" role="status">
+        {interaction.announcement}
+      </span>
     </div>
   );
 }

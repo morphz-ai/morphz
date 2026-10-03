@@ -8,7 +8,10 @@ import {
   scriptStudioApplication,
   objectsApplication,
 } from "../packages/core/src/applications.js";
-import { AppIcon } from "../apps/web/src/ApplicationIcon.js";
+import {
+  AppIcon,
+  ApplicationLauncherIcon,
+} from "../apps/web/src/ApplicationIcon.js";
 import {
   applicationIdentity,
   applicationIdentities,
@@ -108,4 +111,21 @@ test("unknown application keeps its existing semantic symbol", () => {
     markup,
     /application-emblem|application-symbol|linearGradient/,
   );
+});
+
+test("launcher has its own collection symbol without impersonating app identity", () => {
+  const markup = renderToStaticMarkup(createElement(ApplicationLauncherIcon));
+  assert.match(markup, /class="application-launcher-symbol"/);
+  assert.match(markup, /viewBox="0 0 24 24"/);
+  assert.match(markup, /aria-hidden="true" focusable="false"/);
+  assert.match(markup, /fill="currentColor" stroke="none"/);
+  assert.match(markup, /var\(--accent-strong, currentColor\)/);
+  for (const identity of ["reader", "studio", "browser"] as const) {
+    assert.match(markup, new RegExp(`data-launcher-module="${identity}"`));
+    const palette = applicationIdentities[identity].symbol;
+    assert.ok(markup.includes(`light-dark(${palette[0]}, ${palette[1]})`));
+  }
+  assert.equal([...markup.matchAll(/<rect /g)].length, 4);
+  assert.doesNotMatch(markup, /application-emblem|data-application-identity/);
+  assert.doesNotMatch(markup, /<title|role="button"|tabindex|<animate/i);
 });

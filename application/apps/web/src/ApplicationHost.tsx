@@ -6,13 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  Film,
-  Grid2X2,
-  Upload,
-  X,
-  PanelLeftClose,
-} from "lucide-react";
+import { Film, Upload, X, PanelLeftClose } from "lucide-react";
 import {
   applicationManifestSchema,
   applicationDescription,
@@ -51,7 +45,7 @@ import { Reader, type ReadingCompose } from "./Reader.js";
 import { authorizedApplications } from "./application-dock-model.js";
 import type { ReadingContextChange } from "./ReadingContext.js";
 import type { ReaderTarget } from "../../../packages/core/src/reader.js";
-import { AppIcon } from "./ApplicationIcon.js";
+import { AppIcon, ApplicationLauncherIcon } from "./ApplicationIcon.js";
 
 export function ApplicationHost({
   client,
@@ -245,7 +239,7 @@ export function ApplicationHost({
         aria-pressed={!active}
         onClick={() => onActivate(null)}
       >
-        <Grid2X2 />
+        <ApplicationLauncherIcon />
       </button>
       {!active && (
         <h1 className="toolbar-title">

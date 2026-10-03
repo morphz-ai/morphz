@@ -11,6 +11,7 @@ import {
 } from "./project-conversation-fixture.js";
 import { openInput } from "./interaction-helpers.js";
 import { openSettings } from "./settings-helpers.js";
+import { applicationIdentities } from "../apps/web/src/application-identity.js";
 
 const applications = [
   { app: browserApplication, identity: "browser" },
@@ -193,6 +194,64 @@ test("Launcher／工作台共享三个应用身份；四主题亮暗不串色，
       await expect(page.locator(".app")).toHaveAttribute("data-accent", accent);
       await finishColorTransitions(page);
       const launcher = await openLauncher(page);
+      const launcherTrigger = page.getByRole("button", {
+        name: "全部应用",
+        exact: true,
+      });
+      await expectBox(launcherTrigger, 32);
+      const launcherSymbol = launcherTrigger.locator(
+        "svg.application-launcher-symbol",
+      );
+      await expectBox(launcherSymbol, 14);
+      await expect(launcherSymbol).toHaveAttribute("aria-hidden", "true");
+      await expect(launcherSymbol).toHaveAttribute("focusable", "false");
+      await expect(launcherSymbol.locator("rect")).toHaveCount(4);
+      const collectionPaint = await launcherSymbol.evaluate((node) => {
+        const style = getComputedStyle(node);
+        // Custom properties keep their declared syntax; resolve the accent as
+        // a real color before comparing it with computed SVG paint.
+        const probe = document.createElement("span");
+        probe.style.color = "var(--accent-strong)";
+        node.parentElement!.append(probe);
+        const accent = getComputedStyle(probe).color;
+        probe.remove();
+        return {
+          color: style.color,
+          accent,
+          modules: [...node.querySelectorAll("rect")].map(
+            (rect) => getComputedStyle(rect).fill,
+          ),
+        };
+      });
+      const moduleColors = ["reader", "studio", "browser"].map(
+        (identity) =>
+          applicationIdentities[identity as keyof typeof applicationIdentities]
+            .symbol[appearance === "light" ? 0 : 1],
+      );
+      const resolvedModuleColors = await page.evaluate(
+        (colors) =>
+          colors.map((color) => {
+            const probe = document.createElement("span");
+            probe.style.color = color;
+            document.body.append(probe);
+            const result = getComputedStyle(probe).color;
+            probe.remove();
+            return result;
+          }),
+        moduleColors,
+      );
+      expect(collectionPaint.modules.slice(0, 3)).toEqual(resolvedModuleColors);
+      expect(collectionPaint.modules[3]).toBe(collectionPaint.accent);
+      const workspaceLauncher = page
+        .getByRole("button", {
+          name: "应用启动台",
+          exact: true,
+        })
+        .locator("svg.application-launcher-symbol");
+      await expect(workspaceLauncher).toHaveAttribute("aria-hidden", "true");
+      expect(await workspaceLauncher.innerHTML()).toBe(
+        await launcherSymbol.innerHTML(),
+      );
       const artSignatures: string[] = [];
       const palettes: string[] = [];
       for (const { app, identity } of applications) {

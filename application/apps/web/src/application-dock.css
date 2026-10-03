@@ -42,6 +42,7 @@
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+  position: relative;
 }
 .application-dock-pins:empty {
   display: none;
@@ -77,6 +78,7 @@
   color: var(--text-secondary);
   background: var(--surface-raised);
   box-shadow: inset 0 0 0 1px var(--line);
+  position: relative;
 }
 .app
   .application-dock-shortcut:hover:not(:disabled):not([aria-pressed="true"]) {
@@ -92,6 +94,69 @@
   width: 14px;
   height: 14px;
   object-fit: contain;
+}
+.app .application-dock-shortcut[data-dock-magnified] svg,
+.app .application-dock-shortcut[data-dock-magnified] img {
+  transform: translateY(calc(-1 * var(--dock-lift, 0px)))
+    scale(var(--dock-scale, 1));
+  transition: transform 110ms ease-out;
+}
+.application-dock[data-dragging] .application-dock-shortcut svg,
+.application-dock[data-dragging] .application-dock-shortcut img {
+  transform: none;
+  transition: none;
+}
+.application-dock-shortcut[data-drag-source],
+.application-dock-launch[data-drag-source] {
+  opacity: 0.45;
+}
+.application-dock-shortcut[data-drop-before]::before,
+.application-dock-pins[data-drop-end]::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent-strong);
+  pointer-events: none;
+}
+.application-dock-shortcut[data-drop-before]::before {
+  left: 0;
+}
+.application-dock-pins[data-drop-end]::after {
+  right: 0;
+}
+.application-dock-drag-hint {
+  position: absolute;
+  bottom: 100%;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--ink);
+  white-space: nowrap;
+  font-size: 12px;
+  pointer-events: none;
+}
+.application-dock-announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+@media (hover: none), (pointer: coarse), (prefers-reduced-motion: reduce) {
+  .app .application-dock-shortcut[data-dock-magnified] svg,
+  .app .application-dock-shortcut[data-dock-magnified] img {
+    transform: none;
+    transition: none;
+  }
+}
+:root[data-app-motion="reduce"] .app .application-dock-shortcut svg,
+:root[data-app-motion="reduce"] .app .application-dock-shortcut img {
+  transform: none;
+  transition: none;
 }
 .application-dock-error {
   margin: 4px 0 0;
