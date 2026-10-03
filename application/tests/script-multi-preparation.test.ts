@@ -165,6 +165,7 @@ async function fixture(backend: "sqlite" | "postgres", withSource = false) {
     state,
     generations,
     filename,
+    schema,
     get store() {
       return store;
     },
@@ -738,3 +739,314 @@ test("SQLite 实际 v6 已准备输入升级保留单目标 ID、原回执哈希
     await f.close();
   }
 });
+
+test(
+  "PostgreSQL 实际 populated v6 准备行升级保持旧哈希、固定引用、冷恢复与版本权限守门",
+  { skip: !process.env.MORPHZ_TEST_POSTGRES_URL },
+  async () => {
+    const f = await fixture("postgres");
+    const admin = new Pool({
+      connectionString: process.env.MORPHZ_TEST_POSTGRES_URL,
+    });
+    try {
+      assert.match(f.schema, /^script_multi_[a-f0-9]{32}$/);
+      const generation = {
+        ...f.generations[0]!,
+        references: [{ itemId: targets[1]!, revision: 1 }],
+      };
+      const command = {
+        credential: "agent",
+        commandId: "legacy-prepare",
+        ...scope,
+        generation,
+      };
+      const before = await f.store.prepareGeneration(command);
+      const formalBefore = await f.store.readProduction({
+        credential: "human",
+        productionId: scope.productionId,
+      });
+      await f.closeStore();
+
+      // Only this random schema in an explicitly supplied TEST database is
+      // reconstructed as v6. Production migration code is never bypassed.
+      await admin.query(
+        `DROP INDEX "${f.schema}".script_preparations_by_input_target`,
+      );
+      await admin.query(
+        `DROP INDEX "${f.schema}".script_preparations_by_input_order`,
+      );
+      await admin.query(
+        `ALTER TABLE "${f.schema}".script_preparations DROP COLUMN task_request`,
+      );
+      await admin.query(
+        `UPDATE "${f.schema}".script_schema_version SET version=6,schema_sha256=$1`,
+        ["c8eaf0cd6c5f75c86a49793b94bdba4039e3578f04083cbff2ce65839987dca7"],
+      );
+      const legacy = async () => ({
+        preparations: (
+          await admin.query(
+            `SELECT * FROM "${f.schema}".script_preparations ORDER BY collection_ordinal,preparation_id`,
+          )
+        ).rows,
+        references: (
+          await admin.query(
+            `SELECT * FROM "${f.schema}".script_preparation_references ORDER BY preparation_id,ordinal`,
+          )
+        ).rows,
+        receipts: (
+          await admin.query(
+            `SELECT * FROM "${f.schema}".script_command_receipts ORDER BY command_id`,
+          )
+        ).rows,
+      });
+      const legacyRows = await legacy();
+      assert.equal(legacyRows.preparations.length, 1);
+      assert.equal(legacyRows.preparations[0]!.preparation_id, scope.inputId);
+      assert.equal("task_request" in legacyRows.preparations[0]!, false);
+      assert.equal(legacyRows.references.length, 1);
+      const beforeHash = legacyRows.receipts.find(
+        (receipt) => receipt.command_id === command.commandId,
+      )?.request_hash;
+      const expectedHash = createHash("sha256")
+        .update(
+          JSON.stringify({
+            tenantId: "tenant-one",
+            principalId: "human-one",
+            actantId: "agent-one",
+            kind: "agent",
+            runtimeInputId: scope.inputId,
+            projectId: "project-one",
+            productionId: scope.productionId,
+            inputId: scope.inputId,
+            submitted: generation,
+          }),
+        )
+        .digest("hex");
+      assert.equal(
+        beforeHash,
+        expectedHash,
+        "Use the exact old single-target hash, not a new batch hash",
+      );
+      assert.equal(
+        Number(
+          (
+            await admin.query(
+              `SELECT version FROM "${f.schema}".script_schema_version`,
+            )
+          ).rows[0]!.version,
+        ),
+        6,
+      );
+
+      for (let reopen = 0; reopen < 2; reopen++) {
+        // Initialize the actual new Store over populated v6, then cold reopen
+        // v7; both paths must return the original receipt and frozen versions.
+        await f.reopen();
+        assert.deepEqual(await f.store.prepareGeneration(command), before);
+        assert.deepEqual(
+          await f.store.prepareGeneration({
+            ...command,
+            commandId: "recover-same-input",
+          }),
+          before,
+        );
+        const read = await f.store.readPreparation({
+          credential: "agent",
+          ...scope,
+        });
+        assert.equal(read?.preparationId, scope.inputId);
+        assert.equal(read?.task, "");
+        assert.deepEqual(read?.generations, [generation]);
+        assert.deepEqual(
+          await f.store.readProduction({
+            credential: "human",
+            productionId: scope.productionId,
+          }),
+          formalBefore,
+        );
+        const migrated = await legacy();
+        assert.deepEqual(migrated.references, legacyRows.references);
+        assert.deepEqual(migrated.receipts, legacyRows.receipts);
+        assert.deepEqual(
+          migrated.preparations.map(({ task_request: task, ...row }) => {
+            assert.equal(task, "");
+            return row;
+          }),
+          legacyRows.preparations,
+        );
+        assert.equal(
+          Number(
+            (
+              await admin.query(
+                `SELECT version FROM "${f.schema}".script_schema_version`,
+              )
+            ).rows[0]!.version,
+          ),
+          7,
+        );
+        assert.equal(
+          (
+            await admin.query(
+              `SELECT request_hash FROM "${f.schema}".script_command_receipts WHERE command_id=$1`,
+              [command.commandId],
+            )
+          ).rows[0]!.request_hash,
+          beforeHash,
+        );
+        assert.equal(
+          (
+            await admin.query(
+              "SELECT indexname FROM pg_indexes WHERE schemaname=$1 AND indexname IN ('script_preparations_by_input_target','script_preparations_by_input_order')",
+              [f.schema],
+            )
+          ).rows.length,
+          2,
+        );
+        assert.equal(
+          (
+            await admin.query(
+              "SELECT 1 FROM pg_constraint c JOIN pg_namespace n ON n.oid=c.connamespace WHERE n.nspname=$1 AND c.contype='f' AND NOT c.convalidated",
+              [f.schema],
+            )
+          ).rows.length,
+          0,
+        );
+      }
+
+      await assert.rejects(
+        f.store.prepareGenerations({
+          credential: "agent",
+          commandId: "append-after-migration",
+          ...scope,
+          generations: [generation, f.generations[1]!],
+        }),
+        /已经绑定/,
+      );
+      await assert.rejects(
+        f.store.prepareGenerations({
+          credential: "agent",
+          commandId: "replace-task-after-migration",
+          ...scope,
+          generations: [generation],
+          task: "不能改写旧输入的既定任务。",
+        }),
+        /已经绑定/,
+      );
+      await assert.rejects(
+        f.store.prepareGeneration({ ...command, credential: "other-agent" }),
+        /当前持久输入/,
+      );
+      f.state.allowed = false;
+      await assert.rejects(f.store.prepareGeneration(command), /权限/);
+      await assert.rejects(
+        f.store.readPreparation({ credential: "agent", ...scope }),
+        /权限|读取/,
+      );
+      f.state.allowed = true;
+
+      const candidateCommand = {
+        credential: "agent",
+        commandId: "post-migration-candidate",
+        ...scope,
+        draft: draft("升级后候选", "保留迁移后的独立候选。"),
+        explanation: "沿用原固定范围。",
+      };
+      const saved = await f.store.submitCandidate(candidateCommand);
+      await f.store.markDirectoryProjected(saved.tenantId, saved.eventId);
+      await f.reopen();
+      assert.deepEqual(await f.store.submitCandidate(candidateCommand), saved);
+      assert.deepEqual(
+        await f.store.submitCandidate({
+          ...candidateCommand,
+          commandId: "recover-same-candidate",
+        }),
+        saved,
+      );
+      assert.equal(
+        (
+          await f.store.listInputResults({
+            credential: "agent",
+            ...scope,
+            offset: 0,
+            limit: 10,
+          })
+        ).total,
+        1,
+      );
+      await assert.rejects(
+        f.store.submitCandidate({
+          ...candidateCommand,
+          draft: draft("改绑", "不得用同命令改写正文。"),
+        }),
+        /相同命令/,
+      );
+
+      const edited = await f.store.reviseItem({
+        credential: "human",
+        commandId: "human-cas-after-migration",
+        productionId: scope.productionId,
+        itemId: generation.targetId,
+        expectedRevision: 1,
+        draft: draft("人工正文", "人工新稿不能被旧准备覆盖。"),
+      });
+      await f.store.markDirectoryProjected(edited.tenantId, edited.eventId);
+      await assert.rejects(
+        f.store.reviseItem({
+          credential: "human",
+          commandId: "stale-human-cas",
+          productionId: scope.productionId,
+          itemId: generation.targetId,
+          expectedRevision: 1,
+          draft: draft("过期改稿"),
+        }),
+        /版本|变化|过期/,
+      );
+      assert.deepEqual(
+        await f.store.submitCandidate({
+          ...candidateCommand,
+          commandId: "recover-saved-after-human-cas",
+        }),
+        saved,
+        "A saved request remains recoverable without overwriting the newer formal version",
+      );
+      await assert.rejects(
+        f.store.submitCandidate({
+          ...candidateCommand,
+          commandId: "late-after-human-cas",
+          draft: draft("新过期候选", "不能以旧准备新增不同正文。"),
+        }),
+        /过期/,
+      );
+      const current = await f.store.readItemVersion({
+        credential: "human",
+        productionId: scope.productionId,
+        itemId: generation.targetId,
+      });
+      assert.equal(current.revision, 2);
+      assert.equal(current.draft.text, "人工新稿不能被旧准备覆盖。");
+      assert.equal(
+        (
+          await f.store.listInputResults({
+            credential: "agent",
+            ...scope,
+            offset: 0,
+            limit: 10,
+          })
+        ).total,
+        1,
+      );
+      assert.equal(
+        (
+          await admin.query(
+            `SELECT request_hash FROM "${f.schema}".script_command_receipts WHERE command_id=$1`,
+            [command.commandId],
+          )
+        ).rows[0]!.request_hash,
+        beforeHash,
+      );
+    } finally {
+      await admin.end();
+      await f.close();
+    }
+  },
+);

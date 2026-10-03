@@ -95,6 +95,30 @@ outline 条目。Agent 不自动采纳、批准或锁稿；人物候选不会改
 日志 `/private/tmp/morphz-script-v7-review-20261003.log`。唯一临时合成 PG 测试库已删除，
 不修改用户库。最终全应用 Node 1093 通过、161 条条件跳过、0 失败；未运行的条件不算通过。
 
+2026-10-03 当前验证附记：上述 82 项是历史记录；其日志保存决定性 stdout 摘录，
+不是完整原始 stdout，记录中的 `script-relational.test.ts`／`script-live-service.test.ts`
+也不是当前测试文件名，不将该历史命令当作现在可直接复跑的命令。原 PG v4／v5 升级
+回归没有已填充的 v6 preparation 行；此前精确 populated-v6 准备行升级只直接覆盖 SQLite。
+现已在 `tests/script-multi-preparation.test.ts` 新增实际 PostgreSQL populated-v6 回归：
+先将唯一合成 schema 还原为 v6（已有单目标准备行、固定引用与旧单目标请求哈希），再由
+当前 Store 初始化升级并冷重开，核对原列／回执／哈希不变、`task_request` 默认空、v7 索引、
+固定目标集不可改绑、撤权拒绝、人工 CAS、旧保存回执幂等恢复与过期新候选拒绝。
+当前 SQLite／PostgreSQL 同文件真实运行 14/14、零跳过，完整原始日志为
+`/tmp/morphz-script-populated-v6-pg-20261003-green.log`。首次新增测试把相同已保存请求的
+回执恢复误设为拒绝（旧 13 项仍全通过）；仅修正该新断言并加入不同正文的过期拒绝断言，
+原失败日志 `/tmp/morphz-script-populated-v6-pg-20261003-first.log` 保留，不改生产行为。
+当前可在 `application/` 运行的命令为：
+
+```sh
+MORPHZ_TEST_POSTGRES_URL="<本进程唯一隔离 TEST 库 URL>" \
+  ./node_modules/.bin/tsx --test tests/script-multi-preparation.test.ts
+```
+
+本次使用已核身份的本机 PostgreSQL 15.14 服务，唯一新库
+`morphz_script_v6_pg_20261003_854d52c9` 的 owner 为 `shafreeck`；结束时合成 schema 已清空、
+连接数为零，精确删除后库计数为零。只删除可由测试重建的合成数据，不触及任何既有库；
+此验证不新增真实模型调用、build 或原窗口验收，也不替代此前原窗口证据。
+
 批次没有按目标数量新增意图／总结轮次，但输入材料可能增大；合成 create 请求
 177327 字符、review 请求 208972 字符，不是 token 数，也不能宣称零新增模型成本。
 
