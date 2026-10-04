@@ -127,7 +127,9 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
   expect(bounds.y + bounds.height).toBeLessThan(540);
   await page.screenshot({ path: "test-results/quick-search-760.png" });
   await page.keyboard.press("Escape");
-  await page.getByLabel("工作空间选项").click();
+  // This menu now belongs to the content catalog, not the open document.
+  await openLibrary(page);
+  await page.getByLabel("其他内容创作", { exact: true }).click();
   await expect(
     page.getByRole("button", { name: "资料导入与来源", exact: true }),
   ).toHaveCount(0);
@@ -135,7 +137,7 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
     page.getByRole("button", { name: "打开文件", exact: true }),
   ).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await expect(page.getByLabel("工作空间选项")).toBeFocused();
+  await expect(page.getByLabel("其他内容创作", { exact: true })).toBeFocused();
 });
 
 test("文档在主画布创作；退出、切换工作空间和刷新保留各自草稿", async ({
