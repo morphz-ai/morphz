@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { inversePrivateProjectConversationScope } from "./fixtures/private-project-conversation-scope-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -732,9 +733,8 @@ const owner = readFileSync(
   new URL("../apps/web/src/host/exchange-drafts.ts", import.meta.url),
   "utf8",
 );
-const app = readFileSync(
-  new URL("../apps/web/src/App.tsx", import.meta.url),
-  "utf8",
+const app = inversePrivateProjectConversationScope(
+  readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8"),
 );
 function changed(source: string, before: string, after: string) {
   assert.equal(

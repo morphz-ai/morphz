@@ -28,7 +28,6 @@ import {
 import {
   spaceKind,
   inConversation,
-  discussionId,
   applicationFor,
 } from "../../../packages/core/src/model.js";
 import {
@@ -190,6 +189,14 @@ import {
   useExchangeNativeInputState,
 } from "./host/use-exchange-input-tools.js";
 import { createExchangeReferenceCommands } from "./host/exchange-reference-commands.js";
+import {
+  createPrivateProjectConversationScope,
+  projectConversationDraftPresence,
+  startedProjectConversationIds,
+  useCommittedConversationDraftRetirement,
+  usePrivateConversationHistorySelection,
+  usePrivateProjectContentScope,
+} from "./host/private-project-conversation-scope.js";
 
 type View = WorkSurfaceView;
 import {
@@ -355,13 +362,9 @@ function WorkspaceApp({
   const state = client.boot?.workspace;
   const { readLocal, writeLocal } = host.storage;
   const { prefs, recentContentVisits, navigation } = host;
-  // The catalog and its composer share a destination. Keep the existing
-  // catalog preference key so returning/reloading restores the same scope.
-  const [contentScope, setContentScope] = useState(
-    () =>
-      readLocal<{ scope?: string }>("library-view:all-content", {}).scope ??
-      "all",
-  );
+  const { contentScope, setContentScope } = usePrivateProjectContentScope({
+    readLocal,
+  });
   const leftSidebarPreference = sidebarPreference(
     prefs.sidebarWidth,
     prefs.sidebarCompact,
@@ -433,18 +436,8 @@ function WorkspaceApp({
     onNotice: setNotice,
   });
   const { writeInputs: writeDrafts } = draftCommands;
-  const startedConversations = new Set([
-    ...(state?.conversations
-      .filter((c) => c.id !== c.projectId)
-      .map((c) => c.id) ?? []),
-    ...(state?.inputs
-      .filter((input) => !client.boot?.localSavedInputIds.includes(input.id))
-      .map(discussionId) ?? []),
-    ...(client.boot?.runtime.messages.map(discussionId) ?? []),
-  ]);
-  useEffect(() => {
-    draftCommands.retireCommittedConversations(state?.conversations);
-  }, [state?.conversations]);
+  const startedConversations = startedProjectConversationIds({ state, client });
+  useCommittedConversationDraftRetirement(draftCommands, state);
   const projectMetrics = useMemo(() => {
     const metrics = projectDirectoryMetrics(
       state!,
@@ -478,23 +471,11 @@ function WorkspaceApp({
     const runtime = client.boot!.activityByProject[project.id] ?? "";
     return local > runtime ? local : runtime;
   };
-  const hasConversationDraft = (id: string) =>
-    state?.inputs.some(
-      (input) =>
-        discussionId(input) === id &&
-        client.boot?.localSavedInputIds.includes(input.id),
-    ) ||
-    Object.entries(drafts).some(
-      ([key, value]) =>
-        key.startsWith(id + ":") &&
-        !!(
-          value.body.trim() ||
-          value.attachments?.length ||
-          value.textQuotes?.length ||
-          value.selection ||
-          value.intent
-        ),
-    );
+  const hasConversationDraft = projectConversationDraftPresence({
+    state,
+    client,
+    drafts,
+  });
   const {
     openingObject,
     restoredPlace,
@@ -585,16 +566,12 @@ function WorkspaceApp({
     readingSurface.revision === (prefs.artifactRevision ?? artifact.revision)
       ? readingSurface
       : null;
-  useEffect(() => {
-    // An unsent draft has no Platform conversation or Runtime Session yet.
-    // Keep the last authorized history scope until its first send commits;
-    // reading the reserved draft ID would make normal refresh fail with 404.
-    if (!selectedDraft && conversationProjectId && conversationId)
-      void client.selectHistoryScope({
-        projectId: conversationProjectId,
-        conversationId,
-      });
-  }, [conversationProjectId, conversationId, selectedDraft?.id]);
+  usePrivateConversationHistorySelection({
+    client,
+    selectedDraft,
+    conversationProjectId,
+    conversationId,
+  });
   useEffect(() => {
     // The shared default Session does not change when entering the task list.
     // Fetch that view now instead of waiting for the next background poll.
@@ -964,6 +941,41 @@ function WorkspaceApp({
     setWebsiteIntent(null);
     void openUser(id, revision, page);
   }
+  const {
+    selectContentScope,
+    selectConversation,
+    createProjectConversation,
+    discardConversationDraft,
+    restoreConversationDraft,
+    openProject,
+    prepareCreatedProject,
+  } = createPrivateProjectConversationScope({
+    render: {
+      state,
+      prefs,
+      navigationProject,
+      project,
+      sharedDefault,
+      defaultConversation,
+      conversationId,
+      hasConversationDraft,
+      personalSpace,
+    },
+    origin,
+    draftCommands,
+    sendPending,
+    navigation: {
+      navigationGeneration,
+      isCurrent: navigation.isCurrent,
+      setWebsiteIntent,
+      prefer,
+      continueNavigation,
+    },
+    host,
+    privateUi: { setContentScope, setCreating, setExecutions },
+    exchange: { keepExchangeOpen, requestConversationFocus },
+    onNotice: setNotice,
+  });
   const { openTextQuote, composeContent, composeReading, composeIntent } =
     createExchangeReferenceCommands({
       render: {
@@ -1007,129 +1019,6 @@ function WorkspaceApp({
   }
   async function openScript(output: ScriptOutput) {
     return openScriptLocation(scriptOutputLocation(output));
-  }
-  function selectContentScope(scope: string) {
-    if (!origin.isActive()) return;
-    setContentScope(scope);
-    // Treat a destination change as navigation: stale open/picker callbacks
-    // must not restore the previous scope or focus. Drafts and grants remain
-    // keyed by their original workspace, not copied into the new destination.
-    prefer({ artifactId: null, scriptLocation: null });
-  }
-  function selectConversation(workspaceId: string, id: string, focus = false) {
-    if (!origin.isActive()) return;
-    setWebsiteIntent(null);
-    const sameProject =
-      prefs.view === "projects" &&
-      prefs.projectOpen &&
-      navigationProject?.id === workspaceId &&
-      // Search can open another space's object without changing the navigation
-      // entry. Preserve an object only when it actually belongs to this project.
-      project?.id === workspaceId;
-    const selectedExchange =
-      id === (sharedDefault ? defaultConversation : workspaceId)
-        ? workspaceId
-        : id;
-    setCreating(null);
-    setExecutions(null);
-    prefer({
-      view: "projects",
-      projectId: workspaceId,
-      projectOpen: true,
-      ...(!sameProject ? { artifactId: null } : {}),
-      selectedConversations: {
-        [workspaceId]: id,
-      },
-      interactions: {
-        [selectedExchange]:
-          prefs.interactions?.[selectedExchange] === "history"
-            ? "history"
-            : "recent",
-      },
-    });
-    if (focus) {
-      keepExchangeOpen();
-      requestConversationFocus(id, navigationGeneration.current);
-    }
-  }
-  async function createProjectConversation(workspaceId: string, title: string) {
-    // Starting to type is local navigation, not a server-side conversation.
-    // Repeated clicks reuse the unfinished draft; the first input commits both.
-    const pending = draftCommands.createConversation(workspaceId, title);
-    selectConversation(workspaceId, pending.id, true);
-  }
-  function discardConversationDraft(id: string) {
-    if (sendPending.current) {
-      setNotice("消息正在提交，请等待结果后整理草稿。");
-      return;
-    }
-    draftCommands.discardConversation(
-      id,
-      () => state?.conversations.find((c) => c.id === id),
-      (conversation) => {
-        if (conversationId === id) openProject(conversation.projectId);
-      },
-    );
-  }
-  function restoreConversationDraft(id: string) {
-    draftCommands.restoreConversation(
-      id,
-      hasConversationDraft,
-      (conversation) => {
-        selectConversation(conversation.projectId, id, true);
-      },
-    );
-  }
-  function openProject(id: string) {
-    // An explicit project click means its default conversation, not whichever
-    // named Session happened to be used last. Reuse the same switching path so
-    // drafts, the current application/object and in-flight work stay intact.
-    selectConversation(
-      id,
-      sharedDefault ? (personalSpace("dialogue")?.id ?? id) : id,
-    );
-  }
-  function prepareCreatedProject() {
-    const intent = { generation: navigationGeneration.current };
-    const lifetime = host.captureCommit();
-    const active = origin.isActive();
-    return (id: string, kind: string) => {
-      if (!active || kind !== "project") return;
-      const destination: CurrentDestination = (current) =>
-        lifetime(current) &&
-        navigation.isCurrent(intent.generation) &&
-        current.workspace.projects.some(
-          (value) =>
-            value.id === id &&
-            spaceKind(value) === "project" &&
-            !value.deletedAt,
-        );
-      const current = host.currentProjection();
-      if (!current || !destination(current)) return;
-      const conversation = current.capabilities.teamAuthentication
-        ? id
-        : (current.workspace.projects.find(
-            (value) =>
-              value.kind === "dialogue" &&
-              value.ownerPrincipalId === current.principalId,
-          )?.id ?? id);
-      // This is the original default-conversation route only. No old child
-      // draft, focus, notice or creation setter is transferred to the new tree.
-      continueNavigation(
-        {
-          view: "projects",
-          projectId: id,
-          projectOpen: true,
-          artifactId: null,
-          selectedConversations: { [id]: conversation },
-          interactions: {
-            [id]: prefs.interactions?.[id] === "history" ? "history" : "recent",
-          },
-        },
-        intent,
-        destination,
-      );
-    };
   }
   const closeSpeech = createExchangeInputToolCloseCommand({
     dictation: inputDictation,

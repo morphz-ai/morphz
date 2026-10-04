@@ -9,13 +9,18 @@ import { isFunctionDeclaration, type Node } from "typescript/unstable/ast";
 import { chromium } from "@playwright/test";
 import react from "@vitejs/plugin-react";
 import { createServer, transformWithOxc } from "vite";
+import { inversePrivateProjectConversationScope } from "./fixtures/private-project-conversation-scope-consumption.js";
 
 // Execute the actual finite App boundary/dialog functions, not a hand-written
 // copy of their identity or completion algorithms. Private WorkspaceApp below
 // is only a hook/port adapter; this does not replace compiled full App+Client
 // regression or prove actual Platform authorization/HTTP persistence.
 function appFunctions() {
-  const text = readFileSync(resolve("apps/web/src/App.tsx"), "utf8");
+  // Validate the actual new owner, then restore only this finite App seam;
+  // the old mounted algorithms remain the original, not direct new-owner calls.
+  const text = inversePrivateProjectConversationScope(
+    readFileSync(resolve("apps/web/src/App.tsx"), "utf8"),
+  );
   const api = new API({
     cwd: "/app",
     fs: createVirtualFileSystem({

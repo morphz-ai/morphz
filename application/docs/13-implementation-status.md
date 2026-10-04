@@ -1,5 +1,53 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 27：私有项目／会话范围的完整控制器
+
+`host/private-project-conversation-scope.ts` 承接原七个语义动作、两个纯
+投影、一个 content scope state 与两个生命周期 effects。侧栏、项目目录、
+顶栏、内容范围、引用命令和创建回执共用同一 owner；原草稿存储／ID／
+部分写失败仍归已有 draft owner，导航／偏好和授权仍借原 Host 端口。
+没有新增 store、ref、持久键、网络请求、订阅或执行入口。
+
+三个 hook 分别在 App 原 slot 注册，不以早期综合 hook 改变生命周期。
+唯一 inert action factory 在原引用 factory 之前，七个返回方法直接消费，
+避免原 hoisted declaration 改 const alias 后的 TDZ。Launcher 保留原 raw
+content setter，不误换成同时清对象／推进导航的语义动作。
+项目显式点击仍回默认会话；命名会话、未发送草稿、实际对象所属项目和
+启动记录继续分开。创建回执只借原 Host continuation，不迁旧私有焦点／
+草稿／弹层 writer 到身份稳定树。
+
+根与独立 actual Git `c35b9fde` 源码对照：七动作只有原导航 isCurrent
+绑定映射，两投影及三个原 hook／effect body 和 deps 相同；全 **88** 个
+注册顺序、**199** 个完整 JSX 及其余 **133** 个完整 statement／顺序保持。
+普通冻结旧新编译的五份完整原页面用例各 **18/18**，零重试／skip，每边
+核验 **114** 份实际 HTTP 入口资产；**196** 份既有 renderer 源码不变，
+CSS／preload 字节相等。覆盖真实 Platform／HTTP 草稿首发与重试、目录
+授权、跨项目搜索选择、恢复／刷新、引用、对象阅读和项目管理／几何。
+
+新增实际 owner **12 项**行为及 **1 项**真实 React StrictMode 旧新生命周期
+通过；后者使用实际 Host／草稿 hooks 和浏览器 scoped storage，外部 Client／
+授权仍受控，不冒充 Platform／原生验收。新有限消费及相邻门禁 **48/48**；
+根独立证明仅逆掉批准接缝后，完整 App 逐字恢复实际 Git `c35b9fde` 的
+**125,134 字节**，四个旧测试入口撤掉新增包装也逐字恢复其实际旧文件。
+
+根首轮全量 **1937 项：1776 通过、160 能力跳过、1 失败**；失败是旧发送
+测试的直接源码入口仍要求已随原投影迁出的 `discussionId` import。保留红日志，
+入口先验证本次真实 owner 再有限逆展开；原 import shape、算法、计数、断言
+及指定负例未改，独立实际 Git 全文件证明与根 **21/21** 回归通过。
+第二轮全量 **1937 项：1777 通过、160 能力跳过、零失败／取消**。
+本轮显式使用现有 headless Chromium 能力，新增实际挂载及原有可运行浏览器
+检查确实执行；其他能力跳过不计通过。完整生产 build／类型及格式／差异检查
+通过。有限源码证明、自动浏览器回归不等于任意依赖定理或整体验收完成。
+原 App 仍卡退出清理，Runtime 未重启，用户 profile／中心未重置；原窗
+验收和手写创建／批注／搜索引用、更多控件／样式责任仍未完成，目标保持 active。
+
+根证据：`/tmp/morphz-project-scope-root.UGT1u5` 的冻结 manifest、两边
+完整页面报告／HTTP audit、`page-equivalence.json` 与 root source proof；
+独立生产源证明在 `/tmp/morphz-private-project-scope-production.AIBKOB`，
+实际 owner／React 生命周期在 `/tmp/morphz-private-project-scope.2JCNkL`；
+有限消费与四旧入口实际 Git 对照在 `/tmp/morphz-private-scope-boundary.Qk9PCL`。
+根完整构建、首轮红及第二轮全量、完整 App／第四入口逆展开证明均保留在根证据目录。
+
 ## 2026-10-04 前端阶段 26：显式内容打开归入唯一导航 owner
 
 App 原 `openUser`／`openReading` 两个完整算法迁入既有

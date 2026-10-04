@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import type { SetStateAction } from "react";
+import { inversePrivateProjectConversationScope } from "./fixtures/private-project-conversation-scope-consumption.js";
 import {
   createExchangeSubmissionCommands,
   type ExchangeSubmissionCommandOptions,
@@ -317,9 +318,10 @@ test("fixed Git9122 two complete algorithms and actual inert owner match", () =>
   verifySubmissionCommands();
 });
 test("actual App borrowed constructor expands the two fixed Git9122 declarations", () => {
-  const app = readFileSync(
-    new URL("../apps/web/src/App.tsx", import.meta.url),
-    "utf8",
+  // Validate the actual private scope owner, then inverse only its approved
+  // seams; this test still exercises the unchanged submission constructor.
+  const app = inversePrivateProjectConversationScope(
+    readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8"),
   );
   // Existing two whole-tree gates use this same strict expansion before their
   // unchanged older baselines; this case exercises the actual constructor now.

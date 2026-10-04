@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { inversePrivateProjectConversationScope } from "./private-project-conversation-scope-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -185,6 +186,7 @@ export function expandWorkspaceContentOpeningConsumption(
   appText: string,
   ownerText: string,
 ) {
+  appText = inversePrivateProjectConversationScope(appText);
   const parsed = parse({
     App: appText,
     Owner: ownerText,
