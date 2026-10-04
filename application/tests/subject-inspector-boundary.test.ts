@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { inverseObjectAnnotationsFeature } from "./fixtures/object-annotations-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -46,7 +47,9 @@ import {
 // algorithms/update behavior; unrelated App JSX and resources are not frozen.
 const path = "./host/use-subject-inspector.js";
 const sources = {
-  App: readFileSync("apps/web/src/App.tsx", "utf8"),
+  App: inverseObjectAnnotationsFeature(
+    readFileSync("apps/web/src/App.tsx", "utf8"),
+  ),
   Owner: readFileSync("apps/web/src/host/use-subject-inspector.ts", "utf8"),
 };
 const expectedText = `

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { inverseObjectAnnotationsFeature } from "./object-annotations-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -248,6 +249,7 @@ function expand(
   storageText: string,
   requireActual: boolean,
 ) {
+  appText = inverseObjectAnnotationsFeature(appText);
   // No-import/nested old lane changes no byte and strips no old counterfactual.
   // A separate actual-new entry below must require the real feature import.
   if (!requireActual && !appText.includes(componentModule)) return appText;

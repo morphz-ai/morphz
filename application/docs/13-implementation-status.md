@@ -1,5 +1,70 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 29：对象批注完整功能模块
+
+`features/content/ObjectAnnotations.tsx` 持有原两 state、完整读取／取消
+effect、ID 限定的 items 投影和完整 InspectorPanel 树；App 在原位置
+直接消费三导出，保存回执继续借原稳定 React setter。五个原依赖、
+隐藏时保留结果、AbortController 成功／失败守门和原错误文字不变。
+原 Client／Platform 查询、分页、授权与 workspace change 权威未动；
+原 SubjectInspector 显隐、InspectorPanel 宽度／焦点／Escape 未动。
+作者仅借原当前 render state；历史 revision／page、顺序和原文本仍保留。
+没有新 DOM、CSS、state 镜像、缓存、订阅、请求、权限或模型调用。
+
+根重跑实际 Git `9c6b8dd1` 源证明：逆掉三个批准接缝及唯一 import、
+恢复两处原 import bindings 后，完整 App 恢复原 **115,483 字节**。
+完整原 state／effect／projection
+逐字保留；panel 只映射 authorName 与 focusOnMount 两原表达式。
+完整 Client、PlatformClient、InspectorPanel、layout、submission owner
+及四份完整原页面测试和六份相关 fixture／helper 均与实际 Git 相等。
+固定旧挂载 fixture 的六整文件元数据、十一 span、完整可执行原 hook／
+投影／panel 亦经根独立实际 Git 核验，不用候选生成旧 oracle。
+
+冻结旧新完整编译 App，四份完整原页面测试各 **15/15**，零重试／
+skip，原完整源码／断言／预算不变。每边逐例核验 **54** 份实际 HTTP
+入口资产，**198** 份既有 renderer source 与实际 Git 相同；CSS／preload
+字节相等。覆盖真实批注事务、重开恢复、保存时无 Runtime delivery、
+外部 Objects 提交经真实 SSE 重读且保留未发送草稿，以及主体／批注
+显隐、调宽、焦点、原生拖动区 CSS 和截图／听写相邻路径。
+该通知 fixture 使用独立实际 Runtime／Host／SQL，模型请求为零；
+其他页的合成执行状态和媒体端口不冒称实际 Runtime 执行或硬件采集。
+
+另跑原三份持久化／Host／Objects Node 回归，**33 通过、3 PostgreSQL
+能力跳过、零失败／取消**。它证明相应实际 SQLite／Host 合同，不把
+未运行的 PostgreSQL 或受控 React query 说成真实 Client 权限证明。
+
+固定旧源与真实新 feature 的 React StrictMode 挂载 **10/10**，无 skip；
+八组生命周期／交互覆盖五依赖、稳定回执 setter、隐藏保留、迟到取消、
+错误／重试、完整 DOM／原文、焦点／草稿与键盘／指针调宽。
+**48** 组四主题、明暗、宽中窄窗与 CSS zoom 1／2 比较完整 snapshot；
+实际祖先层级及宽窗／窄窗／zoom 有效宽度均核验。几何按 0.01px
+精度精确相等，不冒称像素截图。实际 panel animation name 为 none；
+主题切换的 110ms CSS transitions 原 timing／keyframes 对照保留，
+没有关闭动效或放宽误差。受控 query 只证明 React 生命周期与呈现，
+不代替上面实际页面的 HTTP／持久化权限或完整保存回执。
+
+新有限消费门禁及两份相邻原回归经根重跑 **16/16**，无 skip；独立
+十份相邻 Node 回归 **79/79**。两个旧测试入口仅新增精确 inverse
+消费接缝，撤掉后全文恢复实际 Git；原 hash／计数／断言／指定负例
+不改。门禁遍历器漏检 type-only 反例、旧入口反例被新规则提前拦截
+的两次真实 RED 与窄修证据保留，均未修改生产算法或删除负例。
+根最终完整 build／类型、格式／差异检查通过；全量 Node **1970 项：
+1810 通过、160 能力跳过、零失败／取消**。显式使用现有 headless
+Chromium，新增真实挂载确实执行；能力跳过不计通过。
+
+本阶段完成生产迁移与自动验证，整体目标仍 active，没有额外推送。
+原 App 仍卡在退出清理，强制退出待用户确认；Runtime 不重启，
+profile／中心不重置。原窗、硬件、系统命中和整体目标保持未完成，
+不以本批普通自动浏览器、源码证明或 CSS zoom 替代这些验收。
+
+根证据：`/tmp/morphz-object-annotations-root.mF8t3x` 的 manifest、
+两份完整页面报告／HTTP audit、page-equivalence、root-input-source-proof
+与 root-original-spans、root-fixed-source-proof、root-boundary-actual-git-proof
+和最终 Node／build／format logs；生产源证明在
+`/tmp/morphz-object-annotations-production.75z3xx`，独立挂载在
+`/tmp/morphz-object-annotations-review.aLONrE`，有限门禁在
+`/tmp/morphz-object-annotations-boundary.xI0bZL`。
+
 ## 2026-10-04 前端阶段 28：完整 Human 文档／项目创建 feature
 
 `features/creation/CreateDialog.tsx` 持有原完整创建组件，App 保留两个

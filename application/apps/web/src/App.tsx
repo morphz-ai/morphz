@@ -31,6 +31,11 @@ import {
 } from "../../../packages/core/src/model.js";
 import { actorName, useWorkspace, storageScope } from "./client.js";
 import { CreateDialog } from "./features/creation/CreateDialog.js";
+import {
+  useObjectAnnotations,
+  objectAnnotationItems,
+  ObjectAnnotationsPanel,
+} from "./features/content/ObjectAnnotations.js";
 import { ArtifactEditor } from "./ArtifactEditor.js";
 import { ComposerActionBar } from "./ComposerActionBar.js";
 import { ComposerStatus } from "./ComposerStatus.js";
@@ -99,11 +104,10 @@ import { UnderstandingPanel } from "./UnderstandingPanel.js";
 import { SpeechDialog } from "./SpeechDialog.js";
 import { CaptureDialog } from "./CaptureDialog.js";
 import { MessageAttachments } from "./MessageAttachments.js";
-import type { Workspace } from "../../../packages/core/src/model.js";
 import type { BrowserView } from "./desktop.js";
 import { Notifications } from "./Notifications.js";
 import { useDesktopAppearance } from "./useDesktopAppearance.js";
-import { InspectorPanel, useInspectorLayout } from "./InspectorPanel.js";
+import { useInspectorLayout } from "./InspectorPanel.js";
 import { SidebarToggle } from "./SidebarToggle.js";
 import {
   SidebarResizeHandle,
@@ -791,42 +795,11 @@ function WorkspaceApp({
       mobileCollaboration,
       preferences: prefs,
     });
-  const [annotationRefresh, setAnnotationRefresh] = useState(0);
-  const [annotationResult, setAnnotationResult] = useState<{
-    artifactId: string;
-    items: Workspace["annotations"];
-    error: string;
-    loading: boolean;
-  } | null>(null);
-  useEffect(() => {
-    if (!collaborationVisible || !artifact) return;
-    const controller = new AbortController();
-    const artifactId = artifact.id;
-    setAnnotationResult({ artifactId, items: [], error: "", loading: true });
-    void client
-      .listObjectAnnotations(artifactId, controller.signal)
-      .then((items) => {
-        if (!controller.signal.aborted)
-          setAnnotationResult({ artifactId, items, error: "", loading: false });
-      })
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted)
-          setAnnotationResult({
-            artifactId,
-            items: [],
-            error:
-              error instanceof Error ? error.message : "批注暂时无法读取。",
-            loading: false,
-          });
-      });
-    return () => controller.abort();
-  }, [
-    artifact?.id,
+  const { annotationResult, setAnnotationRefresh } = useObjectAnnotations({
+    artifact,
     collaborationVisible,
-    annotationRefresh,
-    client.boot?.csrfToken,
-    client.workspaceChangeRevision,
-  ]);
+    client,
+  });
   const { ref: inspectorWorkspace, layout: rightInspector } =
     useInspectorLayout(prefs.inspectorWidth ?? prefs.executionWidth ?? 340);
   const inspectorOpen = subjectInspectorOpen({
@@ -1138,10 +1111,7 @@ function WorkspaceApp({
     (total, count) => total + count.mineOpen,
     0,
   );
-  const annotations =
-    artifact && annotationResult?.artifactId === artifact.id
-      ? annotationResult.items
-      : [];
+  const annotations = objectAnnotationItems(artifact, annotationResult);
   const contextTitle =
     artifact?.title ??
     (activeInstance?.applicationId === browserApplication.id
@@ -2849,51 +2819,18 @@ function WorkspaceApp({
           />
         )}
         {collaborationVisible && (
-          <InspectorPanel
-            className="collaboration"
-            label="对象批注"
-            title="批注"
+          <ObjectAnnotationsPanel
+            artifact={artifact}
+            annotationResult={annotationResult}
+            annotations={annotations}
+            authorName={(actantId) => actorName(state, actantId)}
             viewOptions={inspectorViewOptions}
             context={contextTitle}
-            resizeLabel="调整批注栏宽度"
-            // Showing a saved annotation must not steal focus from continued input.
             focusOnMount={!sentInputFocusPending}
             layout={rightInspector}
             onResize={resizeInspector}
             onClose={closeInspector}
-          >
-            <div className="collaboration-scroll">
-              {annotationResult?.artifactId === artifact?.id &&
-              annotationResult.error ? (
-                <p role="alert">批注读取失败：{annotationResult.error}</p>
-              ) : annotationResult?.artifactId !== artifact?.id ||
-                annotationResult.loading ? (
-                <p>正在读取批注…</p>
-              ) : !annotations.length ? (
-                <div className="discussion-empty">
-                  <MessageSquarePlus />
-                  <p>暂无批注</p>
-                </div>
-              ) : (
-                <>
-                  {annotations.map((a) => (
-                    <section className="message annotation" key={a.id}>
-                      <div className="message-author">
-                        <MessageSquarePlus />
-                        {actorName(state, a.author.actantId)}
-                        <small>
-                          批注 · v{a.artifactRevision}
-                          {a.page ? ` · 第 ${a.page} 页` : ""}
-                        </small>
-                      </div>
-                      <blockquote>{a.quote}</blockquote>
-                      <p>{a.body}</p>
-                    </section>
-                  ))}
-                </>
-              )}
-            </div>
-          </InspectorPanel>
+          />
         )}
         {notice && !conversationVisible && (
           <WorkspaceNotice message={notice} onDismiss={() => setNotice("")} />

@@ -143,6 +143,18 @@ Human 手写文档／项目创建的完整生产 feature 现归
 完整固定旧函数／真实新组件挂载、actual Git 源证明、编译页面及全量
 检查分别见阶段 28；受控 Client 挂载不冒称真实事务或原 App 验收。
 
+对象批注的完整读取／取消生命周期、原 ID 投影和整棵展示树现归
+`features/content/ObjectAnnotations.tsx`，真实 App 在原注册／展示位置
+消费 `useObjectAnnotations`、`objectAnnotationItems` 和
+`ObjectAnnotationsPanel`。原两 state、五依赖 effect 和稳定 React
+刷新 setter 保留；隐藏面板不退休状态，成功回执仍借该 setter。
+Client 保留原身份、分页与授权读取入口，SubjectInspector 保留显隐，
+InspectorPanel 保留宽度、焦点及 Escape 权威。作者名称借当前 render
+state 的窄函数，没有 latest 镜像、额外 store、查询或请求。
+原完整 DOM／CSS、历史版本标记与原始文本展示不改；只有原作者和
+focus 表达式的显式参数映射。具体生产接线、有限门禁、实际挂载与
+完整旧新页面证据分开记录于阶段 29，不代表原 App 已恢复或整体验收。
+
 授权内容读取的六个完整算法现归 `data/content-reads.ts`：目录分页／计数、
 当前理解、目录记忆、原件与确切目录项解析。Client 借出原 refs，保留身份／
 撤权清理、refresh 和同步 current-before-React 发布权威；剧本读取使用同一
@@ -510,11 +522,11 @@ CSS zoom 对照不是 Electron／OS 缩放或标题栏原生命中验收；原 A
 
 当前已有工作面解析、稳定导航 Host／应用入口／内容打开、项目与会话私有范围、
 交流意图／焦点、草稿生命周期、发送协议、输入工具、主体检查器、读取回执与
-若干领域数据 family 以及 Human 文档／项目创建的生产 owner；共享顶栏、首批登记图形／透明按钮及交流／
+若干领域数据 family、Human 文档／项目创建和对象批注的生产 owner；共享顶栏、首批登记图形／透明按钮及交流／
 原生弹窗表面也有有限门禁。已有 `ArtifactEditor` 独立拥有现件编辑、草稿、
 版本冲突及保存生命周期，不与手写创建、Agent 输入或宿主导航混为同一职责。
 
-剩余生产边界是批注读取／展示、部分搜索引用编排，
+剩余生产边界是部分搜索引用编排，
 以及其余 role 型组件、跨领域 presentation 与唯一样式责任。领域查询治理
 仍需按真实合同逐批推进，已有 family 不等于整层 query facade 已完成；
 不为凑目录或清空 App 而重造缓存／store。普通页面选择、画布及 portal 组合
