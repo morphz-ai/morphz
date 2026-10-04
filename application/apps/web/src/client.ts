@@ -845,6 +845,29 @@ export function useWorkspace() {
     protectedReadGeneration,
     catalogCache,
     publishCatalog: setContentCatalog,
+    publishScriptLibrary: (entries) => {
+      const latest = current.current;
+      if (!latest) return;
+      if (
+        latest.scriptLibrary.length === entries.length &&
+        latest.scriptLibrary.every((existing, index) => {
+          const entry = entries[index]!;
+          return (
+            existing.id === entry.id &&
+            existing.contentId === entry.contentId &&
+            existing.projectId === entry.projectId &&
+            existing.title === entry.title &&
+            existing.updatedAt === entry.updatedAt &&
+            existing.catalogRevision === entry.catalogRevision &&
+            existing.activityRevision === entry.activityRevision
+          );
+        })
+      )
+        return;
+      const updated = { ...latest, scriptLibrary: entries };
+      current.current = updated;
+      setBoot(updated);
+    },
     publishArtifact: (updated) => {
       current.current = updated;
       setBoot(updated);
@@ -997,6 +1020,8 @@ export function useWorkspace() {
           setError("");
           return true;
         }
+        const readCatalogCache = catalogCache.current;
+        const readCatalogValue = readCatalogCache?.value;
         const {
           workspace,
           runtime,
@@ -1023,6 +1048,21 @@ export function useWorkspace() {
             scope: requestedScope,
             preferences: { ...preferences, contentScope },
             recentContentIds,
+            confirmedScriptContentIds: [
+              ...new Set(
+                (readCatalogValue?.contents ?? [])
+                  .filter(
+                    (entry) =>
+                      entry.appId === "morphz.script-studio" &&
+                      entry.kind === "script" &&
+                      entry.availability === "available" &&
+                      !readCatalogValue?.headContents.some(
+                        (head) => head.id === entry.id,
+                      ),
+                  )
+                  .map((entry) => entry.id),
+              ),
+            ].slice(0, 150),
           },
           conversationHistory.cachedForCatalog(navigation.catalogVersion),
           reusableNavigationCatalog(
@@ -1045,6 +1085,21 @@ export function useWorkspace() {
             "目录在读取期间已更新，请重试。",
             "navigation_changed",
           );
+        if (
+          version !== epoch.current ||
+          !conversationHistory.isSelectionCurrent(requestedScope)
+        )
+          return false;
+        if (
+          readCatalogCache &&
+          catalogCache.current === readCatalogCache &&
+          readCatalogCache.value !== readCatalogValue
+        ) {
+          // An explicit content read published a newer authorized projection.
+          // Re-read through the existing drain before any snapshot writes.
+          void refresh();
+          return false;
+        }
         // Read at publication time: a refresh may have started before the user
         // clicked Send. Only an authoritative same-ID input removes its overlay.
         const savedProjection = localInputDelivery.confirmAndProject(
@@ -1114,11 +1169,6 @@ export function useWorkspace() {
             taskCompletion: true,
           },
         };
-        if (
-          version !== epoch.current ||
-          !conversationHistory.isSelectionCurrent(requestedScope)
-        )
-          return false;
         conversationHistory.commitProjection(
           resolvedScope,
           history,

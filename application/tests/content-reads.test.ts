@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
@@ -9,6 +10,11 @@ import {
   isPrefixUnaryExpression,
   isPostfixUnaryExpression,
   isBinaryExpression,
+  isIdentifier,
+  isPropertyAssignment,
+  isArrowFunction,
+  isIfStatement,
+  isVariableDeclaration,
   type Node,
   type SourceFile,
 } from "typescript/unstable/ast";
@@ -19,9 +25,14 @@ import {
   type PlatformContent,
   type PlatformTask,
   type PlatformTaskVersion,
+  type ScriptLibraryEntry,
 } from "../apps/web/src/platform-client.js";
 import { RequestError } from "../apps/web/src/application-transport.js";
-import type { PlatformNavigationCache } from "../apps/web/src/platform-workspace-view.js";
+import { createRefreshDrain } from "../apps/web/src/refresh-drain.js";
+import {
+  scriptLibraryEntryFromContent,
+  type PlatformNavigationCache,
+} from "../apps/web/src/platform-workspace-view.js";
 import type { ApplicationMethod } from "../packages/core/src/application-api.js";
 import {
   contentSchema,
@@ -300,6 +311,8 @@ type Projection = {
 type Response = (params: unknown) => unknown | Promise<unknown>;
 async function harness(legacy: boolean) {
   const events: unknown[] = [],
+    scriptPublications: ScriptLibraryEntry[][] = [],
+    publicationOrder: string[] = [],
     signals: (AbortSignal | undefined)[] = [];
   const responses = new Map<ApplicationMethod, Response>();
   const source = await PlatformClient.connect({
@@ -332,7 +345,15 @@ async function harness(legacy: boolean) {
   };
   const setContentCatalog = (contents: PlatformContent[]) => {
     assert.equal(catalogCache.current?.value.contents, contents);
+    publicationOrder.push("catalog");
     events.push(["catalog", structuredClone(contents)]);
+  };
+  let onScripts = (_entries: ScriptLibraryEntry[]) => {};
+  const publishScriptLibrary = (entries: ScriptLibraryEntry[]) => {
+    assert.equal(catalogCache.current?.value.scriptLibrary, entries);
+    scriptPublications.push(entries);
+    publicationOrder.push("scripts");
+    onScripts(entries);
   };
   let refreshImpl = async () => false;
   const refresh = () => {
@@ -351,6 +372,7 @@ async function harness(legacy: boolean) {
     : createContentReads({
         ...shared,
         publishCatalog: setContentCatalog,
+        publishScriptLibrary,
         publishArtifact(value) {
           current.current = value;
           setBoot(value);
@@ -365,12 +387,114 @@ async function harness(legacy: boolean) {
     platform,
     protectedReadGeneration,
     catalogCache,
+    scriptPublications,
+    publicationOrder,
+    onScriptPublication(value: typeof onScripts) {
+      onScripts = value;
+    },
     onRefresh(value: typeof refreshImpl) {
       refreshImpl = value;
     },
   };
 }
 type Harness = Awaited<ReturnType<typeof harness>>;
+// Execute only the actual Client's finite synchronous ports/commit preflight.
+// This is not a mounted Client or an HTTP publication test.
+function clientPublicationContracts() {
+  const root = "/content-client-publication",
+    config = root + "/tsconfig.json";
+  const api = new API({
+    cwd: root,
+    fs: createVirtualFileSystem({
+      [root + "/client.ts"]: readFileSync("apps/web/src/client.ts", "utf8"),
+      [config]: JSON.stringify({
+        compilerOptions: { noLib: true, noResolve: true },
+        files: ["client.ts"],
+      }),
+    }),
+  });
+  const snapshot = api.updateSnapshot({ openProjects: [config] });
+  try {
+    const program = snapshot.getProject(config)!.program;
+    assert.deepEqual(program.getSyntacticDiagnostics(), []);
+    const source = program.getSourceFile(root + "/client.ts")!,
+      nodes: Node[] = [];
+    function walk(node: Node) {
+      nodes.push(node);
+      node.forEachChild((child) => {
+        walk(child);
+      });
+    }
+    walk(source);
+    const publishers = nodes
+      .filter(isPropertyAssignment)
+      .filter(
+        (node) =>
+          isIdentifier(node.name) && node.name.text === "publishScriptLibrary",
+      );
+    assert.equal(publishers.length, 1);
+    const publisher = publishers[0]!.initializer;
+    assert.ok(isArrowFunction(publisher));
+    const confirmations = nodes
+      .filter(isVariableDeclaration)
+      .filter(
+        (node) =>
+          isIdentifier(node.name) && node.name.text === "savedProjection",
+      );
+    assert.equal(confirmations.length, 1);
+    const block = confirmations[0]!.parent.parent.parent,
+      statements: Node[] = [];
+    block.forEachChild((node) => {
+      statements.push(node);
+    });
+    const index = statements.indexOf(confirmations[0]!.parent.parent);
+    assert.ok(index >= 2);
+    assert.ok(isIfStatement(statements[index - 2]!));
+    assert.ok(isIfStatement(statements[index - 1]!));
+    const commit = statements
+      .slice(index - 2, index)
+      .map((node) => node.getText())
+      .join("\n");
+    return {
+      publisher: new Function(
+        "current",
+        "setBoot",
+        "return (" + stripTypeScriptTypes(publisher.getText()) + ");",
+      ) as (
+        current: {
+          current: {
+            scriptLibrary: ScriptLibraryEntry[];
+            opaque: string;
+          } | null;
+        },
+        setBoot: (value: unknown) => void,
+      ) => (entries: ScriptLibraryEntry[]) => void,
+      commit: new Function(
+        "version",
+        "epoch",
+        "conversationHistory",
+        "requestedScope",
+        "readCatalogCache",
+        "catalogCache",
+        "readCatalogValue",
+        "refresh",
+        commit + "\nreturn true;",
+      ) as (
+        version: number,
+        epoch: { current: number },
+        history: { isSelectionCurrent: (scope: unknown) => boolean },
+        scope: unknown,
+        cache: PlatformNavigationCache | null,
+        cacheRef: { current: PlatformNavigationCache | null },
+        value: PlatformNavigationCache["value"] | undefined,
+        refresh: () => Promise<boolean>,
+      ) => boolean,
+    };
+  } finally {
+    snapshot.dispose();
+    api.close();
+  }
+}
 async function compare(run: (h: Harness) => unknown | Promise<unknown>) {
   const outcomes: unknown[] = [];
   for (const legacy of [true, false]) {
@@ -424,6 +548,7 @@ test("new and fixed factories do not read borrowed refs or call ports during con
       createContentReads({
         ...shared,
         publishCatalog: unexpected,
+        publishScriptLibrary: unexpected,
         publishArtifact: unexpected,
       }),
     ).length,
@@ -470,6 +595,457 @@ test("construction is inert and the three query contracts pass original paramete
       /当前理解暂不可用/,
     );
   });
+});
+test("equal remembered content synchronously publishes the cached script array, not ignored incoming fields", async () => {
+  const h = await harness(false);
+  const script = entry("script", {
+    appId: "morphz.script-studio",
+    kind: "script",
+    appObjectId: "production",
+    observedVersionRef: "2",
+  });
+  h.catalogCache.current = catalog([script]);
+  const scripts: ScriptLibraryEntry[] = [
+    {
+      id: "production",
+      contentId: "script",
+      projectId: script.projectId,
+      title: script.title,
+      updatedAt: script.updatedAt,
+      catalogRevision: 1,
+      activityRevision: 2,
+    },
+  ];
+  h.catalogCache.current.value.scriptLibrary = scripts;
+  let projected: ScriptLibraryEntry[] = [];
+  h.onScriptPublication((entries) => {
+    projected = entries;
+  });
+  const cache = h.catalogCache.current.value;
+  h.methods.rememberContent(
+    { ...script, availability: "unavailable", updatedAt: "ignored" },
+    bootstrap.csrfToken,
+  );
+  assert.equal(
+    projected,
+    scripts,
+    "missing presentation entry is repaired synchronously",
+  );
+  assert.equal(h.catalogCache.current.value, cache);
+  assert.deepEqual(h.scriptPublications, [scripts]);
+  assert.deepEqual(h.publicationOrder, ["scripts"]);
+  assert.deepEqual(
+    h.events,
+    [],
+    "the original cache/catalog ledger is unchanged",
+  );
+});
+test("equal confirmed cold script moves the cached original to the bounded reference tail and invalidates an older snapshot", async () => {
+  const h = await harness(false),
+    head = entry("head");
+  const scripts = Array.from({ length: 150 }, (_, index) =>
+    entry("script-" + index, {
+      appId: "morphz.script-studio",
+      kind: "script",
+      appObjectId: "production-" + index,
+      observedVersionRef: "2",
+    }),
+  );
+  h.catalogCache.current = catalog([head, ...scripts]);
+  const cache = h.catalogCache.current,
+    before = cache.value,
+    target = scripts[0]!;
+  cache.value.scriptLibrary = scripts.map(scriptLibraryEntryFromContent);
+  h.methods.rememberContent(
+    {
+      ...target,
+      appId: "ignored-app",
+      kind: "document",
+      appObjectId: "ignored-production",
+      availability: "unavailable",
+      updatedAt: "ignored",
+      providerRevision: 99,
+    },
+    bootstrap.csrfToken,
+  );
+  assert.notEqual(
+    cache.value,
+    before,
+    "equal point-read confirmation must retire an older snapshot",
+  );
+  assert.equal(cache.value.headContents[0], head);
+  assert.equal(cache.value.contents.length, 151);
+  assert.equal(
+    cache.value.contents.at(-1),
+    target,
+    "cached source fields, not ignored incoming metadata",
+  );
+  assert.deepEqual(
+    cache.value.contents.slice(1).map((item) => item.id),
+    [...scripts.slice(1).map((item) => item.id), target.id],
+  );
+  assert.deepEqual(
+    cache.value.scriptLibrary.at(-1),
+    scriptLibraryEntryFromContent(target),
+  );
+  assert.equal(cache.version, 8);
+  assert.deepEqual(h.publicationOrder, ["scripts", "catalog"]);
+  let retired = 0;
+  assert.equal(
+    clientPublicationContracts().commit(
+      4,
+      { current: 4 },
+      { isSelectionCurrent: () => true },
+      {},
+      cache,
+      h.catalogCache,
+      before,
+      async () => {
+        retired++;
+        return true;
+      },
+    ),
+    false,
+  );
+  assert.equal(retired, 1);
+  const after = cache.value;
+  h.methods.rememberContent(
+    { ...target, availability: "unavailable", providerRevision: 99 },
+    bootstrap.csrfToken,
+  );
+  assert.equal(
+    cache.value,
+    after,
+    "already-latest confirmation does not repeatedly invalidate snapshots",
+  );
+  assert.deepEqual(h.publicationOrder, ["scripts", "catalog", "scripts"]);
+});
+test("equal tail script confirmation rebuilds an over-budget catalog before the client selects its first 150 references", async () => {
+  for (const mixed of [false, true]) {
+    const h = await harness(false),
+      head = entry("head");
+    const references = Array.from({ length: 151 }, (_, index) =>
+      entry("reference-" + index, {
+        appId: "morphz.script-studio",
+        kind: "script",
+        appObjectId: "production-" + index,
+        observedVersionRef: "2",
+      }),
+    );
+    if (mixed) references[0] = entry("ordinary-document");
+    h.catalogCache.current = catalog([head, ...references]);
+    const cache = h.catalogCache.current,
+      before = cache.value,
+      target = references.at(-1)!;
+    cache.value.scriptLibrary = references
+      .filter((item) => item.kind === "script")
+      .map(scriptLibraryEntryFromContent);
+    h.methods.rememberContent(
+      { ...target, availability: "unavailable", updatedAt: "ignored" },
+      bootstrap.csrfToken,
+    );
+    assert.notEqual(
+      cache.value,
+      before,
+      "a tail confirmation must retire a cache containing more than 150 non-head references",
+    );
+    assert.equal(cache.value.headContents[0], head);
+    assert.equal(cache.value.contents.length, 151);
+    assert.deepEqual(cache.value.contents.slice(1), references.slice(1));
+    assert.equal(cache.value.contents.at(-1), target);
+    assert.deepEqual(
+      cache.value.scriptLibrary.at(-1),
+      scriptLibraryEntryFromContent(target),
+    );
+    assert.ok(
+      cache.value.contents
+        .filter((item) => item.kind === "script")
+        .map((item) => item.id)
+        .slice(0, 150)
+        .includes(target.id),
+      "the current point-read target remains in the client's bounded selection",
+    );
+    assert.deepEqual(h.publicationOrder, ["scripts", "catalog"]);
+    let retired = 0;
+    assert.equal(
+      clientPublicationContracts().commit(
+        4,
+        { current: 4 },
+        { isSelectionCurrent: () => true },
+        {},
+        cache,
+        h.catalogCache,
+        before,
+        async () => {
+          retired++;
+          return true;
+        },
+      ),
+      false,
+    );
+    assert.equal(retired, 1);
+    const bounded = cache.value;
+    h.methods.rememberContent(target, bootstrap.csrfToken);
+    assert.equal(cache.value, bounded, "bounded tail confirmation is a no-op");
+    assert.deepEqual(h.publicationOrder, ["scripts", "catalog", "scripts"]);
+  }
+});
+test("equal head and non-available-script references keep the original no-op and cached fields", async () => {
+  for (const changes of [
+    { appId: "morphz.objects", kind: "document", availability: "available" },
+    {
+      appId: "morphz.script-studio",
+      kind: "script",
+      availability: "unavailable",
+    },
+    {
+      appId: "morphz.script-studio",
+      kind: "document",
+      availability: "available",
+    },
+  ] as const) {
+    const h = await harness(false),
+      head = entry("head"),
+      target = entry("reference", changes),
+      other = entry("other");
+    h.catalogCache.current = catalog([head, target, other]);
+    const before = h.catalogCache.current.value;
+    h.methods.rememberContent(
+      {
+        ...target,
+        appId: "morphz.script-studio",
+        kind: "script",
+        availability: "available",
+        updatedAt: "ignored",
+      },
+      bootstrap.csrfToken,
+    );
+    assert.equal(h.catalogCache.current.value, before);
+    assert.equal(h.catalogCache.current.value.contents[1], target);
+    assert.deepEqual(h.publicationOrder, ["scripts"]);
+    assert.deepEqual(h.events, []);
+  }
+});
+test("changed remembered scripts publish the newly assigned array before catalog, including removal and non-script entries", async () => {
+  const h = await harness(false);
+  const script = entry("script", {
+    appId: "morphz.script-studio",
+    kind: "script",
+    appObjectId: "production",
+    observedVersionRef: "2",
+  });
+  const before = h.catalogCache.current!.value;
+  h.onScriptPublication((entries) => {
+    assert.notEqual(h.catalogCache.current!.value, before);
+    assert.equal(entries, h.catalogCache.current!.value.scriptLibrary);
+    assert.equal(
+      h.events.length,
+      h.scriptPublications.length - 1,
+      "each synchronous script publication precedes its catalog publication",
+    );
+  });
+  h.methods.rememberContent(script, bootstrap.csrfToken);
+  assert.equal(h.scriptPublications[0]![0]!.activityRevision, 2);
+  h.methods.rememberContent(
+    { ...script, revision: 2, observedVersionRef: "3", title: "changed" },
+    bootstrap.csrfToken,
+  );
+  assert.equal(h.scriptPublications[1]![0]!.activityRevision, 3);
+  assert.equal(h.scriptPublications[1]![0]!.catalogRevision, 2);
+  assert.equal(h.scriptPublications[1]![0]!.title, "changed");
+  h.methods.rememberContent(
+    { ...script, revision: 3, availability: "unavailable" },
+    bootstrap.csrfToken,
+  );
+  assert.deepEqual(h.scriptPublications[2], []);
+  h.methods.rememberContent(entry("document"), bootstrap.csrfToken);
+  assert.deepEqual(h.scriptPublications[3], []);
+  assert.deepEqual(h.publicationOrder, [
+    "scripts",
+    "catalog",
+    "scripts",
+    "catalog",
+    "scripts",
+    "catalog",
+    "scripts",
+    "catalog",
+  ]);
+});
+test("remembered script publication retains the original identity and cache preflight", async () => {
+  const h = await harness(false);
+  h.methods.rememberContent(entry(), "different-CSRF");
+  const boot = h.current.current;
+  h.current.current = null;
+  h.methods.rememberContent(entry(), bootstrap.csrfToken);
+  h.current.current = boot;
+  h.catalogCache.current = null;
+  h.methods.rememberContent(entry(), bootstrap.csrfToken);
+  assert.deepEqual(h.scriptPublications, []);
+  assert.deepEqual(h.events, []);
+});
+test("actual Client script publisher uses all seven metadata fields and array order, preserving unchanged references and current-before-React", () => {
+  const { publisher } = clientPublicationContracts();
+  const script: ScriptLibraryEntry = {
+    id: "production",
+    contentId: "script",
+    projectId: "first-project",
+    title: "script",
+    updatedAt: now,
+    catalogRevision: 1,
+    activityRevision: 2,
+  };
+  const current: {
+      current: { scriptLibrary: ScriptLibraryEntry[]; opaque: string } | null;
+    } = { current: { scriptLibrary: [], opaque: "preserved" } },
+    ledger: unknown[] = [];
+  const publish = publisher(current, (updated) => {
+    assert.equal(current.current, updated);
+    ledger.push(updated);
+  });
+  const entries = [script];
+  publish(entries);
+  assert.equal(current.current!.scriptLibrary, entries);
+  assert.equal(current.current!.opaque, "preserved");
+  const unchanged = current.current;
+  publish([{ ...script }]);
+  assert.equal(current.current, unchanged);
+  assert.equal(ledger.length, 1);
+  for (const field of [
+    "id",
+    "contentId",
+    "projectId",
+    "title",
+    "updatedAt",
+    "catalogRevision",
+    "activityRevision",
+  ] as const) {
+    current.current = { scriptLibrary: [script], opaque: "preserved" };
+    const changed = [
+      {
+        ...script,
+        [field]: typeof script[field] === "number" ? 3 : "different",
+      },
+    ];
+    const before: number = ledger.length;
+    publish(changed);
+    assert.equal(ledger.length, before + 1, field + " must publish");
+    assert.equal(current.current!.scriptLibrary, changed);
+  }
+  const second = { ...script, id: "second" };
+  current.current = { scriptLibrary: [script, second], opaque: "preserved" };
+  publish([second, script]);
+  assert.equal(current.current!.scriptLibrary[0], second);
+  publish([]);
+  assert.deepEqual(current.current!.scriptLibrary, []);
+  current.current = null;
+  const before = ledger.length;
+  publish(entries);
+  assert.equal(ledger.length, before);
+});
+test("actual Client catalog commit preflight retires a changed borrowed value through the original drain without writing the stale snapshot", async () => {
+  const { commit } = clientPublicationContracts(),
+    h = await harness(false);
+  const hold = deferred<void>(),
+    started = deferred<void>(),
+    ledger: string[] = [],
+    epoch = { current: 4 };
+  let reads = 0;
+  const drain = createRefreshDrain(async () => {
+    reads++;
+    const cache = h.catalogCache.current,
+      value = cache?.value;
+    if (reads === 1) {
+      started.resolve();
+      await hold.promise;
+    }
+    if (
+      !commit(
+        4,
+        epoch,
+        { isSelectionCurrent: () => true },
+        {},
+        cache,
+        h.catalogCache,
+        value,
+        () => drain.request(),
+      )
+    ) {
+      ledger.push("retired");
+      return false;
+    }
+    ledger.push("confirmed", "history", "catalog", "Boot");
+    return true;
+  });
+  const pending = drain.request();
+  await started.promise;
+  h.methods.rememberContent(
+    entry("script", {
+      appId: "morphz.script-studio",
+      kind: "script",
+      appObjectId: "production",
+      observedVersionRef: "2",
+    }),
+    bootstrap.csrfToken,
+  );
+  hold.resolve();
+  assert.equal(await pending, true);
+  assert.equal(reads, 2);
+  assert.deepEqual(ledger, [
+    "retired",
+    "confirmed",
+    "history",
+    "catalog",
+    "Boot",
+  ]);
+  const cache = h.catalogCache.current!,
+    oldValue = cache.value;
+  cache.value = { ...cache.value };
+  for (const [version, selected] of [
+    [3, true],
+    [4, false],
+  ] as const) {
+    let requests = 0;
+    assert.equal(
+      commit(
+        version,
+        epoch,
+        { isSelectionCurrent: () => selected },
+        {},
+        cache,
+        h.catalogCache,
+        oldValue,
+        async () => {
+          requests++;
+          return true;
+        },
+      ),
+      false,
+    );
+    assert.equal(requests, 0, "original epoch/selection checks precede retry");
+  }
+  h.catalogCache.current = catalog();
+  let requests = 0;
+  assert.equal(
+    commit(
+      4,
+      epoch,
+      { isSelectionCurrent: () => true },
+      {},
+      cache,
+      h.catalogCache,
+      oldValue,
+      async () => {
+        requests++;
+        return true;
+      },
+    ),
+    true,
+  );
+  assert.equal(
+    requests,
+    0,
+    "a replaced authority cache is not the same-object invalidation",
+  );
 });
 test("remember is synchronous: absent identity/cache and the original four-field match are no-ops", async () => {
   await compare((h) => {

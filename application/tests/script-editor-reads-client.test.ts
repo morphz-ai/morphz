@@ -18,6 +18,8 @@ import {
 import type { ApplicationMethod } from "../packages/core/src/application-api.js";
 import { localAccess } from "../packages/core/src/model.js";
 import { emptyScriptDraft } from "../packages/core/src/script-studio.js";
+import type { ScriptEditorProduction } from "../apps/web/src/script-editor-reader.js";
+import type { LiveScriptDraft } from "../packages/script-studio/src/store.js";
 import { agentDomainFixture } from "./agent-domain-fixture.js";
 
 const reader = {
@@ -96,8 +98,11 @@ async function withRealClient(
     hold(match: (url: URL) => boolean, verify: (value: unknown) => void): Hold;
     grant(allowed: boolean): Promise<void>;
     denied(): Promise<void>;
+    revise(): Promise<{ revision: number; title: string }>;
+    mutateOther(): Promise<void>;
   }) => Promise<void>,
   withSource = false,
+  offHead = false,
 ) {
   const fixture = await agentDomainFixture({
     additionalHumans: [reader],
@@ -143,7 +148,7 @@ async function withRealClient(
     })) as { contentId: string };
     const contentId = created.contentId;
     const sourceObjectId = randomUUID();
-    const sources = [];
+    const sources: LiveScriptDraft["sources"] = [];
     if (withSource) {
       await ownerCall("documents.create", {
         commandId: randomUUID(),
@@ -189,6 +194,45 @@ async function withRealClient(
           text: texts[revision],
         },
       });
+    let itemRevision = 3;
+    const revise = async () => {
+      assert.ok(itemRevision < 5, "at most two real fixture revisions");
+      const revision = itemRevision + 1;
+      const title = `TEST 实际修订第${revision}稿`;
+      await ownerCall("scripts.item.revise", {
+        commandId: randomUUID(),
+        contentId,
+        itemId,
+        expectedRevision: itemRevision,
+        draft: {
+          ...emptyScriptDraft(title),
+          sources,
+          text: `TEST 实际修订第${revision}稿正文`,
+        },
+      });
+      itemRevision = revision;
+      return { revision, title };
+    };
+    let otherMutations = 0;
+    const mutateOther = async () => {
+      assert.equal(otherMutations++, 0, "one non-target fixture mutation");
+      await ownerCall("documents.create", {
+        commandId: randomUUID(),
+        objectId: randomUUID(),
+        projectId: fixture.projectId,
+        title: "TEST 非目标目录变更",
+        markdown: "只改变真实目录版本，使后续刷新不能复用旧目录。",
+      });
+    };
+    if (offHead)
+      for (let index = 0; index < 55; index++)
+        await ownerCall("documents.create", {
+          commandId: randomUUID(),
+          objectId: randomUUID(),
+          projectId: fixture.projectId,
+          title: `TEST 首屏之外的真实剧本 ${index}`,
+          markdown: "真实后建文档使目标剧本落在目录首屏之外。",
+        });
     const grant = (allowed: boolean) =>
       fixture.domains.content.platform.reconcileOperatorMembers(
         fixture.transport.identity(),
@@ -273,11 +317,20 @@ async function withRealClient(
       "creating the Client does not eagerly read script data",
     );
     await client.login(tokenFor(reader));
-    assert.ok(
-      client
-        .getSnapshot()
-        ?.scriptLibrary.some((entry) => entry.id === productionId),
-    );
+    if (offHead)
+      assert.equal(
+        client
+          .getSnapshot()
+          ?.scriptLibrary.some((entry) => entry.id === productionId),
+        false,
+        "55 real newer documents must leave the script outside the initial head",
+      );
+    else
+      assert.ok(
+        client
+          .getSnapshot()
+          ?.scriptLibrary.some((entry) => entry.id === productionId),
+      );
     const remote = new HttpApplicationClient(origin);
     const hold = (
       match: (url: URL) => boolean,
@@ -307,6 +360,8 @@ async function withRealClient(
       sourceObjectId,
       hold,
       grant,
+      revise,
+      mutateOther,
       denied: async () => {
         await assert.rejects(
           remote.call(
@@ -344,6 +399,257 @@ const scriptCalls = (reads: Read[]) =>
       read.path.startsWith("/api/platform/scripts") ||
       read.path.startsWith("/api/platform/content/"),
   );
+
+function scriptWitness(
+  value: Pick<
+    ScriptEditorProduction,
+    "id" | "contentId" | "projectId" | "catalogRevision" | "activityRevision"
+  >,
+) {
+  return {
+    id: value.id,
+    contentId: value.contentId,
+    projectId: value.projectId,
+    catalogRevision: value.catalogRevision,
+    activityRevision: value.activityRevision,
+  };
+}
+
+test("actual SSR Client: a real revised script read synchronizes its authorized navigation witness and editor cache before resolving", async () => {
+  await withRealClient(
+    async ({ client, reads, productionId, contentId, itemId, revise }) => {
+      const initial = client.getSnapshot()!;
+      const before = initial.scriptLibrary.find(
+        (entry) => entry.id === productionId,
+      )!;
+      const old = await client.readScriptEditor(productionId);
+      assert.equal(client.getScriptEditor(productionId), old);
+      const revision = await revise();
+      const current = await client.readScriptEditor(productionId);
+      assert.ok(current.activityRevision > before.activityRevision);
+      assert.equal(current.contentId, contentId);
+      assert.equal(current.items[0]!.revision, revision.revision);
+      assert.equal(current.items[0]!.title, revision.title);
+      const resolved = await client.resolveScriptLocation({
+        productionId,
+        itemId,
+      });
+      assert.ok(resolved);
+      assert.equal(resolved.production, current);
+      const snapshot = client.getSnapshot()!;
+      assert.equal(snapshot.csrfToken === initial.csrfToken, true);
+      assert.equal(snapshot.centerId, initial.centerId);
+      assert.equal(snapshot.principalId, reader.principalId);
+      const entry = snapshot.scriptLibrary.find(
+        (value) => value.id === productionId,
+      );
+      assert.ok(entry, "the same authorized original remains navigable");
+      assert.deepEqual(
+        scriptWitness(entry),
+        scriptWitness(current),
+        "the actual read must publish the exact navigation witness before it resolves",
+      );
+      assert.equal(client.getScriptEditor(productionId), current);
+      assert.equal(
+        reads.some((read) => /\/(inputs|messages|infer)(\/|$)/.test(read.path)),
+        false,
+        "reading never submits input or invokes a model",
+      );
+    },
+  );
+});
+
+test("actual SSR Client: a delayed old final navigation receipt cannot roll back a newer real script resolve and the same refresh drains the invalidation", async () => {
+  await withRealClient(
+    async ({
+      client,
+      reads,
+      productionId,
+      itemId,
+      hold,
+      revise,
+      mutateOther,
+    }) => {
+      const initial = client.getSnapshot()!;
+      const old = await client.readScriptEditor(productionId);
+      await mutateOther();
+      reads.length = 0;
+      let navigationReceipts = 0;
+      const gate = hold(
+        (url) =>
+          url.pathname === "/api/platform/runtime-navigation" &&
+          ++navigationReceipts === 2,
+        (value) => {
+          const receipt = value as {
+            catalogVersion: number;
+            revisions: { access: number };
+          };
+          assert.ok(Number.isSafeInteger(receipt.catalogVersion));
+          assert.ok(Number.isSafeInteger(receipt.revisions.access));
+        },
+      );
+      const pending = client.refresh();
+      let current: ScriptEditorProduction | undefined;
+      try {
+        await reachedBeforeCompletion(gate, pending);
+        assert.equal(navigationReceipts, 2);
+        assert.ok(
+          reads.some((read) => read.path.startsWith("/api/platform/content?")),
+          "the non-target real mutation must force a catalog read before the held final receipt",
+        );
+        const revision = await revise();
+        const resolved = await client.resolveScriptLocation({
+          productionId,
+          itemId,
+        });
+        assert.ok(resolved);
+        current = resolved.production;
+        assert.ok(current.activityRevision > old.activityRevision);
+        assert.equal(current.items[0]!.revision, revision.revision);
+        assert.equal(current.items[0]!.title, revision.title);
+      } finally {
+        // Release even when the intended regression assertion is red. Await
+        // this exact requester's Promise before restoring fetch or its stores.
+        gate.release();
+        await pending;
+      }
+      assert.equal(await pending, true);
+      assert.ok(current);
+      const snapshot = client.getSnapshot()!;
+      assert.equal(snapshot.csrfToken === initial.csrfToken, true);
+      assert.equal(snapshot.centerId, initial.centerId);
+      assert.equal(snapshot.principalId, reader.principalId);
+      const entry = snapshot.scriptLibrary.find(
+        (value) => value.id === productionId,
+      );
+      assert.ok(
+        entry,
+        "a delayed authorized receipt cannot remove the original",
+      );
+      assert.deepEqual(
+        scriptWitness(entry),
+        scriptWitness(current),
+        "awaiting the same refresh must retain the newer real script witness",
+      );
+      assert.equal(client.getScriptEditor(productionId), current);
+      assert.ok(
+        reads.filter(
+          (read) =>
+            new URL(read.path, "http://fixture").pathname ===
+            "/api/platform/runtime-navigation",
+        ).length >= 4,
+        "the original refresh Promise must await a second authoritative read",
+      );
+      assert.equal(
+        reads.some((read) => /\/(inputs|messages|infer)(\/|$)/.test(read.path)),
+        false,
+        "the drain never submits input or invokes a model",
+      );
+    },
+  );
+});
+
+test("actual SSR Client: a confirmed off-head script survives a later real refresh while its exact historical body is held", async () => {
+  await withRealClient(
+    async ({
+      client,
+      reads,
+      productionId,
+      contentId,
+      itemId,
+      hold,
+      mutateOther,
+    }) => {
+      const initial = client.getSnapshot()!;
+      assert.equal(
+        initial.scriptLibrary.some((entry) => entry.id === productionId),
+        false,
+      );
+      const gate = hold(
+        (url) =>
+          url.pathname ===
+            `/api/platform/scripts/${contentId}/items/${itemId}` &&
+          url.searchParams.get("revision") === "1",
+        (value) => {
+          const receipt = value as {
+            productionId: string;
+            itemId: string;
+            revision: number;
+            draft: { text: string };
+          };
+          assert.equal(receipt.productionId, productionId);
+          assert.equal(receipt.itemId, itemId);
+          assert.equal(receipt.revision, 1);
+          assert.equal(receipt.draft.text, texts[0]);
+        },
+      );
+      const pending = client.resolveScriptLocation({
+        productionId,
+        itemId,
+        revision: 1,
+      });
+      let resolved: Awaited<typeof pending> | undefined;
+      try {
+        await reachedBeforeCompletion(gate, pending);
+        assert.ok(
+          reads.some(
+            (read) =>
+              read.path === `/api/platform/content/${contentId}` &&
+              read.status === 200,
+          ),
+          "the real metadata confirmation precedes the held historical body",
+        );
+        // This read starts after the original was confirmed and remembered.
+        // No instance, saved location or recency pins the off-head original.
+        await mutateOther();
+        assert.equal(await client.refresh(), true);
+      } finally {
+        gate.release();
+        resolved = await pending;
+      }
+      assert.ok(resolved);
+      assert.equal(resolved.production.id, productionId);
+      assert.equal(resolved.production.contentId, contentId);
+      assert.equal(resolved.item!.id, itemId);
+      assert.equal(
+        client.scriptVersionTitle(productionId, itemId, 1),
+        titles[0],
+      );
+      const version = await client.readScriptVersion(
+        resolved.production,
+        itemId,
+        1,
+      );
+      assert.equal(version.productionId, productionId);
+      assert.equal(version.itemId, itemId);
+      assert.equal(version.revision, 1);
+      assert.equal(version.draft.title, titles[0]);
+      assert.equal(version.draft.text, texts[0]);
+      const snapshot = client.getSnapshot()!;
+      assert.equal(snapshot.csrfToken === initial.csrfToken, true);
+      assert.equal(snapshot.centerId, initial.centerId);
+      assert.equal(snapshot.principalId, reader.principalId);
+      const entry = snapshot.scriptLibrary.find(
+        (value) => value.id === productionId,
+      );
+      assert.ok(
+        entry,
+        "a confirmed authorized off-head original must survive the later refresh",
+      );
+      assert.deepEqual(
+        scriptWitness(entry),
+        scriptWitness(resolved.production),
+      );
+      assert.equal(client.getScriptEditor(productionId), resolved.production);
+      assert.equal(
+        reads.some((read) => /\/(inputs|messages|infer)(\/|$)/.test(read.path)),
+        false,
+      );
+    },
+    false,
+    true,
+  );
+});
 
 test("actual SSR Client: editor warm reuse, getters and body/title shared cache keep original HTTP reads", async () => {
   await withRealClient(

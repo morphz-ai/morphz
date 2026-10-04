@@ -2,7 +2,11 @@ import type {
   Artifact,
   Workspace,
 } from "../../../../packages/core/src/model.js";
-import type { PlatformClient, PlatformContent } from "../platform-client.js";
+import type {
+  PlatformClient,
+  PlatformContent,
+  ScriptLibraryEntry,
+} from "../platform-client.js";
 import {
   readContentArtifact,
   readTaskArtifact,
@@ -18,6 +22,7 @@ export type ContentReadPorts<Projection extends ContentReadProjection> = {
   protectedReadGeneration: { readonly current: number };
   catalogCache: { readonly current: PlatformNavigationCache | null };
   publishCatalog: (entries: PlatformContent[]) => void;
+  publishScriptLibrary: (entries: ScriptLibraryEntry[]) => void;
   publishArtifact: (projection: Projection) => void;
   refresh: () => Promise<boolean>;
 };
@@ -35,6 +40,7 @@ export function createContentReads<Projection extends ContentReadProjection>(
     protectedReadGeneration,
     catalogCache,
     publishCatalog,
+    publishScriptLibrary,
     publishArtifact,
     refresh,
   } = options;
@@ -73,8 +79,25 @@ export function createContentReads<Projection extends ContentReadProjection>(
       existing.projectId === entry.projectId &&
       existing.title === entry.title &&
       existing.observedVersionRef === entry.observedVersionRef
-    )
-      return;
+    ) {
+      if (
+        existing.appId !== "morphz.script-studio" ||
+        existing.kind !== "script" ||
+        existing.availability !== "available" ||
+        cache.value.headContents.some((item) => item.id === existing.id) ||
+        (cache.value.contents.at(-1)?.id === existing.id &&
+          cache.value.contents.filter(
+            (item) =>
+              !cache.value.headContents.some((head) => head.id === item.id),
+          ).length <= 150)
+      ) {
+        publishScriptLibrary(cache.value.scriptLibrary);
+        return;
+      }
+      // Reconfirm the cached original, not ignored incoming metadata. Keep the
+      // latest explicit script reference inside the bounded refresh budget.
+      entry = existing;
+    }
     const headContents = cache.value.headContents.map((item) =>
       item.id === entry.id ? entry : item,
     );
@@ -97,6 +120,7 @@ export function createContentReads<Projection extends ContentReadProjection>(
         )
         .map(scriptLibraryEntryFromContent),
     };
+    publishScriptLibrary(cache.value.scriptLibrary);
     publishCatalog(contents);
   }
   async function resolveArtifact(id: string, revision?: number) {

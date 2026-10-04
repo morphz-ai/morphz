@@ -9,6 +9,7 @@ import {
   isBinaryExpression,
   isCallExpression,
   isExpressionStatement,
+  isIfStatement,
   isFunctionDeclaration,
   isIdentifier,
   isImportDeclaration,
@@ -23,6 +24,7 @@ import {
   isShorthandPropertyAssignment,
   isStringLiteral,
   isTypeAliasDeclaration,
+  isTypeLiteralNode,
   isVariableDeclaration,
   isVariableStatement,
   type Identifier,
@@ -67,8 +69,52 @@ const current = useRef<Boot | null>(null), platform = useRef<PlatformClient | nu
   catalogCache = useRef<PlatformNavigationCache | null>(null), protectedReadGeneration = useRef(0);
 const ports = {platform,current,protectedReadGeneration,catalogCache,
   publishCatalog: setContentCatalog,
+  publishScriptLibrary: (entries) => {
+    const latest = current.current;
+    if (!latest) return;
+    if (latest.scriptLibrary.length === entries.length &&
+      latest.scriptLibrary.every((existing, index) => {
+        const entry = entries[index]!;
+        return existing.id === entry.id && existing.contentId === entry.contentId &&
+          existing.projectId === entry.projectId && existing.title === entry.title &&
+          existing.updatedAt === entry.updatedAt && existing.catalogRevision === entry.catalogRevision &&
+          existing.activityRevision === entry.activityRevision;
+      })) return;
+    const updated = {...latest, scriptLibrary: entries};
+    current.current = updated; setBoot(updated);
+  },
   publishArtifact: (updated) => {current.current = updated; setBoot(updated);}, refresh};
-function borrow() {const {platform,current,protectedReadGeneration,catalogCache,publishCatalog,publishArtifact,refresh}=options;}
+function borrow() {const {platform,current,protectedReadGeneration,catalogCache,publishCatalog,publishScriptLibrary,publishArtifact,refresh}=options;}
+type ScriptPublication = {publishScriptLibrary: (entries: ScriptLibraryEntry[]) => void};
+function scriptPublication() {publishScriptLibrary(cache.value.scriptLibrary);}
+function equalReferenceConfirmation() {
+  if (existing.appId !== "morphz.script-studio" || existing.kind !== "script" ||
+    existing.availability !== "available" ||
+    cache.value.headContents.some((item) => item.id === existing.id) ||
+    (cache.value.contents.at(-1)?.id === existing.id &&
+      cache.value.contents.filter((item) =>
+        !cache.value.headContents.some((head) => head.id === item.id)).length <= 150)) {
+    publishScriptLibrary(cache.value.scriptLibrary); return;
+  }
+  entry = existing;
+}
+function refreshCapture() {const readCatalogCache = catalogCache.current; const readCatalogValue = readCatalogCache?.value;}
+function refreshCommit() {
+  const finalNavigation = await source.navigationRuntime(signal,requestedScope);
+  if (finalNavigation.revisions.access !== navigation.revisions.access) clearProtectedProjection();
+  if (!navigationReadStillCurrent(navigation, finalNavigation))
+    throw new RequestError(409,"目录在读取期间已更新，请重试。","navigation_changed");
+  if (version !== epoch.current || !conversationHistory.isSelectionCurrent(requestedScope)) return false;
+  if (readCatalogCache && catalogCache.current === readCatalogCache && readCatalogCache.value !== readCatalogValue) {
+    void refresh(); return false;
+  }
+  const savedProjection = localInputDelivery.confirmAndProject(workspace,source);
+}
+const selection = {scope: requestedScope, preferences: {...preferences,contentScope}, recentContentIds,
+  confirmedScriptContentIds: [...new Set((readCatalogValue?.contents ?? [])
+    .filter((entry) => entry.appId === "morphz.script-studio" && entry.kind === "script" &&
+      entry.availability === "available" && !readCatalogValue?.headContents.some((head) => head.id === entry.id))
+    .map((entry) => entry.id))].slice(0,150)};
 function scriptReadSession() {
   const identity = current.current, source = platform.current;
   const generation = protectedReadGeneration.current;
@@ -347,6 +393,123 @@ function violations(input = sources) {
     same(ports.get("publishCatalog"), original.get("publishCatalog"));
     same(ports.get("publishArtifact"), original.get("publishArtifact"));
   });
+  rule("authorized-script-publication", () => {
+    const call = variable(client, "contentReads").initializer;
+    assert.ok(call && isCallExpression(call));
+    const ports = properties(call.arguments[0]),
+      original = properties(variable(expected, "ports").initializer);
+    same(
+      ports.get("publishScriptLibrary"),
+      original.get("publishScriptLibrary"),
+    );
+    const type = owner.nodes
+      .filter(isTypeAliasDeclaration)
+      .find((node) => node.name.text === "ContentReadPorts");
+    assert.ok(type && isTypeLiteralNode(type.type));
+    const publication = type.type.members
+      .filter((node) => node.kind === SyntaxKind.PropertySignature)
+      .filter((node) => {
+        let name: string | undefined;
+        node.forEachChild((child) => {
+          if (isIdentifier(child)) name = child.text;
+        });
+        return name === "publishScriptLibrary";
+      });
+    const expectedType = expected.nodes
+      .filter(isTypeAliasDeclaration)
+      .find((node) => node.name.text === "ScriptPublication");
+    assert.ok(expectedType && isTypeLiteralNode(expectedType.type));
+    assert.equal(publication.length, 1);
+    same(publication[0], expectedType.type.members[0]);
+    const remember = fn(owner, "rememberContent");
+    const equal = remember.body!.statements[4];
+    assert.ok(equal && isIfStatement(equal));
+    const oldEqual = fn(fixed, "rememberContent").body!.statements[4];
+    assert.ok(oldEqual && isIfStatement(oldEqual));
+    same(equal.expression, oldEqual.expression);
+    assert.equal(equal.thenStatement.kind, SyntaxKind.Block);
+    const children: Node[] = [];
+    equal.thenStatement.forEachChild((node) => {
+      children.push(node);
+    });
+    assert.equal(children.length, 2);
+    assert.deepEqual(
+      children.map((node) => shape(node)),
+      fn(expected, "equalReferenceConfirmation").body!.statements.map((node) =>
+        shape(node),
+      ),
+    );
+    const statements = remember.body!.statements;
+    same(
+      statements.at(-2),
+      fn(expected, "scriptPublication").body!.statements[0],
+    );
+    same(statements.at(-1), fn(expected, "publish").body!.statements[1]);
+    const calls = owner.nodes
+      .filter(isCallExpression)
+      .filter(
+        (node) =>
+          isIdentifier(node.expression) &&
+          node.expression.text === "publishScriptLibrary",
+      );
+    assert.equal(calls.length, 2);
+  });
+  rule("refresh-authorized-catalog-preimage", () => {
+    const capture = variable(client, "readCatalogCache"),
+      value = variable(client, "readCatalogValue");
+    same(capture, variable(expected, "readCatalogCache"));
+    same(value, variable(expected, "readCatalogValue"));
+    const block = capture.parent.parent.parent;
+    assert.equal(block.kind, SyntaxKind.Block);
+    const statements: Node[] = [];
+    block.forEachChild((node) => {
+      statements.push(node);
+    });
+    const start = statements.indexOf(capture.parent.parent);
+    assert.ok(start >= 0);
+    assert.equal(statements[start + 1], value.parent.parent);
+    assert.ok(
+      statements[start + 2]!.getText().includes("await readPlatformWorkspace("),
+    );
+    const confirm = variable(client, "savedProjection");
+    assert.equal(confirm.parent.parent.parent, block);
+    const commit = statements.indexOf(confirm.parent.parent);
+    assert.ok(commit > start);
+    assert.deepEqual(
+      statements.slice(commit - 5, commit + 1).map((node) => shape(node)),
+      fn(expected, "refreshCommit").body!.statements.map((node) => shape(node)),
+    );
+    const guards = client.nodes
+      .filter(isIfStatement)
+      .filter(
+        (node) =>
+          JSON.stringify(shape(node.expression)) ===
+          JSON.stringify(
+            shape(
+              (
+                fn(expected, "refreshCommit").body!
+                  .statements[3] as import("typescript/unstable/ast").IfStatement
+              ).expression,
+            ),
+          ),
+      );
+    assert.equal(
+      guards.length,
+      1,
+      "one original epoch/selection guard, before confirmation",
+    );
+  });
+  rule("confirmed-script-reference-selection", () => {
+    const calls = client.nodes
+      .filter(isCallExpression)
+      .filter(
+        (node) =>
+          isIdentifier(node.expression) &&
+          node.expression.text === "readPlatformWorkspace",
+      );
+    assert.equal(calls.length, 1);
+    same(calls[0]!.arguments[6], variable(expected, "selection").initializer);
+  });
   rule("direct-public-and-editor-references", () => {
     const declaration = variable(client, "contentReads");
     const returns = fn(client, "useWorkspace").body!.statements.filter(
@@ -504,6 +667,40 @@ function violations(input = sources) {
   });
   rule("six-fixed-algorithms", () => {
     const replacements: { start: number; end: number; text: string }[] = [];
+    const remember = fn(owner, "rememberContent"),
+      equal = remember.body!.statements[4],
+      oldEqual = fn(fixed, "rememberContent").body!.statements[4];
+    assert.ok(
+      equal && isIfStatement(equal) && oldEqual && isIfStatement(oldEqual),
+    );
+    same(equal.expression, oldEqual.expression);
+    assert.equal(equal.thenStatement.kind, SyntaxKind.Block);
+    const equalStatements: Node[] = [];
+    equal.thenStatement.forEachChild((node) => {
+      equalStatements.push(node);
+    });
+    assert.equal(equalStatements.length, 2);
+    assert.deepEqual(
+      equalStatements.map((node) => shape(node)),
+      fn(expected, "equalReferenceConfirmation").body!.statements.map((node) =>
+        shape(node),
+      ),
+    );
+    replacements.push({
+      start: equal.getStart(),
+      end: equal.end,
+      text: oldEqual.getText(),
+    });
+    const scriptPublication = remember.body!.statements.at(-2);
+    same(
+      scriptPublication,
+      fn(expected, "scriptPublication").body!.statements[0],
+    );
+    replacements.push({
+      start: scriptPublication!.getStart(),
+      end: scriptPublication!.end,
+      text: "",
+    });
     for (const node of owner.nodes.filter(isExpressionStatement)) {
       const call = node.expression;
       if (!isCallExpression(call) || !isIdentifier(call.expression)) continue;
@@ -623,8 +820,8 @@ const negatives: Counterfactual[] = [
   ],
   [
     "Client",
-    "      current.current = updated;\n      setBoot(updated);",
-    "      setBoot(updated);\n      current.current = updated;",
+    "    publishArtifact: (updated) => {\n      current.current = updated;\n      setBoot(updated);",
+    "    publishArtifact: (updated) => {\n      setBoot(updated);\n      current.current = updated;",
     "synchronous-publication",
   ],
   [
@@ -689,8 +886,8 @@ const negatives: Counterfactual[] = [
   ],
   [
     "Owner",
-    "import type { PlatformClient, PlatformContent }",
-    "import { PlatformClient, type PlatformContent }",
+    "import type {\n  PlatformClient,\n  PlatformContent,\n  ScriptLibraryEntry,\n}",
+    "import {\n  PlatformClient,\n  type PlatformContent,\n  type ScriptLibraryEntry,\n}",
     "inert-owner-and-finite-dependencies",
   ],
   [
@@ -738,6 +935,150 @@ const negatives: Counterfactual[] = [
     "six-fixed-algorithms",
   ],
   ["Fixed", ".slice(-149)", ".slice(-150)", "six-fixed-algorithms"],
+  [
+    "Client",
+    "publishScriptLibrary: (entries) =>",
+    "publishScriptLibrary: async (entries) =>",
+    "authorized-script-publication",
+  ],
+  [
+    "Client",
+    "existing.activityRevision === entry.activityRevision",
+    "existing.activityRevision >= entry.activityRevision",
+    "authorized-script-publication",
+  ],
+  [
+    "Client",
+    "existing.catalogRevision === entry.catalogRevision",
+    "existing.catalogRevision >= entry.catalogRevision",
+    "authorized-script-publication",
+  ],
+  [
+    "Client",
+    "const entry = entries[index]!;",
+    "const entry = entries[0]!;",
+    "authorized-script-publication",
+  ],
+  [
+    "Client",
+    "const updated = { ...latest, scriptLibrary: entries };",
+    "const updated = { ...latest, scriptLibrary: [...entries] };",
+    "authorized-script-publication",
+  ],
+  [
+    "Owner",
+    "publishScriptLibrary: (entries: ScriptLibraryEntry[]) => void",
+    "publishScriptLibrary?: (entries: ScriptLibraryEntry[]) => void",
+    "authorized-script-publication",
+  ],
+  [
+    "Owner",
+    "publishScriptLibrary(cache.value.scriptLibrary);",
+    "publishScriptLibrary([scriptLibraryEntryFromContent(entry)]);",
+    "authorized-script-publication",
+  ],
+  [
+    "Owner",
+    "    publishScriptLibrary(cache.value.scriptLibrary);\n    publishCatalog(contents);",
+    "    publishCatalog(contents);\n    publishScriptLibrary(cache.value.scriptLibrary);",
+    "authorized-script-publication",
+  ],
+  [
+    "Client",
+    "const readCatalogValue = readCatalogCache?.value;",
+    "const readCatalogValue = structuredClone(readCatalogCache?.value);",
+    "refresh-authorized-catalog-preimage",
+  ],
+  [
+    "Client",
+    "catalogCache.current === readCatalogCache",
+    "catalogCache.current !== readCatalogCache",
+    "refresh-authorized-catalog-preimage",
+  ],
+  [
+    "Client",
+    "readCatalogCache.value !== readCatalogValue",
+    "readCatalogCache.value === readCatalogValue",
+    "refresh-authorized-catalog-preimage",
+  ],
+  [
+    "Client",
+    "          void refresh();\n          return false;",
+    "          await refresh();\n          return false;",
+    "refresh-authorized-catalog-preimage",
+  ],
+  [
+    "Client",
+    "].slice(0, 150)",
+    "].slice(0, 151)",
+    "confirmed-script-reference-selection",
+  ],
+  [
+    "Client",
+    "!readCatalogValue?.headContents.some(",
+    "readCatalogValue?.headContents.some(",
+    "confirmed-script-reference-selection",
+  ],
+  [
+    "Client",
+    "(readCatalogValue?.contents ?? [])",
+    "(catalogCache.current?.value.contents ?? [])",
+    "confirmed-script-reference-selection",
+  ],
+  [
+    "Client",
+    'entry.availability === "available" &&',
+    'entry.availability !== "available" &&',
+    "confirmed-script-reference-selection",
+  ],
+  [
+    "Owner",
+    'existing.appId !== "morphz.script-studio"',
+    'existing.appId === "morphz.script-studio"',
+    "authorized-script-publication",
+  ],
+  [
+    "Owner",
+    'existing.kind !== "script"',
+    'existing.kind === "script"',
+    "authorized-script-publication",
+  ],
+  [
+    "Owner",
+    'existing.availability !== "available"',
+    'existing.availability === "available"',
+    "authorized-script-publication",
+  ],
+  [
+    "Owner",
+    "cache.value.headContents.some((item) => item.id === existing.id)",
+    "!cache.value.headContents.some((item) => item.id === existing.id)",
+    "authorized-script-publication",
+  ],
+  [
+    "Owner",
+    "cache.value.contents.at(-1)?.id === existing.id",
+    "cache.value.contents.at(-1)?.id !== existing.id",
+    "authorized-script-publication",
+  ],
+  [
+    "Owner",
+    "entry = existing;",
+    "entry = { ...entry };",
+    "authorized-script-publication",
+  ],
+  [
+    "Owner",
+    ").length <= 150)",
+    ").length <= 151)",
+    "authorized-script-publication",
+  ],
+  [
+    "Owner",
+    "!cache.value.headContents.some((head) => head.id === item.id)",
+    'item.kind === "script" && !cache.value.headContents.some((head) => head.id === item.id)',
+    "authorized-script-publication",
+  ],
 ];
 test("legal counterfactuals fail their designated finite rule, not parser/runtime accidents", () => {
   for (const [file, from, to, rule] of negatives) {

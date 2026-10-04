@@ -29,6 +29,7 @@ import {
   readerShape,
   readerVariable,
 } from "./reader-reads-contract.js";
+import { inverseScriptCatalogPublicationFix } from "./script-catalog-publication-fix.js";
 
 // A finite source inverse of five original algorithms and their Client seam.
 // This does not establish HTTP permission, Runtime outcomes, React scheduling
@@ -205,6 +206,7 @@ export function expandExecutionInteractionConsumption(
   clientText: string,
   ownerText = executionOwnerText,
 ) {
+  clientText = inverseScriptCatalogPublicationFix(clientText);
   const { fixed } = verifyExecutionInteractionOwner(ownerText),
     client = parseReaderSources({ Client: clientText }).get("Client")!,
     workspace = readerFunction(client, "useWorkspace"),

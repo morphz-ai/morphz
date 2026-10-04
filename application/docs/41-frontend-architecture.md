@@ -142,6 +142,16 @@ Client HTTP／SQLite 的迟到、版本及授权合同通过。旧新页面最�
 仍在，实际 HTTP 资产逐例核 SHA。该对照冻结在新导航接线前，不把这一
 family 或局部回归说成全查询层、原 App 或整体验收。
 
+授权目录记忆随后修复了一个旧正确性缺口：确认剧本目录时同步发布同一
+有界 cache 的 scriptLibrary，Client 持有 current-before-React writer；旧
+刷新若撞上更晚确认的 value，通过原 drain 重读。刷新最终权限／版本与
+epoch／范围守门先于确认写入。非 head 剧本确认引用不成为 recency、偏好
+或权限；按活跃打开优先和原 200 项共享读取预算保留最新确认引用，等值
+冷剧本再次确认也沿原 150 项 cache 上限保留原件。独立真实版本／撤权／
+并发与容量红绿证据、旧新编译页面及全量 Node 检查已通过；原窗验收仍未
+完成，具体通过／能力跳过及两轮完整门禁证据见实施记录。
+该修复单独记录，不把修复前后的行为差异说成纯架构等价，也不改列表排序。
+
 当前 Task batch、目录分页和 Profile 已有真实共享 owner；Schedules 与 TaskList
 的 deadline／重试／取消及 Boot 发布合同不同，不新增一层 broker 强并。
 完整 query facade 目标需要按合同与实际请求测量推进，不等于每个页面都重造

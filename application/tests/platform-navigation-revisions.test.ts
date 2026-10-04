@@ -13,6 +13,7 @@ import {
 } from "../packages/application/src/application.js";
 import { localAccess } from "../packages/core/src/model.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { objectsApplication } from "../packages/core/src/applications.js";
 import {
   ApplicationRequestError,
   type ApplicationMethod,
@@ -27,6 +28,7 @@ import {
   readPlatformWorkspace,
   reusableNavigationCatalog,
   readCachedScriptOverview,
+  scriptLibraryEntryFromContent,
   type PlatformNavigationCache,
 } from "../apps/web/src/platform-workspace-view.js";
 
@@ -121,6 +123,478 @@ async function fixture(backend: "sqlite" | "postgres") {
     throw error;
   }
 }
+
+async function createColdScriptQuery() {
+  const f = await fixture("sqlite");
+  try {
+    const { client, calls, intercept } = await clientFor(f.host);
+    await client.ensurePersonalSpaces();
+    const productionId = randomUUID();
+    const made = (await client.createScript({
+      commandId: randomUUID(),
+      productionId,
+      projectId: f.host.projectId,
+      title: "已确认但尚未启动的冷剧本",
+    })) as { contentId: string };
+    const fillHead = async () => {
+      for (let index = 0; index < 51; index++)
+        await client.createDocument({
+          commandId: randomUUID(),
+          objectId: randomUUID(),
+          projectId: f.host.projectId,
+          title: `目录第一页填充${index}`,
+          markdown: "仅用于真实目录分页，不打开原件。",
+        });
+    };
+    await fillHead();
+    const navigation = await client.navigationRuntime();
+    const initial = await readPlatformWorkspace(
+      client,
+      [],
+      1,
+      disconnectedRuntime,
+    );
+    const entry = await client.getContent(made.contentId);
+    assert.equal(entry.availability, "available");
+    assert.equal(
+      initial.catalog.headContents.some((value) => value.id === entry.id),
+      false,
+      "测试对象确实在真实SQL目录50项第一页之外",
+    );
+    // This is the existing bounded cache after a real authorized point read,
+    // not recency, an application launch, or a persisted navigation preference.
+    const cache: PlatformNavigationCache = {
+      version: navigation.catalogVersion,
+      revisions: navigation.revisions,
+      value: {
+        ...initial.catalog,
+        contents: [...initial.catalog.contents, entry],
+        scriptLibrary: [
+          ...initial.catalog.scriptLibrary,
+          scriptLibraryEntryFromContent(entry),
+        ],
+      },
+    };
+    return { ...f, client, calls, intercept, fillHead, entry, cache };
+  } catch (error) {
+    await f.close();
+    throw error;
+  }
+}
+
+test("sqlite: 已确认冷剧本在同目录与权限版本刷新中保留且不新增目录或原件读取", async () => {
+  const f = await createColdScriptQuery();
+  try {
+    const navigation = await f.client.navigationRuntime();
+    f.calls.clear();
+    const selection = {
+      preferences: { view: "workbench" },
+      confirmedScriptContentIds: [f.entry.id, f.entry.id],
+    };
+    const result = await readPlatformWorkspace(
+      f.client,
+      [],
+      2,
+      disconnectedRuntime,
+      undefined,
+      undefined,
+      selection,
+      undefined,
+      reusableNavigationCatalog(
+        f.cache,
+        navigation.catalogVersion,
+        navigation.revisions,
+      ),
+    );
+    assert.equal(
+      result.catalog.contents.find((entry) => entry.id === f.entry.id),
+      f.entry,
+      "尚未成为editor/prefs/recent引用也不能丢掉已确认目录条目",
+    );
+    assert.deepEqual(
+      result.catalog.scriptLibrary.find(
+        (entry) => entry.id === f.entry.appObjectId,
+      ),
+      scriptLibraryEntryFromContent(f.entry),
+    );
+    assert.equal(f.calls.get("content.list") ?? 0, 0);
+    assert.equal(f.calls.get("content.resolve") ?? 0, 0);
+    assert.equal(f.calls.get("scripts.read") ?? 0, 0);
+    assert.equal(f.calls.get("scripts.snapshot") ?? 0, 0);
+  } finally {
+    await f.close();
+  }
+});
+
+test("sqlite: 冷剧本目录版本变化必须按内容ID重新授权读取，撤权和缺项不回填", async () => {
+  const f = await createColdScriptQuery();
+  try {
+    const production = await f.client.readScriptSnapshot(f.entry.id);
+    await f.client.updateScript({
+      commandId: randomUUID(),
+      contentId: f.entry.id,
+      expectedRevision: production.revision,
+      title: "目录版本变化后的真实剧本标题",
+      brief: production.brief,
+      reviewerPrincipalIds: production.reviewerPrincipalIds,
+      template: production.template,
+    });
+    await f.fillHead();
+    const navigation = await f.client.navigationRuntime();
+    assert.ok(navigation.catalogVersion > f.cache.version);
+    const references: string[][] = [];
+    f.intercept(async (method, params) => {
+      if (method !== "content.list") return;
+      const request = params as { contentIds?: string[] };
+      if (request.contentIds) references.push(request.contentIds);
+    });
+    const missingId = randomUUID();
+    const selection = {
+      preferences: { view: "workbench" },
+      confirmedScriptContentIds: [f.entry.id, missingId],
+    };
+    const fresh = await readPlatformWorkspace(
+      f.client,
+      [],
+      2,
+      disconnectedRuntime,
+      undefined,
+      undefined,
+      selection,
+      undefined,
+      reusableNavigationCatalog(
+        f.cache,
+        navigation.catalogVersion,
+        navigation.revisions,
+      ),
+    );
+    assert.deepEqual(references, [[f.entry.id, missingId]]);
+    assert.equal(
+      fresh.catalog.headContents.some((entry) => entry.id === f.entry.id),
+      false,
+    );
+    const current = fresh.catalog.contents.find(
+      (entry) => entry.id === f.entry.id,
+    );
+    assert.ok(current);
+    assert.ok(current.revision > f.entry.revision);
+    assert.equal(current.title, "目录版本变化后的真实剧本标题");
+    assert.deepEqual(
+      fresh.catalog.scriptLibrary.find(
+        (entry) => entry.id === f.entry.appObjectId,
+      ),
+      scriptLibraryEntryFromContent(current),
+    );
+    assert.equal(
+      fresh.catalog.contents.some((entry) => entry.id === missingId),
+      false,
+    );
+
+    const members = [
+      { ...localAccess, projectIds: [], enabled: true },
+      { ...other, projectIds: [f.host.projectId], enabled: true },
+    ];
+    await f.host.domains.content.platform.reconcileOperatorMembers(
+      f.host.transport.identity(),
+      members,
+    );
+    const { client: bob, intercept } = await clientFor(f.host, other);
+    await bob.ensurePersonalSpaces();
+    const granted = await bob.navigationRuntime();
+    const grantedRead = await readPlatformWorkspace(
+      bob,
+      [],
+      1,
+      disconnectedRuntime,
+    );
+    const grantedCache: PlatformNavigationCache = {
+      version: granted.catalogVersion,
+      revisions: granted.revisions,
+      value: {
+        ...grantedRead.catalog,
+        contents: [...grantedRead.catalog.contents, current],
+      },
+    };
+    await f.host.domains.content.platform.reconcileOperatorMembers(
+      f.host.transport.identity(),
+      [members[0]!, { ...members[1]!, projectIds: [] }],
+    );
+    const revoked = await bob.navigationRuntime();
+    const permitted = reusableNavigationCatalog(
+      grantedCache,
+      revoked.catalogVersion,
+      revoked.revisions,
+    );
+    assert.equal(permitted, undefined);
+    const deniedReferences: string[][] = [];
+    intercept(async (method, params) => {
+      if (method !== "content.list") return;
+      const request = params as { contentIds?: string[] };
+      if (request.contentIds) deniedReferences.push(request.contentIds);
+    });
+    const denied = await readPlatformWorkspace(
+      bob,
+      [],
+      2,
+      disconnectedRuntime,
+      undefined,
+      undefined,
+      selection,
+      undefined,
+      permitted,
+    );
+    assert.deepEqual(deniedReferences, [[f.entry.id, missingId]]);
+    assert.equal(
+      denied.catalog.contents.some((entry) => entry.id === f.entry.id),
+      false,
+    );
+    assert.equal(
+      denied.catalog.scriptLibrary.some(
+        (entry) => entry.id === f.entry.appObjectId,
+      ),
+      false,
+    );
+    assert.equal(
+      denied.catalog.contents.some((entry) => entry.id === missingId),
+      false,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("sqlite: 活跃打开优先、已确认引用去重限150并共享原200项预算", async () => {
+  const f = await fixture("sqlite");
+  try {
+    const { client, intercept } = await clientFor(f.host);
+    await client.ensurePersonalSpaces();
+    const confirmed: string[] = [];
+    for (let index = 0; index < 151; index++) {
+      const made = (await client.createScript({
+        commandId: randomUUID(),
+        productionId: randomUUID(),
+        projectId: f.host.projectId,
+        title: `实际冷剧本${index}`,
+      })) as { contentId: string };
+      confirmed.push(made.contentId);
+    }
+    const opened = (await client.createDocument({
+      commandId: randomUUID(),
+      objectId: randomUUID(),
+      projectId: f.host.projectId,
+      title: "实际打开的文档优先",
+      markdown: "活跃对象不被冷引用挤掉。",
+    })) as { contentId: string };
+    const recent: string[] = [];
+    for (let index = 0; index < 100; index++) {
+      const made = (await client.createDocument({
+        commandId: randomUUID(),
+        objectId: randomUUID(),
+        projectId: f.host.projectId,
+        title: `既有最近内容引用${index}`,
+        markdown: "测试原共享引用预算。",
+      })) as { contentId: string };
+      recent.push(made.contentId);
+    }
+    const referencePages: string[][] = [];
+    intercept(async (method, params) => {
+      if (method !== "content.list") return;
+      const request = params as { contentIds?: string[] };
+      if (request.contentIds) referencePages.push(request.contentIds);
+    });
+    const selection = {
+      preferences: { artifactId: opened.contentId, view: "workbench" },
+      confirmedScriptContentIds: confirmed.flatMap((id) => [id, id]),
+      recentContentIds: recent,
+    };
+    const result = await readPlatformWorkspace(
+      client,
+      [],
+      1,
+      disconnectedRuntime,
+      undefined,
+      undefined,
+      selection,
+    );
+    const expected = [
+      opened.contentId,
+      ...confirmed.slice(0, 150),
+      ...recent.slice(0, 49),
+    ];
+    assert.deepEqual(
+      referencePages.flat(),
+      expected,
+      "真实contentByIds四个50项页，既有200预算不扩大",
+    );
+    assert.equal(referencePages.length, 4);
+    assert.ok(referencePages.every((ids) => ids.length === 50));
+    assert.equal(
+      result.workspace.artifacts.find(
+        (artifact) => artifact.id === opened.contentId,
+      )?.title,
+      "实际打开的文档优先",
+    );
+    assert.deepEqual(
+      result.catalog.contents
+        .filter((entry) => entry.appId === "morphz.script-studio")
+        .map((entry) => entry.id),
+      confirmed.slice(0, 150),
+    );
+    assert.equal(
+      result.catalog.contents.some((entry) => entry.id === confirmed[150]),
+      false,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("sqlite: 超过50个真实打开视图与prefs占位仍保留最后确认目标，重复刷新不反转引用顺序", async () => {
+  const f = await fixture("sqlite");
+  try {
+    const { client } = await clientFor(f.host);
+    await client.ensurePersonalSpaces();
+    const scriptIds: string[] = [];
+    for (let index = 0; index < 150; index++) {
+      const made = (await client.createScript({
+        commandId: randomUUID(),
+        productionId: randomUUID(),
+        projectId: f.host.projectId,
+        title: `已确认引用预算竞争${index}`,
+      })) as { contentId: string };
+      scriptIds.push(made.contentId);
+    }
+    const targetId = scriptIds[0]!;
+    const openedIds: string[] = [];
+    for (let index = 0; index < 60; index++) {
+      const projectId = await client.createProject(
+        `实际应用视图所属项目${index}`,
+        randomUUID(),
+        randomUUID(),
+      );
+      const made = (await client.createDocument({
+        commandId: randomUUID(),
+        objectId: randomUUID(),
+        projectId,
+        title: `实际打开文档${index}`,
+        markdown: "同200项预算内先保留活跃对象。",
+      })) as { contentId: string };
+      openedIds.push(made.contentId);
+      await client.launchAppView({
+        commandId: randomUUID(),
+        projectId,
+        appId: objectsApplication.id,
+        packageVersion: objectsApplication.version,
+        state: { artifactId: made.contentId },
+      });
+    }
+    const prefs = (await client.createDocument({
+      commandId: randomUUID(),
+      objectId: randomUUID(),
+      projectId: f.host.projectId,
+      title: "独立prefs活跃占位",
+      markdown: "不同于60个真实打开视图。",
+    })) as { contentId: string };
+    const instances = await client.appViews();
+    assert.equal(instances.length, 60);
+    assert.ok(instances.every((instance) => instance.status === "open"));
+    const navigation = await client.navigationRuntime();
+    const selection = {
+      preferences: { view: "workbench", artifactId: prefs.contentId },
+    };
+    const initial = await readPlatformWorkspace(
+      client,
+      instances,
+      1,
+      disconnectedRuntime,
+      undefined,
+      undefined,
+      selection,
+    );
+    assert.equal(
+      initial.catalog.headContents.some((entry) => entry.id === targetId),
+      false,
+    );
+    const olderReferences = await client.contentByIds(scriptIds.slice(1));
+    const target = await client.getContent(targetId);
+    const remembered = [...olderReferences, target];
+    assert.equal(remembered.length, 150);
+    assert.equal(
+      remembered.at(-1)!.id,
+      targetId,
+      "真实点读确认目标追加在既有bounded cache末尾",
+    );
+    let cache: PlatformNavigationCache = {
+      version: navigation.catalogVersion,
+      revisions: navigation.revisions,
+      value: {
+        ...initial.catalog,
+        contents: [...initial.catalog.headContents, ...remembered],
+        scriptLibrary: remembered.map(scriptLibraryEntryFromContent),
+      },
+    };
+    let previous = initial.workspace;
+    const expectedReferences = remembered.slice(11).map((entry) => entry.id);
+    for (let pass = 0; pass < 2; pass++) {
+      const current = await client.navigationRuntime();
+      const confirmedScriptContentIds = cache.value.contents
+        .filter(
+          (entry) =>
+            entry.appId === "morphz.script-studio" &&
+            entry.kind === "script" &&
+            entry.availability === "available" &&
+            !cache.value.headContents.some((head) => head.id === entry.id),
+        )
+        .map((entry) => entry.id);
+      const result = await readPlatformWorkspace(
+        client,
+        instances,
+        pass + 2,
+        disconnectedRuntime,
+        undefined,
+        previous,
+        { ...selection, confirmedScriptContentIds },
+        undefined,
+        reusableNavigationCatalog(
+          cache,
+          current.catalogVersion,
+          current.revisions,
+        ),
+      );
+      assert.ok(
+        result.catalog.scriptLibrary.some(
+          (entry) => entry.contentId === targetId,
+        ),
+        "末尾刚确认的真实冷剧本不能被活跃视图预算挤出启动守门依据",
+      );
+      assert.deepEqual(
+        result.catalog.contents
+          .filter((entry) => entry.appId === "morphz.script-studio")
+          .map((entry) => entry.id),
+        expectedReferences,
+        "61活跃占位后剩余139项按原顺序保留尾部，下一轮不能反转",
+      );
+      assert.equal(
+        result.catalog.contents.length,
+        200,
+        "活跃对象和冷引用共享同一200预算",
+      );
+      for (const id of [prefs.contentId, ...openedIds])
+        assert.ok(
+          result.workspace.artifacts.some((artifact) => artifact.id === id),
+          "每个真实活跃对象保持可见",
+        );
+      cache = {
+        version: current.catalogVersion,
+        revisions: current.revisions,
+        value: result.catalog,
+      };
+      previous = result.workspace;
+    }
+  } finally {
+    await f.close();
+  }
+});
 
 /** Both Client and Agent use their real production entry points. No navigation
  * pages, revision values, authorization results or app originals are stubbed. */

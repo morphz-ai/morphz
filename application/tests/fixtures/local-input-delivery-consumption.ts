@@ -32,6 +32,7 @@ import {
   legacyConfirmationBlock,
   legacyRecordBlock,
 } from "./local-input-delivery-32c52210.js";
+import { inverseScriptCatalogPublicationFix } from "./script-catalog-publication-fix.js";
 
 // Finite inverse of this delivery seam, not a generic AST framework or a proof
 // of storage, authority, React scheduling, HTTP outcomes or native UI behavior.
@@ -291,6 +292,7 @@ export function expandLocalInputDeliveryConsumption(
   clientText: string,
   ownerText = localDeliveryOwnerText,
 ) {
+  clientText = inverseScriptCatalogPublicationFix(clientText);
   const { fixed } = verifyLocalInputDeliveryOwner(ownerText),
     client = parseReaderSources({ Client: clientText }).get("Client")!,
     workspace = readerFunction(client, "useWorkspace"),

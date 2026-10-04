@@ -62,6 +62,9 @@ const objectVersionSchema = z.object({
 export type HistorySelection = {
   scope?: HistoryScope | null;
   recentContentIds?: string[];
+  // Authorized point reads waiting for an explicit script open. These bounded
+  // references are not recency or preferences and never confer permission.
+  confirmedScriptContentIds?: string[];
   preferences?: {
     view?: string;
     projectId?: string;
@@ -566,12 +569,32 @@ export async function readPlatformWorkspace(
     baseCatalog.contents.map((entry) => [entry.id, entry]),
   );
   const taskIds = new Set(headTasks.map((task) => task.id));
+  const headContentIds = new Set(
+    baseCatalog.headContents.map((entry) => entry.id),
+  );
+  const confirmedScriptContentIds = [
+    ...new Set(selection.confirmedScriptContentIds ?? []),
+  ]
+    .filter(
+      (id) =>
+        !headContentIds.has(id) &&
+        !taskIds.has(id) &&
+        !openedArtifactIds.has(id),
+    )
+    .slice(0, 150);
+  const confirmedScriptBudget = Math.max(
+    0,
+    200 - [...openedArtifactIds].filter((id) => !taskIds.has(id)).length,
+  );
   // Keep cold navigation bounded. Older message references are resolved on
   // explicit open; their absence from the first page never means deletion.
   const wantedIds = [
     ...new Set(
       [
         ...openedArtifactIds,
+        ...confirmedScriptContentIds.slice(
+          Math.max(0, confirmedScriptContentIds.length - confirmedScriptBudget),
+        ),
         ...contentDeliveries.map((delivery) => delivery.contentId),
         ...(selection.recentContentIds ?? []).slice(0, 100),
         ...historyIds,
