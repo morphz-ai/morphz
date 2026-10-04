@@ -1,5 +1,31 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 51：创建与私有会话的当前合同
+
+仅五个测试／档案路径。Human creation 与 Private project scope 分别
+直接消费 raw-current App 和自己的真实 owner，不再为普通 CI 执行
+Object／Human／Reference 的跨 owner inverse。真实 import／const alias、
+捕获、注册相对顺序、完整自有算法和消费受有限解析合同约束；完整消费的
+独立 React feature 可以增长，不锁当前整份 App 或无关模块清单。
+
+根 fresh actual Git 独立核八件完整历史来源、原十二个完整 callback、
+103 个原始字面量，两个旧 helper 的完整 prefix／API／default 不变。
+原 28 个反例执行完整旧 checker：25 项同时交接到当前规则，三项仅属
+历史整页或无关未消费成员；另八项当前来源／镜像／副作用反例按指定规则
+拒绝，四组实际 alias／React 消费正例通过。历史重放不读取 mutable peer
+defaults；Reference 只核原两个 pre-preparation 缺席 guard，不夸大范围。
+
+根 proper 原八文件 **84/84**，零失败／跳过／取消；包含创建、私有会话
+生命周期与对象评论的实际挂载、原纯算法和相邻门禁。五路径严格类型沿
+原政策检查 415 文件闭包、格式／diff／冻结 SHA 通过。此前 checker／parser
+实现错误保留红记录，不归咎 PostgreSQL；proper 入口使用已验证专用连接。
+不改生产、UI 或存储，不是整应用／Runtime／原 App 验收。Workspace／Draft
+尚有两条当前历史恢复边，下一批交接；整体目标 active。
+
+证据：`/tmp/morphz-human-private-governance-plan.bMK0eN/RESULT.md`、
+`CLASS28.md`、`provenance-root-final.json`／`classification-root-final.json`／
+`strict-root-final.log`，根 `human-private-root-final.log`。
+
 ## 2026-10-05 前端阶段 50：共享对象语义图形
 
 原完整七类 `ObjectIcon`／`kindLabel` 归中性 `ui/ObjectIcon.tsx`，五类

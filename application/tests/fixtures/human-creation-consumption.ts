@@ -560,3 +560,321 @@ export function assertHumanCreationWholeApp(
   );
   return restored;
 }
+
+// Current responsibility checks are deliberately separate from the original
+// immutable migration inverse above. They never call another owner's inverse.
+import * as creationAst from "typescript/unstable/ast";
+function creationSymbol(parsed: Parsed, node: Node): number | undefined {
+  for (let depth = 0; depth < 8 && isIdentifier(node); depth++) {
+    const symbol = parsed.symbols.get(node);
+    const alias = parsed.nodes
+      .filter(creationAst.isVariableDeclaration)
+      .find(
+        (value) =>
+          isIdentifier(value.name) && parsed.symbols.get(value.name) === symbol,
+      );
+    if (!alias?.initializer || !isIdentifier(alias.initializer)) break;
+    node = alias.initializer;
+  }
+  return parsed.symbols.get(node);
+}
+function creationOrigins(parsed: Parsed) {
+  const expected: Record<string, readonly [string, boolean]> = {
+    CreateDialog: [componentModule, false],
+    useState: ["react", false],
+    useRef: ["react", false],
+    useEffect: ["react", false],
+    FormEvent: ["react", true],
+    createPortal: ["react-dom", false],
+    X: ["lucide-react", false],
+    WorkspaceClient: ["../../client.js", true],
+    scopedStorage: ["../../local-preferences.js", false],
+    draftKey: ["../../local-preferences.js", false],
+    useModal: ["../../useModal.js", false],
+  };
+  const names = new Map<number, string>();
+  for (const declaration of parsed.source.statements.filter(
+    isImportDeclaration,
+  )) {
+    const clause = declaration.importClause;
+    if (
+      !isStringLiteral(declaration.moduleSpecifier) ||
+      !clause?.namedBindings ||
+      !isNamedImports(clause.namedBindings)
+    )
+      continue;
+    for (const member of clause.namedBindings.elements) {
+      const name = (member.propertyName ?? member.name).text,
+        contract = expected[name];
+      const symbol = parsed.symbols.get(member.name);
+      if (!contract || symbol === undefined) continue;
+      const type =
+        clause.phaseModifier === SyntaxKind.TypeKeyword || member.isTypeOnly;
+      names.set(
+        symbol,
+        declaration.moduleSpecifier.text === contract[0] && type === contract[1]
+          ? name
+          : "wrong-origin:" + name,
+      );
+    }
+  }
+  return names;
+}
+function creationTree(node: Node, parsed: Parsed): unknown {
+  if (isIdentifier(node)) {
+    const name = creationOrigins(parsed).get(creationSymbol(parsed, node)!);
+    if (name) return [node.kind, 0, name];
+  }
+  const children: unknown[] = [];
+  node.forEachChild((child) => {
+    children.push(creationTree(child, parsed));
+  });
+  return [
+    node.kind,
+    node.flags &
+      (NodeFlags.Const |
+        NodeFlags.Let |
+        NodeFlags.Using |
+        NodeFlags.OptionalChain),
+    ...(isImportDeclaration(node) ? [node.importClause?.phaseModifier] : []),
+    ...(isExportDeclaration(node) ||
+    isImportSpecifier(node) ||
+    isExportSpecifier(node)
+      ? [node.isTypeOnly]
+      : []),
+    ...(isBinaryExpression(node) ? [node.operatorToken.kind] : []),
+    ...(isPrefixUnaryExpression(node) || isPostfixUnaryExpression(node)
+      ? [node.operator]
+      : []),
+    children.length ? children : node.getText(),
+  ];
+}
+function creationSame(
+  actual: Node,
+  source: Parsed,
+  expected: Node,
+  recipe: Parsed,
+  rule: string,
+) {
+  assert.deepEqual(
+    creationTree(actual, source),
+    creationTree(expected, recipe),
+    rule,
+  );
+}
+/** Raw current owner/consumer contract. No whole App/module hash or inverse. */
+export function verifyCurrentHumanCreationConsumption(
+  appText: string,
+  featureText: string,
+  clientText: string,
+  storageText: string,
+) {
+  const parsed = parse({
+    App: appText,
+    Feature: featureText,
+    Expected: expectedFeature,
+    Client: clientText,
+    Storage: storageText,
+    Runtime:
+      humanCreationFixed.runtime.scopedStorageDefinition +
+      "\n" +
+      humanCreationFixed.runtime.draftKeyDefinition,
+  });
+  const consumers = parse({
+    App: humanCreationFixed.consumers[0].raw,
+    Feature: humanCreationFixed.consumers[1].raw,
+  });
+  const app = parsed.get("App")!,
+    feature = parsed.get("Feature")!,
+    expected = parsed.get("Expected")!,
+    client = parsed.get("Client")!,
+    storage = parsed.get("Storage")!,
+    runtime = parsed.get("Runtime")!;
+  const declarations = imports(app, componentModule);
+  const candidates = declarations.flatMap((node) => {
+    const clause = node.importClause;
+    return clause?.namedBindings && isNamedImports(clause.namedBindings)
+      ? clause.namedBindings.elements
+          .filter(
+            (item) => (item.propertyName ?? item.name).text === "CreateDialog",
+          )
+          .map((item) => ({ node, clause, item }))
+      : [];
+  });
+  assert.equal(
+    candidates.length,
+    1,
+    "one actual human creation runtime import",
+  );
+  const binding = candidates[0]!;
+  assert.ok(
+    binding.clause.phaseModifier === undefined && !binding.item.isTypeOnly,
+    "actual runtime human creation import",
+  );
+  const symbol = app.symbols.get(binding.item.name);
+  assert.notEqual(symbol, undefined, "resolved actual creation import");
+  const tags = app.nodes
+    .filter(isJsxSelfClosingElement)
+    .filter(
+      (node) =>
+        creationSymbol(app, node.tagName) === symbol ||
+        creationOrigins(app).get(creationSymbol(app, node.tagName)!) ===
+          "wrong-origin:CreateDialog" ||
+        node.tagName.getText() === binding.item.name.text,
+    );
+  assert.equal(tags.length, 2, "two original actual creation consumers");
+  const workspace = oneFunction(app, "WorkspaceApp");
+  const parameters: Node[] = [];
+  for (const parameter of workspace.parameters)
+    walk(parameter.name, (node) => {
+      if (isIdentifier(node) && node.text === "client") parameters.push(node);
+    });
+  assert.equal(parameters.length, 1, "one original creation render Client");
+  for (const [index, node] of tags.entries()) {
+    assert.equal(
+      creationSymbol(app, node.tagName),
+      symbol,
+      "real imported creation symbol, not local shadow",
+    );
+    const recipe = consumers.get(index === 0 ? "App" : "Feature")!;
+    const original = recipe.nodes.filter(isJsxSelfClosingElement)[0]!;
+    creationSame(
+      node,
+      app,
+      original,
+      recipe,
+      "complete original creation props keys portal and captured callbacks",
+    );
+    const paren = node.parent;
+    assert.ok(
+      isParenthesizedExpression(paren) && isBinaryExpression(paren.parent),
+      "original direct conditional creation placement",
+    );
+    const guard = paren.parent;
+    assert.equal(
+      guard.operatorToken.kind,
+      SyntaxKind.AmpersandAmpersandToken,
+      "original creation conditional operator",
+    );
+    assert.equal(
+      guard.right,
+      paren,
+      "original direct conditional creation placement",
+    );
+    assert.equal(
+      guard.left.getText(),
+      humanCreationFixed.guards[index],
+      "original document/project creation guard",
+    );
+    assert.ok(
+      isJsxExpression(guard.parent) && isJsxElement(guard.parent.parent),
+      "original creation native ancestor",
+    );
+    assert.equal(
+      guard.parent.parent.openingElement.tagName.getText(),
+      index === 0 ? "main" : "div",
+      "original creation native ancestor",
+    );
+    const clientProp = node.attributes.properties
+      .filter(creationAst.isJsxAttribute)
+      .find((value) => value.name.getText() === "client");
+    assert.ok(
+      clientProp?.initializer &&
+        isJsxExpression(clientProp.initializer) &&
+        clientProp.initializer.expression,
+    );
+    assert.equal(
+      creationSymbol(app, clientProp.initializer.expression),
+      app.symbols.get(parameters[0]!),
+      "complete original creation props keys portal and captured callbacks",
+    );
+  }
+  const component = oneFunction(feature, "CreateDialog"),
+    originalComponent = oneFunction(expected, "CreateDialog");
+  assert.equal(
+    component.parent,
+    feature.source,
+    "one module-scope creation component identity",
+  );
+  creationSame(
+    component,
+    feature,
+    originalComponent,
+    expected,
+    "complete actual Git creation body ten hooks seven props and only approved client Pick",
+  );
+  for (const statement of feature.source.statements) {
+    if (creationAst.isExpressionStatement(statement)) {
+      assert.ok(
+        !statement
+          .getText()
+          .match(
+            /\b(fetch|setInterval|setTimeout|queueMicrotask|writeLocal|removeLocal)\s*\(/,
+          ),
+        "no ambient creation mutation outside the owned lifecycle",
+      );
+    }
+  }
+  assert.equal(
+    app.nodes
+      .filter(isFunctionDeclaration)
+      .filter((node) => node.name?.text === "CreateDialog").length,
+    0,
+    "no copied App creation component",
+  );
+  for (const name of ["scopedStorage", "draftKey"]) {
+    const reexport = client.source.statements
+      .filter(isExportDeclaration)
+      .filter(
+        (node) =>
+          node.moduleSpecifier &&
+          isStringLiteral(node.moduleSpecifier) &&
+          node.moduleSpecifier.text === "./local-preferences.js" &&
+          !node.isTypeOnly,
+      )
+      .flatMap((node) =>
+        node.exportClause && creationAst.isNamedExports(node.exportClause)
+          ? node.exportClause.elements.filter(
+              (member) =>
+                !member.isTypeOnly &&
+                member.name.text === name &&
+                (member.propertyName ?? member.name).text === name,
+            )
+          : [],
+      );
+    assert.equal(
+      reexport.length,
+      1,
+      "original Client storage reexport to same defining module",
+    );
+  }
+  creationSame(
+    oneFunction(storage, "scopedStorage"),
+    storage,
+    oneFunction(runtime, "scopedStorage"),
+    runtime,
+    "same original scoped storage definition",
+  );
+  const key = storage.source.statements
+    .filter(isVariableStatement)
+    .filter((node) =>
+      node.declarationList.declarations.some(
+        (value) => value.name.getText() === "draftKey",
+      ),
+    );
+  const expectedKey = runtime.source.statements
+    .filter(isVariableStatement)
+    .find((node) =>
+      node.declarationList.declarations.some(
+        (value) => value.name.getText() === "draftKey",
+      ),
+    )!;
+  assert.equal(key.length, 1, "one original draft key definition");
+  creationSame(
+    key[0]!,
+    storage,
+    expectedKey,
+    runtime,
+    "same original shared draft key definition",
+  );
+}

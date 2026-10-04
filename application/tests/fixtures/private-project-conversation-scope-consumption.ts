@@ -638,3 +638,456 @@ export function assertPrivateProjectConversationWholeApp(
   );
   return restored;
 }
+
+// The original historical inverse above keeps its API/defaults/body intact.
+// Current checking has no Human/Object/Reference inverse prerequisite.
+import * as scopeAst from "typescript/unstable/ast";
+function scopeSymbol(parsed: Parsed, node: Node): number | undefined {
+  for (let depth = 0; depth < 8 && isIdentifier(node); depth++) {
+    const symbol = parsed.symbols.get(node);
+    const alias = parsed.nodes
+      .filter(scopeAst.isVariableDeclaration)
+      .find(
+        (value) =>
+          isIdentifier(value.name) && parsed.symbols.get(value.name) === symbol,
+      );
+    if (!alias?.initializer || !isIdentifier(alias.initializer)) break;
+    node = alias.initializer;
+  }
+  return parsed.symbols.get(node);
+}
+function scopeOrigins(parsed: Parsed) {
+  const dependency: Record<string, readonly [string, boolean]> = {
+    useEffect: ["react", false],
+    useState: ["react", false],
+    discussionId: ["../../../../packages/core/src/model.js", false],
+    spaceKind: ["../../../../packages/core/src/model.js", false],
+    Workspace: ["../../../../packages/core/src/model.js", true],
+    Project: ["../../../../packages/core/src/projects.js", true],
+    WorkspaceClient: ["../client.js", true],
+    scopedStorage: ["../local-preferences.js", true],
+    InputDraft: ["./exchange-drafts.js", true],
+    createExchangeDraftCommands: ["./exchange-drafts.js", true],
+    CurrentDestination: ["./use-workspace-navigation.js", true],
+    NavigationIntent: ["./use-workspace-navigation.js", true],
+    Preferences: ["./use-workspace-navigation-host.js", true],
+    ...Object.fromEntries(
+      exports.map((name) => [name, [ownerModule, false] as const]),
+    ),
+  };
+  const names = new Map<number, string>();
+  for (const declaration of parsed.source.statements.filter(
+    isImportDeclaration,
+  )) {
+    const clause = declaration.importClause;
+    if (
+      !isStringLiteral(declaration.moduleSpecifier) ||
+      !clause?.namedBindings ||
+      !isNamedImports(clause.namedBindings)
+    )
+      continue;
+    for (const member of clause.namedBindings.elements) {
+      const name = (member.propertyName ?? member.name).text,
+        contract = dependency[name],
+        symbol = parsed.symbols.get(member.name);
+      if (!contract || symbol === undefined) continue;
+      const type =
+        clause.phaseModifier === scopeAst.SyntaxKind.TypeKeyword ||
+        member.isTypeOnly;
+      names.set(
+        symbol,
+        declaration.moduleSpecifier.text === contract[0] && type === contract[1]
+          ? name
+          : "wrong-origin:" + name,
+      );
+    }
+  }
+  return names;
+}
+function scopeTree(node: Node, parsed: Parsed): unknown {
+  if (isIdentifier(node)) {
+    const name = scopeOrigins(parsed).get(scopeSymbol(parsed, node)!);
+    if (name) return [node.kind, 0, name];
+  }
+  const children: unknown[] = [];
+  node.forEachChild((child) => {
+    children.push(scopeTree(child, parsed));
+  });
+  return [
+    node.kind,
+    node.flags &
+      (NodeFlags.Const |
+        NodeFlags.Let |
+        NodeFlags.Using |
+        NodeFlags.OptionalChain),
+    ...(isImportDeclaration(node) ? [node.importClause?.phaseModifier] : []),
+    ...(scopeAst.isImportSpecifier(node) ||
+    scopeAst.isExportDeclaration(node) ||
+    scopeAst.isExportSpecifier(node)
+      ? [node.isTypeOnly]
+      : []),
+    ...(isPrefixUnaryExpression(node) || isPostfixUnaryExpression(node)
+      ? [node.operator]
+      : []),
+    ...(isBinaryExpression(node) ? [node.operatorToken.kind] : []),
+    children.length ? children : node.getText(),
+  ];
+}
+function scopeSame(
+  actual: Node,
+  source: Parsed,
+  expected: Node,
+  recipe: Parsed,
+  rule: string,
+) {
+  assert.deepEqual(
+    scopeTree(actual, source),
+    scopeTree(expected, recipe),
+    rule,
+  );
+}
+function scopeProperty(node: Node, name: string): Node {
+  assert.ok(
+    scopeAst.isObjectLiteralExpression(node),
+    "exact borrowed private scope object",
+  );
+  const found = node.properties.filter(
+    (value) =>
+      (scopeAst.isPropertyAssignment(value) ||
+        isShorthandPropertyAssignment(value)) &&
+      value.name.getText() === name,
+  );
+  assert.equal(found.length, 1, "one borrowed private scope field " + name);
+  const value = found[0]!;
+  assert.ok(
+    scopeAst.isPropertyAssignment(value) ||
+      isShorthandPropertyAssignment(value),
+  );
+  return scopeAst.isPropertyAssignment(value) ? value.initializer : value.name;
+}
+/** Finite current lifecycle, captured ports and actual raw App consumers. */
+export function verifyCurrentPrivateProjectConversationScopeConsumption(
+  appText: string,
+  ownerText: string,
+) {
+  const parsed = parse({
+    App: appText,
+    Owner: ownerText,
+    ExpectedOwner: expectedOwner,
+    ExpectedApp: expectedAppSeams,
+  });
+  const app = parsed.get("App")!,
+    owner = parsed.get("Owner")!,
+    expected = parsed.get("ExpectedOwner")!,
+    expectedApp = parsed.get("ExpectedApp")!;
+  const workspace = fn(app, "WorkspaceApp"),
+    calls = new Map<string, Statement>(),
+    actualCalls = new Map<string, scopeAst.CallExpression>();
+  for (const name of exports) {
+    const bindings = app.source.statements
+      .filter(isImportDeclaration)
+      .flatMap((node) => {
+        const clause = node.importClause;
+        return isStringLiteral(node.moduleSpecifier) &&
+          node.moduleSpecifier.text === ownerModule &&
+          clause?.namedBindings &&
+          isNamedImports(clause.namedBindings)
+          ? clause.namedBindings.elements
+              .filter(
+                (member) => (member.propertyName ?? member.name).text === name,
+              )
+              .map((member) => ({ clause, member }))
+          : [];
+      });
+    assert.equal(
+      bindings.length,
+      1,
+      "unique real private scope import " + name,
+    );
+    const binding = bindings[0]!;
+    assert.ok(
+      binding.clause.phaseModifier === undefined && !binding.member.isTypeOnly,
+      "runtime private scope import",
+    );
+    const symbol = app.symbols.get(binding.member.name);
+    assert.notEqual(symbol, undefined, "resolved private scope import " + name);
+    const found = app.nodes
+      .filter(isCallExpression)
+      .filter((node) => scopeSymbol(app, node.expression) === symbol);
+    assert.equal(
+      found.length,
+      1,
+      name === "createPrivateProjectConversationScope"
+        ? "real imported private scope call " + name
+        : "one real private scope call " + name,
+    );
+    const statement = statementOf(found[0]!);
+    assert.equal(
+      statement.parent,
+      workspace.body,
+      "private scope seam remains directly registered in WorkspaceApp " + name,
+    );
+    const recipe = expectedApp.nodes
+      .filter(isCallExpression)
+      .find(
+        (node) =>
+          isIdentifier(node.expression) && node.expression.text === name,
+      )!;
+    scopeSame(
+      statement,
+      app,
+      statementOf(recipe),
+      expectedApp,
+      name === "createPrivateProjectConversationScope"
+        ? "seven direct aliases and exact captured private scope ports"
+        : "original independent private scope hook/projection capture " + name,
+    );
+    calls.set(name, statement);
+    actualCalls.set(name, found[0]!);
+  }
+  const factory = fn(owner, "createPrivateProjectConversationScope"),
+    original = fn(expected, "createPrivateProjectConversationScope");
+  for (const statement of owner.source.statements) {
+    if (scopeAst.isExpressionStatement(statement)) {
+      assert.ok(
+        !statement
+          .getText()
+          .match(
+            /\b(fetch|setInterval|setTimeout|queueMicrotask|writeLocal|removeLocal)\s*\(/,
+          ),
+        "no ambient private scope mutation outside the owned lifecycle",
+      );
+    }
+  }
+  assert.equal(
+    factory.body!.statements.length,
+    12,
+    "inert private scope factory has only four captures seven declarations and return",
+  );
+  scopeSame(
+    factory.parameters[0]!,
+    owner,
+    original.parameters[0]!,
+    expected,
+    "exact private scope port capture binding",
+  );
+  assert.deepEqual(
+    factory.modifiers?.map((node) => node.kind),
+    original.modifiers?.map((node) => node.kind),
+    "synchronous original private scope constructor",
+  );
+  assert.equal(
+    factory.asteriskToken,
+    undefined,
+    "non-generator original private scope constructor",
+  );
+  for (let index = 0; index < 4; index++)
+    scopeSame(
+      factory.body!.statements[index]!,
+      owner,
+      original.body!.statements[index]!,
+      expected,
+      "four constructor captures borrow original render values without reads",
+    );
+  for (const name of privateProjectScopeActions) {
+    const actual = fn(owner, name),
+      recipe = fn(expected, name);
+    assert.equal(
+      actual.parent,
+      factory.body,
+      "seven actions share one private scope owner",
+    );
+    scopeSame(
+      actual,
+      owner,
+      recipe,
+      expected,
+      "complete actual Git private scope algorithm " + name,
+    );
+    assert.equal(
+      app.nodes
+        .filter(isFunctionDeclaration)
+        .filter((node) => node.name?.text === name).length,
+      0,
+      "no copied private scope App action " + name,
+    );
+  }
+  scopeSame(
+    factory.body!.statements[11]!,
+    owner,
+    original.body!.statements[11]!,
+    expected,
+    "private scope returns direct seven aliases",
+  );
+  for (const name of exports.slice(1))
+    scopeSame(
+      fn(owner, name),
+      owner,
+      fn(expected, name),
+      expected,
+      "complete original private scope hook/projection recipe " + name,
+    );
+  for (const name of [
+    "ProjectConversationRead",
+    "PrivateProjectConversationPorts",
+    "ScopeWorkspace",
+    "CapturedConversationClient",
+    "ScopeStorage",
+    "DraftCommands",
+    "Projection",
+  ]) {
+    const actual = owner.source.statements
+        .filter(scopeAst.isTypeAliasDeclaration)
+        .filter((node) => node.name.text === name),
+      recipe = expected.source.statements
+        .filter(scopeAst.isTypeAliasDeclaration)
+        .filter((node) => node.name.text === name);
+    assert.equal(actual.length, 1, "one narrow private scope type " + name);
+    assert.equal(recipe.length, 1);
+    scopeSame(
+      actual[0]!,
+      owner,
+      recipe[0]!,
+      expected,
+      "narrow typed private scope borrowed ports " + name,
+    );
+  }
+  const body = workspace.body!.statements,
+    factoryStatement = calls.get("createPrivateProjectConversationScope")!;
+  assert.ok(
+    fn(app, "open").end <= factoryStatement.pos,
+    "scope factory follows original open before real reference consumer",
+  );
+  const reference = app.nodes
+    .filter(isCallExpression)
+    .filter(
+      (node) =>
+        isIdentifier(node.expression) &&
+        node.expression.text === "createExchangeReferenceCommands",
+    );
+  assert.equal(
+    reference.length,
+    1,
+    "one actual reference consumption neighbor",
+  );
+  assert.ok(
+    factoryStatement.end < reference[0]!.pos,
+    "scope aliases precede first reference consumer",
+  );
+  const state = calls.get("usePrivateProjectContentScope")!,
+    retired = calls.get("useCommittedConversationDraftRetirement")!,
+    started = calls.get("startedProjectConversationIds")!,
+    history = calls.get("usePrivateConversationHistorySelection")!;
+  const statements = (prefix: string) =>
+    body.filter((node) => node.getText().startsWith(prefix));
+  const host = statements(
+      "const { prefs, recentContentVisits, navigation } = host",
+    ),
+    sidebar = statements("const leftSidebarPreference = sidebarPreference"),
+    metrics = statements("const projectMetrics = useMemo"),
+    reading = statements("const currentReading =");
+  assert.equal(host.length, 1);
+  assert.equal(sidebar.length, 1);
+  assert.equal(metrics.length, 1);
+  assert.equal(reading.length, 1);
+  assert.ok(
+    host[0]!.end <= state.pos && state.end <= sidebar[0]!.pos,
+    "private scope state original relative registration",
+  );
+  assert.ok(
+    started.end <= retired.pos,
+    "retirement effect follows original started projection",
+  );
+  assert.ok(
+    retired.end <= metrics[0]!.pos,
+    "retirement effect keeps original hook successor",
+  );
+  const refresh = body.filter((node) =>
+    node
+      .getText()
+      .includes('if (prefs.view === "inbox") void client.refreshView();'),
+  );
+  assert.equal(refresh.length, 1, "one original inbox lifecycle neighbor");
+  assert.ok(
+    reading[0]!.end <= history.pos && history.end <= refresh[0]!.pos,
+    "history effect original relative registration",
+  );
+  const mainCall = actualCalls.get("createPrivateProjectConversationScope")!;
+  const options = mainCall.arguments[0]!;
+  const parameterNames: Node[] = [];
+  for (const parameter of workspace.parameters)
+    walk(parameter.name, (node) => {
+      if (isIdentifier(node)) parameterNames.push(node);
+    });
+  for (const name of ["host", "origin"]) {
+    const parameter = parameterNames.filter((node) => node.getText() === name);
+    assert.equal(parameter.length, 1);
+    assert.equal(
+      scopeSymbol(app, scopeProperty(options, name)),
+      app.symbols.get(parameter[0]!),
+      "same original private scope authority identity " + name,
+    );
+  }
+  const clientParameter = parameterNames.find(
+    (node) => node.getText() === "client",
+  )!;
+  for (const name of [
+    "startedProjectConversationIds",
+    "projectConversationDraftPresence",
+    "usePrivateConversationHistorySelection",
+  ]) {
+    const call = actualCalls.get(name)!;
+    assert.equal(
+      scopeSymbol(app, scopeProperty(call.arguments[0]!, "client")),
+      app.symbols.get(clientParameter),
+      "original captured private conversation Client",
+    );
+  }
+  const names = new Map<number, string>();
+  const aliases = scopeAst.isVariableStatement(factoryStatement)
+    ? factoryStatement.declarationList.declarations[0]!.name
+    : undefined;
+  assert.ok(aliases);
+  assert.ok(scopeAst.isObjectBindingPattern(aliases));
+  for (const value of aliases.elements) {
+    assert.ok(value.name);
+    assert.ok(isIdentifier(value.name));
+    names.set(app.symbols.get(value.name)!, value.name.text);
+  }
+  const actions = app.nodes
+    .filter(scopeAst.isJsxAttribute)
+    .filter((node) =>
+      [
+        "onScopeChange",
+        "onSelect",
+        "onCreate",
+        "onDiscardDraft",
+        "onRestoreDraft",
+        "onOpen",
+        "onOpenProject",
+        "prepareCreated",
+      ].includes(node.name.getText()),
+    );
+  for (const name of privateProjectScopeActions) {
+    assert.ok(
+      actions.some((attribute) => {
+        let used = false;
+        walk(attribute, (node) => {
+          if (isIdentifier(node) && names.get(scopeSymbol(app, node)!) === name)
+            used = true;
+        });
+        return used;
+      }),
+      "actual consumed private scope action " + name,
+    );
+  }
+  const launcher = app.nodes
+    .filter(scopeAst.isPropertyAssignment)
+    .filter((node) => node.name.getText() === "selectAllContent");
+  assert.equal(launcher.length, 1, "one original Launcher scope bridge");
+  assert.equal(
+    launcher[0]!.initializer.getText(),
+    '() => setContentScope("all")',
+    "Launcher retains original raw scope setter",
+  );
+}

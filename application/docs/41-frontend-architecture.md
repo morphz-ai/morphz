@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-05 · 版本：1.11 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-05 · 版本：1.12 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-05。
 
@@ -790,7 +790,11 @@ refresh 权威、App 的 portal／布局／全局快捷键／显式文件导航�
 raw-current 有限合同：真实来源／消费、原捕获、完整自有算法和排序受
 约束，独立 React feature 增长不受整份文件或 peer inverse 限制。原十个
 callback／54 反例保留固定历史证明；其中两项仅属历史。旧 API/default
-不变，Human／Private、Workspace／Draft 的当前入口尚待独立批次交接。
+不变。阶段 51 将 Human／Private 的当前入口交给各自 raw-current 有限
+消费合同，实际来源、捕获、完整自有算法和注册顺序受约束；独立实际消费
+的 React／alias 增长不需要恢复 peer 历史。原十二 callback／28 反例完整
+保留历史执行，其中三项仅属历史；旧 helper prefix／API／default 不变。
+Workspace／Draft 的两条普通当前历史恢复边仍待独立批次交接。
 
 阶段 49 仅补 frame 门禁的两条相邻 writer 物理 owner 和三个已批准
 control carrier 的有限入口 phase；原 recipe、callback／反例和不可变
