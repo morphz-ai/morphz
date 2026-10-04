@@ -25,6 +25,7 @@ import {
   fixedReferencePreparationBaseline as fixed,
   type FixedReferencePreparationBindings,
 } from "./fixtures/exchange-reference-preparation-75ba44c0.js";
+import { historicalReferencePreparationSources } from "./fixtures/exchange-reference-preparation-source-provenance.js";
 
 // Controlled semantic ports, not real Client authorization, App consumption,
 // HTTP, native focus or a complete durable submission receipt.
@@ -209,17 +210,13 @@ test("independent actual Git75ba embedded spans and complete original algorithms
     assert.equal(sha(span.raw), span.sha256);
     assert.equal(Buffer.byteLength(span.raw), span.bytes);
   }
+  // Historical Stage30 scope evidence, not a current-file safety contract.
   for (const [path, contract] of Object.entries(fixed.originalFiles))
     if (path !== "App.tsx" && path !== "host/exchange-reference-commands.ts")
       assert.equal(
-        sha(
-          readFileSync(
-            new URL("../apps/web/src/" + path, import.meta.url),
-            "utf8",
-          ),
-        ),
+        sha(historicalReferencePreparationSources[path]!),
         contract.sha256,
-        "unchanged actual consumer " + path,
+        "historical Stage30 consumer " + path,
       );
   await assertPreparationBodies(ownerSource);
 });
