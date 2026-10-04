@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-05 · 版本：1.13 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-05 · 版本：1.14 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-05。
 
@@ -794,7 +794,13 @@ callback／54 反例保留固定历史证明；其中两项仅属历史。旧 AP
 消费合同，实际来源、捕获、完整自有算法和注册顺序受约束；独立实际消费
 的 React／alias 增长不需要恢复 peer 历史。原十二 callback／28 反例完整
 保留历史执行，其中三项仅属历史；旧 helper prefix／API／default 不变。
-Workspace／Draft 的两条普通当前历史恢复边仍待独立批次交接。
+阶段 53 将 Workspace content opening／Exchange drafts 的普通入口交给
+raw-current 有限消费合同：实际来源、绑定、捕获、注册顺序及完整自有算法
+受约束，独立实际消费的 React／alias 增长不再恢复 peer 历史。原十三个
+callback／69 反例保留完整历史执行，其中两项仅属历史；五个完整草稿
+command recipe 以独立实际 Git 原件约束早退、guard、写入与发布顺序。
+旧 Workspace helper prefix／API／default 不变。这批是测试治理交接，
+不冒称新的生产职责拆分、完整回归或原 App 验收。
 
 阶段 49 仅补 frame 门禁的两条相邻 writer 物理 owner 和三个已批准
 control carrier 的有限入口 phase；原 recipe、callback／反例和不可变

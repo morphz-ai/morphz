@@ -1,5 +1,33 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 53：导航与草稿的当前合同
+
+仅四个测试／档案路径。Workspace content opening 与 Exchange drafts 的
+普通检查直接读取当前 App 及各自 owner，核实际来源、值绑定、捕获、注册
+顺序和完整自有算法；不再恢复 Private／Human／Object／Reference 历史
+页面。独立且实际被 JSX 消费的 React feature、真实 import／const alias
+可以演进，不锁整个当前 App 或无关模块清单。
+
+根独立读取 actual Git 核六件完整档案来源、派生的完整 c35 App、原十三个
+完整 callback AST 及 201 个内字面量／36 个外参数字面量。旧 Workspace
+helper 的完整 24,315 字节 prefix／API／default 不变。五个草稿命令的
+完整有限 recipe 均来自实际 Git 原件，包括 discard／restore 的早退和
+guard，不用 callee 清单代替全算法。原 69 个反例保留完整历史执行；
+67 个交接到当前指定规则，两项无关未消费 inventory 仅属历史。另 16 个
+当前来源／phase／镜像／早退反例按指定规则拒绝，完整消费的增长正例通过。
+
+根 proper 原扩展八文件 **109/109**，零失败／跳过／取消，包含真实
+StrictMode 创建、私有会话与导航消费；完整 typecheck、来源证明、四路径
+严格闭包、格式及 diff 检查通过。首轮当前 D26 漏拒绝与严格类型窄化红项
+保留，未归咎 PostgreSQL，未改生产代码或界面迁就门禁。不是完整回归或
+原 App 验收；当次原窗检查遇到系统锁屏，代码验证继续，目标 active。
+
+证据：`/tmp/morphz-workspace-draft-governance-capture.hqI76n/` 的
+`proper-current-first.log`、`proper-formatted-final.log`、
+`classify-current-final.json`、`final-provenance.json`、`scoped-type-second.log`；
+根 `/tmp/morphz-c3-root.iVuBuE/` 的 `root-current-neighbors.log`、
+`root-full-typecheck.log`、`root-source-provenance.json`。
+
 ## 2026-10-05 完整 Node 回归与书签反例生成修复
 
 冻结 `e464367d` 的 proper `npm test` 实际选择全部 350 个测试文件：

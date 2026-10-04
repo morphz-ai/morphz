@@ -701,3 +701,134 @@ export function verifyCurrentWorkspaceContentOpeningConsumption(
       );
   }
 }
+
+// Separately named current-only entry. The historical expand and its complete
+// module prefix above keep their original APIs/defaults. This does not restore
+// App/Private/Human/Object code or constrain unrelated module declarations.
+export function verifyRawCurrentWorkspaceContentOpeningConsumption(
+  appText: string,
+  ownerText: string,
+) {
+  const owner = parse({ Owner: ownerText }).get("Owner")!;
+  const client = owner.nodes
+    .filter(isTypeAliasDeclaration)
+    .filter((node) => node.name.text === "NavigationClient");
+  assert.equal(client.length, 1, "only three required captured Client fields");
+  const fields: string[] = [];
+  walk(client[0]!.type, (node) => {
+    if (isStringLiteral(node)) fields.push(node.text);
+  });
+  assert.deepEqual(
+    fields,
+    [
+      "resolveArtifact",
+      "resolveScriptLocation",
+      "execute",
+      "boot",
+      "contentCatalog",
+      "resolveCatalogContent",
+    ],
+    "only three required captured Client fields",
+  );
+  const clientImports = owner.source.statements
+    .filter(isImportDeclaration)
+    .filter(
+      (node) =>
+        isStringLiteral(node.moduleSpecifier) &&
+        node.moduleSpecifier.text === "../client.js",
+    )
+    .flatMap((node) => {
+      const named = node.importClause?.namedBindings;
+      if (!named || !isNamedImports(named)) return [];
+      return named.elements.filter(
+        (entry) =>
+          (entry.propertyName?.text ?? entry.name.text) === "WorkspaceClient" &&
+          (node.importClause?.phaseModifier === SyntaxKind.TypeKeyword ||
+            entry.isTypeOnly),
+      );
+    });
+  const typeReference: Identifier[] = [];
+  walk(client[0]!.type, (node) => {
+    if (isIdentifier(node) && node.text !== "Pick") typeReference.push(node);
+  });
+  assert.ok(
+    clientImports.length === 1 &&
+      typeReference.length === 1 &&
+      owner.symbols.get(typeReference[0]!) !== undefined &&
+      owner.symbols.get(typeReference[0]!) ===
+        owner.symbols.get(clientImports[0]!.name),
+    "narrow captured Client type uses its actual type-only source",
+  );
+  const factory = fn(owner, "createWorkspaceNavigationCommands");
+  function noEagerWork(node: Node): boolean {
+    // Function bodies execute on explicit invocation, not construction. The
+    // original applicationActions object is intentionally a closure recipe.
+    if (
+      [
+        SyntaxKind.FunctionDeclaration,
+        SyntaxKind.FunctionExpression,
+        SyntaxKind.ArrowFunction,
+        SyntaxKind.MethodDeclaration,
+      ].includes(node.kind)
+    )
+      return true;
+    if (
+      [
+        SyntaxKind.CallExpression,
+        SyntaxKind.NewExpression,
+        SyntaxKind.PropertyAccessExpression,
+        SyntaxKind.ElementAccessExpression,
+        SyntaxKind.AwaitExpression,
+        SyntaxKind.YieldExpression,
+        SyntaxKind.ComputedPropertyName,
+      ].includes(node.kind)
+    )
+      return false;
+    let valid = true;
+    node.forEachChild((child) => {
+      valid = noEagerWork(child) && valid;
+    });
+    return valid;
+  }
+  for (const statement of factory.body!.statements) {
+    if (
+      isFunctionDeclaration(statement) ||
+      isTypeAliasDeclaration(statement) ||
+      isReturnStatement(statement)
+    )
+      continue;
+    assert.equal(
+      statement.kind,
+      SyntaxKind.VariableStatement,
+      "only two methods added; no constructor reads",
+    );
+    const declarations: Node[] = [];
+    walk(statement, (node) => {
+      if (isVariableDeclaration(node) && node.parent.parent === statement)
+        declarations.push(node);
+    });
+    for (const node of declarations.filter(isVariableDeclaration)) {
+      assert.ok(
+        node.initializer && noEagerWork(node.initializer),
+        "only two methods added; no constructor reads",
+      );
+    }
+  }
+  try {
+    verifyCurrentWorkspaceContentOpeningConsumption(appText, ownerText);
+  } catch (error) {
+    if (!(error instanceof assert.AssertionError)) throw error;
+    const message = error.message.split("\n")[0]!;
+    const rule =
+      /original captured ten navigation options|direct current App alias/.test(
+        message,
+      )
+        ? "exact original ten captured options and direct App aliases"
+        : /one actual WorkspaceApp factory call/.test(message)
+          ? "unique actual navigation factory call"
+          : /direct current return|actual current method return/.test(message)
+            ? "direct shorthand public aliases"
+            : message;
+    assert.fail(rule);
+  }
+}
