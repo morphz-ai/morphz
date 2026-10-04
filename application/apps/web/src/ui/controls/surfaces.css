@@ -1,0 +1,47 @@
+/* Shared action recipes after dialog material; feature and accessibility policies follow. */
+.app button:active:not(:disabled) {
+  background-color: var(--hover);
+}
+.app .outline {
+  background: var(--surface-control);
+  border-color: var(--line);
+  box-shadow: var(--elevation-small);
+}
+.app .primary {
+  box-shadow: var(--elevation-small);
+}
+.app .secondary-action,
+.app .create-dialog > footer > button:not(.primary),
+.app .create-dialog > form > footer > button:not(.primary),
+.app .search-dialog > footer > button,
+.app .editor-actions > button:not(.primary) {
+  min-height: 28px;
+  padding: 4px 9px;
+  gap: 6px;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: var(--control-fill);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  box-shadow: none;
+}
+.app .secondary-action:hover:not(:disabled),
+.app .create-dialog > footer > button:not(.primary):hover:not(:disabled),
+.app .create-dialog > form > footer > button:not(.primary):hover:not(:disabled),
+.app .search-dialog > footer > button:hover:not(:disabled),
+.app .editor-actions > button:not(.primary):hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--muted);
+}
+.app .secondary-action:active:not(:disabled) {
+  background: var(--selection);
+}
+.app .creation-actions .secondary-action strong {
+  font-weight: 500;
+}
+.app .secondary-action .creation-icon {
+  color: inherit;
+}

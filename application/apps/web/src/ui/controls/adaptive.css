@@ -1,0 +1,21 @@
+/* Shared pointer and motion adaptations, kept at their original cascade phase. */
+@media (pointer: coarse) {
+  .app button {
+    min-height: 44px;
+  }
+  .app textarea,
+  .app input,
+  .app select {
+    font-size: 16px;
+  }
+  .app .icon-button,
+  .app .send {
+    width: 44px;
+    height: 44px;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  button {
+    transition: background-color 0.12s ease;
+  }
+}

@@ -23,20 +23,6 @@
 body {
   margin: 0;
 }
-button,
-input,
-textarea,
-select {
-  font: inherit;
-  min-width: 0;
-}
-button {
-  cursor: pointer;
-}
-button:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
 svg {
   width: 16px;
   height: 16px;
@@ -108,76 +94,6 @@ kbd {
   min-height: 420px;
   overflow: hidden;
 }
-.app button,
-.startup button,
-.connection-screen button {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border-radius: 7px;
-  padding: 7px 10px;
-  text-align: left;
-  line-height: 1.4;
-  font-size: 12px;
-}
-.app button:hover:not(:disabled),
-.startup button:hover,
-.connection-screen button:hover:not(:disabled) {
-  background: var(--soft);
-}
-.app button:focus-visible,
-.app a:focus-visible,
-.connection-screen button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
-.app input,
-.app textarea,
-.app select,
-.connection-screen input {
-  background: var(--paper);
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 9px 11px;
-}
-.app textarea {
-  resize: vertical;
-  line-height: 1.8;
-}
-.app input::placeholder,
-.app textarea::placeholder {
-  color: var(--muted);
-  opacity: 0.85;
-}
-.app input:focus,
-.app textarea:focus,
-.app select:focus,
-.connection-screen input:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.app .primary,
-.connection-screen .primary {
-  background: var(--accent);
-  color: var(--on-accent);
-  padding: 9px 14px;
-  font-weight: 550;
-}
-.app .primary:hover:not(:disabled),
-.app .send:hover:not(:disabled),
-.connection-screen .primary:hover:not(:disabled) {
-  background: var(--accent-strong);
-}
-.app .outline {
-  border: 1px solid var(--line);
-  background: var(--paper);
-  padding: 8px 11px;
-  box-shadow: 0 1px 2px var(--shadow);
-}
 .muted {
   color: var(--muted);
 }
@@ -185,13 +101,6 @@ kbd {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.app .icon-button {
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 7px;
-  flex-shrink: 0;
 }
 .brand-mark {
   color: var(--accent);
@@ -1344,21 +1253,6 @@ kbd {
   border-radius: 8px;
   background: var(--soft);
 }
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  color: var(--muted);
-  font-size: 11px;
-  margin: 14px 0;
-}
-.field input,
-.field select,
-.field textarea {
-  width: 100%;
-  color: var(--ink);
-  font-size: 13px;
-}
 .field input[aria-label="对象标题"] {
   font-size: 23px;
   font-weight: 550;
@@ -2376,26 +2270,8 @@ kbd {
   }
 }
 @media (pointer: coarse) {
-  .app button {
-    min-height: 44px;
-  }
-  .app textarea,
-  .app input,
-  .app select {
-    font-size: 16px;
-  }
-  .app .icon-button,
-  .app .send {
-    width: 44px;
-    height: 44px;
-  }
   .theme-menu {
     right: -44px;
-  }
-}
-@media (prefers-reduced-motion: no-preference) {
-  button {
-    transition: background-color 0.12s ease;
   }
 }
 
@@ -2718,14 +2594,6 @@ kbd {
   display: flex;
   flex: 1;
   min-width: 80px;
-}
-.browser-toolbar input {
-  min-width: 60px;
-  width: 100%;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font-size: 12px;
 }
 .browser-status {
   display: flex;

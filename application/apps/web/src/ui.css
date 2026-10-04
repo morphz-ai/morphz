@@ -49,14 +49,6 @@
 .app .unread-label {
   color: var(--accent-strong);
 }
-.app .primary {
-  background: var(--accent-strong);
-}
-.app input::placeholder,
-.app textarea::placeholder {
-  color: var(--muted);
-  opacity: 1;
-}
 .app .workspace-search-controls input:focus {
   box-shadow: none;
 }
@@ -94,10 +86,6 @@
 .app .model-status,
 .app .compose-hint {
   font-size: 12px;
-}
-.app .icon-button {
-  min-width: 32px;
-  min-height: 32px;
 }
 .topbar {
   position: relative;

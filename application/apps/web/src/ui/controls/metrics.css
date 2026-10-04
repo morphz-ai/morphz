@@ -1,0 +1,13 @@
+/* Shared control refinements after dialog geometry and before page UI rules. */
+.app .primary {
+  background: var(--accent-strong);
+}
+.app input::placeholder,
+.app textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+.app .icon-button {
+  min-width: 32px;
+  min-height: 32px;
+}

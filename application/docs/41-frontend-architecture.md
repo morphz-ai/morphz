@@ -620,6 +620,13 @@ ComposerOptions 的默认、自定义、空 ReactNode 触发器与复合菜单�
 不按图形来源切换 renderer，以保留实际 button 身份。没有借此实现新的 pending、
 视觉密度、材质或辅助模式策略，其他控件仍需逐批迁移和验证。
 
+阶段 42 将原完整公共控件 recipe（31 条／85 声明）归 `ui/controls`，
+base／adaptive／metrics／surfaces 四载体在原 cascade 槽组合；Browser 的
+完整独立输入规则（1／6）由 feature 拥有。保留原值、selector、上下文及
+覆盖顺序，不以祖先包装、末尾补丁或新 CSS layers 改行为。有限当前门禁
+登记实际 runtime CSS imports、唯一 recipe 及合法 feature refinement；
+默认 CI 验实际当前控件，固定旧新 compiled 对照仅显式迁移启用。
+
 UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套一层就变尺寸或变色。主题／motion／contrast 在根策略统一决议，循环动效由事实 presentation 明确激活，基础样式不偷偷决定是否运行。
 
 ### 6.2 增量依赖门禁（已治理部分持续扩展）
@@ -714,12 +721,12 @@ Reader 导入、OCR 与持久阅读命令 data owner 和 ScriptStudio 完整工�
 controller 已落实；画布、分页、子组件和局部 JSX 组合仍拥有其原职责。
 
 阶段 39 的实际来源审计登记下列五项。阶段 40 已落地 R2，阶段 41 已落地
-R3；剩余生产边界为 R1、R4、R5，仍须完成有限治理与整体验收。不是按文件行数清空
+R3，阶段 42 已落地 R1；剩余生产边界为 R4、R5，仍须完成有限治理与整体验收。不是按文件行数清空
 宿主，也不是必须让每个页面再加一个 hook：
 
 | 边界                   | 完整职责及保留约束                                                                                                                                                                                                                              |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| R1 公共控件 role／样式 | 原 button／field／primary／outline／icon／secondary recipe 仍跨 styles、ui、visual-system 分散。须明确唯一职责及原 cascade 槽，登记真实消费和有限 feature 例外；不改 DOM、尺寸、颜色、交互或材质。不能仅加 wrapper 或移到末尾再覆盖旧规则。     |
+| R1 公共控件 role／样式（阶段 42 已落地） | 原完整 button／field／primary／outline／icon／secondary recipe 归 `ui/controls` 四原 cascade 槽，Browser 独立 recipe 归 feature；实际唯一来源与合法 refinement 有有限门禁。原 DOM、尺寸、颜色、图形、交互、动效及材质保持，不加 wrapper 或末尾覆盖。 |
 | R2 书签数据操作（阶段 40 已落地） | 完整 list／durable command 归 `data/bookmark-interactions.ts`；能力／身份、8 秒读取、hash、完整稳定 pending 字节和原错误政策保留。Client 仍拥有唯一身份／刷新权威；当前 URL 与目录分页保持不同观察，不新增 cache／请求。 |
 | R3 主体日程检查（阶段 41 已落地） | `features/subject/useSubjectSchedules.ts` 拥有完整显式刷新、limit50 清单、至多 16 个快照／四请求串行批次及取消／质量生命周期；借原 render captured Client 三端口及三方法 logical gateway，renderer 只消费只读事实和语义 refresh。沿用原模型、四依赖、源资格和动作，不套 TaskList 的订阅、重试或超时。 |
 | R4 对象评论与关联数据  | UI 批注 owner 不等于 Client 的完整分页与写入 family 已归位。保留 100 页／100 条、ordinal／schema／溢出合同、原 signal 和迟到政策，以及写命令捕获的 Objects source／revision／quote／page／receipt。关系仍借已有 Platform 分页，不复制或混资源。 |

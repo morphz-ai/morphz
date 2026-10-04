@@ -1,5 +1,48 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 42：公共控件 role 的真实样式所有权
+
+原跨三份大 CSS 的完整公共控件规则归 `ui/controls`，四载体分别保留
+base 16／53、adaptive 4／5、metrics 3／5、surfaces 8／22，合计 31 条
+规则／85 声明；Browser 原完整输入 recipe 独立归 feature（1／6）。
+物理分载体只为保留原实际 cascade 槽：App closure、base、styles、adaptive、
+Browser、dialog-frame、metrics、ui、popup、workflow、dialog-surface、
+surfaces、visual-system。没有新 layer、wrapper、token、尺寸、材质、颜色、
+图形、动效或交互；Browser font12 仍在 coarse common16 之后，workspace
+与 document.body 两种原 portal 仍保留。不是移到末尾覆盖旧规则。
+
+根 actual Git `57e7d4ce` 34 份完整原源／九路径迁移正逆证明通过；隔离
+全部 208 份旧 renderer，仅覆盖 R1 九路径，write:false 编译每边 208 资源。
+完整 2,764 个 selector／context／有序声明 tuple 多重集合相等，未迁移
+2,733 个规则的完整顺序相等。32 个源 recipe 在两边均有 31 个 compiled
+存活者：Vite 原样消除前层 placeholder opacity.85，源 fallback 并未删。
+八份 JS 仅生成的依赖资源文件名不同；不宣称整个 raw JS／CSS SHA 相同。
+
+普通有限门禁与真实组件挂载 root proper `npm test` **4/4**，零跳过；
+真实 BrowserHost／Bookmark modal、CreateDialog、ArtifactEditor、表格和
+ComposerToolButtons 在 12 配置执行 178 阶段，含四强调色明暗、窄屏、
+coarse、减少动态、高对比、200% CSS zoom 和 body fallback。显式旧／新
+root **1/1**，356 阶段所有 computed paint／geometry／原生属性／动作、
+请求 ledger 相等，178 图像对本轮 raw RGBA 完全相同。agent 最终同字节
+独立轮为 174 对相同、四对 RGB 1-LSB 差异；有限原 paint comparator 全
+通过，原结果并存，不挑选一轮冒充任意原生 compositor 的严格像素定理。
+七个明确语法反例和真实 import／合法 feature refinement 正例均保留。
+
+完整五份现行页面 spec 冻结旧／新各 **24/24**，原标题／预算不改，
+每边 216 个实际入口资源响应及 208 emitted 原件核验通过。正常完整
+build 已加载同一个原 Morphz 窗口，原对话、输入、裸彩图 Dock 及活动栏
+可见。按真实截图坐标点左／右顶栏控件，各自收起再恢复，原生可拖动区
+没有吞掉按钮；103 历史消息仍在、未发送草稿不变，未采集硬件或启动工作。
+这不替代整体原生／硬件、所有页面原窗审美及最终默认全量验收。
+
+原 styles 五条 product-bridge 一行格式是既有唯一 formatter 警告，完整
+原字节已独立核对，不批量重排无关旧 CSS；其余八生产及三新测试格式通过。
+证据：`/tmp/morphz-control-role-production.GCG8s3`、
+`/tmp/morphz-controls-pages.SvVuOG`、
+`/tmp/morphz-subject-schedules-root.udmSl9/r1-independent-frozen-*`、
+`/tmp/morphz-original-ui-recovery.q72TCn`。Runtime／业务资料未重启或变更；
+R4／R5、旧门禁治理及整体验收继续，目标 active。
+
 ## 2026-10-04 前端阶段 41：主体日程完整读取生命周期
 
 `features/subject/useSubjectSchedules.ts` 唯一拥有原日程检查器的状态、
