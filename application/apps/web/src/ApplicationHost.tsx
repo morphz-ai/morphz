@@ -26,6 +26,7 @@ import { NavigationIcon } from "./NavigationIcon.js";
 import {
   catalogContentEntries,
   listingKind,
+  type CatalogContentEntry,
 } from "./catalog-content-entries.js";
 import {
   recentContent,
@@ -33,96 +34,63 @@ import {
   type ContentVisit,
 } from "./recent-content.js";
 import type { WorkspaceClient } from "./client.js";
-import type { ScriptGeneration } from "../../../packages/core/src/script-studio.js";
-import type { ScriptLocation } from "../../../packages/core/src/script-delivery.js";
-import type { InputIntent } from "../../../packages/core/src/input-intent.js";
-import { ScriptStudio, type ScriptComposeResult } from "./ScriptStudio.js";
 import { useModal } from "./useModal.js";
-import { BrowserHost } from "./BrowserHost.js";
 import { useTextQuotes } from "./TextQuotes.js";
-import type { BrowserView } from "./desktop.js";
-import { Reader, type ReadingCompose } from "./Reader.js";
 import { authorizedApplications } from "./application-dock-model.js";
-import type { ReadingContextChange } from "./ReadingContext.js";
-import type { ReaderTarget } from "../../../packages/core/src/reader.js";
 import { AppIcon, ApplicationLauncherIcon } from "./ApplicationIcon.js";
 import type { ApplicationNavigationActions } from "./host/use-workspace-navigation.js";
+
+export type ApplicationComposeResult =
+  { ok: true } | { ok: false; error: string };
+
+export type BuiltinApplicationSurface = Readonly<{
+  view: Extract<ApplicationManifest["ui"], { type: "builtin" }>["view"];
+  instance: ApplicationInstance;
+  workspaceId: string;
+  selected: boolean;
+  activeView: boolean;
+  onReturn: () => void;
+  returnLabel: string;
+  fallback: ReactNode;
+}>;
+export type BuiltinApplicationRenderer = (
+  surface: BuiltinApplicationSurface,
+) => ReactNode;
 
 export function ApplicationHost({
   client,
   workspaceId,
   activeId,
-  scriptLocation,
-  onScriptNavigate,
-  onOpenScript,
-  onScriptLibrary,
-  globalLibrary = false,
   recentContentVisits = [],
   children,
   applicationActions,
   navigationId,
   onOpen,
   onCompose,
-  onComposeIntent,
   onNotice,
   enabled = true,
   foreground = true,
   toolbarTarget,
   projectControls,
-  onBrowserPage,
-  onInput,
-  onNativeDialog,
-  readingTarget,
-  readingRevision,
-  onReadingOpen,
-  onReadingCompose,
-  onReadingContext,
-  onReadingLibrary,
-  onReadingJump,
-  onReadingTargetConsumed,
+  renderBuiltin,
+  onOpenRecent,
 }: {
-  readingTarget?: ReaderTarget | null;
-  readingRevision?: number | null;
-  onReadingOpen: (id: string) => void;
-  onReadingCompose: ReadingCompose;
-  onReadingContext: ReadingContextChange;
-  onReadingLibrary: () => void;
-  onReadingJump: (target: ReaderTarget) => void;
-  onReadingTargetConsumed: (requestId: string) => void;
-  onBrowserPage?: (page: BrowserView | null) => void;
-  onInput?: () => void;
-  onNativeDialog?: (open: boolean) => void;
   client: WorkspaceClient;
   workspaceId: string;
   activeId: string | null;
-  scriptLocation?: ScriptLocation & {
-    requestId: string;
-    view?: "library" | "editor";
-  };
-  onScriptNavigate?: (
-    productionId: string,
-    itemId: string,
-    view: "library" | "editor",
-  ) => void;
-  globalLibrary?: boolean;
-  onOpenScript: (id: string, itemId?: string) => void;
-  onScriptLibrary: () => void;
   recentContentVisits?: ContentVisit[];
   children: ReactNode;
   navigationId: number;
   applicationActions: ApplicationNavigationActions;
   onOpen: (id: string) => void;
-  onCompose: (
-    text: string,
-    artifactId?: string,
-    scriptGeneration?: ScriptGeneration,
-  ) => ScriptComposeResult;
-  onComposeIntent: (intent: InputIntent) => void;
+  onCompose: (text: string, artifactId?: string) => ApplicationComposeResult;
   onNotice: (message: string) => void;
   enabled?: boolean;
   foreground?: boolean;
   toolbarTarget: HTMLElement | null;
   projectControls?: ReactNode;
+  renderBuiltin: BuiltinApplicationRenderer;
+  onOpenRecent: (entry: CatalogContentEntry) => void;
 }) {
   const state = client.boot!.workspace;
   const space = state.projects.find((p) => p.id === workspaceId)!;
@@ -317,15 +285,7 @@ export function ApplicationHost({
                   <li key={entry.value.id}>
                     <button
                       type="button"
-                      onClick={() =>
-                        listingKind(entry) === "script"
-                          ? onOpenScript(
-                              entry.kind === "catalog"
-                                ? entry.value.appObjectId
-                                : entry.value.id,
-                            )
-                          : onOpen(entry.value.id)
-                      }
+                      onClick={() => onOpenRecent(entry)}
                       aria-label={`继续打开：${entry.value.title}`}
                       title={`${entry.value.title} · ${listingKind(entry) === "script" ? "剧本" : (kindLabel[listingKind(entry) as keyof typeof kindLabel] ?? "内容")} · ${contentVisitTime(openedAt)} 打开`}
                     >
@@ -410,75 +370,17 @@ export function ApplicationHost({
             hidden={active?.id !== instance.id}
             key={instance.id}
           >
-            {app.ui.type === "builtin" && app.ui.view === "browser" ? (
-              <BrowserHost
-                client={client}
-                activeView={foreground && active?.id === instance.id}
-                onReturn={() => onActivate(null)}
-                returnLabel={spaceKind(space) === "desk" ? "工作台" : "项目"}
-                onInput={onInput}
-                projectId={workspaceId}
-                initialURL={
-                  typeof instance.state.url === "string"
-                    ? instance.state.url
-                    : ""
-                }
-                onPage={(page) => {
-                  onBrowserPage?.(page);
-                  if (page && page.url !== instance.state.url)
-                    void client
-                      .execute({
-                        type: "set-application-state",
-                        instanceId: instance.id,
-                        expectedRevision: instance.revision,
-                        state: { ...instance.state, url: page.url },
-                      })
-                      .catch((e) => onNotice(e.message));
-                }}
-              />
-            ) : app.ui.type === "builtin" && app.ui.view === "reader" ? (
-              <Reader
-                client={client}
-                projectId={workspaceId}
-                artifactId={
-                  typeof instance.state.artifactId === "string"
-                    ? instance.state.artifactId
-                    : undefined
-                }
-                revision={readingRevision}
-                target={readingTarget}
-                active={foreground && active?.id === instance.id}
-                globalLibrary={globalLibrary}
-                onOpen={onReadingOpen}
-                onLibrary={onReadingLibrary}
-                onJump={onReadingJump}
-                onTargetConsumed={onReadingTargetConsumed}
-                onCompose={onReadingCompose}
-                onContext={
-                  active?.id === instance.id ? onReadingContext : undefined
-                }
-                onNotice={onNotice}
-                onNativeDialog={onNativeDialog}
-              />
-            ) : app.ui.type === "builtin" && app.ui.view === "script-studio" ? (
-              <ScriptStudio
-                onNativeDialog={onNativeDialog}
-                client={client}
-                instance={instance}
-                locationRequest={scriptLocation}
-                onNavigate={onScriptNavigate}
-                activeView={foreground && active?.id === instance.id}
-                onCompose={(text, generation) =>
-                  onCompose(text, undefined, generation)
-                }
-                onConceive={() => onComposeIntent("script")}
-                globalLibrary={globalLibrary}
-                onOpenScript={onOpenScript}
-                onLibrary={onScriptLibrary}
-                onNotice={onNotice}
-              />
-            ) : app.ui.type === "builtin" ? (
-              children
+            {app.ui.type === "builtin" ? (
+              renderBuiltin({
+                view: app.ui.view,
+                instance,
+                workspaceId,
+                selected: active?.id === instance.id,
+                activeView: foreground && active?.id === instance.id,
+                onReturn: () => onActivate(null),
+                returnLabel: spaceKind(space) === "desk" ? "工作台" : "项目",
+                fallback: children,
+              })
             ) : (
               <>
                 {app.ui.presentation === "immersive" && (
@@ -641,11 +543,7 @@ function SandboxApplication({
   active: boolean;
   navigationId: number;
   onOpen: (id: string) => void;
-  onCompose: (
-    text: string,
-    artifactId?: string,
-    scriptGeneration?: ScriptGeneration,
-  ) => ScriptComposeResult;
+  onCompose: (text: string, artifactId?: string) => ApplicationComposeResult;
   onNotice: (text: string) => void;
 }) {
   const textQuotes = useTextQuotes();

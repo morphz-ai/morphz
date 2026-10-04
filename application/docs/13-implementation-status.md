@@ -1,5 +1,62 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 54：通用应用宿主与可信内置接线分离
+
+生产三路径：`ApplicationHost` 保留 catalog、实例 key／hidden、顶栏、
+启动／关闭及完整原 sandbox；Browser／Reader／ScriptStudio 的三个
+完整 JSX recipe 与 recent route 归 `host/builtin-application-adapters.tsx`。
+App 在原 render 中借原 Client／语义端口构造无 hooks／effect 的可信
+adapter，Host 消费两个通用端口，不再 import 专业组件或携带专用 props。
+完整原三分支 compose 只命名为同一个 callback，仍由 App 拥有，不冒称
+下一项 compose preparation owner 已迁入。原 sandbox race 仅一处无用
+builtin props 接线更新，原九个场景和断言不变。
+
+内置组合 adapter 不是对外 SDK，也不是第三方权限 gateway。同仓库不代表
+业务混层：Morphz 拥有共享宿主，应用拥有领域能力与画布。当前实验 manifest
+的 `ui` 必填；已有第三方界面安装和受限消息桥，不是完整的无界面认知应用
+定义，安装不自动注册业务服务／Tool／Harness。公开薄型 author SDK 与完整
+第三方领域接入尚未交付；本批不改 schema、协议、CSP、权限、CSS、数据、
+Runtime 或实际原 App bundle。架构文档第 2.2 节明确这些边界。
+
+根 fresh actual Git `4b783472` 独立核 17 件完整来源、18 个 literal seam、
+整个 raw App／Host／race inverse 和四个完整旧 recipe。新 owner 不伪造
+整文件 Git 前身；生产仅获准候选与格式变化。普通门禁不锁整页或恢复跨
+owner inverse，原 21 个指定反例、两个 mixed-import 反例及五个真实增长
+正例通过；全 named type-only import 的首轮误报保留后定向修复。
+
+根 proper 原扩展六文件 **91/91**，零失败／跳过／取消；完整 strict
+typecheck 通过，使用实际专用 PostgreSQL。新 A 组核真实元素与 callback
+捕获／结果，B 组真实 Host 和三个组件在 StrictMode 下核节点、实际 Browser
+输入焦点／值、Reader 已加载 DOM、真实动作、33 源 CSS、四色亮暗／宽窄／
+CSS zoom 及运行中的 motion。显式固定旧 recipe 对照 **18/18**，但不是
+完整旧 Host。Reader 的测量发布 chronology 不承诺确定：保留全部 raw
+ledger／counts，核每条来源及观测边界的完整 key／artifact／revision／focus
+序列化投影；`capture` 函数未实测。其他动作／读取／DOM／材质／几何／
+motion 全值对比不裁剪。SSR／DTO／类型／两轮 chronology 首红项均保留。
+
+两个全新 normal clean build 成功，实际 main 指向的完整当前 CSS
+267,699 字节一致；九个新生成资产一致。三个实际 PDF lazy chunk 不是
+原始字节相等，仅四个精确 chunk filename 替换后完整相等，不等同 PDF
+实际渲染验收。原 `emptyOutDir:false` 中残留旧文件的比较报告保留并纠正，
+不能把它当作当前 lazy graph 相等。
+
+根完整六原 spec、26 项不改断言／预算／筛选／retry 的两 lane，分别
+**24 通过／2 失败**，全部 case／错误／位置一致。失败为原
+`applications.spec.ts:288` 的项目／刷新后 iframe 失联和
+`browser-composer.spec.ts:154` 的原生前台焦点前置；没有新增失败，但
+不是全绿或原窗验收。私有 runner 首次物理路径及随后 SIGKILL teardown
+红项保留；仅私有 teardown 改为正常 SIGTERM，真实 owned group 停止、
+端口空及原 discovery marker 全字节恢复，不杀业务 Runtime 或更换用户
+profile／center。完整当前 Node 回归与原 App 最终验收仍待完成，目标 active。
+
+证据：`/tmp/morphz-builtin-integration.zU9j0V/RESULT.md`、
+`source-proof-type-import-final.json`、`new-migration-final.log`；根
+`/tmp/morphz-builtin-stage54-root.b9AM8H/root-six-proper.log`、
+`root-full-typecheck.log`；clean build 的
+`/tmp/morphz-builtin-root.RiFwwz/root-clean-build-assets-proof.json`、
+`root-clean-lazy-filename-delta.json`；完整页面对照
+`/tmp/morphz-builtin-page-entry-rev3.FRDQd4/root-executed-lane-comparison.json`。
+
 ## 2026-10-05 前端阶段 53：导航与草稿的当前合同
 
 仅四个测试／档案路径。Workspace content opening 与 Exchange drafts 的

@@ -87,6 +87,10 @@ import { ProjectDirectory } from "./WorkspaceViews.js";
 import { TaskList } from "./TaskList.js";
 import { taskListOptions } from "./task-list.js";
 import { ApplicationHost } from "./ApplicationHost.js";
+import {
+  createBuiltinApplicationAdapters,
+  type BuiltinApplicationOptions,
+} from "./host/builtin-application-adapters.js";
 import { AgentDirectories, type DirectoryState } from "./AgentDirectories.js";
 import {
   browserApplication,
@@ -1340,6 +1344,153 @@ function WorkspaceApp({
       ? () => void client.logout().catch((e) => setNotice(e.message))
       : undefined,
   };
+  const applicationCompose: BuiltinApplicationOptions["onCompose"] = (
+    text,
+    artifactId,
+    scriptGeneration,
+  ) => {
+    if (scriptGeneration) {
+      const production = client.getScriptEditor(scriptGeneration.productionId);
+      const target = production?.items.find(
+        (i) => i.id === scriptGeneration.targetId,
+      );
+      if (
+        !production ||
+        production.projectId !== project.id ||
+        !target ||
+        target.revision !== scriptGeneration.baseRevision ||
+        production.revision !== scriptGeneration.contextRevision
+      ) {
+        return {
+          ok: false,
+          error: "剧本引用已有变化，请关闭后重新准备请求；原草稿保留。",
+        };
+      }
+      if (
+        sending ||
+        draft.pendingSupplement ||
+        draft.continuation ||
+        draft.annotation ||
+        draft.taskResult ||
+        draft.body.trim() ||
+        draft.attachments?.length ||
+        draft.textQuotes?.length ||
+        (draft.intent && draft.intent !== "script") ||
+        draft.scriptGeneration
+      ) {
+        return {
+          ok: false,
+          error:
+            "输入框中已有未发送的内容或请求。请先处理原输入，再准备本次请求；这里填写的要求已保留。",
+        };
+      }
+      setDraft(contextKey, {
+        ...draft,
+        intent: undefined,
+        revision: null,
+        selection: "",
+        scriptGeneration: structuredClone(scriptGeneration),
+        body: text,
+      });
+    } else if (artifactId) {
+      const target = state.artifacts.find(
+        (a) => a.id === artifactId && a.projectId === project.id,
+      );
+      const catalogTarget = client.contentCatalog.find(
+        (entry) => entry.id === artifactId && entry.projectId === project.id,
+      );
+      if (!target && !catalogTarget)
+        return { ok: false, error: "引用的内容已不可用。" };
+      const key = conversationId + ":" + artifactId;
+      const observedRevision =
+        target?.revision ?? Number(catalogTarget?.observedVersionRef);
+      const revision =
+        Number.isSafeInteger(observedRevision) && observedRevision > 0
+          ? observedRevision
+          : null;
+      let composed:
+        ReturnType<typeof composeArtifactDrafts<InputDraft>> | undefined;
+      // This iframe event must ACK the actual latest-state
+      // guard, not a render snapshot or an unexecuted updater.
+      flushSync(() =>
+        writeDrafts((previous) => {
+          composed = composeArtifactDrafts(
+            previous,
+            key,
+            emptyDraft,
+            text,
+            revision,
+            conversationId === defaultConversation
+              ? project.id + ":" + artifactId
+              : undefined,
+          );
+          return composed.ok ? composed.drafts : previous;
+        }),
+      );
+      if (!composed || !composed.ok)
+        return {
+          ok: false,
+          error: composed?.error ?? "暂时无法准备输入，原草稿已保留。",
+        };
+      if (key === currentContext.current && composed.bodyChanged)
+        dictationControls.current?.interrupt();
+      prefer({ artifactId });
+    } else
+      setDraft(contextKey, {
+        ...draft,
+        body: [draft.body, text].filter(Boolean).join("\n"),
+      });
+    showInput();
+    return { ok: true };
+  };
+  const builtinApplications = createBuiltinApplicationAdapters({
+    client,
+    onNativeDialog: setNativeExportDialog,
+    onInput: showInput,
+    onBrowserPage: setBrowserPage,
+    scriptLocation: deliveredScript
+      ? (prefs.scriptLocation ?? undefined)
+      : undefined,
+    globalLibrary: prefs.view !== "projects",
+    onOpenScript: (id, itemId) =>
+      void openScriptLocation(
+        {
+          productionId: id,
+          ...(itemId ? { itemId } : {}),
+        },
+        renderNavigation,
+      ),
+    onScriptLibrary: () => void openScriptLibrary(),
+    onScriptNavigate: (productionId, itemId, view) => {
+      if (prefs.scriptLocation)
+        prefer({
+          scriptLocation: {
+            productionId,
+            ...(itemId ? { itemId } : {}),
+            view,
+            requestId: crypto.randomUUID(),
+          },
+        });
+    },
+    readingTarget: prefs.readingTarget,
+    readingRevision: prefs.artifactRevision,
+    onReadingOpen: openReading,
+    onReadingCompose: composeReading,
+    onReadingContext: readingContextChanged,
+    onReadingLibrary: () => void readingLibrary(),
+    onReadingJump: (target) =>
+      void openUser(
+        target.artifactId,
+        target.revision,
+        undefined,
+        target.location,
+      ),
+    onReadingTargetConsumed: readingTargetConsumed,
+    onComposeIntent: composeIntent,
+    onCompose: applicationCompose,
+    onOpen: open,
+    onNotice: setNotice,
+  });
   return createElement(
     TextQuoteProvider,
     {
@@ -1659,9 +1810,6 @@ function WorkspaceApp({
               )}
               <div className="object-surface" hidden={creating === "document"}>
                 <ApplicationHost
-                  onNativeDialog={setNativeExportDialog}
-                  onInput={showInput}
-                  onBrowserPage={setBrowserPage}
                   toolbarTarget={toolbarTarget}
                   projectControls={
                     spaceKind(project) === "project" ? (
@@ -1672,164 +1820,15 @@ function WorkspaceApp({
                   foreground={!historyVisible && creating !== "document"}
                   workspaceId={project.id}
                   activeId={activeId}
-                  scriptLocation={
-                    deliveredScript
-                      ? (prefs.scriptLocation ?? undefined)
-                      : undefined
-                  }
-                  globalLibrary={prefs.view !== "projects"}
-                  onOpenScript={(id, itemId) =>
-                    void openScriptLocation(
-                      {
-                        productionId: id,
-                        ...(itemId ? { itemId } : {}),
-                      },
-                      renderNavigation,
-                    )
-                  }
-                  onScriptLibrary={() => void openScriptLibrary()}
-                  onScriptNavigate={(productionId, itemId, view) => {
-                    if (prefs.scriptLocation)
-                      prefer({
-                        scriptLocation: {
-                          productionId,
-                          ...(itemId ? { itemId } : {}),
-                          view,
-                          requestId: crypto.randomUUID(),
-                        },
-                      });
-                  }}
                   recentContentVisits={recentContentVisits}
                   enabled={applicationWorkspaceOpen}
                   navigationId={navigationGeneration.current}
                   applicationActions={applicationActions}
                   onOpen={open}
-                  readingTarget={prefs.readingTarget}
-                  readingRevision={prefs.artifactRevision}
-                  onReadingOpen={openReading}
-                  onReadingCompose={composeReading}
-                  onReadingContext={readingContextChanged}
-                  onReadingLibrary={() => void readingLibrary()}
-                  onReadingJump={(target) =>
-                    void openUser(
-                      target.artifactId,
-                      target.revision,
-                      undefined,
-                      target.location,
-                    )
-                  }
-                  onReadingTargetConsumed={readingTargetConsumed}
                   onNotice={setNotice}
-                  onComposeIntent={composeIntent}
-                  onCompose={(text, artifactId, scriptGeneration) => {
-                    if (scriptGeneration) {
-                      const production = client.getScriptEditor(
-                        scriptGeneration.productionId,
-                      );
-                      const target = production?.items.find(
-                        (i) => i.id === scriptGeneration.targetId,
-                      );
-                      if (
-                        !production ||
-                        production.projectId !== project.id ||
-                        !target ||
-                        target.revision !== scriptGeneration.baseRevision ||
-                        production.revision !== scriptGeneration.contextRevision
-                      ) {
-                        return {
-                          ok: false,
-                          error:
-                            "剧本引用已有变化，请关闭后重新准备请求；原草稿保留。",
-                        };
-                      }
-                      if (
-                        sending ||
-                        draft.pendingSupplement ||
-                        draft.continuation ||
-                        draft.annotation ||
-                        draft.taskResult ||
-                        draft.body.trim() ||
-                        draft.attachments?.length ||
-                        draft.textQuotes?.length ||
-                        (draft.intent && draft.intent !== "script") ||
-                        draft.scriptGeneration
-                      ) {
-                        return {
-                          ok: false,
-                          error:
-                            "输入框中已有未发送的内容或请求。请先处理原输入，再准备本次请求；这里填写的要求已保留。",
-                        };
-                      }
-                      setDraft(contextKey, {
-                        ...draft,
-                        intent: undefined,
-                        revision: null,
-                        selection: "",
-                        scriptGeneration: structuredClone(scriptGeneration),
-                        body: text,
-                      });
-                    } else if (artifactId) {
-                      const target = state.artifacts.find(
-                        (a) =>
-                          a.id === artifactId && a.projectId === project.id,
-                      );
-                      const catalogTarget = client.contentCatalog.find(
-                        (entry) =>
-                          entry.id === artifactId &&
-                          entry.projectId === project.id,
-                      );
-                      if (!target && !catalogTarget)
-                        return { ok: false, error: "引用的内容已不可用。" };
-                      const key = conversationId + ":" + artifactId;
-                      const observedRevision =
-                        target?.revision ??
-                        Number(catalogTarget?.observedVersionRef);
-                      const revision =
-                        Number.isSafeInteger(observedRevision) &&
-                        observedRevision > 0
-                          ? observedRevision
-                          : null;
-                      let composed:
-                        | ReturnType<typeof composeArtifactDrafts<InputDraft>>
-                        | undefined;
-                      // This iframe event must ACK the actual latest-state
-                      // guard, not a render snapshot or an unexecuted updater.
-                      flushSync(() =>
-                        writeDrafts((previous) => {
-                          composed = composeArtifactDrafts(
-                            previous,
-                            key,
-                            emptyDraft,
-                            text,
-                            revision,
-                            conversationId === defaultConversation
-                              ? project.id + ":" + artifactId
-                              : undefined,
-                          );
-                          return composed.ok ? composed.drafts : previous;
-                        }),
-                      );
-                      if (!composed || !composed.ok)
-                        return {
-                          ok: false,
-                          error:
-                            composed?.error ??
-                            "暂时无法准备输入，原草稿已保留。",
-                        };
-                      if (
-                        key === currentContext.current &&
-                        composed.bodyChanged
-                      )
-                        dictationControls.current?.interrupt();
-                      prefer({ artifactId });
-                    } else
-                      setDraft(contextKey, {
-                        ...draft,
-                        body: [draft.body, text].filter(Boolean).join("\n"),
-                      });
-                    showInput();
-                    return { ok: true };
-                  }}
+                  onCompose={applicationCompose}
+                  renderBuiltin={builtinApplications.renderBuiltin}
+                  onOpenRecent={builtinApplications.openRecentContent}
                 >
                   {artifact &&
                   (prefs.readerMode ||
