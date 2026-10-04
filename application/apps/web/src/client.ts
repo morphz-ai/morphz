@@ -12,10 +12,7 @@ import {
   type ConfigureConnection,
 } from "../../../packages/core/src/connection.js";
 import { taskRuntimeSchema } from "../../../packages/core/src/task-runtime.js";
-import {
-  retainTaskRuntimeProjections,
-  taskRuntimeResponseStillCurrent,
-} from "./task-runtime-projection.js";
+import { retainTaskRuntimeProjections } from "./task-runtime-projection.js";
 import {
   migrateLegacyLocalState,
   migrateApplicationLocalState,
@@ -65,6 +62,7 @@ import type { ScriptEditorProduction } from "./script-editor-reader.js";
 import { createScriptEditorReads } from "./data/script-editor-reads.js";
 import { createContentReads } from "./data/content-reads.js";
 import { createReaderReads } from "./data/reader-reads.js";
+import { createTaskInteractions } from "./data/task-interactions.js";
 import {
   readPlatformWorkspace,
   reusableNavigationCatalog,
@@ -880,6 +878,14 @@ export function useWorkspace() {
     current,
     protectedReadGeneration,
     call: applicationCall,
+  });
+  const taskInteractions = createTaskInteractions({
+    current,
+    platform,
+    taskRuntimeReads,
+    taskRuntimeReadGeneration,
+    call: applicationCall,
+    publishBoot: setBoot,
   });
   function sendingInputIds(
     identity: Pick<Boot, "centerId" | "principalId" | "actantId">,
@@ -1885,17 +1891,6 @@ export function useWorkspace() {
       throw error;
     }
   }
-  async function verifyArtifact(id: string) {
-    const identity = current.current;
-    const source = platform.current;
-    if (!identity || !source || source.boot.csrfToken !== identity.csrfToken)
-      throw new Error("身份已变化，事项未读取。");
-    // A notification can point to an authorized task outside the current
-    // page. The presentation cache is not an authorization decision.
-    await source.taskHead(id, AbortSignal.timeout(8000));
-    if (current.current?.csrfToken !== identity.csrfToken)
-      throw new Error("身份已变化，事项未读取。");
-  }
   async function cancelInput(inputId: string) {
     if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
     await applicationCall("input.cancel", inputId, {
@@ -1925,77 +1920,6 @@ export function useWorkspace() {
           : AbortSignal.timeout(12000),
       }),
     );
-  }
-  async function taskRuntime(
-    taskId: string,
-    control?: {
-      run: number;
-      revision: number;
-      action: "pause" | "resume" | "cancel" | "stop";
-    },
-    observation?: { signal?: AbortSignal; isCurrent?: () => boolean },
-  ) {
-    const origin = current.current;
-    if (!origin) throw new Error("应用尚未就绪，请稍后重试。");
-    const generation = ++taskRuntimeReadGeneration.current;
-    taskRuntimeReads.current.set(taskId, generation);
-    try {
-      const view = taskRuntimeSchema.parse(
-        await applicationCall(
-          control ? "task.control" : "task.snapshot",
-          control ? { id: taskId, ...control } : taskId,
-          {
-            identityGeneration: origin.csrfToken,
-            signal: observation?.signal
-              ? AbortSignal.any([
-                  observation.signal,
-                  AbortSignal.timeout(12000),
-                ])
-              : AbortSignal.timeout(12000),
-          },
-        ),
-      );
-      observation?.signal?.throwIfAborted();
-      // List and detail reads supply the same board/filter projection. These
-      // observations never authorize operations or introduce a storage authority.
-      if (
-        taskRuntimeReads.current.get(taskId) === generation &&
-        (observation?.isCurrent?.() ?? true) &&
-        taskRuntimeResponseStillCurrent(origin, current.current, taskId) &&
-        JSON.stringify(current.current!.taskRuns[taskId]) !==
-          JSON.stringify(view)
-      ) {
-        const updated = {
-          ...current.current!,
-          taskRuns: { ...current.current!.taskRuns, [taskId]: view },
-        };
-        current.current = updated;
-        setBoot(updated);
-      }
-      return view;
-    } finally {
-      if (taskRuntimeReads.current.get(taskId) === generation)
-        taskRuntimeReads.current.delete(taskId);
-    }
-  }
-  async function taskResponses(taskId: string) {
-    const identity = current.current;
-    const source = platform.current;
-    if (!identity || !source || source.boot.csrfToken !== identity.csrfToken)
-      throw new Error("身份已变化，无法读取事项回应。");
-    return (
-      await source.allTaskResponses(taskId, AbortSignal.timeout(12000))
-    ).map((response) => ({
-      id: response.id,
-      taskId: response.taskId,
-      taskRevision: response.taskRevision,
-      body: response.body,
-      author: {
-        principalId: response.authorPrincipalId,
-        actantId: response.authorActantId,
-      },
-      createdAt: response.createdAt,
-    }));
   }
   async function executionResult(scope: ExecutionScope, jobId: string) {
     return z
@@ -2142,8 +2066,8 @@ export function useWorkspace() {
     createSpeechStream,
     transcribe,
     synthesize,
-    taskRuntime,
-    taskResponses,
+    taskRuntime: taskInteractions.taskRuntime,
+    taskResponses: taskInteractions.taskResponses,
     boot,
     contentCatalog,
     contentCounts,
@@ -2204,7 +2128,7 @@ export function useWorkspace() {
     readerCommand,
     readingOcr,
     dispatchInput,
-    verifyArtifact,
+    verifyArtifact: taskInteractions.verifyArtifact,
     cancelInput,
     search,
     executionSnapshot,

@@ -66,6 +66,13 @@ transport，不新增缓存／订阅或 Boot writer。不同查询的 schema、�
 Client／SQLite 与旧新 Reader 页面对照及能力限制见阶段 19，尚不代表
 全领域 query facade、Electron 或原 App 最终验收。
 
+事项的跨页资格复核、Runtime snapshot／control 与回应读取现归
+`data/task-interactions.ts`，Client 直接消费三个完整原算法；按事项读取
+代次、身份清理和 refresh 仍借原 Client 权威，成功投影仍 current-before-React。
+各自不同的超时、迟到返回／发布和分页合同保持，不把列表与 Schedules
+的 observation 策略强并。固定旧 Client、真实 HTTP／SQLite 与旧新页面
+证据见阶段 21；控制请求的真实拒绝不冒称成功执行或整层查询迁移完成。
+
 引用回跳、内容继续处理、Reader 旧兼容准备与显式意图现归
 `host/exchange-reference-commands.ts`，真实 App 在原命令位置直接消费。
 每 render 借原 state／Client 与命令端口，保持各自不同 guards、版本、

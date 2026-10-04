@@ -1,5 +1,50 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 21：事项交互读取与投影所有权
+
+`data/task-interactions.ts` 完整拥有原 `verifyArtifact`、`taskRuntime`
+和 `taskResponses`，其中 Runtime 方法保留原 snapshot／control 两条路径。
+真实 Client 唯一构造并直接公开原三个方法；原按事项的读取代次 refs、
+hooks 注册、身份／撤权清理、refresh 和 `retainTaskRuntimeProjections`
+仍在 Client。构造只借原 refs、transport 与 `setBoot`，不读状态、发请求、
+订阅或建立第二份缓存；成功投影仍先写 `current.current`，再发布 React。
+
+各查询的合同没有被统一：跨页通知的 taskHead 保留 8s 与前后身份核对；
+snapshot／control 保留 12s、schema／abort 顺序、observer 与同事项代次守门，
+迟到响应仍返回真实 view，但不能覆盖新的 Boot／事项绑定，finally 只清自身
+代次；回应仍沿原授权来源分页与作者映射，不新增 post-await guard。
+事项列表、详情和 Schedules 的不同 observation 策略未强行合并；
+此阶段不改变控制权限、持久调度或 Runtime 执行能力。
+
+实际 Git `9122ad28` 的三个完整算法固定为独立 oracle；有限门禁同时检查
+完整方法、无构造副作用、实际 Client 消费及逆变后的完整旧 Client 字节。
+根环境新门禁／等价矩阵、真实 Client HTTP／SQLite 和原投影测试合计
+**28/28** 通过。真实 Client 测试使用 SSR 建立原 refs／方法，不运行 React
+effects，真实登录、成员权限、事项和持久回应来自隔离 Host；已撤权的三个
+读取均被服务拒绝，旧授权响应在真实目录版本刷新后不能覆盖新投影。
+当前隔离 Host 没有 Runtime／模型，control 的原 POST 返回 **503 拒绝**；
+这证明原路由、载荷及错误保留，不证明真实 pause／stop 成功。
+
+根环境冻结阶段 20 的真实编译入口为旧版本，单独编译 Task 阶段后 source
+SHA 前后完全相同。相同四份原页面测试在旧／新资产上各 **14/14**：
+事件失效、失败重试、健康 idle 无周期请求、迟到终态、事项完整正文、
+历史版本与持久完成／撤销均保留；每例收到的三个 HTTP 静态资产核验完整
+SHA。新 JS 为 `app-6ASXkn6s.js`，CSS 与 preload 逐字节保持旧值。
+完整类型检查、该批格式和差异检查通过。测试准备与 URL／body 误判的
+首次失败日志保留，修正仅在新测试，不修改生产来迎合预期。
+
+证据：`/tmp/morphz-submission-task-root.IE1FTB` 的 `task-frozen-tests.log`、
+`typecheck-current.log`、`task-source-before/after.sha256`、
+`task-frozen-build.log`、`tasks-current-baseline/tasks-candidate` 报告及
+`*-audit.json`；独立源核验与相邻读取回归在
+`/tmp/morphz-task-interactions.qQWsBI`。最初把 standalone Markdown 夹具
+混入编译 App 资产探针的四项失败单独保留：该夹具不加载 App 入口，
+不能冒称编译页面对照；最终四份 App 用例未改断言或预算。
+
+原 Morphz 仍在同一已收尾进程的 Electron 退出清理阶段，独立 Runtime
+和 profile／center 未重启或重置；终止该精确 App 进程的已有问题尚待用户
+答复。本阶段不是原 App 验收、全查询层或整体前端迁移完成。
+
 ## 2026-10-04 前端阶段 20：引用、内容继续处理与显式意图的命令所有权
 
 `host/exchange-reference-commands.ts` 完整拥有四个原命令：引用回跳、
