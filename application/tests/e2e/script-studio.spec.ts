@@ -1047,7 +1047,12 @@ test("创作目录按集场组织：上下文新增、折叠、键盘和刷新�
   expect(await page.locator(".script-overview-details[open]").count()).toBe(0);
   await expect(
     page.getByRole("region", { name: "创作简报", exact: true }),
-  ).toContainText("生成前需确认");
+  ).toContainText("可补充题材、受众、风格与制作限制；不影响先写正文。");
+  await expect(
+    page
+      .getByRole("region", { name: "创作简报", exact: true })
+      .getByRole("button", { name: "资料来源与使用说明：查看", exact: true }),
+  ).toBeVisible();
   // Contextual actions choose a sensible default, but still need explicit confirmation.
   const addEpisode = group("episodes").getByRole("button", {
     name: "新建一集",
