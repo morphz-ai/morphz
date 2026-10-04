@@ -1,5 +1,76 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 35：完整原生弹窗 frame／字段控件职责
+
+公共 frame／字段控件现归 `ui/dialog-frame.css`，main 在 styles 与 ui
+之间唯一导入。三份原 CSS 的 30 条规则／107 项有序声明完整迁移，
+包括 27 条公共 recipe 和三条必要 cascade 邻居。原 fallback 与最终
+几何、header／title／footer、文档草稿共享顶栏、字段／控件／焦点、
+窄屏与粗指针保留；Library／Install 顶底栏、Connection 居中宽度
+保留原顺序。Search、领域宽度、primitive、材质、token、DOM、
+`useModal` 和动效不混迁，没有新状态、请求、LLM 或视觉数值。
+
+根从实际 Git `c525d217` 核完整原源码、批准逆展开和 30 条固定 tuple；
+205 份 renderer 原源中 201 份整字节不变，另四份仅批准 CSS 删除／
+唯一入口增量，新 owner 单列。实际编译的 30 条原 recipe 保持顺序；
+其余 2735 条完整上下文／有序声明在一处确切等值宽度 token 的压缩器
+合并展开后完全相同。不是任意 selector／cascade 等价定理。
+
+独立新旧编译资源图共 13 份：四份 JS 仅实际依赖文件名重链接，
+精确有限引用映射后全文相同；preload 和其余非 CSS 资源整字节相同，
+HTML 仅实际入口引用变化。不能将原始四份 JS SHA 称为相同；CSS
+差异由上述完整编译 recipe 另证，不能通过 hash 归一吞掉。
+
+长期有限门禁九组检查公共 role、两个明确邻居 writer 和实际 runtime
+入口；不锁完整 renderer 或 118 条领域库存。合法独立 feature CSS、
+primitive、注释、type import 与无关 JSX 可演进。旧 surface 门禁的
+两份完整几何和原反例按实际 owner 交接，原材质／token／入口／截图
+守门均保留。根独立逆回四个批准测试接缝，得到完整原测试字节；
+旧历史 fixture 未改。新门禁、旧 surface、popup 与交流门禁合计
+27/27、零跳过；原解析／reset shorthand 和复合根漏检 RED 均保留。
+
+当前完整 React 挂载与显式历史 CSS 比较各 9/9、零跳过，实挂
+16 个原生节点（15 个 create）和两个非模态负例，实际字段库存、
+模态焦点／选择恢复、失败保留草稿、长内容滚动、workspace resize、
+粗指针与 reduced-motion 均验证。四强调色×明暗、窄窗与 CSS zoom
+矩阵不是所有消费者的笛卡尔积，更不等于 OS／原 App 验收。单列
+dormant Library footer 探针不是第十七个产品消费方。当前默认测试
+不读 Git／临时目录；严格旧新对照仅显式迁移开关启用。
+
+十四份完整原页面共 93 项，冻结旧版／新版各 **87 通过、6 失败、
+零跳过／重试**。原身份、标题、逐项结果和六项完整规范化失败指纹
+一致，没有新差异；不能写成 93 项全绿。原 iframe 接续、剧本目录焦点、
+窄窗密钥按钮、旧分类预期和两项已撤下独立转写入口的失败保留，后续
+未到达的断言也不冒领通过。106 份原 spec／历史夹具完整字节不变。
+每边 92 个 HTTP 场景核 592 条实际 HTML／入口资源响应，全部 200
+且完整 SHA 正确；一个隔离 Electron 场景只核 normal build 文件，
+不宣称其有 HTTP 资产证据或等于用户原窗口。
+
+原端口自有 Host 的 PID／父子关系和退出均核验；候选 wrapper 退出后
+由 bounded manager 确认已结束的自有资源并恢复原 discovery marker。
+旧版首次 marker 未恢复的 RED 与根随后明确验证的恢复仍单列保留，
+不追写为正常 cleanup。错误中心名、候选资源名假设、重复 HTML 写入
+与漏传 lane 的准备 RED 都未计为有效 93 项，不因观察超时重启测试。
+没有改原 Origin／Host／URL／body、权限、spec 断言或预算，也无 fetch／
+dispatcher 映射。用户原 App、业务 PostgreSQL 与日常 Runtime 未改。
+
+最终冻结代码的默认无参数 `npm test` 实际选择 **323** 份测试源：
+**2147 项，2138 通过、零失败／取消**，另有 **9** 项确切专项未启用
+（S3 三项、Runtime 五项、原生焦点一项），无未知跳过；PostgreSQL
+始终必需，原 151 项分支实际执行。完整 build（含全类型检查）、
+本批格式与差异检查通过；styles 原 product-bridge 格式差异逐字与
+实际旧源相同，未混入全文件格式化，原分包大小警告保留。
+
+根证据在 `/tmp/morphz-dialog-frame-root.fDaXC6`：默认全量、27 项有限
+门禁、9 项严格旧新挂载、最终 build 和源／编译／资产／原页面 proof
+各有独立日志。生产源及完整 tuple 证据在
+`/tmp/morphz-dialog-frame-owner.rd2g1A`，有限门禁与旧测试交接在
+`/tmp/morphz-dialog-frame-boundary.wzMWA9`，挂载／实际 Git 来源在
+`/tmp/morphz-dialog-frame-mounted.xAAWCU`，完整 93 项旧新审计在
+`/tmp/morphz-dialog-frame-page-audit.FjN8is/RESULT.md`。本批按十二条
+明确路径提交，不额外推送。整体目标保持 active；剩余完整 feature、
+数据／presentation／role 与历史门禁治理和原 App 验收仍须继续。
+
 ## 2026-10-04 前端阶段 34：完整 Thread collection 展示职责
 
 `execution-activity.ts` 承接原输入关联分支与范围概览两种完整投影，
@@ -112,6 +183,17 @@ SIGTERM 下抗 TERM worker 的实际 PID 退出与临时目录清理。真实 No
 `root-runtime-required.log`、build／类型检查；机制与初轮 RED 证据在
 `/tmp/morphz-test-postgres-entry.lFMQkS`，独立能力门禁／实际 reporter
 回归及只读审查在 `/tmp/morphz-execution-inspection-validation.BJRLLZ`。
+
+后续独立审计发现例外按 basename 识别会让另一位置的同名文件借用
+允许跳过条目，实际反例复现后以 `777f1d73` 修正为本 checkout 的完整
+规范化路径、精确标题和选择范围。原十四个条件条目未放宽；nested／
+其他 workspace／逃逸路径不能借用。新增合同在旧实现 18 通过／5 失败，
+修复后根经默认入口独立复跑三份机制源 **37/37、零跳过**，原真实 SQL、
+失败与信号清理断言仍在。根日志在阶段 35 的
+`root-capability-path-focused.log`，独立审计在
+`/tmp/morphz-test-runner-audit.FDkDwo/default-entry-current-777f1d73.md`。
+直接 Node 与独立 `test:*` 专项仍不是这个完整入口；不能以其绿色或
+专项跳过宣称全量能力已验收。没有新增推送或远端 CI 运行证据。
 
 ## 2026-10-04 前端阶段 33：执行详情完整 feature 生命周期
 

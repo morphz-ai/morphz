@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.js";
 import "./styles.css";
+import "./ui/dialog-frame.css";
 import "./ui.css";
 import "./ui/popup-surface.css";
 import "./workflow.css";

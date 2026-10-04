@@ -555,18 +555,6 @@
     opacity: 1;
   }
 }
-.app .create-dialog:not(.search-dialog) {
-  position: fixed;
-  left: var(--modal-center, 50vw);
-  right: auto;
-  margin-left: 0;
-  margin-right: 0;
-  transform: translateX(-50%);
-  max-width: min(
-    var(--modal-max-width, calc(100vw - 32px)),
-    calc(100vw - 32px)
-  );
-}
 .browser-host {
   container-type: inline-size;
   display: flex;

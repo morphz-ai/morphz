@@ -258,6 +258,41 @@ function validate(sources: Sources) {
       )
         matches.push(signature(rule));
     });
+    // Stage35 transfers only these two complete geometry recipes to the frame
+    // owner. Keep their original frozen values/order and source-specific rules;
+    // the styles text color remains at its original source. No source inverse
+    // or general relocation allowance is involved.
+    if (
+      old[2] === ".create-dialog" &&
+      old[3].length === 0 &&
+      (old[0] === "styles.css" || old[0] === "ui.css")
+    ) {
+      const geometry = old[0] === "styles.css" ? old[4].slice(1) : old[4];
+      assert.deepEqual(
+        matches,
+        old[0] === "styles.css" ? [[old[2], old[3], old[4].slice(0, 1)]] : [],
+        `retained:${old[0]}:${old[2]}`,
+      );
+      const frameMatches: unknown[] = [];
+      parsed.get("ui/dialog-frame.css")!.walkRules((rule) => {
+        if (
+          key(rule.selector) === old[2] &&
+          JSON.stringify(context(rule)) === JSON.stringify(old[3]) &&
+          JSON.stringify(
+            rule.nodes
+              .filter((node) => node.type !== "comment")
+              .map((node) => (node.type === "decl" ? node.prop : node.type)),
+          ) === JSON.stringify(geometry.map((declaration) => declaration[0]))
+        )
+          frameMatches.push(signature(rule));
+      });
+      assert.deepEqual(
+        frameMatches,
+        [[old[2], old[3], geometry]],
+        `retained:${old[0]}:${old[2]}`,
+      );
+      continue;
+    }
     assert.deepEqual(matches, [frozen(old)], `retained:${old[0]}:${old[2]}`);
   }
   const tokens: unknown[] = [];
@@ -485,9 +520,20 @@ test("surface and finite root competitors reject legal declaration/context drift
       (s) =>
         replace(
           s,
-          "ui.css",
+          "ui/dialog-frame.css",
           "padding: 4px 12px 12px;",
           "padding: 3px 12px 12px;",
+        ),
+    ],
+    [
+      "transferred bare fallback padding",
+      /retained:styles.css/,
+      (s) =>
+        replace(
+          s,
+          "ui/dialog-frame.css",
+          "padding: 24px 28px;",
+          "padding: 23px 28px;",
         ),
     ],
     [
@@ -635,6 +681,10 @@ test("actual composition rejects alternate imports without freezing unrelated fe
   ];
   for (const [name, rule, mutate] of variants) rejected(name, rule, mutate);
   const legal = clone(actual);
+  legal.css.set(
+    "ui/dialog-frame.css",
+    `/* Geometry handoff keeps the original surface contract. */\n${legal.css.get("ui/dialog-frame.css")}`,
+  );
   legal.css.set(
     "future.css",
     `

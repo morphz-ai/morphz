@@ -58,7 +58,8 @@ workflow 与 visual-system 之间唯一导入。它承接原八条规则／十�
 填充、边框、圆角、阴影、模糊及 backdrop；保留 app／非 app、create／search
 及复合类名的原 fallback cascade，不只搬最后获胜的值。实际设置、项目、
 执行记录、搜索、附件和剧本表单继续原生 dialog／`useModal`，没有新增 DOM
-封装。文字、控件、几何、动效、主题与辅助模式 token 仍在原 owner；截图
+封装。该 owner 只承接材质，文字颜色仍在原 owner；公共 frame／字段控件几何由下述
+`dialog-frame.css` 承接，领域变体、动效、主题与辅助模式 token 不混迁。截图
 进行中的透明 backdrop 是 workflow 的显式强选择器例外，不能被普通材质盖掉。
 
 `dialog-surface-ownership.test.ts` 按固定实际 Git `d6555b2a` tuple 约束这一
@@ -67,6 +68,23 @@ workflow 与 visual-system 之间唯一导入。它承接原八条规则／十�
 is／where 及保守隐式 subject；不误把 footer／input 或伪元素内容当成表面。
 这不是任意 CSS 选择器／cascade 定理，也不是全部 Button／Menu／Dialog
 完成；实际旧新编译页面、辅助模式及像素证据另见阶段 25，原 App 待恢复。
+
+原生弹窗的公共 frame／字段控件 owner 现为 `ui/dialog-frame.css`，main
+在 styles 与 ui 之间唯一导入。原 30 条规则／107 项有序声明完整承接：
+27 条公共 recipe 与三条必要 cascade 邻居，包含原 fallback 与最终几何、
+header／title／footer、共享文档草稿顶栏、字段行／控件／焦点、窄屏和粗指针。
+Library／Install 顶底栏与 Connection 居中宽度保留原顺序，不把 Search
+并入 create；领域宽度、primitive、token、材质、运动、DOM 与 `useModal`
+不改变。这是既有控件的职责迁移，不是新设计数值或全产品 Dialog 平台。
+
+`dialog-frame-ownership.test.ts` 治理有限 recipe、实际 runtime 入口和两个
+明确邻居 writer；合法独立 feature／primitive／type／注释及无关 JSX 继续
+可演进。旧 surface 门禁的两份完整几何及原反例按职责交接，原材质／token／
+入口／截图保护仍保留。当前完整 React 挂载验证 16 个原生消费节点、两个
+非模态负例、实际粗指针与 reduced-motion；严格历史 CSS 比较仅显式迁移
+开关启用，普通 CI 不读 Git／临时目录或锁完整 renderer。单列 dormant
+Library footer 探针不冒充第十七个真实消费方。完整编译、源证明、原页面
+矩阵与全量结果分别见阶段 35；这仍不代表原 App 已恢复或全产品原生验收。
 
 非模态浮层表面的 owner 现为 `ui/popup-surface.css`，main 在 ui 后
 唯一导入。它承接原五 CSS 中七条规则／28 项材料声明，保留 Launcher
@@ -561,7 +579,7 @@ UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套�
 - 契约检查：图标 role／可访问名称、状态槽完整性、无回复样例、motion 开停及 fallback 必须进入测试矩阵。
 - 旧模块有确切 allowlist，门禁先作用于新／已迁移区域；每批缩小债务清单，不以全量报错迫使删除合法局部 state。
 
-工作面、交流 controller、首段导航 owner 与首批登记图形／透明按钮的有限 AST 门禁已随各自阶段实现；交流 frame 与原生弹窗表面另有各自有限 CSS AST／入口门禁。其他条目仍是迁移目标。已治理范围必须由具体测试登记，未迁移模块不能因这份文档存在就被描述为已有 CI 约束。
+工作面、交流 controller、首段导航 owner 与首批登记图形／透明按钮的有限 AST 门禁已随各自阶段实现；交流 frame、原生弹窗表面、公共 frame／字段 role 与非模态浮层表面另有各自有限 CSS AST／入口门禁。其他条目仍是迁移目标。已治理范围必须由具体测试登记，未迁移模块不能因这份文档存在就被描述为已有 CI 约束。
 
 当前普通 Node 回归仍混有历史整文件迁移证明：无关合法 App／Client 改动
 也可能触发旧全文 hash，需要年代顺序的 inverse 链。它证明某批迁移的
@@ -625,8 +643,8 @@ CSS zoom 对照不是 Electron／OS 缩放或标题栏原生命中验收；原 A
 交流意图／焦点、草稿生命周期、发送协议、输入工具、主体检查器、读取回执与
 若干领域数据 family、Human 文档／项目创建、对象批注和搜索／引用准备的
 生产 owner，以及完整执行详情 feature controller；共享顶栏、首批登记
-图形／透明按钮及交流／
-原生弹窗表面也有有限门禁。已有 `ArtifactEditor` 独立拥有现件编辑、草稿、
+图形／透明按钮、交流几何、原生弹窗表面／公共字段 role 与非模态表面
+也有有限门禁。已有 `ArtifactEditor` 独立拥有现件编辑、草稿、
 版本冲突及保存生命周期，不与手写创建、Agent 输入或宿主导航混为同一职责。
 
 Thread collection 的输入关联活动与范围概览两种展示投影已迁入同一

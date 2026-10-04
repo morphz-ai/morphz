@@ -1902,26 +1902,6 @@ kbd {
 }
 .create-dialog {
   color: var(--ink);
-  padding: 24px 28px;
-  width: min(590px, calc(100% - 32px));
-  max-height: calc(100dvh - 48px);
-}
-.create-dialog header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 22px;
-}
-.create-dialog h2 {
-  font-size: 18px;
-}
-.create-dialog footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 24px;
-  padding-top: 18px;
-  border-top: 1px solid var(--hairline);
 }
 .form-error {
   font-size: 12px;
@@ -2220,14 +2200,6 @@ kbd {
   .statusbar button {
     font-size: 9px;
   }
-  .create-dialog {
-    padding: 20px;
-  }
-  .create-dialog input,
-  .create-dialog textarea,
-  .create-dialog select {
-    font-size: 16px;
-  }
 }
 .sidebar-search {
   display: flex;
@@ -2248,13 +2220,6 @@ kbd {
   width: min(720px, calc(100vw - 32px));
   max-height: min(760px, calc(100dvh - 48px));
   overflow: auto;
-}
-.library-dialog > header,
-.library-dialog > footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
 }
 .library-dialog > header h2 {
   margin: 0;
@@ -3260,13 +3225,6 @@ kbd {
   width: 100%;
   height: max(520px, calc(100dvh - 315px));
   background: var(--surface);
-}
-.application-install > header,
-.application-install > footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
 }
 .application-install p,
 .application-install li {
