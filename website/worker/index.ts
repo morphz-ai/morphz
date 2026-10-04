@@ -1,8 +1,10 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { serveHomepageVideo } from "./homepage-media.mjs";
 
 interface Env {
+  MORPHZ_MEDIA?: Parameters<typeof serveHomepageVideo>[1];
   ASSETS: {
     fetch(request: Request): Promise<Response>;
   };
@@ -29,6 +31,9 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    const media = await serveHomepageVideo(request, env.MORPHZ_MEDIA);
+    if (media) return media;
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];

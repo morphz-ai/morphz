@@ -23,14 +23,15 @@ const localBindingConfig = {
         },
       ]
     : [],
-  r2_buckets: r2
-    ? [
+  r2_buckets: [
+    { binding: "MORPHZ_MEDIA", bucket_name: "morphz-public-media" },
+    ...(r2 ? [
         {
           binding: r2,
           bucket_name: "site-creator-r2",
         },
-      ]
-    : [],
+      ] : []),
+  ],
 };
 
 export default defineConfig(async () => {

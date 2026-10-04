@@ -42,4 +42,5 @@ __pycache__/
 /.tmp-*
 /tmp/
 /roadshow/
+/videos/
 /morphz/.morphz/

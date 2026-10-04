@@ -10,11 +10,11 @@
 
 <p align="center">
   <a href="https://morphz.ai/#demo">
-    <img src="website/public/video/morphz-live-demo-poster-v1.jpg" alt="Morphz 实机演示：一个智能体，四线程并发构建微缩北京" width="960">
+    <img src="website/public/video/morphz-promo-zh-20261004-v1.jpg" alt="Morphz 中文宣传片：并发工作、上下文维护与受控执行" width="960">
   </a>
 </p>
 
-<p align="center"><a href="https://morphz.ai/#demo"><strong>观看实机演示 · 2:40 →</strong></a></p>
+<p align="center"><a href="https://morphz.ai/#demo"><strong>观看宣传片 · 1:17 →</strong></a></p>
 
 Morphz 是一台面向持久 Agent 的 **S 表达式认知机（S-Expression Cognitive Machine）**。
 它让结构化 Context，而不是不断增长的聊天记录，成为大语言模型直接求值的对象。模型负责

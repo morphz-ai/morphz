@@ -29,8 +29,8 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(zh, /为长期并发工作而生/);
   assert.match(zh, /观看演示/);
   assert.match(zh, /id="demo"/);
-  assert.match(zh, /morphz-live-demo-en-v1\.mp4/);
-  assert.match(zh, /morphz-live-demo-poster-v1\.jpg/);
+  assert.match(zh, /morphz-promo-zh-20261004-v1\.mp4/);
+  assert.match(zh, /morphz-promo-zh-20261004-v1\.jpg/);
   assert.match(zh, /自主维护上下文/);
   assert.match(zh, /多个目标并发推进/);
   assert.match(zh, /执行安全可控/);
@@ -78,7 +78,8 @@ test("renders the finished Chinese and English home pages", async () => {
   assert.match(en, /Autonomous Context maintenance/);
   assert.match(en, /Objectives advance concurrently/);
   assert.match(en, /Execution stays governed/);
-  assert.match(en, /morphz-live-demo-en-v1\.mp4/);
+  assert.match(en, /morphz-promo-en-20261004-v1\.mp4/);
+  assert.match(en, /morphz-promo-en-20261004-v1\.jpg/);
   assert.match(en, /A new operating/);
   assert.match(en, /model for agents\./);
   assert.match(en, /Morphz is an open-source agent for long-running, concurrent work/);
@@ -107,8 +108,8 @@ test("renders the finished Chinese and English home pages", async () => {
     assert.match(html, /<video[^>]*controls=""[^>]*playsInline=""[^>]*preload="metadata"/i);
     assert.match(html, /<video[^>]*aria-label="[^"]+"/);
     assert.doesNotMatch(html, /<video[^>]*autoplay/i);
-    assert.match(html, /morphz-live-demo-en-v1\.vtt/);
-    assert.doesNotMatch(html, /morphz-concept-demo|morphz-live-demo-short/);
+    assert.match(html, /morphz-promo-(?:zh|en)-20261004-v1\.vtt/);
+    assert.doesNotMatch(html, /morphz-concept-demo|morphz-live-demo/);
     assert.match(html, /Morphz/);
     assert.match(html, /github\.com\/morphz-ai\/morphz/);
     assert.doesNotMatch(html, /github\.com\/yaowenai\/morphz/);
@@ -119,15 +120,15 @@ test("renders the finished Chinese and English home pages", async () => {
   }
 });
 
-test("both READMEs link to the full live demo with its new poster", async () => {
+test("both READMEs link to the localized homepage film with its matching poster", async () => {
   for (const [file, href, label] of [
-    ["README.md", "https://morphz.ai/en/#demo", "Watch the live demo · 2:40"],
-    ["README.zh-CN.md", "https://morphz.ai/#demo", "观看实机演示 · 2:40"],
+    ["README.md", "https://morphz.ai/en/#demo", "Watch the film · 1:17"],
+    ["README.zh-CN.md", "https://morphz.ai/#demo", "观看宣传片 · 1:17"],
   ]) {
     const text = await readFile(new URL(`../../${file}`, import.meta.url), "utf8");
     assert.ok(text.includes(`href="${href}"`));
     assert.ok(text.includes(label));
-    assert.match(text, /website\/public\/video\/morphz-live-demo-poster-v1\.jpg/);
+    assert.match(text, /website\/public\/video\/morphz-promo-(?:zh|en)-20261004-v1\.jpg/);
     assert.doesNotMatch(text, /74 seconds|74 秒|morphz-concept-demo/);
   }
   for (const file of ["morphz-live-demo-en-v1.mp4", "morphz-live-demo-poster-v1.jpg", "morphz-live-demo-en-v1.vtt", "morphz-concept-demo-v1.mp4"]) {

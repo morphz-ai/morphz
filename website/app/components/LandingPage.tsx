@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Locale } from "@/lib/docs";
 import { sitePath, SITE_LINKS } from "@/lib/site";
+import homepageMedia from "@/lib/homepage-media.json";
 import { ContextEvaluationField } from "./ContextEvaluationField";
 import { HomeInstallCommand } from "./HomeInstallCommand";
 import { SiteFooter } from "./SiteFooter";
@@ -19,7 +20,7 @@ const content = {
     demoTitle: "自主维护上下文。\n多个目标并发推进。\n执行安全可控。",
     demoLead: "在 Morphz 中，智能体依据新的观察，显式决定如何保留、修订和退役长期认知；运行时保障结构、版本与事务边界。多个目标持续并发推进，真实执行始终受身份、权限和因果轨迹约束。",
     demoFallback: "你的浏览器暂不支持视频播放。",
-    demoVideoLabel: "Morphz 实机演示：一个智能体，四线程并发构建微缩北京",
+    demoVideoLabel: "Morphz 中文宣传片：并发工作、上下文维护与受控执行",
     capabilitiesLabel: "核心功能",
     capabilitiesTitle: "让智能体维护认知、并发推进工作，并安全触达真实环境。",
     capabilitiesLead: "结构化认知上下文、显式事务、持久调度与执行节点，共同构成 Morphz 的长期工作能力。",
@@ -112,7 +113,7 @@ const content = {
     demoTitle: "Autonomous Context maintenance.\nObjectives advance concurrently.\nExecution stays governed.",
     demoLead: "In Morphz, the Agent uses new observations to explicitly preserve, revise, and retire long-term cognition while the Runtime enforces structure, versions, and transaction boundaries. Objectives keep advancing concurrently, and identity, authority, and causal trajectories govern every real-world action.",
     demoFallback: "Your browser does not support video playback.",
-    demoVideoLabel: "Morphz live demo: one agent builds miniature Beijing across four concurrent threads",
+    demoVideoLabel: "Morphz promotional film: concurrent work, Context maintenance, and governed execution",
     capabilitiesLabel: "Core capabilities",
     capabilitiesTitle: "Let an Agent maintain its Context, advance concurrent work, and safely reach real environments.",
     capabilitiesLead: "Context Encoding, explicit transactions, durable scheduling, and Execution Targets work together as the foundation for long-running Agent work.",
@@ -198,6 +199,7 @@ const content = {
 
 export function LandingPage({ locale }: { locale: Locale }) {
   const t = content[locale];
+  const video = homepageMedia.videos[locale];
   const docs = sitePath(locale, "/docs");
   const blog = sitePath(locale, "/blog/from-chat-completion-to-structured-context-evaluation");
   const download = sitePath(locale, "/download");
@@ -247,10 +249,10 @@ export function LandingPage({ locale }: { locale: Locale }) {
             controls
             playsInline
             preload="metadata"
-            poster="/video/morphz-live-demo-poster-v1.jpg"
+            poster={video.poster}
           >
-            <source src="/video/morphz-live-demo-en-v1.mp4" type="video/mp4" />
-            <track kind="captions" src="/video/morphz-live-demo-en-v1.vtt" srcLang="en" label="English sound captions" />
+            <source src={video.src} type="video/mp4" />
+            <track kind="captions" src={video.captions} srcLang={locale} label={locale === "zh" ? "中文声音字幕" : "English sound captions"} />
             {t.demoFallback}
           </video>
         </figure>
