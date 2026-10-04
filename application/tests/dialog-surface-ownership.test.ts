@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, posix } from "node:path";
 import postcss, { type Rule } from "postcss";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
@@ -10,6 +10,7 @@ import {
   isExportDeclaration,
   isIdentifier,
   isImportDeclaration,
+  isNamedImports,
   isNoSubstitutionTemplateLiteral,
   isStringLiteral,
   SyntaxKind,
@@ -27,6 +28,7 @@ import {
 // rendered-image proof. Geometry, text, child controls, motion and token policy
 // retain their owners. The capturing backdrop is an explicit stronger exception.
 const owner = "ui/dialog-surface.css";
+const carrier = "ui/controls/surfaces.css";
 const sourceDirectory = new URL("../apps/web/src/", import.meta.url).pathname;
 type Sources = { css: Map<string, string>; modules: Map<string, string> };
 const key = (selector: string) =>
@@ -228,6 +230,22 @@ function moduleProgram(
 }
 const ownerSpecifier = (specifier: string) =>
   specifier.split(/[?#]/)[0]!.endsWith(`/${owner}`);
+const carrierSource = (file: string, specifier: string) =>
+  (specifier.startsWith(".") || file.endsWith(".css")) &&
+  posix.normalize(
+    posix.join(posix.dirname(file), specifier.split(/[?#]/)[0]!),
+  ) === carrier;
+const resolveModule = (file: string, specifier: string, sources: Sources) => {
+  if (!specifier.startsWith(".")) return undefined;
+  const candidate = posix.normalize(
+    posix.join(posix.dirname(file), specifier.split(/[?#]/)[0]!),
+  );
+  return [
+    candidate,
+    candidate.replace(/\.js$/, ".ts"),
+    candidate.replace(/\.js$/, ".tsx"),
+  ].find((name) => sources.modules.has(name) || sources.css.has(name));
+};
 function validate(sources: Sources) {
   const parsed = new Map(
     [...sources.css].map(([name, text]) => [name, postcss.parse(text)]),
@@ -302,6 +320,13 @@ function validate(sources: Sources) {
         !rule.params.includes("dialog-surface.css"),
         "css-owner-import",
       );
+      const specifier =
+        /^\s*(?:url\(\s*)?(?:"([^"]*)"|'([^']*)'|([^\s;)]+))/.exec(rule.params);
+      assert.ok(
+        !specifier ||
+          !carrierSource(name, specifier[1] ?? specifier[2] ?? specifier[3]!),
+        "css-carrier-import",
+      );
     });
     root.walkRules((rule) => {
       const declarations = rule.nodes.filter((node) => node.type === "decl");
@@ -333,32 +358,62 @@ function validate(sources: Sources) {
     retainedDialogTokens.map((rule) => [rule[0], ...frozen(rule)]),
     "token-policy",
   );
-  let imports = 0;
+  let imports = 0,
+    carrierImports = 0;
+  let mainImports: string[] = [];
+  const edges = new Map<string, string[]>();
   moduleProgram(sources, (file, source) => {
-    const direct: string[] = [];
+    const direct: string[] = [],
+      dependencies: string[] = [];
     source.forEachChild((node) => {
-      if (isImportDeclaration(node) && isStringLiteral(node.moduleSpecifier)) {
+      if (
+        (isImportDeclaration(node) || isExportDeclaration(node)) &&
+        node.moduleSpecifier &&
+        isStringLiteral(node.moduleSpecifier)
+      ) {
         const specifier = node.moduleSpecifier.text;
-        direct.push(specifier);
-        if (!ownerSpecifier(specifier)) return;
-        imports++;
-        assert.ok(
-          file === "main.tsx" &&
-            !node.importClause &&
-            specifier === `./${owner}`,
-          "owner-import",
-        );
+        const clause = isImportDeclaration(node)
+          ? node.importClause
+          : undefined;
+        const typeOnly = isImportDeclaration(node)
+          ? clause?.phaseModifier === SyntaxKind.TypeKeyword ||
+            (!clause?.name &&
+              clause?.namedBindings &&
+              isNamedImports(clause.namedBindings) &&
+              clause.namedBindings.elements.every(
+                (element) => element.isTypeOnly,
+              ))
+          : node.isTypeOnly;
+        const resolved = resolveModule(file, specifier, sources);
+        if (resolved && !typeOnly) dependencies.push(resolved);
+        if (isImportDeclaration(node)) {
+          direct.push(
+            carrierSource(file, specifier) ? `./${carrier}` : specifier,
+          );
+          if (ownerSpecifier(specifier)) {
+            imports++;
+            assert.ok(
+              file === "main.tsx" &&
+                !node.importClause &&
+                specifier === `./${owner}`,
+              "owner-import",
+            );
+          }
+          if (carrierSource(file, specifier)) {
+            carrierImports++;
+            assert.ok(
+              file === "main.tsx" &&
+                !node.importClause &&
+                !/[?#]/.test(specifier) &&
+                sources.css.has(carrier),
+              "carrier-import",
+            );
+          }
+        }
       }
     });
-    if (file === "main.tsx") {
-      const at = direct.indexOf(`./${owner}`);
-      assert.ok(
-        at > 0 &&
-          direct[at - 1] === "./workflow.css" &&
-          direct[at + 1] === "./visual-system.css",
-        "entry-order",
-      );
-    }
+    edges.set(file, dependencies);
+    if (file === "main.tsx") mainImports = direct;
     function walk(node: Node) {
       if (
         isExportDeclaration(node) &&
@@ -366,6 +421,15 @@ function validate(sources: Sources) {
         isStringLiteral(node.moduleSpecifier)
       )
         assert.ok(!ownerSpecifier(node.moduleSpecifier.text), "owner-reexport");
+      if (
+        isExportDeclaration(node) &&
+        node.moduleSpecifier &&
+        isStringLiteral(node.moduleSpecifier)
+      )
+        assert.ok(
+          !carrierSource(file, node.moduleSpecifier.text),
+          "carrier-reexport",
+        );
       if (
         isCallExpression(node) &&
         (node.expression.kind === SyntaxKind.ImportKeyword ||
@@ -380,6 +444,20 @@ function validate(sources: Sources) {
           ),
           "owner-dynamic",
         );
+      if (
+        isCallExpression(node) &&
+        (node.expression.kind === SyntaxKind.ImportKeyword ||
+          (isIdentifier(node.expression) && node.expression.text === "require"))
+      )
+        assert.ok(
+          !node.arguments.some(
+            (argument) =>
+              (isStringLiteral(argument) ||
+                isNoSubstitutionTemplateLiteral(argument)) &&
+              carrierSource(file, argument.text),
+          ),
+          "carrier-dynamic",
+        );
       node.forEachChild((child) => {
         walk(child);
       });
@@ -387,6 +465,51 @@ function validate(sources: Sources) {
     walk(source);
   });
   assert.equal(imports, 1, "single-owner-import");
+  assert.equal(carrierImports, 1, "single-carrier-import");
+  const carrierAt = mainImports.indexOf(`./${carrier}`);
+  assert.ok(
+    carrierAt > 0 &&
+      mainImports[carrierAt - 1] === `./${owner}` &&
+      mainImports[carrierAt + 1] === "./visual-system.css",
+    "entry-order:surface-carrier-phase",
+  );
+  // Project only this source-checked, unique, correctly phased carrier. Keep
+  // every other import and every CSS writer in the original contract.
+  const composition = mainImports.filter(
+    (specifier) => specifier !== `./${carrier}`,
+  );
+  const at = composition.indexOf(`./${owner}`);
+  assert.ok(
+    at > 0 &&
+      composition[at - 1] === "./workflow.css" &&
+      composition[at + 1] === "./visual-system.css",
+    "entry-order",
+  );
+  const reached = new Set<string>(),
+    loaded: string[] = [];
+  function visit(file: string) {
+    if (reached.has(file)) return;
+    reached.add(file);
+    if (sources.css.has(file)) {
+      loaded.push(file);
+      return;
+    }
+    for (const dependency of edges.get(file) ?? []) visit(dependency);
+  }
+  visit("main.tsx");
+  const runtimeAt = loaded.indexOf(carrier);
+  assert.deepEqual(
+    loaded.slice(runtimeAt - 2, runtimeAt + 2),
+    ["workflow.css", owner, carrier, "visual-system.css"],
+    "actual-css-closure-order",
+  );
+  const projected = loaded.filter((file) => file !== carrier);
+  const surfaceAt = projected.indexOf(owner);
+  assert.deepEqual(
+    projected.slice(surfaceAt - 1, surfaceAt + 2),
+    ["workflow.css", owner, "visual-system.css"],
+    "actual-css-closure-order",
+  );
 }
 const actual = actualSources();
 function replace(
@@ -626,8 +749,8 @@ test("actual composition rejects alternate imports without freezing unrelated fe
         replace(
           s,
           "main.tsx",
-          `import "./${owner}";\nimport "./visual-system.css";`,
-          `import "./visual-system.css";\nimport "./${owner}";`,
+          `import "./${owner}";\nimport "./ui/controls/surfaces.css";\nimport "./visual-system.css";`,
+          `import "./ui/controls/surfaces.css";\nimport "./visual-system.css";\nimport "./${owner}";`,
         ),
     ],
     [
@@ -731,4 +854,187 @@ test("real native dialog variant classes and unquoted class subjects cannot add 
       (sources) =>
         sources.css.set("future.css", `${selector} { background: red; }`),
     );
+});
+
+test("the approved action-surface carrier preserves actual value source and phase without hiding writers or independent consumed features", () => {
+  const statement = `import "./${carrier}";`;
+  const variants: [string, RegExp, (sources: Sources) => void][] = [
+    [
+      "carrier missing",
+      /single-carrier-import/,
+      (s) => replace(s, "main.tsx", statement + "\n", ""),
+    ],
+    [
+      "carrier duplicate",
+      /single-carrier-import/,
+      (s) => replace(s, "main.tsx", statement, statement + "\n" + statement),
+    ],
+    [
+      "carrier foreign source",
+      /single-carrier-import/,
+      (s) => replace(s, "main.tsx", statement, 'import "./reader.css";'),
+    ],
+    [
+      "carrier bound import",
+      /carrier-import/,
+      (s) =>
+        replace(
+          s,
+          "main.tsx",
+          statement,
+          `import surface from "./${carrier}";`,
+        ),
+    ],
+    [
+      "carrier type-only import",
+      /carrier-import/,
+      (s) =>
+        replace(
+          s,
+          "main.tsx",
+          statement,
+          `import type Surface from "./${carrier}";`,
+        ),
+    ],
+    [
+      "carrier query",
+      /carrier-import/,
+      (s) => replace(s, "main.tsx", statement, `import "./${carrier}?direct";`),
+    ],
+    [
+      "carrier component import",
+      /carrier-import/,
+      (s) => s.modules.set("future.ts", statement),
+    ],
+    [
+      "carrier reexport",
+      /carrier-reexport/,
+      (s) => s.modules.set("future.ts", `export * from "./${carrier}";`),
+    ],
+    [
+      "carrier dynamic import",
+      /carrier-dynamic/,
+      (s) => s.modules.set("future.ts", `void import("./${carrier}");`),
+    ],
+    [
+      "carrier require",
+      /carrier-dynamic/,
+      (s) => s.modules.set("future.ts", `require("./${carrier}");`),
+    ],
+    [
+      "carrier CSS import",
+      /css-carrier-import/,
+      (s) => s.css.set("future.css", `@import "./${carrier}";`),
+    ],
+    [
+      "carrier before material",
+      /entry-order:surface-carrier-phase/,
+      (s) =>
+        replace(
+          s,
+          "main.tsx",
+          `import "./${owner}";\n${statement}`,
+          `${statement}\nimport "./${owner}";`,
+        ),
+    ],
+    [
+      "carrier after visual",
+      /entry-order:surface-carrier-phase/,
+      (s) =>
+        replace(
+          s,
+          "main.tsx",
+          `${statement}\nimport "./visual-system.css";`,
+          `import "./visual-system.css";\n${statement}`,
+        ),
+    ],
+    [
+      "foreign phase cannot be projected",
+      /entry-order/,
+      (s) => {
+        s.css.set("future.css", ".future-content { background: white; }");
+        replace(
+          s,
+          "main.tsx",
+          statement,
+          statement + '\nimport "./future.css";',
+        );
+      },
+    ],
+    [
+      "actual closure cannot load visual early",
+      /actual-css-closure-order/,
+      (s) =>
+        s.modules.set(
+          "App.tsx",
+          s.modules.get("App.tsx")! + '\nimport "./visual-system.css";',
+        ),
+    ],
+    [
+      "carrier has no material exemption",
+      /foreign-surface:ui\/controls\/surfaces.css:dialog/,
+      (s) =>
+        s.css.set(
+          carrier,
+          s.css.get(carrier)! + "\ndialog { all: initial !important; }\n",
+        ),
+    ],
+  ];
+  for (const [name, rule, mutate] of variants) rejected(name, rule, mutate);
+
+  const alias = clone(actual);
+  replace(
+    alias,
+    "main.tsx",
+    statement,
+    'import "./ui/controls/./surfaces.css";',
+  );
+  validate(alias);
+
+  // Source-consumption positive, not mounted or native-window evidence. The
+  // current App remains; this independent feature is actually named and used.
+  const growth = clone(actual);
+  growth.modules.set(
+    "future-surface-content.tsx",
+    `
+    import { useState, useEffect } from "react";
+    import type { FutureMode as Mode } from "./future-surface-types.js";
+    import "./future-surface-content.css";
+    import "./features/future/surfaces.css";
+    export function FutureSurfaceContent() {
+      const [expanded, setExpanded] = useState(false);
+      useEffect(() => { if (expanded) return () => {}; }, [expanded]);
+      const mode: Mode = "compact";
+      return <section className="future-surface-content" data-mode={mode}>
+        <button onClick={() => setExpanded(!expanded)}>Future content</button>
+        {expanded && <span>Independent feature</span>}
+      </section>;
+    }
+  `,
+  );
+  growth.modules.set(
+    "future-surface-types.ts",
+    'export type FutureMode = "compact";',
+  );
+  growth.css.set(
+    "future-surface-content.css",
+    ".future-surface-content { background: white; padding: 3px; }",
+  );
+  growth.css.set(
+    "features/future/surfaces.css",
+    ".future-surface-content > button { background: white; border-radius: 3px; }",
+  );
+  replace(
+    growth,
+    "main.tsx",
+    'import { App } from "./App.js";',
+    'import { App } from "./App.js";\nimport { FutureSurfaceContent as NextSurfaceContent } from "./features/../future-surface-content.js";',
+  );
+  replace(
+    growth,
+    "main.tsx",
+    "    <App />",
+    "    <App />\n    <NextSurfaceContent />",
+  );
+  validate(growth);
 });

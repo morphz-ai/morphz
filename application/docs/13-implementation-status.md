@@ -1,5 +1,29 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 52：弹窗相邻控件 carrier 的当前交接
+
+仅两份 surface 源码门禁。普通检查先核 `ui/controls/surfaces.css` 实际
+来源、唯一 bare main 导入及原 material→carrier→visual 相对 phase，
+实际 runtime 闭包也核顺序；之后只投影这个已核 carrier 比较原相邻区间。
+其他 CSS 不能被略过，carrier 仍受原材质／token／foreign writer 检查。
+生产 main、CSS、原十二 callback 的断言、两份不可变档案均不改。
+
+根 fresh actual Git 独立核十二个完整 callback：十一件全字节不变；
+唯一 D3 mutant 仅逆两条新增 carrier 路径行即全字节还原。原 114 个
+指定反例及规则保留，新增 32 个 parse-valid 来源／入口／顺序绕过反例；
+实际相对路径 alias 和真实根 JSX 消费的独立 React／CSS feature 正例通过。
+这是有限源码合同，不是任意 CSS 证明或原生行为验收。
+
+根 proper 原扩展七文件 **50/50**，零失败／跳过／取消，包含原 frame、
+popup 与共享剧本的实际挂载、原材质／几何／焦点／动效检查。此前同范围
+**42 通过／6 失败** 及 fresh e4 的同六红项保留；修的是陈旧入口假设和
+一个失效 mutant 接缝，没有改生产样式来迁就测试。冻结 SHA、格式／diff
+及最终完整 typecheck 通过。原 App 当次只读截图／AX 已可见，仍为未安装
+本批构建的原 bundle；整体全量与原 App 最终验收仍未完成，目标 active。
+
+证据：`/tmp/morphz-surface-carrier-handoff-plan.qcWp5q/RESULT.md`、
+`root-final-source-proof.json`，根 `surface-carrier-root-final.log`。
+
 ## 2026-10-05 前端阶段 51：创建与私有会话的当前合同
 
 仅五个测试／档案路径。Human creation 与 Private project scope 分别
