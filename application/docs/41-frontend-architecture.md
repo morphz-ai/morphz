@@ -300,6 +300,14 @@ renderer 只消费两个 DOM refs、三个展示 facts 和三个语义动作。�
 阶段 36 的固定旧源、有限当前所有权、完整 mounted 与原页面对照分别证明，
 不能将它们等同原 App、OS 焦点／硬件验收或全产品迁移完成。
 
+完整事项执行面板 controller 现归 `features/tasks/useTaskRunPanel.tsx`。
+它拥有原 scoped 两观察、六 states／两 refs、完整操作及菜单 recipe；
+renderer 只直接消费十八 facts／recipe 和五语义动作。详情独立观察与
+清单父层批量观察不合并，Client／core／数据发布权威不迁入 controller。
+读取借最新 API，已发动作及随后刷新捕获原 Client；原 null、去重、资格、
+错误与焦点／检查器组合保留，不增加 scope reset、请求或轮询。阶段 37 的
+旧新页面和完整挂载证据不替代实际 Runtime、原 App 或整体迁移完成。
+
 详细测试、原 App 验收与尚未验证的边界见[实施记录](./13-implementation-status.md)。上述提交只证明对应阶段，尚未替代下文所有目标；完整 query facade、跨领域 presentation 和全产品样式 owner 仍未完成。本文未规定新的图标尺寸、间距、色彩或动效审美标准。
 
 ## 1. 当前事实及需要解决的组织问题
@@ -651,7 +659,7 @@ CSS zoom 对照不是 Electron／OS 缩放或标题栏原生命中验收；原 A
 当前已有工作面解析、稳定导航 Host／应用入口／内容打开、项目与会话私有范围、
 交流意图／焦点、草稿生命周期、发送协议、输入工具、主体检查器、读取回执与
 若干领域数据 family、Human 文档／项目创建、对象批注和搜索／引用准备的
-生产 owner，以及完整执行详情和对话阅读视口 feature controller；共享顶栏、首批登记
+生产 owner，以及完整执行详情、对话阅读视口和事项执行 feature controller；共享顶栏、首批登记
 图形／透明按钮、交流几何、原生弹窗表面／公共字段 role 与非模态表面
 也有有限门禁。已有 `ArtifactEditor` 独立拥有现件编辑、草稿、
 版本冲突及保存生命周期，不与手写创建、Agent 输入或宿主导航混为同一职责。

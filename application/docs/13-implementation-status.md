@@ -1,5 +1,61 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 37：完整事项执行面板控制器
+
+`features/tasks/useTaskRunPanel.tsx` 现拥有 TaskRunPanel 的完整 scoped 观察、
+处理结果读取、状态／资格、执行操作、检查器状态及主／次菜单 recipe。
+单个无条件 hook 在原首个注册位置接线；原两 refs、六 states、两 observed
+hooks 的顺序保留，非事项仍在全部注册后返回 null。公开十八个展示事实／
+recipe 和五个语义动作；pending、writers、perform 及内部派生不暴露。
+
+读取仍借原 `api.current` 最新 Client，动作和操作后的额外 refresh 仍捕获
+原 render Client。原同步 pending、await／catch／finally、引用去重、六字段
+scope、错误优先级和各用途资格不变；没有新 scope 重置、store、请求、
+轮询、guard 或模型调用。`run!`／参数类型与 readonly 返回仅静态见证。
+
+ArtifactEditor 详情独立观察、TaskList compact 消费原父层批量观察，未强并。
+原 core／Client／data／observer 保持权威。renderer 原 props／默认值、
+Human 回应、依赖导航、检查器组合及完整 DOM／CSS／图标／布局／动效保留。
+
+根独立读并复跑 actual Git `d93326c0` 的完整 13,034-byte 原件证明：原
+7,008-byte 算法逐字相等，五个 JSX 箭头仅直接命名／静态类型见证；完整
+owner／renderer forward 与整件 inverse 通过，六个邻接权威／消费者未改。
+候选 205 份 renderer 源、208 份 emitted 资源冻结；根正常完整构建与候选
+全部产物／入口一致，完整 CSS／preload 原字节相同，不伪称主 JS 未变。
+
+四份完整原页面测试旧／新各 **21/21**，零重试／跳过；实际身份、断言、
+预算与原 fixtures 保留。每边核 140 个实际 HTTP HTML／入口资产响应，
+全部 200 且 SHA 正确；69 份原 spec／fixture、另 73 份支撑 helper 与
+actual Git 原文核对（两集合部分重叠，非 142 个独立来源）。自有 Host
+进程已关闭、原 fixture 端口空闲及 discovery 恢复，未操作业务数据库／
+用户 App／日常 Runtime。六份原相邻回归根 **42/42**，零跳过。
+
+完整真实 TaskRunPanel 的普通当前 StrictMode 挂载 **12/12**；根独立
+显式完整旧／新挂载 **13/13**，零跳过，每步完整 DOM／端口观察严格深等。
+覆盖真实读取、主／次菜单、控制 payload、停止／撤回／暂停／恢复、同步
+去重、刷新等待、错误、Client 捕获、Human latest dirty-tail、六 scope、
+实际 popover／检查器／结果打开及卸载；旧晚动作特征仅显式迁移对照。
+普通 CSS 动效未禁用，测试有限推进真实 timing；受控端口、虚拟重试时间
+和 DOM 焦点不冒称 HTTP 权限、物理 Runtime、OS 命中或原 App 验收。
+三轮 fixture／断言 RED 保留，仅修测试；没有用 React 错误清空 DOM
+冒充合法非事项 null，也不以 StrictMode 单次读取假设修改生产。
+
+根最终有限门禁 **9/9**，39 个指定可解析反例按精确规则拒绝，真实别名、
+静态类型及独立 React／领域增量正例通过；从 actual Git 独立核 42 段
+完整原语句与五个完整动作箭头。普通 CI 不锁完整组件／Client／App，
+也不把有限 value alias 检查说成通用 TS 绑定／纯度证明。
+
+最终冻结源后的根默认 `npm test`：327 份源、2,186 项，**2,177 通过、
+零失败／取消／todo**。九项为明确未启用的可选能力（S3 三项、Runtime
+五项、原生焦点一项），无未知跳过；PostgreSQL 为必需能力并实际执行。
+根最终类型检查、六份所有权内 TS 文件格式、完整正常构建及编译交接核对
+通过；原构建警告保留，不冒称原 App／原生硬件或整体目标已完成。
+
+根证据 `/tmp/morphz-task-run-root.moRQvb`，生产证明
+`/tmp/morphz-task-run-controller-production.0lzulR`，完整挂载与原件
+`/tmp/morphz-task-run-mounted.NBQw2x`，有限门禁／RED
+`/tmp/morphz-task-run-boundary.5e0g3P`。原 App 最终验收与其余边界继续。
+
 ## 2026-10-04 前端阶段 36：完整对话阅读视口生命周期
 
 `features/exchange/useConversationViewport.ts` 现拥有原 scoped 阅读位置恢复、
