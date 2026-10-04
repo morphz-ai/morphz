@@ -14,6 +14,7 @@ import {
   isMethodSignatureDeclaration,
   isPropertySignatureDeclaration,
   isJsxAttributes,
+  isJsxOpeningElement,
   SyntaxKind,
   isCallExpression,
   isExportDeclaration,
@@ -1691,11 +1692,27 @@ export function verifyExchangeReferencePreparationModuleCurrent(text: string) {
 export function verifyExchangeReferencePreparationConsumption(
   appText: string,
   ownerText: string,
+  integration = {
+    builtin: readFileSync(
+      new URL(
+        "../../apps/web/src/host/builtin-application-adapters.tsx",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    host: readFileSync(
+      new URL("../../apps/web/src/ApplicationHost.tsx", import.meta.url),
+      "utf8",
+    ),
+  },
 ) {
   verifyExchangeReferencePreparationModuleCurrent(ownerText);
   const history = referenceGovernanceHistory;
   const parsed = parseReferencePreparation({
     App: appText,
+    Builtin: integration.builtin,
+    Host: integration.host,
+    BuiltinIntent: 'const value = () => onComposeIntent("script");',
     Factory: expectedFactory,
     State: stateRegistration,
     Commit: commitRegistration,
@@ -2330,12 +2347,254 @@ export function verifyExchangeReferencePreparationConsumption(
         name,
     );
   }
-  // Original four public command sites remain direct, including quote wrappers
+  // Stage54 transferred only these two borrowed command sites to the trusted
+  // builtin adapter. Its complete recipes/panes/Sandbox are governed by the
+  // builtin boundary, not copied here or restored through a whole-App inverse.
+  const builtin = parsed.get("Builtin")!,
+    builtinNames = aliases(builtin),
+    host = parsed.get("Host")!;
+  const builtinBinding = currentImport(
+    app,
+    "./host/builtin-application-adapters.js",
+    "createBuiltinApplicationAdapters",
+    false,
+    "reference actual builtin factory value origin",
+  );
+  const builtinCall = actualCall(
+    "createBuiltinApplicationAdapters",
+    builtinBinding,
+    "reference actual builtin factory value origin",
+  );
+  assert(
+    isVariableDeclaration(builtinCall.parent) &&
+      isIdentifier(builtinCall.parent.name) &&
+      builtinCall.arguments.length === 1 &&
+      isObjectLiteralExpression(builtinCall.arguments[0]!),
+    "reference direct render-captured builtin registration",
+  );
+  const builtinDeclaration = builtinCall.parent;
+  const builtinStatement = directStatement(
+    builtinDeclaration,
+    "reference direct render-captured builtin registration",
+  );
+  assert(
+    registration.end < builtinStatement.getStart(),
+    "reference original command captured before builtin registration",
+  );
+  function builtinField(key: string) {
+    assert(isObjectLiteralExpression(builtinCall.arguments[0]!));
+    const field = one(
+      builtinCall.arguments[0]!.properties.filter(
+        (p) =>
+          (isPropertyAssignment(p) || isShorthandPropertyAssignment(p)) &&
+          p.name.getText() === key,
+      ),
+      "reference original direct consumer " + key,
+    );
+    assert(isPropertyAssignment(field) || isShorthandPropertyAssignment(field));
+    return isPropertyAssignment(field) ? field.initializer : field.name;
+  }
+  for (const [key, command] of [
+    ["onReadingCompose", "composeReading"],
+    ["onComposeIntent", "composeIntent"],
+  ] as const)
+    directValue(
+      builtinField(key),
+      command,
+      "reference original direct consumer " + command + " " + key,
+    );
+
+  function jsxValue(node: Node, key: string) {
+    assert(isJsxOpeningElement(node) || isJsxSelfClosingElement(node));
+    const field = one(
+      node.attributes.properties
+        .filter(isJsxAttribute)
+        .filter((p) => p.name.getText() === key),
+      "reference actual builtin JSX port " + key,
+    );
+    assert(field.initializer && isJsxExpression(field.initializer));
+    assert(field.initializer.expression);
+    return field.initializer.expression;
+  }
+  function noMountKey(node: Node) {
+    assert(isJsxOpeningElement(node) || isJsxSelfClosingElement(node));
+    assert(
+      !node.attributes.properties
+        .filter(isJsxAttribute)
+        .some((p) => p.name.getText() === "key"),
+      "reference original compose consumer identity",
+    );
+  }
+  const hostBinding = currentImport(
+    app,
+    "./ApplicationHost.js",
+    "ApplicationHost",
+    false,
+    "reference actual generic Host value origin",
+  );
+  const hostNode = one(
+    ownedNodes(main)
+      .filter(isJsxOpeningElement)
+      .filter(
+        (node) =>
+          isIdentifier(node.tagName) &&
+          aliasOrigin(app, node.tagName) === app.symbols.get(hostBinding),
+      ),
+    "reference actual generic Host value consumer",
+  );
+  const renderer = jsxValue(hostNode, "renderBuiltin");
+  assert(
+    isPropertyAccessExpression(renderer) &&
+      renderer.name.text === "renderBuiltin" &&
+      isIdentifier(renderer.expression) &&
+      aliasOrigin(app, renderer.expression) ===
+        app.symbols.get(builtinDeclaration.name),
+    "reference actual direct builtin renderer consumption",
+  );
+  noMountKey(hostNode);
+  const hostFactory = currentFunction(host, "ApplicationHost");
+  const hostParameters = hostFactory.parameters[0];
+  assert(
+    hostFactory.body &&
+      hostParameters &&
+      isObjectBindingPattern(hostParameters.name),
+  );
+  const hostRenderer = one(
+    hostParameters.name.elements.filter(
+      (p) => (p.propertyName ?? p.name)?.getText() === "renderBuiltin",
+    ),
+    "reference actual generic Host renderer port",
+  );
+  const hostRendererName = hostRenderer.name;
+  assert(
+    hostRendererName &&
+      isIdentifier(hostRendererName) &&
+      !hostRenderer.initializer,
+  );
+  one(
+    ownedNodes(hostFactory.body)
+      .filter(isCallExpression)
+      .filter(
+        (c) =>
+          isIdentifier(c.expression) &&
+          aliasOrigin(host, c.expression) ===
+            host.symbols.get(hostRendererName),
+      ),
+    "reference actual generic Host renderer invocation",
+  );
+
+  const builtinFactory = currentFunction(
+    builtin,
+    "createBuiltinApplicationAdapters",
+  );
+  const builtinParameters = builtinFactory.parameters[0];
+  assert(
+    builtinFactory.body &&
+      builtinParameters &&
+      isObjectBindingPattern(builtinParameters.name),
+    "reference actual builtin capture ports",
+  );
+  const render = one(
+    builtinFactory.body.statements
+      .filter(isFunctionDeclaration)
+      .filter((n) => n.name?.text === "renderBuiltin"),
+    "reference actual builtin returned renderer",
+  );
+  assert(render.body && render.name);
+  const returned = one(
+    builtinFactory.body.statements.filter(isReturnStatement),
+    "reference actual builtin returned renderer",
+  );
+  assert(returned.expression && isObjectLiteralExpression(returned.expression));
+  const renderField = one(
+    returned.expression.properties.filter(
+      (p) =>
+        (isPropertyAssignment(p) || isShorthandPropertyAssignment(p)) &&
+        p.name.getText() === "renderBuiltin",
+    ),
+    "reference actual builtin returned renderer",
+  );
+  assert(
+    isPropertyAssignment(renderField) ||
+      isShorthandPropertyAssignment(renderField),
+  );
+  const renderValue = isPropertyAssignment(renderField)
+    ? renderField.initializer
+    : renderField.name;
+  assert(
+    isIdentifier(renderValue) &&
+      aliasOrigin(builtin, renderValue) === builtin.symbols.get(render.name),
+    "reference actual builtin returned renderer",
+  );
+  for (const [tag, module, port] of [
+    ["Reader", "../Reader.js", "onReadingCompose"],
+    ["ScriptStudio", "../ScriptStudio.js", "onComposeIntent"],
+  ] as const) {
+    const importedLeaf = currentImport(
+      builtin,
+      module,
+      tag,
+      false,
+      "reference actual builtin leaf value origin " + tag,
+    );
+    const leaf = one(
+      ownedNodes(render.body)
+        .filter(isJsxSelfClosingElement)
+        .filter(
+          (node) =>
+            isIdentifier(node.tagName) &&
+            aliasOrigin(builtin, node.tagName) ===
+              builtin.symbols.get(importedLeaf),
+        ),
+      "reference actual builtin leaf value consumer " + tag,
+    );
+    const captured = one(
+      builtinParameters.name.elements.filter(
+        (p) => (p.propertyName ?? p.name)?.getText() === port,
+      ),
+      "reference original direct consumer " + port,
+    );
+    const capturedName = captured.name;
+    assert(
+      capturedName && isIdentifier(capturedName) && !captured.initializer,
+      "reference original direct consumer " + port,
+    );
+    if (tag === "Reader") {
+      const value = jsxValue(leaf, "onCompose");
+      assert(
+        isIdentifier(value) &&
+          aliasOrigin(builtin, value) === builtin.symbols.get(capturedName),
+        "reference original direct consumer composeReading onReadingCompose",
+      );
+      noMountKey(leaf);
+    } else {
+      builtinNames.set(builtin.symbols.get(capturedName)!, "onComposeIntent");
+      const expectedIntent = parsed.get("BuiltinIntent")!;
+      currentSame(
+        jsxValue(leaf, "onConceive"),
+        builtin,
+        variable(expectedIntent, "value").initializer!,
+        expectedIntent,
+        "reference original direct consumer composeIntent onComposeIntent",
+        builtinNames,
+      );
+      const invoked = one(
+        ownedNodes(jsxValue(leaf, "onConceive")).filter(isCallExpression),
+        "reference original direct consumer composeIntent onComposeIntent",
+      );
+      assert(
+        isIdentifier(invoked.expression) &&
+          aliasOrigin(builtin, invoked.expression) ===
+            builtin.symbols.get(capturedName),
+        "reference original direct consumer composeIntent onComposeIntent",
+      );
+    }
+  }
+
+  // Original public command sites remain direct, including quote wrappers
   // whose void/argument behavior is part of the old public contract.
   for (const [attrName, command, count] of [
     ["onCompose", "composeReading", 1],
-    ["onReadingCompose", "composeReading", 1],
-    ["onComposeIntent", "composeIntent", 1],
     ["onCreate", "composeIntent", 1],
     ["onCompose", "composeContent", 1],
   ] as const) {
@@ -2363,16 +2622,6 @@ export function verifyExchangeReferencePreparationConsumption(
         "reference original direct consumer " + command + " " + attrName,
       );
     }
-    if (attrName === "onReadingCompose")
-      for (const value of values) {
-        assert(isJsxAttributes(value.parent));
-        assert(
-          !value.parent.properties
-            .filter(isJsxAttribute)
-            .some((a) => a.name.getText() === "key"),
-          "reference original compose consumer identity",
-        );
-      }
     if (command === "composeContent") {
       const original = parseReferencePreparation({
         Historical: history.preparationApp,

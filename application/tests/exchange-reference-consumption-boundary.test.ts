@@ -622,8 +622,8 @@ test("current handoff rejects actual reference authority phase command identity 
       /complete preparation captured render fields/,
     ],
     [
-      "onReadingCompose={composeReading}",
-      "onReadingCompose={(...args)=>composeReading(...args)}",
+      "onReadingCompose: composeReading,",
+      "onReadingCompose: (...args)=>composeReading(...args),",
       /reference original direct consumer/,
     ],
     [
@@ -734,6 +734,159 @@ function parseReferencePreparationForCurrent(text: string) {
   return call.parent.parent.parent.getText();
 }
 
+test("current Reference commands keep their true builtin borrow and generic Host ports", () => {
+  const builtin = readFileSync(
+    new URL(
+      "../apps/web/src/host/builtin-application-adapters.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const host = readFileSync(
+    new URL("../apps/web/src/ApplicationHost.tsx", import.meta.url),
+    "utf8",
+  );
+  const integration = { builtin, host };
+  const aliasApp = currentApp
+    .replace(
+      "  createBuiltinApplicationAdapters,",
+      "  createBuiltinApplicationAdapters as builtinFactory,",
+    )
+    .replace(
+      "  const builtinApplications = createBuiltinApplicationAdapters({",
+      "  const capturedBuiltinFactory = builtinFactory;\n  const builtinApplications = capturedBuiltinFactory({",
+    )
+    .replace(
+      "import { ApplicationHost }",
+      "import { ApplicationHost as GenericHost }",
+    )
+    .replace("<ApplicationHost\n", "<GenericHost\n")
+    .replace("</ApplicationHost>", "</GenericHost>");
+  assert.notEqual(aliasApp, currentApp, "actual called builtin import alias");
+  const aliasBuiltin = builtin
+    .replace(
+      "import { Reader, type ReadingCompose }",
+      "import { Reader as BookReader, type ReadingCompose }",
+    )
+    .replace("      <Reader\n", "      <BookReader\n")
+    .replace("  onReadingCompose,\n", "  onReadingCompose: readQuote,\n")
+    .replace("onCompose={onReadingCompose}", "onCompose={readQuote}")
+    .replace("  onComposeIntent,\n", "  onComposeIntent: prepareIntent,\n")
+    .replace(
+      '() => onComposeIntent("script")',
+      '() => prepareIntent("script")',
+    );
+  const aliasHost = host
+    .replace("  renderBuiltin,\n", "  renderBuiltin: trustedRenderer,\n")
+    .replace(
+      "              renderBuiltin({",
+      "              trustedRenderer({",
+    );
+  assert.notEqual(
+    aliasBuiltin,
+    builtin,
+    "real builtin leaf and captured-port aliases",
+  );
+  parse(aliasApp);
+  parse(aliasBuiltin);
+  parse(aliasHost);
+  verifyExchangeReferencePreparationConsumption(aliasApp, currentOwner, {
+    builtin: aliasBuiltin,
+    host: aliasHost,
+  });
+
+  const cases: [
+    string,
+    "app" | "builtin" | "host",
+    string,
+    string,
+    RegExp,
+    string?,
+  ][] = [
+    [
+      "foreign called factory with unused correct import",
+      "app",
+      '} from "./host/builtin-application-adapters.js";',
+      '} from "./host/foreign-builtin-adapters.js";',
+      /reference actual builtin factory value origin/,
+      'import {createBuiltinApplicationAdapters as unusedActualBuiltin} from "./host/builtin-application-adapters.js";\n',
+    ],
+    [
+      "type-only called builtin",
+      "app",
+      "  createBuiltinApplicationAdapters,",
+      "  type createBuiltinApplicationAdapters,",
+      /reference actual builtin factory value origin/,
+    ],
+    [
+      "duplicate compose borrow",
+      "app",
+      "    onReadingCompose: composeReading,",
+      "    onReadingCompose: composeReading,\n    onReadingCompose: composeReading,",
+      /reference original direct consumer onReadingCompose/,
+    ],
+    [
+      "unused correct Reader with foreign consumed",
+      "builtin",
+      "      <Reader\n",
+      "      <ForeignReader\n",
+      /reference actual builtin leaf value consumer Reader/,
+      'import {Reader as ForeignReader} from "../foreign-reader.js";\n',
+    ],
+    [
+      "Reader leaf bridge",
+      "builtin",
+      "onCompose={onReadingCompose}",
+      "onCompose={(...args)=>onReadingCompose(...args)}",
+      /reference original direct consumer composeReading onReadingCompose/,
+    ],
+    [
+      "different Script intent",
+      "builtin",
+      'onConceive={() => onComposeIntent("script")}',
+      'onConceive={() => onComposeIntent("website")}',
+      /reference original direct consumer composeIntent onComposeIntent/,
+    ],
+    [
+      "wrapper public renderer",
+      "app",
+      "renderBuiltin={builtinApplications.renderBuiltin}",
+      "renderBuiltin={(surface)=>builtinApplications.renderBuiltin(surface)}",
+      /reference actual direct builtin renderer consumption/,
+    ],
+    [
+      "unused actual Host renderer",
+      "host",
+      "              renderBuiltin({",
+      "              fakeBuiltinRenderer({",
+      /reference actual generic Host renderer invocation/,
+      "function fakeBuiltinRenderer(_surface:unknown){return null;}\n",
+    ],
+  ];
+  for (const [label, target, before, after, rule, prefix = ""] of cases) {
+    const source = target === "app" ? currentApp : integration[target];
+    assert.equal(
+      source.split(before).length - 1,
+      1,
+      "exact current builtin target " + label,
+    );
+    const changed = prefix + source.replace(before, after);
+    parse(changed);
+    assert.throws(
+      () =>
+        verifyExchangeReferencePreparationConsumption(
+          target === "app" ? changed : currentApp,
+          currentOwner,
+          {
+            ...integration,
+            ...(target === "app" ? {} : { [target]: changed }),
+          },
+        ),
+      rule,
+      label,
+    );
+  }
+});
 test("historical reference proof accepts its original import alias and trivia without normalizing consumers", () => {
   validate(
     app

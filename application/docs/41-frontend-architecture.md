@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-05 · 版本：1.15 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-05 · 版本：1.16 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-05。
 
@@ -165,6 +165,13 @@ Storage、已存 PDF 种子、受控 Runtime 与真实原窗证据各自区分�
 textQuotes、ReadingContext 和剧本域 compose 仍归原 owner，旧 Reader
 兼容回调未被真实 UI 调用。完整固定旧算法／树、有限实际接线、旧新
 编译页面与明确未验收边界见阶段 20，不将端口证明冒称原生验收。
+
+阶段 55 的 Reference 当前检查跟随迁入可信 builtin adapter 的两个真实
+借用端口，核 runtime factory／Host renderer／Reader 与 Script 叶子的
+实际值来源与消费；原 direct、身份及完整历史反例保持。它不复制 builtin
+的完整 recipe、恢复旧 App JSX 或增加跨 owner inverse。具体完整回归首红、
+有限当前／历史证明、定向通过及尚未验收边界见实施记录，不据此声称整个
+前端架构或第三方认知应用接入完成。
 
 发送准入、准备锁与分支回执反馈，以及显式补充的作者检查、草稿和焦点顺序
 现归 `host/exchange-submission-commands.ts`，真实 App 直接消费两个完整

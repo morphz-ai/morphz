@@ -1,5 +1,41 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 55：引用命令的真实应用消费链
+
+仅两个测试路径及本记录／架构文档。阶段 54 后完整当前 Node 回归真实结束：
+351 文件、2,396 项，2,388 通过／四失败／四明确未启用的集成。四失败均为
+Reference 当前检查仍在 App JSX 寻找已经迁入可信 builtin factory 的
+`onReadingCompose`／`onComposeIntent`，不是 PostgreSQL 或生产算法缺失。
+该完整首红日志保留，没有改生产代码迁就旧物理位置。
+
+当前检查沿实际命令返回符号、真实 runtime factory 值来源、唯一 render
+捕获、Host renderer 实际消费与调用，检查 Reader／Script 的两个真实叶子。
+旧 direct／无重挂 key 约束跟随实际消费位置；其余引用消费方与原完整规则
+不变。只重定向一个当前 wrapper 反例的物理锚点，完整历史段及原 26 个
+历史反例字节不变。新增八个 parse-valid 来源／借用反例，真实 import／
+local factory／Host JSX／捕获参数别名及实际消费的独立 feature 正例通过。
+不复制三个完整 builtin recipe，不锁完整当前 App，不新增跨 owner inverse。
+
+专用统一入口八文件两轮 **81/81**；根统一入口原扩展九文件 **86/86**，
+均零失败／跳过／取消。双方完整 typecheck、两测试格式及 diff 检查通过。
+首轮五个 TS7 可选 binding name／parameter 窄化错误保留后定向修复。根
+独立 actual Git 核五份完整原件，有限逆向还原两份完整旧测试，并确认
+App／Host／builtin adapter 全字节未改；这只是迁移来源证明，不是 UI 验收。
+根临时源验证器首轮锚点过宽与误用直接测试入口的红日志也保留，分别改用
+唯一完整函数锚点及统一能力准备入口；没有声称现有浏览器环境不存在。
+
+完整回归首轮还实际通过五个 Rust integration case：嵌套活动、Profile、
+response annotation、V2 缺少 metadata 明确失败，以及 Job 唤醒 Host SSE。
+使用隔离测试状态／受控模型，不调用用户业务数据库或冒称真实供应商验收。
+三个 S3 和一个 native-focus 是明确未启用，不是通过或环境故障。当前整套
+复跑及剩余生产 compose／exchange 控件 owner 与原 App 最终验收继续，
+目标 active；没有将此测试修复称为第三方 SDK 或整体前端重构完成。
+
+证据：`/tmp/morphz-full-stage54-root.QurrEu/full-node-current-7c1aea5a.log`；
+`/tmp/morphz-goal-remaining-7c1aea5a.ufBySh/reference-handoff/RESULT.md`；根
+`/tmp/morphz-stage55-root.CHSEix/root-nine-canonical.log`、
+`root-full-typecheck.log`、`root-reference-source-proof-final.json`。
+
 ## 2026-10-05 前端阶段 54：通用应用宿主与可信内置接线分离
 
 生产三路径：`ApplicationHost` 保留 catalog、实例 key／hidden、顶栏、
