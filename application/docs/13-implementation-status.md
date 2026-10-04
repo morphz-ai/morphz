@@ -1,5 +1,39 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 19：Reader 四查询的完整算法所有权
+
+`data/reader-reads.ts` 完整拥有 `readReading`、`readingContents`、
+`readingState` 和 `readingMarks`，真实 Client 直接公开同一 owner 方法。
+借原 current／protectedReadGeneration refs 与 applicationCall；构造
+无读取、缓存、发布、订阅或新状态。目录、原文、状态与分页标注的不同
+取消／身份检查／schema 顺序全部保留，不用统一 wrapper 改变原合同。
+OCR、Reader 写命令、import、授权清理、refresh 和 Boot 发布仍在原 owner。
+
+固定 `39cf13cf` 原 Client SHA 为
+`74888eb42c5ca575eee39c8064b9e9f9821ba8f6225957101065bf6822d691eb`。
+独立 Git 证明四个原函数文本及 AST 与新 owner 完全一致；固定 oracle
+不依赖新函数，CI 不调用 Git。新有限接线门禁、合法反例、实际 Client
+HTTP／SQLite、三份字节不变的原 Reader 回归和相邻 content／script-editor
+旧门禁共 59 项，57 通过、2 PostgreSQL 能力跳过、零失败／取消。
+
+最初相邻 script-editor 反例测试全局替换第一个 applicationCall 端口，
+新 Reader factory 位于其前方时误改 Reader，旧失败另存。最终仅将
+inert Reader factory 放到 script-editor 后方，不改算法或旧测试；
+独立 proof 核最初与最终冻结的唯一差别就是声明位置。最终 Client SHA 为
+`21c02ad3c622262f768fda0a0022e6acccf811d42a43f507cfa2c4f620d8e505`，
+owner SHA 为 `8c37baa1b9a065f2db879276da0f1bd7c1e44ac8749921340b21d0b1ee4d9d7a`。
+
+四份原 Reader 页面文件在阶段 17 旧编译与最终输入／Reader 候选各
+19/19；真实导入、标注／位置、迟到撤权、PDF、百万字与无隐式模型输入
+原断言保持，逐例审计三份 HTTP 资产。另含导航各 53/53，媒体各 27/28
+同一旧视觉红项；冻结 JS／CSS、全量 1719 项 checkpoint 与能力边界见
+阶段 18。新的编译候选同时含两批迁移，不冒称 Reader 单独 bundle。
+根证据在 `/tmp/morphz-exchange-input-owner-root.1ZYkPK`，独立最终
+证明在 `/tmp/morphz-reader-reads-final.bWnbLc`，旧红项留在
+`/tmp/morphz-reader-reads-proof.w4CI4s`。类型、限定格式与差异检查通过；
+原 App／Electron IPC／原生权限最终验收仍未完成，不称完整 query facade
+或整体前端架构目标已完成。
+
 ## 2026-10-04 前端阶段 18：输入工具状态、生命周期与命令实际消费
 
 `host/use-exchange-input-tools.ts` 现由真实 App 消费，不是未接线 helper。

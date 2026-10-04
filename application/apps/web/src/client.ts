@@ -64,6 +64,7 @@ import type { ScriptDraft } from "../../../packages/core/src/script-studio.js";
 import type { ScriptEditorProduction } from "./script-editor-reader.js";
 import { createScriptEditorReads } from "./data/script-editor-reads.js";
 import { createContentReads } from "./data/content-reads.js";
+import { createReaderReads } from "./data/reader-reads.js";
 import {
   readPlatformWorkspace,
   reusableNavigationCatalog,
@@ -80,15 +81,7 @@ import {
 import { contentVisits } from "./recent-content.js";
 import { runPendingFileImport } from "./pending-file-import.js";
 export { RequestError } from "./application-transport.js";
-import {
-  readingMarkSchema,
-  readingStateSchema,
-  readerMarksReadSchema,
-  type ReaderCommand,
-  type ReadingSection,
-  type ReaderMarksRead,
-  type ReadingMarksPage,
-} from "../../../packages/core/src/reader.js";
+import type { ReaderCommand } from "../../../packages/core/src/reader.js";
 import {
   executionSnapshotSchema,
   type ExecutionScope,
@@ -882,6 +875,11 @@ export function useWorkspace() {
     currentEntry: (productionId) =>
       current.current?.scriptLibrary.find((value) => value.id === productionId),
     rememberContent,
+  });
+  const readerReads = createReaderReads({
+    current,
+    protectedReadGeneration,
+    call: applicationCall,
   });
   function sendingInputIds(
     identity: Pick<Boot, "centerId" | "principalId" | "actantId">,
@@ -1815,31 +1813,6 @@ export function useWorkspace() {
       },
     );
   }
-  async function readReading(
-    artifactId: string,
-    revision: number,
-    sectionId: string,
-    signal?: AbortSignal,
-  ): Promise<ReadingSection> {
-    const identity = current.current;
-    if (!identity) throw new Error("应用尚未就绪，请稍后重试。");
-    const generation = protectedReadGeneration.current;
-    const result = (await applicationCall(
-      "reader.read",
-      { artifactId, revision, sectionId },
-      {
-        identityGeneration: identity.csrfToken,
-        signal,
-      },
-    )) as ReadingSection;
-    if (
-      signal?.aborted ||
-      current.current?.csrfToken !== identity.csrfToken ||
-      protectedReadGeneration.current !== generation
-    )
-      throw new Error("阅读权限已变化，请重新读取。");
-    return result;
-  }
   async function readingOcr(
     request: import("../../../packages/core/src/reader-ocr.js").ReaderOcrRequest,
     signal?: AbortSignal,
@@ -1858,117 +1831,6 @@ export function useWorkspace() {
     if (signal?.aborted || current.current?.csrfToken !== identity.csrfToken)
       throw new Error("阅读权限已变化，请重新读取。");
     return result;
-  }
-  async function readingContents(
-    artifactId: string,
-    revision: number,
-    signal?: AbortSignal,
-  ): Promise<Array<{ id: string; title: string; characters: number }>> {
-    const identity = current.current;
-    if (!identity) throw new Error("应用尚未就绪，请稍后重试。");
-    return (await applicationCall(
-      "reader.contents",
-      { artifactId, revision },
-      {
-        identityGeneration: identity.csrfToken,
-        signal,
-      },
-    )) as Array<{ id: string; title: string; characters: number }>;
-  }
-  async function readingState(
-    artifactId: string,
-    revision: number,
-    signal?: AbortSignal,
-  ): Promise<{
-    position: z.infer<typeof readingStateSchema> | null;
-  }> {
-    const identity = current.current;
-    if (!identity) throw new Error("应用尚未就绪，请稍后重试。");
-    const generation = protectedReadGeneration.current;
-    const raw = (await applicationCall(
-      "reader.state",
-      { artifactId, revision },
-      {
-        identityGeneration: identity.csrfToken,
-        signal,
-      },
-    )) as {
-      position: null | {
-        location: unknown;
-        preferences: unknown;
-        revision: number;
-        updatedAt: string;
-      };
-    };
-    if (
-      signal?.aborted ||
-      current.current?.csrfToken !== identity.csrfToken ||
-      protectedReadGeneration.current !== generation
-    )
-      throw new Error("阅读权限已变化，请重新读取。");
-    return {
-      position: raw.position
-        ? readingStateSchema.parse({
-            location: raw.position.location,
-            preferences: raw.position.preferences,
-            revision: raw.position.revision,
-            updatedAt: raw.position.updatedAt,
-            artifactId,
-            artifactRevision: revision,
-            ownerPrincipalId: identity.principalId,
-          })
-        : null,
-    };
-  }
-  async function readingMarks(
-    request: ReaderMarksRead,
-    signal?: AbortSignal,
-  ): Promise<ReadingMarksPage> {
-    const identity = current.current;
-    if (!identity) throw new Error("应用尚未就绪，请稍后重试。");
-    const query = readerMarksReadSchema.parse(request);
-    const generation = protectedReadGeneration.current;
-    const raw = (await applicationCall("reader.marks", query, {
-      identityGeneration: identity.csrfToken,
-      signal,
-    })) as {
-      marks: Array<Record<string, unknown>>;
-      nextCursor: string | null;
-      hasMore: boolean;
-    };
-    if (
-      signal?.aborted ||
-      current.current?.csrfToken !== identity.csrfToken ||
-      protectedReadGeneration.current !== generation
-    )
-      throw new Error("阅读权限已变化，请重新读取。");
-    if (
-      raw.marks.length > 50 ||
-      typeof raw.hasMore !== "boolean" ||
-      !(raw.nextCursor === null || typeof raw.nextCursor === "string")
-    )
-      throw new Error("标注分页结果无效。");
-    return {
-      nextCursor: raw.nextCursor,
-      hasMore: raw.hasMore,
-      marks: raw.marks.map((mark) =>
-        readingMarkSchema.parse({
-          id: mark.id,
-          location: mark.location,
-          quote: mark.quote,
-          kind: mark.kind,
-          color: mark.color,
-          note: mark.note,
-          revision: mark.revision,
-          createdAt: mark.createdAt,
-          updatedAt: mark.updatedAt,
-          deletedAt: mark.deletedAt,
-          artifactId: query.artifactId,
-          artifactRevision: query.revision,
-          ownerPrincipalId: identity.principalId,
-        }),
-      ),
-    };
   }
   async function readerCommand(
     artifactId: string,
@@ -2335,10 +2197,10 @@ export function useWorkspace() {
     uploadAttachment,
     importPdf,
     importReading,
-    readReading,
-    readingContents,
-    readingState,
-    readingMarks,
+    readReading: readerReads.readReading,
+    readingContents: readerReads.readingContents,
+    readingState: readerReads.readingState,
+    readingMarks: readerReads.readingMarks,
     readerCommand,
     readingOcr,
     dispatchInput,

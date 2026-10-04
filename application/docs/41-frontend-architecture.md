@@ -59,6 +59,13 @@ I/O、effect 或订阅，公开方法无额外异步 wrapper。固定旧 oracle�
 Client HTTP／SQLite 与有限旧新编译 Host 对照已记录；综合页面红项、
 原窗验收及剩余查询 family 仍须继续，不是完整 query facade 已实现。
 
+Reader 的原文、目录、状态、分页标注四个完整读取算法现归
+`data/reader-reads.ts`，Client 直接消费，借同一身份／撤权 refs 和逻辑
+transport，不新增缓存／订阅或 Boot writer。不同查询的 schema、迟到
+检查及取消顺序保持；OCR、import 和写命令未混迁。固定旧 Git、实际
+Client／SQLite 与旧新 Reader 页面对照及能力限制见阶段 19，尚不代表
+全领域 query facade、Electron 或原 App 最终验收。
+
 交流读取的共享纯投影现归 `conversation-read.ts`；提示与历史的不同范围、
 消息数组引用合同及原回执排序仍由真实消费方显式指定。已读初始化、稳定
 acknowledgement 与两个提交 effects 归 `host/use-exchange-read-receipts.ts`，
