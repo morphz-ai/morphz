@@ -32,8 +32,8 @@ return 前可用。App 保留唯一 prefs writer、授权批注读取、实际 D
 
 这不是把所有右栏强行合并为一个领域：全局 subjectTab 与按现场记忆的
 ExecutionScope、对象批注、摘要和移动端显隐保留原有区别。固定旧 Git
-oracle、有限实际接线门禁和旧新编译 Host 对照分别记录在实施记录；本机
-锁屏仍挡住原 App 复验，不能把隔离自动截图视为用户窗口验收。
+oracle、有限实际接线门禁和旧新编译 Host 对照分别记录在实施记录；当时
+锁屏挡住原 App 复验，不能把隔离自动截图视为用户窗口验收。
 
 交流 frame 的样式 owner 现为 `exchange-layout.css`：原 56 条规则、144 项
 声明的上下文、值、权重及选定的实际编译顺序保留，统一承载画布避让、阅读／
@@ -41,7 +41,16 @@ oracle、有限实际接线门禁和旧新编译 Host 对照分别记录在实�
 拖拽／放大、材质／运动、通知和截图生命周期仍归原 owner；不是把全部交流
 CSS 归入一个大文件。`exchange-css-ownership.test.ts` 使用固定旧版本 tuple
 约束这条有限边界及实际入口，不能据此宣称全产品 CSS 完成。原 App 原生
-命中复验仍待系统解锁，具体旧新资产与渲染证据见实施记录。
+命中复验尚未完成，具体旧新资产与渲染证据见实施记录。本轮原窗已可
+操作，随后遇到启动读取错误与原生退出清理卡点；当前需恢复同一 App，
+而不是继续引用历史锁屏状态。独立 Runtime、profile、center 与数据保留。
+
+剧本编辑十二个读取／同步 getter 及原 64／512 FIFO 缓存操作现归
+`data/script-editor-reads.ts`。Client 保留原 ref 初始化与唯一身份／代次
+检查，借出明确语义端口，三个原清理 seam 同步调用该 owner；构造无
+I/O、effect 或订阅，公开方法无额外异步 wrapper。固定旧 oracle、真实
+Client HTTP／SQLite 与有限旧新编译 Host 对照已记录；综合页面红项、
+原窗验收及剩余查询 family 仍须继续，不是完整 query facade 已实现。
 
 当前 Task batch、目录分页和 Profile 已有真实共享 owner；Schedules 与 TaskList
 的 deadline／重试／取消及 Boot 发布合同不同，不新增一层 broker 强并。

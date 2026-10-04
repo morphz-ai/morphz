@@ -1,5 +1,55 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端重构第十四阶段：剧本编辑读取与缓存 owner（原窗验收待恢复）
+
+`data/script-editor-reads.ts` 实际承接十二个剧本编辑读取／同步 getter、
+版本标题读取、目录分页回调和原缓存的插入、FIFO 淘汰与清理。Client
+保留原两个 Map ref 的初始化位置、完整身份／代次检查及真实 Platform
+来源，向 render-local 的惰性 typed factory 借出 ref 与语义端口；三个原
+授权清理位置同步调用同一 `clear`。公开 API 直接返回 owner 方法，没有
+新增 Promise wrapper、effect、订阅、请求、存储或全局状态。Client 从
+3003 行变为 2673 行；行数不是该阶段的完成标准。
+
+固定真实 Git `4ce98b64` 的十二方法及完整 session guard 经独立 AST
+核对，包含 unary／binary 标量运算符。原 64／512 FIFO 上限、空标题
+cache hit、暖读取仍 resolve／head 的顺序、解析后才检查、manifest 子
+读取各自 capture session、early-null 分支及同步 getter 零 I/O 保留。
+有限门禁 2/2、42 个独立解析反例；只接受指定 AssertionError，不把
+parser 或程序错误计为规则拒绝，不锁整个 Client 文件。
+
+读取行为及既有 reader 20/20；真实 React SSR Client＋隔离 HTTP／SQLite
+五项，固定旧 Client 与候选均 5/5。覆盖实际缓存／请求序列、登入退出、
+同 CSRF 下撤权与再授权，以及已返回 200 的迟到版本解析。SSR 没有运行
+挂载 effects，不能据此声称完整宿主生命周期通过。
+
+实际保存的旧编译包与阶段十四候选的 opt-in Host 对照，1440px 明暗两例
+共十二对阶段通过；old/old 两例先校准。概览、导出标题、当前正文、历史
+v1、未保存草稿与检查页严格核文字、值、图标、computed 样式／几何与焦点
+标签，原生产快照前后相同、零输入／剧本内容写入。Host 原 app-view 导航
+写入另行披露。保留 raw PNG，沿用有 AA 盲区及一阶 RGB 校准的有限 paint
+oracle，不宣称 raw RGBA 全同、所有窗口或原生 App 已验收。
+
+阶段十四候选 JS `app-BZX3UW9i.js` SHA256 为
+`3bc96b3d32990ade2eb2fef619be106f1de725939506494cb6e3e36baf6a8a83`；
+CSS／preload helper 与真实旧包字节相同。各对照实际核 HTTP 200 及响应
+SHA，不以磁盘包代替页面加载。冻结时全量 Node 为 1592 项：1427 通过、
+165 条可选集成跳过、零失败；typecheck／build／格式检查通过，跳过项
+不是 Runtime、模型或原生验收。证据与失败报告分开保留于
+`/tmp/morphz-script-editor-query-owner.C44S7d`。
+
+五份原剧本页面回归旧版 17/22、新版 18/22；不能把综合矩阵称为全绿。
+共同失败包含项目关联与已撤回创作限制的旧期望；焦点红项的位置会变化。
+独立固定资产重复验证已在旧版同一保存断言复现：早 RAF 恢复 Save，随后
+清洁草稿使同按钮 disabled，焦点回到 body，原 anchor 一直可用且窗口未
+失焦。该保存生命周期缺陷另行修复，不修改旧断言来接受重构。
+
+原 Morphz 本轮已可操作，不再以历史锁屏当作当前理由。其后实际原窗进入
+启动读取错误页；正常退出时已关闭中心 DB／Host／TCP，进程采样停在
+Node 原生 Environment 清理。初始 storage_error 尚未归因，未清库、缓存、
+配置或重启独立 Runtime。已请求有针对性的 App 退出恢复授权，原窗验收
+及整体前端目标仍未完成。用户另行要求的 Dock 裸图标不混入本阶段不变
+CSS 的对照证明。
+
 ## 2026-10-04 前端重构第十三阶段：主体检查器状态、现场记忆与动作 owner
 
 `host/use-subject-inspector.ts` 实际承接 all-work／execution／summary／
