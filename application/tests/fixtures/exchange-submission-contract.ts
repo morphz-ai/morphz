@@ -122,6 +122,7 @@ export const submissionAppAdapter =
 export function verifySubmissionCommands(
   text = submissionOwnerText,
   algorithms = true,
+  current = false,
 ) {
   const parsed = parseSubmission(text),
     factory = oneFunction(parsed, "createExchangeSubmissionCommands");
@@ -152,12 +153,13 @@ export function verifySubmissionCommands(
   ];
   const actualRuntime: string[][] = [];
   for (const statement of parsed.source.statements) {
-    assert.ok(
-      isImportDeclaration(statement) ||
-        statement.kind === SyntaxKind.TypeAliasDeclaration ||
-        statement === factory,
-      "finite inert submission module",
-    );
+    if (!current)
+      assert.ok(
+        isImportDeclaration(statement) ||
+          statement.kind === SyntaxKind.TypeAliasDeclaration ||
+          statement === factory,
+        "finite inert submission module",
+      );
     if (
       !isImportDeclaration(statement) ||
       statement.importClause?.phaseModifier === SyntaxKind.TypeKeyword
@@ -170,11 +172,49 @@ export function verifySubmissionCommands(
       named.elements.map((node) => node.getText()).join(","),
     ]);
   }
-  assert.deepEqual(
-    actualRuntime,
-    runtime,
-    "only existing submission runtime dependencies",
-  );
+  if (!current)
+    assert.deepEqual(
+      actualRuntime,
+      runtime,
+      "only existing submission runtime dependencies",
+    );
+  if (current) {
+    for (const [path, name] of runtime) {
+      const declarations = parsed.source.statements
+        .filter(isImportDeclaration)
+        .filter(
+          (node) =>
+            node.moduleSpecifier.getText().slice(1, -1) === path &&
+            node.importClause?.phaseModifier !== SyntaxKind.TypeKeyword,
+        );
+      const bindings = declarations.flatMap((node) => {
+        const named = node.importClause?.namedBindings;
+        return named && isNamedImports(named)
+          ? named.elements.filter(
+              (item) =>
+                !item.isTypeOnly &&
+                (item.propertyName?.text ?? item.name.text) === name,
+            )
+          : [];
+      });
+      assert.equal(bindings.length, 1, "actual submission dependency " + name);
+      const id = parsed.symbols.get(bindings[0]!.name);
+      assert.ok(id !== undefined);
+      for (const node of parsed.nodes
+        .filter(isIdentifier)
+        .filter(
+          (node) =>
+            node.text === name &&
+            node.getStart() >= factory.getStart() &&
+            node.end <= factory.end,
+        ))
+        assert.equal(
+          parsed.symbols.get(node),
+          id,
+          "called submission dependency " + name,
+        );
+    }
+  }
   const old = fixedSubmissionDeclarations();
   assert.deepEqual(
     factory
@@ -208,9 +248,25 @@ function checkedConsumption(
   appText: string,
   ownerText: string,
   algorithms: boolean,
+  current = false,
 ) {
-  verifySubmissionCommands(ownerText, algorithms);
+  verifySubmissionCommands(ownerText, algorithms, current);
   const parsed = parseSubmission(appText);
+  if (current)
+    for (const declaration of parsed.nodes.filter(isVariableDeclaration)) {
+      if (
+        !isIdentifier(declaration.name) ||
+        !declaration.initializer ||
+        !isIdentifier(declaration.initializer) ||
+        !(declaration.parent.flags & NodeFlags.Const)
+      )
+        continue;
+      const id = parsed.symbols.get(declaration.name),
+        value = parsed.symbols.get(declaration.initializer);
+      if (id === undefined || value === undefined) continue;
+      for (const node of parsed.nodes.filter(isIdentifier))
+        if (parsed.symbols.get(node) === id) parsed.symbols.set(node, value);
+    }
   const imports = parsed.source.statements
     .filter(isImportDeclaration)
     .filter(
@@ -231,12 +287,15 @@ function checkedConsumption(
   );
   const binding = parsed.symbols.get(named.elements[0]!.name);
   assert.ok(binding !== undefined);
+  const workspace = oneFunction(parsed, "WorkspaceApp");
   const calls = parsed.nodes
     .filter(isCallExpression)
     .filter(
       (node) =>
         isIdentifier(node.expression) &&
-        parsed.symbols.get(node.expression) === binding,
+        parsed.symbols.get(node.expression) === binding &&
+        (!current ||
+          (node.getStart() > workspace.getStart() && node.end < workspace.end)),
     );
   assert.equal(calls.length, 1, "one real borrowed submission call");
   const call = calls[0]!;
@@ -246,8 +305,7 @@ function checkedConsumption(
       isObjectBindingPattern(call.parent.name),
     "direct send supplement aliases",
   );
-  const statement = call.parent.parent.parent,
-    workspace = oneFunction(parsed, "WorkspaceApp");
+  const statement = call.parent.parent.parent;
   assert.ok(
     isVariableStatement(statement) &&
       statement.parent === workspace.body &&
@@ -274,11 +332,23 @@ function checkedConsumption(
   const siblings = workspace.body!.statements,
     index = siblings.indexOf(statement);
   assert.ok(
-    index > 0 &&
-      isVariableStatement(siblings[index - 1]!) &&
-      siblings[index - 1]!.getText().includes("} = subjectInspector;") &&
-      isVariableStatement(siblings[index + 1]!) &&
-      siblings[index + 1]!.getText().startsWith("const agentName"),
+    current
+      ? index > 0 &&
+          siblings.some(
+            (node) =>
+              node.end <= statement.getStart() &&
+              node.getText().includes("} = subjectInspector;"),
+          ) &&
+          siblings.some(
+            (node) =>
+              node.getStart() >= statement.end &&
+              node.getText().startsWith("const agentName"),
+          )
+      : index > 0 &&
+          isVariableStatement(siblings[index - 1]!) &&
+          siblings[index - 1]!.getText().includes("} = subjectInspector;") &&
+          isVariableStatement(siblings[index + 1]!) &&
+          siblings[index + 1]!.getText().startsWith("const agentName"),
     "late constructor after inspector aliases before agentName",
   );
   for (const alias of aliases.elements) {
@@ -299,18 +369,24 @@ function checkedConsumption(
   assert.equal(
     parsed.nodes
       .filter(isFunctionDeclaration)
-      .filter((node) => ["send", "supplement"].includes(node.name?.text ?? ""))
-      .length,
+      .filter(
+        (node) =>
+          ["send", "supplement"].includes(node.name?.text ?? "") &&
+          (!current ||
+            (node.getStart() > workspace.getStart() &&
+              node.end < workspace.end)),
+      ).length,
     0,
     "no old duplicate submission body",
   );
-  assert.equal(
-    parsed.nodes
-      .filter(isIdentifier)
-      .filter((node) => parsed.symbols.get(node) === binding).length,
-    2,
-    "factory import only directly consumed once",
-  );
+  if (!current)
+    assert.equal(
+      parsed.nodes
+        .filter(isIdentifier)
+        .filter((node) => parsed.symbols.get(node) === binding).length,
+      2,
+      "factory import only directly consumed once",
+    );
   return { parsed, statement, declaration };
 }
 // Finite source contract, not visual/API proof. Validate actual production first;
@@ -410,4 +486,13 @@ export function verifySubmissionConsumption(
   ownerText = submissionOwnerText,
 ) {
   checkedConsumption(appText, ownerText, false);
+}
+
+// Raw-current seam only: no inverse, whole-App hash or module inventory.
+// Existing expand/verify entry points retain their historical peer semantics.
+export function verifyRawSubmissionConsumption(
+  appText: string,
+  ownerText = submissionOwnerText,
+) {
+  checkedConsumption(appText, ownerText, true, true);
 }

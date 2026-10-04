@@ -477,3 +477,227 @@ export function expandWorkspaceContentOpeningConsumption(
   );
   return { app: expandedApp, owner: expandedOwner };
 }
+
+// Verify the two current methods and their actual render-local port. This does
+// not call any historical inverse or lock the module's unrelated declarations.
+export function verifyCurrentWorkspaceContentOpeningConsumption(
+  appText: string,
+  ownerText: string,
+) {
+  const parsed = parse({
+    App: appText,
+    Owner: ownerText,
+    Fixed: fixedText,
+    Expected: expectedText,
+  });
+  const app = parsed.get("App")!,
+    owner = parsed.get("Owner")!,
+    fixed = parsed.get("Fixed")!,
+    expected = parsed.get("Expected")!;
+  for (const declaration of app.nodes.filter(isVariableDeclaration)) {
+    if (
+      !isIdentifier(declaration.name) ||
+      !declaration.initializer ||
+      !isIdentifier(declaration.initializer) ||
+      !(declaration.parent.flags & NodeFlags.Const)
+    )
+      continue;
+    const id = app.symbols.get(declaration.name),
+      value = app.symbols.get(declaration.initializer);
+    if (id === undefined || value === undefined) continue;
+    for (const node of app.nodes.filter(isIdentifier))
+      if (app.symbols.get(node) === id) app.symbols.set(node, value);
+  }
+  const factory = fn(owner, "createWorkspaceNavigationCommands"),
+    workspaceApp = fn(app, "WorkspaceApp");
+  for (const name of methods) {
+    const original = fn(fixed, name);
+    assert.equal(
+      hash(original.getText()),
+      fixedContentOpeningBaseline[name],
+      "fixed actual Git complete " + name,
+    );
+    const candidate = fn(owner, name);
+    assert.equal(
+      candidate.parent,
+      factory.body,
+      "content opening belongs to the existing factory",
+    );
+    const mapped = candidate
+      .getText()
+      .replaceAll("owner.setExplicitWebsiteIntent", "setWebsiteIntent")
+      .replace(/\bcontinuation\b/g, "origin")
+      .replace(/\bowner\b/g, "navigation")
+      .replace(/\bworkspace\b/g, "state")
+      .replace(/\bonNotice\b/g, "setNotice");
+    same(
+      fn(parse({ Mapped: mapped }).get("Mapped")!, name),
+      original,
+      "complete original content-opening algorithm " + name,
+    );
+    assert.equal(
+      app.nodes
+        .filter(isFunctionDeclaration)
+        .filter((node) => node.name?.text === name).length,
+      0,
+      "no duplicate App content-opening algorithm",
+    );
+    for (const identifier of owner.nodes
+      .filter(isIdentifier)
+      .filter(
+        (node) =>
+          node.getStart() >= candidate.getStart() &&
+          node.end <= candidate.end &&
+          ["client", "owner", "workspace", "continuation", "onNotice"].includes(
+            node.text,
+          ),
+      )) {
+      const parameter = factory.parameters[0]!.name;
+      assert.ok(isObjectBindingPattern(parameter));
+      const binding = parameter.elements.find(
+        (element) =>
+          element.name &&
+          isIdentifier(element.name) &&
+          element.name.text === identifier.text,
+      );
+      assert.ok(binding?.name && isIdentifier(binding.name));
+      assert.notEqual(owner.symbols.get(binding.name), undefined);
+      assert.equal(
+        owner.symbols.get(identifier),
+        owner.symbols.get(binding.name),
+        "borrow the original captured navigation port " + identifier.text,
+      );
+    }
+  }
+
+  assert.deepEqual(
+    factory.modifiers?.map((node) => node.kind),
+    [SyntaxKind.ExportKeyword],
+    "synchronous current navigation factory",
+  );
+  assert.equal(
+    factory.asteriskToken,
+    undefined,
+    "non-generator navigation factory",
+  );
+  const returned = factory.body!.statements.at(-1)!;
+  assert.ok(
+    isReturnStatement(returned) &&
+      returned.expression &&
+      isObjectLiteralExpression(returned.expression),
+  );
+  for (const name of methods) {
+    const members: ShorthandPropertyAssignment[] =
+      returned.expression.properties
+        .filter(isShorthandPropertyAssignment)
+        .filter((node) => node.name.getText() === name);
+    assert.equal(members.length, 1, "direct current return " + name);
+    assert.equal(
+      owner.symbols.get(members[0]!.name),
+      owner.symbols.get(fn(owner, name).name!),
+      "actual current method return " + name,
+    );
+  }
+  const imports = app.source.statements
+    .filter(isImportDeclaration)
+    .filter(
+      (node) =>
+        node.moduleSpecifier.getText().slice(1, -1) ===
+        "./host/use-workspace-navigation.js",
+    )
+    .flatMap((node) => {
+      assert.notEqual(
+        node.importClause?.phaseModifier,
+        SyntaxKind.TypeKeyword,
+        "runtime navigation import",
+      );
+      const named = node.importClause?.namedBindings;
+      assert.ok(named && isNamedImports(named));
+      return named.elements.filter(
+        (item) =>
+          !item.isTypeOnly &&
+          (item.propertyName?.text ?? item.name.text) ===
+            "createWorkspaceNavigationCommands",
+      );
+    });
+  assert.equal(imports.length, 1, "single real navigation factory import");
+  const symbol = app.symbols.get(imports[0]!.name);
+  assert.ok(symbol !== undefined);
+  const calls = app.nodes
+    .filter(isCallExpression)
+    .filter(
+      (node) =>
+        isIdentifier(node.expression) &&
+        app.symbols.get(node.expression) === symbol &&
+        node.getStart() > workspaceApp.getStart() &&
+        node.end < workspaceApp.end,
+    );
+  assert.equal(calls.length, 1, "one actual WorkspaceApp factory call");
+  const call = calls[0]!;
+  assert.ok(
+    isVariableDeclaration(call.parent) &&
+      call.parent.initializer === call &&
+      isObjectBindingPattern(call.parent.name),
+  );
+  assert.ok(
+    isVariableStatement(call.parent.parent.parent) &&
+      call.parent.parent.parent.parent === workspaceApp.body,
+    "unconditional direct navigation registration",
+  );
+  assert.equal(
+    call.parent.parent.flags & (NodeFlags.Const | NodeFlags.Let),
+    NodeFlags.Const,
+    "const navigation result",
+  );
+  const expectedCall = expected.nodes
+    .filter(isCallExpression)
+    .find(
+      (node) =>
+        node.expression.getText() === "createWorkspaceNavigationCommands",
+    )!;
+  same(
+    call.arguments[0]!,
+    expectedCall.arguments[0]!,
+    "original captured ten navigation options",
+  );
+  assert.equal(call.arguments.length, 1);
+  assert.equal(call.typeArguments?.length ?? 0, 0);
+  assert.ok(
+    call.end <
+      app.nodes
+        .filter(isVariableDeclaration)
+        .find(
+          (node) => isIdentifier(node.name) && node.name.text === "positions",
+        )!.pos,
+    "navigation capture before original positions",
+  );
+  for (const name of methods) {
+    const element = call.parent.name.elements.find(
+      (node) => node.name?.getText() === name,
+    );
+    assert.ok(
+      element?.name &&
+        isIdentifier(element.name) &&
+        !element.propertyName &&
+        !element.initializer,
+      "direct current App alias " + name,
+    );
+    const id = app.symbols.get(element.name);
+    assert.ok(id !== undefined);
+    const uses = app.nodes
+      .filter(isIdentifier)
+      .filter(
+        (node) =>
+          node.text === name &&
+          node.getStart() > workspaceApp.getStart() &&
+          node.end < workspaceApp.end,
+      );
+    assert.ok(uses.length > 2, "real current consumers " + name);
+    for (const use of uses)
+      assert.equal(
+        app.symbols.get(use),
+        id,
+        "current captured alias consumer " + name,
+      );
+  }
+}

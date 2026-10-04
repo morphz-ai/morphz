@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import test from "node:test";
-import { expandSubmissionConsumption } from "./fixtures/exchange-submission-contract.js";
-import { expandWorkspaceContentOpeningConsumption } from "./fixtures/workspace-content-opening-consumption.js";
+import nodeTest from "node:test";
+import {
+  historicalNavigationSource,
+  navigationGovernanceArchive,
+} from "./fixtures/application-navigation-governance-history.js";
+import {
+  verifyRawSubmissionConsumption,
+  expandSubmissionConsumption,
+} from "./fixtures/exchange-submission-contract.js";
+import { verifyCurrentWorkspaceContentOpeningConsumption } from "./fixtures/workspace-content-opening-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
   SyntaxKind,
+  NodeFlags,
   isArrowFunction,
   isBindingElement,
   isBinaryExpression,
@@ -44,17 +52,12 @@ import {
   type SourceFile,
 } from "typescript/unstable/ast";
 
-// Finite consumption contract, not arbitrary JS purity, React scheduling or
-// visual/OS hit-test proof. cb7246a2 canonical hashes below were computed from
-// the fixed original App/Host, not the migrated implementation. CI needs no git
-// history. The App→Host prop replacements and Stage13's six exact inspector
-// event ports are normalized; the latter use the independently fixed Git85
-// callbacks. The four state registrations/one commit expand the actual owner
-// at their real import-bound calls, retaining the original hook/effect hashes.
-// Exchange read state/ack/commit likewise expand to the fixed 4ce registrations
-// only after the actual new owner and its host ports pass a finite seam check.
-// literal trees, callbacks, keys/refs/hidden/portals and hook arguments remain.
-// A future deliberate UI/lifecycle change must explicitly review this baseline.
+// Current checks read raw production and govern named authority/consumer
+// recipes. They do not expand unrelated owners or hash the whole current UI.
+// The unchanged cb metrics and 104 literal counterfactuals below apply only to
+// independently archived historical sources. CI reads no Git or /tmp.
+// This finite source contract is not JS purity, React scheduling, Runtime,
+// visual/OS hit-testing or manual acceptance of the user's native window.
 const baseline = {
   App: {
     jsxNodes: 196,
@@ -319,15 +322,42 @@ function parse(contents: Record<string, string>) {
           if (isIdentifier(node)) identifiers.push(node);
         });
         const resolved = project.checker.getSymbolAtLocation(identifiers);
+        const symbols = new Map<Node, number | undefined>(
+          identifiers.map((node, index) => [node, resolved[index]?.id]),
+        );
+        for (const declaration of nodes.filter(isVariableDeclaration)) {
+          if (
+            !isIdentifier(declaration.name) ||
+            !declaration.initializer ||
+            !isIdentifier(declaration.initializer) ||
+            !(declaration.parent.flags & NodeFlags.Const)
+          )
+            continue;
+          const id = symbols.get(declaration.name),
+            value = symbols.get(declaration.initializer);
+          if (id === undefined || value === undefined) continue;
+          for (const identifier of identifiers)
+            if (symbols.get(identifier) === id) symbols.set(identifier, value);
+        }
         return [
           name,
           {
             source,
             nodes,
             identifiers,
-            symbols: new Map(
-              identifiers.map((node, index) => [node, resolved[index]?.id]),
-            ),
+            symbols: new Map([
+              ...symbols,
+              ...nodes
+                .filter(isShorthandPropertyAssignment)
+                .map(
+                  (node) =>
+                    [
+                      node.name,
+                      project.checker.getShorthandAssignmentValueSymbol(node)
+                        ?.id,
+                    ] as const,
+                ),
+            ]),
           },
         ];
       }),
@@ -412,7 +442,7 @@ function oneVariable(parsed: Parsed, name: string) {
   assert.equal(found.length, 1, `one ${name} variable`);
   return found[0]!;
 }
-function reactHooks(parsed: Parsed) {
+function reactHooks(parsed: Parsed, current = false) {
   const hooks = new Map<number | undefined, string>();
   for (const node of parsed.nodes.filter(isImportDeclaration)) {
     if (
@@ -420,10 +450,16 @@ function reactHooks(parsed: Parsed) {
       node.moduleSpecifier.text !== "react"
     )
       continue;
+    if (
+      current &&
+      (!node.importClause?.namedBindings ||
+        !isNamedImports(node.importClause.namedBindings))
+    )
+      continue;
     assert.ok(
       node.importClause?.namedBindings &&
         isNamedImports(node.importClause.namedBindings) &&
-        !node.importClause.name,
+        (current || !node.importClause.name),
       "original explicit React imports, no hidden namespace lifecycle",
     );
     for (const item of node.importClause.namedBindings.elements) {
@@ -433,18 +469,19 @@ function reactHooks(parsed: Parsed) {
         node.importClause.phaseModifier === SyntaxKind.TypeKeyword
       )
         continue;
-      assert.ok(
-        [
-          "createElement",
-          "useState",
-          "useRef",
-          "useEffect",
-          "useLayoutEffect",
-          "useCallback",
-          "useMemo",
-        ].includes(name),
-        "no unreviewed React store or lifecycle primitive",
-      );
+      if (!current)
+        assert.ok(
+          [
+            "createElement",
+            "useState",
+            "useRef",
+            "useEffect",
+            "useLayoutEffect",
+            "useCallback",
+            "useMemo",
+          ].includes(name),
+          "no unreviewed React store or lifecycle primitive",
+        );
       if (/^use[A-Z]/.test(name)) {
         const binding = parsed.symbols.get(item.name);
         assert.ok(binding !== undefined);
@@ -530,10 +567,11 @@ function subjectContract(
   subject: Parsed,
   fixed: Parsed,
   adapter: Parsed,
+  current = false,
 ): SubjectContract {
   const expanded: SubjectContract["expanded"] = new Map(),
     attributes = new Map<Node, unknown>(),
-    ownerHooks = reactHooks(subject),
+    ownerHooks = reactHooks(subject, current),
     registered = new Set<Node>();
   for (const [name, local, before, after, primitives] of [
     [
@@ -568,7 +606,11 @@ function subjectContract(
   ] as const) {
     const symbol = imported(app, subjectPath, name);
     const uses = app.identifiers.filter(
-      (node) => app.symbols.get(node) === symbol,
+      (node) =>
+        app.symbols.get(node) === symbol &&
+        (!current ||
+          inFunction(node, oneFunction(app, "WorkspaceApp")) ||
+          node.parent.kind === SyntaxKind.ImportSpecifier),
     );
     const calls = uses.filter(
       (node) =>
@@ -613,6 +655,14 @@ function subjectContract(
       hookCalls.map(({ name }) => name),
       primitives,
     );
+    if (current)
+      sameRecipe(
+        subject,
+        oneFunction(subject, name),
+        historicalNavigationSource("subjectOwner"),
+        name,
+        "subject-current: original registration recipe " + name,
+      );
     expanded.set(call, hookCalls);
   }
   const allOwnerHooks = subject.nodes
@@ -622,11 +672,12 @@ function subjectContract(
         isIdentifier(node.expression) &&
         ownerHooks.has(subject.symbols.get(node.expression)),
     );
-  assert.equal(
-    allOwnerHooks.length,
-    registered.size,
-    "no extra owner lifecycle outside original registrations",
-  );
+  if (!current)
+    assert.equal(
+      allOwnerHooks.length,
+      registered.size,
+      "no extra owner lifecycle outside original registrations",
+    );
 
   const factory = imported(app, subjectPath, "createSubjectInspectorCommands");
   const commandCalls = app.nodes
@@ -634,7 +685,8 @@ function subjectContract(
     .filter(
       (node) =>
         isIdentifier(node.expression) &&
-        app.symbols.get(node.expression) === factory,
+        app.symbols.get(node.expression) === factory &&
+        (!current || inFunction(node, oneFunction(app, "WorkspaceApp"))),
     );
   assert.equal(commandCalls.length, 1, "one actual subject command factory");
   const declaration = oneVariable(app, "subjectInspector");
@@ -1238,6 +1290,7 @@ function exchangeReadContract(
   fixed: Parsed,
   adapter: Parsed,
   contract: SubjectContract,
+  current = false,
 ) {
   try {
     const registrations = [
@@ -1253,14 +1306,18 @@ function exchangeReadContract(
         ["useEffect", "useEffect"],
       ],
     ] as const;
-    const ownerHooks = reactHooks(owner),
+    const ownerHooks = reactHooks(owner, current),
       fixedHooks = reactHooks(fixed);
     const calls: CallExpression[] = [],
       registered = new Set<Node>();
     for (const [name, original, primitives] of registrations) {
       const symbol = imported(app, exchangeReadPath, name);
       const uses = app.identifiers.filter(
-        (node) => app.symbols.get(node) === symbol,
+        (node) =>
+          app.symbols.get(node) === symbol &&
+          (!current ||
+            inFunction(node, oneFunction(app, "WorkspaceApp")) ||
+            node.parent.kind === SyntaxKind.ImportSpecifier),
       );
       assert.equal(uses.length, 2, `${name}: import plus one direct call`);
       const call = uses.find(
@@ -1272,9 +1329,23 @@ function exchangeReadContract(
       calls.push(call);
       const body = oneFunction(owner, name).body;
       assert.ok(body);
+      const originalRead = current
+        ? parse({
+            Original: historicalNavigationSource("exchangeReadOwner"),
+          }).get("Original")!
+        : adapter;
+      if (current)
+        assert.deepEqual(
+          currentRecipe(owner, oneFunction(owner, name)),
+          currentRecipe(originalRead, oneFunction(originalRead, name)),
+          "actual read hook parameters/declaration: " + name,
+        );
       assert.deepEqual(
-        scalarSyntax(body),
-        scalarSyntax(oneFunction(adapter, name).body!),
+        current ? currentRecipe(owner, body) : scalarSyntax(body),
+        current
+          ? currentRecipe(originalRead, oneFunction(originalRead, name).body!)
+          : scalarSyntax(oneFunction(adapter, name).body!),
+        "original read recipe and dependency origin: " + name,
       );
       const actual: string[] = [];
       walk(body, (node) => {
@@ -1303,24 +1374,26 @@ function exchangeReadContract(
       );
       contract.expanded.set(call, expanded);
     }
-    assert.equal(
-      owner.nodes
-        .filter(isCallExpression)
-        .filter(
-          (node) =>
-            isIdentifier(node.expression) &&
-            ownerHooks.has(owner.symbols.get(node.expression)),
-        ).length,
-      registered.size,
-    );
-    for (const statement of owner.source.statements)
-      assert.ok(
-        isImportDeclaration(statement) ||
-          isTypeAliasDeclaration(statement) ||
-          (isFunctionDeclaration(statement) &&
-            registrations.some(([name]) => statement.name?.text === name)),
-        "only the three read hooks, types and imports; no module mirror/state effect",
+    if (!current)
+      assert.equal(
+        owner.nodes
+          .filter(isCallExpression)
+          .filter(
+            (node) =>
+              isIdentifier(node.expression) &&
+              ownerHooks.has(owner.symbols.get(node.expression)),
+          ).length,
+        registered.size,
       );
+    if (!current)
+      for (const statement of owner.source.statements)
+        assert.ok(
+          isImportDeclaration(statement) ||
+            isTypeAliasDeclaration(statement) ||
+            (isFunctionDeclaration(statement) &&
+              registrations.some(([name]) => statement.name?.text === name)),
+          "only the three read hooks, types and imports; no module mirror/state effect",
+        );
     for (const [name, count] of [
       ["acknowledgeReplies", 2],
       ["readReplyReceipts", 1],
@@ -1334,7 +1407,11 @@ function exchangeReadContract(
           .filter(
             (node) =>
               isIdentifier(node.expression) &&
-              owner.symbols.get(node.expression) === symbol,
+              owner.symbols.get(node.expression) === symbol &&
+              (!current ||
+                registrations.some(([name]) =>
+                  inFunction(node, oneFunction(owner, name)),
+                )),
           ).length,
         count,
         `actual ${name} helper binding`,
@@ -1389,7 +1466,7 @@ function exchangeReadContract(
     assert.ok(
       oneVariable(app, "unseenReply").end < ack.pos && ack.end < commit.pos,
     );
-    const appHooks = reactHooks(app);
+    const appHooks = reactHooks(app, current);
     const layouts = app.nodes
       .filter(isCallExpression)
       .filter(
@@ -1419,23 +1496,30 @@ function exchangeInputToolContract(
   adapter: Parsed,
   ownerText: string,
   contract: SubjectContract,
+  current = false,
 ) {
   try {
     // This pins the reviewed NEW API/constructor lane, not an old algorithm
     // oracle. The independent fixed-b8 test and mounted ledgers prove the
     // moved algorithms. It deliberately includes the real nullable version
     // type discovered when the previously unconsumed candidate was connected.
-    assert.equal(
-      createHash("sha256").update(ownerText).digest("hex"),
-      "d6aebe9b808e45041b9b4c946a1612e98d6787d013188d555b7cf16fd6748f34",
-      "reviewed input owner API, inert constructors and complete algorithms",
-    );
+    if (!current)
+      assert.equal(
+        createHash("sha256").update(ownerText).digest("hex"),
+        "d6aebe9b808e45041b9b4c946a1612e98d6787d013188d555b7cf16fd6748f34",
+        "reviewed input owner API, inert constructors and complete algorithms",
+      );
+    if (current) verifyInputRecipes(owner);
     const path = "./host/use-exchange-input-tools.js";
     const workspace = oneFunction(app, "WorkspaceApp");
     const oneImportedCall = (name: string) => {
       const symbol = imported(app, path, name);
       const uses = app.identifiers.filter(
-        (node) => app.symbols.get(node) === symbol,
+        (node) =>
+          app.symbols.get(node) === symbol &&
+          (!current ||
+            inFunction(node, workspace) ||
+            node.parent.kind === SyntaxKind.ImportSpecifier),
       );
       assert.equal(
         uses.length,
@@ -1447,13 +1531,14 @@ function exchangeInputToolContract(
         .filter(
           (node) =>
             isIdentifier(node.expression) &&
-            app.symbols.get(node.expression) === symbol,
+            app.symbols.get(node.expression) === symbol &&
+            (!current || inFunction(node, workspace)),
         );
       assert.equal(calls.length, 1, `${name}: no wrapper or duplicate owner`);
       return calls[0]!;
     };
     const fixedHooks = reactHooks(fixed);
-    const ownerHooks = reactHooks(owner);
+    const ownerHooks = reactHooks(owner, current);
     for (const [name, oldName, binding, primitives] of [
       [
         "useExchangeDictationState",
@@ -1747,7 +1832,468 @@ function exchangeInputToolContract(
     });
   }
 }
-function consumption(
+function inFunction(node: Node, fn: ReturnType<typeof oneFunction>) {
+  return node.getStart() > fn.getStart() && node.end <= fn.end;
+}
+// Normalize only actual named-import values, never same-spelled local fakes.
+function currentRecipe(parsed: Parsed, node: Node): unknown {
+  const names = new Map<number | undefined, readonly string[]>();
+  for (const declaration of parsed.source.statements.filter(
+    isImportDeclaration,
+  )) {
+    if (declaration.importClause?.phaseModifier === SyntaxKind.TypeKeyword)
+      continue;
+    const named = declaration.importClause?.namedBindings;
+    if (named && isNamedImports(named))
+      for (const item of named.elements)
+        if (!item.isTypeOnly)
+          names.set(parsed.symbols.get(item.name), [
+            (item.propertyName ?? item.name).text,
+            declaration.moduleSpecifier.getText().slice(1, -1),
+            "runtime",
+          ]);
+  }
+  function tree(value: Node): unknown {
+    if (isIdentifier(value) && names.has(parsed.symbols.get(value)))
+      return [value.kind, names.get(parsed.symbols.get(value))];
+    const children: unknown[] = [];
+    value.forEachChild((child) => {
+      children.push(tree(child));
+    });
+    return [
+      value.kind,
+      ...(isPrefixUnaryExpression(value) || isPostfixUnaryExpression(value)
+        ? [value.operator]
+        : []),
+      ...(isBinaryExpression(value) ? [value.operatorToken.kind] : []),
+      children.length ? children : value.getText(),
+    ];
+  }
+  return tree(node);
+}
+function sameRecipe(
+  parsed: Parsed,
+  node: Node,
+  original: string,
+  name: string,
+  rule: string,
+) {
+  const expected = parse({ Original: original }).get("Original")!;
+  assert.deepEqual(
+    currentRecipe(parsed, node),
+    currentRecipe(expected, oneFunction(expected, name)),
+    rule,
+  );
+}
+function moduleNoEagerIO(parsed: Parsed, rule: string) {
+  for (const statement of parsed.source.statements) {
+    if (
+      isFunctionDeclaration(statement) ||
+      isTypeAliasDeclaration(statement) ||
+      isImportDeclaration(statement)
+    )
+      continue;
+    const direct: Node[] = [];
+    function visit(node: Node) {
+      if (
+        node !== statement &&
+        (isFunctionDeclaration(node) ||
+          isArrowFunction(node) ||
+          node.kind === SyntaxKind.FunctionExpression)
+      )
+        return;
+      direct.push(node);
+      node.forEachChild((child) => {
+        visit(child);
+      });
+    }
+    visit(statement);
+    assert.equal(
+      direct.some(
+        (node) =>
+          isCallExpression(node) &&
+          /^(fetch|use[A-Z]|set[A-Z])/.test(node.expression.getText()),
+      ),
+      false,
+      rule,
+    );
+  }
+}
+function verifyInputRecipes(owner: Parsed) {
+  moduleNoEagerIO(owner, "module-top-level-io");
+  // Eight primitive initialization/effect recipes in four grouped hooks,
+  // twelve real input callbacks (directory/attachment errors are two consumers
+  // of the same recipe), and early close are the original 21 finite recipes.
+  // Independent exports/imports are outside this closed originating-input API.
+  const fixed = parse({
+    Fixed: historicalNavigationSource("exchangeInputToolOwner"),
+  }).get("Fixed")!;
+  for (const name of [
+    "useExchangeDictationState",
+    "useExchangeInputMediaState",
+    "useExchangeNativeInputState",
+    "useExchangeInputToolCommit",
+    "createExchangeInputToolCloseCommand",
+    "createExchangeInputToolCommands",
+  ])
+    assert.deepEqual(
+      currentRecipe(owner, oneFunction(owner, name)),
+      currentRecipe(fixed, oneFunction(fixed, name)),
+      "input-original-recipe: " + name,
+    );
+  const helper = imported(
+    owner,
+    "../live-dictation.js",
+    "replaceDictationTail",
+  );
+  const called = owner.nodes
+    .filter(isCallExpression)
+    .filter(
+      (node) =>
+        inFunction(node, oneFunction(owner, "transcriptChanged")) &&
+        isIdentifier(node.expression),
+    );
+  assert.ok(
+    called.some(
+      (node) =>
+        isIdentifier(node.expression) &&
+        owner.symbols.get(node.expression) === helper,
+    ),
+    "actual dictation-tail helper value",
+  );
+}
+function withRule(rule: string, check: () => void) {
+  try {
+    check();
+  } catch (error) {
+    if (!(error instanceof assert.AssertionError)) throw error;
+    throw new assert.AssertionError({ message: rule + ": " + error.message });
+  }
+}
+function currentNavigationHost(app: Parsed, stable: Parsed) {
+  withRule("navigation-host-owner-seams", () => {
+    const originalApp = parse({
+      Original: historicalNavigationSource("app"),
+    }).get("Original")!;
+    const original = parse({
+      Original: historicalNavigationSource("stableNavigationHost"),
+    }).get("Original")!;
+    // These tiny identity and zero-DOM sibling functions are governed authority
+    // recipes, not the WorkspaceApp renderer or its lifecycle inventory.
+    for (const name of [
+      "App",
+      "WorkspaceNavigationHost",
+      "PrivateNavigationBoundary",
+    ])
+      assert.deepEqual(
+        currentRecipe(app, oneFunction(app, name)),
+        currentRecipe(originalApp, oneFunction(originalApp, name)),
+        "identity/lifetime original recipe: " + name,
+      );
+    for (const [name, container] of [
+      ["NavigationHostLifetime", "WorkspaceNavigationHost"],
+      ["NavigationOriginLifetime", "PrivateNavigationBoundary"],
+    ]) {
+      const id = imported(
+        app,
+        "./host/use-workspace-navigation-host.js",
+        name!,
+      );
+      const nodes = app.nodes
+        .filter(isJsxSelfClosingElement)
+        .filter(
+          (node) =>
+            inFunction(node, oneFunction(app, container!)) &&
+            isIdentifier(node.tagName) &&
+            app.symbols.get(node.tagName) === id,
+        );
+      assert.equal(
+        nodes.length,
+        1,
+        "actual zero-DOM lifetime sibling: " + name,
+      );
+    }
+    for (const name of [
+      "useWorkspaceNavigationHost",
+      "useWorkspaceNavigationOrigin",
+    ]) {
+      const actual = oneFunction(stable, name),
+        expected = oneFunction(original, name);
+      // Preserve each existing registration/authority statement and relative
+      // order. A complete independent React feature may add its own statements.
+      let previous = -1;
+      const governed = new Set<Node>();
+      for (const statement of expected.body!.statements) {
+        const signature = currentRecipe(original, statement);
+        const matches = actual
+          .body!.statements.map((node, index) => ({ node, index }))
+          .filter(
+            ({ node }) =>
+              JSON.stringify(currentRecipe(stable, node)) ===
+              JSON.stringify(signature),
+          );
+        assert.equal(
+          matches.length,
+          1,
+          "original authority statement: " + statement.getText().slice(0, 60),
+        );
+        assert.ok(
+          matches[0]!.index > previous,
+          "original authority statement order",
+        );
+        previous = matches[0]!.index;
+        governed.add(matches[0]!.node);
+      }
+      const react = reactHooks(stable, true);
+      for (const statement of actual.body!.statements.filter(
+        (node) => !governed.has(node),
+      ))
+        if (isExpressionStatement(statement))
+          assert.ok(
+            isCallExpression(statement.expression) &&
+              isIdentifier(statement.expression.expression) &&
+              react.has(stable.symbols.get(statement.expression.expression)),
+            "Host construction cannot eagerly read or act",
+          );
+    }
+    for (const name of ["NavigationHostLifetime", "NavigationOriginLifetime"])
+      assert.deepEqual(
+        currentRecipe(stable, oneFunction(stable, name)),
+        currentRecipe(original, oneFunction(original, name)),
+        "actual activation and retirement: " + name,
+      );
+    const types = (parsed: Parsed) =>
+      parsed.nodes
+        .filter(isTypeAliasDeclaration)
+        .filter((node) => node.name.text === "Preferences");
+    assert.equal(types(stable).length, 1);
+    assert.equal(types(original).length, 1);
+    const required: Node[] = [];
+    types(original)[0]!.type.forEachChild((node) => {
+      required.push(node);
+    });
+    const actual: Node[] = [];
+    types(stable)[0]!.type.forEachChild((node) => {
+      actual.push(node);
+    });
+    for (const field of required)
+      assert.ok(
+        actual.some(
+          (node) =>
+            JSON.stringify(currentRecipe(stable, node)) ===
+            JSON.stringify(currentRecipe(original, field)),
+        ),
+        "governed persisted preference field: " + field.getText(),
+      );
+    const defaults = oneVariable(stable, "defaultPrefs").initializer!,
+      oldDefaults = oneVariable(original, "defaultPrefs").initializer!;
+    assert.ok(
+      isObjectLiteralExpression(defaults) &&
+        isObjectLiteralExpression(oldDefaults),
+    );
+    for (const field of oldDefaults.properties)
+      assert.ok(
+        defaults.properties.some(
+          (node) =>
+            JSON.stringify(currentRecipe(stable, node)) ===
+            JSON.stringify(currentRecipe(original, field)),
+        ),
+        "original preference default: " + field.getText(),
+      );
+    const workspace = oneFunction(app, "WorkspaceApp");
+    for (const name of ["prefs", "readLocal"]) {
+      const actual = bindingVariable(app, name),
+        expected = bindingVariable(originalApp, name);
+      assert.ok(inFunction(actual, workspace));
+      assert.deepEqual(
+        currentRecipe(app, actual),
+        currentRecipe(originalApp, expected),
+        "actual single Host borrow: " + name,
+      );
+    }
+    assert.deepEqual(
+      currentRecipe(app, oneVariable(app, "state")),
+      currentRecipe(originalApp, oneVariable(originalApp, "state")),
+      "original render Client Boot workspace",
+    );
+    for (const name of ["prefer", "continueNavigation", "setNotice"])
+      assert.deepEqual(
+        currentRecipe(app, oneFunction(app, name)),
+        currentRecipe(originalApp, oneFunction(originalApp, name)),
+        "actual origin/Host writer: " + name,
+      );
+    for (const name of ["setDraft", "updateDraft"])
+      assert.deepEqual(
+        currentRecipe(app, oneFunction(app, name)),
+        currentRecipe(originalApp, oneFunction(originalApp, name)),
+        "actual originating draft writer: " + name,
+      );
+    const project = app.nodes
+      .filter(isJsxSelfClosingElement)
+      .filter(
+        (node) =>
+          node.tagName.getText() === "CreateDialog" &&
+          node.attributes.properties.some(
+            (attribute) =>
+              isJsxAttribute(attribute) &&
+              attribute.name.getText() === "prepareCreated",
+          ),
+      );
+    assert.equal(project.length, 1);
+    const prepared = project[0]!.attributes.properties
+      .filter(isJsxAttribute)
+      .find((node) => node.name.getText() === "prepareCreated");
+    const originalPrepared = originalApp.nodes
+      .filter(isJsxAttribute)
+      .find(
+        (node) =>
+          node.name.getText() === "prepareCreated" &&
+          node.parent.parent.getText().startsWith("<CreateDialog"),
+      );
+    assert.ok(prepared && originalPrepared);
+    assert.deepEqual(
+      scalarSyntax(prepared),
+      scalarSyntax(originalPrepared),
+      "actual project preparation callback",
+    );
+  });
+}
+function hostStableSurfaces(host: Parsed, app: Parsed) {
+  withRule("host-stable-surface", () => {
+    const original = parse({
+      Original: historicalNavigationSource("host"),
+    }).get("Original")!;
+    const panels = host.nodes
+      .filter(isJsxOpeningElement)
+      .filter((node) =>
+        node.attributes.properties.some(
+          (attribute) =>
+            isJsxAttribute(attribute) &&
+            attribute.name.getText() === "className" &&
+            attribute.initializer?.getText() === '"application-pane"',
+        ),
+      );
+    assert.equal(panels.length, 1);
+    const tab = (parsed: Parsed) =>
+      parsed.nodes
+        .filter(isJsxOpeningElement)
+        .find((node) =>
+          node.attributes.properties.some(
+            (attribute) =>
+              isJsxAttribute(attribute) &&
+              attribute.name.getText() === "className" &&
+              attribute.initializer?.getText() === '"application-tab"',
+          ),
+        )!;
+    for (const name of ["key", "data-active"]) {
+      const actual = tab(host)
+        .attributes.properties.filter(isJsxAttribute)
+        .find((node) => node.name.getText() === name)!;
+      const expected = tab(original)
+        .attributes.properties.filter(isJsxAttribute)
+        .find((node) => node.name.getText() === name)!;
+      assert.deepEqual(
+        scalarSyntax(actual),
+        scalarSyntax(expected),
+        "stable application tab " + name,
+      );
+    }
+    for (const name of ["key", "hidden", "role", "aria-label"]) {
+      const actual = panels[0]!.attributes.properties
+        .filter(isJsxAttribute)
+        .find((node) => node.name.getText() === name)!;
+      const old = original.nodes
+        .filter(isJsxOpeningElement)
+        .find((node) =>
+          node.attributes.properties.some(
+            (attribute) =>
+              isJsxAttribute(attribute) &&
+              attribute.name.getText() === "className" &&
+              attribute.initializer?.getText() === '"application-pane"',
+          ),
+        )!;
+      const expected = old.attributes.properties
+        .filter(isJsxAttribute)
+        .find((node) => node.name.getText() === name)!;
+      assert.deepEqual(
+        scalarSyntax(actual),
+        scalarSyntax(expected),
+        "stable application pane " + name,
+      );
+    }
+    const portals = (parsed: Parsed) =>
+      parsed.nodes
+        .filter(isCallExpression)
+        .filter(
+          (node) =>
+            node.expression.getText() === "createPortal" &&
+            node.arguments[0]?.getText() === "toolbar",
+        );
+    assert.equal(portals(host).length, 1, "one original toolbar portal");
+    assert.deepEqual(
+      scalarSyntax(portals(host)[0]!.parent),
+      scalarSyntax(portals(original)[0]!.parent),
+      "actual toolbar portal target and visibility",
+    );
+    const effects = (parsed: Parsed) =>
+      parsed.nodes
+        .filter(isCallExpression)
+        .filter(
+          (node) =>
+            /Observer/.test(node.getText()) &&
+            ["useLayoutEffect", "useEffect"].includes(
+              node.expression.getText(),
+            ),
+        );
+    for (const expected of effects(original))
+      assert.ok(
+        effects(host).some(
+          (actual) =>
+            JSON.stringify(scalarSyntax(actual)) ===
+            JSON.stringify(scalarSyntax(expected)),
+        ),
+        "original tab/appearance observer recipe",
+      );
+    const surfaces = app.nodes
+      .filter(isJsxOpeningElement)
+      .filter((node) =>
+        node.attributes.properties.some(
+          (attribute) =>
+            isJsxAttribute(attribute) &&
+            attribute.name.getText() === "className" &&
+            attribute.initializer?.getText() === '"object-surface"',
+        ),
+      );
+    assert.equal(surfaces.length, 1);
+    const hidden = surfaces[0]!.attributes.properties
+      .filter(isJsxAttribute)
+      .find((node) => node.name.getText() === "hidden");
+    const originalApp = parse({
+      Original: historicalNavigationSource("app"),
+    }).get("Original")!;
+    const originalSurface = originalApp.nodes
+      .filter(isJsxOpeningElement)
+      .find((node) =>
+        node.attributes.properties.some(
+          (attribute) =>
+            isJsxAttribute(attribute) &&
+            attribute.name.getText() === "className" &&
+            attribute.initializer?.getText() === '"object-surface"',
+        ),
+      )!;
+    const originalHidden = originalSurface.attributes.properties
+      .filter(isJsxAttribute)
+      .find((node) => node.name.getText() === "hidden")!;
+    assert.ok(hidden);
+    assert.deepEqual(
+      scalarSyntax(hidden),
+      scalarSyntax(originalHidden),
+      "original object surface visibility",
+    );
+  });
+}
+
+function currentConsumptionCore(
   appText: string,
   hostText: string,
   ownerText: string,
@@ -1756,7 +2302,365 @@ function consumption(
   navigationHostText = stableNavigationHost,
   inputOwnerText = exchangeInputToolOwner,
 ) {
-  appText = expandSubmissionConsumption(appText);
+  const parsed = parse({
+    App: appText,
+    Host: hostText,
+    Owner: ownerText,
+    Adapter: adapterText,
+    Subject: subjectOwnerText,
+    FixedSubject: fixedSubject,
+    SubjectAdapter: subjectAdapterText,
+    ExchangeRead: exchangeReadOwnerText,
+    FixedExchangeRead: fixedExchangeRead,
+    ExchangeReadAdapter: exchangeReadAdapterText,
+    NavigationHost: navigationHostText,
+    NavigationAdapter: navigationAdapterText,
+    FixedAppRoot: fixedAppRoot,
+    NavigationHostContract: navigationHostContractText,
+    InputTools: inputOwnerText,
+    FixedInputTools: fixedInputTools,
+    InputToolAdapter: inputToolAdapterText,
+  });
+  const app = parsed.get("App")!,
+    host = parsed.get("Host")!,
+    owner = parsed.get("Owner")!,
+    adapter = parsed.get("Adapter")!;
+  withRule("navigation-host-owner-seams", () => {
+    const original = parse({
+      Original: historicalNavigationSource("owner"),
+    }).get("Original")!;
+    for (const name of [
+      "canStart",
+      "capture",
+      "guard",
+      "permitted",
+      "privateLifetimePermitted",
+      "publish",
+      "visit",
+      "privateShell",
+      "notice",
+      "projectAvailable",
+      "instanceAvailable",
+      "artifactAvailable",
+      "scriptAvailable",
+      "activateApplication",
+    ])
+      assert.deepEqual(
+        currentRecipe(owner, oneFunction(owner, name)),
+        currentRecipe(original, oneFunction(original, name)),
+        "actual navigation authority recipe: " + name,
+      );
+    const factory = oneFunction(owner, "createWorkspaceNavigationCommands"),
+      oldFactory = oneFunction(original, "createWorkspaceNavigationCommands");
+    assert.deepEqual(
+      currentRecipe(owner, factory.parameters[0]!),
+      currentRecipe(original, oldFactory.parameters[0]!),
+      "actual captured navigation parameters",
+    );
+    const captures = factory.body!.statements.filter(
+      (node) =>
+        isExpressionStatement(node) ||
+        (node.kind === SyntaxKind.VariableStatement &&
+          !node.getText().includes("const applicationActions")),
+    );
+    const expected = oldFactory.body!.statements.filter(
+      (node) =>
+        isExpressionStatement(node) ||
+        (node.kind === SyntaxKind.VariableStatement &&
+          !node.getText().includes("const applicationActions")),
+    );
+    assert.deepEqual(
+      captures.map((node) => currentRecipe(owner, node)),
+      expected.map((node) => currentRecipe(original, node)),
+      "inert navigation captures without eager reads/mirrors",
+    );
+  });
+  const factory = imported(
+    app,
+    "./host/use-workspace-navigation.js",
+    "createWorkspaceNavigationCommands",
+  );
+  const factoryCalls = app.nodes
+    .filter(isCallExpression)
+    .filter(
+      (node) =>
+        isIdentifier(node.expression) &&
+        app.symbols.get(node.expression) === factory &&
+        inFunction(node, oneFunction(app, "WorkspaceApp")),
+    );
+  assert.equal(factoryCalls.length, 1, "one real owner factory call");
+  const call = factoryCalls[0]!;
+  assert.ok(
+    isVariableDeclaration(call.parent) &&
+      call.parent.initializer === call &&
+      isObjectBindingPattern(call.parent.name),
+    "commands consumed directly, not returned from an async wrapper",
+  );
+  const command = call.parent.name.elements.filter(
+    (node) =>
+      isBindingElement(node) &&
+      !node.propertyName &&
+      !!node.name &&
+      isIdentifier(node.name) &&
+      node.name.text === "applicationActions",
+  );
+  assert.equal(command.length, 1, "actual applicationActions owner binding");
+  const actions = app.symbols.get(command[0]!.name!);
+  assert.ok(actions !== undefined);
+  const hostImport = imported(app, "./ApplicationHost.js", "ApplicationHost");
+  const hostRenders = app.nodes
+    .filter(
+      (node) => isJsxOpeningElement(node) || isJsxSelfClosingElement(node),
+    )
+    .filter(
+      (node) =>
+        isIdentifier(node.tagName) &&
+        app.symbols.get(node.tagName) === hostImport,
+    );
+  assert.equal(hostRenders.length, 1, "one actual imported Host render");
+  const attributes = hostRenders[0]!.attributes.properties;
+  assert.equal(
+    attributes
+      .filter(isJsxAttribute)
+      .some((node) => node.name.getText() === "key"),
+    false,
+    "stable Host instance is not keyed by navigation generation",
+  );
+  const actionProps = attributes
+    .filter(isJsxAttribute)
+    .filter((node) => node.name.getText() === "applicationActions");
+  assert.equal(actionProps.length, 1, "one applicationActions Host port");
+  const value = actionProps[0]!.initializer;
+  assert.ok(
+    value &&
+      isJsxExpression(value) &&
+      value.expression &&
+      isIdentifier(value.expression) &&
+      app.symbols.get(value.expression) === actions,
+    "Host uses the real directly-destructured applicationActions, no wrapper",
+  );
+  assert.equal(
+    attributes
+      .filter(isJsxAttribute)
+      .some((node) =>
+        ["onActivate", "onOpenContents"].includes(node.name.getText()),
+      ),
+    false,
+    "retired Host callback props cannot duplicate the owner",
+  );
+
+  withRule("host-prepared-current", () => {
+    const actionType = imported(
+      host,
+      "./host/use-workspace-navigation.js",
+      "ApplicationNavigationActions",
+      true,
+    );
+    const hostFunction = oneFunction(host, "ApplicationHost");
+    const parameter = hostFunction.parameters[0]!;
+    assert.ok(isObjectBindingPattern(parameter.name));
+    const local = parameter.name.elements.filter(
+      (node) =>
+        !!node.name &&
+        isIdentifier(node.name) &&
+        node.name.text === "applicationActions",
+    );
+    assert.equal(
+      local.length,
+      1,
+      "Host original prop binding receives actions",
+    );
+    const localBinding = host.symbols.get(local[0]!.name!);
+    assert.ok(localBinding !== undefined);
+    const typed: Node[] = [];
+    parameter.type!.forEachChild((node) => {
+      if (
+        node.kind === SyntaxKind.PropertySignature &&
+        node.getText().replace(/\s+/g, "") ===
+          "applicationActions:ApplicationNavigationActions;"
+      )
+        typed.push(node);
+    });
+    assert.equal(typed.length, 1, "Host actions use the real typed owner port");
+    const typeUses: Identifier[] = [];
+    walk(typed[0]!, (node) => {
+      if (isIdentifier(node) && host.symbols.get(node) === actionType)
+        typeUses.push(node);
+    });
+    assert.equal(typeUses.length, 1, "not a locally-shadowed action type");
+    const uses = host.identifiers.filter(
+      (node) => host.symbols.get(node) === localBinding,
+    );
+    assert.equal(
+      uses.length,
+      4,
+      "only receive/activate/launch/close action uses",
+    );
+    assert.deepEqual(
+      uses
+        .filter((node) => node !== local[0]!.name)
+        .map((node) => {
+          assert.ok(
+            isPropertyAccessExpression(node.parent) &&
+              node.parent.expression === node,
+            "direct typed port, no Host-local second action store",
+          );
+          return node.parent.name.text;
+        }),
+      ["activate", "launch", "close"],
+    );
+    const activate = oneVariable(host, "onActivate").initializer;
+    assert.ok(
+      activate &&
+        isPropertyAccessExpression(activate) &&
+        isIdentifier(activate.expression) &&
+        host.symbols.get(activate.expression) === localBinding &&
+        activate.name.text === "activate",
+      "original JSX callbacks use the direct owner activation reference",
+    );
+    assert.deepEqual(
+      syntax(oneVariable(host, "navigationSnapshot").initializer!),
+      syntax(oneVariable(adapter, "navigationSnapshot").initializer!),
+      "captured original workspace/generation/active/ordered instances",
+    );
+    for (const name of ["launch", "close"])
+      assert.deepEqual(
+        syntax(oneFunction(host, name).body!),
+        syntax(oneFunction(adapter, name).body!),
+        `${name}: raw promise inside original caller-local try/catch/finally`,
+      );
+  });
+  withRule("prepared-owner-current", () => {
+    const prepared = oneVariable(owner, "applicationActions");
+    assert.equal(prepared.type?.getText(), "ApplicationNavigationActions");
+    assert.deepEqual(
+      scalarSyntax(prepared.initializer!),
+      scalarSyntax(
+        oneVariable(parsed.get("NavigationAdapter")!, "applicationActions")
+          .initializer!,
+      ),
+      "prepared union adds explicit retired/scope guards without altering raw promises or captured activation policy",
+    );
+    originalPreparedPolicy(
+      prepared.initializer!,
+      oneVariable(adapter, "applicationActions").initializer!,
+    );
+    const actionTypes = owner.nodes
+      .filter(isTypeAliasDeclaration)
+      .filter((node) => node.name.text === "ApplicationNavigationActions");
+    assert.equal(actionTypes.length, 1, "one typed prepared action owner");
+    const preparedTypeNames: Identifier[] = [];
+    walk(prepared.type!, (node) => {
+      if (isIdentifier(node)) preparedTypeNames.push(node);
+    });
+    assert.equal(preparedTypeNames.length, 1);
+    assert.equal(
+      owner.symbols.get(preparedTypeNames[0]!),
+      owner.symbols.get(actionTypes[0]!.name),
+      "prepared value uses its actual declared action type",
+    );
+    const returned = oneFunction(
+      owner,
+      "createWorkspaceNavigationCommands",
+    ).body!.statements.at(-1)!;
+    assert.ok(
+      isReturnStatement(returned) &&
+        returned.expression &&
+        isObjectLiteralExpression(returned.expression),
+    );
+    const returnedActions = returned.expression.properties.filter(
+      (node) =>
+        (isShorthandPropertyAssignment(node) || isPropertyAssignment(node)) &&
+        node.name.getText() === "applicationActions",
+    );
+    assert.equal(returnedActions.length, 1);
+    assert.ok(isShorthandPropertyAssignment(returnedActions[0]!));
+  });
+  currentNavigationHost(app, parsed.get("NavigationHost")!);
+  hostStableSurfaces(host, app);
+  const contract = withSubjectCurrent(
+    app,
+    parsed.get("Subject")!,
+    parsed.get("FixedSubject")!,
+    parsed.get("SubjectAdapter")!,
+  );
+  exchangeReadContract(
+    app,
+    parsed.get("ExchangeRead")!,
+    parsed.get("FixedExchangeRead")!,
+    parsed.get("ExchangeReadAdapter")!,
+    contract,
+    true,
+  );
+  exchangeInputToolContract(
+    app,
+    parsed.get("InputTools")!,
+    parsed.get("FixedInputTools")!,
+    parsed.get("InputToolAdapter")!,
+    inputOwnerText,
+    contract,
+    true,
+  );
+  withRule("navigation-captured-current", () =>
+    verifyCurrentWorkspaceContentOpeningConsumption(appText, ownerText),
+  );
+  withRule("submission-current", () => verifyRawSubmissionConsumption(appText));
+}
+function withSubjectCurrent(
+  app: Parsed,
+  subject: Parsed,
+  fixed: Parsed,
+  adapter: Parsed,
+) {
+  let contract: SubjectContract | undefined;
+  withRule("subject-current", () => {
+    contract = subjectContract(app, subject, fixed, adapter, true);
+    const workspace = oneFunction(app, "WorkspaceApp");
+    const call = app.nodes
+      .filter(isCallExpression)
+      .find(
+        (node) =>
+          node.expression.getText() === "useSubjectInspectorCommit" &&
+          inFunction(node, workspace),
+      )!;
+    assert.ok(
+      call && call.parent.parent === workspace.body,
+      "original subject direct commit",
+    );
+    const keyboard = app.nodes
+      .filter(isCallExpression)
+      .find(
+        (node) =>
+          inFunction(node, workspace) &&
+          node.getText().includes("function keyboard(e: KeyboardEvent)"),
+      )!;
+    const annotation = app.nodes
+      .filter(isCallExpression)
+      .find(
+        (node) =>
+          inFunction(node, workspace) &&
+          node.expression.getText() === "useObjectAnnotations",
+      )!;
+    assert.ok(
+      annotation.end < call.pos && call.end < keyboard.pos,
+      "original subject commit after annotation and before keyboard",
+    );
+  });
+  return contract!;
+}
+function historicalConsumption(
+  appText: string,
+  hostText: string,
+  ownerText: string,
+  subjectOwnerText = subjectOwner,
+  exchangeReadOwnerText = exchangeReadOwner,
+  navigationHostText = stableNavigationHost,
+  inputOwnerText = exchangeInputToolOwner,
+) {
+  appText = expandSubmissionConsumption(
+    appText,
+    historicalNavigationSource("submissionOwner"),
+  );
   const parsed = parse({
     App: appText,
     Host: hostText,
@@ -2006,34 +2910,22 @@ function consumption(
     "original Host JSX/effects/all React lifecycle registrations",
   );
 }
-const { app, owner } = expandWorkspaceContentOpeningConsumption(
-  readFileSync("apps/web/src/App.tsx", "utf8"),
-  readFileSync("apps/web/src/host/use-workspace-navigation.ts", "utf8"),
-);
-const host = readFileSync("apps/web/src/ApplicationHost.tsx", "utf8");
-const subjectOwner = readFileSync(
-  "apps/web/src/host/use-subject-inspector.ts",
-  "utf8",
-);
+const app = historicalNavigationSource("app"),
+  owner = historicalNavigationSource("owner"),
+  host = historicalNavigationSource("host"),
+  subjectOwner = historicalNavigationSource("subjectOwner");
 const fixedSubject = readFileSync(
   "tests/fixtures/subject-inspector-85a50934.ts",
   "utf8",
 );
-const exchangeReadOwner = readFileSync(
-  "apps/web/src/host/use-exchange-read-receipts.ts",
-  "utf8",
-);
+const exchangeReadOwner = historicalNavigationSource("exchangeReadOwner");
 const fixedExchangeRead = readFileSync(
   "tests/fixtures/exchange-read-receipts-4ce98b64.ts",
   "utf8",
 );
-const stableNavigationHost = readFileSync(
-  "apps/web/src/host/use-workspace-navigation-host.ts",
-  "utf8",
-);
-const exchangeInputToolOwner = readFileSync(
-  "apps/web/src/host/use-exchange-input-tools.ts",
-  "utf8",
+const stableNavigationHost = historicalNavigationSource("stableNavigationHost");
+const exchangeInputToolOwner = historicalNavigationSource(
+  "exchangeInputToolOwner",
 );
 const fixedInputTools = readFileSync(
   "tests/fixtures/exchange-input-tools-b8db8158.ts",
@@ -2044,323 +2936,136 @@ function changed(source: string, from: string, to: string) {
   return source.replace(from, to);
 }
 
-test("actual App/Host consume the typed prepared navigation owner and retain fixed cb7246a2 JSX/lifecycle", () => {
-  consumption(app, host, owner);
-});
-test("input tools reject parsed fake imports, mirrors, altered scopes/focus and optional transcript drift before fixed-tree expansion", () => {
-  const cases = [
-    {
-      source: changed(
-        app,
-        "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
-        "if (inputVisible) useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
-      ),
-      rule: "input retirement is a direct unconditional Host expression",
-    },
-    {
-      source: changed(
-        app,
-        "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
-        "function hiddenRetirement(){useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });}\nhiddenRetirement();",
-      ),
-      rule: "input retirement is a direct unconditional Host expression",
-    },
-    {
-      source:
-        changed(
+// These unchanged 104 literal counterfactuals validate immutable historical
+// operands only. They are not claimed as 104 current-source checks.
+function registerHistoricalCounterfactuals() {
+  const consumption = historicalConsumption;
+  const test = (name: string, callback: () => void) =>
+    nodeTest("fixed-history: " + name, callback);
+  test("actual App/Host consume the typed prepared navigation owner and retain fixed cb7246a2 JSX/lifecycle", () => {
+    consumption(app, host, owner);
+  });
+  test("input tools reject parsed fake imports, mirrors, altered scopes/focus and optional transcript drift before fixed-tree expansion", () => {
+    const cases = [
+      {
+        source: changed(
           app,
-          "  useExchangeDictationState,",
-          "  useExchangeDictationState as ActualInputDictation,",
-        ) + "\nfunction useExchangeDictationState(){return {};}",
-      rule: "useExchangeDictationState: actual import and one direct call",
-    },
-    {
-      source: changed(
-        app,
-        "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
-        "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });\nuseExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
-      ),
-      rule: "useExchangeInputToolCommit: actual import and one direct call",
-    },
-    {
-      source: changed(
-        app,
-        "      contextKey,\n      directoryScope,\n      contextTitle,",
-        "      contextKey: currentContext.current,\n      directoryScope,\n      contextTitle,",
-      ),
-      rule: "inputTools: exact captured render, original writers/focus/navigation ports",
-    },
-    {
-      source: changed(
-        app,
-        "drafts: { replace: setDraft, update: updateDraft },\n    currentContext,",
-        "drafts: { replace: setDraft, update: () => {} },\n    currentContext,",
-      ),
-      rule: "inputTools: exact captured render, original writers/focus/navigation ports",
-    },
-    {
-      source: changed(
-        app,
-        "?.querySelector<HTMLButtonElement>('button[aria-label=\"语音输入\"]')\n        ?.focus()",
-        "?.querySelector<HTMLButtonElement>('button[aria-label=\"语音输入\"]')\n        ?.focus({ preventScroll: true })",
-      ),
-      rule: "closeSpeech: exact captured render, original writers/focus/navigation ports",
-    },
-    {
-      source: changed(
-        app,
-        "openSavedCapture: (projectId, id) => void openObject(projectId, id)",
-        "openSavedCapture: (projectId, id) => void openObject(project.id, id)",
-      ),
-      rule: "inputTools: exact captured render, original writers/focus/navigation ports",
-    },
-    {
-      source: changed(
-        app,
-        "inputTools.directorySelectingChanged",
-        "inputTools.attachmentsBusyChanged",
-      ),
-      rule: "AgentDirectories.onSelecting: exact originating input command",
-    },
-    {
-      source: changed(
-        app,
-        "speech.modal ? undefined : inputTools.transcriptChanged",
-        "inputTools.transcriptChanged",
-      ),
-      rule: "SpeechDialog.onTranscript: exact originating input command",
-    },
-    {
-      source: changed(
-        app,
-        "onSelect: inputTools.openCapture",
-        "onSelect: (hideWindow) => inputTools.openCapture(hideWindow)",
-      ),
-      rule: "exchange-input-tool-owner-seams:",
-    },
-  ];
-  for (const entry of cases) {
-    parse({ Candidate: entry.source });
-    assert.throws(
-      () => consumption(entry.source, host, owner),
-      (error) =>
-        error instanceof assert.AssertionError &&
-        error.message.startsWith("exchange-input-tool-owner-seams:") &&
-        error.message.includes(entry.rule),
-    );
-  }
-  const close = oneVariable(parse({ App: app }).get("App")!, "closeSpeech");
-  const statement = close.parent.parent.getText();
-  const moved = changed(
-    changed(app, statement, ""),
-    "  const inputTools =",
-    statement + "\n  const inputTools =",
-  );
-  parse({ Candidate: moved });
-  assert.throws(
-    () => consumption(moved, host, owner),
-    (error) =>
-      error instanceof assert.AssertionError &&
-      error.message.includes(
-        "exchange-input-tool-owner-seams: early close before startup return",
-      ),
-  );
-  const extraWork =
-    exchangeInputToolOwner + '\nfetch("/unreviewed-input-request");';
-  parse({ CandidateOwner: extraWork });
-  assert.throws(
-    () =>
-      consumption(
-        app,
-        host,
-        owner,
-        subjectOwner,
-        exchangeReadOwner,
-        stableNavigationHost,
-        extraWork,
-      ),
-    (error) =>
-      error instanceof assert.AssertionError &&
-      error.message.includes(
-        "exchange-input-tool-owner-seams: reviewed input owner API",
-      ),
-  );
-});
-test("input owner imports may be renamed without changing actual direct consumption", () => {
-  const alias = changed(
-    changed(
-      app,
-      "  createExchangeInputToolCommands,",
-      "  createExchangeInputToolCommands as createOriginalInputTools,",
-    ),
-    "const inputTools = createExchangeInputToolCommands(",
-    "const inputTools = createOriginalInputTools(",
-  );
-  consumption(alias, host, owner);
-});
-test("six previously accepted Host/Origin counterfactuals reject before old-tree normalization for the exact source rule", () => {
-  const cases = [
-    {
-      name: "Host currentness",
-      stable: changed(
-        stableNavigationHost,
-        "return lifetime.current.active && !!currentProjection();",
-        "return true;",
-      ),
-      rule: "Host currentness cannot bypass identity/lifetime",
-    },
-    {
-      name: "returned navigation",
-      stable: changed(
-        stableNavigationHost,
-        "isCurrentHost() && state.isCurrent(generation)",
-        "state.isCurrent(generation)",
-      ),
-      rule: "Host returned navigation preserves currentness/single state",
-    },
-    {
-      name: "Host lifetime fake binding",
-      app:
-        changed(
-          app,
-          "  NavigationHostLifetime,",
-          "  NavigationHostLifetime as RealNavigationHostLifetime,",
-        ) + "\nfunction NavigationHostLifetime() { return null; }",
-      rule: "actual imported lifetime consumer: NavigationHostLifetime",
-    },
-    {
-      name: "Origin lifetime fake binding",
-      app:
-        changed(
-          app,
-          "  NavigationOriginLifetime,",
-          "  NavigationOriginLifetime as RealNavigationOriginLifetime,",
-        ) + "\nfunction NavigationOriginLifetime() { return null; }",
-      rule: "actual imported lifetime consumer: NavigationOriginLifetime",
-    },
-    {
-      name: "eager snapshot construction",
-      stable: changed(
-        stableNavigationHost,
-        "  const state = useWorkspaceNavigationState();",
-        "  getSnapshot();\n  const state = useWorkspaceNavigationState();",
-      ),
-      rule: "Host construction only reviewed registrations/declarations",
-    },
-    {
-      name: "persisted schema",
-      stable: changed(
-        stableNavigationHost,
-        "  subjectOpen: boolean;",
-        "  subjectOpen: string;",
-      ),
-      rule: "original persisted Preferences schema/defaults",
-    },
-  ];
-  for (const entry of cases) {
-    const candidateApp = entry.app ?? app,
-      candidateHost = entry.stable ?? stableNavigationHost;
-    parse({ CandidateApp: candidateApp, CandidateHost: candidateHost });
-    assert.throws(
-      () =>
-        consumption(
-          candidateApp,
-          host,
-          owner,
-          subjectOwner,
-          exchangeReadOwner,
-          candidateHost,
+          "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
+          "if (inputVisible) useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
         ),
-      (error) =>
-        error instanceof assert.AssertionError &&
-        error.message.startsWith("navigation-host-owner-seams:") &&
-        error.message.includes(entry.rule),
-      `${entry.name}: ${entry.rule}`,
+        rule: "input retirement is a direct unconditional Host expression",
+      },
+      {
+        source: changed(
+          app,
+          "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
+          "function hiddenRetirement(){useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });}\nhiddenRetirement();",
+        ),
+        rule: "input retirement is a direct unconditional Host expression",
+      },
+      {
+        source:
+          changed(
+            app,
+            "  useExchangeDictationState,",
+            "  useExchangeDictationState as ActualInputDictation,",
+          ) + "\nfunction useExchangeDictationState(){return {};}",
+        rule: "useExchangeDictationState: actual import and one direct call",
+      },
+      {
+        source: changed(
+          app,
+          "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
+          "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });\nuseExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
+        ),
+        rule: "useExchangeInputToolCommit: actual import and one direct call",
+      },
+      {
+        source: changed(
+          app,
+          "      contextKey,\n      directoryScope,\n      contextTitle,",
+          "      contextKey: currentContext.current,\n      directoryScope,\n      contextTitle,",
+        ),
+        rule: "inputTools: exact captured render, original writers/focus/navigation ports",
+      },
+      {
+        source: changed(
+          app,
+          "drafts: { replace: setDraft, update: updateDraft },\n    currentContext,",
+          "drafts: { replace: setDraft, update: () => {} },\n    currentContext,",
+        ),
+        rule: "inputTools: exact captured render, original writers/focus/navigation ports",
+      },
+      {
+        source: changed(
+          app,
+          "?.querySelector<HTMLButtonElement>('button[aria-label=\"语音输入\"]')\n        ?.focus()",
+          "?.querySelector<HTMLButtonElement>('button[aria-label=\"语音输入\"]')\n        ?.focus({ preventScroll: true })",
+        ),
+        rule: "closeSpeech: exact captured render, original writers/focus/navigation ports",
+      },
+      {
+        source: changed(
+          app,
+          "openSavedCapture: (projectId, id) => void openObject(projectId, id)",
+          "openSavedCapture: (projectId, id) => void openObject(project.id, id)",
+        ),
+        rule: "inputTools: exact captured render, original writers/focus/navigation ports",
+      },
+      {
+        source: changed(
+          app,
+          "inputTools.directorySelectingChanged",
+          "inputTools.attachmentsBusyChanged",
+        ),
+        rule: "AgentDirectories.onSelecting: exact originating input command",
+      },
+      {
+        source: changed(
+          app,
+          "speech.modal ? undefined : inputTools.transcriptChanged",
+          "inputTools.transcriptChanged",
+        ),
+        rule: "SpeechDialog.onTranscript: exact originating input command",
+      },
+      {
+        source: changed(
+          app,
+          "onSelect: inputTools.openCapture",
+          "onSelect: (hideWindow) => inputTools.openCapture(hideWindow)",
+        ),
+        rule: "exchange-input-tool-owner-seams:",
+      },
+    ];
+    for (const entry of cases) {
+      parse({ Candidate: entry.source });
+      assert.throws(
+        () => consumption(entry.source, host, owner),
+        (error) =>
+          error instanceof assert.AssertionError &&
+          error.message.startsWith("exchange-input-tool-owner-seams:") &&
+          error.message.includes(entry.rule),
+      );
+    }
+    const close = oneVariable(parse({ App: app }).get("App")!, "closeSpeech");
+    const statement = close.parent.parent.getText();
+    const moved = changed(
+      changed(app, statement, ""),
+      "  const inputTools =",
+      statement + "\n  const inputTools =",
     );
-  }
-});
-test("new navigation lifetime/identity seams reject valid drift before expanding the fixed old tree", () => {
-  const appCandidates = [
-    changed(
-      app,
-      "csrfToken: client.boot.csrfToken,",
-      'csrfToken: "another-session",',
-    ),
-    changed(
-      app,
-      "key={JSON.stringify(nextIdentity)}",
-      "key={nextIdentity.centerId}",
-    ),
-    changed(app, "{client.boot ? (", "{true ? ("),
-    changed(
-      app,
-      "      <NavigationOriginLifetime origin={origin} />\n      <WorkspaceApp client={client} host={host} origin={origin} />",
-      "      <WorkspaceApp client={client} host={host} origin={origin} />\n      <NavigationOriginLifetime origin={origin} />",
-    ),
-    changed(
-      app,
-      "<NavigationHostLifetime host={host} />",
-      "<NavigationHostLifetime host={host} /><NavigationHostLifetime host={host} />",
-    ),
-    changed(app, '"正在打开工作空间…"', '"unapproved connecting placeholder"'),
-    changed(
-      app,
-      '  return (\n    <main className="connection-screen">',
-      '  useEffect(() => {}, []);\n  return (\n    <main className="connection-screen">',
-    ),
-    changed(
-      app,
-      "const { readLocal, writeLocal } = host.storage;",
-      "const { readLocal, writeLocal } = scopedStorage();",
-    ),
-    changed(
-      app,
-      'creating === "project" ? prepareCreatedProject : undefined',
-      "undefined",
-    ),
-    changed(
-      app,
-      '"./host/use-workspace-navigation-host.js"',
-      '"./host/fake-navigation-host.js"',
-    ),
-  ];
-  const stableCandidates = [
-    changed(
-      stableNavigationHost,
-      "scopedStorage(`${scope.centerId}:${scope.principalId}`)",
-      "scopedStorage()",
-    ),
-    changed(stableNavigationHost, "return host.retire;", "return () => {};"),
-    changed(stableNavigationHost, "return origin.retire;", "return () => {};"),
-    changed(
-      stableNavigationHost,
-      "useRef({ active: false, incarnation: 0 })",
-      "useRef({ active: false, incarnation: 0, boot: getSnapshot() })",
-    ),
-    changed(
-      stableNavigationHost,
-      "useState<NavigationIdentity>(() => ({ ...identity }))",
-      "useState<NavigationIdentity>(() => ({ ...identity, boot: getSnapshot() }))",
-    ),
-    changed(
-      stableNavigationHost,
-      "const state = useWorkspaceNavigationState();",
-      "const state = useWorkspaceNavigationState();\nuseLayoutEffect(() => {}, []);",
-    ),
-  ];
-  for (const [index, candidate] of appCandidates.entries()) {
-    // A syntactically invalid candidate or absent mutation target is not proof.
-    parse({ Candidate: candidate });
+    parse({ Candidate: moved });
     assert.throws(
-      () => consumption(candidate, host, owner),
+      () => consumption(moved, host, owner),
       (error) =>
         error instanceof assert.AssertionError &&
-        error.message.startsWith("navigation-host-owner-seams:"),
-      `App lifetime seam candidate ${index}`,
+        error.message.includes(
+          "exchange-input-tool-owner-seams: early close before startup return",
+        ),
     );
-  }
-  for (const [index, candidate] of stableCandidates.entries()) {
-    parse({ Candidate: candidate });
+    const extraWork =
+      exchangeInputToolOwner + '\nfetch("/unreviewed-input-request");';
+    parse({ CandidateOwner: extraWork });
     assert.throws(
       () =>
         consumption(
@@ -2369,423 +3074,1023 @@ test("new navigation lifetime/identity seams reject valid drift before expanding
           owner,
           subjectOwner,
           exchangeReadOwner,
-          candidate,
+          stableNavigationHost,
+          extraWork,
         ),
       (error) =>
         error instanceof assert.AssertionError &&
-        error.message.startsWith("navigation-host-owner-seams:"),
-      `Host lifetime seam candidate ${index}`,
+        error.message.includes(
+          "exchange-input-tool-owner-seams: reviewed input owner API",
+        ),
     );
-  }
-  const originalPreferenceDrift = changed(
-    stableNavigationHost,
-    "subjectOpen: p.subjectOpen === true,",
-    "subjectOpen: true,",
-  );
-  parse({ Candidate: originalPreferenceDrift });
-  assert.throws(
-    () =>
-      consumption(
+  });
+  test("input owner imports may be renamed without changing actual direct consumption", () => {
+    const alias = changed(
+      changed(
         app,
+        "  createExchangeInputToolCommands,",
+        "  createExchangeInputToolCommands as createOriginalInputTools,",
+      ),
+      "const inputTools = createExchangeInputToolCommands(",
+      "const inputTools = createOriginalInputTools(",
+    );
+    consumption(alias, host, owner);
+  });
+  test("six previously accepted Host/Origin counterfactuals reject before old-tree normalization for the exact source rule", () => {
+    const cases = [
+      {
+        name: "Host currentness",
+        stable: changed(
+          stableNavigationHost,
+          "return lifetime.current.active && !!currentProjection();",
+          "return true;",
+        ),
+        rule: "Host currentness cannot bypass identity/lifetime",
+      },
+      {
+        name: "returned navigation",
+        stable: changed(
+          stableNavigationHost,
+          "isCurrentHost() && state.isCurrent(generation)",
+          "state.isCurrent(generation)",
+        ),
+        rule: "Host returned navigation preserves currentness/single state",
+      },
+      {
+        name: "Host lifetime fake binding",
+        app:
+          changed(
+            app,
+            "  NavigationHostLifetime,",
+            "  NavigationHostLifetime as RealNavigationHostLifetime,",
+          ) + "\nfunction NavigationHostLifetime() { return null; }",
+        rule: "actual imported lifetime consumer: NavigationHostLifetime",
+      },
+      {
+        name: "Origin lifetime fake binding",
+        app:
+          changed(
+            app,
+            "  NavigationOriginLifetime,",
+            "  NavigationOriginLifetime as RealNavigationOriginLifetime,",
+          ) + "\nfunction NavigationOriginLifetime() { return null; }",
+        rule: "actual imported lifetime consumer: NavigationOriginLifetime",
+      },
+      {
+        name: "eager snapshot construction",
+        stable: changed(
+          stableNavigationHost,
+          "  const state = useWorkspaceNavigationState();",
+          "  getSnapshot();\n  const state = useWorkspaceNavigationState();",
+        ),
+        rule: "Host construction only reviewed registrations/declarations",
+      },
+      {
+        name: "persisted schema",
+        stable: changed(
+          stableNavigationHost,
+          "  subjectOpen: boolean;",
+          "  subjectOpen: string;",
+        ),
+        rule: "original persisted Preferences schema/defaults",
+      },
+    ];
+    for (const entry of cases) {
+      const candidateApp = entry.app ?? app,
+        candidateHost = entry.stable ?? stableNavigationHost;
+      parse({ CandidateApp: candidateApp, CandidateHost: candidateHost });
+      assert.throws(
+        () =>
+          consumption(
+            candidateApp,
+            host,
+            owner,
+            subjectOwner,
+            exchangeReadOwner,
+            candidateHost,
+          ),
+        (error) =>
+          error instanceof assert.AssertionError &&
+          error.message.startsWith("navigation-host-owner-seams:") &&
+          error.message.includes(entry.rule),
+        `${entry.name}: ${entry.rule}`,
+      );
+    }
+  });
+  test("new navigation lifetime/identity seams reject valid drift before expanding the fixed old tree", () => {
+    const appCandidates = [
+      changed(
+        app,
+        "csrfToken: client.boot.csrfToken,",
+        'csrfToken: "another-session",',
+      ),
+      changed(
+        app,
+        "key={JSON.stringify(nextIdentity)}",
+        "key={nextIdentity.centerId}",
+      ),
+      changed(app, "{client.boot ? (", "{true ? ("),
+      changed(
+        app,
+        "      <NavigationOriginLifetime origin={origin} />\n      <WorkspaceApp client={client} host={host} origin={origin} />",
+        "      <WorkspaceApp client={client} host={host} origin={origin} />\n      <NavigationOriginLifetime origin={origin} />",
+      ),
+      changed(
+        app,
+        "<NavigationHostLifetime host={host} />",
+        "<NavigationHostLifetime host={host} /><NavigationHostLifetime host={host} />",
+      ),
+      changed(
+        app,
+        '"正在打开工作空间…"',
+        '"unapproved connecting placeholder"',
+      ),
+      changed(
+        app,
+        '  return (\n    <main className="connection-screen">',
+        '  useEffect(() => {}, []);\n  return (\n    <main className="connection-screen">',
+      ),
+      changed(
+        app,
+        "const { readLocal, writeLocal } = host.storage;",
+        "const { readLocal, writeLocal } = scopedStorage();",
+      ),
+      changed(
+        app,
+        'creating === "project" ? prepareCreatedProject : undefined',
+        "undefined",
+      ),
+      changed(
+        app,
+        '"./host/use-workspace-navigation-host.js"',
+        '"./host/fake-navigation-host.js"',
+      ),
+    ];
+    const stableCandidates = [
+      changed(
+        stableNavigationHost,
+        "scopedStorage(`${scope.centerId}:${scope.principalId}`)",
+        "scopedStorage()",
+      ),
+      changed(stableNavigationHost, "return host.retire;", "return () => {};"),
+      changed(
+        stableNavigationHost,
+        "return origin.retire;",
+        "return () => {};",
+      ),
+      changed(
+        stableNavigationHost,
+        "useRef({ active: false, incarnation: 0 })",
+        "useRef({ active: false, incarnation: 0, boot: getSnapshot() })",
+      ),
+      changed(
+        stableNavigationHost,
+        "useState<NavigationIdentity>(() => ({ ...identity }))",
+        "useState<NavigationIdentity>(() => ({ ...identity, boot: getSnapshot() }))",
+      ),
+      changed(
+        stableNavigationHost,
+        "const state = useWorkspaceNavigationState();",
+        "const state = useWorkspaceNavigationState();\nuseLayoutEffect(() => {}, []);",
+      ),
+    ];
+    for (const [index, candidate] of appCandidates.entries()) {
+      // A syntactically invalid candidate or absent mutation target is not proof.
+      parse({ Candidate: candidate });
+      assert.throws(
+        () => consumption(candidate, host, owner),
+        (error) =>
+          error instanceof assert.AssertionError &&
+          error.message.startsWith("navigation-host-owner-seams:"),
+        `App lifetime seam candidate ${index}`,
+      );
+    }
+    for (const [index, candidate] of stableCandidates.entries()) {
+      parse({ Candidate: candidate });
+      assert.throws(
+        () =>
+          consumption(
+            app,
+            host,
+            owner,
+            subjectOwner,
+            exchangeReadOwner,
+            candidate,
+          ),
+        (error) =>
+          error instanceof assert.AssertionError &&
+          error.message.startsWith("navigation-host-owner-seams:"),
+        `Host lifetime seam candidate ${index}`,
+      );
+    }
+    const originalPreferenceDrift = changed(
+      stableNavigationHost,
+      "subjectOpen: p.subjectOpen === true,",
+      "subjectOpen: true,",
+    );
+    parse({ Candidate: originalPreferenceDrift });
+    assert.throws(
+      () =>
+        consumption(
+          app,
+          host,
+          owner,
+          subjectOwner,
+          exchangeReadOwner,
+          originalPreferenceDrift,
+        ),
+      (error) =>
+        error instanceof assert.AssertionError &&
+        error.message.startsWith(
+          "original App JSX/effects/all React lifecycle registrations",
+        ),
+      "moved original initializer still fails the unchanged old hook hash, not the new lifetime check",
+    );
+  });
+  test("App consumption rejects fake/shadowed ports and unapproved DOM or lifecycle changes", () => {
+    const candidates = [
+      changed(
+        app,
+        "applicationActions={applicationActions}",
+        "applicationActions={otherActions}",
+      ),
+      changed(
+        app,
+        "applicationActions={applicationActions}",
+        "applicationActions={{ ...applicationActions }}",
+      ),
+      changed(
+        app,
+        "applicationActions={applicationActions}",
+        "onActivate={activateApplication} applicationActions={applicationActions}",
+      ),
+      changed(
+        app,
+        "applicationActions={applicationActions}",
+        "applicationActions={applicationActions} key={navigationGeneration.current}",
+      ),
+      changed(
+        app,
+        "  const {\n    travel,",
+        "  const createWorkspaceNavigationCommands = () => ({});\n  const {\n    travel,",
+      ),
+      changed(
+        app,
+        '<div className="object-surface" hidden={creating === "document"}>',
+        '<div className="object-surface" hidden={false}>',
+      ),
+      changed(
+        app,
+        "const positions = useRef(new Map<string, number>());",
+        "useEffect(() => {}, []);\n  const positions = useRef(new Map<string, number>());",
+      ),
+      changed(
+        app,
+        "const positions = useRef(new Map<string, number>());",
+        "const mirror = useState(null);\n  const positions = useRef(new Map<string, number>());",
+      ),
+    ];
+    for (const candidate of candidates) {
+      parse({ Candidate: candidate });
+      assert.throws(
+        () => consumption(candidate, host, owner),
+        assert.AssertionError,
+      );
+    }
+  });
+  test("Host rejects an async bridge, changed capture or relocated local busy/error/finally contract", () => {
+    for (const candidate of [
+      changed(
         host,
+        "const action = applicationActions.launch(",
+        "const action = await applicationActions.launch(",
+      ),
+      changed(
+        host,
+        "action.commit(await action.pending);",
+        "await action.pending;\n      await Promise.resolve();\n      action.commit(undefined);",
+      ),
+      changed(
+        host,
+        "await action.pending;\n      action.commit();",
+        "action.commit();\n      await action.pending;",
+      ),
+      changed(
+        host,
+        "const navigationSnapshot = { workspaceId, navigationId, activeId, instances };",
+        "const navigationSnapshot = { workspaceId, navigationId: 0, activeId, instances };",
+      ),
+      changed(
+        host,
+        "const navigationSnapshot = { workspaceId, navigationId, activeId, instances };",
+        "const navigationSnapshot = { workspaceId, navigationId, activeId, instances: [...instances] };",
+      ),
+      changed(
+        host,
+        "const onActivate = applicationActions.activate;",
+        "const onActivate = (...args) => applicationActions.activate(...args);",
+      ),
+      changed(host, "if (launching.current) return;", "if (busy) return;"),
+      changed(
+        host,
+        "launching.current = false;\n      setBusy(false);",
+        "setBusy(false);\n      launching.current = false;",
+      ),
+      changed(
+        host,
+        "onNotice((error as Error).message);",
+        "if (activeId) onNotice((error as Error).message);",
+      ),
+      changed(
+        host,
+        "applicationActions: ApplicationNavigationActions;",
+        "applicationActions: any;",
+      ),
+      changed(
+        host,
+        "import type { ApplicationNavigationActions }",
+        "import type { OtherActions as ApplicationNavigationActions }",
+      ),
+    ]) {
+      parse({ Candidate: candidate });
+      assert.throws(
+        () => consumption(app, candidate, owner),
+        assert.AssertionError,
+      );
+    }
+  });
+  test("Host fixed-tree/lifecycle gate rejects pane remount, altered portal and new state/effects", () => {
+    for (const candidate of [
+      changed(host, "key={instance.id}", "key={navigationId}"),
+      changed(host, "hidden={active?.id !== instance.id}", "hidden={false}"),
+      changed(
+        host,
+        "createPortal(toolbar, toolbarTarget)",
+        "createPortal(<section>{toolbar}</section>, toolbarTarget)",
+      ),
+      changed(
+        host,
+        "const launching = useRef(false);",
+        "useEffect(() => {}, []);\n  const launching = useRef(false);",
+      ),
+      changed(
+        host,
+        "const launching = useRef(false);",
+        "const [mirrored, setMirrored] = useState(null);\n  const launching = useRef(false);",
+      ),
+      changed(
+        host,
+        "[activeId, instanceIds, enabled, toolbarTarget]",
+        "[activeId, instances, enabled, toolbarTarget]",
+      ),
+      changed(
+        host,
+        "<small>{applicationDescription(app)}</small>",
+        "<small>changed late sibling</small>",
+      ),
+      changed(
+        host,
+        'attributeFilter: ["data-appearance", "data-accent"]',
+        'attributeFilter: ["data-appearance", "data-unreviewed"]',
+      ),
+    ]) {
+      parse({ Candidate: candidate });
+      assert.throws(
+        () => consumption(app, candidate, owner),
+        assert.AssertionError,
+      );
+    }
+  });
+  test("prepared owner rejects async/raw-promise wrappers and changed captured activation/neighbor order", () => {
+    for (const candidate of [
+      changed(
         owner,
+        "launch(app, captured, contents = false) {",
+        "async launch(app, captured, contents = false) {",
+      ),
+      changed(
+        owner,
+        "pending: openWorkspaceContents()",
+        "pending: Promise.resolve().then(() => openWorkspaceContents())",
+      ),
+      changed(
+        owner,
+        "}),\n        commit(receipt)",
+        "}).then((receipt) => receipt),\n        commit(receipt)",
+      ),
+      changed(
+        owner,
+        "activateApplication(receipt.entityId, captured.navigationId, app);",
+        "activateApplication(receipt.entityId);",
+      ),
+      changed(
+        owner,
+        "captured.instances[index + 1] ??",
+        "captured.instances[index - 1] ??",
+      ),
+    ]) {
+      parse({ Candidate: candidate });
+      assert.throws(
+        () => consumption(app, host, candidate),
+        assert.AssertionError,
+      );
+    }
+  });
+  test("finite gate permits comments and unrelated non-UI/non-lifecycle helpers", () => {
+    consumption(
+      app +
+        "\n// No governed JSX or lifecycle changed.\nfunction unrelatedPureHelper(value: number) { return value + 1; }\n",
+      host + "\n// An unrelated comment is not a mount or state change.\n",
+      owner,
+    );
+  });
+
+  test("Stage13 expansion rejects fake/shadowed imports, repeated or relocated hooks and unapproved inspector ports", () => {
+    const commit = app.match(
+      /  useSubjectInspectorCommit\(inspectorSelections, \{[\s\S]*?\n  \}\);/,
+    )?.[0];
+    assert.ok(commit, "the real commit seam exists");
+    for (const candidate of [
+      changed(app, subjectPath, "./host/fake-subject-inspector.js"),
+      changed(
+        app,
+        "const subjectActivity = useSubjectActivityState();",
+        "const useSubjectActivityState = () => ({allActivity:false});\nconst subjectActivity = useSubjectActivityState();",
+      ),
+      changed(
+        app,
+        "const subjectActivity = useSubjectActivityState();",
+        "const subjectActivity = useSubjectActivityState();\nconst duplicate = useSubjectActivityState();",
+      ),
+      changed(
+        app,
+        "const subjectActivity = useSubjectActivityState();",
+        "const subjectActivity = (() => useSubjectActivityState())();",
+      ),
+      changed(
+        app,
+        commit,
+        commit.replace("    contextKey,", '    contextKey: "another-surface",'),
+      ),
+      changed(
+        changed(app, commit, ""),
+        "  useExchangeControllerFocus(exchangeController);",
+        `${commit}\n  useExchangeControllerFocus(exchangeController);`,
+      ),
+      changed(app, "onBack={subjectInspector.back}", "onBack={unrelated.back}"),
+      changed(
+        app,
+        "onSelect={subjectInspector.selectExecution}",
+        "onSelect={subjectInspector.selectScope}",
+      ),
+      changed(
+        app,
+        "onAllWorkChange={subjectInspector.setAllActivity}",
+        "onAllWorkChange={(value) => subjectInspector.setAllActivity(value)}",
+      ),
+    ]) {
+      parse({ Candidate: candidate });
+      assert.throws(
+        () => consumption(candidate, host, owner),
+        assert.AssertionError,
+      );
+    }
+  });
+
+  test("Stage13 expands actual owner initializers/effect trees and rejects drift or an extra lifecycle", () => {
+    for (const candidate of [
+      changed(subjectOwner, "useState(false)", "useState(true)"),
+      changed(
         subjectOwner,
+        "new Map<string, InspectorSelection>()",
+        "new Map<string, InspectorSelection>([[contextKey, selection]])",
+      ),
+      changed(
+        subjectOwner,
+        "[contextKey, executions, understandingOpen, collaborationVisible]",
+        "[executions, contextKey, understandingOpen, collaborationVisible]",
+      ),
+      changed(
+        subjectOwner,
+        "if (executions)",
+        'if (subjectView === "activity" && executions)',
+      ),
+      changed(
+        subjectOwner,
+        "const [allActivity, setAllActivity] = useState(false);",
+        "useLayoutEffect(() => {}, []);\nconst [allActivity, setAllActivity] = useState(false);",
+      ),
+      subjectOwner + "\nexport function extraLifecycle() { useState(0); }\n",
+    ]) {
+      parse({ Candidate: candidate });
+      assert.throws(
+        () => consumption(app, host, owner, candidate),
+        assert.AssertionError,
+      );
+    }
+  });
+
+  test("exchange read expansion rejects valid fake/mirror/miswired ports and displaced original registrations", () => {
+    const state = app.match(
+      /  const readReceiptState = useExchangeReadReceiptState\(\{[\s\S]*?\n  \}\);/,
+    )?.[0];
+    const commit = app.match(
+      /  useExchangeReadReceiptCommit\(readReceiptState, \{[\s\S]*?\n  \}\);/,
+    )?.[0];
+    assert.ok(state && commit, "actual exchange read seams exist");
+    const candidates = [
+      changed(app, exchangeReadPath, "./host/fake-read-receipts.js"),
+      changed(
+        app,
+        state,
+        "const useExchangeReadReceiptState = () => ({});\n" + state,
+      ),
+      changed(app, commit, commit + "\n" + commit),
+      changed(
+        changed(app, state, ""),
+        "  const positions = useRef",
+        state + "\n  const positions = useRef",
+      ),
+      changed(
+        changed(app, commit, ""),
+        "  const readReplies =",
+        commit + "\n  const readReplies =",
+      ),
+      changed(
+        app,
+        "const { seenReplies } = readReceiptState;",
+        "const { seenReplies } = { ...readReceiptState };",
+      ),
+      changed(
+        app,
+        "useExchangeReadAcknowledgement(readReceiptState)",
+        "useExchangeReadAcknowledgement({ ...readReceiptState })",
+      ),
+      changed(
+        app,
+        'readLocal<unknown>("conversation-read-receipts", null)',
+        'readLocal<unknown>("other-read-receipts", null)',
+      ),
+      changed(
+        app,
+        "messages: client.boot!.runtime.messages,",
+        "messages: replies,",
+      ),
+      changed(
+        app,
+        'writeLocal("conversation-read-receipts", seen)',
+        'writeLocal("conversation-read-receipts", receipts)',
+      ),
+      changed(
+        app,
+        "onNotice: setNotice,\n  });\n  useLayoutEffect",
+        "onNotice: () => {},\n  });\n  useLayoutEffect",
+      ),
+    ];
+    for (const candidate of candidates) {
+      // A syntax/loader/program exception must not masquerade as rule rejection.
+      parse({ Fixture: candidate });
+      assert.throws(
+        () => consumption(candidate, host, owner),
+        (error) =>
+          error instanceof assert.AssertionError &&
+          error.message.startsWith("exchange-read-owner-seams:"),
+      );
+    }
+  });
+
+  test("exchange read expansion validates actual owner helpers, lazy fallback and both original commit trees", () => {
+    const candidates = [
+      changed(exchangeReadOwner, 'from "react"', 'from "./fake-react.js"'),
+      changed(
         exchangeReadOwner,
-        originalPreferenceDrift,
+        'from "../conversation-read.js"',
+        'from "../fake-conversation-read.js"',
       ),
-    (error) =>
-      error instanceof assert.AssertionError &&
-      error.message.startsWith(
-        "original App JSX/effects/all React lifecycle registrations",
+      changed(exchangeReadOwner, "restored !== null", "restored === null"),
+      changed(
+        exchangeReadOwner,
+        "if (restored !== null) return restored;",
+        "if (restored !== null) return {};",
       ),
-    "moved original initializer still fails the unchanged old hook hash, not the new lifetime check",
+      changed(exchangeReadOwner, "[version]", "[receipts]"),
+      changed(exchangeReadOwner, "[seenReplies]", "[version]"),
+      changed(exchangeReadOwner, "persist(seenReplies)", "persist({})"),
+      changed(
+        exchangeReadOwner,
+        "reconcileReplyReceipts(old, receipts)",
+        "acknowledgeReplies(old, receipts)",
+      ),
+      exchangeReadOwner + "\nconst mirroredReadState = new Map();\n",
+      exchangeReadOwner +
+        "\nexport function extraReadEffect() { useEffect(() => {}, []); }\n",
+    ];
+    for (const candidate of candidates) {
+      parse({ Fixture: candidate });
+      assert.throws(
+        () => consumption(app, host, owner, subjectOwner, candidate),
+        (error) =>
+          error instanceof assert.AssertionError &&
+          error.message.startsWith("exchange-read-owner-seams:"),
+      );
+    }
+  });
+}
+registerHistoricalCounterfactuals();
+
+const rawSources = {
+  app: readFileSync("apps/web/src/App.tsx", "utf8"),
+  host: readFileSync("apps/web/src/ApplicationHost.tsx", "utf8"),
+  owner: readFileSync("apps/web/src/host/use-workspace-navigation.ts", "utf8"),
+  subjectOwner: readFileSync(
+    "apps/web/src/host/use-subject-inspector.ts",
+    "utf8",
+  ),
+  exchangeReadOwner: readFileSync(
+    "apps/web/src/host/use-exchange-read-receipts.ts",
+    "utf8",
+  ),
+  stableNavigationHost: readFileSync(
+    "apps/web/src/host/use-workspace-navigation-host.ts",
+    "utf8",
+  ),
+  exchangeInputToolOwner: readFileSync(
+    "apps/web/src/host/use-exchange-input-tools.ts",
+    "utf8",
+  ),
+};
+type CurrentSources = typeof rawSources;
+function currentConsumption(sources: CurrentSources = rawSources) {
+  withRule("navigation-current-consumption", () =>
+    currentConsumptionCore(
+      sources.app,
+      sources.host,
+      sources.owner,
+      sources.subjectOwner,
+      sources.exchangeReadOwner,
+      sources.stableNavigationHost,
+      sources.exchangeInputToolOwner,
+    ),
   );
-});
-test("App consumption rejects fake/shadowed ports and unapproved DOM or lifecycle changes", () => {
-  const candidates = [
-    changed(
-      app,
-      "applicationActions={applicationActions}",
-      "applicationActions={otherActions}",
-    ),
-    changed(
-      app,
-      "applicationActions={applicationActions}",
-      "applicationActions={{ ...applicationActions }}",
-    ),
-    changed(
-      app,
-      "applicationActions={applicationActions}",
-      "onActivate={activateApplication} applicationActions={applicationActions}",
-    ),
-    changed(
-      app,
-      "applicationActions={applicationActions}",
-      "applicationActions={applicationActions} key={navigationGeneration.current}",
-    ),
-    changed(
-      app,
-      "  const {\n    travel,",
-      "  const createWorkspaceNavigationCommands = () => ({});\n  const {\n    travel,",
-    ),
-    changed(
-      app,
-      '<div className="object-surface" hidden={creating === "document"}>',
-      '<div className="object-surface" hidden={false}>',
-    ),
-    changed(
-      app,
-      "const positions = useRef(new Map<string, number>());",
-      "useEffect(() => {}, []);\n  const positions = useRef(new Map<string, number>());",
-    ),
-    changed(
-      app,
-      "const positions = useRef(new Map<string, number>());",
-      "const mirror = useState(null);\n  const positions = useRef(new Map<string, number>());",
-    ),
-  ];
-  for (const candidate of candidates) {
-    parse({ Candidate: candidate });
-    assert.throws(
-      () => consumption(candidate, host, owner),
-      assert.AssertionError,
+}
+nodeTest(
+  "current raw App/Host actual navigation, authority and borrowed owners; no historical inverse",
+  () => currentConsumption(),
+);
+nodeTest(
+  "historical archive retains original cb metrics and all 104 literal negatives",
+  () => {
+    assert.equal(navigationGovernanceArchive.ledger.length, 104);
+    assert.equal(
+      navigationGovernanceArchive.ledger.filter(
+        (entry) => entry.currentRule !== null,
+      ).length,
+      93,
     );
-  }
-});
-test("Host rejects an async bridge, changed capture or relocated local busy/error/finally contract", () => {
-  for (const candidate of [
-    changed(
-      host,
-      "const action = applicationActions.launch(",
-      "const action = await applicationActions.launch(",
-    ),
-    changed(
-      host,
-      "action.commit(await action.pending);",
-      "await action.pending;\n      await Promise.resolve();\n      action.commit(undefined);",
-    ),
-    changed(
-      host,
-      "await action.pending;\n      action.commit();",
-      "action.commit();\n      await action.pending;",
-    ),
-    changed(
-      host,
-      "const navigationSnapshot = { workspaceId, navigationId, activeId, instances };",
-      "const navigationSnapshot = { workspaceId, navigationId: 0, activeId, instances };",
-    ),
-    changed(
-      host,
-      "const navigationSnapshot = { workspaceId, navigationId, activeId, instances };",
-      "const navigationSnapshot = { workspaceId, navigationId, activeId, instances: [...instances] };",
-    ),
-    changed(
-      host,
-      "const onActivate = applicationActions.activate;",
-      "const onActivate = (...args) => applicationActions.activate(...args);",
-    ),
-    changed(host, "if (launching.current) return;", "if (busy) return;"),
-    changed(
-      host,
-      "launching.current = false;\n      setBusy(false);",
-      "setBusy(false);\n      launching.current = false;",
-    ),
-    changed(
-      host,
-      "onNotice((error as Error).message);",
-      "if (activeId) onNotice((error as Error).message);",
-    ),
-    changed(
-      host,
-      "applicationActions: ApplicationNavigationActions;",
-      "applicationActions: any;",
-    ),
-    changed(
-      host,
-      "import type { ApplicationNavigationActions }",
-      "import type { OtherActions as ApplicationNavigationActions }",
-    ),
-  ]) {
-    parse({ Candidate: candidate });
-    assert.throws(
-      () => consumption(app, candidate, owner),
-      assert.AssertionError,
+    const source = readFileSync(new URL(import.meta.url), "utf8");
+    const actualLedger = parse({ Actual: source }).get("Actual")!;
+    const literal = oneFunction(
+      actualLedger,
+      "registerHistoricalCounterfactuals",
+    ).body!.statements.filter(isExpressionStatement);
+    // Compare complete parsed original literal block, not formatting/comments.
+    assert.deepEqual(
+      literal.map(scalarSyntax),
+      parse({ Fixed: navigationGovernanceArchive.originalGate.literalLedger })
+        .get("Fixed")!
+        .source.statements.map(scalarSyntax),
     );
-  }
-});
-test("Host fixed-tree/lifecycle gate rejects pane remount, altered portal and new state/effects", () => {
-  for (const candidate of [
-    changed(host, "key={instance.id}", "key={navigationId}"),
-    changed(host, "hidden={active?.id !== instance.id}", "hidden={false}"),
-    changed(
-      host,
-      "createPortal(toolbar, toolbarTarget)",
-      "createPortal(<section>{toolbar}</section>, toolbarTarget)",
-    ),
-    changed(
-      host,
-      "const launching = useRef(false);",
-      "useEffect(() => {}, []);\n  const launching = useRef(false);",
-    ),
-    changed(
-      host,
-      "const launching = useRef(false);",
-      "const [mirrored, setMirrored] = useState(null);\n  const launching = useRef(false);",
-    ),
-    changed(
-      host,
-      "[activeId, instanceIds, enabled, toolbarTarget]",
-      "[activeId, instances, enabled, toolbarTarget]",
-    ),
-    changed(
-      host,
-      "<small>{applicationDescription(app)}</small>",
-      "<small>changed late sibling</small>",
-    ),
-    changed(
-      host,
-      'attributeFilter: ["data-appearance", "data-accent"]',
-      'attributeFilter: ["data-appearance", "data-unreviewed"]',
-    ),
-  ]) {
-    parse({ Candidate: candidate });
-    assert.throws(
-      () => consumption(app, candidate, owner),
-      assert.AssertionError,
+    assert.equal(
+      createHash("sha256")
+        .update(navigationGovernanceArchive.originalGate.literalLedger)
+        .digest("hex"),
+      navigationGovernanceArchive.originalGate.ledgerSha256,
     );
-  }
-});
-test("prepared owner rejects async/raw-promise wrappers and changed captured activation/neighbor order", () => {
-  for (const candidate of [
-    changed(
-      owner,
-      "launch(app, captured, contents = false) {",
-      "async launch(app, captured, contents = false) {",
-    ),
-    changed(
-      owner,
-      "pending: openWorkspaceContents()",
-      "pending: Promise.resolve().then(() => openWorkspaceContents())",
-    ),
-    changed(
-      owner,
-      "}),\n        commit(receipt)",
-      "}).then((receipt) => receipt),\n        commit(receipt)",
-    ),
-    changed(
-      owner,
-      "activateApplication(receipt.entityId, captured.navigationId, app);",
-      "activateApplication(receipt.entityId);",
-    ),
-    changed(
-      owner,
-      "captured.instances[index + 1] ??",
-      "captured.instances[index - 1] ??",
-    ),
-  ]) {
-    parse({ Candidate: candidate });
-    assert.throws(
-      () => consumption(app, host, candidate),
-      assert.AssertionError,
+    for (const key of Object.keys(navigationGovernanceArchive.sources))
+      historicalNavigationSource(key);
+    assert.deepEqual(
+      structure(
+        parse({ App: historicalNavigationSource("cbApp") }).get("App")!,
+        true,
+      ),
+      baseline.App,
     );
-  }
-});
-test("finite gate permits comments and unrelated non-UI/non-lifecycle helpers", () => {
-  consumption(
-    app +
-      "\n// No governed JSX or lifecycle changed.\nfunction unrelatedPureHelper(value: number) { return value + 1; }\n",
-    host + "\n// An unrelated comment is not a mount or state change.\n",
-    owner,
-  );
-});
+    assert.deepEqual(
+      structure(
+        parse({ Host: historicalNavigationSource("cbHost") }).get("Host")!,
+        false,
+      ),
+      baseline.Host,
+    );
+  },
+);
+nodeTest(
+  "current handoff executes the 93 authority/consumption/borrowed literal recipes",
+  () => {
+    currentConsumption();
+    for (const entry of navigationGovernanceArchive.ledger.filter(
+      (entry) => entry.currentRule,
+    )) {
+      const sources = { ...rawSources };
+      for (const [name, changes] of Object.entries(entry.changes)) {
+        const key = name as keyof CurrentSources;
+        assert.ok(key in sources, "known governed source " + name);
+        for (const change of changes)
+          sources[key] = change.from
+            ? changed(sources[key], change.from, change.to)
+            : sources[key] + change.to;
+      }
+      parse({ Fixture: Object.values(sources).join("\n") });
+      const groups = [
+        "exchange-input-tool-owner-seams",
+        "navigation-host-owner-seams",
+        "navigation-host-owner-seams",
+        "",
+        "host-prepared-current",
+        "host-stable-surface",
+        "prepared-owner-current",
+        "subject-current",
+        "subject-current",
+        "exchange-read-owner-seams",
+        "exchange-read-owner-seams",
+      ];
+      const rule =
+        entry.id === 42 ? "host-stable-surface" : groups[entry.group - 1]!;
+      const direct: Record<number, string> = {
+        37: "Host uses the real directly-destructured applicationActions",
+        38: "Host uses the real directly-destructured applicationActions",
+        39: "retired Host callback props",
+        40: "stable Host instance",
+        41: "one real owner factory call",
+      };
+      const specified =
+        "navigation-current-consumption: " +
+        (rule ? rule + ":" : direct[entry.id]);
+      assert.throws(
+        () => currentConsumption(sources),
+        (error) =>
+          error instanceof assert.AssertionError &&
+          error.message.startsWith(specified),
+        "current parsed negative " + entry.id + " must hit " + specified,
+      );
+    }
+  },
+);
 
-test("Stage13 expansion rejects fake/shadowed imports, repeated or relocated hooks and unapproved inspector ports", () => {
-  const commit = app.match(
-    /  useSubjectInspectorCommit\(inspectorSelections, \{[\s\S]*?\n  \}\);/,
-  )?.[0];
-  assert.ok(commit, "the real commit seam exists");
-  for (const candidate of [
-    changed(app, subjectPath, "./host/fake-subject-inspector.js"),
-    changed(
-      app,
-      "const subjectActivity = useSubjectActivityState();",
-      "const useSubjectActivityState = () => ({allActivity:false});\nconst subjectActivity = useSubjectActivityState();",
-    ),
-    changed(
-      app,
-      "const subjectActivity = useSubjectActivityState();",
-      "const subjectActivity = useSubjectActivityState();\nconst duplicate = useSubjectActivityState();",
-    ),
-    changed(
-      app,
-      "const subjectActivity = useSubjectActivityState();",
-      "const subjectActivity = (() => useSubjectActivityState())();",
-    ),
-    changed(
-      app,
-      commit,
-      commit.replace("    contextKey,", '    contextKey: "another-surface",'),
-    ),
-    changed(
-      changed(app, commit, ""),
-      "  useExchangeControllerFocus(exchangeController);",
-      `${commit}\n  useExchangeControllerFocus(exchangeController);`,
-    ),
-    changed(app, "onBack={subjectInspector.back}", "onBack={unrelated.back}"),
-    changed(
-      app,
-      "onSelect={subjectInspector.selectExecution}",
-      "onSelect={subjectInspector.selectScope}",
-    ),
-    changed(
-      app,
-      "onAllWorkChange={subjectInspector.setAllActivity}",
-      "onAllWorkChange={(value) => subjectInspector.setAllActivity(value)}",
-    ),
-  ]) {
-    parse({ Candidate: candidate });
-    assert.throws(
-      () => consumption(candidate, host, owner),
-      assert.AssertionError,
+nodeTest(
+  "raw-current permits complete independent App and Host React features with actual consumers",
+  () => {
+    const feature = `const [independentOpen,setIndependentOpen]=useState(false);
+ useEffect(()=>{if(independentOpen) { const timer=setTimeout(()=>setIndependentOpen(false),1); return()=>clearTimeout(timer); }},[independentOpen]);
+ function toggleIndependent(){setIndependentOpen(old=>!old);}`;
+    const app = changed(
+      changed(
+        rawSources.app,
+        "  const profile = useProfile(client);",
+        "  const profile = useProfile(client);\n" + feature,
+      ),
+      "<WorkspaceTopbar",
+      "<button aria-expanded={independentOpen} onClick={toggleIndependent}>{independentOpen ? 'close' : 'open'}</button><WorkspaceTopbar",
     );
-  }
-});
-
-test("Stage13 expands actual owner initializers/effect trees and rejects drift or an extra lifecycle", () => {
-  for (const candidate of [
-    changed(subjectOwner, "useState(false)", "useState(true)"),
-    changed(
-      subjectOwner,
-      "new Map<string, InspectorSelection>()",
-      "new Map<string, InspectorSelection>([[contextKey, selection]])",
-    ),
-    changed(
-      subjectOwner,
-      "[contextKey, executions, understandingOpen, collaborationVisible]",
-      "[executions, contextKey, understandingOpen, collaborationVisible]",
-    ),
-    changed(
-      subjectOwner,
-      "if (executions)",
-      'if (subjectView === "activity" && executions)',
-    ),
-    changed(
-      subjectOwner,
-      "const [allActivity, setAllActivity] = useState(false);",
-      "useLayoutEffect(() => {}, []);\nconst [allActivity, setAllActivity] = useState(false);",
-    ),
-    subjectOwner + "\nexport function extraLifecycle() { useState(0); }\n",
-  ]) {
-    parse({ Candidate: candidate });
-    assert.throws(
-      () => consumption(app, host, owner, candidate),
-      assert.AssertionError,
+    const host = changed(
+      changed(
+        rawSources.host,
+        "  const launching = useRef(false);",
+        "  const launching = useRef(false);\n" + feature,
+      ),
+      "      {toolbarTarget && createPortal(toolbar, toolbarTarget)}",
+      '      <button onClick={toggleIndependent} aria-expanded={independentOpen}>{independentOpen ? "close" : "open"}</button>\n      {toolbarTarget && createPortal(toolbar, toolbarTarget)}',
     );
-  }
-});
-
-test("exchange read expansion rejects valid fake/mirror/miswired ports and displaced original registrations", () => {
-  const state = app.match(
-    /  const readReceiptState = useExchangeReadReceiptState\(\{[\s\S]*?\n  \}\);/,
-  )?.[0];
-  const commit = app.match(
-    /  useExchangeReadReceiptCommit\(readReceiptState, \{[\s\S]*?\n  \}\);/,
-  )?.[0];
-  assert.ok(state && commit, "actual exchange read seams exist");
-  const candidates = [
-    changed(app, exchangeReadPath, "./host/fake-read-receipts.js"),
-    changed(
-      app,
-      state,
-      "const useExchangeReadReceiptState = () => ({});\n" + state,
-    ),
-    changed(app, commit, commit + "\n" + commit),
-    changed(
-      changed(app, state, ""),
-      "  const positions = useRef",
-      state + "\n  const positions = useRef",
-    ),
-    changed(
-      changed(app, commit, ""),
-      "  const readReplies =",
-      commit + "\n  const readReplies =",
-    ),
-    changed(
-      app,
-      "const { seenReplies } = readReceiptState;",
-      "const { seenReplies } = { ...readReceiptState };",
-    ),
-    changed(
-      app,
-      "useExchangeReadAcknowledgement(readReceiptState)",
-      "useExchangeReadAcknowledgement({ ...readReceiptState })",
-    ),
-    changed(
-      app,
-      'readLocal<unknown>("conversation-read-receipts", null)',
-      'readLocal<unknown>("other-read-receipts", null)',
-    ),
-    changed(
-      app,
-      "messages: client.boot!.runtime.messages,",
-      "messages: replies,",
-    ),
-    changed(
-      app,
-      'writeLocal("conversation-read-receipts", seen)',
-      'writeLocal("conversation-read-receipts", receipts)',
-    ),
-    changed(
-      app,
-      "onNotice: setNotice,\n  });\n  useLayoutEffect",
-      "onNotice: () => {},\n  });\n  useLayoutEffect",
-    ),
-  ];
-  for (const candidate of candidates) {
-    // A syntax/loader/program exception must not masquerade as rule rejection.
-    parse({ Fixture: candidate });
-    assert.throws(
-      () => consumption(candidate, host, owner),
-      (error) =>
-        error instanceof assert.AssertionError &&
-        error.message.startsWith("exchange-read-owner-seams:"),
+    parse({ App: app, Host: host });
+    currentConsumption({ ...rawSources, app, host });
+  },
+);
+nodeTest(
+  "raw-current permits actual factory/import aliases and independent feature lifecycle/module growth",
+  () => {
+    let app = changed(
+      rawSources.app,
+      "  createWorkspaceNavigationCommands,",
+      "  createWorkspaceNavigationCommands as navigationCommands,",
     );
-  }
-});
-
-test("exchange read expansion validates actual owner helpers, lazy fallback and both original commit trees", () => {
-  const candidates = [
-    changed(exchangeReadOwner, 'from "react"', 'from "./fake-react.js"'),
-    changed(
-      exchangeReadOwner,
-      'from "../conversation-read.js"',
-      'from "../fake-conversation-read.js"',
-    ),
-    changed(exchangeReadOwner, "restored !== null", "restored === null"),
-    changed(
-      exchangeReadOwner,
-      "if (restored !== null) return restored;",
-      "if (restored !== null) return {};",
-    ),
-    changed(exchangeReadOwner, "[version]", "[receipts]"),
-    changed(exchangeReadOwner, "[seenReplies]", "[version]"),
-    changed(exchangeReadOwner, "persist(seenReplies)", "persist({})"),
-    changed(
-      exchangeReadOwner,
-      "reconcileReplyReceipts(old, receipts)",
-      "acknowledgeReplies(old, receipts)",
-    ),
-    exchangeReadOwner + "\nconst mirroredReadState = new Map();\n",
-    exchangeReadOwner +
-      "\nexport function extraReadEffect() { useEffect(() => {}, []); }\n",
-  ];
-  for (const candidate of candidates) {
-    parse({ Fixture: candidate });
-    assert.throws(
-      () => consumption(app, host, owner, subjectOwner, candidate),
-      (error) =>
-        error instanceof assert.AssertionError &&
-        error.message.startsWith("exchange-read-owner-seams:"),
+    app = changed(
+      app,
+      "} = createWorkspaceNavigationCommands({",
+      "} = navigationCommands({",
     );
-  }
-});
+    // This is an independently consumed JSX feature, not an unused dummy export.
+    const subjectOwner =
+      rawSources.subjectOwner +
+      `\nexport function IndependentFeature(){ const [client,setDraft]=useState(false); const current=client; useLayoutEffect(()=>{if(current)setDraft(false);},[current]); return <button onClick={()=>setDraft(!current)}>{String(current)}</button>; }\n`;
+    app = changed(
+      app,
+      "import { SubjectSidebar }",
+      'import { IndependentFeature } from "./host/use-subject-inspector.js";\nimport { SubjectSidebar }',
+    );
+    app = changed(
+      app,
+      "<WorkspaceTopbar",
+      "<IndependentFeature /><WorkspaceTopbar",
+    );
+    const readOwner =
+      rawSources.exchangeReadOwner +
+      `\nexport function IndependentReadFeature(){ const [client,setDraft]=useState(false);const current=client;useEffect(()=>{if(current)setDraft(false);},[current]);return <button onClick={()=>setDraft(!current)}>{String(current)}</button>; }\nconst unrelatedMap=new Map();\n`;
+    const inputs =
+      rawSources.exchangeInputToolOwner +
+      `\nexport function IndependentInputFeature(){const [client,setDraft]=useState(false);const current=client;useEffect(()=>{if(current)setDraft(false);},[current]);return <button onClick={()=>setDraft(!current)}>{String(current)}</button>; }\n`;
+    app = changed(
+      app,
+      "import { SubjectSidebar }",
+      'import { IndependentReadFeature } from "./host/use-exchange-read-receipts.js";\nimport { IndependentInputFeature } from "./host/use-exchange-input-tools.js";\nimport { SubjectSidebar }',
+    );
+    app = changed(
+      app,
+      "<IndependentFeature />",
+      "<IndependentFeature /><IndependentReadFeature /><IndependentInputFeature />",
+    );
+    parse({ App: app, Subject: subjectOwner, Read: readOwner, Input: inputs });
+    currentConsumption({
+      ...rawSources,
+      app,
+      subjectOwner,
+      exchangeReadOwner: readOwner,
+      exchangeInputToolOwner: inputs,
+    });
+    // The same real factory can be consumed in a separate lexical feature. Only
+    // the WorkspaceApp Host is required to have exactly one registration.
+    currentConsumption({
+      ...rawSources,
+      app:
+        app +
+        `\nexport function SeparateNavigationFeature({options}){const {openUser}=navigationCommands(options);return <button onClick={()=>void openUser("x")}>open</button>;}\n`,
+    });
+  },
+);
+nodeTest(
+  "raw-current rejects consumed mirrors and actual lifecycle side effects at specified authority rules",
+  () => {
+    const cases = [
+      {
+        sources: {
+          ...rawSources,
+          app: changed(
+            rawSources.app,
+            "  const { prefs, recentContentVisits, navigation } = host;",
+            "  const { prefs, recentContentVisits } = host; const [navigation]=useState(host.navigation);",
+          ),
+        },
+        rule: "navigation-host-owner-seams:",
+      },
+      {
+        sources: {
+          ...rawSources,
+          app: changed(
+            rawSources.app,
+            "useExchangeReadAcknowledgement(readReceiptState)",
+            "useExchangeReadAcknowledgement(mirroredReceiptState)",
+          ).replace(
+            "  const { seenReplies } = readReceiptState;",
+            "  const { seenReplies } = readReceiptState; const [mirroredReceiptState]=useState(readReceiptState);",
+          ),
+        },
+        rule: "exchange-read-owner-seams:",
+      },
+      {
+        sources: {
+          ...rawSources,
+          stableNavigationHost: changed(
+            rawSources.stableNavigationHost,
+            "return host.retire;",
+            "return () => {host.activate();host.retire();};",
+          ),
+        },
+        rule: "navigation-host-owner-seams:",
+      },
+      {
+        sources: {
+          ...rawSources,
+          exchangeInputToolOwner:
+            rawSources.exchangeInputToolOwner + '\nfetch("/api/platform");\n',
+        },
+        rule: "exchange-input-tool-owner-seams:",
+      },
+    ];
+    for (const { sources, rule } of cases) {
+      parse(sources);
+      assert.throws(
+        () => currentConsumption(sources),
+        (error) =>
+          error instanceof assert.AssertionError &&
+          error.message.startsWith("navigation-current-consumption: " + rule),
+      );
+    }
+  },
+);
+nodeTest(
+  "raw-current rejects same-export wrong-module values and unused correct-import camouflage",
+  () => {
+    currentConsumption();
+    const cases = [
+      {
+        key: "stableNavigationHost",
+        from: 'from "../local-preferences.js"',
+        to: 'from "../foreign-storage.js"',
+        rule: "navigation-host-owner-seams:",
+      },
+      {
+        key: "stableNavigationHost",
+        from: 'from "../interface-preferences.js"',
+        to: 'from "../foreign-preferences.js"',
+        rule: "navigation-host-owner-seams:",
+      },
+      {
+        key: "stableNavigationHost",
+        from: 'from "../recent-content.js"',
+        to: 'from "../foreign-content.js"',
+        rule: "navigation-host-owner-seams:",
+      },
+      {
+        key: "stableNavigationHost",
+        from: 'from "react"',
+        to: 'from "./foreign-react.js"',
+        rule: "navigation-host-owner-seams:",
+      },
+      {
+        key: "subjectOwner",
+        from: 'from "react"',
+        to: 'from "./foreign-react.js"',
+        rule: "subject-current:",
+      },
+      {
+        key: "exchangeInputToolOwner",
+        from: 'from "react"',
+        to: 'from "./foreign-react.js"',
+        rule: "exchange-input-tool-owner-seams:",
+      },
+      {
+        key: "stableNavigationHost",
+        from: 'import { scopedStorage } from "../local-preferences.js";',
+        to: 'import { scopedStorage as unusedCorrectStorage } from "../local-preferences.js"; import { scopedStorage } from "./foreign-storage.js";',
+        rule: "navigation-host-owner-seams:",
+      },
+    ] as const;
+    for (const { key, from, to, rule } of cases) {
+      const sources = {
+        ...rawSources,
+        [key]: changed(rawSources[key], from, to),
+      };
+      parse(sources);
+      assert.throws(
+        () => currentConsumption(sources),
+        (error) =>
+          error instanceof assert.AssertionError &&
+          error.message.startsWith("navigation-current-consumption: " + rule),
+      );
+    }
+  },
+);
+nodeTest(
+  "raw-current accepts actual constant factory and actual owner dependency import aliases",
+  () => {
+    let app = changed(
+      rawSources.app,
+      "  const profile = useProfile(client);",
+      "  const profile = useProfile(client);\nconst navFactory = createWorkspaceNavigationCommands;",
+    );
+    app = changed(
+      app,
+      "} = createWorkspaceNavigationCommands({",
+      "} = navFactory({",
+    );
+    let stable = changed(
+      rawSources.stableNavigationHost,
+      "import { scopedStorage }",
+      "import { scopedStorage as identityStorage }",
+    );
+    stable = stable.replaceAll("scopedStorage(", "identityStorage(");
+    let subject = changed(
+      rawSources.subjectOwner,
+      "useState, type RefObject",
+      "useState as stateHook, type RefObject",
+    );
+    subject = subject
+      .replaceAll("useState(", "stateHook(")
+      .replaceAll("useState<", "stateHook<");
+    let input = changed(
+      rawSources.exchangeInputToolOwner,
+      "useState, type RefObject",
+      "useState as inputState, type RefObject",
+    );
+    input = input
+      .replaceAll("useState(", "inputState(")
+      .replaceAll("useState<", "inputState<");
+    parse({ App: app, Host: stable, Subject: subject, Input: input });
+    currentConsumption({
+      ...rawSources,
+      app,
+      stableNavigationHost: stable,
+      subjectOwner: subject,
+      exchangeInputToolOwner: input,
+    });
+  },
+);

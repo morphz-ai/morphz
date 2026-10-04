@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-04 · 版本：1.5 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-04 · 版本：1.6 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -291,6 +291,17 @@ TextQuoteProvider、SelectionActions、Reader 与现件编辑仍是各自的完�
 inverse API 仅作为明确历史合同保留，不暗改成另一种语义。四个同名
 但错误实际来源的误接受反例已由根独立复现并修正。其它旧页面／owner
 的全文门禁与 inverse 链尚未整体治理，不能由本阶段宣称全部完成。
+
+阶段 45 将导航的普通当前工程合同与旧整体树证明分开。当前直接核
+actual App／Host 的真实值来源、身份／权限／lifetime、原 prepared
+operation 与稳定消费，而非锁整件 App／Host 或调用其它 owner 的
+inverse。actual Git 十份独立档案保留原十四测试组、一百零四反例与
+cb 全文 metrics；九十三项交接当前，十一项无关全文增长限制仅历史。
+独立且实际消费的 React feature 与合法真实别名继续可演进；镜像、
+生命周期副作用和同名错误模块仍拒绝。两个旧 helper 默认合同不变，
+新 current verifier 独立命名；其它 peer 的 inverse 债务未由此消失。
+根三文件 32/32 与严格类型、实际 Git 和来源探针通过，范围是有限源码
+合同，不是整页／原 App／Runtime 证明；R5 共同旧 iframe 红项单列。
 
 授权内容读取的六个完整算法现归 `data/content-reads.ts`：目录分页／计数、
 当前理解、目录记忆、原件与确切目录项解析。Client 借出原 refs，保留身份／

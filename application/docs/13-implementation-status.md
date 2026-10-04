@@ -1,5 +1,42 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 45：导航的当前权限与消费合同
+
+本阶段只改导航消费测试、两个借用 helper 与独立历史档案，不改生产、
+界面或业务。普通当前检查直接读实际 App／Host／navigation owner，核
+实际模块与 runtime／type phase、捕获身份／授权／lifetime、原 prepared
+Promise／caller catch／finally、稳定 pane／portal 及真实 Subject／Read／
+Input 消费。不再以整个当前 App／Host hash、全局 JSX／hook 数量或
+其它 owner 的 inverse 作为导航当前工程门禁。
+
+actual Git 2cf／cb 十份完整原件及 4e32 原门禁独立固定。原十四组测试、
+一百零四个字面反例、正例、固定原 metrics 和拒绝规则保留为明确历史
+证明；九十三个危险 recipe 在 raw-current 中解析并命中指定规则。
+其余十一项是独立空 hook、未消费值或无关文案等旧全文约束，仅保留
+历史，不声称一百零四项全部是当前合同。另加十一项真实镜像、生命周期
+副作用与 wrong-module／unused-correct-import 来源反例；实际消费的
+独立 React feature／state／effect 和真实 import／const alias 正例通过。
+这是解析源码合同，不冒称挂载执行、权限运行证明或原生验收。
+
+根独立重核十份档案与 actual Git、六个完整旧 API、原字面账本和分类，
+另从实际 Git 独立重放核对落盘十四回调的完整语法、二百六十四个原
+字面值及一百零四条操作链；此来源记录器不冒充行为测试。
+并复跑四个错误模块同名值反例：scopedStorage、interfacePreferences、
+contentVisits、React 均按实际来源拒绝。agent 修前误接受红证据保留；
+根两次来源探针均在已修后为绿，不虚构根发现新的红项。根 proper
+`npm test` 三文件 **32/32**、零失败／跳过；四获准路径及依赖沿原严格
+类型策略检查通过。旧 helper 的默认语义与原对等调用保留，没有偷偷
+把历史 inverse API 改成当前 verifier。
+
+证据：`/tmp/morphz-navigation-governance.cKlwmu/RESULT.md`、
+`CLASSIFICATION-104.md`、根 `r-gov-b-root-final.log` 与
+`/tmp/morphz-navigation-root-audit.1yyug4/final-probe.json`。
+其它 peer 的旧全文／inverse 链、R5、最终全量和整体原生验收仍在收尾。
+同期 R5 原完整页面旧／新各 17 通过、1 失败；共同红项是创建项目触发
+既有应用 iframe 重挂载，保留原断言，未把它算通过或混入本阶段修复。
+原 Morphz 窗口本轮再读实际截图可见，对话／输入／活动保留；未重启
+App／Runtime 或重建用户数据。目标 active，不称整体工程已完成。
+
 ## 2026-10-04 前端阶段 44：引用与评论的有限当前工程门禁
 
 本阶段只改五份测试／helper 与一份独立历史档案，不改生产、界面或业务。
