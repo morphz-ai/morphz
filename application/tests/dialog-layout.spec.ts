@@ -1,6 +1,10 @@
 import { openSettings } from "./settings-helpers.js";
 import { test, expect, type Locator, type Page } from "@playwright/test";
-import { openInput, openTranscription } from "./interaction-helpers.js";
+import {
+  openComposerMedia,
+  openInput,
+  openTranscription,
+} from "./interaction-helpers.js";
 
 async function syntheticImage(page: Page, width: number, height: number) {
   return page.evaluate(
@@ -125,6 +129,7 @@ test("截图弹窗按图片比例利用空间，标题动作同行，窄窗确�
     );
     await page.setViewportSize({ width: 1440, height: 960 });
     await openInput(page);
+    await openComposerMedia(page);
     await trigger.click();
     const preview = dialog.getByAltText("待确认的截图");
     await expect(preview).toBeVisible();
