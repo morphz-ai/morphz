@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -43,8 +43,9 @@ const base = {
     "postgres://fixture:dummy-secret@127.0.0.1:59999/isolated_test",
   MORPHZ_TEST_BROWSER_EXECUTABLE: "/fixture/browser",
 };
+const testsRoot = fileURLToPath(new URL("./", import.meta.url));
 const known = {
-  file: "/repo/application/tests/cloud-artifact-store.test.ts",
+  file: join(testsRoot, "cloud-artifact-store.test.ts"),
   name: "云 Store：两个 Host 共读原件、精确版本、备份恢复和损坏拒绝",
   skip: true,
 };
@@ -119,10 +120,10 @@ test("reporter exposes exact declared omissions and final Node counts without cr
   assert.equal(lines.join("").includes("dummy-secret"), false);
 });
 
-test("selected basename scope is explicit and deduplicated, never presented as a full run", async () => {
+test("selected exact path scope is explicit and deduplicated, never presented as a full run", async () => {
   const selected = plan({}, [
     "tests/response-annotations-runtime.test.ts",
-    "/repo/application/tests/response-annotations-runtime.test.ts",
+    join(testsRoot, "response-annotations-runtime.test.ts"),
   ]);
   const lines = await consume(
     events([
@@ -138,7 +139,7 @@ test("selected basename scope is explicit and deduplicated, never presented as a
     selected,
   );
   assert.deepEqual(coverage(lines).selectedFiles, [
-    "response-annotations-runtime.test.ts",
+    join(testsRoot, "response-annotations-runtime.test.ts"),
   ]);
   assert.deepEqual(coverage(lines).optionalNotExecuted, []);
   assert.deepEqual(coverage(lines).unexpectedSkips, []);
@@ -183,7 +184,7 @@ test("real Node loads the default reporter and emits both ordinary and scoped co
     assert.equal(reports.length, 1);
     const record = coverage(reports);
     assert.deepEqual(record.required, ["postgres"]);
-    assert.deepEqual(record.selectedFiles, ["coverage-entry-probe.test.mjs"]);
+    assert.deepEqual(record.selectedFiles, [file]);
     assert.deepEqual(record.optionalNotExecuted, []);
     assert.deepEqual(record.unexpectedSkips, []);
     assert.equal(record.counts.tests, 1);
@@ -252,6 +253,32 @@ test("a file/name mismatch and an unselected declared test both remain unexpecte
       consume(events([{ type: "test:pass", data }, summary()]), actual),
       /Test coverage failed: Unexpected skipped test/,
     );
+});
+
+test("reporter rejects a same-basename nested or external skip and retains the exact selected path", async () => {
+  const copies = [
+    join(testsRoot, "copied", "cloud-artifact-store.test.ts"),
+    resolve(
+      testsRoot,
+      "../../../other-workspace/application/tests/cloud-artifact-store.test.ts",
+    ),
+    "tests/../cloud-artifact-store.test.ts",
+    "tests/../../cloud-artifact-store.test.ts",
+  ];
+  for (const file of copies) {
+    const lines: string[] = [];
+    const selected = plan({}, [file]);
+    await assert.rejects(async () => {
+      for await (const line of reportTestCoverage(
+        events([{ type: "test:pass", data: { ...known, file } }, summary()]),
+        selected,
+      ))
+        lines.push(line);
+    }, /Test coverage failed: Unexpected skipped test/);
+    assert.deepEqual(coverage(lines).selectedFiles, [...selected.files!]);
+    assert.deepEqual(coverage(lines).optionalNotExecuted, []);
+    assert.equal(coverage(lines).unexpectedSkips.length, 1);
+  }
 });
 
 test("no final root summary is an error after draining, not a coverage success", async () => {

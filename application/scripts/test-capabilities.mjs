@@ -6,8 +6,22 @@ import {
   statSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runtimeBinaryPath } from "./runtime-path.mjs";
+
+const testsRoot = fileURLToPath(new URL("../tests/", import.meta.url));
+const applicationRoot = resolve(testsRoot, "..");
+
+// Basenames/tests-relative callers refer to this checkout's tests, never to a
+// same-named file in another directory. Absolute Node event paths stay absolute.
+function testFileIdentity(file) {
+  if (typeof file !== "string" || !file) return null;
+  const root = /^(?:\.[/\\])*tests[/\\]/.test(file)
+    ? applicationRoot
+    : testsRoot;
+  return resolve(root, file);
+}
 
 // Explicit exceptions belong to a real test and capability, not a blanket skip
 // count or title regexp. Any newly skipped test fails until its scope is reviewed.
@@ -171,9 +185,10 @@ export function testCapabilityPlan({
       "PostgreSQL test preparation did not provide a connection.",
     );
   const selectedFiles =
-    files === null ? null : new Set(files.map((file) => basename(file)));
+    files === null ? null : new Set(files.map(testFileIdentity));
   const selected = optionalTests.filter(
-    (test) => selectedFiles === null || selectedFiles.has(test.file),
+    (test) =>
+      selectedFiles === null || selectedFiles.has(join(testsRoot, test.file)),
   );
   const has = (capability) =>
     selected.some((test) => test.capability === capability);
@@ -236,11 +251,12 @@ export function testCapabilityPlan({
 }
 
 export function classifySkippedTest(data, plan) {
+  const identity = testFileIdentity(data.file);
   const declaration = optionalTests.find(
     (test) =>
-      test.file === basename(data.file || "") && test.name === data.name,
+      join(testsRoot, test.file) === identity && test.name === data.name,
   );
-  if (!declaration || (plan.files && !plan.files.has(declaration.file)))
+  if (!declaration || (plan.files && !plan.files.has(identity)))
     throw new Error(`Unexpected skipped test: ${data.name}`);
   const { capability, flag } = declaration;
   let allowed = false;

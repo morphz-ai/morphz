@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 type Plan = {
   env: NodeJS.ProcessEnv;
   files: Set<string> | null;
@@ -123,8 +125,9 @@ const windows = {
   file: "managed-artifact-store-upgrade.test.ts",
   name: "受管 Store PostgreSQL：DB已提交而根标记发布失败，不开放业务，同一重开完成升级",
 };
+const testsRoot = fileURLToPath(new URL("./", import.meta.url));
 const data = ({ file, name }: { file: string; name: string }) => ({
-  file: "/repo/application/tests/" + file,
+  file: join(testsRoot, file),
   name,
   skip: true,
 });
@@ -212,6 +215,54 @@ test("unknown, copied-name, misspelled and unselected skips cannot use an allow-
   );
 });
 
+test("optional identities preserve actual absolute and supported relative paths without basename collisions", () => {
+  const item = declarations[0];
+  const absolute = join(testsRoot, item.file);
+  const aliases = [
+    item.file,
+    `tests/${item.file}`,
+    `./tests/./${item.file}`,
+    `tests/nested/../${item.file}`,
+    absolute,
+  ];
+  const actual = plan({}, { files: aliases });
+  assert.deepEqual([...actual.files!], [absolute]);
+  assert.equal(actual.selected.length, 1);
+  for (const file of aliases)
+    assert.deepEqual(classifySkippedTest({ file, name: item.name }, actual), {
+      file: item.file,
+      name: item.name,
+      capability: item.capability,
+      reason: "explicit integration not enabled",
+    });
+});
+
+test("nested, wrong-workspace and dot-segment escaping files cannot borrow the same optional title", () => {
+  const item = declarations[0];
+  const unrelated = [
+    join(testsRoot, "copied", item.file),
+    `copied/${item.file}`,
+    `tests/copied/${item.file}`,
+    resolve(testsRoot, "../../../other-workspace/application/tests", item.file),
+    resolve(testsRoot, "..", item.file),
+    `../${item.file}`,
+    `tests/../${item.file}`,
+    `tests/../../${item.file}`,
+  ];
+  for (const file of unrelated) {
+    assert.throws(
+      () => classifySkippedTest({ file, name: item.name }, plan()),
+      /Unexpected skipped test/,
+    );
+    const selected = plan({}, { files: [file] });
+    assert.deepEqual(selected.selected, [], file);
+    assert.throws(
+      () => classifySkippedTest(data(item), selected),
+      /Unexpected skipped test/,
+    );
+  }
+});
+
 test("four Darwin-specific cases and the single Windows exclusion are platform-exact", () => {
   for (const item of darwin) {
     assert.equal(
@@ -285,7 +336,7 @@ test("required Runtime checks only selected files and all corresponding exact fl
   );
   const actual = plan(
     { ...runtime, MORPHZ_PROFILE_RUNTIME_E2E: "1" },
-    { files: ["/repo/application/tests/profile-agent-update.test.ts"] },
+    { files: [join(testsRoot, "profile-agent-update.test.ts")] },
   );
   assert.equal(actual.selected.length, 1);
   assert.throws(
