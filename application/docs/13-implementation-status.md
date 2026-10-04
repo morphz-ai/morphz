@@ -1,5 +1,55 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 22：发送与补充的完整宿主命令所有权
+
+`host/exchange-submission-commands.ts` 完整拥有原 `send` 和 `supplement`。
+真实 App 直接消费两别名，保留原准备锁／错误／reveal state 与 refs 的
+注册位置及全部 effects；只借原 render 事实、Client／Profile、writer 和
+inspector／exchange 动作，不新增 store、cache、mirror、请求或权限。
+构造在 startup return 及主体 inspector 别名初始化之后、所有消费者
+之前；原 hoisted `send` 延迟使用的 `openCollaboration` 不能提前借用。
+补充的 rAF／preventScroll focus 仍是 App 原样提供的 lazy DOM 端口。
+
+准入、浅捕获、follow-up 规范化、Profile 准备、四分支协议与准备锁顺序
+不变。staged 投递已消费旧稿并释放准备锁，后续旧失败／settled 不得清除
+下一条草稿或解锁另一份请求；反馈仍按原 key／会话归属。补充保留原
+principal／actant 检查、执行分支 title／60 字 label、未知回执冻结字节，
+overlay 关闭与显示输入／延迟焦点顺序，不触发另一份执行。
+
+两完整声明固定于实际 Git `9122ad28`。根环境独立核验声明原始字节，并
+在严格核对实际 App 导入／捕获／别名、完整 owner 算法及构造之后，只逆
+展开这个迁移 seam：完整旧 App 树为 **15924 nodes**，旧与还原 SHA 同为
+`d4dc62a3f401d714eb43b547cdd3c736ea191cf7e521e4ffe03784cb5fb51f65`。
+两个旧 whole-tree 门禁各仅增加 import 和严格展开，原摘要／数量没改；
+原协议门禁保留所有规则，将原八个回调反例定位到真实新 owner。
+独立只读复核没有发现生产缺陷或门禁放宽。新 15 个命令／有限消费合同
+与既有门禁／协议合计 **80/80**；受控端口不等同 React 调度、HTTP 授权、
+实际模型或用户窗口证明。新测试中途的 symbol／type-only import 与反例
+定位误判已修正，失败记录保留，不修改生产迎合预期。
+
+相同六份原生产页面测试，固定旧编译与本次新编译各 **28/28**。普通／
+并发快捷键、首发幂等、会话草稿／引用隔离、补充冻结回执、停止／等待、
+听写许可和迟到结果保留；原断言、预算及零重试不改，每例实际收到的
+静态资产核对完整 SHA。候选入口为 `app-haUAvumG.js`，JS SHA 为
+`7b487b81fe6edade0229168da9315edfc58f8d20dcf7d2fb395d25fcc1c831f2`；
+CSS 与 preload 逐字节保持旧值。私有编译前后源 SHA 相同，完整生产
+build／类型检查通过，原分包尺寸警告仍记录，未通过调整阈值掩盖。
+根环境全量 Node checkpoint 为 **1781 项：1610 通过、171 明确能力
+跳过、零失败／取消**；跳过不冒称原生、浏览器或外部能力已经验收。
+
+根证据：`/tmp/morphz-submission-task-root.IE1FTB` 的
+`submission-git-root-proof.log`、`submission-source-before/after.sha256`、
+`submission-frozen-build.log`、`submission-full-build.log`、
+`submission-full-node.log` 和
+`submission-current-baseline/submission-candidate` 报告及 `*-audit.json`。
+固定源、80 项合同和精确格式证据在
+`/tmp/morphz-exchange-submission-owner.ZnTkGS`。最初旧编译探针误包含
+不加载 App 的独立 hook 夹具与已撤回的独立转写入口，原失败单独保留；
+最终对照仅排除该转写用例，六份原文件 SHA 完全相同，不冒称它已修复。
+
+原 App 的已收尾进程仍待用户批准精确终止以恢复，同一 Runtime、数据与
+profile／center 未重启或重置；本批不是原生验收或整体架构迁移完成。
+
 ## 2026-10-04 前端阶段 21：事项交互读取与投影所有权
 
 `data/task-interactions.ts` 完整拥有原 `verifyArtifact`、`taskRuntime`

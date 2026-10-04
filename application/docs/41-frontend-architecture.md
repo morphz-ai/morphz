@@ -15,7 +15,7 @@
 | 导航状态与回执       | `host/use-workspace-navigation.ts` 的 state／commands／commit；`use-workspace-navigation-host.ts` 持有唯一 prefs／recency writer | 原 generation／trail 与焦点顺序保留；同身份刷新可接续已发起的导航，私有 UI、草稿与 DOM lease 仍退休。只迁已审查边界，实际 HTTP 资产与门禁证据见阶段 17；不是完整 App 拆分或原窗验收。      |
 | 应用导航与实例切换   | 同一 navigation commands owner；App 的应用入口与 ApplicationHost 的启动／关闭消费 typed actions                                  | Reader／剧本库／内容／Browser／激活／普通导航及原捕获邻居迁入；同步 prepared operation 保留原 Promise、Host 等待和 busy 清理，不新增状态、存储或 effect。有限旧实现对照与实际消费门禁。    |
 | 草稿生命周期         | `host/exchange-drafts.ts` 的三 state hooks／五 local commands；App 保留发送、导航与原退休 effect                                 | 原本机键、初始化位置、ref／render snapshot、逐步写入失败及 ID 保留；16 项逻辑、6 项有限 AST、4 项实际 React 挂载、31 项未改旧 Host 回归。不是新 store 或原子事务，原窗复验待解锁。         |
-| 发送协议编排         | `host/submit-exchange-draft.ts`；App 保留准备锁、草稿反馈与焦点                                                                  | 原四分支、Profile flush→scope→当前工作面复核、补充原身份与冻结重试字节、同步 receipt/catch/finally 端口；有限协议与实际接线门禁，不新增授权或发送入口。                                    |
+| 发送协议与宿主命令   | `host/submit-exchange-draft.ts` 与 `host/exchange-submission-commands.ts`；App 保留原注册与 DOM 焦点端口                         | 原四分支、Profile flush→scope→当前工作面复核、补充原身份与冻结重试字节、准备锁与 staged 反馈；有限协议、完整旧算法与实际接线门禁，不新增授权或发送入口。                                   |
 | 共享工作区顶栏       | `shell/WorkspaceTopbar.tsx`；App 保留原三个 portal target state/ref 与语义动作                                                   | 一个原生 header、原面包屑／显隐／导航按钮与三个常驻插槽，无新包装／key／样式；固定旧 markup、实际挂载及真实 App 导入／消费门禁，不接管领域画布或路由。                                     |
 | 会话历史查询         | `data/conversation-history.ts`；Client 持有唯一实例，workspace view 消费 head 策略                                               | 原 scope／缓存／分页 promise、head 复用与合并实际迁入；身份、epoch、catalogVersion、授权清理及 Boot 发布仍在 Client。固定旧实现对照及有限依赖门禁，不是全查询层或新的授权 owner。          |
 | 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费                                         | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。                         |
@@ -80,6 +80,15 @@ Client／SQLite 与旧新 Reader 页面对照及能力限制见阶段 19，尚�
 textQuotes、ReadingContext 和剧本域 compose 仍归原 owner，旧 Reader
 兼容回调未被真实 UI 调用。完整固定旧算法／树、有限实际接线、旧新
 编译页面与明确未验收边界见阶段 20，不将端口证明冒称原生验收。
+
+发送准入、准备锁与分支回执反馈，以及显式补充的作者检查、草稿和焦点顺序
+现归 `host/exchange-submission-commands.ts`，真实 App 直接消费两个完整
+原命令。原 feedback state／refs 的注册与 effects 仍在 App；每 render
+仅借原事实、Client／Profile 与 writer，不新增 store 或 latest 镜像。
+构造明确在 startup return 和 inspector 别名初始化之后、消费者之前，
+避免原 hoisted 函数借用晚声明动作的 TDZ；DOM rAF 仍是 App 的 lazy
+端口。完整旧 Git 树、原门禁基准和旧新编译页面对照见阶段 22，
+不把有限 source 或受控端口证明当作真实 Runtime／原生验收。
 
 交流读取的共享纯投影现归 `conversation-read.ts`；提示与历史的不同范围、
 消息数组引用合同及原回执排序仍由真实消费方显式指定。已读初始化、稳定
@@ -231,9 +240,10 @@ App 继续决定发送中 guard、实际已保存输入是否构成草稿、听�
 复核身份及当前工作面后才构造载荷；补充使用原请求的来源及旧 pending operation，
 先保留同 command ID／字节再走原 Client。不会读取当前页面参数重新绑定旧工作。
 
-Client 仍拥有 typed gateway、实际授权、outbox、首次会话事务与投递幂等；App
-仍拥有准备锁、原 key 的 functional 草稿消费、错误分类、staged 迟到失败保护、
-界面与焦点。receipt／rejected／settled 在原 execute continuation 内同步调用，
+Client 仍拥有 typed gateway、实际授权、outbox、首次会话事务与投递幂等；
+`exchange-submission-commands` 拥有准备锁操作、原 key 的 functional 草稿
+消费、错误分类和 staged 迟到失败保护，App 保留原 state／ref 注册、writer、
+界面及 DOM 焦点端口。receipt／rejected／settled 在原 execute continuation 内同步调用，
 不是返回后再 await 清理；本机保存回执不冒充已执行成功。阅读类型迁到纯
 `reading-context-model.ts`，原组件继续 re-export；宿主不导入领域 JSX。
 这不是已完成全部 Exchange，也没有新全局 store、重试循环或额外模型请求。

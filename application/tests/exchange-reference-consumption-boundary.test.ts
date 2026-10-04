@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { expandSubmissionConsumption } from "./fixtures/exchange-submission-contract.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -205,6 +206,7 @@ function metrics(parsed: Parsed) {
 }
 
 function validate(text: string, ownerText = owner) {
+  text = expandSubmissionConsumption(text);
   // Validate actual complete algorithms BEFORE allowing any finite App expansion.
   const ownerParsed = parse(ownerText);
   const ownerFactory = oneFunction(

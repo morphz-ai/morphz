@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import {
+  submissionOwnerText,
+  verifySubmissionConsumption,
+} from "./fixtures/exchange-submission-contract.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -35,8 +39,9 @@ import {
 } from "typescript/unstable/ast";
 
 // A finite gate for this submission protocol and its real App callsite only.
-// Runtime/Host remain authority, client owns outbox, and App owns preparation
-// lock and same-key UI feedback. Traces/browser tests, not this AST gate, prove
+// Runtime/Host remain authority, client owns outbox, and the consumed command
+// owner owns preparation lock/feedback through App's unchanged registrations.
+// Traces/browser tests, not this AST gate, prove
 // outcomes, async scheduling, React effects or native/visual equivalence.
 const oracleText = `
 const conditions = [
@@ -292,14 +297,20 @@ function ownership(
   ownerText: string,
   appText: string,
   modelText: string,
+  commandText = submissionOwnerText,
 ): string[] {
+  // Check actual App import/capture/aliases without replacing the actual command
+  // callbacks under test. The original protocol rules below now inspect them in
+  // their real owner, not a synthesized original App or an omitted callsite.
+  verifySubmissionConsumption(appText, commandText);
   const parsed = parse({
     "owner.ts": ownerText,
     "App.tsx": appText,
     "model.ts": modelText,
+    "commands.ts": commandText,
   });
   const owner = parsed.get("owner.ts")!,
-    app = parsed.get("App.tsx")!,
+    app = parsed.get("commands.ts")!,
     model = parsed.get("model.ts")!;
   const failures = new Set<string>();
   const check = (valid: boolean, rule: string) => {
@@ -620,11 +631,11 @@ function ownership(
         "owner-no-dom-outbox-or-latest-global-state",
       );
   });
-  const host = functions(app.source, "WorkspaceApp")[0];
+  const host = functions(app.source, "createExchangeSubmissionCommands")[0];
   const send = host && functions(host, "send")[0];
   const entries = importedCalls(
     app,
-    importedSymbols(app, "./host/submit-exchange-draft.js"),
+    importedSymbols(app, "./submit-exchange-draft.js"),
     "submitExchangeDraft",
   );
   const entry = entries[0];
@@ -714,9 +725,10 @@ function reject(
   appText: string,
   rule: string,
   modelText = model,
+  commandText = submissionOwnerText,
 ) {
   assert.ok(
-    ownership(ownerText, appText, modelText).includes(rule),
+    ownership(ownerText, appText, modelText, commandText).includes(rule),
     `Expected designated violation: ${rule}`,
   );
 }
@@ -844,7 +856,7 @@ test("submission gate rejects branch order, Profile ordering and frozen suppleme
   ])
     reject(changed(owner, before!, after!), app, rule!);
 });
-test("submission gate rejects fake App imports, context escape and changed UI feedback seams", () => {
+test("submission gate rejects fake command imports, context escape and changed UI feedback seams", () => {
   for (const [before, after, rule] of [
     [
       "    await submitExchangeDraft(",
@@ -887,7 +899,13 @@ test("submission gate rejects fake App imports, context escape and changed UI fe
       "original-gateway-profile-current-key-and-pending-writer-seams",
     ],
   ])
-    reject(owner, changed(app, before!, after!), rule!);
+    reject(
+      owner,
+      app,
+      rule!,
+      model,
+      changed(submissionOwnerText, before!, after!),
+    );
 });
 test("submission gate permits formatting and unrelated UI owners outside the migrated protocol", () => {
   assert.deepEqual(

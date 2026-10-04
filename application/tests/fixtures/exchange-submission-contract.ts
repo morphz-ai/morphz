@@ -1,0 +1,413 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { API } from "typescript/unstable/sync";
+import { createVirtualFileSystem } from "typescript/unstable/fs";
+import {
+  NodeFlags,
+  SyntaxKind,
+  isFunctionDeclaration,
+  isIdentifier,
+  isImportDeclaration,
+  isNamedImports,
+  isObjectBindingPattern,
+  isCallExpression,
+  isVariableDeclaration,
+  isVariableStatement,
+  isPrefixUnaryExpression,
+  isPostfixUnaryExpression,
+  type Node,
+  type Identifier,
+} from "typescript/unstable/ast";
+import { fixedSubmissionHashes } from "./exchange-submission-9122ad28.js";
+export const submissionOwnerText = readFileSync(
+  new URL(
+    "../../apps/web/src/host/exchange-submission-commands.ts",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const fixedText = readFileSync(
+  new URL("./exchange-submission-9122ad28.ts", import.meta.url),
+  "utf8",
+);
+const ownerPath = "./host/exchange-submission-commands.js";
+export function parseSubmission(text: string) {
+  const file = "/submission/App.tsx",
+    config = "/submission/tsconfig.json";
+  const api = new API({
+    cwd: "/submission",
+    fs: createVirtualFileSystem({
+      [file]: text,
+      [config]: JSON.stringify({
+        compilerOptions: { noLib: true, noResolve: true, jsx: "preserve" },
+        files: ["App.tsx"],
+      }),
+    }),
+  });
+  const snapshot = api.updateSnapshot({ openProjects: [config] });
+  try {
+    const project = snapshot.getProject(config)!;
+    assert.equal(
+      project.program.getSyntacticDiagnostics().length,
+      0,
+      "valid parsed submission source",
+    );
+    const source = project.program.getSourceFile(file)!;
+    const nodes: Node[] = [],
+      names: Identifier[] = [];
+    function walk(node: Node) {
+      nodes.push(node);
+      if (isIdentifier(node)) names.push(node);
+      node.forEachChild((child) => {
+        walk(child);
+      });
+    }
+    walk(source);
+    const resolved = project.checker.getSymbolAtLocation(names);
+    return {
+      source,
+      nodes,
+      symbols: new Map(names.map((node, i) => [node, resolved[i]?.id])),
+    };
+  } finally {
+    snapshot.dispose();
+    api.close();
+  }
+}
+export function submissionSyntax(node: Node): unknown {
+  if (isPrefixUnaryExpression(node) || isPostfixUnaryExpression(node))
+    return [node.kind, node.operator, submissionSyntax(node.operand)];
+  const children: unknown[] = [];
+  node.forEachChild((child) => {
+    children.push(submissionSyntax(child));
+  });
+  return [
+    node.kind,
+    node.flags &
+      (NodeFlags.Const |
+        NodeFlags.Let |
+        NodeFlags.Using |
+        NodeFlags.OptionalChain),
+    children.length ? children : node.getText(),
+  ];
+}
+function oneFunction(parsed: ReturnType<typeof parseSubmission>, name: string) {
+  const found = parsed.nodes
+    .filter(isFunctionDeclaration)
+    .filter((node) => node.name?.text === name);
+  assert.equal(found.length, 1, "single function " + name);
+  assert.ok(found[0]!.body);
+  return found[0]!;
+}
+export function fixedSubmissionDeclarations() {
+  const fixed = parseSubmission(fixedText);
+  return Object.fromEntries(
+    (["send", "supplement"] as const).map((name) => {
+      const value = oneFunction(fixed, name).getText();
+      assert.equal(
+        createHash("sha256").update(value).digest("hex"),
+        fixedSubmissionHashes[name],
+        "fixed Git9122 whole algorithm " + name,
+      );
+      return [name, value];
+    }),
+  ) as Record<"send" | "supplement", string>;
+}
+const captureText =
+  "function createExchangeSubmissionCommands({ render, client, profile, feedback, dictationControls, drafts: draftPorts, exchange, inspector, onNotice: setNotice, focusAfterSupplement }: ExchangeSubmissionCommandOptions) {\nconst { project, selectedConversation, selectedDraft, draft, sending, uploadingDrafts, contextKey, conversationId, workspace: state, emptyDraft, artifact, activeInstance, browserPage, readingExpected, currentReading, canAuthorizeDirectories, directoryScope, directoryState, rightInspector } = render;\nconst { sendPending, currentContext, setSending, setInputErrors, setRevealedInputs, setAnnotationRefresh } = feedback;\nconst { replace: setDraft, update: updateDraft } = draftPorts;\nconst { setMobileCollaboration, showSentInput, requestSentInputFocus, showInput } = exchange;\nconst { openCollaboration, closeInspector } = inspector;\nreturn { send, supplement };\n}";
+export const submissionAppAdapter =
+  "const { send, supplement } = createExchangeSubmissionCommands({\nrender: { project, selectedConversation, selectedDraft, draft, sending, uploadingDrafts, contextKey, conversationId, workspace: state, emptyDraft, artifact, activeInstance, browserPage, readingExpected, currentReading, canAuthorizeDirectories, directoryScope, directoryState, rightInspector },\nclient, profile,\nfeedback: { sendPending, currentContext, setSending, setInputErrors, setRevealedInputs, setAnnotationRefresh },\ndictationControls,\ndrafts: { replace: setDraft, update: updateDraft },\nexchange: { setMobileCollaboration, showSentInput, requestSentInputFocus, showInput },\ninspector: { openCollaboration, closeInspector },\nonNotice: setNotice,\nfocusAfterSupplement: () => requestAnimationFrame(() => input.current?.focus({ preventScroll: true })),\n});";
+
+export function verifySubmissionCommands(
+  text = submissionOwnerText,
+  algorithms = true,
+) {
+  const parsed = parseSubmission(text),
+    factory = oneFunction(parsed, "createExchangeSubmissionCommands");
+  assert.deepEqual(
+    factory.modifiers?.map((node) => node.kind),
+    [SyntaxKind.ExportKeyword],
+    "synchronous inert submission factory",
+  );
+  const expected = oneFunction(
+    parseSubmission(captureText),
+    "createExchangeSubmissionCommands",
+  );
+  const captures = factory.body!.statements.filter(
+    (node) => !isFunctionDeclaration(node),
+  );
+  assert.deepEqual(
+    [factory.parameters.map(submissionSyntax), captures.map(submissionSyntax)],
+    [
+      expected.parameters.map(submissionSyntax),
+      expected.body!.statements.map(submissionSyntax),
+    ],
+    "exact borrowed captures and direct public commands",
+  );
+  const runtime = [
+    ["../composer-drafts.js", "consumeComposerDraft"],
+    ["../application-transport.js", "RequestError"],
+    ["./submit-exchange-draft.js", "submitExchangeDraft"],
+  ];
+  const actualRuntime: string[][] = [];
+  for (const statement of parsed.source.statements) {
+    assert.ok(
+      isImportDeclaration(statement) ||
+        statement.kind === SyntaxKind.TypeAliasDeclaration ||
+        statement === factory,
+      "finite inert submission module",
+    );
+    if (
+      !isImportDeclaration(statement) ||
+      statement.importClause?.phaseModifier === SyntaxKind.TypeKeyword
+    )
+      continue;
+    const named = statement.importClause?.namedBindings;
+    assert.ok(named && isNamedImports(named), "named runtime dependencies");
+    actualRuntime.push([
+      statement.moduleSpecifier.getText().slice(1, -1),
+      named.elements.map((node) => node.getText()).join(","),
+    ]);
+  }
+  assert.deepEqual(
+    actualRuntime,
+    runtime,
+    "only existing submission runtime dependencies",
+  );
+  const old = fixedSubmissionDeclarations();
+  assert.deepEqual(
+    factory
+      .body!.statements.filter(isFunctionDeclaration)
+      .map((node) => node.name?.text),
+    ["send", "supplement"],
+    "complete two-command owner",
+  );
+  if (!algorithms) return;
+  for (const name of ["send", "supplement"] as const) {
+    let source = oneFunction(parsed, name).getText();
+    if (name === "supplement") {
+      assert.equal(
+        source.split("focusAfterSupplement();").length,
+        2,
+        "one deferred DOM focus port",
+      );
+      source = source.replace(
+        "focusAfterSupplement();",
+        "requestAnimationFrame(() => input.current?.focus({ preventScroll: true }));",
+      );
+    }
+    assert.deepEqual(
+      submissionSyntax(oneFunction(parseSubmission(source), name)),
+      submissionSyntax(oneFunction(parseSubmission(old[name]), name)),
+      "whole original submission algorithm " + name,
+    );
+  }
+}
+function checkedConsumption(
+  appText: string,
+  ownerText: string,
+  algorithms: boolean,
+) {
+  verifySubmissionCommands(ownerText, algorithms);
+  const parsed = parseSubmission(appText);
+  const imports = parsed.source.statements
+    .filter(isImportDeclaration)
+    .filter(
+      (node) => node.moduleSpecifier.getText().slice(1, -1) === ownerPath,
+    );
+  assert.equal(imports.length, 1, "one actual submission import");
+  const declaration = imports[0]!,
+    named = declaration.importClause?.namedBindings;
+  assert.ok(named && isNamedImports(named));
+  assert.deepEqual(
+    named.elements.map((node) => node.propertyName?.text ?? node.name.text),
+    ["createExchangeSubmissionCommands"],
+    "actual imported submission factory",
+  );
+  assert.notEqual(
+    declaration.importClause?.phaseModifier,
+    SyntaxKind.TypeKeyword,
+  );
+  const binding = parsed.symbols.get(named.elements[0]!.name);
+  assert.ok(binding !== undefined);
+  const calls = parsed.nodes
+    .filter(isCallExpression)
+    .filter(
+      (node) =>
+        isIdentifier(node.expression) &&
+        parsed.symbols.get(node.expression) === binding,
+    );
+  assert.equal(calls.length, 1, "one real borrowed submission call");
+  const call = calls[0]!;
+  assert.ok(
+    isVariableDeclaration(call.parent) &&
+      call.parent.initializer === call &&
+      isObjectBindingPattern(call.parent.name),
+    "direct send supplement aliases",
+  );
+  const statement = call.parent.parent.parent,
+    workspace = oneFunction(parsed, "WorkspaceApp");
+  assert.ok(
+    isVariableStatement(statement) &&
+      statement.parent === workspace.body &&
+      statement.declarationList.declarations.length === 1 &&
+      statement.declarationList.flags & NodeFlags.Const,
+    "render-local submission call",
+  );
+  const aliases = call.parent.name;
+  assert.ok(isObjectBindingPattern(aliases));
+  assert.deepEqual(
+    aliases.elements.map((node) => node.getText()),
+    ["send", "supplement"],
+    "two original direct aliases",
+  );
+  const expected =
+    parseSubmission(submissionAppAdapter).nodes.filter(isCallExpression)[0]!;
+  assert.equal(call.typeArguments?.length ?? 0, 0, "no submission type bridge");
+  assert.equal(call.arguments.length, 1);
+  assert.deepEqual(
+    submissionSyntax(call.arguments[0]!),
+    submissionSyntax(expected.arguments[0]!),
+    "exact captured submission ports",
+  );
+  const siblings = workspace.body!.statements,
+    index = siblings.indexOf(statement);
+  assert.ok(
+    index > 0 &&
+      isVariableStatement(siblings[index - 1]!) &&
+      siblings[index - 1]!.getText().includes("} = subjectInspector;") &&
+      isVariableStatement(siblings[index + 1]!) &&
+      siblings[index + 1]!.getText().startsWith("const agentName"),
+    "late constructor after inspector aliases before agentName",
+  );
+  for (const alias of aliases.elements) {
+    const name = alias.name;
+    assert.ok(name && isIdentifier(name));
+    const id = parsed.symbols.get(name);
+    for (const node of parsed.nodes
+      .filter(isCallExpression)
+      .map((node) => node.expression)
+      .filter(isIdentifier)
+      .filter((node) => node.text === name.text))
+      assert.equal(
+        parsed.symbols.get(node),
+        id,
+        "actual direct submission consumer " + name.text,
+      );
+  }
+  assert.equal(
+    parsed.nodes
+      .filter(isFunctionDeclaration)
+      .filter((node) => ["send", "supplement"].includes(node.name?.text ?? ""))
+      .length,
+    0,
+    "no old duplicate submission body",
+  );
+  assert.equal(
+    parsed.nodes
+      .filter(isIdentifier)
+      .filter((node) => parsed.symbols.get(node) === binding).length,
+    2,
+    "factory import only directly consumed once",
+  );
+  return { parsed, statement, declaration };
+}
+// Finite source contract, not visual/API proof. Validate actual production first;
+// restore only this seam for the existing unchanged whole-App hashes/counts.
+export function expandSubmissionConsumption(
+  appText: string,
+  ownerText = submissionOwnerText,
+) {
+  const { parsed, statement, declaration } = checkedConsumption(
+    appText,
+    ownerText,
+    true,
+  );
+  const old = fixedSubmissionDeclarations(),
+    image = oneFunction(parsed, "importImage");
+  const edits = [
+    { start: statement.getStart(), end: statement.end, value: "" },
+    {
+      start: image.getStart(),
+      end: image.getStart(),
+      value: old.send + "\n" + old.supplement + "\n",
+    },
+    {
+      start: declaration.getStart(),
+      end: declaration.end,
+      value:
+        'import { submitExchangeDraft } from "./host/submit-exchange-draft.js";',
+    },
+  ];
+  const originals = [
+    [
+      "../../../packages/core/src/model.js",
+      'import { spaceKind, inConversation, discussionId, applicationFor } from "../../../packages/core/src/model.js";',
+      'import { spaceKind, inConversation, discussionId, applicationFor, type InputDispatchMode } from "../../../packages/core/src/model.js";',
+    ],
+    [
+      "./composer-drafts.js",
+      'import { composeArtifactDrafts, replaceComposerSurface, updateComposerDraft } from "./composer-drafts.js";',
+      'import { composeArtifactDrafts, consumeComposerDraft, replaceComposerSurface, updateComposerDraft } from "./composer-drafts.js";',
+    ],
+  ];
+  for (const [module, expected, value] of originals) {
+    const imports = parsed.source.statements
+      .filter(isImportDeclaration)
+      .filter(
+        (node) => node.importClause?.phaseModifier !== SyntaxKind.TypeKeyword,
+      )
+      .filter((node) => node.moduleSpecifier.getText().slice(1, -1) === module);
+    assert.equal(
+      imports.length,
+      1,
+      "original submission import seam " + module,
+    );
+    assert.deepEqual(
+      submissionSyntax(imports[0]!),
+      submissionSyntax(parseSubmission(expected!).source.statements[0]!),
+      "only unused submission symbol removed " + module,
+    );
+    edits.push({
+      start: imports[0]!.getStart(),
+      end: imports[0]!.end,
+      value: value!,
+    });
+  }
+  const desktop = parsed.source.statements
+    .filter(isImportDeclaration)
+    .filter(
+      (node) => node.moduleSpecifier.getText().slice(1, -1) === "./desktop.js",
+    );
+  assert.equal(desktop.length, 1);
+  for (const module of [
+    "../../../packages/core/src/continuation.js",
+    "./application-transport.js",
+  ])
+    assert.equal(
+      parsed.source.statements
+        .filter(isImportDeclaration)
+        .filter(
+          (node) => node.moduleSpecifier.getText().slice(1, -1) === module,
+        ).length,
+      0,
+      "unused import is absent " + module,
+    );
+  edits.push({
+    start: desktop[0]!.getStart(),
+    end: desktop[0]!.getStart(),
+    value:
+      'import type { InputContinuation } from "../../../packages/core/src/continuation.js";\nimport { RequestError } from "./application-transport.js";\n',
+  });
+  let result = appText;
+  for (const edit of edits.sort((a, b) => b.start - a.start))
+    result = result.slice(0, edit.start) + edit.value + result.slice(edit.end);
+  return result;
+}
+export function verifySubmissionConsumption(
+  appText: string,
+  ownerText = submissionOwnerText,
+) {
+  checkedConsumption(appText, ownerText, false);
+}
