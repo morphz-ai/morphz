@@ -692,11 +692,8 @@ test("bookmark factory value binding registration captured ports and public cons
     [
       changed(
         sources.Client,
-        "const bookmarkInteractions = createBookmarkInteractions({",
-        "const bookmarkInteractions = Promise.resolve(createBookmarkInteractions({",
-      ).replace(
-        "    savedInputScope,\n  });\n  const taskInteractions",
-        "    savedInputScope,\n  }));\n  const taskInteractions",
+        "  const bookmarkInteractions = createBookmarkInteractions({\n    current,\n    call: applicationCall,\n    savedInputScope,\n  });",
+        "  const bookmarkInteractions = Promise.resolve(createBookmarkInteractions({\n    current,\n    call: applicationCall,\n    savedInputScope,\n  }));",
       ),
       "bookmark-direct-registration",
     ],

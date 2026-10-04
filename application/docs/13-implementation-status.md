@@ -1,5 +1,28 @@
 # 桌面能力实施记录
 
+## 2026-10-05 完整 Node 回归与书签反例生成修复
+
+冻结 `e464367d` 的 proper `npm test` 实际选择全部 350 个测试文件：
+2352 项中 **2342 通过、1 失败、9 项显式集成 opt-out**，无取消或
+unexpected skip。专用 PostgreSQL 已使用，不把未启用的 Runtime／S3／
+native-focus 集成称作环境缺失。完整结果仍是失败，不覆盖此前红记录。
+
+唯一失败发生在书签源码门禁的第三个 Promise 包裹反例：闭合括号的
+unchecked replace 假设下一声明紧邻 task owner；合法新增独立 object
+owner 后替换零命中，先产生非法源，未进入预期拒绝规则。根核完整诊断
+及实际注册，只将该反例改为唯一匹配完整目标注册；不依赖相邻模块，保留
+parse 前置、原 `bookmark-direct-registration` 规则和其他全部断言。
+生产 Client、书签算法、权限和界面不改。
+
+根 proper 三文件（boundary／pure／Client）**18/18**，零失败／跳过／
+取消；当前已有独立 object owner 的实际源通过，Promise 反例合法解析后
+按原指定规则拒绝。这是唯一红项的定向复验，不冒充修复后的全量绿灯；
+后续生产拆分完成后须重新冻结并跑完整回归。
+
+证据：`/tmp/morphz-subject-schedules-root.udmSl9/full-node-current-e464367d.log`、
+`/tmp/morphz-bookmark-mutant-diagnosis.jOeE3i/REPORT.md`、`diagnosis.json`、
+根 `root-final-neighbors.log`。
+
 ## 2026-10-05 前端阶段 52：弹窗相邻控件 carrier 的当前交接
 
 仅两份 surface 源码门禁。普通检查先核 `ui/controls/surfaces.css` 实际
