@@ -251,11 +251,6 @@
 }
 .selection-actions {
   color: var(--ink);
-  background: var(--surface-popover);
-  border-color: var(--line);
-  box-shadow: var(--elevation-popover);
-  -webkit-backdrop-filter: var(--popup-blur);
-  backdrop-filter: var(--popup-blur);
 }
 .selection-actions button {
   display: inline-flex;
@@ -864,14 +859,6 @@
 }
 .app .attachment-preview-dialog:has(> pre) {
   --ui-dialog-width: 680px;
-}
-.app :is(.composer-options, .theme-menu, .workspace-options-menu) {
-  background: var(--surface-popover);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  box-shadow: var(--elevation-popover);
-  -webkit-backdrop-filter: var(--popup-blur);
-  backdrop-filter: var(--popup-blur);
 }
 .app :is(.theme-menu, .appearance-settings) .mode-options {
   background: light-dark(#e5e5e5, #303030);

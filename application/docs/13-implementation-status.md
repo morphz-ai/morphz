@@ -1,5 +1,73 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 31：非模态浮层表面的唯一样式责任
+
+`ui/popup-surface.css` 现承接原五份 CSS 中七条表面规则的 **28** 项
+声明，保留完整原值、权重、声明顺序和 fallback，不只复制最后获胜值。
+真实入口在 `ui.css` 后唯一导入；原 workflow／dialog／visual 相对顺序
+不变。Launcher 的强选择器仍为 20px，普通 app 菜单仍为 10px，非 app
+主题 fallback 仍为 12px，选文工具栏仍为 8px。选文是 body portal，
+其裸选择器未收窄到 `.app`。这些是原值迁移，不是新审美规范。
+原 `ComposerOptions` 的 25 个静态 JSX 消费点分布于 18 个模块，
+并不代表同时挂载 25 个菜单。原组件、DOM、状态、焦点、尺寸、子项
+hover、动画、token 与辅助模式仍归各自 owner，不新增包装或请求。
+
+根独立实际 Git `9708abbd` 证明：五个完整 CSS 仅逆回批准删除项，
+main 仅撤回唯一 import 后均逐字恢复原文件；新 owner 精确等于原七条
+tuple。**194** 份其余 renderer source 完整 Git 字节未变。实际旧新
+编译 CSS 中，选定表面的属性值及同属性序列保持，选文 border →
+border-color 顺序保持，其余 **2752** 条编译规则的上下文、选择器和
+有序声明相等。相邻两条选文规则被原编译器合并为六条；不将这一有限
+证明称为任意 CSS cascade 定理。根最终 build 的三份实际入口资产
+与冻结新版页面测试加载的资产 SHA 完全一致。
+
+十份完整相关页面在冻结原版／新版各 **52/52**，无 retry／skip；
+每边核对 **231** 份实际 HTTP 入口资产，完整 spec 与私有 fixture
+源码相同。原独立 Dock 组件回归另为 **27/27**，不混入完整 App
+资产审计。三个旧 spec 只校准已撤菜单入口、工作台恢复 Browser 时的
+返回路径，以及无通知场景的明确前置范围，保留原材质、焦点、空间、
+选文、来源和草稿断言；完整 source inverse 与原测试／断言预算核对
+通过，已独立提交 `34631d98`。初轮重复资产探针、私有服务静态目录、
+共享中心通知与 guest fallback 前提错误的 RED 保留，不冒称生产缺陷。
+
+新增八项有限 CSS／真实入口门禁及十项旧样式回归通过；加九项引用
+纯回归的根组合为 **27/27**。新规则具有 53 个可解析负例，并允许
+无关 module、feature、子控件合法演进。固定迁移 provenance 与当前
+职责约束分开：相邻整文件旧源检查只在独立迁移证明执行，不锁普通 CI。
+原阶段 30 相邻旧源误锁也已单独修正并提交 `739656bf`，原算法与安全
+反例不删。这只是部分测试治理收口，旧跨 owner inverse 链仍待继续。
+
+根独立真实 React 挂载：普通 current-only 与显式
+`MORPHZ_TEST_POPUP_MIGRATION_EQUIVALENCE=1` 各 **10/10**，无 skip；
+八场景组覆盖原 native popover、Appearance／Profile／Scope、实际
+Launcher、SelectionActions／Provider body portal、关闭／焦点／命中、
+引用版本、卸载清理及非 app／复合 fallback。四色×明暗×宽窄×CSS
+zoom 1／2 共 **32** 有效组合、三种真实表面共 **96** 次捕获；完整
+DOM、材料、0.01px 几何和动作结果旧新精确相等。普通动效未关闭，
+先捕获真实子项 `menu-content-reveal` 的 180ms timing／keyframes，
+再等待有限动画结束。有效 media、native datasets、guest fallback 与
+触摸单独验证，不当作原生系统辅助偏好或 guest 合成器验收。
+
+根最终完整 build／类型、指定十条路径格式与差异检查通过。原
+`styles.css` 的既有 product-bridge 格式警告未借此整文件重排，原段
+完整字节已对照。全量 Node **2015 项：1855 通过、160 能力跳过、
+零失败／取消**；新增挂载显式使用已有 headless Chromium。受控回调
+不冒称真实 Launcher 事务、HTTP ACL、逐帧像素、OS zoom 或原 App。
+
+本批生产与自动验证已完成；整体目标保持 active，没有额外推送。
+原 App 仍卡退出清理，强制退出待用户确认，不重置 profile／中心或
+重启 Runtime。其余完整查询生命周期、五领域展示、控件／样式责任、
+长期门禁治理、全产品与原窗验收仍未完成。
+
+根证据：`/tmp/morphz-popup-surface-root.R9WKkQ` 的 manifest、完整旧新
+页面／HTTP audit、page-equivalence、source／compiled／boundary proofs、
+calibration inverse、独立 Dock、focused、mounted 两模式、最终 build／
+Node／format，以及 `root-final-source-build-mounted-proof.json`。
+生产证明在 `/tmp/morphz-popup-surface-production.KMurRw`，门禁在
+`/tmp/morphz-popup-surface-boundary.H8qk8y`，挂载及独立 actual Git
+runtime-only CSS 顺序重算在 `/tmp/morphz-popup-surface-mounted.aEdW2o`。
+旧 26 CSS 的完整字节与顺序分别核对，新顺序仅新增唯一 popup slot。
+
 ## 2026-10-04 前端阶段 30：完整搜索／选文／评论准备与 reveal 生命周期
 
 现有 `host/exchange-reference-commands.ts` 持有原搜索选文、现件选区、

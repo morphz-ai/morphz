@@ -863,10 +863,6 @@
   padding: 4px;
   display: flex;
   gap: 2px;
-  background: light-dark(#fff, #292929);
-  border: 1px solid light-dark(#ddd, #444);
-  box-shadow: 0 4px 16px #0002;
-  border-radius: 8px;
   color: light-dark(#222, #eee);
   font:
     13px -apple-system,

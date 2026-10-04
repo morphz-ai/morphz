@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App.js";
 import "./styles.css";
 import "./ui.css";
+import "./ui/popup-surface.css";
 import "./workflow.css";
 import "./ui/dialog-surface.css";
 import "./visual-system.css";

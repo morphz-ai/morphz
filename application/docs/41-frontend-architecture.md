@@ -68,6 +68,16 @@ is／where 及保守隐式 subject；不误把 footer／input 或伪元素内容
 这不是任意 CSS 选择器／cascade 定理，也不是全部 Button／Menu／Dialog
 完成；实际旧新编译页面、辅助模式及像素证据另见阶段 25，原 App 待恢复。
 
+非模态浮层表面的 owner 现为 `ui/popup-surface.css`，main 在 ui 后
+唯一导入。它承接原五 CSS 中七条规则／28 项材料声明，保留 Launcher
+强选择器、非 app／复合 fallback 与 body portal 选文的原 cascade；
+原组件、几何、子控件、token、动效和辅助模式不迁移或改变。
+`popup-surface-ownership.test.ts` 治理这一有限表面及真实 runtime 入口，
+不锁无关 feature／控件。挂载普通 CI 验证现行八场景合同；完整旧新
+快照对照通过显式迁移开关执行，固定旧 CSS 来源不依赖 CI 调用 Git。
+194 份 renderer 整文件未改、实际编译规则、十份完整页面与真实组件
+旧新对照分别见阶段 31；这些不是原 App 或全产品样式验收。
+
 剧本编辑十二个读取／同步 getter 及原 64／512 FIFO 缓存操作现归
 `data/script-editor-reads.ts`。Client 保留原 ref 初始化与唯一身份／代次
 检查，借出明确语义端口，三个原清理 seam 同步调用该 owner；构造无
@@ -494,7 +504,10 @@ UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套�
 也可能触发旧全文 hash，需要年代顺序的 inverse 链。它证明某批迁移的
 变化范围，不等于长期职责约束已经设计完善。后续治理须保留原始迁移
 证据及所有安全反例，先补足当前 owner／消费／行为的明确规则与合法
-无关变更的正例，再分离固定迁移证明和当前生产约束；这项尚未实现。
+无关变更的正例，再分离固定迁移证明和当前生产约束。阶段 31 已将
+阶段 30 的相邻整文件来源校验改为不可变历史档案，并独立证明原字节；
+新 popup 门禁只约束有限表面，挂载普通 CI 不锁旧新整棵历史快照或
+相邻组件全文。已有其他 inverse 链尚未整体治理，不称该目标完成。
 不能只改 glob、历史 hash 或删断言求绿，也不新增一个通用 AST broker。
 
 ### 6.3 共享顶栏的实际组合边界

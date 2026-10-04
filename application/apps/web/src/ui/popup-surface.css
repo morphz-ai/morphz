@@ -1,0 +1,50 @@
+/* Existing nonmodal popup materials, in their original source order.
+   Geometry, controls, tokens, accessibility policy and motion stay with their owners. */
+
+/* Launcher keeps its stronger material variant. */
+.app .composer-options.application-dock-menu {
+  border-radius: 20px;
+}
+
+/* Non-app and legacy fallbacks retain their original distinctions. */
+.theme-menu {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+  box-shadow: 0 10px 36px var(--shadow);
+}
+.workspace-options-menu {
+  border: 1px solid var(--line);
+  border-radius: var(--ui-radius-panel);
+  background: var(--paper);
+  box-shadow: 0 8px 28px var(--shadow);
+}
+.composer-options {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px var(--shadow);
+}
+.selection-actions {
+  background: light-dark(#fff, #292929);
+  border: 1px solid light-dark(#ddd, #444);
+  box-shadow: 0 4px 16px #0002;
+  border-radius: 8px;
+}
+
+/* The selected-text toolbar is a body portal, not an app descendant. */
+.selection-actions {
+  background: var(--surface-popover);
+  border-color: var(--line);
+  box-shadow: var(--elevation-popover);
+  -webkit-backdrop-filter: var(--popup-blur);
+  backdrop-filter: var(--popup-blur);
+}
+.app :is(.composer-options, .theme-menu, .workspace-options-menu) {
+  background: var(--surface-popover);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--elevation-popover);
+  -webkit-backdrop-filter: var(--popup-blur);
+  backdrop-filter: var(--popup-blur);
+}

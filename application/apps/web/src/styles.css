@@ -1844,10 +1844,6 @@ kbd {
   top: calc(100% + 14px);
   width: 264px;
   padding: 17px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--paper);
-  box-shadow: 0 10px 36px var(--shadow);
   z-index: 40;
 }
 .mode-options {

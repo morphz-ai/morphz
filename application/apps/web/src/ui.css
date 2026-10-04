@@ -772,11 +772,7 @@ body:has(dialog[open]) .cognitive-application-frame {
   right: 0;
   top: 40px;
   width: 180px;
-  border: 1px solid var(--line);
-  border-radius: var(--ui-radius-panel);
   padding: 6px;
-  background: var(--paper);
-  box-shadow: 0 8px 28px var(--shadow);
 }
 .app .workspace-options-menu button {
   width: 100%;
@@ -1670,10 +1666,6 @@ body:has(dialog[open]) .cognitive-application-frame {
   max-width: calc(100vw - 16px);
   overflow-y: auto;
   color: var(--ink);
-  background: var(--paper);
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  box-shadow: 0 6px 20px var(--shadow);
 }
 .composer-options::backdrop {
   -webkit-app-region: no-drag;
