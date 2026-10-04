@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { inverseExchangeReferencePreparationModule } from "./fixtures/exchange-reference-preparation-consumption.js";
-import { expandSubmissionConsumption } from "./fixtures/exchange-submission-contract.js";
-import { expandWorkspaceContentOpeningConsumption } from "./fixtures/workspace-content-opening-consumption.js";
+import { verifyExchangeReferencePreparationConsumption } from "./fixtures/exchange-reference-preparation-consumption.js";
+import { referenceGovernanceHistory } from "./fixtures/exchange-reference-governance-history.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -39,24 +38,21 @@ import {
   referenceOriginalImports,
 } from "./fixtures/exchange-reference-consumption-b5f698dd.js";
 
-const { app } = expandWorkspaceContentOpeningConsumption(
-  readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8"),
-  readFileSync(
-    new URL(
-      "../apps/web/src/host/use-workspace-navigation.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  ),
+// Immutable actual Git source retains all original whole-tree assertions and
+// twenty-six counterfactuals. It is not an inverse of today's App or an ordinary
+// current whole-App contract. Current consumption is checked separately below.
+const app = referenceGovernanceHistory.consumptionApp;
+const owner = referenceGovernanceHistory.owner;
+const currentApp = readFileSync(
+  new URL("../apps/web/src/App.tsx", import.meta.url),
+  "utf8",
 );
-const owner = inverseExchangeReferencePreparationModule(
-  readFileSync(
-    new URL(
-      "../apps/web/src/host/exchange-reference-commands.ts",
-      import.meta.url,
-    ),
-    "utf8",
+const currentOwner = readFileSync(
+  new URL(
+    "../apps/web/src/host/exchange-reference-commands.ts",
+    import.meta.url,
   ),
+  "utf8",
 );
 const fixed = readFileSync(
   new URL("./fixtures/exchange-reference-39cf13cf.ts", import.meta.url),
@@ -216,7 +212,6 @@ function metrics(parsed: Parsed) {
 }
 
 function validate(text: string, ownerText = owner) {
-  text = expandSubmissionConsumption(text);
   // Validate actual complete algorithms BEFORE allowing any finite App expansion.
   const ownerParsed = parse(ownerText);
   const ownerFactory = oneFunction(
@@ -400,11 +395,346 @@ function validate(text: string, ownerText = owner) {
   );
 }
 
-test("actual App uniquely consumes complete reference owner with original ports and complete fixed tree", () => {
+test("immutable historical App retains the complete original tree and reference proof", () => {
   validate(app);
 });
 
-test("finite reference gate accepts an actual import alias and trivia without normalizing consumers", () => {
+test("raw current App borrows the real eight-command owner without whole-App inverse or inventory", () => {
+  const actual = verifyExchangeReferencePreparationConsumption(
+    currentApp,
+    currentOwner,
+  );
+  assert.deepEqual(actual.methods, [
+    ...referenceMethods,
+    "prepareSearchQuote",
+    "selectArtifactQuote",
+    "changeTextQuotes",
+    "focusCommentComposer",
+  ]);
+  for (const [key, value] of [
+    ["baseline", referenceGovernanceHistory.baselineApp],
+    ["consumption", app],
+    ["owner", owner],
+  ] as const)
+    assert.equal(
+      createHash("sha256").update(value).digest("hex"),
+      referenceGovernanceHistory.metadata[key].sha256,
+      "immutable actual Git reference history " + key,
+    );
+});
+
+test("current reference consumption permits actually consumed independent React features and actual import/command aliases", () => {
+  const independent = `\nfunction IndependentReferenceFeature(){ const [value,setValue]=useState(0);useEffect(()=>setValue(v=>v+1),[]);return <aside>{value}</aside>; }\n`;
+  // This new feature has an actual JSX consumer, not an unused helper.
+  // This is a parsed source contract, not mounted React execution.
+  const withFeature =
+    currentApp
+      .replace(
+        "        <SearchDocuments",
+        "        <><IndependentReferenceFeature /><IndependentOwnerFeature /><SearchDocuments",
+      )
+      .replace(
+        "          onQuote={prepareSearchQuote}\n        />",
+        "          onQuote={prepareSearchQuote}\n        /></>",
+      ) + independent;
+  assert.notEqual(withFeature, currentApp);
+  verifyExchangeReferencePreparationConsumption(
+    'import {IndependentOwnerFeature} from "./host/exchange-reference-commands.js";\n' +
+      withFeature,
+    currentOwner +
+      `\nexport function IndependentOwnerFeature(){const [value,setValue]=useState(0);useEffect(()=>setValue(v=>v+1),[]);return value;}\n`,
+  );
+  const alias = currentApp
+    .replace(
+      "  createExchangeReferenceCommands,",
+      "  createExchangeReferenceCommands as referenceCommands,",
+    )
+    .replace("} = createExchangeReferenceCommands({", "} = referenceCommands({")
+    .replace(
+      "    prepareSearchQuote,\n    selectArtifactQuote,",
+      "    prepareSearchQuote: quoteFromSearch,\n    selectArtifactQuote,",
+    )
+    .replace("onQuote={prepareSearchQuote}", "onQuote={quoteFromSearch}");
+  verifyExchangeReferencePreparationConsumption(alias, currentOwner);
+  const constAliases = currentApp
+    .replace(
+      "  const state = client.boot?.workspace;",
+      "  const referenceFactory = createExchangeReferenceCommands;\n  const state = client.boot?.workspace;",
+    )
+    .replace("} = createExchangeReferenceCommands({", "} = referenceFactory({")
+    .replace(
+      "  function readingTargetConsumed(requestId: string) {",
+      "  const searchQuote = prepareSearchQuote;\n  const contentQuote = composeContent;\n  function readingTargetConsumed(requestId: string) {",
+    )
+    .replace("onQuote={prepareSearchQuote}", "onQuote={searchQuote}")
+    .replace("onCompose={composeContent}", "onCompose={contentQuote}");
+  verifyExchangeReferencePreparationConsumption(constAliases, currentOwner);
+});
+
+test("current borrowed modules runtime phases and returned command origins reject foreign nominal lookalikes", () => {
+  const variants: [string, string, RegExp][] = [
+    [
+      "foreign called controller",
+      currentApp.replace(
+        '} from "./host/use-exchange-controller.js";',
+        '} from "./host/foreign-controller.js";',
+      ),
+      /reference called borrowed factory origin useExchangeController/,
+    ],
+    [
+      "foreign called draft factory",
+      currentApp.replace(
+        '} from "./host/exchange-drafts.js";',
+        '} from "./host/foreign-drafts.js";',
+      ),
+      /reference called borrowed factory origin createExchangeDraftCommands/,
+    ],
+    [
+      "unused actual controller import",
+      'import {useExchangeController as actualController} from "./host/use-exchange-controller.js";\n' +
+        currentApp.replace(
+          '} from "./host/use-exchange-controller.js";',
+          '} from "./host/foreign-controller.js";',
+        ),
+      /reference called borrowed factory origin useExchangeController/,
+    ],
+    [
+      "unused actual draft import",
+      'import {createExchangeDraftCommands as actualDrafts} from "./host/exchange-drafts.js";\n' +
+        currentApp.replace(
+          '} from "./host/exchange-drafts.js";',
+          '} from "./host/foreign-drafts.js";',
+        ),
+      /reference called borrowed factory origin createExchangeDraftCommands/,
+    ],
+    [
+      "type-only controller",
+      currentApp.replace(
+        "  useExchangeController,\n",
+        "  type useExchangeController,\n",
+      ),
+      /reference called borrowed factory origin useExchangeController/,
+    ],
+    [
+      "type-only draft factory",
+      currentApp.replace(
+        "  createExchangeDraftCommands,\n",
+        "  type createExchangeDraftCommands,\n",
+      ),
+      /reference called borrowed factory origin createExchangeDraftCommands/,
+    ],
+    [
+      "unused returned search command",
+      'import {prepareSearchQuote as foreignQuote} from "./host/foreign-quote.js";\n' +
+        currentApp.replace(
+          "onQuote={prepareSearchQuote}",
+          "onQuote={foreignQuote}",
+        ),
+      /direct actual preparation consumer prepareSearchQuote/,
+    ],
+    [
+      "unused returned content command",
+      'import {composeContent as foreignContent} from "./host/foreign-content.js";\n' +
+        currentApp.replace(
+          "onCompose={composeContent}",
+          "onCompose={foreignContent}",
+        ),
+      /reference original direct consumer composeContent/,
+    ],
+  ];
+  for (const [label, variant, rule] of variants) {
+    assert.notEqual(variant, currentApp, label);
+    parse(variant);
+    assert.throws(
+      () =>
+        verifyExchangeReferencePreparationConsumption(variant, currentOwner),
+      rule,
+      label,
+    );
+  }
+});
+
+test("current handoff rejects actual reference authority phase command identity and lifecycle deltas for finite named rules", () => {
+  function rejects(
+    before: string,
+    after: string,
+    rule: RegExp,
+    module = false,
+  ) {
+    const source = module ? currentOwner : currentApp;
+    const factory = module ? "" : parseReferencePreparationForCurrent(source);
+    const target = factory.includes(before) ? factory : source;
+    assert.equal(
+      target.split(before).length - 1,
+      1,
+      "exact current handoff target " + before,
+    );
+    const changed = source.replace(target, target.replace(before, after));
+    parse(changed);
+    assert.throws(
+      () =>
+        verifyExchangeReferencePreparationConsumption(
+          module ? currentApp : changed,
+          module ? changed : currentOwner,
+        ),
+      rule,
+    );
+  }
+  for (const [before, after, rule] of [
+    [
+      ownerPath,
+      "./host/not-the-reference-owner.js",
+      /one actual reference owner import/,
+    ],
+    [
+      "  createExchangeReferenceCommands,",
+      "  type createExchangeReferenceCommands,",
+      /one actual reference owner import/,
+    ],
+    [
+      "    workspace: state,",
+      "    workspace: {artifacts:state?.artifacts??[]},",
+      /complete preparation captured render fields/,
+    ],
+    [
+      "      conversationId,\n      contextKey,",
+      "      conversationId: conversationProjectId,\n      contextKey,",
+      /complete preparation captured render fields/,
+    ],
+    [
+      "drafts: { replace: setDraft, update: updateDraft }",
+      "drafts: {replace:setDraft,update:(key,change)=>updateDraft(key,change)}",
+      /complete preparation captured render fields/,
+    ],
+    [
+      "      requestConversationFocus,\n      scheduleSearchQuoteFocus:",
+      "      requestConversationFocus: requestSentInputFocus,\n      scheduleSearchQuoteFocus:",
+      /complete preparation captured render fields/,
+    ],
+    [
+      "clearSelection: () => window.getSelection()?.removeAllRanges()",
+      "clearSelection: () => window.getSelection()?.empty()",
+      /complete preparation captured render fields/,
+    ],
+    [
+      "    onNotice: setNotice,\n  });\n  function readingTargetConsumed",
+      "    onNotice: (message)=>setNotice(message),\n  });\n  function readingTargetConsumed",
+      /complete preparation captured render fields/,
+    ],
+    [
+      "onReadingCompose={composeReading}",
+      "onReadingCompose={(...args)=>composeReading(...args)}",
+      /reference original direct consumer/,
+    ],
+    [
+      "onOpenQuote={(quote) => void openTextQuote(quote)}",
+      "onOpenQuote={(quote)=>{if(sending)return;void openTextQuote(quote);}}",
+      /reference original void quote consumer/,
+    ],
+    [
+      "onCompose={composeContent}",
+      "onCompose={composeIntent}",
+      /reference original direct consumer/,
+    ],
+    [
+      "onCompose={composeContent}",
+      'onCompose={composeContent} key="new-mount"',
+      /reference original compose consumer identity/,
+    ],
+    [
+      "function setDraft(key: string, value: InputDraft) {\n    if (!origin.isActive()) return;",
+      "function setDraft(key: string, value: InputDraft) {",
+      /reference borrowed live binding setDraft/,
+    ],
+  ] as const) {
+    rejects(before, after, rule);
+  }
+  const factory = parseReferencePreparationForCurrent(currentApp);
+  for (const [value, rule] of [
+    [
+      "if (state) { " + factory + " }",
+      /inert preparation factory original unconditional Host slot/,
+    ],
+    [
+      factory.replace(/^const /, "let "),
+      /inert preparation factory original unconditional Host slot/,
+    ],
+    [
+      factory
+        .replace(
+          "createExchangeReferenceCommands({",
+          "Promise.resolve(createExchangeReferenceCommands({",
+        )
+        .replace(/\}\);$/, "}));"),
+      /eight same-name direct preparation aliases no Promise bridge/,
+    ],
+    [
+      factory.replace(
+        "    composeReading,",
+        "    composeReading: wrongReading,",
+      ),
+      /reference original direct consumer/,
+    ],
+    [
+      factory + "\ncreateExchangeReferenceCommands({} as never);",
+      /real imported preparation factory not shadowed/,
+    ],
+  ] as const) {
+    const variant = currentApp.replace(factory, value);
+    parse(variant);
+    assert.throws(
+      () =>
+        verifyExchangeReferencePreparationConsumption(variant, currentOwner),
+      rule,
+    );
+  }
+  rejects(
+    "  } = render;",
+    "  } = {...render};",
+    /inert preparation construction exact borrowed captures/,
+    true,
+  );
+  rejects(
+    "old.body.trim() ||",
+    "false ||",
+    /original reference algorithm composeReading/,
+    true,
+  );
+  rejects(
+    "export function createExchangeReferenceCommands",
+    "export async function createExchangeReferenceCommands",
+    /synchronous reference factory/,
+    true,
+  );
+  rejects(
+    "  async function openTextQuote",
+    "  function structuredClone(value){return value;}\n  async function openTextQuote",
+    /reference-called-clone-origin/,
+    true,
+  );
+  rejects(
+    "useEffect(() => setQuoteReveal(null), [conversationId]);",
+    "useEffect(() => setQuoteReveal(null), [contextKey]);",
+    /complete original preparation hook recipe/,
+    true,
+  );
+  rejects(
+    "  const state = client.boot?.workspace;",
+    "  const createExchangeDraftCommands=(_ports:unknown)=>({});\n  const state = client.boot?.workspace;",
+    /reference called borrowed factory origin/,
+  );
+});
+
+function parseReferencePreparationForCurrent(text: string) {
+  const parsed = parse(text);
+  const call = parsed.nodes
+    .filter(isCallExpression)
+    .find((c) => c.expression.getText() === "createExchangeReferenceCommands");
+  assert(call && isVariableDeclaration(call.parent));
+  return call.parent.parent.parent.getText();
+}
+
+test("historical reference proof accepts its original import alias and trivia without normalizing consumers", () => {
   validate(
     app
       .replace(
@@ -419,7 +749,7 @@ test("finite reference gate accepts an actual import alias and trivia without no
   validate(app + "\n// comments are not new behavior\n");
 });
 
-test("parsed counterfactuals reject actual-port, phase, alias, lifecycle and later JSX drift for precise rules", () => {
+test("historical twenty-six parsed counterfactuals retain every original specified rejection rule", () => {
   const parsed = parse(app);
   const importedFactory = imported(
     parsed,

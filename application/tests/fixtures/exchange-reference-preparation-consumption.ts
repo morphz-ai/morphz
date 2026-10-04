@@ -6,6 +6,15 @@ import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
   NodeFlags,
   isBinaryExpression,
+  isBindingElement,
+  isArrowFunction,
+  isPropertyAccessExpression,
+  isReturnStatement,
+  isTypeLiteralNode,
+  isMethodSignatureDeclaration,
+  isPropertySignatureDeclaration,
+  isJsxAttributes,
+  SyntaxKind,
   isCallExpression,
   isExportDeclaration,
   isExportSpecifier,
@@ -30,6 +39,7 @@ import {
   type Identifier,
   type Node,
 } from "typescript/unstable/ast";
+import { referenceGovernanceHistory } from "./exchange-reference-governance-history.js";
 
 // Actual Git75ba independently frozen before adapting any candidate. Ordinary
 // CI needs no Git. Finite source/consumer proof is not mounted scheduling,
@@ -1194,4 +1204,1232 @@ export function assertExchangeReferencePreparationWholeModule(
   ownerText: string,
 ) {
   return moduleInverse(ownerText, true);
+}
+
+// Current finite contract. The legacy inverse APIs above retain their original
+// historical semantics for explicitly historical peers, but are never called
+// here. Independent domains can add their own hooks, fields, methods and JSX.
+function ownedNodes(root: Node) {
+  const result: Node[] = [];
+  walk(root, (node) => result.push(node));
+  return result;
+}
+function currentFunction(parsed: Parsed, name: string) {
+  return one(
+    parsed.source.statements
+      .filter(isFunctionDeclaration)
+      .filter((n) => n.name?.text === name),
+    "one actual governed function " + name,
+  );
+}
+function currentImport(
+  parsed: Parsed,
+  path: string,
+  name: string,
+  typeOnly = false,
+  rule = "reference-runtime-origin " + name,
+) {
+  const matches = imports(parsed, path).flatMap((declaration) => {
+    const named = declaration.importClause?.namedBindings;
+    return named && isNamedImports(named)
+      ? named.elements
+          .filter((item) => (item.propertyName ?? item.name).text === name)
+          .map((item) => ({ declaration, item }))
+      : [];
+  });
+  const { declaration, item } = one(matches, rule);
+  const isType =
+    declaration.importClause?.phaseModifier === SyntaxKind.TypeKeyword ||
+    item.isTypeOnly;
+  assert.equal(isType, typeOnly, rule);
+  assert.notEqual(
+    parsed.symbols.get(item.name),
+    undefined,
+    "reference-called-value-origin " + name,
+  );
+  return item.name;
+}
+function aliases(parsed: Parsed) {
+  const names = new Map<number, string>();
+  for (const declaration of parsed.source.statements.filter(
+    isImportDeclaration,
+  )) {
+    const named = declaration.importClause?.namedBindings;
+    if (named && isNamedImports(named))
+      for (const member of named.elements) {
+        const id = parsed.symbols.get(member.name);
+        if (id !== undefined)
+          names.set(id, (member.propertyName ?? member.name).text);
+      }
+  }
+  // Only actual const direct aliases, never wrappers or a name-only substitute.
+  for (let pass = 0; pass < 2; pass++)
+    for (const variable of parsed.nodes.filter(isVariableDeclaration)) {
+      if (
+        !isIdentifier(variable.name) ||
+        !variable.initializer ||
+        !isIdentifier(variable.initializer) ||
+        !(variable.parent.flags & NodeFlags.Const)
+      )
+        continue;
+      const source = parsed.symbols.get(variable.initializer),
+        target = parsed.symbols.get(variable.name);
+      if (source !== undefined && target !== undefined && names.has(source))
+        names.set(target, names.get(source)!);
+    }
+  return names;
+}
+// A spelling map helps compare finite recipes, but never proves origin. Only
+// transparent const identifier aliases may borrow an actual source symbol.
+function aliasOrigin(parsed: Parsed, value: Identifier) {
+  let id = parsed.symbols.get(value);
+  const seen = new Set<number>();
+  while (id !== undefined && !seen.has(id)) {
+    seen.add(id);
+    const declaration = parsed.nodes
+      .filter(isVariableDeclaration)
+      .find((d) => isIdentifier(d.name) && parsed.symbols.get(d.name) === id);
+    if (
+      !declaration?.initializer ||
+      !isIdentifier(declaration.initializer) ||
+      !(declaration.parent.flags & NodeFlags.Const)
+    )
+      break;
+    id = parsed.symbols.get(declaration.initializer);
+  }
+  return id;
+}
+function normalized(
+  node: Node,
+  parsed: Parsed,
+  names = aliases(parsed),
+): unknown {
+  if (isIdentifier(node)) {
+    const id = parsed.symbols.get(node);
+    return [
+      node.kind,
+      id === undefined ? node.text : (names.get(id) ?? node.text),
+    ];
+  }
+  const children: unknown[] = [];
+  node.forEachChild((child) => {
+    children.push(normalized(child, parsed, names));
+  });
+  return [
+    node.kind,
+    node.flags & (NodeFlags.Const | NodeFlags.Let | NodeFlags.OptionalChain),
+    ...(isBinaryExpression(node) ? [node.operatorToken.kind] : []),
+    ...(isPrefixUnaryExpression(node) || isPostfixUnaryExpression(node)
+      ? [node.operator]
+      : []),
+    children.length ? children : node.getText(),
+  ];
+}
+function currentSame(
+  actual: Node,
+  ap: Parsed,
+  expected: Node,
+  ep: Parsed,
+  rule: string,
+  names = aliases(ap),
+) {
+  assert.deepEqual(
+    normalized(actual, ap, names),
+    normalized(expected, ep),
+    rule,
+  );
+}
+function calledAs(parsed: Parsed, root: Node, binding: Identifier) {
+  const names = aliases(parsed),
+    id = parsed.symbols.get(binding);
+  return ownedNodes(root)
+    .filter(isCallExpression)
+    .filter(
+      (call) =>
+        isIdentifier(call.expression) &&
+        (parsed.symbols.get(call.expression) === id ||
+          names.get(parsed.symbols.get(call.expression)!) === names.get(id!)),
+    );
+}
+function localVariable(root: Node, name: string) {
+  return one(
+    ownedNodes(root)
+      .filter(isVariableDeclaration)
+      .filter((n) => n.name.getText() === name),
+    "reference-live-binding " + name,
+  );
+}
+function currentTypeFields(
+  actual: Node,
+  expected: Node,
+  ap: Parsed,
+  ep: Parsed,
+) {
+  // Existing option fields remain exact; new unrelated fields are not inventory.
+  assert(
+    isTypeAliasDeclaration(actual) &&
+      isTypeAliasDeclaration(expected) &&
+      isTypeLiteralNode(actual.type) &&
+      isTypeLiteralNode(expected.type),
+    "exact preparation scope focus render and authority port types",
+  );
+  const actualFields = actual.type.members,
+    expectedFields = expected.type.members;
+  for (const field of expectedFields) {
+    assert(
+      isPropertySignatureDeclaration(field) ||
+        isMethodSignatureDeclaration(field),
+      "named original option field",
+    );
+    assert(field.name, "named original option field");
+    const text = field.name.getText();
+    const same = actualFields.filter(
+      (n) =>
+        (isPropertySignatureDeclaration(n) ||
+          isMethodSignatureDeclaration(n)) &&
+        n.name?.getText() === text,
+    );
+    currentSame(
+      one(
+        same,
+        "exact preparation scope focus render and authority port types " + text,
+      ),
+      ap,
+      field,
+      ep,
+      "exact preparation scope focus render and authority port types",
+    );
+  }
+}
+export function verifyExchangeReferencePreparationModuleCurrent(text: string) {
+  const parsed = parseReferencePreparation({
+      Actual: text,
+      Expected: expectedModule,
+    }),
+    actual = parsed.get("Actual")!,
+    expected = parsed.get("Expected")!;
+  for (const [path, name] of [
+    ["../client.js", "WorkspaceClient"],
+    ["react", "Dispatch"],
+    ["react", "SetStateAction"],
+  ]) {
+    const rule =
+      path === "react"
+        ? "exact preparation React runtime hooks and type-only writer ports"
+        : "original type-only preparation dependencies plus one reviewed React runtime import";
+    currentImport(actual, path!, name!, true, rule);
+  }
+  for (const name of hookNames) {
+    const hook = currentFunction(actual, name),
+      original = currentFunction(expected, name);
+    currentSame(
+      hook,
+      actual,
+      original,
+      expected,
+      "complete original preparation hook recipe " + name,
+    );
+    const react = currentImport(
+      actual,
+      "react",
+      name === hookNames[0] ? "useState" : "useEffect",
+    );
+    const calls = calledAs(actual, hook, react);
+    assert.equal(calls.length, 1, "single preparation hook registration");
+    const real = one(
+      ownedNodes(hook)
+        .filter(isCallExpression)
+        .filter(
+          (c) =>
+            isIdentifier(c.expression) &&
+            aliases(actual).get(actual.symbols.get(c.expression)!) ===
+              (name === hookNames[0] ? "useState" : "useEffect"),
+        ),
+      "real imported React preparation hook not shadowed",
+    );
+    sameSymbol(
+      actual,
+      react,
+      real.expression as Identifier,
+      "real imported React preparation hook not shadowed",
+    );
+  }
+  const factory = currentFunction(actual, "createExchangeReferenceCommands"),
+    original = currentFunction(expected, "createExchangeReferenceCommands");
+  assert(factory.body && original.body, "reference-inert-sync-factory");
+  assert(
+    !factory.asteriskToken &&
+      !factory.modifiers?.some((m) => m.kind === SyntaxKind.AsyncKeyword),
+    "synchronous reference factory",
+  );
+  currentSame(
+    factory.parameters[0]!,
+    actual,
+    original.parameters[0]!,
+    expected,
+    "exact render-captured preparation factory parameters",
+  );
+  const options = one(
+    actual.source.statements
+      .filter(isTypeAliasDeclaration)
+      .filter((n) => n.name.text === "ExchangeReferenceOptions"),
+    "one preparation options type",
+  );
+  const oldOptions = one(
+    expected.source.statements
+      .filter(isTypeAliasDeclaration)
+      .filter((n) => n.name.text === "ExchangeReferenceOptions"),
+    "one expected options type",
+  );
+  currentTypeFields(options, oldOptions, actual, expected);
+  const typeRoots: Node[] = [
+    options,
+    factory.parameters[0]!,
+    ...hookNames.map((name) => currentFunction(actual, name)),
+  ];
+  for (const name of [
+    "NavigationCommands",
+    "ExchangeController",
+    "ReadingComposeCommand",
+    "QuoteReveal",
+  ]) {
+    const declaration = one(
+      actual.source.statements
+        .filter(isTypeAliasDeclaration)
+        .filter((t) => t.name.text === name),
+      "reference original typed dependency " + name,
+    );
+    currentSame(
+      declaration,
+      actual,
+      one(
+        expected.source.statements
+          .filter(isTypeAliasDeclaration)
+          .filter((t) => t.name.text === name),
+        "fixed original typed dependency " + name,
+      ),
+      expected,
+      "reference original typed dependency " + name,
+    );
+    typeRoots.push(declaration);
+  }
+  const actualNames = aliases(actual);
+  for (const declaration of expected.source.statements.filter(
+    isImportDeclaration,
+  )) {
+    const bindings = declaration.importClause?.namedBindings;
+    if (
+      !isStringLiteral(declaration.moduleSpecifier) ||
+      !bindings ||
+      !isNamedImports(bindings)
+    )
+      continue;
+    for (const member of bindings.elements) {
+      if (
+        declaration.importClause?.phaseModifier !== SyntaxKind.TypeKeyword &&
+        !member.isTypeOnly
+      )
+        continue;
+      const name = (member.propertyName ?? member.name).text,
+        binding = currentImport(
+          actual,
+          declaration.moduleSpecifier.text,
+          name,
+          true,
+          "reference original type-only dependency origin " + name,
+        );
+      for (const root of typeRoots)
+        for (const id of ownedNodes(root)
+          .filter(isIdentifier)
+          .filter(
+            (n) => (actualNames.get(actual.symbols.get(n)!) ?? n.text) === name,
+          ))
+          sameSymbol(
+            actual,
+            binding,
+            id,
+            "reference actual typed port binding " + name,
+          );
+    }
+  }
+  for (const name of allNames) {
+    const root = ownedNodes(factory),
+      matches = root.filter(
+        (n) =>
+          (isFunctionDeclaration(n) || isVariableDeclaration(n)) &&
+          n.name?.getText() === name,
+      );
+    const complete = one(
+        matches,
+        "one complete actual reference algorithm " + name,
+      ),
+      old = method(expected, name);
+    currentSame(
+      isVariableDeclaration(complete) ? statement(complete) : complete,
+      actual,
+      old,
+      expected,
+      newNames.includes(name as (typeof newNames)[number])
+        ? "complete original preparation recipe " + name
+        : "original reference algorithm " + name,
+    );
+  }
+  const expectedCaptures = original.body.statements
+    .filter(isVariableStatement)
+    .filter(
+      (s) =>
+        !s.declarationList.declarations.some((d) =>
+          ["composeReading", "changeTextQuotes"].includes(d.name.getText()),
+        ),
+    );
+  for (const capture of expectedCaptures) {
+    const declarations = capture.declarationList.declarations;
+    const value = declarations[0]!.initializer!.getText();
+    const found = factory.body.statements
+      .filter(isVariableStatement)
+      .filter((s) =>
+        s.declarationList.declarations.some(
+          (d) => d.initializer?.getText() === value,
+        ),
+      );
+    currentSame(
+      one(
+        found,
+        "inert preparation construction exact borrowed captures and eight direct returns",
+      ),
+      actual,
+      capture,
+      expected,
+      "inert preparation construction exact borrowed captures and eight direct returns",
+    );
+  }
+  for (const node of factory.body.statements) {
+    if (isFunctionDeclaration(node)) continue;
+    assert(
+      isVariableStatement(node) || isReturnStatement(node),
+      "reference construction only captures and returns commands",
+    );
+    if (isVariableStatement(node))
+      for (const d of node.declarationList.declarations)
+        if (d.initializer && !isArrowFunction(d.initializer))
+          walk(d.initializer, (n) => {
+            assert(
+              !isCallExpression(n),
+              "inert preparation construction exact borrowed captures and eight direct returns: no constructor port call",
+            );
+            assert(
+              !isPropertyAccessExpression(n) || n.name.text !== "current",
+              "inert preparation construction exact borrowed captures and eight direct returns: no constructor live ref read",
+            );
+          });
+  }
+  const returned = one(
+    factory.body.statements.filter(isReturnStatement),
+    "reference-direct-returned-command",
+  );
+  assert(
+    returned.expression && isObjectLiteralExpression(returned.expression),
+    "reference-direct-returned-command",
+  );
+  for (const name of allNames) {
+    const p = one(
+      returned.expression.properties.filter(
+        (p) =>
+          (isPropertyAssignment(p) || isShorthandPropertyAssignment(p)) &&
+          p.name.getText() === name,
+      ),
+      "inert preparation construction exact borrowed captures and eight direct returns",
+    );
+    assert(
+      isShorthandPropertyAssignment(p) && isIdentifier(p.name),
+      "inert preparation construction exact borrowed captures and eight direct returns",
+    );
+    const declaration = one(
+      ownedNodes(factory).filter(
+        (n) =>
+          (isFunctionDeclaration(n) || isVariableDeclaration(n)) &&
+          n.name?.getText() === name,
+      ),
+      "actual returned reference method " + name,
+    );
+    assert(
+      (isFunctionDeclaration(declaration) ||
+        isVariableDeclaration(declaration)) &&
+        declaration.name &&
+        isIdentifier(declaration.name),
+      "actual returned reference method " + name,
+    );
+    sameSymbol(
+      actual,
+      p.name,
+      declaration.name,
+      "reference-direct-returned-command " + name,
+    );
+  }
+  const reading = one(
+    ownedNodes(factory)
+      .filter(isVariableDeclaration)
+      .filter((d) => d.name.getText() === "composeReading"),
+    "actual composeReading",
+  );
+  const clone = one(
+    ownedNodes(reading)
+      .filter(isCallExpression)
+      .filter((c) => c.expression.getText() === "structuredClone"),
+    "reference-called-clone-origin",
+  );
+  assert.equal(
+    actual.symbols.get(clone.expression),
+    undefined,
+    "reference-called-clone-origin",
+  );
+  return { methods: allNames, hooks: hookNames };
+}
+
+// Only this owner's current App seam is governed. Neither a whole renderer
+// digest nor any other owner's inverse participates in this verification.
+export function verifyExchangeReferencePreparationConsumption(
+  appText: string,
+  ownerText: string,
+) {
+  verifyExchangeReferencePreparationModuleCurrent(ownerText);
+  const history = referenceGovernanceHistory;
+  const parsed = parseReferencePreparation({
+    App: appText,
+    Factory: expectedFactory,
+    State: stateRegistration,
+    Commit: commitRegistration,
+    Witness:
+      history.recipes.imports +
+      "\nfunction WorkspaceApp() {\n" +
+      Object.entries(history.recipes)
+        .filter(([key]) => key !== "imports")
+        .map(([, value]) =>
+          value.startsWith("function ") ? value : "const " + value + ";",
+        )
+        .join("\n") +
+      "\n}",
+    Search: fixed.searchElement.replace(
+      "onQuote={" + fixed.search + "}",
+      "onQuote={prepareSearchQuote}",
+    ),
+    Artifact: fixed.artifactElement.replace(
+      "onSelect={" + fixed.select + "}",
+      "onSelect={selectArtifactQuote}",
+    ),
+    Provider:
+      "const props = " +
+      fixed.provider
+        .replace(fixed.change, "changeTextQuotes")
+        .replace(fixed.focus, "focusCommentComposer") +
+      ";",
+  });
+  const app = parsed.get("App")!,
+    main = currentFunction(app, "WorkspaceApp"),
+    witness = parsed.get("Witness")!,
+    names = aliases(app);
+  assert(main.body, "actual reference Host function");
+  const body = main.body;
+  const commandOrigins = new Map<string, number>();
+  const hostOrigins = new Map<string, number>();
+  const hostDefinitions: Identifier[] = [];
+  for (const parameter of main.parameters)
+    hostDefinitions.push(
+      ...ownedNodes(parameter.name)
+        .filter(isIdentifier)
+        .filter(
+          (n) =>
+            n === parameter.name ||
+            (isBindingElement(n.parent) && n.parent.name === n),
+        ),
+    );
+  for (const s of body.statements) {
+    if (isFunctionDeclaration(s) && s.name) hostDefinitions.push(s.name);
+    if (isVariableStatement(s))
+      for (const d of s.declarationList.declarations)
+        hostDefinitions.push(
+          ...ownedNodes(d.name)
+            .filter(isIdentifier)
+            .filter(
+              (n) =>
+                n === d.name ||
+                (isBindingElement(n.parent) && n.parent.name === n),
+            ),
+        );
+  }
+  for (const definition of hostDefinitions) {
+    const id = app.symbols.get(definition);
+    assert.notEqual(id, undefined, "resolved original Host capture");
+    hostOrigins.set(definition.text, id!);
+    if (!names.has(id!)) names.set(id!, definition.text);
+  }
+  const factoryBinding = currentImport(
+    app,
+    modulePath,
+    "createExchangeReferenceCommands",
+    false,
+    "one actual reference owner import from its real module",
+  );
+  const hookBindings = hookNames.map((name) =>
+    currentImport(
+      app,
+      modulePath,
+      name,
+      false,
+      "complete same-name runtime preparation owner import",
+    ),
+  );
+  function actualCall(name: string, binding: Identifier, rule: string) {
+    const importedName = names.get(app.symbols.get(binding)!);
+    const candidates = ownedNodes(main)
+      .filter(isCallExpression)
+      .filter(
+        (c) =>
+          isIdentifier(c.expression) &&
+          (c.expression.text === name ||
+            names.get(app.symbols.get(c.expression)!) === importedName),
+      );
+    const call = one(candidates, rule);
+    assert(isIdentifier(call.expression), rule);
+    assert.equal(
+      aliasOrigin(app, call.expression),
+      app.symbols.get(binding),
+      rule,
+    );
+    return call;
+  }
+  function mapBindings(
+    node: Node,
+    expectedKeys: readonly string[],
+    rule: string,
+  ) {
+    assert(
+      isVariableDeclaration(node) && isObjectBindingPattern(node.name),
+      rule,
+    );
+    assert.deepEqual(
+      node.name.elements.map((e) => (e.propertyName ?? e.name)?.getText()),
+      expectedKeys,
+      rule,
+    );
+    for (const e of node.name.elements) {
+      assert(
+        e.name && isIdentifier(e.name) && !e.initializer && !e.dotDotDotToken,
+        rule,
+      );
+      names.set(app.symbols.get(e.name)!, (e.propertyName ?? e.name).getText());
+      if (expectedKeys === allNames)
+        commandOrigins.set(
+          (e.propertyName ?? e.name).getText(),
+          app.symbols.get(e.name)!,
+        );
+    }
+  }
+  function directStatement(node: Node, rule: string) {
+    const s = isVariableDeclaration(node) ? statement(node) : node;
+    assert(s.parent === body, rule);
+    if (isVariableStatement(s))
+      assert(s.declarationList.flags & NodeFlags.Const, rule);
+    return s;
+  }
+  for (let i = 0; i < hookNames.length; i++) {
+    const name = hookNames[i]!,
+      call = actualCall(
+        name,
+        hookBindings[i]!,
+        "real imported preparation hook not local shadow " + name,
+      );
+    if (i === 0)
+      mapBindings(
+        call.parent,
+        ["quoteReveal", "setQuoteReveal"],
+        "exact original preparation state writer and effect arguments",
+      );
+    const s = directStatement(
+        i === 0 ? call.parent : call.parent,
+        "unconditional original preparation hook slot " + name,
+      ),
+      ep = parsed.get(i === 0 ? "State" : "Commit")!;
+    currentSame(
+      s,
+      app,
+      ep.source.statements[0]!,
+      ep,
+      "exact original preparation state writer and effect arguments",
+      names,
+    );
+    const previous =
+      i === 0
+        ? localVariable(main, "sendPending")
+        : one(
+            ownedNodes(main)
+              .filter(isFunctionDeclaration)
+              .filter((f) => f.name?.text === "conversationKey"),
+            "original conversation key",
+          );
+    if (i === 0)
+      assert(
+        previous.end < s.getStart() &&
+          s.end < localVariable(main, "draftCommands").getStart(),
+        "original preparation hook preceding witness " + name,
+      );
+    else {
+      const toolbar = one(
+        ownedNodes(main)
+          .filter(isVariableDeclaration)
+          .filter((v) =>
+            v.name.getText().includes("conversationToolbarTarget"),
+          ),
+        "original preparation hook following witness " + name,
+      );
+      assert(
+        previous.end < s.getStart() && s.end < toolbar.getStart(),
+        "original preparation hook preceding witness " + name,
+      );
+    }
+  }
+  const call = actualCall(
+    "createExchangeReferenceCommands",
+    factoryBinding,
+    "real imported preparation factory not shadowed",
+  );
+  assert(
+    isVariableDeclaration(call.parent),
+    "eight same-name direct preparation aliases no Promise bridge",
+  );
+  mapBindings(
+    call.parent,
+    allNames,
+    "eight same-name direct preparation aliases no Promise bridge",
+  );
+  const registration = directStatement(
+    call.parent,
+    "inert preparation factory original unconditional Host slot",
+  );
+  const before = one(
+      ownedNodes(main)
+        .filter(isFunctionDeclaration)
+        .filter((v) => v.name?.text === "open"),
+      "original reference open witness",
+    ),
+    after = one(
+      ownedNodes(main)
+        .filter(isFunctionDeclaration)
+        .filter((v) => v.name?.text === "readingTargetConsumed"),
+      "original preparation factory before reading callbacks",
+    );
+  const privateCall = one(
+    ownedNodes(main)
+      .filter(isVariableDeclaration)
+      .filter(
+        (v) =>
+          isObjectBindingPattern(v.name) &&
+          v.name.elements.some(
+            (e) =>
+              (e.propertyName ?? e.name)?.getText() === "prepareCreatedProject",
+          ),
+      ),
+    "original preparation factory preceding seven private aliases",
+  );
+  assert(
+    before.end < privateCall.getStart() &&
+      privateCall.end < registration.getStart() &&
+      registration.end < after.getStart(),
+    "original preparation factory preceding private aliases before reading callbacks",
+  );
+  const privateBinding = currentImport(
+    app,
+    "./host/private-project-conversation-scope.js",
+    "createPrivateProjectConversationScope",
+  );
+  assert(
+    privateCall.initializer &&
+      isCallExpression(privateCall.initializer) &&
+      isIdentifier(privateCall.initializer.expression),
+    "real original private owner preceding preparation factory",
+  );
+  assert.equal(
+    aliasOrigin(app, privateCall.initializer.expression),
+    app.symbols.get(privateBinding),
+    "real original private owner preceding preparation factory",
+  );
+  assert.equal(
+    call.arguments.length,
+    1,
+    "one captured preparation options object",
+  );
+  assert(
+    isObjectLiteralExpression(call.arguments[0]!),
+    "complete preparation captured render fields scope and distinct lazy focus ports",
+  );
+  const expected = parsed.get("Factory")!,
+    expectedCall = one(
+      expected.nodes
+        .filter(isCallExpression)
+        .filter(
+          (c) => c.expression.getText() === "createExchangeReferenceCommands",
+        ),
+      "fixed preparation factory",
+    );
+  // Local direct command aliases are legal only when they are actually consumed.
+  for (let pass = 0; pass < 2; pass++)
+    for (const v of ownedNodes(main).filter(isVariableDeclaration))
+      if (
+        isIdentifier(v.name) &&
+        v.initializer &&
+        isIdentifier(v.initializer) &&
+        v.parent.flags & NodeFlags.Const
+      ) {
+        const from = names.get(app.symbols.get(v.initializer)!);
+        if (from) names.set(app.symbols.get(v.name)!, from);
+      }
+  currentSame(
+    call.arguments[0]!,
+    app,
+    expectedCall.arguments[0]!,
+    expected,
+    "complete preparation captured render fields scope and distinct lazy focus ports",
+    names,
+  );
+  for (const identifier of ownedNodes(call.arguments[0]!).filter(
+    isIdentifier,
+  )) {
+    if (
+      (isPropertyAssignment(identifier.parent) &&
+        identifier.parent.name === identifier) ||
+      (isPropertyAccessExpression(identifier.parent) &&
+        identifier.parent.name === identifier)
+    )
+      continue;
+    const role = names.get(app.symbols.get(identifier)!) ?? identifier.text,
+      source = hostOrigins.get(role);
+    if (source !== undefined)
+      assert.equal(
+        aliasOrigin(app, identifier),
+        source,
+        "reference actual captured Host value origin " + role,
+      );
+  }
+  // Actual public client/render value, actual guarded stable draft writer and
+  // actual controller outputs: a lookalike name is not a borrowed authority.
+  const parameter = main.parameters[0];
+  assert(
+    parameter && isObjectBindingPattern(parameter.name),
+    "reference captured Client authority",
+  );
+  const client = one(
+    parameter.name.elements.filter(
+      (e) => (e.propertyName ?? e.name)?.getText() === "client",
+    ),
+    "reference captured Client authority",
+  );
+  assert(
+    client.name && isIdentifier(client.name),
+    "reference captured Client authority",
+  );
+  const clientProperty = one(
+    call.arguments[0]!.properties.filter(isShorthandPropertyAssignment).filter(
+      (p) => p.name.getText() === "client",
+    ),
+    "reference captured Client authority",
+  );
+  assert(
+    isIdentifier(clientProperty.name),
+    "reference captured Client authority",
+  );
+  sameSymbol(
+    app,
+    client.name,
+    clientProperty.name,
+    "reference captured Client authority",
+  );
+  const origin = one(
+    parameter.name.elements.filter(
+      (e) => (e.propertyName ?? e.name)?.getText() === "origin",
+    ),
+    "reference captured origin lifetime authority",
+  );
+  assert(origin.name && isIdentifier(origin.name));
+  const originProperty = one(
+    call.arguments[0]!.properties.filter(isShorthandPropertyAssignment).filter(
+      (p) => p.name.getText() === "origin",
+    ),
+    "reference captured origin lifetime authority",
+  );
+  assert(isIdentifier(originProperty.name));
+  sameSymbol(
+    app,
+    origin.name,
+    originProperty.name,
+    "reference captured origin lifetime authority",
+  );
+  for (const key of [
+    "state",
+    "drafts",
+    "setDraft",
+    "updateDraft",
+    "setNotice",
+    "conversationKey",
+    "draftCommands",
+    "exchangeController",
+    "input",
+    "exchange",
+  ]) {
+    const candidate = one(
+      ownedNodes(main).filter(
+        (n) =>
+          (isFunctionDeclaration(n) || isVariableDeclaration(n)) &&
+          n.name?.getText() === key,
+      ),
+      "reference borrowed live binding " + key,
+    );
+    const original = one(
+      ownedNodes(currentFunction(witness, "WorkspaceApp")).filter(
+        (n) =>
+          (isFunctionDeclaration(n) || isVariableDeclaration(n)) &&
+          n.name?.getText() === key,
+      ),
+      "fixed reference borrowed live binding " + key,
+    );
+    currentSame(
+      candidate,
+      app,
+      original,
+      witness,
+      "reference borrowed live binding " + key,
+      names,
+    );
+    if (isVariableDeclaration(candidate))
+      assert(
+        candidate.parent.flags & NodeFlags.Const,
+        "reference stable captured declaration " + key,
+      );
+    for (const importedCall of ownedNodes(original)
+      .filter(isCallExpression)
+      .filter((c) => isIdentifier(c.expression))) {
+      const importedName = aliases(witness).get(
+        witness.symbols.get(importedCall.expression)!,
+      );
+      if (!importedName) continue;
+      const c = one(
+        ownedNodes(candidate)
+          .filter(isCallExpression)
+          .filter(
+            (c) =>
+              isIdentifier(c.expression) &&
+              (names.get(app.symbols.get(c.expression)!) ??
+                c.expression.text) === importedName,
+          ),
+        "reference called borrowed factory origin " + importedName,
+      );
+      const importDeclaration = one(
+        witness.source.statements.filter(isImportDeclaration).filter((d) => {
+          const b = d.importClause?.namedBindings;
+          return (
+            b &&
+            isNamedImports(b) &&
+            b.elements.some(
+              (m) =>
+                witness.symbols.get(m.name) ===
+                witness.symbols.get(importedCall.expression),
+            )
+          );
+        }),
+        "fixed borrowed factory actual import origin " + importedName,
+      );
+      assert(isStringLiteral(importDeclaration.moduleSpecifier));
+      const binding = currentImport(
+        app,
+        importDeclaration.moduleSpecifier.text,
+        importedName,
+        false,
+        "reference called borrowed factory origin " + importedName,
+      );
+      assert(isIdentifier(c.expression));
+      assert.equal(
+        aliasOrigin(app, c.expression),
+        app.symbols.get(binding),
+        "reference called borrowed factory origin " + importedName,
+      );
+    }
+  }
+  const write = one(
+    ownedNodes(main)
+      .filter(isVariableDeclaration)
+      .filter(
+        (v) =>
+          isObjectBindingPattern(v.name) &&
+          v.name.elements.some((e) => e.name?.getText() === "writeDrafts"),
+      ),
+    "reference original writeInputs writer",
+  );
+  assert(
+    write.initializer &&
+      isIdentifier(write.initializer) &&
+      write.initializer.text === "draftCommands",
+    "reference original writeInputs writer",
+  );
+  assert(isObjectBindingPattern(write.name));
+  assert.deepEqual(
+    write.name.elements.map((e) => ({
+      key: e.propertyName?.getText(),
+      name: e.name?.getText(),
+    })),
+    [{ key: "writeInputs", name: "writeDrafts" }],
+    "reference original writeInputs writer",
+  );
+  function directValue(value: Node | undefined, name: string, rule: string) {
+    assert(
+      value &&
+        isIdentifier(value) &&
+        aliasOrigin(app, value) === commandOrigins.get(name),
+      rule,
+    );
+  }
+  function jsx(tag: string, attributeName: string, name: string) {
+    const component = currentImport(
+        app,
+        tag === "SearchDocuments"
+          ? "./LibraryDialogs.js"
+          : "./ArtifactEditor.js",
+        tag,
+      ),
+      elementNode = one(
+        ownedNodes(main)
+          .filter(isJsxSelfClosingElement)
+          .filter(
+            (n) =>
+              isIdentifier(n.tagName) &&
+              app.symbols.get(n.tagName) === app.symbols.get(component),
+          ),
+        "one actual preparation JSX consumer " + tag,
+      );
+    const attr = attribute(elementNode, attributeName);
+    assert(attr.initializer && isJsxExpression(attr.initializer));
+    directValue(
+      attr.initializer.expression,
+      name,
+      "direct actual preparation consumer " + name,
+    );
+    return elementNode;
+  }
+  const search = jsx("SearchDocuments", "onQuote", "prepareSearchQuote"),
+    artifact = jsx("ArtifactEditor", "onSelect", "selectArtifactQuote");
+  const searchGuard = [
+    search.parent,
+    search.parent?.parent,
+    search.parent?.parent?.parent,
+  ].find((n) => n && isBinaryExpression(n));
+  assert(
+    searchGuard &&
+      isBinaryExpression(searchGuard) &&
+      searchGuard.operatorToken.kind === SyntaxKind.AmpersandAmpersandToken &&
+      searchGuard.left.getText() === "searchOpen",
+    "reference-search-visibility-guard",
+  );
+  const artifactExpected = parsed.get("Artifact")!;
+  currentSame(
+    attribute(artifact, "key"),
+    app,
+    attribute(element(artifactExpected, "ArtifactEditor"), "key"),
+    artifactExpected,
+    "complete original Artifact consumer identity keys captured callbacks and selection",
+    names,
+  );
+  const providerBinding = currentImport(
+    app,
+    "./TextQuotes.js",
+    "TextQuoteProvider",
+  );
+  const provider = one(
+    ownedNodes(main)
+      .filter(isCallExpression)
+      .filter(
+        (c) =>
+          c.arguments[0] &&
+          isIdentifier(c.arguments[0]) &&
+          app.symbols.get(c.arguments[0]) === app.symbols.get(providerBinding),
+      ),
+    "reference actual TextQuoteProvider",
+  );
+  const providerProps = provider.arguments[1];
+  assert(
+    providerProps && isObjectLiteralExpression(providerProps),
+    "reference actual TextQuoteProvider",
+  );
+  for (const [key, name] of [
+    ["onChange", "changeTextQuotes"],
+    ["onFocusComposer", "focusCommentComposer"],
+  ])
+    directValue(
+      property(providerProps, key!).initializer,
+      name!,
+      "direct actual preparation consumer " + name,
+    );
+  const providerExpected = parsed.get("Provider")!,
+    expectedProps = variable(providerExpected, "props").initializer!;
+  for (const key of [
+    "quotes",
+    "scope",
+    "reveal",
+    "disabled",
+    "onEngage",
+    "onOpen",
+    "onNotice",
+  ])
+    currentSame(
+      property(providerProps, key),
+      app,
+      property(expectedProps, key),
+      providerExpected,
+      "complete original Provider props reveal disabled engage notice and distinct direct focus change",
+      names,
+    );
+  for (const callee of ownedNodes(property(providerProps, "onOpen"))
+    .filter(isCallExpression)
+    .map((c) => c.expression))
+    directValue(
+      callee,
+      "openTextQuote",
+      "reference original void quote consumer",
+    );
+  for (const name of newNames) {
+    const references = ownedNodes(main)
+      .filter(isIdentifier)
+      .filter((n) => names.get(app.symbols.get(n)!) === name);
+    const extra = references
+      .filter(
+        (n) => isVariableDeclaration(n.parent) && n.parent.initializer === n,
+      )
+      .filter((n) => {
+        const aliasName = (n.parent as ReturnType<typeof localVariable>).name;
+        return !ownedNodes(main)
+          .filter(isIdentifier)
+          .some(
+            (other) =>
+              other !== aliasName &&
+              app.symbols.get(other) === app.symbols.get(aliasName) &&
+              !(
+                isVariableDeclaration(other.parent) &&
+                other.parent.name === other
+              ),
+          );
+      });
+    assert.equal(
+      extra.length,
+      0,
+      "one direct preparation consumer no alias wrapper or extra invocation " +
+        name,
+    );
+    assert.equal(
+      references.filter(
+        (n) => isCallExpression(n.parent) && n.parent.expression === n,
+      ).length,
+      0,
+      "one direct preparation consumer no alias wrapper or extra invocation " +
+        name,
+    );
+  }
+  // Original four public command sites remain direct, including quote wrappers
+  // whose void/argument behavior is part of the old public contract.
+  for (const [attrName, command, count] of [
+    ["onCompose", "composeReading", 1],
+    ["onReadingCompose", "composeReading", 1],
+    ["onComposeIntent", "composeIntent", 1],
+    ["onCreate", "composeIntent", 1],
+    ["onCompose", "composeContent", 1],
+  ] as const) {
+    const values = ownedNodes(main)
+      .filter(isJsxAttribute)
+      .filter(
+        (a) =>
+          a.name.getText() === attrName &&
+          a.initializer &&
+          isJsxExpression(a.initializer) &&
+          a.initializer.expression &&
+          isIdentifier(a.initializer.expression) &&
+          names.get(app.symbols.get(a.initializer.expression)!) === command,
+      );
+    assert.equal(
+      values.length,
+      count,
+      "reference original direct consumer " + command + " " + attrName,
+    );
+    for (const value of values) {
+      assert(value.initializer && isJsxExpression(value.initializer));
+      directValue(
+        value.initializer.expression,
+        command,
+        "reference original direct consumer " + command + " " + attrName,
+      );
+    }
+    if (attrName === "onReadingCompose")
+      for (const value of values) {
+        assert(isJsxAttributes(value.parent));
+        assert(
+          !value.parent.properties
+            .filter(isJsxAttribute)
+            .some((a) => a.name.getText() === "key"),
+          "reference original compose consumer identity",
+        );
+      }
+    if (command === "composeContent") {
+      const original = parseReferencePreparation({
+        Historical: history.preparationApp,
+      }).get("Historical")!;
+      const originalContent = one(
+        original.nodes
+          .filter(isJsxSelfClosingElement)
+          .filter((n) => n.tagName.getText() === "ObjectCollection"),
+        "historical compose consumer identity",
+      );
+      const attrs = values[0]!.parent;
+      assert(isJsxAttributes(attrs));
+      const key = one(
+        attrs.properties
+          .filter(isJsxAttribute)
+          .filter((a) => a.name.getText() === "key"),
+        "reference original compose consumer identity",
+      );
+      currentSame(
+        key,
+        app,
+        attribute(originalContent, "key"),
+        original,
+        "reference original compose consumer identity",
+        names,
+      );
+    }
+  }
+  const quoteOpen = one(
+    ownedNodes(main)
+      .filter(isJsxAttribute)
+      .filter((a) => a.name.getText() === "onOpenQuote"),
+    "reference original quote consumer",
+  );
+  const quoteExpected = parseReferencePreparation({
+    Quote: "const value = (quote) => void openTextQuote(quote);",
+  }).get("Quote")!;
+  assert(
+    quoteOpen.initializer &&
+      isJsxExpression(quoteOpen.initializer) &&
+      quoteOpen.initializer.expression,
+  );
+  currentSame(
+    quoteOpen.initializer.expression,
+    app,
+    variable(quoteExpected, "value").initializer!,
+    quoteExpected,
+    "reference original void quote consumer",
+    names,
+  );
+  for (const callee of ownedNodes(quoteOpen.initializer.expression)
+    .filter(isCallExpression)
+    .map((c) => c.expression))
+    directValue(
+      callee,
+      "openTextQuote",
+      "reference original void quote consumer",
+    );
+  return { methods: allNames, hooks: hookNames, consumers: 4 };
 }

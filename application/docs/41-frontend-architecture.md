@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-04 · 版本：1.4 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-04 · 版本：1.5 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -283,6 +283,14 @@ scope、草稿、权限、导航与实际 DOM writer 仍归原宿主；SearchDoc
 TextQuoteProvider、SelectionActions、Reader 与现件编辑仍是各自的完整组件。
 不新增 store、缓存、查询、请求、DOM、CSS 或模型调用。完整 Git 源证明、
 旧新编译页面与隔离挂载分别见阶段 30；原 App 和原生验收仍未完成。
+
+阶段 44 将这个 owner 的普通当前门禁与历史迁移证明分开。当前直接核
+实际 module／runtime phase／symbol 来源、捕获端口、注册相对阶段与
+八命令实际消费，不锁整个 App／owner 或全局 React 数量。独立有 JSX
+消费的 React 增长及合法别名可演进；固定旧全文／二十六原反例和旧
+inverse API 仅作为明确历史合同保留，不暗改成另一种语义。四个同名
+但错误实际来源的误接受反例已由根独立复现并修正。其它旧页面／owner
+的全文门禁与 inverse 链尚未整体治理，不能由本阶段宣称全部完成。
 
 授权内容读取的六个完整算法现归 `data/content-reads.ts`：目录分页／计数、
 当前理解、目录记忆、原件与确切目录项解析。Client 借出原 refs，保留身份／
@@ -738,13 +746,13 @@ controller 已落实；画布、分页、子组件和局部 JSX 组合仍拥有�
 R3，阶段 42 已落地 R1，阶段 43 已落地 R4；剩余生产边界为 R5，仍须完成有限治理与整体验收。不是按文件行数清空
 宿主，也不是必须让每个页面再加一个 hook：
 
-| 边界                   | 完整职责及保留约束                                                                                                                                                                                                                              |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| R1 公共控件 role／样式（阶段 42 已落地） | 原完整 button／field／primary／outline／icon／secondary recipe 归 `ui/controls` 四原 cascade 槽，Browser 独立 recipe 归 feature；实际唯一来源与合法 refinement 有有限门禁。原 DOM、尺寸、颜色、图形、交互、动效及材质保持，不加 wrapper 或末尾覆盖。 |
-| R2 书签数据操作（阶段 40 已落地） | 完整 list／durable command 归 `data/bookmark-interactions.ts`；能力／身份、8 秒读取、hash、完整稳定 pending 字节和原错误政策保留。Client 仍拥有唯一身份／刷新权威；当前 URL 与目录分页保持不同观察，不新增 cache／请求。 |
-| R3 主体日程检查（阶段 41 已落地） | `features/subject/useSubjectSchedules.ts` 拥有完整显式刷新、limit50 清单、至多 16 个快照／四请求串行批次及取消／质量生命周期；借原 render captured Client 三端口及三方法 logical gateway，renderer 只消费只读事实和语义 refresh。沿用原模型、四依赖、源资格和动作，不套 TaskList 的订阅、重试或超时。 |
-| R4 对象评论与关联数据（阶段 43 已落地） | 完整分页与写入叶子归 `data/object-interactions.ts`；Client 借原 refs、source、receipt、同一未发送错误 constructor，直接公开与消费。保留 100 页／100 条、ordinal／schema／溢出、signal、原迟到政策和捕获的 Objects source／revision／quote／page；关系仍借 Platform 独立分页。 |
-| R5 通用持久命令投递    | 非 record-input 的原 scoped pending、载荷 hash／身份、稳定 ID／字节、投递／refresh 及明确与未知失败政策仍归 Client 聚合。完整共享投递职责须归 data owner，借原权威端口；不复制领域 dispatch，不强并已独立的 input delivery 或增加存储。         |
+| 边界                                     | 完整职责及保留约束                                                                                                                                                                                                                                                                                    |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1 公共控件 role／样式（阶段 42 已落地） | 原完整 button／field／primary／outline／icon／secondary recipe 归 `ui/controls` 四原 cascade 槽，Browser 独立 recipe 归 feature；实际唯一来源与合法 refinement 有有限门禁。原 DOM、尺寸、颜色、图形、交互、动效及材质保持，不加 wrapper 或末尾覆盖。                                                  |
+| R2 书签数据操作（阶段 40 已落地）        | 完整 list／durable command 归 `data/bookmark-interactions.ts`；能力／身份、8 秒读取、hash、完整稳定 pending 字节和原错误政策保留。Client 仍拥有唯一身份／刷新权威；当前 URL 与目录分页保持不同观察，不新增 cache／请求。                                                                              |
+| R3 主体日程检查（阶段 41 已落地）        | `features/subject/useSubjectSchedules.ts` 拥有完整显式刷新、limit50 清单、至多 16 个快照／四请求串行批次及取消／质量生命周期；借原 render captured Client 三端口及三方法 logical gateway，renderer 只消费只读事实和语义 refresh。沿用原模型、四依赖、源资格和动作，不套 TaskList 的订阅、重试或超时。 |
+| R4 对象评论与关联数据（阶段 43 已落地）  | 完整分页与写入叶子归 `data/object-interactions.ts`；Client 借原 refs、source、receipt、同一未发送错误 constructor，直接公开与消费。保留 100 页／100 条、ordinal／schema／溢出、signal、原迟到政策和捕获的 Objects source／revision／quote／page；关系仍借 Platform 独立分页。                         |
+| R5 通用持久命令投递                      | 非 record-input 的原 scoped pending、载荷 hash／身份、稳定 ID／字节、投递／refresh 及明确与未知失败政策仍归 Client 聚合。完整共享投递职责须归 data owner，借原权威端口；不复制领域 dispatch，不强并已独立的 input delivery 或增加存储。                                                               |
 
 每项在实施前核对完整算法、静态／实时捕获 seam、真实消费、数据权威和验收
 清单。已有 ArtifactEditor、Reader／Browser feature、Client 唯一 identity／

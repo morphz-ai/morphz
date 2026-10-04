@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { inverseExchangeReferencePreparationModule } from "./fixtures/exchange-reference-preparation-consumption.js";
+import { referencePreparationFixed } from "./fixtures/exchange-reference-preparation-consumption.js";
 import test, { type TestContext } from "node:test";
 import {
   createExchangeReferenceCommands,
@@ -21,6 +21,7 @@ import {
   parseReference,
   verifyFixedReference,
   verifyReferenceOwner,
+  verifyReferenceOwnerCurrent,
 } from "./fixtures/exchange-reference-contract.js";
 
 // Controlled semantic ports, not App mounting, HTTP/source authorization,
@@ -29,14 +30,15 @@ const fixedSource = readFileSync(
   new URL("./fixtures/exchange-reference-39cf13cf.ts", import.meta.url),
   "utf8",
 );
-const ownerSource = inverseExchangeReferencePreparationModule(
-  readFileSync(
-    new URL(
-      "../apps/web/src/host/exchange-reference-commands.ts",
-      import.meta.url,
-    ),
-    "utf8",
+// Original fourteen counterfactuals run on the immutable actual Git75 owner;
+// actual production commands below remain the real current eight-method factory.
+const ownerSource = referencePreparationFixed.ownerRaw;
+const currentOwnerSource = readFileSync(
+  new URL(
+    "../apps/web/src/host/exchange-reference-commands.ts",
+    import.meta.url,
   ),
+  "utf8",
 );
 // The old four-method lane borrows actual new methods after checking the whole
 // approved eight-key surface; only the four named additions are omitted here.
@@ -420,6 +422,7 @@ async function parity(
 test("fixed four complete Git algorithms and the finite owner adapters remain exact", () => {
   verifyFixedReference(fixedSource);
   verifyReferenceOwner(ownerSource, fixedSource);
+  verifyReferenceOwnerCurrent(currentOwnerSource, fixedSource);
 });
 
 test("legal counterfactuals reject the specific algorithm/constructor rule, not parse errors", () => {

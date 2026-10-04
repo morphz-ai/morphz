@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 44：引用与评论的有限当前工程门禁
+
+本阶段只改五份测试／helper 与一份独立历史档案，不改生产、界面或业务。
+引用 owner 的普通当前检查直接读取真实 App／owner：核八个完整命令、
+两个原 hook、实际 runtime import／const alias 来源、原注册相对阶段、
+捕获 scope／草稿／焦点 writer、返回值与真实 JSX／Provider 消费。不再
+以当前整件 App hash、全局 hook／JSX 数量或跨 owner inverse 限制演进。
+独立、实际有 JSX 消费的 React feature／state／effect 正例通过；这是
+解析源码的消费证明，不冒称已挂载运行或原 App 验收。
+
+actual Git b5／9122／75／9708 的完整原件和原二十六反例独立固定，
+历史检查仍保留原全文 metrics、完整 callback 字节及精确拒绝规则。
+原十八命令测试组与十四个反例保留；当前危险反例按有限语义交接。
+合法且实际消费的别名、独立域的 factory／React 增长不再作为当前违规；
+这些明确政策差异与二十六项交接逐项记录，没有用历史 PASS 代替当前证明。
+
+根独立发现并保留四个真正误接受的来源反例：错误模块的同名 controller／
+draft factory，以及正确返回方法闲置但 JSX 使用同名 foreign callback。
+修后按真实 symbol 来源拒绝全部四项，而非仅按 exportedName 归一化。
+根重新核 actual Git 完整档案、六十二／七个旧 helper 声明、原完整二十六
+callback、十七个完整命令测试文本，均保留；独立 proper `npm test`
+三文件 **34/34**，零失败／跳过。含未改准备行为文件的 agent 四文件
+**43/43**；根六路径及依赖的原严格类型策略检查通过。同期完整全局
+类型检查仍碰到 R5 测试编辑中诊断，最终全量须待全部 owner 冻结再执行。
+
+证据：`/tmp/morphz-reference-governance.AFT21B/RESULT.md`、
+`/tmp/morphz-reference-root-audit.6Gm0c7/first-probe.json` 与
+`final-probe.json`、根 `r-gov-a-root-final.log`。未启动服务、请求模型、
+重启原 App／Runtime 或修改用户数据。其它 whole-App／inverse 链、R5
+真实请求及整体原生验收仍在收尾；目标 active，不称整体工程已完成。
+
 ## 2026-10-04 前端阶段 43：对象评论与关联的完整数据操作
 
 `data/object-interactions.ts` 拥有原两个完整读取算法与 annotate／link

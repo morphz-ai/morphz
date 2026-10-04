@@ -17,7 +17,9 @@ import {
   inverseExchangeReferencePreparationModule,
   parseReferencePreparation,
   referencePreparationFixed,
+  verifyExchangeReferencePreparationConsumption,
 } from "./fixtures/exchange-reference-preparation-consumption.js";
+import { referenceGovernanceHistory } from "./fixtures/exchange-reference-governance-history.js";
 
 // Actual source/consumer and inert construction evidence. Separate fixed-old /
 // actual-new React tests and full compiled pages own scheduling and DOM behavior;
@@ -44,11 +46,13 @@ function changed(text: string, before: string, after: string) {
 function rejected(appText: string, ownerText: string, rule: RegExp) {
   parseReferencePreparation({ App: appText, Owner: ownerText });
   assert.throws(
-    () => assertExchangeReferencePreparationWholeApp(appText, ownerText),
+    () => verifyExchangeReferencePreparationConsumption(appText, ownerText),
     rule,
   );
 }
-test("actual preparation complete two recipes eight methods captured ports and four real consumers inverse actual Git75ba whole App and module", () => {
+test("immutable migration archive retains complete actual Git75ba whole App and module proof without locking today's renderer", () => {
+  const app = referenceGovernanceHistory.preparationApp;
+  const owner = referenceGovernanceHistory.preparationOwner;
   const originalApp = assertExchangeReferencePreparationWholeApp(app, owner);
   const originalOwner = assertExchangeReferencePreparationWholeModule(owner);
   assert.equal(
@@ -513,10 +517,21 @@ test("four actual consumers are sole direct returned symbols and retain full ori
   rejected(
     changed(app, "{searchOpen && (", "{searchOpen || ("),
     owner,
+    /reference-search-visibility-guard/,
+  );
+  historicalRejected(
+    changed(
+      referenceGovernanceHistory.preparationApp,
+      "{searchOpen && (",
+      "{searchOpen || (",
+    ),
+    referenceGovernanceHistory.preparationOwner,
     /whole actual Git75ba App SHA after only approved preparation inverse/,
   );
 });
 test("finite inverse is byte-idempotent in legacy lanes retains unrelated deltas and cannot strip extra approved-span comments or new inventory", () => {
+  const app = referenceGovernanceHistory.preparationApp;
+  const owner = referenceGovernanceHistory.preparationOwner;
   const oldApp = inverseExchangeReferencePreparationApp(app, owner),
     oldOwner = referencePreparationFixed.ownerRaw;
   for (const original of [
@@ -543,17 +558,17 @@ test("finite inverse is byte-idempotent in legacy lanes retains unrelated deltas
     inverseExchangeReferencePreparationApp(outside, owner),
     oldApp + "\n// unrelated new delta\n",
   );
-  rejected(
+  historicalRejected(
     outside,
     owner,
     /whole actual Git75ba App bytes after only approved preparation inverse/,
   );
-  rejected(
+  historicalRejected(
     app,
     owner + "\n// unrelated module delta\n",
     /whole actual Git75ba owner bytes after only approved preparation inverse/,
   );
-  rejected(
+  historicalRejected(
     app,
     changed(
       owner,
@@ -562,7 +577,7 @@ test("finite inverse is byte-idempotent in legacy lanes retains unrelated deltas
     ),
     /complete original preparation recipe prepareSearchQuote raw approved span/,
   );
-  rejected(
+  historicalRejected(
     changed(
       app,
       "    scope: { conversationKey },",
@@ -571,9 +586,17 @@ test("finite inverse is byte-idempotent in legacy lanes retains unrelated deltas
     owner,
     /complete preparation captured render fields scope and distinct lazy focus ports raw approved span/,
   );
-  rejected(
+  historicalRejected(
     app,
     owner + "\nconst extraOwner = {};\n",
     /reviewed finite preparation module inventory/,
   );
 });
+
+function historicalRejected(appText: string, ownerText: string, rule: RegExp) {
+  parseReferencePreparation({ App: appText, Owner: ownerText });
+  assert.throws(
+    () => assertExchangeReferencePreparationWholeApp(appText, ownerText),
+    rule,
+  );
+}

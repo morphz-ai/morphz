@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { inverseExchangeReferencePreparationModule } from "./exchange-reference-preparation-consumption.js";
+import {
+  inverseExchangeReferencePreparationModule,
+  verifyExchangeReferencePreparationModuleCurrent,
+} from "./exchange-reference-preparation-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -102,8 +105,8 @@ export function verifyFixedReference(source: string) {
   return declarations;
 }
 
-// A deliberately finite structural contract, not a general purity proof or
-// authority/UI/mounted-consumption gate. The fixed oracle supplies the algorithms.
+// Historical API retained for historical peers and original counterfactuals.
+// It does not claim to validate the raw current eight-method owner.
 export function verifyReferenceOwner(owner: string, fixed: string) {
   owner = inverseExchangeReferencePreparationModule(owner);
   const parsed = parseReference(owner);
@@ -159,4 +162,10 @@ export function verifyReferenceOwner(owner: string, fixed: string) {
       old[name],
       "original reference algorithm " + name,
     );
+}
+
+// Raw current owner: no inverse, cross-owner chain or whole-module inventory.
+export function verifyReferenceOwnerCurrent(owner: string, fixed: string) {
+  verifyFixedReference(fixed);
+  return verifyExchangeReferencePreparationModuleCurrent(owner);
 }
