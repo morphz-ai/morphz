@@ -134,6 +134,34 @@ observation、busy、焦点与展示仍各属原 owner。完整旧 Client 字节
 实际 HTTP 拒绝及旧新编译页面证据见阶段 24，不视为完整执行 presentation、
 真实批准成功或原 App 验收。
 
+执行详情的完整 UI 生命周期现归
+`features/execution/useExecutionInspection.ts`，既有 `ExecutionDialog`
+直接消费六个事实与三个动作。它借原 Client、scope、dialog ref 和
+embedded 值，持有原局部状态、读取观察、模态注册、scope 退休、
+完整 control／readResult 以及当前 render 的成果链接投影。原第一个
+dialog ref 与整棵 DOM、Job／Thread 展示、审批禁用和打开／关闭动作
+仍归 renderer；三条原真实挂载路径不改。
+
+这是完整 feature controller，不是查询 broker、第二份授权／审批
+ledger 或新的状态机。原捕获 scope 与最新 API 的区别、控制 finally
+只在当前范围清 busy 后不等待刷新、结果读取不刷新、同 key 离线保留
+投影等语义不归一化；原 action、期限、身份与刷新权威仍在 Client／
+data owner。完整原算法、17 个展平注册／依赖与实际 React 阶段分别
+验证，静态注册数不冒充运行时 hook 计数。原 CSS、动效、请求和
+模型调用不新增或改变。
+
+有限门禁只治理该生命周期、同步声明、实际参数符号与直接消费，
+不锁 App／Client 或完整 renderer；合法无关 JSX、CSS、pure 增量及
+真实 import alias 继续允许。完整旧源逆证明只属独立迁移证据，
+严格旧新挂载比较通过显式 migration 开关运行，普通 CI 验证当前契约。
+编译页面、源证明、受控 Client 挂载与全量检查见阶段 33；这些不代表
+Runtime 执行、真实授权成功、全部查询治理或原 App 验收。
+
+既有 Thread 图形门禁仍检查原状态、heading／span 树和真实图形消费；
+不再把详情的原 hook 物理位置锁在 renderer。原完整 hook 摘要由固定
+历史档案另证，scope 退休的原指定负例由实际 inspection owner 门禁
+承接，不能以职责迁移为由删除行为约束。
+
 交流读取的共享纯投影现归 `conversation-read.ts`；提示与历史的不同范围、
 消息数组引用合同及原回执排序仍由真实消费方显式指定。已读初始化、稳定
 acknowledgement 与两个提交 effects 归 `host/use-exchange-read-receipts.ts`，
@@ -574,12 +602,15 @@ CSS zoom 对照不是 Electron／OS 缩放或标题栏原生命中验收；原 A
 当前已有工作面解析、稳定导航 Host／应用入口／内容打开、项目与会话私有范围、
 交流意图／焦点、草稿生命周期、发送协议、输入工具、主体检查器、读取回执与
 若干领域数据 family、Human 文档／项目创建、对象批注和搜索／引用准备的
-生产 owner；共享顶栏、首批登记图形／透明按钮及交流／
+生产 owner，以及完整执行详情 feature controller；共享顶栏、首批登记
+图形／透明按钮及交流／
 原生弹窗表面也有有限门禁。已有 `ArtifactEditor` 独立拥有现件编辑、草稿、
 版本冲突及保存生命周期，不与手写创建、Agent 输入或宿主导航混为同一职责。
 
-剩余生产边界是其余 role 型组件、跨领域 presentation 与唯一样式责任。领域查询治理
-仍需按真实合同逐批推进，已有 family 不等于整层 query facade 已完成；
+剩余生产边界包括 Thread collection 的输入关联活动与范围概览两种展示
+投影、其余 role 型组件及唯一样式责任；不同用途的事实不能强并成一个
+状态 enum。领域查询治理仍需按真实合同逐批推进，已有 family 不等于
+整层 query facade 已完成；
 不为凑目录或清空 App 而重造缓存／store。普通页面选择、画布及 portal 组合
 可以保留在宿主，完整业务生命周期应归 feature。
 

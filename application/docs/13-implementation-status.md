@@ -1,5 +1,75 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 33：执行详情完整 feature 生命周期
+
+`features/execution/useExecutionInspection.ts` 接收原 Client、scope、
+dialog ref 和 embedded 四个借用值，拥有原状态、最新 API ref、scope
+投影、完整读取观察、模态注册、scope 退休、控制／结果读取和成果链接
+投影。`ExecutionDialog` 在原位置直接消费六个事实与三个动作；原第一个
+dialog ref、完整 DOM、keys、Job／Thread 展示、审批控制与打开／关闭
+动作仍留在 renderer。原三条真实消费路径不改。不是新 broker、store、
+审批 ledger、查询／Runtime 协议或 UI 模型调用。
+
+根独立实际 Git `114960d1` 证明两份生产源的完整正向迁移／逆向恢复；
+固定旧档案的原组件、十五条完整生命周期语句及四份借用 helper 原字节
+另行核对。静态展开后的 **17** 个 primitive 注册顺序／依赖与原源相同，
+不冒充运行时 hook 计数。可执行完整旧 Dialog、完整旧 controller recipe
+及九份源码来源、十二个原片段从实际 Git 独立捕获，不用新版当旧版 oracle。
+全部 **200** 份其余 renderer source 完整字节相等，**202** 份 renderer
+source 在 build／挂载期间冻结，完整原 CSS 和 preload 字节不改；正常
+完整 build 的三入口资产与实际加载的冻结新版资产一致。
+
+六份完整原执行页面的 **19** 项与完整原事项 spec 中两个精确原生 dialog
+场景，冻结旧版／新版各 **21/21**，无 retry／skip。每边核对 **69** 份
+实际 HTTP 入口资产；七份完整 spec、三份私有 fixture 均保持实际 Git
+原字节，无旧入口校准。覆盖读取顺序、原动效、审批、父子 Thread、事项
+事件观察、注解、真实来源和完整结果。不是原 App 窗口验收。
+
+根独立八份相邻原回归 **54/54**；新有限门禁 **16/16**，原四十个
+指定可解析负例保留，并补充七个实际符号／环境初始化／同步声明负例。
+真实 React helper import alias、纯增量、无关 JSX／CSS／注释合法；
+不增加当前 App／Client／完整 renderer hash 或跨 owner inverse 链。
+测试草案漏检借用值、环境初始化和 async／generator，并误拒 helper alias
+的 RED 独立复核后修正；生产、旧档案和行为测试字节未改变。
+
+默认当前契约与显式
+`MORPHZ_TEST_EXECUTION_INSPECTION_MIGRATION_EQUIVALENCE=1` 各 **12/12**，
+无 skip；每轮为三个 Node 测试、八个实质挂载组及一个父测试，不是十二个
+独立浏览器场景。实际 React StrictMode、原观察器和原生 HTML dialog 验证
+layout 在 passive read 前、held invalidation／abort／dirty-tail、健康空闲
+零轮询、失败退避／恢复、最新 Client 与捕获 scope、退休／迟到／卸载、
+完整 control finally 不等待刷新、结果读取不刷新、当前 render 的成果链接、
+稳定 keyed details／焦点／选择／resize 和同 key 离线控制语义。
+原 ABA／单 busy 并发与离线 Job-stop 特征仅作显式迁移比较，不写成长期
+必须保留的缺陷。受控端口不等于真实 ACL／事务／Runtime／原生 macOS。
+回调事件筛选、测试 getter 类型及档案 import 定位准备错误的 RED 均保留，
+没有为测试改生产行为或削掉旧动作断言。
+
+初轮全量 Node **2067 项：1904 通过、160 能力跳过、3 失败**，三个
+失败均为既有 Thread 图形门禁把完整详情 hook 摘要锁在 renderer，及
+退休负例仍定位旧源。当前图形事实／heading／span 树的原摘要不变，
+生命周期由真正的 inspection owner 检查；完整原 hook 摘要另作固定历史
+证明，原 `[observationScope]` 退休负例由实际 owner 的指定规则承接。
+没有把失败略过或更新为新版摘要。独立复核后的图形／生命周期联合门禁
+**20/20**；根最终全量 Node **2068 项：1908 通过、160 能力跳过、
+零失败／取消**，完整初轮 RED 保留。
+
+根最终完整 build／类型及八条源路径格式、完整差异检查通过；本批生产与
+自动验证完成，做 focused local commit，不代表原 App 验收。整体目标仍 active；
+Thread collection 展示、其余 role／样式归属、查询合同与旧门禁治理、
+跨页综合及原 App 原生验收仍未完成。原 App 仍卡退出清理；强制退出
+待用户确认，不重置 profile／中心、不重启 Runtime。本批未额外推送。
+
+根证据：`/tmp/morphz-execution-inspection-root.MmOF6j` 的 manifest、
+旧新原页面／HTTP audit、完整源逆证明、固定档案证明、相邻／finite、
+mounted 两模式、最终 build／Node／format 与 source freeze；初轮失败
+保留在 `root-node-final.log`，最终全量为 `root-node-after-glyph-repair.log`，
+八条验证源和正常 build 冻结证明为 `root-final-stage-proof.json`。
+生产、门禁、行为证据分别在
+`/tmp/morphz-execution-inspection-production.VPMBkj`、
+`/tmp/morphz-execution-inspection-boundary.0TUdV4` 和
+`/tmp/morphz-execution-inspection-validation.BJRLLZ`。
+
 ## 2026-10-04 前端阶段 32：完整工具步骤的只读展示责任
 
 既有 `execution-presentation.ts` 新增两个纯入口：实时工具消息的

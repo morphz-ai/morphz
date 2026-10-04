@@ -25,13 +25,18 @@ import {
   type Node,
   type SourceFile,
 } from "typescript/unstable/ast";
+import { executionInspectionOriginal as fixed114 } from "./fixtures/execution-inspection-114960d1.js";
 
 // Finite first-two Thread-glyph contract, not all presentation/React/visual
 // correctness. 14ae1de6 original row, group heading/status and hook arguments
 // supply the hashes. Whitespace plus only the original Icon map and inner
 // glyph are normalized; other expressions retain their parentheses.
 // Job controls/body, other components and CSS are deliberately outside scope.
-// CI needs no git checkout/history. SSR and mounted scheduling are separate tests.
+// Dialog lifecycle moved to the actual execution-inspection owner: current
+// Dialog checks only its original Thread-glyph facts/tree. The original Dialog
+// lifecycle digest remains below as an immutable fixed114 historical proof.
+// Sidebar's existing contract is unchanged. CI needs no Git checkout/history;
+// SSR and mounted scheduling are separate tests.
 const baseline = {
   Sidebar: {
     scope: "a677e6fdecd44d0e500dcbe7a94ef42db84f62e3c66c2431150f7e8d640d9c22",
@@ -354,8 +359,15 @@ function inspect(sources: Sources) {
         1,
       );
     });
-    rule(`${owner}-original-facts-span-tree-and-lifecycle`, () =>
-      assert.deepEqual(scopes(consumer, owner), baseline[owner]),
+    rule(
+      owner === "Sidebar"
+        ? "Sidebar-original-facts-span-tree-and-lifecycle"
+        : "Dialog-original-facts-span-tree",
+      () => {
+        const actual = scopes(consumer, owner);
+        if (owner === "Sidebar") assert.deepEqual(actual, baseline.Sidebar);
+        else assert.equal(actual.scope, baseline.Dialog.scope);
+      },
     );
   }
   return failures;
@@ -367,8 +379,12 @@ const source = Object.fromEntries(
   ]),
 ) as Sources;
 
-test("two Thread consumers retain their fixed original facts/tree/lifecycle and share actual glyph owner", () => {
+test("two Thread consumers retain original glyph facts/tree and share the actual glyph owner", () => {
   assert.deepEqual(inspect(source), []);
+});
+test("fixed committed original Dialog retains its historical glyph facts and complete lifecycle digest", () => {
+  const original = parse({ Dialog: fixed114.originalComponent.raw });
+  assert.deepEqual(scopes(original.get("Dialog")!, "Dialog"), baseline.Dialog);
 });
 test("finite AST contract tolerates formatting, not a line-count/source-substring oracle", () => {
   const formatted = {
@@ -441,11 +457,14 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
   );
   reject(
     "Dialog",
-    "Dialog-original-facts-span-tree-and-lifecycle",
+    "Dialog-original-facts-span-tree",
     ["title={status?.label}", ""],
     ["client.online && !error", "client.online"],
-    ["}, [observationScope]);", "}, []);"],
   );
+  // Scope retirement is no longer in this glyph consumer. Its exact original
+  // [observationScope] -> [] counterfactual is still executed against the real
+  // Controller in execution-inspection-boundary.test.ts under the designated
+  // original-scope-retirement-guard rule, not an expanded historical consumer.
   reject("Running", "running-waveform-source-unchanged", [
     'className="execution-signal-flow"',
     'className="execution-signal-base"',
