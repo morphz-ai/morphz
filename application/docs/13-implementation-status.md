@@ -1,5 +1,30 @@
 # 桌面能力实施记录
 
+## 2026-10-04 独立校准：既有 workflow 页面回归
+
+书签 data owner 的旧／新完整四 spec 对照首先均为 **13 通过、3 失败**。
+三个相同红项来自 workflow 的旧入口／职责假设：附加文件现在是共享输入
+菜单中的持久选项，焦点不应重开已关闭历史，阅读材质由 conversation 而非
+未绘制的外层 frame 承载。没有以新 UI 行为覆盖旧回归，也没有修生产页面。
+
+只校准 `workflow-ux.spec.ts` 的前三例：先沿真实添加菜单打开附件选择；
+失焦、选中与取消仍检查原稿、禁用／恢复和附件，并新增同一输入 DOM 的
+mount 见证；五次切页仍检查唯一共享触发器和持久附件选项；两种外观下
+明确检查焦点不展开历史，再显式打开并核阅读层原材质、文字 opacity、
+全历史与输入高度。后面三例完整原字节、原六标题与全部预算不变。
+
+首次校准仍有 **15 通过、1 失败**：菜单关闭后，定位器的父 group 未包含
+隐藏节点。保留该日志，仅给父 group 补同一 includeHidden 查询，未删除
+选择期间禁用断言。最终完整四 spec 的旧／新各 **16/16**，无跳过或重试。
+其它三份 spec、48 份 fixture、80 份支撑 helper 均核实际 Git 原字节，
+每项核实际页面加载的冻结 HTML／主 JS／CSS／preload；原红与中间红仍保留。
+自有 Host 已关闭，发现 marker 恢复，未操作用户资料或后台 Runtime。
+
+根证据 `/tmp/morphz-bookmark-pages-final.5yxlrA`；原红证据
+`/tmp/morphz-bookmark-interactions-root.SpANNk`，首次校准红项证据
+`/tmp/morphz-bookmark-pages-contract.eiHcH5`。这是一项独立测试契约修正，
+不等于整个前端目标完成或原 App 的 native picker／焦点验收。
+
 ## 2026-10-04 原 Morphz 窗口恢复：退出清理挂起
 
 Human 再次反馈无法看到 UI。根检查原安装应用 `ai.morphz.desktop`：

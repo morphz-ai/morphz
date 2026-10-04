@@ -1,6 +1,10 @@
 import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
-import { openInput, composerAction } from "./interaction-helpers.js";
+import {
+  openInput,
+  composerAction,
+  openComposerMedia,
+} from "./interaction-helpers.js";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 
@@ -11,7 +15,22 @@ test("系统附件选择期间失焦不卸载输入，取消和选中后均恢�
   await page.goto("/");
   const input = await openInput(page);
   await input.fill("附件选择期间的草稿");
-  const choose = page.getByRole("button", { name: "附加文件", exact: true });
+  await input.evaluate((element) => {
+    element.dataset.pickerMount = "preserved";
+  });
+  await openComposerMedia(page);
+  // Selection closes the input menu, not its persistent option or composer.
+  const choose = page
+    .getByRole("group", {
+      name: "添加到这条消息",
+      exact: true,
+      includeHidden: true,
+    })
+    .getByRole("button", {
+      name: "附加文件",
+      exact: true,
+      includeHidden: true,
+    });
   const chooserEvent = page.waitForEvent("filechooser");
   await choose.click();
   const chooser = await chooserEvent;
@@ -26,6 +45,7 @@ test("系统附件选择期间失焦不卸载输入，取消和选中后均恢�
     () => new Promise<void>((done) => requestAnimationFrame(() => done())),
   );
   await expect(input).toHaveValue("附件选择期间的草稿");
+  await expect(input).toHaveAttribute("data-picker-mount", "preserved");
   await expect(choose).toBeDisabled();
   await chooser.setFiles({
     name: "native-picker.md",
@@ -36,12 +56,14 @@ test("系统附件选择期间失焦不卸载输入，取消和选中后均恢�
     "native-picker.md",
   );
   await expect(choose).toBeEnabled();
+  await openComposerMedia(page);
   const cancelled = page.waitForEvent("filechooser");
   await choose.click();
   await cancelled;
   await page.getByLabel("消息附件文件").dispatchEvent("cancel");
   await expect(choose).toBeEnabled();
   await expect(input).toHaveValue("附件选择期间的草稿");
+  await expect(input).toHaveAttribute("data-picker-mount", "preserved");
   await page.evaluate(() => {
     Reflect.deleteProperty(document, "hasFocus");
   });
@@ -56,7 +78,14 @@ test("切换工作页面和重新展开输入不重复挂载附件按钮", async
       .click();
     await openInput(page);
     await expect(
-      page.getByRole("button", { name: "附加文件", exact: true }),
+      page.getByRole("button", { name: "添加输入内容", exact: true }),
+    ).toHaveCount(1);
+    await expect(
+      page.getByRole("button", {
+        name: "附加文件",
+        exact: true,
+        includeHidden: true,
+      }),
     ).toHaveCount(1);
     if (name === "对话") {
       await expect(
@@ -71,7 +100,14 @@ test("切换工作页面和重新展开输入不重复挂载附件按钮", async
     }
     await openInput(page);
     await expect(
-      page.getByRole("button", { name: "附加文件", exact: true }),
+      page.getByRole("button", { name: "添加输入内容", exact: true }),
+    ).toHaveCount(1);
+    await expect(
+      page.getByRole("button", {
+        name: "附加文件",
+        exact: true,
+        includeHidden: true,
+      }),
     ).toHaveCount(1);
   }
 });
@@ -86,21 +122,30 @@ test("half-open history has a translucent boundary without dimming text or resiz
     await page.getByRole("button", { name: appearance, exact: true }).click();
     await page.keyboard.press("Escape");
     await openInput(page);
+    const history = page.locator(".exchange-panel > .conversation");
+    const surface = page.locator(".exchange-panel");
+    if (await history.isVisible()) await composerAction(page, "收起交流记录");
     await page.getByLabel("AI 输入内容").focus();
+    await expect(page.locator(".primary-panel")).toHaveAttribute(
+      "data-interaction",
+      "input",
+    );
+    await expect(history).toHaveCount(0);
+    await composerAction(page, "查看交流记录");
     await expect(page.locator(".primary-panel")).toHaveAttribute(
       "data-interaction",
       "recent",
     );
-    const history = page.locator(".conversation");
-    const surface = page.locator(".exchange-panel");
     await expect(history).toHaveCSS("opacity", "1");
     await expect(surface).toHaveCSS("opacity", "1");
-    await expect(surface).toHaveCSS(
+    // The reading boundary owns the material; the shared frame stays unpainted.
+    await expect(surface).toHaveCSS("backdrop-filter", "none");
+    await expect(history).toHaveCSS(
       "backdrop-filter",
       "blur(20px) saturate(1.08)",
     );
     expect(
-      await surface.evaluate((el) => getComputedStyle(el).boxShadow),
+      await history.evaluate((el) => getComputedStyle(el).boxShadow),
     ).not.toBe("none");
     const inputBounds = (await page.getByLabel("AI 输入内容").boundingBox())!;
     expect(inputBounds.height).toBeGreaterThanOrEqual(60);
