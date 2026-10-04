@@ -1,5 +1,28 @@
 # 桌面能力实施记录
 
+## 2026-10-04 草稿架构门禁：补齐运算符与函数声明见证
+
+在阶段 24 提交 `c2f3128b` 后，只读复核发现旧 draft 门禁接受六个
+合法解析的变种：两个私有 draft guard 的 `!` 改 `+`、两个函数改 async、
+setDraft 改 generator，以及 createConversation 的 `!pending` 改 `+pending`。
+根环境直接读取实际 Git `c2f3128b` 的门禁独立复现六项均被放行；这只
+证明这一有限源规则漏检，不声称其他门禁、类型或运行行为都接受变种。
+
+修复仅在 `exchange-draft-boundary.test.ts`：syntax 明确保留 prefix
+operator，guarded declaration 同时比较 modifiers、asterisk、名称、类型
+参数、参数和返回类型，不再只比较 body／parameters。六个新反例先验证
+唯一真实函数与唯一替换、合法解析，再各自要求命中原指定规则。原七项
+先绿、新六项先红的证据保留；修复后根相邻 draft／submission／navigation
+合同 **41/41**，独立七份相邻合同 **71/71**，均无跳过；完整类型和限定
+格式检查通过。原 oracle 模板逐字节未改，根 SHA 为
+`8b56c20a79617a4600c4538221e3b20956fba5ac257a88899bf726af718754d5`；
+App 与 draft owner 的实际生产字节仍等于该 Git。没有 UI、权限或运行
+算法变更，也没有以更新旧基准来消除失败。
+
+独立先红／修复证据：`/tmp/morphz-draft-gate-prefix.0iWWv3`。这不是全部
+JavaScript 语义检查或完整架构门禁；跨层依赖、全产品样式／role 所有权
+仍未完成，不能将局部测试通过视为整个前端目标完成。
+
 ## 2026-10-04 前端阶段 24：执行查询、控制与共享审批记录所有权
 
 `data/execution-interactions.ts` 完整拥有原 `cancelInput`、执行 snapshot／

@@ -14,6 +14,7 @@ import {
   isImportDeclaration,
   isNamedImports,
   isElementAccessExpression,
+  isPrefixUnaryExpression,
   isPropertyAccessExpression,
   isReturnStatement,
   isStringLiteral,
@@ -234,7 +235,24 @@ function syntax(node: Node): unknown {
   node.forEachChild((child) => {
     children.push(syntax(child));
   });
-  return [node.kind, children.length ? children : node.getText()];
+  // A prefix operator is a scalar, not a forEachChild child. Preserve it so
+  // the private origin guard and the original pending test cannot invert.
+  return [
+    node.kind,
+    isPrefixUnaryExpression(node) ? node.operator : undefined,
+    children.length ? children : node.getText(),
+  ];
+}
+function signature(node: FunctionDeclaration): unknown {
+  return [
+    node.kind,
+    node.modifiers?.map(syntax),
+    node.asteriskToken?.kind,
+    node.name && syntax(node.name),
+    node.typeParameters?.map(syntax),
+    node.parameters.map(syntax),
+    node.type && syntax(node.type),
+  ];
 }
 function same(left: Node | undefined, right: Node | undefined) {
   return (
@@ -621,8 +639,8 @@ function ownership(ownerText: string, appText: string): string[] {
               .every((node, index) =>
                 same(node, originalBody.statements[index]),
               ) &&
-            JSON.stringify(actual.parameters.map(syntax)) ===
-              JSON.stringify(expected!.parameters.map(syntax))
+            JSON.stringify(signature(actual)) ===
+              JSON.stringify(signature(expected!))
           : same(actual, expected)),
       "host-guards-dictation-async-shell-navigation-seams-unchanged",
     );
@@ -989,6 +1007,79 @@ test("retired private draft entry guard is mandatory, before original dictation/
     "original-storage-capture-read-aliases-and-single-functional-writer",
   );
 });
+for (const [label, side, name, before, after, rule] of [
+  [
+    "setDraft prefix operator",
+    "app",
+    "setDraft",
+    "if (!origin.isActive()) return;",
+    "if (+origin.isActive()) return;",
+    "host-guards-dictation-async-shell-navigation-seams-unchanged",
+  ],
+  [
+    "updateDraft prefix operator",
+    "app",
+    "updateDraft",
+    "if (!origin.isActive()) return;",
+    "if (+origin.isActive()) return;",
+    "host-guards-dictation-async-shell-navigation-seams-unchanged",
+  ],
+  [
+    "setDraft async declaration",
+    "app",
+    "setDraft",
+    "function setDraft(",
+    "async function setDraft(",
+    "host-guards-dictation-async-shell-navigation-seams-unchanged",
+  ],
+  [
+    "updateDraft async declaration",
+    "app",
+    "updateDraft",
+    "function updateDraft(",
+    "async function updateDraft(",
+    "host-guards-dictation-async-shell-navigation-seams-unchanged",
+  ],
+  [
+    "setDraft generator declaration",
+    "app",
+    "setDraft",
+    "function setDraft(",
+    "function* setDraft(",
+    "host-guards-dictation-async-shell-navigation-seams-unchanged",
+  ],
+  [
+    "createConversation prefix operator",
+    "owner",
+    "createConversation",
+    "if (!pending)",
+    "if (+pending)",
+    "create-current-ref-persist-ref-state-stable-ids",
+  ],
+] as const)
+  test(`draft gate rejects parsed ${label} counterfactual`, () => {
+    const source = side === "app" ? app : owner;
+    const filename = side === "app" ? "App.tsx" : "owner.ts";
+    const parsed = parse({ [filename]: source }).get(filename)!;
+    const targets = functions(parsed.source, name);
+    assert.equal(
+      targets.length,
+      1,
+      "Counterfactual has one actual function target",
+    );
+    const original = targets[0]!.getText(parsed.source);
+    const candidate = changed(
+      source,
+      original,
+      changed(original, before, after),
+    );
+    parse({ [filename]: candidate });
+    rejected(
+      side === "owner" ? candidate : owner,
+      side === "app" ? candidate : app,
+      rule,
+    );
+  });
 test("draft gate permits formatting and unrelated local UI/storage owners", () => {
   assert.deepEqual(
     ownership(
