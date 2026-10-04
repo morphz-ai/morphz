@@ -1,5 +1,42 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 41：主体日程完整读取生命周期
+
+`features/subject/useSubjectSchedules.ts` 唯一拥有原日程检查器的状态、
+显式刷新、受限读取、取消及质量生命周期。借当前 render 的 Client
+boot／online／refresh 和三方法 logical gateway，不新增 transport、订阅、
+轮询、超时、cache 或任务控制。原 identity／attempt／online／connected
+四依赖、navigation → captured refresh → list 顺序、50 条清单、至多 16
+快照及四请求串行批次、错误原子拒绝和 abort guard 保留。renderer 只消费
+七个只读事实及 refresh 动作；原图形、DOM、文案、CSS 和精确源跳转不变。
+
+根独立核 actual Git `57e7d4ce` 的完整 8,520-byte SubjectSchedules 原件、
+11 个完整 prelude 和两个来源动作；批准的正向迁移／整件逆证明通过。
+普通 CI 用有限当前 owner／实际 import、gateway、直接消费和 source scope
+门禁，不锁整个 App／Client／renderer，也不新增跨 owner inverse。20 个
+明确语法反例和真实别名、独立 type／export／无关 JSX 正例通过。
+
+根 proper `npm test` 新 controller／门禁及原 sidebar model **22/22**，
+零失败或跳过；显式实际旧件对照 **8/8**，127 次完整 DOM／ARIA／焦点、
+scope、错误、请求与生命周期观察逐项相等。受控 logical Desktop bridge
+只用于隔离挂载，不冒充 HTTP ACL、物理 Runtime 或原生硬件证明。
+
+完整三个现行页面 spec 的冻结旧／新版本各 **17/17**，原标题和预算不改，
+每边 176 个实际入口 HTTP 资源响应及 208 份 emitted 资源核验通过。首轮
+八红均为私有 Project fixture 静态根仍指 normal dist；业务断言已通过，
+只校准私有静态资源根后重新跑完整两边，保留初始红日志，不改生产页面。
+证据：`/tmp/morphz-subject-schedules-root.udmSl9`、
+`/tmp/morphz-subject-schedules-controller.dFJ72T`、
+`/tmp/morphz-subject-schedules-pages-final.vWVmxL`。
+
+正常完整类型／Web／Service 构建通过。同一个原 Morphz 窗口只刷新 UI，
+103 条历史消息、原输入、Dock 和右侧栏仍可见；实际打开定时任务并点击
+刷新，按钮按原策略读取时禁用、完成后恢复，已有等待触发项仍在，再恢复
+原活动页签。未发送消息、修改业务对象或重启 Runtime。原窗证据在
+`/tmp/morphz-original-ui-recovery.q72TCn`；这不是整体原生／硬件验收，
+也不是退出清理缺陷已修复。R1／R4／R5、旧门禁治理及整体验收继续，
+目标保持 active；本批后新增代码的默认全量尚须收尾后重新执行。
+
 ## 2026-10-04 前端阶段 40：完整个人书签数据操作
 
 `data/bookmark-interactions.ts` 拥有原完整 list／durable command family。
