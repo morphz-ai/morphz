@@ -37,6 +37,10 @@
   overflow-x: auto;
   scrollbar-width: none;
   position: relative;
+  /* Paint/focus clearance inside the scroll clip. Negative block margins keep
+     the original 32px group, button rects and drag insertion coordinates. */
+  padding-block: 4px;
+  margin-block: -4px;
 }
 .application-dock-pins:empty {
   display: none;
@@ -52,26 +56,43 @@
   place-items: center;
   border: 0;
   border-radius: 9px;
-  padding: 8px;
+  padding: 0;
   color: var(--text-secondary);
-  background: var(--surface-raised);
-  box-shadow: inset 0 0 0 1px var(--line);
+  background: transparent;
+  box-shadow: none;
   position: relative;
 }
 .app
   .application-dock-shortcut:hover:not(:disabled):not([aria-pressed="true"]) {
-  background: var(--soft);
+  background: transparent;
 }
 .app .application-dock-shortcut[aria-pressed="true"]:not(:disabled) {
-  background: var(--selection);
-  box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: transparent;
+  box-shadow: none;
   color: var(--ink);
+}
+.app .application-dock-shortcut:active:not(:disabled) {
+  background: transparent;
+}
+.application-dock-shortcut[aria-pressed="true"]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 .app .application-dock-shortcut svg,
 .app .application-dock-shortcut img {
-  width: 14px;
-  height: 14px;
+  width: 22px;
+  height: 22px;
   object-fit: contain;
+  /* Magnified paint may extend above the hit rect; it is not a new target. */
+  pointer-events: none;
 }
 .app .application-dock-shortcut[data-dock-magnified] svg,
 .app .application-dock-shortcut[data-dock-magnified] img {
@@ -104,6 +125,8 @@
 }
 .application-dock-pins[data-drop-end]::after {
   right: 0;
+  top: 8px;
+  bottom: 8px;
 }
 .application-dock-drag-hint {
   position: absolute;

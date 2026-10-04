@@ -202,7 +202,8 @@ test("Launcher／工作台共享三个应用身份；四主题亮暗不串色，
       const launcherSymbol = launcherTrigger.locator(
         "svg.application-launcher-symbol",
       );
-      await expectBox(launcherSymbol, 14);
+      // User-authorized bare Dock glyphs are 22px; the 32px hit box stays above.
+      await expectBox(launcherSymbol, 22);
       await expect(launcherSymbol).toHaveAttribute("aria-hidden", "true");
       await expect(launcherSymbol).toHaveAttribute("focusable", "false");
       await expect(launcherSymbol.locator("rect")).toHaveCount(4);
@@ -307,7 +308,7 @@ test("Launcher／工作台共享三个应用身份；四主题亮暗不串色，
         const symbol = shortcut.locator(
           `svg.application-symbol[data-application-identity="${identity}"]`,
         );
-        await expectBox(symbol, 14);
+        await expectBox(symbol, 22);
         await expect(symbol).toHaveAttribute("aria-hidden", "true");
         await expect(symbol).toHaveAttribute("focusable", "false");
         await expect(symbol).toHaveAttribute("stroke", "currentColor");
@@ -396,7 +397,7 @@ test("原中文名称和Tab／Escape／键盘固定可达；刷新保留图标�
     ),
   ).toBeVisible();
   await expectBox(shortcut, 32);
-  await expectBox(shortcut.locator("svg"), 14);
+  await expectBox(shortcut.locator("svg"), 22);
   const restored = await openLauncher(page);
   const remove = restored.getByRole("button", {
     name: "从 Dock 移除：阅读",

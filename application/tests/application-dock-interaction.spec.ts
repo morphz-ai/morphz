@@ -21,6 +21,7 @@ import React, {StrictMode, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {flushSync} from 'react-dom';
 import {ApplicationDock} from '/src/ApplicationDock.tsx';
+import '/src/application-icons.css';
 import {browserApplication, readerApplication, scriptStudioApplication} from ${JSON.stringify(`/@fs/${resolve("packages/core/src/applications.ts")}`)};
 import {scopedStorage} from '/src/local-preferences.ts';
 const defaults = [scriptStudioApplication, browserApplication, readerApplication];
@@ -35,6 +36,7 @@ function Fixture() {
  current = {keys, apps: apps.map(app=>app.id+'@'+app.version), writes, launches, manages};
  control = (name,value) => flushSync(()=>{
   if(name==='catalog')setApps(defaults.filter(app=>value.includes(app.id+'@'+app.version)));
+  else if(name==='applications')setApps(value);
   else if(name==='keys')setKeys(value);
   else if(name==='width')setWidth(value);
   else if(name==='unmount')setMounted(false);
@@ -104,6 +106,90 @@ const frames = (page: Page) =>
         requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       ),
   );
+const geometry = (page: Page) =>
+  page.evaluate(() => {
+    const rect = (element: Element) => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return { x, y, width, height };
+    };
+    return [
+      ...document.querySelectorAll(
+        ".application-dock-shortcut, .application-dock-buttons, #right-controls, #draft",
+      ),
+    ].map(rect);
+  });
+const glyphPaint = (source: Locator) =>
+  source.evaluate((element) => {
+    const glyph = element.querySelector("svg, img")!,
+      clip = element.closest(".application-dock-pins"),
+      paint = glyph.getBoundingClientRect(),
+      button = element.getBoundingClientRect(),
+      style = getComputedStyle(glyph),
+      frame = getComputedStyle(element),
+      dot = getComputedStyle(element, "::after"),
+      matrix = new DOMMatrixReadOnly(
+        style.transform === "none" ? undefined : style.transform,
+      );
+    return {
+      width: parseFloat(style.width),
+      height: parseFloat(style.height),
+      scale: matrix.a,
+      visibleWidth: paint.width,
+      visibleHeight: paint.height,
+      paint: {
+        left: paint.left,
+        right: paint.right,
+        top: paint.top,
+        bottom: paint.bottom,
+      },
+      clip: clip
+        ? (() => {
+            const r = clip.getBoundingClientRect();
+            return {
+              left: r.left,
+              right: r.right,
+              top: r.top,
+              bottom: r.bottom,
+            };
+          })()
+        : null,
+      background: frame.backgroundColor,
+      shadow: frame.boxShadow,
+      border: frame.borderWidth,
+      dot: {
+        content: dot.content,
+        width: dot.width,
+        height: dot.height,
+        bottom: dot.bottom,
+        background: dot.backgroundColor,
+        pointerEvents: dot.pointerEvents,
+      },
+      centerHit:
+        document
+          .elementFromPoint(
+            button.x + button.width / 2,
+            button.y + button.height / 2,
+          )
+          ?.closest(".application-dock-shortcut") === element,
+      aboveHit:
+        document
+          .elementFromPoint(button.x + button.width / 2, button.y - 0.5)
+          ?.closest(".application-dock-shortcut") === element,
+      edgeHits: [
+        -0.5,
+        -1,
+        -1.5,
+        -2,
+        button.height + 0.5,
+        button.height + 1.5,
+      ].map(
+        (offset) =>
+          document
+            .elementFromPoint(button.x + button.width / 2, button.y + offset)
+            ?.closest(".application-dock-shortcut") === element,
+      ),
+    };
+  });
 let server: Awaited<ReturnType<typeof createServer>> | undefined,
   fixtureUrl: string;
 const failures = new WeakMap<
@@ -430,6 +516,294 @@ test("glyph hover never changes layout/hit geometry; menu and dynamic local redu
     await source.evaluate((e) => e.style.getPropertyValue("--dock-scale")),
   ).toBe("");
 });
+
+for (const appearance of ["light", "dark"] as const)
+  test(`bare ${appearance} Dock: original hit geometry, visible magnification and active dot without a framed hover/active state`, async ({
+    page,
+  }, testInfo) => {
+    await page.evaluate((appearance) => {
+      document.documentElement.style.colorScheme = appearance;
+      document.body.style.background =
+        appearance === "light" ? "#f7f7f7" : "#202020";
+      document.body.style.setProperty(
+        "--ink",
+        appearance === "light" ? "#222" : "#ececec",
+      );
+      document.body.style.setProperty(
+        "--text-secondary",
+        appearance === "light" ? "#444" : "#b5b5b5",
+      );
+    }, appearance);
+    // Original finite layout declarations, reviewed in the previous CSS. This
+    // overlay is only an independent geometry oracle, not another Dock UI.
+    const old = await page.addStyleTag({
+      content: `
+      .application-dock-pins { padding-block:0; margin-block:0; }
+      .app .application-dock-shortcut { padding:8px; }
+      .app .application-dock-shortcut svg, .app .application-dock-shortcut img { width:14px; height:14px; }
+    `,
+    });
+    const original = await geometry(page);
+    const originalEdges = (await glyphPaint(shortcut(page, studio))).edgeHits;
+    expect(
+      original.filter((rect) => rect.width === 32 && rect.height === 32),
+    ).toHaveLength(3);
+    const nodes = await page
+      .locator(".application-dock-shortcut")
+      .evaluateAll((elements) => {
+        Reflect.set(window, "originalDockButtons", elements);
+        Reflect.set(
+          window,
+          "originalDockGlyphs",
+          elements.map((element) => element.querySelector("svg, img")),
+        );
+        return elements.map(
+          (element) => element.querySelector("svg")!.outerHTML,
+        );
+      });
+    await old.evaluate((element) => (element as HTMLElement).remove());
+    await frames(page);
+    expect(await geometry(page)).toEqual(original);
+    expect(
+      await page
+        .locator(".application-dock-shortcut")
+        .evaluateAll((elements) =>
+          elements.every(
+            (element, index) =>
+              Reflect.get(window, "originalDockButtons")[index] === element &&
+              Reflect.get(window, "originalDockGlyphs")[index] ===
+                element.querySelector("svg, img"),
+          ),
+        ),
+    ).toBe(true);
+    expect(
+      await page
+        .locator(".application-dock-shortcut")
+        .evaluateAll((elements) =>
+          elements.map((element) => element.querySelector("svg")!.outerHTML),
+        ),
+    ).toEqual(nodes);
+    const source = shortcut(page, studio),
+      origin = await center(source);
+    let paint = await glyphPaint(source);
+    expect(paint.width).toBe(22);
+    expect(paint.height).toBe(22);
+    expect(paint.background).toBe("rgba(0, 0, 0, 0)");
+    expect(paint.shadow).toBe("none");
+    expect(paint.border).toBe("0px");
+    expect(paint.dot).toMatchObject({
+      content: '""',
+      width: "3px",
+      height: "3px",
+      bottom: "-1px",
+      pointerEvents: "none",
+    });
+    expect(paint.dot.background).not.toBe("rgba(0, 0, 0, 0)");
+    expect((await glyphPaint(shortcut(page, browser))).dot.content).toBe(
+      "none",
+    );
+    for (const other of [
+      shortcut(page, browser),
+      page.getByRole("button", { name: "全部应用", exact: true }),
+    ]) {
+      const point = await center(other);
+      await page.mouse.move(point.x, point.y);
+      await expect
+        .poll(async () => (await glyphPaint(other)).scale)
+        .toBeGreaterThanOrEqual(1.37);
+      const otherPaint = await glyphPaint(other);
+      expect(otherPaint.width).toBe(22);
+      expect(otherPaint.background).toBe("rgba(0, 0, 0, 0)");
+      expect(otherPaint.shadow).toBe("none");
+      expect(otherPaint.border).toBe("0px");
+      expect(await geometry(page)).toEqual(original);
+    }
+    await page.mouse.move(origin.x, origin.y);
+    await expect
+      .poll(async () => (await glyphPaint(source)).scale)
+      .toBeGreaterThanOrEqual(1.37);
+    paint = await glyphPaint(source);
+    expect(paint.visibleWidth / paint.width).toBeGreaterThanOrEqual(1.3);
+    expect(paint.visibleHeight / paint.height).toBeGreaterThanOrEqual(1.3);
+    expect(paint.clip).not.toBe(null);
+    expect(paint.paint.top).toBeGreaterThanOrEqual(paint.clip!.top);
+    expect(paint.paint.bottom).toBeLessThanOrEqual(paint.clip!.bottom);
+    expect(paint.paint.left).toBeGreaterThanOrEqual(paint.clip!.left);
+    expect(paint.centerHit).toBe(true);
+    // Chromium hit testing quantizes fractional boundary pixels. Compare the
+    // actual old boundary samples rather than assuming y - .5 is outside.
+    expect(paint.edgeHits).toEqual(originalEdges);
+    expect(await geometry(page)).toEqual(original);
+    const neighbour = await glyphPaint(shortcut(page, browser));
+    expect(paint.paint.right).toBeLessThan(neighbour.paint.left);
+    const controls = await page.locator("#right-controls").boundingBox();
+    assert.ok(controls);
+    expect(neighbour.paint.right).toBeLessThan(controls.x);
+    await page
+      .locator(".exchange-panel")
+      .screenshot({ path: testInfo.outputPath(`bare-dock-${appearance}.png`) });
+    // The real shared button :active rule must not reintroduce its rectangle.
+    const shared = await page.addStyleTag({
+      content:
+        ".app button:active:not(:disabled){background-color:rgb(232,232,232)}",
+    });
+    await page.mouse.down();
+    for (const element of [source, shortcut(page, browser)]) {
+      const current = await glyphPaint(element);
+      expect(current.background).toBe("rgba(0, 0, 0, 0)");
+      expect(current.shadow).toBe("none");
+    }
+    await page.keyboard.press("Escape");
+    await page.mouse.move(800, 250);
+    await page.mouse.up();
+    // No click/launch was performed: the captured pointer is cancelled by Esc.
+    await shared.evaluate((element) => (element as HTMLElement).remove());
+    await source.focus();
+    await page.keyboard.press("Tab");
+    await expect(shortcut(page, browser)).toBeFocused();
+    expect(
+      await shortcut(page, browser).evaluate((element) => {
+        const style = getComputedStyle(element);
+        return (
+          style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0
+        );
+      }),
+    ).toBe(true);
+    expect(
+      await page
+        .locator(".application-dock-shortcut")
+        .evaluateAll((elements) =>
+          elements.every(
+            (element, index) =>
+              Reflect.get(window, "originalDockButtons")[index] === element &&
+              Reflect.get(window, "originalDockGlyphs")[index] ===
+                element.querySelector("svg, img"),
+          ),
+        ),
+    ).toBe(true);
+    expect((await report(page)).writes).toEqual([]);
+  });
+
+test("bare scroll-edge glyphs and drag markers keep their original group/insertion geometry; empty/compact do not add height", async ({
+  page,
+}) => {
+  const entries = Array.from({ length: 12 }, (_, index) => ({
+    ...browserApplication,
+    id: `test.dock.${index}`,
+    title: `TEST Dock ${index}`,
+  }));
+  const keys = entries.map(applicationKey);
+  await run(page, "applications", entries);
+  await run(page, "keys", keys);
+  const group = page.locator(".application-dock-buttons"),
+    pins = page.locator(".application-dock-pins");
+  await group.evaluate((element) => {
+    (element as HTMLElement).style.width = "180px";
+  });
+  await expect
+    .poll(() =>
+      pins.evaluate((element) => element.scrollWidth > element.clientWidth),
+    )
+    .toBe(true);
+  const before = await geometry(page);
+  for (const key of [keys[0]!, keys.at(-1)!]) {
+    await pins.evaluate(
+      (element, last) => {
+        element.scrollLeft = last ? element.scrollWidth : 0;
+      },
+      key === keys.at(-1),
+    );
+    const source = shortcut(page, key),
+      origin = await center(source);
+    const edges = (await glyphPaint(source)).edgeHits;
+    await page.mouse.move(origin.x, origin.y);
+    await expect
+      .poll(async () => (await glyphPaint(source)).scale)
+      .toBeGreaterThanOrEqual(1.37);
+    const paint = await glyphPaint(source);
+    expect(paint.paint.left).toBeGreaterThanOrEqual(paint.clip!.left);
+    expect(paint.paint.right).toBeLessThanOrEqual(paint.clip!.right);
+    expect(paint.paint.top).toBeGreaterThanOrEqual(paint.clip!.top);
+    expect(paint.paint.bottom).toBeLessThanOrEqual(paint.clip!.bottom);
+    expect(paint.centerHit).toBe(true);
+    expect(paint.edgeHits).toEqual(edges);
+    expect((await group.boundingBox())!.height).toBe(32);
+  }
+  await page.mouse.move(800, 250);
+  await pins.evaluate((element) => {
+    element.scrollLeft = 0;
+  });
+  await frames(page);
+  expect(await geometry(page)).toEqual(before);
+  const marker = await pins.evaluate((element) => {
+    element.setAttribute("data-drop-end", "true");
+    const rect = element.getBoundingClientRect(),
+      style = getComputedStyle(element, "::after");
+    return {
+      top: rect.top + parseFloat(style.top),
+      height: parseFloat(style.height),
+    };
+  });
+  const first = await shortcut(page, keys[0]!).boundingBox();
+  assert.ok(first);
+  expect(marker).toEqual({ top: first.y + 4, height: 24 });
+  await pins.evaluate((element) => {
+    element.removeAttribute("data-drop-end");
+  });
+  await run(page, "keys", []);
+  expect((await group.boundingBox())!.height).toBe(32);
+  await run(page, "keys", keys);
+  await run(page, "width", 400);
+  expect((await group.boundingBox())!.height).toBe(32);
+  await expect(pins).toBeHidden();
+  expect((await report(page)).writes).toEqual([]);
+});
+
+test("installed PNG keeps its exact image identity and receives the same unclipped bare-glyph paint", async ({
+  page,
+}) => {
+  const entry = {
+    ...readerApplication,
+    id: "test.installed-image",
+    title: "TEST Installed PNG",
+    iconImage:
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6uAoAAAAASUVORK5CYII=",
+  };
+  await run(page, "applications", [entry]);
+  await run(page, "keys", [applicationKey(entry)]);
+  const source = shortcut(page, applicationKey(entry)),
+    image = source.locator("img");
+  await expect(image).toHaveAttribute("src", entry.iconImage);
+  await expect
+    .poll(() =>
+      image.evaluate((element) => (element as HTMLImageElement).naturalWidth),
+    )
+    .toBe(1);
+  const original = await geometry(page),
+    origin = await center(source);
+  await image.evaluate((element) => {
+    Reflect.set(window, "originalDockImage", element);
+  });
+  await page.mouse.move(origin.x, origin.y);
+  await expect
+    .poll(async () => (await glyphPaint(source)).scale)
+    .toBeGreaterThanOrEqual(1.37);
+  const paint = await glyphPaint(source);
+  expect(paint.width).toBe(22);
+  expect(paint.height).toBe(22);
+  expect(paint.background).toBe("rgba(0, 0, 0, 0)");
+  expect(paint.shadow).toBe("none");
+  expect(paint.paint.top).toBeGreaterThanOrEqual(paint.clip!.top);
+  expect(paint.paint.bottom).toBeLessThanOrEqual(paint.clip!.bottom);
+  expect(await geometry(page)).toEqual(original);
+  await expect(image).toHaveAttribute("src", entry.iconImage);
+  expect(
+    await image.evaluate(
+      (element) => Reflect.get(window, "originalDockImage") === element,
+    ),
+  ).toBe(true);
+  expect((await report(page)).writes).toEqual([]);
+});
 test("system reduce disables magnification, but ordering keeps its non-motion semantics", async ({
   page,
 }) => {
@@ -478,6 +852,22 @@ test("coarse touch retains 44px targets, visible pins and no hover/drag requirem
   const source = shortcut(page, studio);
   await expect(source).toBeVisible();
   expect((await source.boundingBox())!.width).toBe(44);
+  // Mobile emulation maps CSS coordinates through a fractional viewport scale;
+  // its reported rect height can be 43.999938 while the actual target is 44px.
+  expect(
+    await source.evaluate((element) => ({
+      height: getComputedStyle(element).height,
+      target: (element as HTMLElement).offsetHeight,
+    })),
+  ).toEqual({ height: "44px", target: 44 });
+  const paint = await glyphPaint(source);
+  expect(paint.width).toBe(22);
+  expect(paint.height).toBe(22);
+  expect(paint.scale).toBe(1);
+  expect(paint.background).toBe("rgba(0, 0, 0, 0)");
+  expect(paint.shadow).toBe("none");
+  expect(paint.paint.top).toBeGreaterThanOrEqual(paint.clip!.top);
+  expect(paint.paint.bottom).toBeLessThanOrEqual(paint.clip!.bottom);
   await source.dispatchEvent("pointermove", {
     pointerType: "touch",
     clientX: 200,
