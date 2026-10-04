@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useState } from "react";
 import type { ScriptLocation } from "../../../packages/core/src/script-delivery.js";
 import {
   ArrowLeft,
@@ -23,9 +23,12 @@ import {
 import { contentOwnershipTitle } from "../../../packages/core/src/content.js";
 import { ContentMetadata } from "./ContentMetadata.js";
 import type { WorkspaceClient } from "./client.js";
-import { useModal } from "./useModal.js";
+import { StudioDialog } from "./features/script/StudioDialog.js";
 import { ScriptItemEditor } from "./ScriptStudioEditor.js";
-import { scriptDisplayTime } from "../../../packages/core/src/script-studio-presentation.js";
+import {
+  scriptDisplayTime,
+  scriptStatusLabels,
+} from "../../../packages/core/src/script-studio-presentation.js";
 import type { ScriptEditorProduction } from "./script-editor-reader.js";
 import type { ScriptDirectoryItem } from "../../../packages/core/src/script-editor.js";
 import {
@@ -66,50 +69,8 @@ type Props = {
 };
 export type ScriptComposeResult = { ok: true } | { ok: false; error: string };
 export type { ScriptRun } from "./features/script/useScriptStudioWorkspace.js";
-export function StudioDialog({
-  title,
-  children,
-  onClose,
-  compact = false,
-}: {
-  title: string;
-  children: ReactNode;
-  onClose: () => void;
-  compact?: boolean;
-}) {
-  const dialog = useRef<HTMLDialogElement>(null);
-  useModal(dialog);
-  return (
-    <dialog
-      ref={dialog}
-      className={`create-dialog script-dialog${compact ? " script-dialog-compact" : ""}`}
-      aria-label={title}
-      onCancel={(e) => {
-        e.preventDefault();
-        onClose();
-      }}
-    >
-      <header>
-        <h2>{title}</h2>
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="关闭"
-          onClick={onClose}
-        >
-          <X />
-        </button>
-      </header>
-      {children}
-    </dialog>
-  );
-}
-export const scriptStatusLabels = {
-  draft: "草稿",
-  "in-review": "待审",
-  approved: "已批准",
-  locked: "已锁稿",
-};
+export { StudioDialog } from "./features/script/StudioDialog.js";
+export { scriptStatusLabels } from "../../../packages/core/src/script-studio-presentation.js";
 
 export function ScriptStudio({
   client,

@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-04 · 版本：1.7 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-04 · 版本：1.8 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -765,8 +765,9 @@ Reader 导入、OCR 与持久阅读命令 data owner 和 ScriptStudio 完整工�
 controller 已落实；画布、分页、子组件和局部 JSX 组合仍拥有其原职责。
 
 阶段 39 的实际来源审计登记下列五项。阶段 40 已落地 R2，阶段 41 已落地
-R3，阶段 42 已落地 R1，阶段 43 已落地 R4；剩余生产边界为 R5，仍须完成有限治理与整体验收。不是按文件行数清空
-宿主，也不是必须让每个页面再加一个 hook：
+R3，阶段 42 已落地 R1，阶段 43 已落地 R4，阶段 46 已落地 R5；五项的
+生产职责都已实际交接，剩余有限治理和整体验收不因此自动完成。不是按
+文件行数清空宿主，也不是必须让每个页面再加一个 hook：
 
 | 边界                                     | 完整职责及保留约束                                                                                                                                                                                                                                                                                    |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -774,7 +775,7 @@ R3，阶段 42 已落地 R1，阶段 43 已落地 R4；剩余生产边界为 R5�
 | R2 书签数据操作（阶段 40 已落地）        | 完整 list／durable command 归 `data/bookmark-interactions.ts`；能力／身份、8 秒读取、hash、完整稳定 pending 字节和原错误政策保留。Client 仍拥有唯一身份／刷新权威；当前 URL 与目录分页保持不同观察，不新增 cache／请求。                                                                              |
 | R3 主体日程检查（阶段 41 已落地）        | `features/subject/useSubjectSchedules.ts` 拥有完整显式刷新、limit50 清单、至多 16 个快照／四请求串行批次及取消／质量生命周期；借原 render captured Client 三端口及三方法 logical gateway，renderer 只消费只读事实和语义 refresh。沿用原模型、四依赖、源资格和动作，不套 TaskList 的订阅、重试或超时。 |
 | R4 对象评论与关联数据（阶段 43 已落地）  | 完整分页与写入叶子归 `data/object-interactions.ts`；Client 借原 refs、source、receipt、同一未发送错误 constructor，直接公开与消费。保留 100 页／100 条、ordinal／schema／溢出、signal、原迟到政策和捕获的 Objects source／revision／quote／page；关系仍借 Platform 独立分页。                         |
-| R5 通用持久命令投递                      | 非 record-input 的原 scoped pending、载荷 hash／身份、稳定 ID／字节、投递／refresh 及明确与未知失败政策仍归 Client 聚合。完整共享投递职责须归 data owner，借原权威端口；不复制领域 dispatch，不强并已独立的 input delivery 或增加存储。                                                               |
+| R5 通用持久命令投递（阶段 46 已落地）    | `data/operation-delivery.ts` 拥有完整非 record-input execute、原失败分类及同一 Unsent constructor；五惰性端口借 Client 原唯一权威。原 pending、hash／身份、稳定 ID／字节、清理与 refresh 顺序保持；领域 dispatch 和独立 input delivery 不复制，不增加存储或请求。                                     |
 
 每项在实施前核对完整算法、静态／实时捕获 seam、真实消费、数据权威和验收
 清单。已有 ArtifactEditor、Reader／Browser feature、Client 唯一 identity／
@@ -784,6 +785,18 @@ refresh 权威、App 的 portal／布局／全局快捷键／显式文件导航�
 
 当前生产约束与历史整文件迁移证明的测试治理也须收口，不能把不断增长
 的跨 owner inverse 链作为正常新增功能的永久前提。
+
+阶段 47 已将原完整剧本弹窗和四态词表交给各自共享 owner，七处表单
+直接复用并保留原同 binding 兼容出口；Editor 不再 runtime 导入父页。
+现件编辑仍有合法生命周期所有权，尚待逐批交接的是其被五个页面共享的
+ObjectIcon／kindLabel 纯语义图形，以及 App 内完整三分支 application
+compose preparation；不因此把每个局部 JSX 或状态再套一个 controller。
+
+交流样式的实际 33 源审计确认，单行底栏与交流几何已有 owner，五类旧
+footer／floating class 未有当前 TSX 消费，保留合法 fallback。Dock 的早
+phase 与后公共控件细化共同决定实际命中尺寸，不能整体后移以凑整理数量。
+交流 controls 的 16 条／63 声明完整 role recipe 是已定位的最小候选，
+尚未迁移或实测，不把来源报告等同编译／视觉／原生命中验收。
 
 整体跨页面外观／交互回归及原 App 的原生焦点、硬件和系统命中验收仍未完成。
 图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美

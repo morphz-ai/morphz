@@ -34,6 +34,13 @@ export function scriptAuthorName(
   );
 }
 
+export const scriptStatusLabels = {
+  draft: "草稿",
+  "in-review": "待审",
+  approved: "已批准",
+  locked: "已锁稿",
+};
+
 export const scriptEventLabels: Record<
   ScriptItem["events"][number]["action"],
   string

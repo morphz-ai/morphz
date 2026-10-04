@@ -7,6 +7,7 @@ import {
   scriptDisplayTime,
   scriptEventLabels,
   scriptEventNote,
+  scriptStatusLabels,
 } from "../../../packages/core/src/script-studio-presentation.js";
 import {
   prepareScriptGeneration,
@@ -31,12 +32,8 @@ import { draftKey, scopedStorage, type WorkspaceClient } from "./client.js";
 import { useContentDirectory } from "./useContentDirectory.js";
 import { scriptFocusReturn } from "./script-studio-focus.js";
 import { ScriptCandidates } from "./ScriptCandidates.js";
-import {
-  StudioDialog,
-  scriptStatusLabels,
-  type ScriptRun,
-  type ScriptComposeResult,
-} from "./ScriptStudio.js";
+import { StudioDialog } from "./features/script/StudioDialog.js";
+import type { ScriptRun, ScriptComposeResult } from "./ScriptStudio.js";
 
 type DraftState = { baseRevision: number; draft: ScriptDraft };
 type GenerationDraft = {

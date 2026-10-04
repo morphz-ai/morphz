@@ -13,6 +13,7 @@ import { type ScriptItem } from "../../../packages/core/src/script-studio.js";
 import type { ScriptDirectoryItem } from "../../../packages/core/src/script-editor.js";
 import { scopedStorage } from "./client.js";
 import { ComposerOptions } from "./ComposerOptions.js";
+import { scriptStatusLabels as statuses } from "../../../packages/core/src/script-studio-presentation.js";
 
 export const scriptCreateLabels: Record<ScriptItem["kind"], string> = {
   outline: "新建全剧大纲",
@@ -30,13 +31,6 @@ const createKinds: ScriptItem["kind"][] = [
   "setting",
   "source",
 ];
-const statuses = {
-  draft: "草稿",
-  "in-review": "待审",
-  approved: "已批准",
-  locked: "已锁稿",
-};
-
 /** A view projection only: original IDs, kinds, order and parent links stay intact. */
 export function scriptDirectory(items: ScriptDirectoryItem[]) {
   const sorted = [...items].sort(

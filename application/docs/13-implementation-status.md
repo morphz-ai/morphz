@@ -1,5 +1,39 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 47：共享剧本弹窗与状态词表
+
+原完整 `StudioDialog` 归 `features/script/StudioDialog.tsx`，七处原表单
+直接消费同一组件。四种状态的原中文词表归 core presentation，Studio、
+Editor 和 Navigation 直接消费；两个原公开名称保留同 binding 兼容出口，
+Editor 到父页面的 runtime 循环边改为原有类型的 type-only 引用。
+没有新增包装、样式、状态政策、冻结对象、请求或生命周期。原四 props、
+ref／useModal 顺序、原生节点、取消后关闭、标题与 children 都不改。
+
+根 fresh actual Git `e4fdd2ce` 核四完整原件、完整 Dialog、两原词表及七个
+consumer header；完整 forward／inverse 及小固定档案核对通过。普通 CI
+只约束原小组件、真实模块／value phase 与消费，不锁完整页面源码。
+二十一项 parse-valid 反例及实际 import／const alias、独立 React 消费
+正例通过。词表仍是原普通 `export const` 对象，不与 Job 状态混并。
+
+根 proper 六文件定向回归 **64/64**、零失败／跳过；agent 五文件
+**58/58**，新两文件 **7/7**。原完整 Studio、Editor、Navigation、Library
+挂载及 dialog-frame／Host 测试保留；七个表单有完整来源接线合同，不把
+新的受控 children 测试说成七项完整业务流程全部运行。显式既有历史
+Studio 对照另为 **13/13**、123 组完整原始观察一致；其旧件来自
+`13dbe571`，不冒称是新造的 e4 旧 renderer。原 CSS、DOM、焦点与草稿
+保持。根完整类型检查、正式 build exit 0；构建未装入原 App。
+
+根另在 fresh e4 整件档案复现原弹窗样式门禁 **5 通过／4 失败**，与
+当前原门禁相同；原因是阶段 42 已迁公共按钮 recipe 后，其旧物理路径
+和入口槽未交接。保留失败与原断言，正由独立 test-only 批次治理，不在
+这批共享组件里修改 UI 或吞掉失败。原 App／Runtime 不重启；整体全量、
+原 App／硬件验收和其余已登记边界仍在收尾，目标 active。
+
+证据：`/tmp/morphz-script-shared-production.oTuyDU/RESULT.md`、
+`source-proof.json`、小档案独立核对，根 `script-shared-root-final.log`／
+`script-shared-root-migration.log`；旧门禁基线在
+`/tmp/morphz-dialog-frame-root.PlQxB5/application`。
+
 ## 2026-10-04 前端阶段 46：完整操作提交的独立数据 owner
 
 Client 的非输入 durable delivery 现归 `data/operation-delivery.ts`。
