@@ -2,7 +2,11 @@ import { openSettings } from "./settings-helpers.js";
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
 import { seedLibraryArtifact, humanTask } from "./artifact-fixtures.js";
-import { openInput, composerAction } from "./interaction-helpers.js";
+import {
+  openInput,
+  openExchangeReading,
+  composerAction,
+} from "./interaction-helpers.js";
 test("真实对象、刷新恢复、引用批注、关联、事项和全局输入", async ({ page }) => {
   test.setTimeout(90_000);
   const errors: string[] = [];
@@ -256,7 +260,7 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
     48,
   );
   await page.getByRole("button", { name: "隐藏右侧栏" }).click();
-  await openInput(page);
+  await openExchangeReading(page);
   await composerAction(page, "收起交流记录");
   await expect(page.getByLabel("文档正文", { exact: true })).toHaveValue(
     "尚未保存的编辑内容",
@@ -264,6 +268,7 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
   await page.getByRole("button", { name: "保存版本", exact: true }).click();
   await openInput(page);
   await page.reload();
+  await openExchangeReading(page);
   await expect(page.getByRole("region", { name: "当前对话" })).toBeVisible();
   await composerAction(page, "展开完整记录");
   for (const width of [1380, 760, 390, 320]) {
@@ -313,7 +318,7 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "项目", exact: true })
     .click();
-  await openInput(page);
+  await openExchangeReading(page);
   await expect(page.getByRole("region", { name: "当前对话" })).toContainText(
     "请围绕这个对象继续讨论。",
   );
@@ -321,7 +326,7 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: /^事项/ })
     .click();
-  await openInput(page);
+  await openExchangeReading(page);
   await expect(page.getByRole("region", { name: "当前对话" })).toContainText(
     "请围绕这个对象继续讨论。",
   );

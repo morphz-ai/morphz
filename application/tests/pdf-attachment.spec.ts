@@ -39,23 +39,33 @@ test("PDF 附件调宽后文字不叠加，分页与草稿保持，不创建内�
   for (const width of [1440, 760, 390, 1440]) {
     await page.setViewportSize({ width, height: 960 });
     await expect(layer).toContainText("DESIGN NOTES");
+    let renderedWidth = 0;
     await expect
-      .poll(async () =>
-        dialog.locator(".pdf-page").evaluate((element) => {
-          const canvas = element.querySelector("canvas")!;
-          const text = element.querySelector(".pdf-text-layer")!;
-          return Math.abs(
-            canvas.getBoundingClientRect().width -
-              text.getBoundingClientRect().width,
-          );
-        }),
-      )
+      .poll(async () => {
+        // Resize replaces the page: readiness, alignment and width must come
+        // from one current DOM sample, not a later detached canvas locator.
+        const sample = await dialog.locator(".pdf-page").evaluate((element) => {
+          const canvas = element.querySelector("canvas");
+          const text = element.querySelector(".pdf-text-layer");
+          if (element.getAttribute("aria-busy") !== "false" || !canvas || !text)
+            return { width: 0, alignment: Infinity };
+          const canvasWidth = canvas.getBoundingClientRect().width;
+          const textWidth = text.getBoundingClientRect().width;
+          return {
+            width: canvasWidth,
+            alignment:
+              canvasWidth > 0 && textWidth > 0
+                ? Math.abs(canvasWidth - textWidth)
+                : Infinity,
+          };
+        });
+        renderedWidth = sample.width;
+        return sample.alignment;
+      })
       .toBeLessThan(2);
     await expect(layer).toHaveText(originalText!);
     await expect(layer.locator("span")).toHaveCount(originalCount);
-    widths.push(
-      (await dialog.locator(".pdf-page canvas").boundingBox())!.width,
-    );
+    widths.push(renderedWidth);
   }
   expect(Math.max(...widths) - Math.min(...widths)).toBeGreaterThan(100);
   await dialog.getByRole("button", { name: "附件下一页" }).click();

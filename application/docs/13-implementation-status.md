@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-05 页面回归：显式阅读入口与 PDF 同次采样
+
+仅 `tests/workspace.spec.ts`、`tests/pdf-attachment.spec.ts` 与本记录，
+不改生产组件、焦点策略、PDF 生命周期、CSS 或接口。旧／新完整四例
+首轮都暴露过测试前置问题：输入聚焦不再自动展开已关闭的交流记录；
+PDF 调宽时页节点可能在两次采样之间替换。保留原首红与后续完整失败记录。
+
+Workspace 第三用例沿用现有 `openExchangeReading`，在原收起动作前、
+reload 后、Projects 返回及 Tasks 返回四处明确打开阅读区；原区域、
+窄屏几何、草稿、键盘与跨页返回断言全部保留。PDF 仍在原 poll 中要求
+小于 2px 对齐，准备状态、非零文字／画布尺寸及 width 改为同次 DOM 采样；
+原文字／span 数、超过 100px 宽度变化、分页、草稿及不发送／不持久正文
+断言不变。没有响应伪造、点击重试、过滤、增加等待或容差调整。
+
+实际旧 `66666d53` 与第一份 Topbar 候选正常构建，使用相同校正 spec，
+各 **4/4**，完整两文件、worker1、retry0 和原预算不变。根代理独立核验
+每例真实 Page trace 中的 index／完整 CSS 响应字节与各 lane 磁盘资产
+一致，marker 恢复、owned 进程组和端口／临时中心清理均通过。当前完整
+typecheck 通过。此证据只验证测试接线修正，不代表后续 64 条 Topbar
+候选的迁移等价、第三方接入完成或原 App／原生窗口验收。
+
+证据：原完整十文件首红在 `/tmp/morphz-topbar-real-consumers.Owpy5W/`；
+两次接线后续首红分别在 `/tmp/morphz-topbar-test-setup-entry.QothK5/`、
+`/tmp/morphz-topbar-test-setup-v2-entry.UICy2n/`；最终两 lane 完整四例与
+独立字节／生命周期审计在 `/tmp/morphz-topbar-test-setup-v3-entry.jj1ywI/`。
+最终 PDF 条件的一行格式化后，在全新
+`/tmp/morphz-topbar-test-setup-formatted.fcXjFj/` 复跑并核完整最终 spec
+字节，两 lane 仍各 **4/4**，共 20 次实际 Page CSS 响应与清理再次通过。
+原应用 iframe 因新增项目误判撤权而卸载，是另一个旧生产 bug，不以
+测试修正掩盖；待独立修复授权，不混入保持行为不变的重构。
+
 ## 2026-10-05 前端阶段 58：PDF 渲染样式的独立所有权
 
 生产五路径：原 styles 的完整 14 条／51 声明与原 visual 的完整 9 条／
