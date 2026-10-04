@@ -1,5 +1,33 @@
 # 桌面能力实施记录
 
+## 2026-10-04 独立修复：Web 收藏的精确 URL 筛选
+
+Human 明确批准另行修复、独立提交。真实 `HttpApplicationClient` 已发送 `url`，
+但 HTTP GET `/api/bookmarks` 漏传给已有领域查询；两条收藏时，查询较旧 URL
+可能返回另一条较新的记录。Desktop logical API 与 BrowserStore 原筛选正确。
+服务端仅补传原 `url` 参数，继续使用既有校验、身份、查询和数据模型；
+不改页面、UI／动效、Runtime、数据库 schema、权限或重试政策。
+
+新增原 Host 测试中的真实 HTTP 对照：选列表非首项 URL，不依赖时间戳不相等；
+完整结果与 logical API 深等，未知 URL 返回空列表，非法 URL 仍返回 400。
+修复前 proper `npm test` 真红项及独立 HTTP／SQLite 复现保留，修复后五份
+完整相关测试 **18/18**，零跳过，PostgreSQL 必需且实际执行。
+
+完整原 `bookmarks.spec.ts` 三项 **3/3**、零重试／跳过；原断言和预算未改。
+旧页面入口硬编码 Chrome 而本机已安装测试 Chromium，首次浏览器启动失败
+原日志保留；私有运行配置直接解析并使用该已安装浏览器，没有安装浏览器、
+改断言、注入样式或操作用户 App。其第三例原有模拟查询不作为真实 HTTP
+筛选证据；真实筛选由上述 Host 回归验证。
+
+最终默认 `npm test` 选择 332 份源、2,229 项，**2,220 通过、零失败／取消／
+todo**；九项明确未启用（S3 三、Runtime 五、原生焦点一），无未知跳过，
+PostgreSQL 实际执行。根完整构建、类型与本次新增代码格式检查通过；HTTP
+原有无关格式问题保留，不在本项重排。全部 207 份 renderer
+源及 208 份 emitted 资源保持阶段 39 候选原字节。自有测试 Host 已关闭，
+私有页面运行的 discovery marker 恢复；没有修改用户资料、草稿、业务数据库、
+日常 Runtime 或原 App。根证据 `/tmp/morphz-bookmark-http-url-root.aPgHaT`。
+本项不是收藏数据 owner 重构，也不是整体前端目标或原 App 验收完成。
+
 ## 2026-10-04 前端阶段 39：完整剧本工作室生命周期
 
 `features/script/useScriptStudioWorkspace.ts` 现拥有 ScriptStudio 原完整

@@ -448,6 +448,9 @@ export function createAppServer(
               ...(url.searchParams.has("query")
                 ? { query: url.searchParams.get("query") }
                 : {}),
+              ...(url.searchParams.has("url")
+                ? { url: url.searchParams.get("url") }
+                : {}),
               ...(url.searchParams.has("offset")
                 ? { offset: Number(url.searchParams.get("offset")) }
                 : {}),

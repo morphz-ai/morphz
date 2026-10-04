@@ -175,9 +175,34 @@ test("受信 Host Session 可操作独立收藏；旧工作区不能再写同一
         },
         { identityGeneration: remoteBoot.csrfToken },
       );
-      assert.equal(
-        ((await remote.call("bookmarks.list", {})) as unknown[]).length,
-        2,
+      const allRows = (await remote.call("bookmarks.list", {})) as Array<{
+        url: string;
+      }>;
+      assert.equal(allRows.length, 2);
+      // Select the off-head URL even if timestamps tie. This must use
+      // the same exact domain filter over real HTTP as the Desktop logical API.
+      const exactURL = { url: allRows[1]!.url, limit: 1 };
+      const localExact = await connection.call(
+        "bookmarks.list",
+        exactURL,
+        options,
+      );
+      assert.equal((localExact as unknown[]).length, 1);
+      assert.deepEqual(
+        await remote.call("bookmarks.list", exactURL),
+        localExact,
+      );
+      assert.deepEqual(
+        await remote.call("bookmarks.list", {
+          url: "https://example.com/not-saved",
+          limit: 1,
+        }),
+        [],
+      );
+      await assert.rejects(
+        remote.call("bookmarks.list", { url: "not-a-website", limit: 1 }),
+        (error: unknown) =>
+          error instanceof Error && "status" in error && error.status === 400,
       );
       assert.equal(workspace.runtimeState(), null);
     } finally {
