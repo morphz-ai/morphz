@@ -1,5 +1,26 @@
 # 桌面能力实施记录
 
+## 2026-10-05 PDF 回归：真实版本冲突的确定性测试接线
+
+仅 `tests/pdf.spec.ts` 与本记录，不改 Reader、存储、SSE 或生产样式。
+原完整旧／新两 lane 首轮各 1/2：附件通过，Reader 在等待 409 时超时。
+实际 Page 请求表明外部保存后，实时刷新已读到新版 paper；随后选择
+paper 可能成为原来的同位置／偏好 no-op，旧用例不保证发出旧版本写入。
+
+现在只暂挂一次真实目标 PDF 的 UI save-position 请求，核其原版本／
+位置／偏好，再用原真实 API 提交外部写入，原样继续 UI 请求并等待真实
+409。没有伪造响应、改请求、禁用 SSE、删除断言或加大等待；后续完整
+画布、中文文字层、窄屏、分页、批注保存及重开断言与第二完整 spec 保留。
+两份干净旧／新 build 使用同一校正用例，各 **2/2**，原 30s／5s、
+worker1、retry0 不变。真实 Page 均载入其 index 选中的完整 CSS 字节；
+两 lane 的 marker 恢复、owned 进程关闭、端口清理均通过。
+
+当前完整 typecheck 与相关五文件统一入口 **36/36** 通过；不是完整
+Node 或原 App／原生验收。本修正独立于正在收口的 PDF 样式 owner。
+首红留在 `/tmp/morphz-pdf-original-spec-entry.6BdI6y/`；新完整两 lane
+及独立 Page 字节／lifecycle 收据在
+`/tmp/morphz-pdf-real-conflict-entry.WSqHVa/`。
+
 ## 2026-10-05 前端阶段 57：交流控件样式的独立所有权
 
 生产三路径：原 visual 的交流媒体／历史控件完整 **16 条、63 声明**迁入

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Route } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
@@ -78,34 +78,97 @@ test("既有 PDF 在阅读器中保留真实画布、中文文字层、分页批
   await expect
     .poll(async () => (await readPosition())?.revision ?? 0)
     .toBeGreaterThan(0);
-  const current = (await readPosition())!;
-  const accepted = await page.request.post("/api/reader/commands", {
-    headers: {
-      Origin: new URL(page.url()).origin,
-      "X-Morphz-Token": boot.csrfToken,
-    },
-    data: {
-      commandId: randomUUID(),
-      artifactId: entityId,
-      revision: 1,
-      command: {
-        action: "save-position",
-        artifactId: entityId,
-        artifactRevision: 1,
-        location: current.location,
-        preferences: { ...current.preferences, theme: "paper" },
-        expectedRevision: current.revision,
-      },
-    },
+  type Position = NonNullable<Awaited<ReturnType<typeof readPosition>>>;
+  type PositionWrite = {
+    artifactId: string;
+    revision: number;
+    command: {
+      action: string;
+      artifactId: string;
+      artifactRevision: number;
+      location: Position["location"];
+      preferences: Position["preferences"];
+      expectedRevision: number;
+    };
+  };
+  const commandRoute = "**/api/reader/commands";
+  let releasePositionWrite = () => {};
+  let capturePositionWrite = (_write: PositionWrite) => {};
+  const resumePositionWrite = new Promise<void>((resolve) => {
+    releasePositionWrite = resolve;
   });
-  expect(accepted.ok(), await accepted.text()).toBe(true);
-  const staleWrite = page.waitForResponse(
-    (response) =>
-      response.url().endsWith("/api/reader/commands") &&
-      response.status() === 409,
-  );
-  await settings.getByLabel("阅读主题", { exact: true }).selectOption("paper");
-  await staleWrite;
+  const capturedPositionWrite = new Promise<PositionWrite>((resolve) => {
+    capturePositionWrite = resolve;
+  });
+  let captured = false;
+  const pausePositionWrite = async (route: Route) => {
+    const request = route.request();
+    if (request.method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const write = request.postDataJSON() as PositionWrite;
+    if (
+      captured ||
+      write.artifactId !== entityId ||
+      write.revision !== 1 ||
+      write.command?.action !== "save-position" ||
+      write.command.artifactId !== entityId ||
+      write.command.artifactRevision !== 1 ||
+      write.command.preferences.theme !== "paper"
+    ) {
+      await route.continue();
+      return;
+    }
+    captured = true;
+    capturePositionWrite(write);
+    await resumePositionWrite;
+    await route.continue();
+  };
+  await page.route(commandRoute, pausePositionWrite);
+  try {
+    const staleWrite = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/reader/commands") &&
+        response.status() === 409,
+    );
+    // Hold the real UI request before the external write; live SSE invalidation
+    // may otherwise refresh the Reader before it can issue a stale command.
+    await settings.getByLabel("阅读主题", { exact: true }).selectOption("paper");
+    const uiWrite = await capturedPositionWrite;
+    const current = (await readPosition())!;
+    expect(uiWrite.command.expectedRevision).toBe(current.revision);
+    expect(uiWrite.command.location).toEqual(current.location);
+    expect(uiWrite.command.preferences).toEqual({
+      ...current.preferences,
+      theme: "paper",
+    });
+    const accepted = await page.request.post("/api/reader/commands", {
+      headers: {
+        Origin: new URL(page.url()).origin,
+        "X-Morphz-Token": boot.csrfToken,
+      },
+      data: {
+        commandId: randomUUID(),
+        artifactId: entityId,
+        revision: 1,
+        command: {
+          action: "save-position",
+          artifactId: entityId,
+          artifactRevision: 1,
+          location: current.location,
+          preferences: { ...current.preferences, theme: "paper" },
+          expectedRevision: current.revision,
+        },
+      },
+    });
+    expect(accepted.ok(), await accepted.text()).toBe(true);
+    releasePositionWrite();
+    await staleWrite;
+  } finally {
+    releasePositionWrite();
+    await page.unroute(commandRoute, pausePositionWrite);
+  }
   await expect(page.getByText(/阅读进度未保存/)).toHaveCount(0);
   await expect(paper).toHaveAttribute("data-theme", "paper");
   await settings.getByLabel("阅读主题", { exact: true }).selectOption("system");
