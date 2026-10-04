@@ -2091,8 +2091,8 @@ test("input tools reject parsed fake imports, mirrors, altered scopes/focus and 
     {
       source: changed(
         app,
-        "drafts: { replace: setDraft, update: updateDraft }",
-        "drafts: { replace: setDraft, update: () => {} }",
+        "drafts: { replace: setDraft, update: updateDraft },\n    currentContext,",
+        "drafts: { replace: setDraft, update: () => {} },\n    currentContext,",
       ),
       rule: "inputTools: exact captured render, original writers/focus/navigation ports",
     },

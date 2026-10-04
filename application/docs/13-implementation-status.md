@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-04 引用／内容回归：现行输入关联与真实 Host 能力
+
+字节不变的七份原页面文件在引用迁移前后编译各 23/26：三项
+`content-workflow` 都先找已折叠的 `.composer-meta .context-chip`。
+现只核实际非展开入口 `.composer-scope-label` 可见，以及原精确项目／
+`v1`／`v3` 的 title 和 aria-label；不接受最新 `v4` 代替旧草稿关联。
+这三处反向恢复与实际 Git `b5f698dd` 原全文字节一致，旧失败保留。
+
+只校准定位后，旧编译 25/26：首例用未配置 Runtime 的公共测试中心，
+却只在 runtime-navigation／history JSON 中模拟 configured，真正命令
+准备读原 Boot 后只保存，不触发原 messages 断言。现在仅首例借已有
+project-conversation-fixture 的已配置、停止派发 Host，用页面真实
+origin／cookie 获取 Client。原路由模拟、迟到 gate／finally、202 ACK、
+请求项目／会话／正文／意图／附件和 A／B／全目录草稿断言全部保留。
+另外两例的 Host 未改。独立有限逆变并统一机械对象换行后，与 Git 原
+文件全文相等；两份既有 Host 夹具字节不变，不生成模型回复。
+
+旧 input-tools 负例的全局 drafts 替换在新接线后误击 reference factory。
+只将两个替换字符串限定为原 `drafts…currentContext` 连续位置；旧门禁
+算法、固定摘要、拒绝规则和断言不变，独立逆变全文与 Git 原字节一致。
+旧失败另存，限定后原 14 项门禁通过。
+
+最终同一格式化源码的七份页面文件在固定旧／新编译各 26/26，逐例
+核三份 HTTP 资产与完整 SHA，零重试／flaky／skip。spec SHA 为
+`352cebb9735eda24bee8db235b84986f8c5936c0fde881244cf96ee1c65de2ea`。
+证据在 `/tmp/morphz-exchange-input-owner-root.1ZYkPK` 的
+`reference-old`、`reference-original-candidate`、`reference-calibrated-baseline`
+及最终 `reference-formatted-*` 报告。额外 Electron 用例明确不纳入本
+headless 矩阵；此处是真实隔离 Host／HTTP／领域存储的准备与受控 ACK，
+不证明被拦截发送的服务端持久化、真实 LLM／Session 或用户原 App。
+
 ## 2026-10-04 独立缺陷修复：恢复录音停止按钮的红色提示
 
 用户另行授权恢复停止提示，不作为外观不变重构的隐含修改。只将
