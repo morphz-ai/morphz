@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-04 · 版本：1.9 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-04 · 版本：1.10 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -791,6 +791,11 @@ raw-current 有限合同：真实来源／消费、原捕获、完整自有算�
 约束，独立 React feature 增长不受整份文件或 peer inverse 限制。原十个
 callback／54 反例保留固定历史证明；其中两项仅属历史。旧 API/default
 不变，Human／Private、Workspace／Draft 的当前入口尚待独立批次交接。
+
+阶段 49 仅补 frame 门禁的两条相邻 writer 物理 owner 和三个已批准
+control carrier 的有限入口 phase；原 recipe、callback／反例和不可变
+档案不变。另两份 surface 门禁的旧入口假设已在 actual Git 基线复现，
+仍待独立交接，不把 frame 定向通过当作全部公共样式治理完成。
 
 阶段 47 已将原完整剧本弹窗和四态词表交给各自共享 owner，七处表单
 直接复用并保留原同 binding 兼容出口；Editor 不再 runtime 导入父页。

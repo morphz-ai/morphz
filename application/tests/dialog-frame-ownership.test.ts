@@ -22,6 +22,21 @@ import { fixedDialogFrame } from "./fixtures/dialog-frame-c525d217.js";
 // Finite current role ownership, not a universal selector/effect solver.
 // Complete historical source/inverse belongs to the separate migration proof.
 const owner = "ui/dialog-frame.css";
+// R1 transferred these two shared action writers without changing their rules.
+// The immutable c525 tuples keep their historical source; current ownership is
+// explicit, so a leftover Visual writer is still a foreign writer, not an alias.
+const adjacentOwner = "ui/controls/surfaces.css";
+const currentNeighbors = fixedDialogFrame.neighbors.map((tuple) => ({
+  ...tuple,
+  source: adjacentOwner,
+}));
+// These three approved control carriers preserve the original frame/UI phase.
+// No other CSS is removed when checking the original adjacent frame slot.
+const entryCarriers = [
+  "ui/controls/adaptive.css",
+  "features/browser/browser-controls.css",
+  "ui/controls/metrics.css",
+] as const;
 const directory = new URL("../apps/web/src/", import.meta.url).pathname;
 type Sources = { css: Map<string, string>; modules: Map<string, string> };
 const key = (value: string) =>
@@ -287,6 +302,36 @@ function resolve(file: string, specifier: string, sources: Sources) {
     path.replace(/\.js$/, ".tsx"),
   ].find((name) => sources.css.has(name) || sources.modules.has(name));
 }
+function relativeStyle(file: string, specifier: string) {
+  return specifier.startsWith(".")
+    ? posix.normalize(
+        posix.join(posix.dirname(file), specifier.split(/[?#]/)[0]!),
+      )
+    : undefined;
+}
+const isCarrier = (file: string | undefined) =>
+  file !== undefined && (entryCarriers as readonly string[]).includes(file);
+function framePhase(styles: string[], rule: string) {
+  const governed = new Set<string>([
+    "styles.css",
+    ...entryCarriers,
+    owner,
+    "ui.css",
+  ]);
+  assert.deepEqual(
+    styles.filter((file) => governed.has(file)),
+    [
+      "styles.css",
+      entryCarriers[0],
+      entryCarriers[1],
+      owner,
+      entryCarriers[2],
+      "ui.css",
+    ],
+    rule,
+  );
+  return styles.filter((file) => !isCarrier(file));
+}
 function literal(node: Node | undefined): string | undefined {
   if (!node) return undefined;
   if (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node))
@@ -344,7 +389,7 @@ function validate(sources: Sources) {
         (n) => n.type === "decl" && affects(n.prop, ownedProps),
       );
       if (!relevant.length) return;
-      const neighbor = fixedDialogFrame.neighbors.find(
+      const neighbor = currentNeighbors.find(
         (n) =>
           n.source === file &&
           key(n.selector) === key(rule.selector) &&
@@ -372,7 +417,7 @@ function validate(sources: Sources) {
       seenNeighbors.set(key(neighbor.selector), old);
     });
   }
-  for (const n of fixedDialogFrame.neighbors)
+  for (const n of currentNeighbors)
     assert.equal(
       seenNeighbors.get(key(n.selector))?.length,
       1,
@@ -380,7 +425,9 @@ function validate(sources: Sources) {
     );
   let imports = 0;
   const edges = new Map<string, string[]>(),
-    mainCss: string[] = [];
+    mainCss: string[] = [],
+    mainStyles: string[] = [],
+    carrierImports = new Map<string, number>();
   moduleProgram(sources, (file, source) => {
     const dependencies: string[] = [];
     source.forEachChild((node) => {
@@ -408,8 +455,22 @@ function validate(sources: Sources) {
           "frame-runtime-import",
         );
       }
+      const style = relativeStyle(file, spec);
+      if (isCarrier(style)) {
+        assert.ok(
+          file === "main.tsx" &&
+            isImportDeclaration(node) &&
+            !clause &&
+            !typeOnly &&
+            !/[?#]/.test(spec),
+          "frame-carrier-runtime-import",
+        );
+        carrierImports.set(style!, (carrierImports.get(style!) ?? 0) + 1);
+      }
       const resolved = resolve(file, spec, sources);
       if (resolved && !typeOnly) dependencies.push(resolved);
+      if (file === "main.tsx" && !typeOnly && resolved?.endsWith(".css"))
+        mainStyles.push(resolved);
       if (file === "main.tsx" && !typeOnly && spec.endsWith(".css"))
         mainCss.push(spec);
     });
@@ -419,7 +480,7 @@ function validate(sources: Sources) {
         isCallExpression(node) &&
         (node.expression.kind === SyntaxKind.ImportKeyword ||
           (isIdentifier(node.expression) && node.expression.text === "require"))
-      )
+      ) {
         assert.ok(
           !node.arguments.some((a) => {
             const spec = literal(a);
@@ -427,6 +488,14 @@ function validate(sources: Sources) {
           }),
           "frame-dynamic-import",
         );
+        assert.ok(
+          !node.arguments.some((a) => {
+            const spec = literal(a);
+            return spec !== undefined && isCarrier(relativeStyle(file, spec));
+          }),
+          "frame-carrier-dynamic-import",
+        );
+      }
       node.forEachChild((child) => {
         walk(child);
       });
@@ -434,11 +503,18 @@ function validate(sources: Sources) {
     walk(source);
   });
   assert.equal(imports, 1, "frame-single-import");
-  const at = mainCss.indexOf("./" + owner);
+  for (const carrier of entryCarriers)
+    assert.equal(
+      carrierImports.get(carrier),
+      1,
+      "frame-carrier-single-import:" + carrier,
+    );
+  const originalMainSlot = framePhase(mainStyles, "frame-carrier-entry-order");
+  const at = originalMainSlot.indexOf(owner);
   assert.ok(
     at > 0 &&
-      mainCss[at - 1] === "./styles.css" &&
-      mainCss[at + 1] === "./ui.css",
+      originalMainSlot[at - 1] === "styles.css" &&
+      originalMainSlot[at + 1] === "ui.css",
     "frame-entry-slot",
   );
   assert.deepEqual(
@@ -460,15 +536,27 @@ function validate(sources: Sources) {
     for (const dep of edges.get(file) ?? []) visit(dep);
   }
   visit("main.tsx");
+  const originalRuntimeSlot = framePhase(
+    loaded,
+    "frame-carrier-actual-runtime-order",
+  );
   assert.ok(
-    loaded.indexOf("styles.css") >= 0 &&
-      loaded.indexOf(owner) === loaded.indexOf("styles.css") + 1 &&
-      loaded.indexOf("ui.css") === loaded.indexOf(owner) + 1,
+    originalRuntimeSlot.indexOf("styles.css") >= 0 &&
+      originalRuntimeSlot.indexOf(owner) ===
+        originalRuntimeSlot.indexOf("styles.css") + 1 &&
+      originalRuntimeSlot.indexOf("ui.css") ===
+        originalRuntimeSlot.indexOf(owner) + 1,
     "frame-actual-runtime-slot",
   );
   assert.ok(
     loaded.indexOf("ui.css") < loaded.indexOf("visual-system.css"),
     "frame-adjacent-cascade-order",
+  );
+  assert.ok(
+    loaded.indexOf("ui.css") < loaded.indexOf("ui/dialog-surface.css") &&
+      loaded.indexOf("ui/dialog-surface.css") < loaded.indexOf(adjacentOwner) &&
+      loaded.indexOf(adjacentOwner) < loaded.indexOf("visual-system.css"),
+    "frame-current-adjacent-cascade-order",
   );
 }
 const actual = actualSources();
@@ -592,7 +680,7 @@ test("explicit adjacent shared button writers cannot gain importance or a reset 
   reject("frame-adjacent-writer:", (s) =>
     replace(
       s,
-      "visual-system.css",
+      "ui/controls/surfaces.css",
       "min-height: 28px;",
       "min-height: 28px !important;",
     ),
@@ -600,7 +688,7 @@ test("explicit adjacent shared button writers cannot gain importance or a reset 
   reject("frame-adjacent-writer:", (s) =>
     replace(
       s,
-      "visual-system.css",
+      "ui/controls/surfaces.css",
       "line-height: 18px;",
       "line-height: 18px;\n  font: inherit;",
     ),
@@ -663,6 +751,123 @@ test("entry uses a real unique side-effect import, original cascade and no role 
     ),
   );
 });
+test("current neighboring owner and approved carriers cannot be omitted, duplicated, reordered or bypassed", () => {
+  function adjacent(s: Sources, selector: string) {
+    const root = postcss.parse(s.css.get(adjacentOwner)!);
+    const found: Rule[] = [];
+    root.walkRules((rule) => {
+      if (key(rule.selector) === key(selector)) found.push(rule);
+    });
+    assert.equal(found.length, 1, "current-neighbor-counterfactual-target");
+    return { root, rule: found[0]! };
+  }
+  for (const neighbor of currentNeighbors) {
+    reject("foreign-frame-writer:visual-system.css", (s) => {
+      const { rule } = adjacent(s, neighbor.selector);
+      s.css.set(
+        "visual-system.css",
+        s.css.get("visual-system.css")! + "\n" + rule.toString(),
+      );
+    });
+    reject("frame-adjacent-writer-count", (s) => {
+      const { root, rule } = adjacent(s, neighbor.selector);
+      rule.remove();
+      s.css.set(adjacentOwner, root.toString());
+    });
+    reject("frame-adjacent-writer-count", (s) => {
+      const { rule } = adjacent(s, neighbor.selector);
+      s.css.set(
+        adjacentOwner,
+        s.css.get(adjacentOwner)! + "\n" + rule.toString(),
+      );
+    });
+  }
+  for (const carrier of entryCarriers) {
+    reject("frame-carrier-single-import:" + carrier, (s) =>
+      replace(s, "main.tsx", 'import "./' + carrier + '";\n', ""),
+    );
+    reject("frame-carrier-single-import:" + carrier, (s) =>
+      s.modules.set(
+        "main.tsx",
+        s.modules.get("main.tsx")! + '\nimport "./' + carrier + '";',
+      ),
+    );
+  }
+  for (const [carrier, before] of [
+    [entryCarriers[0], owner],
+    [entryCarriers[1], "styles.css"],
+    [entryCarriers[2], owner],
+  ] as const)
+    reject("frame-carrier-entry-order", (s) => {
+      const line = 'import "./' + carrier + '";\n';
+      replace(s, "main.tsx", line, "");
+      replace(
+        s,
+        "main.tsx",
+        'import "./' + before + '";',
+        line + 'import "./' + before + '";',
+      );
+    });
+  reject("frame-entry-slot", (s) => {
+    s.css.set(
+      "foreign-phase.css",
+      ".foreign-independent-domain{color:inherit}",
+    );
+    replace(
+      s,
+      "main.tsx",
+      'import "./styles.css";',
+      'import "./styles.css";\nimport "./foreign-phase.css";',
+    );
+  });
+  reject("frame-actual-runtime-slot", (s) => {
+    s.css.set(
+      "foreign-phase.css",
+      ".foreign-independent-domain{color:inherit}",
+    );
+    s.modules.set(
+      "foreign-phase.ts",
+      'import "./foreign-phase.css";\nexport const independent=1;',
+    );
+    replace(
+      s,
+      "main.tsx",
+      'import "./styles.css";',
+      'import "./styles.css";\nimport "./foreign-phase.js";',
+    );
+  });
+  reject("frame-carrier-runtime-import", (s) =>
+    s.modules.set(
+      "App.tsx",
+      s.modules.get("App.tsx")! + '\nimport "./ui/controls/adaptive.css";',
+    ),
+  );
+  reject("frame-carrier-runtime-import", (s) =>
+    replace(
+      s,
+      "main.tsx",
+      'import "./ui/controls/adaptive.css";',
+      'import carrier from "./ui/controls/adaptive.css";',
+    ),
+  );
+  reject("frame-carrier-dynamic-import", (s) =>
+    s.modules.set(
+      "App.tsx",
+      s.modules.get("App.tsx")! +
+        '\nvoid import("./ui/controls/" + "metrics.css");',
+    ),
+  );
+  reject("frame-current-adjacent-cascade-order", (s) => {
+    const line = 'import "./ui/controls/surfaces.css";\n';
+    replace(s, "main.tsx", line, "");
+    replace(
+      s,
+      "main.tsx",
+      'import "./ui/dialog-surface.css";',
+      line + 'import "./ui/dialog-surface.css";',
+    );
+  });
+});
 test("unrelated domain, primitive, compound-local, JSX/comments/type imports and new independent feature CSS remain lawful", () => {
   const s = clone(actual);
   s.css.set(owner, "/* role documentation may evolve */\n" + s.css.get(owner)!);
@@ -684,4 +889,44 @@ test("unrelated domain, primitive, compound-local, JSX/comments/type imports and
       '\nconst unrelatedFooter=<footer data-owner="another-domain">Allowed</footer>;',
   );
   validate(s);
+  const carried = clone(s);
+  for (const [before, after] of [
+    ["./ui/controls/adaptive.css", "./ui/controls/../controls/adaptive.css"],
+    [
+      "./features/browser/browser-controls.css",
+      "./features/browser/./browser-controls.css",
+    ],
+    ["./ui/controls/metrics.css", "./ui/controls/../controls/metrics.css"],
+  ] as const)
+    replace(
+      carried,
+      "main.tsx",
+      'import "' + before + '";',
+      'import "' + after + '";',
+    );
+  carried.css.set(
+    "features/future-dialog-content.css",
+    ".future-dialog-content{display:grid;gap:7px}",
+  );
+  carried.modules.set(
+    "features/future-dialog-content.tsx",
+    'import "./future-dialog-content.css";\nimport {useState,useEffect} from "react";\nexport function FutureDialogContent(){const [visible,setVisible]=useState(true);useEffect(()=>()=>{},[]);return <button className="future-dialog-content" onClick={()=>setVisible(!visible)}>{String(visible)}</button>;}',
+  );
+  carried.modules.set(
+    "main.tsx",
+    carried.modules.get("main.tsx")! +
+      '\nimport {FutureDialogContent} from "./features/future-dialog-content.js";',
+  );
+  assert.equal(
+    carried.modules.get("main.tsx")!.split("<App />").length,
+    2,
+    "future-render-counterfactual-target",
+  );
+  replace(
+    carried,
+    "main.tsx",
+    "<App />",
+    "<App />\n    <FutureDialogContent />",
+  );
+  validate(carried);
 });

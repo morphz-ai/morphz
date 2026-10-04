@@ -1,5 +1,33 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 49：弹窗 frame 入口与相邻 writer 交接
+
+仅改一个源码门禁，不改生产 CSS、main、DOM 或不可变 c525 档案。
+两条原 shared action rule 的当前物理 owner 明确为
+`ui/controls/surfaces.css`；旧 visual 残留仍被拒绝。三个已批准 control
+carrier 在 main 和真实 runtime 模块闭包中逐一核唯一来源与原相对 phase，
+只投影这三个 carrier 后继续验证原 frame 槽，不跳过任意新增 CSS。
+原 30 rules／107 声明、三个 Dialog carrier、两邻 tuple 和原值保持。
+
+根 fresh actual Git 独立核原九个 callback：七件完整字节相同；相邻
+callback 仅逆两个物理路径字符串即全字节还原；合法增长 callback 仅
+移除八个新增 statement 即全字节还原。原 43 个指定反例保留，另加
+21 个当前遗漏／重复／顺序／入口绕过反例；实际同源路径 alias 和根
+JSX 消费的独立 React／CSS module 正例通过。均是有限解析／来源合同，
+不声称任意 CSS／TS 定理或真实组件挂载。
+
+根 proper 五文件 **36/36**，零失败／跳过，含原 frame／popup 挂载和
+共享剧本测试；agent 唯一门禁 **10/10**、完整类型／格式通过。根另扩
+七文件为 **42 通过／6 失败**；两份相邻 surface 门禁在 fresh e4 全件
+也复现 **6 通过／6 失败**，均为旧入口 phase 或已不存在的 mutant
+接缝，并非这批 frame 或共享组件回归。保留全部失败与原断言，下一批
+分别交接，不能把当前定向绿灯冒充整个门禁／全量／原 App 验收。
+
+证据：`/tmp/morphz-dialog-frame-gate-plan.yI0Qs0/RESULT.md` 与独立
+actual Git callback／fixture proof；根 `dialog-frame-root-owned-final.log`
+和 `dialog-frame-root-final.log`；旧两 gate 在 fresh e4 保留档案运行。
+原 App／Runtime 未重启，整体目标 active。
+
 ## 2026-10-04 前端阶段 48：对象评论与主体检查的当前合同
 
 本批仅四个测试／档案路径，不改生产或界面。对象评论的当前检查直接
