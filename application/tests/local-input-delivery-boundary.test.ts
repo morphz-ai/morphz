@@ -6,6 +6,7 @@ import {
   verifyLocalInputDeliveryConsumption,
   localDeliveryOwnerText,
   verifyLocalInputDeliveryOwner,
+  operationDeliveryOwnerText,
 } from "./fixtures/local-input-delivery-consumption.js";
 
 const client = readFileSync("apps/web/src/client.ts", "utf8");
@@ -43,7 +44,7 @@ test("complete delivery owner is inert with original synchronous and refresh Cli
 test("legal Client mutations fail designated real import, capture, synchronous branch and refresh seams", () => {
   const constructor = client.slice(
     client.indexOf("  const localInputDelivery = createLocalInputDelivery({"),
-    client.indexOf("  const executionInteractions ="),
+    client.indexOf("  const operationDelivery ="),
   );
   assert.ok(constructor.startsWith("  const localInputDelivery"));
   const variants: [string, string, string][] = [
@@ -103,16 +104,6 @@ test("legal Client mutations fail designated real import, capture, synchronous b
       "no shadow import variable",
     ],
     [
-      "return localInputDelivery.recordInput(",
-      "return await localInputDelivery.recordInput(",
-      "synchronous captured Client record branch",
-    ],
-    [
-      "        externalCommandId,\n        onInputStaged,",
-      "        undefined,\n        onInputStaged,",
-      "synchronous captured Client record branch",
-    ],
-    [
       "const savedInputs = localInputDelivery.readSaved(source.boot);",
       "const savedInputs = localInputDelivery.readSaved(current.current!);",
       "original early refresh read seam",
@@ -129,6 +120,30 @@ test("legal Client mutations fail designated real import, capture, synchronous b
       {
         name: "AssertionError",
         message: new RegExp(rule),
+      },
+    );
+  // Same original two mutants now target the complete durable owner. Neither
+  // the five captured arguments nor the synchronous input handoff was relaxed.
+  for (const [before, after] of [
+    [
+      "return localInputDelivery.recordInput(",
+      "return await localInputDelivery.recordInput(",
+    ],
+    [
+      "        externalCommandId,\n        onInputStaged,",
+      "        undefined,\n        onInputStaged,",
+    ],
+  ])
+    assert.throws(
+      () =>
+        verifyLocalInputDeliveryConsumption(
+          client,
+          localDeliveryOwnerText,
+          changed(operationDeliveryOwnerText, before!, after!),
+        ),
+      {
+        name: "AssertionError",
+        message: /synchronous captured Client record branch/,
       },
     );
   assert.throws(

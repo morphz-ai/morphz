@@ -39,6 +39,10 @@ export const localDeliveryOwnerText = readFileSync(
   new URL("../../apps/web/src/data/local-input-delivery.ts", import.meta.url),
   "utf8",
 );
+export const operationDeliveryOwnerText = readFileSync(
+  new URL("../../apps/web/src/data/operation-delivery.ts", import.meta.url),
+  "utf8",
+);
 const fixedText = readFileSync(
   new URL("./local-input-delivery-32c52210.ts", import.meta.url),
   "utf8",
@@ -289,6 +293,7 @@ export function verifyLocalInputDeliveryOwner(
 export function verifyLocalInputDeliveryConsumption(
   clientText: string,
   ownerText = localDeliveryOwnerText,
+  operationText = operationDeliveryOwnerText,
 ) {
   verifyLocalInputDeliveryOwner(ownerText);
   const client = parseReaderSources({ Client: clientText }).get("Client")!,
@@ -356,7 +361,7 @@ export function verifyLocalInputDeliveryConsumption(
       siblings[index - 1] ===
         readerVariable(scoped, "taskInteractions").parent.parent &&
       siblings[index + 1] ===
-        readerVariable(scoped, "executionInteractions").parent.parent,
+        readerVariable(scoped, "operationDelivery").parent.parent,
     "original delivery registration location",
   );
   assert.equal(calls[0]!.arguments.length, 1);
@@ -412,10 +417,48 @@ export function verifyLocalInputDeliveryConsumption(
     );
   assert.deepEqual(
     deliveryUses.map((node) => node.name.text).sort(),
-    ["confirmAndProject", "dispatchInput", "readSaved", "recordInput"],
+    ["confirmAndProject", "dispatchInput", "readSaved"],
     "only four actual Client delivery consumers",
   );
-  const execute = readerFunction(scoped, "execute"),
+  // The fourth consumer moved with complete durable delivery. Its actual
+  // constructor still borrows this exact local-input owner, not a mirror.
+  const operationBinding = readerVariable(scoped, "operationDelivery");
+  assert.ok(
+    operationBinding.initializer &&
+      isCallExpression(operationBinding.initializer),
+  );
+  assert.equal(
+    client.symbols.get(operationBinding.initializer.expression),
+    readerImport(
+      client,
+      "./data/operation-delivery.js",
+      "createOperationDelivery",
+    ).symbol,
+    "synchronous captured Client record branch",
+  );
+  const operationPorts = operationBinding.initializer.arguments[0];
+  assert.ok(operationPorts && isObjectLiteralExpression(operationPorts));
+  const localPort = operationPorts.properties.filter(
+    (node) =>
+      isShorthandPropertyAssignment(node) &&
+      isIdentifier(node.name) &&
+      node.name.text === "localInputDelivery",
+  );
+  assert.equal(
+    localPort.length,
+    1,
+    "synchronous captured Client record branch",
+  );
+  assert.ok(isShorthandPropertyAssignment(localPort[0]!));
+  assert.equal(
+    client.symbols.get(localPort[0]!.name),
+    client.symbols.get(binding.name),
+    "synchronous captured Client record branch",
+  );
+  const operation = parseReaderSources({ Operation: operationText }).get(
+      "Operation",
+    )!,
+    execute = readerFunction(operation, "execute"),
     recordBranch = execute.body!.statements[2]!;
   same(
     recordBranch,

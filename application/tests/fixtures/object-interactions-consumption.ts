@@ -529,16 +529,35 @@ export function verifyObjectInteractionConsumption(
     readerShape(expectedDone),
     "object-original-captured-receipt",
   );
-  const error = one(
-    client.source.statements
+  // Durable delivery owns the sole class now. The domain leaf must borrow the
+  // exact actual value import of that exported constructor, never a namesake.
+  const operationOwner = parseReaderSources({
+    Operation: readFileSync(
+      new URL("../../apps/web/src/data/operation-delivery.ts", import.meta.url),
+      "utf8",
+    ),
+  }).get("Operation")!;
+  const errorClass = one(
+    operationOwner.source.statements
       .filter(isClassDeclaration)
       .filter((value) => value.name?.text === "UnsentOperationError"),
     "object-original-unsent-constructor",
   );
   assert.equal(
-    error.getText(),
+    errorClass.getText().replace(/^export /, ""),
     fixed.spans.UnsentOperationError.raw,
     "object-original-unsent-constructor",
+  );
+  assert.ok(
+    errorClass.modifiers?.some(
+      (value) => value.kind === SyntaxKind.ExportKeyword,
+    ),
+    "object-original-unsent-constructor",
+  );
+  const error = imported(
+    client,
+    "./data/operation-delivery.js",
+    "UnsentOperationError",
   );
   const command = one(
     dispatch.body.statements
@@ -596,7 +615,7 @@ export function verifyObjectInteractionConsumption(
       captured("op"),
       captured("commandId"),
       done.name,
-      ...(type === "annotate" ? [error.name!] : []),
+      ...(type === "annotate" ? [error] : []),
     ];
     assert.equal(
       invocation.arguments.length,

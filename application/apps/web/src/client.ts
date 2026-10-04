@@ -20,7 +20,6 @@ import {
 } from "./legacy-storage.js";
 import {
   draftOwner,
-  draftKey,
   scopedStorage,
   storageScope,
 } from "./local-preferences.js";
@@ -63,6 +62,11 @@ import {
 } from "./data/object-interactions.js";
 import { createTaskInteractions } from "./data/task-interactions.js";
 import { createLocalInputDelivery } from "./data/local-input-delivery.js";
+import {
+  createOperationDelivery,
+  UnsentOperationError,
+} from "./data/operation-delivery.js";
+export { operationMayCommitBeforeError } from "./data/operation-delivery.js";
 import { createExecutionInteractions } from "./data/execution-interactions.js";
 import {
   readPlatformWorkspace,
@@ -137,8 +141,6 @@ export type SpeechScope = {
   artifactId?: string;
   revision?: number;
 };
-
-class UnsentOperationError extends Error {}
 
 async function scriptDraftForDomain(
   source: PlatformClient,
@@ -744,28 +746,6 @@ export async function executePlatformOperation(
   );
 }
 
-/** A script or document command may commit its app-owned original before the
- * Platform directory projection fails. HTTP 4xx alone cannot prove that the
- * app transaction did not commit, so the next identical attempt must retain
- * the original command identity.
- */
-export function operationMayCommitBeforeError(operation: Operation): boolean {
-  return (
-    operation.type === "install-application" ||
-    operation.type === "launch-application" ||
-    operation.type === "set-application-state" ||
-    operation.type === "close-application" ||
-    (operation.type === "update-project" && operation.state !== undefined) ||
-    (operation.type === "organize-content" &&
-      operation.changes.title !== undefined) ||
-    operation.type === "script-command" ||
-    operation.type === "import-document" ||
-    (operation.type === "create-artifact" &&
-      ["document", "image", "interactive"].includes(operation.content.kind)) ||
-    (operation.type === "revise-artifact" &&
-      ["document", "image", "interactive"].includes(operation.content.kind))
-  );
-}
 export function useWorkspace() {
   const scriptEditorModels = useRef(
     new Map<string, { identity: string; value: ScriptEditorProduction }>(),
@@ -909,6 +889,13 @@ export function useWorkspace() {
     setBoot,
     refreshAfterMutation,
     call: applicationCall,
+  });
+  const operationDelivery = createOperationDelivery({
+    current,
+    platform,
+    localInputDelivery,
+    executePlatformOperation,
+    refreshAfterMutation,
   });
   const executionInteractions = createExecutionInteractions({
     current,
@@ -1411,84 +1398,6 @@ export function useWorkspace() {
     boot?.csrfToken,
     authenticationRequired,
   ]);
-  async function execute(
-    operation: Operation,
-    dispatch = false,
-    applicationInstanceId?: string,
-    externalCommandId?: string,
-    onInputStaged?: (inputId: string) => void,
-  ): Promise<Receipt> {
-    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
-    const identity = current.current,
-      scope = `${identity.centerId}:${identity.principalId}`,
-      { readLocal, writeLocal } = scopedStorage(scope);
-    if (operation.type === "record-input")
-      return localInputDelivery.recordInput(
-        identity,
-        operation,
-        dispatch,
-        externalCommandId,
-        onInputStaged,
-      );
-    const hash = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(
-        JSON.stringify({
-          operation,
-          dispatch,
-          applicationInstanceId,
-          externalCommandId,
-        }),
-      ),
-    );
-    const key = draftKey(
-      "pending:" +
-        Array.from(new Uint8Array(hash), (v) =>
-          v.toString(16).padStart(2, "0"),
-        ).join(""),
-    );
-    if (current.current?.csrfToken !== identity.csrfToken)
-      throw new Error("身份已切换，操作未发送。");
-    const command = readLocal<{
-      commandId: string;
-      operation: Operation;
-      applicationInstanceId?: string;
-    } | null>(key, null) ?? {
-      commandId: externalCommandId ?? crypto.randomUUID(),
-      operation,
-      ...(applicationInstanceId ? { applicationInstanceId } : {}),
-    };
-    // Save retry identity before sending. A lost reply must not duplicate a mutation after reload.
-    writeLocal(key, command);
-    try {
-      const source = platform.current;
-      if (!source || source.boot.csrfToken !== identity.csrfToken)
-        throw new Error("身份已变化，操作未发送。");
-      const receipt = await executePlatformOperation(
-        source,
-        identity,
-        command,
-        dispatch,
-      );
-      writeLocal(key, null);
-      await refreshAfterMutation();
-      return receipt;
-    } catch (e) {
-      if (e instanceof UnsentOperationError) writeLocal(key, null);
-      if (e instanceof RequestError) {
-        // A server error can occur after commit. Keep its identity until a
-        // successful receipt or a definitive client-side rejection is known.
-        if (
-          e.status < 500 &&
-          e.status !== 408 &&
-          !operationMayCommitBeforeError(operation)
-        )
-          writeLocal(key, null);
-        await refreshAfterMutation();
-      }
-      throw e;
-    }
-  }
   async function upload(
     file: File,
   ): Promise<{ assetId: string; mime: string }> {
@@ -1714,7 +1623,7 @@ export function useWorkspace() {
     readScriptOverview,
     listObjectAnnotations: objectInteractions.listObjectAnnotations,
     workRelationsFor: objectInteractions.workRelationsFor,
-    execute,
+    execute: operationDelivery.execute,
     bookmarkList: bookmarkInteractions.bookmarkList,
     bookmarkCommand: bookmarkInteractions.bookmarkCommand,
     upload,

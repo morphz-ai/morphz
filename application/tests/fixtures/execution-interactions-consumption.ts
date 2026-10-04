@@ -258,10 +258,16 @@ export function verifyExecutionInteractionConsumption(
   );
   const siblings = workspace.body!.statements,
     index = siblings.indexOf(statement);
+  // Durable non-input delivery is now the adjacent borrowed owner. Preserve
+  // local -> execution -> clear order without requiring obsolete adjacency.
+  const localStatement = readerVariable(scoped, "localInputDelivery").parent
+    .parent;
+  assert.ok(isVariableStatement(localStatement));
   assert.ok(
     index > 0 &&
       siblings[index - 1] ===
-        readerVariable(scoped, "localInputDelivery").parent.parent &&
+        readerVariable(scoped, "operationDelivery").parent.parent &&
+      siblings.indexOf(localStatement) < index - 1 &&
       siblings[index + 1] ===
         readerFunction(scoped, "clearProtectedProjection"),
     "original execution registration location",

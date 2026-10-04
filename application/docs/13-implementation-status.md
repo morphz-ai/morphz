@@ -1,5 +1,43 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 46：完整操作提交的独立数据 owner
+
+Client 的非输入 durable delivery 现归 `data/operation-delivery.ts`。
+完整 execute、可能已提交的错误分类及唯一 Unsent 错误类从实际
+`618fc8b9` 原件迁移；五个借用端口的构造无读取或副作用，公开
+execute 直接交付真实方法引用。Client 保留完整域分发、身份／权限、
+protected projection 退休、refresh 及独立 local input 权威。
+record-input 的五个捕获实参和同步交接不变；四字段 SHA、完整 pending
+命令／实例、旧作用域、存储／发送／清理／刷新顺序及异常边界均不改。
+没有新增状态、锁、轮询、请求、epoch 政策、DOM、CSS、图标或动效。
+
+新增当前受控、实际 Client HTTP／SQLite 及有限消费合同；固定实际 Git
+六个完整可执行算法仅供明确迁移对照，不锁普通 CI 的整个 Client。
+三个旧位置门禁仅交接真实 owner 邻接、第四个 local input 消费和
+同一个 exported Unsent constructor；原反例与指定拒绝规则保留。
+根独立来源探针确实发现正确但未消费的 import 加同名 foreign 值会
+误接受，修复只限有限门禁，三个原红项现按 actual symbol 精确拒绝；
+合法 import／const alias 与完整独立 feature 增长仍通过。
+
+根本轮 actual Git 全件正逆来源证明、六段完整 raw／元数据、四个
+门禁完整差异及十六个邻接原件核对 exit 0。proper `npm test` 六文件
+**28/28**，显式旧新完整账本对照 **6/6**，均零失败／跳过；agent
+最终同组加原邻接行为测试 **82/82**。根完整类型检查与正式
+`npm run build` exit 0；构建保留旧内容寻址资产，没有清空运行窗口
+可能尚需的 lazy chunks。不能把受控端口、真实 HTTP／隔离 SQLite
+或构建成功等同真实 Runtime、物理存储／硬件或原 App 验收。
+
+根完整旧新七份原页面用例各 **17 通过／1 失败**：共同既有红项为
+创建项目卸载原 iframe。原句柄断言、trace 和失败保留；只读诊断已
+定位通知端过宽的 accessChanged 分类，等待单独修复授权，不在此
+纯架构迁移中改业务／撤权行为。原 App 保持运行，本阶段未重启它
+或 Runtime，也未将新的构建装入原 App；整个目标仍 active。
+
+证据：`/tmp/morphz-operation-delivery-production.r8fqdZ/R5-FINAL-RESULT.md`、
+`frozen-source-final.json`，根 `r5-root-final.log`／`r5-root-migration.log`、
+`/tmp/morphz-operation-root-origin.6KFOzJ/root-final-probe.json`、
+`/tmp/morphz-operation-pages-root.vkR5Vc/root-comparison-proof.json`。
+
 ## 2026-10-04 前端阶段 45：导航的当前权限与消费合同
 
 本阶段只改导航消费测试、两个借用 helper 与独立历史档案，不改生产、

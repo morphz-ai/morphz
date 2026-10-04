@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-04 · 版本：1.6 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-04 · 版本：1.7 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -327,6 +327,17 @@ epoch／范围守门先于确认写入。非 head 剧本确认引用不成为 re
 的 deadline／重试／取消及 Boot 发布合同不同，不新增一层 broker 强并。
 完整 query facade 目标需要按合同与实际请求测量推进，不等于每个页面都重造
 读取缓存。Thread 图形共享也不改变 Task／Job／消息 delivery 的独立语义。
+
+非输入操作的完整 durable delivery 现归 `data/operation-delivery.ts`。
+它只借原 current／platform refs、local input 的 record 方法、域分发与
+刷新端口；构造无副作用，Client 原位直接交付 execute 引用。唯一 Unsent
+constructor、可能已提交的错误分类、完整 pending 身份／实例与存储、
+发送、清理、刷新及异常顺序不改；record-input 仍同步交接原五参数。
+域分发、授权、protected projection 退休与刷新权威仍归 Client，不新增
+锁、镜像、broker、轮询或 UI。根当前 28/28、明确旧新 6/6、类型／构建
+与完整实际 Git 来源核对通过；原完整页面对比仍有双方共同的旧 iframe
+红项。有限门禁核真实来源，迁移全文证明不锁普通当前 CI；此阶段不
+等同 Runtime、原 App 或整体完成，具体证据与边界见阶段 46。
 
 发送协议与共享顶栏阶段已提交 `d45cf84d`。补充重试的原命令匹配修复另以
 `28cecd4a` 提交：`local-saved-inputs.ts` 仅在双方 supplement 时认可候选省略
