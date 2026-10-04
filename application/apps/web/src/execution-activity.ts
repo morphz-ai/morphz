@@ -1,7 +1,12 @@
-import type { ExecutionActivity } from "../../../packages/core/src/conversation.js";
+import {
+  activeExecutionThreads,
+  type ConversationRuntime,
+  type ExecutionActivity,
+} from "../../../packages/core/src/conversation.js";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import {
   inConversation,
+  type RecordedInput,
   type Workspace,
 } from "../../../packages/core/src/model.js";
 
@@ -252,4 +257,92 @@ export function executionActivityClock(thread: ActivityThread): string {
         hour12: false,
       })
     : "时间待核对";
+}
+
+/** Input-linked background work keeps its own branch-status priority. */
+export function inputExecutionActivityPresentation(
+  runtime: ConversationRuntime,
+  item: Pick<RecordedInput, "id"> | null | undefined,
+  online: boolean | null | undefined,
+): Readonly<{
+  activeBranch: boolean;
+  workStatus: ActivityStatus | undefined;
+}> {
+  const activeBranches =
+    item && online
+      ? activeExecutionThreads(runtime).filter((t) => t.inputId === item.id)
+      : [];
+  const activeBranch = activeBranches.length > 0;
+  const branchStatuses = activeBranches.map((thread) =>
+    executionActivityStatus(thread, true),
+  );
+  const workStatus =
+    branchStatuses.find((s) => s.kind === "running") ??
+    branchStatuses.find((s) => s.kind === "unknown") ??
+    branchStatuses.find((s) => s.kind === "paused") ??
+    branchStatuses[0];
+  return { activeBranch, workStatus };
+}
+
+/** Collect the authorized overview before the renderer's separate thread prose. */
+export function executionActivityOverview(
+  state: Workspace,
+  threads: readonly ActivityThread[],
+  scope: ExecutionScope,
+  allWork: boolean,
+  sharedDefault: boolean,
+  runtime: ConversationRuntime,
+): Readonly<{
+  activityThreads: ActivityThread[];
+  active: ActivityThread[];
+  recent: ReturnType<typeof executionActivityDateGroups>;
+  activeCount: number;
+  activityAvailable: boolean;
+  activityComplete: boolean;
+}> {
+  const activityThreads = executionActivityThreads(
+    state,
+    threads,
+    scope,
+    allWork,
+    sharedDefault,
+  );
+  const groupedActivities = executionActivityRoots(activityThreads);
+  const hasOpenWork = (t: ActivityThread) =>
+    t.lifecycle === "open" ||
+    executionActivityDescendants(t, activityThreads).some(
+      (child) => child.lifecycle === "open",
+    );
+  const active = groupedActivities.filter(hasOpenWork);
+  const recent = executionActivityDateGroups(
+    groupedActivities.filter((t) => !hasOpenWork(t)),
+  );
+  const activeCount = active.length;
+  const activityAvailable =
+    runtime.connected && runtime.activity?.available === true;
+  const activityComplete = activityAvailable && !runtime.activity?.truncated;
+  return {
+    activityThreads,
+    active,
+    recent,
+    activeCount,
+    activityAvailable,
+    activityComplete,
+  };
+}
+
+/** Read bounded-count quality only in the original post-thread-summary phase. */
+export function executionActivityOverviewSummary(
+  runtime: ConversationRuntime,
+  activityAvailable: boolean,
+  activeCount: number,
+): string {
+  const activitySummary = !activityAvailable
+    ? "工作状态待核对"
+    : runtime.activity?.truncated
+      ? activeCount
+        ? `至少 ${activeCount} 项进行中`
+        : "工作状态待核对"
+      : `${activeCount} 项进行中`;
+  return activitySummary;
 }

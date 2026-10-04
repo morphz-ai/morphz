@@ -1,5 +1,74 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 34：完整 Thread collection 展示职责
+
+`execution-activity.ts` 承接原输入关联分支与范围概览两种完整投影，
+真实 `Conversation` 与 `ExecutionSidebar` 直接消费。输入按原身份、
+执行 kind／open、online 短路与 running／unknown／paused 优先级处理；
+范围概览沿原授权范围、实际父子关系和日期分组，以活动根而非 Thread
+数计数。范围计数文案在原 `threadSummary` 后单独消费，保持原两阶段
+属性读取顺序。不可用／截断零计数不宣称空闲，截断正计数仍称“至少”。
+
+本批只改三份生产源的完整算法及直接消费接缝，无新 JSX、CSS、图形、
+动效、hook、store、查询、Client／Runtime 协议或模型调用。两种用途
+各自的政策不强并；列表选择、精确补充、停止与原详情控制不移交。
+
+根独立从实际 Git `a1acc677` 复核十三条完整原声明、原 owner 算法和
+三份完整源的批准逆展开；其余 **202** 份 renderer 源完整字节不变，
+全部 **205** 份 renderer 与单列 Vite 配置在旧新 build／页面期间冻结。
+完整原 CSS 与 preload 字节相同。这个一次性历史证明不成为普通 CI
+锁住整份 renderer／App／Client 的长期 hash 或跨 owner inverse 链。
+
+四份完整原页面 spec 的 **11** 项，冻结旧版／新版各 **11/11**，
+无 retry／skip；每边核 **44** 份实际 HTTP HTML／三入口资产。七份
+spec／fixture 保持实际 Git 原字节，原 URL／Host／Origin／body 和
+同源权限检查未改，无 fetch／dispatcher 映射。最初随机端口却保留原
+Origin 导致 baseline 十一项 403 的 RED 保留；最后使用确认为空闲的
+原 fixture 端口和两份隔离中心复跑，两个自有 Host 均已退出并释放端口。
+
+根通过默认 `npm test` 复跑八份未改相邻 Node 回归：**46/46、零跳过**。
+最终有限消费门禁 **12/12、零跳过**，覆盖完整算法、真实 core 类型
+来源与符号、直接消费、读取阶段和下游事实绑定。五十二个指定可解析
+反例保留原算法／hash；合法无关 JSX／CSS／type import／pure 增量、
+真实 value／type import aliases、名为 process 的局部纯数据参数及
+process／globalThis 局部 readonly 数组的普通 map 投影通过。
+检查器初稿把属性名当局部变量、误拒合法同名参数与数组调用的 RED 已保留并修正；
+这不是任意 JS 纯度或通用 AST 安全证明，不锁整份当前 renderer。
+
+当前行为与显式
+`MORPHZ_TEST_THREAD_COLLECTION_MIGRATION_EQUIVALENCE=1` 各 **12/12、零跳过**。
+其中为九个纯算法／来源／读取顺序测试、一组完整 StrictMode 浏览器挂载
+及其两个真实 SSR 子组，不是十二个独立浏览器场景。完整 Conversation
+的无输入 Reply 对 online getter 短路、真实 Sidebar 根计数、当前／全部
+切换、同 ID 节点及外部焦点、缓存未知／截断零计数、Enter 精确范围、
+真实补充 generation、停止 revision 和过期进度退休均实际断言；原 stream／
+snapshot 端口调用走受控夹具，未产生业务 API 或模型请求。
+
+测试初稿的显式 undefined 默认值、排序、getter spread 和缺 Client 端口
+问题，以及把具名 Thread 误指向同一输入导致 running 正确胜 paused 的
+RED 全部保留。最终夹具使用真实第二输入来源，不向生产增加 scope
+过滤或削掉暂停断言。独立实际 Git 证明固定十三段 raw 与三份完整旧
+recipe；普通 CI 不调用 Git／读取临时目录，严格旧算法比较仅由显式开关启用。
+
+最终冻结代码的完整 build（含全类型检查）、格式与差异检查均通过，
+原分包大小警告保留。默认全量实际选择 **321** 份测试源：**2126** 项，
+**2117** 通过、零失败／取消，另有 **9** 项确切未启用专项（S3 三项、
+Runtime 五项、原生焦点一项），无意外跳过；PostgreSQL 为必需能力，
+原漏跑的 151 项实际执行。前两轮全量在最后两次门禁窄修复前冻结，
+日志另存，不冒充最终门禁源码验收。原 App、真实 Runtime 执行、权限／
+事务、硬件与原生焦点并不由这批隔离展示测试证明。
+
+已核证据：`/tmp/morphz-thread-collection-root.SEeZWk` 的
+`root-original-eight.log`、`root-finite-final.log`、`root-default-full.log`、
+`root-build-final.log` 与最终 `root-proof.json`；独立三源／实际 Git 原声明证明在
+`/tmp/morphz-thread-collection-production.jDxECn`；完整页面、
+HTTP／源码／生命周期 audit 在 `/tmp/morphz-thread-collection-matrix.s9sL06`。
+有限门禁／RED 在 `/tmp/morphz-thread-collection-boundary.dHAXqi`，
+行为／旧算法独立证明／夹具 RED 在 `/tmp/morphz-thread-collection-behavior.XCCzO8`。
+本批按上述冻结源码与八条明确路径做 focused local commit，不额外推送。
+整体前端目标保持 active；其余 role／样式所有权、查询治理及原 App
+最终验收尚未完成，不能以本阶段测试替代。
+
 ## 2026-10-04 测试入口：默认 PostgreSQL 与精确覆盖门禁
 
 之前全量报告中的 160 项跳过并不表示本机没有 PostgreSQL：逐项源码

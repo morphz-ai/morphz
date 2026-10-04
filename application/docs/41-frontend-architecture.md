@@ -162,6 +162,28 @@ Runtime 执行、真实授权成功、全部查询治理或原 App 验收。
 历史档案另证，scope 退休的原指定负例由实际 inspection owner 门禁
 承接，不能以职责迁移为由删除行为约束。
 
+Thread collection 的两种完整展示投影现归既有 `execution-activity.ts`。
+`Conversation` 直接消费 `inputExecutionActivityPresentation`，以原输入、
+Runtime 和短路读取的 online 值决定关联分支与原 running／unknown／paused
+优先级。`ExecutionSidebar` 直接消费 `executionActivityOverview`，沿原
+授权范围、实际父子关系与日期分组，返回活动根、近期分组、根计数和
+读取质量；完成父项有未完成子项时仍归进行中，不用 Thread 数冒充活动数。
+
+范围概览的计数文案由 `executionActivityOverviewSummary` 在原
+`threadSummary` 之后消费，保留两阶段读取顺序。不可用、截断但零计数
+仍显示待核对；截断正计数只称“至少”。两种用途的状态优先级、可用性
+与范围不能强并成另一套统一 enum，当前输入目标、steer、审批控制和
+原 JSX／CSS／图形／动效均未迁移。owner 不引入 React、Client、IO、
+订阅或模型请求。源证明与完整旧新编译页面见阶段 34；普通 CI 的有限
+消费约束与真实组件行为验证另记实施记录，不冒充原 App 验收。
+
+`thread-collection-presentation-boundary.test.ts` 约束这三个完整纯入口、
+真实 core 类型借用、原 scope／family／质量算法及两个真实消费方；
+合法无关 JSX／CSS、value／type import alias 和 pure 增量仍可演进。
+当前完整 React／SSR 消费合同默认执行，固定旧 collection recipe 的
+严格对照以显式 migration 开关执行。原源码 hash／批准逆展开仅留作
+独立历史证据，不为普通 CI 增加整文件锁或跨 owner inverse。
+
 交流读取的共享纯投影现归 `conversation-read.ts`；提示与历史的不同范围、
 消息数组引用合同及原回执排序仍由真实消费方显式指定。已读初始化、稳定
 acknowledgement 与两个提交 effects 归 `host/use-exchange-read-receipts.ts`，
@@ -607,10 +629,11 @@ CSS zoom 对照不是 Electron／OS 缩放或标题栏原生命中验收；原 A
 原生弹窗表面也有有限门禁。已有 `ArtifactEditor` 独立拥有现件编辑、草稿、
 版本冲突及保存生命周期，不与手写创建、Agent 输入或宿主导航混为同一职责。
 
-剩余生产边界包括 Thread collection 的输入关联活动与范围概览两种展示
-投影、其余 role 型组件及唯一样式责任；不同用途的事实不能强并成一个
-状态 enum。领域查询治理仍需按真实合同逐批推进，已有 family 不等于
-整层 query facade 已完成；
+Thread collection 的输入关联活动与范围概览两种展示投影已迁入同一
+实际 owner，并保留各自原政策与两个真实消费方。剩余生产边界包括其他
+用途的 presentation、其余 role 型组件及唯一样式责任；不同用途的事实
+不能强并成一个状态 enum。领域查询治理仍需按真实合同逐批推进，已有
+family 不等于整层 query facade 已完成；
 不为凑目录或清空 App 而重造缓存／store。普通页面选择、画布及 portal 组合
 可以保留在宿主，完整业务生命周期应归 feature。
 

@@ -20,7 +20,6 @@ import {
 import {
   conversationGroups,
   conversationTimeline,
-  activeExecutionThreads,
   type ConversationRuntime,
 } from "../../../packages/core/src/conversation.js";
 import { shouldFollow } from "./interaction.js";
@@ -62,7 +61,7 @@ import {
 } from "./conversation-presentation.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { liveToolPresentation } from "./execution-presentation.js";
-import { executionActivityStatus } from "./execution-activity.js";
+import { inputExecutionActivityPresentation } from "./execution-activity.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 
 export type ExchangePosition = {
@@ -727,21 +726,12 @@ export function Conversation({
                   : "Morphz",
                 createdAt: (item ?? reply)!.createdAt,
               });
-              const activeBranches =
-                item && client.online
-                  ? activeExecutionThreads(runtime).filter(
-                      (t) => t.inputId === item.id,
-                    )
-                  : [];
-              const activeBranch = activeBranches.length > 0;
-              const branchStatuses = activeBranches.map((thread) =>
-                executionActivityStatus(thread, true),
-              );
-              const workStatus =
-                branchStatuses.find((s) => s.kind === "running") ??
-                branchStatuses.find((s) => s.kind === "unknown") ??
-                branchStatuses.find((s) => s.kind === "paused") ??
-                branchStatuses[0];
+              const { activeBranch, workStatus } =
+                inputExecutionActivityPresentation(
+                  runtime,
+                  item,
+                  item && client.online,
+                );
               const WorkStatusIcon =
                 workStatus?.kind === "running"
                   ? Activity

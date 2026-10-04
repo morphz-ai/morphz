@@ -14,10 +14,10 @@ import { activeExecutionThreads } from "../../../packages/core/src/conversation.
 import type { ScriptOutput } from "../../../packages/core/src/script-delivery.js";
 import {
   executionActivityClock,
-  executionActivityDateGroups,
+  executionActivityOverview,
+  executionActivityOverviewSummary,
   executionActivityScope,
   executionActivitySummary,
-  executionActivityThreads,
   executionActivityRoots,
   executionActivityDescendants,
   executionActivityGroupStatus,
@@ -104,37 +104,29 @@ export function ExecutionSidebar({
       : m.inputId === scope.inputId,
   );
   const liveTools = messages.filter((m) => m.tool && m.streaming);
-  const activityThreads = executionActivityThreads(
+  const {
+    activityThreads,
+    active,
+    recent,
+    activeCount,
+    activityAvailable,
+    activityComplete,
+  } = executionActivityOverview(
     state,
     threads,
     scope,
     allWork,
     !client.boot!.capabilities.teamAuthentication,
+    runtime,
   );
-  const groupedActivities = executionActivityRoots(activityThreads);
-  const hasOpenWork = (t: ActivityThread) =>
-    t.lifecycle === "open" ||
-    executionActivityDescendants(t, activityThreads).some(
-      (child) => child.lifecycle === "open",
-    );
-  const active = groupedActivities.filter(hasOpenWork);
-  const recent = executionActivityDateGroups(
-    groupedActivities.filter((t) => !hasOpenWork(t)),
-  );
-  const activeCount = active.length;
-  const activityAvailable =
-    runtime.connected && runtime.activity?.available === true;
-  const activityComplete = activityAvailable && !runtime.activity?.truncated;
   const threadSummary = thread
     ? executionActivitySummary(thread, activityAvailable && !!currentThread)
     : "";
-  const activitySummary = !activityAvailable
-    ? "工作状态待核对"
-    : runtime.activity?.truncated
-      ? activeCount
-        ? `至少 ${activeCount} 项进行中`
-        : "工作状态待核对"
-      : `${activeCount} 项进行中`;
+  const activitySummary = executionActivityOverviewSummary(
+    runtime,
+    activityAvailable,
+    activeCount,
+  );
   async function refresh() {
     if (!onRefresh || refreshing) return;
     setRefreshing(true);
