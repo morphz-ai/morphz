@@ -155,6 +155,17 @@ state 的窄函数，没有 latest 镜像、额外 store、查询或请求。
 focus 表达式的显式参数映射。具体生产接线、有限门禁、实际挂载与
 完整旧新页面证据分开记录于阶段 29，不代表原 App 已恢复或整体验收。
 
+搜索选文、现件选区和逐段评论的草稿准备、评论焦点与引用 reveal 生命周期
+现由同一 `host/exchange-reference-commands.ts` 拥有。App 原位注册 state
+与退休 effect，并直接把四个返回方法交给 SearchDocuments、ArtifactEditor
+与 TextQuoteProvider；既有四个回访／准备方法逐字保留。搜索沿原捕获草稿、
+generation 和条件焦点，现件选区只清理原字段，评论沿原 functional update
+与 preventScroll 焦点，不能因共用 owner 而归一化这些不同合同。
+scope、草稿、权限、导航与实际 DOM writer 仍归原宿主；SearchDocuments、
+TextQuoteProvider、SelectionActions、Reader 与现件编辑仍是各自的完整组件。
+不新增 store、缓存、查询、请求、DOM、CSS 或模型调用。完整 Git 源证明、
+旧新编译页面与隔离挂载分别见阶段 30；原 App 和原生验收仍未完成。
+
 授权内容读取的六个完整算法现归 `data/content-reads.ts`：目录分页／计数、
 当前理解、目录记忆、原件与确切目录项解析。Client 借出原 refs，保留身份／
 撤权清理、refresh 和同步 current-before-React 发布权威；剧本读取使用同一
@@ -355,8 +366,9 @@ generation；Reader 清空后激活仍读取当时 current generation；Browser 
 责任，不迁入 identity-stable Host；Launcher 保留 raw setter 的原不同语义。
 项目默认／命名／未提交与已启动的区别、同项目对象保留的双重判断、创建
 迟到回执的原 continuation 均不归一化。旧新普通编译的原页面和实际 React
-生命周期证据见阶段 27；手写创建、批注／搜索引用编排、其他 page／overlay
-责任及原窗验收仍须继续，不能据这条 scope 边界声称 App 已整体拆完。
+生命周期证据见阶段 27；手写创建、批注与搜索引用随后分别迁入阶段
+28／29／30 的生产 owner。其他 page／overlay 责任及原窗验收仍须继续，
+不能据这条 scope 边界声称 App 已整体拆完。
 
 页面局部选择如果要持久化，声明唯一 owner 和恢复顺序，例如显式新 navigation intent → 对象确切引用 → 既有持久视图；不能 App、实例状态、localStorage 三处互相回写。迁移前需逐个确认当前优先顺序，不使用新 key 默认覆盖旧用户偏好。
 
@@ -478,6 +490,13 @@ UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套�
 
 工作面、交流 controller、首段导航 owner 与首批登记图形／透明按钮的有限 AST 门禁已随各自阶段实现；交流 frame 与原生弹窗表面另有各自有限 CSS AST／入口门禁。其他条目仍是迁移目标。已治理范围必须由具体测试登记，未迁移模块不能因这份文档存在就被描述为已有 CI 约束。
 
+当前普通 Node 回归仍混有历史整文件迁移证明：无关合法 App／Client 改动
+也可能触发旧全文 hash，需要年代顺序的 inverse 链。它证明某批迁移的
+变化范围，不等于长期职责约束已经设计完善。后续治理须保留原始迁移
+证据及所有安全反例，先补足当前 owner／消费／行为的明确规则与合法
+无关变更的正例，再分离固定迁移证明和当前生产约束；这项尚未实现。
+不能只改 glob、历史 hash 或删断言求绿，也不新增一个通用 AST broker。
+
 ### 6.3 共享顶栏的实际组合边界
 
 `WorkspaceTopbar` 只接受只读展示事实、有限 history／sidebar 值、三个原生 ref、
@@ -522,15 +541,18 @@ CSS zoom 对照不是 Electron／OS 缩放或标题栏原生命中验收；原 A
 
 当前已有工作面解析、稳定导航 Host／应用入口／内容打开、项目与会话私有范围、
 交流意图／焦点、草稿生命周期、发送协议、输入工具、主体检查器、读取回执与
-若干领域数据 family、Human 文档／项目创建和对象批注的生产 owner；共享顶栏、首批登记图形／透明按钮及交流／
+若干领域数据 family、Human 文档／项目创建、对象批注和搜索／引用准备的
+生产 owner；共享顶栏、首批登记图形／透明按钮及交流／
 原生弹窗表面也有有限门禁。已有 `ArtifactEditor` 独立拥有现件编辑、草稿、
 版本冲突及保存生命周期，不与手写创建、Agent 输入或宿主导航混为同一职责。
 
-剩余生产边界是部分搜索引用编排，
-以及其余 role 型组件、跨领域 presentation 与唯一样式责任。领域查询治理
+剩余生产边界是其余 role 型组件、跨领域 presentation 与唯一样式责任。领域查询治理
 仍需按真实合同逐批推进，已有 family 不等于整层 query facade 已完成；
 不为凑目录或清空 App 而重造缓存／store。普通页面选择、画布及 portal 组合
 可以保留在宿主，完整业务生命周期应归 feature。
+
+当前生产约束与历史整文件迁移证明的测试治理也须收口，不能把不断增长
+的跨 owner inverse 链作为正常新增功能的永久前提。
 
 整体跨页面外观／交互回归及原 App 的原生焦点、硬件和系统命中验收仍未完成。
 图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美

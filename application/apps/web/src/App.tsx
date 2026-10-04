@@ -57,7 +57,6 @@ import {
   updateComposerDraft,
 } from "./composer-drafts.js";
 import { quoteSource, revealTextQuote } from "./text-quote-dom.js";
-import type { TextQuote } from "../../../packages/core/src/text-quotes.js";
 import { ExecutionSidebar } from "./ExecutionSidebar.js";
 import { SubjectSidebar } from "./SubjectSidebar.js";
 import { SubjectObjectives } from "./SubjectObjectives.js";
@@ -185,7 +184,11 @@ import {
   useExchangeInputToolCommit,
   useExchangeNativeInputState,
 } from "./host/use-exchange-input-tools.js";
-import { createExchangeReferenceCommands } from "./host/exchange-reference-commands.js";
+import {
+  createExchangeReferenceCommands,
+  useExchangeQuoteRevealState,
+  useExchangeQuoteRevealCommit,
+} from "./host/exchange-reference-commands.js";
 import {
   createPrivateProjectConversationScope,
   projectConversationDraftPresence,
@@ -421,10 +424,7 @@ function WorkspaceApp({
   const manageProject = (project: Project, action: ProjectAction) =>
     setProjectAction({ project, action });
   const sendPending = useRef(false);
-  const [quoteReveal, setQuoteReveal] = useState<{
-    quote: TextQuote;
-    token: string;
-  } | null>(null);
+  const { quoteReveal, setQuoteReveal } = useExchangeQuoteRevealState();
   const draftCommands = createExchangeDraftCommands({
     inputs: inputDraftState,
     conversations: conversationDraftState,
@@ -596,7 +596,7 @@ function WorkspaceApp({
       workspaceId,
     );
   }
-  useEffect(() => setQuoteReveal(null), [conversationId]);
+  useExchangeQuoteRevealCommit(conversationId, setQuoteReveal);
   const [conversationToolbarTarget, setConversationToolbarTarget] =
     useState<HTMLDivElement | null>(null);
   const exchangeController = useExchangeController({
@@ -942,43 +942,61 @@ function WorkspaceApp({
     exchange: { keepExchangeOpen, requestConversationFocus },
     onNotice: setNotice,
   });
-  const { openTextQuote, composeContent, composeReading, composeIntent } =
-    createExchangeReferenceCommands({
-      render: {
-        conversationId,
-        contextKey,
-        workspace: state,
-        drafts,
-        draft,
-        sending,
-        emptyDraft,
-      },
-      origin,
-      navigation: {
-        navigationGeneration,
-        isCurrent: navigation.isCurrent,
-        setExplicitWebsiteIntent: setWebsiteIntent,
-        openObject,
-        openScriptLocation,
-        openBrowser,
-        activateApplication,
-        selectConversation,
-      },
-      client,
-      drafts: { replace: setDraft, update: updateDraft },
-      exchange: {
-        keepOpen: keepExchangeOpen,
-        showInput,
-        setInteraction,
-        requestConversationFocus,
-      },
-      quotes: {
-        clearSelection: () => window.getSelection()?.removeAllRanges(),
-        reveal: revealTextQuote,
-        setReveal: setQuoteReveal,
-      },
-      onNotice: setNotice,
-    });
+  const {
+    openTextQuote,
+    composeContent,
+    composeReading,
+    composeIntent,
+    prepareSearchQuote,
+    selectArtifactQuote,
+    changeTextQuotes,
+    focusCommentComposer,
+  } = createExchangeReferenceCommands({
+    render: {
+      conversationId,
+      contextKey,
+      workspace: state,
+      drafts,
+      draft,
+      sending,
+      emptyDraft,
+    },
+    scope: { conversationKey },
+    origin,
+    navigation: {
+      navigationGeneration,
+      isCurrent: navigation.isCurrent,
+      setExplicitWebsiteIntent: setWebsiteIntent,
+      openObject,
+      openScriptLocation,
+      openBrowser,
+      activateApplication,
+      selectConversation,
+    },
+    client,
+    drafts: { replace: setDraft, update: updateDraft },
+    exchange: {
+      keepOpen: keepExchangeOpen,
+      showInput,
+      setInteraction,
+      requestConversationFocus,
+      scheduleSearchQuoteFocus: () =>
+        requestAnimationFrame(() => {
+          if (!exchange.current?.contains(document.activeElement))
+            input.current?.focus();
+        }),
+      scheduleCommentComposerFocus: () =>
+        requestAnimationFrame(() =>
+          input.current?.focus({ preventScroll: true }),
+        ),
+    },
+    quotes: {
+      clearSelection: () => window.getSelection()?.removeAllRanges(),
+      reveal: revealTextQuote,
+      setReveal: setQuoteReveal,
+    },
+    onNotice: setNotice,
+  });
   function readingTargetConsumed(requestId: string) {
     if (prefs.readingTarget?.requestId === requestId)
       prefer({ readingTarget: null });
@@ -1332,15 +1350,9 @@ function WorkspaceApp({
         sending ||
         !!draft.pendingSupplement ||
         !!selectedConversation?.archivedAt,
-      onChange: (textQuotes) =>
-        updateDraft(contextKey, (old) => ({ ...old, textQuotes })),
+      onChange: changeTextQuotes,
       onEngage: keepExchangeOpen,
-      onFocusComposer: () => {
-        showInput();
-        requestAnimationFrame(() =>
-          input.current?.focus({ preventScroll: true }),
-        );
-      },
+      onFocusComposer: focusCommentComposer,
       onOpen: (quote) => void openTextQuote(quote),
       onNotice: setNotice,
     },
@@ -1885,18 +1897,7 @@ function WorkspaceApp({
                       }}
                       initialRevision={prefs.artifactRevision}
                       initialPage={prefs.artifactPage}
-                      onSelect={(quote, revision, page, annotation) => {
-                        setDraft(contextKey, {
-                          ...draft,
-                          selection: quote,
-                          revision,
-                          page,
-                          annotation,
-                          taskResult: undefined,
-                          intent: undefined,
-                        });
-                        showInput();
-                      }}
+                      onSelect={selectArtifactQuote}
                     />
                   ) : prefs.view === "inbox" ? (
                     <TaskList
@@ -2924,35 +2925,7 @@ function WorkspaceApp({
           client={client}
           onClose={() => setSearchOpen(false)}
           onOpen={openUser}
-          onQuote={(id, projectId, revision, quote, page) => {
-            void openObject(
-              projectId,
-              id,
-              revision,
-              page,
-              false,
-              undefined,
-              quote,
-            ).then((generation) => {
-              if (
-                generation === undefined ||
-                generation !== navigationGeneration.current
-              )
-                return;
-              const key = conversationKey(projectId) + ":" + id;
-              setDraft(key, {
-                ...(drafts[key] ?? emptyDraft),
-                selection: quote,
-                revision,
-                page,
-              });
-              setInteraction("recent");
-              requestAnimationFrame(() => {
-                if (!exchange.current?.contains(document.activeElement))
-                  input.current?.focus();
-              });
-            });
-          }}
+          onQuote={prepareSearchQuote}
         />
       )}
     </div>,

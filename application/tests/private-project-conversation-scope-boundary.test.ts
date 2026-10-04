@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { inverseExchangeReferencePreparationApp } from "./fixtures/exchange-reference-preparation-consumption.js";
 import {
   assertPrivateProjectConversationWholeApp,
   inversePrivateProjectConversationScope,
@@ -12,9 +13,8 @@ import {
 // Actual production consumer and owner, not a model of their wiring. This
 // finite source proof is separate from controlled owner/React behavior tests
 // and does not claim compiled App, Platform permissions or native acceptance.
-const app = readFileSync(
-  new URL("../apps/web/src/App.tsx", import.meta.url),
-  "utf8",
+const app = inverseExchangeReferencePreparationApp(
+  readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8"),
 );
 const owner = readFileSync(
   new URL(

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { inverseExchangeReferencePreparationApp } from "./exchange-reference-preparation-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -340,6 +341,7 @@ function expand(
   clientText: string,
   requireActual: boolean,
 ) {
+  appText = inverseExchangeReferencePreparationApp(appText);
   // Nested old/no-import lanes preserve every byte, including specified old
   // counterfactuals; only the separate actual-new assertion requires migration.
   if (!requireActual && !appText.includes(featureModule)) return appText;

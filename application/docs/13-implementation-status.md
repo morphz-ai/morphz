@@ -1,5 +1,85 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 30：完整搜索／选文／评论准备与 reveal 生命周期
+
+现有 `host/exchange-reference-commands.ts` 持有原搜索选文、现件选区、
+逐段评论更新和评论焦点的四个完整算法，以及分别原位注册的 quote
+state／退休 effect。App 的四个实际消费者直接借返回方法；既有四个
+引用回访／内容／阅读／意图准备方法逐字保留。搜索仍捕获原草稿，按
+原 generation、目标 conversationKey 和条件焦点接续；现件选区只清
+原 taskResult／intent；评论仍 functional merge 最新草稿，并保留原
+expression return 与 preventScroll 焦点。没有额外 guard 或 async 包装。
+原稳定 React setter、只随 conversationId 的 reveal 退休、两个不同
+rAF 端口和全部原注册顺序保持。scope／权限、草稿持久化、实际导航与
+DOM writer 留在原宿主，不新增 store、缓存、订阅、请求、DOM、CSS
+或模型调用。SearchDocuments、Provider、SelectionActions、Reader 和
+ArtifactEditor 的已有完整生命周期不重复迁移。
+
+根独立实际 Git `75ba44c0` 源证明：只逆掉批准的 import、注册、factory
+与四个消费接缝，完整 App 恢复原 **113,015 字节**，完整 owner 恢复原
+**8,263 字节**；原四方法 raw 全等。独立旧 fixture 的 **13** 个整文件、
+**13** 个 raw span、四个完整可执行原回调和两个注册均与实际 Git 相等。
+两份生产源和三个新行为测试冻结 SHA 复核，**198** 份既有 renderer
+source 未改；实际 Client、Platform、原组件、持久化 tests 与相关 helpers
+保持原整文件，唯一旧页面入口校准另有完整字节撤销证明。
+
+七份完整原页面在冻结旧版／新版编译 App 各 **30/30**，零重试／skip；
+每边逐例核实 **117** 份实际 HTTP 入口资产，CSS／preload 字节相等。
+覆盖全文搜索、最近打开、持久化内容索引、确切历史选文、评论／引用
+来源回跳、草稿恢复与 Session 隔离、失败重试／回执去重、触摸、窄窗
+和明暗主题。初轮旧版 **29 通过／1 失败** 是旧测试点击已不存在的
+工作空间选项。只校准到内容库的「其他内容创作」与原 Escape 焦点；
+原「资料导入与来源」「打开文件」不得出现、搜索、选区和空间预算
+断言均保留。旧校准单项和两份完整最终页面均通过，校准已独立提交
+`98ad08a5`，不是为迁移恢复撤下的 UI。相关四份原 Node 持久化／搜索
+回归为 **17 通过、2 PostgreSQL 能力跳过、零失败／取消**，不把纯
+PDF 页投影或未运行的 PostgreSQL 算成实际存储证明。
+
+根独立新命令／门禁及旧引用消费回归 **39/39**，无 skip；独立相邻
+完整回归 **53/53**，原断言、hash、计数和指定反例保留。五份旧测试
+或 helper 只加有限入口 inverse；旧四方法动态测试先检查实际有序八
+方法，再借原四个同一函数引用，新增三个端口为禁止调用的窄 mock。
+仅撤掉这些批准接缝后，五整文件恢复实际 Git 字节。初轮旧 inventory／
+返回键、跨 owner 前置见证抢先拒绝和旧 raw-target 不存在的 RED 保留；
+新门禁只治理自身 consumer，旧合法 import alias 和 clone／wrapper
+安全反例仍由旧特定规则拒绝，不用 parser 错或更新历史 hash 求绿。
+
+根独立实际 React StrictMode 挂载 **9/9**（父测试＋八场景组），无 skip。
+真实 scoped storage、SearchDocuments、TextQuoteProvider、ArtifactEditor、
+SelectionActions 和原 hooks 验证 stable setter、原位注册、范围退休、
+捕获与 functional 草稿、受控迟到导航、原生 HTML dialog 关闭、portal、
+原历史 revision／page、焦点与 textarea 选区、取消／卸载。业务读取
+与导航是受控端口，不冒称实际 ACL、Runtime 或完整事务回执。
+**48** 组 Search 几何／动效记录覆盖真实四 accent、明暗、宽中窄窗及
+CSS zoom 1／2；0.01px 几何、原 DOM／material 和 timing／keyframes
+旧新精确相等，没有关闭动效。原 search 的 180ms reveal 和 110ms
+主题过渡保留；不是逐帧像素或原生 OS 缩放证明。48 组的 Provider
+quote geometry 为 null，不宣称全主题 Provider 空间覆盖。**24** 个
+zoom 2 场景保留旧、新共同的搜索溢出（窄窗 workspace 200px／search
+696px），未借重构改 CSS 或把共同问题写成空间验收成功。
+
+根最终完整 build／类型、格式／差异检查通过；全量 Node **1997 项：
+1837 通过、160 能力跳过、零失败／取消**。新增挂载显式执行现有
+headless Chromium。首轮完整 build 的新 helper 类型收窄错误保留，
+准确修窄后第二轮 build 通过；没有生产类型或布局变更。
+
+本批生产与自动验证已完成，整体目标仍 active，没有额外推送。原 App
+仍卡在退出清理，强制退出待用户确认；不重置 profile／中心，不重启
+Runtime。原窗、硬件、系统命中与全产品验收未完成。另已核实普通 CI
+仍混合当前职责约束和历史整文件迁移证明，跨 owner inverse 链的长期
+治理必须继续，不能把这一批新增门禁数量说成整体工程已收口。
+
+根证据：`/tmp/morphz-reference-preparation-root.Gfgapr` 的冻结 manifest、
+两份完整最终页面／HTTP audit、page-equivalence、root-input-source-proof、
+root-production-source-proof-final、root-fixed-source-proof、
+root-boundary-final-actual-git-proof、root-mounted-final 和最终 Node／
+build logs。生产源证明在
+`/tmp/morphz-reference-preparation-production.CfJ7ap`，独立旧源与挂载在
+`/tmp/morphz-reference-preparation-validation.vzHjhU`，门禁及五旧文件
+撤销证明在 `/tmp/morphz-reference-preparation-boundary.sNnpL8`。
+未应用的 popup 样式方案与测试治理审查只用于定位后续工作，不是
+已实现的生产 owner 或已批准的视觉规范。
+
 ## 2026-10-04 前端阶段 29：对象批注完整功能模块
 
 `features/content/ObjectAnnotations.tsx` 持有原两 state、完整读取／取消

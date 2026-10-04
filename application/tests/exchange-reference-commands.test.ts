@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { inverseExchangeReferencePreparationModule } from "./fixtures/exchange-reference-preparation-consumption.js";
 import test, { type TestContext } from "node:test";
 import {
   createExchangeReferenceCommands,
@@ -28,13 +29,38 @@ const fixedSource = readFileSync(
   new URL("./fixtures/exchange-reference-39cf13cf.ts", import.meta.url),
   "utf8",
 );
-const ownerSource = readFileSync(
-  new URL(
-    "../apps/web/src/host/exchange-reference-commands.ts",
-    import.meta.url,
+const ownerSource = inverseExchangeReferencePreparationModule(
+  readFileSync(
+    new URL(
+      "../apps/web/src/host/exchange-reference-commands.ts",
+      import.meta.url,
+    ),
+    "utf8",
   ),
-  "utf8",
 );
+// The old four-method lane borrows actual new methods after checking the whole
+// approved eight-key surface; only the four named additions are omitted here.
+function originalReferenceSurface(
+  result: ReturnType<typeof createExchangeReferenceCommands>,
+) {
+  assert.deepEqual(
+    Object.keys(result),
+    [
+      "openTextQuote",
+      "composeContent",
+      "composeReading",
+      "composeIntent",
+      "prepareSearchQuote",
+      "selectArtifactQuote",
+      "changeTextQuotes",
+      "focusCommentComposer",
+    ],
+    "actual reference factory has only the eight approved ordered methods",
+  );
+  const { openTextQuote, composeContent, composeReading, composeIntent } =
+    result;
+  return { openTextQuote, composeContent, composeReading, composeIntent };
+}
 const empty: InputDraft = { body: "", selection: "", revision: null };
 const token = "11111111-1111-4111-8111-111111111111";
 const contentKey = "conversation:object";
@@ -275,6 +301,11 @@ function harness(t: TestContext, lane: "fixed" | "owner", setup: Setup = {}) {
       emptyDraft: empty,
       ...setup,
     },
+    scope: {
+      conversationKey: () => {
+        throw new Error("original four commands must not call new scope port");
+      },
+    },
     origin: { isActive },
     navigation: {
       navigationGeneration: generation,
@@ -288,7 +319,22 @@ function harness(t: TestContext, lane: "fixed" | "owner", setup: Setup = {}) {
     },
     client: { resolveArtifact },
     drafts: { replace, update },
-    exchange: { keepOpen, showInput, setInteraction, requestConversationFocus },
+    exchange: {
+      keepOpen,
+      showInput,
+      setInteraction,
+      requestConversationFocus,
+      scheduleSearchQuoteFocus: () => {
+        throw new Error(
+          "original four commands must not call new search focus port",
+        );
+      },
+      scheduleCommentComposerFocus: () => {
+        throw new Error(
+          "original four commands must not call new comment focus port",
+        );
+      },
+    },
     quotes: {
       clearSelection: () => windowPort.getSelection()?.removeAllRanges(),
       reveal,
@@ -332,7 +378,7 @@ function harness(t: TestContext, lane: "fixed" | "owner", setup: Setup = {}) {
   const commands =
     lane === "fixed"
       ? createFixedReferenceCommands(fixed)
-      : createExchangeReferenceCommands(options);
+      : originalReferenceSurface(createExchangeReferenceCommands(options));
   assert.equal(events.length, 0, "construction performs no action");
   return {
     events,
@@ -465,7 +511,9 @@ test("construction borrows workspace/ref/ports without reading or invoking them"
   value.options.quotes.reveal = forbidden;
   value.options.drafts.replace = forbidden;
   value.options.exchange.showInput = forbidden;
-  const result = createExchangeReferenceCommands(value.options);
+  const result = originalReferenceSurface(
+    createExchangeReferenceCommands(value.options),
+  );
   assert.deepEqual(Object.keys(result), [
     "openTextQuote",
     "composeContent",

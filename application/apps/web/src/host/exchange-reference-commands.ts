@@ -1,3 +1,4 @@
+import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import type { Workspace } from "../../../../packages/core/src/model.js";
 import type { InputIntent } from "../../../../packages/core/src/input-intent.js";
 import type { ReadingReference } from "../../../../packages/core/src/reader.js";
@@ -20,6 +21,24 @@ export type ReadingComposeCommand = (
   question: string,
 ) => { ok: boolean; error?: string };
 
+export type QuoteReveal = { quote: TextQuote; token: string } | null;
+
+// Separate original registration seams retain the Host's hook/effect order.
+export function useExchangeQuoteRevealState() {
+  const [quoteReveal, setQuoteReveal] = useState<{
+    quote: TextQuote;
+    token: string;
+  } | null>(null);
+  return { quoteReveal, setQuoteReveal };
+}
+
+export function useExchangeQuoteRevealCommit(
+  conversationId: string,
+  setQuoteReveal: Dispatch<SetStateAction<QuoteReveal>>,
+) {
+  useEffect(() => setQuoteReveal(null), [conversationId]);
+}
+
 export type ExchangeReferenceOptions = {
   render: {
     conversationId: string;
@@ -30,6 +49,7 @@ export type ExchangeReferenceOptions = {
     sending: boolean;
     emptyDraft: InputDraft;
   };
+  scope: { conversationKey(workspaceId: string): string };
   origin: Pick<WorkspaceNavigationOrigin, "isActive">;
   navigation: Pick<
     NavigationOwner,
@@ -56,7 +76,11 @@ export type ExchangeReferenceOptions = {
   exchange: Pick<
     ExchangeController,
     "showInput" | "setInteraction" | "requestConversationFocus"
-  > & { keepOpen(): void };
+  > & {
+    keepOpen(): void;
+    scheduleSearchQuoteFocus(): void;
+    scheduleCommentComposerFocus(): void;
+  };
   quotes: {
     clearSelection(): void;
     reveal(quote: TextQuote): boolean;
@@ -65,12 +89,13 @@ export type ExchangeReferenceOptions = {
   onNotice(message: string): void;
 };
 
-/** Four distinct, render-captured preparation/revisit commands. Construction
+/** Distinct, render-captured preparation/revisit commands. Construction
  * borrows facts and ports only: no ref/DOM read, query, token or lifecycle.
  * Authority, draft persistence and actual focus remain with the original Host.
  */
 export function createExchangeReferenceCommands({
   render,
+  scope,
   origin,
   navigation,
   client,
@@ -88,6 +113,7 @@ export function createExchangeReferenceCommands({
     sending,
     emptyDraft,
   } = render;
+  const { conversationKey } = scope;
   const {
     navigationGeneration,
     openObject,
@@ -103,6 +129,8 @@ export function createExchangeReferenceCommands({
     showInput,
     setInteraction,
     requestConversationFocus,
+    scheduleSearchQuoteFocus,
+    scheduleCommentComposerFocus,
   } = exchange;
   const { reveal: revealTextQuote, setReveal: setQuoteReveal } = quotes;
 
@@ -258,5 +286,69 @@ export function createExchangeReferenceCommands({
     });
     showInput();
   }
-  return { openTextQuote, composeContent, composeReading, composeIntent };
+  function prepareSearchQuote(
+    id: string,
+    projectId: string,
+    revision: number,
+    quote: string,
+    page?: number,
+  ) {
+    void openObject(
+      projectId,
+      id,
+      revision,
+      page,
+      false,
+      undefined,
+      quote,
+    ).then((generation) => {
+      if (
+        generation === undefined ||
+        generation !== navigationGeneration.current
+      )
+        return;
+      const key = conversationKey(projectId) + ":" + id;
+      setDraft(key, {
+        ...(drafts[key] ?? emptyDraft),
+        selection: quote,
+        revision,
+        page,
+      });
+      setInteraction("recent");
+      scheduleSearchQuoteFocus();
+    });
+  }
+  function selectArtifactQuote(
+    quote: string,
+    revision: number,
+    page?: number,
+    annotation?: boolean,
+  ) {
+    setDraft(contextKey, {
+      ...draft,
+      selection: quote,
+      revision,
+      page,
+      annotation,
+      taskResult: undefined,
+      intent: undefined,
+    });
+    showInput();
+  }
+  const changeTextQuotes = (textQuotes: TextQuote[]) =>
+    updateDraft(contextKey, (old) => ({ ...old, textQuotes }));
+  function focusCommentComposer() {
+    showInput();
+    scheduleCommentComposerFocus();
+  }
+  return {
+    openTextQuote,
+    composeContent,
+    composeReading,
+    composeIntent,
+    prepareSearchQuote,
+    selectArtifactQuote,
+    changeTextQuotes,
+    focusCommentComposer,
+  };
 }

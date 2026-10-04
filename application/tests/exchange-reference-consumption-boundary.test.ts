@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { inverseExchangeReferencePreparationModule } from "./fixtures/exchange-reference-preparation-consumption.js";
 import { expandSubmissionConsumption } from "./fixtures/exchange-submission-contract.js";
 import { expandWorkspaceContentOpeningConsumption } from "./fixtures/workspace-content-opening-consumption.js";
 import { API } from "typescript/unstable/sync";
@@ -48,12 +49,14 @@ const { app } = expandWorkspaceContentOpeningConsumption(
     "utf8",
   ),
 );
-const owner = readFileSync(
-  new URL(
-    "../apps/web/src/host/exchange-reference-commands.ts",
-    import.meta.url,
+const owner = inverseExchangeReferencePreparationModule(
+  readFileSync(
+    new URL(
+      "../apps/web/src/host/exchange-reference-commands.ts",
+      import.meta.url,
+    ),
+    "utf8",
   ),
-  "utf8",
 );
 const fixed = readFileSync(
   new URL("./fixtures/exchange-reference-39cf13cf.ts", import.meta.url),

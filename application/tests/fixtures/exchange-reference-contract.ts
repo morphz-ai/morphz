@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { inverseExchangeReferencePreparationModule } from "./exchange-reference-preparation-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -104,6 +105,7 @@ export function verifyFixedReference(source: string) {
 // A deliberately finite structural contract, not a general purity proof or
 // authority/UI/mounted-consumption gate. The fixed oracle supplies the algorithms.
 export function verifyReferenceOwner(owner: string, fixed: string) {
+  owner = inverseExchangeReferencePreparationModule(owner);
   const parsed = parseReference(owner);
   for (const statement of parsed.source.statements.filter(isImportDeclaration))
     assert.equal(
