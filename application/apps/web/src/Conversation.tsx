@@ -45,7 +45,7 @@ import {
 } from "../../../packages/core/src/script-delivery.js";
 import { scriptKindLabels } from "../../../packages/core/src/script-studio.js";
 import type { WorkspaceClient } from "./client.js";
-import { ObjectIcon } from "./ArtifactEditor.js";
+import { ObjectIcon } from "./ui/ObjectIcon.js";
 import { AttachmentPreview } from "./AttachmentPreview.js";
 import {
   conversationDate,

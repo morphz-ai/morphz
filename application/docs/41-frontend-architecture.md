@@ -1,8 +1,8 @@
 # Morphz 前端整体架构
 
-日期：2026-10-04 · 版本：1.10 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-05 · 版本：1.11 · 状态：分阶段实施中，整体迁移尚未完成。
 
-阶段清单更新：2026-10-04。
+阶段清单更新：2026-10-05。
 
 目标：明确共享宿主、状态、数据、组件及样式所有权，减少页面独立复制同类逻辑。保留已有共享设施、数据与授权；不推倒 Runtime／Platform，不为状态展示增加 LLM 请求，不另做 Desktop 前端。本工程设计独立于已撤回的视觉探索，不采纳其数值或审美规则。下文保留完整目标，具体生产实现及验证分别记录，不能据此宣称整体架构已迁移完成。
 
@@ -799,9 +799,12 @@ control carrier 的有限入口 phase；原 recipe、callback／反例和不可�
 
 阶段 47 已将原完整剧本弹窗和四态词表交给各自共享 owner，七处表单
 直接复用并保留原同 binding 兼容出口；Editor 不再 runtime 导入父页。
-现件编辑仍有合法生命周期所有权，尚待逐批交接的是其被五个页面共享的
-ObjectIcon／kindLabel 纯语义图形，以及 App 内完整三分支 application
-compose preparation；不因此把每个局部 JSX 或状态再套一个 controller。
+阶段 50 将原完整 ObjectIcon／kindLabel 交给 `ui/ObjectIcon.tsx`；五类
+页面直接消费，ArtifactEditor 保留原同 binding 兼容出口。图形含义与
+调用方条件不变，无新 wrapper／effect／样式。有限当前消费门禁与显式
+旧新实际图形／样式对照分别证明边界和等价，不锁整页或借 peer inverse。
+现件编辑仍有合法生命周期所有权；App 内完整三分支 application compose
+preparation 尚待交接，不因此把每个局部 JSX 或状态再套一个 controller。
 
 交流样式的实际 33 源审计确认，单行底栏与交流几何已有 owner，五类旧
 footer／floating class 未有当前 TSX 消费，保留合法 fallback。Dock 的早

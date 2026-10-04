@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Search, MessageSquareQuote } from "lucide-react";
 import type { SearchResult } from "../../../packages/core/src/retrieval.js";
 import type { WorkspaceClient } from "./client.js";
-import { ObjectIcon } from "./ArtifactEditor.js";
+import { ObjectIcon } from "./ui/ObjectIcon.js";
 import { useModal } from "./useModal.js";
 import { visibleProfileMenuTrigger } from "./profile-menu-focus.js";
 import { searchPreview } from "./document-presentation.js";

@@ -15,7 +15,7 @@ import {
 import type { Artifact, Workspace } from "../../../packages/core/src/model.js";
 import { contentOwnershipTitle } from "../../../packages/core/src/content.js";
 import { scopedStorage, type WorkspaceClient } from "./client.js";
-import { ObjectIcon, kindLabel } from "./ArtifactEditor.js";
+import { ObjectIcon, kindLabel } from "./ui/ObjectIcon.js";
 import { ComposerOptions } from "./ComposerOptions.js";
 import { ContentMetadata } from "./ContentMetadata.js";
 import { ContentPreview } from "./ContentPreview.js";

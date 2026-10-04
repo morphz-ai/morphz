@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 50：共享对象语义图形
+
+原完整七类 `ObjectIcon`／`kindLabel` 归中性 `ui/ObjectIcon.tsx`，五类
+页面直接消费同一 owner；ArtifactEditor 保留原同 binding 兼容出口。
+不新增 DOM、状态、effect、调用方回退或样式。根 fresh actual Git 独立
+核五件完整页面的精确 forward／inverse、新模块原完整声明和 36 件
+未改邻居。当前门禁只约束实际来源、七处图形消费、六处标签读取与有限
+调用方条件，不把整页 hash 或跨 owner inverse 链带入普通 CI。
+
+根最终 proper 当前两文件 **7/7**；原宿主 **22/22** 与其余原七邻居
+**60/60** 分批串行，合计原十文件范围 **89/89**，零失败／跳过。此前
+同范围 TS7 EPIPE／spawn EAGAIN 红记录保留，不以资源原因推断产品正确。
+显式旧新迁移另 **7/7**：实际 StrictMode、当前 main CSS 图、八个主题／
+宽度组合各 35 个图形，完整 SVG／几何／颜色／描边／动效记录直接相等，
+无归一化。原 eyebrow 隐藏和 delivery 18px 保留，不能把 size16 属性
+误报成所有位置的实际尺寸。不是五页整页或原 App 验收。
+
+最终 full typecheck／build、九路径格式与 diff 检查通过。根仅修正新
+历史测试 fixture 的 classic／automatic JSX 共用 React 绑定，原声明
+字节不变，并重新核来源、当前与迁移证据。构建未安装到原 App；原 App／
+Runtime 未重启，整体回归与原生验收仍未完成，目标 active。
+
+证据：`/tmp/morphz-object-icon-shared.yLA13Z/RESULT.md`、
+`source-proof.json`、`root-final-ledgers.json`，根
+`object-icon-root-final-current.log`／`object-icon-root-final-migration.log`／
+`object-icon-root-host-serial.log`／`object-icon-root-final-neighbors.log`。
+
 ## 2026-10-04 前端阶段 49：弹窗 frame 入口与相邻 writer 交接
 
 仅改一个源码门禁，不改生产 CSS、main、DOM 或不可变 c525 档案。

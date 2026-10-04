@@ -21,7 +21,7 @@ import {
   operationSchema,
   spaceKind,
 } from "../../../packages/core/src/model.js";
-import { ObjectIcon, kindLabel } from "./ArtifactEditor.js";
+import { ObjectIcon, kindLabel } from "./ui/ObjectIcon.js";
 import { NavigationIcon } from "./NavigationIcon.js";
 import {
   catalogContentEntries,
