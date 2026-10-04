@@ -306,6 +306,11 @@ function ScriptItemEditorView({
   }
   async function save() {
     if (!editable || saving.current) return;
+    const restoreFocus = scriptFocusReturn(
+      (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
+        ".script-editor",
+      ) ?? null,
+    );
     saving.current = true;
     try {
       await run({
@@ -333,6 +338,9 @@ function ScriptItemEditorView({
       setNotice(`已保存 v${saved.revision}`);
     } finally {
       saving.current = false;
+      // The command's earlier return may refocus Save while the rereads are
+      // pending. Finish after the clean draft disables that same button.
+      restoreFocus();
     }
   }
   const pinned = (ids: string[]) => {
