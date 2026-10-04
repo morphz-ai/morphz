@@ -56,6 +56,11 @@ import { createContentReads } from "./data/content-reads.js";
 import { createReaderReads } from "./data/reader-reads.js";
 import { createReaderInteractions } from "./data/reader-interactions.js";
 import { createBookmarkInteractions } from "./data/bookmark-interactions.js";
+import {
+  createObjectInteractions,
+  annotateObjectOperation,
+  linkWorkOperation,
+} from "./data/object-interactions.js";
 import { createTaskInteractions } from "./data/task-interactions.js";
 import { createLocalInputDelivery } from "./data/local-input-delivery.js";
 import { createExecutionInteractions } from "./data/execution-interactions.js";
@@ -243,29 +248,16 @@ export async function executePlatformOperation(
     }
     return done(op.target.id);
   }
-  if (op.type === "annotate") {
-    const entry = await source.getContent(op.artifactId);
-    if (entry.appId !== "morphz.objects" || entry.availability !== "available")
-      throw new UnsentOperationError("所选内容不是可批注的原件，未保存批注。");
-    await source.annotateObject({
+  if (op.type === "annotate")
+    return annotateObjectOperation(
+      source,
+      op,
       commandId,
-      contentId: entry.id,
-      revision: op.artifactRevision,
-      quote: op.quote,
-      ...(op.page === undefined ? {} : { page: op.page }),
-      body: op.body,
-    });
-    return done(commandId);
-  }
-  if (op.type === "link-artifacts") {
-    const relationId = await source.linkWork({
-      commandId,
-      fromId: op.fromId,
-      toId: op.toId,
-      kind: op.relation,
-    });
-    return done(relationId);
-  }
+      done,
+      UnsentOperationError,
+    );
+  if (op.type === "link-artifacts")
+    return linkWorkOperation(source, op, commandId, done);
   if (op.type === "update-project" && op.title && !op.state) {
     await source.renameProject(
       op.projectId,
@@ -897,6 +889,7 @@ export function useWorkspace() {
     call: applicationCall,
     savedInputScope,
   });
+  const objectInteractions = createObjectInteractions({ current, platform });
   const taskInteractions = createTaskInteractions({
     current,
     platform,
@@ -1496,50 +1489,6 @@ export function useWorkspace() {
       throw e;
     }
   }
-  async function listObjectAnnotations(
-    contentId: string,
-    signal?: AbortSignal,
-  ) {
-    const identity = current.current;
-    const source = platform.current;
-    if (!identity || !source || source.boot.csrfToken !== identity.csrfToken)
-      throw new Error("身份已变化，批注未读取。");
-    const annotations: Workspace["annotations"] = [];
-    let afterOrdinal: number | undefined;
-    for (let page = 0; page < 100; page++) {
-      const rows = z
-        .array(
-          z.object({
-            ordinal: z.number().int().nonnegative(),
-            annotation: stateSchema.shape.annotations.element,
-          }),
-        )
-        .parse(
-          await source.listObjectAnnotations(
-            contentId,
-            {
-              limit: 100,
-              ...(afterOrdinal === undefined ? {} : { afterOrdinal }),
-            },
-            signal,
-          ),
-        );
-      annotations.push(...rows.map((row) => row.annotation));
-      if (rows.length < 100) return annotations;
-      const last = rows.at(-1)!.ordinal;
-      if (afterOrdinal !== undefined && last <= afterOrdinal)
-        throw new Error("批注分页游标未推进。");
-      afterOrdinal = last;
-    }
-    throw new Error("批注数量超过当前可读取范围。");
-  }
-  async function workRelationsFor(objectId: string, signal?: AbortSignal) {
-    const identity = current.current;
-    const source = platform.current;
-    if (!identity || !source || source.boot.csrfToken !== identity.csrfToken)
-      throw new Error("身份已变化，关联未读取。");
-    return source.allWorkRelations(objectId, signal);
-  }
   async function upload(
     file: File,
   ): Promise<{ assetId: string; mime: string }> {
@@ -1763,8 +1712,8 @@ export function useWorkspace() {
     scriptVersionTitle: scriptEditorReads.scriptVersionTitle,
     resolveCatalogContent: contentReads.resolveCatalogContent,
     readScriptOverview,
-    listObjectAnnotations,
-    workRelationsFor,
+    listObjectAnnotations: objectInteractions.listObjectAnnotations,
+    workRelationsFor: objectInteractions.workRelationsFor,
     execute,
     bookmarkList: bookmarkInteractions.bookmarkList,
     bookmarkCommand: bookmarkInteractions.bookmarkCommand,

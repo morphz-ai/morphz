@@ -8,6 +8,7 @@ import {
   inverseObjectAnnotationsFeature,
   objectAnnotationsFixed,
 } from "./fixtures/object-annotations-consumption.js";
+import { readObjectInteractionOwner } from "./fixtures/object-interactions-consumption.js";
 
 // Finite actual source/consumer proof. Fixed-old/actual-new React lifecycle,
 // actual Client authority and compiled full-App/native acceptance are separate.
@@ -26,6 +27,7 @@ const client = readFileSync(
   new URL("../apps/web/src/client.ts", import.meta.url),
   "utf8",
 );
+const objectOwner = readObjectInteractionOwner();
 function changed(text: string, before: string, after: string) {
   assert.equal(
     text.split(before).length - 1,
@@ -66,10 +68,17 @@ function rejected(
   featureText: string,
   rule: RegExp,
   clientText = client,
+  ownerText = objectOwner,
 ) {
   legal(appText, featureText, clientText);
   assert.throws(
-    () => assertObjectAnnotationsWholeApp(appText, featureText, clientText),
+    () =>
+      assertObjectAnnotationsWholeApp(
+        appText,
+        featureText,
+        clientText,
+        ownerText,
+      ),
     rule,
   );
 }
@@ -209,7 +218,8 @@ test("object annotations preserve complete read, abort and five-dependency recip
     app,
     feature,
     /complete original authorized annotation Client reader identity pagination and bounds/,
-    changed(client, reader, changedReader),
+    client,
+    changed(objectOwner, reader, changedReader),
   );
   const wake = objectAnnotationsFixed.invalidation[0]!.raw;
   const changedWake = changed(

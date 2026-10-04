@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { inverseExchangeReferencePreparationApp } from "./exchange-reference-preparation-consumption.js";
+import {
+  readObjectInteractionOwner,
+  verifyObjectInteractionConsumption,
+} from "./object-interactions-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -340,6 +344,7 @@ function expand(
   featureText: string,
   clientText: string,
   requireActual: boolean,
+  ownerText: string,
 ) {
   appText = inverseExchangeReferencePreparationApp(appText);
   // Nested old/no-import lanes preserve every byte, including specified old
@@ -715,11 +720,10 @@ function expand(
     0,
     "only moved annotation Workspace type import removed",
   );
-  assert.equal(
-    oneFunction(client, "listObjectAnnotations").getText(),
-    objectAnnotationsFixed.reader.raw,
-    "complete original authorized annotation Client reader identity pagination and bounds",
-  );
+  // R4 moves only the complete Client reader and its real public consumption.
+  // Preserve the original raw/hash above; verify its current owner instead of
+  // repairing Client with another historical inverse chain.
+  verifyObjectInteractionConsumption(clientText, ownerText);
   const invalidation = client.nodes
     .filter(isCallExpression)
     .filter(
@@ -790,15 +794,17 @@ export function inverseObjectAnnotationsFeature(
   appText: string,
   featureText = readFeature(),
   clientText = readClient(),
+  ownerText = readObjectInteractionOwner(),
 ) {
-  return expand(appText, featureText, clientText, false);
+  return expand(appText, featureText, clientText, false, ownerText);
 }
 export function assertObjectAnnotationsWholeApp(
   appText: string,
   featureText = readFeature(),
   clientText = readClient(),
+  ownerText = readObjectInteractionOwner(),
 ) {
-  const result = expand(appText, featureText, clientText, true);
+  const result = expand(appText, featureText, clientText, true, ownerText);
   assert.equal(
     Buffer.byteLength(result),
     objectAnnotationsFixed.appBytes,

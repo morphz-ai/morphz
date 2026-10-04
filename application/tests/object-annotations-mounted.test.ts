@@ -12,7 +12,6 @@ import {
   isExpressionStatement,
   isJsxElement,
   isPropertyAssignment,
-  isShorthandPropertyAssignment,
   isMethodDeclaration,
   type Node,
 } from "typescript/unstable/ast";
@@ -21,6 +20,10 @@ import react from "@vitejs/plugin-react";
 import { chromium, type Page } from "@playwright/test";
 import { createServer, transformWithOxc } from "vite";
 import { fixedObjectAnnotationBaseline as fixed } from "./fixtures/object-annotations-9c6b8dd1.js";
+import {
+  readObjectInteractionOwner,
+  verifyObjectInteractionConsumption,
+} from "./fixtures/object-interactions-consumption.js";
 
 // Actual fixed-old and current hooks/panels, real React/InspectorPanel/layout.
 // Query promises and render facts are controlled, not authorization or durable
@@ -93,6 +96,8 @@ test("actual Git9c6 complete state/effect/projection/panel/query/receipt provena
     ),
   );
   const client = parse(readFileSync(resolve("apps/web/src/client.ts"), "utf8"));
+  const objectOwnerText = readObjectInteractionOwner();
+  const objectOwner = parse(objectOwnerText);
   const receipt = parse(
     readFileSync(
       resolve("apps/web/src/host/exchange-submission-commands.ts"),
@@ -178,7 +183,7 @@ test("actual Git9c6 complete state/effect/projection/panel/query/receipt provena
       "panel contains only original JSX return",
     );
     assert.equal(
-      fn(client.nodes, "listObjectAnnotations").getText(),
+      fn(objectOwner.nodes, "listObjectAnnotations").getText(),
       fixed.spans.ClientQuery.raw,
     );
     assert.equal(
@@ -189,11 +194,15 @@ test("actual Git9c6 complete state/effect/projection/panel/query/receipt provena
       one(
         client.nodes,
         (node) =>
-          isShorthandPropertyAssignment(node) &&
+          isPropertyAssignment(node) &&
           node.name.getText() === "listObjectAnnotations",
         "direct Client query alias",
       ).getText(),
-      fixed.spans.ClientPublicAlias.raw,
+      "listObjectAnnotations: objectInteractions.listObjectAnnotations",
+    );
+    verifyObjectInteractionConsumption(
+      readFileSync(resolve("apps/web/src/client.ts"), "utf8"),
+      objectOwnerText,
     );
     assert.equal(
       one(
@@ -226,6 +235,7 @@ test("actual Git9c6 complete state/effect/projection/panel/query/receipt provena
     old.close();
     actual.close();
     client.close();
+    objectOwner.close();
     receipt.close();
     platform.close();
   }

@@ -1,5 +1,53 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 43：对象评论与关联的完整数据操作
+
+`data/object-interactions.ts` 拥有原两个完整读取算法与 annotate／link
+写入叶子；Client 在原 bookmark→object→task 顺序唯一构造，公开直接
+方法，原 dispatch 分支直接调用叶子。借同一 current／platform ref、
+捕获 source、receipt closure 与 UnsentOperationError constructor；不新增
+请求、cache、effect、storage 或刷新权威。批注保留 100 页／100 条、
+ordinal schema、short-page／游标／溢出策略和原 signal；关系仍直接借
+Platform 的独立分页。原版本、引文、page、返回 Objects ID 与回执不混用。
+
+根独立核 actual Git `57e7d4ce` 的完整 63,185-byte Client、九个完整
+算法／分支及十四个邻居；整件 forward／inverse 和新 owner 迁移证明通过。
+完整固定旧件另由 fresh Git 捕获核验；旧三个批注测试仅交接物理 query
+来源／直接 alias／原分页反例，原 metadata、其它负例、state／effect、
+DOM、焦点、迟到和 geometry／motion 断言均保留。没有新增跨 owner inverse；
+原批注 whole-App 门禁的历史治理债务仍在，另行收尾。
+
+根对最终冻结十一份源独立 proper `npm test` **31/31**，零失败／跳过；
+含有限门禁 11、受控行为 6、真实 Client→HTTP→SQLite 4、原挂载 10。
+显式完整旧／新算法对照 **6/6**。24 个合法源反例命中指定规则，实际
+import／const／schema 别名和消费的独立 Client state／effect／cleanup
+增长正例通过，不锁整件当前 Client 或无关清理。
+
+真实私有 HTTP／SQL 覆盖非 head catalogID、历史 v1、101 条批注两页、
+关联独立读取、提交后丢回执、SSR 冷重挂载原整件 pending／ID 重试及
+单次 SQL mutation／receipt、Human 隔离、同 token 实时撤权、切换身份
+后的旧 200 被实际 epoch408 拒收。Map-backed Storage 是完整 Storage API
+合同，不冒称浏览器磁盘持久化；受控 Runtime 未启动。已存 Objects PDF
+种子覆盖原版本／page1 批注，不冒称 Human PDF 导入或文件字节验收。
+非法 page999 的原 domain Error→HTTP500 公共提示保持，未混入修复。
+
+六份完整原页面 spec 冻结旧／新各 **21/21**，标题／预算不变；每边
+104 个实际入口资源响应、208 emitted 原件、零跳过／重试及自有生命周期
+核验通过。首轮候选唯一红是私有文档迟到测试静态根仍读 normal dist；
+业务断言已通过，仅校准私有 webRoot 后重跑完整两边，保留初始红证据。
+正常完整 build 通过并仅刷新原 Morphz；实际打开已有 v2 文档及批注栏，
+正文和真实空态可见，再恢复原对话、活动页签与两侧栏。103 历史消息、
+输入和 Dock 保留，没有写业务对象、发送模型请求或重启 Runtime。
+
+最终冻结 R4 类型／格式检查通过；根后续全局类型检查遇到另行编辑中的
+门禁 helper AST 类型错误，不将中间快照称为全量通过。须待所有 owner
+冻结后重新执行完整类型／默认全量与原生／硬件验收。证据：
+`/tmp/morphz-object-interactions-production.Mm6vqZ`、
+`/tmp/morphz-object-pages-http-root.TaEmCB`、
+`/tmp/morphz-subject-schedules-root.udmSl9/r4-independent-corrected-final.log`、
+`/tmp/morphz-original-ui-recovery.q72TCn/original-r4-conversation-restored.jpeg`。
+R5、有限门禁治理和整体验收继续；目标 active，不宣称架构整体完成。
+
 ## 2026-10-04 前端阶段 42：公共控件 role 的真实样式所有权
 
 原跨三份大 CSS 的完整公共控件规则归 `ui/controls`，四载体分别保留
