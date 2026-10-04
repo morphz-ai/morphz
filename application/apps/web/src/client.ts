@@ -33,16 +33,8 @@ export {
 } from "./local-preferences.js";
 import { applicationStoragePrefix } from "../../../packages/core/src/application-names.js";
 import {
-  readSavedInputs,
-  removeSavedInput,
-  saveInputLocally,
-  withSavedInputs,
   withoutSavedInputs,
   inputSubmissionSchema,
-  newInputOperation,
-  matchSavedInputOperation,
-  savedInputOperation,
-  type LocalSavedInput,
 } from "./local-saved-inputs.js";
 import {
   applicationCall,
@@ -63,6 +55,7 @@ import { createScriptEditorReads } from "./data/script-editor-reads.js";
 import { createContentReads } from "./data/content-reads.js";
 import { createReaderReads } from "./data/reader-reads.js";
 import { createTaskInteractions } from "./data/task-interactions.js";
+import { createLocalInputDelivery } from "./data/local-input-delivery.js";
 import {
   readPlatformWorkspace,
   reusableNavigationCatalog,
@@ -96,7 +89,6 @@ import {
 } from "../../../packages/core/src/conversation.js";
 import {
   contentOrganizationChangesSchema,
-  operationSchema,
   stateSchema,
   taskContentSchema,
   type Operation,
@@ -887,36 +879,18 @@ export function useWorkspace() {
     call: applicationCall,
     publishBoot: setBoot,
   });
-  function sendingInputIds(
-    identity: Pick<Boot, "centerId" | "principalId" | "actantId">,
-  ) {
-    const scope = savedInputScope(identity) + ":";
-    return new Set(
-      [...inputSends.current.keys()]
-        .filter((key) => key.startsWith(scope))
-        .map((key) => key.slice(scope.length)),
-    );
-  }
-  function publishSavedInputs(identity: Boot) {
-    const latest = current.current;
-    if (!latest || latest.csrfToken !== identity.csrfToken) return;
-    const projection = withSavedInputs(
-      withoutSavedInputs(latest.workspace, latest.localSavedInputIds),
-      readSavedInputs(localStorage, savedInputScope(identity)),
-      identity,
-      sendingInputIds(identity),
-    );
-    const value = {
-      ...latest,
-      workspace: projection.workspace,
-      localSavedInputIds: projection.localInputIds,
-      localInputSubmissions: projection.submissions,
-    };
-    current.current = value;
-    // A background read must not consider its pre-submit snapshot current.
-    snapshotText.current = "";
-    setBoot(value);
-  }
+  const localInputDelivery = createLocalInputDelivery({
+    inputSends,
+    current,
+    platform,
+    snapshotText,
+    storage: () => localStorage,
+    savedInputScope,
+    executePlatformOperation,
+    setBoot,
+    refreshAfterMutation,
+    call: applicationCall,
+  });
   function clearProtectedProjection() {
     protectedReadGeneration.current++;
     current.current = null;
@@ -966,10 +940,7 @@ export function useWorkspace() {
         const scope = `${source.boot.centerId}:${source.boot.principalId}`;
         const local = scopedStorage(scope);
         const instances = await source.appViews(signal);
-        const savedInputs = readSavedInputs(
-          localStorage,
-          savedInputScope(source.boot),
-        );
+        const savedInputs = localInputDelivery.readSaved(source.boot);
         const preferences = local.readLocal<{
           view?: string;
           projectId?: string;
@@ -1073,33 +1044,9 @@ export function useWorkspace() {
           );
         // Read at publication time: a refresh may have started before the user
         // clicked Send. Only an authoritative same-ID input removes its overlay.
-        const latestSaved = readSavedInputs(
-          localStorage,
-          savedInputScope(source.boot),
-        );
-        const knownInputs = new Map(
-          workspace.inputs.map((input) => [input.id, input]),
-        );
-        const unconfirmed = latestSaved.filter((entry) => {
-          const input = knownInputs.get(entry.commandId);
-          if (
-            !input ||
-            input.author.principalId !== source.boot.principalId ||
-            input.author.actantId !== source.boot.actantId
-          )
-            return true;
-          removeSavedInput(
-            localStorage,
-            savedInputScope(source.boot),
-            entry.commandId,
-          );
-          return false;
-        });
-        const savedProjection = withSavedInputs(
+        const savedProjection = localInputDelivery.confirmAndProject(
           workspace,
-          unconfirmed,
-          source.boot,
-          sendingInputIds(source.boot),
+          source,
         );
         const snapshot = {
           ...source.boot,
@@ -1411,72 +1358,6 @@ export function useWorkspace() {
     boot?.csrfToken,
     authenticationRequired,
   ]);
-  async function submitSavedInput(
-    identity: Boot,
-    entry: LocalSavedInput,
-    onStaged?: (inputId: string) => void,
-  ): Promise<Receipt> {
-    const scope = savedInputScope(identity);
-    const key = scope + ":" + entry.commandId;
-    const pending = inputSends.current.get(key);
-    if (pending) return pending;
-    const source = platform.current;
-    if (!source || current.current?.csrfToken !== identity.csrfToken)
-      throw new Error("身份已变化，消息未发送。");
-    const staged = { ...entry, submission: { state: "sending" as const } };
-    // Persist the frozen payload before transport; retries never use the editor.
-    saveInputLocally(localStorage, scope, staged);
-    const request = Promise.resolve().then(() =>
-      executePlatformOperation(
-        source,
-        identity,
-        {
-          commandId: entry.commandId,
-          operation: savedInputOperation(entry.operation),
-        },
-        true,
-      ),
-    );
-    inputSends.current.set(key, request);
-    publishSavedInputs(identity);
-    onStaged?.(entry.commandId);
-    try {
-      const receipt = await request;
-      // A concurrent history refresh may already have confirmed this input.
-      if (
-        readSavedInputs(localStorage, scope).some(
-          (input) => input.commandId === entry.commandId,
-        )
-      )
-        saveInputLocally(localStorage, scope, {
-          ...entry,
-          submission: { state: "accepted" },
-        });
-      return receipt;
-    } catch (error) {
-      if (
-        readSavedInputs(localStorage, scope).some(
-          (input) => input.commandId === entry.commandId,
-        )
-      )
-        saveInputLocally(localStorage, scope, {
-          ...entry,
-          submission: {
-            state: "failed",
-            error:
-              error instanceof Error ? error.message : "发送失败，点击重试。",
-          },
-        });
-      throw error;
-    } finally {
-      inputSends.current.delete(key);
-      publishSavedInputs(identity);
-      // Submission success does not depend on an expensive catalog refresh.
-      // Keep the same bubble until history supplies its authoritative same-ID row.
-      if (current.current?.csrfToken === identity.csrfToken)
-        void refreshAfterMutation();
-    }
-  }
   async function execute(
     operation: Operation,
     dispatch = false,
@@ -1488,41 +1369,14 @@ export function useWorkspace() {
     const identity = current.current,
       scope = `${identity.centerId}:${identity.principalId}`,
       { readLocal, writeLocal } = scopedStorage(scope);
-    if (
-      operation.type === "record-input" &&
-      operation.conversationId &&
-      !operation.newConversation &&
-      readSavedInputs(localStorage, savedInputScope(identity)).some(
-        (input) =>
-          input.operation.conversationId === operation.conversationId &&
-          input.operation.newConversation,
-      )
-    )
-      throw new Error("请先发送这段对话中已保存的第一条消息。");
-    if (operation.type === "record-input") {
-      const commandId = externalCommandId ?? crypto.randomUUID();
-      const existing = readSavedInputs(
-        localStorage,
-        savedInputScope(identity),
-      ).find((input) => input.commandId === commandId);
-      const parsed = existing
-        ? matchSavedInputOperation(operation, existing.operation)
-        : operationSchema.parse(newInputOperation(operation));
-      const entry: LocalSavedInput = existing ?? {
-        commandId,
-        createdAt: new Date().toISOString(),
-        operation: parsed as LocalSavedInput["operation"],
-      };
-      if (dispatch) return submitSavedInput(identity, entry, onInputStaged);
-      saveInputLocally(localStorage, savedInputScope(identity), entry);
-      publishSavedInputs(identity);
-      onInputStaged?.(commandId);
-      return {
-        commandId,
-        entityId: commandId,
-        workspaceRevision: identity.workspace.revision,
-      };
-    }
+    if (operation.type === "record-input")
+      return localInputDelivery.recordInput(
+        identity,
+        operation,
+        dispatch,
+        externalCommandId,
+        onInputStaged,
+      );
     const hash = await crypto.subtle.digest(
       "SHA-256",
       new TextEncoder().encode(
@@ -1752,32 +1606,6 @@ export function useWorkspace() {
           throw new Error("身份已切换，导入结果尚未确认。");
       },
     );
-  }
-  async function dispatchInput(inputId: string) {
-    const identity = current.current;
-    if (!identity) throw new Error("应用尚未就绪，请稍后重试。");
-    const scope = savedInputScope(identity);
-    const saved = readSavedInputs(localStorage, scope);
-    const local = saved.find((item) => item.commandId === inputId);
-    if (local) {
-      if (!identity.runtime.configured)
-        throw new Error("连接 Agent 后才能发送这条本机保存的消息。");
-      if (
-        local.operation.conversationId &&
-        saved.some(
-          (item) =>
-            item.commandId !== inputId &&
-            item.operation.conversationId === local.operation.conversationId &&
-            item.operation.newConversation,
-        )
-      )
-        throw new Error("请先发送这段对话中已保存的第一条消息。");
-      await submitSavedInput(identity, local);
-    } else
-      await applicationCall("input.send", inputId, {
-        identityGeneration: identity.csrfToken,
-      });
-    if (!local) await refreshAfterMutation();
   }
   async function importReading(
     file: File,
@@ -2127,7 +1955,7 @@ export function useWorkspace() {
     readingMarks: readerReads.readingMarks,
     readerCommand,
     readingOcr,
-    dispatchInput,
+    dispatchInput: localInputDelivery.dispatchInput,
     verifyArtifact: taskInteractions.verifyArtifact,
     cancelInput,
     search,

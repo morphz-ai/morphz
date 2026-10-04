@@ -16,6 +16,7 @@
 | 应用导航与实例切换   | 同一 navigation commands owner；App 的应用入口与 ApplicationHost 的启动／关闭消费 typed actions                                  | Reader／剧本库／内容／Browser／激活／普通导航及原捕获邻居迁入；同步 prepared operation 保留原 Promise、Host 等待和 busy 清理，不新增状态、存储或 effect。有限旧实现对照与实际消费门禁。    |
 | 草稿生命周期         | `host/exchange-drafts.ts` 的三 state hooks／五 local commands；App 保留发送、导航与原退休 effect                                 | 原本机键、初始化位置、ref／render snapshot、逐步写入失败及 ID 保留；16 项逻辑、6 项有限 AST、4 项实际 React 挂载、31 项未改旧 Host 回归。不是新 store 或原子事务，原窗复验待解锁。         |
 | 发送协议与宿主命令   | `host/submit-exchange-draft.ts` 与 `host/exchange-submission-commands.ts`；App 保留原注册与 DOM 焦点端口                         | 原四分支、Profile flush→scope→当前工作面复核、补充原身份与冻结重试字节、准备锁与 staged 反馈；有限协议、完整旧算法与实际接线门禁，不新增授权或发送入口。                                   |
+| 本机输入投递与确认   | `data/local-input-delivery.ts`；Client 直接消费保存／投递、重试及刷新确认                                                        | 完整冻结载荷、身份范围、同步准备与原 Promise 顺序；storage lazy 端口、发送 refs 与身份／刷新权威仍在 Client，不建第二份 store，不重放旧输入或改请求策略。                                  |
 | 共享工作区顶栏       | `shell/WorkspaceTopbar.tsx`；App 保留原三个 portal target state/ref 与语义动作                                                   | 一个原生 header、原面包屑／显隐／导航按钮与三个常驻插槽，无新包装／key／样式；固定旧 markup、实际挂载及真实 App 导入／消费门禁，不接管领域画布或路由。                                     |
 | 会话历史查询         | `data/conversation-history.ts`；Client 持有唯一实例，workspace view 消费 head 策略                                               | 原 scope／缓存／分页 promise、head 复用与合并实际迁入；身份、epoch、catalogVersion、授权清理及 Boot 发布仍在 Client。固定旧实现对照及有限依赖门禁，不是全查询层或新的授权 owner。          |
 | 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费                                         | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。                         |
@@ -89,6 +90,15 @@ textQuotes、ReadingContext 和剧本域 compose 仍归原 owner，旧 Reader
 避免原 hoisted 函数借用晚声明动作的 TDZ；DOM rAF 仍是 App 的 lazy
 端口。完整旧 Git 树、原门禁基准和旧新编译页面对照见阶段 22，
 不把有限 source 或受控端口证明当作真实 Runtime／原生验收。
+
+本机消息的保存、发送中投影、冻结投递、重试和历史确认现归
+`data/local-input-delivery.ts`。Client 保留原发送 Map／身份 refs、其注册
+位置、共享 scope、非输入命令和刷新权威；构造不访问 storage 或发请求。
+同步 record 准备直接返回原 submit Promise，公开重试也是直接方法别名；
+发布时另外读取最新本机记录，仅同 ID、principal、actant 的真实历史项
+能够确认移除。原异常边界、身份切换和微任务顺序保持，不增加自动重放、
+轮询、缓存或权限。固定原 Client 全字节逆展开、真实 HTTP／SQLite 与
+相同编译页面的旧新对照见阶段 23；不冒称原 App 或全命令层完成。
 
 交流读取的共享纯投影现归 `conversation-read.ts`；提示与历史的不同范围、
 消息数组引用合同及原回执排序仍由真实消费方显式指定。已读初始化、稳定

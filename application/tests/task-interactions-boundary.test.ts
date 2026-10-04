@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { expandLocalInputDeliveryConsumption } from "./fixtures/local-input-delivery-consumption.js";
 import {
   isCallExpression,
   isIdentifier,
@@ -50,6 +51,10 @@ function replaceOnce(source: string, before: string, after: string) {
   return source.replace(before, after);
 }
 function validate(input = sources) {
+  input = {
+    ...input,
+    Client: expandLocalInputDeliveryConsumption(input.Client),
+  };
   const parsed = parseReaderSources(input),
     client = parsed.get("Client")!,
     owner = parsed.get("Owner")!,

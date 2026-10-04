@@ -1,5 +1,56 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 23：本机输入投递与确认的完整所有权
+
+`data/local-input-delivery.ts` 完整拥有本机消息的保存、发送中投影、冻结
+投递、重试及历史确认。真实 Client 直接消费四处 seam，保留原发送 Map、
+身份 refs 的注册位置、共享 scope、scopedStorage 初始化、非输入命令与
+刷新权威；构造只借原 refs／逻辑请求和 lazy storage，没有请求、state、
+effect、订阅、缓存或第二份 store。公开 dispatch 是直接别名，record
+准备同步返回原 submit Promise，不加 await。UI、DOM、CSS、图标与动效
+未改，也不自动重放本机待发记录。
+
+原算法先保存冻结载荷、登记 pending、发布和 staged，再在原微任务里
+投递；重试沿用 ID、时间和原 payload。不同身份隔离，旧结果不发布到新
+Boot。早期读取与发布时的 fresh read 仍分开，只有同 ID、principal、
+actant 的权威历史记录能够移除本机项。原磁盘／callback 失败、partial
+removal、try/finally 位置和同 key pending 顺序保持，未另加修复或守门。
+
+固定实际 Git `32c52210` 的五完整函数和两个原块。根环境与独立只读复核
+分别核对 raw 字节，并严格检查真实 Client 的唯一导入／构造、原 refs、
+同步分支、两个刷新 seam 和直接公开消费后，只逆展开本迁移：完整旧
+Client 与还原字节相等，SHA 均为
+`5ef656793c9f70eada0bfc4eb0dcfc54ae4efab2d25eca6fd8d7dbdcdb2c3128`。
+旧 Task 门禁仅新增 import 和严格展开；反向移除后全文与原 Git 相同，
+原摘要、规则、反例不改，其他三个相邻读取门禁字节未动。
+
+新旧算法双 lane 19 项、有限实际消费／反例 3 项通过；结合旧 local-saved
+和相邻读取共 **37/37**。根真实 Client 另 **3/3**：SSR 建立实际 refs／
+方法，不运行 React effects；真实隔离 HTTP／SQLite 登录与读回核对保存
+不发送、重开不重放、staged 与冻结请求，以及登出／新登录后旧响应丢弃。
+Host 未配置 Runtime，原 POST 实际返回 **503**；这证明请求与失败保留，
+不证明 Agent／模型成功执行。fixture 登录映射和预期错误的初期红项保留。
+
+相同六份原生产页面文件，冻结旧编译与本次新编译各 **28/28**，零重试。
+原乐观保存、首发幂等、失败重试、补充冻结回执、发送手势和会话隔离
+断言不改；八个旧准备问题独立校准，见下节。每边实际 HTTP 资源各
+132 份核对完整 SHA。候选为 `app-DeA0tkPM.js`，JS SHA 为
+`7b79552695b1374b4e8d31543796b18b1ba0f21440a96d93c1291a0e38f1c032`；
+CSS／preload 与旧编译逐字节相同，私有编译前后源 SHA 相同。完整
+build／类型与限定格式通过，原分包警告保持，没有调整阈值。
+根全量 Node checkpoint 为 **1806 项：1635 通过、171 明确能力跳过、
+零失败／取消**；跳过不视为原生、浏览器或外部能力已经验收。
+
+根证据：`/tmp/morphz-local-input-root.rzLAQ5` 的 `root-git-proof.log`、
+`delivery-focused-root.log`、`delivery-source-before/after.sha256`、
+`delivery-frozen-build.log`、`delivery-full-build.log`、`delivery-full-node.log` 和旧新页面报告／
+audit。固定算法及失败记录在 `/tmp/morphz-local-input-delivery.boIEJv`；
+有限实际消费和独立 Git 证据在 `/tmp/morphz-local-input-consumption.5UR3Vh`。
+双 lane 的新测试曾被两个 Date 输入差 1ms 影响，现固定输入而不改
+断言；生产未为测试改变。原 App 仍待已提问的精确进程恢复授权，
+Runtime、profile、center 与数据未重启或重置。本阶段不是整层查询、
+宿主拆分、原生或整体架构验收完成。
+
 ## 2026-10-04 本机消息回归：显式阅读与合成事件准备
 
 本机投递重构前，冻结实际 Git `32c52210` 的旧生产编译，六份原页面
