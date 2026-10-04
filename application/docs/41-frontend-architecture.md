@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-04 · 版本：1.8 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-04 · 版本：1.9 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -785,6 +785,12 @@ refresh 权威、App 的 portal／布局／全局快捷键／显式文件导航�
 
 当前生产约束与历史整文件迁移证明的测试治理也须收口，不能把不断增长
 的跨 owner inverse 链作为正常新增功能的永久前提。
+
+阶段 48 已将 Object annotations 与 Subject inspector 的当前检查交给
+raw-current 有限合同：真实来源／消费、原捕获、完整自有算法和排序受
+约束，独立 React feature 增长不受整份文件或 peer inverse 限制。原十个
+callback／54 反例保留固定历史证明；其中两项仅属历史。旧 API/default
+不变，Human／Private、Workspace／Draft 的当前入口尚待独立批次交接。
 
 阶段 47 已将原完整剧本弹窗和四态词表交给各自共享 owner，七处表单
 直接复用并保留原同 binding 兼容出口；Editor 不再 runtime 导入父页。

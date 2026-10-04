@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { inverseObjectAnnotationsFeature } from "./fixtures/object-annotations-consumption.js";
+import {
+  historicalSubjectApp,
+  objectGovernanceHistory,
+} from "./fixtures/object-annotations-governance-history.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -20,6 +23,7 @@ import {
   isJsxOpeningElement,
   isJsxSelfClosingElement,
   isNamedImports,
+  isObjectBindingPattern,
   isObjectLiteralExpression,
   isParenthesizedExpression,
   isPostfixUnaryExpression,
@@ -47,11 +51,11 @@ import {
 // algorithms/update behavior; unrelated App JSX and resources are not frozen.
 const path = "./host/use-subject-inspector.js";
 const sources = {
-  App: inverseObjectAnnotationsFeature(
-    readFileSync("apps/web/src/App.tsx", "utf8"),
-  ),
+  App: readFileSync("apps/web/src/App.tsx", "utf8"),
   Owner: readFileSync("apps/web/src/host/use-subject-inspector.ts", "utf8"),
 };
+const historicalTest = (title: string, callback: () => void) =>
+  test("fixed historical evidence: " + title, callback);
 const expectedText = `
 function activity() { const [allActivity, setAllActivity] = useState(false); return {allActivity, setAllActivity}; }
 function inspection() { const [executions, setExecutions] = useState<ExecutionScope | null>(null); const [understandingOpen, setUnderstandingOpen] = useState(false); return {executions, setExecutions, understandingOpen, setUnderstandingOpen}; }
@@ -102,6 +106,7 @@ const visibleWitness = !!artifact && subjectCollaborationVisible(visibleArgument
 const openArguments = {executions, subjectView, understandingOpen, collaborationVisible};
 const presentationArguments = {executions, understandingOpen, collaborationVisible, conversationProjectId, conversationId};
 const annotationDependencies = [artifact?.id, collaborationVisible, annotationRefresh, client.boot?.csrfToken, client.workspaceChangeRevision];
+const annotationRegistration = {artifact, collaborationVisible, client};
 const keyboardDependencies = [interaction, dialogueCanvas, contextKey, creating, mobileCollaboration, executions, understandingOpen, collaborationVisible, speech];
 type ReadPorts = {
   workspace: Pick<Workspace, "projects" | "inputs">;
@@ -153,14 +158,20 @@ function parse(contents: Record<string, string>) {
           if (isIdentifier(node)) identifiers.push(node);
         });
         const resolved = project.checker.getSymbolAtLocation(identifiers);
+        const symbols = new Map<Node, number | undefined>(
+          identifiers.map((node, index) => [node, resolved[index]?.id]),
+        );
+        for (const node of nodes.filter(isShorthandPropertyAssignment))
+          symbols.set(
+            node.name,
+            project.checker.getShorthandAssignmentValueSymbol(node)?.id,
+          );
         return [
           name,
           {
             source,
             nodes,
-            symbols: new Map(
-              identifiers.map((node, index) => [node, resolved[index]?.id]),
-            ),
+            symbols,
           },
         ];
       }),
@@ -171,6 +182,8 @@ function parse(contents: Record<string, string>) {
   }
 }
 function syntax(node: Node): unknown {
+  if (isIdentifier(node) && currentNames.has(node))
+    return [node.kind, currentNames.get(node)];
   if (isParenthesizedExpression(node)) return syntax(node.expression);
   // TS's unary operator is a scalar, not a forEachChild token. Omitting it
   // would incorrectly equate Boolean coercion (!!) with numeric coercion (~~).
@@ -264,8 +277,23 @@ function calls(parsed: Parsed, module: string, name: string) {
     .filter(
       (node) =>
         isIdentifier(node.expression) &&
-        parsed.symbols.get(node.expression) === symbol,
+        subjectLocalSymbol(parsed, node.expression) === symbol,
     );
+}
+function subjectLocalSymbol(parsed: Parsed, node: Node): number | undefined {
+  for (let depth = 0; depth < 8 && isIdentifier(node); depth++) {
+    const symbol = parsed.symbols.get(node);
+    const declaration = parsed.nodes
+      .filter(isVariableDeclaration)
+      .find(
+        (value) =>
+          isIdentifier(value.name) && parsed.symbols.get(value.name) === symbol,
+      );
+    if (!declaration?.initializer || !isIdentifier(declaration.initializer))
+      break;
+    node = declaration.initializer;
+  }
+  return parsed.symbols.get(node);
 }
 function oneCall(parsed: Parsed, name: string) {
   const found = calls(parsed, path, name);
@@ -286,12 +314,70 @@ function contains(node: Node, name: string) {
   });
   return found;
 }
-function ownership(contents = sources) {
+const currentNames = new WeakMap<Node, string>();
+function normalizeCurrentSymbols(parsed: Parsed) {
+  const aliases = new Map<number, Node>(),
+    names = new Map<number, string>();
+  for (const node of parsed.nodes.filter(isVariableDeclaration)) {
+    const symbol = parsed.symbols.get(node.name);
+    if (
+      symbol !== undefined &&
+      node.initializer &&
+      isIdentifier(node.initializer)
+    )
+      aliases.set(symbol, node.initializer);
+  }
+  for (const declaration of parsed.nodes.filter(isImportDeclaration)) {
+    const clause = declaration.importClause;
+    if (
+      !clause?.namedBindings ||
+      !isNamedImports(clause.namedBindings) ||
+      !isStringLiteral(declaration.moduleSpecifier)
+    )
+      continue;
+    for (const member of clause.namedBindings.elements) {
+      const exported = (member.propertyName ?? member.name).text;
+      const origin = ["useState", "useRef", "useLayoutEffect"].includes(
+        exported,
+      )
+        ? "react"
+        : exported.startsWith("useSubject") ||
+            exported.startsWith("subjectInspector") ||
+            exported.startsWith("subjectCollaboration") ||
+            exported.startsWith("createSubject")
+          ? path
+          : undefined;
+      const symbol = parsed.symbols.get(member.name);
+      if (!origin || symbol === undefined) continue;
+      const valid =
+        declaration.moduleSpecifier.text === origin &&
+        clause.phaseModifier === undefined &&
+        !member.isTypeOnly;
+      names.set(symbol, valid ? exported : "wrong-origin:" + exported);
+    }
+  }
+  for (const node of parsed.nodes.filter(isIdentifier)) {
+    let symbol = parsed.symbols.get(node);
+    for (
+      let depth = 0;
+      depth < 8 && symbol !== undefined && aliases.has(symbol);
+      depth++
+    )
+      symbol = parsed.symbols.get(aliases.get(symbol)!);
+    if (symbol !== undefined && names.has(symbol))
+      currentNames.set(node, names.get(symbol)!);
+  }
+}
+function ownership(contents = sources, historical = false) {
   const parsed = parse({ ...contents, Expected: expectedText });
   const app = parsed.get("App")!,
     owner = parsed.get("Owner")!,
     expected = parsed.get("Expected")!;
   const workspace = fn(app, "WorkspaceApp");
+  if (!historical) {
+    normalizeCurrentSymbols(app);
+    normalizeCurrentSymbols(owner);
+  }
   const problems: string[] = [];
   const rule = (name: string, check: () => void) => {
     try {
@@ -310,12 +396,80 @@ function ownership(contents = sources) {
     ]);
     for (const statement of owner.source.statements)
       assert.ok(
-        isImportDeclaration(statement) ||
+        (isImportDeclaration(statement) &&
+          (historical || !!statement.importClause)) ||
           isFunctionDeclaration(statement) ||
-          isTypeAliasDeclaration(statement),
+          isTypeAliasDeclaration(statement) ||
+          (!historical &&
+            isVariableStatement(statement) &&
+            statement.declarationList.declarations.every(
+              (value) =>
+                value.initializer &&
+                (isIdentifier(value.initializer) ||
+                  isStringLiteral(value.initializer) ||
+                  value.initializer.kind === SyntaxKind.NumericLiteral),
+            )),
         "no module-global mutable store or initialization",
       );
-    for (const node of owner.nodes) {
+    const ownedFunctions = [
+      "useSubjectActivityState",
+      "useSubjectInspectionState",
+      "useSubjectCollaborationState",
+      "useSubjectInspectorMemory",
+      "useSubjectInspectorCommit",
+      "subjectInspectorView",
+      "subjectCollaborationVisible",
+      "subjectInspectorOpen",
+      "subjectInspectorPresentation",
+      "createSubjectInspectorCloseCommand",
+      "createSubjectInspectorCommands",
+    ].map((name) => fn(owner, name));
+    const ownedNodes = owner.nodes.filter((node) =>
+      ownedFunctions.some(
+        (value) => node.pos >= value.pos && node.end <= value.end,
+      ),
+    );
+    const consumedSymbols = new Set(
+      ownedNodes.filter(isIdentifier).map((node) => owner.symbols.get(node)),
+    );
+    consumedSymbols.delete(undefined);
+    // Resolve only the owned recipes' borrowed identifier aliases. A separate
+    // consumed feature may legitimately import more React hooks in this module.
+    for (let depth = 0; depth < 8; depth++)
+      for (const value of owner.nodes.filter(isVariableDeclaration))
+        if (
+          value.initializer &&
+          isIdentifier(value.initializer) &&
+          consumedSymbols.has(owner.symbols.get(value.name))
+        )
+          consumedSymbols.add(owner.symbols.get(value.initializer));
+    const usedMembers = (node: Node) => {
+      assert.ok(
+        isImportDeclaration(node) &&
+          node.importClause?.namedBindings &&
+          isNamedImports(node.importClause.namedBindings),
+      );
+      return node.importClause.namedBindings.elements.filter(
+        (item) =>
+          historical || consumedSymbols.has(owner.symbols.get(item.name)),
+      );
+    };
+    const governed = historical
+      ? owner.nodes
+      : [
+          ...ownedNodes,
+          ...owner.nodes
+            .filter(isImportDeclaration)
+            .filter(
+              (node) =>
+                node.importClause?.namedBindings &&
+                isNamedImports(node.importClause.namedBindings) &&
+                node.importClause.namedBindings.elements.some((item) =>
+                  consumedSymbols.has(owner.symbols.get(item.name)),
+                ),
+            ),
+        ];
+    for (const node of governed) {
       if (isImportDeclaration(node)) {
         assert.ok(
           isStringLiteral(node.moduleSpecifier) &&
@@ -327,13 +481,20 @@ function ownership(contents = sources) {
           assert.ok(typePaths.has(node.moduleSpecifier.text));
         else {
           assert.equal(node.moduleSpecifier.text, "react");
-          assert.deepEqual(
-            node.importClause.namedBindings.elements
-              .filter((item) => !item.isTypeOnly)
-              .map((item) => (item.propertyName ?? item.name).text)
-              .sort(),
-            ["useLayoutEffect", "useRef", "useState"],
-          );
+          const runtime = usedMembers(node)
+            .filter((item) => !item.isTypeOnly)
+            .map((item) => (item.propertyName ?? item.name).text);
+          if (historical)
+            assert.deepEqual(runtime.sort(), [
+              "useLayoutEffect",
+              "useRef",
+              "useState",
+            ]);
+          else
+            for (const name of runtime)
+              assert.ok(
+                ["useLayoutEffect", "useRef", "useState"].includes(name),
+              );
         }
       }
       assert.notEqual(node.kind, SyntaxKind.AnyKeyword, "real types, not any");
@@ -367,9 +528,17 @@ function ownership(contents = sources) {
           `unreviewed owner responsibility: ${node.text}`,
         );
     }
-    assert.equal(calls(owner, "react", "useState").length, 4);
-    assert.equal(calls(owner, "react", "useRef").length, 1);
-    assert.equal(calls(owner, "react", "useLayoutEffect").length, 1);
+    const registered = (name: string) =>
+      calls(owner, "react", name).filter(
+        (node) =>
+          historical ||
+          ownedFunctions.some(
+            (value) => node.pos >= value.pos && node.end <= value.end,
+          ),
+      );
+    assert.equal(registered("useState").length, 4);
+    assert.equal(registered("useRef").length, 1);
+    assert.equal(registered("useLayoutEffect").length, 1);
   });
   rule("single-state-and-memory-registration", () => {
     for (const [actual, old] of Object.entries({
@@ -514,16 +683,68 @@ function ownership(contents = sources) {
       variable(expected, "commitArguments").initializer,
     );
     const effects = textCalls(app, workspace, "useEffect");
-    const annotation = effects.filter((node) =>
-      contains(node, "listObjectAnnotations"),
-    );
+    const annotation = historical
+      ? effects.filter((node) => contains(node, "listObjectAnnotations"))
+      : calls(
+          app,
+          "./features/content/ObjectAnnotations.js",
+          "useObjectAnnotations",
+        );
     const keyboard = effects.filter((node) => contains(node, "keyboard"));
     assert.equal(annotation.length, 1);
     assert.equal(keyboard.length, 1);
-    same(
-      annotation[0]!.arguments[1],
-      variable(expected, "annotationDependencies").initializer,
-    );
+    if (historical) {
+      same(
+        annotation[0]!.arguments[1],
+        variable(expected, "annotationDependencies").initializer,
+      );
+    } else {
+      assert.equal(annotation[0]!.arguments.length, 1);
+      same(
+        annotation[0]!.arguments[0],
+        variable(expected, "annotationRegistration").initializer,
+      );
+      const registration = annotation[0]!.parent;
+      assert.ok(
+        isVariableDeclaration(registration) &&
+          isVariableStatement(registration.parent.parent) &&
+          registration.parent.parent.parent === workspace.body,
+        "unconditional actual annotation registration",
+      );
+      const clients = workspace.parameters.flatMap((node) =>
+        isObjectBindingPattern(node.name)
+          ? node.name.elements.filter(
+              (value) => value.name?.getText() === "client",
+            )
+          : [],
+      );
+      assert.equal(clients.length, 1, "original captured render Client");
+      const options = annotation[0]!.arguments[0]!;
+      assert.equal(
+        subjectLocalSymbol(app, property(options, "client")),
+        app.symbols.get(clients[0]!.name!),
+        "annotation borrows original captured render Client",
+      );
+      for (const field of ["artifact", "collaborationVisible"] as const) {
+        const value = variable(app, field, workspace);
+        const binding = isObjectBindingPattern(value.name)
+          ? value.name.elements.find((node) => node.name?.getText() === field)
+              ?.name
+          : value.name;
+        assert.ok(binding, "one original render annotation input binding");
+        assert.equal(
+          subjectLocalSymbol(app, property(options, field)),
+          app.symbols.get(binding),
+          "annotation borrows original render " + field,
+        );
+      }
+      assert.equal(
+        effects.filter((node) => contains(node, "listObjectAnnotations"))
+          .length,
+        0,
+        "no restored inline annotation effect",
+      );
+    }
     same(
       keyboard[0]!.arguments[1],
       variable(expected, "keyboardDependencies").initializer,
@@ -790,6 +1011,265 @@ function ownership(contents = sources) {
   return problems;
 }
 
+function registerHistoricalSubjectCounterfactuals() {
+  const test = historicalTest;
+  const sources = {
+    App: historicalSubjectApp,
+    Owner: objectGovernanceHistory.sources.subjectOwner!.raw,
+  };
+  const ownership = (contents = sources) => inspectHistoricalSubject(contents);
+  test("subject inspector owns state, provenance memory and semantic commands at original host seams", () => {
+    assert.deepEqual(ownership(), []);
+  });
+  test("subject inspector gate permits comments/formatting and unrelated host/feature evolution", () => {
+    assert.deepEqual(
+      ownership({
+        App:
+          sources.App.replace(
+            "const subjectInspector =",
+            "/* harmless comment */\nconst subjectInspector =",
+          ) + "\nfunction unrelatedFeature() { return 42; }",
+        Owner: sources.Owner.replace(
+          "return { allActivity, setAllActivity };",
+          "return {\n allActivity,\n setAllActivity\n};",
+        ),
+      }),
+      [],
+    );
+  });
+  function changed(source: string, from: string, to: string) {
+    assert.ok(source.includes(from), `counterfactual seam exists: ${from}`);
+    return source.replace(from, to);
+  }
+  test("subject inspector gate rejects actual binding, mirror and side-effect counterfactuals", () => {
+    const cases: [string, keyof typeof sources, string, string][] = [
+      [
+        "four-original-hook-seams-and-unique-call-bindings",
+        "App",
+        path,
+        "./host/fake-subject-inspector.js",
+      ],
+      [
+        "four-original-hook-seams-and-unique-call-bindings",
+        "App",
+        "const subjectActivity = useSubjectActivityState();",
+        "const useSubjectActivityState = () => ({ allActivity: false });\nconst subjectActivity = useSubjectActivityState();",
+      ],
+      [
+        "single-state-and-memory-registration",
+        "App",
+        "const { allActivity } = subjectActivity;",
+        "const { allActivity } = subjectActivity;\nconst mirror = useState(allActivity);",
+      ],
+      [
+        "single-state-and-memory-registration",
+        "App",
+        "const { allActivity } = subjectActivity;",
+        "const { allActivity } = subjectActivity;\nconst mirror = React.useState(executions);",
+      ],
+      [
+        "single-state-and-memory-registration",
+        "Owner",
+        "useState(false)",
+        "useState(true)",
+      ],
+      [
+        "finite-dependencies-and-no-domain-dom-storage-owner",
+        "Owner",
+        "import { useLayoutEffect",
+        'import "../ui.css";\nimport { useLayoutEffect',
+      ],
+      [
+        "finite-dependencies-and-no-domain-dom-storage-owner",
+        "Owner",
+        "type InspectorSelection =",
+        "const secondMemory = new Map();\ntype InspectorSelection =",
+      ],
+      [
+        "finite-dependencies-and-no-domain-dom-storage-owner",
+        "Owner",
+        "onClosedFocus();",
+        'document.querySelector(".inspector-toggle")?.focus();\nonClosedFocus();',
+      ],
+      [
+        "finite-dependencies-and-no-domain-dom-storage-owner",
+        "Owner",
+        'workspace: Pick<Workspace, "projects" | "inputs">;',
+        "workspace: any;",
+      ],
+      [
+        "synchronous-command-ports-original-captures-and-focus-in-app",
+        "Owner",
+        'historyClient: Pick<WorkspaceClient, "loadHistoryUntil" | "getSnapshot">;',
+        "historyClient: WorkspaceClient;",
+      ],
+      [
+        "synchronous-command-ports-original-captures-and-focus-in-app",
+        "Owner",
+        "const openExecutions = () => {",
+        "prefer({ subjectOpen: true });\nconst openExecutions = () => {",
+      ],
+      [
+        "synchronous-command-ports-original-captures-and-focus-in-app",
+        "Owner",
+        "selectExecution: setExecutions,",
+        "selectExecution: (scope: ExecutionScope) => setExecutions(scope),",
+      ],
+      [
+        "synchronous-command-ports-original-captures-and-focus-in-app",
+        "App",
+        "workspace: state,\n    historyClient: client,",
+        "workspace: { ...state },\n    historyClient: client,",
+      ],
+      [
+        "synchronous-command-ports-original-captures-and-focus-in-app",
+        "App",
+        "close: closeInspector,",
+        "close: () => closeInspector(),",
+      ],
+      [
+        "synchronous-command-ports-original-captures-and-focus-in-app",
+        "App",
+        'document.querySelector<HTMLElement>(".inspector-toggle")',
+        'document.querySelector<HTMLElement>(".composer")',
+      ],
+      [
+        "actual-six-consumer-bindings-and-original-row-setter-identity",
+        "App",
+        "onSelect={subjectInspector.selectExecution}",
+        "onSelect={subjectInspector.selectScope}",
+      ],
+      [
+        "actual-six-consumer-bindings-and-original-row-setter-identity",
+        "App",
+        "onBack={subjectInspector.back}",
+        "onBack={() => subjectInspector.back()}",
+      ],
+      [
+        "actual-six-consumer-bindings-and-original-row-setter-identity",
+        "App",
+        "onInspect={subjectInspector.selectScope}",
+        "onInspect={unrelated.selectScope}",
+      ],
+    ];
+    for (const [rule, file, from, to] of cases)
+      assert.ok(
+        ownership({
+          ...sources,
+          [file]: changed(sources[file], from, to),
+        }).includes(rule),
+        `${file}: ${rule}`,
+      );
+  });
+  test("subject inspector gate rejects memory priority/dependency changes and relocated registration", () => {
+    const cases: [string, keyof typeof sources, string, string][] = [
+      [
+        "original-memory-effect-priority-dependencies-and-commit-phase",
+        "Owner",
+        "[contextKey, executions, understandingOpen, collaborationVisible]",
+        "[contextKey, inspection.executions, understandingOpen, collaborationVisible]",
+      ],
+      [
+        "original-memory-effect-priority-dependencies-and-commit-phase",
+        "Owner",
+        "[contextKey, executions, understandingOpen, collaborationVisible]",
+        "[executions, contextKey, understandingOpen, collaborationVisible]",
+      ],
+      [
+        "original-memory-effect-priority-dependencies-and-commit-phase",
+        "Owner",
+        "if (executions)",
+        "if (subjectView === 'activity' && executions)",
+      ],
+      [
+        "original-memory-effect-priority-dependencies-and-commit-phase",
+        "App",
+        "useSubjectInspectorCommit(inspectorSelections, {",
+        "fakeCommit(inspectorSelections, {",
+      ],
+      [
+        "original-memory-effect-priority-dependencies-and-commit-phase",
+        "App",
+        "useSubjectInspectorCommit(inspectorSelections, {",
+        "useSubjectInspectorCommit(inspectorSelections, {});\nuseSubjectInspectorCommit(inspectorSelections, {",
+      ],
+      [
+        "four-original-hook-seams-and-unique-call-bindings",
+        "App",
+        "const subjectActivity = useSubjectActivityState();",
+        "const subjectActivity = useSubjectActivityState();\nconst extra = useSubjectInspectionState();",
+      ],
+      [
+        "pure-projections-and-artifact-narrowing-witness",
+        "Owner",
+        'preferences.subjectTab ?? "activity"',
+        'preferences.subjectTab ?? "settings"',
+      ],
+      [
+        "pure-projections-and-artifact-narrowing-witness",
+        "Owner",
+        "!executions &&",
+        "~executions &&",
+      ],
+      [
+        "pure-projections-and-artifact-narrowing-witness",
+        "Owner",
+        "!!executions || !!subjectView",
+        "~~executions || !!subjectView",
+      ],
+      [
+        "pure-projections-and-artifact-narrowing-witness",
+        "Owner",
+        "!!executions || !!subjectView",
+        "!!executions && !!subjectView",
+      ],
+      [
+        "pure-projections-and-artifact-narrowing-witness",
+        "App",
+        "!!artifact &&\n    subjectCollaborationVisible",
+        "~~artifact &&\n    subjectCollaborationVisible",
+      ],
+      [
+        "pure-projections-and-artifact-narrowing-witness",
+        "App",
+        "!!artifact &&\n    subjectCollaborationVisible",
+        "Boolean(artifact) &&\n    subjectCollaborationVisible",
+      ],
+      [
+        "pure-projections-and-artifact-narrowing-witness",
+        "App",
+        "!!artifact &&\n    subjectCollaborationVisible",
+        "!!artifact && customGuard &&\n    subjectCollaborationVisible",
+      ],
+    ];
+    for (const [rule, file, from, to] of cases)
+      assert.ok(
+        ownership({
+          ...sources,
+          [file]: changed(sources[file], from, to),
+        }).includes(rule),
+        `${file}: ${rule}`,
+      );
+    const commit = sources.App.match(
+      /  useSubjectInspectorCommit\(inspectorSelections, \{[\s\S]*?\n  \}\);/,
+    )?.[0];
+    assert.ok(commit);
+    const relocated = changed(
+      changed(sources.App, commit, ""),
+      "  useExchangeControllerFocus(exchangeController);",
+      `${commit}\n  useExchangeControllerFocus(exchangeController);`,
+    );
+    assert.ok(
+      ownership({ ...sources, App: relocated }).includes(
+        "original-memory-effect-priority-dependencies-and-commit-phase",
+      ),
+    );
+  });
+}
+function inspectHistoricalSubject(contents: typeof sources) {
+  return ownership(contents, true);
+}
+registerHistoricalSubjectCounterfactuals();
 test("subject inspector owns state, provenance memory and semantic commands at original host seams", () => {
   assert.deepEqual(ownership(), []);
 });
@@ -1035,5 +1515,119 @@ test("subject inspector gate rejects memory priority/dependency changes and relo
     ownership({ ...sources, App: relocated }).includes(
       "original-memory-effect-priority-dependencies-and-commit-phase",
     ),
+  );
+});
+test("current subject annotation registration rejects wrong origins, phases, captures and ordering", () => {
+  for (const [from, to] of [
+    [
+      "  useObjectAnnotations,",
+      "  useObjectAnnotations as unusedAnnotationHook,",
+    ],
+    [
+      "    collaborationVisible,\n    client,\n  });",
+      "    collaborationVisible,\n    client: { ...client },\n  });",
+    ],
+    [
+      "  const { annotationResult, setAnnotationRefresh } = useObjectAnnotations({",
+      "  if (collaborationVisible) { const { annotationResult, setAnnotationRefresh } = useObjectAnnotations({",
+    ],
+  ] as const) {
+    let changedApp = changed(sources.App, from, to);
+    if (to.startsWith("  if"))
+      changedApp = changed(
+        changedApp,
+        "    client,\n  });\n  const { ref: inspectorWorkspace",
+        "    client,\n  }); }\n  const { ref: inspectorWorkspace",
+      );
+    assert.ok(
+      ownership({ ...sources, App: changedApp }).includes(
+        "original-memory-effect-priority-dependencies-and-commit-phase",
+      ),
+    );
+  }
+  const foreign = sources.App.replace(
+    "type View = WorkSurfaceView;",
+    'import { useObjectAnnotations as foreignHook } from "./foreign-annotation.js";\ntype View = WorkSurfaceView;',
+  ).replace(" = useObjectAnnotations({", " = foreignHook({");
+  assert.ok(
+    ownership({ ...sources, App: foreign }).includes(
+      "original-memory-effect-priority-dependencies-and-commit-phase",
+    ),
+  );
+  const phase = sources.App.replace(
+    "  useObjectAnnotations,",
+    "  type useObjectAnnotations,",
+  );
+  assert.ok(
+    ownership({ ...sources, App: phase }).includes(
+      "original-memory-effect-priority-dependencies-and-commit-phase",
+    ),
+  );
+  for (const name of ["useState", "useRef", "useLayoutEffect"] as const) {
+    const extra =
+      `import { ${name} as foreignHook } from "./foreign-react.js";\n` +
+      sources.Owner;
+    const consumed = extra.replace(
+      name === "useState"
+        ? " = useState"
+        : name === "useRef"
+          ? "return useRef"
+          : "  useLayoutEffect",
+      name === "useState"
+        ? " = foreignHook"
+        : name === "useRef"
+          ? "return foreignHook"
+          : "  foreignHook",
+    );
+    const result = ownership({ ...sources, Owner: consumed });
+    assert.ok(
+      result.includes("finite-dependencies-and-no-domain-dom-storage-owner"),
+    );
+  }
+});
+test("current subject accepts real import aliases and independently consumed complete React lifecycle", () => {
+  const aliasedOwner = sources.Owner.replace(
+    "useLayoutEffect, useRef, useState",
+    "useLayoutEffect as remember, useRef as memory, useState as stateHook",
+  )
+    .replaceAll(" = useState", " = stateHook")
+    .replace("return useRef", "return memory")
+    .replace("  useLayoutEffect", "  remember");
+  const aliasedApp = sources.App.replace(
+    "  useSubjectActivityState,",
+    "  useSubjectActivityState as activityState,",
+  )
+    .replace(" = useSubjectActivityState();", " = readActivity();")
+    .replace(
+      "  const state = client.boot?.workspace;",
+      "  const readActivity = activityState;\n  const state = client.boot?.workspace;",
+    )
+    .replace(
+      "  useObjectAnnotations,",
+      "  useObjectAnnotations as annotationHook,",
+    )
+    .replace(" = useObjectAnnotations({", " = annotationHook({");
+  assert.deepEqual(ownership({ App: aliasedApp, Owner: aliasedOwner }), []);
+  const independentOwner =
+    sources.Owner.replace(
+      "useLayoutEffect, useRef, useState,",
+      "useEffect, useLayoutEffect, useRef, useState,",
+    ) +
+    "\nexport function IndependentSubjectFeature() { const [value] = useState(0); useEffect(() => {}, []); return null; }";
+  const independentApp = sources.App.replace(
+    "  useSubjectActivityState,",
+    "  useSubjectActivityState,\n  IndependentSubjectFeature,",
+  ).replace(
+    "<WorkspaceTopbar",
+    "<IndependentSubjectFeature /><WorkspaceTopbar",
+  );
+  assert.notEqual(
+    independentApp,
+    sources.App,
+    "separate lifecycle is actually consumed",
+  );
+  assert.deepEqual(
+    ownership({ App: independentApp, Owner: independentOwner }),
+    [],
   );
 });

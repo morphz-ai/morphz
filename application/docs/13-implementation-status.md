@@ -1,5 +1,34 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 48：对象评论与主体检查的当前合同
+
+本批仅四个测试／档案路径，不改生产或界面。对象评论的当前检查直接
+消费实际 App、三个完整自有算法、Client／Object data owner 及两条原
+失效效果；主体检查直接核实际 annotation hook 的来源、捕获和原顺序。
+两个当前入口不再恢复其他 owner 的旧 inline effect，不锁整份 App。
+旧 helper 的完整 prefix、三个原 API／default／body 都保持原字节，
+供尚未交接的历史借用者使用，不悄悄改变它们的语义。
+
+原十个完整 callback、216 个原始字面量与 fresh actual Git 独立核对。
+原 54 个反例完整历史重放：52 项同时属于当前合同；未消费的 alias
+次数和无关整份 App hash 两项仅保留历史，不冒充当前安全检查。新增
+14 个当前来源／捕获反例按指定规则拒绝；实际 import／const alias 和
+完整消费的独立 React 生命周期通过。根发现的独立新 useEffect import
+误报已在当前有限消费范围内修正，历史依赖规则未放宽；修前红记录保留。
+
+根 proper 八文件回归 **69/69**，零失败／跳过／取消，含真实 React
+挂载及 actual Client HTTP／SQLite 邻接，不等于整应用或原生验收。
+根独立复跑十二件完整 actual Git 原件、派生完整 Subject App、十个
+callback／54 反例与全原 R4 verifier；三个旧 API 和四件冻结 SHA 核对
+通过。四 roots 沿原严格类型政策及 412 依赖文件检查、格式／diff 通过。
+Reference 的档案仅走其原 pre-Stage30 early-return，不声称全 peer
+执行。剩余 Human／Private、Workspace／Draft 当前入口仍须交接；
+整体全量、原 App／硬件和既有另案问题保持未完成，目标 active。
+
+证据：`/tmp/morphz-object-governance.wVLU2f/RESULT.md`、
+`CLASSIFICATION-54.md`、根 `object-governance-root-final.log`／
+`scoped-type-root.log` 及独立 actual Git／原反例重放。
+
 ## 2026-10-04 前端阶段 47：共享剧本弹窗与状态词表
 
 原完整 `StudioDialog` 归 `features/script/StudioDialog.tsx`，七处原表单

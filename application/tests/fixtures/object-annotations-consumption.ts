@@ -817,3 +817,391 @@ export function assertObjectAnnotationsWholeApp(
   );
   return result;
 }
+
+// Current finite contract: only owned recipes and their actual consumers.
+// No historical App inverse, whole-file digest or peer default sampling here.
+function annotationLocal(parsed: Parsed, value: Node): Node {
+  for (let depth = 0; depth < 8 && isIdentifier(value); depth++) {
+    const symbol = parsed.symbols.get(value);
+    const declaration = parsed.nodes
+      .filter(isVariableDeclaration)
+      .find(
+        (node) =>
+          isIdentifier(node.name) && parsed.symbols.get(node.name) === symbol,
+      );
+    if (!declaration?.initializer || !isIdentifier(declaration.initializer))
+      break;
+    value = declaration.initializer;
+  }
+  return value;
+}
+function annotationImported(parsed: Parsed, module: string, name: string) {
+  const declarations = imports(parsed, module);
+  assert.ok(declarations.length, "one actual object annotation runtime import");
+  assert.ok(
+    declarations.some((node) => node.importClause?.phaseModifier === undefined),
+    "actual runtime object annotation import",
+  );
+  const members = declarations.flatMap((declaration) => {
+    const clause = declaration.importClause;
+    if (
+      !clause ||
+      clause.phaseModifier !== undefined ||
+      !clause.namedBindings ||
+      !isNamedImports(clause.namedBindings)
+    )
+      return [];
+    return clause.namedBindings.elements.filter(
+      (node) =>
+        !node.isTypeOnly && (node.propertyName ?? node.name).text === name,
+    );
+  });
+  assert.equal(
+    members.length,
+    1,
+    "actual runtime object annotation import " + name,
+  );
+  return members[0]!.name;
+}
+const annotationOrigins: Record<string, string> = {
+  useState: "react",
+  useEffect: "react",
+  MessageSquarePlus: "lucide-react",
+  InspectorPanel: "../../InspectorPanel.js",
+  Artifact: "../../../../../packages/core/src/model.js",
+  Workspace: "../../../../../packages/core/src/model.js",
+  WorkspaceClient: "../../client.js",
+  ComposerOption: "../../ComposerOptions.js",
+  InspectorLayout: "../../inspector-layout.js",
+  useObjectAnnotations: featureModule,
+  objectAnnotationItems: featureModule,
+  ObjectAnnotationsPanel: featureModule,
+  actorName: "./client.js",
+  subjectCollaborationVisible: "./host/use-subject-inspector.js",
+  useInspectorLayout: "./InspectorPanel.js",
+};
+function annotationNames(parsed: Parsed) {
+  const names = new Map<number, string>();
+  for (const declaration of parsed.source.statements.filter(
+    isImportDeclaration,
+  )) {
+    const clause = declaration.importClause;
+    if (
+      !isStringLiteral(declaration.moduleSpecifier) ||
+      !clause?.namedBindings ||
+      !isNamedImports(clause.namedBindings)
+    )
+      continue;
+    for (const member of clause.namedBindings.elements) {
+      const name = (member.propertyName ?? member.name).text;
+      if (!Object.hasOwn(annotationOrigins, name)) continue;
+      const symbol = parsed.symbols.get(member.name);
+      if (symbol === undefined) continue;
+      const type = [
+        "Artifact",
+        "Workspace",
+        "WorkspaceClient",
+        "ComposerOption",
+        "InspectorLayout",
+      ].includes(name);
+      const valid =
+        declaration.moduleSpecifier.text === annotationOrigins[name] &&
+        (type
+          ? clause.phaseModifier === SyntaxKind.TypeKeyword || member.isTypeOnly
+          : clause.phaseModifier === undefined && !member.isTypeOnly);
+      names.set(symbol, valid ? name : "wrong-origin:" + name);
+    }
+  }
+  return names;
+}
+function annotationShape(parsed: Parsed, node: Node): unknown {
+  const names = annotationNames(parsed);
+  function tree(value: Node): unknown {
+    if (isIdentifier(value)) {
+      const local = annotationLocal(parsed, value);
+      const symbol = parsed.symbols.get(local);
+      return [
+        value.kind,
+        symbol === undefined ? value.text : (names.get(symbol) ?? value.text),
+      ];
+    }
+    const children: unknown[] = [];
+    value.forEachChild((child) => {
+      children.push(tree(child));
+    });
+    return [
+      value.kind,
+      value.flags &
+        (NodeFlags.Const |
+          NodeFlags.Let |
+          NodeFlags.Using |
+          NodeFlags.OptionalChain),
+      ...(isImportDeclaration(value)
+        ? [value.importClause?.phaseModifier]
+        : []),
+      ...(isImportSpecifier(value) ||
+      isExportSpecifier(value) ||
+      isExportDeclaration(value)
+        ? [value.isTypeOnly]
+        : []),
+      ...(isBinaryExpression(value) ? [value.operatorToken.kind] : []),
+      ...(isPrefixUnaryExpression(value) || isPostfixUnaryExpression(value)
+        ? [value.operator]
+        : []),
+      children.length ? children : value.getText(),
+    ];
+  }
+  return tree(node);
+}
+function annotationSame(
+  actual: Parsed,
+  node: Node,
+  expected: Parsed,
+  old: Node,
+  rule: string,
+) {
+  assert.deepEqual(
+    annotationShape(actual, node),
+    annotationShape(expected, old),
+    rule,
+  );
+}
+function annotationCalls(parsed: Parsed, module: string, name: string) {
+  const symbol = parsed.symbols.get(annotationImported(parsed, module, name));
+  assert.notEqual(
+    symbol,
+    undefined,
+    "real imported annotation symbol, not local shadow",
+  );
+  return parsed.nodes
+    .filter(isCallExpression)
+    .filter(
+      (node) =>
+        parsed.symbols.get(annotationLocal(parsed, node.expression)) === symbol,
+    );
+}
+/** Current UI/read contract. The separately named legacy APIs above remain
+ * unchanged for fixed history/peers; this function never calls their inverse. */
+export function verifyCurrentObjectAnnotationsConsumption(
+  appText: string,
+  featureText: string,
+  clientText: string,
+  ownerText: string,
+) {
+  const parsed = parse({
+    App: appText,
+    Feature: featureText,
+    Client: clientText,
+    Expected: expectedFeature,
+    Caller: `${expectedRegistration}\n${expectedProjection}\nconst panel = (${expectedConsumer});\n${objectAnnotationsFixed.beforeHook}\n${objectAnnotationsFixed.afterHook}`,
+    Invalidations: objectAnnotationsFixed.invalidation
+      .map((span) => span.raw)
+      .join("\n"),
+  });
+  const app = parsed.get("App")!,
+    feature = parsed.get("Feature")!,
+    expected = parsed.get("Expected")!,
+    caller = parsed.get("Caller")!,
+    client = parsed.get("Client")!;
+  const workspace = oneFunction(app, "WorkspaceApp");
+  for (const [name, rule] of [
+    [
+      "useObjectAnnotations",
+      "complete original annotation two states effect five dependencies abort and stable writer",
+    ],
+    ["objectAnnotationItems", "complete original annotation ID projection"],
+    [
+      "ObjectAnnotationsPanel",
+      "complete original annotation panel DOM keys focus and only two expressions",
+    ],
+  ] as const)
+    annotationSame(
+      feature,
+      oneFunction(feature, name),
+      expected,
+      oneFunction(expected, name),
+      rule,
+    );
+  const hook = annotationCalls(app, featureModule, "useObjectAnnotations");
+  const items = annotationCalls(app, featureModule, "objectAnnotationItems");
+  for (const found of [hook, items])
+    assert.equal(
+      found.length,
+      1,
+      "real imported annotation symbol, not local shadow",
+    );
+  const panelImport = annotationImported(
+    app,
+    featureModule,
+    "ObjectAnnotationsPanel",
+  );
+  const panels = app.nodes
+    .filter(isJsxSelfClosingElement)
+    .filter(
+      (node) =>
+        app.symbols.get(annotationLocal(app, node.tagName)) ===
+        app.symbols.get(panelImport),
+    );
+  assert.equal(
+    panels.length,
+    1,
+    "real imported annotation symbol, not local shadow",
+  );
+  const registration = hook[0]!.parent;
+  assert.ok(
+    isVariableDeclaration(registration) &&
+      isObjectBindingPattern(registration.name),
+    "direct stable annotation aliases",
+  );
+  const statement = registration.parent.parent;
+  assert.ok(
+    isVariableStatement(statement) && statement.parent === workspace.body,
+    "unconditional original annotation hook slot",
+  );
+  const oldRegistration = caller.source.statements[0]!;
+  annotationSame(
+    app,
+    statement,
+    caller,
+    oldRegistration,
+    "exact original annotation Client and stable writer aliases",
+  );
+  const collaboration = workspace.body!.statements.find((node) =>
+    node.getText().startsWith("const collaborationVisible ="),
+  );
+  const layout = annotationCalls(
+    app,
+    "./InspectorPanel.js",
+    "useInspectorLayout",
+  );
+  assert.ok(
+    collaboration && collaboration.end <= statement.pos,
+    "original annotation hook preceding collaboration witness",
+  );
+  assert.equal(
+    layout.length,
+    1,
+    "original annotation hook before inspector layout and memory commit",
+  );
+  assert.ok(
+    statement.end < layout[0]!.pos,
+    "original annotation hook preceding collaboration witness",
+  );
+  const feedback = app.nodes
+    .filter(isShorthandPropertyAssignment)
+    .filter((node) => node.name.getText() === "setAnnotationRefresh");
+  const writer = registration.name.elements.find(
+    (node) => node.name?.getText() === "setAnnotationRefresh",
+  );
+  assert.ok(writer?.name, "direct stable annotation aliases");
+  assert.equal(
+    feedback.length,
+    1,
+    "submission borrows original annotation stable writer",
+  );
+  assert.equal(
+    app.symbols.get(feedback[0]!.name),
+    app.symbols.get(writer.name),
+    "submission borrows original annotation stable writer",
+  );
+  const projection = items[0]!.parent;
+  assert.ok(
+    isVariableDeclaration(projection) &&
+      isVariableStatement(projection.parent.parent) &&
+      projection.parent.parent.parent === workspace.body,
+    "original annotation projection direct post-startup slot",
+  );
+  annotationSame(
+    app,
+    projection.parent.parent,
+    caller,
+    caller.source.statements[1]!,
+    "original annotation projection inputs",
+  );
+  const startup = workspace.body!.statements.find((node) =>
+    node.getText().startsWith("if (!state || !project)"),
+  );
+  const context = workspace.body!.statements.find((node) =>
+    node.getText().startsWith("const contextTitle ="),
+  );
+  assert.ok(
+    startup &&
+      context &&
+      startup.end < projection.pos &&
+      projection.end < context.pos,
+    "original annotation projection after startup and before context",
+  );
+  const panel = panels[0]!;
+  const oldPanel = caller.nodes.filter(isJsxSelfClosingElement)[0]!;
+  annotationSame(
+    app,
+    panel,
+    caller,
+    oldPanel,
+    "complete original annotation props and captured render authorName",
+  );
+  const paren = panel.parent;
+  assert.ok(
+    isParenthesizedExpression(paren) &&
+      isBinaryExpression(paren.parent) &&
+      paren.parent.operatorToken.kind === SyntaxKind.AmpersandAmpersandToken &&
+      paren.parent.left.getText() === "collaborationVisible",
+    "original annotation visibility guard",
+  );
+  const actor = annotationImported(app, "./client.js", "actorName");
+  const author = panel.attributes.properties.find(
+    (node) => isJsxAttribute(node) && node.name.getText() === "authorName",
+  );
+  assert.ok(
+    author &&
+      isJsxAttribute(author) &&
+      author.initializer &&
+      isJsxExpression(author.initializer) &&
+      author.initializer.expression &&
+      isArrowFunction(author.initializer.expression) &&
+      isCallExpression(author.initializer.expression.body),
+    "original render annotation author closure",
+  );
+  assert.equal(
+    app.symbols.get(
+      annotationLocal(app, author.initializer.expression.body.expression),
+    ),
+    app.symbols.get(actor),
+    "real captured render actorName binding",
+  );
+  const state = workspace
+    .body!.statements.filter(isVariableStatement)
+    .flatMap((node) => [...node.declarationList.declarations])
+    .filter((node) => node.name.getText() === "state");
+  assert.equal(state.length, 1, "one original render workspace state");
+  assert.equal(
+    state[0]!.initializer?.getText(),
+    "client.boot?.workspace",
+    "original render annotation author workspace capture",
+  );
+  assert.equal(
+    app.symbols.get(author.initializer.expression.body.arguments[0]!),
+    app.symbols.get(state[0]!.name),
+    "author reads original render workspace, not latest projection",
+  );
+  verifyObjectInteractionConsumption(clientText, ownerText);
+  const effectSymbol = client.symbols.get(
+    annotationImported(client, "react", "useEffect"),
+  );
+  const invalidation = client.nodes
+    .filter(isCallExpression)
+    .filter(
+      (node) =>
+        client.symbols.get(annotationLocal(client, node.expression)) ===
+          effectSymbol && node.getText().includes("setWorkspaceChangeRevision"),
+    );
+  const old = parsed
+    .get("Invalidations")!
+    .nodes.filter(isCallExpression)
+    .filter((node) => node.expression.getText() === "useEffect");
+  assert.deepEqual(
+    invalidation.map((node) => annotationShape(client, node)),
+    old.map((node) => annotationShape(parsed.get("Invalidations")!, node)),
+    "original annotation cross-domain refresh and access invalidation effects",
+  );
+}
