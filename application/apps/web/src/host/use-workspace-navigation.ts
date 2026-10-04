@@ -214,7 +214,12 @@ type NavigationSurface = Pick<
 >;
 type NavigationClient = Pick<
   WorkspaceClient,
-  "resolveArtifact" | "resolveScriptLocation" | "execute"
+  | "resolveArtifact"
+  | "resolveScriptLocation"
+  | "execute"
+  | "boot"
+  | "contentCatalog"
+  | "resolveCatalogContent"
 >;
 type ApplicationReceipt = Awaited<ReturnType<NavigationClient["execute"]>>;
 /** One command's changing intent witness, not a persisted navigation queue. */
@@ -653,6 +658,60 @@ export function createWorkspaceNavigationCommands<
       owner.finishOpen(generation);
     }
   }
+  // Only first-party, explicit user navigation opens a network page. Application
+  // bridge requests and restored views do not grant that browser intent.
+  // boot/contentCatalog are the original render Client's ordinary properties,
+  // distinct from the continuation's current authorized projection witness.
+  async function openUser(
+    id: string,
+    revision?: number,
+    page?: number,
+    reading?: ReadingLocation,
+  ) {
+    if (!continuation.isActive()) return;
+    try {
+      const script = client.boot?.scriptLibrary.find(
+        (item) => item.id === id || item.contentId === id,
+      );
+      if (script) return openScriptLocation({ productionId: script.id });
+      const generation = owner.beginIntent();
+      const loadedArtifact = workspace?.artifacts.find(
+        (item) => item.id === id,
+      );
+      const catalogEntry =
+        client.contentCatalog.find((entry) => entry.id === id) ??
+        (!loadedArtifact ? await client.resolveCatalogContent(id) : null);
+      if (!continuation.isActive() || !owner.isCurrent(generation)) return;
+      if (
+        catalogEntry?.appId === "morphz.script-studio" &&
+        catalogEntry.kind === "script"
+      )
+        return openScriptLocation({ productionId: catalogEntry.appObjectId });
+      const a = loadedArtifact ?? (await client.resolveArtifact(id));
+      if (!continuation.isActive() || !owner.isCurrent(generation)) return;
+      if (!a) {
+        onNotice("对象暂时无法读取，请检查连接或访问权限后重试。");
+        return;
+      }
+      owner.setExplicitWebsiteIntent(
+        a?.content.kind === "website" ? a.id : null,
+      );
+      void openObject(a.projectId, id, revision, page, !!reading, reading);
+    } catch (error) {
+      onNotice(
+        error instanceof Error ? error.message : "内容暂时无法打开，请重试。",
+      );
+    }
+  }
+  async function openReading(id: string) {
+    if (!continuation.isActive()) return;
+    const generation = owner.beginIntent();
+    const a =
+      workspace?.artifacts.find((a) => a.id === id) ??
+      (await client.resolveArtifact(id));
+    if (!continuation.isActive() || !owner.isCurrent(generation)) return;
+    if (a) await openObject(a.projectId, id, undefined, undefined, true);
+  }
   async function launchDockApplication(
     app: Pick<ApplicationCatalogEntry, "id" | "version">,
   ) {
@@ -1041,6 +1100,8 @@ export function createWorkspaceNavigationCommands<
   return {
     travel,
     openObject,
+    openUser,
+    openReading,
     openScriptLocation,
     launchDockApplication,
     readingLibrary,

@@ -209,6 +209,11 @@ function fixture(active?: "reader" | "browser") {
     },
     preferences,
     client: {
+      boot: current,
+      contentCatalog: [],
+      async resolveCatalogContent() {
+        return null;
+      },
       resolveArtifact: (...args) => readArtifact(...args),
       resolveScriptLocation: (...args) => readScript(...args),
       execute(operation) {

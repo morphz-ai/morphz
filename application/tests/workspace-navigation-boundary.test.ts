@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { expandWorkspaceContentOpeningConsumption } from "./fixtures/workspace-content-opening-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -1148,11 +1149,10 @@ function ownership(
   );
   return problems;
 }
-const owner = readFileSync(
-  "apps/web/src/host/use-workspace-navigation.ts",
-  "utf8",
+const { owner, app } = expandWorkspaceContentOpeningConsumption(
+  readFileSync("apps/web/src/App.tsx", "utf8"),
+  readFileSync("apps/web/src/host/use-workspace-navigation.ts", "utf8"),
 );
-const app = readFileSync("apps/web/src/App.tsx", "utf8");
 const stableHost = readFileSync(
   "apps/web/src/host/use-workspace-navigation-host.ts",
   "utf8",

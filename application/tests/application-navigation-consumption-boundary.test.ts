@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { expandSubmissionConsumption } from "./fixtures/exchange-submission-contract.js";
+import { expandWorkspaceContentOpeningConsumption } from "./fixtures/workspace-content-opening-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -2005,12 +2006,11 @@ function consumption(
     "original Host JSX/effects/all React lifecycle registrations",
   );
 }
-const app = readFileSync("apps/web/src/App.tsx", "utf8");
-const host = readFileSync("apps/web/src/ApplicationHost.tsx", "utf8");
-const owner = readFileSync(
-  "apps/web/src/host/use-workspace-navigation.ts",
-  "utf8",
+const { app, owner } = expandWorkspaceContentOpeningConsumption(
+  readFileSync("apps/web/src/App.tsx", "utf8"),
+  readFileSync("apps/web/src/host/use-workspace-navigation.ts", "utf8"),
 );
+const host = readFileSync("apps/web/src/ApplicationHost.tsx", "utf8");
 const subjectOwner = readFileSync(
   "apps/web/src/host/use-subject-inspector.ts",
   "utf8",

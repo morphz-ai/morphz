@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { expandSubmissionConsumption } from "./fixtures/exchange-submission-contract.js";
+import { expandWorkspaceContentOpeningConsumption } from "./fixtures/workspace-content-opening-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -37,9 +38,15 @@ import {
   referenceOriginalImports,
 } from "./fixtures/exchange-reference-consumption-b5f698dd.js";
 
-const app = readFileSync(
-  new URL("../apps/web/src/App.tsx", import.meta.url),
-  "utf8",
+const { app } = expandWorkspaceContentOpeningConsumption(
+  readFileSync(new URL("../apps/web/src/App.tsx", import.meta.url), "utf8"),
+  readFileSync(
+    new URL(
+      "../apps/web/src/host/use-workspace-navigation.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
 );
 const owner = readFileSync(
   new URL(

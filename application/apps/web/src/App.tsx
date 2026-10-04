@@ -101,7 +101,6 @@ import {
   type ReadingSurface,
   type ReadingContextChange,
 } from "./ReadingContext.js";
-import type { ReadingLocation } from "../../../packages/core/src/reader.js";
 import { SearchDocuments } from "./LibraryDialogs.js";
 import { UnderstandingPanel } from "./UnderstandingPanel.js";
 import { SpeechDialog } from "./SpeechDialog.js";
@@ -670,6 +669,8 @@ function WorkspaceApp({
   const {
     travel,
     openObject,
+    openUser,
+    openReading,
     openScriptLocation,
     launchDockApplication,
     readingLibrary,
@@ -1000,54 +1001,6 @@ function WorkspaceApp({
       },
       onNotice: setNotice,
     });
-  // Only first-party, explicit user navigation opens a network page. Application
-  // bridge requests and restored views do not grant that browser intent.
-  async function openUser(
-    id: string,
-    revision?: number,
-    page?: number,
-    reading?: ReadingLocation,
-  ) {
-    if (!origin.isActive()) return;
-    try {
-      const script = client.boot?.scriptLibrary.find(
-        (item) => item.id === id || item.contentId === id,
-      );
-      if (script) return openScriptLocation({ productionId: script.id });
-      const generation = navigation.beginIntent();
-      const loadedArtifact = state?.artifacts.find((item) => item.id === id);
-      const catalogEntry =
-        client.contentCatalog.find((entry) => entry.id === id) ??
-        (!loadedArtifact ? await client.resolveCatalogContent(id) : null);
-      if (!origin.isActive() || !navigation.isCurrent(generation)) return;
-      if (
-        catalogEntry?.appId === "morphz.script-studio" &&
-        catalogEntry.kind === "script"
-      )
-        return openScriptLocation({ productionId: catalogEntry.appObjectId });
-      const a = loadedArtifact ?? (await client.resolveArtifact(id));
-      if (!origin.isActive() || !navigation.isCurrent(generation)) return;
-      if (!a) {
-        setNotice("对象暂时无法读取，请检查连接或访问权限后重试。");
-        return;
-      }
-      setWebsiteIntent(a?.content.kind === "website" ? a.id : null);
-      void openObject(a.projectId, id, revision, page, !!reading, reading);
-    } catch (error) {
-      setNotice(
-        error instanceof Error ? error.message : "内容暂时无法打开，请重试。",
-      );
-    }
-  }
-  async function openReading(id: string) {
-    if (!origin.isActive()) return;
-    const generation = navigation.beginIntent();
-    const a =
-      state?.artifacts.find((a) => a.id === id) ??
-      (await client.resolveArtifact(id));
-    if (!origin.isActive() || !navigation.isCurrent(generation)) return;
-    if (a) await openObject(a.projectId, id, undefined, undefined, true);
-  }
   function readingTargetConsumed(requestId: string) {
     if (prefs.readingTarget?.requestId === requestId)
       prefer({ readingTarget: null });

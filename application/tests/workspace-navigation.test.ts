@@ -169,6 +169,11 @@ function fixture(change: Partial<NavigationPreferences> = {}) {
     },
   };
   const client: Options["client"] = {
+    boot: projection,
+    contentCatalog: [],
+    async resolveCatalogContent() {
+      return null;
+    },
     async resolveArtifact(id, revision) {
       events.push(["resolve-artifact", id, revision]);
       return artifact(id);
@@ -433,6 +438,8 @@ test("factory construction performs zero reads, writes, lifecycle transitions or
   assert.deepEqual(Object.keys(f.commands()), [
     "travel",
     "openObject",
+    "openUser",
+    "openReading",
     "openScriptLocation",
     "launchDockApplication",
     "readingLibrary",

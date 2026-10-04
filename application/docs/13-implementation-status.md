@@ -1,5 +1,34 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 26：显式内容打开归入唯一导航 owner
+
+App 原 `openUser`／`openReading` 两个完整算法迁入既有
+`createWorkspaceNavigationCommands`，不再由 App 复制目录读取与导航分支。
+原十个构造端口与注册位置不变；Client 窄类型新增原 boot、contentCatalog
+及 resolveCatalogContent。只有五个已有绑定映射、两个直接消费别名及
+原 type import 删除，无新 hook、store、请求、effect、订阅或 await。
+
+保留 render 捕获与当前授权 witness 的区别，以及原两阶段读取／守门：
+剧本快路返回原下层 Promise；User 普通打开仍 void、Reading 等待下层；
+原 null／错误提示、网站意图与读取 ID、迟到成功／失败语义都保留。
+下层对象／剧本命令及其确切授权／目录版本检查没有改写。
+
+根与独立证明逆掉批准接缝后，App 与导航 owner 全字节恢复实际 Git
+`2cf6a3f2`。独立固定原算法的 **15 项**行为对照，以及有限真实导入、
+别名、完整构造参数、注册和上下游消费门禁均通过；旧算法／断言不改。
+有限源码门禁不是任意依赖定理或真实权限／原窗验收。
+
+剧本同步旧缺陷另以 `e80e5bdf` 修复。普通、未插桩的冻结旧新编译都含
+同一修复，只替换旧导航两源；同六份完整原页面用例各 **26/26**，每边
+核验 **93 份**实际 HTTP 入口资产，CSS／preload 字节一致，零重试／skip。
+根完整 build／类型检查及 **1876 项 Node：1705 通过、171 原能力跳过、
+零失败／取消**。这不是未修复旧版本的行为等价或原 App 已恢复的证明。
+
+证据：`/tmp/morphz-open-navigation-root.ndQoxp/source-proof.json`、
+`/tmp/morphz-script-sync-root.97ESaS` 的冻结 manifest、页面对照及最终
+全量／类型日志。主页面／项目私有范围、页面／overlay 组合、更多公共
+控件／样式与整体真实原窗复验仍未完成；目标继续 active，没有额外推送。
+
 ## 2026-10-04 剧本打开修复：已确认目录同步与有界引用保留
 
 阶段 26 页面复验发现剧本目录／条目请求都成功，却在启动编辑器前被确切

@@ -202,9 +202,13 @@ function fixture(mode: Mode, scenario: Scenario = {}) {
     restorePlace() {},
   };
   const client = {
+    contentCatalog: [],
+    async resolveCatalogContent() {
+      return null;
+    },
     get boot() {
       events.push(["read-captured-boot"]);
-      return bootState ? { workspace: bootState } : null;
+      return bootState ? ({ workspace: bootState } as Boot) : null;
     },
     execute(operation: Operation) {
       operations.push(operation);

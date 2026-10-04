@@ -315,8 +315,12 @@ Promise 与同步 commit，Host 在原 await continuation 内激活／报错并�
 统一 owner 不统一旧分支策略：Dock 新建 intent，Launcher 使用 render 捕获的
 generation；Reader 清空后激活仍读取当时 current generation；Browser 保留
 捕获 `client.boot` 查询及第二次 await 后原来没有额外 guard 的行为。迟到语义
-修正应另做显式行为变更，不能混在外观／交互不变迁移里。`openUser`、
-`openReading` 的授权读取／意图仍是上游 adapter，不声称所有导航已迁完。
+修正应另做显式行为变更，不能混在外观／交互不变迁移里。
+阶段 26 已将原 `openUser`／`openReading` 的两个完整授权读取／意图算法
+迁入同一 owner，App 直接消费返回方法；保留原 render 捕获、十个构造
+端口及注册位置，只做五个绑定映射。独立固定原算法和整文件逆迁移、
+同修复旧新编译页面与全量检查通过；不代表项目范围及全部页面导航组合
+已经迁完。相关剧本目录同步缺陷单独修复、单独提交，不删除原授权守门。
 固定旧 `cb7246a2` 八函数作为独立测试 oracle；有限 AST 门禁核对实际 App／Host
 消费、旧 JSX／effects 和原等待结构，不代替真实浏览器或原 App 验收。
 
