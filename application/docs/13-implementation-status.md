@@ -1,5 +1,56 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 24：执行查询、控制与共享审批记录所有权
+
+`data/execution-interactions.ts` 完整拥有原 `cancelInput`、执行 snapshot／
+result、control 与 `approvalSubmitted` 五算法。真实 Client 在原本机投递
+owner 之后唯一构造，直接公开五方法；原审批 Set、反馈 state、current ref
+的注册及身份／刷新权威仍在 Client。构造只借原引用和逻辑请求，不读状态、
+发请求或建立缓存；两个审批页面、消息与活动停止入口均沿原 Client 消费，
+没有 JSX、DOM、样式、图标、动效或新的请求策略。
+
+审批 key 仍为原 CSRF／approval ID／fingerprint，先登记、增加反馈代次，
+再发原请求。失败和未知回执也不解除重复提交保护；新 fingerprint 是另一
+次明确决定，普通 Thread／Job 控制不登记审批。原登出不清 Set，空身份
+getter、重复 current 读取、counter 失败的部分副作用保持。取消沿原 8s
+请求，只有成功才等待刷新；snapshot 的 caller signal／12s 组合、result
+schema 和原 transport 代次检查不统一重写或补充新守门。
+
+固定实际 Git `51f9101e` 的五完整原函数。根与独立复核各自确认原 oracle、
+新 owner raw 字节与实际 Git 一致；严格核对唯一导入／构造、准确 borrowed
+ports、原 hooks 与五直接消费后逆展开，完整 Client 逐字节恢复原版，SHA
+同为 `effed98cb46cd9ab9ed968a1877ba3c363c2496ab6ca87bd243bd2034225c679`。
+旧 local-input 与 Task 门禁只增加这一 seam 的严格逆展开；反向移除后
+全文与原 Git 相同，原摘要、规则、数量和反例不改，原 local helper 及
+content／Reader／script 三门禁不动。新行为／消费与相邻合同 **45/45**，
+30 个合法解析反例均按对应规则拒绝；有限源门禁不冒称 Runtime 执行。
+
+根算法与原执行／审批测试 **27/27**，含另建的实际 Client **3/3**：SSR
+建立真实 refs／方法，原 HTTP／SQLite 登录校验精确查询／停止路径与
+控制载荷，审批失败后的跨入口防重复、新指纹，以及新登录不能接收旧
+身份响应。隔离 Host 未配置 Runtime，实际拒绝为 **503**，不生成批准、
+停止或模型成功回执。首轮新测试错误假设 null query 字段为空串，按原
+HTTP serializer 的省略合同校准新断言；2/3 红项保留，生产未为测试修改。
+
+四份字节不变的原生产页面测试在冻结旧／新编译各 **11/11**，零重试，
+逐例实际 HTTP 三资源、每边共 33 份核验完整 SHA。跨工作面审批、未知
+回执锁定、真实 scope、并发单项停止、结果和正序读取、四主题及运行中
+消息 perimeter／reduced-motion 的原断言保留。新入口 `app-CMwVSuhb.js`
+SHA 为 `a2f78e353dccbb8f66d1402fc5c84665dc251bae4a80ce0a64df1b777963a80f`；
+CSS／preload 与旧编译逐字节一致，私有编译前后冻结源 SHA 相同。
+完整 build／类型／限定格式通过，原分包尺寸警告未通过改阈值掩盖。
+根全量 Node checkpoint 为 **1826 项：1655 通过、171 明确能力跳过、
+零失败／取消**；跳过不视为原生、浏览器或外部能力已经验收。
+
+根证据：`/tmp/morphz-execution-root.M439st` 的 `root-git-proof.log`、
+`execution-focused-root.log`、`execution-source-before/after.sha256`、
+`execution-frozen-build.log`、`execution-full-build.log`、
+`execution-full-node.log` 及旧新页面报告／audit。
+固定旧算法在 `/tmp/morphz-execution-interactions.OgxdeL`，实际消费门禁
+和独立字节对照在 `/tmp/morphz-execution-consumption.jZc4OB`。原 App 的
+退出清理卡死未解决，恢复仍待已提出的精确进程操作授权；Runtime、数据
+及 profile 未重启或重置。本批不是原窗、完整查询层或整体架构验收。
+
 ## 2026-10-04 前端阶段 23：本机输入投递与确认的完整所有权
 
 `data/local-input-delivery.ts` 完整拥有本机消息的保存、发送中投影、冻结

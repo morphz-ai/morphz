@@ -100,6 +100,15 @@ textQuotes、ReadingContext 和剧本域 compose 仍归原 owner，旧 Reader
 轮询、缓存或权限。固定原 Client 全字节逆展开、真实 HTTP／SQLite 与
 相同编译页面的旧新对照见阶段 23；不冒称原 App 或全命令层完成。
 
+执行 snapshot／result、精确控制、输入取消与共享审批尝试记录现归
+`data/execution-interactions.ts`，Client 唯一构造并直接公开五原方法。
+原审批 Set／反馈 state 与 current 注册位置、身份和 refresh 权威不移；
+构造没有读取、订阅或请求。两个审批 surface 沿同一 ledger 保持失败后的
+重复提交保护，原指纹／身份 key、超时、schema 和刷新顺序不改；页面
+observation、busy、焦点与展示仍各属原 owner。完整旧 Client 字节对照、
+实际 HTTP 拒绝及旧新编译页面证据见阶段 24，不视为完整执行 presentation、
+真实批准成功或原 App 验收。
+
 交流读取的共享纯投影现归 `conversation-read.ts`；提示与历史的不同范围、
 消息数组引用合同及原回执排序仍由真实消费方显式指定。已读初始化、稳定
 acknowledgement 与两个提交 effects 归 `host/use-exchange-read-receipts.ts`，

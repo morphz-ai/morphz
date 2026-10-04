@@ -56,6 +56,7 @@ import { createContentReads } from "./data/content-reads.js";
 import { createReaderReads } from "./data/reader-reads.js";
 import { createTaskInteractions } from "./data/task-interactions.js";
 import { createLocalInputDelivery } from "./data/local-input-delivery.js";
+import { createExecutionInteractions } from "./data/execution-interactions.js";
 import {
   readPlatformWorkspace,
   reusableNavigationCatalog,
@@ -73,11 +74,6 @@ import { contentVisits } from "./recent-content.js";
 import { runPendingFileImport } from "./pending-file-import.js";
 export { RequestError } from "./application-transport.js";
 import type { ReaderCommand } from "../../../packages/core/src/reader.js";
-import {
-  executionSnapshotSchema,
-  type ExecutionScope,
-  type ExecutionControl,
-} from "../../../packages/core/src/execution.js";
 import type {
   SearchRequest,
   SearchResult,
@@ -890,6 +886,13 @@ export function useWorkspace() {
     setBoot,
     refreshAfterMutation,
     call: applicationCall,
+  });
+  const executionInteractions = createExecutionInteractions({
+    current,
+    approvalSubmissions,
+    updateApprovalSubmissions,
+    call: applicationCall,
+    refreshAfterMutation,
   });
   function clearProtectedProjection() {
     protectedReadGeneration.current++;
@@ -1719,14 +1722,6 @@ export function useWorkspace() {
       throw error;
     }
   }
-  async function cancelInput(inputId: string) {
-    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
-    await applicationCall("input.cancel", inputId, {
-      identityGeneration: current.current.csrfToken,
-      signal: AbortSignal.timeout(8000),
-    });
-    await refreshAfterMutation();
-  }
   async function search(
     request: SearchRequest,
     signal?: AbortSignal,
@@ -1736,59 +1731,6 @@ export function useWorkspace() {
       identityGeneration: current.current.csrfToken,
       signal: signal ?? AbortSignal.timeout(8000),
     }) as Promise<SearchResult>;
-  }
-  async function executionSnapshot(
-    scope: ExecutionScope,
-    signal?: AbortSignal,
-  ) {
-    return executionSnapshotSchema.parse(
-      await applicationCall("execution.snapshot", scope, {
-        signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(12000)])
-          : AbortSignal.timeout(12000),
-      }),
-    );
-  }
-  async function executionResult(scope: ExecutionScope, jobId: string) {
-    return z
-      .object({
-        text: z.string(),
-        truncated: z.boolean(),
-        available: z.boolean(),
-      })
-      .parse(
-        await applicationCall(
-          "execution.result",
-          { scope, jobId },
-          { signal: AbortSignal.timeout(12000) },
-        ),
-      );
-  }
-  async function controlExecution(command: ExecutionControl) {
-    if (!current.current) throw new Error("应用尚未就绪，请稍后重试。");
-    if (
-      command.action.type === "allow-once" ||
-      command.action.type === "deny"
-    ) {
-      const key = JSON.stringify([
-        current.current.csrfToken,
-        command.action.approvalId,
-        command.action.fingerprint,
-      ]);
-      if (approvalSubmissions.current.has(key))
-        throw new Error("本次审批已提交，请核对最新执行状态，不要重复批准。");
-      approvalSubmissions.current.add(key);
-      updateApprovalSubmissions((version) => version + 1);
-    }
-    return applicationCall("execution.control", command, {
-      identityGeneration: current.current.csrfToken,
-      signal: AbortSignal.timeout(12000),
-    });
-  }
-  function approvalSubmitted(approvalId: string, fingerprint: string) {
-    return approvalSubmissions.current.has(
-      JSON.stringify([current.current?.csrfToken, approvalId, fingerprint]),
-    );
   }
   async function speechStatus(signal?: AbortSignal) {
     return z
@@ -1957,12 +1899,12 @@ export function useWorkspace() {
     readingOcr,
     dispatchInput: localInputDelivery.dispatchInput,
     verifyArtifact: taskInteractions.verifyArtifact,
-    cancelInput,
+    cancelInput: executionInteractions.cancelInput,
     search,
-    executionSnapshot,
-    executionResult,
-    controlExecution,
-    approvalSubmitted,
+    executionSnapshot: executionInteractions.executionSnapshot,
+    executionResult: executionInteractions.executionResult,
+    controlExecution: executionInteractions.controlExecution,
+    approvalSubmitted: executionInteractions.approvalSubmitted,
   };
 }
 export type WorkspaceClient = ReturnType<typeof useWorkspace>;

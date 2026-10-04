@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { expandExecutionInteractionConsumption } from "./fixtures/execution-interactions-consumption.js";
 import { parseReaderSources } from "./fixtures/reader-reads-contract.js";
 import {
   expandLocalInputDeliveryConsumption,
@@ -10,7 +11,9 @@ import {
   verifyLocalInputDeliveryOwner,
 } from "./fixtures/local-input-delivery-consumption.js";
 
-const client = readFileSync("apps/web/src/client.ts", "utf8");
+const client = expandExecutionInteractionConsumption(
+  readFileSync("apps/web/src/client.ts", "utf8"),
+);
 function changed(text: string, before: string, after: string) {
   assert.equal(text.split(before).length, 2, "one existing mutation target");
   const result = text.replace(before, after);

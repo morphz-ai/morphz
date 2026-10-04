@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { expandExecutionInteractionConsumption } from "./fixtures/execution-interactions-consumption.js";
 import { expandLocalInputDeliveryConsumption } from "./fixtures/local-input-delivery-consumption.js";
 import {
   isCallExpression,
@@ -53,7 +54,9 @@ function replaceOnce(source: string, before: string, after: string) {
 function validate(input = sources) {
   input = {
     ...input,
-    Client: expandLocalInputDeliveryConsumption(input.Client),
+    Client: expandLocalInputDeliveryConsumption(
+      expandExecutionInteractionConsumption(input.Client),
+    ),
   };
   const parsed = parseReaderSources(input),
     client = parsed.get("Client")!,
