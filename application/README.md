@@ -120,6 +120,23 @@ npm run test:runtime-identity
 
 浏览器端到端测试使用已安装的 Chrome、独立临时数据库及 65421 端口。桌面测试使用独立临时配置和 65419 端口，运行前需确保该测试端口空闲；不会连接或清理已有用户数据库。两种测试均禁用项目 `.env` 加载，不依赖真实语音凭据。
 
+`npm test` 的 Node 测试默认必须执行 PostgreSQL 分支：显式设置
+`MORPHZ_TEST_POSTGRES_URL` 时先验证该测试连接；未设置时使用已安装的
+PostgreSQL 工具创建随机端口、独立临时目录和数据库，结束或失败后关闭并清理
+它自己创建的实例。不会自动连接 5432、猜测用户库或读取生产 `.env`。
+缺少工具、空配置、连接失败和未知跳过均使命令失败，不降级为 SQLite-only。
+可用 `MORPHZ_TEST_POSTGRES_BIN_DIR` 指定完整工具目录；无需每次手动传临时 URL。
+完整套件还验证本地临时实例的创建和清理，因此即使指定远端测试 URL，
+运行完整套件仍需本地 PostgreSQL 服务器工具；仅显式连接准备不要求 `initdb`。
+浏览器挂载使用显式 `MORPHZ_TEST_BROWSER_EXECUTABLE` 或已安装的 Playwright
+浏览器；入口不自动下载，未准备的必需挂载用例不能作为通过。
+
+覆盖报告逐项列出未启用的 S3、真实 Runtime 和原生焦点专项，不把它们称作
+数据库不可用。CI 云存储通道要求 `MORPHZ_TEST_REQUIRED_CAPABILITIES=postgres,s3`；
+真实 Runtime 通道明确启用对应集成开关并要求 `postgres,runtime`。已准备或必需
+的专项仍被跳过时失败。`npm test -- tests/某项.test.ts` 可缩小文件范围，
+报告仍明确选择范围；不能把局部验证冒称整个产品或原 App 验收。
+
 `npm run test:runtime-tools` 验收当前正式链路：Runtime 持久消息来源与重试、Platform 事项依赖和调度、内嵌 Host 的 Unix 工具调用及应用原件写入／阅读引用。它使用已编译的 Runtime、独立数据和本机合成模型，不再启动退役 workspace／command 接口，不接受 `--live`，也不算原版 Desktop 人工验收。
 
 `npm run test:native-input` 是单独的交互式 macOS 验收：真实麦克风采集仅送至本机无网络测试替身，随后丢弃，再等待人在系统界面选择一小块测试区域；超时失败，不自动截取全屏。使用独立数据与 65421 端口，不可与界面回归同时运行，不读取密钥、不调用语音供应商，不属于无人值守测试套件。`--microphone-only` 可只验收麦克风，避免重复截图。

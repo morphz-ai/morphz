@@ -53,6 +53,8 @@ jobs:
       - run: npm audit --omit=dev --audit-level=low
       - run: python3 ../scripts/generate-third-party-licenses.py application --check
       - run: npm run build
+      - run: sudo apt-get update && sudo apt-get install -y postgresql
+      - run: npx playwright install --with-deps chromium
       - run: npm test
       - run: npx playwright install --with-deps chrome
       # Native macOS cases explicitly skip here and run in the Desktop job.
@@ -109,13 +111,13 @@ jobs:
           cache: npm
           cache-dependency-path: application/package-lock.json
       - run: npm ci
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-client-16
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-16 postgresql-client-16
+      - run: npx playwright install --with-deps chromium
       - run: npm run build
-      - name: Run SQLite, PostgreSQL and cloud byte-store conformance without skips
-        run: |
-          set -o pipefail
-          ./node_modules/.bin/tsx --test --test-reporter=tap tests/*.test.ts | tee "$RUNNER_TEMP/application-storage-tests.tap"
-          grep -q '^# skipped 0$' "$RUNNER_TEMP/application-storage-tests.tap"
+      - name: Require PostgreSQL and cloud conformance; audit every remaining skip
+        env:
+          MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres,s3
+        run: npm test
 
   desktop:
     name: Embedded Desktop (macOS)
@@ -137,7 +139,10 @@ jobs:
       # Download the pinned runtime before timed UI tests, not on first launch.
       - run: node node_modules/electron/install.js
       - run: npm run build
-      - run: npm test
+      - run: brew install postgresql@16
+      - run: npx playwright install chromium
+      - name: Run tests with mandatory isolated PostgreSQL
+        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test
       - run: npm run test:embedded
       - run: npm run test:platform-embedded-desktop
       - run: npm run test:platform-desktop
@@ -191,6 +196,20 @@ jobs:
       - run: cargo build --locked -p morphz --bin morphz
       - run: npm ci --prefix application
       - run: npm --prefix application run build
+      - run: sudo apt-get update && sudo apt-get install -y postgresql
+      - name: Run the actual Runtime annotation, nested-thread, Profile and notification contracts
+        env:
+          MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres,runtime
+          MORPHZ_NESTED_ACTIVITY_RUNTIME_E2E: "1"
+          MORPHZ_PROFILE_RUNTIME_E2E: "1"
+          MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E: "1"
+          MORPHZ_WORKSPACE_RUNTIME_E2E: "1"
+        run: >-
+          npm --prefix application test --
+          tests/nested-thread-activity-runtime.test.ts
+          tests/profile-agent-update.test.ts
+          tests/response-annotations-runtime.test.ts
+          tests/workspace-changes-actual-runtime.test.ts
       # Real Runtime, local synthetic provider, isolated databases; no user secrets.
       - run: npm --prefix application run test:runtime-ipc
       - run: npm --prefix application run test:continuation-runtime

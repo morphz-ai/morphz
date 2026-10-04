@@ -1,5 +1,49 @@
 # 桌面能力实施记录
 
+## 2026-10-04 测试入口：默认 PostgreSQL 与精确覆盖门禁
+
+之前全量报告中的 160 项跳过并不表示本机没有 PostgreSQL：逐项源码
+复核确认，151 项是测试调用漏传连接，另有 S3 三项、Runtime 五项和
+原生焦点一项未启用。本机已有 PostgreSQL 服务仍在运行，没有停止、
+替换或写入用户业务数据库。
+
+`npm test` 现在直接消费 `scripts/run-tests.mjs`。未提供测试 URL 时，
+入口用已有工具准备随机 loopback 端口、0700 临时目录、专用 role／库，
+核对服务目录与角色后才建立测试库，并实际执行 SQL 验证。显式测试 URL
+保留并先执行连接验证；准备器不替换、写入或关闭那个已有服务。缺工具、
+空配置和连接失败必须报错，不降级为 SQLite-only，不猜测 5432 的用户库。
+测试子进程禁用项目 `.env`；成功、失败和中断只清理本轮自有资源。
+POSIX 进程组先结束再关闭自建 PostgreSQL，无法确认结束时保留资源并报错。
+
+覆盖 reporter 消费完整 Node 事件流，输出选择范围、实际计数以及每项
+未启用的专项。PostgreSQL 始终必需；未知跳过、已准备或声明必需的能力
+仍跳过，均使测试失败。例外限定确切文件／用例／条件，不采用标题正则
+或允许跳过数量。CI 准备 PostgreSQL 与浏览器，云存储通道明确要求
+`postgres,s3`，Runtime 通道为原四文件启用四个开关并要求
+`postgres,runtime`，不再用整个跨平台套件“零跳过”的错误总量判定。
+这些是 CI 源改动，本轮没有推送或远端 CI 运行证据。
+
+根独立普通 `npm test` 未手动传数据库 URL：**2102 项，2093 通过，
+零失败／取消，9 项明确专项未启用**。原 151 项 PostgreSQL 分支实际执行，
+没有数据库跳过或未知跳过。相同默认入口的机制回归 **34/34、零跳过**，
+覆盖真实 SQL、显式 URL 不变、准备失败、子测试失败、未知跳过、SIGINT／
+SIGTERM 下抗 TERM worker 的实际 PID 退出与临时目录清理。真实 Node
+默认 reporter 入口、package 的真实默认命令也有回归，不能只有未消费 helper。
+准备脚本继承 Node 内部 worker 标记导致空跑、普通函数 reporter 被 Node
+误识别的两轮真实 RED 均保留并已修复，不只凭纯 helper 测试宣称入口可用。
+
+另以必需 Runtime 能力运行四份原文件：**12/12、零跳过**，五项 opt-in
+真实 Rust 合同已执行；模型只用本机合成 provider，不连接用户 Runtime
+或付费模型。完整 build／类型及本批源格式检查通过。S3 三项与原生焦点
+一项仍未在本轮执行；Windows 子进程清理、启动过程的中断和远端 CI
+不冒充已全面验收。本批不改变 UI，也不代表整个前端重构或原 App 验收完成。
+
+根日志：`/tmp/morphz-test-entry-root.RDJpqm` 的
+`root-default-full.log`、`root-mechanism-final.log`、
+`root-runtime-required.log`、build／类型检查；机制与初轮 RED 证据在
+`/tmp/morphz-test-postgres-entry.lFMQkS`，独立能力门禁／实际 reporter
+回归及只读审查在 `/tmp/morphz-execution-inspection-validation.BJRLLZ`。
+
 ## 2026-10-04 前端阶段 33：执行详情完整 feature 生命周期
 
 `features/execution/useExecutionInspection.ts` 接收原 Client、scope、

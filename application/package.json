@@ -60,7 +60,7 @@
     "start": "node dist/service/apps/service/src/main.js",
     "desktop": "node scripts/desktop.mjs",
     "desktop:dev": "node scripts/desktop-dev.mjs",
-    "test": "tsx --test --test-concurrency=4 tests/*.test.ts",
+    "test": "node scripts/run-tests.mjs",
     "test:e2e": "npm run build && playwright test",
     "test:desktop": "node scripts/desktop-smoke.mjs",
     "test:platform-desktop": "node scripts/platform-desktop-smoke.mjs",
