@@ -1,18 +1,11 @@
-import {
-  Fragment,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
 import { discussionId } from "../../../packages/core/src/model.js";
 import { SentTextQuotes } from "./TextQuotes.js";
-import { quoteSource, locateTextQuote } from "./text-quote-dom.js";
+import { quoteSource } from "./text-quote-dom.js";
 import {
   quotedInputText,
   type TextQuote,
@@ -22,7 +15,6 @@ import {
   conversationTimeline,
   type ConversationRuntime,
 } from "../../../packages/core/src/conversation.js";
-import { shouldFollow } from "./interaction.js";
 import { actorName } from "./client.js";
 import {
   hasUnreadReplies,
@@ -64,11 +56,13 @@ import { liveToolPresentation } from "./execution-presentation.js";
 import { inputExecutionActivityPresentation } from "./execution-activity.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 
-export type ExchangePosition = {
-  top: number;
-  following: boolean;
-  revealed: string | null;
-};
+import {
+  useConversationViewportState,
+  useConversationViewportCommit,
+  type ExchangePosition,
+} from "./features/exchange/useConversationViewport.js";
+
+export type { ExchangePosition } from "./features/exchange/useConversationViewport.js";
 
 /** The conversation shares the primary column with objects and the global composer. */
 export function Conversation({
@@ -188,73 +182,21 @@ export function Conversation({
       }));
     }
   }
-  const scroller = useRef<HTMLElement>(null);
-  const prependPosition = useRef<{
-    key: string;
-    height: number;
-    top: number;
-  } | null>(null);
-  const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const [earlierError, setEarlierError] = useState("");
-  async function loadEarlier() {
-    if (!onLoadEarlierHistory || loadingEarlier) return;
-    const el = scroller.current;
-    if (el)
-      prependPosition.current = {
-        key: positionKey,
-        height: el.scrollHeight,
-        top: el.scrollTop,
-      };
-    setLoadingEarlier(true);
-    setEarlierError("");
-    try {
-      await onLoadEarlierHistory();
-    } catch (error) {
-      prependPosition.current = null;
-      setEarlierError(
-        error instanceof Error ? error.message : "旧消息暂时无法读取，请重试。",
-      );
-    } finally {
-      setLoadingEarlier(false);
-    }
-  }
-  const revealedQuote = useRef<string | null>(null);
-  const loadingQuote = useRef<string | null>(null);
-  const latestButton = useRef<HTMLButtonElement>(null);
-  const positionKey =
-    conversationId +
-    (focused
-      ? ":focus:" + (focusedArtifactId ?? focusedApplicationId)
-      : ":all");
-  const saved = positions.get(positionKey);
-  const previousPositionKey = useRef(positionKey);
-  const following = useRef(saved?.following ?? true);
-  const initialized = useRef(false);
-  const revealed = useRef(saved?.revealed ?? revealInputId);
-  const [awayFromLatest, setAwayFromLatest] = useState(!following.current);
-  function acknowledgeVisibleReplies() {
-    if (
-      following.current &&
-      document.visibilityState === "visible" &&
-      document.hasFocus() &&
-      !document.querySelector("dialog[open]")
-    )
-      onRead(receipts);
-  }
-  function updateLatestIndicator() {
-    if (following.current) {
-      // Move focus before removing its button. A detached focused control
-      // otherwise looks like leaving the unpinned exchange. Do not steal
-      // focus when ordinary scrolling or new content reaches the bottom.
-      if (latestButton.current === document.activeElement) {
-        onFocusComposer?.();
-        if (latestButton.current === document.activeElement)
-          scroller.current?.focus({ preventScroll: true });
-      }
-      acknowledgeVisibleReplies();
-    }
-    setAwayFromLatest(!following.current);
-  }
+  const viewport = useConversationViewportState({
+    conversationId,
+    focused,
+    focusedArtifactId,
+    focusedApplicationId,
+    positions,
+    revealInputId,
+  });
+  const {
+    scroller,
+    latestButton,
+    loadingEarlier,
+    earlierError,
+    awayFromLatest,
+  } = viewport;
   const groups = conversationGroups(inputs, readScope.messages);
   // The initiating input owns cancellation, even without a current output.
   // Background execution branches retain their separate inspector controls.
@@ -386,153 +328,32 @@ export function Conversation({
           item.reply?.streaming,
       )
       .join("|") + JSON.stringify([...waitingResponses]);
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
-    if (previousPositionKey.current !== positionKey) {
-      initialized.current = false;
-      following.current = saved?.following ?? true;
-      revealed.current = saved?.revealed ?? revealInputId;
-      previousPositionKey.current = positionKey;
-    }
-    if (!initialized.current && saved) el.scrollTop = saved.top;
-    if (revealInputId && revealed.current !== revealInputId)
-      following.current = true;
-    if (following.current) {
-      el.scrollTop = el.scrollHeight;
-    }
-    revealed.current = revealInputId;
-    initialized.current = true;
-    updateLatestIndicator();
-    positions.set(positionKey, {
-      top: el.scrollTop,
-      following: following.current,
-      revealed: revealed.current,
-    });
-  }, [contentVersion, readVersion, revealInputId, positionKey, onRead]);
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    const old = prependPosition.current;
-    if (!el || !old || old.key !== positionKey || loadingEarlier) return;
-    following.current = false;
-    el.scrollTop = old.top + el.scrollHeight - old.height;
-    positions.set(positionKey, {
-      top: el.scrollTop,
-      following: false,
-      revealed: revealed.current,
-    });
-    setAwayFromLatest(true);
-    prependPosition.current = null;
-  }, [contentVersion, loadingEarlier, positionKey]);
-  useEffect(() => {
-    const read = () => acknowledgeVisibleReplies();
-    document.addEventListener("visibilitychange", read);
-    window.addEventListener("focus", read);
-    document.addEventListener("focusin", read);
-    return () => {
-      document.removeEventListener("visibilitychange", read);
-      window.removeEventListener("focus", read);
-      document.removeEventListener("focusin", read);
-    };
-  }, [readVersion, positionKey, onRead]);
-  useLayoutEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
-    const observer = new ResizeObserver(() => {
-      if (following.current) el.scrollTop = el.scrollHeight;
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-  useLayoutEffect(() => {
-    if (!quoteReveal || revealedQuote.current === quoteReveal.token) return;
-    const quote = quoteReveal.quote.source;
-    if (quote.kind !== "message") return;
-    const el = scroller.current;
-    const message = el?.querySelector<HTMLElement>(
-      `[data-message-id="${CSS.escape(quote.messageId)}"]`,
-    );
-    if (!message) {
-      if (
-        focused &&
-        (allInputs.some((item) => item.id === quote.messageId) ||
-          messages.some((item) => item.id === quote.messageId))
-      ) {
-        setAllHistory(true);
-      } else if (
-        hasEarlierHistory &&
-        loadingQuote.current !== quoteReveal.token
-      ) {
-        loadingQuote.current = quoteReveal.token;
-        void client.loadHistoryUntil(quote.messageId).then(
-          (found) => {
-            if (!found) {
-              revealedQuote.current = quoteReveal.token;
-              onQuoteUnavailable?.();
-            }
-          },
-          (error: unknown) => {
-            revealedQuote.current = quoteReveal.token;
-            onQuoteUnavailable?.(
-              error instanceof Error ? error.message : undefined,
-            );
-          },
-        );
-      } else {
-        if (loadingQuote.current !== quoteReveal.token) {
-          revealedQuote.current = quoteReveal.token;
-          onQuoteUnavailable?.();
-        }
-      }
-      return;
-    }
-    revealedQuote.current = quoteReveal.token;
-    // A source jump is explicit navigation, not a request to follow new output.
-    following.current = false;
-    el!.scrollTop +=
-      message.getBoundingClientRect().top -
-      el!.getBoundingClientRect().top -
-      24;
-    setAwayFromLatest(true);
-    positions.set(positionKey, {
-      top: el!.scrollTop,
-      following: false,
-      revealed: revealed.current,
-    });
-    const range = locateTextQuote(quoteReveal.quote);
-    if (range) {
-      window.getSelection()?.removeAllRanges();
-      window.getSelection()?.addRange(range);
-    }
-    message.setAttribute("data-quote-revealed", "true");
-    const timeout = window.setTimeout(
-      () => message.removeAttribute("data-quote-revealed"),
-      2200,
-    );
-    return () => {
-      clearTimeout(timeout);
-      message.removeAttribute("data-quote-revealed");
-    };
-  }, [quoteReveal, focused, contentVersion, hasEarlierHistory]);
+  const { loadEarlier, onScroll, returnLatest } = useConversationViewportCommit(
+    viewport,
+    {
+      contentVersion,
+      readVersion,
+      receipts,
+      onRead,
+      onFocusComposer,
+      onLoadEarlierHistory,
+      quoteReveal,
+      onQuoteUnavailable,
+      focused,
+      allInputs,
+      messages,
+      hasEarlierHistory,
+      setAllHistory,
+      client,
+    },
+  );
   return (
     <section
       className="conversation"
       aria-label="当前对话"
       tabIndex={-1}
       ref={scroller}
-      onScroll={() => {
-        const el = scroller.current;
-        if (!el) return;
-        following.current = shouldFollow(
-          el.scrollHeight - el.clientHeight - el.scrollTop,
-        );
-        updateLatestIndicator();
-        positions.set(positionKey, {
-          top: el.scrollTop,
-          following: following.current,
-          revealed: revealed.current,
-        });
-      }}
+      onScroll={onScroll}
     >
       {notice}
       {hasEarlierHistory && onLoadEarlierHistory && (
@@ -1156,12 +977,7 @@ export function Conversation({
           <button
             ref={latestButton}
             className="new-exchange"
-            onClick={() => {
-              following.current = true;
-              if (scroller.current)
-                scroller.current.scrollTop = scroller.current.scrollHeight;
-              updateLatestIndicator();
-            }}
+            onClick={returnLatest}
           >
             {unread ? "有新内容 · 返回最新" : "返回最新"}
           </button>

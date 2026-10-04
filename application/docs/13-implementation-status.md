@@ -1,5 +1,60 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 36：完整对话阅读视口生命周期
+
+`features/exchange/useConversationViewport.ts` 现拥有原 scoped 阅读位置恢复、
+跟随／返回最新、前插历史锚点、可见已读、引用定位／历史补读及焦点交接。
+Conversation 在原 timeline 前登记 state，在原 read／content version 后登记
+effects；原九 refs、三 states、四 layout／一 passive effect 的顺序及依赖保留。
+两个 hook 用模块私有 Symbol 交接，不向 renderer 公开内部 writer bag。
+
+App 仍拥有同一位置 Map 与工作面 key；消息／筛选／回执计算、取消及整个展示树
+仍归 Conversation。数据／历史 owner 仍负责实际范围、授权、分页与发布；借用
+原 render Client 和原 setter，不克隆成 store，不新增查询、订阅、轮询或模型请求。
+原 ExchangePosition type re-export 保留，原 CSS、图标、DOM、布局及动效未改。
+
+根从 actual Git `29863c3f` 核完整原组件 49,917 bytes 和 25 段固定原 recipe，
+两份生产源完整 forward／inverse 证明通过。其余 202 份 renderer 原源完整
+字节不变；候选 204 份源与每边 208 份 emitted 资源均在页面期间冻结。
+正常完整 build 与候选产物一致，完整 CSS／preload 原字节相同；主 JS 因真实
+controller 迁移变化，不冒称其原始 SHA 相同。
+
+五份完整原 spec 共 23 项，旧／新各 **23/23、零重试／跳过**；逐项身份、标题及
+原断言／预算保留。每边核 152 个实际 HTTP HTML／三入口资源响应，全部 200
+且完整 SHA 正确。五 spec、63 历史 fixture 及原支撑源未改；没有 Origin／Host／
+body／权限映射或 fake fetch。自有 Host 已退出、原端口空闲、discovery marker
+恢复；用户原 App、日常 Runtime、业务 PostgreSQL 与用户数据未操作。
+
+当前完整 StrictMode Conversation 挂载 **8/8**；根显式 actual Git 完整旧组件
+与当前对照 **17/17**，均零跳过，观察记录严格深等。实测同 Map／DOM、阅读／
+前插 BCR、真实 Range、焦点交接、异步历史、失败、marker 与卸载 cleanup。
+visibility／hasFocus 和 ResizeObserver 明确受控，不冒称 OS foreground；marker
+到期实测不单独证明计时下界，原 2200ms 参数由固定源和门禁另证。同 ID 流式
+由原页面覆盖，局部 prop scope 切换不冒称完整 App 导航或原窗验收。
+
+旧 read-receipts 门禁仅将三条 visibility／focus／modal 守门移交到直接消费的
+controller，并增加真实接缝检查；根逆回得到完整旧测试字节，其余断言不变。
+五份相邻 Node 回归 **59/59、零跳过**。永久门禁只约束真实 import／借用端口、
+注册阶段、完整原阅读算法和直接 DOM 消费，不锁完整当前组件／App／Client。
+独立复核发现保留正确 unused import 后替换实际函数、重赋借用对象及假 setter
+的五处门禁漏检；原 RED 保留。现按真正被调用的 value symbol／module、原
+Map／Client 参数未重赋及真实 React setter 窄修；根最终有限门禁 **10/10**，
+44 个指定可解析反例和合法独立 feature／React／utility／setter aliases 均通过。
+不是全文件禁用同名 export／赋值或任意 TS 绑定安全证明；未变原 25 段旧源。
+
+最终冻结门禁后的根默认 `npm test`：325 份源、2,165 项，**2,156 通过、
+零失败／取消／todo**。九项为明确未启用的可选能力（S3 三项、Runtime
+五项、原生焦点一项），无未知跳过；PostgreSQL 为必需能力并实际执行。
+修复前的首次全量结果单独保留，不代替这轮最终证据。根独立类型检查、
+七份所有权内 TS 文件格式、完整正常构建及编译产物交接校验通过；原构建
+警告保留，不冒称原 App／原生硬件验收。
+
+根证据在 `/tmp/morphz-conversation-viewport-root.2l9yAK`，生产来源与完整迁移
+证明在 `/tmp/morphz-conversation-viewport-production.hB0U2H`，有限门禁／RED 在
+`/tmp/morphz-conversation-viewport-boundary.fbAYsB`，完整挂载／独立旧源在
+`/tmp/morphz-conversation-viewport-mounted.AEXqTD`。整体迁移仍未完成；完整
+Task feature、其余数据／presentation／role 与历史门禁治理及原 App 验收继续。
+
 ## 2026-10-04 前端阶段 35：完整原生弹窗 frame／字段控件职责
 
 公共 frame／字段控件现归 `ui/dialog-frame.css`，main 在 styles 与 ui

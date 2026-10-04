@@ -539,9 +539,22 @@ test("actual Conversation keeps its original items/receipt initializers and allH
   );
   assert(actual.includes("() => setAllHistory(false)"));
   assert(actual.includes("[focusedArtifactId, focusedApplicationId]"));
-  assert(actual.includes('document.visibilityState === "visible"'));
-  assert(actual.includes("document.hasFocus()"));
-  assert(actual.includes('!document.querySelector("dialog[open]")'));
+  // The renderer still owns receipt computation; its visibility/focus/modal
+  // guards now live in the directly consumed complete viewport controller.
+  const viewport = readFileSync(
+    new URL(
+      "../apps/web/src/features/exchange/useConversationViewport.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert(
+    actual.includes('from "./features/exchange/useConversationViewport.js"'),
+  );
+  assert(actual.includes("useConversationViewportCommit("));
+  assert(viewport.includes('document.visibilityState === "visible"'));
+  assert(viewport.includes("document.hasFocus()"));
+  assert(viewport.includes('!document.querySelector("dialog[open]")'));
 });
 
 // Isolated registration adapter, not a React renderer or a real visibility
