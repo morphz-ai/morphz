@@ -1,5 +1,9 @@
 import { expect, type Page } from "@playwright/test";
-import { openInput, composerAction } from "./interaction-helpers.js";
+import {
+  openInput,
+  openExchangeReading,
+  composerAction,
+} from "./interaction-helpers.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import {
@@ -79,7 +83,17 @@ async function failedMessage(
   // Other suites may have left an artifact open in the shared test center.
   // Test the work surface, not that artifact's scoped message history.
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
-  return { sent, release, fail: () => (state = "failed") };
+  // Focusing the composer restores writing only; reading is an explicit action.
+  await openExchangeReading(page);
+  return {
+    sent,
+    release,
+    fail: async () => {
+      state = "failed";
+      // This data is synthetic: notify its existing synthetic workspace stream.
+      await presentation.refresh();
+    },
+  };
 }
 
 test("重试直接失败也保留消息与未发送草稿，仍可重试同一输入", async ({
@@ -178,7 +192,7 @@ for (const mode of ["recent", "history"] as const) {
         0,
       );
       expect(fixture.sent).toEqual(["retry-fixture-12"]);
-      fixture.fail();
+      await fixture.fail();
       await expect(retry).toBeVisible();
       await expect(history).toBeVisible();
       await expect(input).toBeFocused();

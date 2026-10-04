@@ -1,5 +1,23 @@
 # 桌面能力实施记录
 
+## 2026-10-04 本机消息回归：显式阅读与合成事件准备
+
+本机投递重构前，冻结实际 Git `32c52210` 的旧生产编译，六份原页面
+测试首次为 **20/28**。八个红项均在 `message-retry`：旧准备仍依赖输入
+获焦自动展开历史，或只改变模拟变量却不通知其合成事件流。前者已被
+用户明确关闭，后者不应靠恢复生产轮询掩盖；并非工作空间归属错误。
+
+现在只在测试准备中使用既有 `openExchangeReading` 显式阅读，模拟失败
+调用既有 `presentation.refresh()` 并等待通知。原八项断言、预算、标题
+及生产实现不改。相同六份测试在原编译上 **28/28**，零重试；逐例实际
+HTTP 静态资源共 132 份核对完整 SHA。旧失败、trace 与 negative audit
+独立保留，不能冒称原首次基线已通过或重构后的对应行为已验证。
+
+证据：`/tmp/morphz-local-input-root.rzLAQ5` 的 `delivery-baseline` 报告、
+`delivery-baseline-negative-audit.json`、`delivery-current-baseline` 报告
+及 `delivery-current-baseline-audit.json`。本条是回归准备的有限校准，
+不增加请求、轮询或模型调用，也不是原 App／原生验收。
+
 ## 2026-10-04 前端阶段 22：发送与补充的完整宿主命令所有权
 
 `host/exchange-submission-commands.ts` 完整拥有原 `send` 和 `supplement`。
