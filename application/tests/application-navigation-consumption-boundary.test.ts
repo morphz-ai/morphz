@@ -12,7 +12,9 @@ import {
   isCallExpression,
   isFunctionDeclaration,
   isElementAccessExpression,
+  isExpressionStatement,
   isIdentifier,
+  isIfStatement,
   isImportDeclaration,
   isJsxAttribute,
   isJsxAttributes,
@@ -223,6 +225,54 @@ const fixedAppRoot = `export function App() {
     />
   );
 }`;
+// New, reviewed input-port wiring is checked independently. Old JSX arrows
+// below are copied from Git 39cf13cf (also unchanged in b8db8158), not generated
+// from the extracted owner. The original cb7246a2 hashes above stay fixed.
+const inputToolAdapterText = `
+function registrations(){
+ const inputDictation=useExchangeDictationState();
+ const {dictationControls,speechRecording,setSpeechRecording}=inputDictation;
+ const inputMedia=useExchangeInputMediaState();
+ const {uploadingDrafts,speech,capture}=inputMedia;
+ const nativeInput=useExchangeNativeInputState();
+ const {directoryPickerScope,nativeExportDialog,setNativeExportDialog}=nativeInput;
+ useExchangeInputToolCommit(inputMedia,{contextKey,inputVisible});
+ const closeSpeech=createExchangeInputToolCloseCommand({dictation:inputDictation,media:inputMedia,currentContext,keepExchangeOpen,
+  focusMicrophone:()=>exchange.current?.querySelector<HTMLButtonElement>('button[aria-label="语音输入"]')?.focus()});
+ const inputTools=createExchangeInputToolCommands({closeSpeech,dictation:inputDictation,media:inputMedia,native:nativeInput,
+  render:{contextKey,directoryScope,contextTitle,draft,project,artifact,preferences:prefs},
+  drafts:{replace:setDraft,update:updateDraft},currentContext,exchange:{showInput,setInteraction},
+  focus:{scheduleInput:()=>requestAnimationFrame(()=>input.current?.focus())},
+  openSavedCapture:(projectId,id)=>void openObject(projectId,id),
+  reportInputError:(key,message)=>setInputErrors((old)=>({...old,[key]:message}))});
+}
+const fixedInputPorts=(<>
+ <MessageAttachments
+  capture={{onSelect:(hideWindow)=>setCapture({key:contextKey,projectId:project.id,hideWindow,
+   ...(artifact?{artifactId:artifact.id,artifactRevision:draft.revision??prefs.artifactRevision??artifact.revision}:{})})}}
+  onBusy={(busy)=>setUploadingDrafts((old)=>({...old,[contextKey]:busy}))}
+  onChange={(update)=>updateDraft(contextKey,(old)=>({...old,attachments:update(old.attachments??[])}))}
+  onError={(message)=>setInputErrors((old)=>({...old,[contextKey]:message}))}/>
+ <button aria-label="语音输入" onClick={()=>{
+  if(speech?.key===contextKey&&!speech.modal)dictationControls.current?.toggle();
+  else setSpeech({scope:{projectId:project.id,...(artifact?{artifactId:artifact.id,revision:draft.revision??prefs.artifactRevision??artifact.revision}:{})},
+   title:contextTitle,key:contextKey,draft:{...draft}});
+ }}/>
+ <AgentDirectories onSelecting={(selecting)=>setDirectoryPickerScope((current)=>selecting?directoryScope:current===directoryScope?null:current)}
+  onError={(message)=>setInputErrors((old)=>({...old,[contextKey]:message}))}/>
+ <SpeechDialog onTranscript={speech.modal?undefined:(text,previous)=>updateDraft(speech.key,(saved)=>({...saved,body:replaceDictationTail(saved.body,text,previous),revision:speech.scope.revision??null}))}
+  onInsert={(text)=>{
+   const saved=speech.draft;
+   const body=[saved.body,text].filter(Boolean).join("\\n");
+   if(body.length>30000)throw new Error("这段文字超过单条消息长度，请先保存为文档，再围绕文档输入；文字不会被截断。");
+   setDraft(speech.key,{...saved,body,revision:speech.scope.revision??null});
+   setSpeech(null);setInteraction("input");requestAnimationFrame(()=>input.current?.focus());
+  }}/>
+ <CaptureDialog onClose={()=>setCapture(null)}
+  onAttach={(attachment)=>{const key=capture.key;updateDraft(key,(old)=>({...old,attachments:[...(old.attachments??[]),attachment]}));setCapture(null);if(currentContext.current===key)showInput();}}
+  onSaved={(id)=>{const projectId=capture.projectId;setCapture(null);void openObject(projectId,id);}}/>
+</>);
+`;
 type Parsed = {
   source: SourceFile;
   nodes: Node[];
@@ -1360,6 +1410,341 @@ function exchangeReadContract(
     });
   }
 }
+function exchangeInputToolContract(
+  app: Parsed,
+  owner: Parsed,
+  fixed: Parsed,
+  adapter: Parsed,
+  ownerText: string,
+  contract: SubjectContract,
+) {
+  try {
+    // This pins the reviewed NEW API/constructor lane, not an old algorithm
+    // oracle. The independent fixed-b8 test and mounted ledgers prove the
+    // moved algorithms. It deliberately includes the real nullable version
+    // type discovered when the previously unconsumed candidate was connected.
+    assert.equal(
+      createHash("sha256").update(ownerText).digest("hex"),
+      "d6aebe9b808e45041b9b4c946a1612e98d6787d013188d555b7cf16fd6748f34",
+      "reviewed input owner API, inert constructors and complete algorithms",
+    );
+    const path = "./host/use-exchange-input-tools.js";
+    const workspace = oneFunction(app, "WorkspaceApp");
+    const oneImportedCall = (name: string) => {
+      const symbol = imported(app, path, name);
+      const uses = app.identifiers.filter(
+        (node) => app.symbols.get(node) === symbol,
+      );
+      assert.equal(
+        uses.length,
+        2,
+        `${name}: actual import and one direct call`,
+      );
+      const calls = app.nodes
+        .filter(isCallExpression)
+        .filter(
+          (node) =>
+            isIdentifier(node.expression) &&
+            app.symbols.get(node.expression) === symbol,
+        );
+      assert.equal(calls.length, 1, `${name}: no wrapper or duplicate owner`);
+      return calls[0]!;
+    };
+    const fixedHooks = reactHooks(fixed);
+    const ownerHooks = reactHooks(owner);
+    for (const [name, oldName, binding, primitives] of [
+      [
+        "useExchangeDictationState",
+        "useFixedDictationState",
+        "inputDictation",
+        ["useRef", "useState"],
+      ],
+      [
+        "useExchangeInputMediaState",
+        "useFixedInputMediaState",
+        "inputMedia",
+        ["useState", "useState", "useState"],
+      ],
+      [
+        "useExchangeNativeInputState",
+        "useFixedNativeInputState",
+        "nativeInput",
+        ["useState", "useState"],
+      ],
+      [
+        "useExchangeInputToolCommit",
+        "useFixedInputToolCommit",
+        null,
+        ["useEffect"],
+      ],
+    ] as const) {
+      const call = oneImportedCall(name);
+      if (binding) {
+        const declaration = oneVariable(app, binding);
+        assert.equal(
+          declaration.initializer,
+          call,
+          `${name}: directly borrowed state, no mirror`,
+        );
+        assert.equal(
+          declaration.parent.parent.parent,
+          workspace.body,
+          `${name}: direct unconditional original Host registration`,
+        );
+        assert.equal(call.arguments.length, 0);
+      } else {
+        assert.ok(
+          isExpressionStatement(call.parent) &&
+            call.parent.parent === workspace.body,
+          "input retirement is a direct unconditional Host expression",
+        );
+        const slot = workspace.body!.statements.indexOf(call.parent);
+        assert.equal(
+          workspace.body!.statements[slot - 1]?.getText().replace(/\s+/g, ""),
+          "useExchangeControllerFocus(exchangeController);",
+          "input retirement retains original focus/retirement seam",
+        );
+        assert.ok(
+          workspace
+            .body!.statements[slot + 1]?.getText()
+            .startsWith("const collaborationVisible"),
+          "input retirement precedes original collaboration derivation",
+        );
+        const expected = adapter.nodes
+          .filter(isCallExpression)
+          .find((node) => node.expression.getText() === name)!;
+        assert.deepEqual(
+          call.arguments.map(scalarSyntax),
+          expected.arguments.map(scalarSyntax),
+          "original retirement scope/visibility arguments",
+        );
+      }
+      const registrations = (
+        parsed: Parsed,
+        functionName: string,
+        hooks: Map<number | undefined, string>,
+      ) => {
+        const result: { node: CallExpression; name: string }[] = [];
+        walk(oneFunction(parsed, functionName).body!, (node) => {
+          if (isCallExpression(node) && isIdentifier(node.expression)) {
+            const primitive = hooks.get(parsed.symbols.get(node.expression));
+            if (primitive) result.push({ node, name: primitive });
+          }
+        });
+        return result;
+      };
+      const actual = registrations(owner, name, ownerHooks);
+      const original = registrations(fixed, oldName, fixedHooks);
+      assert.deepEqual(
+        actual.map(({ name }) => name),
+        primitives,
+      );
+      assert.deepEqual(
+        original.map(({ name }) => name),
+        primitives,
+      );
+      assert.deepEqual(
+        actual.map(({ node }) => node.arguments.map(scalarSyntax)),
+        original.map(({ node }) => node.arguments.map(scalarSyntax)),
+        `${name}: original initialization/effect arguments`,
+      );
+      // Fixed original type syntax is kept for the whole-tree oracle. The
+      // actual owner uses explicit equivalent Scene aliases, not new state.
+      contract.expanded.set(call, original);
+    }
+    for (const name of [
+      "dictationControls",
+      "uploadingDrafts",
+      "directoryPickerScope",
+    ]) {
+      const actual = bindingVariable(app, name);
+      const expected = bindingVariable(adapter, name);
+      assert.deepEqual(scalarSyntax(actual.name), scalarSyntax(expected.name));
+      assert.deepEqual(
+        scalarSyntax(actual.initializer!),
+        scalarSyntax(expected.initializer!),
+        `original ${name} state/ref/setter aliases`,
+      );
+    }
+    for (const [name, binding] of [
+      ["createExchangeInputToolCloseCommand", "closeSpeech"],
+      ["createExchangeInputToolCommands", "inputTools"],
+    ] as const) {
+      const call = oneImportedCall(name);
+      const declaration = oneVariable(app, binding);
+      assert.equal(declaration.initializer, call);
+      assert.equal(
+        declaration.parent.parent.parent,
+        workspace.body,
+        `${binding}: direct original Host constructor phase`,
+      );
+      const expected = oneVariable(adapter, binding).initializer!;
+      assert.ok(isCallExpression(expected));
+      assert.equal(call.typeArguments?.length ?? 0, 0);
+      assert.deepEqual(
+        call.arguments.map(scalarSyntax),
+        expected.arguments.map(scalarSyntax),
+        `${binding}: exact captured render, original writers/focus/navigation ports`,
+      );
+    }
+    const startupReturn = workspace
+      .body!.statements.filter(isIfStatement)
+      .find(
+        (node) =>
+          node.expression.getText().replace(/\s+/g, "") === "!state||!project",
+      )!;
+    assert.ok(startupReturn, "original guarded startup branch exists");
+    const close = oneVariable(app, "closeSpeech");
+    const commands = oneVariable(app, "inputTools");
+    assert.ok(
+      close.end < startupReturn.pos &&
+        startupReturn.end < oneVariable(app, "contextTitle").pos &&
+        oneVariable(app, "contextTitle").end < commands.pos,
+      "early close before startup return, full commands after original context title",
+    );
+    const keyboard = app.nodes
+      .filter(isCallExpression)
+      .find(
+        (node) =>
+          node.expression.getText() === "useEffect" &&
+          node.getText().includes("function keyboard(e: KeyboardEvent)"),
+      )!;
+    assert.ok(
+      close.end < keyboard.pos,
+      "close stays available to original keyboard registration",
+    );
+    const tools = oneVariable(app, "inputTools");
+    assert.ok(isIdentifier(tools.name));
+    const toolsSymbol = app.symbols.get(tools.name);
+    assert.ok(toolsSymbol !== undefined);
+    const consumed = new Set<Node>();
+    const tags = new Map<string, Node>();
+    for (const tag of [
+      "MessageAttachments",
+      "AgentDirectories",
+      "SpeechDialog",
+      "CaptureDialog",
+    ]) {
+      const symbol = imported(app, `./${tag}.js`, tag);
+      const actual = app.nodes.filter(
+        (node) =>
+          (isJsxOpeningElement(node) || isJsxSelfClosingElement(node)) &&
+          isIdentifier(node.tagName) &&
+          app.symbols.get(node.tagName) === symbol,
+      );
+      assert.equal(actual.length, 1, `real imported ${tag} consumer`);
+      tags.set(tag, actual[0]!);
+    }
+    const microphone = app.nodes.filter(
+      (node) =>
+        isJsxOpeningElement(node) &&
+        node.tagName.getText() === "button" &&
+        node.attributes.properties.some(
+          (attribute) =>
+            isJsxAttribute(attribute) &&
+            attribute.name.getText() === "aria-label" &&
+            attribute.initializer?.getText() === '"语音输入"',
+        ),
+    );
+    assert.equal(microphone.length, 1);
+    tags.set("button", microphone[0]!);
+    const attribute = (tag: Node, name: string) => {
+      assert.ok(isJsxOpeningElement(tag) || isJsxSelfClosingElement(tag));
+      const found = tag.attributes.properties
+        .filter(isJsxAttribute)
+        .filter((node) => node.name.getText() === name);
+      assert.equal(
+        found.length,
+        1,
+        `one ${name} attribute on ${tag.tagName.getText()}`,
+      );
+      return found[0]!;
+    };
+    const originalTag = (name: string) =>
+      adapter.nodes.find(
+        (node) =>
+          (isJsxOpeningElement(node) || isJsxSelfClosingElement(node)) &&
+          node.tagName.getText() === name,
+      )!;
+    for (const [tag, name, command] of [
+      ["MessageAttachments", "onBusy", "attachmentsBusyChanged"],
+      ["MessageAttachments", "onChange", "attachmentsChanged"],
+      ["MessageAttachments", "onError", "attachmentError"],
+      ["button", "onClick", "toggleDictation"],
+      ["AgentDirectories", "onSelecting", "directorySelectingChanged"],
+      ["AgentDirectories", "onError", "attachmentError"],
+      ["SpeechDialog", "onTranscript", "transcriptChanged"],
+      ["SpeechDialog", "onInsert", "transcriptInserted"],
+      ["CaptureDialog", "onClose", "closeCapture"],
+      ["CaptureDialog", "onAttach", "captureAttached"],
+      ["CaptureDialog", "onSaved", "captureSaved"],
+    ] as const) {
+      const actual = attribute(tags.get(tag)!, name);
+      assert.ok(actual.initializer && isJsxExpression(actual.initializer));
+      const expression = actual.initializer.expression!;
+      assert.equal(
+        expression.getText().replace(/\s+/g, ""),
+        name === "onTranscript"
+          ? `speech.modal?undefined:inputTools.${command}`
+          : `inputTools.${command}`,
+        `${tag}.${name}: exact originating input command and optional-transcript condition`,
+      );
+      walk(expression, (node) => {
+        if (isIdentifier(node) && node.text === "inputTools") {
+          assert.equal(
+            app.symbols.get(node),
+            toolsSymbol,
+            "actual factory result, not shadowed input commands",
+          );
+          consumed.add(node);
+        }
+      });
+      contract.attributes.set(
+        actual,
+        syntax(attribute(originalTag(tag), name)),
+      );
+    }
+    const capture = attribute(tags.get("MessageAttachments")!, "capture");
+    const properties: Node[] = [];
+    walk(capture, (node) => {
+      if (isPropertyAssignment(node) && node.name.getText() === "onSelect")
+        properties.push(node);
+    });
+    assert.equal(properties.length, 1);
+    const selector = properties[0]!;
+    assert.ok(
+      isPropertyAssignment(selector) &&
+        isPropertyAccessExpression(selector.initializer) &&
+        isIdentifier(selector.initializer.expression),
+    );
+    assert.equal(selector.initializer.name.text, "openCapture");
+    assert.equal(
+      app.symbols.get(selector.initializer.expression),
+      toolsSymbol,
+      "capture borrows actual originating scene command",
+    );
+    consumed.add(selector.initializer.expression);
+    const fixedSelectors: Node[] = [];
+    walk(attribute(originalTag("MessageAttachments"), "capture"), (node) => {
+      if (isPropertyAssignment(node) && node.name.getText() === "onSelect")
+        fixedSelectors.push(node);
+    });
+    assert.equal(fixedSelectors.length, 1);
+    contract.attributes.set(selector, syntax(fixedSelectors[0]!));
+    assert.equal(consumed.size, 12);
+    assert.equal(
+      app.identifiers.filter((node) => app.symbols.get(node) === toolsSymbol)
+        .length,
+      consumed.size + 1,
+      "one directly consumed command result, no alias/mirror/extra work",
+    );
+  } catch (error) {
+    if (!(error instanceof assert.AssertionError)) throw error;
+    throw new assert.AssertionError({
+      message: "exchange-input-tool-owner-seams: " + error.message,
+    });
+  }
+}
 function consumption(
   appText: string,
   hostText: string,
@@ -1367,6 +1752,7 @@ function consumption(
   subjectOwnerText = subjectOwner,
   exchangeReadOwnerText = exchangeReadOwner,
   navigationHostText = stableNavigationHost,
+  inputOwnerText = exchangeInputToolOwner,
 ) {
   const parsed = parse({
     App: appText,
@@ -1383,6 +1769,9 @@ function consumption(
     NavigationAdapter: navigationAdapterText,
     FixedAppRoot: fixedAppRoot,
     NavigationHostContract: navigationHostContractText,
+    InputTools: inputOwnerText,
+    FixedInputTools: fixedInputTools,
+    InputToolAdapter: inputToolAdapterText,
   });
   const app = parsed.get("App")!,
     host = parsed.get("Host")!,
@@ -1595,6 +1984,14 @@ function consumption(
     parsed.get("ExchangeReadAdapter")!,
     appContract,
   );
+  exchangeInputToolContract(
+    projectedApp,
+    parsed.get("InputTools")!,
+    parsed.get("FixedInputTools")!,
+    parsed.get("InputToolAdapter")!,
+    inputOwnerText,
+    appContract,
+  );
   assert.deepEqual(
     structure(projectedApp, true, appContract),
     baseline.App,
@@ -1632,6 +2029,14 @@ const stableNavigationHost = readFileSync(
   "apps/web/src/host/use-workspace-navigation-host.ts",
   "utf8",
 );
+const exchangeInputToolOwner = readFileSync(
+  "apps/web/src/host/use-exchange-input-tools.ts",
+  "utf8",
+);
+const fixedInputTools = readFileSync(
+  "tests/fixtures/exchange-input-tools-b8db8158.ts",
+  "utf8",
+);
 function changed(source: string, from: string, to: string) {
   assert.ok(source.includes(from), `negative fixture target absent: ${from}`);
   return source.replace(from, to);
@@ -1639,6 +2044,157 @@ function changed(source: string, from: string, to: string) {
 
 test("actual App/Host consume the typed prepared navigation owner and retain fixed cb7246a2 JSX/lifecycle", () => {
   consumption(app, host, owner);
+});
+test("input tools reject parsed fake imports, mirrors, altered scopes/focus and optional transcript drift before fixed-tree expansion", () => {
+  const cases = [
+    {
+      source: changed(
+        app,
+        "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
+        "if (inputVisible) useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
+      ),
+      rule: "input retirement is a direct unconditional Host expression",
+    },
+    {
+      source: changed(
+        app,
+        "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
+        "function hiddenRetirement(){useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });}\nhiddenRetirement();",
+      ),
+      rule: "input retirement is a direct unconditional Host expression",
+    },
+    {
+      source:
+        changed(
+          app,
+          "  useExchangeDictationState,",
+          "  useExchangeDictationState as ActualInputDictation,",
+        ) + "\nfunction useExchangeDictationState(){return {};}",
+      rule: "useExchangeDictationState: actual import and one direct call",
+    },
+    {
+      source: changed(
+        app,
+        "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
+        "useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });\nuseExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });",
+      ),
+      rule: "useExchangeInputToolCommit: actual import and one direct call",
+    },
+    {
+      source: changed(
+        app,
+        "      contextKey,\n      directoryScope,\n      contextTitle,",
+        "      contextKey: currentContext.current,\n      directoryScope,\n      contextTitle,",
+      ),
+      rule: "inputTools: exact captured render, original writers/focus/navigation ports",
+    },
+    {
+      source: changed(
+        app,
+        "drafts: { replace: setDraft, update: updateDraft }",
+        "drafts: { replace: setDraft, update: () => {} }",
+      ),
+      rule: "inputTools: exact captured render, original writers/focus/navigation ports",
+    },
+    {
+      source: changed(
+        app,
+        "?.querySelector<HTMLButtonElement>('button[aria-label=\"语音输入\"]')\n        ?.focus()",
+        "?.querySelector<HTMLButtonElement>('button[aria-label=\"语音输入\"]')\n        ?.focus({ preventScroll: true })",
+      ),
+      rule: "closeSpeech: exact captured render, original writers/focus/navigation ports",
+    },
+    {
+      source: changed(
+        app,
+        "openSavedCapture: (projectId, id) => void openObject(projectId, id)",
+        "openSavedCapture: (projectId, id) => void openObject(project.id, id)",
+      ),
+      rule: "inputTools: exact captured render, original writers/focus/navigation ports",
+    },
+    {
+      source: changed(
+        app,
+        "inputTools.directorySelectingChanged",
+        "inputTools.attachmentsBusyChanged",
+      ),
+      rule: "AgentDirectories.onSelecting: exact originating input command",
+    },
+    {
+      source: changed(
+        app,
+        "speech.modal ? undefined : inputTools.transcriptChanged",
+        "inputTools.transcriptChanged",
+      ),
+      rule: "SpeechDialog.onTranscript: exact originating input command",
+    },
+    {
+      source: changed(
+        app,
+        "onSelect: inputTools.openCapture",
+        "onSelect: (hideWindow) => inputTools.openCapture(hideWindow)",
+      ),
+      rule: "exchange-input-tool-owner-seams:",
+    },
+  ];
+  for (const entry of cases) {
+    parse({ Candidate: entry.source });
+    assert.throws(
+      () => consumption(entry.source, host, owner),
+      (error) =>
+        error instanceof assert.AssertionError &&
+        error.message.startsWith("exchange-input-tool-owner-seams:") &&
+        error.message.includes(entry.rule),
+    );
+  }
+  const close = oneVariable(parse({ App: app }).get("App")!, "closeSpeech");
+  const statement = close.parent.parent.getText();
+  const moved = changed(
+    changed(app, statement, ""),
+    "  const inputTools =",
+    statement + "\n  const inputTools =",
+  );
+  parse({ Candidate: moved });
+  assert.throws(
+    () => consumption(moved, host, owner),
+    (error) =>
+      error instanceof assert.AssertionError &&
+      error.message.includes(
+        "exchange-input-tool-owner-seams: early close before startup return",
+      ),
+  );
+  const extraWork =
+    exchangeInputToolOwner + '\nfetch("/unreviewed-input-request");';
+  parse({ CandidateOwner: extraWork });
+  assert.throws(
+    () =>
+      consumption(
+        app,
+        host,
+        owner,
+        subjectOwner,
+        exchangeReadOwner,
+        stableNavigationHost,
+        extraWork,
+      ),
+    (error) =>
+      error instanceof assert.AssertionError &&
+      error.message.includes(
+        "exchange-input-tool-owner-seams: reviewed input owner API",
+      ),
+  );
+});
+test("input owner imports may be renamed without changing actual direct consumption", () => {
+  const alias = changed(
+    changed(
+      app,
+      "  createExchangeInputToolCommands,",
+      "  createExchangeInputToolCommands as createOriginalInputTools,",
+    ),
+    "const inputTools = createExchangeInputToolCommands(",
+    "const inputTools = createOriginalInputTools(",
+  );
+  consumption(alias, host, owner);
 });
 test("six previously accepted Host/Origin counterfactuals reject before old-tree normalization for the exact source rule", () => {
   const cases = [

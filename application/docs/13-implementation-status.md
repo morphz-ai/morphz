@@ -1,5 +1,44 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 18：输入工具状态、生命周期与命令实际消费
+
+`host/use-exchange-input-tools.ts` 现由真实 App 消费，不是未接线 helper。
+三组原 state/ref 在原位置注册；关闭语音命令在 startup return／键盘
+effect 前，完整媒体命令在原 contextTitle 后。12 个原附件、麦克风、
+目录、语音和截图 callback 使用同一命令 owner；原 JSX、条件、key/ref、
+禁用、焦点、草稿写入、项目与导航归属不变。采集／ASR、上传与目录授权
+仍归原领域组件／Client，不新增 store、权限镜像、effect 或网络请求。
+
+实际接线发现原 Preferences 的 `artifactRevision` 是 `number | null`，
+修复 owner 和固定旧适配端口的一行类型声明，不复制／转换原 prefs。
+固定旧 21 处算法／初始化与 Git 对照保持，完整 App／Host JSX、81 处
+React 注册与 16 个 effects 的旧摘要不重算。有限门禁分别检查实际导入、
+原 render capture、直接消费、early/late 顺序及无条件注册；独立复核
+曾发现条件分支／隐藏函数包住退休 hook 的合法反例可放行，现已按直接
+宿主语句规则拒绝，保留反例，不用 parse error 充当拒绝证据。
+
+根最终输入／实际接线组合 34/34；实际 React StrictMode 挂载 1/1，
+覆盖原状态和语音／截图组件、有效 PNG 解码、合成采集及控制端口。
+此前固定 Git／独立适配复核和根检查日志分别保留。冻结输入／Reader
+checkpoint 的全量 Node 为 1719 项，1549 通过、170 明确能力跳过，
+零失败／取消；完整 build、类型、限定格式及差异检查通过。
+
+固定阶段 17 编译旧版与最终输入／Reader 候选的页面对照各为：导航 53/53、
+Reader 19/19；媒体在仅校准截图菜单入口后，各为 27/28，同一原听写
+红色停止提示失败，未改原听写断言。两条明确撤下的独立转写用例不纳入
+此现行入口矩阵，保留原用例，不恢复 UI、不称其能力已验收。媒体采集、
+截图和 guest bridge 是受控端口，不能据此声称系统权限／硬件／供应商通过。
+
+页面逐例核三份实际 HTTP 资产及完整 SHA；旧 JS 为
+`46e1568adc6eb59a6207959f73e1cc19093dc31ce08e9b9016a5bf75869c62a3`，
+新 JS 为 `44f29131c9d1c182d19de94f10482788a414e37e4bcf839ba6c1d2cb59bb5283`。
+CSS 仍为 `6b1af0246ec4f33cf7cf5de0e3fb00d4cb9158e16d257d5fbc390293feb2027d`，
+preload 仍为原字节。新冻结资产同时含 Reader 迁移，不能称输入单独 bundle。
+根证据在 `/tmp/morphz-exchange-input-owner-root.1ZYkPK`，输入独立接线
+复核在 `/tmp/morphz-input-tools-consumption.SX5G2V`。用户已另行授权恢复
+听写红色提示，作为后续独立缺陷修复，不混入此不变迁移。原 App 的
+定点退出恢复与最终原生验收仍未完成，整体前端目标继续。
+
 ## 2026-10-04 截图回归：使用已确认的输入添加入口
 
 字节未变的 `capture.spec.ts` 在固定阶段 17 编译旧版及最初输入／Reader

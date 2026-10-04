@@ -10,7 +10,6 @@ import {
   type CSSProperties,
 } from "react";
 import { createPortal, flushSync } from "react-dom";
-import { replaceDictationTail } from "./live-dictation.js";
 import {
   ArrowUp,
   MessageCircle,
@@ -111,7 +110,6 @@ import type { ReadingLocation } from "../../../packages/core/src/reader.js";
 import { SearchDocuments } from "./LibraryDialogs.js";
 import { UnderstandingPanel } from "./UnderstandingPanel.js";
 import { SpeechDialog } from "./SpeechDialog.js";
-import type { SpeechScope } from "./client.js";
 import { CaptureDialog } from "./CaptureDialog.js";
 import { MessageAttachments } from "./MessageAttachments.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
@@ -191,6 +189,14 @@ import {
   useExchangeReadReceiptCommit,
   useExchangeReadReceiptState,
 } from "./host/use-exchange-read-receipts.js";
+import {
+  createExchangeInputToolCloseCommand,
+  createExchangeInputToolCommands,
+  useExchangeDictationState,
+  useExchangeInputMediaState,
+  useExchangeInputToolCommit,
+  useExchangeNativeInputState,
+} from "./host/use-exchange-input-tools.js";
 
 type View = WorkSurfaceView;
 import {
@@ -373,35 +379,18 @@ function WorkspaceApp({
   const subjectActivity = useSubjectActivityState();
   const { allActivity } = subjectActivity;
   const [unreadNotifications, setUnreadNotifications] = useState(0);
-  const dictationControls = useRef<{
-    toggle(): void;
-    interrupt(): void;
-  } | null>(null);
-  const [speechRecording, setSpeechRecording] = useState(false);
+  const inputDictation = useExchangeDictationState();
+  const { dictationControls, speechRecording, setSpeechRecording } =
+    inputDictation;
   const [privateNotice, setPrivateNotice] = useState(""),
     [connectionOpen, setConnectionOpen] = useState(false),
     [settingsSection, setSettingsSection] = useState<SettingsSection | null>(
       null,
     ),
-    [inputErrors, setInputErrors] = useState<Record<string, string>>({}),
-    [uploadingDrafts, setUploadingDrafts] = useState<Record<string, boolean>>(
-      {},
-    ),
-    [speech, setSpeech] = useState<{
-      scope: SpeechScope;
-      title: string;
-      key: string;
-      draft: InputDraft;
-      modal?: boolean;
-    } | null>(null),
-    [capture, setCapture] = useState<{
-      key: string;
-      projectId: string;
-      hideWindow: boolean;
-      artifactId?: string;
-      artifactRevision?: number;
-    } | null>(null),
-    subjectInspection = useSubjectInspectionState(),
+    [inputErrors, setInputErrors] = useState<Record<string, string>>({});
+  const inputMedia = useExchangeInputMediaState();
+  const { uploadingDrafts, speech, capture } = inputMedia;
+  const subjectInspection = useSubjectInspectionState(),
     { executions, setExecutions, understandingOpen, setUnderstandingOpen } =
       subjectInspection,
     [searchOpen, setSearchOpen] = useState(false),
@@ -630,10 +619,9 @@ function WorkspaceApp({
     ready: false,
     grants: [],
   });
-  const [directoryPickerScope, setDirectoryPickerScope] = useState<
-    string | null
-  >(null);
-  const [nativeExportDialog, setNativeExportDialog] = useState(false);
+  const nativeInput = useExchangeNativeInputState();
+  const { directoryPickerScope, nativeExportDialog, setNativeExportDialog } =
+    nativeInput;
   function conversationKey(workspaceId: string) {
     return workSurfaceConversationId(
       workSurface,
@@ -825,15 +813,7 @@ function WorkspaceApp({
   };
   useWorkspaceNavigationCommit(navigation, { place, travel });
   useExchangeControllerFocus(exchangeController);
-  useEffect(() => {
-    // Do not retain a hidden recorder that could restart when returning here.
-    setSpeech((current) =>
-      current &&
-      (current.key !== contextKey || (!current.modal && !inputVisible))
-        ? null
-        : current,
-    );
-  }, [contextKey, inputVisible]);
+  useExchangeInputToolCommit(inputMedia, { contextKey, inputVisible });
   // Keep the original artifact-existence witness for annotation JSX narrowing.
   const collaborationVisible =
     !!artifact &&
@@ -1319,18 +1299,16 @@ function WorkspaceApp({
     });
     showInput();
   }
-  function closeSpeech() {
-    dictationControls.current?.interrupt();
-    if (speech && !speech.modal && speech.key === currentContext.current) {
-      // Restore a stable control before the inline close button unmounts.
-      // Closing dictation is not leaving the surrounding composer.
-      keepExchangeOpen();
+  const closeSpeech = createExchangeInputToolCloseCommand({
+    dictation: inputDictation,
+    media: inputMedia,
+    currentContext,
+    keepExchangeOpen,
+    focusMicrophone: () =>
       exchange.current
         ?.querySelector<HTMLButtonElement>('button[aria-label="语音输入"]')
-        ?.focus();
-    }
-    setSpeech(null);
-  }
+        ?.focus(),
+  });
   useEffect(() => {
     function keyboard(e: KeyboardEvent) {
       if (e.isComposing || e.keyCode === 229 || e.defaultPrevented) return;
@@ -1630,6 +1608,30 @@ function WorkspaceApp({
     (activeInstance?.applicationId === browserApplication.id
       ? browserPage?.title || "浏览器"
       : project.title);
+  const inputTools = createExchangeInputToolCommands({
+    closeSpeech,
+    dictation: inputDictation,
+    media: inputMedia,
+    native: nativeInput,
+    render: {
+      contextKey,
+      directoryScope,
+      contextTitle,
+      draft,
+      project,
+      artifact,
+      preferences: prefs,
+    },
+    drafts: { replace: setDraft, update: updateDraft },
+    currentContext,
+    exchange: { showInput, setInteraction },
+    focus: {
+      scheduleInput: () => requestAnimationFrame(() => input.current?.focus()),
+    },
+    openSavedCapture: (projectId, id) => void openObject(projectId, id),
+    reportInputError: (key, message) =>
+      setInputErrors((old) => ({ ...old, [key]: message })),
+  });
   // A personal desk remains the real input owner, but is not an explicit
   // project association. Named conversations already belong to a project.
   const showPlainComposerScope = !!(
@@ -2971,21 +2973,7 @@ function WorkspaceApp({
                                   !!uploadingDrafts[contextKey] ||
                                   !client.online ||
                                   (draft.attachments?.length ?? 0) >= 8,
-                                onSelect: (hideWindow) =>
-                                  setCapture({
-                                    key: contextKey,
-                                    projectId: project.id,
-                                    hideWindow,
-                                    ...(artifact
-                                      ? {
-                                          artifactId: artifact.id,
-                                          artifactRevision:
-                                            draft.revision ??
-                                            prefs.artifactRevision ??
-                                            artifact.revision,
-                                        }
-                                      : {}),
-                                  }),
+                                onSelect: inputTools.openCapture,
                               }}
                               key={`attachments:${contextKey}`}
                               inputRef={input}
@@ -3002,24 +2990,9 @@ function WorkspaceApp({
                                 !!uploadingDrafts[contextKey] ||
                                 !client.online
                               }
-                              onBusy={(busy) =>
-                                setUploadingDrafts((old) => ({
-                                  ...old,
-                                  [contextKey]: busy,
-                                }))
-                              }
-                              onChange={(update) =>
-                                updateDraft(contextKey, (old) => ({
-                                  ...old,
-                                  attachments: update(old.attachments ?? []),
-                                }))
-                              }
-                              onError={(message) =>
-                                setInputErrors((old) => ({
-                                  ...old,
-                                  [contextKey]: message,
-                                }))
-                              }
+                              onBusy={inputTools.attachmentsBusyChanged}
+                              onChange={inputTools.attachmentsChanged}
+                              onError={inputTools.attachmentError}
                             />
                           </>
                         }
@@ -3036,28 +3009,7 @@ function WorkspaceApp({
                                 !client.online) &&
                               !speechRecording
                             }
-                            onClick={() => {
-                              if (speech?.key === contextKey && !speech.modal)
-                                dictationControls.current?.toggle();
-                              else
-                                setSpeech({
-                                  scope: {
-                                    projectId: project.id,
-                                    ...(artifact
-                                      ? {
-                                          artifactId: artifact.id,
-                                          revision:
-                                            draft.revision ??
-                                            prefs.artifactRevision ??
-                                            artifact.revision,
-                                        }
-                                      : {}),
-                                  },
-                                  title: contextTitle,
-                                  key: contextKey,
-                                  draft: { ...draft },
-                                });
-                            }}
+                            onClick={inputTools.toggleDictation}
                           >
                             {speechRecording ? <Square /> : <Mic />}
                           </button>
@@ -3128,22 +3080,11 @@ function WorkspaceApp({
                                     !client.online ||
                                     !!draft.continuation
                                   }
-                                  onSelecting={(selecting) =>
-                                    setDirectoryPickerScope((current) =>
-                                      selecting
-                                        ? directoryScope
-                                        : current === directoryScope
-                                          ? null
-                                          : current,
-                                    )
+                                  onSelecting={
+                                    inputTools.directorySelectingChanged
                                   }
                                   onState={setDirectoryState}
-                                  onError={(message) =>
-                                    setInputErrors((old) => ({
-                                      ...old,
-                                      [contextKey]: message,
-                                    }))
-                                  }
+                                  onError={inputTools.attachmentError}
                                 />
                               ) : undefined
                             }
@@ -3437,56 +3378,22 @@ function WorkspaceApp({
             inlineTarget={speech.modal ? undefined : dictationSlot!}
             transcriptLimit={30000 - draft.body.length - (draft.body ? 1 : 0)}
             onTranscript={
-              speech.modal
-                ? undefined
-                : (text, previous) =>
-                    updateDraft(speech.key, (saved) => ({
-                      ...saved,
-                      body: replaceDictationTail(saved.body, text, previous),
-                      revision: speech.scope.revision ?? null,
-                    }))
+              speech.modal ? undefined : inputTools.transcriptChanged
             }
             client={client}
             scope={speech.scope}
             title={speech.title}
             onClose={closeSpeech}
-            onInsert={(text) => {
-              const saved = speech.draft;
-              const body = [saved.body, text].filter(Boolean).join("\n");
-              if (body.length > 30000)
-                throw new Error(
-                  "这段文字超过单条消息长度，请先保存为文档，再围绕文档输入；文字不会被截断。",
-                );
-              setDraft(speech.key, {
-                ...saved,
-                body,
-                revision: speech.scope.revision ?? null,
-              });
-              setSpeech(null);
-              setInteraction("input");
-              requestAnimationFrame(() => input.current?.focus());
-            }}
+            onInsert={inputTools.transcriptInserted}
           />
         )}
       {capture && (
         <CaptureDialog
           client={client}
           {...capture}
-          onClose={() => setCapture(null)}
-          onAttach={(attachment) => {
-            const key = capture.key;
-            updateDraft(key, (old) => ({
-              ...old,
-              attachments: [...(old.attachments ?? []), attachment],
-            }));
-            setCapture(null);
-            if (currentContext.current === key) showInput();
-          }}
-          onSaved={(id) => {
-            const projectId = capture.projectId;
-            setCapture(null);
-            void openObject(projectId, id);
-          }}
+          onClose={inputTools.closeCapture}
+          onAttach={inputTools.captureAttached}
+          onSaved={inputTools.captureSaved}
         />
       )}
       {searchOpen && (

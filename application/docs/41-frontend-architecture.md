@@ -23,6 +23,13 @@
 | 登记图形与透明按钮   | `design/control-icons.tsx`、`ui/IconButton.tsx`；SidebarToggle、ComposerToolButtons、ExchangeControls                            | 原七图形／两 role、单 native button、原 props/ref/key/compact 焦点。13 项 Node／门禁与 5 项实际隔离挂载通过；当前契约的相关矩阵 60/60 通过，有限治理，不包含全部菜单／按钮或原窗最终验收。 |
 | 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`                                            | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                                                |
 
+输入工具的原三组状态／ref、退休 effect、early close 与完整媒体命令现归
+`host/use-exchange-input-tools.ts`，真实 App 的 12 个消费 callback 已接线。
+草稿／焦点／导航／授权 writer 仍借原端口，不移动注册顺序，不恢复独立
+转写入口；完整旧 App／Host 树、原算法与有限实际接线门禁共同约束。
+原采集／ASR、上传和目录权限不归这个 owner，原 App／硬件最终验收
+仍未完成。冻结旧新页面与同一听写视觉红项的界限见阶段 18 实施记录。
+
 主体检查器的生产状态、按工作现场的详情记忆、纯派生展示和完整语义动作现归
 `host/use-subject-inspector.ts`。四组注册与记忆 layout effect 仍在 App 的原
 相对位置，不新增 store、请求、偏好键或 effect；close 命令仍在 startup
