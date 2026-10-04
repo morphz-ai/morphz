@@ -1,0 +1,116 @@
+.app :is(.composer-media-tools, .exchange-view-tools) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+.app .exchange-view-tools {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+}
+/* Reading text may scroll beneath these local controls. Only the group gets
+   a material surface; input-only tools keep their clear floating treatment. */
+.app
+  .exchange-panel:has(> .conversation)
+  > .exchange-controls-slot
+  .exchange-view-tools {
+  background: var(--surface-popover);
+  border-radius: 8px;
+  -webkit-backdrop-filter: var(--popup-blur);
+  backdrop-filter: var(--popup-blur);
+}
+.app .composer-unread {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.app :is(.composer-media-tools, .exchange-view-tools) > .icon-button {
+  position: relative;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 8px;
+  border: 0;
+  color: var(--text-secondary);
+  border-radius: 9px;
+  background: var(--surface-raised);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+/* Panel-local tools are quiet chrome, not application-launch surfaces. */
+.app .exchange-view-tools > .icon-button {
+  flex-basis: 28px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 7px;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+}
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .composer-tool-group-start {
+  margin-left: 8px;
+}
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .composer-tool-reserved {
+  visibility: hidden;
+  pointer-events: none;
+}
+.app :is(.composer-media-tools, .exchange-view-tools) > .icon-button > svg {
+  position: relative;
+  width: 16px;
+  height: 16px;
+}
+.app .exchange-view-tools > .icon-button > svg {
+  width: 13px;
+  height: 13px;
+}
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .icon-button:hover:not(:disabled):not([aria-pressed="true"]) {
+  background: var(--soft);
+}
+/* A persistent toggle is not a hover or a disabled control. Keep the same hit
+   area, but give it a pressed surface and stronger icon independent of focus. */
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .icon-button[aria-pressed="true"]:not(:disabled) {
+  background: var(--selection);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.app .exchange-view-tools > .icon-button[aria-pressed="true"]:not(:disabled) {
+  color: var(--ink);
+  box-shadow: none;
+}
+.app
+  :is(.composer-media-tools, .exchange-view-tools)
+  > .icon-button[aria-pressed="true"]:not(:disabled)
+  > svg {
+  stroke-width: 2;
+}
+@media (pointer: coarse) {
+  .app :is(.composer-media-tools, .exchange-view-tools) {
+    gap: 0;
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .app :is(.composer-media-tools, .exchange-view-tools) > .icon-button {
+    flex-basis: 44px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

@@ -1,5 +1,47 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 57：交流控件样式的独立所有权
+
+生产三路径：原 visual 的交流媒体／历史控件完整 **16 条、63 声明**迁入
+`features/exchange/exchange-controls.css`；唯一实际 main import 保持在
+visual 之后、exchange-layout 之前。原细／粗指针、28／32／44 命中尺寸、
+材质、pressed／hover／reserved 状态、未读点、token、motion 与 DOM 不改。
+早 phase 的 application Dock 仍由原 owner 拥有，不能把 Dock 与面板控件
+混成一种语义或整体后移。原 coarse floating survivor 保留。
+
+新有限门禁九组固定完整原 16／63 recipe、唯一实际 runtime import 与
+相对 phase、竞争 writer，并核真实别名／独立 feature 增长及 native
+selector／quoted-data 反例。旧 Exchange CSS 六组只交接一条已迁移
+writer 的实际物理 owner 与唯一 phase；旧 frame 档案、算法及指定负例
+不重算，不采用跨 owner inverse、整 App hash 或一份不断扩大的公共库存。
+
+两个干净 normal build 均通过完整 typecheck、Vite、service 编译及 prune；
+候选首轮新增测试的 union flatMap 类型红项保留，改为同义声明计数 reduce，
+没有改生产。最终当前源码完整 typecheck、八个相关源码格式及 diff 检查
+通过。统一入口四文件 **52/52**；修正当前过时测试后的完整回归 **355 文件、
+2,427 项、2,423 通过／零失败／零取消／4 明确未启用**，见下方独立测试
+交接记录。实际 Runtime 五个集成场景使用隔离状态与受控模型。
+
+根独立核 actual Git51af 的完整来源，实际 index 选中的两份生产 CSS 各
+2,764 rules。全部 16 个完整 compiled recipe 的 selector、context、ordered
+declaration／value／important 相等；只移除这 16 件及其独占空 wrapper 后，
+完整余下有序流相等。每条跨越的未选 rule 全量保留，没有按“看起来不竞争”
+过滤。两份完整 CSS bytes 不同；这不是 universal cascade、JS、审美或原窗证明。
+
+六文件完整旧／新页面的第二轮各 **23/24**；六个 Floating 场景、七个
+伸缩场景及原 200% Electron 场景通过，唯一原生前台前置同样失败。完整
+case、断言、预算、零 retry 与原始首红保留；没有原始几何附件，不声称
+双方逐像素或完整几何值相等。原 App 当前系统锁屏，最终原生命中／焦点／
+硬件验收未完成；PDF 与 Shell 剩余样式所有权和整体跨页面验收继续，
+目标 active，不把本阶段迁移当成整体完成。
+
+证据：`/tmp/morphz-controls-stage57-baseline.YikRAY/root-normal-build.log`、
+`/tmp/morphz-controls-stage57-current.35nZrH/root-normal-build-second.log`；
+`/tmp/morphz-exchange-controls-compiled.kvVItU/RESULT.json` 及完整 profiles／
+remainder／crossings；`/tmp/morphz-controls-stage57-canonical.T53XHF/` 的
+`final-current-typecheck.log`、完整回归和 case 对照；
+`/tmp/morphz-controls-stage57-contract-entry.A6JJFE/` 保存两 lane 原始收据。
+
 ## 2026-10-05 前端回归：现有 Dock 与输入消费合同的测试交接
 
 仅两个测试及本记录。Floating 原六个完整用例保留，四行预期跟随用户

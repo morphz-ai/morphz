@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-05 · 版本：1.17 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-05 · 版本：1.18 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-05。
 
@@ -24,6 +24,7 @@
 | 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费                                         | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。                         |
 | Thread 状态图形      | `ExecutionStatusIcon.tsx`；ExecutionSidebar 与 ExecutionDialog 的原外层 span 消费                                                | 七状态图形与缺省回退共用，原状态权威／标签／静态尺寸及运行波形保留，无新 DOM、effect 或请求；固定旧 oracle、实际 StrictMode 及有限门禁 7/7，原旧 Host 29/29，新合并回归 61/61。            |
 | 登记图形与透明按钮   | `design/control-icons.tsx`、`ui/IconButton.tsx`；SidebarToggle、ComposerToolButtons、ExchangeControls                            | 原七图形／两 role、单 native button、原 props/ref/key/compact 焦点。13 项 Node／门禁与 5 项实际隔离挂载通过；当前契约的相关矩阵 60/60 通过，有限治理，不包含全部菜单／按钮或原窗最终验收。 |
+| 交流控件样式         | `features/exchange/exchange-controls.css`；实际 main 在 visual 与 exchange-layout 之间加载 | 原完整 16 条／63 声明及唯一 runtime phase；早 phase 的 Dock 仍独立。有限 owner 门禁与完整 selected compiled flow／余流对照，不改状态、DOM、图形、材质或尺寸，不代替原窗验收。 |
 | 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`                                            | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                                                |
 
 输入工具的原三组状态／ref、退休 effect、early close 与完整媒体命令现归
@@ -479,6 +480,8 @@ App 保留原草稿／导航／焦点权威；阶段 56 将完整原 compose 算
 认知应用定义。已有界面安装／启动与受限桥；安装并不自动注册第三方业务服务、
 Tool／Harness 或数据权威。公开的薄型 author SDK、完整的领域接入与可选 GUI
 合同仍未交付，不能把内部源码类型和手写 postMessage 示例当作已稳定的外部 SDK。
+实际 `record-input` 应用激活仍只解析四个内置 manifest 与已注册领域实例；
+第三方界面包声明 Harness 不等于已经打通自身身份的业务／执行接入。
 这轮保留原协议／权限，不借前端重构扩充第三方能力。
 
 ## 3. 状态所有权：不是把所有东西放进一个全局 store
@@ -853,14 +856,20 @@ control carrier 的有限入口 phase；原 recipe、callback／反例和不可�
 页面直接消费，ArtifactEditor 保留原同 binding 兼容出口。图形含义与
 调用方条件不变，无新 wrapper／effect／样式。有限当前消费门禁与显式
 旧新实际图形／样式对照分别证明边界和等价，不锁整页或借 peer inverse。
-现件编辑仍有合法生命周期所有权；App 内完整三分支 application compose
-preparation 尚待交接，不因此把每个局部 JSX 或状态再套一个 controller。
+现件编辑仍有合法生命周期所有权；阶段 56 已将完整三分支 application
+compose preparation 交给独立 owner，App 在原 render 借原端口构造，
+builtin 与 sandbox 共用原同步准备命令。不因此把每个局部 JSX 或状态
+再套一个 controller，也不把准备草稿等同于发送／执行。
 
 交流样式的实际 33 源审计确认，单行底栏与交流几何已有 owner，五类旧
 footer／floating class 未有当前 TSX 消费，保留合法 fallback。Dock 的早
 phase 与后公共控件细化共同决定实际命中尺寸，不能整体后移以凑整理数量。
-交流 controls 的 16 条／63 声明完整 role recipe 是已定位的最小候选，
-尚未迁移或实测，不把来源报告等同编译／视觉／原生命中验收。
+阶段 57 已把交流 controls 的完整 16 条／63 声明迁入独立 feature owner，
+保留原相对 phase；九组有限 owner 检查、完整实际 compiled recipe／余流
+及跨越节点收据、完整旧新页面回归分别记录。页面两 lane 各 23/24，剩余
+同一原生前台前置未通过；不把来源报告或编译相等自动当成原生命中验收。
+PDF 完整渲染器样式与 Shell packing 仍须按各自实际职责、两个原级联承载
+及完整消费者验收继续，不为凑目录统一合并不同权限或生命周期的查询。
 
 整体跨页面外观／交互回归及原 App 的原生焦点、硬件和系统命中验收仍未完成。
 图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美

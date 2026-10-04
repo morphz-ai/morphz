@@ -8,6 +8,13 @@ import {
   retainedFrameRules,
   type FrozenRule,
 } from "./fixtures/exchange-frame-b9906e0c.js";
+import {
+  exchangeControlsFile,
+  originalExchangeControlFrameTuple,
+  exchangeControlsCssViolations,
+  exchangeControlsEntryViolations,
+  isExchangeControlsSpecifier,
+} from "./fixtures/exchange-controls-51af4c20.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -332,6 +339,41 @@ function violations(sources: Sources) {
   const layout = parsed.get(layoutFile);
   const visual = parsed.get(visualFile);
   if (!layout || !visual) return [...result, "missing-owner"];
+  // This is current physical ownership, not an inverse of source or a new
+  // historical tuple. The complete bounded role must pass before this one
+  // immutable retained material tuple can acquire its new physical location.
+  const roleErrors = exchangeControlsCssViolations(parsed);
+  result.push(...roleErrors);
+  const currentRetained = new Map(expectedRetained);
+  if (roleErrors.length === 0) {
+    const matches = retainedFrameRules.filter(
+      (tuple) =>
+        JSON.stringify(tuple) ===
+        JSON.stringify(originalExchangeControlFrameTuple),
+    );
+    contract("exchange-controls-retained-handoff", () =>
+      assert.equal(matches.length, 1),
+    );
+    if (matches.length === 1) {
+      const material = frozenSignature(matches[0]!);
+      const original = expectedRetained.get(visualFile) ?? [];
+      const retainedMatches = original.filter(
+        (rule) => JSON.stringify(rule) === JSON.stringify(material),
+      );
+      contract("exchange-controls-retained-handoff", () =>
+        assert.equal(retainedMatches.length, 1),
+      );
+      if (retainedMatches.length === 1) {
+        currentRetained.set(
+          visualFile,
+          original.filter(
+            (rule) => JSON.stringify(rule) !== JSON.stringify(material),
+          ),
+        );
+        currentRetained.set(exchangeControlsFile, [material]);
+      }
+    }
+  }
   contract("layout-exact-geometry", () => {
     assert.deepEqual(rules(layout), expectedLayout);
     assert.ok(
@@ -377,7 +419,7 @@ function violations(sources: Sources) {
       contract(`frame-retained:${file}`, () => {
         assert.deepEqual(
           rules(root).filter((rule) => frameGoverned(rule.selector)),
-          expectedRetained.get(file) ?? [],
+          currentRetained.get(file) ?? [],
         );
       });
     if (file === layoutFile || file === visualFile) continue;
@@ -414,6 +456,18 @@ function violations(sources: Sources) {
       const project = snapshot.getProject(config)!;
       if (project.program.getSyntacticDiagnostics().length)
         result.push("module-parse");
+      // This mandatory phase/origin proof uses the existing parsed program;
+      // the role's physical retained mapping is never sufficient on its own.
+      result.push(
+        ...exchangeControlsEntryViolations(
+          [...sources.modules.keys()].map((file) => ({
+            file,
+            source: project.program.getSourceFile(`${directory}/${file}`)!,
+          })),
+          sources.css,
+          (identifier) => !project.checker.getSymbolAtLocation([identifier])[0],
+        ),
+      );
       let imports = 0;
       for (const file of sources.modules.keys()) {
         const source = project.program.getSourceFile(`${directory}/${file}`)!;
@@ -456,11 +510,15 @@ function violations(sources: Sources) {
             result.push(`component-import:${file}`);
           const index = direct.indexOf(statement);
           const previous = direct[index - 1]?.moduleSpecifier;
+          const beforeRole = direct[index - 2]?.moduleSpecifier;
           const next = direct[index + 1]?.moduleSpecifier;
           if (
             !previous ||
             !isStringLiteral(previous) ||
-            previous.text !== `./${visualFile}` ||
+            !isExchangeControlsSpecifier(file, previous.text) ||
+            !beforeRole ||
+            !isStringLiteral(beforeRole) ||
+            beforeRole.text !== `./${visualFile}` ||
             !next ||
             !isStringLiteral(next) ||
             next.text !== "./inspector.css" ||
@@ -900,8 +958,8 @@ test("入口AST拒绝顺序漂移、重复及组件或延迟加载", () => {
           s.modules
             .get("main.tsx")!
             .replace(
-              'import "./visual-system.css";\nimport "./exchange-layout.css";',
-              'import "./exchange-layout.css";\nimport "./visual-system.css";',
+              'import "./visual-system.css";\nimport "./features/exchange/exchange-controls.css";\nimport "./exchange-layout.css";',
+              'import "./exchange-layout.css";\nimport "./features/exchange/exchange-controls.css";\nimport "./visual-system.css";',
             ),
         ),
       "entry-order",
