@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-05 · 版本：1.16 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-05 · 版本：1.17 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-05。
 
@@ -15,6 +15,7 @@
 | 导航状态与回执       | `host/use-workspace-navigation.ts` 的 state／commands／commit；`use-workspace-navigation-host.ts` 持有唯一 prefs／recency writer | 原 generation／trail 与焦点顺序保留；同身份刷新可接续已发起的导航，私有 UI、草稿与 DOM lease 仍退休。只迁已审查边界，实际 HTTP 资产与门禁证据见阶段 17；不是完整 App 拆分或原窗验收。      |
 | 应用导航与实例切换   | 同一 navigation commands owner；App 的应用入口与 ApplicationHost 的启动／关闭消费 typed actions                                  | Reader／剧本库／内容／Browser／激活／普通导航及原捕获邻居迁入；同步 prepared operation 保留原 Promise、Host 等待和 busy 清理，不新增状态、存储或 effect。有限旧实现对照与实际消费门禁。    |
 | 内置应用界面接线     | `host/builtin-application-adapters.tsx`；App 在原 render 中构造，ApplicationHost 消费 renderer／recent 两端口                     | Browser／Reader／ScriptStudio 的完整原 props recipe 与 recent routing 归可信组合 adapter；Host 保留实例 key、显隐、顶栏与独立 sandbox 协议。无新 hooks、writer、请求或权限，不是第三方 SDK。 |
+| 应用输入准备         | `host/application-compose-preparation.ts`；App 在原 render 位置构造，builtin adapter 与 sandbox Host 借同一个命令 | 完整原剧本／对象／普通三分支及同步回执不变，借原 scoped 草稿 writer、真实 flushSync 与焦点端口；不增加 state／effect／请求，不改沙箱权限，不是第三方 SDK。 |
 | 草稿生命周期         | `host/exchange-drafts.ts` 的三 state hooks／五 local commands；App 保留发送、导航与原退休 effect                                 | 原本机键、初始化位置、ref／render snapshot、逐步写入失败及 ID 保留；16 项逻辑、6 项有限 AST、4 项实际 React 挂载、31 项未改旧 Host 回归。不是新 store 或原子事务，原窗复验待解锁。         |
 | 发送协议与宿主命令   | `host/submit-exchange-draft.ts` 与 `host/exchange-submission-commands.ts`；App 保留原注册与 DOM 焦点端口                         | 原四分支、Profile flush→scope→当前工作面复核、补充原身份与冻结重试字节、准备锁与 staged 反馈；有限协议、完整旧算法与实际接线门禁，不新增授权或发送入口。                                   |
 | 本机输入投递与确认   | `data/local-input-delivery.ts`；Client 直接消费保存／投递、重试及刷新确认                                                        | 完整冻结载荷、身份范围、同步准备与原 Promise 顺序；storage lazy 端口、发送 refs 与身份／刷新权威仍在 Client，不建第二份 store，不重放旧输入或改请求策略。                                  |
@@ -463,8 +464,11 @@ apps/web/src/
 controller 或权限 gateway。它只借原 render 捕获的 Client／语义端口，
 返回原真实组件；Reader／Browser／ScriptStudio 继续拥有自己的生命周期。
 通用 ApplicationHost 不再 import 这三个专业组件或携带其专用 props。
-App 保留原草稿／导航／焦点权威与完整 compose 算法，只把同一个命令提供给
-内置 adapter 和 sandbox 消费方。没有新增应用注册、存储或执行入口。
+App 保留原草稿／导航／焦点权威；阶段 56 将完整原 compose 算法交给
+`application-compose-preparation`，在原 render 位置借原端口构造，并将
+同一个同步准备命令提供给内置 adapter 和 sandbox 消费方。它不新增
+状态、effect、请求、注册、存储或执行入口；对象分支的实际 flushSync 回执
+与普通／剧本分支的原排队发布区别保留，不把准备草稿等同于发送输入。
 
 第三方 UI 继续通过现有 opaque-origin iframe 与受限消息桥接入，不获得该
 内部 factory、完整 WorkspaceClient、React controller、Node／native ports

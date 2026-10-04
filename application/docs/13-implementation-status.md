@@ -1,5 +1,40 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 56：应用输入准备的独立职责
+
+生产两路径：App 的原 `applicationCompose` 完整三分支迁入
+`host/application-compose-preparation.ts`，仍在原 render 位置同步构造。
+借原 captured render、Client 读取、scoped 草稿 writer、真实 flushSync、
+当前工作面／听写 refs 与焦点端口；builtin adapter 和 sandbox Host
+消费同一个返回命令。剧本优先、版本／冲突检查、对象 latest updater 的
+真实 ACK、普通 captured append、异常与部分写入顺序保持。没有新增
+state、effect、请求、发送入口、权限、SDK、DOM、CSS 或领域存储。
+
+统一入口八文件 **62/62**，零失败／跳过／取消。有限实际接线门禁保留
+二十个 parse-valid 反例及实际 import／const 别名、独立消费 feature 正例。
+纯算法与真实 React StrictMode 挂载保留原 scoped draft writer／storage；
+显式固定旧实现对照 **8/8**。首 mounted 红项是普通／剧本同步 ACK 后
+立即观察尚未 commit 的 React DOM：现保留完整 `immediateSnapshot`，
+仅另等真实 DOM 发布后记录终态，未修改生产调度或对象 flushSync。
+
+原 builtin 门禁仅交接箭头 initializer 为真实工厂调用；两旧测试共四组
+导入反例／别名锚点跟随 Prettier 的单行实际导入。首轮未命中锚点的
+三失败保留；原断言／规则／二十三 builtin 反例及 Reference 二十六个
+历史反例不删。独立完整源码 inverse 核十三份实际原件、完整原三分支
+及两个原消费片段；普通 CI 不依赖 Git／临时目录或锁整个当前 App。
+
+干净 Git `728eb101` 原件与仅覆盖批准路径的候选分别正常生产构建通过，
+包括完整 typecheck／服务构建；实际入口选中的 CSS 全字节相等。
+这不是全页面、第三方 SDK、真实供应商或原 App 原生验收。阶段 55 的
+完整回归已结束，见下；阶段 56 后整套复跑、剩余交流控件 owner 及
+原 App 最终验收仍待完成，目标保持 active。
+
+证据：`/tmp/morphz-application-compose-preparation.fpz65K/` 的
+`root-eight-anchor-handoff.log`、`root-eight-formatted-final.log`、
+`root-fixed-current-second.log`、`root-final-source-proof-fourth.json`；
+`/tmp/morphz-compose-stage56-baseline.SP8YoW/root-normal-build.log` 与
+`/tmp/morphz-compose-stage56-current.azMR0n/root-normal-build.log`。
+
 ## 2026-10-05 前端阶段 55：引用命令的真实应用消费链
 
 仅两个测试路径及本记录／架构文档。阶段 54 后完整当前 Node 回归真实结束：
@@ -27,14 +62,18 @@ App／Host／builtin adapter 全字节未改；这只是迁移来源证明，不
 完整回归首轮还实际通过五个 Rust integration case：嵌套活动、Profile、
 response annotation、V2 缺少 metadata 明确失败，以及 Job 唤醒 Host SSE。
 使用隔离测试状态／受控模型，不调用用户业务数据库或冒称真实供应商验收。
-三个 S3 和一个 native-focus 是明确未启用，不是通过或环境故障。当前整套
-复跑及剩余生产 compose／exchange 控件 owner 与原 App 最终验收继续，
+三个 S3 和一个 native-focus 是明确未启用，不是通过或环境故障。阶段 55
+提交 `728eb101` 后完整统一入口复跑已真实结束：351 文件、2,397 项，
+2,393 通过／零失败／零取消／四项上述明确未启用，unexpectedSkips 为空。
+剩余生产 compose／exchange 控件 owner 与原 App 最终验收继续，
 目标 active；没有将此测试修复称为第三方 SDK 或整体前端重构完成。
 
 证据：`/tmp/morphz-full-stage54-root.QurrEu/full-node-current-7c1aea5a.log`；
 `/tmp/morphz-goal-remaining-7c1aea5a.ufBySh/reference-handoff/RESULT.md`；根
 `/tmp/morphz-stage55-root.CHSEix/root-nine-canonical.log`、
 `root-full-typecheck.log`、`root-reference-source-proof-final.json`。
+完整复跑证据为同目录 `root-full-node-728eb101.log` 与
+`root-full-node-terminal.json`，不将提交前首红或定向回归冒称整套全绿。
 
 ## 2026-10-05 前端阶段 54：通用应用宿主与可信内置接线分离
 

@@ -749,8 +749,8 @@ test("current Reference commands keep their true builtin borrow and generic Host
   const integration = { builtin, host };
   const aliasApp = currentApp
     .replace(
-      "  createBuiltinApplicationAdapters,",
-      "  createBuiltinApplicationAdapters as builtinFactory,",
+      'import { createBuiltinApplicationAdapters } from "./host/builtin-application-adapters.js";',
+      'import { createBuiltinApplicationAdapters as builtinFactory } from "./host/builtin-application-adapters.js";',
     )
     .replace(
       "  const builtinApplications = createBuiltinApplicationAdapters({",
@@ -814,8 +814,8 @@ test("current Reference commands keep their true builtin borrow and generic Host
     [
       "type-only called builtin",
       "app",
-      "  createBuiltinApplicationAdapters,",
-      "  type createBuiltinApplicationAdapters,",
+      'import { createBuiltinApplicationAdapters } from "./host/builtin-application-adapters.js";',
+      'import { type createBuiltinApplicationAdapters } from "./host/builtin-application-adapters.js";',
       /reference actual builtin factory value origin/,
     ],
     [

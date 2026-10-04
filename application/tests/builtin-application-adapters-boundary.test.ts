@@ -611,7 +611,7 @@ function verify(values: typeof sources) {
   }
   const compose = binding(app, workspace.body!, "applicationCompose");
   assert.ok(
-    compose.initializer && ts.isArrowFunction(unwrap(compose.initializer)),
+    compose.initializer && ts.isCallExpression(unwrap(compose.initializer)),
     "builtin-one-compose-writer",
   );
   assert.equal(
@@ -796,8 +796,8 @@ test("finite actual consumer/context/trust counterfactuals reject their specifie
     [
       "type-only fake factory",
       "App",
-      "  createBuiltinApplicationAdapters,",
-      "  type createBuiltinApplicationAdapters,",
+      'import { createBuiltinApplicationAdapters } from "./host/builtin-application-adapters.js";',
+      'import { type createBuiltinApplicationAdapters } from "./host/builtin-application-adapters.js";',
       /builtin-actual-factory-value/,
     ],
   ];
@@ -831,8 +831,8 @@ test("actual import/local aliases, static types and genuinely consumed independe
   const app =
     changed(
       sources.App,
-      "  createBuiltinApplicationAdapters,",
-      "  createBuiltinApplicationAdapters as actualBuiltinFactory,",
+      'import { createBuiltinApplicationAdapters } from "./host/builtin-application-adapters.js";',
+      'import { createBuiltinApplicationAdapters as actualBuiltinFactory } from "./host/builtin-application-adapters.js";',
     ).replace(
       "= createBuiltinApplicationAdapters({",
       "= borrowedBuiltinFactory({",
