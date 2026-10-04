@@ -466,8 +466,8 @@ test("entry counterfactuals reject missing, foreign, bound, delayed and incorrec
   reject("phase", "exchange-controls:entry-phase", (sources) =>
     replaceMain(
       sources,
-      `import "./visual-system.css";\n${line}`,
-      `${line}\nimport "./visual-system.css";`,
+      `import "./visual-system.css";\nimport "./features/pdf/pdf-reading-adaptive.css";\n${line}`,
+      `${line}\nimport "./visual-system.css";\nimport "./features/pdf/pdf-reading-adaptive.css";`,
     ),
   );
   reject("early dependency", "exchange-controls:actual-css-phase", (sources) =>

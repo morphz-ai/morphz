@@ -324,51 +324,6 @@
   font-size: 14px;
   line-height: 1.5;
 }
-.app .pdf-reader {
-  background: var(--bg);
-}
-
-/* Reading tools belong to the existing window bar, not a second page header. */
-.app .object-paper.pdf-paper {
-  max-width: 952px;
-  padding: 8px 16px 16px;
-}
-.app .pdf-paper .pdf-reader {
-  margin-top: 0;
-}
-.app .pdf-toolbar-slot .pdf-controls {
-  flex-wrap: nowrap;
-  gap: 2px;
-  margin: 0;
-}
-.app .pdf-toolbar-slot .pdf-controls button {
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  padding: 4px;
-}
-.app .pdf-toolbar-slot label {
-  gap: 4px;
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-.app .pdf-toolbar-slot select {
-  width: auto;
-  min-width: 44px;
-  height: 28px;
-  padding: 3px 4px;
-  background: transparent;
-  border-color: transparent;
-}
-.app .pdf-file-info {
-  margin-top: 12px;
-  color: var(--muted);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.app .pdf-file-info p {
-  margin: 6px 0;
-}
 .app .topbar:has(.pdf-toolbar-slot) .breadcrumb {
   min-width: 40px;
 }

@@ -1,5 +1,72 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 58：PDF 渲染样式的独立所有权
+
+生产五路径：原 styles 的完整 14 条／51 声明与原 visual 的完整 9 条／
+25 声明，分别迁入 `features/pdf/pdf-reading-base.css` 和
+`pdf-reading-adaptive.css`，实际 main 保留两个原级联 phase。六条
+Topbar／Host packing 仍留在宿主；Reader、ReaderPdf、PdfReader、
+AttachmentPreview、ArtifactEditor 的 DOM、PDF.js 生命周期、权限、
+查询、原画布／文字层值和交互未改，不把第三方沙箱接入当作内置渲染器。
+
+新有限门禁七组核完整 23／76、唯一实际 bare import、main 与 runtime
+phase、原有限 shared-native 细化、Host 保留和合法独立 feature 增长。
+旧 frame 十组、controls 九组、exchange 六组仅做严格有限交接：先核
+完整双 PDF owner，成功后只投影一条指定载体；失败保留实际未投影流。
+原断言与指定负例保留，不使用整 App hash、跨 peer inverse 或无条件
+载体忽略。首红包括新规则误判 Host 的 :has 条件、quoted 属性文本及
+非唯一反例锚点，均修测试合同，不改生产。独立审查补上属性中的
+`::before` 数据不能掩盖真实 PDF subject 的反例。
+
+两份干净 normal build 通过完整 typecheck／Vite／service／prune；
+根代理独立比较 index 实际选中的完整 CSS：各 2,764 rules／11,758
+nodes，23 个完整 compiled recipe 及完整未选有序树相等，6 条 Host
+保留。全部跨越规则／节点记录，不做选择器子集比较或按猜测竞争过滤。
+CSS 完整字节不同；这是有限迁移证明，不是 universal cascade、JS、
+审美或原 App 验收。
+
+完整统一 Node：356 文件、**2,434 项、2,430 通过／零失败／零取消／
+4 明确未启用**，专用 PostgreSQL 实际准备并核验，unexpectedSkips
+为空；五个受控模型／隔离状态的真实 Runtime 集成场景通过。三个 S3
+与一个 native-focus 是未启用，不计为通过或环境丢失。随后门禁审查
+补上有限属性数据反例，最终全 typecheck 与相关五文件 **36/36** 通过。
+
+完整旧／新两文件 PDF 页面回归，经独立 `54420110` 测试接线修正后
+各 **2/2**；实际 Page CSS 字节、marker 恢复及 owned 进程／端口清理
+有独立收据，原首红不覆盖。三种真实消费者的同 DOM 完整 CSS 切换
+现已通过：Reader、附件、历史 PdfReader 的对象／应用／inline 五种
+挂载，12 组环境共 **247 个状态、741 次完整快照比较、1,000 次实际
+Page CSS 响应**。四 accent／明暗、窄屏、指针及辅助媒体、真实 PDF.js
+加载／失败、中文文字层、真实鼠标选区、分页、portal、原 scopedStorage
+及无关 render 保留均有实际记录；独立收据审计与当前消费者源码核验通过。
+
+挂载入口的首红包括 CJS／Vite 路径、响应缺 UTF-8 charset、加载路由
+清理、原生 details 可见性和遗漏真实 main／object-surface／sidebar
+前置，均仅修验证入口。原完整入口还有 180s 取消；隔离诊断证实原
+`.app zoom=2` 从打开时就把 modal 高度放大到 1,856px，按钮落在屏幕外，
+不是选区把它滚走，也不是此 CSS 迁移产生的新差异。保留该 RED，
+200% 轴明确改为 **720×480 CSS 视口／DPR2 的布局代理**，实际 zoom=1；
+这不是 Electron／OS 原生缩放验收。其余 12 轴、五挂载、180s 与全部
+原断言保留。每状态五次全量 fresh snapshot 和三次严格比较不减，只将
+当前普通对象／数组数据域的比较留在浏览器，减少四份重复大树的传输；
+无字段过滤、容差或值归一化，差异仍返回完整树。最终约 140s、零取消。
+
+这些是隔离挂载与有限迁移证明：Client 读取／阅读位置回执是受控端口，
+不冒充后端授权、真实用户草稿或原 App 验收；生产消费者与样式值未改。
+原 App／原生命中验收仍未完成，实际原进程／Runtime 保留且系统仍锁屏。
+
+证据：`/tmp/morphz-pdf-reading-c93283db.Gn6BHd/` 的来源档案、独立
+源码证明、全量／有限回归及 typecheck 原始日志；两份 normal build
+在 `/tmp/morphz-pdf-stage58-baseline.49GIER/` 与
+`/tmp/morphz-pdf-stage58-current.XdUFDV/`；完整 compiled 记录在
+`/tmp/morphz-pdf-compiled-proof.3JLGxE/RESULT.json`；完整两文件页面
+记录在 `/tmp/morphz-pdf-real-conflict-entry.WSqHVa/`。挂载全部首红保留于
+各独立 `/tmp/morphz-pdf-mounted-*/` 与 zoom 诊断收据；完整通过入口为
+`/tmp/morphz-pdf-mounted-layout-proxy.ajcGM7/`，完整收据为
+`/tmp/morphz-pdf-mounted-layout-proxy-first-receipt.json`，根独立审计入口为
+`/tmp/morphz-pdf-final-evidence.lmHJFJ/verify.mjs`。Shell packing
+与整体跨页面／原窗验证继续；整体目标 active，不以阶段数量计百分比。
+
 ## 2026-10-05 PDF 回归：真实版本冲突的确定性测试接线
 
 仅 `tests/pdf.spec.ts` 与本记录，不改 Reader、存储、SSE 或生产样式。

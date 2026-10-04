@@ -14,6 +14,10 @@ import {
   type Node,
   type SourceFile,
 } from "typescript/unstable/ast";
+import {
+  pdfReadingCarriers,
+  verifiedPdfCarrierPhases,
+} from "./pdf-reading-contract.js";
 
 // Fixed pre-migration payload with bounded current-source validators.
 // Complete raw sources came from actual Git; no candidate oracle or CI Git.
@@ -665,10 +669,27 @@ export function exchangeControlsEntryViolations(
     walk(source);
   }
   check("exchange-controls:single-entry", () => assert.equal(imports, 1));
+  let pdfPhases: ReturnType<typeof verifiedPdfCarrierPhases> | undefined;
+  check("exchange-controls:pdf-contract", () => {
+    pdfPhases = verifiedPdfCarrierPhases(
+      pdfReadingCarriers.adaptive,
+      css,
+      modules,
+      isUnboundRequire,
+    );
+  });
+  // Failed PDF verification never grants projection. Original role diagnostics
+  // are still collected against the unprojected actual stream.
+  const roleImports = pdfPhases
+    ? mainImports.filter(
+        (specifier) =>
+          physical("main.tsx", specifier) !== pdfReadingCarriers.adaptive,
+      )
+    : mainImports;
   check("exchange-controls:entry-phase", () => {
-    const at = mainImports.indexOf(`./${exchangeControlsFile}`);
+    const at = roleImports.indexOf(`./${exchangeControlsFile}`);
     assert.ok(at > 0);
-    assert.deepEqual(mainImports.slice(at - 1, at + 2), [
+    assert.deepEqual(roleImports.slice(at - 1, at + 2), [
       "./visual-system.css",
       `./${exchangeControlsFile}`,
       "./exchange-layout.css",
@@ -686,10 +707,11 @@ export function exchangeControlsEntryViolations(
     for (const next of edges.get(file) ?? []) visit(next);
   }
   visit("main.tsx");
+  const roleLoaded = pdfPhases ? pdfPhases.runtime : loaded;
   check("exchange-controls:actual-css-phase", () => {
-    const at = loaded.indexOf(exchangeControlsFile);
+    const at = roleLoaded.indexOf(exchangeControlsFile);
     assert.ok(at > 0);
-    assert.deepEqual(loaded.slice(at - 1, at + 2), [
+    assert.deepEqual(roleLoaded.slice(at - 1, at + 2), [
       "visual-system.css",
       exchangeControlsFile,
       "exchange-layout.css",

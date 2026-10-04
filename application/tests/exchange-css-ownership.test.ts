@@ -15,6 +15,10 @@ import {
   exchangeControlsEntryViolations,
   isExchangeControlsSpecifier,
 } from "./fixtures/exchange-controls-51af4c20.js";
+import {
+  pdfReadingCarriers,
+  verifiedPdfCarrierPhases,
+} from "./fixtures/pdf-reading-contract.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -468,15 +472,35 @@ function violations(sources: Sources) {
           (identifier) => !project.checker.getSymbolAtLocation([identifier])[0],
         ),
       );
+      let verifiedPdf = false;
+      contract("pdf-reading:complete-handoff", () => {
+        verifiedPdfCarrierPhases(
+          pdfReadingCarriers.adaptive,
+          sources.css,
+          [...sources.modules.keys()].map((file) => ({
+            file,
+            source: project.program.getSourceFile(`${directory}/${file}`)!,
+          })),
+          (identifier) => !project.checker.getSymbolAtLocation([identifier])[0],
+        );
+        verifiedPdf = true;
+      });
       let imports = 0;
       for (const file of sources.modules.keys()) {
         const source = project.program.getSourceFile(`${directory}/${file}`)!;
-        const direct = source.statements.flatMap((statement) =>
+        let direct = source.statements.flatMap((statement) =>
           isImportDeclaration(statement) &&
           isStringLiteral(statement.moduleSpecifier)
             ? [statement]
             : [],
         );
+        if (file === "main.tsx" && verifiedPdf)
+          direct = direct.filter(
+            (statement) =>
+              !isStringLiteral(statement.moduleSpecifier) ||
+              join(".", statement.moduleSpecifier.text) !==
+                pdfReadingCarriers.adaptive,
+          );
         if (file === "main.tsx")
           contract("known-composition-order", () => {
             // Actual old bundle placed App's compact/Dock dependencies before
@@ -958,8 +982,8 @@ test("入口AST拒绝顺序漂移、重复及组件或延迟加载", () => {
           s.modules
             .get("main.tsx")!
             .replace(
-              'import "./visual-system.css";\nimport "./features/exchange/exchange-controls.css";\nimport "./exchange-layout.css";',
-              'import "./exchange-layout.css";\nimport "./features/exchange/exchange-controls.css";\nimport "./visual-system.css";',
+              'import "./visual-system.css";\nimport "./features/pdf/pdf-reading-adaptive.css";\nimport "./features/exchange/exchange-controls.css";\nimport "./exchange-layout.css";',
+              'import "./exchange-layout.css";\nimport "./features/exchange/exchange-controls.css";\nimport "./visual-system.css";\nimport "./features/pdf/pdf-reading-adaptive.css";',
             ),
         ),
       "entry-order",

@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-05 · 版本：1.18 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-05 · 版本：1.19 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-05。
 
@@ -25,6 +25,7 @@
 | Thread 状态图形      | `ExecutionStatusIcon.tsx`；ExecutionSidebar 与 ExecutionDialog 的原外层 span 消费                                                | 七状态图形与缺省回退共用，原状态权威／标签／静态尺寸及运行波形保留，无新 DOM、effect 或请求；固定旧 oracle、实际 StrictMode 及有限门禁 7/7，原旧 Host 29/29，新合并回归 61/61。            |
 | 登记图形与透明按钮   | `design/control-icons.tsx`、`ui/IconButton.tsx`；SidebarToggle、ComposerToolButtons、ExchangeControls                            | 原七图形／两 role、单 native button、原 props/ref/key/compact 焦点。13 项 Node／门禁与 5 项实际隔离挂载通过；当前契约的相关矩阵 60/60 通过，有限治理，不包含全部菜单／按钮或原窗最终验收。 |
 | 交流控件样式         | `features/exchange/exchange-controls.css`；实际 main 在 visual 与 exchange-layout 之间加载 | 原完整 16 条／63 声明及唯一 runtime phase；早 phase 的 Dock 仍独立。有限 owner 门禁与完整 selected compiled flow／余流对照，不改状态、DOM、图形、材质或尺寸，不代替原窗验收。 |
+| PDF 渲染样式         | `features/pdf/pdf-reading-base.css` 与 `pdf-reading-adaptive.css`；实际 main 保留两个原 phase | 完整 23 条／76 声明、双源实际加载与有限 writer 门禁；Topbar／Host 六条 packing 保留。Reader／Attachment／历史 PdfReader 消费不改；来源、编译、页面及原窗证明分别记录，不是第三方 SDK。 |
 | 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`                                            | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                                                |
 
 输入工具的原三组状态／ref、退休 effect、early close 与完整媒体命令现归
@@ -868,8 +869,15 @@ phase 与后公共控件细化共同决定实际命中尺寸，不能整体后�
 保留原相对 phase；九组有限 owner 检查、完整实际 compiled recipe／余流
 及跨越节点收据、完整旧新页面回归分别记录。页面两 lane 各 23/24，剩余
 同一原生前台前置未通过；不把来源报告或编译相等自动当成原生命中验收。
-PDF 完整渲染器样式与 Shell packing 仍须按各自实际职责、两个原级联承载
-及完整消费者验收继续，不为凑目录统一合并不同权限或生命周期的查询。
+阶段 58 已把 PDF 完整 23 条／76 声明归入两条原级联承载的同一 feature
+owner，Host 六条 packing 保留；严格双 owner 校验后才允许旧门禁的
+单载体交接。完整 compiled recipe／未选树、统一 Node 与完整两文件
+页面回归分别记录；三种真实消费者的五种独立挂载已完成 12 组环境、
+247 状态／741 全量比较／1,000 次精确 CSS 响应，不以 Reader 目录路径
+代替历史 PdfReader。200% 仅为视口／DPR 布局代理；受控 Client 和
+隔离草稿不冒充后端或原用户资料验证。原 CSS zoom 首红保留，入口
+修正不改生产值，原窗／原生验收仍独立未完成。Shell packing 仍须按其真实职责及稳定
+portal 消费者继续，不为凑目录统一合并不同权限或生命周期的查询。
 
 整体跨页面外观／交互回归及原 App 的原生焦点、硬件和系统命中验收仍未完成。
 图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美

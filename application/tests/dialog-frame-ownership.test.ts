@@ -18,6 +18,10 @@ import {
   type Node,
 } from "typescript/unstable/ast";
 import { fixedDialogFrame } from "./fixtures/dialog-frame-c525d217.js";
+import {
+  pdfReadingCarriers,
+  verifiedPdfCarrierPhases,
+} from "./fixtures/pdf-reading-contract.js";
 
 // Finite current role ownership, not a universal selector/effect solver.
 // Complete historical source/inverse belongs to the separate migration proof.
@@ -261,9 +265,13 @@ function affects(property: string, owned: Set<string>) {
   }
   return false;
 }
-function moduleProgram(
+function moduleProgram<T = void>(
   sources: Sources,
   consume: (file: string, source: Node) => void,
+  finish?: (
+    modules: Parameters<typeof verifiedPdfCarrierPhases>[2],
+    unbound: Parameters<typeof verifiedPdfCarrierPhases>[3],
+  ) => T,
 ) {
   const base = "/dialog-frame-contract",
     config = base + "/tsconfig.json",
@@ -278,10 +286,18 @@ function moduleProgram(
   try {
     const snapshot = api.updateSnapshot({ openProjects: [config] });
     try {
-      const program = snapshot.getProject(config)!.program;
+      const project = snapshot.getProject(config)!,
+        program = project.program;
       assert.equal(program.getSyntacticDiagnostics().length, 0, "module-parse");
       for (const name of sources.modules.keys())
         consume(name, program.getSourceFile(base + "/" + name)!);
+      return finish?.(
+        [...sources.modules.keys()].map((file) => ({
+          file,
+          source: program.getSourceFile(base + "/" + file)!,
+        })),
+        (identifier) => !project.checker.getSymbolAtLocation([identifier])[0],
+      );
     } finally {
       snapshot.dispose();
     }
@@ -428,80 +444,102 @@ function validate(sources: Sources) {
     mainCss: string[] = [],
     mainStyles: string[] = [],
     carrierImports = new Map<string, number>();
-  moduleProgram(sources, (file, source) => {
-    const dependencies: string[] = [];
-    source.forEachChild((node) => {
-      if (
-        (!isImportDeclaration(node) && !isExportDeclaration(node)) ||
-        !node.moduleSpecifier ||
-        !isStringLiteral(node.moduleSpecifier)
-      )
-        return;
-      const spec = node.moduleSpecifier.text,
-        clause = isImportDeclaration(node) ? node.importClause : undefined;
-      const typeOnly = isImportDeclaration(node)
-        ? clause?.phaseModifier === SyntaxKind.TypeKeyword ||
-          (!clause?.name &&
-            clause?.namedBindings &&
-            isNamedImports(clause.namedBindings) &&
-            clause.namedBindings.elements.length > 0 &&
-            clause.namedBindings.elements.every((e) => e.isTypeOnly))
-        : node.isTypeOnly;
-      if (isOwner(spec)) {
-        assert.ok(isImportDeclaration(node), "frame-reexport");
-        imports++;
-        assert.ok(
-          file === "main.tsx" && !clause && spec === "./" + owner,
-          "frame-runtime-import",
-        );
-      }
-      const style = relativeStyle(file, spec);
-      if (isCarrier(style)) {
-        assert.ok(
-          file === "main.tsx" &&
-            isImportDeclaration(node) &&
-            !clause &&
-            !typeOnly &&
-            !/[?#]/.test(spec),
-          "frame-carrier-runtime-import",
-        );
-        carrierImports.set(style!, (carrierImports.get(style!) ?? 0) + 1);
-      }
-      const resolved = resolve(file, spec, sources);
-      if (resolved && !typeOnly) dependencies.push(resolved);
-      if (file === "main.tsx" && !typeOnly && resolved?.endsWith(".css"))
-        mainStyles.push(resolved);
-      if (file === "main.tsx" && !typeOnly && spec.endsWith(".css"))
-        mainCss.push(spec);
-    });
-    edges.set(file, dependencies);
-    function walk(node: Node) {
-      if (
-        isCallExpression(node) &&
-        (node.expression.kind === SyntaxKind.ImportKeyword ||
-          (isIdentifier(node.expression) && node.expression.text === "require"))
-      ) {
-        assert.ok(
-          !node.arguments.some((a) => {
-            const spec = literal(a);
-            return spec !== undefined && isOwner(spec);
-          }),
-          "frame-dynamic-import",
-        );
-        assert.ok(
-          !node.arguments.some((a) => {
-            const spec = literal(a);
-            return spec !== undefined && isCarrier(relativeStyle(file, spec));
-          }),
-          "frame-carrier-dynamic-import",
-        );
-      }
-      node.forEachChild((child) => {
-        walk(child);
+  const pdfPhases = moduleProgram(
+    sources,
+    (file, source) => {
+      const dependencies: string[] = [];
+      source.forEachChild((node) => {
+        if (
+          (!isImportDeclaration(node) && !isExportDeclaration(node)) ||
+          !node.moduleSpecifier ||
+          !isStringLiteral(node.moduleSpecifier)
+        )
+          return;
+        const spec = node.moduleSpecifier.text,
+          clause = isImportDeclaration(node) ? node.importClause : undefined;
+        const typeOnly = isImportDeclaration(node)
+          ? clause?.phaseModifier === SyntaxKind.TypeKeyword ||
+            (!clause?.name &&
+              clause?.namedBindings &&
+              isNamedImports(clause.namedBindings) &&
+              clause.namedBindings.elements.length > 0 &&
+              clause.namedBindings.elements.every((e) => e.isTypeOnly))
+          : node.isTypeOnly;
+        if (isOwner(spec)) {
+          assert.ok(isImportDeclaration(node), "frame-reexport");
+          imports++;
+          assert.ok(
+            file === "main.tsx" && !clause && spec === "./" + owner,
+            "frame-runtime-import",
+          );
+        }
+        const style = relativeStyle(file, spec);
+        if (isCarrier(style)) {
+          assert.ok(
+            file === "main.tsx" &&
+              isImportDeclaration(node) &&
+              !clause &&
+              !typeOnly &&
+              !/[?#]/.test(spec),
+            "frame-carrier-runtime-import",
+          );
+          carrierImports.set(style!, (carrierImports.get(style!) ?? 0) + 1);
+        }
+        const resolved = resolve(file, spec, sources);
+        if (resolved && !typeOnly) dependencies.push(resolved);
+        if (file === "main.tsx" && !typeOnly && resolved?.endsWith(".css"))
+          mainStyles.push(resolved);
+        if (file === "main.tsx" && !typeOnly && spec.endsWith(".css"))
+          mainCss.push(spec);
       });
-    }
-    walk(source);
-  });
+      edges.set(file, dependencies);
+      function walk(node: Node) {
+        if (
+          isCallExpression(node) &&
+          (node.expression.kind === SyntaxKind.ImportKeyword ||
+            (isIdentifier(node.expression) &&
+              node.expression.text === "require"))
+        ) {
+          assert.ok(
+            !node.arguments.some((a) => {
+              const spec = literal(a);
+              return spec !== undefined && isOwner(spec);
+            }),
+            "frame-dynamic-import",
+          );
+          assert.ok(
+            !node.arguments.some((a) => {
+              const spec = literal(a);
+              return spec !== undefined && isCarrier(relativeStyle(file, spec));
+            }),
+            "frame-carrier-dynamic-import",
+          );
+        }
+        node.forEachChild((child) => {
+          walk(child);
+        });
+      }
+      walk(source);
+    },
+    (modules, unbound) => {
+      // Preserve this owner's original import and relative-carrier diagnostics
+      // first. Success must still verify the complete two-PDF contract.
+      assert.equal(imports, 1, "frame-single-import");
+      for (const carrier of entryCarriers)
+        assert.equal(
+          carrierImports.get(carrier),
+          1,
+          "frame-carrier-single-import:" + carrier,
+        );
+      framePhase(mainStyles, "frame-carrier-entry-order");
+      return verifiedPdfCarrierPhases(
+        pdfReadingCarriers.base,
+        sources.css,
+        modules,
+        unbound,
+      );
+    },
+  )!;
   assert.equal(imports, 1, "frame-single-import");
   for (const carrier of entryCarriers)
     assert.equal(
@@ -509,7 +547,10 @@ function validate(sources: Sources) {
       1,
       "frame-carrier-single-import:" + carrier,
     );
-  const originalMainSlot = framePhase(mainStyles, "frame-carrier-entry-order");
+  const originalMainSlot = framePhase(
+    pdfPhases.main,
+    "frame-carrier-entry-order",
+  );
   const at = originalMainSlot.indexOf(owner);
   assert.ok(
     at > 0 &&
@@ -537,7 +578,7 @@ function validate(sources: Sources) {
   }
   visit("main.tsx");
   const originalRuntimeSlot = framePhase(
-    loaded,
+    pdfPhases.runtime,
     "frame-carrier-actual-runtime-order",
   );
   assert.ok(
@@ -816,8 +857,8 @@ test("current neighboring owner and approved carriers cannot be omitted, duplica
     replace(
       s,
       "main.tsx",
-      'import "./styles.css";',
-      'import "./styles.css";\nimport "./foreign-phase.css";',
+      'import "./features/browser/browser-controls.css";',
+      'import "./features/browser/browser-controls.css";\nimport "./foreign-phase.css";',
     );
   });
   reject("frame-actual-runtime-slot", (s) => {
@@ -832,8 +873,8 @@ test("current neighboring owner and approved carriers cannot be omitted, duplica
     replace(
       s,
       "main.tsx",
-      'import "./styles.css";',
-      'import "./styles.css";\nimport "./foreign-phase.js";',
+      'import "./features/browser/browser-controls.css";',
+      'import "./features/browser/browser-controls.css";\nimport "./foreign-phase.js";',
     );
   });
   reject("frame-carrier-runtime-import", (s) =>
