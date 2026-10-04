@@ -1906,16 +1906,9 @@ kbd {
 }
 .create-dialog {
   color: var(--ink);
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 15px;
   padding: 24px 28px;
   width: min(590px, calc(100% - 32px));
   max-height: calc(100dvh - 48px);
-  box-shadow: 0 18px 70px var(--shadow);
-}
-.create-dialog::backdrop {
-  background: light-dark(#161a2548, #0009);
 }
 .create-dialog header {
   display: flex;

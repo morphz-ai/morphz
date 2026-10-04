@@ -4,6 +4,7 @@ import { App } from "./App.js";
 import "./styles.css";
 import "./ui.css";
 import "./workflow.css";
+import "./ui/dialog-surface.css";
 import "./visual-system.css";
 import "./exchange-layout.css";
 import "./inspector.css";

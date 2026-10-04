@@ -1,0 +1,44 @@
+/* Native dialog paint only. Keep the original fallback cascade, including
+   non-app create/search surfaces; dimensions and controls retain their owners. */
+.create-dialog {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  box-shadow: 0 18px 70px var(--shadow);
+}
+.create-dialog::backdrop {
+  background: light-dark(#161a2548, #0009);
+}
+
+/* Preserve the original app fallback and the later bare create/search rules.
+   The app material below still wins by specificity, not by changing tokens. */
+.app dialog {
+  background: var(--paper);
+}
+.create-dialog {
+  border-radius: var(--ui-radius-panel);
+}
+.search-dialog {
+  border: 1px solid var(--line);
+  border-radius: var(--ui-radius-panel);
+  box-shadow:
+    0 16px 48px light-dark(#0000001a, #00000050),
+    0 2px 8px var(--shadow);
+}
+.search-dialog::backdrop {
+  background: light-dark(#0003, #0007);
+}
+
+/* Dense dialogs use a thicker material than short, anchored menus. Only the
+   fill is translucent; labels and hit surfaces retain full opacity. */
+.app :is(.create-dialog, .search-dialog, .attachment-preview-dialog) {
+  background: var(--surface-dialog);
+  border-color: var(--line);
+  border-radius: 14px;
+  box-shadow: var(--elevation-modal);
+  -webkit-backdrop-filter: var(--popup-blur);
+  backdrop-filter: var(--popup-blur);
+}
+.app dialog::backdrop {
+  background: var(--popup-backdrop);
+}

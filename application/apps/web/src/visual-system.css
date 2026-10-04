@@ -862,19 +862,6 @@
   --hairline: var(--popup-hairline);
   color: var(--ink);
 }
-/* Dense dialogs use a thicker material than short, anchored menus. Only the
-   fill is translucent; labels and hit surfaces retain full opacity. */
-.app :is(.create-dialog, .search-dialog, .attachment-preview-dialog) {
-  background: var(--surface-dialog);
-  border-color: var(--line);
-  border-radius: 14px;
-  box-shadow: var(--elevation-modal);
-  -webkit-backdrop-filter: var(--popup-blur);
-  backdrop-filter: var(--popup-blur);
-}
-.app dialog::backdrop {
-  background: var(--popup-backdrop);
-}
 .app .attachment-preview-dialog:has(> pre) {
   --ui-dialog-width: 680px;
 }

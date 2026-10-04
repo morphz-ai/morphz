@@ -2122,13 +2122,11 @@ body:has(dialog[open]) .cognitive-application-frame {
 }
 .app dialog {
   color: var(--ink);
-  background: var(--paper);
 }
 .create-dialog {
   /* Variants choose a preferred width; they never compete with this rule. */
   width: min(var(--ui-dialog-width, 460px), calc(100vw - 40px));
   max-height: var(--modal-max-height, calc(100dvh - 32px));
-  border-radius: var(--ui-radius-panel);
   padding: 4px 12px 12px;
   overflow: auto;
 }
@@ -2690,19 +2688,11 @@ body:has(dialog[open]) .cognitive-application-frame {
   padding: 0;
   width: min(640px, calc(100vw - var(--workspace-offset, 0px) - 40px));
   max-height: min(65dvh, 660px);
-  border: 1px solid var(--line);
-  border-radius: var(--ui-radius-panel);
-  box-shadow:
-    0 16px 48px light-dark(#0000001a, #00000050),
-    0 2px 8px var(--shadow);
   overflow: hidden;
 }
 .search-dialog[open] {
   display: flex;
   flex-direction: column;
-}
-.search-dialog::backdrop {
-  background: light-dark(#0003, #0007);
 }
 .workspace-search-controls {
   display: flex;

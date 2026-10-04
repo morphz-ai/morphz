@@ -1,5 +1,68 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 25：原生弹层表面的唯一样式责任与有限门禁
+
+`ui/dialog-surface.css` 承接原 styles／ui／visual 的 **8 条规则、18 项
+声明**，main 在 workflow→该 owner→visual 间唯一导入。选择器、root
+上下文、值、声明／fallback 顺序与 important 全保留，不只搬最后获胜值。
+文字、几何、子控件、motion、token 与辅助策略留原 owner；原 native
+dialog／`useModal` 和实际消费 JSX 均未改，不另加表面包装或新数值规范。
+进行中截图的透明／无 blur backdrop 保留 workflow 的强选择器例外。
+
+根与独立环境分别对实际 Git `d6555b2a` 验证完整原文减法／逆迁移：三个
+原 CSS 余项所有字节与相对顺序、workflow 全文未动，main 仅加唯一 import；
+新八条完整 tuple 与原文相等。独立复核旧新实际编译的八组属性及捕获
+prefixed／standard blur 均相等；生产冻结后编译，最终 source SHA 与独立
+固定证据一致。
+新 gate 用固定原 tuple 约束实际单入口、余项、token 与有限直接竞争者；
+登记十九种实际 native 类、shorthand／longhand、escaped／class 属性、
+is／where 和保守隐式 subject，同时保留 footer／input／伪元素的合法边界。
+初版专属变体漏检与中间版 lookalike class 误报的红证据保留；修复后根
+新／原交流 CSS 门禁 **10/10**，新门禁含 **60 个合法解析且按指定规则
+拒绝的反例**。这不是任意 CSS cascade 定理或全产品依赖约束。
+
+冻结旧新编译的十二份真实页面测试使用相同输入／fixture，仅切 private
+static-root。截图已迁移入口的独立修复为 `a7bef2d1`，旧断言／预算／图片
+保留。每边 **37 项：35 通过、2 项相同旧入口超时**，零重试／skip；
+两项均在已撤独立转写／工作空间菜单，不冒充 37/37，也不恢复旧入口或
+换听写场景凑绿。逐例三份实际 HTTP 资产完整 SHA，每边核验 **135 份**；
+同一 source／fixture SHA、实际结果与有限接缝逐例比较一致。设置／项目
+八主题、触屏／窄窗、焦点／选区／草稿、真实 native 执行审批及失败记录、
+搜索／附件／截图／捕获例外、透明与对比度原断言均沿原真实消费者。
+
+另用实际编译 CSS 的隔离 Chromium native dialog 固定组合做 **174 组**
+完整 computed style／几何对照，**51 组**截图像素 SHA 一致；涵盖 app／
+非 app／复合 fallback、八主题、两宽度、系统与显式 native 辅助属性、
+browser guest 材质、capture 及 CSS zoom。媒体条件用实际 matchMedia
+核验，并断言辅助／捕获 blur 关闭。一轮测量在截图前 detach CDP，导致
+媒体恢复触发额外转场像素差异；修正隔离测量生命周期后重新全跑，未改
+生产或弱化像素／样式断言。此对照不是原 App、原生网页叠层、macOS
+截图选择器、真实 Electron zoom 或 Runtime 成功验收。
+
+新入口 `app-Z8kWApC2.js` SHA 为
+`44059ca4a6b2d2ed07d62262d314316ae92a6a68a29d8ff22d9aeffdd8fd844b`；
+CSS `app-C9EoVA8G.css` SHA 为
+`8dbe27c1cb2ead35ed001803da0a5ded94be6ccb75fb568576d06c6146ae505c`。
+preload 原字节保持；index 可达七份 JS 仅按真实构建资产文件名映射逆掉
+hash 后全文相等，三个模块 raw 字节也相等。未把 dist 保留的历史资源
+当作当前加载模块或另改用户窗口缓存。
+
+完整 build／最终类型检查通过，原分包大小警告保留；新增／其余变更
+路径格式检查通过，styles.css 的唯一 product-bridge 格式警告与实际
+旧 Git 完全同段／同字节，未混入无关重排。根全量 Node checkpoint
+**1836 项：1665 通过、171 明确能力跳过，零失败／取消**；skip 不计
+原生、浏览器或外部能力验收。原 App 退出清理卡死及其精确恢复授权仍未
+解决，Runtime、profile、center、用户数据未重启或重置。主页面／overlay
+编排、其他控件／样式 owner 与整体架构目标仍须继续，目标保持 active。
+
+根证据：`/tmp/morphz-dialog-surface-root.wiC7F7` 的 `build.log`、
+`full-node.log`、`owner-gates-final-root.log`、旧新页面报告／HTTP audit、
+`page-equivalence.json`、`computed-equivalence/report.json`、
+`computed-equivalence-session-stable.log`、`javascript-equivalence.json`。
+独立固定 tuple／源码逆迁移与门禁红绿记录在
+`/tmp/morphz-dialog-surface-owner.gu13I8`，只读二审与可重跑原文证明在
+`/tmp/morphz-dialog-surface-independent.xwX95h`。未额外推送或创建第二个 App。
+
 ## 2026-10-04 截图布局回归：跟随已迁移的真实输入菜单入口
 
 阶段 25 的冻结旧编译页对照先得到 **30 项：28 通过、2 个旧入口超时**。

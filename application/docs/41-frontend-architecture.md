@@ -53,6 +53,21 @@ CSS 归入一个大文件。`exchange-css-ownership.test.ts` 使用固定旧版�
 操作，随后遇到启动读取错误与原生退出清理卡点；当前需恢复同一 App，
 而不是继续引用历史锁屏状态。独立 Runtime、profile、center 与数据保留。
 
+原生弹窗表面的生产 owner 现为 `ui/dialog-surface.css`，由 main 在
+workflow 与 visual-system 之间唯一导入。它承接原八条规则／十八项声明的
+填充、边框、圆角、阴影、模糊及 backdrop；保留 app／非 app、create／search
+及复合类名的原 fallback cascade，不只搬最后获胜的值。实际设置、项目、
+执行记录、搜索、附件和剧本表单继续原生 dialog／`useModal`，没有新增 DOM
+封装。文字、控件、几何、动效、主题与辅助模式 token 仍在原 owner；截图
+进行中的透明 backdrop 是 workflow 的显式强选择器例外，不能被普通材质盖掉。
+
+`dialog-surface-ownership.test.ts` 按固定实际 Git `d6555b2a` tuple 约束这一
+有限表面边界、原 token／混合规则余项和真实入口。门禁登记十九个现有原生
+变体类，检查 shorthand／longhand、escaped／quoted／unquoted class、
+is／where 及保守隐式 subject；不误把 footer／input 或伪元素内容当成表面。
+这不是任意 CSS 选择器／cascade 定理，也不是全部 Button／Menu／Dialog
+完成；实际旧新编译页面、辅助模式及像素证据另见阶段 25，原 App 待恢复。
+
 剧本编辑十二个读取／同步 getter 及原 64／512 FIFO 缓存操作现归
 `data/script-editor-reads.ts`。Client 保留原 ref 初始化与唯一身份／代次
 检查，借出明确语义端口，三个原清理 seam 同步调用该 owner；构造无
@@ -406,14 +421,14 @@ ComposerOptions 的默认、自定义、空 ReactNode 触发器与复合菜单�
 
 UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套一层就变尺寸或变色。主题／motion／contrast 在根策略统一决议，循环动效由事实 presentation 明确激活，基础样式不偷偷决定是否运行。
 
-### 6.2 依赖门禁（拟实现）
+### 6.2 增量依赖门禁（已治理部分持续扩展）
 
 - AST import 检查：presentation 不导入 transport／React 页面，ui 不导入 data／features，feature 不导入他域内部或 App 私有实现；访问业务只走 typed gateway。
 - CSS AST 检查：受治理 selector/property 登记唯一 owner；新增裸色、非标尺寸、全局动画及跨域 selector 必须有显式例外。
 - 契约检查：图标 role／可访问名称、状态槽完整性、无回复样例、motion 开停及 fallback 必须进入测试矩阵。
 - 旧模块有确切 allowlist，门禁先作用于新／已迁移区域；每批缩小债务清单，不以全量报错迫使删除合法局部 state。
 
-工作面、交流 controller、首段导航 owner 与首批登记图形／透明按钮的有限 AST 门禁已随各自阶段实现；其他条目仍是迁移目标。已治理范围必须由具体测试登记，未迁移模块不能因这份文档存在就被描述为已有 CI 约束。
+工作面、交流 controller、首段导航 owner 与首批登记图形／透明按钮的有限 AST 门禁已随各自阶段实现；交流 frame 与原生弹窗表面另有各自有限 CSS AST／入口门禁。其他条目仍是迁移目标。已治理范围必须由具体测试登记，未迁移模块不能因这份文档存在就被描述为已有 CI 约束。
 
 ### 6.3 共享顶栏的实际组合边界
 
