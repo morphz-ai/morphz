@@ -1,5 +1,24 @@
 # 桌面能力实施记录
 
+## 2026-10-04 工作流回归维护：显式阅读／媒体入口与批注模式定位
+
+`workflow-details.spec.ts` 的原批注模式定位同时命中提示与次要按钮，
+随后原测试又假定聚焦输入自动展开交流历史；截图项没有打开现有媒体菜单。
+本次仅限定 `.annotation-mode` 原提示、使用既有 `openExchangeReading` 和
+`openComposerMedia` 显式入口。保存批注、真实 Platform 回读、零 Agent
+投递、全文历史切换、截图本机保存／刷新恢复、内容计数及听写停采断言未删改；
+不改生产 UI、恢复已撤入口或延长原预算。
+
+固定阶段 25 编译和阶段 26 未提交编译沿同一当前测试各 **3/3 通过**，
+零重试／skip；每边逐例核验三份实际 HTTP 入口资产完整 SHA。
+精确逆掉四个测试接缝后，全文与实际 Git `2cf6a3f2` 相等：原 SHA
+`f5d1709e3b22f3080fc0b4a7f1eddf8d51e52bab922bd91e3e5eaddfbb4f5e9c`，
+当前 SHA `8ca32edf179b6dbf0c3a1ded2856bdb6e4dfc4005583b934b5f5c4098177234b`。
+证据在 `/tmp/morphz-open-navigation-root.ndQoxp` 的
+`workflow-entry-proof.json`、两份 `*-workflow-explicit-entry` 报告及 HTTP audit。
+这仅关闭相应旧测试入口缺口；剧本版本同步缺陷另行修复，原 App 与整体架构
+验收仍未完成，不能据这三项测试宣布目标完成。
+
 ## 2026-10-04 前端阶段 25：原生弹层表面的唯一样式责任与有限门禁
 
 `ui/dialog-surface.css` 承接原 styles／ui／visual 的 **8 条规则、18 项

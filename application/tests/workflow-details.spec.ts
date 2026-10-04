@@ -2,7 +2,11 @@ import { test, expect } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
-import { openInput } from "./interaction-helpers.js";
+import {
+  openComposerMedia,
+  openExchangeReading,
+  openInput,
+} from "./interaction-helpers.js";
 
 const platform = () =>
   PlatformClient.connect(new HttpApplicationClient("http://127.0.0.1:65421"));
@@ -50,7 +54,9 @@ test("选区批注使用同一输入但不发送 Agent；对象交流可以切�
     .getByRole("toolbar", { name: "选中文本操作" })
     .getByRole("button", { name: "批注", exact: true })
     .click();
-  await expect(page.getByText("保存为批注", { exact: true })).toBeVisible();
+  await expect(
+    page.locator(".annotation-mode").getByText("保存为批注", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByText("Agent 未连接", { exact: true })).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "截图输入", exact: true }),
@@ -67,7 +73,7 @@ test("选区批注使用同一输入但不发送 Agent；对象交流可以切�
   )) as Array<{ annotation: { body: string } }>;
   expect(annotations).toHaveLength(1);
   expect(annotations[0]?.annotation.body).toBe("这是我自己的批注。");
-  await openInput(page);
+  await openExchangeReading(page);
   await expect(
     page.getByRole("button", { name: "查看全部交流" }),
   ).toBeVisible();
@@ -100,6 +106,7 @@ test("截图附加后保存为未发送消息，不创建内容对象", async ({
     .getByRole("button", { name: "对话", exact: true })
     .click();
   await openInput(page);
+  await openComposerMedia(page);
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "截图输入" });
   await dialog.getByRole("button", { name: "添加到消息", exact: true }).click();
