@@ -39,7 +39,8 @@ test("对话常驻输入：失焦与 Escape 不隐藏，快捷键聚焦，其他
   await input.press("Escape");
   await expect(input).toBeVisible();
   await expect(input).not.toBeFocused();
-  await page.getByRole("group", { name: "输入工具", exact: true }).hover();
+  // Application shortcuts now live in the separate floating Dock.
+  await page.locator(".application-dock").hover();
   await expect(page.getByLabel("更多输入选项")).toHaveCount(0);
   await expect(page.getByLabel("固定输入框", { exact: true })).toHaveCount(0);
   await page.keyboard.press("Escape");
