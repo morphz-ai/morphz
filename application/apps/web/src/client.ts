@@ -55,6 +55,7 @@ import { createScriptEditorReads } from "./data/script-editor-reads.js";
 import { createContentReads } from "./data/content-reads.js";
 import { createReaderReads } from "./data/reader-reads.js";
 import { createReaderInteractions } from "./data/reader-interactions.js";
+import { createBookmarkInteractions } from "./data/bookmark-interactions.js";
 import { createTaskInteractions } from "./data/task-interactions.js";
 import { createLocalInputDelivery } from "./data/local-input-delivery.js";
 import { createExecutionInteractions } from "./data/execution-interactions.js";
@@ -91,10 +92,6 @@ import {
   type Receipt,
   type Workspace,
 } from "../../../packages/core/src/model.js";
-import {
-  bookmarkSchema,
-  type BookmarkOperation,
-} from "../../../packages/core/src/bookmarks.js";
 import { applicationStateSchema } from "../../../packages/core/src/applications.js";
 const bootSchema = z.object({
   centerId: z.string().uuid(),
@@ -895,6 +892,11 @@ export function useWorkspace() {
     call: applicationCall,
     refreshAfterMutation,
   });
+  const bookmarkInteractions = createBookmarkInteractions({
+    current,
+    call: applicationCall,
+    savedInputScope,
+  });
   const taskInteractions = createTaskInteractions({
     current,
     platform,
@@ -1538,70 +1540,6 @@ export function useWorkspace() {
       throw new Error("身份已变化，关联未读取。");
     return source.allWorkRelations(objectId, signal);
   }
-  async function bookmarkList(
-    request: {
-      query?: string;
-      url?: string;
-      deleted?: boolean;
-      offset?: number;
-      limit?: number;
-    } = {},
-  ) {
-    const identity = current.current;
-    if (!identity) throw new Error("应用尚未就绪，请稍后重试。");
-    if (!identity.capabilities.browserBookmarks)
-      throw new Error("浏览器收藏尚未接通新数据模型。");
-    return z.array(bookmarkSchema).parse(
-      await applicationCall("bookmarks.list", request, {
-        identityGeneration: identity.csrfToken,
-        signal: AbortSignal.timeout(8000),
-      }),
-    );
-  }
-  async function bookmarkCommand(operation: BookmarkOperation) {
-    const identity = current.current;
-    if (!identity) throw new Error("应用尚未就绪，请稍后重试。");
-    if (!identity.capabilities.browserBookmarks)
-      throw new Error("浏览器收藏尚未接通新数据模型。");
-    const scope = savedInputScope(identity);
-    const { readLocal, writeLocal } = scopedStorage(scope);
-    const hash = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(JSON.stringify(operation)),
-    );
-    const key = draftKey(
-      "pending:bookmark:" +
-        Array.from(new Uint8Array(hash), (value) =>
-          value.toString(16).padStart(2, "0"),
-        ).join(""),
-    );
-    if (current.current?.csrfToken !== identity.csrfToken)
-      throw new Error("身份已切换，操作未发送。");
-    const command = readLocal<{
-      commandId: string;
-      operation: BookmarkOperation;
-    } | null>(key, null) ?? {
-      commandId: crypto.randomUUID(),
-      operation,
-    };
-    writeLocal(key, command);
-    try {
-      const receipt = await applicationCall("bookmarks.command", command, {
-        identityGeneration: identity.csrfToken,
-        signal: AbortSignal.timeout(8000),
-      });
-      writeLocal(key, null);
-      return receipt;
-    } catch (error) {
-      if (
-        error instanceof RequestError &&
-        error.status < 500 &&
-        error.status !== 408
-      )
-        writeLocal(key, null);
-      throw error;
-    }
-  }
   async function upload(
     file: File,
   ): Promise<{ assetId: string; mime: string }> {
@@ -1828,8 +1766,8 @@ export function useWorkspace() {
     listObjectAnnotations,
     workRelationsFor,
     execute,
-    bookmarkList,
-    bookmarkCommand,
+    bookmarkList: bookmarkInteractions.bookmarkList,
+    bookmarkCommand: bookmarkInteractions.bookmarkCommand,
     upload,
     uploadAttachment,
     importPdf,

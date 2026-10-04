@@ -50,8 +50,10 @@ oracle、有限实际接线门禁和旧新编译 Host 对照分别记录在实�
 CSS 归入一个大文件。`exchange-css-ownership.test.ts` 使用固定旧版本 tuple
 约束这条有限边界及实际入口，不能据此宣称全产品 CSS 完成。原 App 原生
 命中复验尚未完成，具体旧新资产与渲染证据见实施记录。本轮原窗已可
-操作，随后遇到启动读取错误与原生退出清理卡点；当前需恢复同一 App，
-而不是继续引用历史锁屏状态。独立 Runtime、profile、center 与数据保留。
+操作，随后遇到启动读取错误与原生退出清理卡点。10 月 4 日已在备份和
+Human 明确批准后恢复同一 App，真实窗口与开关响应已检查；退出清理根因
+及整体原生验收仍未完成，不再把历史锁屏或已恢复的窗口当作当前阻断。
+独立 Runtime、profile、center 与数据保留。
 
 原生弹窗表面的生产 owner 现为 `ui/dialog-surface.css`，由 main 在
 workflow 与 visual-system 之间唯一导入。它承接原八条规则／十八项声明的
@@ -67,7 +69,7 @@ workflow 与 visual-system 之间唯一导入。它承接原八条规则／十�
 变体类，检查 shorthand／longhand、escaped／quoted／unquoted class、
 is／where 及保守隐式 subject；不误把 footer／input 或伪元素内容当成表面。
 这不是任意 CSS 选择器／cascade 定理，也不是全部 Button／Menu／Dialog
-完成；实际旧新编译页面、辅助模式及像素证据另见阶段 25，原 App 待恢复。
+完成；实际旧新编译页面、辅助模式及像素证据另见阶段 25，原 App 整体验收待完成。
 
 原生弹窗的公共 frame／字段控件 owner 现为 `ui/dialog-frame.css`，main
 在 styles 与 ui 之间唯一导入。原 30 条规则／107 项有序声明完整承接：
@@ -119,6 +121,20 @@ Reader 的文件导入、OCR 交互和持久阅读命令现归
 位置队列、标注选择与目录观察仍由各自完整 feature 拥有。
 阶段 38 的迁移证明、真实 Client／私有 SQL、完整旧新 Reader 页面及
 最终验证另记实施记录；不将受控 OCR 回执称为物理 OCR 或原 App 验收。
+
+个人书签的完整 list／durable command family 现归
+`data/bookmark-interactions.ts`；Client 唯一同步构造并直接公开原两方法。
+owner 借原 identity ref、logical transport 与 saved-input scope，构造不读取
+身份／storage 或发请求。原 8 秒读取、schema、权限、载荷 hash、完整稳定
+pending command、408／明确拒绝／未知失败政策保持；不新增 cache、订阅、
+refresh、数据模型或模型调用。Browser／Bookmark renderer、CSS 与原 HTML
+保持各自职责，Web URL 参数缺失另有独立修复，不混为 ownership 改动。
+
+普通门禁约束两个 bounded 算法及真实值绑定／直接消费，不锁整个 Client，
+身份退休只约束实际 borrowed current 的同步 null，不锁其它 owner 的清理。
+固定旧源与完整 inverse 是单次迁移证据，严格行为对照显式启用；真实 Client
+HTTP／私有 SQLite 和完整旧新页面结果分别见阶段 40，不冒称原 App 的
+完整原生／硬件验收。
 
 事项的跨页资格复核、Runtime snapshot／control 与回应读取现归
 `data/task-interactions.ts`，Client 直接消费三个完整原算法；按事项读取
@@ -299,7 +315,7 @@ epoch／范围守门先于确认写入。非 head 剧本确认引用不成为 re
 不能移接到新树。项目新建回执只允许接续原 default-conversation 位置，
 不自动建 Session、带走另一份草稿或伪造完成。普通切页也不能取消已选择的
 图片创建；它只阻止迟到结果抢回导航，真实命令仍由 Client／服务核权限。
-这批的自动证明、明确测试校准与原 App 待恢复边界见实施记录，不增加视觉规范。
+这批的自动证明、明确测试校准与原 App 未完成验收边界见实施记录，不增加视觉规范。
 
 完整对话阅读视口生命周期现归 `features/exchange/useConversationViewport.ts`。
 state／commit 两 hook 在原渲染时点登记，私有 Symbol 承接内部 refs／writers；
@@ -697,13 +713,14 @@ Thread collection 的输入关联活动与范围概览两种展示投影已迁�
 Reader 导入、OCR 与持久阅读命令 data owner 和 ScriptStudio 完整工作室
 controller 已落实；画布、分页、子组件和局部 JSX 组合仍拥有其原职责。
 
-阶段 39 的实际来源审计将剩余生产边界明确为以下五项；不是按文件行数
-清空宿主，也不是必须让每个页面再加一个 hook：
+阶段 39 的实际来源审计登记下列五项。阶段 40 已落地 R2；剩余生产边界
+为 R1、R3、R4、R5，仍须完成有限治理与整体验收。不是按文件行数清空
+宿主，也不是必须让每个页面再加一个 hook：
 
 | 边界                   | 完整职责及保留约束                                                                                                                                                                                                                              |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | R1 公共控件 role／样式 | 原 button／field／primary／outline／icon／secondary recipe 仍跨 styles、ui、visual-system 分散。须明确唯一职责及原 cascade 槽，登记真实消费和有限 feature 例外；不改 DOM、尺寸、颜色、交互或材质。不能仅加 wrapper 或移到末尾再覆盖旧规则。     |
-| R2 书签数据操作        | Client 仍拥有完整 list 与 durable command 的能力／身份检查、8 秒读取、hash、稳定 pending ID／字节及原错误清理。完整 family 应归 bounded data owner；当前 URL 与目录分页仍是不同观察，不新增 cache／请求。                                       |
+| R2 书签数据操作（阶段 40 已落地） | 完整 list／durable command 归 `data/bookmark-interactions.ts`；能力／身份、8 秒读取、hash、完整稳定 pending 字节和原错误政策保留。Client 仍拥有唯一身份／刷新权威；当前 URL 与目录分页保持不同观察，不新增 cache／请求。 |
 | R3 主体日程检查        | SubjectSchedules 仍同时拥有呈现与 logical transport 的显式 refresh、limit50 清单、至多 16 个快照／四请求批次及取消／质量生命周期。完整 feature controller 应借窄 gateway，沿用原模型；不套 TaskList 的订阅、重试或超时。                        |
 | R4 对象评论与关联数据  | UI 批注 owner 不等于 Client 的完整分页与写入 family 已归位。保留 100 页／100 条、ordinal／schema／溢出合同、原 signal 和迟到政策，以及写命令捕获的 Objects source／revision／quote／page／receipt。关系仍借已有 Platform 分页，不复制或混资源。 |
 | R5 通用持久命令投递    | 非 record-input 的原 scoped pending、载荷 hash／身份、稳定 ID／字节、投递／refresh 及明确与未知失败政策仍归 Client 聚合。完整共享投递职责须归 data owner，借原权威端口；不复制领域 dispatch，不强并已独立的 input delivery 或增加存储。         |

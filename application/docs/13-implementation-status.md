@@ -1,5 +1,53 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 40：完整个人书签数据操作
+
+`data/bookmark-interactions.ts` 拥有原完整 list／durable command family。
+Client 在 reader 与 task owner 之间唯一同步构造，直接公开原两方法；借原
+identity ref、logical call 和 saved-input scope。原能力／身份检查、8 秒读取、
+schema、operation hash、完整稳定 pending command 和不同错误清理政策
+不变。构造无 I/O；没有新 cache、effect、store、请求、refresh 或 LLM 调用。
+Browser／Bookmark UI、图形、DOM、CSS、model、HTTP 与原领域权限不迁移。
+
+根独立核 actual Git `2877c03d` 的完整 65,127-byte Client 原件及十个邻居，
+两完整算法原字节迁入，全部 approved forward／inverse 恢复通过。208 份
+当前 renderer 源仅 Client 和新 owner 改变。正常完整 build 的全部 208 份
+当前 emitted 资源与独立候选相等，完整 CSS／preload 与旧版相同；主 JS
+实现迁移后的字节不同。Vite 原配置刻意保留旧 content-addressed chunks，
+支持原运行窗口的迟到 lazy import，未删除既有资源；不把包含历史 chunks
+的整个 dist 目录人口当成这次 emitted 清单。
+
+默认当前行为与真实 Client HTTP／私有 SQLite **12/12**；显式迁移对照
+**12/12**，完整旧／新 observation 相等。包含 CRUD、非首项 URL、53 条
+分页、冷重开、真提交后的丢回执／重挂载、完整稳定重试、两 Human 隔离、
+撤权、真 409／400、本机清理失败及身份切换后的旧 200 被 408 拒收。
+受控 gateway 的旧特征只在显式迁移执行，不冒充真实 Runtime／原生验收。
+
+最终有限门禁加行为／Client 的 proper `npm test` **18/18**，无跳过；
+31 个合法语法反例须命中指定规则，六种真实别名／独立增长正例仍可通过。
+根审查发现早版把整个 protected-clear 锁住，合法其它 cache/state 清理
+产生真红；收窄为 borrowed current 的同步、无条件 null，保留身份恢复／
+早退／条件写／错 ref 反例，不锁其它 owner。原 clear raw 只归历史档案。
+首轮全量恰读到门禁修正中间版本，该一项红日志保留；最终全量改为执行
+前后完整源码快照核验，不把编辑中的测试版本当作终态。
+
+最终默认全量选择 335 份测试、2,247 项：**2,238 通过、零失败／取消／
+todo**；九项为明确未启用的 S3 三、Runtime 五、native-focus 一，无未知
+跳过。PostgreSQL 必需并实际执行，不是环境缺失；1,054 份生产／测试／
+支撑源执行前后相等，自有测试进程正常 exit 0。
+
+完整四份现行页面回归旧／新各 **16/16**，每边核 76 个实际 HTTP 入口
+资源响应，零跳过／重试；原旧入口的三红与首次校准一红另在独立测试修正
+提交 `388b0f38` 记录，不改生产 UI 掩盖失败。类型、正常完整构建和七份
+本次代码／测试格式检查通过。根证据
+`/tmp/morphz-bookmark-interactions-root.SpANNk` 与
+`/tmp/morphz-bookmark-pages-final.5yxlrA`；自有 Host 已关闭，发现 marker
+恢复，未修改用户内容／输入或重启后台 Runtime。
+
+本阶段不是原 App 整体原生／硬件验收，也不是退出清理根因修复。原窗口
+已另行恢复并实际检查；剩余 R1／R3／R4／R5、有限治理与整体验收继续，
+目标保持 active。
+
 ## 2026-10-04 独立校准：既有 workflow 页面回归
 
 书签 data owner 的旧／新完整四 spec 对照首先均为 **13 通过、3 失败**。
