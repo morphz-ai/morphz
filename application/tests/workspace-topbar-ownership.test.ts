@@ -22,6 +22,7 @@ import {
   type TopbarSources,
   type TopbarPhase,
 } from "./fixtures/workspace-topbar-contract.js";
+import { windowFrameCarriers } from "./fixtures/window-frame-contract.js";
 
 // Locally reused actual source/TS API method, not a registered peer test, Git,
 // whole-App hash, historical source projection or peer inverse.
@@ -728,6 +729,27 @@ test("Topbar reusable handoff omits one approved phase entry only after complete
     );
   });
   const invalids: Array<[string, string, (s: Sources) => void]> = [
+    ...Object.values(windowFrameCarriers).map(
+      (carrier): [string, string, (s: Sources) => void] => [
+        carrier + " independent complete phase cannot be hidden",
+        "topbar:window-frame-contract",
+        (s) => {
+          const root = postcss.parse(s.css.get(carrier)!);
+          const first = root.nodes.find((node) => node.type === "rule");
+          assert.ok(first?.type === "rule");
+          const declaration = first.nodes.find((node) => node.type === "decl");
+          assert.ok(declaration?.type === "decl");
+          declaration.value = "inherit";
+          s.css.set(carrier, root.toString());
+        },
+      ],
+    ),
+    [
+      "independent WindowFrame foreign writer cannot be projected",
+      "topbar:window-frame-contract",
+      (s) =>
+        append(s, "UnusedWindowFrame.css", ".sidebar-resize-shield{width:1px}"),
+    ],
     ...phases.map((phase): [string, string, (s: Sources) => void] => {
       const row = topbarRecipes.find((row) => row.phase === phase)!;
       return [

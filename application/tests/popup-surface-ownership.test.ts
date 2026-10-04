@@ -31,6 +31,7 @@ import {
   topbarCarriers,
   verifiedTopbarCarrierPhases,
 } from "./fixtures/workspace-topbar-contract.js";
+import { windowFrameCarriers } from "./fixtures/window-frame-contract.js";
 
 // A finite root-material contract, not a universal CSS solver or App snapshot.
 // Actual-Git whole-source migration proof is a separate one-time verifier.
@@ -519,6 +520,7 @@ function validate(sources: Sources) {
       // still identify popup/order regressions rather than a peer handoff failure.
       const currentInterval = [
         "ui.css",
+        windowFrameCarriers.composition,
         topbarComposition,
         owner,
         "workflow.css",
@@ -582,17 +584,17 @@ function validate(sources: Sources) {
       // Every Topbar recipe, retained seam, unique origin and all THREE actual
       // phases must pass before ONLY composition is transparent to this peer.
       // All CSS above remains scanned for foreign material/token writers.
-      verifiedTopbarCarrierPhases(
+      const topbar = verifiedTopbarCarrierPhases(
         topbarComposition,
         sources.css,
         modules,
         unbound,
       );
-      const composition = mainImports.filter(
-        (specifier) =>
-          specifier !== `./${carrier}` &&
-          specifier !== `./${topbarComposition}`,
-      );
+      // The complete Topbar proof also requires the independent BOTH-phase
+      // WindowFrame proof before its two slots are projected. No blind filter.
+      const composition = topbar.main
+        .filter((file) => file !== carrier)
+        .map((file) => `./${file}`);
       const at = composition.indexOf(`./${owner}`);
       assert.ok(
         at > 0 &&
@@ -602,9 +604,7 @@ function validate(sources: Sources) {
           composition[at + 3] === "./visual-system.css",
         "entry-order",
       );
-      const projected = loaded.filter(
-        (file) => file !== carrier && file !== topbarComposition,
-      );
+      const projected = topbar.runtime.filter((file) => file !== carrier);
       assert.deepEqual(
         projected.slice(
           projected.indexOf("ui.css"),
@@ -1173,6 +1173,20 @@ test("the approved action-surface carrier preserves actual value source and phas
 });
 
 test("Topbar composition handoff maps only whole C03 and requires all three complete phases before projecting it", () => {
+  for (const phase of Object.values(windowFrameCarriers))
+    reject(
+      phase + " independent complete recipe cannot be hidden",
+      /topbar:complete-handoff:.*topbar:window-frame-contract/,
+      (sources) => {
+        const root = postcss.parse(sources.css.get(phase)!);
+        const first = root.nodes.find((node) => node.type === "rule");
+        assert.ok(first?.type === "rule");
+        const declaration = first.nodes.find((node) => node.type === "decl");
+        assert.ok(declaration?.type === "decl");
+        declaration.value = "inherit";
+        sources.css.set(phase, root.toString());
+      },
+    );
   const nativeDiagnostic = /retained:ui\.css:\.app\[data-desktop="mac"\]/;
   for (const [name, change] of [
     [

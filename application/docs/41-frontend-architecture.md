@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-05 · 版本：1.20 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-05 · 版本：1.21 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-05。
 
@@ -21,6 +21,7 @@
 | 本机输入投递与确认   | `data/local-input-delivery.ts`；Client 直接消费保存／投递、重试及刷新确认                                                        | 完整冻结载荷、身份范围、同步准备与原 Promise 顺序；storage lazy 端口、发送 refs 与身份／刷新权威仍在 Client，不建第二份 store，不重放旧输入或改请求策略。                                    |
 | 共享工作区顶栏       | `shell/WorkspaceTopbar.tsx`；App 保留原三个 portal target state/ref 与语义动作                                                   | 一个原生 header、原面包屑／显隐／导航按钮与三个常驻插槽，无新包装／key／样式；固定旧 markup、实际挂载及真实 App 导入／消费门禁，不接管领域画布或路由。                                       |
 | 共享顶栏样式         | `shell/workspace-topbar-base.css`、`workspace-topbar-composition.css`、`workspace-topbar-packing.css`；main 保留三个原 phase     | 完整 64 条／171 声明归 shell；C11 混合规则原位保留，PDF Host packing 不归 PDF feature。有限 owner、来源／编译与实际 normal-App 12 轴／312 状态分层验证，不更改原 UI 或替代原生验收。         |
+| 窗口／侧栏布局       | `shell/window-frame-base.css`、`window-frame-composition.css`；main 保留两个原 phase                                           | 完整26条／83声明归shell，状态、portal和唯一宽度writer保留；有限门禁、完整compiled余树、14项交互及57状态严格对照分层验证，不改UI，不替代原窗／原生命中验收。                               |
 | 会话历史查询         | `data/conversation-history.ts`；Client 持有唯一实例，workspace view 消费 head 策略                                               | 原 scope／缓存／分页 promise、head 复用与合并实际迁入；身份、epoch、catalogVersion、授权清理及 Boot 发布仍在 Client。固定旧实现对照及有限依赖门禁，不是全查询层或新的授权 owner。            |
 | 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费                                         | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。                           |
 | Thread 状态图形      | `ExecutionStatusIcon.tsx`；ExecutionSidebar 与 ExecutionDialog 的原外层 span 消费                                                | 七状态图形与缺省回退共用，原状态权威／标签／静态尺寸及运行波形保留，无新 DOM、effect 或请求；固定旧 oracle、实际 StrictMode 及有限门禁 7/7，原旧 Host 29/29，新合并回归 61/61。              |
@@ -888,7 +889,23 @@ portal 消费者继续，不为凑目录统一合并不同权限或生命周期�
 名值与原始几何严格比较，保留原枚举与动画原件，不覆盖旧 RED；1000ms
 只验证 END，非内部插值／完整自然事件生命周期／任意画布或原生动效。
 原 38 项 suite 两 lane 各 37/38，既有新增项目误撤权导致 iframe 重建的
-同一失败保留，不混入保持行为不变的迁移。窗口／侧栏几何 owner 仍需继续。
+同一失败保留，不混入保持行为不变的迁移。
+
+阶段 60 将窗口／侧栏基础布局及完整 resize feedback 的26条／83声明
+交给 `shell/window-frame-base.css`、`window-frame-composition.css`，
+保留两个原 main phase、混合规则与空 ui wrapper。状态、DOM、数值和
+mac分支不改。有限当前 owner／消费门禁和完整 compiled recipe／有序
+余树分别核验；原三文件14项各自通过，独立审计明确临时端口取证及隔离
+Electron证据边界。normal App 的完整10轴／57状态与实际 Page bytes
+严格对照通过，源码／状态／原始几何和自然有限 END 分层记录；不是
+原生命中或动效内部插值验收。统一359文件2,453项通过，零失败／取消，
+4明确未启用。原RED保持，具体接线修复和完整证据见实施记录。
+
+原App已恢复同一路径及原资料，Runtime未停止；恢复窗实际仍为Brh，
+候选原窗加载和最终验收不因此完成。WindowFrame之后仅收敛必要剩余：
+导航两个当前测试入口断开peer inverse、剩余合法data gateway／owner登记、
+最终全回归与同一原App验收。没有实证重复或越界，不按App／Client行数
+继续新增controller、facade、cache或第二套状态权威。
 
 整体跨页面外观／交互回归及原 App 的原生焦点、硬件和系统命中验收仍未完成。
 图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美

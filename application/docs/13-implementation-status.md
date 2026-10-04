@@ -1,5 +1,72 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 60：窗口布局样式所有权与完整复验
+
+`shell/window-frame-base.css` 和 `window-frame-composition.css` 接管
+原 styles／ui 中 **26 条完整规则、83 个声明**；main 保留两个原级联
+位置。App／Sidebar／resize shield 的 DOM、状态和实际数据写入不改，
+原 CSS 数值、图形、动效及 mac 分支原样保留。混合职责规则仍原位，
+原 ui 的空 max560 wrapper 保留；不拆 selector tuple、不加末尾覆盖。
+
+普通 WindowFrame 门禁治理完整 recipe、14 个 retained 职责族、真实
+组件／portal／宽度 writer、唯一来源和 runtime phase，并保留删除、重复、
+改值／important、顺序、错误 owner 与合法独立 feature 增长反例。Topbar
+和 Popup 只在完整校验后交接指定载体，不逆展开 peer 或锁整份 App。
+五生产与五门禁路径另经独立审查，当前完整 typecheck／格式检查通过。
+
+冻结 normal build 为 Git `9a10f743` 与仅五生产路径的候选：两边完整
+typecheck／Vite／service／prune terminal0。实际完整 compiled CSS 各
+2,765 rules；26 个 authored profile 分别独立核原始有序 compiled tuple，
+含三个原生产 minifier 自动生成的前缀，共86 declaration leaves。
+完整未选有序 raw 树在仅移除所登记 exclusive wrappers 后相等，无通用
+归一化或混合规则投影；全部 retained crossings 另保留收据。这不是任意
+DOM cascade、原生或审美验收。
+
+原三文件完整交互回归旧／新各 **14/14**，原预算、retry0 和全部断言
+保持。最初取证器只认固定端口，漏认五个原夹具的实际临时端口，原
+manager／取证 RED 保留；独立冷审计核两 lane 各13个真实 Page 的
+完整 index／CSS 响应与冻结构建相等。第14个隔离 Electron case 通过，
+但不把其继承浏览器 trace 称为该 Electron Page 或原用户窗口取证。
+
+normal App 完整有限对照旧／新各 **10/10、57 状态**，涵盖四配色／
+明暗、实际宽度／窄窗、键盘／真实 pointer capture 和 body portal shield、
+模态及 coarse／reduced media。每个实际 Page 的 index／完整 CSS trace
+正文、同 Page 的 main JS 正文均匹配本 lane 的构建；全部属性名值、
+原始几何、控件／草稿／偏好事实严格相等，无容差、舍入或字段删减。
+CSSOM 原始枚举保留，但不比较浏览器不稳定的自定义属性枚举顺序。
+有限过渡仅自然结束后采样，不代表160ms内部插值、原生触控或 OS 命中。
+
+首轮候选9/10仍为 RED：首例页面动作和取证已完成，最终 trace 归档
+超时，迟生成 ZIP 不补成首次通过；延迟原因未确证。后续完整两 lane
+复验未改 spec、预算、附件、时钟或比较器算法。独立比较器首轮 import
+错误也保留；仅将 `realpathSync` 从 path 改从 fs 导入的新兄弟执行器
+SHA 为 `085ebda84231b77e51449be5b4a4c14ec4e215f8836276be0d655d503623d225`，
+实际严格对照 PASS。结果内原冻结比较器指纹不是该修正执行器指纹。
+
+最新统一 Node **359 文件、2,457 项、2,453 通过、零失败／取消，
+4 明确未启用**；required PostgreSQL／Runtime、四 Runtime flags 实际
+启用，unexpectedSkips 为空。三个 S3 与一个 native-focus 不计为通过，
+不是环境丢失。先前 Popup／Profile／头像长超时在本次全量通过，未删
+原断言或改预算，不据此假称已确证系统延迟根因。
+
+原 App 已按授权在私有备份后恢复同一路径、profile、center；六业务库
+integrity 与121个主键 identity sets 无缺失，独立 Runtime 未停止。
+这不证明每个可变字段或在途完成，也未确证此前 generic-storage-error
+的具体 RPC 根因。恢复后实际 Sources 为 Brh 构建，本阶段候选原窗
+加载及原生命中仍需随后独立验收；整体目标保持 active。
+
+来源在 `/tmp/morphz-window-frame-stage60-preparation.SuiATO/`，候选构建
+在 `/tmp/morphz-window-frame-stage60-build.jYMW6e/`，完整 compiled 证明
+在 `/tmp/morphz-window-frame-compiled-proof.lGTtIY/`，有限门禁交接在
+`/tmp/morphz-window-frame-gate-implementation.uCUsin/`。原14项取证及冷审计
+分别在 `/tmp/morphz-window-frame-real-consumers.BKRc70/` 与
+`/tmp/morphz-window-frame-original-trace-audit.jrDoA2/`。mounted 首红与
+完整复验分别在 `/tmp/morphz-window-frame-mounted-prepared.FlK2el/` 与
+`/tmp/morphz-window-frame-mounted-revalidation.hKXCOM/`。统一首红与最终
+日志为 `/tmp/morphz-window-frame-stage60-full-node-first.log`、
+`/tmp/morphz-window-frame-stage60-full-node-after-css.log`。原窗恢复收据及
+备份在 `/tmp/morphz-original-logged-recovery.5UPC1a/`，不将隔离截图冒称原窗。
+
 ## 2026-10-05 挂载测试：共用实际 main 样式入口
 
 五份比较当前／固定组件算法的挂载夹具，原来手写旧 CSS 清单，未随

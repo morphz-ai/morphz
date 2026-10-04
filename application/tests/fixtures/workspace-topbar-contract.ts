@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { posix } from "node:path";
 import postcss, { type Rule, type Root, type ChildNode } from "postcss";
+import { verifiedWindowFrameCarrierPhases } from "./window-frame-contract.js";
 import {
   isImportDeclaration,
   isExportDeclaration,
@@ -1387,7 +1388,23 @@ export function topbarEntryFacts(
     for (const dependency of edges.get(file) ?? []) visit(dependency);
   }
   visit("main.tsx");
-  return { errors, main, runtime };
+  // Stage60 adds two independent WindowFrame slots before our original phases.
+  // Only complete two-carrier/writer/origin/phase proof may make them transparent.
+  // WindowFrame is a leaf fixture and never imports this or another peer fixture.
+  let windowFrame:
+    ReturnType<typeof verifiedWindowFrameCarrierPhases> | undefined;
+  guarded(
+    () => {
+      windowFrame = verifiedWindowFrameCarrierPhases(css, modules, unbound);
+    },
+    "topbar:window-frame-contract",
+    errors,
+  );
+  return {
+    errors,
+    main: windowFrame?.main ?? main,
+    runtime: windowFrame?.runtime ?? runtime,
+  };
 }
 export function topbarPhaseViolations(
   main: readonly string[],

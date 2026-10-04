@@ -1,0 +1,59 @@
+/* Window frame baseline: preserve the original styles phase. */
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  height: 100dvh;
+  min-height: 420px;
+  overflow: hidden;
+}
+.sidebar {
+  background: var(--side);
+  border-right: 1px solid var(--hairline);
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  user-select: none;
+}
+.sidebar-hidden {
+  grid-template-columns: minmax(0, 1fr);
+}
+.sidebar-hidden .sidebar {
+  display: none;
+}
+.app[data-desktop="mac"] .wordmark {
+  margin-top: 47px;
+  min-height: 49px;
+}
+.app[data-desktop="mac"] .sidebar::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--sidebar-width);
+  height: 47px;
+  -webkit-app-region: drag;
+}
+@media (max-width: 1100px) {
+  .app.sidebar-hidden {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .app[data-desktop="mac"] .sidebar::before {
+    width: var(--sidebar-width);
+  }
+}
+@media (max-width: 560px) {
+  .app,
+  .app.sidebar-hidden {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .app .sidebar {
+    display: flex;
+    padding: 0 12px 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--hairline);
+    overflow: visible;
+  }
+}

@@ -1,0 +1,90 @@
+/* Window frame composition: preserve the original ui phase; shared resize feedback stays whole. */
+.app.sidebar-hidden {
+  --workspace-offset: 0px;
+}
+.sidebar-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 56px;
+  flex-shrink: 0;
+  gap: 8px;
+  margin-top: 47px;
+}
+.sidebar {
+  container: sidebar / inline-size;
+}
+.app[data-desktop="mac"] .sidebar-header .wordmark {
+  margin-top: 0;
+  min-height: 48px;
+}
+@media (min-width: 561px) {
+  .app.sidebar-compact .sidebar {
+    padding-inline: 12px;
+  }
+  .app.sidebar-compact .sidebar-header {
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 12px;
+  }
+}
+.sidebar-resizer {
+  position: absolute;
+  left: calc(var(--sidebar-width) - 4px);
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 30;
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+.app :is(.sidebar-resizer, .inspector-resizer)::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: var(--hairline);
+  pointer-events: none;
+  transition: background-color 160ms ease;
+}
+.app :is(.sidebar-resizer, .inspector-resizer):hover::after,
+.app :is(.sidebar-resizer, .inspector-resizer):focus-visible::after,
+.app .inspector-resizer:active::after,
+.app[data-sidebar-resizing] .sidebar-resizer::after {
+  background: var(--line-strong);
+}
+.app :is(.sidebar-resizer, .inspector-resizer):focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.app.sidebar-compact[data-desktop="mac"] .sidebar-resizer {
+  top: 48px;
+}
+.app.sidebar-compact[data-desktop="mac"] .sidebar-resizer::after {
+  top: -48px;
+}
+.sidebar-resize-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  cursor: ew-resize;
+  touch-action: none;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+@media (max-width: 560px) {
+  .app {
+    --workspace-offset: 0px;
+  }
+  .sidebar-header {
+    margin-top: 0;
+  }
+  .app[data-desktop="mac"] .sidebar-header {
+    margin-top: 47px;
+  }
+}
