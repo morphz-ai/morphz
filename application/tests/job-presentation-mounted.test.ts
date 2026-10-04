@@ -8,6 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import react from "@vitejs/plugin-react";
 import { chromium, type Page, type BrowserContext } from "@playwright/test";
 import { createServer, transformWithOxc } from "vite";
+import { currentAppCSSImports } from "./fixtures/current-app-css.js";
 import { initialWorkspace } from "../packages/core/src/model.js";
 import { FixedToolMessage } from "./fixtures/job-presentation-08215636-behavior.js";
 import type { LiveMessage } from "../packages/core/src/live-conversation.js";
@@ -24,7 +25,7 @@ import React,{StrictMode,useState} from 'react';import {createRoot} from 'react-
 import {ToolMessage} from '/src/Conversation.tsx';import {ExecutionDialog} from '/src/ExecutionDialog.tsx';
 import {FixedToolMessage,FixedExecutionDialog} from '/@fs/${fixture}';
 import {initialWorkspace} from '/@fs/${resolve("packages/core/src/model.ts")}';import {jobSchema} from '/@fs/${resolve("packages/core/src/execution.ts")}';
-import '/src/styles.css';import '/src/ui.css';import '/src/ui/popup-surface.css';import '/src/workflow.css';import '/src/ui/dialog-surface.css';import '/src/visual-system.css';import '/src/exchange-layout.css';import '/src/inspector.css';import '/src/task-list.css';import '/src/content-catalog.css';import '/src/browser-bookmarks.css';import '/src/text-quotes.css';import '/src/profile-avatar.css';import '/src/personality-profile.css';import '/src/execution-activity.css';import '/src/execution-thread-groups.css';import '/src/application-icons.css';
+${currentAppCSSImports()}
 const fixed=new URL(location.href).searchParams.get('lane')==='fixed',Tool=fixed?FixedToolMessage:ToolMessage,Dialog=fixed?FixedExecutionDialog:ExecutionDialog;
 const stamp='2026-10-04T00:00:00.000Z',state=initialWorkspace(stamp),events=[],requests=[],ids=new WeakMap();let serial=0,api,last,unmounted=false;
 state.artifacts.push({id:'artifact-original',projectId:'project-original',title:'原成果'});

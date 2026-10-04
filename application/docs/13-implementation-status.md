@@ -1,5 +1,24 @@
 # 桌面能力实施记录
 
+## 2026-10-05 挂载测试：共用实际 main 样式入口
+
+五份比较当前／固定组件算法的挂载夹具，原来手写旧 CSS 清单，未随
+已迁移的 owner 更新。统一全量首轮保留为 RED：2,453 项，2,427 通过、
+20 失败、2 取消、4 明确未启用；没有把 PostgreSQL／Runtime 误报为缺失。
+
+新增 test-only `fixtures/current-app-css.ts`：通过 TS AST 读取当前 main
+的裸 CSS imports，保持全部声明次序及重复项，不执行 main／App，不排序、
+不加末尾覆盖。create-dialog、exchange-reference-preparation、
+execution-inspection、job-presentation、object-annotations 五夹具仅
+替换 CSS 入口，原两组件／算法 lane 仍同用当前 CSS。明确固定历史 CSS
+oracle、其他夹具、原 actions／assertions／时限及生产实现保持。
+
+实际定向五文件 **46/46**，零失败／取消／跳过；格式化后助手四组
+**4/4**、typecheck 与七路径格式检查通过。原完整日志及各次源指纹
+在 `/tmp/morphz-current-app-css-fixture-fix.gIQTvA/`。此提交只修测试
+接线机制，不宣称全量复验、原 App、真实 Runtime 执行或另外的
+Popup／Profile／头像超时已修复。
+
 ## 2026-10-05 前端阶段 59：共享顶栏样式所有权与有限等价证明
 
 当前生产候选只改七个 CSS／main 路径：原 styles、ui、visual 的完整

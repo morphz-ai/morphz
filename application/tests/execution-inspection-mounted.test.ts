@@ -6,6 +6,7 @@ import test from "node:test";
 import react from "@vitejs/plugin-react";
 import { chromium, type BrowserContext, type Page } from "@playwright/test";
 import { createServer, transformWithOxc } from "vite";
+import { currentAppCSSImports } from "./fixtures/current-app-css.js";
 import type { ExecutionSnapshot } from "../packages/core/src/execution.js";
 
 // Real React/StrictMode, original observation and modal hooks; controlled Client
@@ -20,7 +21,7 @@ import React,{StrictMode,useRef,useState} from 'react';import {createRoot} from 
 import {ExecutionDialog} from '/src/ExecutionDialog.tsx';import {useExecutionInspection} from '/src/features/execution/useExecutionInspection.ts';
 import {FixedExecutionDialog,useFixedExecutionInspection} from '/@fs/${fixture}';
 import {initialWorkspace} from '/@fs/${resolve("packages/core/src/model.ts")}';import {jobSchema,executionSnapshotSchema} from '/@fs/${resolve("packages/core/src/execution.ts")}';
-import '/src/styles.css';import '/src/ui.css';import '/src/ui/popup-surface.css';import '/src/workflow.css';import '/src/ui/dialog-surface.css';import '/src/visual-system.css';import '/src/execution-activity.css';import '/src/execution-thread-groups.css';
+${currentAppCSSImports()}
 const params=new URL(location.href).searchParams,fixed=params.get('lane')==='fixed',surface=params.get('surface')??'controller',controlledClock=params.get('clock')==='1';
 const hook=fixed?useFixedExecutionInspection:useExecutionInspection,Dialog=fixed?FixedExecutionDialog:ExecutionDialog;
 const stamp='2026-10-04T00:00:00.000Z',events=[],requests=[],issued=[],captured={},renderTraces=[],ids=new WeakMap();let serial=0,api,last,controller=null,unmounted=false,observers=0;const resizeListeners=new Set();

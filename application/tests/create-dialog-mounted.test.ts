@@ -10,6 +10,7 @@ import { isFunctionDeclaration, type Node } from "typescript/unstable/ast";
 import react from "@vitejs/plugin-react";
 import { chromium, type Page } from "@playwright/test";
 import { createServer, transformWithOxc } from "vite";
+import { currentAppCSSImports } from "./fixtures/current-app-css.js";
 import {
   fixedCreationConsumerSha,
   fixedCreationConsumers,
@@ -98,7 +99,7 @@ import {CreateDialog as ActualCreateDialog} from '/src/features/creation/CreateD
 import {FixedCreateDialog} from '/@fs/${resolve("tests/fixtures/create-dialog-778e6b93.tsx")}';
 import {WorkspaceTopbar} from '/src/shell/WorkspaceTopbar.tsx';
 import {scopedStorage,storageScope,draftKey,draftOwner} from '/src/local-preferences.ts';
-import '/src/styles.css';import '/src/ui.css';import '/src/workflow.css';import '/src/ui/dialog-surface.css';import '/src/visual-system.css';import '/src/exchange-layout.css';import '/src/inspector.css';import '/src/task-list.css';import '/src/content-catalog.css';import '/src/browser-bookmarks.css';import '/src/text-quotes.css';import '/src/profile-avatar.css';import '/src/personality-profile.css';import '/src/execution-activity.css';import '/src/execution-thread-groups.css';import '/src/application-icons.css';
+${currentAppCSSImports()}
 const mode=new URL(location.href).searchParams.get('mode'),CreateDialog=mode==='fixed'?FixedCreateDialog:ActualCreateDialog,options=window.creationOptions??{};
 const events=[],pending=[],ids=new WeakMap();let nextId=0,api,phase='idle',failWrites=false,throwPrepare=false,throwPrepared=false,throwOrdinary=false,syncExecuteError=false;
 const id=node=>{if(!node)return null;if(!ids.has(node))ids.set(node,++nextId);return ids.get(node);};

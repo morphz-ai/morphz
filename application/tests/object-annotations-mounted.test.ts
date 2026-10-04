@@ -19,6 +19,7 @@ import { format } from "prettier";
 import react from "@vitejs/plugin-react";
 import { chromium, type Page } from "@playwright/test";
 import { createServer, transformWithOxc } from "vite";
+import { currentAppCSSImports } from "./fixtures/current-app-css.js";
 import { fixedObjectAnnotationBaseline as fixed } from "./fixtures/object-annotations-9c6b8dd1.js";
 import {
   readObjectInteractionOwner,
@@ -248,7 +249,7 @@ import {MessageSquarePlus} from 'lucide-react';
 import {useObjectAnnotations,objectAnnotationItems,ObjectAnnotationsPanel} from '/src/features/content/ObjectAnnotations.tsx';
 import {useFixedObjectAnnotations,fixedObjectAnnotationItems,FixedObjectAnnotationsPanel} from '/@fs/${resolve("tests/fixtures/object-annotations-9c6b8dd1.tsx")}';
 import {actorName} from '/src/client.ts';import {useInspectorLayout} from '/src/InspectorPanel.tsx';
-import '/src/styles.css';import '/src/ui.css';import '/src/workflow.css';import '/src/ui/dialog-surface.css';import '/src/visual-system.css';import '/src/exchange-layout.css';import '/src/inspector.css';import '/src/task-list.css';import '/src/content-catalog.css';import '/src/browser-bookmarks.css';import '/src/text-quotes.css';import '/src/profile-avatar.css';import '/src/personality-profile.css';import '/src/execution-activity.css';import '/src/execution-thread-groups.css';import '/src/application-icons.css';
+${currentAppCSSImports()}
 const fixed=new URL(location.href).searchParams.get('lane')==='fixed',read=fixed?useFixedObjectAnnotations:useObjectAnnotations,itemsFor=fixed?fixedObjectAnnotationItems:objectAnnotationItems,options=window.annotationOptions??{};
 const queries=[],events=[],captures=[],ids=new WeakMap();let nextId=0,api,last,unmounted=false;
 const id=value=>{if(!value)return null;if(!ids.has(value))ids.set(value,++nextId);return ids.get(value);};

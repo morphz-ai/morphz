@@ -7,6 +7,7 @@ import test from "node:test";
 import react from "@vitejs/plugin-react";
 import { chromium, type Page } from "@playwright/test";
 import { createServer, transformWithOxc } from "vite";
+import { currentAppCSSImports } from "./fixtures/current-app-css.js";
 
 // Actual React/Provider/SearchDocuments/ArtifactEditor/SelectionActions and
 // scoped draft owner; controlled Client/navigation/Host ports, not App/HTTP,
@@ -21,7 +22,7 @@ import {scopedStorage,storageScope,draftKey} from '/src/local-preferences.ts';
 import {replaceComposerSurface,updateComposerDraft} from '/src/composer-drafts.ts';
 import {readWorkSurfaceDraft,workSurfaceConversationId} from '/src/host/work-surface.ts';
 import {TextQuoteProvider,TextQuoteDrafts} from '/src/TextQuotes.tsx';import {SearchDocuments} from '/src/LibraryDialogs.tsx';import {ArtifactEditor} from '/src/ArtifactEditor.tsx';
-import '/src/styles.css';import '/src/ui.css';import '/src/workflow.css';import '/src/ui/dialog-surface.css';import '/src/visual-system.css';import '/src/exchange-layout.css';import '/src/inspector.css';import '/src/task-list.css';import '/src/content-catalog.css';import '/src/browser-bookmarks.css';import '/src/text-quotes.css';import '/src/profile-avatar.css';import '/src/personality-profile.css';import '/src/execution-activity.css';import '/src/execution-thread-groups.css';import '/src/application-icons.css';
+${currentAppCSSImports()}
 const fixed=new URL(location.href).searchParams.get('lane')==='fixed',read=fixed?useFixedExchangeQuoteRevealState:useExchangeQuoteRevealState,commit=fixed?useFixedExchangeQuoteRevealCommit:useExchangeQuoteRevealCommit;
 const empty={body:'',selection:'',revision:null},scope='center-test:human-test',storage=scopedStorage(scope);storageScope(scope);
 const events=[],requests=[],navigation=[],captures=[],ids=new WeakMap(),motion=[];let nextId=0,api,last,unmounted=false,alive=true;
