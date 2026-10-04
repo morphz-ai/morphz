@@ -1122,7 +1122,7 @@
   height: 8px;
   accent-color: var(--accent);
 }
-.app .composer-media-tools > button[data-recording="true"] {
+.app .composer-action-trailing > button[data-recording="true"] {
   color: light-dark(#ae3535, #ee8d8d);
 }
 .dictation-consent {

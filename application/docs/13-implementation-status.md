@@ -1,5 +1,30 @@
 # 桌面能力实施记录
 
+## 2026-10-04 独立缺陷修复：恢复录音停止按钮的红色提示
+
+用户另行授权恢复停止提示，不作为外观不变重构的隐含修改。只将
+`workflow.css` 的录音规则从已不存在的 `.composer-media-tools` 改为
+真实 `.composer-action-trailing` 直接按钮；原明／暗红色值不变。
+App／Client、DOM、图标、尺寸、间距、草稿、焦点和录音行为未修改。
+
+阶段 18／19 的固定旧／新媒体组合均为 27/28，同一原听写红色断言失败；
+保留两边原红项。修复后，六份现行媒体文件完整组合 28/28，原听写断言
+未改，逐例核三份实际 HTTP 资产；两条已撤下的独立转写用例仍明确不纳入。
+实际 StrictMode ComposerActionBar 配完整生产 CSS 的新回归 12/12：
+四种 accent × 明／暗、录音／停止后的恢复、无旁路红色泄漏、ARIA、
+焦点、32px 按钮／16px 图标及原 coarse pointer 44px 点击范围。
+挂载 fixture 的麦克风 JSX 与真实 App AST 一致，不替换领域组件。
+全量类型、限定格式、差异检查及冻结编译通过。
+
+单行 selector 反向修复后与 Git `39cf13cf` 原 workflow 全字节一致。
+修复冻结 JS SHA 为
+`0ba86a23fbac2a0edc96a0754d739bd8df93e47015e5416afdc3d1b36467a10a`，
+CSS SHA 为 `e6b379574f4d92d9365df6784204f9fce42a567e640908fb2d1aae3585828fd4`，
+preload 原字节不变。证据在 `/tmp/morphz-dictation-recording-color.3XXvwe`
+及 `/tmp/morphz-exchange-input-owner-root.1ZYkPK/media-color-fixed-candidate*`。
+编译页面中的采集／ASR／截图仍是受控端口，不冒称原生权限、真实硬件、
+供应商或原 App 最终验收通过；整体架构目标继续。
+
 ## 2026-10-04 前端阶段 19：Reader 四查询的完整算法所有权
 
 `data/reader-reads.ts` 完整拥有 `readReading`、`readingContents`、
