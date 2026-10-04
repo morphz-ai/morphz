@@ -9,8 +9,11 @@ import {
   type TopbarScenario,
 } from "./workspace-topbar-baseline.js";
 import "../../apps/web/src/styles.css";
+import "../../apps/web/src/shell/workspace-topbar-base.css";
 import "../../apps/web/src/ui.css";
+import "../../apps/web/src/shell/workspace-topbar-composition.css";
 import "../../apps/web/src/visual-system.css";
+import "../../apps/web/src/shell/workspace-topbar-packing.css";
 import "../../apps/web/src/inspector.css";
 
 const baseline = new URLSearchParams(location.search).has("baseline");

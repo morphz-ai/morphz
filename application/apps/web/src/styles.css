@@ -291,49 +291,6 @@ kbd {
   flex-direction: column;
   background: var(--paper);
 }
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 64px;
-  flex-shrink: 0;
-  padding: 0 20px;
-  border-bottom: 1px solid var(--hairline);
-  user-select: none;
-}
-.breadcrumb {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: var(--muted);
-  font-size: 12px;
-  overflow: hidden;
-  white-space: nowrap;
-}
-.breadcrumb > svg {
-  width: 14px;
-  height: 14px;
-}
-.breadcrumb > span,
-.breadcrumb > strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.breadcrumb button {
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted);
-  padding: 5px;
-  display: block;
-}
-.breadcrumb > strong {
-  color: var(--ink);
-  font-weight: 500;
-}
 .surface-switch {
   display: flex;
   align-items: center;
@@ -364,14 +321,6 @@ kbd {
   width: 14px;
   height: 14px;
 }
-.top-actions {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  flex-shrink: 0;
-  padding-left: 8px;
-  border-left: 1px solid var(--hairline);
-}
 .top-actions > button,
 .theme-wrap > button {
   color: var(--muted);
@@ -392,15 +341,9 @@ kbd {
   height: 47px;
   -webkit-app-region: drag;
 }
-.app[data-desktop="mac"] .topbar {
-  -webkit-app-region: drag;
-}
 .app[data-desktop="mac"] .topbar button,
 .app[data-desktop="mac"] .theme-menu {
   -webkit-app-region: no-drag;
-}
-.app[data-desktop="mac"].sidebar-hidden .topbar {
-  padding-left: 94px;
 }
 .workspace-body {
   display: grid;
@@ -1829,10 +1772,6 @@ kbd {
   .workspace-body {
     grid-template-columns: minmax(0, 1fr) 250px;
   }
-  .topbar {
-    padding-inline: 15px;
-    gap: 8px;
-  }
   .input-toggle kbd {
     display: none;
   }
@@ -1875,14 +1814,6 @@ kbd {
     width: min(320px, 100%);
     z-index: 25;
     box-shadow: -10px 0 30px var(--shadow);
-  }
-  .breadcrumb > svg,
-  .breadcrumb:has(strong) > span {
-    display: none;
-  }
-  .top-actions {
-    gap: 0;
-    padding-left: 5px;
   }
   .surface-switch button {
     gap: 5px;
@@ -1955,25 +1886,6 @@ kbd {
   .sidebar-bottom,
   .app .sidebar-toggle {
     display: none;
-  }
-  .topbar {
-    height: 50px;
-    padding-inline: 12px;
-    gap: 6px;
-    justify-content: space-between;
-  }
-  .breadcrumb {
-    display: none;
-  }
-  .top-actions {
-    border-left: 0;
-    padding-left: 0;
-    gap: 1px;
-  }
-  .top-actions .icon-button {
-    width: 28px;
-    min-width: 28px;
-    padding: 5px;
   }
   .surface-switch {
     padding: 2px;

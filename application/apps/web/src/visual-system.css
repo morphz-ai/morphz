@@ -324,26 +324,6 @@
   font-size: 14px;
   line-height: 1.5;
 }
-.app .topbar:has(.pdf-toolbar-slot) .breadcrumb {
-  min-width: 40px;
-}
-.app .topbar:has(.pdf-toolbar-slot) .detail-toolbar-slot {
-  flex-shrink: 0;
-}
-@container (max-width: 640px) {
-  .app .topbar:has(.pdf-toolbar-slot) .application-toolbar-slot {
-    min-width: 0;
-  }
-  .app .topbar:has(.pdf-toolbar-slot) .application-strip {
-    overflow-x: auto;
-  }
-  .app .topbar:has(.pdf-toolbar-slot) .navigation-history button:last-child {
-    display: none;
-  }
-  .app .topbar:has(.pdf-toolbar-slot) .object-toolbar {
-    gap: 2px;
-  }
-}
 .exchange-scope .conversation-scope {
   font-size: 12px;
 }

@@ -1,5 +1,140 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 59：共享顶栏样式所有权与有限等价证明
+
+当前生产候选只改七个 CSS／main 路径：原 styles、ui、visual 的完整
+Topbar recipe 分别由 `shell/workspace-topbar-base.css`、
+`workspace-topbar-composition.css`、`workspace-topbar-packing.css` 承载，
+实际 main 各保留原 phase。原 UI 数值、DOM、图形、动效、portal target、
+领域组件、数据／授权、Runtime 和状态算法不变。此阶段完成该有限职责交接，
+实际最新候选的完整页面回归已结束。旧采样合同的首轮 RED 保留；新合同的
+完整 12 轴／312 状态严格对照及独立收据审计均已通过，不据源码、
+门禁或隔离页面宣称原 App／原生外观验收完成。
+
+原不可变清单仍为 65 条／172 声明；最终候选迁移 **64 条／171 声明**，
+分族 16／54、42／111、6／6。C11 的混合过滤／count 规则保留在原 ui，
+不能让编译合并跨过原 `display:block` 细化。该完整四条 U640 容器的
+规则／声明／顺序有有限门禁，含 block→none 和移到 block 之后的负例。
+六条 PDF Host packing 只按原宿主职责归入 packing，不迁到 PDF feature。
+
+最新有限门禁九文件 **63/63**；Popup 最后一处仅格式化后单文件
+**10/10**。有限借用及旧 owner 的指定 phase 交接必须先核完整 Topbar
+载体／保留 tuple，成功才投影一条获准载体；其他改动无豁免。普通入口
+不锁整个 App、不用 Git 或跨 peer inverse；实际独立 React／CSS feature
+增长与合法别名反例保留。相关完整 typecheck 通过。
+
+两份干净 normal build 分别为实际 Git `66666d53` 与最新 64 条候选，
+完整 typecheck／Vite／service／prune terminal0；原 App 构建及进程未改。
+根代理另核不可变档案的九份完整源字节与实际 Git 一致、当前七条生产
+路径与最新构建源一致；三份原 CSS 仅移除指定完整规则后的整个有序源
+AST、comments 和剩余 context 相等，main 全字节只允许三个指定 import。
+
+实际 index 选择的完整 compiled CSS：旧 2,764 rules／11,758 nodes，
+新 2,765 rules／11,767 nodes。64 authored 映射为 63 编译边界：61 个
+普通完整 recipe 和原连续 C12／C13 的一个完整合并 group，均要求独立
+production minifier reference／旧／新三方 raw tuple 完全相等。
+C38 是唯一明确非 raw-equal 边界：原连续两个 Library 与 Topbar 的
+完整混合 rule，对应新 retained Library 与 selected Topbar 的完整两件；
+三个完整独立 minifier reference 全部核准后，才允许旧 remainder 一次
+预声明的完整 Library 投影。**不是原始 closure／raw CSS 相等**，不是
+删掉混合规则、selector 子集比较或通用归一化。仅此投影后的整个剩余
+有序 raw 树相等，其余所有节点／规则／context 均保留。
+
+完整跨越收据与负例保留：C38 的 54 个 retained crossings 包含 53 条
+原 UI tail 与一个已披露的 Library self-boundary；原 58 条 tail 中另五条
+selected 未被跨越。15 个 padding writer 包括 `.sr-only{padding:0}`，
+不能隐去不同值或声称任意多 class 的 DOM 都等价。独立 JSON 审计通过，
+这只是当前有限迁移证明，不代替实际 Page CSS 字节、渲染或原生命中。
+
+最新完整统一 Node：**357 文件、2,444 项、2,440 通过、零失败／取消、
+4 明确未启用**；required PostgreSQL／Runtime，四个 Runtime flag 实际
+启用，unexpectedSkips 为空。三个 S3 与一个 native-focus 不计为通过，
+不是环境丢失；真实 Rust 场景使用隔离状态和受控模型响应，不冒充付费
+模型或原用户资料。已提交 `220b5c68` 的测试接线单独记录于下方。
+
+实际旧版与最终 64 条候选使用相同最终 spec，完整十文件／38 用例，
+各 **37 通过／1 失败**。两边均在新建项目后原第三方 iframe 应继续
+连接的原断言失败；这是新增项目被误判为撤权导致界面卸载的旧生产 bug，
+不是前置接线问题，也不因旧／新相同而视为通过。没有过滤失败项、重试、
+放宽原断言或时限。根代理独立核验 15 个完整 spec 来源、每 lane 的
+75 次实际 Page index／CSS 响应字节、全部 38 个 trace，以及 marker
+恢复、owned 进程组／临时中心／端口清理。完整 suite 保持 RED；另行
+修复仍待用户选择，不混入保持行为不变的重构。
+
+严格 mounted 对照的旧版完整首轮为 **12 例、8 通过／4 超时**，
+不是等价验收通过。四个覆盖式右栏轴均在内容创作入口的指针点击被
+非模态 inspector 遮挡；原真实 UI 支持的键盘入口用于后续采样准备，
+不以 force click、伪造事件或生产变更绕过。该首轮未中断，完整 trace、
+未完成状态收据及清理均保留；原更早的带计数导航前置失败也保留。
+网络证据校验另有明确接线错误：安装的 Playwright 普通 trace 默认
+`omitScripts`，实际 Page 的 index／CSS 正文存在，main JS 响应存在
+但正文被省略。后续从同一原 Page 被动读取 `response.body()`，
+仍要求实际脚本字节与该 lane 的磁盘构建一致；不以另一条 HTTP GET
+替代 Page 加载证明。原附件内联导致 reporter 无文件路径的后续首红也保留。
+最终附件按同一 case 的实际 bytes 保存，旧／新各 **12/12**，Page／HTTP
+reporter 零错误，原 index／完整 CSS 的 trace 正文与实际 Page 的 main JS
+正文均与各 lane 构建相等；原生 App、Runtime 和用户 center 未改。
+
+最终严格对照的完整 **12 轴／156 状态仍为 RED**，第一处为完整 computed
+数组中自定义属性的枚举位置不同，不能据两边操作通过宣称等价。另用完全
+相同的旧 compiled CSS 在三个独立、已核验的浏览器进程诊断：自定义属性
+枚举顺序不同，标准属性顺序／值、按属性名的所有值及原始矩形均相同。
+这是有限 CSSOM 诊断，不是 normal App 或原窗验收。完整实际收据的独立
+诊断覆盖 6,552 nodes／336 pseudos：所有 6,888 个 computed 数组的
+属性名集合、按名值、标准属性顺序以及全部原始几何／控件事实均无差异，
+但 **51 状态的实际动画数组仍有差异**，含尚未完成过渡的数量、缩短时长
+及插值起始颜色；原采样未记录 effect target／transition property，不能
+冒充已定位同一 effect 或已经证明动画相等。当时下一份采样合同仍在设计，
+必须保留全部原始枚举及动画证据，不按上述诊断宣称最终对照通过。
+没有排序或覆盖原收据，也没有将首轮 RED 改为通过。
+
+根代理另用同一旧 compiled CSS、同一已核验浏览器，在隔离的合成
+Inspector-toggle markup 中诊断真实鼠标与 `transitionrun`：两种真实
+RAF 间隔后移开，完整时长均 110ms，反向过渡实际缩短为约 37.51ms／
+72.59ms；event target／property 和原 effect keyframes 均记录。没有修改
+动画时钟、样式或伪造事件。这验证未完成过渡历史会影响时长的机制，
+不是 normal App 验收，也不能从旧收据恢复当时缺失的 effect 身份。
+新的稳定起点与真实 hover 合同的后续执行单独记录如下。
+
+新的完整 normal-App 合同保留每个 computed 属性名／原值与全原始枚举，
+不比较浏览器不稳定的自定义属性枚举位置；几何原值无舍入、容差或字段删减。
+每个实际状态先保留并等待原有限过渡自然结束，再真实鼠标悬停，完整记录
+同一 effect 的 target／property／timing／keyframes 与控制前事实；1000ms
+只表示已结束的 END 采样，不代表内部插值、任意画布或全部原生动效。
+旧／新各 **12/12**，**312 状态／7,515,354 属性名值／92 个 controlled effect**
+的整个有限 comparand 严格相等，Page／HTTP 零错误且完整 index、CSS 和
+同一原 Page 的 JS 实际字节均与冻结构建相等；owned 清理完成。
+
+独立冷审计首次 RED 保留：它的 retained-effect union 漏掉控制前由实际
+`getAnimations()` 捕获、但在 END 后合法退出最终 live scan 的完整 refs。
+完整原件与 controlled 身份／timing／keyframes 并未丢失；每 lane 的 92
+个 effect 均已按原始收据核对，零重复身份／metadata 差异／取消／event error。
+只修独立核验逻辑，不改生产、冻结页面入口、实际收据或旧失败结果。根代理
+审阅并独立核完整源码唯一 delta 与全绑定后，修正后的冷审计实际执行
+**12 轴全部通过**：24 个 Page 的完整 index／CSS／同 Page JS 字节、全部
+原始属性枚举与按名值、312 状态的整个 comparand、原件与 controlled
+完整 metadata／END、真实指针／焦点／布局及 owned 清理均严格核验。
+没有宣称原件所有自然事件已被观察：初始实际 refs 可以先于事件派发被捕获。
+旧首红不重写，此结果仍只证明有限 END 采样，不证明内部插值或原生窗口。
+
+证据：不可变来源在 `/tmp/morphz-workspace-topbar-three-phase-preparation.lf6Q36/`；
+最终源／门禁／full Node 原始日志在 `/tmp/morphz-workspace-topbar-source-move.sLAIDm/`；
+旧／新 normal build 在 `/tmp/morphz-topbar-stage59-baseline.z0VBDQ/` 与
+`/tmp/morphz-topbar-stage59-refined.kwALKv/`；完整 compiled 证明及全部
+跨越在 `/tmp/morphz-topbar-compiled-proof.4pTt8g/`；最终候选完整页面
+及根独立审计在 `/tmp/morphz-topbar64-real-consumers.qQ6Xsh/`。原两个
+compiled 首红和 65 条候选均保留，不覆盖为绿。实际 mounted 首红在
+`/tmp/morphz-topbar-mounted-strict-file-attachments.YEXNRj/`；相同旧 CSS
+诊断在 `/tmp/morphz-topbar-cssom-resolved-browser.rnv3cc/`。
+全量实际收据诊断在 `/tmp/morphz-topbar-animation-readonly-taxonomy.Cb1czP/`；
+同旧 CSS 反向过渡诊断在 `/tmp/morphz-topbar-old-css-transition-diagnostic.rvdSIx/`。
+新稳定／hover 完整收据与首次严格 PASS 在
+`/tmp/morphz-topbar-mounted-stable-hover-entry.Y5OJg0/`；独立冷审计首红在
+`/tmp/morphz-topbar-stable-motion-independent-audit.Oy0RwN/AUDIT-FIRST.json`。
+修正后的独立冷审计完整源码、绑定和首次 PASS 在
+`/tmp/morphz-topbar-stable-motion-audit-initialrefs.nycTgp/`。
+原 App／原生验收仍独立未完成，整体目标保持 active。
+
 ## 2026-10-05 页面回归：显式阅读入口与 PDF 同次采样
 
 仅 `tests/workspace.spec.ts`、`tests/pdf-attachment.spec.ts` 与本记录，

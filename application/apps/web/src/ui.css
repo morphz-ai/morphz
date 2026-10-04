@@ -87,80 +87,8 @@
 .app .compose-hint {
   font-size: 12px;
 }
-.topbar {
-  position: relative;
-  height: 48px;
-  gap: 8px;
-  padding-inline: 12px;
-  border-bottom: 0;
-  background: var(--paper);
-  container-type: inline-size;
-}
 /* Reserve the upper edge for native dragging without adding another title row.
    Interactive controls sit below it and opt out individually, not by container. */
-.app[data-desktop="mac"] .topbar::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: 6px;
-  z-index: 3;
-  -webkit-app-region: drag;
-}
-.app[data-desktop="mac"]
-  .topbar
-  :is(
-    button,
-    input,
-    textarea,
-    select,
-    a,
-    summary,
-    [role="tab"],
-    [contenteditable="true"],
-    .search-field,
-    .workspace-options-menu
-  ) {
-  -webkit-app-region: no-drag;
-}
-.topbar .toolbar-title,
-.topbar .toolbar-title button {
-  margin: 0;
-  padding-block: 0;
-  font-size: 22px;
-  font-weight: 600;
-  line-height: 1.3;
-  color: var(--ink);
-  letter-spacing: -0.4px;
-  white-space: nowrap;
-}
-.topbar:has(.page-toolbar-slot:not([hidden])) .breadcrumb {
-  flex: 0 0 auto;
-}
-.page-toolbar-slot {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  min-width: 0;
-  gap: 8px;
-}
-.detail-toolbar-slot {
-  display: flex;
-  min-width: 0;
-  flex: 0 1 auto;
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-.topbar .object-toolbar,
-.topbar .draft-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  min-height: 32px;
-  border: 0;
-  white-space: nowrap;
-}
 .draft-toolbar h2 {
   font-size: 14px;
 }
@@ -204,9 +132,6 @@
   padding: 0;
   margin: 0;
 }
-.page-toolbar-slot button {
-  white-space: nowrap;
-}
 .toolbar-count {
   color: var(--muted);
   white-space: nowrap;
@@ -216,15 +141,6 @@
   padding: 6px 8px;
   background: transparent;
   border: 0;
-}
-.page-toolbar-slot .project-directory-toolbar {
-  display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  justify-content: flex-end;
-  width: 100%;
-  gap: 8px;
-  margin: 0;
 }
 .project-directory-toolbar > span {
   margin-right: auto;
@@ -268,28 +184,9 @@
     width: auto;
     flex: 1;
   }
-  .toolbar-action-label,
-  .toolbar-install span {
-    display: none;
-  }
-  .topbar .object-toolbar > span {
-    display: none;
-  }
   .app .version-controls select {
     width: 80px;
   }
-}
-.app:not(.sidebar-hidden) .sidebar-toggle {
-  position: absolute;
-  right: calc(100% + 16px);
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
-}
-.top-actions {
-  gap: 4px;
-  padding-left: 4px;
-  border: 0;
 }
 .sidebar-header {
   position: relative;
@@ -425,13 +322,6 @@
     justify-content: center;
     padding-inline: 0;
   }
-  .app.sidebar-compact .sidebar-toggle {
-    position: static;
-    transform: none;
-  }
-  .app.sidebar-compact[data-desktop="mac"] .topbar {
-    padding-left: calc(max(0px, 94px - var(--sidebar-width)) + 12px);
-  }
   .app.sidebar-compact .browser-sidebar-toggle {
     left: calc(var(--sidebar-width) + 12px);
   }
@@ -512,79 +402,9 @@
   top: 100%;
   width: min(248px, calc(100vw - 32px));
 }
-.application-toolbar-slot {
-  min-width: 0;
-  flex: 1;
-}
-.topbar .application-strip {
-  --border: var(--line);
-  --surface: var(--paper);
-  --surface-hover: var(--hover);
-  min-height: 0;
-  height: 40px;
-  padding: 0;
-  border: 0;
-  gap: 6px;
-}
-.topbar .application-tabs {
-  flex: 0 1 auto;
-  min-width: 0;
-  scrollbar-width: thin;
-}
-.topbar .application-strip > button {
-  flex-shrink: 0;
-}
-.topbar .application-strip {
-  min-width: 0;
-}
-.topbar:has(.detail-toolbar-slot:not(:empty)) .application-toolbar-slot {
-  min-width: 200px;
-}
-.topbar .application-tabs + button {
-  margin-left: auto;
-}
-.topbar .application-tab {
-  flex: 0 0 auto;
-}
-.topbar .application-tab > button:first-child {
-  min-width: 64px;
-  max-width: 180px;
-  padding: 7px 8px;
-}
 .application-tab span {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-@container (max-width: 640px) {
-  .topbar:has(.detail-toolbar-slot:not(:empty)) .application-toolbar-slot {
-    min-width: 150px;
-  }
-  .topbar .application-strip {
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .topbar .application-tabs {
-    flex-shrink: 0;
-  }
-  .topbar .detail-toolbar-slot {
-    min-width: 32px;
-  }
-  .topbar .object-toolbar button {
-    min-width: 32px;
-    padding-inline: 6px;
-  }
-  .topbar .object-toolbar .inline {
-    gap: 2px;
-  }
-}
-.app[data-desktop="mac"] .application-tabs,
-.app[data-desktop="mac"] .workspace-options {
-  -webkit-app-region: no-drag;
-}
-@container (max-width: 400px) {
-  .topbar:has(.detail-toolbar-slot:not(:empty)) .application-toolbar-slot {
-    min-width: 72px;
-  }
 }
 .primary-panel > main.application-canvas {
   display: flex;
@@ -1699,21 +1519,6 @@ body:has(dialog[open]) .cognitive-application-frame {
 }
 .composer-model > span:first-child {
   flex-shrink: 0;
-}
-.navigation-history {
-  display: flex;
-  align-items: center;
-  gap: 0;
-  flex-shrink: 0;
-  -webkit-app-region: no-drag;
-}
-.app .navigation-history .icon-button {
-  width: 28px;
-  height: 28px;
-  padding: 6px;
-}
-.navigation-history button:disabled {
-  opacity: 0.25;
 }
 .app .delivery-object {
   display: flex;
@@ -3030,12 +2835,6 @@ summary:focus-visible {
   .library-results {
     padding-inline: 12px;
   }
-  .topbar {
-    padding-inline: 12px;
-  }
-  .top-actions {
-    gap: 6px;
-  }
   .composer-actions .inline {
     gap: 4px;
   }
@@ -3045,12 +2844,6 @@ summary:focus-visible {
   }
 }
 @media (max-width: 480px) {
-  .breadcrumb {
-    gap: 3px;
-  }
-  .topbar {
-    gap: 4px;
-  }
   .top-actions .input-toggle kbd {
     display: none;
   }
@@ -3146,15 +2939,6 @@ summary:focus-visible {
 }
 
 /* Tasks are work to read and act on, not a disabled edit form. */
-.task-breadcrumb > button {
-  font-size: 13px;
-  color: var(--muted);
-  flex-shrink: 0;
-}
-.task-breadcrumb .toolbar-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .sr-only {
   position: absolute;
   width: 1px;

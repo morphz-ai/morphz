@@ -17,6 +17,8 @@ import {
   pdfReadingPhaseViolations,
   verifiedPdfCarrierPhases,
   pdfReadingCarriers,
+  pdfHostPackingOwner,
+  pdfReadingMainNeighbors,
   type PdfSources,
 } from "./fixtures/pdf-reading-contract.js";
 
@@ -293,7 +295,7 @@ test("PDF direct competing writers, finite native refinements and retained Host 
     (sources) =>
       replace(
         sources,
-        "visual-system.css",
+        pdfHostPackingOwner,
         ".app .topbar:has(.pdf-toolbar-slot) .breadcrumb {\n  min-width: 40px;",
         ".app .topbar:has(.pdf-toolbar-slot) .breadcrumb {\n  min-width: 41px;",
       ),
@@ -380,8 +382,8 @@ test("PDF actual main and runtime phase reject physical movement and earlier dep
     replace(
       sources,
       "main.tsx",
-      line("styles.css"),
-      line("styles.css") + 'import "./future.js";\n',
+      line(pdfReadingMainNeighbors.base[0]),
+      line(pdfReadingMainNeighbors.base[0]) + 'import "./future.js";\n',
     );
   });
   reject(
@@ -396,8 +398,9 @@ test("PDF actual main and runtime phase reject physical movement and earlier dep
       replace(
         sources,
         "main.tsx",
-        line("styles.css"),
-        line("styles.css") + 'import {} from "./future.js";\n',
+        line(pdfReadingMainNeighbors.base[0]),
+        line(pdfReadingMainNeighbors.base[0]) +
+          'import {} from "./future.js";\n',
       );
     },
   );

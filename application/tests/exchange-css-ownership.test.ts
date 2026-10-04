@@ -19,6 +19,10 @@ import {
   pdfReadingCarriers,
   verifiedPdfCarrierPhases,
 } from "./fixtures/pdf-reading-contract.js";
+import {
+  topbarCarriers,
+  verifiedTopbarCarrierPhases,
+} from "./fixtures/workspace-topbar-contract.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -485,6 +489,19 @@ function violations(sources: Sources) {
         );
         verifiedPdf = true;
       });
+      let verifiedTopbar = false;
+      contract("topbar:complete-handoff", () => {
+        verifiedTopbarCarrierPhases(
+          topbarCarriers.packing,
+          sources.css,
+          [...sources.modules.keys()].map((file) => ({
+            file,
+            source: project.program.getSourceFile(`${directory}/${file}`)!,
+          })),
+          (identifier) => !project.checker.getSymbolAtLocation([identifier])[0],
+        );
+        verifiedTopbar = true;
+      });
       let imports = 0;
       for (const file of sources.modules.keys()) {
         const source = project.program.getSourceFile(`${directory}/${file}`)!;
@@ -494,12 +511,14 @@ function violations(sources: Sources) {
             ? [statement]
             : [],
         );
-        if (file === "main.tsx" && verifiedPdf)
+        if (file === "main.tsx" && verifiedPdf && verifiedTopbar)
           direct = direct.filter(
             (statement) =>
               !isStringLiteral(statement.moduleSpecifier) ||
-              join(".", statement.moduleSpecifier.text) !==
-                pdfReadingCarriers.adaptive,
+              (join(".", statement.moduleSpecifier.text) !==
+                pdfReadingCarriers.adaptive &&
+                join(".", statement.moduleSpecifier.text) !==
+                  topbarCarriers.packing),
           );
         if (file === "main.tsx")
           contract("known-composition-order", () => {
@@ -982,8 +1001,8 @@ test("入口AST拒绝顺序漂移、重复及组件或延迟加载", () => {
           s.modules
             .get("main.tsx")!
             .replace(
-              'import "./visual-system.css";\nimport "./features/pdf/pdf-reading-adaptive.css";\nimport "./features/exchange/exchange-controls.css";\nimport "./exchange-layout.css";',
-              'import "./exchange-layout.css";\nimport "./features/exchange/exchange-controls.css";\nimport "./visual-system.css";\nimport "./features/pdf/pdf-reading-adaptive.css";',
+              'import "./visual-system.css";\nimport "./shell/workspace-topbar-packing.css";\nimport "./features/pdf/pdf-reading-adaptive.css";\nimport "./features/exchange/exchange-controls.css";\nimport "./exchange-layout.css";',
+              'import "./exchange-layout.css";\nimport "./features/exchange/exchange-controls.css";\nimport "./visual-system.css";\nimport "./shell/workspace-topbar-packing.css";\nimport "./features/pdf/pdf-reading-adaptive.css";',
             ),
         ),
       "entry-order",

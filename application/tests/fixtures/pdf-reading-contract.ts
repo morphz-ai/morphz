@@ -24,6 +24,22 @@ import {
 } from "./pdf-reading-c93283db.js";
 
 export const pdfReadingCarriers = fixedPdfReadingRole.carriers;
+// Stage59 moved the exact six Host leaves and inserted its separately guarded
+// carriers before PDF. Keep the immutable c932 archive historical; this is the
+// current physical seam, not permission to omit arbitrary preceding CSS.
+export const pdfHostPackingOwner = "shell/workspace-topbar-packing.css";
+export const pdfReadingMainNeighbors = {
+  base: [
+    "shell/workspace-topbar-base.css",
+    pdfReadingCarriers.base,
+    "ui/controls/adaptive.css",
+  ],
+  adaptive: [
+    pdfHostPackingOwner,
+    pdfReadingCarriers.adaptive,
+    "features/exchange/exchange-controls.css",
+  ],
+} as const;
 export type PdfSources = Readonly<{
   css: ReadonlyMap<string, string>;
   modules: ReadonlyMap<string, string>;
@@ -394,7 +410,7 @@ export function pdfReadingCssViolations(css: ReadonlyMap<string, string>) {
   }
   guarded(
     () => {
-      const visual = parsed.get("visual-system.css");
+      const visual = parsed.get(pdfHostPackingOwner);
       assert.ok(visual);
       const matches: Rule[] = [];
       visual.walkRules((rule) => {
@@ -560,9 +576,7 @@ export function pdfReadingPhaseViolations(
   runtime: readonly string[],
 ) {
   const errors: string[] = [];
-  for (const [phase, neighbors] of Object.entries(
-    fixedPdfReadingRole.mainNeighbors,
-  ))
+  for (const [phase, neighbors] of Object.entries(pdfReadingMainNeighbors))
     for (const [stream, label] of [
       [main, "main"],
       [runtime, "runtime"],

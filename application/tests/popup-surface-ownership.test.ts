@@ -27,11 +27,16 @@ import {
   selectedPopupSurfaceRules,
   type FrozenPopupRule,
 } from "./fixtures/popup-surface-9708abbd.js";
+import {
+  topbarCarriers,
+  verifiedTopbarCarrierPhases,
+} from "./fixtures/workspace-topbar-contract.js";
 
 // A finite root-material contract, not a universal CSS solver or App snapshot.
 // Actual-Git whole-source migration proof is a separate one-time verifier.
 const owner = "ui/popup-surface.css";
 const carrier = "ui/controls/surfaces.css";
+const topbarComposition = topbarCarriers.composition;
 const directory = new URL("../apps/web/src/", import.meta.url).pathname;
 type Sources = { css: Map<string, string>; modules: Map<string, string> };
 const key = (selector: string) =>
@@ -63,6 +68,19 @@ function signature(rule: Rule) {
   ];
 }
 const frozen = (rule: FrozenPopupRule) => [rule[2], rule[3], rule[4]];
+// Only the complete original C03 native no-drag tuple changed physical owner.
+// The frozen 9708 archive and all other retained popup writers stay untouched.
+const movedTopbarNoDragSelector =
+  '.app[data-desktop="mac"] .topbar :is( button,input,textarea,select,a,summary,[role="tab"],[contenteditable="true"],.search-field,.workspace-options-menu )';
+const movedTopbarNoDrag = JSON.stringify([
+  movedTopbarNoDragSelector,
+  [],
+  [["-webkit-app-region", "no-drag", false]],
+]);
+const retainedSource = (rule: FrozenPopupRule) =>
+  rule[0] === "ui.css" && JSON.stringify(frozen(rule)) === movedTopbarNoDrag
+    ? topbarComposition
+    : rule[0];
 const paint = (property: string) =>
   /^(?:all|background(?:-.*)?|border(?:-.*)?|box-shadow|(?:-webkit-)?backdrop-filter)$/.test(
     property.toLowerCase(),
@@ -184,6 +202,10 @@ function clone(source: Sources): Sources {
 function moduleProgram(
   sources: Sources,
   consume: (name: string, source: Node) => void,
+  finish?: (
+    modules: Parameters<typeof verifiedTopbarCarrierPhases>[2],
+    unbound: Parameters<typeof verifiedTopbarCarrierPhases>[3],
+  ) => void,
 ) {
   const base = "/morphz-popup-surface",
     config = `${base}/tsconfig.json`;
@@ -198,10 +220,18 @@ function moduleProgram(
   try {
     const snapshot = api.updateSnapshot({ openProjects: [config] });
     try {
-      const program = snapshot.getProject(config)!.program;
+      const project = snapshot.getProject(config)!,
+        program = project.program;
       assert.equal(program.getSyntacticDiagnostics().length, 0, "module-parse");
       for (const name of sources.modules.keys())
         consume(name, program.getSourceFile(`${base}/${name}`)!);
+      finish?.(
+        [...sources.modules.keys()].map((file) => ({
+          file,
+          source: program.getSourceFile(`${base}/${file}`)!,
+        })),
+        (identifier) => !project.checker.getSymbolAtLocation([identifier])[0],
+      );
     } finally {
       snapshot.dispose();
     }
@@ -253,7 +283,7 @@ function validate(sources: Sources) {
   );
   for (const old of [...mixedPopupSurvivors, ...retainedPopupRules]) {
     const matches: unknown[] = [];
-    parsed.get(old[0])?.walkRules((rule) => {
+    parsed.get(retainedSource(old))?.walkRules((rule) => {
       if (
         key(rule.selector) === old[2] &&
         JSON.stringify(context(rule)) === JSON.stringify(old[3])
@@ -315,223 +345,275 @@ function validate(sources: Sources) {
   let popover = 0,
     toolbar = 0,
     portal = 0;
-  moduleProgram(sources, (file, source) => {
-    const direct: string[] = [],
-      dependencies: string[] = [];
-    source.forEachChild((node) => {
-      if (
-        (!isImportDeclaration(node) && !isExportDeclaration(node)) ||
-        !node.moduleSpecifier ||
-        !isStringLiteral(node.moduleSpecifier)
-      )
-        return;
-      const specifier = node.moduleSpecifier.text;
-      const clause = isImportDeclaration(node) ? node.importClause : undefined;
-      const typeOnly = isImportDeclaration(node)
-        ? clause?.phaseModifier === SyntaxKind.TypeKeyword ||
-          (!clause?.name &&
-            clause?.namedBindings &&
-            isNamedImports(clause.namedBindings) &&
-            clause.namedBindings.elements.every(
-              (element) => element.isTypeOnly,
-            ))
-        : node.isTypeOnly;
-      const resolved = resolveModule(file, specifier, sources);
-      if (resolved && !typeOnly) dependencies.push(resolved);
-      if (isImportDeclaration(node)) {
-        direct.push(
-          carrierSource(file, specifier) ? `./${carrier}` : specifier,
-        );
-        if (isOwner(specifier)) {
-          imports++;
-          assert.ok(
-            file === "main.tsx" &&
-              !node.importClause &&
-              specifier === `./${owner}`,
-            "owner-import",
-          );
-        }
-        if (carrierSource(file, specifier)) {
-          carrierImports++;
-          assert.ok(
-            file === "main.tsx" &&
-              !node.importClause &&
-              !/[?#]/.test(specifier) &&
-              sources.css.has(carrier),
-            "carrier-import",
-          );
-        }
-      } else {
-        assert.ok(!isOwner(specifier), "owner-reexport");
-        assert.ok(!carrierSource(file, specifier), "carrier-reexport");
-      }
-    });
-    edges.set(file, dependencies);
-    if (file === "main.tsx") mainImports = direct;
-    function walk(node: Node) {
-      if (
-        isCallExpression(node) &&
-        (node.expression.kind === SyntaxKind.ImportKeyword ||
-          (isIdentifier(node.expression) && node.expression.text === "require"))
-      )
-        assert.ok(
-          !node.arguments.some(
-            (argument) =>
-              (isStringLiteral(argument) ||
-                isNoSubstitutionTemplateLiteral(argument)) &&
-              isOwner(argument.text),
-          ),
-          "owner-dynamic",
-        );
-      if (
-        isCallExpression(node) &&
-        (node.expression.kind === SyntaxKind.ImportKeyword ||
-          (isIdentifier(node.expression) && node.expression.text === "require"))
-      )
-        assert.ok(
-          !node.arguments.some(
-            (argument) =>
-              (isStringLiteral(argument) ||
-                isNoSubstitutionTemplateLiteral(argument)) &&
-              carrierSource(file, argument.text),
-          ),
-          "carrier-dynamic",
-        );
-      if (
-        file === "ComposerOptions.tsx" &&
-        isJsxOpeningElement(node) &&
-        node.tagName.getText() === "div"
-      ) {
-        const attrs = node.attributes.properties.filter(isJsxAttribute);
-        const native = attrs.find((attr) => attr.name.getText() === "popover");
-        const className = attrs.find(
-          (attr) => attr.name.getText() === "className",
-        );
+  moduleProgram(
+    sources,
+    (file, source) => {
+      const direct: string[] = [],
+        dependencies: string[] = [];
+      source.forEachChild((node) => {
         if (
-          native &&
-          className?.initializer?.getText().includes("composer-options")
-        ) {
-          assert.equal(
-            native.initializer?.getText(),
-            '"manual"',
-            "actual-popover-root",
+          (!isImportDeclaration(node) && !isExportDeclaration(node)) ||
+          !node.moduleSpecifier ||
+          !isStringLiteral(node.moduleSpecifier)
+        )
+          return;
+        const specifier = node.moduleSpecifier.text;
+        const clause = isImportDeclaration(node)
+          ? node.importClause
+          : undefined;
+        const typeOnly = isImportDeclaration(node)
+          ? clause?.phaseModifier === SyntaxKind.TypeKeyword ||
+            (!clause?.name &&
+              clause?.namedBindings &&
+              isNamedImports(clause.namedBindings) &&
+              clause.namedBindings.elements.length > 0 &&
+              clause.namedBindings.elements.every(
+                (element) => element.isTypeOnly,
+              ))
+          : node.isTypeOnly;
+        const resolved = resolveModule(file, specifier, sources);
+        if (resolved && !typeOnly) dependencies.push(resolved);
+        if (isImportDeclaration(node)) {
+          direct.push(
+            carrierSource(file, specifier)
+              ? `./${carrier}`
+              : resolved === topbarComposition
+                ? `./${topbarComposition}`
+                : specifier,
           );
-          assert.equal(
-            className.initializer.getText(),
-            "{`composer-options ${menuClassName}`}",
-            "actual-popover-root",
-          );
-          popover++;
+          if (isOwner(specifier)) {
+            imports++;
+            assert.ok(
+              file === "main.tsx" &&
+                !node.importClause &&
+                specifier === `./${owner}`,
+              "owner-import",
+            );
+          }
+          if (carrierSource(file, specifier)) {
+            carrierImports++;
+            assert.ok(
+              file === "main.tsx" &&
+                !node.importClause &&
+                !/[?#]/.test(specifier) &&
+                sources.css.has(carrier),
+              "carrier-import",
+            );
+          }
+        } else {
+          assert.ok(!isOwner(specifier), "owner-reexport");
+          assert.ok(!carrierSource(file, specifier), "carrier-reexport");
         }
-      }
-      if (
-        file === "SelectionActions.tsx" &&
-        isCallExpression(node) &&
-        isIdentifier(node.expression) &&
-        node.expression.text === "createPortal"
-      ) {
-        const [element, host] = node.arguments;
-        assert.ok(
-          element &&
-            isJsxElement(element) &&
-            host?.getText() === "document.body",
-          "actual-body-portal",
-        );
-        const attrs =
-          element.openingElement.attributes.properties.filter(isJsxAttribute);
-        assert.equal(
-          attrs
-            .find((attr) => attr.name.getText() === "className")
-            ?.initializer?.getText(),
-          '"selection-actions"',
-          "actual-body-portal",
-        );
-        assert.equal(
-          attrs
-            .find((attr) => attr.name.getText() === "role")
-            ?.initializer?.getText(),
-          '"toolbar"',
-          "actual-body-portal",
-        );
-        portal++;
-        toolbar++;
-      }
-      node.forEachChild((child) => {
-        walk(child);
       });
-    }
-    walk(source);
-  });
-  assert.equal(imports, 1, "single-owner-import");
-  assert.equal(carrierImports, 1, "single-carrier-import");
-  const carrierAt = mainImports.indexOf(`./${carrier}`);
-  assert.ok(
-    carrierAt > 0 &&
-      mainImports[carrierAt - 1] === "./ui/dialog-surface.css" &&
-      mainImports[carrierAt + 1] === "./visual-system.css",
-    "entry-order:surface-carrier-phase",
-  );
-  // Only the approved, source-checked and correctly phased carrier is
-  // transparent to the historical interval. All other imports/writers remain.
-  const composition = mainImports.filter(
-    (specifier) => specifier !== `./${carrier}`,
-  );
-  const at = composition.indexOf(`./${owner}`);
-  assert.ok(
-    at > 0 &&
-      composition[at - 1] === "./ui.css" &&
-      composition[at + 1] === "./workflow.css" &&
-      composition[at + 2] === "./ui/dialog-surface.css" &&
-      composition[at + 3] === "./visual-system.css",
-    "entry-order",
-  );
-  const reached = new Set<string>(),
-    loaded: string[] = [];
-  function visit(file: string) {
-    if (reached.has(file)) return;
-    reached.add(file);
-    if (sources.css.has(file)) {
-      loaded.push(file);
-      return;
-    }
-    for (const dependency of edges.get(file) ?? []) visit(dependency);
-  }
-  visit("main.tsx");
-  assert.ok(
-    reached.has("ComposerOptions.tsx") &&
-      reached.has("SelectionActions.tsx") &&
-      reached.has("ApplicationDock.tsx"),
-    "actual-consumer-closure",
-  );
-  assert.equal(popover, 1, "actual-popover-root");
-  assert.equal(toolbar, 1, "actual-body-portal");
-  assert.equal(portal, 1, "actual-body-portal");
-  assert.ok(
-    loaded.indexOf("application-dock.css") >= 0 &&
-      loaded.indexOf("application-dock.css") < loaded.indexOf(owner),
-    "actual-dock-closure-order",
-  );
-  const interval = [
-    "ui.css",
-    owner,
-    "workflow.css",
-    "ui/dialog-surface.css",
-    "visual-system.css",
-  ];
-  const runtimeAt = loaded.indexOf(carrier);
-  assert.deepEqual(
-    loaded.slice(runtimeAt - 1, runtimeAt + 2),
-    ["ui/dialog-surface.css", carrier, "visual-system.css"],
-    "actual-css-closure-order",
-  );
-  const projected = loaded.filter((file) => file !== carrier);
-  assert.deepEqual(
-    projected.slice(
-      projected.indexOf("ui.css"),
-      projected.indexOf("ui.css") + interval.length,
-    ),
-    interval,
-    "actual-css-closure-order",
+      edges.set(file, dependencies);
+      if (file === "main.tsx") mainImports = direct;
+      function walk(node: Node) {
+        if (
+          isCallExpression(node) &&
+          (node.expression.kind === SyntaxKind.ImportKeyword ||
+            (isIdentifier(node.expression) &&
+              node.expression.text === "require"))
+        )
+          assert.ok(
+            !node.arguments.some(
+              (argument) =>
+                (isStringLiteral(argument) ||
+                  isNoSubstitutionTemplateLiteral(argument)) &&
+                isOwner(argument.text),
+            ),
+            "owner-dynamic",
+          );
+        if (
+          isCallExpression(node) &&
+          (node.expression.kind === SyntaxKind.ImportKeyword ||
+            (isIdentifier(node.expression) &&
+              node.expression.text === "require"))
+        )
+          assert.ok(
+            !node.arguments.some(
+              (argument) =>
+                (isStringLiteral(argument) ||
+                  isNoSubstitutionTemplateLiteral(argument)) &&
+                carrierSource(file, argument.text),
+            ),
+            "carrier-dynamic",
+          );
+        if (
+          file === "ComposerOptions.tsx" &&
+          isJsxOpeningElement(node) &&
+          node.tagName.getText() === "div"
+        ) {
+          const attrs = node.attributes.properties.filter(isJsxAttribute);
+          const native = attrs.find(
+            (attr) => attr.name.getText() === "popover",
+          );
+          const className = attrs.find(
+            (attr) => attr.name.getText() === "className",
+          );
+          if (
+            native &&
+            className?.initializer?.getText().includes("composer-options")
+          ) {
+            assert.equal(
+              native.initializer?.getText(),
+              '"manual"',
+              "actual-popover-root",
+            );
+            assert.equal(
+              className.initializer.getText(),
+              "{`composer-options ${menuClassName}`}",
+              "actual-popover-root",
+            );
+            popover++;
+          }
+        }
+        if (
+          file === "SelectionActions.tsx" &&
+          isCallExpression(node) &&
+          isIdentifier(node.expression) &&
+          node.expression.text === "createPortal"
+        ) {
+          const [element, host] = node.arguments;
+          assert.ok(
+            element &&
+              isJsxElement(element) &&
+              host?.getText() === "document.body",
+            "actual-body-portal",
+          );
+          const attrs =
+            element.openingElement.attributes.properties.filter(isJsxAttribute);
+          assert.equal(
+            attrs
+              .find((attr) => attr.name.getText() === "className")
+              ?.initializer?.getText(),
+            '"selection-actions"',
+            "actual-body-portal",
+          );
+          assert.equal(
+            attrs
+              .find((attr) => attr.name.getText() === "role")
+              ?.initializer?.getText(),
+            '"toolbar"',
+            "actual-body-portal",
+          );
+          portal++;
+          toolbar++;
+        }
+        node.forEachChild((child) => {
+          walk(child);
+        });
+      }
+      walk(source);
+    },
+    (modules, unbound) => {
+      assert.equal(imports, 1, "single-owner-import");
+      assert.equal(carrierImports, 1, "single-carrier-import");
+      const carrierAt = mainImports.indexOf(`./${carrier}`);
+      assert.ok(
+        carrierAt > 0 &&
+          mainImports[carrierAt - 1] === "./ui/dialog-surface.css" &&
+          mainImports[carrierAt + 1] === "./visual-system.css",
+        "entry-order:surface-carrier-phase",
+      );
+      // Check the real, unprojected popup seam first so its original diagnostics
+      // still identify popup/order regressions rather than a peer handoff failure.
+      const currentInterval = [
+        "ui.css",
+        topbarComposition,
+        owner,
+        "workflow.css",
+        "ui/dialog-surface.css",
+        carrier,
+        "visual-system.css",
+      ];
+      const currentAt = mainImports.indexOf("./ui.css");
+      assert.deepEqual(
+        mainImports.slice(currentAt, currentAt + currentInterval.length),
+        currentInterval.map((file) => `./${file}`),
+        "entry-order",
+      );
+      const reached = new Set<string>(),
+        loaded: string[] = [];
+      function visit(file: string) {
+        if (reached.has(file)) return;
+        reached.add(file);
+        if (sources.css.has(file)) {
+          loaded.push(file);
+          return;
+        }
+        for (const dependency of edges.get(file) ?? []) visit(dependency);
+      }
+      visit("main.tsx");
+      assert.ok(
+        reached.has("ComposerOptions.tsx") &&
+          reached.has("SelectionActions.tsx") &&
+          reached.has("ApplicationDock.tsx"),
+        "actual-consumer-closure",
+      );
+      assert.equal(popover, 1, "actual-popover-root");
+      assert.equal(toolbar, 1, "actual-body-portal");
+      assert.equal(portal, 1, "actual-body-portal");
+      assert.ok(
+        loaded.indexOf("application-dock.css") >= 0 &&
+          loaded.indexOf("application-dock.css") < loaded.indexOf(owner),
+        "actual-dock-closure-order",
+      );
+      const interval = [
+        "ui.css",
+        owner,
+        "workflow.css",
+        "ui/dialog-surface.css",
+        "visual-system.css",
+      ];
+      const runtimeAt = loaded.indexOf(carrier);
+      assert.deepEqual(
+        loaded.slice(runtimeAt - 1, runtimeAt + 2),
+        ["ui/dialog-surface.css", carrier, "visual-system.css"],
+        "actual-css-closure-order",
+      );
+      assert.deepEqual(
+        loaded.slice(
+          loaded.indexOf("ui.css"),
+          loaded.indexOf("ui.css") + currentInterval.length,
+        ),
+        currentInterval,
+        "actual-css-closure-order",
+      );
+      // Every Topbar recipe, retained seam, unique origin and all THREE actual
+      // phases must pass before ONLY composition is transparent to this peer.
+      // All CSS above remains scanned for foreign material/token writers.
+      verifiedTopbarCarrierPhases(
+        topbarComposition,
+        sources.css,
+        modules,
+        unbound,
+      );
+      const composition = mainImports.filter(
+        (specifier) =>
+          specifier !== `./${carrier}` &&
+          specifier !== `./${topbarComposition}`,
+      );
+      const at = composition.indexOf(`./${owner}`);
+      assert.ok(
+        at > 0 &&
+          composition[at - 1] === "./ui.css" &&
+          composition[at + 1] === "./workflow.css" &&
+          composition[at + 2] === "./ui/dialog-surface.css" &&
+          composition[at + 3] === "./visual-system.css",
+        "entry-order",
+      );
+      const projected = loaded.filter(
+        (file) => file !== carrier && file !== topbarComposition,
+      );
+      assert.deepEqual(
+        projected.slice(
+          projected.indexOf("ui.css"),
+          projected.indexOf("ui.css") + interval.length,
+        ),
+        interval,
+        "actual-css-closure-order",
+      );
+    },
   );
 }
 const actual = actualSources();
@@ -824,6 +906,31 @@ test("actual entry rejects extra, component, CSS, reexport and dynamic popup imp
   );
 });
 test("actual relative closure rejects unreachable primitive consumers and component CSS reordering", () => {
+  for (const syntax of [
+    'import "./future-popup.js";',
+    'import {} from "./future-popup.js";',
+  ])
+    reject(
+      "actual independent runtime import interrupts popup entry seam: " +
+        syntax,
+      /entry-order/,
+      (source) => {
+        source.css.set(
+          "future-popup.css",
+          ".future-popup-owned { padding: 3px; }",
+        );
+        source.modules.set(
+          "future-popup.ts",
+          'import "./future-popup.css"; export const value = 1;',
+        );
+        replace(
+          source,
+          "main.tsx",
+          'import "./shell/workspace-topbar-composition.css";',
+          'import "./shell/workspace-topbar-composition.css";\n' + syntax,
+        );
+      },
+    );
   reject("menu detached", /actual-consumer-closure/, (source) => {
     for (const [name, text] of source.modules)
       if (name !== "ComposerOptions.tsx")
@@ -1063,4 +1170,150 @@ test("the approved action-surface carrier preserves actual value source and phas
     "    <App />\n    <NextSurfaceContent />",
   );
   validate(growth);
+});
+
+test("Topbar composition handoff maps only whole C03 and requires all three complete phases before projecting it", () => {
+  const nativeDiagnostic = /retained:ui\.css:\.app\[data-desktop="mac"\]/;
+  for (const [name, change] of [
+    [
+      "C03 no-drag value",
+      (rule: Rule) => {
+        rule.walkDecls("-webkit-app-region", (decl) => {
+          decl.value = "drag";
+        });
+      },
+    ],
+    [
+      "C03 branch narrowing",
+      (rule: Rule) => {
+        rule.selector = rule.selector.replace(
+          ",\n    .workspace-options-menu",
+          "",
+        );
+      },
+    ],
+    [
+      "C03 importance",
+      (rule: Rule) => {
+        rule.walkDecls("-webkit-app-region", (decl) => {
+          decl.important = true;
+        });
+      },
+    ],
+    [
+      "C03 context",
+      (rule: Rule) => {
+        rule.replaceWith(
+          postcss.atRule({
+            name: "media",
+            params: "(min-width: 1px)",
+            nodes: [rule.clone()],
+          }),
+        );
+      },
+    ],
+  ] as const)
+    reject(name, nativeDiagnostic, (sources) => {
+      const root = postcss.parse(sources.css.get(topbarComposition)!);
+      const matches: Rule[] = [];
+      root.walkRules((rule) => {
+        if (key(rule.selector) === movedTopbarNoDragSelector)
+          matches.push(rule);
+      });
+      assert.equal(
+        matches.length,
+        1,
+        "one actual complete C03 mutation target",
+      );
+      change(matches[0]!);
+      sources.css.set(topbarComposition, root.toString());
+    });
+  for (const phase of [topbarCarriers.base, topbarCarriers.packing])
+    reject(
+      phase + " recipe cannot be hidden",
+      /topbar:complete-handoff/,
+      (sources) => {
+        const root = postcss.parse(sources.css.get(phase)!);
+        const first = root.nodes.find((node) => node.type === "rule");
+        assert.ok(first?.type === "rule");
+        const declaration = first.nodes.find((node) => node.type === "decl");
+        assert.ok(declaration?.type === "decl");
+        declaration.value = "initial";
+        sources.css.set(phase, root.toString());
+      },
+    );
+  for (const phase of [topbarCarriers.base, topbarCarriers.packing])
+    reject(phase + " missing entry", /topbar:complete-handoff/, (sources) =>
+      replace(sources, "main.tsx", `import "./${phase}";\n`, ""),
+    );
+  const statement = `import "./${topbarComposition}";`;
+  reject(
+    "composition query is not a bare carrier",
+    /topbar:complete-handoff/,
+    (sources) =>
+      replace(
+        sources,
+        "main.tsx",
+        statement,
+        `import "./${topbarComposition}?direct";`,
+      ),
+  );
+  reject(
+    "composition extra component origin",
+    /topbar:complete-handoff/,
+    (sources) => sources.modules.set("future-topbar.ts", statement),
+  );
+  reject(
+    "composition actual early dependency",
+    /actual-css-closure-order/,
+    (sources) =>
+      sources.modules.set(
+        "App.tsx",
+        sources.modules.get("App.tsx")! + "\n" + statement,
+      ),
+  );
+  reject(
+    "old C03 writer cannot survive beside its current owner",
+    /topbar:complete-handoff/,
+    (sources) =>
+      append(
+        sources,
+        "ui.css",
+        movedTopbarNoDragSelector + " { -webkit-app-region: no-drag; }",
+      ),
+  );
+  reject(
+    "composition has no popup material exemption",
+    /foreign-surface:shell\/workspace-topbar-composition\.css:/,
+    (sources) =>
+      append(
+        sources,
+        topbarComposition,
+        ".composer-options { background: red; }",
+      ),
+  );
+  reject(
+    "unknown composition neighbor is not projected",
+    /entry-order/,
+    (sources) => {
+      sources.css.set(
+        "future-topbar.css",
+        ".future-topbar-content { padding: 3px; }",
+      );
+      replace(
+        sources,
+        "main.tsx",
+        statement,
+        statement + '\nimport "./future-topbar.css";',
+      );
+    },
+  );
+  const alias = clone(actual);
+  replace(
+    alias,
+    "main.tsx",
+    statement,
+    'import "./shell/./workspace-topbar-composition.css";',
+  );
+  validate(alias);
 });

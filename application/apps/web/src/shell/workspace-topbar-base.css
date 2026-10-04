@@ -1,0 +1,94 @@
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 64px;
+  flex-shrink: 0;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--hairline);
+  user-select: none;
+}
+.breadcrumb {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.breadcrumb > svg {
+  width: 14px;
+  height: 14px;
+}
+.breadcrumb > span,
+.breadcrumb > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.breadcrumb button {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  padding: 5px;
+  display: block;
+}
+.breadcrumb > strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--hairline);
+}
+.app[data-desktop="mac"] .topbar {
+  -webkit-app-region: drag;
+}
+.app[data-desktop="mac"].sidebar-hidden .topbar {
+  padding-left: 94px;
+}
+@media (max-width: 1100px) {
+  .topbar {
+    padding-inline: 15px;
+    gap: 8px;
+  }
+}
+@media (max-width: 850px) {
+  .breadcrumb > svg,
+  .breadcrumb:has(strong) > span {
+    display: none;
+  }
+  .top-actions {
+    gap: 0;
+    padding-left: 5px;
+  }
+}
+@media (max-width: 560px) {
+  .topbar {
+    height: 50px;
+    padding-inline: 12px;
+    gap: 6px;
+    justify-content: space-between;
+  }
+  .breadcrumb {
+    display: none;
+  }
+  .top-actions {
+    border-left: 0;
+    padding-left: 0;
+    gap: 1px;
+  }
+  .top-actions .icon-button {
+    width: 28px;
+    min-width: 28px;
+    padding: 5px;
+  }
+}

@@ -22,6 +22,10 @@ import {
   pdfReadingCarriers,
   verifiedPdfCarrierPhases,
 } from "./fixtures/pdf-reading-contract.js";
+import {
+  topbarCarriers,
+  verifiedTopbarCarrierPhases,
+} from "./fixtures/workspace-topbar-contract.js";
 
 // Finite current role ownership, not a universal selector/effect solver.
 // Complete historical source/inverse belongs to the separate migration proof.
@@ -532,12 +536,24 @@ function validate(sources: Sources) {
           "frame-carrier-single-import:" + carrier,
         );
       framePhase(mainStyles, "frame-carrier-entry-order");
-      return verifiedPdfCarrierPhases(
+      verifiedPdfCarrierPhases(
         pdfReadingCarriers.base,
         sources.css,
         modules,
         unbound,
       );
+      const topbar = verifiedTopbarCarrierPhases(
+        topbarCarriers.base,
+        sources.css,
+        modules,
+        unbound,
+      );
+      return {
+        main: topbar.main.filter((file) => file !== pdfReadingCarriers.base),
+        runtime: topbar.runtime.filter(
+          (file) => file !== pdfReadingCarriers.base,
+        ),
+      };
     },
   )!;
   assert.equal(imports, 1, "frame-single-import");

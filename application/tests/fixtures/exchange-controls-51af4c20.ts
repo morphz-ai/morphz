@@ -18,6 +18,10 @@ import {
   pdfReadingCarriers,
   verifiedPdfCarrierPhases,
 } from "./pdf-reading-contract.js";
+import {
+  topbarCarriers,
+  verifiedTopbarCarrierPhases,
+} from "./workspace-topbar-contract.js";
 
 // Fixed pre-migration payload with bounded current-source validators.
 // Complete raw sources came from actual Git; no candidate oracle or CI Git.
@@ -678,14 +682,25 @@ export function exchangeControlsEntryViolations(
       isUnboundRequire,
     );
   });
+  let topbarPhases: ReturnType<typeof verifiedTopbarCarrierPhases> | undefined;
+  check("exchange-controls:topbar-contract", () => {
+    topbarPhases = verifiedTopbarCarrierPhases(
+      topbarCarriers.packing,
+      css,
+      modules,
+      isUnboundRequire,
+    );
+  });
   // Failed PDF verification never grants projection. Original role diagnostics
   // are still collected against the unprojected actual stream.
-  const roleImports = pdfPhases
-    ? mainImports.filter(
-        (specifier) =>
-          physical("main.tsx", specifier) !== pdfReadingCarriers.adaptive,
-      )
-    : mainImports;
+  const roleImports =
+    pdfPhases && topbarPhases
+      ? mainImports.filter(
+          (specifier) =>
+            physical("main.tsx", specifier) !== pdfReadingCarriers.adaptive &&
+            physical("main.tsx", specifier) !== topbarCarriers.packing,
+        )
+      : mainImports;
   check("exchange-controls:entry-phase", () => {
     const at = roleImports.indexOf(`./${exchangeControlsFile}`);
     assert.ok(at > 0);
@@ -707,7 +722,12 @@ export function exchangeControlsEntryViolations(
     for (const next of edges.get(file) ?? []) visit(next);
   }
   visit("main.tsx");
-  const roleLoaded = pdfPhases ? pdfPhases.runtime : loaded;
+  const roleLoaded =
+    pdfPhases && topbarPhases
+      ? topbarPhases.runtime.filter(
+          (file) => file !== pdfReadingCarriers.adaptive,
+        )
+      : loaded;
   check("exchange-controls:actual-css-phase", () => {
     const at = roleLoaded.indexOf(exchangeControlsFile);
     assert.ok(at > 0);
