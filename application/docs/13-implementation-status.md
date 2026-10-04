@@ -1,5 +1,42 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 16：授权内容读取 family 的单一 owner
+
+`data/content-reads.ts` 实际承载目录分页／计数、当前理解读取、目录记忆、
+原件解析和确切目录项解析六个原算法。Client 借出原 platform、current、
+protected read generation 与目录缓存 ref；初始化、身份与撤权清理、refresh
+和投影发布权威仍留 Client。构造无 I/O／effect／订阅，公开 getter 直接
+引用 owner，剧本读取也消费同一个同步 remember 方法，不保留第二套算法。
+
+原目录 live read、历史版本合并、事项 fallback、404 的不同守门、缓存
+原序与 149 条非 head 尾部、15s deadline 和一／两次 refresh 顺序保留。
+三处原件发布仍同步先写 current 再提交 React；不新增 await、去重请求、
+共享 broker、偏好键或 renderer 权限权威。普通三种查询也不被偷偷加上
+与原实现不同的身份策略。这是完整六方法读取 family，不是整个查询层。
+
+固定 Git `84de08bb` 六函数 oracle 与合法解析的 30 个有限反例核实际导入、
+borrowed ports、唯一消费、无副作用构造、同步发布及原初始化／清理。
+根独立相关测试 26/26，包含真实 Client＋隔离 HTTP／SQLite 的 head／历史
+正文、版本 union、较新目录后的迟到正文及同 CSRF 撤权拒绝。SSR 仅用于
+初始化真实 Client refs／方法，不当作挂载 UI 或原 App 证明。
+根全量 Node checkpoint 为 1630 项：1463 通过、167 明确跳过、零失败／
+取消；包含浏览器可用性和原生焦点能力边界，不能声称全部集成通过。
+完整构建、类型、这六文件格式与差异检查通过。
+
+固定旧／新编译 HTTP Host 三份原页面用例各 6/8，保留两项相同红项：
+旧测试仍点击已撤下的「工作空间选项／当前理解」入口，以及等待不再
+被当前 ComposerScope 消费的 `.context-chip`。没有删除原数据／版本／
+草稿／无发送断言，没有为变绿恢复旧 UI 或增加等待预算。后者的现行
+语义定位与前者的不可达入口分别继续审计；本批不能称页面矩阵全绿。
+每例真实响应核三份资产 HTTP 200 和各自冻结 SHA；新旧 CSS 仍完全同字节，
+SHA256 为 `6b1af0246ec4f33cf7cf5de0e3fb00d4cb9158e16d257d5fbc390293feb2027d`。
+
+根构建、全量及相关日志、两份完整报告与失败 trace 保存在
+`/tmp/morphz-content-owner-host.QIqQq8`。这批只迁读取算法，没有 JSX、图形、
+布局、动效或原生权限变更；有限等价证据不代表整产品与原 App 验收。
+原 App 仍待定点退出恢复授权；导航接续、其余宿主／领域呈现／组件及样式
+迁移保持目标进行中，未重启独立 Runtime 或推送新提交。
+
 ## 2026-10-04 前端阶段 15：交流读取范围与已读回执 owner
 
 `conversation-read.ts` 统一输入归属及对应交付筛选；App 的局部提示与整段

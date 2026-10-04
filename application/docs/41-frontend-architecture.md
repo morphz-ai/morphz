@@ -60,6 +60,13 @@ App 保留原身份范围的唯一存储端口与失败提示。默认实际 Rea
 根环境尚未通过，不把浏览器模拟或隔离 Host 对照算成原 App 验收。
 这不是新的订阅、镜像状态、默认回复事实或统一查询 broker。
 
+授权内容读取的六个完整算法现归 `data/content-reads.ts`：目录分页／计数、
+当前理解、目录记忆、原件与确切目录项解析。Client 借出原 refs，保留身份／
+撤权清理、refresh 和同步 current-before-React 发布权威；剧本读取使用同一
+remember 消费，没有第二份算法、构造请求或额外 await。固定旧算法与真实
+Client HTTP／SQLite 的迟到、版本及授权合同通过；有限旧新页面对照仍有
+相同旧入口／定位红项并保留，不能把该 family 说成全查询层或整体验收。
+
 当前 Task batch、目录分页和 Profile 已有真实共享 owner；Schedules 与 TaskList
 的 deadline／重试／取消及 Boot 发布合同不同，不新增一层 broker 强并。
 完整 query facade 目标需要按合同与实际请求测量推进，不等于每个页面都重造
