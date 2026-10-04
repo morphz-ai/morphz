@@ -1,5 +1,42 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 20：引用、内容继续处理与显式意图的命令所有权
+
+`host/exchange-reference-commands.ts` 完整拥有四个原命令：引用回跳、
+内容继续处理、旧 Reader 兼容准备与显式意图。真实 App 在原引用命令
+位置，每 render 唯一构造并直接消费四个原名称；借原 state／Client、
+私有 origin、导航代次、草稿 writer、DOM 选区与焦点端口。不新增 state、
+store、订阅、effect、请求、memo 或 latest-value 镜像；各分支原 guards、
+schema、版本、等待与局部写入顺序不统一改写。Provider 当前 textQuotes
+写入、ReadingContext、剧本域 compose／iframe ACK 保留原 owner。
+
+固定四份完整声明与实际 Git `39cf13cf`、`b5f698dd` 原文本逐字节相等，
+新 owner 只明示 DOM 端口及无运行语义的 Reading 类型两项适配。真实
+导入／唯一直接注册／精确捕获／原消费者／原构造与直接 return 的有限
+门禁通过；捕获克隆、公开 async wrapper、隐藏／重复／改位注册、原
+消费后的 JSX 和生命周期变异均按具体规则拒绝。新算法／消费 21/21，
+结合已有 App／Host 门禁根 35/35；两份旧完整树与摘要不重算。最初
+测试反例误击重名字段／错误拒绝原因的失败保留，只校准反例发生位置。
+
+固定旧编译与最终新编译的七份现行页面各 26/26，原精确来源、跨页面
+评论／草稿／Session、编辑原文不写回、v3 未发草稿不重绑 v4 及迟到
+请求归属断言保留；明确测试入口／Host 修订另记下节。逐例审计三份
+实际 HTTP 资产，最终 App SHA 为
+`c56d4c9784fe65fd086e06083d53ec9142d1897bc9f9d39af1c738287f949be3`。
+新 JS SHA 为 `09438baaf43ad64affed193945c91b3dca19d1b455971bd6f2648670d71b3eaf`；
+CSS／preload 与独立红色修复后旧编译逐字节相等，不能称相对未修复
+色彩也不变。完整 build、类型、限定格式与差异检查通过；全量 Node
+checkpoint 为 1743 项，1572 通过、171 明确能力跳过、零失败／取消。
+颜色的浏览器能力跳过另有指定实际浏览器的 12/12 证明，不把 skips 算成功。
+
+根证据在 `/tmp/morphz-exchange-input-owner-root.1ZYkPK`，独立 Git／
+完整实际接线与失败证据在 `/tmp/morphz-exchange-reference-consumption.FkXFTv`。
+Reader 的旧 onCompose 虽保持传递，真实 UI 仍走 textQuotes.comment，
+不能将兼容端口测试说成该入口实际调用。script／web／surface 回跳及
+迟到身份／授权变化目前只是完整原算法和受控端口证明，不冒称本组
+真实页面／guest／权限已验收。原 App／Electron／原生最终验收未完成；
+完整查询层、跨领域 presentation、全产品样式／role 与宿主拆分仍继续。
+
 ## 2026-10-04 引用／内容回归：现行输入关联与真实 Host 能力
 
 字节不变的七份原页面文件在引用迁移前后编译各 23/26：三项

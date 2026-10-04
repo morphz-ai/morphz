@@ -50,10 +50,7 @@ import { ProfileMenu } from "./ProfileMenu.js";
 import { useProfile } from "./useProfile.js";
 import { AppearanceMenu } from "./AppearanceControls.js";
 import { inputDispatchMode } from "./interface-preferences.js";
-import {
-  inputIntents,
-  type InputIntent,
-} from "../../../packages/core/src/input-intent.js";
+import { inputIntents } from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
 import { WorkspaceNotice } from "./WorkspaceNotice.js";
 import { TextQuoteDrafts, TextQuoteProvider } from "./TextQuotes.js";
@@ -100,7 +97,7 @@ import {
   browserApplication,
   readerApplication,
 } from "../../../packages/core/src/applications.js";
-import { Reader, type ReadingCompose } from "./Reader.js";
+import { Reader } from "./Reader.js";
 import {
   ReadingContext,
   type ReadingSurface,
@@ -197,6 +194,7 @@ import {
   useExchangeInputToolCommit,
   useExchangeNativeInputState,
 } from "./host/use-exchange-input-tools.js";
+import { createExchangeReferenceCommands } from "./host/exchange-reference-commands.js";
 
 type View = WorkSurfaceView;
 import {
@@ -969,95 +967,43 @@ function WorkspaceApp({
     setWebsiteIntent(null);
     void openUser(id, revision, page);
   }
-  async function openTextQuote(quote: TextQuote) {
-    if (!origin.isActive()) return;
-    window.getSelection()?.removeAllRanges();
-    const source = quote.source;
-    if (source.kind !== "message" && revealTextQuote(quote)) {
-      return;
-    }
-    if (source.kind === "message") {
-      if (source.conversationId !== conversationId) {
-        selectConversation(source.projectId, source.conversationId);
-      }
-      keepExchangeOpen();
-      setInteraction("recent");
-      setQuoteReveal({ quote, token: crypto.randomUUID() });
-    } else if (source.kind === "artifact" || source.kind === "reading") {
-      const generation = await openObject(
-        source.projectId,
-        source.artifactId,
-        source.revision,
-        source.kind === "artifact" ? source.page : undefined,
-        source.kind === "reading",
-        source.kind === "reading" ? source.location : undefined,
-      );
-      if (
-        !origin.isActive() ||
-        generation === undefined ||
-        !navigation.isCurrent(generation)
-      )
-        return;
-      setQuoteReveal({ quote, token: crypto.randomUUID() });
-    } else if (source.kind === "script") {
-      const generation = await openScriptLocation({
-        productionId: source.productionId,
-        itemId: source.entryId,
-        revision: source.revision,
-        candidateId: source.candidateId,
-      });
-      if (
-        !origin.isActive() ||
-        generation === undefined ||
-        !navigation.isCurrent(generation)
-      )
-        return;
-      setQuoteReveal({ quote, token: crypto.randomUUID() });
-    } else if (source.kind === "web") {
-      const generation = await openBrowser(source.url);
-      if (
-        !origin.isActive() ||
-        generation === undefined ||
-        !navigation.isCurrent(generation)
-      )
-        return;
-      setQuoteReveal({ quote, token: crypto.randomUUID() });
-    } else if (source.applicationInstanceId) {
-      activateApplication(source.applicationInstanceId);
-    } else setNotice("已保留所选原文；这个界面没有固定的内容位置。");
-  }
-  async function composeContent(id: string) {
-    if (!origin.isActive()) return;
-    const expectedNavigation = navigationGeneration.current;
-    const target =
-      state?.artifacts.find((a) => a.id === id) ??
-      (await client.resolveArtifact(id));
-    if (
-      !origin.isActive() ||
-      !navigation.isCurrent(expectedNavigation) ||
-      !target
-    )
-      return;
-    // Opening a result changes the object reference, never the current Session.
-    const key = conversationId + ":" + id;
-    const revision = drafts[key]?.revision ?? target.revision;
-    updateDraft(key, (old) => ({ ...old, revision: old.revision ?? revision }));
-    setWebsiteIntent(null);
-    keepExchangeOpen();
-    // A current result is a live document, not an implicit history selection.
-    // Keep an older unsent draft anchored to its original reference, however.
-    const generation = await openObject(
-      target.projectId,
-      id,
-      revision === target.revision ? undefined : revision,
-    );
-    if (generation !== undefined) {
-      if (!origin.isActive() || !navigation.isCurrent(generation)) return;
-      requestConversationFocus(conversationId, generation);
-      keepExchangeOpen();
-      setInteraction("recent");
-    }
-  }
+  const { openTextQuote, composeContent, composeReading, composeIntent } =
+    createExchangeReferenceCommands({
+      render: {
+        conversationId,
+        contextKey,
+        workspace: state,
+        drafts,
+        draft,
+        sending,
+        emptyDraft,
+      },
+      origin,
+      navigation: {
+        navigationGeneration,
+        isCurrent: navigation.isCurrent,
+        setExplicitWebsiteIntent: setWebsiteIntent,
+        openObject,
+        openScriptLocation,
+        openBrowser,
+        activateApplication,
+        selectConversation,
+      },
+      client,
+      drafts: { replace: setDraft, update: updateDraft },
+      exchange: {
+        keepOpen: keepExchangeOpen,
+        showInput,
+        setInteraction,
+        requestConversationFocus,
+      },
+      quotes: {
+        clearSelection: () => window.getSelection()?.removeAllRanges(),
+        reveal: revealTextQuote,
+        setReveal: setQuoteReveal,
+      },
+      onNotice: setNotice,
+    });
   // Only first-party, explicit user navigation opens a network page. Application
   // bridge requests and restored views do not grant that browser intent.
   async function openUser(
@@ -1110,39 +1056,6 @@ function WorkspaceApp({
     if (prefs.readingTarget?.requestId === requestId)
       prefer({ readingTarget: null });
   }
-  const composeReading: ReadingCompose = (
-    id,
-    revision,
-    reference,
-    question,
-  ) => {
-    const key = conversationId + ":" + id,
-      old = drafts[key] ?? emptyDraft;
-    if (
-      old.body.trim() ||
-      old.selection ||
-      old.attachments?.length ||
-      old.continuation ||
-      old.taskResult ||
-      old.scriptGeneration
-    )
-      return {
-        ok: false,
-        error: "输入框中有未发送内容，请先处理原草稿；这次选文仍保留。",
-      };
-    setDraft(key, {
-      ...old,
-      reading: structuredClone(reference),
-      skipReading: false,
-      revision,
-      selection: reference.quote,
-      body: question,
-      annotation: false,
-      intent: undefined,
-    });
-    showInput();
-    return { ok: true };
-  };
   async function openScript(output: ScriptOutput) {
     return openScriptLocation(scriptOutputLocation(output));
   }
@@ -1268,36 +1181,6 @@ function WorkspaceApp({
         destination,
       );
     };
-  }
-  function composeIntent(intent: InputIntent) {
-    if (
-      intent === "script" &&
-      (sending ||
-        draft.pendingSupplement ||
-        draft.continuation ||
-        draft.annotation ||
-        draft.taskResult ||
-        draft.scriptGeneration)
-    ) {
-      setNotice(
-        "输入中已有另一份请求，请先完成或明确移除原请求，再构思新剧。原草稿保留。",
-      );
-      showInput();
-      return;
-    }
-    if (intent === "website") {
-      void openBrowser();
-      return;
-    }
-    // Preserve the exact workspace, object reference, selection and unfinished text.
-    // Clicking a shortcut neither submits a request nor creates an empty object.
-    setDraft(contextKey, {
-      ...draft,
-      intent,
-      annotation: false,
-      taskResult: undefined,
-    });
-    showInput();
   }
   const closeSpeech = createExchangeInputToolCloseCommand({
     dictation: inputDictation,

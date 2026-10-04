@@ -66,6 +66,14 @@ transport，不新增缓存／订阅或 Boot writer。不同查询的 schema、�
 Client／SQLite 与旧新 Reader 页面对照及能力限制见阶段 19，尚不代表
 全领域 query facade、Electron 或原 App 最终验收。
 
+引用回跳、内容继续处理、Reader 旧兼容准备与显式意图现归
+`host/exchange-reference-commands.ts`，真实 App 在原命令位置直接消费。
+每 render 借原 state／Client 与命令端口，保持各自不同 guards、版本、
+等待与草稿／焦点顺序；不增加状态、请求或订阅。当前 Provider 的
+textQuotes、ReadingContext 和剧本域 compose 仍归原 owner，旧 Reader
+兼容回调未被真实 UI 调用。完整固定旧算法／树、有限实际接线、旧新
+编译页面与明确未验收边界见阶段 20，不将端口证明冒称原生验收。
+
 交流读取的共享纯投影现归 `conversation-read.ts`；提示与历史的不同范围、
 消息数组引用合同及原回执排序仍由真实消费方显式指定。已读初始化、稳定
 acknowledgement 与两个提交 effects 归 `host/use-exchange-read-receipts.ts`，
