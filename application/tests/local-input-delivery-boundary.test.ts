@@ -1,38 +1,49 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { expandExecutionInteractionConsumption } from "./fixtures/execution-interactions-consumption.js";
 import { parseReaderSources } from "./fixtures/reader-reads-contract.js";
 import {
-  expandLocalInputDeliveryConsumption,
+  verifyLocalInputDeliveryConsumption,
   localDeliveryOwnerText,
-  originalDeliveryClientSha,
   verifyLocalInputDeliveryOwner,
 } from "./fixtures/local-input-delivery-consumption.js";
 
-const client = expandExecutionInteractionConsumption(
-  readFileSync("apps/web/src/client.ts", "utf8"),
-);
+const client = readFileSync("apps/web/src/client.ts", "utf8");
 function changed(text: string, before: string, after: string) {
   assert.equal(text.split(before).length, 2, "one existing mutation target");
   const result = text.replace(before, after);
   parseReaderSources({ Mutation: result });
   return result;
 }
-test("complete delivery owner is inert and actual Client consumption inverses the full fixed Git32c Client", () => {
-  verifyLocalInputDeliveryOwner();
-  const original = expandLocalInputDeliveryConsumption(client);
-  assert.equal(
-    createHash("sha256").update(original).digest("hex"),
-    originalDeliveryClientSha,
-    "entire actual Git32c Client, including original state/ref lifetime, authority, refresh and non-input branch",
+test("unrelated Client type, export and independent React feature growth preserves delivery seams", () => {
+  verifyLocalInputDeliveryConsumption(
+    client +
+      `\nexport type FutureDeliveryView = { label: string };\nexport function useFutureDeliveryView() { const current = useRef(0); const [value] = useState(0); function clearProtectedProjection() { return current.current; } return value + clearProtectedProjection(); }\nexport const futureDeliveryLabel = "independent";\n`,
   );
+  verifyLocalInputDeliveryConsumption(
+    client +
+      `\nexport function futureDeliveryOwner(ports: Parameters<typeof createLocalInputDelivery>[0]) { return createLocalInputDelivery(ports); }\n`,
+  );
+  verifyLocalInputDeliveryConsumption(
+    changed(
+      changed(
+        client,
+        "import { createLocalInputDelivery }",
+        "import { createLocalInputDelivery as makeDelivery }",
+      ),
+      "const localInputDelivery = createLocalInputDelivery(",
+      "const localInputDelivery = makeDelivery(",
+    ),
+  );
+});
+test("complete delivery owner is inert with original synchronous and refresh Client seams", () => {
+  verifyLocalInputDeliveryOwner();
+  verifyLocalInputDeliveryConsumption(client);
 });
 test("legal Client mutations fail designated real import, capture, synchronous branch and refresh seams", () => {
   const constructor = client.slice(
     client.indexOf("  const localInputDelivery = createLocalInputDelivery({"),
-    client.indexOf("  function clearProtectedProjection()"),
+    client.indexOf("  const executionInteractions ="),
   );
   assert.ok(constructor.startsWith("  const localInputDelivery"));
   const variants: [string, string, string][] = [
@@ -70,12 +81,17 @@ test("legal Client mutations fail designated real import, capture, synchronous b
   for (const [before, after, rule] of variants)
     assert.throws(
       () =>
-        expandLocalInputDeliveryConsumption(
+        verifyLocalInputDeliveryConsumption(
           changed(client, constructor, changed(constructor, before, after)),
         ),
       { name: "AssertionError", message: new RegExp(rule) },
     );
   const direct: [string, string, string][] = [
+    [
+      "if (!navigationReadStillCurrent(navigation, finalNavigation))",
+      "if (navigationReadStillCurrent(navigation, finalNavigation))",
+      "one original final navigation check",
+    ],
     [
       'import { createLocalInputDelivery } from "./data/local-input-delivery.js";',
       'import { type createLocalInputDelivery } from "./data/local-input-delivery.js";',
@@ -109,7 +125,7 @@ test("legal Client mutations fail designated real import, capture, synchronous b
   ];
   for (const [before, after, rule] of direct)
     assert.throws(
-      () => expandLocalInputDeliveryConsumption(changed(client, before, after)),
+      () => verifyLocalInputDeliveryConsumption(changed(client, before, after)),
       {
         name: "AssertionError",
         message: new RegExp(rule),
@@ -117,7 +133,7 @@ test("legal Client mutations fail designated real import, capture, synchronous b
     );
   assert.throws(
     () =>
-      expandLocalInputDeliveryConsumption(
+      verifyLocalInputDeliveryConsumption(
         changed(
           client,
           "dispatchInput: localInputDelivery.dispatchInput",
@@ -132,7 +148,7 @@ test("legal Client mutations fail designated real import, capture, synchronous b
   );
   assert.throws(
     () =>
-      expandLocalInputDeliveryConsumption(
+      verifyLocalInputDeliveryConsumption(
         changed(client, constructor, constructor + duplicate),
       ),
     {
@@ -141,7 +157,7 @@ test("legal Client mutations fail designated real import, capture, synchronous b
     },
   );
 });
-test("legal owner mutations fail complete algorithms, frozen retry/order and inert construction before expansion", () => {
+test("legal owner mutations fail complete algorithms, frozen retry/order and inert construction", () => {
   const variants: [string, string, string][] = [
     [
       "inputSends.current.set(key, request);",
@@ -196,7 +212,7 @@ test("legal owner mutations fail complete algorithms, frozen retry/order and ine
   ];
   for (const [before, after, rule] of variants) {
     const owner = changed(localDeliveryOwnerText, before, after);
-    assert.throws(() => expandLocalInputDeliveryConsumption(client, owner), {
+    assert.throws(() => verifyLocalInputDeliveryConsumption(client, owner), {
       name: "AssertionError",
       message: new RegExp(rule),
     });

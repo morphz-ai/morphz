@@ -1,5 +1,67 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 38：完整 Reader 数据操作与有限旧门禁
+
+`data/reader-interactions.ts` 现拥有原文件导入、OCR 和持久阅读命令的完整
+三套生命周期。Client 在原读取 owner 后直接登记一次，借用原 identity
+ref、applicationCall 与 mutation confirmation，三个公开方法原样别名。
+构造无 I/O／订阅；没有新 store、请求、模型调用、轮询或展示改动。
+
+导入仍在内容目录确认后才清除稳定 command ID；两次摘要计算和文件读取
+后的身份检查、35 秒信号及确认失败重试保留。OCR 借调用者 signal 和身份
+代际，不新增超时。阅读命令仍为 12 秒，明确 4xx（408 除外）与不确定
+失败的不同 pending 清理政策；不混入导入刷新或新的完成后 guard。
+Reader 画布、分页、位置队列和 OCR 控件未改，不把 data owner 当页面 controller。
+
+根独立复跑 actual Git `21cb34dc` 的完整 68,796-byte Client 来源、完整
+三算法原字节及 owner／Client forward／inverse。六个邻接权威／消费方
+原字节保留。206 份候选 renderer 源、208 份 emitted 资源冻结；正常
+完整构建与候选入口／所有产物一致，完整 CSS／preload 与旧版字节相同，
+不伪称实现迁移后的主 JS 字节未变。
+
+四份完整原 Reader 页面 spec 旧／新各 **19/19**，零重试／跳过；断言、
+身份和预算保留。每边核 168 个实际 HTTP HTML／入口资产响应，完整 SHA
+正确。页面对照时核 71 份原 spec／fixture 及另 75 份支撑 helper；随后
+仅四份旧架构门禁与其明确 helper 按下述有限治理调整，原页面 spec 与
+Reader 支撑 helper 保持不变。自有 Host 已关闭，discovery 恢复；没有
+用户 App、日常 Runtime、业务数据库或模型操作。
+
+根原相邻测试加新有限门禁 **73/73**，新 family 当前 **19/19**，零跳过，
+各组范围有重叠，不合并冒称独立覆盖总数。七组 owner 行为显式完整
+旧／新对照 **7/7**，完整返回观察深等；五组实际 Client 通过真实独立
+HTTP／SQLite 验证导入原字节、目录确认、稳定重试、CAS、私有数据及撤权。
+服务端已提交但回执被延迟时切换 Human，旧 HTTP 回应按原 transport
+抛精确 408，新的 snapshot 不发布旧结果；原 Human 重试同 ID，实际
+回执／事件表仍一行。受控桌面 OCR bridge 的代际取消仍为 AbortError，
+不借重构统一两个既有合同。原 OCR 控件挂载 **3/3**，不冒称硬件 OCR。
+
+execution、local-input-delivery、task-interactions 与 script publication
+四份旧门禁解除全文 Client hash／跨 owner inverse 链。完整旧算法、
+历史 provenance 及所有原负例保留；原先隐含的 identity／approval 清理
+由 fresh Git 完整有限 clear 和 refs 明确接手，真实消费／端口／确认
+规则保留。独立 feature、类型／export、真实 import alias 正例通过，
+不增加 Reader inverse，也不宣称任意 TS 绑定／权限已形式证明。
+
+新增测试的六个类型错误、原真实端点 201／撤权隐私 404 的 fixture
+假设错误及旧门禁首次 **9 通过／4 失败** 均保留 RED。修正只限对应
+新测试／明确旧门禁责任，没有放宽端点断言、改生产行为或隐藏失败。
+四份旧门禁最终 **18/18**、零跳过，另经只读独立复跑和完整原负例 AST
+核对；原九 task 负例及各域原完整反例表／顺序保留。
+
+最终冻结后的根默认 `npm test`：330 份源、2,210 项，**2,201 通过、
+零失败／取消／todo**。九项是明确未启用的可选能力（S3 三项、Runtime
+五项、原生焦点一项），无未知跳过；PostgreSQL 必需并实际执行。
+根完整类型检查、十五份生产／测试 TS 文件格式和 diff 检查通过。
+最终完整正常构建及候选全部编译产物／入口交接独立核对通过；
+这批不替代原窗验收。
+
+根证据 `/tmp/morphz-reader-interactions-root.YTiVro`；生产来源
+`/tmp/morphz-reader-interactions-production.UuTrpQ`，新行为／真实 Client
+`/tmp/morphz-reader-interactions.ym6f3r`，新有限门禁
+`/tmp/morphz-reader-interactions-boundary.fXnLIY`，旧门禁治理
+`/tmp/morphz-reader-legacy-governance.BhGpMD`。原 App 验收、ScriptStudio
+完整工作室及其余架构边界继续；这批不是整体目标完成。
+
 ## 2026-10-04 前端阶段 37：完整事项执行面板控制器
 
 `features/tasks/useTaskRunPanel.tsx` 现拥有 TaskRunPanel 的完整 scoped 观察、

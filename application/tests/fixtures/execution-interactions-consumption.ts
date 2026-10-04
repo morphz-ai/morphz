@@ -29,9 +29,8 @@ import {
   readerShape,
   readerVariable,
 } from "./reader-reads-contract.js";
-import { inverseScriptCatalogPublicationFix } from "./script-catalog-publication-fix.js";
 
-// A finite source inverse of five original algorithms and their Client seam.
+// Finite current ownership rules for five original algorithms and their Client seam.
 // This does not establish HTTP permission, Runtime outcomes, React scheduling
 // or original App/native acceptance. CI needs neither Git history nor a shell.
 export const executionOwnerText = readFileSync(
@@ -92,14 +91,6 @@ const expected = parseReaderSources({
 }).get("Expected")!;
 function same(actual: Node, original: Node, rule: string) {
   assert.deepEqual(readerShape(actual), readerShape(original), rule);
-}
-function replaceOnce(text: string, before: string, after: string) {
-  assert.equal(
-    text.split(before).length,
-    2,
-    "one finite execution inverse target",
-  );
-  return text.replace(before, after);
 }
 export function verifiedExecutionOriginals() {
   const fixed = parseReaderSources({ Fixed: fixedText }).get("Fixed")!;
@@ -199,23 +190,33 @@ export function verifyExecutionInteractionOwner(
   return { fixed };
 }
 
-// Validate this production seam before restoring only stage24. The complete
-// Client SHA is checked by the new gate, not here: earlier gates must still
-// diagnose their original legal mutations after stage24 then stage23 inverses.
-export function expandExecutionInteractionConsumption(
+// Verify actual production consumption without rewriting other owners or
+// permanently fingerprinting unrelated Client algorithms.
+export function verifyExecutionInteractionConsumption(
   clientText: string,
   ownerText = executionOwnerText,
 ) {
-  clientText = inverseScriptCatalogPublicationFix(clientText);
-  const { fixed } = verifyExecutionInteractionOwner(ownerText),
-    client = parseReaderSources({ Client: clientText }).get("Client")!,
+  verifyExecutionInteractionOwner(ownerText);
+  const client = parseReaderSources({ Client: clientText }).get("Client")!,
     workspace = readerFunction(client, "useWorkspace"),
+    scoped = {
+      ...client,
+      nodes: client.nodes.filter((node) => {
+        for (
+          let parent: Node | undefined = node;
+          parent;
+          parent = parent.parent
+        )
+          if (parent === workspace.body) return true;
+        return false;
+      }),
+    },
     imported = readerImport(
       client,
       "./data/execution-interactions.js",
       "createExecutionInteractions",
     ),
-    binding = readerVariable(client, "executionInteractions");
+    binding = readerVariable(scoped, "executionInteractions");
   const imports = client.source.statements
     .filter(isImportDeclaration)
     .filter(
@@ -235,7 +236,7 @@ export function expandExecutionInteractionConsumption(
       declaration.importClause?.phaseModifier !== SyntaxKind.TypeKeyword,
     "runtime execution factory import",
   );
-  const calls = client.nodes
+  const calls = scoped.nodes
     .filter(isCallExpression)
     .filter(
       (node) =>
@@ -260,9 +261,9 @@ export function expandExecutionInteractionConsumption(
   assert.ok(
     index > 0 &&
       siblings[index - 1] ===
-        readerVariable(client, "localInputDelivery").parent.parent &&
+        readerVariable(scoped, "localInputDelivery").parent.parent &&
       siblings[index + 1] ===
-        readerFunction(client, "clearProtectedProjection"),
+        readerFunction(scoped, "clearProtectedProjection"),
     "original execution registration location",
   );
   assert.equal(calls[0]!.arguments.length, 1);
@@ -277,7 +278,7 @@ export function expandExecutionInteractionConsumption(
   const ports = calls[0]!.arguments[0]!;
   assert.ok(isObjectLiteralExpression(ports));
   for (const name of ["current", "approvalSubmissions"] as const) {
-    const ref = readerVariable(client, name);
+    const ref = readerVariable(scoped, name);
     const property: Node | undefined = ports.properties.find(
       (node) =>
         isShorthandPropertyAssignment(node) &&
@@ -367,12 +368,12 @@ export function expandExecutionInteractionConsumption(
       name === "call"
         ? readerImport(client, "./application-transport.js", "applicationCall")
             .symbol
-        : client.symbols.get(readerFunction(client, name).name!),
+        : client.symbols.get(readerFunction(scoped, name).name!),
       "capture actual original execution function " + name,
     );
   }
   assert.equal(
-    client.nodes
+    scoped.nodes
       .filter(isFunctionDeclaration)
       .filter((node) =>
         executionNames.includes(
@@ -425,39 +426,4 @@ export function expandExecutionInteractionConsumption(
       "actual execution owner public alias",
     );
   }
-  let restored = replaceOnce(
-    clientText,
-    'import { createExecutionInteractions } from "./data/execution-interactions.js";\n',
-    "",
-  );
-  restored = replaceOnce(restored, executionRegistration, "");
-  restored = replaceOnce(
-    restored,
-    "import type {\n  SearchRequest,",
-    'import {\n  executionSnapshotSchema,\n  type ExecutionScope,\n  type ExecutionControl,\n} from "../../../packages/core/src/execution.js";\nimport type {\n  SearchRequest,',
-  );
-  restored = replaceOnce(
-    restored,
-    "  async function search(",
-    "  " +
-      readerFunction(fixed, "cancelInput").getText() +
-      "\n  async function search(",
-  );
-  restored = replaceOnce(
-    restored,
-    "  async function speechStatus(",
-    "  " +
-      executionNames
-        .slice(1)
-        .map((name) => readerFunction(fixed, name).getText())
-        .join("\n  ") +
-      "\n  async function speechStatus(",
-  );
-  for (const name of executionNames)
-    restored = replaceOnce(
-      restored,
-      `    ${name}: executionInteractions.${name},`,
-      `    ${name},`,
-    );
-  return restored;
 }

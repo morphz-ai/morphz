@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
@@ -9,15 +8,11 @@ import {
   approvedScriptLibraryPublisher,
   inverseScriptCatalogPublicationFix,
   originalScriptEpochSelectionGuard,
-  originalScriptPublicationClientSha,
 } from "./fixtures/script-catalog-publication-fix.js";
-import { expandExecutionInteractionConsumption } from "./fixtures/execution-interactions-consumption.js";
-import { expandLocalInputDeliveryConsumption } from "./fixtures/local-input-delivery-consumption.js";
 import { parseReaderSources } from "./fixtures/reader-reads-contract.js";
+import { verifyClientProjectionLifetime } from "./fixtures/client-projection-lifetime-21cb34dc.js";
 
 const client = readFileSync("apps/web/src/client.ts", "utf8");
-const hash = (source: string) =>
-  createHash("sha256").update(source).digest("hex");
 function spanChanged(source: string, before: string, after: string) {
   assert.equal(
     source.split(before).length,
@@ -33,21 +28,23 @@ function changed(source: string, before: string, after: string) {
 }
 function validate(source = client) {
   const original = inverseScriptCatalogPublicationFix(source);
-  assert.equal(
-    hash(original),
-    originalScriptPublicationClientSha,
-    "complete actual Git b20 Client after only approved publication-fix inverse",
-  );
+  verifyClientProjectionLifetime(source);
   return original;
 }
 
-test("approved script publication fix inverses the complete actual fixed Git b20 Client and is strictly idempotent", () => {
+test("approved script publication seams have a finite strictly idempotent inverse", () => {
   const original = validate();
   assert.equal(inverseScriptCatalogPublicationFix(original), original);
-  const stage24 = expandExecutionInteractionConsumption(client);
-  assert.equal(inverseScriptCatalogPublicationFix(stage24), stage24);
-  const stage23 = expandLocalInputDeliveryConsumption(stage24);
-  assert.equal(inverseScriptCatalogPublicationFix(stage23), stage23);
+});
+test("unrelated Client type, export and independent React feature growth preserves script publication seams", () => {
+  const source =
+    client +
+    `\nexport type FutureCatalogView = { label: string };\nexport function useFutureCatalogView() { const current = useRef(0); const [value] = useState(0); return value + current.current; }\nexport const futureCatalogLabel = "independent";\n`;
+  const original = validate(source);
+  assert.equal(inverseScriptCatalogPublicationFix(original), original);
+  assert.ok(
+    original.includes('export const futureCatalogLabel = "independent";'),
+  );
 });
 
 test("legal publisher variants reject incomplete metadata, stale capture, updater replay, wrappers and unapproved fields", () => {
@@ -321,10 +318,11 @@ test("finite inverse preserves unapproved old Client mutations rather than erasi
   );
   const restored = inverseScriptCatalogPublicationFix(drift);
   assert.ok(restored.includes("protectedReadGeneration.current += 0;"));
-  assert.notEqual(hash(restored), originalScriptPublicationClientSha);
+  // The finite publication inverse must preserve a foreign clear mutation.
+  // The exact clear owner rule, not an unrelated whole-Client hash, rejects it.
   assert.throws(() => validate(drift), {
     name: "AssertionError",
     message:
-      /complete actual Git b20 Client after only approved publication-fix inverse/,
+      /complete original protected projection clear and approval lifetime/,
   });
 });

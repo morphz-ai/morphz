@@ -110,6 +110,16 @@ transport，不新增缓存／订阅或 Boot writer。不同查询的 schema、�
 Client／SQLite 与旧新 Reader 页面对照及能力限制见阶段 19，尚不代表
 全领域 query facade、Electron 或原 App 最终验收。
 
+Reader 的文件导入、OCR 交互和持久阅读命令现归
+`data/reader-interactions.ts`，Client 借原身份 ref、逻辑 transport 和
+导入确认动作，直接公开三个完整原算法，构造不读取身份或 storage。
+导入在目录确认前保留文件提交 ID；OCR 借调用方 signal、不增加超时；
+阅读命令保留原指纹、12 秒请求和 4xx／408／5xx 不同的重试处理，
+不套用导入的 refresh 或新增响应后 guard。原 Reader／OCR 控件、
+位置队列、标注选择与目录观察仍由各自完整 feature 拥有。
+阶段 38 的迁移证明、真实 Client／私有 SQL、完整旧新 Reader 页面及
+最终验证另记实施记录；不将受控 OCR 回执称为物理 OCR 或原 App 验收。
+
 事项的跨页资格复核、Runtime snapshot／control 与回应读取现归
 `data/task-interactions.ts`，Client 直接消费三个完整原算法；按事项读取
 代次、身份清理和 refresh 仍借原 Client 权威，成功投影仍 current-before-React。
@@ -614,6 +624,16 @@ UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套�
 证据，不进入普通 CI；严格旧新组件对照由显式 migration 开关启用，
 日常默认验证当前契约。未为本批增加旧相邻门禁适配或跨 owner inverse。
 
+阶段 38 将 execution、local-input-delivery、task-interactions 与 script
+catalog-publication 四份旧门禁从跨 owner 整文件逆展开链中分离。
+完整旧算法、原反例和历史来源摘要保留；普通 CI 检查真实 workspace
+消费、借用端口／ref、原注册位置、清理生命周期及 script 发布／确认
+合同。身份代际失效和 approval lifetime 原先隐含在全文 hash 中的部分，
+现在有有限原算法和明确反例，不以删除断言换绿。独立 React feature、
+类型／export 及实际 import alias 有合法正例；不增加 Reader inverse，
+不将有限绑定检查描述为任意 TypeScript 数据流或权限证明。
+其余历史链仍须治理，这四份分离不代表整体测试架构已完成。
+
 ### 6.3 共享顶栏的实际组合边界
 
 `WorkspaceTopbar` 只接受只读展示事实、有限 history／sidebar 值、三个原生 ref、
@@ -671,6 +691,10 @@ Thread collection 的输入关联活动与范围概览两种展示投影已迁�
 family 不等于整层 query facade 已完成；
 不为凑目录或清空 App 而重造缓存／store。普通页面选择、画布及 portal 组合
 可以保留在宿主，完整业务生命周期应归 feature。
+
+Reader 导入、OCR 与持久阅读命令的完整 data owner 已落实，原 Reader
+画布、分页和 OCR 控件仍各自拥有交互；ScriptStudio 的完整工作室
+生命周期及其他未迁移操作仍需继续，不能以一个 family 代替完整页面迁移。
 
 当前生产约束与历史整文件迁移证明的测试治理也须收口，不能把不断增长
 的跨 owner inverse 链作为正常新增功能的永久前提。

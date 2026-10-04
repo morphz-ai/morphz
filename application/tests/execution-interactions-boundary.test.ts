@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   executionOwnerText,
   executionRegistration,
-  expandExecutionInteractionConsumption,
-  originalExecutionClientSha,
+  verifyExecutionInteractionConsumption,
   verifyExecutionInteractionOwner,
 } from "./fixtures/execution-interactions-consumption.js";
 import { parseReaderSources } from "./fixtures/reader-reads-contract.js";
+import { verifyClientProjectionLifetime } from "./fixtures/client-projection-lifetime-21cb34dc.js";
 
 const client = readFileSync("apps/web/src/client.ts", "utf8");
 function changed(text: string, before: string, after: string) {
@@ -19,18 +18,14 @@ function changed(text: string, before: string, after: string) {
   return result;
 }
 function validate(text = client, owner = executionOwnerText) {
-  const original = expandExecutionInteractionConsumption(text, owner);
-  assert.equal(
-    createHash("sha256").update(original).digest("hex"),
-    originalExecutionClientSha,
-    "entire actual Git51f Client, including hooks, identity, approval lifetime, authority and refresh",
-  );
+  verifyExecutionInteractionConsumption(text, owner);
+  verifyClientProjectionLifetime(text);
 }
-test("complete five-method execution owner is inert and actual Client consumption inverses the full fixed Git51f Client", () => {
+test("complete five-method execution owner, actual Client consumers and protected projection lifetime", () => {
   verifyExecutionInteractionOwner();
   validate();
 });
-test("legal Client counterfactuals fail real import, exact captures, placement, hooks, direct aliases or whole-Client preservation", () => {
+test("legal Client counterfactuals fail real import, captures, placement, hooks, aliases and finite clear lifetime", () => {
   const captures: [string, string, string][] = [
     [
       "    current,",
@@ -118,12 +113,12 @@ test("legal Client counterfactuals fail real import, exact captures, placement, 
     [
       "function clearProtectedProjection() {",
       "function clearProtectedProjection() { approvalSubmissions.current.clear();",
-      "entire actual Git51f Client",
+      "complete original protected projection clear and approval lifetime",
     ],
     [
       "function clearProtectedProjection() {\n    protectedReadGeneration.current++;",
       "function clearProtectedProjection() {\n    protectedReadGeneration.current += 0;",
-      "entire actual Git51f Client",
+      "complete original protected projection clear and approval lifetime",
     ],
   ];
   for (const [before, after, rule] of direct)
@@ -141,6 +136,27 @@ test("legal Client counterfactuals fail real import, exact captures, placement, 
     name: "AssertionError",
     message: /original execution registration location/,
   });
+});
+test("unrelated Client type, export and independent React feature growth does not change execution ownership", () => {
+  validate(
+    client +
+      `\nexport type FutureExecutionView = { label: string };\nexport function useFutureExecutionView() { const current = useRef(0); const [value] = useState(0); function clearProtectedProjection() { return current.current; } return value + clearProtectedProjection(); }\nexport const futureExecutionLabel = "independent";\n`,
+  );
+  validate(
+    client +
+      `\nexport function futureExecutionOwner(ports: Parameters<typeof createExecutionInteractions>[0]) { return createExecutionInteractions(ports); }\n`,
+  );
+  validate(
+    changed(
+      changed(
+        client,
+        "import { createExecutionInteractions }",
+        "import { createExecutionInteractions as makeExecution }",
+      ),
+      "const executionInteractions = createExecutionInteractions(",
+      "const executionInteractions = makeExecution(",
+    ),
+  );
 });
 test("legal owner counterfactuals fail complete original timeout, signal, parse, approval ordering and inert construction rules", () => {
   const variants: [string, string, string][] = [

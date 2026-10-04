@@ -32,9 +32,8 @@ import {
   legacyConfirmationBlock,
   legacyRecordBlock,
 } from "./local-input-delivery-32c52210.js";
-import { inverseScriptCatalogPublicationFix } from "./script-catalog-publication-fix.js";
 
-// Finite inverse of this delivery seam, not a generic AST framework or a proof
+// Finite current rules for this delivery seam, not a generic AST framework or a proof
 // of storage, authority, React scheduling, HTTP outcomes or native UI behavior.
 export const localDeliveryOwnerText = readFileSync(
   new URL("../../apps/web/src/data/local-input-delivery.ts", import.meta.url),
@@ -285,23 +284,33 @@ export function verifyLocalInputDeliveryOwner(
   return { owner, fixed };
 }
 
-// Validate actual ownership before restoring only this batch. The whole Client
-// SHA is asserted separately by the new gate, so existing gates keep diagnosing
-// their own legal counterexamples under their original named rules.
-export function expandLocalInputDeliveryConsumption(
+// Verify actual ownership and the four Client consumers without rewriting
+// another owner or fingerprinting unrelated Client feature growth.
+export function verifyLocalInputDeliveryConsumption(
   clientText: string,
   ownerText = localDeliveryOwnerText,
 ) {
-  clientText = inverseScriptCatalogPublicationFix(clientText);
-  const { fixed } = verifyLocalInputDeliveryOwner(ownerText),
-    client = parseReaderSources({ Client: clientText }).get("Client")!,
+  verifyLocalInputDeliveryOwner(ownerText);
+  const client = parseReaderSources({ Client: clientText }).get("Client")!,
     workspace = readerFunction(client, "useWorkspace"),
+    scoped = {
+      ...client,
+      nodes: client.nodes.filter((node) => {
+        for (
+          let parent: Node | undefined = node;
+          parent;
+          parent = parent.parent
+        )
+          if (parent === workspace.body) return true;
+        return false;
+      }),
+    },
     imported = readerImport(
       client,
       "./data/local-input-delivery.js",
       "createLocalInputDelivery",
     ),
-    binding = readerVariable(client, "localInputDelivery");
+    binding = readerVariable(scoped, "localInputDelivery");
   const imports = client.source.statements
     .filter(isImportDeclaration)
     .filter(
@@ -320,7 +329,7 @@ export function expandLocalInputDeliveryConsumption(
       declaration.importClause?.phaseModifier !== SyntaxKind.TypeKeyword,
     "runtime delivery factory import",
   );
-  const calls = client.nodes
+  const calls = scoped.nodes
     .filter(isCallExpression)
     .filter(
       (node) =>
@@ -345,9 +354,9 @@ export function expandLocalInputDeliveryConsumption(
   assert.ok(
     index > 0 &&
       siblings[index - 1] ===
-        readerVariable(client, "taskInteractions").parent.parent &&
+        readerVariable(scoped, "taskInteractions").parent.parent &&
       siblings[index + 1] ===
-        readerFunction(client, "clearProtectedProjection"),
+        readerVariable(scoped, "executionInteractions").parent.parent,
     "original delivery registration location",
   );
   assert.equal(calls[0]!.arguments.length, 1);
@@ -367,7 +376,7 @@ export function expandLocalInputDeliveryConsumption(
     "platform",
     "snapshotText",
   ] as const) {
-    const ref = readerVariable(client, name);
+    const ref = readerVariable(scoped, name);
     const property: Node | undefined = ports.properties.find(
       (node) =>
         isShorthandPropertyAssignment(node) &&
@@ -406,7 +415,7 @@ export function expandLocalInputDeliveryConsumption(
     ["confirmAndProject", "dispatchInput", "readSaved", "recordInput"],
     "only four actual Client delivery consumers",
   );
-  const execute = readerFunction(client, "execute"),
+  const execute = readerFunction(scoped, "execute"),
     recordBranch = execute.body!.statements[2]!;
   same(
     recordBranch,
@@ -414,7 +423,7 @@ export function expandLocalInputDeliveryConsumption(
     "synchronous captured Client record branch",
   );
   assert.equal(
-    client.nodes
+    scoped.nodes
       .filter(isFunctionDeclaration)
       .filter((node) =>
         originalNames.includes(
@@ -448,8 +457,8 @@ export function expandLocalInputDeliveryConsumption(
     client.symbols.get(binding.name),
     "direct actual dispatch alias",
   );
-  const early = readerVariable(client, "savedInputs").parent.parent,
-    late = readerVariable(client, "savedProjection").parent.parent;
+  const early = readerVariable(scoped, "savedInputs").parent.parent,
+    late = readerVariable(scoped, "savedProjection").parent.parent;
   same(
     early,
     readerVariable(expected, "savedInputs").parent.parent,
@@ -471,94 +480,27 @@ export function expandLocalInputDeliveryConsumption(
     readerVariable(expected, "instances").parent.parent,
     "early read after original appViews await",
   );
+  const guardExpression = (
+    readerFunction(expected, "refresh").body!
+      .statements[2] as import("typescript/unstable/ast").IfStatement
+  ).expression;
+  const finalChecks = refreshStatements.filter(
+    (node) =>
+      isIfStatement(node) &&
+      JSON.stringify(readerShape(node.expression)) ===
+        JSON.stringify(readerShape(guardExpression)),
+  );
+  assert.equal(finalChecks.length, 1, "one original final navigation check");
   same(
-    refreshStatements[
-      refreshStatements.indexOf(
-        late as import("typescript/unstable/ast").Statement,
-      ) - 1
-    ]!,
+    finalChecks[0]!,
     readerFunction(expected, "refresh").body!.statements[2]!,
     "confirmation after original final navigation check",
   );
-  const edits: { start: number; end: number; value: string }[] = [
-    { start: declaration.getStart(), end: declaration.end + 1, value: "" },
-    {
-      start: statement.getStart(),
-      end: statement.end,
-      value:
-        readerFunction(fixed, "sendingInputIds").getText() +
-        "\n  " +
-        readerFunction(fixed, "publishSavedInputs").getText(),
-    },
-    {
-      start: execute.getStart(),
-      end: execute.getStart(),
-      value: readerFunction(fixed, "submitSavedInput").getText() + "\n  ",
-    },
-    {
-      start: recordBranch.getStart(),
-      end: recordBranch.end,
-      value: legacyRecordBlock,
-    },
-    {
-      start: early.getStart(),
-      end: early.end,
-      value:
-        "const savedInputs = readSavedInputs(\n          localStorage,\n          savedInputScope(source.boot),\n        );",
-    },
-    { start: late.getStart(), end: late.end, value: legacyConfirmationBlock },
-    {
-      start: dispatch[0]!.getStart(),
-      end: dispatch[0]!.end,
-      value: "dispatchInput",
-    },
-  ];
-  assert.equal(
-    clientText[declaration.end],
-    "\n",
-    "finite complete import line removal",
+  assert.ok(
+    refreshStatements.indexOf(finalChecks[0]!) <
+      refreshStatements.indexOf(
+        late as import("typescript/unstable/ast").Statement,
+      ),
+    "confirmation after original final navigation check",
   );
-  const reading = readerFunction(client, "importReading");
-  edits.push({
-    start: reading.getStart(),
-    end: reading.getStart(),
-    value: readerFunction(fixed, "dispatchInput").getText() + "\n  ",
-  });
-  const restoredImports = [
-    [
-      "./local-saved-inputs.js",
-      'import {\n  readSavedInputs,\n  removeSavedInput,\n  saveInputLocally,\n  withSavedInputs,\n  withoutSavedInputs,\n  inputSubmissionSchema,\n  newInputOperation,\n  matchSavedInputOperation,\n  savedInputOperation,\n  type LocalSavedInput,\n} from "./local-saved-inputs.js";',
-    ],
-    [
-      "../../../packages/core/src/model.js",
-      'import {\n  contentOrganizationChangesSchema,\n  operationSchema,\n  stateSchema,\n  taskContentSchema,\n  type Operation,\n  type Receipt,\n  type Workspace,\n} from "../../../packages/core/src/model.js";',
-    ],
-  ];
-  for (const [path, value] of restoredImports) {
-    const actual = client.source.statements
-        .filter(isImportDeclaration)
-        .filter(
-          (node) =>
-            isStringLiteral(node.moduleSpecifier) &&
-            node.moduleSpecifier.text === path,
-        ),
-      original = expected.source.statements
-        .filter(isImportDeclaration)
-        .find(
-          (node) =>
-            isStringLiteral(node.moduleSpecifier) &&
-            node.moduleSpecifier.text === path,
-        )!;
-    assert.equal(actual.length, 1);
-    same(actual[0]!, original, "only removed unused delivery imports " + path);
-    edits.push({
-      start: actual[0]!.getStart(),
-      end: actual[0]!.end,
-      value: value!,
-    });
-  }
-  let result = clientText;
-  for (const edit of edits.sort((a, b) => b.start - a.start))
-    result = result.slice(0, edit.start) + edit.value + result.slice(edit.end);
-  return result;
 }
