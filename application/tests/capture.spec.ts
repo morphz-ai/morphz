@@ -1,6 +1,6 @@
 import { openLibrary } from "./application-helpers.js";
 import { test, expect } from "@playwright/test";
-import { openInput } from "./interaction-helpers.js";
+import { openComposerMedia, openInput } from "./interaction-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
 
 for (const platform of ["MacIntel", "Win32", "Linux x86_64"]) {
@@ -25,6 +25,7 @@ for (const platform of ["MacIntel", "Win32", "Linux x86_64"]) {
     await page.goto("/");
     const input = await openInput(page);
     await input.fill("修饰键截图保留这份草稿");
+    await openComposerMedia(page);
     const trigger = page.getByRole("button", { name: "截图输入", exact: true });
     await expect(trigger).toHaveAttribute(
       "title",
@@ -38,6 +39,7 @@ for (const platform of ["MacIntel", "Win32", "Linux x86_64"]) {
       [[], false],
       [["Shift"], false],
     ] as const) {
+      await openComposerMedia(page);
       await trigger.click({ modifiers: [...modifiers] });
       await expect
         .poll(() =>
@@ -51,7 +53,9 @@ for (const platform of ["MacIntel", "Win32", "Linux x86_64"]) {
         .toEqual({ hideWindow });
       await page.evaluate(() => Reflect.get(window, "finishCapture")(null));
       await expect(page.locator(".capture-dialog")).toHaveCount(0);
-      await expect(trigger).toBeFocused();
+      await expect(
+        page.getByRole("button", { name: "添加输入内容", exact: true }),
+      ).toBeFocused();
       await expect(input).toHaveValue("修饰键截图保留这份草稿");
     }
     expect(
@@ -94,6 +98,7 @@ test("重新划区逐次读取 Option/Alt，取消或失败保留已有预览且
   await page.goto("/");
   const input = await openInput(page);
   await input.fill("重选不改草稿");
+  await openComposerMedia(page);
   await page
     .getByRole("button", { name: "截图输入", exact: true })
     .click({ modifiers: ["Alt"] });
@@ -137,6 +142,7 @@ test("一次点击进入截图，失败只提示并等待明确重试", async ({
   await page.goto("/");
   const input = await openInput(page);
   await input.fill("截图失败也保留草稿");
+  await openComposerMedia(page);
   const trigger = page.getByRole("button", { name: "截图输入", exact: true });
   await trigger.click();
   const dialog = page.getByRole("dialog", { name: "截图输入", exact: true });
@@ -156,7 +162,9 @@ test("一次点击进入截图，失败只提示并等待明确重试", async ({
     .poll(() => page.evaluate(() => Reflect.get(window, "captureCalls")))
     .toBe(2);
   await expect(page.locator(".capture-dialog")).toHaveCount(0);
-  await expect(trigger).toBeFocused();
+  await expect(
+    page.getByRole("button", { name: "添加输入内容", exact: true }),
+  ).toBeFocused();
   await expect(input).toHaveValue("截图失败也保留草稿");
 });
 
@@ -190,6 +198,7 @@ test("完整对话截图保留消息，只暂时移走输入与确认层", async
     "data-interaction",
     "history",
   );
+  await openComposerMedia(page);
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.locator(".capture-dialog");
   await expect
@@ -202,7 +211,7 @@ test("完整对话截图保留消息，只暂时移走输入与确认层", async
   await page.evaluate(() => Reflect.get(window, "finishCapture")(null));
   await expect(dialog).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "截图输入", exact: true }),
+    page.getByRole("button", { name: "添加输入内容", exact: true }),
   ).toBeFocused();
   await expect(input).toBeVisible();
   await expect(input).toHaveValue("截图后继续编辑，不发送");
@@ -265,6 +274,7 @@ test("系统选区前移走遮罩和输入，取消与失败恢复原预览及�
   const beforeContentCounts = await page.request
     .get("/api/platform/content/counts")
     .then((r) => r.json());
+  await openComposerMedia(page);
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.locator(".capture-dialog");
   const select = dialog.locator(".capture-start");
@@ -289,10 +299,11 @@ test("系统选区前移走遮罩和输入，取消与失败恢复原预览及�
   await page.evaluate(() => Reflect.get(window, "finishCapture")(null));
   await expect(dialog).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "截图输入", exact: true }),
+    page.getByRole("button", { name: "添加输入内容", exact: true }),
   ).toBeFocused();
   expect(await canvas.boundingBox()).toEqual(canvasBefore);
   await expect(input).toHaveValue("已有草稿，不发送");
+  await openComposerMedia(page);
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => Reflect.get(window, "captureCalls")))
@@ -447,6 +458,7 @@ test("浏览器截图先等待原生网页恢复，选完恢复模态遮挡且�
   await page.getByRole("textbox", { name: "网站地址" }).press("Enter");
   await expect(page.locator(".browser-slot")).toBeVisible();
   await openInput(page);
+  await openComposerMedia(page);
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.locator(".capture-dialog");
   await expect
@@ -539,12 +551,14 @@ test("截图先预览，确认才上传，并保留当前对象关联", async ({
   await page.getByLabel("新对象标题").fill("截图关联来源");
   await page.getByRole("button", { name: "创建", exact: true }).click();
   await openInput(page);
+  await openComposerMedia(page);
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "截图输入", exact: true });
   await expect(dialog.getByAltText("待确认的截图")).toBeVisible();
   expect(uploads).toBe(0);
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
   expect(uploads).toBe(0);
+  await openComposerMedia(page);
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   await dialog.getByLabel("截图标题").fill("手动选择的测试图");
   await dialog.getByRole("button", { name: "保存到内容", exact: true }).click();
@@ -604,6 +618,7 @@ test("保存到内容失败后改为添加到消息，附件仍从自己的 Stor
   await page.goto("/");
   await openLibrary(page);
   await openInput(page);
+  await openComposerMedia(page);
   await page.getByRole("button", { name: "截图输入", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "截图输入", exact: true });
   await expect(dialog.getByAltText("待确认的截图")).toBeVisible();

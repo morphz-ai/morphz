@@ -1,5 +1,25 @@
 # 桌面能力实施记录
 
+## 2026-10-04 截图回归：使用已确认的输入添加入口
+
+字节未变的 `capture.spec.ts` 在固定阶段 17 编译旧版及最初输入／Reader
+候选上都因未打开“添加输入内容”菜单而找不到截图按钮，原失败报告保留。
+测试现只补原 `openComposerMedia` 入口，并将取消焦点核为常驻 `+`：
+原 `MessageAttachments` 明确先聚焦这个按钮，再开启截图面板。独立复核
+确认反向移除 11 处菜单打开、4 处焦点目标及 helper import 后，测试与
+Git `39cf13cf` 原文件逐字节相等；原预算、modifier、草稿、保存、上传、
+对象关联、遮罩、guest、重选与失败断言未改，不恢复撤下的 UI。
+
+同一校准文件在旧版 10/10，新最终媒体组合内截图 10/10，逐例核实际
+HTTP 三份资产及完整 SHA。测试文件 SHA 为
+`edfc536b5063fbf4fa90669a14eaecf32409add9ac3298efd862c1ca87cf8df3`。
+证据在 `/tmp/morphz-exchange-input-owner-root.1ZYkPK` 的
+`capture-original-*-browser-fixed`、`capture-calibrated-baseline` 和
+`media-final-candidate` 报告；错误 Chrome 路径导致的首次启动失败另存，
+不算产品失败。测试用受控桌面截图／guest bridge，不能替代实际 macOS
+选区、系统权限或原 App 验收。完整媒体组合尚各有一项相同听写视觉红项，
+不据这项入口校准称全媒体或整体前端验收通过。
+
 ## 2026-10-04 前端阶段 17：导航生命周期与回执的宿主所有权
 
 `host/use-workspace-navigation-host.ts` 成为 preferences、recent-content 和
