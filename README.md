@@ -10,7 +10,7 @@ English · [简体中文](README.zh-CN.md)
 
 <p align="center">
   <a href="https://morphz.ai/en/#demo">
-    <img src="website/public/video/morphz-promo-en-20261004-v1.jpg" alt="Morphz promotional film: concurrent work, Context maintenance, and governed execution" width="960">
+    <img src="website/public/video/morphz-live-demo-poster-v1.jpg" alt="Morphz promotional film: concurrent work, Context maintenance, and governed execution" width="960">
   </a>
 </p>
 

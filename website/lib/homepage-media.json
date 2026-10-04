@@ -5,7 +5,7 @@
     "zh": {
       "src": "/video/morphz-promo-zh-20261004-v1.mp4",
       "key": "homepage/20261004-v1/morphz-promo-zh.mp4",
-      "poster": "/video/morphz-promo-zh-20261004-v1.jpg",
+      "poster": "/video/morphz-live-demo-poster-v1.jpg",
       "captions": "/video/morphz-promo-zh-20261004-v1.vtt",
       "bytes": 39235560,
       "sha256": "eb69c5c91ad2939b47f7b4cd6a32ad16dab76ad2bf1f3788fc95029aa9003cbc",
@@ -14,7 +14,7 @@
     "en": {
       "src": "/video/morphz-promo-en-20261004-v1.mp4",
       "key": "homepage/20261004-v1/morphz-promo-en.mp4",
-      "poster": "/video/morphz-promo-en-20261004-v1.jpg",
+      "poster": "/video/morphz-live-demo-poster-v1.jpg",
       "captions": "/video/morphz-promo-en-20261004-v1.vtt",
       "bytes": 36891463,
       "sha256": "b7a2b0ea575f258519fa9a7baf1522bace78545ed4154a2652a0e3f8782749eb",

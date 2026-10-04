@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://morphz.ai/#demo">
-    <img src="website/public/video/morphz-promo-zh-20261004-v1.jpg" alt="Morphz 中文宣传片：并发工作、上下文维护与受控执行" width="960">
+    <img src="website/public/video/morphz-live-demo-poster-v1.jpg" alt="Morphz 中文宣传片：并发工作、上下文维护与受控执行" width="960">
   </a>
 </p>
 
