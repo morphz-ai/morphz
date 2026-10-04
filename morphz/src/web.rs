@@ -410,6 +410,14 @@ struct ControlProviderAccountRequest {
 }
 
 #[derive(serde::Deserialize)]
+struct PutAgentProviderPolicyRequest {
+    mode: crate::memory::AgentProviderPolicyMode,
+    #[serde(default)]
+    accounts: Vec<String>,
+    expected_revision: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
 struct PutProviderCatalogSetupRequest {
     provider_id: String,
     provider: ProviderInstanceConfig,
@@ -1156,7 +1164,7 @@ impl Server {
             .merge(custom_operator_routes())
             .route(
                 "/api/agents/:agent_id/provider-accounts",
-                get(handle_get_agent_provider_bindings),
+                get(handle_get_agent_provider_bindings).put(handle_set_agent_provider_policy),
             )
             .route(
                 "/api/agents/:agent_id/provider-accounts/:account_id",
@@ -2379,8 +2387,18 @@ async fn bind_dashboard_default_agent_provider_account(
         .is_some();
     if !agent_exists {
         // Some embedded hosts construct the HTTP surface before Runtime
-        // start. Startup's legacy-policy adoption will bind the saved account
-        // once the default Agent is materialized.
+        // start. Startup initializes inheritance once the Agent exists.
+        return Ok(());
+    }
+    if state
+        .sdk
+        .agent_provider_bindings(&state.default_agent_id)
+        .await?
+        .mode
+        == crate::memory::AgentProviderPolicyMode::Inherit
+    {
+        // Catalog saves must not undo an explicit exclusion. Inheritance
+        // already makes newly enabled accounts available without a grant.
         return Ok(());
     }
     state
@@ -4409,6 +4427,31 @@ async fn handle_get_agent_provider_bindings(
     }
     match state.sdk.agent_provider_bindings(&agent_id).await {
         Ok(bindings) => Json(bindings).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_set_agent_provider_policy(
+    State(state): State<Arc<AppState>>,
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<PutAgentProviderPolicyRequest>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    match state
+        .sdk
+        .set_agent_provider_policy(
+            &agent_id,
+            request.mode,
+            &request.accounts,
+            request.expected_revision,
+        )
+        .await
+    {
+        Ok(policy) => Json(policy).into_response(),
         Err(error) => sdk_error_response(error),
     }
 }
@@ -13206,6 +13249,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_provider_policy_operator_api_and_catalog_saves_preserve_exclusions() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut state, runtime) =
+            test_state_at_with_workers(&temp.path().join("runtime.db"), false).await;
+        Arc::get_mut(&mut state).unwrap().auth_token = Some("dashboard-secret".into());
+        runtime.start().await.unwrap();
+        let mut config = runtime.provider_catalog_config().unwrap();
+        for id in ["account-a", "account-b"] {
+            config.auth_accounts.insert(
+                id.into(),
+                AuthAccountConfig {
+                    auth_adapter: "none".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        runtime
+            .replace_provider_catalog(config.clone())
+            .await
+            .unwrap();
+        let mode = crate::memory::AgentProviderPolicyMode::Restricted;
+        let unauthorized = handle_set_agent_provider_policy(
+            State(state.clone()),
+            Path("agent-test".into()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(PutAgentProviderPolicyRequest {
+                mode,
+                accounts: vec![],
+                expected_revision: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        let restricted = handle_set_agent_provider_policy(
+            State(state.clone()),
+            Path("agent-test".into()),
+            dashboard_headers(),
+            Query(AuthQuery::default()),
+            Json(PutAgentProviderPolicyRequest {
+                mode,
+                accounts: vec!["account-a".into()],
+                expected_revision: Some(1),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(restricted.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .agent_provider_bindings("agent-test")
+                .await
+                .unwrap()
+                .bindings
+                .len(),
+            1
+        );
+        let inherit = crate::memory::AgentProviderPolicyMode::Inherit;
+        let stale = handle_set_agent_provider_policy(
+            State(state.clone()),
+            Path("agent-test".into()),
+            dashboard_headers(),
+            Query(AuthQuery::default()),
+            Json(PutAgentProviderPolicyRequest {
+                mode: inherit,
+                accounts: vec![],
+                expected_revision: Some(1),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        for (mode, accounts) in [
+            (inherit, vec!["account-a".into()]),
+            (mode, vec!["missing".into()]),
+        ] {
+            let invalid = handle_set_agent_provider_policy(
+                State(state.clone()),
+                Path("agent-test".into()),
+                dashboard_headers(),
+                Query(AuthQuery::default()),
+                Json(PutAgentProviderPolicyRequest {
+                    mode,
+                    accounts,
+                    expected_revision: None,
+                }),
+            )
+            .await
+            .into_response();
+            assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        }
+        let restored = handle_set_agent_provider_policy(
+            State(state.clone()),
+            Path("agent-test".into()),
+            dashboard_headers(),
+            Query(AuthQuery::default()),
+            Json(PutAgentProviderPolicyRequest {
+                mode: inherit,
+                accounts: vec![],
+                expected_revision: Some(2),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(restored.status(), StatusCode::OK);
+        runtime
+            .unbind_agent_provider_account("agent-test", "account-a")
+            .await
+            .unwrap();
+        bind_dashboard_default_agent_provider_account(&state, "account-a")
+            .await
+            .unwrap();
+        config.auth_accounts.insert(
+            "account-c".into(),
+            AuthAccountConfig {
+                auth_adapter: "none".into(),
+                ..Default::default()
+            },
+        );
+        runtime.replace_provider_catalog(config).await.unwrap();
+        let policy = runtime.agent_provider_bindings("agent-test").await.unwrap();
+        assert_eq!(policy.mode, inherit);
+        assert_eq!(policy.revision, 4);
+        assert_eq!(policy.excluded_accounts, vec!["account-a"]);
+        assert_eq!(
+            policy
+                .bindings
+                .iter()
+                .map(|binding| binding.account_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["account-b", "account-c"]
+        );
+    }
+
+    #[tokio::test]
     async fn dashboard_can_delete_an_account_bound_only_to_its_default_agent() {
         let tmp = tempfile::tempdir().unwrap();
         let database_path = tmp.path().join("morphz.db");
@@ -13841,6 +14020,15 @@ mod tests {
                     title: agent_id.into(),
                     root_context_id: format!("context-{agent_id}"),
                 })
+                .await
+                .unwrap();
+            runtime
+                .set_agent_provider_policy(
+                    agent_id,
+                    crate::memory::AgentProviderPolicyMode::Restricted,
+                    &[],
+                    Some(1),
+                )
                 .await
                 .unwrap();
             runtime

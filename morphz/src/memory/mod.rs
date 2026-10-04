@@ -8399,15 +8399,62 @@ pub struct AgentProviderBindingRecord {
     pub bound_at: DateTime<Utc>,
 }
 
-/// Complete Provider Account policy for one Agent.
-///
-/// The policy row exists independently from its bindings so an intentionally
-/// unconfigured Agent remains distinguishable from a legacy Agent that has
-/// never adopted Agent-scoped Provider routing.
+/// `Inherit` follows the operator's live Runtime account catalog. `Restricted`
+/// is an explicit allowlist, including an intentionally empty one. Old policy
+/// payloads default to Restricted so upgrades never widen existing authority.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProviderPolicyMode {
+    Inherit,
+    #[default]
+    Restricted,
+}
+
+#[derive(Debug)]
+pub struct AgentProviderPolicyRevisionConflict {
+    pub current_revision: u64,
+}
+
+impl std::fmt::Display for AgentProviderPolicyRevisionConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Agent Provider policy revision conflict: current={}",
+            self.current_revision
+        )
+    }
+}
+
+impl std::error::Error for AgentProviderPolicyRevisionConflict {}
+
+impl AgentProviderPolicyMode {
+    pub fn parse(value: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        match value {
+            "inherit" => Ok(Self::Inherit),
+            "restricted" => Ok(Self::Restricted),
+            _ => Err(format!("Unknown Agent Provider policy mode '{value}'").into()),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::Restricted => "restricted",
+        }
+    }
+}
+
+/// Complete durable Provider Account policy for one Agent. Inherited policies
+/// store exclusions rather than a copied catalog, so newly configured accounts
+/// are available immediately while an operator's unbind survives restarts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentProviderBindingSet {
     pub agent_id: String,
     pub revision: u64,
+    #[serde(default)]
+    pub mode: AgentProviderPolicyMode,
+    #[serde(default)]
+    pub excluded_accounts: Vec<String>,
     pub bindings: Vec<AgentProviderBindingRecord>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -8426,6 +8473,31 @@ pub trait AgentProviderBindingStore: Send + Sync {
         &self,
         agent_id: &str,
         account_ids: &[String],
+    ) -> Result<AgentProviderBindingSet, Box<dyn std::error::Error + Send + Sync>> {
+        self.initialize_agent_provider_policy(
+            agent_id,
+            AgentProviderPolicyMode::Restricted,
+            account_ids,
+        )
+        .await
+    }
+
+    async fn initialize_agent_provider_policy(
+        &self,
+        agent_id: &str,
+        mode: AgentProviderPolicyMode,
+        account_ids: &[String],
+    ) -> Result<AgentProviderBindingSet, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Atomically replace an operator-authored policy. Inherit requires an
+    /// empty allowlist and resets exclusions; an optional revision fences a
+    /// stale management request. Repeating an identical policy is a no-op.
+    async fn set_agent_provider_policy(
+        &self,
+        agent_id: &str,
+        mode: AgentProviderPolicyMode,
+        account_ids: &[String],
+        expected_revision: Option<u64>,
     ) -> Result<AgentProviderBindingSet, Box<dyn std::error::Error + Send + Sync>>;
 
     async fn get_agent_provider_bindings(
@@ -8434,8 +8506,8 @@ pub trait AgentProviderBindingStore: Send + Sync {
     ) -> Result<Option<AgentProviderBindingSet>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Resolve a Context to its owning Agent and Provider policy. `None`
-    /// means that the Context itself is not durable; `Some` may contain zero
-    /// bindings when the Agent was deliberately left unconfigured.
+    /// means that the Context itself is not durable. Inherited policy records
+    /// contain no copied grants: callers resolve them against a catalog snapshot.
     async fn get_context_agent_provider_bindings(
         &self,
         context_id: &str,
@@ -8453,6 +8525,8 @@ pub trait AgentProviderBindingStore: Send + Sync {
         account_id: &str,
     ) -> Result<AgentProviderBindingSet, Box<dyn std::error::Error + Send + Sync>>;
 
+    /// Explicit references only. Inheritance follows catalog removal and
+    /// must not prevent an operator from deleting an unreferenced account.
     async fn list_provider_account_agent_bindings(
         &self,
         account_id: &str,

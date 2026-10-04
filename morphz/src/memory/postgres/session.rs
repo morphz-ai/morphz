@@ -431,7 +431,7 @@ impl SessionDirectoryStore for PostgresStore {
         .await?;
         sqlx::query(
             r#"INSERT INTO agent_provider_binding_scopes
-               (agent_id, revision, created_at, updated_at) VALUES ($1, 1, $2, $2)"#,
+               (agent_id, revision, mode, created_at, updated_at) VALUES ($1, 1, 'inherit', $2, $2)"#,
         )
         .bind(&agent.id)
         .bind(&now)

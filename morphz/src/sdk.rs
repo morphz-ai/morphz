@@ -36,11 +36,11 @@ use crate::identity::PrincipalAssertion;
 use crate::llm::{ModelRouteDiagnostic, ProviderAccountDiagnostic};
 pub use crate::memory::MessageDispatchMode;
 use crate::memory::{
-    is_transient_storage_contention, AgentProviderBindingSet, ArtifactTransferExecutionRecord,
-    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord,
-    CapabilityLeaseRestriction, CognitiveContextRecord, ContextCapabilityBindingRecord,
-    ContextUpdate, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeOutputStream, ExecutionJobFilter, ExecutionJobRecord,
+    is_transient_storage_contention, AgentProviderBindingSet, AgentProviderPolicyMode,
+    ArtifactTransferExecutionRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
+    CapabilityLeaseRecord, CapabilityLeaseRestriction, CognitiveContextRecord,
+    ContextCapabilityBindingRecord, ContextUpdate, EdgeCommandMutation, EdgeCommandOutputChunk,
+    EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, ExecutionJobFilter, ExecutionJobRecord,
     ExecutionJobStatus, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope, ExecutionTargetFilter,
@@ -1383,6 +1383,47 @@ impl MorphzSdk {
             .agent_provider_bindings(agent_id)
             .await
             .map_err(SdkError::internal)
+    }
+
+    pub async fn set_agent_provider_policy(
+        &self,
+        agent_id: &str,
+        mode: AgentProviderPolicyMode,
+        account_ids: &[String],
+        expected_revision: Option<u64>,
+    ) -> SdkResult<AgentProviderBindingSet> {
+        self.agent_provider_bindings(agent_id).await?;
+        if mode == AgentProviderPolicyMode::Inherit && !account_ids.is_empty() {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Inherited Provider policy cannot contain explicit accounts",
+            ));
+        }
+        let catalog = self
+            .runtime
+            .provider_catalog_config()
+            .map_err(SdkError::internal)?;
+        for account_id in account_ids {
+            if !catalog.auth_accounts.contains_key(account_id.trim()) {
+                return Err(SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    format!("Auth Account '{account_id}' does not exist"),
+                ));
+            }
+        }
+        self.runtime
+            .set_agent_provider_policy(agent_id.trim(), mode, account_ids, expected_revision)
+            .await
+            .map_err(|error| {
+                if error
+                    .downcast_ref::<crate::memory::AgentProviderPolicyRevisionConflict>()
+                    .is_some()
+                {
+                    SdkError::new(SdkErrorCode::Conflict, error.to_string())
+                } else {
+                    SdkError::internal(error)
+                }
+            })
     }
 
     pub async fn bind_agent_provider_account(

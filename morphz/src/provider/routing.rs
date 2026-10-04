@@ -17,8 +17,8 @@ use crate::llm::{
     ProviderAccountDiagnostic, ReasoningEffort, Response, ToolDefinition,
 };
 use crate::memory::{
-    AgentProviderBindingStore, ProviderAccountStateMutation, ProviderAccountStateStore,
-    ProviderAccountStatus,
+    AgentProviderBindingStore, AgentProviderPolicyMode, ProviderAccountStateMutation,
+    ProviderAccountStateStore, ProviderAccountStatus,
 };
 use chrono::{Duration as ChronoDuration, Utc};
 use sha2::{Digest, Sha256};
@@ -854,6 +854,7 @@ impl RoutedClient {
     async fn agent_allowed_accounts(
         &self,
         request: &ModelRequestContext,
+        catalog: &EffectiveProviderCatalog,
     ) -> Result<Option<BTreeMap<String, ()>>, ModelAttemptBindingError> {
         let Some(store) = self.agent_binding_store() else {
             return Ok(None);
@@ -873,19 +874,28 @@ impl RoutedClient {
                     request.context_id
                 ))
             })?;
-        if binding_set.bindings.is_empty() {
-            return Err(ModelAttemptBindingError::configuration(format!(
-                "Agent '{}' has no Provider Account binding; its operator must configure one before model evaluation",
-                binding_set.agent_id
-            )));
-        }
-        Ok(Some(
-            binding_set
+        let accounts = match binding_set.mode {
+            AgentProviderPolicyMode::Inherit => catalog
+                .auth_accounts
+                .iter()
+                .filter(|(id, account)| {
+                    account.enabled && !binding_set.excluded_accounts.contains(id)
+                })
+                .map(|(id, _)| (id.clone(), ()))
+                .collect::<BTreeMap<_, _>>(),
+            AgentProviderPolicyMode::Restricted => binding_set
                 .bindings
                 .into_iter()
                 .map(|binding| (binding.account_id, ()))
                 .collect(),
-        ))
+        };
+        if accounts.is_empty() {
+            return Err(ModelAttemptBindingError::configuration(format!(
+                "Agent '{}' has no Provider Account binding available under its policy; its operator must configure an enabled account before model evaluation",
+                binding_set.agent_id
+            )));
+        }
+        Ok(Some(accounts))
     }
 
     async fn account_availability(
@@ -1636,7 +1646,7 @@ impl RoutedClient {
         let (route_id, route) = catalog
             .resolve_route(&alias)
             .map_err(ModelAttemptBindingError::configuration)?;
-        let allowed_accounts = self.agent_allowed_accounts(request).await?;
+        let allowed_accounts = self.agent_allowed_accounts(request, &catalog).await?;
         if let Some(allowed) = allowed_accounts.as_ref() {
             let candidates = Self::eligible_route_candidates(route_id, route, request)?;
             let mut has_authorized_candidate = false;
@@ -2902,6 +2912,119 @@ mod tests {
         assert_eq!(binding.requested_alias, "coding");
         assert_eq!(binding.physical_model, "physical-model-alpha");
         assert_eq!(binding.auth_account_id, "account-b");
+    }
+
+    #[tokio::test]
+    async fn inherited_agent_accounts_follow_catalog_without_bypassing_exclusions_or_route_gates() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "inherit-agent".into(),
+                title: "Inherit".into(),
+                root_context_id: "inherit-context".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "inherit-context".into(),
+                title: "Inherit".into(),
+                agent_id: "inherit-agent".into(),
+            })
+            .await
+            .unwrap();
+        store
+            .initialize_agent_provider_policy(
+                "inherit-agent",
+                AgentProviderPolicyMode::Inherit,
+                &[],
+            )
+            .await
+            .unwrap();
+        let mut config = routed_config();
+        let client = RoutedClient::new(&config, "coding".into()).unwrap();
+        client.attach_agent_provider_binding_store(store.clone());
+        client.attach_provider_account_state_store(store.clone());
+        let request = ModelRequestContext {
+            context_id: "inherit-context".into(),
+            session_id: "inherit-session".into(),
+            attempt_id: "inherit-attempt".into(),
+            objective_id: None,
+            required_capabilities: Vec::new(),
+        };
+        let first = client.bind_model_attempt(&request).await.unwrap();
+        assert!(["account-a", "account-b"].contains(&first.auth_account_id.as_str()));
+        store
+            .unbind_agent_provider_account("inherit-agent", "account-a")
+            .await
+            .unwrap();
+        config.auth_accounts.get_mut("account-b").unwrap().enabled = false;
+        client.replace_provider_catalog(&config).unwrap();
+        assert!(client.bind_model_attempt(&request).await.is_err());
+        // A new config account becomes usable without writing an Agent grant.
+        config.auth_accounts.insert(
+            "account-c".into(),
+            AuthAccountConfig {
+                auth_adapter: "none".into(),
+                provider: Some("direct".into()),
+                ..Default::default()
+            },
+        );
+        config
+            .provider_instances
+            .get_mut("direct")
+            .unwrap()
+            .accounts
+            .push("account-c".into());
+        client.replace_provider_catalog(&config).unwrap();
+        assert_eq!(
+            client
+                .bind_model_attempt(&request)
+                .await
+                .unwrap()
+                .auth_account_id,
+            "account-c"
+        );
+        // Still honor account health: an excluded account cannot rescue it.
+        store
+            .put_provider_account_state(
+                "account-c",
+                None,
+                ProviderAccountStatus::Disabled,
+                None,
+                Some("test_disabled"),
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(client.bind_model_attempt(&request).await.is_err());
+        // A configured route with only an excluded account must not escape the policy.
+        config
+            .model_routes
+            .get_mut("coding-primary")
+            .unwrap()
+            .candidates[0]
+            .account = Some("account-a".into());
+        client.replace_provider_catalog(&config).unwrap();
+        assert!(client
+            .bind_model_attempt(&request)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("no Provider Account authorized"));
+        let mut unknown = request;
+        unknown.context_id = "unknown-context".into();
+        assert!(client
+            .bind_model_attempt(&unknown)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("not durable"));
     }
 
     #[tokio::test]

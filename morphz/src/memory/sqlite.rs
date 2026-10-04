@@ -553,6 +553,8 @@ impl SqliteStore {
         CREATE TABLE IF NOT EXISTS agent_provider_binding_scopes (
             agent_id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL CHECK(revision >= 1),
+            mode TEXT NOT NULL DEFAULT 'restricted' CHECK(mode IN ('inherit', 'restricted')),
+            excluded_accounts_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY(agent_id) REFERENCES agents(id) ON DELETE CASCADE
@@ -1504,6 +1506,31 @@ impl SqliteStore {
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
+        let mut provider_policy_migration = begin_immediate_sqlite_transaction(&pool).await?;
+        let provider_policy_columns =
+            sqlx::query("PRAGMA table_info(agent_provider_binding_scopes)")
+                .fetch_all(&mut *provider_policy_migration)
+                .await?;
+        for (name, definition) in [
+            (
+                "mode",
+                "TEXT NOT NULL DEFAULT 'restricted' CHECK(mode IN ('inherit', 'restricted'))",
+            ),
+            ("excluded_accounts_json", "TEXT NOT NULL DEFAULT '[]'"),
+        ] {
+            if !provider_policy_columns
+                .iter()
+                .any(|row| row.get::<String, _>("name") == name)
+            {
+                sqlx::query(&format!(
+                    "ALTER TABLE agent_provider_binding_scopes ADD COLUMN {name} {definition}"
+                ))
+                .execute(&mut *provider_policy_migration)
+                .await?;
+            }
+        }
+        provider_policy_migration.commit().await?;
+
         let capability_lease_columns = sqlx::query("PRAGMA table_info(capability_leases)")
             .fetch_all(&pool)
             .await?
@@ -10848,7 +10875,7 @@ impl SessionDirectoryStore for SqliteStore {
         .await?;
         sqlx::query(
             r#"INSERT INTO agent_provider_binding_scopes
-               (agent_id, revision, created_at, updated_at) VALUES (?, 1, ?, ?)"#,
+               (agent_id, revision, mode, created_at, updated_at) VALUES (?, 1, 'inherit', ?, ?)"#,
         )
         .bind(&agent.id)
         .bind(&now)

@@ -11261,15 +11261,54 @@ where
         .get_agent_provider_bindings("conformance-agent")
         .await
         .unwrap()
-        .expect("Agent Bootstrap must create an explicit empty Provider policy");
+        .expect("Agent Bootstrap must create an inherited Provider policy");
     assert_eq!(initial.revision, 1);
     assert!(initial.bindings.is_empty());
+    assert_eq!(
+        initial.mode,
+        morphz::memory::AgentProviderPolicyMode::Inherit
+    );
+    let no_op = store
+        .bind_agent_provider_account("conformance-agent", "shared-account")
+        .await
+        .unwrap();
+    assert_eq!(no_op.revision, 1);
+    assert!(no_op.bindings.is_empty());
+    let excluded = store
+        .unbind_agent_provider_account("conformance-agent", "shared-account")
+        .await
+        .unwrap();
+    assert_eq!(excluded.revision, 2);
+    assert_eq!(excluded.excluded_accounts, vec!["shared-account"]);
+    assert_eq!(
+        store
+            .unbind_agent_provider_account("conformance-agent", "shared-account")
+            .await
+            .unwrap()
+            .revision,
+        2
+    );
+    let restored = store
+        .bind_agent_provider_account("conformance-agent", "shared-account")
+        .await
+        .unwrap();
+    assert_eq!(restored.revision, 3);
+    assert!(restored.excluded_accounts.is_empty());
+    store
+        .set_agent_provider_policy(
+            "conformance-agent",
+            morphz::memory::AgentProviderPolicyMode::Restricted,
+            &[],
+            Some(3),
+        )
+        .await
+        .unwrap();
 
     let primary = store
         .bind_agent_provider_account("conformance-agent", "shared-account")
         .await
         .unwrap();
-    assert_eq!(primary.revision, 2);
+    assert_eq!(primary.revision, 5);
     assert_eq!(primary.bindings[0].account_id, "shared-account");
     let by_context = store
         .get_context_agent_provider_bindings("conformance-context")
@@ -11325,7 +11364,7 @@ where
         .unbind_agent_provider_account("conformance-agent", "shared-account")
         .await
         .unwrap();
-    assert_eq!(unbound.revision, 3);
+    assert_eq!(unbound.revision, 6);
     assert!(unbound.bindings.is_empty());
     assert_eq!(
         store
@@ -11334,6 +11373,58 @@ where
             .unwrap()
             .len(),
         1
+    );
+
+    store
+        .ensure_agent(NewAgent {
+            id: "conformance-inherited-provider-agent".into(),
+            title: "Inherited provider".into(),
+            root_context_id: "conformance-inherited-provider-context".into(),
+        })
+        .await
+        .unwrap();
+    let mode = morphz::memory::AgentProviderPolicyMode::Inherit;
+    store
+        .initialize_agent_provider_policy("conformance-inherited-provider-agent", mode, &[])
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(
+        store.unbind_agent_provider_account("conformance-inherited-provider-agent", "dynamic-a"),
+        store.unbind_agent_provider_account("conformance-inherited-provider-agent", "dynamic-b"),
+    );
+    a.unwrap();
+    b.unwrap();
+    let excluded = store
+        .get_agent_provider_bindings("conformance-inherited-provider-agent")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(excluded.revision, 3);
+    assert_eq!(excluded.excluded_accounts, vec!["dynamic-a", "dynamic-b"]);
+    assert!(store
+        .set_agent_provider_policy("conformance-inherited-provider-agent", mode, &[], Some(1))
+        .await
+        .is_err());
+    assert_eq!(
+        store
+            .get_agent_provider_bindings("conformance-inherited-provider-agent")
+            .await
+            .unwrap()
+            .unwrap(),
+        excluded
+    );
+    let restored = store
+        .set_agent_provider_policy("conformance-inherited-provider-agent", mode, &[], Some(3))
+        .await
+        .unwrap();
+    assert_eq!(restored.revision, 4);
+    assert!(restored.excluded_accounts.is_empty());
+    assert_eq!(
+        store
+            .set_agent_provider_policy("conformance-inherited-provider-agent", mode, &[], Some(4))
+            .await
+            .unwrap(),
+        restored
     );
 }
 
@@ -11976,6 +12067,91 @@ async fn postgres_session_pooler_smoke_when_configured() {
 }
 
 #[tokio::test]
+async fn postgres_agent_provider_policy_upgrade_when_configured() {
+    let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let schema = format!(
+        "morphz_provider_policy_upgrade_{}_{}",
+        std::process::id(),
+        chrono::Utc::now().timestamp_nanos_opt().unwrap()
+    );
+    let administration = sqlx::PgPool::connect(&database_url).await.unwrap();
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&administration)
+        .await
+        .unwrap();
+    let separator = if database_url.contains('?') { '&' } else { '?' };
+    let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}%2Cpublic");
+    let store = PostgresStore::new(&scoped_url, 4).await.unwrap();
+    for agent in ["legacy-bound", "legacy-empty"] {
+        store
+            .ensure_agent(NewAgent {
+                id: agent.into(),
+                title: agent.into(),
+                root_context_id: format!("context-{agent}"),
+            })
+            .await
+            .unwrap();
+    }
+    let legacy = store
+        .initialize_agent_provider_bindings("legacy-bound", &["shared".into()])
+        .await
+        .unwrap();
+    let empty = store
+        .initialize_agent_provider_bindings("legacy-empty", &[])
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE agent_provider_binding_scopes DROP COLUMN mode, DROP COLUMN excluded_accounts_json")
+        .execute(store.pool()).await.unwrap();
+    sqlx::query(
+        "DELETE FROM schema_migrations WHERE version = '20261004_01_agent_provider_policy_modes'",
+    )
+    .execute(store.pool())
+    .await
+    .unwrap();
+    store.pool().close().await;
+    drop(store);
+    let reopened = PostgresStore::new(&scoped_url, 4).await.unwrap();
+    assert_eq!(
+        reopened
+            .get_agent_provider_bindings("legacy-bound")
+            .await
+            .unwrap()
+            .unwrap(),
+        legacy
+    );
+    assert_eq!(
+        reopened
+            .initialize_agent_provider_policy(
+                "legacy-empty",
+                morphz::memory::AgentProviderPolicyMode::Inherit,
+                &[]
+            )
+            .await
+            .unwrap(),
+        empty
+    );
+    let inherited = reopened
+        .set_agent_provider_policy(
+            "legacy-bound",
+            morphz::memory::AgentProviderPolicyMode::Inherit,
+            &[],
+            Some(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inherited.revision, 2);
+    assert!(inherited.bindings.is_empty());
+    reopened.pool().close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&administration)
+        .await
+        .unwrap();
+    administration.close().await;
+}
+
+#[tokio::test]
 async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when_configured() {
     let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
         return;
@@ -12083,6 +12259,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260820_01_tool_call_history",
         "20260820_02_principal_context_encounters",
         "20260901_01_agent_provider_bindings",
+        "20261004_01_agent_provider_policy_modes",
         "20260911_01_scheduler_dependency_ready_fifo",
     ] {
         assert!(

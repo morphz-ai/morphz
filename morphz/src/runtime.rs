@@ -38,31 +38,32 @@ use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
     AgentBootstrapRecord, AgentProviderBindingRecord, AgentProviderBindingSet,
-    AgentProviderBindingStore, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalResolution,
-    ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
-    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord,
-    CapabilityLeaseRestriction, CapabilityLeaseScope, CognitiveContextRecord,
-    ContextCapabilityBindingMutation, ContextCapabilityBindingRecord, ContextStateSummary,
-    ContextTokenBudgetMutation, ContextUpdate, DelegationFilter, DelegationRecord,
-    DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
-    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, EventStore,
-    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMonitorRecord, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
-    ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
-    ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
-    ExecutionTargetStore, MessageClaim, MessageDispatchMode, NewAgent,
-    NewArtifactTransferExecution, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
-    NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
-    NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryPage, QueryFilter,
-    RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
-    SessionContextSharing, SessionPrincipalBinding, SessionRecord, SessionStatus, SessionStore,
-    SessionTimelineCursor, SessionTimelineItem, SessionUpdate, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadControlAction, ThreadControlState, ThreadGroupFilter,
-    ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadOutcomeRecord,
-    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadSupervision,
-    ThreadSupervisorKind, TimerStore, TransientStorageRetention,
+    AgentProviderBindingStore, AgentProviderPolicyMode, AgentRecord, ApprovalFilter,
+    ApprovalMutation, ApprovalResolution, ApprovalStore, ArtifactTransferExecutionRecord,
+    AttentionAcknowledgementRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
+    CapabilityLeaseRecord, CapabilityLeaseRestriction, CapabilityLeaseScope,
+    CognitiveContextRecord, ContextCapabilityBindingMutation, ContextCapabilityBindingRecord,
+    ContextStateSummary, ContextTokenBudgetMutation, ContextUpdate, DelegationFilter,
+    DelegationRecord, DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
+    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
+    EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter,
+    ExecutionJobMonitorRecord, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionTargetAuthorizationFilter,
+    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
+    ExecutionTargetFilter, ExecutionTargetMutation, ExecutionTargetRecord,
+    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore, MessageClaim,
+    MessageDispatchMode, NewAgent, NewArtifactTransferExecution, NewCognitiveContext,
+    NewDelegation, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode,
+    NewObjective, NewPrincipal, NewSession, NewThread, NewThreadActivation, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
+    PrincipalDirectoryPage, QueryFilter, RecallDocumentKind, RecallProjectionStore, RuntimeStore,
+    ScheduleMutation, ScheduleRecord, SessionContextSharing, SessionPrincipalBinding,
+    SessionRecord, SessionStatus, SessionStore, SessionTimelineCursor, SessionTimelineItem,
+    SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction,
+    ThreadControlState, ThreadGroupFilter, ThreadGroupMemberRecord, ThreadKind, ThreadLifecycle,
+    ThreadMutation, ThreadOutcomeRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadSupervision, ThreadSupervisorKind, TimerStore,
+    TransientStorageRetention,
 };
 use crate::objective::{
     ObjectiveAmendTool, ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor,
@@ -2788,26 +2789,13 @@ impl MorphzRuntime {
                 })
                 .await?;
         }
-        // Adopt Agent-scoped Provider authority without breaking databases
-        // created before that authority existed.  Only Agents without a
-        // policy row receive the current Runtime accounts. An empty catalog
-        // cannot establish operator intent: defer adoption until configuration
-        // is available (for example after correcting MORPHZ_HOME). An intentionally
-        // empty policy already has a row and therefore remains empty across
-        // restarts.
-        let existing_account_ids = self
-            .provider_catalog_config()?
-            .auth_accounts
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        if !existing_account_ids.is_empty() {
-            for agent in self.inner.store.list_agents(true).await? {
-                self.inner
-                    .store
-                    .initialize_agent_provider_bindings(&agent.id, &existing_account_ids)
-                    .await?;
-            }
+        // Missing policies follow this single operator's live catalog, even
+        // when it is initially empty. Persisted restrictions remain untouched.
+        for agent in self.inner.store.list_agents(true).await? {
+            self.inner
+                .store
+                .initialize_agent_provider_policy(&agent.id, AgentProviderPolicyMode::Inherit, &[])
+                .await?;
         }
         self.inner
             .store
@@ -4716,14 +4704,11 @@ impl MorphzRuntime {
     }
 
     pub async fn ensure_agent(&self, agent: NewAgent) -> Result<AgentRecord, RuntimeError> {
-        let existed = self.inner.store.get_agent(&agent.id).await?.is_some();
         let record = self.inner.store.ensure_agent(agent).await?;
-        if !existed {
-            self.inner
-                .store
-                .initialize_agent_provider_bindings(&record.id, &[])
-                .await?;
-        }
+        self.inner
+            .store
+            .initialize_agent_provider_policy(&record.id, AgentProviderPolicyMode::Inherit, &[])
+            .await?;
         Ok(record)
     }
 
@@ -4747,7 +4732,11 @@ impl MorphzRuntime {
             .await?;
         self.inner
             .store
-            .initialize_agent_provider_bindings(&bundle.agent.id, &[])
+            .initialize_agent_provider_policy(
+                &bundle.agent.id,
+                AgentProviderPolicyMode::Inherit,
+                &[],
+            )
             .await?;
         self.bind_default_principal(&bundle.initial_session.id)
             .await?;
@@ -4862,11 +4851,64 @@ impl MorphzRuntime {
         if self.inner.store.get_agent(agent_id).await?.is_none() {
             return Err(format!("Agent '{agent_id}' does not exist").into());
         }
-        self.inner
+        let mut policy = self
+            .inner
             .store
             .get_agent_provider_bindings(agent_id)
             .await?
-            .ok_or_else(|| format!("Agent '{agent_id}' Provider policy is not initialized").into())
+            .ok_or_else(|| -> RuntimeError {
+                format!("Agent '{agent_id}' Provider policy is not initialized").into()
+            })?;
+        if policy.mode == AgentProviderPolicyMode::Inherit {
+            policy.bindings = self
+                .provider_catalog_config()?
+                .auth_accounts
+                .iter()
+                .filter(|(id, account)| account.enabled && !policy.excluded_accounts.contains(id))
+                .map(|(id, _)| AgentProviderBindingRecord {
+                    agent_id: agent_id.to_string(),
+                    account_id: id.clone(),
+                    bound_at: policy.created_at,
+                })
+                .collect();
+        }
+        Ok(policy)
+    }
+
+    /// Operator-only replacement of inheritance or an explicit allowlist.
+    pub async fn set_agent_provider_policy(
+        &self,
+        agent_id: &str,
+        mode: AgentProviderPolicyMode,
+        account_ids: &[String],
+        expected_revision: Option<u64>,
+    ) -> Result<AgentProviderBindingSet, RuntimeError> {
+        let agent_id = agent_id.trim();
+        self.agent_provider_bindings(agent_id).await?;
+        if mode == AgentProviderPolicyMode::Inherit && !account_ids.is_empty() {
+            return Err("Inherited Provider policy cannot contain explicit accounts".into());
+        }
+        let catalog = self.provider_catalog_config()?;
+        for account_id in account_ids {
+            if !catalog.auth_accounts.contains_key(account_id.trim()) {
+                return Err(format!("Auth Account '{account_id}' does not exist").into());
+            }
+        }
+        let previous = self
+            .inner
+            .store
+            .get_agent_provider_bindings(agent_id)
+            .await?;
+        let policy = self
+            .inner
+            .store
+            .set_agent_provider_policy(agent_id, mode, account_ids, expected_revision)
+            .await?;
+        if previous.as_ref().map(|policy| policy.revision) != Some(policy.revision) {
+            self.publish_model_configuration_changed("agent_provider_policy_changed")
+                .await?;
+        }
+        self.agent_provider_bindings(agent_id).await
     }
 
     /// Associate one reusable Provider Account with an Agent. The Account
@@ -4906,7 +4948,7 @@ impl MorphzRuntime {
             self.publish_model_configuration_changed("agent_provider_account_bound")
                 .await?;
         }
-        Ok(bindings)
+        self.agent_provider_bindings(agent_id).await
     }
 
     pub async fn unbind_agent_provider_account(
@@ -4936,7 +4978,7 @@ impl MorphzRuntime {
             self.publish_model_configuration_changed("agent_provider_account_unbound")
                 .await?;
         }
-        Ok(bindings)
+        self.agent_provider_bindings(agent_id).await
     }
 
     pub async fn provider_account_agent_bindings(
@@ -11844,7 +11886,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_adopts_legacy_agents_but_new_agents_start_unconfigured() {
+    async fn provider_policy_defaults_follow_live_catalog_and_preserve_restrictions() {
         let database = NamedTempFile::new().unwrap();
         let mut config = AppConfig::default();
         config.auth_accounts.insert(
@@ -11854,7 +11896,30 @@ mod tests {
                 ..AuthAccountConfig::default()
             },
         );
-        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+        config.provider_instances.insert(
+            "policy-provider".into(),
+            crate::config::ProviderInstanceConfig {
+                adapter: "openai-compatible".into(),
+                base_url: "https://models.example.test/v1".into(),
+                accounts: vec!["legacy-account".into()],
+                ..Default::default()
+            },
+        );
+        config.model_routes.insert(
+            "policy-model".into(),
+            crate::config::ModelRouteConfig {
+                candidates: vec![crate::config::ModelRouteCandidateConfig {
+                    provider: "policy-provider".into(),
+                    model: "policy-model".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        let client = Arc::new(
+            crate::provider::routing::RoutedClient::new(&config, "policy-model".into()).unwrap(),
+        );
+        let runtime = MorphzRuntime::builder(config, client)
             .database_path(database.path().to_string_lossy())
             .build()
             .await
@@ -11877,6 +11942,7 @@ mod tests {
             .unwrap();
         assert_eq!(adopted.bindings.len(), 1);
         assert_eq!(adopted.bindings[0].account_id, "legacy-account");
+        assert_eq!(adopted.mode, AgentProviderPolicyMode::Inherit);
 
         let created = runtime
             .create_agent_bundle(
@@ -11902,12 +11968,53 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created.agent.id, "new-agent");
-        assert!(runtime
-            .agent_provider_bindings("new-agent")
+        assert_eq!(
+            runtime
+                .agent_provider_bindings("new-agent")
+                .await
+                .unwrap()
+                .bindings
+                .len(),
+            1
+        );
+        // The default is dynamic, not a copied startup snapshot.
+        let mut catalog = runtime.provider_catalog_config().unwrap();
+        catalog.auth_accounts.insert(
+            "later-account".into(),
+            AuthAccountConfig {
+                auth_adapter: "none".into(),
+                ..Default::default()
+            },
+        );
+        catalog.auth_accounts.insert(
+            "disabled-account".into(),
+            AuthAccountConfig {
+                auth_adapter: "none".into(),
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        runtime.replace_provider_catalog(catalog).await.unwrap();
+        for agent in ["new-agent", "legacy-agent"] {
+            assert_eq!(
+                runtime
+                    .agent_provider_bindings(agent)
+                    .await
+                    .unwrap()
+                    .bindings
+                    .len(),
+                2
+            );
+        }
+        runtime
+            .set_agent_provider_policy(
+                "new-agent",
+                AgentProviderPolicyMode::Restricted,
+                &[],
+                Some(1),
+            )
             .await
-            .unwrap()
-            .bindings
-            .is_empty());
+            .unwrap();
 
         // Explicit policy edits publish the same durable configuration epoch
         // as route edits, so waiting Objectives can resume without probing an
@@ -11950,7 +12057,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_startup_defers_provider_adoption_without_overriding_explicit_empty_policy() {
+    async fn provider_policy_empty_startup_and_restart_preserve_explicit_denials() {
         let database = NamedTempFile::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
@@ -11959,13 +12066,17 @@ mod tests {
             .unwrap();
         runtime.start().await.unwrap();
         let agent_id = runtime.inner.identity.agent_id.clone();
-        assert!(runtime
-            .inner
-            .store
-            .get_agent_provider_bindings(&agent_id)
-            .await
-            .unwrap()
-            .is_none());
+        assert_eq!(
+            runtime
+                .inner
+                .store
+                .get_agent_provider_bindings(&agent_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .mode,
+            AgentProviderPolicyMode::Inherit
+        );
         runtime
             .inner
             .store
