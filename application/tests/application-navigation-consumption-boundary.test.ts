@@ -8,6 +8,7 @@ import {
   SyntaxKind,
   isArrowFunction,
   isBindingElement,
+  isBinaryExpression,
   isCallExpression,
   isFunctionDeclaration,
   isIdentifier,
@@ -24,6 +25,8 @@ import {
   isObjectLiteralExpression,
   isPropertyAccessExpression,
   isPropertyAssignment,
+  isPrefixUnaryExpression,
+  isPostfixUnaryExpression,
   isReturnStatement,
   isShorthandPropertyAssignment,
   isStringLiteral,
@@ -42,6 +45,8 @@ import {
 // event ports are normalized; the latter use the independently fixed Git85
 // callbacks. The four state registrations/one commit expand the actual owner
 // at their real import-bound calls, retaining the original hook/effect hashes.
+// Exchange read state/ack/commit likewise expand to the fixed 4ce registrations
+// only after the actual new owner and its host ports pass a finite seam check.
 // literal trees, callbacks, keys/refs/hidden/portals and hook arguments remain.
 // A future deliberate UI/lifecycle change must explicitly review this baseline.
 const baseline = {
@@ -575,11 +580,241 @@ function subjectContract(
   }
   return { attributes, expanded };
 }
+
+const exchangeReadPath = "./host/use-exchange-read-receipts.js";
+const exchangeReadAdapterText = `
+function useExchangeReadReceiptState() {
+  const [seenReplies, setSeenReplies] = useState(() => {
+    const restored = readReplyReceipts(readStored());
+    if (restored !== null) return restored;
+    const bootstrap = readBootstrap();
+    return acknowledgeReplies({}, replyReceipts(bootstrap.messages, bootstrap.outputs, bootstrap.scriptOutputs));
+  });
+  return {seenReplies, setSeenReplies};
+}
+function useExchangeReadAcknowledgement() {
+  return useCallback((receipts: ReplyReceipt[]) => {
+    setSeenReplies((old) => acknowledgeReplies(old, receipts));
+  }, []);
+}
+function useExchangeReadReceiptCommit() {
+  useEffect(() => {
+    setSeenReplies((old) => reconcileReplyReceipts(old, receipts));
+  }, [version]);
+  useEffect(() => {
+    try { persist(seenReplies); }
+    catch { onNotice("已读状态暂时无法保存，重开后可能再次提示。"); }
+  }, [seenReplies]);
+}
+const stateArguments = {
+  readStored: () => readLocal<unknown>("conversation-read-receipts", null),
+  readBootstrap: () => ({messages: client.boot!.runtime.messages,
+    outputs: client.boot!.outputs, scriptOutputs: client.boot!.scriptOutputs}),
+};
+const acknowledgementArguments = readReceiptState;
+const commitArguments = {receipts, version: receiptVersion,
+  persist: (seen) => writeLocal("conversation-read-receipts", seen), onNotice: setNotice};
+`;
+function scalarSyntax(node: Node): unknown {
+  const children: unknown[] = [];
+  node.forEachChild((child) => {
+    children.push(scalarSyntax(child));
+  });
+  return [
+    node.kind,
+    ...(isPrefixUnaryExpression(node) || isPostfixUnaryExpression(node)
+      ? [node.operator]
+      : []),
+    ...(isBinaryExpression(node) ? [node.operatorToken.kind] : []),
+    children.length ? children : node.getText(),
+  ];
+}
+function exchangeReadContract(
+  app: Parsed,
+  owner: Parsed,
+  fixed: Parsed,
+  adapter: Parsed,
+  contract: SubjectContract,
+) {
+  try {
+    const registrations = [
+      ["useExchangeReadReceiptState", "useFixedReceiptState", ["useState"]],
+      [
+        "useExchangeReadAcknowledgement",
+        "useFixedReceiptAcknowledgement",
+        ["useCallback"],
+      ],
+      [
+        "useExchangeReadReceiptCommit",
+        "useFixedReceiptCommit",
+        ["useEffect", "useEffect"],
+      ],
+    ] as const;
+    const ownerHooks = reactHooks(owner),
+      fixedHooks = reactHooks(fixed);
+    const calls: CallExpression[] = [],
+      registered = new Set<Node>();
+    for (const [name, original, primitives] of registrations) {
+      const symbol = imported(app, exchangeReadPath, name);
+      const uses = app.identifiers.filter(
+        (node) => app.symbols.get(node) === symbol,
+      );
+      assert.equal(uses.length, 2, `${name}: import plus one direct call`);
+      const call = uses.find(
+        (node) =>
+          isCallExpression(node.parent) && node.parent.expression === node,
+      )?.parent;
+      assert.ok(call && isCallExpression(call));
+      assert.equal(call.typeArguments?.length ?? 0, 0);
+      calls.push(call);
+      const body = oneFunction(owner, name).body;
+      assert.ok(body);
+      assert.deepEqual(
+        scalarSyntax(body),
+        scalarSyntax(oneFunction(adapter, name).body!),
+      );
+      const actual: string[] = [];
+      walk(body, (node) => {
+        if (!isCallExpression(node) || !isIdentifier(node.expression)) return;
+        const primitive = ownerHooks.get(owner.symbols.get(node.expression));
+        if (primitive) {
+          actual.push(primitive);
+          registered.add(node);
+        } else
+          assert.doesNotMatch(
+            node.expression.text,
+            /^use[A-Z]/,
+            "no hidden read hook bridge",
+          );
+      });
+      assert.deepEqual(actual, primitives);
+      const expanded: { node: CallExpression; name: string }[] = [];
+      walk(oneFunction(fixed, original).body!, (node) => {
+        if (!isCallExpression(node) || !isIdentifier(node.expression)) return;
+        const primitive = fixedHooks.get(fixed.symbols.get(node.expression));
+        if (primitive) expanded.push({ node, name: primitive });
+      });
+      assert.deepEqual(
+        expanded.map(({ name }) => name),
+        primitives,
+      );
+      contract.expanded.set(call, expanded);
+    }
+    assert.equal(
+      owner.nodes
+        .filter(isCallExpression)
+        .filter(
+          (node) =>
+            isIdentifier(node.expression) &&
+            ownerHooks.has(owner.symbols.get(node.expression)),
+        ).length,
+      registered.size,
+    );
+    for (const statement of owner.source.statements)
+      assert.ok(
+        isImportDeclaration(statement) ||
+          isTypeAliasDeclaration(statement) ||
+          (isFunctionDeclaration(statement) &&
+            registrations.some(([name]) => statement.name?.text === name)),
+        "only the three read hooks, types and imports; no module mirror/state effect",
+      );
+    for (const [name, count] of [
+      ["acknowledgeReplies", 2],
+      ["readReplyReceipts", 1],
+      ["reconcileReplyReceipts", 1],
+      ["replyReceipts", 1],
+    ] as const) {
+      const symbol = imported(owner, "../conversation-read.js", name);
+      assert.equal(
+        owner.nodes
+          .filter(isCallExpression)
+          .filter(
+            (node) =>
+              isIdentifier(node.expression) &&
+              owner.symbols.get(node.expression) === symbol,
+          ).length,
+        count,
+        `actual ${name} helper binding`,
+      );
+    }
+    const [state, ack, commit] = calls;
+    assert.ok(state && ack && commit);
+    assert.equal(oneVariable(app, "readReceiptState").initializer, state);
+    const seen = bindingVariable(app, "seenReplies");
+    assert.equal(seen.initializer?.getText(), "readReceiptState");
+    assert.equal(state.arguments.length, 1);
+    assert.deepEqual(
+      scalarSyntax(state.arguments[0]!),
+      scalarSyntax(oneVariable(adapter, "stateArguments").initializer!),
+    );
+    assert.equal(oneVariable(app, "readReplies").initializer, ack);
+    assert.equal(ack.arguments.length, 1);
+    assert.deepEqual(
+      scalarSyntax(ack.arguments[0]!),
+      scalarSyntax(
+        oneVariable(adapter, "acknowledgementArguments").initializer!,
+      ),
+    );
+    assert.equal(commit.parent.kind, SyntaxKind.ExpressionStatement);
+    assert.equal(commit.arguments.length, 2);
+    assert.deepEqual(
+      scalarSyntax(commit.arguments[0]!),
+      scalarSyntax(ack.arguments[0]!),
+    );
+    assert.deepEqual(
+      scalarSyntax(commit.arguments[1]!),
+      scalarSyntax(oneVariable(adapter, "commitArguments").initializer!),
+    );
+    const ownerState = app.symbols.get(
+      oneVariable(app, "readReceiptState").name,
+    );
+    assert.ok(ownerState !== undefined);
+    for (const node of [
+      seen.initializer!,
+      ack.arguments[0]!,
+      commit.arguments[0]!,
+    ])
+      assert.equal(
+        app.symbols.get(node),
+        ownerState,
+        "one actual read state owner, not a mirror",
+      );
+    assert.ok(
+      bindingVariable(app, "revealedInputs").end < state.pos &&
+        state.end < oneVariable(app, "inputs").pos,
+    );
+    assert.ok(
+      oneVariable(app, "unseenReply").end < ack.pos && ack.end < commit.pos,
+    );
+    const appHooks = reactHooks(app);
+    const layouts = app.nodes
+      .filter(isCallExpression)
+      .filter(
+        (node) =>
+          isIdentifier(node.expression) &&
+          appHooks.get(app.symbols.get(node.expression)) === "useLayoutEffect",
+      );
+    const scroll = layouts.filter((node) =>
+      node.getText().includes("positions.current.set(contextKey"),
+    );
+    assert.equal(scroll.length, 1);
+    assert.ok(
+      commit.end < scroll[0]!.pos,
+      "receipt commits precede the original scroll/title/trail/focus seams",
+    );
+  } catch (error) {
+    if (!(error instanceof assert.AssertionError)) throw error;
+    throw new assert.AssertionError({
+      message: "exchange-read-owner-seams: " + error.message,
+    });
+  }
+}
 function consumption(
   appText: string,
   hostText: string,
   ownerText: string,
   subjectOwnerText = subjectOwner,
+  exchangeReadOwnerText = exchangeReadOwner,
 ) {
   const parsed = parse({
     App: appText,
@@ -589,6 +824,9 @@ function consumption(
     Subject: subjectOwnerText,
     FixedSubject: fixedSubject,
     SubjectAdapter: subjectAdapterText,
+    ExchangeRead: exchangeReadOwnerText,
+    FixedExchangeRead: fixedExchangeRead,
+    ExchangeReadAdapter: exchangeReadAdapterText,
   });
   const app = parsed.get("App")!,
     host = parsed.get("Host")!,
@@ -774,17 +1012,21 @@ function consumption(
   assert.equal(returnedActions.length, 1);
   assert.ok(isShorthandPropertyAssignment(returnedActions[0]!));
 
+  const appContract = subjectContract(
+    app,
+    parsed.get("Subject")!,
+    parsed.get("FixedSubject")!,
+    parsed.get("SubjectAdapter")!,
+  );
+  exchangeReadContract(
+    app,
+    parsed.get("ExchangeRead")!,
+    parsed.get("FixedExchangeRead")!,
+    parsed.get("ExchangeReadAdapter")!,
+    appContract,
+  );
   assert.deepEqual(
-    structure(
-      app,
-      true,
-      subjectContract(
-        app,
-        parsed.get("Subject")!,
-        parsed.get("FixedSubject")!,
-        parsed.get("SubjectAdapter")!,
-      ),
-    ),
+    structure(app, true, appContract),
     baseline.App,
     "original App JSX/effects/all React lifecycle registrations",
   );
@@ -806,6 +1048,14 @@ const subjectOwner = readFileSync(
 );
 const fixedSubject = readFileSync(
   "tests/fixtures/subject-inspector-85a50934.ts",
+  "utf8",
+);
+const exchangeReadOwner = readFileSync(
+  "apps/web/src/host/use-exchange-read-receipts.ts",
+  "utf8",
+);
+const fixedExchangeRead = readFileSync(
+  "tests/fixtures/exchange-read-receipts-4ce98b64.ts",
   "utf8",
 );
 function changed(source: string, from: string, to: string) {
@@ -1085,4 +1335,110 @@ test("Stage13 expands actual owner initializers/effect trees and rejects drift o
       () => consumption(app, host, owner, candidate),
       assert.AssertionError,
     );
+});
+
+test("exchange read expansion rejects valid fake/mirror/miswired ports and displaced original registrations", () => {
+  const state = app.match(
+    /  const readReceiptState = useExchangeReadReceiptState\(\{[\s\S]*?\n  \}\);/,
+  )?.[0];
+  const commit = app.match(
+    /  useExchangeReadReceiptCommit\(readReceiptState, \{[\s\S]*?\n  \}\);/,
+  )?.[0];
+  assert.ok(state && commit, "actual exchange read seams exist");
+  const candidates = [
+    changed(app, exchangeReadPath, "./host/fake-read-receipts.js"),
+    changed(
+      app,
+      state,
+      "const useExchangeReadReceiptState = () => ({});\n" + state,
+    ),
+    changed(app, commit, commit + "\n" + commit),
+    changed(
+      changed(app, state, ""),
+      "  const positions = useRef",
+      state + "\n  const positions = useRef",
+    ),
+    changed(
+      changed(app, commit, ""),
+      "  const readReplies =",
+      commit + "\n  const readReplies =",
+    ),
+    changed(
+      app,
+      "const { seenReplies } = readReceiptState;",
+      "const { seenReplies } = { ...readReceiptState };",
+    ),
+    changed(
+      app,
+      "useExchangeReadAcknowledgement(readReceiptState)",
+      "useExchangeReadAcknowledgement({ ...readReceiptState })",
+    ),
+    changed(
+      app,
+      'readLocal<unknown>("conversation-read-receipts", null)',
+      'readLocal<unknown>("other-read-receipts", null)',
+    ),
+    changed(
+      app,
+      "messages: client.boot!.runtime.messages,",
+      "messages: replies,",
+    ),
+    changed(
+      app,
+      'writeLocal("conversation-read-receipts", seen)',
+      'writeLocal("conversation-read-receipts", receipts)',
+    ),
+    changed(
+      app,
+      "onNotice: setNotice,\n  });\n  useLayoutEffect",
+      "onNotice: () => {},\n  });\n  useLayoutEffect",
+    ),
+  ];
+  for (const candidate of candidates) {
+    // A syntax/loader/program exception must not masquerade as rule rejection.
+    parse({ Fixture: candidate });
+    assert.throws(
+      () => consumption(candidate, host, owner),
+      (error) =>
+        error instanceof assert.AssertionError &&
+        error.message.startsWith("exchange-read-owner-seams:"),
+    );
+  }
+});
+
+test("exchange read expansion validates actual owner helpers, lazy fallback and both original commit trees", () => {
+  const candidates = [
+    changed(exchangeReadOwner, 'from "react"', 'from "./fake-react.js"'),
+    changed(
+      exchangeReadOwner,
+      'from "../conversation-read.js"',
+      'from "../fake-conversation-read.js"',
+    ),
+    changed(exchangeReadOwner, "restored !== null", "restored === null"),
+    changed(
+      exchangeReadOwner,
+      "if (restored !== null) return restored;",
+      "if (restored !== null) return {};",
+    ),
+    changed(exchangeReadOwner, "[version]", "[receipts]"),
+    changed(exchangeReadOwner, "[seenReplies]", "[version]"),
+    changed(exchangeReadOwner, "persist(seenReplies)", "persist({})"),
+    changed(
+      exchangeReadOwner,
+      "reconcileReplyReceipts(old, receipts)",
+      "acknowledgeReplies(old, receipts)",
+    ),
+    exchangeReadOwner + "\nconst mirroredReadState = new Map();\n",
+    exchangeReadOwner +
+      "\nexport function extraReadEffect() { useEffect(() => {}, []); }\n",
+  ];
+  for (const candidate of candidates) {
+    parse({ Fixture: candidate });
+    assert.throws(
+      () => consumption(app, host, owner, subjectOwner, candidate),
+      (error) =>
+        error instanceof assert.AssertionError &&
+        error.message.startsWith("exchange-read-owner-seams:"),
+    );
+  }
 });

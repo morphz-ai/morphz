@@ -26,8 +26,8 @@ import {
 import { shouldFollow } from "./interaction.js";
 import { actorName } from "./client.js";
 import {
-  focusedInputs,
   hasUnreadReplies,
+  projectConversationReadScope,
   replyReceipts,
   type ReadReplies,
   type ReplyReceipt,
@@ -138,13 +138,19 @@ export function Conversation({
     [focusedArtifactId, focusedApplicationId],
   );
   const focused = !!(focusedArtifactId || focusedApplicationId) && !allHistory;
-  const inputs = focusedInputs(
-    allInputs,
-    client.boot!.outputs,
-    focused
-      ? { artifactId: focusedArtifactId, applicationId: focusedApplicationId }
-      : {},
-  );
+  const readScope = projectConversationReadScope({
+    inputs: allInputs,
+    messages,
+    outputs: client.boot!.outputs,
+    scriptOutputs: client.boot?.scriptOutputs ?? [],
+    scope: {
+      focus: focused
+        ? { artifactId: focusedArtifactId, applicationId: focusedApplicationId }
+        : {},
+      messageArray: "filter-always",
+    },
+  });
+  const { inputs } = readScope;
   const inputById = new Map(inputs.map((input) => [input.id, input]));
   const stateInputById = new Map(
     state.inputs.map((input) => [input.id, input]),
@@ -250,12 +256,7 @@ export function Conversation({
     }
     setAwayFromLatest(!following.current);
   }
-  const groups = conversationGroups(
-    inputs,
-    messages.filter(
-      (m) => !focused || (!!m.inputId && inputById.has(m.inputId)),
-    ),
-  );
+  const groups = conversationGroups(inputs, readScope.messages);
   // The initiating input owns cancellation, even without a current output.
   // Background execution branches retain their separate inspector controls.
   const responseControls = new Map(
@@ -296,12 +297,8 @@ export function Conversation({
         })),
     ]),
   );
-  const outputs = (client.boot?.outputs ?? []).filter((o) =>
-    inputById.has(o.inputId),
-  );
-  const scriptOutputs = (client.boot?.scriptOutputs ?? []).filter((o) =>
-    inputById.has(o.inputId),
-  );
+  const outputs = readScope.outputs;
+  const scriptOutputs = readScope.scriptOutputs;
   // Presentation only, owned by the actual input. Waiting is not a reply,
   // publication or unread receipt, and does not depend on cancellation support.
   const waitingResponses = new Map(

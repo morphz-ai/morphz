@@ -52,6 +52,14 @@ I/O、effect 或订阅，公开方法无额外异步 wrapper。固定旧 oracle�
 Client HTTP／SQLite 与有限旧新编译 Host 对照已记录；综合页面红项、
 原窗验收及剩余查询 family 仍须继续，不是完整 query facade 已实现。
 
+交流读取的共享纯投影现归 `conversation-read.ts`；提示与历史的不同范围、
+消息数组引用合同及原回执排序仍由真实消费方显式指定。已读初始化、稳定
+acknowledgement 与两个提交 effects 归 `host/use-exchange-read-receipts.ts`，
+App 保留原身份范围的唯一存储端口与失败提示。默认实际 React 挂载覆盖
+状态／存储／可见阅读生命周期；原生前后台激活另有显式能力测试，当前
+根环境尚未通过，不把浏览器模拟或隔离 Host 对照算成原 App 验收。
+这不是新的订阅、镜像状态、默认回复事实或统一查询 broker。
+
 当前 Task batch、目录分页和 Profile 已有真实共享 owner；Schedules 与 TaskList
 的 deadline／重试／取消及 Boot 发布合同不同，不新增一层 broker 强并。
 完整 query facade 目标需要按合同与实际请求测量推进，不等于每个页面都重造

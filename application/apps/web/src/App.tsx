@@ -180,15 +180,16 @@ import {
   useSubjectInspectorMemory,
 } from "./host/use-subject-inspector.js";
 import {
-  acknowledgeReplies,
   conversationMessages,
-  focusedInputs,
   hasUnreadReplies,
-  readReplyReceipts,
-  reconcileReplyReceipts,
+  projectConversationReadScope,
   replyReceipts,
-  type ReplyReceipt,
 } from "./conversation-read.js";
+import {
+  useExchangeReadAcknowledgement,
+  useExchangeReadReceiptCommit,
+  useExchangeReadReceiptState,
+} from "./host/use-exchange-read-receipts.js";
 
 type View = WorkSurfaceView;
 type Preferences = InterfacePreferences & {
@@ -718,20 +719,15 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const [revealedInputs, setRevealedInputs] = useState<Record<string, string>>(
     {},
   );
-  const [seenReplies, setSeenReplies] = useState(
-    () =>
-      readReplyReceipts(
-        readLocal<unknown>("conversation-read-receipts", null),
-      ) ??
-      acknowledgeReplies(
-        {},
-        replyReceipts(
-          client.boot!.runtime.messages,
-          client.boot!.outputs,
-          client.boot!.scriptOutputs,
-        ),
-      ),
-  );
+  const readReceiptState = useExchangeReadReceiptState({
+    readStored: () => readLocal<unknown>("conversation-read-receipts", null),
+    readBootstrap: () => ({
+      messages: client.boot!.runtime.messages,
+      outputs: client.boot!.outputs,
+      scriptOutputs: client.boot!.scriptOutputs,
+    }),
+  });
+  const { seenReplies } = readReceiptState;
   const inputs =
     state?.inputs.filter((i) =>
       inConversation(state!, conversationId, i, sharedDefault),
@@ -756,46 +752,41 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         ? activeInstance.id
         : undefined,
   };
-  const badgeInputs = focusedInputs(
+  const badgeRead = projectConversationReadScope({
     inputs,
-    client.boot!.outputs,
-    conversationFocus,
-  );
-  const badgeInputIds = new Set(badgeInputs.map((i) => i.id));
-  const conversationInputIds = new Set(inputs.map((i) => i.id));
-  const badgeReplies =
-    conversationFocus.artifactId || conversationFocus.applicationId
-      ? replies.filter((m) => !!m.inputId && badgeInputIds.has(m.inputId))
-      : replies;
+    messages: replies,
+    outputs: client.boot!.outputs,
+    scriptOutputs: client.boot!.scriptOutputs,
+    scope: { focus: conversationFocus, messageArray: "preserve-unfocused" },
+  });
+  const conversationRead = projectConversationReadScope({
+    inputs,
+    messages: replies,
+    outputs: client.boot!.outputs,
+    scriptOutputs: client.boot!.scriptOutputs,
+    scope: { focus: {}, messageArray: "preserve-unfocused" },
+  });
   const receipts = replyReceipts(
-    replies,
-    client.boot!.outputs.filter((o) => conversationInputIds.has(o.inputId)),
-    client.boot!.scriptOutputs.filter((o) =>
-      conversationInputIds.has(o.inputId),
-    ),
+    conversationRead.messages,
+    conversationRead.outputs,
+    conversationRead.scriptOutputs,
   );
   const receiptVersion = JSON.stringify(receipts);
   const unseenReply = hasUnreadReplies(
     seenReplies,
     replyReceipts(
-      badgeReplies,
-      client.boot!.outputs.filter((o) => badgeInputIds.has(o.inputId)),
-      client.boot!.scriptOutputs.filter((o) => badgeInputIds.has(o.inputId)),
+      badgeRead.messages,
+      badgeRead.outputs,
+      badgeRead.scriptOutputs,
     ),
   );
-  const readReplies = useCallback((receipts: ReplyReceipt[]) => {
-    setSeenReplies((old) => acknowledgeReplies(old, receipts));
-  }, []);
-  useEffect(() => {
-    setSeenReplies((old) => reconcileReplyReceipts(old, receipts));
-  }, [receiptVersion]);
-  useEffect(() => {
-    try {
-      writeLocal("conversation-read-receipts", seenReplies);
-    } catch {
-      setNotice("已读状态暂时无法保存，重开后可能再次提示。");
-    }
-  }, [seenReplies]);
+  const readReplies = useExchangeReadAcknowledgement(readReceiptState);
+  useExchangeReadReceiptCommit(readReceiptState, {
+    receipts,
+    version: receiptVersion,
+    persist: (seen) => writeLocal("conversation-read-receipts", seen),
+    onNotice: setNotice,
+  });
   useLayoutEffect(() => {
     const element =
       main.current?.querySelector<HTMLElement>(

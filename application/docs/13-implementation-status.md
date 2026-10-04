@@ -1,5 +1,40 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 15：交流读取范围与已读回执 owner
+
+`conversation-read.ts` 统一输入归属及对应交付筛选；App 的局部提示与整段
+回执仍是两个范围，未聚焦时保持原消息数组引用。Conversation 明确使用
+原始的始终 filter 策略，保留局部／全部历史、分组、时间排序及
+`items.flatMap` 回执顺序，不把提示范围冒充已经读到的内容。
+
+`host/use-exchange-read-receipts.ts` 承载原惰性初始化、稳定 acknowledgement
+及两个提交 effects；三个调用仍位于 App 原注册位置。合法存储不读 Boot，
+缺失／损坏存储仍初始化完整 Boot 的消息、文档与剧本交付。原存储键、
+捕获身份范围、functional updater、effect 顺序／依赖和失败提示保留，
+没有增加缓存、监听、请求、状态副本或客户端执行事实。
+
+固定 Git 4ce98b64 oracle、真实消费的有限门禁及相关读取测试通过；门禁
+保留此前 cb7246a2 JSX／lifecycle 基线，仅核准后展开这三个 owner 调用。
+21 个合法解析反例检查假绑定、镜像、错误存储、聚焦 Bootstrap、错误依赖
+及新增 lifecycle。固定旧新编译 HTTP／SQLite Host 四份用例各 25/25，
+实际响应逐用例核 JS／CSS／preload；原 CSS SHA256 仍为
+`6b1af0246ec4f33cf7cf5de0e3fb00d4cb9158e16d257d5fbc390293feb2027d`。
+此批不修改原 JSX、图形、动效或样式，有限对照不代表全产品验收。
+
+实际 React StrictMode 挂载使用内存展示事实与真实浏览器存储，核完整
+初始化、稳定回调、发布别名、dialog／scroll／历史范围及卸载清理的旧新
+完整事件对照。默认主用例不依赖原生前后台激活；独立能力测试保留原
+失焦／可见性／后台未读／返回已读断言，以 `MORPHZ_TEST_NATIVE_FOCUS=1`
+明确启用。根环境三次真实失败／超时均保留，不能声称该原生分支通过。
+默认挂载中的焦点模拟也不等于用户 App 的原生焦点验收。
+根最终相关用例 33 项：32 通过、上述原生能力 1 项明确跳过，零失败／取消。
+
+证据在 `/tmp/morphz-exchange-read-host.1WSe7v` 与
+`/tmp/morphz-exchange-read-owner.xCPhQG`。完整构建、类型、格式及差异检查
+通过；原 App 仍卡在退出清理，等待定点恢复授权，独立 Runtime 未终止。
+项目关联接续缺陷及其余读取／命令、领域展示、组件和样式 owner 继续推进；
+没有把本批提交称为整个前端重构或原窗验收完成。
+
 ## 2026-10-04 对话回归：沿用已确认的浮动应用 Dock 入口
 
 对话常驻输入用例仍悬停已撤回的「输入工具」group；现有生产入口是独立

@@ -39,6 +39,47 @@ export function focusedInputs(
   return inputs;
 }
 
+type ConversationReadSource = {
+  inputs: Workspace["inputs"];
+  messages: LiveMessage[];
+  outputs: ArtifactOutput[];
+  scriptOutputs: ScriptOutput[];
+};
+
+/** Both readers use the same input ownership. Their original message-array
+ * contracts differ: the badge preserves an unfocused source array, while the
+ * history always filters it. Neither policy chooses whether history is open. */
+export function projectConversationReadScope({
+  inputs: allInputs,
+  messages,
+  outputs,
+  scriptOutputs,
+  scope,
+}: ConversationReadSource & {
+  scope: {
+    focus: ConversationFocus;
+    messageArray: "preserve-unfocused" | "filter-always";
+  };
+}) {
+  const inputs = focusedInputs(allInputs, outputs, scope.focus);
+  const inputIds = new Set(inputs.map((input) => input.id));
+  const focused = !!(scope.focus.artifactId || scope.focus.applicationId);
+  return {
+    inputs,
+    messages:
+      scope.messageArray === "filter-always" || focused
+        ? messages.filter(
+            (message) =>
+              !focused || (!!message.inputId && inputIds.has(message.inputId)),
+          )
+        : messages,
+    outputs: outputs.filter((output) => inputIds.has(output.inputId)),
+    scriptOutputs: scriptOutputs.filter((output) =>
+      inputIds.has(output.inputId),
+    ),
+  };
+}
+
 export function conversationMessages(
   state: Workspace,
   conversationId: string,
