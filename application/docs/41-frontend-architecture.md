@@ -132,6 +132,17 @@ App 保留原身份范围的唯一存储端口与失败提示。默认实际 Rea
 根环境尚未通过，不把浏览器模拟或隔离 Host 对照算成原 App 验收。
 这不是新的订阅、镜像状态、默认回复事实或统一查询 broker。
 
+Human 手写文档／项目创建的完整生产 feature 现归
+`features/creation/CreateDialog.tsx`，App 的两个原消费点直接导入该组件。
+草稿捕获／恢复／持久化、提交与 busy、错误、成功清稿、卸载后的回执、
+文档顶栏 portal 及项目原生弹窗均由这个稳定的 module-scope 组件持有；
+创建选择、项目／对象导航和 Host prepared continuation 仍归宿主。
+原七个 props、十个注册、document key／project 无 key、原存储 scope
+及完整 submit 顺序不改，Client 依赖只用原 execute 方法的 type-only Pick。
+没有第二份草稿 owner、store、wrapper DOM、样式、查询、请求或授权。
+完整固定旧函数／真实新组件挂载、actual Git 源证明、编译页面及全量
+检查分别见阶段 28；受控 Client 挂载不冒称真实事务或原 App 验收。
+
 授权内容读取的六个完整算法现归 `data/content-reads.ts`：目录分页／计数、
 当前理解、目录记忆、原件与确切目录项解析。Client 借出原 refs，保留身份／
 撤权清理、refresh 和同步 current-before-React 发布权威；剧本读取使用同一
@@ -499,11 +510,11 @@ CSS zoom 对照不是 Electron／OS 缩放或标题栏原生命中验收；原 A
 
 当前已有工作面解析、稳定导航 Host／应用入口／内容打开、项目与会话私有范围、
 交流意图／焦点、草稿生命周期、发送协议、输入工具、主体检查器、读取回执与
-若干领域数据 family 的生产 owner；共享顶栏、首批登记图形／透明按钮及交流／
+若干领域数据 family 以及 Human 文档／项目创建的生产 owner；共享顶栏、首批登记图形／透明按钮及交流／
 原生弹窗表面也有有限门禁。已有 `ArtifactEditor` 独立拥有现件编辑、草稿、
-版本冲突及保存生命周期，不能把尚未迁出的手写创建泛化成编辑器未组件化。
+版本冲突及保存生命周期，不与手写创建、Agent 输入或宿主导航混为同一职责。
 
-剩余生产边界是完整手写创建 feature、批注读取／展示、部分搜索引用编排，
+剩余生产边界是批注读取／展示、部分搜索引用编排，
 以及其余 role 型组件、跨领域 presentation 与唯一样式责任。领域查询治理
 仍需按真实合同逐批推进，已有 family 不等于整层 query facade 已完成；
 不为凑目录或清空 App 而重造缓存／store。普通页面选择、画布及 portal 组合

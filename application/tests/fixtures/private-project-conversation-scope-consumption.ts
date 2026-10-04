@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { inverseHumanCreationFeature } from "./human-creation-consumption.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -322,6 +323,7 @@ export function inversePrivateProjectConversationScope(
     "utf8",
   ),
 ) {
+  appText = inverseHumanCreationFeature(appText);
   const parsed = parse({
     App: appText,
     Owner: ownerText,

@@ -1,5 +1,60 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 28：完整 Human 文档／项目创建 feature
+
+`features/creation/CreateDialog.tsx` 持有原完整创建组件，App 保留两个
+原消费点及选择／导航／prepared continuation。只有唯一 runtime import、
+完整原函数迁出和五个不再使用的 import bindings 删除；组件仅增加 export
+和原 Client execute 的 type-only Pick。七个 props、两个完整 JSX 消费及
+十个注册顺序保留，无新 DOM／CSS、hook、store、请求、订阅或授权。
+
+原 scopedStorage 在组件内只捕获一次，document 缓存仍每 render 读取，
+project 不读写文档草稿。文档按原 project key 重挂，项目表单没有新增 key；
+busy 时字段仍可编辑，不把迟到回执重定向到新项目／Client。保留 prepare
+在 try 之前、清稿失败不重复创建、prepared 回调即使卸载仍执行，以及
+onCreated／错误／busy 的原 alive 守门。文档标题仍只 portal 到真实
+WorkspaceTopbar detail slot，空 slot 不新增 fallback；项目继续 useModal。
+
+根独立 actual Git `778e6b93` 证明：仅逆掉批准接缝后，完整 App 逐字
+恢复原 **120,474 字节**；完整函数、两消费点／guards、原 Client 存储
+reexport 及定义等值。旧 private-scope fixture 仅加一个 import 和 inverse
+首行；独立逆掉后全文恢复原 **33,527 字节**，旧 hash／计数／断言与
+指定负例未改。新有限门禁及七份相邻原回归 **69/69**，无 skip；门禁
+不是任意 AST／依赖定理，不用受控挂载代替实际 Client 或原窗验收。
+
+冻结普通旧新编译的五份完整原页面测试各 **18/18**，零重试／skip；
+每边逐例核验 **114** 份真实 HTTP 入口资产，**197** 份既有 renderer
+源码未动，CSS／preload 字节一致。覆盖真实 Platform／HTTP 手写创建、
+内容归属、首发／重试、目录授权、切换／恢复／引用及项目管理和几何。
+另外两份完整原弹窗／触屏／顶栏页面各 **3/3**，每边核验 **9** 份
+实际 HTTP 入口资产，原断言、预算和完整源码相同，零重试／skip。
+
+固定完整旧组件与实际新 feature 的真实 React StrictMode／Storage／
+useModal／WorkspaceTopbar 对照 **11/11**，无 skip；execute／prepare
+和回调为受控端口，另由上述完整 App 页面验证实际事务。**64** 组四主题、
+明暗、1440／760 窗口与 CSS zoom 1／2 精确 snapshot 包含原祖先层级，
+对各 branch／主题明确验证中心区域宽窗大于窄窗及 zoom 后的有效宽度。
+原弹窗的实际入场 animation name／timing／keyframes 在结束前对照，
+真实 animation.finished 后才比较终态几何，不关闭动效或增加容差。
+首轮入场采样差异及误占侧栏 280px 的中间 fixture 证据保留，后者不作为
+窄窗覆盖证据；最终真实中心宽度为 1160／480，zoom 2 为 880／200。
+根最终完整生产 build／类型、格式／差异检查通过。全量 Node
+**1954 项：1794 通过、160 能力跳过、零失败／取消**；显式使用现有
+headless Chromium，新增实际挂载及原可运行浏览器检查确实执行。
+能力跳过不计通过，自动回归不代表全产品或原生验收完成。
+
+原 App 仍卡在原生退出清理，正常退出信号未恢复；强制退出另待用户确认。
+Runtime 不重启，profile／中心不重置；自动浏览器与 CSS zoom 不能替代
+原窗、硬件或系统命中验收。剩余批注、部分搜索引用、更多控件／样式、
+领域查询治理和整体验收继续推进，目标保持 active，本阶段没有额外推送。
+
+根证据：`/tmp/morphz-human-creation-root.9z4pzG` 的冻结 manifest、两份
+完整页面报告／HTTP audit、`page-equivalence.json` 及 root actual Git proof；
+生产源证明在 `/tmp/morphz-human-creation-production.dIZDHR`，实际
+挂载在 `/tmp/morphz-human-creation-review.xE5xhR`，有限门禁及旧入口
+逐字证明在 `/tmp/morphz-human-creation-boundary.w9iJ6J`。失败与修订
+证据保留，不以删除旧断言、放宽几何误差或能力跳过制造通过。
+
 ## 2026-10-04 前端阶段 27：私有项目／会话范围的完整控制器
 
 `host/private-project-conversation-scope.ts` 承接原七个语义动作、两个纯
