@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-03 · 版本：1.2 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-04 · 版本：1.3 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-04。
 
@@ -318,7 +318,14 @@ renderer 只直接消费十八 facts／recipe 和五语义动作。详情独立�
 错误与焦点／检查器组合保留，不增加 scope reset、请求或轮询。阶段 37 的
 旧新页面和完整挂载证据不替代实际 Runtime、原 App 或整体迁移完成。
 
-详细测试、原 App 验收与尚未验证的边界见[实施记录](./13-implementation-status.md)。上述提交只证明对应阶段，尚未替代下文所有目标；完整 query facade、跨领域 presentation 和全产品样式 owner 仍未完成。本文未规定新的图标尺寸、间距、色彩或动效审美标准。
+完整剧本工作室生命周期现归 `features/script/useScriptStudioWorkspace.ts`。
+它拥有原 70 个前置语句、40 次注册和 18 个完整命名动作，renderer 在原位置
+直接消费 59 个只读事实／refs／命令；原四表单及行级组合仍归 renderer。
+原读取顺序、Client 捕获、偏好与焦点、错误及原生导出交接不变；不新增
+状态、存储、请求、权限或模型调用。阶段 39 的旧新完整页面、有限当前门禁及
+完整真实组件挂载分别提供证据，不替代原 App 或真实 native 端口验收。
+
+详细测试、原 App 验收与尚未验证的边界见[实施记录](./13-implementation-status.md)。上述提交只证明对应阶段，尚未替代下文所有目标；剩余数据／样式职责、有限测试治理及全产品验收按第 8 节清单继续。本文未规定新的图标尺寸、间距、色彩或动效审美标准。
 
 ## 1. 当前事实及需要解决的组织问题
 
@@ -685,16 +692,27 @@ CSS zoom 对照不是 Electron／OS 缩放或标题栏原生命中验收；原 A
 版本冲突及保存生命周期，不与手写创建、Agent 输入或宿主导航混为同一职责。
 
 Thread collection 的输入关联活动与范围概览两种展示投影已迁入同一
-实际 owner，并保留各自原政策与两个真实消费方。剩余生产边界包括其他
-用途的 presentation、其余 role 型组件及唯一样式责任；不同用途的事实
-不能强并成一个状态 enum。领域查询治理仍需按真实合同逐批推进，已有
-family 不等于整层 query facade 已完成；
-不为凑目录或清空 App 而重造缓存／store。普通页面选择、画布及 portal 组合
-可以保留在宿主，完整业务生命周期应归 feature。
+实际 owner，工具呈现与 ApprovalDetails 也有真实复用消费方。不同用途的
+事实不能强并成一个状态 enum，不能因名称相近就缓存或合并不同资源。
+Reader 导入、OCR 与持久阅读命令 data owner 和 ScriptStudio 完整工作室
+controller 已落实；画布、分页、子组件和局部 JSX 组合仍拥有其原职责。
 
-Reader 导入、OCR 与持久阅读命令的完整 data owner 已落实，原 Reader
-画布、分页和 OCR 控件仍各自拥有交互；ScriptStudio 的完整工作室
-生命周期及其他未迁移操作仍需继续，不能以一个 family 代替完整页面迁移。
+阶段 39 的实际来源审计将剩余生产边界明确为以下五项；不是按文件行数
+清空宿主，也不是必须让每个页面再加一个 hook：
+
+| 边界                   | 完整职责及保留约束                                                                                                                                                                                                                              |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1 公共控件 role／样式 | 原 button／field／primary／outline／icon／secondary recipe 仍跨 styles、ui、visual-system 分散。须明确唯一职责及原 cascade 槽，登记真实消费和有限 feature 例外；不改 DOM、尺寸、颜色、交互或材质。不能仅加 wrapper 或移到末尾再覆盖旧规则。     |
+| R2 书签数据操作        | Client 仍拥有完整 list 与 durable command 的能力／身份检查、8 秒读取、hash、稳定 pending ID／字节及原错误清理。完整 family 应归 bounded data owner；当前 URL 与目录分页仍是不同观察，不新增 cache／请求。                                       |
+| R3 主体日程检查        | SubjectSchedules 仍同时拥有呈现与 logical transport 的显式 refresh、limit50 清单、至多 16 个快照／四请求批次及取消／质量生命周期。完整 feature controller 应借窄 gateway，沿用原模型；不套 TaskList 的订阅、重试或超时。                        |
+| R4 对象评论与关联数据  | UI 批注 owner 不等于 Client 的完整分页与写入 family 已归位。保留 100 页／100 条、ordinal／schema／溢出合同、原 signal 和迟到政策，以及写命令捕获的 Objects source／revision／quote／page／receipt。关系仍借已有 Platform 分页，不复制或混资源。 |
+| R5 通用持久命令投递    | 非 record-input 的原 scoped pending、载荷 hash／身份、稳定 ID／字节、投递／refresh 及明确与未知失败政策仍归 Client 聚合。完整共享投递职责须归 data owner，借原权威端口；不复制领域 dispatch，不强并已独立的 input delivery 或增加存储。         |
+
+每项在实施前核对完整算法、静态／实时捕获 seam、真实消费、数据权威和验收
+清单。已有 ArtifactEditor、Reader／Browser feature、Client 唯一 identity／
+refresh 权威、App 的 portal／布局／全局快捷键／显式文件导航桥属于合法
+组合，不为凑目录新增 facade、cache、store 或第二套控制器。其余 data 入口
+仍须逐项登记为已拥有职责或明确 gateway，不能只凭删除 Client 方法宣称完成。
 
 当前生产约束与历史整文件迁移证明的测试治理也须收口，不能把不断增长
 的跨 owner inverse 链作为正常新增功能的永久前提。

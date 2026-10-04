@@ -1,5 +1,53 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 39：完整剧本工作室生命周期
+
+`features/script/useScriptStudioWorkspace.ts` 现拥有 ScriptStudio 原完整
+工作室生命周期与语义动作。原 70 个前置语句、40 次 state／ref／effect／
+读取注册及其顺序保留；renderer 在原首个注册位置调用一次无条件 hook，
+直接消费 59 个只读事实、DOM attachment refs 和命令，不暴露内部 writer bag。
+原 18 个完整箭头动作直接命名，22 个 JSX 入口及一个内嵌入口接线；
+六个行级组合仍归 renderer，四个表单和真实子组件未改。
+
+完整保存、选择、异步读取、目录偏好、显式历史／审阅、导出和原生交接归同一
+feature owner；捕获 Client、scopedStorage、原 await／void／return、
+flushSync、错误／取消／焦点及 60 秒 URL 回收政策保留。只增加静态类型
+见证和所有权边界，没有新 state、effect、store、请求、权限、轮询或模型调用。
+这不是对创作流程、素材授权或 Runtime 的另一次行为变更。
+
+根独立核对 actual Git `13dbe571` 的完整 60,684-byte 原件：70 个完整
+语句原字节、40 次注册、18 个完整动作、59 个返回成员、全部消费入口及
+七个邻接 owner 保留，完整 forward／inverse 与历史组件原件还原通过。
+207 份 renderer 源、208 份 emitted 资源冻结；正常完整构建与候选所有
+产物一致。完整 CSS／preload 与旧版字节相同，主 JS 实现迁移后的字节不相同。
+
+六份完整原剧本 spec 旧／新各 **27/27**，零重试／跳过；原断言、身份、
+预算及支撑 helper 不变。每边核 164 个实际资源响应。其中 22 项加载
+真实 App HTTP 入口，四项是原真实 Editor 挂载，一项是原隔离内嵌 Electron；
+后两种不冒称加载了 App HTTP bundle。自有测试 Host 已关闭、discovery
+恢复，未操作业务数据库、日常 Runtime 或用户 App。
+
+完整真实 ScriptStudio、Library、Navigation、Editor、四表单、原 modal／
+读取 hook 的当前 StrictMode 挂载 **13/13**，117 份完整观察；根独立显式
+历史／当前挂载 **13/13**，123 对完整报告 deepEqual，包括自然 DOM ID／
+ARIA、焦点／选区、表单、精确 command／callback／存储及资源清理。
+受控 Client／native 端口不是真实 HTTP／SQL、OS 焦点或选择器验收。
+首次红项是新测试的名称、原异步读取／焦点及未观察初始 mount 时机假设；
+原失败日志保留。修正仅限新测试，不删除 ID／ARIA／焦点字段来绕过比较。
+
+有限当前门禁 **6/6**，包含 27 个解析有效的负例与五种合法正例，约束真实
+import 来源、完整原职责及实际消费，不固定整个未来组件／owner 哈希或逆迁移链。
+根新增门禁与挂载 **19/19**、五份完整原相邻回归 **51/51**，均零跳过。
+最终默认 `npm test` 选择 332 份源、2,229 项，**2,220 通过、零失败／取消／
+todo**；九项明确未启用（S3 三、Runtime 五、原生焦点一），无未知跳过，
+PostgreSQL 必需且实际执行。完整类型、格式与 diff 检查通过。
+
+根证据 `/tmp/morphz-script-workspace-pages.jNuuaT`；完整原生产来源
+`/tmp/morphz-script-workspace-production.PJOXWo`、有限门禁
+`/tmp/morphz-script-workspace-boundary.IKr3Wh`、完整挂载
+`/tmp/morphz-script-workspace-mounted.al8C2N`。公共控件、剩余数据／日程
+边界、测试治理、全产品等价回归及原 App 验收继续；这一批不是整体完成。
+
 ## 2026-10-04 前端阶段 38：完整 Reader 数据操作与有限旧门禁
 
 `data/reader-interactions.ts` 现拥有原文件导入、OCR 和持久阅读命令的完整
