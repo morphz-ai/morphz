@@ -1,5 +1,41 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端回归：现有 Dock 与输入消费合同的测试交接
+
+仅两个测试及本记录。Floating 原六个完整用例保留，四行预期跟随用户
+已确认并在 `570a31d1` 落地的裸 Dock：图形 22px、透明背景、无 inset
+阴影；原 32／28／coarse44 命中框、半径、200% multiplier、几何／焦点／
+草稿断言与预算不改，没有把生产 UI 改回旧方框。
+
+Submission 的单个当前检查直接复用现成 `verifyRawSubmissionConsumption`，
+核实际 raw App 的真实 import／binding、唯一 render 捕获、完整原端口、
+顺序与固定 Git9122 两个完整算法。不再为这一个当前用例先逆向恢复 peer
+旧 App。原固定算法用例、历史 expansion helper 和全部历史负例字节不变；
+没有修改生产发送、应用输入准备或第三方协议。
+
+统一入口四文件 **52/52**，零失败／跳过／取消；统一入口准备并核验了
+专用 PostgreSQL，unexpectedSkips 为空。六文件完整旧／新页面对照首轮各
+24 项 **17 通过／7 失败**，保留原证据；四行合同交接后的新两 lane 各
+**23 通过／1 失败**，所有六个 Floating 场景通过。剩余同一原生前台
+焦点检查未通过，系统实际显示锁屏。内部几何断言通过不等于双方全量
+原始几何或像素相等；被动 HTTP 字节收据不是 Page 实际加载或原 App 验收。
+
+完整当前 Node 首轮 **2,424 项、2,414 通过／1 失败／9 明确未启用**；
+唯一失败为上述当前 Submission 检查仍依赖 compose 的旧 import 位置，
+不是 PostgreSQL 缺失。该首红保留；修正后启用原四组 Runtime integration
+的完整回归实际结束：355 文件、**2,427 项、2,423 通过／零失败／零取消／
+4 明确未启用**，unexpectedSkips 为空。四项是三个 S3 和一个 native-focus，
+不是通过或环境故障；Runtime 使用原隔离测试状态与受控模型，不是用户
+业务或真实供应商验收。交流控件生产 owner 与整体原 App 验收另记，
+目标保持 active。
+
+证据：`/tmp/morphz-controls-stage57-canonical.T53XHF/` 的
+`focused-current-handoff.log`、`full-node-first.log`、
+`full-node-second-runtime-enabled.log`；
+`/tmp/morphz-controls-stage57-entry.Zy6AL5/` 保留原断言首轮；
+`/tmp/morphz-controls-stage57-contract-entry.A6JJFE/` 保存第二轮两份报告、
+完整合同四行差异、原件字节核对、HTTP 与清理收据。
+
 ## 2026-10-05 前端阶段 56：应用输入准备的独立职责
 
 生产两路径：App 的原 `applicationCompose` 完整三分支迁入

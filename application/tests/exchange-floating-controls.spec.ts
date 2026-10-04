@@ -260,7 +260,7 @@ async function expectFloats(page: Page) {
       expect(button.y).toBeGreaterThanOrEqual(-1);
       expect(button.bottom).toBeLessThanOrEqual(geometry.viewport.height + 1);
       const desktopSize = button.group === "dock" ? 32 : 28;
-      const iconSize = button.group === "dock" ? 14 : 13;
+      const iconSize = button.group === "dock" ? 22 : 13;
       expect(button.width).toBeCloseTo(
         (geometry.coarse ? 44 : desktopSize) * geometry.zoom,
         0,
@@ -274,7 +274,7 @@ async function expectFloats(page: Page) {
       expect(button.appearance.border).toEqual(["0px", "0px", "0px", "0px"]);
       if (button.group === "dock") {
         expect(button.appearance.radius).toBe("9px");
-        expect(button.appearance.shadow).toContain("inset");
+        expect(button.appearance.shadow).toBe("none");
       } else {
         expect(button.appearance.radius).toBe("8px");
         expect(button.appearance.shadow).toBe("none");
@@ -384,10 +384,10 @@ async function expectLayeredButtonMaterials(page: Page, input: Locator) {
   await expect(history).toHaveAttribute("aria-pressed", "false");
   await expect(history).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   await expect(history).toHaveCSS("box-shadow", "none");
-  await expect(dock).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(dock).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   await expect
     .poll(() => dock.evaluate((element) => getComputedStyle(element).boxShadow))
-    .toContain("inset");
+    .toBe("none");
   const bounds = await history.boundingBox();
   await history.hover();
   await expectFlatNeutralFill(history);
