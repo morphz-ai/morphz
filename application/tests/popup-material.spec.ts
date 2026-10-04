@@ -121,6 +121,12 @@ test("亮暗模式的大弹窗与轻菜单分别共用中性材质、边界和�
   page,
 }) => {
   await page.goto("/");
+  // Normal workspace material; a previously restored browser intentionally
+  // requests the solid guest fallback, covered by the separate test below.
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
   for (const colorScheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme });
     const dialogs = [];
@@ -159,10 +165,8 @@ test("亮暗模式的大弹窗与轻菜单分别共用中性材质、边界和�
       page.getByRole("group", { name: "外观设置面板", exact: true }),
     );
     await page.keyboard.press("Escape");
-    await page
-      .getByRole("button", { name: "工作空间选项", exact: true })
-      .click();
-    const menu = page.getByRole("group", { name: "工作空间操作", exact: true });
+    await page.getByRole("button", { name: "用户菜单", exact: true }).click();
+    const menu = page.getByRole("group", { name: "用户菜单", exact: true });
     const actions = await material(menu);
     expect(actions).toEqual(appearance);
     expect(actions.radius).toBe("10px");
@@ -177,7 +181,7 @@ test("亮暗模式的大弹窗与轻菜单分别共用中性材质、边界和�
     await expect(menu.locator("button:not(:disabled)").first()).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(
-      page.getByRole("button", { name: "工作空间选项", exact: true }),
+      page.getByRole("button", { name: "用户菜单", exact: true }),
     ).toBeFocused();
   }
 });

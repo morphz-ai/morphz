@@ -542,6 +542,11 @@ test("消息、文档、阅读选文跨页面汇总，翻章不改引用，刷�
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "工作台", exact: true })
     .click();
+  const workspaceReturn = page.getByRole("button", {
+    name: "返回工作空间",
+    exact: true,
+  });
+  if (await workspaceReturn.isVisible()) await workspaceReturn.click();
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await page.getByRole("button", { name: "阅读 1.0.0", exact: true }).click();
   const back = page.getByRole("button", { name: "全部读物", exact: true });

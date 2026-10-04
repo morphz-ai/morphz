@@ -192,6 +192,15 @@ test("个人菜单有真实客户端功能但不虚构账号操作，连接与�
 }) => {
   const runtime = { configured: true, connected: true };
   const presentation = await prepare(page, runtime);
+  // This case asserts the no-unread identity description; other page tests
+  // may have created notifications in the shared automatic test center.
+  await page.route("**/api/notifications", (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({
+          json: { mode: "all", revision: 0, unread: 0, items: [] },
+        })
+      : route.continue(),
+  );
   await page.goto("/");
   const trigger = page
     .getByRole("button", { name: "用户菜单", exact: true })
