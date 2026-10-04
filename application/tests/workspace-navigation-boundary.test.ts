@@ -12,6 +12,7 @@ import {
   isFunctionDeclaration,
   isIdentifier,
   isImportDeclaration,
+  isJsxSelfClosingElement,
   isMethodDeclaration,
   isNamedImports,
   isObjectBindingPattern,
@@ -98,6 +99,18 @@ function writer() {
   });
 }
 function restorePatch() { writePreferences((previous) => ({ ...previous, ...next }), "position"); }
+function guardedRestorePatch() { continuation.writePreferences((previous) => ({ ...previous, ...next }), "position", guard(intent, destination)); }
+function privatePrefer() {
+  if (!origin.isActive()) return;
+  if (isNavigationPreferenceChange(change)) {
+    navigation.beginIntent(); setUnderstandingOpen(false); navigation.resetPreferenceNavigation(); clearResizePreview();
+  }
+  writePreferences((previous) => mergeNavigationPreferences(previous, change), "settings");
+}
+function privateWriter() {
+  if (!origin.isActive()) return;
+  host.writePreferences(update, failure, origin.capturePrivateCommit());
+}
 function currentEpoch() { return owner.navigationGeneration.current; }
 `;
 type Parsed = { source: SourceFile; symbols: Map<Node, number> };
@@ -176,13 +189,159 @@ function syntax(node: Node): unknown {
   });
   // Leaf spelling preserves Chinese text, string whitespace, operators and
   // literal values. AST structure preserves expression and statement order.
-  return [node.kind, children.length ? children : node.getText()];
+  return [
+    node.kind,
+    ...((node.kind === SyntaxKind.PrefixUnaryExpression ||
+      node.kind === SyntaxKind.PostfixUnaryExpression) &&
+    "operator" in node
+      ? [node.operator]
+      : []),
+    children.length ? children : node.getText(),
+  ];
 }
 function same(a: Node | undefined, b: Node | undefined) {
   return !!a && !!b && JSON.stringify(syntax(a)) === JSON.stringify(syntax(b));
 }
+function zeroDOM(node: Node): unknown {
+  const children: unknown[] = [];
+  node.forEachChild((child) => {
+    if (child.kind !== SyntaxKind.JsxText || child.getText().trim())
+      children.push(zeroDOM(child));
+  });
+  return [node.kind, children.length ? children : node.getText()];
+}
+function boundCalls(parsed: Parsed, path: string, name: string) {
+  const bindings: number[] = [];
+  walk(parsed.source, (node) => {
+    if (
+      isImportDeclaration(node) &&
+      isStringLiteral(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === path &&
+      node.importClause?.namedBindings &&
+      isNamedImports(node.importClause.namedBindings)
+    )
+      for (const item of node.importClause.namedBindings.elements)
+        if (
+          (item.propertyName ?? item.name).text === name &&
+          !item.isTypeOnly &&
+          node.importClause.phaseModifier !== SyntaxKind.TypeKeyword
+        ) {
+          const id = parsed.symbols.get(item.name);
+          if (id !== undefined) bindings.push(id);
+        }
+  });
+  const found: CallExpression[] = [];
+  walk(parsed.source, (node) => {
+    if (
+      isCallExpression(node) &&
+      isIdentifier(node.expression) &&
+      bindings.includes(parsed.symbols.get(node.expression) ?? -1)
+    )
+      found.push(node);
+  });
+  return bindings.length === 1 ? found : [];
+}
+function boundLifetime(parsed: Parsed, name: string, container: string) {
+  const imports: Identifier[] = [];
+  walk(parsed.source, (node) => {
+    if (
+      isImportDeclaration(node) &&
+      isStringLiteral(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === "./host/use-workspace-navigation-host.js" &&
+      node.importClause?.namedBindings &&
+      isNamedImports(node.importClause.namedBindings) &&
+      node.importClause.phaseModifier !== SyntaxKind.TypeKeyword
+    )
+      for (const item of node.importClause.namedBindings.elements)
+        if (!item.isTypeOnly && (item.propertyName ?? item.name).text === name)
+          imports.push(item.name);
+  });
+  const binding =
+    imports.length === 1 ? parsed.symbols.get(imports[0]!) : undefined;
+  const renders: Identifier[] = [];
+  const parent = functions(parsed.source, container);
+  if (parent.length === 1)
+    walk(parent[0]!.body!, (node) => {
+      if (
+        isJsxSelfClosingElement(node) &&
+        isIdentifier(node.tagName) &&
+        node.tagName.text === name
+      )
+        renders.push(node.tagName);
+    });
+  return (
+    binding !== undefined &&
+    renders.length === 1 &&
+    parsed.symbols.get(renders[0]!) === binding
+  );
+}
 const oracle = parse({ "oracle.ts": oracleText }).get("oracle.ts")!.source;
 const body = (name: string) => functions(oracle, name)[0]!.body!;
+// New lifecycle/authorization seams are independently explicit here. They are
+// not silently folded into the old state/commit/prefer oracle above.
+const hostContract = `
+function Host() {
+ function activate(){lifetime.current.active=true;lifetime.current.incarnation++;}
+ function retire(){lifetime.current.active=false;lifetime.current.incarnation++;state.beginIntent();}
+ function currentProjection(){const current=getSnapshot();return current&&current.centerId===scope.centerId&&current.principalId===scope.principalId&&current.csrfToken===scope.csrfToken?current:null;}
+ function isCurrentHost(){return lifetime.current.active&&!!currentProjection();}
+ function captureCommit(){const incarnation=lifetime.current.incarnation;return()=>lifetime.current.active&&lifetime.current.incarnation===incarnation;}
+ function permitted(){if(!lifetime.current.active||lifetime.current.incarnation!==incarnation)return false;const current=currentProjection();return !!current&&destination(current);}
+ function writePreferences(){
+  const incarnation=lifetime.current.incarnation;
+  if(!permitted(incarnation,destination))return;
+  setPrefs((previous)=>{if(!permitted(incarnation,destination))return previous;const next=update(previous);
+   try{writeLocal("preferences",next);}catch{setPersistenceNotice(persistenceMessages[failure]);}return next;});
+ }
+ function recordContentVisit(){const incarnation=lifetime.current.incarnation;if(!permitted(incarnation,destination))return;
+  setRecentContentVisits((previous)=>{if(!permitted(incarnation,destination))return previous;const next=visitContent(previous,id);
+   try{writeLocal("recent-content",next);}catch{setPersistenceNotice(persistenceMessages.recent);}return next;});
+ }
+ return {prefs,persistenceNotice,dismissPersistenceNotice:()=>setPersistenceNotice(""),storage,recentContentVisits,
+ navigation:{...state,isCurrent:(generation:number)=>isCurrentHost()&&state.isCurrent(generation)},
+ isCurrentHost,captureCommit,activate,retire,currentProjection,writePreferences,recordContentVisit};
+}
+function NavigationHostLifetime(){useLayoutEffect(()=>{host.activate();return host.retire;},[]);return null;}
+function useWorkspaceNavigationOrigin(){
+ const lifetime=useRef({active:false,incarnation:0});
+ function activate(){lifetime.current.active=true;lifetime.current.incarnation++;}
+ function retire(){lifetime.current.active=false;lifetime.current.incarnation++;}
+ function isActive(){return lifetime.current.active&&host.isCurrentHost();}
+ function capturePrivateCommit():CurrentDestination {const incarnation=lifetime.current.incarnation;return()=>lifetime.current.active&&lifetime.current.incarnation===incarnation;}
+ return {isActive,capturePrivateCommit,activate,retire};
+}
+function NavigationOriginLifetime(){useLayoutEffect(()=>{origin.activate();return origin.retire;},[]);return null;}
+function WorkspaceNavigationHost(){const host=useWorkspaceNavigationHost({identity,getSnapshot:client.getSnapshot});return (<>
+ <NavigationHostLifetime host={host}/>{client.boot?(<PrivateNavigationBoundary client={client} host={host}/>):(<WorkspaceConnection client={client}/>)}</>);}
+function PrivateNavigationBoundary(){const origin=useWorkspaceNavigationOrigin(host);return (<><NavigationOriginLifetime origin={origin}/><WorkspaceApp client={client} host={host} origin={origin}/></>);}
+function setNotice(){if(!origin.isActive())return;host.dismissPersistenceNotice();setPrivateNotice(message);}
+`;
+// Fixed original b8db8158 persisted schema; only its View alias is spelled by
+// the identical imported WorkSurfaceView after migration. Not a new UI hash.
+const preferenceContract = `
+type Preferences=InterfacePreferences&{
+ subjectTab?:SubjectView;subjectOpen:boolean;dockApplications?:string[];taskList?:TaskListOptions;
+ executionWidth?:number;inspectorWidth?:number;view:WorkSurfaceView;projectId:string;
+ artifactId:string|null;artifactRevision:number|null;artifactPage?:number|null;readerMode?:boolean;
+ readingTarget?:ReaderTarget|null;collaboration:boolean;composer:boolean;conversation:boolean|null;
+ sidebar:boolean;sidebarWidth?:number;sidebarCompact?:boolean;projectOpen:boolean;
+ applications?:Record<string,string|null>;
+ scriptLocation?:(ScriptLocation&{requestId:string;view?:"library"|"editor"})|null;
+ interactions?:Record<string,InteractionMode>;exchangeHeights?:Record<string,number>;
+ pinnedInputs?:Record<string,boolean>;selectedConversations?:Record<string,string>;
+ localFile?:{projectId:string;reference:LocalFileView["reference"]};
+};
+const defaultPrefs:Preferences={...interfacePreferences({}),view:"desk",projectId:"first-project",
+ artifactId:null,artifactRevision:null,collaboration:false,subjectOpen:false,composer:true,
+ conversation:null,sidebar:true,projectOpen:false};
+function hostRegistrations(){
+ const [scope]=useState<NavigationIdentity>(()=>({...identity}));
+ const [storage]=useState(()=>scopedStorage(\`\${scope.centerId}:\${scope.principalId}\`));
+ const {readLocal,writeLocal}=storage;
+ const [persistenceNotice,setPersistenceNotice]=useState<PersistenceNotice>("");
+ const state=useWorkspaceNavigationState();const lifetime=useRef({active:false,incarnation:0});
+}
+`;
 function properties(node: Node | undefined): Map<string, Node> {
   const values = new Map<string, Node>();
   if (node && isObjectLiteralExpression(node))
@@ -194,10 +353,23 @@ function properties(node: Node | undefined): Map<string, Node> {
     }
   return values;
 }
-function ownership(ownerText: string, appText: string): string[] {
-  const parsed = parse({ "owner.ts": ownerText, "App.tsx": appText });
+function ownership(
+  ownerText: string,
+  appText: string,
+  hostText = stableHost,
+): string[] {
+  const parsed = parse({
+    "owner.ts": ownerText,
+    "App.tsx": appText,
+    "host.ts": hostText,
+    "host-contract.tsx": hostContract,
+    "preferences.ts": preferenceContract,
+  });
   const { source: owner } = parsed.get("owner.ts")!;
   const app = parsed.get("App.tsx")!;
+  const host = parsed.get("host.ts")!;
+  const contract = parsed.get("host-contract.tsx")!;
+  const preferences = parsed.get("preferences.ts")!.source;
   const problems: string[] = [];
   const check = (valid: boolean, rule: string) => {
     if (!valid) problems.push(rule);
@@ -302,13 +474,47 @@ function ownership(ownerText: string, appText: string): string[] {
   );
   if (factory[0]?.body) {
     const statements = factory[0].body.statements;
+    const named = statements.filter(isFunctionDeclaration);
+    const commandNames = [
+      "travel",
+      "openScriptLocation",
+      "openObject",
+      "launchDockApplication",
+      "readingLibrary",
+      "openScriptLibrary",
+      "openWorkspaceContents",
+      "activateApplication",
+      "navigate",
+      "openBrowser",
+    ];
+    const guardNames = [
+      "canStart",
+      "capture",
+      "guard",
+      "permitted",
+      "privateLifetimePermitted",
+      "publish",
+      "visit",
+      "privateShell",
+      "notice",
+      "projectAvailable",
+      "instanceAvailable",
+      "artifactAvailable",
+      "scriptAvailable",
+    ];
     check(
       factory.length === 1 &&
-        statements.length === 13 &&
+        statements.length === 27 &&
         isVariableStatement(statements[0]!) &&
-        statements.slice(1, 11).every(isFunctionDeclaration) &&
-        isVariableStatement(statements[11]!) &&
-        isReturnStatement(statements[12]!),
+        statements
+          .slice(1, -2)
+          .every(
+            (node) =>
+              isFunctionDeclaration(node) ||
+              (isTypeAliasDeclaration(node) && node.name.text === "Intent"),
+          ) &&
+        isVariableStatement(statements.at(-2)!) &&
+        isReturnStatement(statements.at(-1)!),
       "factory-no-hooks-or-construction-effects",
     );
     const first = isVariableStatement(statements[0]!)
@@ -318,28 +524,15 @@ function ownership(ownerText: string, appText: string): string[] {
       first?.initializer?.getText() === "surface",
       "factory-captures-one-surface",
     );
-    const names = statements
-      .slice(1, 11)
-      .filter(isFunctionDeclaration)
-      .map((fn) => fn.name?.text);
+    const names = named.map((fn) => fn.name?.text);
     check(
       JSON.stringify(names) ===
-        JSON.stringify([
-          "travel",
-          "openScriptLocation",
-          "openObject",
-          "launchDockApplication",
-          "readingLibrary",
-          "openScriptLibrary",
-          "openWorkspaceContents",
-          "activateApplication",
-          "navigate",
-          "openBrowser",
-        ]),
+        JSON.stringify([...guardNames, ...commandNames]),
       "only-reviewed-navigation-commands",
     );
-    const prepared = isVariableStatement(statements[11]!)
-      ? statements[11].declarationList.declarations[0]
+    const preparedStatement = statements.at(-2)!;
+    const prepared = isVariableStatement(preparedStatement)
+      ? preparedStatement.declarationList.declarations[0]
       : undefined;
     check(
       prepared?.name.getText() === "applicationActions" &&
@@ -370,8 +563,9 @@ function ownership(ownerText: string, appText: string): string[] {
         "prepared-actions-are-synchronous-declarations-not-eager-or-async-bridges",
       );
     }
-    const returned = isReturnStatement(statements[12]!)
-      ? properties(statements[12].expression)
+    const returnedStatement = statements.at(-1)!;
+    const returned = isReturnStatement(returnedStatement)
+      ? properties(returnedStatement.expression)
       : new Map<string, Node>();
     check(
       [...returned.keys()].join(",") ===
@@ -403,7 +597,7 @@ function ownership(ownerText: string, appText: string): string[] {
     check(
       !!callback &&
         "body" in callback &&
-        same(callback.body as Node, body("restorePatch")),
+        same(callback.body as Node, body("guardedRestorePatch")),
       "history-raw-spread-not-prefer-or-clear-preview",
     );
     const object = functions(factory[0], "openObject")[0];
@@ -449,7 +643,12 @@ function ownership(ownerText: string, appText: string): string[] {
     });
     return result;
   };
-  const states = importedCalls("useWorkspaceNavigationState");
+  const hostStates = boundCalls(
+    host,
+    "./use-workspace-navigation.js",
+    "useWorkspaceNavigationState",
+  );
+  const states = hostStates;
   const factories = importedCalls("createWorkspaceNavigationCommands");
   const commits = importedCalls("useWorkspaceNavigationCommit");
   const surfaces = calls(app.source, "deriveWorkSurface");
@@ -470,11 +669,14 @@ function ownership(ownerText: string, appText: string): string[] {
   check(
     !!stateEntry &&
       !!surface &&
-      stateEntry.pos < surface.pos &&
+      functions(host.source, "useWorkspaceNavigationHost")[0]
+        ?.body?.getText()
+        .includes(stateEntry.getText()) === true &&
       stateEntry.arguments.length === 0,
     "state-before-unique-resolver",
   );
   const stateBindings: string[] = [];
+  let hostNavigationBindings = 0;
   let preferenceOwners = 0;
   function generationRef(node: Node) {
     return (
@@ -493,6 +695,21 @@ function ownership(ownerText: string, appText: string): string[] {
   walk(app.source, (node) => {
     if (
       isVariableDeclaration(node) &&
+      isObjectBindingPattern(node.name) &&
+      node.name.elements.some(
+        (element) => element.name?.getText() === "navigation",
+      )
+    ) {
+      hostNavigationBindings++;
+      check(
+        node.initializer?.getText() === "host" &&
+          node.name.getText().replace(/\s+/g, "") ===
+            "{prefs,recentContentVisits,navigation}",
+        "navigation-owned-by-stable-host-direct-binding",
+      );
+    }
+    if (
+      isVariableDeclaration(node) &&
       node.initializer?.getText() === "navigation" &&
       isObjectBindingPattern(node.name)
     )
@@ -504,10 +721,7 @@ function ownership(ownerText: string, appText: string): string[] {
       );
     if (isVariableDeclaration(node) && isIdentifier(node.name)) {
       if (node.name.text === "navigation")
-        check(
-          node.initializer === stateEntry,
-          "navigation-owned-by-state-hook",
-        );
+        check(false, "navigation-owned-by-state-hook");
       check(
         ![
           "navigationGeneration",
@@ -571,6 +785,7 @@ function ownership(ownerText: string, appText: string): string[] {
         "generation-writes-belong-to-owner",
       );
   });
+  check(hostNavigationBindings === 1, "unique-stable-host-navigation-binding");
   check(
     stateBindings.join(",") ===
       "openingObject:openingObject,restoredPlace:restoredPlace,trail:trail,websiteIntent:websiteIntent,navigationGeneration:navigationGeneration,setExplicitWebsiteIntent:setWebsiteIntent",
@@ -599,16 +814,33 @@ function ownership(ownerText: string, appText: string): string[] {
     surface: "workSurface",
     preferences: "prefs",
     prefer: "prefer",
-    writePreferences: "writePreferences",
-    recordContentVisit: "recordContentVisit",
     onNotice: "setNotice",
   };
   check(
-    options.size === 11 &&
+    options.size === 10 &&
       Object.entries(expected).every(
         ([key, value]) => options.get(key)?.getText() === value,
       ),
     "factory-explicit-single-owner-inputs",
+  );
+  const continuation = properties(options.get("continuation"));
+  check(
+    continuation.size === 6 &&
+      Object.entries({
+        isActive: "origin.isActive",
+        currentProjection: "host.currentProjection",
+        captureCommit: "host.captureCommit",
+        prefer: "continueNavigation",
+        writePreferences: "host.writePreferences",
+        recordContentVisit: "host.recordContentVisit",
+      }).every(([name, text]) => continuation.get(name)?.getText() === text),
+    "mandatory-current-host-continuation-not-a-private-writer-bag",
+  );
+  check(
+    factory[0]!.parameters[0]?.type
+      ?.getText()
+      .includes("continuation: Continuation<P>;") === true,
+    "mandatory-no-test-only-fallback",
   );
   const shell = properties(options.get("shell"));
   check(
@@ -670,27 +902,37 @@ function ownership(ownerText: string, appText: string): string[] {
   );
   check(
     functions(app.source, "prefer").length === 1 &&
-      same(functions(app.source, "prefer")[0]?.body, body("prefer")),
+      same(functions(app.source, "prefer")[0]?.body, body("privatePrefer")),
     "preference-bridge-original-side-effect-order",
   );
   check(
     functions(app.source, "writePreferences").length === 1 &&
-      same(functions(app.source, "writePreferences")[0]?.body, body("writer")),
+      same(
+        functions(app.source, "writePreferences")[0]?.body,
+        body("privateWriter"),
+      ),
     "sole-persistence-updater-original-write-and-errors",
   );
   check(
-    preferenceOwners === 1 &&
-      calls(app.source, "setPrefs").length === 1 &&
-      calls(app.source, "writeLocal").filter(
+    preferenceOwners === 0 &&
+      calls(app.source, "setPrefs").length === 0 &&
+      calls(host.source, "setPrefs").length === 1 &&
+      calls(host.source, "writeLocal").filter(
         (call) =>
           isStringLiteral(call.arguments[0]!) &&
           call.arguments[0].text === "preferences",
-      ).length === 1,
+      ).length === 1 &&
+      calls(app.source, "writeLocal").filter(
+        (call) =>
+          call.arguments[0] &&
+          isStringLiteral(call.arguments[0]) &&
+          call.arguments[0].text === "preferences",
+      ).length === 0,
     "one-preference-setter-and-storage-writer",
   );
   check(
-    importedCalls("isNavigationPreferenceChange").length === 1 &&
-      importedCalls("mergeNavigationPreferences").length === 1,
+    importedCalls("isNavigationPreferenceChange").length === 2 &&
+      importedCalls("mergeNavigationPreferences").length === 2,
     "preference-bridge-uses-real-imports-not-shadowed-formulas",
   );
   let launchProps = 0;
@@ -709,6 +951,201 @@ function ownership(ownerText: string, appText: string): string[] {
     }
   });
   check(launchProps === 1, "one-dock-launch-seam");
+  for (const name of [
+    "activate",
+    "retire",
+    "currentProjection",
+    "isCurrentHost",
+    "captureCommit",
+    "permitted",
+    "writePreferences",
+    "recordContentVisit",
+  ]) {
+    const expected = functions(contract.source, name),
+      actual = functions(host.source, name);
+    check(
+      actual.length === expected.length &&
+        actual.every((value, index) => same(value.body, expected[index]?.body)),
+      "explicit-host-identity-lifetime-and-two-stage-writer-contract",
+    );
+  }
+  const hostMain = functions(host.source, "useWorkspaceNavigationHost");
+  const hostStatements = hostMain[0]?.body?.statements ?? [];
+  const registrationShape = hostStatements.map((node) =>
+    isVariableStatement(node)
+      ? node.declarationList.declarations.length === 1
+        ? node.declarationList.declarations[0]!.name.getText().replace(
+            /\s+/g,
+            "",
+          )
+        : "multiple-declarations"
+      : isFunctionDeclaration(node)
+        ? `function:${node.name?.text}`
+        : isReturnStatement(node)
+          ? "return"
+          : "eager-statement",
+  );
+  check(
+    hostMain.length === 1 &&
+      JSON.stringify(registrationShape) ===
+        JSON.stringify([
+          "[scope]",
+          "[storage]",
+          "{readLocal,writeLocal}",
+          "[recentContentVisits,setRecentContentVisits]",
+          "[prefs,setPrefs]",
+          "[persistenceNotice,setPersistenceNotice]",
+          "state",
+          "lifetime",
+          "function:activate",
+          "function:retire",
+          "function:currentProjection",
+          "function:isCurrentHost",
+          "function:captureCommit",
+          "function:permitted",
+          "function:writePreferences",
+          "function:recordContentVisit",
+          "return",
+        ]),
+    "host-construction-only-reviewed-registration-and-declarations",
+  );
+  for (const name of [
+    "scope",
+    "storage",
+    "readLocal",
+    "persistenceNotice",
+    "state",
+    "lifetime",
+  ]) {
+    const found: Node[] = [],
+      expected: Node[] = [];
+    for (const [source, output] of [
+      [hostMain[0]?.body, found],
+      [functions(preferences, "hostRegistrations")[0]?.body, expected],
+    ] as const)
+      if (source)
+        walk(source, (node) => {
+          if (
+            isVariableDeclaration(node) &&
+            (node.name.getText() === name ||
+              node.name.getText().replace(/\s+/g, "").startsWith(`[${name}]`) ||
+              node.name.getText().replace(/\s+/g, "").startsWith(`[${name},`) ||
+              node.name.getText().replace(/\s+/g, "").startsWith(`{${name},`))
+          )
+            output.push(node);
+        });
+    check(
+      found.length === 1 &&
+        expected.length === 1 &&
+        same(found[0], expected[0]),
+      "host-construction-only-reviewed-registration-and-declarations",
+    );
+  }
+  const originalHost = functions(contract.source, "Host")[0]!;
+  check(
+    same(hostStatements.at(-1), originalHost.body!.statements.at(-1)),
+    "host-return-preserves-currentness-and-single-navigation-state",
+  );
+  for (const name of ["Preferences"]) {
+    const actual: Node[] = [],
+      expected: Node[] = [];
+    for (const [source, output] of [
+      [host.source, actual],
+      [preferences, expected],
+    ] as const)
+      walk(source, (node) => {
+        if (isTypeAliasDeclaration(node) && node.name.text === name)
+          output.push(node.type);
+      });
+    check(
+      actual.length === 1 &&
+        expected.length === 1 &&
+        same(actual[0], expected[0]),
+      "original-persisted-preference-schema-and-defaults",
+    );
+  }
+  const defaults: Node[] = [],
+    expectedDefaults: Node[] = [];
+  for (const [source, output] of [
+    [host.source, defaults],
+    [preferences, expectedDefaults],
+  ] as const)
+    walk(source, (node) => {
+      if (isVariableDeclaration(node) && node.name.getText() === "defaultPrefs")
+        output.push(node);
+    });
+  check(
+    defaults.length === 1 &&
+      expectedDefaults.length === 1 &&
+      same(defaults[0], expectedDefaults[0]),
+    "original-persisted-preference-schema-and-defaults",
+  );
+  for (const [name, container] of [
+    ["NavigationHostLifetime", "WorkspaceNavigationHost"],
+    ["NavigationOriginLifetime", "PrivateNavigationBoundary"],
+  ])
+    check(
+      boundLifetime(app, name!, container!),
+      "actual-import-bound-null-sibling-lifetime-consumers",
+    );
+  check(
+    calls(host.source, "useState").length === 5 &&
+      calls(host.source, "useRef").length === 2 &&
+      calls(host.source, "useLayoutEffect").length === 2 &&
+      calls(host.source, "scopedStorage").length === 1 &&
+      calls(host.source, "scopedStorage")[0]!.arguments[0]?.getText() ===
+        "`${scope.centerId}:${scope.principalId}`" &&
+      calls(host.source, "useEffect").length === 0 &&
+      !hostText.includes("useInsertionEffect"),
+    "only-scoped-preference-recency-and-null-slot-lifetimes",
+  );
+  for (const name of [
+    "NavigationHostLifetime",
+    "NavigationOriginLifetime",
+    "useWorkspaceNavigationOrigin",
+  ])
+    check(
+      same(
+        functions(host.source, name)[0]?.body,
+        functions(contract.source, name)[0]?.body,
+      ),
+      "first-null-sibling-only-lifetime-registration",
+    );
+  for (const name of ["WorkspaceNavigationHost", "PrivateNavigationBoundary"])
+    check(
+      !!functions(app.source, name)[0]?.body &&
+        JSON.stringify(zeroDOM(functions(app.source, name)[0]!.body!)) ===
+          JSON.stringify(zeroDOM(functions(contract.source, name)[0]!.body!)),
+      "actual-protected-branch-and-first-null-sibling-order",
+    );
+  check(
+    same(
+      functions(app.source, "setNotice")[0]?.body,
+      functions(contract.source, "setNotice")[0]?.body,
+    ),
+    "private-notice-remains-with-origin-not-retired-updater",
+  );
+  for (const name of [
+    "useWorkspaceNavigationHost",
+    "useWorkspaceNavigationOrigin",
+  ])
+    check(
+      boundCalls(app, "./host/use-workspace-navigation-host.js", name)
+        .length === 1,
+      "actual-import-bound-lifetime-owners-not-local-mirrors",
+    );
+  check(
+    calls(app.source, "useWorkspaceNavigationState").length === 0 &&
+      calls(app.source, "useWorkspaceNavigationHost").length === 1 &&
+      calls(app.source, "useWorkspaceNavigationOrigin").length === 1 &&
+      calls(app.source, "scopedStorage").every(
+        (call) =>
+          !functions(app.source, "WorkspaceApp")[0]
+            ?.body?.getText()
+            .includes(call.getText()),
+      ),
+    "single-stable-owner-no-private-projection-retention",
+  );
   return problems;
 }
 const owner = readFileSync(
@@ -716,10 +1153,83 @@ const owner = readFileSync(
   "utf8",
 );
 const app = readFileSync("apps/web/src/App.tsx", "utf8");
+const stableHost = readFileSync(
+  "apps/web/src/host/use-workspace-navigation-host.ts",
+  "utf8",
+);
 function changed(source: string, from: string, to: string) {
   assert.ok(source.includes(from), `Fixture target missing: ${from}`);
   return source.replace(from, to);
 }
+test("six previously accepted Host/Origin counterfactuals each violate their own finite source rule", () => {
+  const cases = [
+    {
+      name: "Host currentness",
+      host: changed(
+        stableHost,
+        "return lifetime.current.active && !!currentProjection();",
+        "return true;",
+      ),
+      rule: "explicit-host-identity-lifetime-and-two-stage-writer-contract",
+    },
+    {
+      name: "returned navigation",
+      host: changed(
+        stableHost,
+        "isCurrentHost() && state.isCurrent(generation)",
+        "state.isCurrent(generation)",
+      ),
+      rule: "host-return-preserves-currentness-and-single-navigation-state",
+    },
+    {
+      name: "Host lifetime fake binding",
+      app:
+        changed(
+          app,
+          "  NavigationHostLifetime,",
+          "  NavigationHostLifetime as RealNavigationHostLifetime,",
+        ) + "\nfunction NavigationHostLifetime() { return null; }",
+      rule: "actual-import-bound-null-sibling-lifetime-consumers",
+    },
+    {
+      name: "Origin lifetime fake binding",
+      app:
+        changed(
+          app,
+          "  NavigationOriginLifetime,",
+          "  NavigationOriginLifetime as RealNavigationOriginLifetime,",
+        ) + "\nfunction NavigationOriginLifetime() { return null; }",
+      rule: "actual-import-bound-null-sibling-lifetime-consumers",
+    },
+    {
+      name: "eager snapshot construction",
+      host: changed(
+        stableHost,
+        "  const state = useWorkspaceNavigationState();",
+        "  getSnapshot();\n  const state = useWorkspaceNavigationState();",
+      ),
+      rule: "host-construction-only-reviewed-registration-and-declarations",
+    },
+    {
+      name: "persisted schema",
+      host: changed(
+        stableHost,
+        "  subjectOpen: boolean;",
+        "  subjectOpen: string;",
+      ),
+      rule: "original-persisted-preference-schema-and-defaults",
+    },
+  ];
+  for (const entry of cases) {
+    const candidateApp = entry.app ?? app,
+      candidateHost = entry.host ?? stableHost;
+    parse({ "App.tsx": candidateApp, "host.ts": candidateHost });
+    assert.ok(
+      ownership(owner, candidateApp, candidateHost).includes(entry.rule),
+      `${entry.name}: ${entry.rule}`,
+    );
+  }
+});
 test("navigation has one production owner, one preference writer and ordered real effect seams", () => {
   assert.deepEqual(ownership(owner, app), []);
 });
@@ -729,13 +1239,13 @@ test("navigation gate rejects duplicated generations, fake entries and copied st
     app + "\nconst [restoredPlace, restore] = useState(null);",
     changed(
       app,
-      "const navigation = useWorkspaceNavigationState();",
-      "const useWorkspaceNavigationState = () => ({}); const navigation = useWorkspaceNavigationState();",
+      "const { prefs, recentContentVisits, navigation } = host;",
+      "const navigation = {}; const { prefs, recentContentVisits } = host;",
     ),
     changed(
       app,
-      "const navigation = useWorkspaceNavigationState();",
-      "const navigation = {}; useWorkspaceNavigationState();",
+      "const { prefs, recentContentVisits, navigation } = host;",
+      "const { prefs, recentContentVisits, navigation } = { ...host };",
     ),
     changed(
       app,
@@ -768,17 +1278,24 @@ test("navigation gate rejects duplicated generations, fake entries and copied st
       "    navigationGeneration: anotherGeneration,\n    setExplicitWebsiteIntent",
     ),
     changed(
-      changed(app, "const navigation = useWorkspaceNavigationState();", ""),
+      changed(
+        app,
+        "const { prefs, recentContentVisits, navigation } = host;",
+        "const { prefs, recentContentVisits } = host;",
+      ),
       "  const [readingSurface",
       "  const navigation = useWorkspaceNavigationState();\n  const [readingSurface",
     ),
   ];
-  for (const candidate of badApps)
-    assert.ok(ownership(owner, candidate).length > 0);
+  for (const [index, candidate] of badApps.entries())
+    assert.ok(
+      ownership(owner, candidate).length > 0,
+      `app counterfactual ${index}`,
+    );
 });
 test("navigation gate rejects moved commits, changed dependencies and reset order", () => {
   const seam = "useWorkspaceNavigationCommit(navigation, { place, travel });";
-  for (const candidate of [
+  for (const [index, candidate] of [
     changed(app, seam, ""),
     changed(
       changed(app, seam, ""),
@@ -796,9 +1313,12 @@ test("navigation gate rejects moved commits, changed dependencies and reset orde
       "      navigation.resetPreferenceNavigation();\n      setUnderstandingOpen(false);",
     ),
     changed(app, "      clearResizePreview();", ""),
-  ])
-    assert.ok(ownership(owner, candidate).length > 0);
-  for (const candidate of [
+  ].entries())
+    assert.ok(
+      ownership(owner, candidate).length > 0,
+      `app moved seam ${index}`,
+    );
+  for (const [index, candidate] of [
     changed(
       owner,
       "[placeKey, openingObject]",
@@ -820,11 +1340,18 @@ test("navigation gate rejects moved commits, changed dependencies and reset orde
       "    restoring.current = true;\n    setRestoredPlace(next);",
       "    setRestoredPlace(next);\n    restoring.current = true;",
     ),
-  ])
-    assert.ok(ownership(candidate, app).length > 0);
+  ].entries())
+    assert.ok(
+      ownership(candidate, app).length > 0,
+      `owner counterfactual ${index}`,
+    );
 });
 test("navigation gate rejects constructor work, extra writer, setter bag and broadened operations", () => {
-  for (const candidate of [
+  const object = functions(
+    parse({ "owner.ts": owner }).get("owner.ts")!.source,
+    "openObject",
+  )[0]!.getText();
+  for (const [index, candidate] of [
     owner + '\nfetch("/api");',
     'import { WorkspaceApp } from "../App.js";\n' + owner,
     changed(
@@ -861,16 +1388,23 @@ test("navigation gate rejects constructor work, extra writer, setter bag and bro
     changed(owner, 'type: "close-application",', 'type: "launch-application",'),
     changed(
       owner,
-      "return owner.navigationGeneration.current;",
-      "return generation;",
+      object,
+      changed(
+        object,
+        "return owner.navigationGeneration.current;",
+        "return generation;",
+      ),
     ),
     changed(
       owner,
-      'writePreferences((previous) => ({ ...previous, ...next }), "position");',
+      'continuation.writePreferences(\n          (previous) => ({ ...previous, ...next }),\n          "position",\n          guard(intent, destination),\n        );',
       "prefer(next);",
     ),
-  ])
-    assert.ok(ownership(candidate, app).length > 0);
+  ].entries())
+    assert.ok(
+      ownership(candidate, app).length > 0,
+      `owner constructor seam ${index}`,
+    );
   for (const candidate of [
     app + "\nsetPrefs({});",
     app + '\nwriteLocal("preferences", {});',
@@ -903,11 +1437,115 @@ test("navigation gate allows unrelated local UI state and import aliases", () =>
   );
   const aliased = changed(
     app,
-    "  useWorkspaceNavigationState,",
-    "  useWorkspaceNavigationState as useNavigationState,",
+    "  createWorkspaceNavigationCommands,",
+    "  createWorkspaceNavigationCommands as createNavigationCommands,",
   ).replace(
-    "const navigation = useWorkspaceNavigationState();",
-    "const navigation = useNavigationState();",
+    "} = createWorkspaceNavigationCommands({",
+    "} = createNavigationCommands({",
   );
   assert.deepEqual(ownership(owner, aliased), []);
+});
+test("new Host/private lifecycle rejects lost scope/session/updater checks, duplicate registration, reordered null siblings and fake imports independently of the old state oracle", () => {
+  const hostCases = [
+    changed(stableHost, "current.csrfToken === scope.csrfToken", "true"),
+    changed(
+      stableHost,
+      "lifetime.current.incarnation !== incarnation",
+      "false",
+    ),
+    changed(
+      stableHost,
+      "if (!permitted(incarnation, destination)) return previous;",
+      "if (false) return previous;",
+    ),
+    changed(stableHost, "return host.retire;", "return () => {};"),
+    changed(stableHost, "return origin.retire;", "return () => {};"),
+    changed(
+      stableHost,
+      "scopedStorage(`${scope.centerId}:${scope.principalId}`)",
+      "scopedStorage()",
+    ),
+    changed(
+      stableHost,
+      'from "./use-workspace-navigation.js"',
+      'from "./fake-navigation.js"',
+    ),
+    changed(
+      stableHost,
+      "useLayoutEffect(() => {",
+      "useInsertionEffect(() => {",
+    ),
+    changed(
+      stableHost,
+      "const state = useWorkspaceNavigationState();",
+      "const useWorkspaceNavigationState = () => ({}); const state = useWorkspaceNavigationState();",
+    ),
+  ];
+  const hostRules = [
+    "explicit-host-identity-lifetime-and-two-stage-writer-contract",
+    "explicit-host-identity-lifetime-and-two-stage-writer-contract",
+    "explicit-host-identity-lifetime-and-two-stage-writer-contract",
+    "first-null-sibling-only-lifetime-registration",
+    "first-null-sibling-only-lifetime-registration",
+    "host-construction-only-reviewed-registration-and-declarations",
+    "unique-real-imported-owner-surface-commit",
+    "first-null-sibling-only-lifetime-registration",
+    "unique-real-imported-owner-surface-commit",
+  ];
+  assert.equal(hostCases.length, hostRules.length);
+  for (const [index, candidate] of hostCases.entries()) {
+    parse({ "host.ts": candidate });
+    assert.ok(
+      ownership(owner, app, candidate).includes(hostRules[index]!),
+      `Host counterfactual ${index}: ${hostRules[index]}`,
+    );
+  }
+  const appCases = [
+    changed(
+      app,
+      'from "./host/use-workspace-navigation-host.js"',
+      'from "./host/fake-navigation-host.js"',
+    ),
+    changed(
+      app,
+      "<NavigationHostLifetime host={host} />",
+      "<NavigationHostLifetime host={{...host}} />",
+    ),
+    changed(
+      app,
+      "<NavigationOriginLifetime origin={origin} />",
+      "<NavigationOriginLifetime origin={origin} /><NavigationOriginLifetime origin={origin} />",
+    ),
+    changed(
+      app,
+      "<WorkspaceApp client={client} host={host} origin={origin} />",
+      "<WorkspaceApp client={client} host={host} origin={{...origin}} />",
+    ),
+    changed(app, "if (!origin.isActive()) return;", "if (false) return;"),
+  ];
+  const appRules = [
+    "actual-import-bound-lifetime-owners-not-local-mirrors",
+    "actual-protected-branch-and-first-null-sibling-order",
+    "actual-protected-branch-and-first-null-sibling-order",
+    "actual-protected-branch-and-first-null-sibling-order",
+    "private-notice-remains-with-origin-not-retired-updater",
+  ];
+  assert.equal(appCases.length, appRules.length);
+  for (const [index, candidate] of appCases.entries()) {
+    parse({ "App.tsx": candidate });
+    assert.ok(
+      ownership(owner, candidate).includes(appRules[index]!),
+      `App counterfactual ${index}: ${appRules[index]}`,
+    );
+  }
+  assert.ok(
+    ownership(
+      changed(
+        owner,
+        "continuation: Continuation<P>;",
+        "continuation?: Continuation<P>;",
+      ),
+      app,
+    ).includes("mandatory-no-test-only-fallback"),
+  );
 });

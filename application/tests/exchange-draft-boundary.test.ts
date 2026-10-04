@@ -128,6 +128,8 @@ function appSeams() {
     Object.entries(drafts).some(([key, value]) => key.startsWith(id + ":") && !!(
       value.body.trim() || value.attachments?.length || value.textQuotes?.length || value.selection || value.intent));
 }
+function currentStorageSeam() { const { readLocal, writeLocal } = host.storage; }
+function privateOriginGuard() { if (!origin.isActive()) return; }
 function setDraft(key: string, value: InputDraft) {
   if (key === currentContext.current && value.body !== drafts[key]?.body) dictationControls.current?.interrupt();
   writeDrafts((previous) => replaceComposerSurface(previous, key, emptyDraft, value));
@@ -244,6 +246,10 @@ function same(left: Node | undefined, right: Node | undefined) {
 const oracle = parse({ "oracle.ts": oracleText }).get("oracle.ts")!.source;
 const body = (name: string) => functions(oracle, name)[0]!.body!;
 const declaration = (name: string) => declarations(body("appSeams"), name)[0]!;
+const currentStorage = declarations(
+  body("currentStorageSeam"),
+  "readLocal",
+)[0]!;
 const ports = body("storagePorts").statements[0]!;
 assert.ok(isReturnStatement(ports));
 const storagePorts = isReturnStatement(ports) ? ports.expression : undefined;
@@ -532,7 +538,11 @@ function ownership(ownerText: string, appText: string): string[] {
   ]) {
     const found = declarations(workspace, name);
     check(
-      found.length === 1 && same(found[0], declaration(name)),
+      found.length === 1 &&
+        same(
+          found[0],
+          name === "readLocal" ? currentStorage : declaration(name),
+        ),
       "original-storage-capture-read-aliases-and-single-functional-writer",
     );
   }
@@ -548,7 +558,6 @@ function ownership(ownerText: string, appText: string): string[] {
     "draftCommands",
     "startedConversations",
     "projectMetrics",
-    "navigation",
     "workSurface",
   ];
   const positions = ordered.map(
@@ -560,6 +569,13 @@ function ownership(ownerText: string, appText: string): string[] {
         position >= 0 && (index === 0 || position > positions[index - 1]!),
     ),
     "state-hooks-retain-original-init-slots-before-unique-surface",
+  );
+  const stableState = declarations(workspace, "navigation");
+  check(
+    stableState.length === 1 &&
+      stableState[0]!.initializer?.getText() === "host" &&
+      stableState[0]!.pos < positions[0]!,
+    "stable-navigation-before-private-drafts-not-a-second-owner",
   );
   check(
     calls(workspace, "deriveWorkSurface").length === 1,
@@ -588,8 +604,26 @@ function ownership(ownerText: string, appText: string): string[] {
   ]) {
     const target = functions(workspace, name);
     const expected = functions(oracle, name)[0];
+    const guarded = name === "setDraft" || name === "updateDraft";
+    const actual = target[0];
+    const originalBody = expected?.body;
+    const guard = body("privateOriginGuard").statements[0];
     check(
-      target.length === 1 && same(target[0], expected),
+      target.length === 1 &&
+        !!actual?.body &&
+        !!originalBody &&
+        (guarded
+          ? same(actual.body.statements[0], guard) &&
+            actual.body.statements.length ===
+              originalBody.statements.length + 1 &&
+            actual.body.statements
+              .slice(1)
+              .every((node, index) =>
+                same(node, originalBody.statements[index]),
+              ) &&
+            JSON.stringify(actual.parameters.map(syntax)) ===
+              JSON.stringify(expected!.parameters.map(syntax))
+          : same(actual, expected)),
       "host-guards-dictation-async-shell-navigation-seams-unchanged",
     );
   }
@@ -921,6 +955,38 @@ test("draft gate rejects shell guard, async, dictation and navigation seam drift
       "          value.intent || value.model",
     ),
     "real-local-input-and-composer-content-restore-guard",
+  );
+});
+test("retired private draft entry guard is mandatory, before original dictation/updater code, not a replacement of that original code", () => {
+  for (const name of ["setDraft", "updateDraft"]) {
+    const actual = functions(
+      parse({ "App.tsx": app }).get("App.tsx")!.source,
+      name,
+    )[0]!;
+    const guard = actual.body!.statements[0]!.getText();
+    for (const replacement of [
+      "",
+      "if (origin.isActive()) return;",
+      "if (!origin.isActive()) { writeDrafts(() => ({})); return; }",
+    ])
+      rejected(
+        owner,
+        changed(
+          app,
+          actual.getText(),
+          actual.getText().replace(guard, replacement),
+        ),
+        "host-guards-dictation-async-shell-navigation-seams-unchanged",
+      );
+  }
+  rejected(
+    owner,
+    changed(
+      app,
+      "const { readLocal, writeLocal } = host.storage;",
+      "const { readLocal, writeLocal } = useState(() => scopedStorage())[0];",
+    ),
+    "original-storage-capture-read-aliases-and-single-functional-writer",
   );
 });
 test("draft gate permits formatting and unrelated local UI/storage owners", () => {

@@ -35,9 +35,16 @@ test("工作台与项目拥有独立空间；白净画布、应用恢复、对�
     await (await openInput(page)).fill(label + " 的对象消息");
     await page.getByRole("button", { name: "保存输入", exact: true }).click();
     await expect(page.locator(".conversation-heading")).toHaveCount(0);
-    await expect(page.locator(".composer .context-chip")).toContainText(
-      label + "文档",
-    );
+    await expect(
+      page
+        .getByRole("region", { name: "AI 输入", exact: true })
+        .getByLabel(`输入关联：${label}文档`, { exact: true }),
+    ).toContainText(label + "文档");
+    await expect(
+      page
+        .getByRole("log", { name: "对话消息" })
+        .getByRole("button", { name: `${label}文档 · v1`, exact: true }),
+    ).toBeVisible();
     await expect(page.getByRole("log", { name: "对话消息" })).toContainText(
       label + " 的对象消息",
     );

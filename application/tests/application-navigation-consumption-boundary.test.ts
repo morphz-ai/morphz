@@ -11,6 +11,7 @@ import {
   isBinaryExpression,
   isCallExpression,
   isFunctionDeclaration,
+  isElementAccessExpression,
   isIdentifier,
   isImportDeclaration,
   isJsxAttribute,
@@ -21,6 +22,7 @@ import {
   isJsxOpeningElement,
   isJsxSelfClosingElement,
   isNamedImports,
+  isMethodDeclaration,
   isObjectBindingPattern,
   isObjectLiteralExpression,
   isPropertyAccessExpression,
@@ -123,6 +125,104 @@ function prepared() {
   };
 }
 `;
+// Approved bounded additions. The cb7246a2 baselines above are unchanged.
+// Only after these exact seams pass can their old registration/DOM counterparts
+// be expanded for the old whole-tree comparison; new lifetime is checked apart.
+const navigationAdapterText = `
+function App() {
+ const client=useWorkspace();
+ const currentIdentity=client.boot?{centerId:client.boot.centerId,principalId:client.boot.principalId,csrfToken:client.boot.csrfToken}:null;
+ const [identity,setIdentity]=useState<NavigationIdentity|null>(currentIdentity);
+ const nextIdentity=client.authenticationRequired?null:(currentIdentity??identity);
+ if(identity?.centerId!==nextIdentity?.centerId||identity?.principalId!==nextIdentity?.principalId||identity?.csrfToken!==nextIdentity?.csrfToken)setIdentity(nextIdentity);
+ if(client.authenticationRequired){return <WorkspaceLogin client={client}/>;}
+ if(client.boot){storageScope(client.boot.centerId,client.boot.principalId);}
+ if(!nextIdentity)return <WorkspaceConnection client={client}/>;
+ return (<WorkspaceNavigationHost key={JSON.stringify(nextIdentity)} client={client} identity={nextIdentity}/>);
+}
+function WorkspaceNavigationHost(){const host=useWorkspaceNavigationHost({identity,getSnapshot:client.getSnapshot});return (<><NavigationHostLifetime host={host}/>{client.boot?(<PrivateNavigationBoundary client={client} host={host}/>):(<WorkspaceConnection client={client}/>)}</>);}
+function PrivateNavigationBoundary(){const origin=useWorkspaceNavigationOrigin(host);return (<><NavigationOriginLifetime origin={origin}/><WorkspaceApp client={client} host={host} origin={origin}/></>);}
+function NavigationHostLifetime(){useLayoutEffect(()=>{host.activate();return host.retire;},[]);return null;}
+function NavigationOriginLifetime(){useLayoutEffect(()=>{origin.activate();return origin.retire;},[]);return null;}
+function hostIdentityCapture(){const [scope]=useState<NavigationIdentity>(()=>({...identity}));const lifetime=useRef({active:false,incarnation:0});}
+function scopedRegistration(){const [storage]=useState(()=>scopedStorage(\`\${scope.centerId}:\${scope.principalId}\`));}
+function originalStorage(){const {readLocal,writeLocal}=useState(()=>scopedStorage())[0];}
+const newScriptPort = <ApplicationHost onOpenScript={(id,itemId)=>void openScriptLocation({productionId:id,...(itemId?{itemId}:{})},renderNavigation)}/>;
+const oldScriptPort = <ApplicationHost onOpenScript={(id,itemId)=>void openScriptLocation({productionId:id,...(itemId?{itemId}:{})})}/>;
+const newProjectPort = <CreateDialog prepareCreated={creating === "project" ? prepareCreatedProject : undefined} onCreated={(id,kind)=>{setCreating(null);if(kind!=="project")void openObject(project.id,id);}}/>;
+const oldProjectPort = <CreateDialog onCreated={(id,kind)=>{setCreating(null);if(kind==="project")openProject(id);else void openObject(project.id,id);}}/>;
+function prepared(){const applicationActions:ApplicationNavigationActions={
+ activate:activateApplication,
+ launch(app,captured,contents=false){
+  if(contents)return {kind:"contents",pending:openWorkspaceContents()};
+  const intent=capture(captured.navigationId);
+  const destination:CurrentDestination=(current)=>projectAvailable(current,captured.workspaceId);
+  if(!privateLifetimePermitted(intent,destination))return {kind:"application",pending:Promise.reject(new Error("原位置已不可用或无访问权限。")),commit(){}};
+  return {kind:"application",pending:client.execute({type:"launch-application",workspaceId:captured.workspaceId,applicationId:app.id,applicationVersion:app.version}),
+   commit(receipt){if(!permitted(intent,(current)=>instanceAvailable(current,receipt.entityId,captured.workspaceId,app)))return;activateApplication(receipt.entityId,captured.navigationId,app);}};
+ },
+ close(instance,captured){
+  const intent=capture(captured.navigationId);const app={id:instance.applicationId,version:instance.applicationVersion};
+  if(!privateLifetimePermitted(intent,(current)=>instanceAvailable(current,instance.id,captured.workspaceId,app)))return {pending:Promise.reject(new Error("原位置已不可用或无访问权限。")),commit(){}};
+  return {pending:client.execute({type:"close-application",instanceId:instance.id,expectedRevision:instance.revision}),commit(){
+   if(!permitted(intent,(current)=>projectAvailable(current,captured.workspaceId)&&!current.workspace.applicationInstances.some((value)=>value.id===instance.id)))return;
+   if(captured.activeId===instance.id){const index=captured.instances.findIndex((i)=>i.id===instance.id);const next=captured.instances[index+1]??captured.instances[index-1];const nextApp=next?{id:next.applicationId,version:next.applicationVersion}:undefined;
+    if(next&&!permitted(intent,(current)=>instanceAvailable(current,next.id,captured.workspaceId,nextApp)))return;activateApplication(next?.id??null,captured.navigationId,nextApp);}
+  }};
+ }
+};}
+`;
+// Original b8db8158 persisted schema/defaults, with its View alias spelled by
+// the identical WorkSurfaceView import. New Host seams are checked before any
+// old-tree expansion; the fixed cb7246a2 counts and hashes are not recalculated.
+const navigationHostContractText = `
+type Preferences=InterfacePreferences&{
+ subjectTab?:SubjectView;subjectOpen:boolean;dockApplications?:string[];taskList?:TaskListOptions;
+ executionWidth?:number;inspectorWidth?:number;view:WorkSurfaceView;projectId:string;
+ artifactId:string|null;artifactRevision:number|null;artifactPage?:number|null;readerMode?:boolean;
+ readingTarget?:ReaderTarget|null;collaboration:boolean;composer:boolean;conversation:boolean|null;
+ sidebar:boolean;sidebarWidth?:number;sidebarCompact?:boolean;projectOpen:boolean;
+ applications?:Record<string,string|null>;
+ scriptLocation?:(ScriptLocation&{requestId:string;view?:"library"|"editor"})|null;
+ interactions?:Record<string,InteractionMode>;exchangeHeights?:Record<string,number>;
+ pinnedInputs?:Record<string,boolean>;selectedConversations?:Record<string,string>;
+ localFile?:{projectId:string;reference:LocalFileView["reference"]};
+};
+const defaultPrefs:Preferences={...interfacePreferences({}),view:"desk",projectId:"first-project",
+ artifactId:null,artifactRevision:null,collaboration:false,subjectOpen:false,composer:true,
+ conversation:null,sidebar:true,projectOpen:false};
+function registrations(){
+ const {readLocal,writeLocal}=storage;
+ const [persistenceNotice,setPersistenceNotice]=useState<PersistenceNotice>("");
+ const state=useWorkspaceNavigationState();
+}
+function isCurrentHost(){return lifetime.current.active&&!!currentProjection();}
+function returned(){return {prefs,persistenceNotice,dismissPersistenceNotice:()=>setPersistenceNotice(""),storage,recentContentVisits,
+ navigation:{...state,isCurrent:(generation:number)=>isCurrentHost()&&state.isCurrent(generation)},
+ isCurrentHost,captureCommit,activate,retire,currentProjection,writePreferences,recordContentVisit};}
+`;
+// Exact original App function from Git cb7246a2, verified before embedding.
+// This is a DOM/hook comparison projection, not production navigation code.
+const fixedAppRoot = `export function App() {
+  const client = useWorkspace();
+  if (client.authenticationRequired) return <WorkspaceLogin client={client} />;
+  if (!client.boot)
+    return (
+      <main className="connection-screen">
+        <BrandMark />
+        <h1>Morphz</h1>
+        <p>{client.error || "正在打开工作空间…"}</p>
+        <button onClick={() => void client.refresh()}>重试</button>
+      </main>
+    );
+  storageScope(client.boot.centerId, client.boot.principalId);
+  return (
+    <WorkspaceApp
+      key={\`\${client.boot.centerId}:\${client.boot.principalId}\`}
+      client={client}
+    />
+  );
+}`;
 type Parsed = {
   source: SourceFile;
   nodes: Node[];
@@ -629,6 +729,457 @@ function scalarSyntax(node: Node): unknown {
     children.length ? children : node.getText(),
   ];
 }
+function finiteNavigationTree(node: Node): unknown {
+  const children: unknown[] = [];
+  node.forEachChild((child) => {
+    if (child.kind !== SyntaxKind.JsxText || child.getText().trim())
+      children.push(finiteNavigationTree(child));
+  });
+  return [
+    node.kind,
+    ...(isPrefixUnaryExpression(node) || isPostfixUnaryExpression(node)
+      ? [node.operator]
+      : []),
+    ...(isBinaryExpression(node) ? [node.operatorToken.kind] : []),
+    children.length ? children : node.getText(),
+  ];
+}
+function navigationProjection(
+  app: Parsed,
+  stable: Parsed,
+  adapter: Parsed,
+  fixed: Parsed,
+  hostContract: Parsed,
+): Parsed {
+  const edits: { start: number; end: number; text: string }[] = [];
+  const replace = (node: Node, text: string) =>
+    edits.push({ start: node.getStart(), end: node.end, text });
+  const tree = (node: Node) => JSON.stringify(finiteNavigationTree(node));
+  for (const name of [
+    "App",
+    "WorkspaceNavigationHost",
+    "PrivateNavigationBoundary",
+  ]) {
+    const actual = oneFunction(app, name),
+      expected = oneFunction(adapter, name);
+    assert.equal(
+      tree(actual.body!),
+      tree(expected.body!),
+      "new identity/zero-DOM sibling seam: " + name,
+    );
+    replace(actual, name === "App" ? fixedAppRoot : "");
+  }
+  for (const name of ["NavigationHostLifetime", "NavigationOriginLifetime"])
+    assert.equal(
+      tree(oneFunction(stable, name).body!),
+      tree(oneFunction(adapter, name).body!),
+      "new lifetime registered exactly once separately: " + name,
+    );
+  for (const [name, container] of [
+    ["NavigationHostLifetime", "WorkspaceNavigationHost"],
+    ["NavigationOriginLifetime", "PrivateNavigationBoundary"],
+  ] as const) {
+    const binding = imported(
+      app,
+      "./host/use-workspace-navigation-host.js",
+      name,
+    );
+    const rendered = app.nodes
+      .filter(isJsxSelfClosingElement)
+      .filter(
+        (node) =>
+          node.tagName.getText() === name &&
+          node.getStart() > oneFunction(app, container).getStart() &&
+          node.end < oneFunction(app, container).end,
+      );
+    assert.equal(
+      rendered.length,
+      1,
+      "actual imported lifetime consumer: " + name,
+    );
+    assert.ok(isIdentifier(rendered[0]!.tagName));
+    assert.equal(
+      app.symbols.get(rendered[0]!.tagName),
+      binding,
+      "actual imported lifetime consumer: " + name,
+    );
+  }
+  const connection = oneFunction(app, "WorkspaceConnection");
+  assert.equal(
+    connection.body!.statements.length,
+    1,
+    "connection extraction cannot hide an extra lifecycle or statement",
+  );
+  const originalConnection = oneFunction(fixed, "App").body!.statements[2]!;
+  assert.equal(originalConnection.kind, SyntaxKind.IfStatement);
+  const originalReturns: Node[] = [];
+  walk(originalConnection, (node) => {
+    if (isReturnStatement(node)) originalReturns.push(node);
+  });
+  assert.equal(originalReturns.length, 1);
+  assert.equal(
+    tree(connection.body!.statements[0]!),
+    tree(originalReturns[0]!),
+    "connection DOM/errors/retry are original, not a placeholder projection",
+  );
+  replace(connection, "");
+  for (const name of [
+    "useWorkspaceNavigationHost",
+    "useWorkspaceNavigationOrigin",
+  ]) {
+    const binding = imported(
+      app,
+      "./host/use-workspace-navigation-host.js",
+      name,
+    );
+    assert.equal(
+      app.nodes
+        .filter(isCallExpression)
+        .filter(
+          (node) =>
+            isIdentifier(node.expression) &&
+            app.symbols.get(node.expression) === binding,
+        ).length,
+      1,
+      "one actual " + name,
+    );
+  }
+  const hook = oneFunction(stable, "useWorkspaceNavigationHost");
+  const statements = hook.body!.statements;
+  assert.deepEqual(
+    statements.map((node) => {
+      if (node.kind === SyntaxKind.VariableStatement) {
+        const variables: Node[] = [];
+        node.forEachChild((list) => {
+          list.forEachChild((child) => {
+            if (isVariableDeclaration(child)) variables.push(child);
+          });
+        });
+        assert.equal(
+          variables.length,
+          1,
+          "Host construction only reviewed registrations/declarations",
+        );
+        return (variables[0] as ReturnType<typeof oneVariable>).name
+          .getText()
+          .replace(/\s+/g, "");
+      }
+      return isFunctionDeclaration(node)
+        ? `function:${node.name?.text}`
+        : isReturnStatement(node)
+          ? "return"
+          : "eager-statement";
+    }),
+    [
+      "[scope]",
+      "[storage]",
+      "{readLocal,writeLocal}",
+      "[recentContentVisits,setRecentContentVisits]",
+      "[prefs,setPrefs]",
+      "[persistenceNotice,setPersistenceNotice]",
+      "state",
+      "lifetime",
+      "function:activate",
+      "function:retire",
+      "function:currentProjection",
+      "function:isCurrentHost",
+      "function:captureCommit",
+      "function:permitted",
+      "function:writePreferences",
+      "function:recordContentVisit",
+      "return",
+    ],
+    "Host construction only reviewed registrations/declarations",
+  );
+  for (const name of ["readLocal", "persistenceNotice", "state"])
+    assert.equal(
+      tree(bindingVariable(stable, name)),
+      tree(bindingVariable(hostContract, name)),
+      "Host construction only reviewed registrations/declarations",
+    );
+  assert.equal(
+    tree(oneFunction(stable, "isCurrentHost").body!),
+    tree(oneFunction(hostContract, "isCurrentHost").body!),
+    "Host currentness cannot bypass identity/lifetime",
+  );
+  assert.equal(
+    tree(statements.at(-1)!),
+    tree(oneFunction(hostContract, "returned").body!.statements[0]!),
+    "Host returned navigation preserves currentness/single state",
+  );
+  const types = (parsed: Parsed) =>
+    parsed.nodes
+      .filter(isTypeAliasDeclaration)
+      .filter((node) => node.name.text === "Preferences");
+  assert.equal(
+    types(stable).length,
+    1,
+    "original persisted Preferences schema/defaults",
+  );
+  assert.equal(
+    tree(types(stable)[0]!.type),
+    tree(types(hostContract)[0]!.type),
+    "original persisted Preferences schema/defaults",
+  );
+  assert.equal(
+    tree(oneVariable(stable, "defaultPrefs")),
+    tree(oneVariable(hostContract, "defaultPrefs")),
+    "original persisted Preferences schema/defaults",
+  );
+  assert.equal(
+    tree(bindingVariable(stable, "scope")),
+    tree(bindingVariable(adapter, "scope")),
+    "only the three primitive identity values are captured",
+  );
+  const lifetimes = hook
+    .body!.statements.filter(
+      (node) => node.kind === SyntaxKind.VariableStatement,
+    )
+    .flatMap((node) => {
+      const values: Node[] = [];
+      walk(node, (child) => {
+        if (isVariableDeclaration(child) && child.name.getText() === "lifetime")
+          values.push(child);
+      });
+      return values;
+    });
+  assert.equal(lifetimes.length, 1);
+  assert.equal(
+    tree(lifetimes[0]!),
+    tree(oneVariable(adapter, "lifetime")),
+    "host lease captures no Boot, body, cache or pending state",
+  );
+  assert.equal(
+    hook
+      .body!.getText()
+      .includes("const state = useWorkspaceNavigationState();"),
+    true,
+  );
+  const ownerBinding = imported(
+    stable,
+    "./use-workspace-navigation.js",
+    "useWorkspaceNavigationState",
+  );
+  assert.equal(
+    stable.nodes
+      .filter(isCallExpression)
+      .filter(
+        (node) =>
+          isIdentifier(node.expression) &&
+          stable.symbols.get(node.expression) === ownerBinding,
+      ).length,
+    1,
+  );
+  assert.equal(
+    tree(bindingVariable(stable, "storage")),
+    tree(bindingVariable(adapter, "storage")),
+    "one explicit identity-scoped storage registration",
+  );
+  const hostAlias = bindingVariable(app, "prefs");
+  assert.equal(hostAlias.initializer?.getText(), "host");
+  assert.equal(
+    hostAlias.name.getText().replace(/\s/g, ""),
+    "{prefs,recentContentVisits,navigation}",
+  );
+  replace(hostAlias.parent.parent, "");
+  const storageAlias = bindingVariable(app, "readLocal");
+  assert.equal(storageAlias.initializer?.getText(), "host.storage");
+  replace(
+    storageAlias.parent.parent,
+    oneFunction(adapter, "originalStorage").body!.statements[0]!.getText() +
+      "\n" +
+      bindingVariable(stable, "recentContentVisits").parent.parent.getText(),
+  );
+  const preferences = bindingVariable(stable, "prefs");
+  const sidebar = oneVariable(app, "leftSidebarPreference");
+  edits.push({
+    start: sidebar.parent.parent.getStart(),
+    end: sidebar.parent.parent.getStart(),
+    text: preferences.parent.parent.getText() + "\n",
+  });
+  const hostRender = app.nodes
+    .filter(isJsxOpeningElement)
+    .find((node) => node.tagName.getText() === "ApplicationHost");
+  assert.ok(hostRender);
+  const script = hostRender.attributes.properties
+    .filter(isJsxAttribute)
+    .find((node) => node.name.getText() === "onOpenScript");
+  assert.ok(script);
+  const attr = (name: string, tag: string) =>
+    adapter.nodes
+      .filter(isJsxAttribute)
+      .find(
+        (node) =>
+          node.name.getText() === name &&
+          node.parent.parent.getText().startsWith("<" + tag),
+      )!;
+  assert.equal(tree(script), tree(attr("onOpenScript", "ApplicationHost")));
+  const oldScript = adapter.nodes
+    .filter(isJsxAttribute)
+    .filter((node) => node.name.getText() === "onOpenScript")[1]!;
+  replace(script, oldScript.getText());
+  const project = app.nodes
+    .filter(isJsxSelfClosingElement)
+    .filter(
+      (node) =>
+        node.tagName.getText() === "CreateDialog" &&
+        node.attributes.properties.some(
+          (prop) =>
+            isJsxAttribute(prop) && prop.name.getText() === "prepareCreated",
+        ),
+    );
+  assert.equal(project.length, 1);
+  for (const name of ["prepareCreated", "onCreated"]) {
+    const actual = project[0]!.attributes.properties
+      .filter(isJsxAttribute)
+      .find((node) => node.name.getText() === name)!;
+    assert.equal(tree(actual), tree(attr(name, "CreateDialog")));
+    replace(
+      actual,
+      name === "prepareCreated"
+        ? ""
+        : adapter.nodes
+            .filter(isJsxAttribute)
+            .filter((node) => node.name.getText() === "onCreated")[1]!
+            .getText(),
+    );
+  }
+  const primitives = reactHooks(stable);
+  assert.deepEqual(
+    stable.nodes
+      .filter(isCallExpression)
+      .filter(
+        (node) =>
+          isIdentifier(node.expression) &&
+          primitives.has(stable.symbols.get(node.expression)),
+      )
+      .map((node) => primitives.get(stable.symbols.get(node.expression))),
+    [
+      "useState",
+      "useState",
+      "useState",
+      "useState",
+      "useState",
+      "useRef",
+      "useLayoutEffect",
+      "useRef",
+      "useLayoutEffect",
+    ],
+    "new primitive lifetimes are separate, not folded into fixed old effect counts",
+  );
+  let text = app.source.getFullText();
+  for (const edit of edits.sort((a, b) => b.start - a.start))
+    text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+  return parse({ Projected: text }).get("Projected")!;
+}
+function checkedNavigationProjection(
+  app: Parsed,
+  stable: Parsed,
+  adapter: Parsed,
+  fixed: Parsed,
+  hostContract: Parsed,
+): Parsed {
+  try {
+    return navigationProjection(app, stable, adapter, fixed, hostContract);
+  } catch (error) {
+    assert.fail(`navigation-host-owner-seams: ${(error as Error).message}`);
+  }
+}
+// Keep the original prepared oracle live as well as the explicit new guard
+// contract. These are the old raw operation receipts/capture policy, not a
+// second implementation of the permitted/destination predicates.
+function originalPreparedPolicy(actual: Node, original: Node) {
+  const methods = (node: Node, name: string) => {
+    const found: Node[] = [];
+    walk(node, (child) => {
+      if (isMethodDeclaration(child) && child.name.getText() === name)
+        found.push(child);
+    });
+    assert.equal(found.length, 1, `one original prepared ${name}`);
+    return found[0]!;
+  };
+  const pending = (node: Node) => {
+    const found: Node[] = [];
+    walk(node, (child) => {
+      if (
+        isPropertyAssignment(child) &&
+        child.name.getText() === "pending" &&
+        isCallExpression(child.initializer) &&
+        child.initializer.expression.getText() !== "Promise.reject"
+      )
+        found.push(child.initializer);
+    });
+    return found.map(scalarSyntax);
+  };
+  const activate = (node: Node) => {
+    const found: CallExpression[] = [];
+    walk(node, (child) => {
+      if (
+        isCallExpression(child) &&
+        child.expression.getText() === "activateApplication"
+      )
+        found.push(child);
+    });
+    assert.equal(found.length, 1);
+    return found[0]!;
+  };
+  for (const name of ["launch", "close"]) {
+    const next = methods(actual, name),
+      old = methods(original, name);
+    assert.deepEqual(
+      pending(next),
+      pending(old),
+      `${name}: original promise-producing calls, arguments and order`,
+    );
+  }
+  const nextLaunch = activate(methods(actual, "launch")),
+    oldLaunch = activate(methods(original, "launch"));
+  assert.deepEqual(
+    nextLaunch.arguments.slice(0, 2).map(scalarSyntax),
+    oldLaunch.arguments.map(scalarSyntax),
+    "launch preserves original receipt id and captured generation",
+  );
+  const nextClose = methods(actual, "close"),
+    oldClose = methods(original, "close");
+  const activeCondition = (node: Node) => {
+    const found: Node[] = [];
+    walk(node, (child) => {
+      if (
+        isBinaryExpression(child) &&
+        child.left.getText() === "captured.activeId"
+      )
+        found.push(child);
+    });
+    assert.equal(found.length, 1);
+    return scalarSyntax(found[0]!);
+  };
+  assert.deepEqual(
+    activeCondition(nextClose),
+    activeCondition(oldClose),
+    "close retains captured active-instance policy",
+  );
+  const neighbours = (node: Node) => {
+    const found: Node[] = [];
+    walk(node, (child) => {
+      if (
+        isElementAccessExpression(child) &&
+        child.expression.getText() === "captured.instances"
+      )
+        found.push(child);
+    });
+    return found.map(scalarSyntax);
+  };
+  assert.deepEqual(
+    neighbours(nextClose),
+    neighbours(oldClose),
+    "close retains the original next-then-previous captured neighbour order",
+  );
+  assert.deepEqual(
+    scalarSyntax(activate(nextClose).arguments[1]!),
+    scalarSyntax(activate(oldClose).arguments[1]!),
+    "close retains original captured generation",
+  );
+}
 function exchangeReadContract(
   app: Parsed,
   owner: Parsed,
@@ -815,6 +1366,7 @@ function consumption(
   ownerText: string,
   subjectOwnerText = subjectOwner,
   exchangeReadOwnerText = exchangeReadOwner,
+  navigationHostText = stableNavigationHost,
 ) {
   const parsed = parse({
     App: appText,
@@ -827,6 +1379,10 @@ function consumption(
     ExchangeRead: exchangeReadOwnerText,
     FixedExchangeRead: fixedExchangeRead,
     ExchangeReadAdapter: exchangeReadAdapterText,
+    NavigationHost: navigationHostText,
+    NavigationAdapter: navigationAdapterText,
+    FixedAppRoot: fixedAppRoot,
+    NavigationHostContract: navigationHostContractText,
   });
   const app = parsed.get("App")!,
     host = parsed.get("Host")!,
@@ -977,9 +1533,16 @@ function consumption(
   const prepared = oneVariable(owner, "applicationActions");
   assert.equal(prepared.type?.getText(), "ApplicationNavigationActions");
   assert.deepEqual(
-    syntax(prepared.initializer!),
-    syntax(oneVariable(adapter, "applicationActions").initializer!),
-    "prepared union is synchronous and exposes only original raw promises",
+    scalarSyntax(prepared.initializer!),
+    scalarSyntax(
+      oneVariable(parsed.get("NavigationAdapter")!, "applicationActions")
+        .initializer!,
+    ),
+    "prepared union adds explicit retired/scope guards without altering raw promises or captured activation policy",
+  );
+  originalPreparedPolicy(
+    prepared.initializer!,
+    oneVariable(adapter, "applicationActions").initializer!,
   );
   const actionTypes = owner.nodes
     .filter(isTypeAliasDeclaration)
@@ -1012,21 +1575,28 @@ function consumption(
   assert.equal(returnedActions.length, 1);
   assert.ok(isShorthandPropertyAssignment(returnedActions[0]!));
 
-  const appContract = subjectContract(
+  const projectedApp = checkedNavigationProjection(
     app,
+    parsed.get("NavigationHost")!,
+    parsed.get("NavigationAdapter")!,
+    parsed.get("FixedAppRoot")!,
+    parsed.get("NavigationHostContract")!,
+  );
+  const appContract = subjectContract(
+    projectedApp,
     parsed.get("Subject")!,
     parsed.get("FixedSubject")!,
     parsed.get("SubjectAdapter")!,
   );
   exchangeReadContract(
-    app,
+    projectedApp,
     parsed.get("ExchangeRead")!,
     parsed.get("FixedExchangeRead")!,
     parsed.get("ExchangeReadAdapter")!,
     appContract,
   );
   assert.deepEqual(
-    structure(app, true, appContract),
+    structure(projectedApp, true, appContract),
     baseline.App,
     "original App JSX/effects/all React lifecycle registrations",
   );
@@ -1058,6 +1628,10 @@ const fixedExchangeRead = readFileSync(
   "tests/fixtures/exchange-read-receipts-4ce98b64.ts",
   "utf8",
 );
+const stableNavigationHost = readFileSync(
+  "apps/web/src/host/use-workspace-navigation-host.ts",
+  "utf8",
+);
 function changed(source: string, from: string, to: string) {
   assert.ok(source.includes(from), `negative fixture target absent: ${from}`);
   return source.replace(from, to);
@@ -1065,6 +1639,209 @@ function changed(source: string, from: string, to: string) {
 
 test("actual App/Host consume the typed prepared navigation owner and retain fixed cb7246a2 JSX/lifecycle", () => {
   consumption(app, host, owner);
+});
+test("six previously accepted Host/Origin counterfactuals reject before old-tree normalization for the exact source rule", () => {
+  const cases = [
+    {
+      name: "Host currentness",
+      stable: changed(
+        stableNavigationHost,
+        "return lifetime.current.active && !!currentProjection();",
+        "return true;",
+      ),
+      rule: "Host currentness cannot bypass identity/lifetime",
+    },
+    {
+      name: "returned navigation",
+      stable: changed(
+        stableNavigationHost,
+        "isCurrentHost() && state.isCurrent(generation)",
+        "state.isCurrent(generation)",
+      ),
+      rule: "Host returned navigation preserves currentness/single state",
+    },
+    {
+      name: "Host lifetime fake binding",
+      app:
+        changed(
+          app,
+          "  NavigationHostLifetime,",
+          "  NavigationHostLifetime as RealNavigationHostLifetime,",
+        ) + "\nfunction NavigationHostLifetime() { return null; }",
+      rule: "actual imported lifetime consumer: NavigationHostLifetime",
+    },
+    {
+      name: "Origin lifetime fake binding",
+      app:
+        changed(
+          app,
+          "  NavigationOriginLifetime,",
+          "  NavigationOriginLifetime as RealNavigationOriginLifetime,",
+        ) + "\nfunction NavigationOriginLifetime() { return null; }",
+      rule: "actual imported lifetime consumer: NavigationOriginLifetime",
+    },
+    {
+      name: "eager snapshot construction",
+      stable: changed(
+        stableNavigationHost,
+        "  const state = useWorkspaceNavigationState();",
+        "  getSnapshot();\n  const state = useWorkspaceNavigationState();",
+      ),
+      rule: "Host construction only reviewed registrations/declarations",
+    },
+    {
+      name: "persisted schema",
+      stable: changed(
+        stableNavigationHost,
+        "  subjectOpen: boolean;",
+        "  subjectOpen: string;",
+      ),
+      rule: "original persisted Preferences schema/defaults",
+    },
+  ];
+  for (const entry of cases) {
+    const candidateApp = entry.app ?? app,
+      candidateHost = entry.stable ?? stableNavigationHost;
+    parse({ CandidateApp: candidateApp, CandidateHost: candidateHost });
+    assert.throws(
+      () =>
+        consumption(
+          candidateApp,
+          host,
+          owner,
+          subjectOwner,
+          exchangeReadOwner,
+          candidateHost,
+        ),
+      (error) =>
+        error instanceof assert.AssertionError &&
+        error.message.startsWith("navigation-host-owner-seams:") &&
+        error.message.includes(entry.rule),
+      `${entry.name}: ${entry.rule}`,
+    );
+  }
+});
+test("new navigation lifetime/identity seams reject valid drift before expanding the fixed old tree", () => {
+  const appCandidates = [
+    changed(
+      app,
+      "csrfToken: client.boot.csrfToken,",
+      'csrfToken: "another-session",',
+    ),
+    changed(
+      app,
+      "key={JSON.stringify(nextIdentity)}",
+      "key={nextIdentity.centerId}",
+    ),
+    changed(app, "{client.boot ? (", "{true ? ("),
+    changed(
+      app,
+      "      <NavigationOriginLifetime origin={origin} />\n      <WorkspaceApp client={client} host={host} origin={origin} />",
+      "      <WorkspaceApp client={client} host={host} origin={origin} />\n      <NavigationOriginLifetime origin={origin} />",
+    ),
+    changed(
+      app,
+      "<NavigationHostLifetime host={host} />",
+      "<NavigationHostLifetime host={host} /><NavigationHostLifetime host={host} />",
+    ),
+    changed(app, '"正在打开工作空间…"', '"unapproved connecting placeholder"'),
+    changed(
+      app,
+      '  return (\n    <main className="connection-screen">',
+      '  useEffect(() => {}, []);\n  return (\n    <main className="connection-screen">',
+    ),
+    changed(
+      app,
+      "const { readLocal, writeLocal } = host.storage;",
+      "const { readLocal, writeLocal } = scopedStorage();",
+    ),
+    changed(
+      app,
+      'creating === "project" ? prepareCreatedProject : undefined',
+      "undefined",
+    ),
+    changed(
+      app,
+      '"./host/use-workspace-navigation-host.js"',
+      '"./host/fake-navigation-host.js"',
+    ),
+  ];
+  const stableCandidates = [
+    changed(
+      stableNavigationHost,
+      "scopedStorage(`${scope.centerId}:${scope.principalId}`)",
+      "scopedStorage()",
+    ),
+    changed(stableNavigationHost, "return host.retire;", "return () => {};"),
+    changed(stableNavigationHost, "return origin.retire;", "return () => {};"),
+    changed(
+      stableNavigationHost,
+      "useRef({ active: false, incarnation: 0 })",
+      "useRef({ active: false, incarnation: 0, boot: getSnapshot() })",
+    ),
+    changed(
+      stableNavigationHost,
+      "useState<NavigationIdentity>(() => ({ ...identity }))",
+      "useState<NavigationIdentity>(() => ({ ...identity, boot: getSnapshot() }))",
+    ),
+    changed(
+      stableNavigationHost,
+      "const state = useWorkspaceNavigationState();",
+      "const state = useWorkspaceNavigationState();\nuseLayoutEffect(() => {}, []);",
+    ),
+  ];
+  for (const [index, candidate] of appCandidates.entries()) {
+    // A syntactically invalid candidate or absent mutation target is not proof.
+    parse({ Candidate: candidate });
+    assert.throws(
+      () => consumption(candidate, host, owner),
+      (error) =>
+        error instanceof assert.AssertionError &&
+        error.message.startsWith("navigation-host-owner-seams:"),
+      `App lifetime seam candidate ${index}`,
+    );
+  }
+  for (const [index, candidate] of stableCandidates.entries()) {
+    parse({ Candidate: candidate });
+    assert.throws(
+      () =>
+        consumption(
+          app,
+          host,
+          owner,
+          subjectOwner,
+          exchangeReadOwner,
+          candidate,
+        ),
+      (error) =>
+        error instanceof assert.AssertionError &&
+        error.message.startsWith("navigation-host-owner-seams:"),
+      `Host lifetime seam candidate ${index}`,
+    );
+  }
+  const originalPreferenceDrift = changed(
+    stableNavigationHost,
+    "subjectOpen: p.subjectOpen === true,",
+    "subjectOpen: true,",
+  );
+  parse({ Candidate: originalPreferenceDrift });
+  assert.throws(
+    () =>
+      consumption(
+        app,
+        host,
+        owner,
+        subjectOwner,
+        exchangeReadOwner,
+        originalPreferenceDrift,
+      ),
+    (error) =>
+      error instanceof assert.AssertionError &&
+      error.message.startsWith(
+        "original App JSX/effects/all React lifecycle registrations",
+      ),
+    "moved original initializer still fails the unchanged old hook hash, not the new lifetime check",
+  );
 });
 test("App consumption rejects fake/shadowed ports and unapproved DOM or lifecycle changes", () => {
   const candidates = [
@@ -1109,11 +1886,13 @@ test("App consumption rejects fake/shadowed ports and unapproved DOM or lifecycl
       "const mirror = useState(null);\n  const positions = useRef(new Map<string, number>());",
     ),
   ];
-  for (const candidate of candidates)
+  for (const candidate of candidates) {
+    parse({ Candidate: candidate });
     assert.throws(
       () => consumption(candidate, host, owner),
       assert.AssertionError,
     );
+  }
 });
 test("Host rejects an async bridge, changed capture or relocated local busy/error/finally contract", () => {
   for (const candidate of [
@@ -1168,11 +1947,13 @@ test("Host rejects an async bridge, changed capture or relocated local busy/erro
       "import type { ApplicationNavigationActions }",
       "import type { OtherActions as ApplicationNavigationActions }",
     ),
-  ])
+  ]) {
+    parse({ Candidate: candidate });
     assert.throws(
       () => consumption(app, candidate, owner),
       assert.AssertionError,
     );
+  }
 });
 test("Host fixed-tree/lifecycle gate rejects pane remount, altered portal and new state/effects", () => {
   for (const candidate of [
@@ -1208,11 +1989,13 @@ test("Host fixed-tree/lifecycle gate rejects pane remount, altered portal and ne
       'attributeFilter: ["data-appearance", "data-accent"]',
       'attributeFilter: ["data-appearance", "data-unreviewed"]',
     ),
-  ])
+  ]) {
+    parse({ Candidate: candidate });
     assert.throws(
       () => consumption(app, candidate, owner),
       assert.AssertionError,
     );
+  }
 });
 test("prepared owner rejects async/raw-promise wrappers and changed captured activation/neighbor order", () => {
   for (const candidate of [
@@ -1233,19 +2016,21 @@ test("prepared owner rejects async/raw-promise wrappers and changed captured act
     ),
     changed(
       owner,
-      "activateApplication(receipt.entityId, captured.navigationId);",
+      "activateApplication(receipt.entityId, captured.navigationId, app);",
       "activateApplication(receipt.entityId);",
     ),
     changed(
       owner,
-      "captured.instances[index + 1]?.id ??",
-      "captured.instances[index - 1]?.id ??",
+      "captured.instances[index + 1] ??",
+      "captured.instances[index - 1] ??",
     ),
-  ])
+  ]) {
+    parse({ Candidate: candidate });
     assert.throws(
       () => consumption(app, host, candidate),
       assert.AssertionError,
     );
+  }
 });
 test("finite gate permits comments and unrelated non-UI/non-lifecycle helpers", () => {
   consumption(
@@ -1299,11 +2084,13 @@ test("Stage13 expansion rejects fake/shadowed imports, repeated or relocated hoo
       "onAllWorkChange={subjectInspector.setAllActivity}",
       "onAllWorkChange={(value) => subjectInspector.setAllActivity(value)}",
     ),
-  ])
+  ]) {
+    parse({ Candidate: candidate });
     assert.throws(
       () => consumption(candidate, host, owner),
       assert.AssertionError,
     );
+  }
 });
 
 test("Stage13 expands actual owner initializers/effect trees and rejects drift or an extra lifecycle", () => {
@@ -1330,11 +2117,13 @@ test("Stage13 expands actual owner initializers/effect trees and rejects drift o
       "useLayoutEffect(() => {}, []);\nconst [allActivity, setAllActivity] = useState(false);",
     ),
     subjectOwner + "\nexport function extraLifecycle() { useState(0); }\n",
-  ])
+  ]) {
+    parse({ Candidate: candidate });
     assert.throws(
       () => consumption(app, host, owner, candidate),
       assert.AssertionError,
     );
+  }
 });
 
 test("exchange read expansion rejects valid fake/mirror/miswired ports and displaced original registrations", () => {

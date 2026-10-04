@@ -8,25 +8,25 @@
 
 ### 已落地的边界
 
-| 阶段                 | 生产 owner 与消费方                                                                                   | 工程约束与范围                                                                                                                                                                             |
-| -------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 工作面解析           | `host/work-surface.ts` 的 `deriveWorkSurface`；`App.tsx` 消费只读派生值                               | `frontend-architecture.test.ts` 检查类型与依赖、禁止消费方重新计算 scope/key；保留原持久键、领域归属与 default/named 会话区别。提交 `10b19994`。                                           |
-| 交流意图与焦点       | `host/use-exchange-controller.ts`；App 保留发送、草稿及页面组合                                       | `exchange-controller-boundary.test.ts` 与 controller 回归约束显隐、固定、伸缩预览和焦点恢复；不更改 Runtime 输入或权限。提交 `b1e37aa2`。                                                  |
-| 导航状态与回执       | `host/use-workspace-navigation.ts` 的 state／commands／commit；App 保留唯一 prefs writer              | 四个原导航命令、同一 generation 与原 trail／焦点顺序；76 项相关 Node／门禁、44 项 Host 浏览器回归通过。只迁已审查边界，不把保留的其他业务入口称为已拆完；原窗复验待解锁。                  |
-| 应用导航与实例切换   | 同一 navigation commands owner；App 的应用入口与 ApplicationHost 的启动／关闭消费 typed actions       | Reader／剧本库／内容／Browser／激活／普通导航及原捕获邻居迁入；同步 prepared operation 保留原 Promise、Host 等待和 busy 清理，不新增状态、存储或 effect。有限旧实现对照与实际消费门禁。    |
-| 草稿生命周期         | `host/exchange-drafts.ts` 的三 state hooks／五 local commands；App 保留发送、导航与原退休 effect      | 原本机键、初始化位置、ref／render snapshot、逐步写入失败及 ID 保留；16 项逻辑、6 项有限 AST、4 项实际 React 挂载、31 项未改旧 Host 回归。不是新 store 或原子事务，原窗复验待解锁。         |
-| 发送协议编排         | `host/submit-exchange-draft.ts`；App 保留准备锁、草稿反馈与焦点                                       | 原四分支、Profile flush→scope→当前工作面复核、补充原身份与冻结重试字节、同步 receipt/catch/finally 端口；有限协议与实际接线门禁，不新增授权或发送入口。                                    |
-| 共享工作区顶栏       | `shell/WorkspaceTopbar.tsx`；App 保留原三个 portal target state/ref 与语义动作                        | 一个原生 header、原面包屑／显隐／导航按钮与三个常驻插槽，无新包装／key／样式；固定旧 markup、实际挂载及真实 App 导入／消费门禁，不接管领域画布或路由。                                     |
-| 会话历史查询         | `data/conversation-history.ts`；Client 持有唯一实例，workspace view 消费 head 策略                    | 原 scope／缓存／分页 promise、head 复用与合并实际迁入；身份、epoch、catalogVersion、授权清理及 Boot 发布仍在 Client。固定旧实现对照及有限依赖门禁，不是全查询层或新的授权 owner。          |
-| 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费              | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。                         |
-| Thread 状态图形      | `ExecutionStatusIcon.tsx`；ExecutionSidebar 与 ExecutionDialog 的原外层 span 消费                     | 七状态图形与缺省回退共用，原状态权威／标签／静态尺寸及运行波形保留，无新 DOM、effect 或请求；固定旧 oracle、实际 StrictMode 及有限门禁 7/7，原旧 Host 29/29，新合并回归 61/61。            |
-| 登记图形与透明按钮   | `design/control-icons.tsx`、`ui/IconButton.tsx`；SidebarToggle、ComposerToolButtons、ExchangeControls | 原七图形／两 role、单 native button、原 props/ref/key/compact 焦点。13 项 Node／门禁与 5 项实际隔离挂载通过；当前契约的相关矩阵 60/60 通过，有限治理，不包含全部菜单／按钮或原窗最终验收。 |
-| 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`                 | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                                                |
+| 阶段                 | 生产 owner 与消费方                                                                                                              | 工程约束与范围                                                                                                                                                                             |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 工作面解析           | `host/work-surface.ts` 的 `deriveWorkSurface`；`App.tsx` 消费只读派生值                                                          | `frontend-architecture.test.ts` 检查类型与依赖、禁止消费方重新计算 scope/key；保留原持久键、领域归属与 default/named 会话区别。提交 `10b19994`。                                           |
+| 交流意图与焦点       | `host/use-exchange-controller.ts`；App 保留发送、草稿及页面组合                                                                  | `exchange-controller-boundary.test.ts` 与 controller 回归约束显隐、固定、伸缩预览和焦点恢复；不更改 Runtime 输入或权限。提交 `b1e37aa2`。                                                  |
+| 导航状态与回执       | `host/use-workspace-navigation.ts` 的 state／commands／commit；`use-workspace-navigation-host.ts` 持有唯一 prefs／recency writer | 原 generation／trail 与焦点顺序保留；同身份刷新可接续已发起的导航，私有 UI、草稿与 DOM lease 仍退休。只迁已审查边界，实际 HTTP 资产与门禁证据见阶段 17；不是完整 App 拆分或原窗验收。      |
+| 应用导航与实例切换   | 同一 navigation commands owner；App 的应用入口与 ApplicationHost 的启动／关闭消费 typed actions                                  | Reader／剧本库／内容／Browser／激活／普通导航及原捕获邻居迁入；同步 prepared operation 保留原 Promise、Host 等待和 busy 清理，不新增状态、存储或 effect。有限旧实现对照与实际消费门禁。    |
+| 草稿生命周期         | `host/exchange-drafts.ts` 的三 state hooks／五 local commands；App 保留发送、导航与原退休 effect                                 | 原本机键、初始化位置、ref／render snapshot、逐步写入失败及 ID 保留；16 项逻辑、6 项有限 AST、4 项实际 React 挂载、31 项未改旧 Host 回归。不是新 store 或原子事务，原窗复验待解锁。         |
+| 发送协议编排         | `host/submit-exchange-draft.ts`；App 保留准备锁、草稿反馈与焦点                                                                  | 原四分支、Profile flush→scope→当前工作面复核、补充原身份与冻结重试字节、同步 receipt/catch/finally 端口；有限协议与实际接线门禁，不新增授权或发送入口。                                    |
+| 共享工作区顶栏       | `shell/WorkspaceTopbar.tsx`；App 保留原三个 portal target state/ref 与语义动作                                                   | 一个原生 header、原面包屑／显隐／导航按钮与三个常驻插槽，无新包装／key／样式；固定旧 markup、实际挂载及真实 App 导入／消费门禁，不接管领域画布或路由。                                     |
+| 会话历史查询         | `data/conversation-history.ts`；Client 持有唯一实例，workspace view 消费 head 策略                                               | 原 scope／缓存／分页 promise、head 复用与合并实际迁入；身份、epoch、catalogVersion、授权清理及 Boot 发布仍在 Client。固定旧实现对照及有限依赖门禁，不是全查询层或新的授权 owner。          |
+| 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费                                         | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。                         |
+| Thread 状态图形      | `ExecutionStatusIcon.tsx`；ExecutionSidebar 与 ExecutionDialog 的原外层 span 消费                                                | 七状态图形与缺省回退共用，原状态权威／标签／静态尺寸及运行波形保留，无新 DOM、effect 或请求；固定旧 oracle、实际 StrictMode 及有限门禁 7/7，原旧 Host 29/29，新合并回归 61/61。            |
+| 登记图形与透明按钮   | `design/control-icons.tsx`、`ui/IconButton.tsx`；SidebarToggle、ComposerToolButtons、ExchangeControls                            | 原七图形／两 role、单 native button、原 props/ref/key/compact 焦点。13 项 Node／门禁与 5 项实际隔离挂载通过；当前契约的相关矩阵 60/60 通过，有限治理，不包含全部菜单／按钮或原窗最终验收。 |
+| 应用图形与 Dock 手势 | `ApplicationIcon.tsx`；`application-dock-interaction.ts` 与 `use-application-dock.ts`                                            | 图形共用身份，手势沿用既有本机固定偏好，不卸载、不启动或发送；这是用户另行要求的交互增强，不是“外观不变”迁移。提交 `21fee71a`、`33bd788b`。                                                |
 
 主体检查器的生产状态、按工作现场的详情记忆、纯派生展示和完整语义动作现归
 `host/use-subject-inspector.ts`。四组注册与记忆 layout effect 仍在 App 的原
 相对位置，不新增 store、请求、偏好键或 effect；close 命令仍在 startup
-return 前可用。App 保留唯一 prefs writer、授权批注读取、实际 DOM 焦点与
+return 前可用。App 借用导航 Host 的唯一 prefs writer，保留授权批注读取、实际 DOM 焦点与
 导航／输入的原清理端口；SubjectSidebar、活动／目标列表、Logo 与顶栏消费
 同一动作 owner。图标、原 JSX、CSS 及真实数据来源不因此迁移或更改。
 
@@ -79,8 +79,23 @@ family 或局部回归说成全查询层、原 App 或整体验收。
 `28cecd4a` 提交：`local-saved-inputs.ts` 仅在双方 supplement 时认可候选省略
 原已保存 parallel 标记，
 严格全字段比较后返回原 operation；不更改首发默认、权限、发送入口或 UI。
-该修复不是新持久化格式或整层 query facade。当前原页面矩阵仍有三条真实
-项目新增／权限失效红项，完整前端工程及原 App 最终验收不能据此称为完成。
+该修复不是新持久化格式或整层 query facade。此前项目新增／关联及权限
+失效红项由后续阶段分别复现、修复和复验；历史失败报告保留，不追写为成功。
+完整前端工程及原 App 最终验收不能据局部页面矩阵称为完成。
+
+导航生命周期的唯一宿主现为 `host/use-workspace-navigation-host.ts`。
+它只保留 center／principal／CSRF 三个身份原语，沿用原 preferences、recency
+与 navigation 注册，不缓存 Boot、正文、草稿、授权目录或 pending 请求。
+同一登录身份的保护投影清空会卸载完整私有工作树，Host 不因此退休；登出、
+身份／CSRF 更换或 Host 卸载则退休。两个零 DOM sibling 在真实布局提交时
+分别启用 Host 和 private origin，不能在 render 中修改 active 代次。
+
+已发起导航的 continuation 必须检查当前授权目的地与实例／对象版本，并在
+函数 updater 执行时重新检查 lease。旧 private 的草稿、焦点、弹窗与提示回调
+不能移接到新树。项目新建回执只允许接续原 default-conversation 位置，
+不自动建 Session、带走另一份草稿或伪造完成。普通切页也不能取消已选择的
+图片创建；它只阻止迟到结果抢回导航，真实命令仍由 Client／服务核权限。
+这批的自动证明、明确测试校准与原 App 待恢复边界见实施记录，不增加视觉规范。
 
 详细测试、原 App 验收与尚未验证的边界见[实施记录](./13-implementation-status.md)。上述提交只证明对应阶段，尚未替代下文所有目标；完整 query facade、跨领域 presentation 和全产品样式 owner 仍未完成。本文未规定新的图标尺寸、间距、色彩或动效审美标准。
 
@@ -201,7 +216,8 @@ Client 仍拥有 typed gateway、实际授权、outbox、首次会话事务与�
 首段生产迁移已落地：`useWorkspaceNavigationState` 只拥有原状态／ref，无 effects；
 `createWorkspaceNavigationCommands` 是无构造副作用的 render-local 命令闭包；
 `useWorkspaceNavigationCommit` 在原 trail／快捷键位置注册原 effects。
-同一 generation 仍由 exchange 与 ApplicationHost 消费，原 prefs writer 仍在 App；
+同一 generation 仍由 exchange 与 ApplicationHost 消费；阶段 17 将原 prefs writer
+与 recency／导航注册移入同身份稳定 Host，App 借用窄端口；
 不通过整个 setter bag、latest 快照或新增 store 镜像宿主。偏好 patch 与返回的
 raw spread 语义分开。`workspace-navigation-boundary.test.ts` 约束这条真实 seam，
 `workspace-navigation.test.ts` 验证原回执／错误／历史契约，不覆盖所有 App 业务入口。

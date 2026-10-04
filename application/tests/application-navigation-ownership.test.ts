@@ -32,6 +32,7 @@ import {
   type FixedNavigationBindings,
   type FixedHostBindings,
 } from "./fixtures/application-navigation-cb7246a2.js";
+import type { Boot } from "../apps/web/src/client.js";
 
 const now = "2026-10-04T00:00:00.000Z";
 type Mode = "fixed" | "production";
@@ -120,6 +121,41 @@ function fixture(mode: Mode, scenario: Scenario = {}) {
         ? state.projects.find((p) => p.kind === scenario.project)
         : state.projects.find((p) => p.id === "first-project");
   const capturedPrefs = initialPreferences();
+  // A separate finite current-authorized catalog: mutating render-captured
+  // state/boot below is not a revocation. Domain revocation has dedicated
+  // negative tests in workspace-navigation-continuation.test.ts.
+  const authorized = structuredClone(state);
+  for (const id of [
+    "unloaded-instance",
+    "closed",
+    "missing",
+    "a",
+    "b",
+    "c",
+    "neighbour",
+  ])
+    authorized.applicationInstances.push(instance(id));
+  if (scenario.active) {
+    authorized.applicationInstances = authorized.applicationInstances.filter(
+      (value) => value.id !== scenario.active!.id,
+    );
+    authorized.applicationInstances.push(structuredClone(scenario.active));
+  }
+  const projection = {
+    centerId: "fixture-center",
+    principalId: "local-owner",
+    csrfToken: "fixture-session",
+    workspace: authorized,
+    scriptLibrary: [],
+  } as unknown as Boot;
+  let hostAlive = true;
+  const current = () =>
+    hostAlive &&
+    projection.centerId === "fixture-center" &&
+    projection.principalId === "local-owner" &&
+    projection.csrfToken === "fixture-session"
+      ? projection
+      : null;
   let preferences = capturedPrefs;
   let perform: (operation: Operation) => Promise<Receipt> = async () =>
     receipt();
@@ -174,6 +210,30 @@ function fixture(mode: Mode, scenario: Scenario = {}) {
       operations.push(operation);
       events.push(["execute", structuredClone(operation)]);
       const pending = perform(operation);
+      // Observe acknowledgement without wrapping the exact execute Promise,
+      // adding an await, or changing either old/new Host continuation. The
+      // real transport publishes authorized instances at command receipt.
+      void pending.then(
+        (result) => {
+          if (operation.type === "launch-application") {
+            authorized.applicationInstances =
+              authorized.applicationInstances.filter(
+                (value) => value.id !== result.entityId,
+              );
+            authorized.applicationInstances.push({
+              ...instance(result.entityId, operation.applicationId),
+              workspaceId: operation.workspaceId,
+              applicationVersion: operation.applicationVersion,
+            });
+          } else if (operation.type === "close-application") {
+            authorized.applicationInstances =
+              authorized.applicationInstances.filter(
+                (value) => value.id !== operation.instanceId,
+              );
+          }
+        },
+        () => {},
+      );
       executePromises.push(pending);
       return pending;
     },
@@ -237,15 +297,42 @@ function fixture(mode: Mode, scenario: Scenario = {}) {
       },
       preferences: capturedPrefs,
       prefer,
-      writePreferences(update, failure) {
-        preferences = update(preferences);
-        events.push(["write", failure]);
-      },
       shell: {
         finishCreation: clearCreation,
         dismissExecutionInspector: dismissExecutions,
       },
-      recordContentVisit: (id) => events.push(["content-visit", id]),
+      continuation: {
+        isActive: () => !!current(),
+        currentProjection: current,
+        captureCommit() {
+          const identity = [
+            projection.centerId,
+            projection.principalId,
+            projection.csrfToken,
+          ];
+          return (value) =>
+            hostAlive &&
+            value.centerId === identity[0] &&
+            value.principalId === identity[1] &&
+            value.csrfToken === identity[2];
+        },
+        prefer(change, intent, destination) {
+          const before = current();
+          if (!before || !destination(before)) return;
+          prefer(change);
+          intent.generation = owner.navigationGeneration.current;
+        },
+        writePreferences(update, failure, destination) {
+          const before = current();
+          if (!before || !destination(before)) return;
+          preferences = update(preferences);
+          events.push(["write", failure]);
+        },
+        recordContentVisit(id, destination) {
+          const before = current();
+          if (before && destination(before)) events.push(["content-visit", id]);
+        },
+      },
       onNotice: notice,
       application: {
         historyVisible: scenario.historyVisible ?? true,

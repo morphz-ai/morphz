@@ -23,6 +23,7 @@ import {
   readerApplication,
   scriptStudioApplication,
 } from "../packages/core/src/applications.js";
+import type { Boot } from "../apps/web/src/client.js";
 
 type Options = Parameters<
   typeof createWorkspaceNavigationCommands<NavigationPreferences>
@@ -97,6 +98,27 @@ function fixture(change: Partial<NavigationPreferences> = {}) {
   const notices: string[] = [];
   const patches: Partial<NavigationPreferences>[] = [];
   let preferences = prefs(change);
+  // Current authorization is a finite controlled projection, distinct from
+  // the render capture. This is port-level coverage, not a real Client proof.
+  const authorized = initialWorkspace(now);
+  authorized.artifacts = ["document-A", "reader-object", "excluded"].map((id) =>
+    artifact(id),
+  );
+  const projection = {
+    centerId: "fixture-center",
+    principalId: "local-owner",
+    csrfToken: "fixture-session",
+    workspace: authorized,
+    scriptLibrary: [{ ...script().production }],
+  } as unknown as Boot;
+  let alive = true;
+  const current = () =>
+    alive &&
+    projection.centerId === "fixture-center" &&
+    projection.principalId === "local-owner" &&
+    projection.csrfToken === "fixture-session"
+      ? projection
+      : null;
   const owner: NavigationOwner = {
     navigationGeneration: { current: 0 },
     openingObject: false,
@@ -157,6 +179,20 @@ function fixture(change: Partial<NavigationPreferences> = {}) {
     },
     async execute(operation) {
       events.push(["execute", operation]);
+      if (operation.type === "launch-application")
+        authorized.applicationInstances = [
+          {
+            id: "instance-A",
+            workspaceId: operation.workspaceId,
+            applicationId: operation.applicationId,
+            applicationVersion: operation.applicationVersion,
+            revision: 1,
+            state: {},
+            status: "open",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ];
       return {
         commandId: "command-A",
         entityId: "instance-A",
@@ -184,10 +220,6 @@ function fixture(change: Partial<NavigationPreferences> = {}) {
       }
       preferences = mergeNavigationPreferences(preferences, change);
     },
-    writePreferences(update, failure) {
-      preferences = update(preferences);
-      events.push(["write", failure, preferences]);
-    },
     shell: {
       finishCreation() {
         events.push(["finish-creation"]);
@@ -196,8 +228,37 @@ function fixture(change: Partial<NavigationPreferences> = {}) {
         events.push(["dismiss-executions"]);
       },
     },
-    recordContentVisit(id) {
-      events.push(["visit", id]);
+    continuation: {
+      isActive: () => !!current(),
+      currentProjection: current,
+      captureCommit() {
+        const identity = [
+          projection.centerId,
+          projection.principalId,
+          projection.csrfToken,
+        ];
+        return (value) =>
+          alive &&
+          value.centerId === identity[0] &&
+          value.principalId === identity[1] &&
+          value.csrfToken === identity[2];
+      },
+      prefer(change, intent, destination) {
+        const before = current();
+        if (!before || !destination(before)) return;
+        options.prefer(change);
+        intent.generation = owner.navigationGeneration.current;
+      },
+      writePreferences(update, failure, destination) {
+        const before = current();
+        if (!before || !destination(before)) return;
+        preferences = update(preferences);
+        events.push(["write", failure, preferences]);
+      },
+      recordContentVisit(id, destination) {
+        const before = current();
+        if (before && destination(before)) events.push(["visit", id]);
+      },
     },
     onNotice(message) {
       notices.push(message);

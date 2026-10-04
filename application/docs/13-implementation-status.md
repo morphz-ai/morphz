@@ -1,5 +1,65 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 17：导航生命周期与回执的宿主所有权
+
+`host/use-workspace-navigation-host.ts` 成为 preferences、recent-content 和
+navigation 注册的唯一 owner。原键、初始化、偏好合并、原 state/ref 与 trail
+算法保留；只捕获 center／principal／CSRF 三个身份原语，不保留保护 Boot、
+正文、草稿、目录权限或 pending 请求。同身份刷新清空保护投影时仍卸载
+完整私有工作树，Host 本身可以接续已发起的导航；登出、身份／CSRF 更换、
+Host 卸载及 StrictMode 退休代次都使旧回调失效。
+
+两个实际零 DOM sibling 在 private child 之前提交 Host／origin layout lease；
+不在 render 写 active、不增包装 DOM、延迟 effect 或 insertion effect。
+普通 private 草稿、焦点、弹窗和提示回调不能移接新树。导航的 mandatory
+continuation 按当前授权投影核项目、原件／确切版本与应用实例，并在真实
+函数 updater 执行时再核 lifetime／目的地；没有仅测试使用的 fallback。
+新建项目只接续原 default-conversation 位置，不自动创建 Session 或迁走草稿。
+
+根最终导航／门禁／实际 React／图片边界组合 106/106，零跳过、失败和取消；
+全量 Node checkpoint 为 1672 项，1502 通过、170 明确跳过、零失败／取消。
+浏览器可用性、PostgreSQL 与原生能力的跳过仍是能力边界，不称全部集成通过。
+完整构建、类型、限定文件格式和差异检查通过。
+
+独立复核发现上传后使用 navigation generation 作为图片创建准入，会在
+普通换页时取消已经明确选择的原项目创作。本轮修正为 upload 后仅核原
+private origin；原 Client／服务继续核写入授权，创建后才用 generation 抑制
+迟到打开。真实生产函数、固定旧函数与修复前反例的控制端口回归 9/9；
+这不是 HTTP 上传字节、原生选择器或服务权限证明。
+
+固定 Git 的原导航／draft／prepared oracle 和 `cb7246a2` App／Host
+DOM、hook、effect 摘要不重算。新 Host／origin 身份、schema/defaults、
+inert 构造、两阶段 updater、实际 Lifetime import→JSX symbol、唯一 state
+及返回端口单独严格核后才允许旧树有限展开。再审曾发现六个合法反例被
+旧版门禁接受，已补各自具体拒绝规则，不以 missing target／parse error
+冒充拒绝。真实 App 边界函数挂载包含 child-layout、同身份 clear、身份
+ABA 与放弃 Suspense render；其 private WorkspaceApp／Client 为控制端口，
+不能独立当作完整生产 App 或权限验收。
+
+完整编译 App＋真实 Client／隔离 HTTP／SQLite 的跨页面矩阵最终 53/53，
+零失败、跳过和 flaky。固定旧 53 项为 52/53，原创建项目后无 heading
+的失败保留；同一最终校准导航用例在旧版仍失败。校准只替换撤下的
+`.context-chip`：保存后核当前关联的确切标题，同时在已保存消息中核 v1
+引用，原正文、页面、草稿、Session、预算仍在。曾错误套用未发草稿的
+v1 scope 造成的中间红项及 trace 也保留；不改生产去迎合该错误假设。
+此无 Runtime fixture 的消息是本机“已保存／未发送”，不冒称 Host 投递。
+
+另一个字节不变的原剧本归属用例，旧 Host 为“全部剧本”失败，新最终
+Host 1/1，通过新项目标题、两部剧本、原件／未保存草稿、刷新恢复和
+无多余 Session／输入的原断言。逐例核真实 HTTP 三份资产 200 和完整 SHA，
+最终 JS 为 `46e1568adc6eb59a6207959f73e1cc19093dc31ce08e9b9016a5bf75869c62a3`；
+CSS 仍为 `6b1af0246ec4f33cf7cf5de0e3fb00d4cb9158e16d257d5fbc390293feb2027d`，
+preload 也保持旧字节。私有 fixture 仅替换 webRoot，不替换 API／领域模型。
+首次矩阵的可变私有资产／source-only topbar 观察配置错误报告另存，不算旧新证明。
+
+根的构建、专项／全量日志、固定旧新报告、逐例真实资产审计与失败 trace
+在 `/tmp/morphz-navigation-host-root.1fJOBs`，最终编译／矩阵用 `upload-fix`
+命名；门禁最初冻结与再审、图片固定 Git 证明分别保留独立目录。Topbar
+5/5 是实际隔离组件和 CSS zoom，不冒充原生桌面缩放；本轮未改变 UI 图标、
+布局、动效或视觉规范。原 App 仍待定点退出恢复授权，没有开第二个人工
+App／profile／center，也没有终止独立 Runtime。输入工具新 owner 尚未
+接线，不混入本阶段提交；其余宿主、数据展示、共享组件及样式迁移继续。
+
 ## 2026-10-04 内容目录回归：核对已撤入口与现行输入关联
 
 固定旧／新内容读取 Host 的最初结果仍各为 6/8；原报告及失败 trace

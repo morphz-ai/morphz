@@ -56,6 +56,10 @@ export type PreferenceWriter<P> = (
   update: (previous: P) => P,
   failure: "settings" | "position",
 ) => void;
+// A current authorized projection witness, not an identity authority or cache.
+export type CurrentDestination = (
+  projection: NonNullable<ReturnType<WorkspaceClient["getSnapshot"]>>,
+) => boolean;
 
 export function isNavigationPreferenceChange(
   change: Partial<NavigationPreferences>,
@@ -213,6 +217,24 @@ type NavigationClient = Pick<
   "resolveArtifact" | "resolveScriptLocation" | "execute"
 >;
 type ApplicationReceipt = Awaited<ReturnType<NavigationClient["execute"]>>;
+/** One command's changing intent witness, not a persisted navigation queue. */
+export type NavigationIntent = { generation: number };
+type Continuation<P> = {
+  isActive(): boolean;
+  currentProjection(): ReturnType<WorkspaceClient["getSnapshot"]>;
+  captureCommit(): CurrentDestination;
+  prefer(
+    change: Partial<P>,
+    intent: NavigationIntent,
+    destination: CurrentDestination,
+  ): void;
+  writePreferences(
+    update: (previous: P) => P,
+    failure: "settings" | "position",
+    destination: CurrentDestination,
+  ): void;
+  recordContentVisit(id: string, destination: CurrentDestination): void;
+};
 
 /** Facts captured by ApplicationHost's render, not a refreshed projection or
  * an invocation-time generation. Closing only changes the visible selection. */
@@ -252,11 +274,10 @@ export function createWorkspaceNavigationCommands<
   surface,
   preferences: prefs,
   prefer,
-  writePreferences,
   shell,
-  recordContentVisit,
   onNotice,
   application,
+  continuation,
 }: {
   owner: NavigationOwner;
   client: NavigationClient;
@@ -264,9 +285,7 @@ export function createWorkspaceNavigationCommands<
   surface: NavigationSurface;
   preferences: P;
   prefer: (change: Partial<NavigationPreferences>) => void;
-  writePreferences: PreferenceWriter<P>;
   shell: { finishCreation(): void; dismissExecutionInspector(): void };
-  recordContentVisit: (id: string) => void;
   onNotice: (message: string) => void;
   application: {
     historyVisible: boolean;
@@ -274,10 +293,134 @@ export function createWorkspaceNavigationCommands<
     readCapturedInstance(id: string): ApplicationInstance | undefined;
     selectAllContent(): void;
   };
+  continuation: Continuation<P>;
 }) {
   const { project, applicationWorkspaceOpen, exchangeKey, activeInstance } =
     surface;
+  function canStart(expected?: number) {
+    return expected === undefined
+      ? continuation.isActive()
+      : owner.isCurrent(expected);
+  }
+  function capture(generation: number) {
+    return { generation, lifetime: continuation.captureCommit() };
+  }
+  type Intent = ReturnType<typeof capture>;
+  function guard(
+    intent: Intent,
+    destination: CurrentDestination,
+  ): CurrentDestination {
+    return (current) =>
+      owner.isCurrent(intent.generation) &&
+      intent.lifetime(current) &&
+      destination(current);
+  }
+  function permitted(intent: Intent, destination: CurrentDestination) {
+    const current = continuation.currentProjection();
+    return !!current && guard(intent, destination)(current);
+  }
+  function privateLifetimePermitted(
+    intent: Intent,
+    destination: CurrentDestination,
+  ) {
+    const current = continuation.currentProjection();
+    return (
+      continuation.isActive() &&
+      !!current &&
+      intent.lifetime(current) &&
+      destination(current)
+    );
+  }
+  function publish(
+    change: Partial<NavigationPreferences>,
+    intent: Intent,
+    destination: CurrentDestination,
+  ) {
+    if (!permitted(intent, destination)) return;
+    continuation.prefer(
+      change as Partial<P>,
+      intent,
+      guard(intent, destination),
+    );
+  }
+  function visit(id: string, intent: Intent, destination: CurrentDestination) {
+    continuation.recordContentVisit(id, guard(intent, destination));
+  }
+  function privateShell(action: () => void) {
+    if (continuation.isActive()) action();
+  }
+  function notice(message: string) {
+    privateShell(() => onNotice(message));
+  }
+  function projectAvailable(
+    current: Parameters<CurrentDestination>[0],
+    id: string,
+  ) {
+    return current.workspace.projects.some(
+      (value) => value.id === id && !value.deletedAt,
+    );
+  }
+  function instanceAvailable(
+    current: Parameters<CurrentDestination>[0],
+    id: string,
+    workspaceId: string,
+    app?: Pick<ApplicationCatalogEntry, "id" | "version">,
+  ) {
+    return (
+      projectAvailable(current, workspaceId) &&
+      current.workspace.applicationInstances.some(
+        (value) =>
+          value.id === id &&
+          value.workspaceId === workspaceId &&
+          value.status === "open" &&
+          (!app ||
+            (value.applicationId === app.id &&
+              value.applicationVersion === app.version)),
+      )
+    );
+  }
+  function artifactAvailable(
+    current: Parameters<CurrentDestination>[0],
+    id: string,
+    workspaceId: string,
+    revision?: number,
+  ) {
+    return (
+      projectAvailable(current, workspaceId) &&
+      current.workspace.artifacts.some(
+        (value) =>
+          value.id === id &&
+          value.projectId === workspaceId &&
+          (revision === undefined ||
+            value.revision === revision ||
+            value.versions.some((version) => version.revision === revision)),
+      )
+    );
+  }
+  function scriptAvailable(
+    current: Parameters<CurrentDestination>[0],
+    id: string,
+    workspaceId: string,
+    contentId?: string,
+    catalogRevision?: number,
+    activityRevision?: number,
+  ) {
+    return (
+      projectAvailable(current, workspaceId) &&
+      current.scriptLibrary.some(
+        (value) =>
+          value.id === id &&
+          value.projectId === workspaceId &&
+          (contentId === undefined || value.contentId === contentId) &&
+          (catalogRevision === undefined ||
+            value.catalogRevision === catalogRevision) &&
+          (activityRevision === undefined ||
+            value.activityRevision === activityRevision),
+      )
+    );
+  }
   async function travel(direction: number) {
+    if (!canStart()) return;
     const current = owner.trail.current,
       index = current.index + direction,
       next = current.places[index];
@@ -287,10 +430,13 @@ export function createWorkspaceNavigationCommands<
       !next.scriptLocation &&
       !workspace?.projects.some((p) => p.id === next.projectId)
     ) {
-      onNotice("原位置已不可用或无访问权限。");
+      notice("原位置已不可用或无访问权限。");
       return;
     }
     const generation = owner.beginOpen();
+    const intent = capture(generation);
+    let destination: CurrentDestination = (current) =>
+      projectAvailable(current, next.projectId);
     try {
       if (next.artifactId) {
         const resolved = await client.resolveArtifact(
@@ -298,38 +444,78 @@ export function createWorkspaceNavigationCommands<
           next.artifactRevision ?? undefined,
         );
         if (!resolved) throw new Error("原位置已不可用或无访问权限。");
+        const projectId = resolved.projectId;
+        destination = (current) =>
+          artifactAvailable(
+            current,
+            next.artifactId!,
+            projectId,
+            next.artifactRevision ?? resolved.revision,
+          );
       }
       if (next.scriptLocation) {
         const resolved = await client.resolveScriptLocation(
           next.scriptLocation,
         );
         if (!resolved) throw new Error("原位置已不可用或无访问权限。");
+        const { id, projectId, contentId, catalogRevision, activityRevision } =
+          resolved.production;
+        const objectDestination = destination;
+        destination = (current) =>
+          (!next.artifactId || objectDestination(current)) &&
+          scriptAvailable(
+            current,
+            id,
+            projectId,
+            contentId,
+            catalogRevision,
+            activityRevision,
+          );
       }
-      if (!owner.isCurrent(generation)) return;
-      shell.finishCreation();
+      if (!permitted(intent, destination)) return;
+      privateShell(shell.finishCreation);
       owner.setExplicitWebsiteIntent(null);
-      shell.dismissExecutionInspector();
+      privateShell(shell.dismissExecutionInspector);
       owner.restorePlace(current, index, next, () => {
-        writePreferences((previous) => ({ ...previous, ...next }), "position");
+        continuation.writePreferences(
+          (previous) => ({ ...previous, ...next }),
+          "position",
+          guard(intent, destination),
+        );
       });
     } catch (cause) {
       if (owner.isCurrent(generation))
-        onNotice(
-          cause instanceof Error ? cause.message : "原位置暂时无法读取。",
-        );
+        notice(cause instanceof Error ? cause.message : "原位置暂时无法读取。");
     } finally {
       owner.finishOpen(generation);
     }
   }
-  async function openScriptLocation(target: ScriptLocation) {
+  async function openScriptLocation(
+    target: ScriptLocation,
+    expectedNavigation?: number,
+  ) {
+    if (!canStart(expectedNavigation)) return;
     const generation = owner.beginOpen();
+    const intent = capture(generation);
     try {
       const resolved = await client.resolveScriptLocation(target);
       if (!owner.isCurrent(generation)) return;
       if (!resolved) {
-        onNotice("剧本结果已不可用或无访问权限。");
+        notice("剧本结果已不可用或无访问权限。");
         return;
       }
+      const { id, projectId, contentId, catalogRevision, activityRevision } =
+        resolved.production;
+      const productionDestination: CurrentDestination = (current) =>
+        scriptAvailable(
+          current,
+          id,
+          projectId,
+          contentId,
+          catalogRevision,
+          activityRevision,
+        );
+      if (!permitted(intent, productionDestination)) return;
       const receipt = await client.execute({
         type: "launch-application",
         workspaceId: resolved.production.projectId,
@@ -337,21 +523,34 @@ export function createWorkspaceNavigationCommands<
         applicationVersion: scriptStudioApplication.version,
         scriptTarget: target,
       });
-      if (!owner.isCurrent(generation)) return;
-      shell.finishCreation();
+      const destination: CurrentDestination = (current) =>
+        productionDestination(current) &&
+        instanceAvailable(
+          current,
+          receipt.entityId,
+          projectId,
+          scriptStudioApplication,
+        );
+      if (!permitted(intent, destination)) return;
+      privateShell(shell.finishCreation);
       if (resolved.production.contentId)
-        recordContentVisit(resolved.production.contentId);
-      prefer({
-        artifactId: null,
-        scriptLocation: { ...target, requestId: receipt.commandId },
-        applications: {
-          ...prefs.applications,
-          [resolved.production.projectId]: receipt.entityId,
+        visit(resolved.production.contentId, intent, destination);
+      publish(
+        {
+          artifactId: null,
+          scriptLocation: { ...target, requestId: receipt.commandId },
+          applications: {
+            ...prefs.applications,
+            [resolved.production.projectId]: receipt.entityId,
+          },
+          interactions: { [exchangeKey]: "hidden" },
         },
-        interactions: { [exchangeKey]: "hidden" },
-      });
+        intent,
+        destination,
+      );
+      return owner.navigationGeneration.current;
     } catch (error) {
-      if (owner.isCurrent(generation)) onNotice((error as Error).message);
+      if (owner.isCurrent(generation)) notice((error as Error).message);
     } finally {
       owner.finishOpen(generation);
     }
@@ -365,7 +564,9 @@ export function createWorkspaceNavigationCommands<
     reading?: ReadingLocation,
     expectedQuote?: string,
   ) {
+    if (!canStart()) return;
     const generation = owner.beginOpen();
+    const intent = capture(generation);
     try {
       const opened = await client.resolveArtifact(id, revision);
       if (!owner.isCurrent(generation)) return;
@@ -383,6 +584,14 @@ export function createWorkspaceNavigationCommands<
         opened.content.kind === "publication" ||
         opened.content.kind === "pdf";
       const application = readingView ? readerApplication : objectsApplication;
+      const objectDestination: CurrentDestination = (current) =>
+        artifactAvailable(
+          current,
+          id,
+          workspaceId,
+          revision ?? opened.revision,
+        );
+      if (!permitted(intent, objectDestination)) return;
       const result = applicationWorkspaceOpen
         ? await client.execute({
             type: "launch-application",
@@ -392,41 +601,54 @@ export function createWorkspaceNavigationCommands<
             artifactId: id,
           })
         : null;
-      if (!owner.isCurrent(generation)) return;
-      shell.finishCreation();
-      prefer({
-        artifactId: id,
-        artifactRevision: revision ?? null,
-        artifactPage: page ?? null,
-        readerMode: readingView,
-        readingTarget: reading
-          ? {
-              artifactId: id,
-              revision: revision ?? opened.revision,
-              location: reading,
-              requestId: crypto.randomUUID(),
-            }
-          : null,
-        ...(prefs.interactions?.[exchangeKey] === "history"
-          ? { interactions: { [exchangeKey]: "recent" as const } }
-          : {}),
-        ...(result
-          ? {
-              applications: {
-                ...prefs.applications,
-                [workspaceId]: result.entityId,
-              },
-            }
-          : {}),
-      });
-      if (isContentArtifact(opened)) recordContentVisit(id);
+      const destination: CurrentDestination = (current) =>
+        objectDestination(current) &&
+        (!result ||
+          instanceAvailable(
+            current,
+            result.entityId,
+            workspaceId,
+            application,
+          ));
+      if (!permitted(intent, destination)) return;
+      privateShell(shell.finishCreation);
+      publish(
+        {
+          artifactId: id,
+          artifactRevision: revision ?? null,
+          artifactPage: page ?? null,
+          readerMode: readingView,
+          readingTarget: reading
+            ? {
+                artifactId: id,
+                revision: revision ?? opened.revision,
+                location: reading,
+                requestId: crypto.randomUUID(),
+              }
+            : null,
+          ...(prefs.interactions?.[exchangeKey] === "history"
+            ? { interactions: { [exchangeKey]: "recent" as const } }
+            : {}),
+          ...(result
+            ? {
+                applications: {
+                  ...prefs.applications,
+                  [workspaceId]: result.entityId,
+                },
+              }
+            : {}),
+        },
+        intent,
+        destination,
+      );
+      if (isContentArtifact(opened)) visit(id, intent, destination);
       // prefer synchronously invalidates the old intent. Consumers need the
       // updated epoch, not the one captured before the authorized reads.
       return owner.navigationGeneration.current;
     } catch (e) {
       // Preserve this branch's original error semantics; unlike script/travel,
       // its catch was not generation-gated. Race fixes are a separate change.
-      onNotice((e as Error).message);
+      notice((e as Error).message);
     } finally {
       owner.finishOpen(generation);
     }
@@ -434,31 +656,46 @@ export function createWorkspaceNavigationCommands<
   async function launchDockApplication(
     app: Pick<ApplicationCatalogEntry, "id" | "version">,
   ) {
+    if (!canStart()) return;
     // This handler is only exposed by App when a real project is present.
     const workspaceProject = project!;
     const generation = owner.beginIntent();
+    const intent = capture(generation);
+    if (
+      !permitted(intent, (current) =>
+        projectAvailable(current, workspaceProject.id),
+      )
+    )
+      return;
     const receipt = await client.execute({
       type: "launch-application",
       workspaceId: workspaceProject.id,
       applicationId: app.id,
       applicationVersion: app.version,
     });
-    if (!owner.isCurrent(generation)) return;
-    prefer({
-      view: spaceKind(workspaceProject) === "project" ? "projects" : "desk",
-      projectId: workspaceProject.id,
-      projectOpen: true,
-      artifactId: null,
-      artifactRevision: null,
-      scriptLocation: null,
-      readerMode: app.id === readerApplication.id,
-      applications: {
-        ...prefs.applications,
-        [workspaceProject.id]: receipt.entityId,
+    const destination: CurrentDestination = (current) =>
+      instanceAvailable(current, receipt.entityId, workspaceProject.id, app);
+    if (!permitted(intent, destination)) return;
+    publish(
+      {
+        view: spaceKind(workspaceProject) === "project" ? "projects" : "desk",
+        projectId: workspaceProject.id,
+        projectOpen: true,
+        artifactId: null,
+        artifactRevision: null,
+        scriptLocation: null,
+        readerMode: app.id === readerApplication.id,
+        applications: {
+          ...prefs.applications,
+          [workspaceProject.id]: receipt.entityId,
+        },
       },
-    });
+      intent,
+      destination,
+    );
   }
   async function readingLibrary() {
+    if (!canStart()) return;
     if (
       !activeInstance ||
       activeInstance.applicationId !== readerApplication.id
@@ -466,6 +703,16 @@ export function createWorkspaceNavigationCommands<
       prefer({ artifactId: null, readerMode: false, readingTarget: null });
       return;
     }
+    const generation = owner.navigationGeneration.current;
+    const intent = capture(generation);
+    const destination: CurrentDestination = (current) =>
+      instanceAvailable(
+        current,
+        activeInstance.id,
+        activeInstance.workspaceId,
+        readerApplication,
+      );
+    if (!permitted(intent, destination)) return;
     try {
       await client.execute({
         type: "set-application-state",
@@ -473,15 +720,29 @@ export function createWorkspaceNavigationCommands<
         expectedRevision: activeInstance.revision,
         state: { ...activeInstance.state, artifactId: "" },
       });
-      activateApplication(activeInstance.id);
+      // Preserve Reader's original default-current completion policy while
+      // rejecting a retired private instance/session or revoked Reader target.
+      if (!privateLifetimePermitted(intent, destination)) return;
+      activateApplication(activeInstance.id, undefined, readerApplication);
     } catch (e) {
-      onNotice((e as Error).message);
+      notice((e as Error).message);
     }
   }
   async function openScriptLibrary() {
+    if (!canStart()) return;
     const desk = application.personalDesk();
     if (!desk) return;
     const generation = owner.beginIntent();
+    const intent = capture(generation);
+    const deskDestination: CurrentDestination = (current) =>
+      projectAvailable(current, desk.id) &&
+      current.workspace.projects.some(
+        (value) =>
+          value.id === desk.id &&
+          value.kind === "desk" &&
+          value.ownerPrincipalId === current.principalId,
+      );
+    if (!permitted(intent, deskDestination)) return;
     try {
       const receipt = await client.execute({
         type: "launch-application",
@@ -490,18 +751,31 @@ export function createWorkspaceNavigationCommands<
         applicationVersion: scriptStudioApplication.version,
         scriptTarget: null,
       });
-      if (!owner.isCurrent(generation)) return;
-      prefer({
-        view: "desk",
-        scriptLocation: null,
-        artifactId: null,
-        applications: { ...prefs.applications, [desk.id]: receipt.entityId },
-      });
+      const destination: CurrentDestination = (current) =>
+        deskDestination(current) &&
+        instanceAvailable(
+          current,
+          receipt.entityId,
+          desk.id,
+          scriptStudioApplication,
+        );
+      if (!permitted(intent, destination)) return;
+      publish(
+        {
+          view: "desk",
+          scriptLocation: null,
+          artifactId: null,
+          applications: { ...prefs.applications, [desk.id]: receipt.entityId },
+        },
+        intent,
+        destination,
+      );
     } catch (e) {
-      if (owner.isCurrent(generation)) onNotice((e as Error).message);
+      if (owner.isCurrent(generation)) notice((e as Error).message);
     }
   }
   async function openWorkspaceContents() {
+    if (!canStart()) return;
     if (project && spaceKind(project) !== "project") {
       application.selectAllContent();
       navigate("content");
@@ -509,6 +783,9 @@ export function createWorkspaceNavigationCommands<
     }
     if (!project) return;
     const generation = owner.beginOpen();
+    const intent = capture(generation);
+    if (!permitted(intent, (current) => projectAvailable(current, project.id)))
+      return;
     try {
       const receipt = await client.execute({
         type: "launch-application",
@@ -517,45 +794,84 @@ export function createWorkspaceNavigationCommands<
         applicationVersion: objectsApplication.version,
         artifactId: null,
       });
-      if (!owner.isCurrent(generation)) return;
-      activateApplication(receipt.entityId);
+      if (
+        !permitted(intent, (current) =>
+          instanceAvailable(
+            current,
+            receipt.entityId,
+            project.id,
+            objectsApplication,
+          ),
+        )
+      )
+        return;
+      activateApplication(receipt.entityId, generation, objectsApplication);
     } catch (error) {
-      if (owner.isCurrent(generation)) onNotice((error as Error).message);
+      if (owner.isCurrent(generation)) notice((error as Error).message);
     } finally {
       owner.finishOpen(generation);
     }
   }
   function activateApplication(
     id: string | null,
-    expectedNavigation = owner.navigationGeneration.current,
+    expectedNavigation?: number,
+    expectedApp?: Pick<ApplicationCatalogEntry, "id" | "version">,
   ) {
-    if (!owner.isCurrent(expectedNavigation)) return;
+    if (!canStart(expectedNavigation)) return;
+    const generation = expectedNavigation ?? owner.navigationGeneration.current;
+    if (!owner.isCurrent(generation)) return;
     if (!project) return;
+    const intent = capture(generation);
+    const capturedInstance = workspace?.applicationInstances.find(
+      (value) => value.id === id,
+    );
+    const app =
+      expectedApp ??
+      (capturedInstance
+        ? {
+            id: capturedInstance.applicationId,
+            version: capturedInstance.applicationVersion,
+          }
+        : undefined);
+    const destination: CurrentDestination = (current) =>
+      id === null
+        ? projectAvailable(current, project.id)
+        : instanceAvailable(current, id, project.id, app);
+    if (!permitted(intent, destination)) return;
     owner.setExplicitWebsiteIntent(null);
-    shell.finishCreation();
-    prefer({
-      applications: { ...prefs.applications, [project.id]: id },
-      readerMode:
-        workspace?.applicationInstances.find((i) => i.id === id)
-          ?.applicationId === readerApplication.id,
-      artifactId: null,
-      artifactRevision: null,
-      readingTarget: null,
-      ...(id === null ? { scriptLocation: null } : {}),
-      ...(application.historyVisible
-        ? { interactions: { [exchangeKey]: "recent" as const } }
-        : {}),
-    });
+    privateShell(shell.finishCreation);
+    publish(
+      {
+        applications: { ...prefs.applications, [project.id]: id },
+        readerMode:
+          workspace?.applicationInstances.find((i) => i.id === id)
+            ?.applicationId === readerApplication.id,
+        artifactId: null,
+        artifactRevision: null,
+        readingTarget: null,
+        ...(id === null ? { scriptLocation: null } : {}),
+        ...(application.historyVisible
+          ? { interactions: { [exchangeKey]: "recent" as const } }
+          : {}),
+      },
+      intent,
+      destination,
+    );
   }
   function navigate(view: NavigationPreferences["view"]) {
+    if (!canStart()) return;
     owner.setExplicitWebsiteIntent(null);
     shell.finishCreation();
     shell.dismissExecutionInspector();
     prefer({ view, artifactId: null, projectOpen: false });
   }
   async function openBrowser(url?: string) {
+    if (!canStart()) return;
     if (!project) return;
     const generation = owner.beginIntent();
+    const intent = capture(generation);
+    if (!permitted(intent, (current) => projectAvailable(current, project.id)))
+      return;
     try {
       const result = await client.execute({
         type: "launch-application",
@@ -563,28 +879,55 @@ export function createWorkspaceNavigationCommands<
         applicationId: browserApplication.id,
         applicationVersion: browserApplication.version,
       });
-      if (!owner.isCurrent(generation)) return;
+      const destination: CurrentDestination = (current) =>
+        instanceAvailable(
+          current,
+          result.entityId,
+          project.id,
+          browserApplication,
+        );
+      if (!permitted(intent, destination)) return;
       if (url) {
         // The port retains App's captured client.boot lookup. It is not a
         // refreshed Client snapshot or a second authorization read.
         const instance = application.readCapturedInstance(result.entityId);
-        if (instance)
+        if (instance) {
+          if (
+            instance.workspaceId !== project.id ||
+            instance.applicationId !== browserApplication.id ||
+            instance.applicationVersion !== browserApplication.version
+          )
+            return;
           await client.execute({
             type: "set-application-state",
             instanceId: instance.id,
             expectedRevision: instance.revision,
             state: { ...instance.state, url },
           });
+        }
       }
-      prefer({
-        view: spaceKind(project) === "project" ? "projects" : "desk",
-        projectId: project.id,
-        projectOpen: true,
-        artifactId: null,
-        applications: { ...prefs.applications, [project.id]: result.entityId },
-      });
+      // The old Browser policy deliberately has no new intent check after
+      // set-state. Keep that policy for a living private origin; only its
+      // identity/lifetime and currently authorized target are new guardrails.
+      if (!privateLifetimePermitted(intent, destination)) return;
+      intent.generation = owner.navigationGeneration.current;
+      publish(
+        {
+          view: spaceKind(project) === "project" ? "projects" : "desk",
+          projectId: project.id,
+          projectOpen: true,
+          artifactId: null,
+          applications: {
+            ...prefs.applications,
+            [project.id]: result.entityId,
+          },
+        },
+        intent,
+        destination,
+      );
+      return owner.navigationGeneration.current;
     } catch (e) {
-      onNotice(e instanceof Error ? e.message : "浏览器未能打开。");
+      notice(e instanceof Error ? e.message : "浏览器未能打开。");
     }
   }
   // Host keeps its original await/catch/finally and local busy lifecycle. These
@@ -595,6 +938,15 @@ export function createWorkspaceNavigationCommands<
     launch(app, captured, contents = false) {
       if (contents)
         return { kind: "contents", pending: openWorkspaceContents() };
+      const intent = capture(captured.navigationId);
+      const destination: CurrentDestination = (current) =>
+        projectAvailable(current, captured.workspaceId);
+      if (!privateLifetimePermitted(intent, destination))
+        return {
+          kind: "application",
+          pending: Promise.reject(new Error("原位置已不可用或无访问权限。")),
+          commit() {},
+        };
       return {
         kind: "application",
         pending: client.execute({
@@ -604,11 +956,36 @@ export function createWorkspaceNavigationCommands<
           applicationVersion: app.version,
         }),
         commit(receipt) {
-          activateApplication(receipt.entityId, captured.navigationId);
+          if (
+            !permitted(intent, (current) =>
+              instanceAvailable(
+                current,
+                receipt.entityId,
+                captured.workspaceId,
+                app,
+              ),
+            )
+          )
+            return;
+          activateApplication(receipt.entityId, captured.navigationId, app);
         },
       };
     },
     close(instance, captured) {
+      const intent = capture(captured.navigationId);
+      const app = {
+        id: instance.applicationId,
+        version: instance.applicationVersion,
+      };
+      if (
+        !privateLifetimePermitted(intent, (current) =>
+          instanceAvailable(current, instance.id, captured.workspaceId, app),
+        )
+      )
+        return {
+          pending: Promise.reject(new Error("原位置已不可用或无访问权限。")),
+          commit() {},
+        };
       return {
         pending: client.execute({
           type: "close-application",
@@ -616,15 +993,45 @@ export function createWorkspaceNavigationCommands<
           expectedRevision: instance.revision,
         }),
         commit() {
+          // Platform appViews deliberately returns only open instances. A
+          // successful close therefore removes this ID from the projection;
+          // the captured neighbour still needs its own current authorization.
+          if (
+            !permitted(
+              intent,
+              (current) =>
+                projectAvailable(current, captured.workspaceId) &&
+                !current.workspace.applicationInstances.some(
+                  (value) => value.id === instance.id,
+                ),
+            )
+          )
+            return;
           if (captured.activeId === instance.id) {
             const index = captured.instances.findIndex(
               (i) => i.id === instance.id,
             );
+            const next =
+              captured.instances[index + 1] ?? captured.instances[index - 1];
+            const nextApp = next
+              ? { id: next.applicationId, version: next.applicationVersion }
+              : undefined;
+            if (
+              next &&
+              !permitted(intent, (current) =>
+                instanceAvailable(
+                  current,
+                  next.id,
+                  captured.workspaceId,
+                  nextApp,
+                ),
+              )
+            )
+              return;
             activateApplication(
-              captured.instances[index + 1]?.id ??
-                captured.instances[index - 1]?.id ??
-                null,
+              next?.id ?? null,
               captured.navigationId,
+              nextApp,
             );
           }
         },

@@ -50,11 +50,7 @@ import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
 import { ProfileMenu } from "./ProfileMenu.js";
 import { useProfile } from "./useProfile.js";
 import { AppearanceMenu } from "./AppearanceControls.js";
-import {
-  interfacePreferences,
-  inputDispatchMode,
-  type InterfacePreferences,
-} from "./interface-preferences.js";
+import { inputDispatchMode } from "./interface-preferences.js";
 import {
   inputIntents,
   type InputIntent,
@@ -73,7 +69,7 @@ import type { TextQuote } from "../../../packages/core/src/text-quotes.js";
 import { ExecutionSidebar } from "./ExecutionSidebar.js";
 import { SubjectSidebar } from "./SubjectSidebar.js";
 import { SubjectObjectives } from "./SubjectObjectives.js";
-import { subjectLogoState, type SubjectView } from "./subject-sidebar-model.js";
+import { subjectLogoState } from "./subject-sidebar-model.js";
 import { SubjectLogo } from "./SubjectLogo.js";
 import { ApplicationDock } from "./ApplicationDock.js";
 import { WorkspaceTopbar } from "./shell/WorkspaceTopbar.js";
@@ -98,7 +94,7 @@ import { ProductBridge } from "./ProductBridge.js";
 import { ObjectCollection } from "./ObjectCollection.js";
 import { ProjectDirectory } from "./WorkspaceViews.js";
 import { TaskList } from "./TaskList.js";
-import { taskListOptions, type TaskListOptions } from "./task-list.js";
+import { taskListOptions } from "./task-list.js";
 import { ApplicationHost } from "./ApplicationHost.js";
 import { AgentDirectories, type DirectoryState } from "./AgentDirectories.js";
 import {
@@ -111,12 +107,8 @@ import {
   type ReadingSurface,
   type ReadingContextChange,
 } from "./ReadingContext.js";
-import type {
-  ReaderTarget,
-  ReadingLocation,
-} from "../../../packages/core/src/reader.js";
+import type { ReadingLocation } from "../../../packages/core/src/reader.js";
 import { SearchDocuments } from "./LibraryDialogs.js";
-import type { LocalFileView } from "../../../packages/core/src/local-files.js";
 import { UnderstandingPanel } from "./UnderstandingPanel.js";
 import { SpeechDialog } from "./SpeechDialog.js";
 import type { SpeechScope } from "./client.js";
@@ -127,7 +119,6 @@ import type { InputContinuation } from "../../../packages/core/src/continuation.
 import { RequestError } from "./application-transport.js";
 import type { BrowserView } from "./desktop.js";
 import { Notifications } from "./Notifications.js";
-import type { InteractionMode } from "./interaction.js";
 import { useModal } from "./useModal.js";
 import { useDesktopAppearance } from "./useDesktopAppearance.js";
 import { InspectorPanel, useInspectorLayout } from "./InspectorPanel.js";
@@ -137,7 +128,6 @@ import {
   useSidebarLayout,
 } from "./SidebarResizeHandle.js";
 import { sidebarPreference } from "./sidebar-layout.js";
-import { contentVisits, visitContent } from "./recent-content.js";
 import { useConversationStream } from "./useConversationStream.js";
 import {
   deriveWorkSurface,
@@ -162,10 +152,21 @@ import {
   isNavigationPreferenceChange,
   mergeNavigationPreferences,
   useWorkspaceNavigationCommit,
-  useWorkspaceNavigationState,
   type NavigationPlace,
   type PreferenceWriter,
+  type NavigationIntent,
 } from "./host/use-workspace-navigation.js";
+import {
+  useWorkspaceNavigationHost,
+  useWorkspaceNavigationOrigin,
+  NavigationHostLifetime,
+  NavigationOriginLifetime,
+  type CurrentDestination,
+  type NavigationIdentity,
+  type Preferences,
+  type WorkspaceNavigationHost as NavigationHost,
+  type WorkspaceNavigationOrigin as NavigationOrigin,
+} from "./host/use-workspace-navigation-host.js";
 import {
   createSubjectInspectorCloseCommand,
   createSubjectInspectorCommands,
@@ -192,56 +193,11 @@ import {
 } from "./host/use-exchange-read-receipts.js";
 
 type View = WorkSurfaceView;
-type Preferences = InterfacePreferences & {
-  subjectTab?: SubjectView;
-  subjectOpen: boolean;
-  dockApplications?: string[];
-  taskList?: TaskListOptions;
-  executionWidth?: number;
-  inspectorWidth?: number;
-  view: View;
-  projectId: string;
-  artifactId: string | null;
-  artifactRevision: number | null;
-  artifactPage?: number | null;
-  readerMode?: boolean;
-  readingTarget?: ReaderTarget | null;
-  collaboration: boolean;
-  composer: boolean;
-  conversation: boolean | null;
-  sidebar: boolean;
-  sidebarWidth?: number;
-  sidebarCompact?: boolean;
-  projectOpen: boolean;
-  applications?: Record<string, string | null>;
-  scriptLocation?:
-    | (ScriptLocation & { requestId: string; view?: "library" | "editor" })
-    | null;
-  interactions?: Record<string, InteractionMode>;
-  exchangeHeights?: Record<string, number>;
-  pinnedInputs?: Record<string, boolean>;
-  selectedConversations?: Record<string, string>;
-  localFile?: { projectId: string; reference: LocalFileView["reference"] };
-};
 import {
   scriptOutputLocation,
-  type ScriptLocation,
   type ScriptOutput,
 } from "../../../packages/core/src/script-delivery.js";
 
-const defaultPrefs: Preferences = {
-  ...interfacePreferences({}),
-  view: "desk",
-  projectId: "first-project",
-  artifactId: null,
-  artifactRevision: null,
-  collaboration: false,
-  subjectOpen: false,
-  composer: true,
-  conversation: null,
-  sidebar: true,
-  projectOpen: false,
-};
 const emptyDraft: InputDraft = { body: "", selection: "", revision: null };
 const labels: Record<View, string> = {
   dialogue: "对话",
@@ -252,22 +208,91 @@ const labels: Record<View, string> = {
 };
 export function App() {
   const client = useWorkspace();
-  if (client.authenticationRequired) return <WorkspaceLogin client={client} />;
-  if (!client.boot)
-    return (
-      <main className="connection-screen">
-        <BrandMark />
-        <h1>Morphz</h1>
-        <p>{client.error || "正在打开工作空间…"}</p>
-        <button onClick={() => void client.refresh()}>重试</button>
-      </main>
-    );
-  storageScope(client.boot.centerId, client.boot.principalId);
+  // Retain identity metadata only. Permission refresh still immediately removes
+  // the protected Boot and unmounts the complete private WorkspaceApp tree.
+  const currentIdentity = client.boot
+    ? {
+        centerId: client.boot.centerId,
+        principalId: client.boot.principalId,
+        csrfToken: client.boot.csrfToken,
+      }
+    : null;
+  const [identity, setIdentity] = useState<NavigationIdentity | null>(
+    currentIdentity,
+  );
+  const nextIdentity = client.authenticationRequired
+    ? null
+    : (currentIdentity ?? identity);
+  if (
+    identity?.centerId !== nextIdentity?.centerId ||
+    identity?.principalId !== nextIdentity?.principalId ||
+    identity?.csrfToken !== nextIdentity?.csrfToken
+  )
+    setIdentity(nextIdentity);
+  if (client.authenticationRequired) {
+    return <WorkspaceLogin client={client} />;
+  }
+  if (client.boot) {
+    storageScope(client.boot.centerId, client.boot.principalId);
+  }
+  if (!nextIdentity) return <WorkspaceConnection client={client} />;
   return (
-    <WorkspaceApp
-      key={`${client.boot.centerId}:${client.boot.principalId}`}
+    <WorkspaceNavigationHost
+      key={JSON.stringify(nextIdentity)}
       client={client}
+      identity={nextIdentity}
     />
+  );
+}
+function WorkspaceConnection({
+  client,
+}: {
+  client: ReturnType<typeof useWorkspace>;
+}) {
+  return (
+    <main className="connection-screen">
+      <BrandMark />
+      <h1>Morphz</h1>
+      <p>{client.error || "正在打开工作空间…"}</p>
+      <button onClick={() => void client.refresh()}>重试</button>
+    </main>
+  );
+}
+function WorkspaceNavigationHost({
+  client,
+  identity,
+}: {
+  client: ReturnType<typeof useWorkspace>;
+  identity: NavigationIdentity;
+}) {
+  const host = useWorkspaceNavigationHost({
+    identity,
+    getSnapshot: client.getSnapshot,
+  });
+  return (
+    <>
+      <NavigationHostLifetime host={host} />
+      {client.boot ? (
+        <PrivateNavigationBoundary client={client} host={host} />
+      ) : (
+        <WorkspaceConnection client={client} />
+      )}
+    </>
+  );
+}
+function PrivateNavigationBoundary({
+  client,
+  host,
+}: {
+  client: ReturnType<typeof useWorkspace>;
+  host: NavigationHost;
+}) {
+  const origin = useWorkspaceNavigationOrigin(host);
+  return (
+    <>
+      <NavigationOriginLifetime origin={origin} />
+      <WorkspaceApp client={client} host={host} origin={origin} />
+    </>
   );
 }
 function WorkspaceLogin({
@@ -318,13 +343,19 @@ function WorkspaceLogin({
     </main>
   );
 }
-function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
+function WorkspaceApp({
+  client,
+  host,
+  origin,
+}: {
+  client: ReturnType<typeof useWorkspace>;
+  host: NavigationHost;
+  origin: NavigationOrigin;
+}) {
   const profile = useProfile(client);
   const state = client.boot?.workspace;
-  const { readLocal, writeLocal } = useState(() => scopedStorage())[0];
-  const [recentContentVisits, setRecentContentVisits] = useState(() =>
-    contentVisits(readLocal<unknown>("recent-content", [])),
-  );
+  const { readLocal, writeLocal } = host.storage;
+  const { prefs, recentContentVisits, navigation } = host;
   // The catalog and its composer share a destination. Keep the existing
   // catalog preference key so returning/reloading restores the same scope.
   const [contentScope, setContentScope] = useState(
@@ -332,28 +363,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       readLocal<{ scope?: string }>("library-view:all-content", {}).scope ??
       "all",
   );
-  const [prefs, setPrefs] = useState<Preferences>(() => {
-    const p = readLocal<Partial<Preferences>>("preferences", {});
-    return {
-      ...defaultPrefs,
-      ...p,
-      ...interfacePreferences(p),
-      ...sidebarPreference(p.sidebarWidth, p.sidebarCompact),
-      subjectOpen: p.subjectOpen === true,
-      subjectTab: ["activity", "permissions", "schedules", "settings"].includes(
-        p.subjectTab ?? "",
-      )
-        ? p.subjectTab
-        : "activity",
-      collaboration: p.subjectOpen === true ? false : p.collaboration === true,
-      projectOpen: p.projectOpen ?? p.view === "projects",
-      view: ["dialogue", "inbox", "content", "desk", "projects"].includes(
-        p.view ?? "",
-      )
-        ? p.view!
-        : defaultPrefs.view,
-    };
-  });
   const leftSidebarPreference = sidebarPreference(
     prefs.sidebarWidth,
     prefs.sidebarCompact,
@@ -369,7 +378,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     interrupt(): void;
   } | null>(null);
   const [speechRecording, setSpeechRecording] = useState(false);
-  const [notice, setNotice] = useState(""),
+  const [privateNotice, setPrivateNotice] = useState(""),
     [connectionOpen, setConnectionOpen] = useState(false),
     [settingsSection, setSettingsSection] = useState<SettingsSection | null>(
       null,
@@ -404,6 +413,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     ),
     [creating, setCreating] = useState<"document" | "project" | null>(null),
     [sending, setSending] = useState(false);
+  const notice = host.persistenceNotice || privateNotice;
+  function setNotice(message: string) {
+    if (!origin.isActive()) return;
+    host.dismissPersistenceNotice();
+    setPrivateNotice(message);
+  }
   const inputDraftState = useExchangeInputDraftState({ readLocal, writeLocal });
   const drafts = inputDraftState.value;
   const conversationDraftState = useExchangeConversationDraftState({
@@ -498,7 +513,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           value.intent
         ),
     );
-  const navigation = useWorkspaceNavigationState();
   const {
     openingObject,
     restoredPlace,
@@ -507,6 +521,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     navigationGeneration,
     setExplicitWebsiteIntent: setWebsiteIntent,
   } = navigation;
+  const renderNavigation = navigationGeneration.current;
   const [browserPage, setBrowserPage] = useState<BrowserView | null>(null);
   const [attachmentSlot, setAttachmentSlot] = useState<HTMLDivElement | null>(
     null,
@@ -629,17 +644,6 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   useEffect(() => setQuoteReveal(null), [conversationId]);
   const [conversationToolbarTarget, setConversationToolbarTarget] =
     useState<HTMLDivElement | null>(null);
-  function recordContentVisit(id: string) {
-    setRecentContentVisits((previous) => {
-      const next = visitContent(previous, id);
-      try {
-        writeLocal("recent-content", next);
-      } catch {
-        setNotice("最近打开记录暂时无法保存，内容不受影响。");
-      }
-      return next;
-    });
-  }
   const exchangeController = useExchangeController({
     surface: workSurface,
     preferences: prefs,
@@ -699,13 +703,19 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     surface: workSurface,
     preferences: prefs,
     prefer,
-    writePreferences,
     shell: {
       finishCreation: () => setCreating(null),
       dismissExecutionInspector: () => setExecutions(null),
     },
-    recordContentVisit,
     onNotice: setNotice,
+    continuation: {
+      isActive: origin.isActive,
+      currentProjection: host.currentProjection,
+      captureCommit: host.captureCommit,
+      prefer: continueNavigation,
+      writePreferences: host.writePreferences,
+      recordContentVisit: host.recordContentVisit,
+    },
     application: {
       historyVisible,
       personalDesk: () => personalSpace("desk"),
@@ -910,6 +920,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
   const mac = /Mac|iPhone|iPad/.test(navigator.platform),
     shortcut = mac ? "⌘J" : "Ctrl+J";
   function prefer(change: Partial<Preferences>) {
+    if (!origin.isActive()) return;
     if (isNavigationPreferenceChange(change)) {
       navigation.beginIntent();
       setUnderstandingOpen(false);
@@ -925,21 +936,38 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     update: Parameters<PreferenceWriter<Preferences>>[0],
     failure: Parameters<PreferenceWriter<Preferences>>[1],
   ) {
-    setPrefs((previous) => {
-      const next = update(previous);
-      try {
-        writeLocal("preferences", next);
-      } catch {
-        setNotice(
-          failure === "settings"
-            ? "设置暂时无法持久保存。"
-            : "当前位置暂时无法持久保存。",
-        );
-      }
-      return next;
-    });
+    if (!origin.isActive()) return;
+    host.writePreferences(update, failure, origin.capturePrivateCommit());
+  }
+  function continueNavigation(
+    change: Partial<Preferences>,
+    intent: NavigationIntent,
+    destination: CurrentDestination,
+  ) {
+    const current = host.currentProjection();
+    if (
+      !navigation.isCurrent(intent.generation) ||
+      !current ||
+      !destination(current)
+    )
+      return;
+    if (isNavigationPreferenceChange(change)) {
+      intent.generation = navigation.beginIntent();
+      // Old private setters/DOM refs are never rebound to the new private tree.
+      if (origin.isActive()) {
+        setUnderstandingOpen(false);
+        navigation.resetPreferenceNavigation();
+        clearResizePreview();
+      } else navigation.resetPreferenceNavigation();
+    }
+    host.writePreferences(
+      (previous) => mergeNavigationPreferences(previous, change),
+      "settings",
+      destination,
+    );
   }
   function setDraft(key: string, value: InputDraft) {
+    if (!origin.isActive()) return;
     if (key === currentContext.current && value.body !== drafts[key]?.body)
       dictationControls.current?.interrupt();
     writeDrafts((previous) =>
@@ -951,15 +979,18 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     update: (value: InputDraft) => InputDraft,
     initial: InputDraft = emptyDraft,
   ) {
+    if (!origin.isActive()) return;
     writeDrafts((previous) =>
       updateComposerDraft(previous, key, emptyDraft, update, initial),
     );
   }
   function open(id: string, revision?: number, page?: number) {
+    if (!origin.isActive()) return;
     setWebsiteIntent(null);
     void openUser(id, revision, page);
   }
   async function openTextQuote(quote: TextQuote) {
+    if (!origin.isActive()) return;
     window.getSelection()?.removeAllRanges();
     const source = quote.source;
     if (source.kind !== "message" && revealTextQuote(quote)) {
@@ -973,7 +1004,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       setInteraction("recent");
       setQuoteReveal({ quote, token: crypto.randomUUID() });
     } else if (source.kind === "artifact" || source.kind === "reading") {
-      await openObject(
+      const generation = await openObject(
         source.projectId,
         source.artifactId,
         source.revision,
@@ -981,27 +1012,52 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
         source.kind === "reading",
         source.kind === "reading" ? source.location : undefined,
       );
+      if (
+        !origin.isActive() ||
+        generation === undefined ||
+        !navigation.isCurrent(generation)
+      )
+        return;
       setQuoteReveal({ quote, token: crypto.randomUUID() });
     } else if (source.kind === "script") {
-      await openScriptLocation({
+      const generation = await openScriptLocation({
         productionId: source.productionId,
         itemId: source.entryId,
         revision: source.revision,
         candidateId: source.candidateId,
       });
+      if (
+        !origin.isActive() ||
+        generation === undefined ||
+        !navigation.isCurrent(generation)
+      )
+        return;
       setQuoteReveal({ quote, token: crypto.randomUUID() });
     } else if (source.kind === "web") {
-      await openBrowser(source.url);
+      const generation = await openBrowser(source.url);
+      if (
+        !origin.isActive() ||
+        generation === undefined ||
+        !navigation.isCurrent(generation)
+      )
+        return;
       setQuoteReveal({ quote, token: crypto.randomUUID() });
     } else if (source.applicationInstanceId) {
       activateApplication(source.applicationInstanceId);
     } else setNotice("已保留所选原文；这个界面没有固定的内容位置。");
   }
   async function composeContent(id: string) {
+    if (!origin.isActive()) return;
+    const expectedNavigation = navigationGeneration.current;
     const target =
       state?.artifacts.find((a) => a.id === id) ??
       (await client.resolveArtifact(id));
-    if (!target) return;
+    if (
+      !origin.isActive() ||
+      !navigation.isCurrent(expectedNavigation) ||
+      !target
+    )
+      return;
     // Opening a result changes the object reference, never the current Session.
     const key = conversationId + ":" + id;
     const revision = drafts[key]?.revision ?? target.revision;
@@ -1016,7 +1072,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       revision === target.revision ? undefined : revision,
     );
     if (generation !== undefined) {
-      if (navigationGeneration.current !== generation) return;
+      if (!origin.isActive() || !navigation.isCurrent(generation)) return;
       requestConversationFocus(conversationId, generation);
       keepExchangeOpen();
       setInteraction("recent");
@@ -1030,6 +1086,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     page?: number,
     reading?: ReadingLocation,
   ) {
+    if (!origin.isActive()) return;
     try {
       const script = client.boot?.scriptLibrary.find(
         (item) => item.id === id || item.contentId === id,
@@ -1040,14 +1097,14 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       const catalogEntry =
         client.contentCatalog.find((entry) => entry.id === id) ??
         (!loadedArtifact ? await client.resolveCatalogContent(id) : null);
-      if (generation !== navigationGeneration.current) return;
+      if (!origin.isActive() || !navigation.isCurrent(generation)) return;
       if (
         catalogEntry?.appId === "morphz.script-studio" &&
         catalogEntry.kind === "script"
       )
         return openScriptLocation({ productionId: catalogEntry.appObjectId });
       const a = loadedArtifact ?? (await client.resolveArtifact(id));
-      if (generation !== navigationGeneration.current) return;
+      if (!origin.isActive() || !navigation.isCurrent(generation)) return;
       if (!a) {
         setNotice("对象暂时无法读取，请检查连接或访问权限后重试。");
         return;
@@ -1061,11 +1118,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     }
   }
   async function openReading(id: string) {
+    if (!origin.isActive()) return;
     const generation = navigation.beginIntent();
     const a =
       state?.artifacts.find((a) => a.id === id) ??
       (await client.resolveArtifact(id));
-    if (generation !== navigationGeneration.current) return;
+    if (!origin.isActive() || !navigation.isCurrent(generation)) return;
     if (a) await openObject(a.projectId, id, undefined, undefined, true);
   }
   function readingTargetConsumed(requestId: string) {
@@ -1109,6 +1167,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     return openScriptLocation(scriptOutputLocation(output));
   }
   function selectContentScope(scope: string) {
+    if (!origin.isActive()) return;
     setContentScope(scope);
     // Treat a destination change as navigation: stale open/picker callbacks
     // must not restore the previous scope or focus. Drafts and grants remain
@@ -1116,6 +1175,7 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     prefer({ artifactId: null, scriptLocation: null });
   }
   function selectConversation(workspaceId: string, id: string, focus = false) {
+    if (!origin.isActive()) return;
     setWebsiteIntent(null);
     const sameProject =
       prefs.view === "projects" &&
@@ -1186,6 +1246,48 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
       id,
       sharedDefault ? (personalSpace("dialogue")?.id ?? id) : id,
     );
+  }
+  function prepareCreatedProject() {
+    const intent = { generation: navigationGeneration.current };
+    const lifetime = host.captureCommit();
+    const active = origin.isActive();
+    return (id: string, kind: string) => {
+      if (!active || kind !== "project") return;
+      const destination: CurrentDestination = (current) =>
+        lifetime(current) &&
+        navigation.isCurrent(intent.generation) &&
+        current.workspace.projects.some(
+          (value) =>
+            value.id === id &&
+            spaceKind(value) === "project" &&
+            !value.deletedAt,
+        );
+      const current = host.currentProjection();
+      if (!current || !destination(current)) return;
+      const conversation = current.capabilities.teamAuthentication
+        ? id
+        : (current.workspace.projects.find(
+            (value) =>
+              value.kind === "dialogue" &&
+              value.ownerPrincipalId === current.principalId,
+          )?.id ?? id);
+      // This is the original default-conversation route only. No old child
+      // draft, focus, notice or creation setter is transferred to the new tree.
+      continueNavigation(
+        {
+          view: "projects",
+          projectId: id,
+          projectOpen: true,
+          artifactId: null,
+          selectedConversations: { [id]: conversation },
+          interactions: {
+            [id]: prefs.interactions?.[id] === "history" ? "history" : "recent",
+          },
+        },
+        intent,
+        destination,
+      );
+    };
   }
   function composeIntent(intent: InputIntent) {
     if (
@@ -1473,16 +1575,21 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
     requestAnimationFrame(() => input.current?.focus({ preventScroll: true }));
   }
   async function importImage(image: File | undefined) {
+    if (!origin.isActive()) return;
+    const expectedNavigation = navigationGeneration.current;
     if (!image || !project || importing) return;
     setImporting(true);
     try {
       const { assetId } = await client.upload(image);
+      if (!origin.isActive()) return;
       const receipt = await client.execute({
         type: "create-artifact",
         projectId: project.id,
         title: image.name.replace(/\.[^.]+$/, "").slice(0, 180) || "导入的图片",
         content: { kind: "image", assetId, alt: "" },
       });
+      if (!origin.isActive() || !navigation.isCurrent(expectedNavigation))
+        return;
       await openObject(project.id, receipt.entityId);
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "导入失败。");
@@ -2002,10 +2109,13 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
                   }
                   globalLibrary={prefs.view !== "projects"}
                   onOpenScript={(id, itemId) =>
-                    void openScriptLocation({
-                      productionId: id,
-                      ...(itemId ? { itemId } : {}),
-                    })
+                    void openScriptLocation(
+                      {
+                        productionId: id,
+                        ...(itemId ? { itemId } : {}),
+                      },
+                      renderNavigation,
+                    )
                   }
                   onScriptLibrary={() => void openScriptLibrary()}
                   onScriptNavigate={(productionId, itemId, view) => {
@@ -3276,10 +3386,12 @@ function WorkspaceApp({ client }: { client: ReturnType<typeof useWorkspace> }) {
           projectId={project.id}
           client={client}
           onClose={() => setCreating(null)}
+          prepareCreated={
+            creating === "project" ? prepareCreatedProject : undefined
+          }
           onCreated={(id, kind) => {
             setCreating(null);
-            if (kind === "project") openProject(id);
-            else void openObject(project.id, id);
+            if (kind !== "project") void openObject(project.id, id);
           }}
         />
       )}
@@ -3422,6 +3534,7 @@ function CreateDialog({
   client,
   onClose,
   onCreated,
+  prepareCreated,
   toolbarTarget,
 }: {
   kind: "document" | "project";
@@ -3429,6 +3542,7 @@ function CreateDialog({
   client: ReturnType<typeof useWorkspace>;
   onClose: () => void;
   onCreated: (id: string, kind: string) => void;
+  prepareCreated?: () => (id: string, kind: string) => void;
   toolbarTarget?: HTMLElement | null;
 }) {
   const [storage] = useState(() => scopedStorage());
@@ -3467,6 +3581,7 @@ function CreateDialog({
     if (!title.trim() || busy) return;
     setBusy(true);
     setError("");
+    const created = prepareCreated?.();
     try {
       const result = await client.execute(
         kind === "project"
@@ -3485,11 +3600,13 @@ function CreateDialog({
           /* Creation already succeeded; never repeat it on a local storage failure. */
         }
       }
+      created?.(result.entityId, kind);
       if (alive.current) onCreated(result.entityId, kind);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "创建失败。");
+      if (alive.current)
+        setError(e instanceof Error ? e.message : "创建失败。");
     } finally {
-      setBusy(false);
+      if (alive.current) setBusy(false);
     }
   }
   const heading = (
