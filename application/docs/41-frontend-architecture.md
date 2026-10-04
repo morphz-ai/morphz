@@ -447,6 +447,19 @@ Session 流负责实时前缀；workspace change 负责持久事实失效；两�
 | ApprovalPresentation | 原操作／授权请求及决定回执                  | 待本人处理、提交中、过期、已决定；不跨范围批准 |
 | TaskPresentation     | TaskContent＋TaskRuntime                    | 事项是否完成、是否可回应、安排与依赖           |
 
+工具步骤的完整只读展示现归既有 `execution-presentation.ts`：
+`liveToolPresentation` 承接实时消息的完整 JSON parse／catch、十二状态
+词表和原 title／detail fallback；`executionSnapshotJobPresentation`
+借原 typed Job 投影，承接快照停止请求的优先级与原七状态词表。
+`Conversation.ToolMessage` 和 `ExecutionDialog` 的真实 Job 行分别直接
+消费两入口。实时参数生成不是完成，实时审批／unknown 与持久快照的
+审批／lost 文案不强并；只有活动中的 Job 才由停止请求覆盖状态文案。
+原四个导出算法、回执限定及返回形状不改，注解不能从原参数或邻近
+步骤恢复。owner 不含 JSX、IO、React state、timer 或新业务状态。
+完整实际 Git 原算法／消费接缝、有限门禁、旧新编译页面和真实组件
+挂载分别记录于阶段 32；这不是五领域 presentation 已整体完成，也
+不迁移详情读取、审批和结果控制的生命周期或改动现有 UI。
+
 每个展示模型有业务状态之外的读取质量：available／stale／truncated、来源 sourceRef／scope 与本机 observedAt。权威 sourceRevision／sourceUpdatedAt 仅在实际提供时保留，允许缺失；查询代次或观察时间不冒充持久版本或最后工作时间。读取不可用不能落为 idle；历史部分已知不能变为全量计数。**状态与文字分槽**：状态由权威事实决定，注解只提供可选 prose。
 
 ### 5.1 注解与无回复路径
@@ -509,6 +522,12 @@ UI state 是 props 的显式值，材质是 role／variant；不能 DOM 多套�
 新 popup 门禁只约束有限表面，挂载普通 CI 不锁旧新整棵历史快照或
 相邻组件全文。已有其他 inverse 链尚未整体治理，不称该目标完成。
 不能只改 glob、历史 hash 或删断言求绿，也不新增一个通用 AST broker。
+
+阶段 32 的 Job 门禁仅检查自身纯算法、词表、回执和真实直接消费：
+合法无关 JSX／CSS／注释、type import／pure export 与直接 import alias
+可继续演进。固定完整旧源码及批准接缝的整文件逆证明只用于独立迁移
+证据，不进入普通 CI；严格旧新组件对照由显式 migration 开关启用，
+日常默认验证当前契约。未为本批增加旧相邻门禁适配或跨 owner inverse。
 
 ### 6.3 共享顶栏的实际组合边界
 

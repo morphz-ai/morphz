@@ -1,6 +1,6 @@
 import { useModal } from "./useModal.js";
 import {
-  executionJobPresentation,
+  executionSnapshotJobPresentation,
   executionJobsInReadingOrder,
   executionResultSummary,
 } from "./execution-presentation.js";
@@ -11,7 +11,6 @@ import { executionActivityStatus } from "./execution-activity.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { ApprovalDetails } from "./ApprovalCard.js";
 import {
-  jobStatusLabel,
   type ExecutionScope,
   type ExecutionSnapshot,
   type ExecutionControl,
@@ -347,7 +346,7 @@ export function ExecutionDialog({
                 className={grouped ? "execution-thread-timeline" : undefined}
               >
                 {group.jobs.map((job) => {
-                  const presentation = executionJobPresentation(
+                  const presentation = executionSnapshotJobPresentation(
                     job,
                     client.boot!.workspace,
                   );
@@ -362,12 +361,7 @@ export function ExecutionDialog({
                           {presentation.title}
                         </strong>
                         <span className={`job-status ${job.status}`}>
-                          {job.cancel_requested_at &&
-                          ["queued", "waiting_approval", "running"].includes(
-                            job.status,
-                          )
-                            ? "正在停止"
-                            : jobStatusLabel[job.status]}
+                          {presentation.statusLabel}
                         </span>
                       </header>
                       {presentation.detail && (

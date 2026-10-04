@@ -1,5 +1,65 @@
 # 桌面能力实施记录
 
+## 2026-10-04 前端阶段 32：完整工具步骤的只读展示责任
+
+既有 `execution-presentation.ts` 新增两个纯入口：实时工具消息的
+`liveToolPresentation`，以及持久 Job 快照的
+`executionSnapshotJobPresentation`。原 JSON parse／catch、十二实时
+状态、title／detail fallback，及停止请求只覆盖三种活动状态的规则
+完整迁入；原四导出算法与返回形状逐字保留。`Conversation.ToolMessage`
+和 `ExecutionDialog` 的真实 Job 行直接消费各自入口。实时生成参数不
+等于完成，实时审批／unknown 与快照审批／lost 不强并。typed 注解仍
+限定确切 Job，结果 prose 仍要求真实 `result_event_id`，不解析原参数
+或邻近步骤冒充注解。没有 JSX、IO、额外 state／effect／请求或模型调用。
+原 DOM、图标、CSS、keys、原始技术信息、结果与审批控制不改。
+
+根独立实际 Git `08215636` 证明：三份完整生产源只通过批准的
+import／完整算法／展示绑定接缝正向迁移与逆向恢复，原四算法 raw
+相等。固定旧档案的 **18** 个原片段、词表和 **10** 份完整源码来源
+重新读取 Git 核对；可执行完整旧 PURE／ToolMessage／ExecutionDialog
+仅重定位 import 或改导出名即可逐字恢复，两个有限旧 adapter 也与
+原完整表达式相等。**198** 份其余 renderer source 完整字节不变。
+全部 **201** 份 renderer source 和八条生产／新测试路径在根最终
+build 与挂载期间保持冻结；实际正常 build 的三入口资产与冻结新版
+页面加载的资产 SHA 一致，完整原 CSS 和 preload 字节相等。
+
+六份完整原页面在冻结旧版／新版各 **19/19**，无 retry／skip；
+每边核对 **57** 份实际 HTTP 入口资产，完整 spec 与两份私有 fixture
+均保持实际 Git 原字节，无旧入口校准。覆盖真实活动详情、原动效、
+审批、父子 Thread、事项事件观察、注解和可核对的完整结果。
+根独立纯算法与七份原相邻回归 **42/42**，明确使用已有浏览器能力；
+有限门禁 **10/10**，含 **34** 个可解析指定规则负例及合法无关
+JSX／CSS／注释／type import／pure export／直接 alias 正例。
+普通 CI 不锁相邻整文件，未增加跨 owner inverse 或旧门禁适配。
+
+根独立真实 SSR／React StrictMode 挂载：默认当前契约与显式
+`MORPHZ_TEST_JOB_PRESENTATION_MIGRATION_EQUIVALENCE=1` 各 **14/14**，
+无 skip；每轮为七个纯测试、六个实质 SSR／浏览器组及一个父测试，
+不是十四个独立浏览器场景。完整旧新 DOM、动作、原详情节点／展开／
+焦点、Job 更新、读取错误、scope／CSRF 退休、迟到结果与控制反馈、
+卸载和原生 HTML dialog 焦点一致。实际 styles／动画未关闭，但本批
+不声称 geometry／逐帧 pixel 或原 App 验收；Client 是受控端口，不
+冒称真实权限、事务或 Runtime 执行。SSR React runtime、测试 JSON／
+词表和门禁括号识别等准备错误的 RED 保留，均未改生产或旧断言。
+另实际观察到旧字典的 `toString` 原型键会返回函数，两版本相同；
+此次未混入修复，也未把该旧缺陷写成普通 CI 必须保留的契约。
+
+根最终完整 build／类型、八条源路径格式与差异检查通过；全量 Node
+**2039 项：1879 通过、160 能力跳过、零失败／取消**。本批生产与
+自动验证完成，整体目标仍 active，没有额外推送。详情的完整读取／
+控制 feature controller 仅有下一批方案，尚未实施；其余领域展示、
+控件／样式、历史门禁治理、全产品与原 App 验收仍未完成。
+原 App 仍卡退出清理，强制退出待用户确认，不重置 profile／中心或
+重启 Runtime。
+
+根证据：`/tmp/morphz-job-presentation-root.rsUJ0Z` 的 manifest、
+旧新完整页面／HTTP audit、原源逆证明、固定可执行旧源码证明、
+focused／boundary、mounted 两模式、最终 build／Node／format 与
+`root-final-source-build-proof.json`。生产、门禁、挂载证据分别在
+`/tmp/morphz-job-presentation-production.IyZHIi`、
+`/tmp/morphz-job-presentation-boundary.Y22TtL` 和
+`/tmp/morphz-job-presentation-validation.8Ggug2`；均保留初轮 RED。
+
 ## 2026-10-04 前端阶段 31：非模态浮层表面的唯一样式责任
 
 `ui/popup-surface.css` 现承接原五份 CSS 中七条表面规则的 **28** 项

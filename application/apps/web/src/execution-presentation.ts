@@ -1,5 +1,9 @@
 import { isObjectToolName } from "../../../packages/core/src/application-names.js";
-import type { ExecutionSnapshot } from "../../../packages/core/src/execution.js";
+import {
+  jobStatusLabel,
+  type ExecutionSnapshot,
+} from "../../../packages/core/src/execution.js";
+import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
 import {
   currentScriptDraft,
@@ -237,4 +241,70 @@ export function executionResultSummary(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Streaming parameter generation is not a completed execution. Keep the
+ * live protocol's compatibility labels and incomplete-JSON fallback distinct. */
+export function liveToolPresentation(
+  tool: NonNullable<LiveMessage["tool"]>,
+  state: Workspace,
+): Readonly<{
+  title: string;
+  detail: string | undefined;
+  statusLabel: string;
+}> {
+  let presentation;
+  try {
+    presentation = executionPresentation(
+      tool.name,
+      JSON.parse(tool.arguments),
+      state,
+    );
+  } catch {
+    /* Streaming arguments may be incomplete. */
+  }
+  const status =
+    (
+      {
+        generating: "正在生成参数",
+        pending: "参数已生成",
+        running: "执行中",
+        queued: "排队中",
+        waiting_approval: "等待审批",
+        approval_required: "等待审批",
+        success: "已完成",
+        succeeded: "已完成",
+        completed: "已完成",
+        failed: "失败",
+        error: "失败",
+        cancelled: "已取消",
+      } as Record<string, string>
+    )[tool.status] ?? tool.status;
+  return {
+    title: presentation?.title ?? tool.name ?? "工具调用",
+    detail: presentation?.detail,
+    statusLabel: status,
+  };
+}
+
+/** A persisted stop request takes precedence only while its Job is active;
+ * terminal outcomes and the snapshot's approval/lost labels stay authoritative. */
+export function executionSnapshotJobPresentation(
+  job: ExecutionSnapshot["jobs"][number],
+  state: Workspace,
+): Readonly<{
+  title: string;
+  detail: string;
+  result: string | null;
+  statusLabel: string;
+}> {
+  const presentation = executionJobPresentation(job, state);
+  return {
+    ...presentation,
+    statusLabel:
+      job.cancel_requested_at &&
+      ["queued", "waiting_approval", "running"].includes(job.status)
+        ? "正在停止"
+        : jobStatusLabel[job.status],
+  };
 }

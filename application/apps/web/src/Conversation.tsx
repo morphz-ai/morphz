@@ -61,7 +61,7 @@ import {
   isPendingResponse,
 } from "./conversation-presentation.js";
 import { ApprovalCard } from "./ApprovalCard.js";
-import { executionPresentation } from "./execution-presentation.js";
+import { liveToolPresentation } from "./execution-presentation.js";
 import { executionActivityStatus } from "./execution-activity.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 
@@ -1332,43 +1332,17 @@ export function ToolMessage({
   state: Workspace;
 }) {
   const tool = message.tool!;
-  let presentation;
-  try {
-    presentation = executionPresentation(
-      tool.name,
-      JSON.parse(tool.arguments),
-      state,
-    );
-  } catch {
-    /* Streaming arguments may be incomplete. */
-  }
-  const status =
-    (
-      {
-        generating: "正在生成参数",
-        pending: "参数已生成",
-        running: "执行中",
-        queued: "排队中",
-        waiting_approval: "等待审批",
-        approval_required: "等待审批",
-        success: "已完成",
-        succeeded: "已完成",
-        completed: "已完成",
-        failed: "失败",
-        error: "失败",
-        cancelled: "已取消",
-      } as Record<string, string>
-    )[tool.status] ?? tool.status;
+  const presentation = liveToolPresentation(tool, state);
   return (
     <details className="message-tool" data-tool-status={tool.status}>
       <summary>
         <ChevronRight className="tool-chevron" size={14} />
         <Wrench size={14} aria-hidden="true" />
-        <span className="tool-name" title={presentation?.detail}>
-          {presentation?.title ?? tool.name ?? "工具调用"}
-          {presentation?.detail ? ` · ${presentation.detail}` : ""}
+        <span className="tool-name" title={presentation.detail}>
+          {presentation.title}
+          {presentation.detail ? ` · ${presentation.detail}` : ""}
         </span>
-        <span className="tool-state">{status}</span>
+        <span className="tool-state">{presentation.statusLabel}</span>
       </summary>
       <div className="tool-details">
         {tool.arguments && (
