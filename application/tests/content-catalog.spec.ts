@@ -36,7 +36,7 @@ async function doc(
   return created.contentId;
 }
 
-test("公开状态不混入内容；未知筛选恢复全部，查看原件和理解不改数据或草稿", async ({
+test("公开状态不混入内容；未知筛选恢复全部，原件和草稿保留，撤下理解入口不复现", async ({
   page,
 }) => {
   await page.goto("/");
@@ -118,11 +118,28 @@ test("公开状态不混入内容；未知筛选恢复全部，查看原件和�
   });
   await launcher.click();
   await expect(page.getByLabel("继续工作")).not.toContainText(prefix + "状态");
-  await page.getByRole("button", { name: "工作空间选项", exact: true }).click();
-  await page.getByRole("button", { name: "当前理解", exact: true }).click();
+  // acf76a53 / current UI standard withdraw this entry, not its persisted data.
   await expect(
-    page.getByRole("complementary", { name: "当前理解", exact: true }),
-  ).toContainText(prefix + "状态正文");
+    page.getByRole("button", {
+      name: "工作空间选项",
+      exact: true,
+      includeHidden: true,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", {
+      name: "当前理解",
+      exact: true,
+      includeHidden: true,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("complementary", {
+      name: "当前理解",
+      exact: true,
+      includeHidden: true,
+    }),
+  ).toHaveCount(0);
   expect(await records()).toEqual(before);
   expect(
     (await source.navigationRuntime()).runtime.deliveries.map(
@@ -331,7 +348,11 @@ test("从内容继续交流准确引用版本、不自动发送、不覆盖其�
   const input = page.getByLabel("AI 输入内容", { exact: true });
   await expect(input).toBeFocused();
   await expect(input).toHaveValue("");
-  await expect(page.locator(".composer .context-chip")).toContainText(title);
+  await expect(
+    page
+      .getByRole("region", { name: "AI 输入", exact: true })
+      .getByLabel(`输入关联：${title} · v1`, { exact: true }),
+  ).toContainText(title);
   await input.fill("此产物的未发草稿");
   await page
     .locator(".breadcrumb")

@@ -64,8 +64,11 @@ App 保留原身份范围的唯一存储端口与失败提示。默认实际 Rea
 当前理解、目录记忆、原件与确切目录项解析。Client 借出原 refs，保留身份／
 撤权清理、refresh 和同步 current-before-React 发布权威；剧本读取使用同一
 remember 消费，没有第二份算法、构造请求或额外 await。固定旧算法与真实
-Client HTTP／SQLite 的迟到、版本及授权合同通过；有限旧新页面对照仍有
-相同旧入口／定位红项并保留，不能把该 family 说成全查询层或整体验收。
+Client HTTP／SQLite 的迟到、版本及授权合同通过。旧新页面最初各 6/8 的
+相同旧入口／定位失败证据保留；按明确撤下入口与现行精确输入关联校准
+两项测试后，同三份原页面用例各 8/8，原数据、版本、草稿及无发送断言
+仍在，实际 HTTP 资产逐例核 SHA。该对照冻结在新导航接线前，不把这一
+family 或局部回归说成全查询层、原 App 或整体验收。
 
 当前 Task batch、目录分页和 Profile 已有真实共享 owner；Schedules 与 TaskList
 的 deadline／重试／取消及 Boot 发布合同不同，不新增一层 broker 强并。
