@@ -77,6 +77,14 @@ const typeImports = new Set([
   ...runtimeImports.keys(),
   core + "text-quotes.js",
 ]);
+// This new reviewed dependency permits one type symbol through named imports,
+// not other symbols, runtime imports, inline imports or a module-wide allow.
+const reviewedTypeSymbols = new Map([
+  [
+    core + "cognitive-app-object-locator.js",
+    new Set(["CognitiveAppObjectLocator"]),
+  ],
+]);
 const surfaceFields = [
   "navigationProject",
   "deliveredScript",
@@ -138,6 +146,7 @@ const ambientEffects = new Set([
   "process",
   "globalThis",
   "require",
+  "JSON",
 ]);
 const readMethods = new Set([
   "find",
@@ -281,6 +290,21 @@ function issue(
   };
 }
 
+function syntaxFingerprint(node: Node): string {
+  const syntax = (value: Node): unknown[] => {
+    const children: unknown[][] = [];
+    value.forEachChild((child) => {
+      children.push(syntax(child));
+    });
+    return [
+      value.kind,
+      isIdentifier(value) || isStringLiteral(value) ? value.text : "",
+      children,
+    ];
+  };
+  return JSON.stringify(syntax(node));
+}
+
 function pureModelViolations({ source, symbols }: Parsed): Violation[] {
   const violations: Violation[] = [];
   const report = (node: Node, rule: string, detail: string) =>
@@ -341,7 +365,8 @@ function pureModelViolations({ source, symbols }: Parsed): Violation[] {
         const imported = (item.propertyName ?? item.name).text;
         if (
           typeOnly
-            ? !typeImports.has(path)
+            ? !typeImports.has(path) &&
+              !reviewedTypeSymbols.get(path)?.has(imported)
             : !runtimeImports.get(path)?.has(imported)
         )
           report(
@@ -528,6 +553,34 @@ function pureModelViolations({ source, symbols }: Parsed): Violation[] {
         "Pure work-surface derivation cannot modify caller or module state",
       );
   };
+  const reviewedIdentitySerialization = (node: CallExpression) => {
+    // A single, independently fixed pure model helper is reviewed below. It
+    // serializes only scalar identity fields from trusted plain owner data.
+    // This bounded gate is not a JS purity proof for getters/toJSON/proxies.
+    // Never add JSON to pureStaticMethods: every other JSON call stays denied.
+    const callee = node.expression;
+    if (
+      !isPropertyAccessExpression(callee) ||
+      !isIdentifier(callee.expression) ||
+      callee.expression.text !== "JSON" ||
+      callee.name.text !== "stringify" ||
+      (symbols.has(callee.expression) &&
+        declared.has(symbols.get(callee.expression)!)) ||
+      node.arguments.length !== 1 ||
+      node.typeArguments?.length ||
+      !isReturnStatement(node.parent) ||
+      node.parent.expression !== node ||
+      !isBlock(node.parent.parent) ||
+      !isFunctionDeclaration(node.parent.parent.parent)
+    )
+      return false;
+    const fn = node.parent.parent.parent;
+    return (
+      fn.parent === source &&
+      fn.name?.text === "cognitiveWorkSurfaceKey" &&
+      syntaxFingerprint(fn) === reviewedCognitiveIdentityFingerprint
+    );
+  };
   for (const statement of source.statements) {
     if (isVariableStatement(statement)) {
       if (!(statement.declarationList.flags & NodeFlags.Const))
@@ -564,10 +617,18 @@ function pureModelViolations({ source, symbols }: Parsed): Violation[] {
             if (lexicalNames.get(scope)?.has(node.text)) return true;
           return false;
         })();
+      const reviewedJsonReceiver =
+        isIdentifier(node) &&
+        node.text === "JSON" &&
+        isPropertyAccessExpression(node.parent) &&
+        node.parent.expression === node &&
+        isCallExpression(node.parent.parent) &&
+        reviewedIdentitySerialization(node.parent.parent);
       if (
         isIdentifier(node) &&
         ambientEffects.has(node.text) &&
         !shorthandLocal &&
+        !reviewedJsonReceiver &&
         (!symbols.has(node) || !declared.has(symbols.get(node)!)) &&
         !(
           (isPropertyAccessExpression(node.parent) ||
@@ -613,7 +674,11 @@ function pureModelViolations({ source, symbols }: Parsed): Violation[] {
                 "mutation",
                 `Cannot mutate borrowed state with ${method}`,
               );
-          } else if (!readMethods.has(method) && !pureStatic)
+          } else if (
+            !readMethods.has(method) &&
+            !pureStatic &&
+            !reviewedIdentitySerialization(node)
+          )
             report(node, "effect-call", `Unreviewed method call: ${method}`);
         } else
           report(
@@ -915,6 +980,29 @@ export function deriveWorkSurface(input: { values: number[]; document: string })
   const lookedUp = lookup(input.values, count);
   return { text, document, count, selected, found, lookedUp, cached: cache.get(document) };
 }`;
+// Independent reviewed oracle, not read/captured from production at test time.
+// Identifier names, operators, complete tuple order, string values, parameter,
+// export and body shape are pinned by AST; comments/formatting are irrelevant.
+const reviewedCognitiveIdentity = `
+export function cognitiveWorkSurfaceKey(surface: CognitiveWorkSurface) {
+  const source = surface.kind === "original" ? surface.locator : surface;
+  const a = source.authority;
+  return JSON.stringify([
+    surface.kind,
+    source.projectId,
+    source.connectionId,
+    [a.appId, a.version, a.definitionHash, a.instanceId, a.serviceId, a.dataAuthorityId],
+    ...(surface.kind === "original"
+      ? [surface.locator.contentId, surface.locator.object.objectId]
+      : [surface.viewId]),
+  ]);
+}`;
+const identityReference = parseSources({
+  "identity-reference.ts": reviewedCognitiveIdentity,
+}).get("identity-reference.ts")!.source.statements[0]!;
+assert.ok(isFunctionDeclaration(identityReference));
+const reviewedCognitiveIdentityFingerprint =
+  syntaxFingerprint(identityReference);
 const validApp = `
 import { deriveWorkSurface, readWorkSurfaceDraft, workSurfaceConversationId } from "${appModule}";
 function WorkspaceApp() {
@@ -958,6 +1046,194 @@ test("the boundary gate permits local computation, type-only dependencies and ex
   assert.deepEqual(pureModelViolations(parsed.get("model.ts")!), []);
   assert.deepEqual(appConsumerViolations(parsed.get("App.tsx")!), []);
   assert.deepEqual(appConsumerViolations(parsed.get("AliasedApp.tsx")!), []);
+});
+
+test("pure model admits only the reviewed cognitive locator type and exact global JSON identity helper", () => {
+  const source =
+    validModel +
+    `\nimport type { CognitiveAppObjectLocator } from "${core}cognitive-app-object-locator.js";\n` +
+    reviewedCognitiveIdentity;
+  const parsed = parseSources({
+    "identity.ts": source,
+    "formatted-identity.ts": source.replace(
+      "return JSON.stringify([",
+      "// Formatting does not alter the finite identity AST.\nreturn JSON.stringify( [",
+    ),
+    "aliased-type.ts": source.replace(
+      "{ CognitiveAppObjectLocator }",
+      "{ CognitiveAppObjectLocator as ExactLocator }",
+    ),
+  });
+  for (const name of [
+    "identity.ts",
+    "formatted-identity.ts",
+    "aliased-type.ts",
+  ])
+    assert.deepEqual(pureModelViolations(parsed.get(name)!), [], name);
+});
+
+test("cognitive identity exception cannot admit general JSON calls, replacers, shadowing, tuple changes or adjacent effects", () => {
+  const changed = (from: string, to: string) => {
+    assert.ok(reviewedCognitiveIdentity.includes(from), from);
+    return reviewedCognitiveIdentity.replace(from, to);
+  };
+  const fixtures: [string, string, string][] = [
+    [
+      "other-function",
+      changed("cognitiveWorkSurfaceKey", "otherIdentity"),
+      "effect-call",
+    ],
+    [
+      "arbitrary-json",
+      "function serialize(value: unknown) { return JSON.stringify(value); }",
+      "effect-call",
+    ],
+    [
+      "other-json-method",
+      changed("JSON.stringify", "JSON.parse"),
+      "effect-call",
+    ],
+    [
+      "object-argument",
+      reviewedCognitiveIdentity.replace(
+        /return JSON\.stringify\([\s\S]*\);/,
+        "return JSON.stringify(surface);",
+      ),
+      "effect-call",
+    ],
+    ["replacer", changed("]);", "], (key, value) => value);"), "effect-call"],
+    ["undefined-replacer", changed("]);", "], undefined);"), "effect-call"],
+    ["space-argument", changed("]);", "], undefined, 2);"), "effect-call"],
+    [
+      "shadowed-parameter",
+      changed(
+        "surface: CognitiveWorkSurface)",
+        "surface: CognitiveWorkSurface, JSON: any)",
+      ),
+      "effect-call",
+    ],
+    [
+      "shadowed-local",
+      changed(
+        "  const source =",
+        "  const JSON = { stringify: (value: unknown) => value };\n  const source =",
+      ),
+      "effect-call",
+    ],
+    [
+      "shadowed-module",
+      "const JSON = { stringify: (value: unknown) => value };\n" +
+        reviewedCognitiveIdentity,
+      "effect-call",
+    ],
+    [
+      "json-alias",
+      changed(
+        "  const source =",
+        "  const serializer = JSON;\n  const source =",
+      ).replace("JSON.stringify", "serializer.stringify"),
+      "effect-call",
+    ],
+    [
+      "json-escape",
+      reviewedCognitiveIdentity + "\nfunction expose() { return JSON; }",
+      "ambient-effect",
+    ],
+    [
+      "global-json-replacement",
+      reviewedCognitiveIdentity +
+        "\nfunction install(input: any) { JSON.stringify = input.persist; }",
+      "ambient-effect",
+    ],
+    [
+      "computed-json-replacement",
+      reviewedCognitiveIdentity +
+        '\nfunction install(input: any) { JSON["stringify"] = input.persist; }',
+      "ambient-effect",
+    ],
+    [
+      "computed-method",
+      changed("JSON.stringify", 'JSON["stringify"]'),
+      "effect-call",
+    ],
+    [
+      "changed-tuple-order",
+      changed(
+        "a.serviceId, a.dataAuthorityId",
+        "a.dataAuthorityId, a.serviceId",
+      ),
+      "effect-call",
+    ],
+    [
+      "extra-identity-field",
+      changed(
+        "surface.locator.object.objectId]",
+        "surface.locator.object.objectId, surface.locator.object.versionRef]",
+      ),
+      "effect-call",
+    ],
+    [
+      "changed-string-value",
+      changed('"original"', '"ori ginal"'),
+      "effect-call",
+    ],
+    [
+      "adjacent-network",
+      changed(
+        "  return JSON.stringify",
+        '  fetch("/api/private");\n  return JSON.stringify',
+      ),
+      "ambient-effect",
+    ],
+    ["nested-effect", changed("a.appId,", "a.persist(),"), "effect-call"],
+    [
+      "mutating-tuple",
+      changed("a.appId,", '(a.appId = "changed"),'),
+      "mutation",
+    ],
+    [
+      "unreviewed-type-symbol",
+      `import type { OtherLocator } from "${core}cognitive-app-object-locator.js";\n` +
+        reviewedCognitiveIdentity,
+      "dependency",
+    ],
+    [
+      "runtime-locator",
+      `import { CognitiveAppObjectLocator } from "${core}cognitive-app-object-locator.js";\n` +
+        reviewedCognitiveIdentity,
+      "dependency",
+    ],
+    [
+      "other-core-type",
+      `import type { CognitiveAppCatalogDto } from "${core}cognitive-app-api.js";\n` +
+        reviewedCognitiveIdentity,
+      "dependency",
+    ],
+    [
+      "type-reexport",
+      `export type { CognitiveAppObjectLocator } from "${core}cognitive-app-object-locator.js";\n` +
+        reviewedCognitiveIdentity,
+      "dependency",
+    ],
+    [
+      "inline-locator-type",
+      `type Locator = import("${core}cognitive-app-object-locator.js").CognitiveAppObjectLocator;\n` +
+        reviewedCognitiveIdentity,
+      "dependency",
+    ],
+  ];
+  const parsed = parseSources(
+    Object.fromEntries(
+      fixtures.map(([name, code]) => [name + ".ts", validModel + "\n" + code]),
+    ),
+  );
+  for (const [name, , rule] of fixtures)
+    assert.ok(
+      pureModelViolations(parsed.get(name + ".ts")!).some(
+        (violation) => violation.rule === rule,
+      ),
+      `${name}: expected ${rule} rejection`,
+    );
 });
 
 test("exchangeKey delegation accepts only one real navigation owner consuming the same derived workSurface", () => {
