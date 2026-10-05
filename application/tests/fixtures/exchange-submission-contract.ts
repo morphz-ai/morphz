@@ -14,6 +14,8 @@ import {
   isCallExpression,
   isVariableDeclaration,
   isVariableStatement,
+  isTryStatement,
+  isShorthandPropertyAssignment,
   isPrefixUnaryExpression,
   isPostfixUnaryExpression,
   type Node,
@@ -115,9 +117,21 @@ export function fixedSubmissionDeclarations() {
   ) as Record<"send" | "supplement", string>;
 }
 const captureText =
-  "function createExchangeSubmissionCommands({ render, client, profile, feedback, dictationControls, drafts: draftPorts, exchange, inspector, onNotice: setNotice, focusAfterSupplement }: ExchangeSubmissionCommandOptions) {\nconst { project, selectedConversation, selectedDraft, draft, sending, uploadingDrafts, contextKey, conversationId, workspace: state, emptyDraft, artifact, activeInstance, browserPage, readingExpected, currentReading, canAuthorizeDirectories, directoryScope, directoryState, rightInspector } = render;\nconst { sendPending, currentContext, setSending, setInputErrors, setRevealedInputs, setAnnotationRefresh } = feedback;\nconst { replace: setDraft, update: updateDraft } = draftPorts;\nconst { setMobileCollaboration, showSentInput, requestSentInputFocus, showInput } = exchange;\nconst { openCollaboration, closeInspector } = inspector;\nreturn { send, supplement };\n}";
+  "function createExchangeSubmissionCommands({ render, client, profile, feedback, dictationControls, drafts: draftPorts, exchange, inspector, onNotice: setNotice, focusAfterSupplement }: ExchangeSubmissionCommandOptions) {\nconst { project, selectedConversation, selectedDraft, draft, sending, uploadingDrafts, contextKey, conversationId, workspace: state, emptyDraft, artifact, activeInstance, browserPage, readingExpected, currentReading, cognitiveSurface, canAuthorizeDirectories, directoryScope, directoryState, rightInspector } = render;\nconst { sendPending, currentContext, setSending, setInputErrors, setRevealedInputs, setAnnotationRefresh } = feedback;\nconst { replace: setDraft, update: updateDraft } = draftPorts;\nconst { setMobileCollaboration, showSentInput, requestSentInputFocus, showInput } = exchange;\nconst { openCollaboration, closeInspector } = inspector;\nreturn { send, supplement };\n}";
 export const submissionAppAdapter =
   "const { send, supplement } = createExchangeSubmissionCommands({\nrender: { project, selectedConversation, selectedDraft, draft, sending, uploadingDrafts, contextKey, conversationId, workspace: state, emptyDraft, artifact, activeInstance, browserPage, readingExpected, currentReading, canAuthorizeDirectories, directoryScope, directoryState, rightInspector },\nclient, profile,\nfeedback: { sendPending, currentContext, setSending, setInputErrors, setRevealedInputs, setAnnotationRefresh },\ndictationControls,\ndrafts: { replace: setDraft, update: updateDraft },\nexchange: { setMobileCollaboration, showSentInput, requestSentInputFocus, showInput },\ninspector: { openCollaboration, closeInspector },\nonNotice: setNotice,\nfocusAfterSupplement: () => requestAnimationFrame(() => input.current?.focus({ preventScroll: true })),\n});";
+export const cognitiveSubmissionAppAdapter = submissionAppAdapter.replace(
+  "currentReading, canAuthorizeDirectories",
+  "currentReading, cognitiveSurface, canAuthorizeDirectories",
+);
+const cognitiveSlotGuard = `function expectedGuard() {
+  try {
+    guardCognitiveAppInputCommand({ operation: draft });
+  } catch {
+    setInputErrors((old) => ({ ...old, [contextKey]: "原件引用无效，草稿已保留。" }));
+    return;
+  }
+}`;
 
 export function verifySubmissionCommands(
   text = submissionOwnerText,
@@ -150,6 +164,10 @@ export function verifySubmissionCommands(
     ["../composer-drafts.js", "consumeComposerDraft"],
     ["../application-transport.js", "RequestError"],
     ["./submit-exchange-draft.js", "submitExchangeDraft"],
+    [
+      "../../../../packages/core/src/cognitive-app-object-locator.js",
+      "guardCognitiveAppInputCommand",
+    ],
   ];
   const actualRuntime: string[][] = [];
   for (const statement of parsed.source.statements) {
@@ -223,9 +241,59 @@ export function verifySubmissionCommands(
     ["send", "supplement"],
     "complete two-command owner",
   );
-  if (!algorithms) return;
   for (const name of ["send", "supplement"] as const) {
     let source = oneFunction(parsed, name).getText();
+    if (name === "send") {
+      // Validate the complete finite new guard and single source carry first.
+      // Only then remove those exact additions to compare the unchanged
+      // complete algorithm with the immutable Git9122 witness.
+      const candidate = parseSubmission(source),
+        fn = oneFunction(candidate, name);
+      const guards = fn.body!.statements.filter(isTryStatement);
+      assert.equal(guards.length, 1, "one cognitive own-slot pre-spread guard");
+      const expectedGuard = oneFunction(
+        parseSubmission(cognitiveSlotGuard),
+        "expectedGuard",
+      ).body!.statements[0]!;
+      assert.deepEqual(
+        submissionSyntax(guards[0]!),
+        submissionSyntax(expectedGuard),
+        "exact cognitive own-slot guard",
+      );
+      const statements = fn.body!.statements;
+      assert.equal(
+        statements.indexOf(guards[0]!),
+        1,
+        "cognitive guard after old admission before original shallow spread",
+      );
+      const carries = candidate.nodes
+        .filter(isShorthandPropertyAssignment)
+        .filter(
+          (node) =>
+            isIdentifier(node.name) && node.name.text === "cognitiveSurface",
+        );
+      assert.equal(carries.length, 1, "one exact cognitive source carry");
+      const submissions = candidate.nodes
+        .filter(isCallExpression)
+        .filter((node) => node.expression.getText() === "submitExchangeDraft");
+      assert.equal(submissions.length, 1);
+      assert.ok(
+        submissions[0]!.arguments[3]!.getStart() < carries[0]!.getStart() &&
+          submissions[0]!.arguments[3]!.end > carries[0]!.end,
+        "source only carried in captured submit context",
+      );
+      assert.equal(
+        source[carries[0]!.end],
+        ",",
+        "source carry has original tuple separator",
+      );
+      const edits = [
+        { start: guards[0]!.getStart(), end: guards[0]!.end },
+        { start: carries[0]!.getStart(), end: carries[0]!.end + 1 },
+      ];
+      for (const edit of edits.sort((a, b) => b.start - a.start))
+        source = source.slice(0, edit.start) + source.slice(edit.end);
+    }
     if (name === "supplement") {
       assert.equal(
         source.split("focusAfterSupplement();").length,
@@ -237,11 +305,12 @@ export function verifySubmissionCommands(
         "requestAnimationFrame(() => input.current?.focus({ preventScroll: true }));",
       );
     }
-    assert.deepEqual(
-      submissionSyntax(oneFunction(parseSubmission(source), name)),
-      submissionSyntax(oneFunction(parseSubmission(old[name]), name)),
-      "whole original submission algorithm " + name,
-    );
+    if (algorithms)
+      assert.deepEqual(
+        submissionSyntax(oneFunction(parseSubmission(source), name)),
+        submissionSyntax(oneFunction(parseSubmission(old[name]), name)),
+        "whole original submission algorithm " + name,
+      );
   }
 }
 function checkedConsumption(
@@ -320,8 +389,14 @@ function checkedConsumption(
     ["send", "supplement"],
     "two original direct aliases",
   );
-  const expected =
-    parseSubmission(submissionAppAdapter).nodes.filter(isCallExpression)[0]!;
+  // Two finite literal adapters: historical consumers omit the new optional
+  // source; actual current App must borrow its trusted surface explicitly.
+  const hasCognitiveSurface = call.arguments[0]
+    ?.getText()
+    .includes("cognitiveSurface");
+  const expected = parseSubmission(
+    hasCognitiveSurface ? cognitiveSubmissionAppAdapter : submissionAppAdapter,
+  ).nodes.filter(isCallExpression)[0]!;
   assert.equal(call.typeArguments?.length ?? 0, 0, "no submission type bridge");
   assert.equal(call.arguments.length, 1);
   assert.deepEqual(

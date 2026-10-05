@@ -9,6 +9,44 @@ import {
 } from "../../../../packages/core/src/applications.js";
 import { projectStatus } from "../../../../packages/core/src/projects.js";
 import type { TextQuote } from "../../../../packages/core/src/text-quotes.js";
+import type { CognitiveAppObjectLocator } from "../../../../packages/core/src/cognitive-app-object-locator.js";
+
+/** Trusted current owner facts, not a guest state or a restored preference.
+ * Human services still authorize every read/write; this only identifies the
+ * work surface and keeps its local draft separate from builtin applications. */
+export type CognitiveWorkSurface =
+  | Readonly<{
+      kind: "view";
+      projectId: string;
+      viewId: string;
+      connectionId: string;
+      authority: CognitiveAppObjectLocator["authority"];
+    }>
+  | Readonly<{ kind: "original"; locator: CognitiveAppObjectLocator }>;
+
+/** JSON tuple encoding preserves opaque identifiers without delimiter
+ * collisions. Mutable view/binding revisions and object versions are not
+ * local draft identities; their validity belongs to the live owner gate. */
+export function cognitiveWorkSurfaceKey(surface: CognitiveWorkSurface) {
+  const source = surface.kind === "original" ? surface.locator : surface;
+  const a = source.authority;
+  return JSON.stringify([
+    surface.kind,
+    source.projectId,
+    source.connectionId,
+    [
+      a.appId,
+      a.version,
+      a.definitionHash,
+      a.instanceId,
+      a.serviceId,
+      a.dataAuthorityId,
+    ],
+    ...(surface.kind === "original"
+      ? [surface.locator.contentId, surface.locator.object.objectId]
+      : [surface.viewId]),
+  ]);
+}
 
 export type WorkSurfaceView =
   "dialogue" | "inbox" | "content" | "desk" | "projects";
@@ -38,6 +76,7 @@ export type WorkSurfaceInput<
   contentScope: string;
   conversationDrafts: Readonly<Record<string, Draft>>;
   restoredPlace: { artifactId: string | null } | null;
+  cognitiveSurface?: CognitiveWorkSurface | null;
 };
 
 /** Derive the visible work surface without changing its objects or routing.
@@ -54,6 +93,7 @@ export function deriveWorkSurface<
   contentScope,
   conversationDrafts,
   restoredPlace,
+  cognitiveSurface,
 }: WorkSurfaceInput<Draft, Script>) {
   const personalSpace = (kind: "desk" | "inbox" | "dialogue") =>
     state?.projects.find(
@@ -77,32 +117,41 @@ export function deriveWorkSurface<
               personalSpace("desk"));
   // An open object owns the next input; it does not retarget the shared
   // conversation or any already admitted activation.
-  const deliveredProduction = prefs.scriptLocation
-    ? scriptLibrary.find(
-        (entry) => entry.id === prefs.scriptLocation!.productionId,
-      )
-    : undefined;
+  const deliveredProduction =
+    !cognitiveSurface && prefs.scriptLocation
+      ? scriptLibrary.find(
+          (entry) => entry.id === prefs.scriptLocation!.productionId,
+        )
+      : undefined;
   const deliveredScript = deliveredProduction
     ? { production: deliveredProduction }
     : null;
-  const project =
-    state?.projects.find(
-      (p) => p.id === deliveredScript?.production?.projectId,
-    ) ??
-    state?.projects.find(
-      (p) =>
-        p.id ===
-        state.artifacts.find((a) => a.id === prefs.artifactId)?.projectId,
-    ) ??
-    (navigationProject &&
-    ["dialogue", "inbox"].includes(navigationProject.kind ?? "")
-      ? personalSpace("desk")
-      : navigationProject);
+  const project = cognitiveSurface
+    ? state?.projects.find(
+        (p) =>
+          p.id ===
+          (cognitiveSurface.kind === "original"
+            ? cognitiveSurface.locator.projectId
+            : cognitiveSurface.projectId),
+      )
+    : (state?.projects.find(
+        (p) => p.id === deliveredScript?.production?.projectId,
+      ) ??
+      state?.projects.find(
+        (p) =>
+          p.id ===
+          state.artifacts.find((a) => a.id === prefs.artifactId)?.projectId,
+      ) ??
+      (navigationProject &&
+      ["dialogue", "inbox"].includes(navigationProject.kind ?? "")
+        ? personalSpace("desk")
+        : navigationProject));
   const sharedDefault = !teamAuthentication;
   const defaultConversation = sharedDefault
     ? personalSpace("dialogue")?.id
     : navigationProject?.id;
   const applicationWorkspaceOpen =
+    !cognitiveSurface &&
     (!!deliveredScript ||
       prefs.view === "desk" ||
       (prefs.view === "projects" && prefs.projectOpen)) &&
@@ -136,21 +185,23 @@ export function deriveWorkSurface<
       activeInstance.applicationVersion,
     ).ui.presentation === "immersive"
   );
-  const artifact = state?.artifacts.find(
-    (a) =>
-      activeInstance?.applicationId !== "morphz.script-studio" &&
-      a.projectId === project?.id &&
-      a.id ===
-        (activeInstance?.applicationId === readerApplication.id
-          ? activeInstance.state.artifactId
-          : restoredPlace
-            ? restoredPlace.artifactId
-            : (prefs.artifactId ??
-              (prefs.view !== "inbox" &&
-              activeInstance?.applicationId === objectsApplication.id
-                ? activeInstance.state.artifactId
-                : null))),
-  );
+  const artifact = !cognitiveSurface
+    ? state?.artifacts.find(
+        (a) =>
+          activeInstance?.applicationId !== "morphz.script-studio" &&
+          a.projectId === project?.id &&
+          a.id ===
+            (activeInstance?.applicationId === readerApplication.id
+              ? activeInstance.state.artifactId
+              : restoredPlace
+                ? restoredPlace.artifactId
+                : (prefs.artifactId ??
+                  (prefs.view !== "inbox" &&
+                  activeInstance?.applicationId === objectsApplication.id
+                    ? activeInstance.state.artifactId
+                    : null))),
+      )
+    : undefined;
   const selectedConversation =
     state?.conversations.find(
       (c) =>
@@ -180,9 +231,11 @@ export function deriveWorkSurface<
   const contextKey =
     conversationId +
     ":" +
-    (artifact?.id ??
-      activeInstance?.id ??
-      (navigationProject?.id ?? "") + ":" + prefs.view);
+    (cognitiveSurface
+      ? "cognitive:" + cognitiveWorkSurfaceKey(cognitiveSurface)
+      : (artifact?.id ??
+        activeInstance?.id ??
+        (navigationProject?.id ?? "") + ":" + prefs.view));
   const exchangeKey =
     conversationId === defaultConversation
       ? prefs.view === "content"
@@ -195,7 +248,10 @@ export function deriveWorkSurface<
     (artifact?.id ?? activeInstance?.id ?? prefs.view);
   const quoteKey = conversationId + ":quotes";
   const dialogueCanvas =
-    prefs.view === "dialogue" && !artifact && !applicationWorkspaceOpen;
+    prefs.view === "dialogue" &&
+    !cognitiveSurface &&
+    !artifact &&
+    !applicationWorkspaceOpen;
 
   return {
     navigationProject,
@@ -218,6 +274,8 @@ export function deriveWorkSurface<
     legacyContextKey,
     quoteKey,
     dialogueCanvas,
+    cognitiveSurface,
+    legacyDraftAllowed: !cognitiveSurface,
   };
 }
 
@@ -229,13 +287,15 @@ export function readWorkSurfaceDraft<T extends { textQuotes?: TextQuote[] }>(
     quoteKey: string;
     conversationId: string;
     defaultConversation: string | undefined;
+    legacyDraftAllowed?: boolean;
   },
   drafts: Readonly<Record<string, T>>,
   empty: T,
 ) {
   const surfaceDraft =
     drafts[surface.contextKey] ??
-    (surface.conversationId === surface.defaultConversation
+    (surface.legacyDraftAllowed !== false &&
+    surface.conversationId === surface.defaultConversation
       ? drafts[surface.legacyContextKey]
       : undefined) ??
     empty;

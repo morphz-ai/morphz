@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   submissionOwnerText,
   verifySubmissionConsumption,
+  submissionSyntax,
 } from "./fixtures/exchange-submission-contract.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
@@ -45,7 +47,7 @@ import {
 // outcomes, async scheduling, React effects or native/visual equivalence.
 const oracleText = `
 const conditions = [
-  !asAnnotation && !captured.continuation && !captured.taskResult && !captured.scriptGeneration && !captured.reading && !captured.selection && !captured.textQuotes?.length && !captured.skipReading && readingExpected,
+  !asAnnotation && !captured.continuation && !captured.taskResult && !captured.scriptGeneration && !cognitive && !captured.reading && !captured.selection && !captured.textQuotes?.length && !captured.skipReading && readingExpected,
   !captured.continuation && canAuthorizeDirectories && (directoryState.scope !== directoryScope || !directoryState.ready),
   asAnnotation && (!artifact || !captured.selection || !captured.revision),
   !captured.continuation && (asAnnotation || captured.taskResult) && captured.attachments?.length,
@@ -55,7 +57,7 @@ const conditions = [
 ];
 const context = {
   projectId: project.id, conversationId, firstConversation, artifact, activeInstance,
-  browserPage, readingExpected, currentReading, canAuthorizeDirectories,
+  browserPage, readingExpected, currentReading, cognitiveSurface, canAuthorizeDirectories,
   directoryScope, directoryState, capabilities: {
     directedInput: client.boot?.capabilities.directedInput,
     conversationOnFirstInput: client.boot?.capabilities.conversationOnFirstInput,
@@ -104,6 +106,11 @@ function finalCallbacks() {
   try { ports.onResolved(result); } catch (error) { ports.onRejected(error); } finally { ports.onSettled(); }
 }
 function profileOrder() { await ports.profile.flush(); ports.profile.assertCurrentScope(); if (!ports.isCurrentSurface()) throw new Error("工作范围已切换，草稿已保留，请回到原处发送。"); }
+const cognitiveFields = {
+  ...(activeInstance && !cognitive ? { application: { id: activeInstance.applicationId, version: activeInstance.applicationVersion } } : {}),
+  ...(cognitiveObject ? { cognitiveObject } : {}),
+  ...(browserPage && !cognitive && activeInstance?.applicationId === "morphz.browser" ? { browser: { pageId: browserPage.pageId, epoch: browserPage.epoch, url: browserPage.url, title: browserPage.title } } : {}),
+};
 `;
 type Parsed = {
   source: SourceFile;
@@ -322,6 +329,19 @@ function ownership(
       "../../../../packages/core/src/text-quotes.js",
       new Set(["quotedInputText"]),
     ],
+    [
+      "../../../../packages/core/src/cognitive-app-object-locator.js",
+      new Set(["parseCognitiveAppObjectLocator"]),
+    ],
+    [
+      "../../../../packages/cognitive-app-sdk/src/protocol.js",
+      new Set(["parseWireJson"]),
+    ],
+    [
+      "../../../../packages/cognitive-app-sdk/src/domain-wire.js",
+      new Set(["parseDomainAuthority"]),
+    ],
+    ["./work-surface.js", new Set(["cognitiveWorkSurfaceKey"])],
   ]);
   const types = new Set([
     ...runtime.keys(),
@@ -400,7 +420,22 @@ function ownership(
       ),
       "resolved-callback-before-return-and-finally",
     );
-    const sequence = transaction.tryBlock.statements;
+    // Reviewed finite source admission. This syntax fingerprint is not a
+    // permission proof; independent controlled outcome tests cover old V1,
+    // await mutation, getters and current target mismatch. All original
+    // branch/receipt/async/command mutation gates remain below unchanged.
+    const fullSequence = transaction.tryBlock.statements;
+    check(
+      fullSequence.length === 18 &&
+        createHash("sha256")
+          .update(
+            JSON.stringify(fullSequence.slice(0, 11).map(submissionSyntax)),
+          )
+          .digest("hex") ===
+          "ed3535f8aa3c0db3627e5618fb6007f2a48e9046ee0332d185dcd37185d17c8d",
+      "exact-cognitive-source-snapshot-admission-before-first-await",
+    );
+    const sequence = fullSequence.slice(11);
     check(
       sequence.length === 7 && sequence.slice(0, 4).every(isIfStatement),
       "original-preflight-order-before-four-branches",
@@ -437,7 +472,7 @@ function ownership(
       "type,continuation,projectId,conversationId,artifactId,artifactRevision,selection,body,textQuotes,targetActantId,attachments",
       "type,taskId,expectedRevision,body",
       "type,artifactId,artifactRevision,quote,page,body",
-      "type,dispatchMode,model,reasoningEffort,projectId,conversationId,newConversation,application,artifactId,artifactRevision,selection,reading,body,textQuotes,scriptGeneration,directories,attachments,browser,intent,targetActantId",
+      "type,dispatchMode,model,reasoningEffort,projectId,conversationId,newConversation,application,artifactId,artifactRevision,selection,cognitiveObject,reading,body,textQuotes,scriptGeneration,directories,attachments,browser,intent,targetActantId",
     ];
     branches.forEach((branch, index) => {
       const execute = calls(branch, "ports.execute");
@@ -507,6 +542,39 @@ function ownership(
           "supplement-persist-before-transport-no-staging-unlock",
         );
       } else if (index === 3) {
+        const cognitiveFields = expected("cognitiveFields");
+        check(
+          isObjectLiteralExpression(cognitiveFields),
+          "finite-cognitive-payload-oracle",
+        );
+        if (
+          operation &&
+          isObjectLiteralExpression(operation) &&
+          isObjectLiteralExpression(cognitiveFields)
+        )
+          for (const [
+            fieldIndex,
+            expectedSpread,
+          ] of cognitiveFields.properties.entries()) {
+            const family = ["application", "cognitiveObject", "browser"][
+              fieldIndex
+            ]!;
+            const candidates = operation.properties
+              .filter(isSpreadAssignment)
+              .filter((prop) => {
+                const expr = isParenthesizedExpression(prop.expression)
+                  ? prop.expression.expression
+                  : prop.expression;
+                return (
+                  isConditionalExpression(expr) &&
+                  operationFields(expr.whenTrue).includes(family)
+                );
+              });
+            check(
+              candidates.length === 1 && same(candidates[0], expectedSpread),
+              "exact-cognitive-payload-no-implicit-harness-or-head",
+            );
+          }
         const flush = calls(branch, "ports.profile.flush"),
           scope = calls(branch, "ports.profile.assertCurrentScope"),
           surface = calls(branch, "ports.isCurrentSurface");
@@ -563,7 +631,30 @@ function ownership(
       ).length === 2,
     "real-core-helper-imports-not-same-name-local-fakes",
   );
+  for (const [path, names] of runtime)
+    for (const name of names) {
+      if (["discussionId", "quotedInputText"].includes(name)) continue;
+      const bound = importedSymbols(owner, path).get(name);
+      const actualCalls = submit ? calls(submit, name) : [];
+      check(
+        bound !== undefined &&
+          actualCalls.length > 0 &&
+          actualCalls.every(
+            (call) =>
+              isIdentifier(call.expression) &&
+              owner.symbols.get(call.expression) === bound,
+          ),
+        "new-source-helpers-are-actual-bound-imports",
+      );
+    }
   const allowedCalls = new Set([
+    "Object.getOwnPropertyDescriptor",
+    "parseCognitiveAppObjectLocator",
+    "parseWireJson",
+    "parseDomainAuthority",
+    "cognitiveWorkSurfaceKey",
+    "JSON.parse",
+    "JSON.stringify",
     "currentReading?.capture",
     "structuredClone",
     "crypto.randomUUID",
@@ -906,6 +997,60 @@ test("submission gate rejects fake command imports, context escape and changed U
       model,
       changed(submissionOwnerText, before!, after!),
     );
+});
+test("submission gate rejects cognitive source dropping, current-head substitution and implicit Harness", () => {
+  for (const [before, after, rule] of [
+    [
+      "parseCognitiveAppObjectLocator(slot.value)",
+      "parseCognitiveAppObjectLocator(cognitiveSource.locator)",
+      "exact-cognitive-source-snapshot-admission-before-first-await",
+    ],
+    [
+      "...(cognitiveObject ? { cognitiveObject } : {}),",
+      "...(cognitiveObject ? {} : {}),",
+      "exact-operation-field-families-no-supplement-scope-escalation",
+    ],
+    [
+      "...(cognitiveObject ? { cognitiveObject } : {}),",
+      "...(cognitiveObject ? { cognitiveObject: cognitiveSource.locator } : {}),",
+      "exact-cognitive-payload-no-implicit-harness-or-head",
+    ],
+    [
+      "...(activeInstance && !cognitive",
+      "...(activeInstance",
+      "exact-cognitive-payload-no-implicit-harness-or-head",
+    ],
+    [
+      "      !captured.scriptGeneration &&\n      !cognitive &&",
+      "      !captured.scriptGeneration &&",
+      "reading-directory-annotation-attachment-guards-unchanged",
+    ],
+    [
+      "          continuation: captured.continuation,",
+      "          continuation: captured.continuation, cognitiveObject,",
+      "exact-operation-field-families-no-supplement-scope-escalation",
+    ],
+    [
+      'import { parseWireJson } from "../../../../packages/cognitive-app-sdk/src/protocol.js";',
+      'import { parseWireJson as forgedParser } from "../../../../packages/cognitive-app-sdk/src/protocol.js";',
+      "new-source-helpers-are-actual-bound-imports",
+    ],
+  ])
+    reject(changed(owner, before!, after!), app, rule!);
+  assert.throws(
+    () =>
+      ownership(
+        owner,
+        app,
+        model,
+        changed(
+          submissionOwnerText,
+          "guardCognitiveAppInputCommand({ operation: draft });",
+          "void draft.cognitiveObject;",
+        ),
+      ),
+    { message: /exact cognitive own-slot guard/ },
+  );
 });
 test("submission gate permits formatting and unrelated UI owners outside the migrated protocol", () => {
   assert.deepEqual(

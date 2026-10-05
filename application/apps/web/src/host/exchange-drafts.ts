@@ -10,9 +10,11 @@ import type { ReasoningEffort } from "../../../../packages/core/src/inference.js
 import type { ReadingInput } from "../../../../packages/core/src/reader.js";
 import type { ScriptGeneration } from "../../../../packages/core/src/script-studio.js";
 import type { TextQuote } from "../../../../packages/core/src/text-quotes.js";
+import type { CognitiveAppObjectLocator } from "../../../../packages/core/src/cognitive-app-object-locator.js";
 import { draftKey, type scopedStorage } from "../local-preferences.js";
 
 export type InputDraft = {
+  cognitiveObject?: CognitiveAppObjectLocator;
   textQuotes?: TextQuote[];
   reading?: ReadingInput;
   skipReading?: boolean;

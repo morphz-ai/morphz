@@ -9,9 +9,11 @@ import type { WorkspaceClient } from "../client.js";
 import type { useProfile } from "../useProfile.js";
 import type { ConversationDraft, InputDraft } from "./exchange-drafts.js";
 import type { ExchangeSubmissionContext } from "./submit-exchange-draft.js";
+import type { CognitiveWorkSurface } from "./work-surface.js";
 import { consumeComposerDraft } from "../composer-drafts.js";
 import { RequestError } from "../application-transport.js";
 import { submitExchangeDraft } from "./submit-exchange-draft.js";
+import { guardCognitiveAppInputCommand } from "../../../../packages/core/src/cognitive-app-object-locator.js";
 
 type RecordSetter<T> = Dispatch<SetStateAction<Record<string, T>>>;
 export type ExchangeSubmissionCommandOptions = {
@@ -31,6 +33,7 @@ export type ExchangeSubmissionCommandOptions = {
     browserPage: ExchangeSubmissionContext["browserPage"];
     readingExpected: boolean;
     currentReading: ExchangeSubmissionContext["currentReading"];
+    cognitiveSurface?: CognitiveWorkSurface | null;
     canAuthorizeDirectories: boolean;
     directoryScope: string;
     directoryState: ExchangeSubmissionContext["directoryState"];
@@ -94,6 +97,7 @@ export function createExchangeSubmissionCommands({
     browserPage,
     readingExpected,
     currentReading,
+    cognitiveSurface,
     canAuthorizeDirectories,
     directoryScope,
     directoryState,
@@ -132,6 +136,17 @@ export function createExchangeSubmissionCommands({
       uploadingDrafts[contextKey]
     )
       return;
+    // Inspect only the independent new slot before the legacy shallow spread.
+    // Do not execute a slot getter or constrain unrelated legacy draft bytes.
+    try {
+      guardCognitiveAppInputCommand({ operation: draft });
+    } catch {
+      setInputErrors((old) => ({
+        ...old,
+        [contextKey]: "原件引用无效，草稿已保留。",
+      }));
+      return;
+    }
     dictationControls.current?.interrupt();
     const key = contextKey,
       captured =
@@ -177,6 +192,7 @@ export function createExchangeSubmissionCommands({
         browserPage,
         readingExpected,
         currentReading,
+        cognitiveSurface,
         canAuthorizeDirectories,
         directoryScope,
         directoryState,

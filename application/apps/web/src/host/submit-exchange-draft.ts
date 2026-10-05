@@ -10,6 +10,13 @@ import type { DirectoryGrant } from "../../../../packages/core/src/local-files.j
 import { quotedInputText } from "../../../../packages/core/src/text-quotes.js";
 import type { ReadingSurface } from "../reading-context-model.js";
 import type { ConversationDraft, InputDraft } from "./exchange-drafts.js";
+import { parseCognitiveAppObjectLocator } from "../../../../packages/core/src/cognitive-app-object-locator.js";
+import { parseWireJson } from "../../../../packages/cognitive-app-sdk/src/protocol.js";
+import { parseDomainAuthority } from "../../../../packages/cognitive-app-sdk/src/domain-wire.js";
+import {
+  cognitiveWorkSurfaceKey,
+  type CognitiveWorkSurface,
+} from "./work-surface.js";
 
 type RecordInput = Extract<Operation, { type: "record-input" }>;
 export type ExchangeSubmissionResult = {
@@ -26,6 +33,7 @@ export type ExchangeSubmissionContext = {
   browserPage: RecordInput["browser"] | null;
   readingExpected: boolean;
   currentReading: ReadingSurface | null;
+  cognitiveSurface?: CognitiveWorkSurface | null;
   canAuthorizeDirectories: boolean;
   directoryScope: string;
   directoryState: { scope: string; ready: boolean; grants: DirectoryGrant[] };
@@ -80,17 +88,85 @@ export async function submitExchangeDraft(
     browserPage,
     readingExpected,
     currentReading,
+    cognitiveSurface,
     canAuthorizeDirectories,
     directoryScope,
     directoryState,
     capabilities,
   } = context;
   try {
+    // Only the new source is detached here; unrelated legacy carriers keep
+    // their original snapshot/budget behavior. Supplements never take a new
+    // caller source: their immutable original is inherited by the backend.
+    const slot = Object.getOwnPropertyDescriptor(captured, "cognitiveObject");
+    if (
+      (slot && (!("value" in slot) || !slot.enumerable)) ||
+      (!slot && "cognitiveObject" in captured)
+    )
+      throw new Error("原件引用无效，草稿已保留。");
+    const cognitiveSource: CognitiveWorkSurface | undefined =
+      !captured.continuation && cognitiveSurface
+        ? JSON.parse(JSON.stringify(parseWireJson(cognitiveSurface)))
+        : undefined;
+    const cognitiveObject =
+      !captured.continuation && !captured.taskResult && !asAnnotation
+        ? slot?.value !== undefined
+          ? parseCognitiveAppObjectLocator(slot.value)
+          : cognitiveSource?.kind === "original"
+            ? parseCognitiveAppObjectLocator(cognitiveSource.locator)
+            : undefined
+        : undefined;
+    const cognitive = !!(cognitiveSource || cognitiveObject);
+    if (
+      cognitiveSource &&
+      cognitiveSource.kind !== "view" &&
+      cognitiveSource.kind !== "original"
+    )
+      throw new Error("原件工作范围无效，草稿已保留。");
+    if (cognitiveSource?.kind === "view")
+      parseDomainAuthority(cognitiveSource.authority);
+    if (cognitiveSource?.kind === "original")
+      parseCognitiveAppObjectLocator(cognitiveSource.locator);
+    if (
+      cognitiveSource &&
+      projectId !==
+        (cognitiveSource.kind === "original"
+          ? cognitiveSource.locator.projectId
+          : cognitiveSource.projectId)
+    )
+      throw new Error("原件工作范围已有变化，草稿已保留。");
+    if (
+      cognitiveObject &&
+      (cognitiveObject.projectId !== projectId ||
+        (cognitiveSource?.kind === "original" &&
+          cognitiveWorkSurfaceKey({
+            kind: "original",
+            locator: cognitiveObject,
+          }) !== cognitiveWorkSurfaceKey(cognitiveSource)) ||
+        (cognitiveSource?.kind === "view" &&
+          (cognitiveSource.projectId !== cognitiveObject.projectId ||
+            cognitiveSource.connectionId !== cognitiveObject.connectionId ||
+            JSON.stringify(parseDomainAuthority(cognitiveSource.authority)) !==
+              JSON.stringify(cognitiveObject.authority))))
+    )
+      throw new Error("原件工作范围已有变化，草稿已保留。");
+    if (
+      cognitive &&
+      (asAnnotation ||
+        captured.taskResult ||
+        artifact ||
+        captured.revision !== null ||
+        captured.selection ||
+        captured.reading ||
+        captured.scriptGeneration)
+    )
+      throw new Error("原输入中已有其他来源或专用请求，草稿已保留。");
     if (
       !asAnnotation &&
       !captured.continuation &&
       !captured.taskResult &&
       !captured.scriptGeneration &&
+      !cognitive &&
       !captured.reading &&
       !captured.selection &&
       !captured.textQuotes?.length &&
@@ -208,7 +284,7 @@ export async function submitExchangeDraft(
           ...(firstConversation
             ? { newConversation: { title: firstConversation.title } }
             : {}),
-          ...(activeInstance
+          ...(activeInstance && !cognitive
             ? {
                 application: {
                   id: activeInstance.applicationId,
@@ -221,6 +297,7 @@ export async function submitExchangeDraft(
             ? (captured.revision ?? artifact.revision)
             : null,
           selection: captured.selection,
+          ...(cognitiveObject ? { cognitiveObject } : {}),
           ...(captured.reading ? { reading: captured.reading } : {}),
           body: captured.body,
           ...(captured.textQuotes?.length
@@ -235,7 +312,9 @@ export async function submitExchangeDraft(
           ...(captured.attachments?.length
             ? { attachments: captured.attachments }
             : {}),
-          ...(browserPage && activeInstance?.applicationId === "morphz.browser"
+          ...(browserPage &&
+          !cognitive &&
+          activeInstance?.applicationId === "morphz.browser"
             ? {
                 browser: {
                   pageId: browserPage.pageId,
