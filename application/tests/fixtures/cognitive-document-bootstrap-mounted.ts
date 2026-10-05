@@ -17,6 +17,7 @@ export type DocumentBootstrapReport = {
   sent: Array<{ kind: string; marker?: string; id?: string }>;
   observations: Array<Record<string, unknown>>;
   invalid: number;
+  credits: number[];
 };
 
 /** Controlled synchronous SDK facade stub; not the packed production SDK. */
@@ -52,15 +53,19 @@ export function authorDocument(before = "", after = ""): string {
 
 const parentCode = String.raw`(() => {
   const expected = __EXPECTED__, marker = __MARKER__, protocol = __PROTOCOL__;
-  const report = {peers:0,ready:0,loads:0,requests:[],sent:[],observations:[],invalid:0};
+  const report = {peers:0,ready:0,loads:0,requests:[],sent:[],observations:[],invalid:0,credits:[]};
   let port = null, heldPeer = null, holdPeer = __HOLDPEER__, holdReplies = false, ready = false;
   const waiting = [];
+  let sentSequence = 0, creditedSequence = 0, receivedSequence = 0;
   const wrapper = document.createElement("iframe");
   wrapper.id = "trusted-wrapper"; wrapper.src = "/trusted-wrapper";
   wrapper.addEventListener("load", () => report.loads++);
   function emit(message) {
     report.sent.push(message);
-    port?.postMessage({kind:"wire",text:JSON.stringify(message)});
+    if (port) {
+      sentSequence++;
+      port.postMessage({kind:"wire",text:JSON.stringify(message)});
+    }
   }
   function attach(peer) {
     if (port !== null) { peer.close(); return; }
@@ -73,10 +78,21 @@ const parentCode = String.raw`(() => {
         emit({kind:"init",marker});
         return;
       }
+      if (packet?.kind === "credit") {
+        if (Array.isArray(packet) || Object.keys(packet).length !== 2 ||
+            !Number.isSafeInteger(packet.sequence) || packet.sequence !== creditedSequence + 1 ||
+            packet.sequence > sentSequence) { report.invalid++; return; }
+        creditedSequence = packet.sequence;
+        report.credits.push(packet.sequence);
+        return;
+      }
+      let consumedWire = false;
       try {
-        if (!ready || !packet || packet.kind !== "wire" || Object.keys(packet).length !== 2 ||
+        if (!packet || packet.kind !== "wire" || Object.keys(packet).length !== 2 ||
             typeof packet.text !== "string" || new TextEncoder().encode(packet.text).byteLength > 524288)
           throw Error("bad frame");
+        consumedWire = true;
+        if (!ready) throw Error("not parser-ready");
         const request = JSON.parse(packet.text);
         if (request?.kind !== "request" || request.method !== "readObject" ||
             typeof request.id !== "string" || request.id.length > 100 || Object.keys(request).length !== 3)
@@ -85,6 +101,9 @@ const parentCode = String.raw`(() => {
         if (holdReplies) waiting.push(request.id);
         else emit({kind:"result",id:request.id,marker});
       } catch { report.invalid++; }
+      finally {
+        if (consumedWire) peer.postMessage({kind:"credit",sequence:++receivedSequence});
+      }
     };
     peer.start();
   }

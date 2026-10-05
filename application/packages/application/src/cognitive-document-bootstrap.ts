@@ -11,7 +11,9 @@ import { applicationViewPermissions } from "../../core/src/resource-policy.js";
 
 /** Shared fixed Document handoff. No business authority or mounted consumer. */
 export const cognitiveDocumentBootstrapProtocol =
-  "morphz-cognitive-document-bootstrap/v1";
+  "morphz-cognitive-document-bootstrap/v2";
+/** Native transport window, distinct from Browser SDK/business pending. */
+export const cognitiveDocumentWireWindow = 16;
 export const cognitiveDocumentFacadeName = "__morphzCognitiveDocument";
 export const cognitiveDocumentBootstrapPolicy =
   "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'";
@@ -28,6 +30,7 @@ const documentPrefix = String.raw`(() => {
   const keys = Object.keys;
   const array = Array.isArray;
   const finite = Number.isFinite;
+  const safeInteger = Number.isSafeInteger;
   const nativeJSON = JSON, parse = JSON.parse;
   const encoder = new TextEncoder();
   const encode = TextEncoder.prototype.encode;
@@ -55,6 +58,7 @@ const documentPrefix = String.raw`(() => {
   const channel = new MessageChannel();
   const hostPort = channel.port1, peer = channel.port2;
   let retired = false, claimed = false, subscriber = null, ready = false;
+  let sentSequence = 0, creditedSequence = 0, receivedSequence = 0;
   function retire() {
     if (retired) return;
     retired = true;
@@ -117,9 +121,17 @@ const documentPrefix = String.raw`(() => {
     check() { check(); },
     send(text) {
       check();
+      if (sentSequence - creditedSequence >= 16)
+        throw new Error("Cognitive document is busy.");
       const detachedText = wire(text);
       check();
-      apply(post, hostPort, [{kind: "wire", text: detachedText}]);
+      if (!safeInteger(sentSequence + 1)) {
+        retire();
+        throw new Error("Cognitive document is retired.");
+      }
+      sentSequence++;
+      try { apply(post, hostPort, [{kind: "wire", text: detachedText}]); }
+      catch(error) { retire(); throw error; }
     },
     subscribe(callback) {
       check();
@@ -145,14 +157,30 @@ const documentPrefix = String.raw`(() => {
     try {
       check();
       const message = apply(eventData, event, []);
-      if (!message || typeof message !== "object" || keys(message).length !== 2)
+      if (!message || typeof message !== "object" || array(message) || keys(message).length !== 2)
         throw new Error("Invalid cognitive document ingress.");
-      const kind = descriptor(message, "kind"), text = descriptor(message, "text");
+      const kind = descriptor(message, "kind");
+      if (kind && kind.value === "credit") {
+        const sequence = descriptor(message, "sequence");
+        if (!sequence || !("value" in sequence) ||
+            !safeInteger(sequence.value) || sequence.value !== creditedSequence + 1 ||
+            sequence.value > sentSequence)
+          throw new Error("Invalid cognitive document credit.");
+        check();
+        creditedSequence = sequence.value;
+        return;
+      }
+      const text = descriptor(message, "text");
       if (!kind || kind.value !== "wire" || !text || !("value" in text))
         throw new Error("Invalid cognitive document ingress.");
       const validated = wire(text.value);
       check();
       if (ready && subscriber !== null) subscriber(validated);
+      check();
+      if (!safeInteger(receivedSequence + 1))
+        throw new Error("Invalid cognitive document sequence.");
+      receivedSequence++;
+      apply(post, hostPort, [{kind: "credit", sequence: receivedSequence}]);
     } catch { retire(); }
   }]);
   apply(add, hostPort, ["messageerror", retire]);
@@ -168,7 +196,7 @@ const documentPrefix = String.raw`(() => {
   }
   apply(add, doc, ["DOMContentLoaded", parserReady, {once: true}]);
   apply(parentPost, nativeParent, [{
-    protocol: "morphz-cognitive-document-bootstrap/v1", proof: __PROOF__
+    protocol: "morphz-cognitive-document-bootstrap/v2", proof: __PROOF__
   }, "*", [peer]]);
 })();`;
 

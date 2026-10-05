@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-05 固定文档原生端口的有限窗口
+
+独立 Chromium 实测原 v1 facade 绕开 SDK 后能一次排入 1,000 条 wire，
+真实 RED 保留在 `/tmp/morphz-document-credit-BURST-RED-oct05.log`。
+私有 framing 升至 v2，固定前缀和可信 Host endpoint 各限十六个未消费
+wire；单调连续 credit 只确认传输消费，不是业务 ACK、事务回滚或授权。
+没有待发队列、自动重试或增加作者预算，满窗即同步拒绝。
+
+Root 独立正式组合中的本阶段五文件 67/67、零失败／取消／跳过，包括
+既有原型二十、纯资源八、新 Chromium 六、独立端口三十与真实两端
+Chromium 三项；同组合另含独立原生机制一项，范围另行记录，不混称。
+日志 `/tmp/morphz-document-credit-and-native-ROOT-PAIRED-FINAL-oct05.log`。
+端口三十项中二十六项使用真实 Node MessageChannel，四项显式描述符
+单元验证；不把它们当作 Chromium 或生产 SDK。新的浏览器测试验证
+1,000 次 burst 只有十六次发送、显式 credit 恢复不重放、重复控制退休、
+数组框架与同步 doc.open 回调守门；两个移除守门的受控 mutant 实际
+触发错误交付／多余 credit，作为正向攻击 oracle。初轮 mutant 转义
+定位错误的失败日志也保留，不修改生产守门或旧测试断言来通过。
+
+两端 witness 使用生产固定构造器及 Host endpoint，实际 HTTP 加载完整
+字节与 header；受控 receive-start gate 只推迟原生 start，不制造消息。
+双向千次 burst、真实连续 credit 后第二窗与失败请求不自动重发均通过。
+类型、九路径专项格式通过，日志 `ROOT-TYPES-CORRECT`、`ROOT-FORMAT-FINAL`
+沿上述 `/tmp/morphz-document-credit-and-native-` 前缀及 `-oct05.log` 后缀。
+
+原型受控 peer 只适配新 private framing，旧原型断言未减弱。每方向 native
+队列分项为十六 wire＋十六反向 credit，作者至 Host 再有一个 ready；
+不是整个队列十六条。单端关闭不保证另一端即时取消所有业务 pending，
+也不保证浏览器原生队列回收；后续 SDK／owner 生命周期必须另行验收。
+当前 private Host endpoint 尚未挂载，真实 SDK 与原 App 仍未完成。
+
 ## 2026-10-05 单源的共享作者文档资源叶层
 
 已验收固定文档构造器移入共享 Application，Web 旧路径仅 reexport，

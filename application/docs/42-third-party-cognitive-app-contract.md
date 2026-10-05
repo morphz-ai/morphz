@@ -672,15 +672,26 @@ JavaScript URL 重写仅在明确的非生产 sandbox 对照中执行并核退�
 mutation hash 或数据库状态，不能绕过当前 session／view／binding 门。
 
 原 `/api/cognitive-app-view`、公开 readUi DTO 和 Remote 有界原字节读取
-保持。HTTP 先通过当前 Human 的实际 readUi／Store 门再构造；Desktop
-embedded adapter 借用当前 Local／Remote 原资源读取后调用同一构造器，
-不增加应用 HTTP server。构造的 SHA await 前固定原字节，返回前再次
-核当前身份／连接代次和取消，不把请求初始许可当作异步后的披露许可。
+保持。认证载体的接线修正（2026-10-05，已审查、实施中）：固定包装
+投影放入 UiPackageService 的同一私有不可变字节读取管线及 SAME HPA
+会话，不暴露可由 UI／caller 提交的构造 callback。原 Store 校验完成后
+生成固定包装，SHA await 结束再次执行原完整 prepareCognitiveAppUiRead
+快照比较，复核 Human、项目、grant、connection、安装字节与窗口双 CAS。
+普通窗口 metadata read 可在停用连接后保持可读，因此不能充当这项
+披露许可检查；单独的 Local generation／Remote epoch 也不够。
+
+HTTP 与 Local 调同一私有 ApplicationSession 文档资源能力，不新增
+公开 applicationMethods 或 readUi 字段。Remote 直接有界读取认证的
+专用包装 endpoint，不先读取 raw 再于 Host 构造；reader 只允许内部
+固定 raw／document 两种描述，不开放 caller URL、header 或预算。
+Desktop embedded 使用 Local／Remote 的已构造载体，不增加 HTTP
+server，不在最终权限检查后再次等待摘要。响应适配器只同步验证字节、
+当前身份／取消并披露，不把请求初始许可当作异步后的披露许可。
 HEAD 也走同一门，返回实际包装字节长度，不执行作者代码。
 
 作者上限仍为 1,000,000 个 UTF-8 字节，BOM、原字节 SHA 与安装证明
 不变。包装载体单独验证 1,500,000 字节上限：当前最大作者字节与
-128 字符 proof 实测为 1,341,611 字节，包含 Base64 扩张和 8,275 字节
+128 字符 proof 在 v2 实测为 1,342,767 字节，包含 Base64 扩张和 9,431 字节
 固定开销；该预算是工程决定，不扩大原作者或消息预算。生成后仍须
 验证实际 UTF-8 长度，未来固定前缀增长也不能绕过该门。
 
@@ -697,6 +708,45 @@ nonce、单次消费和当前真实 owner；作者不能用复制 proof 的新�
 第二个 SDK port；每次 context accessor、观察者注册、逐个观察者通知、
 结果解析／冻结／accept 和发送均需同步文档守门。SDK 十六 pending 不
 等于原生端口队列有界，private ingress 背压必须另行证明后才接 consumer。
+
+原生端口背压的实施模型（有限端口已验收，生产 consumer 未挂载）：固定前缀和可信 Host endpoint
+各持十六个发送 credit，只有可信端点处理完一个有界 wire frame 后才
+返还一个 credit；确认使用单调连续序号并核实际未偿发送，重复、跳号或
+超前确认不能增加窗口。该确认是传输消费，不是业务 ACK、commit 或许可。
+作者仅能通过固定 facade 发送字符串，外层总是包装为 wire，不能注入
+private credit／parser-ready 控制帧或得到原生端口；控制帧不交作者观察者。
+
+发送没有 credit 时同步拒绝，既不加入 JavaScript 待发队列，也不自动
+重试。每个方向最多十六个未消费 wire，各自不超过原 512 KiB／深度／
+节点预算；返还控制帧亦受对应未偿发送限制。接收回调前后再次同步核
+文档，作者观察者重写 Document 时不能继续确认或发布。Host 无可用
+发送 credit 时让现 channel 安全退休，不缓存私密结果或伪造业务回滚；
+已受理写入的原 ID／回执继续属于既有领域账本。
+
+Host 在 parser-ready 前不发送 wire；接收仅准一次严格的既有 SDK connect，
+此时原 channel 尚未 loaded，不授权或发布 init。其余早发业务帧退休。
+各方向的 native 队列分项上界为十六 wire＋十六反向确认，作者至 Host
+另有一个 parser-ready；不能简写为“整个原生队列最多十六条”。
+单端退休只关闭本端并阻止本端再次交付，不能推断另一端立即清除
+全部业务 pending；SDK 退休通知和 Host owner／channel 联动仍须实现，
+不能把 MessagePort.close 当成 native 队列回收证明。
+
+这是原生消息队列与 SDK／业务 pending 两个不同边界；不是承诺阻止
+作者在自身 renderer 无限循环、任意分配内存，或撤回已披露字节。
+实际同步 burst 绕过 SDK、延迟端点、非法／重复 credit、失效文档及
+正常往返均需证明后再接生产 consumer，不能只由 pending≤16 推断。
+
+Root 独立正式组合中的本阶段五文件 67/67、零跳过，包含原型二十、
+纯资源八、新 Chromium 六、Node 端口三十和真实 paired Chromium 三项；
+另行原生机制一项范围不相混。
+新 Chromium 实测绕过 SDK 的千次 burst 限十六、显式恢复不重放、
+重复 credit 退休、数组形伪帧隔离与观察者同步 doc.open 后不确认；
+两个受控 guard-removal mutant 实际触发错误交付／credit，原 RED 与
+mutant 定位错误保留。Node 三十项中四项为明确的受控描述符单元，
+其余真实原生端口。paired 三项实际加载完整固定字节与 header，生产
+Host endpoint 双向 burst 与 FIFO credit 恢复通过；Doc 方向暂停使用
+明确的受控 native receive-start gate，不造 ACK 或消息。这些证据不代替生产 SDK、业务 consumer、
+领域业务或用户原 App 验收。私有端点尚不进入公共应用接口。
 
 第三方 locator 固定实际 app／version／definition hash、instance／service／
 data authority、objectId、opaque versionRef 与原目录 content id。导航与
