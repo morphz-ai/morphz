@@ -8,14 +8,18 @@ import { renderToString } from "react-dom/server";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
+  SyntaxKind,
   isArrayBindingPattern,
   isBinaryExpression,
   isBindingElement,
   isCallExpression,
   isFunctionDeclaration,
   isIdentifier,
+  isImportDeclaration,
+  isNamedImports,
   isPostfixUnaryExpression,
   isPrefixUnaryExpression,
+  isStringLiteral,
   isVariableDeclaration,
   type Node,
   type SourceFile,
@@ -78,7 +82,10 @@ function shape(node: Node, source: SourceFile): unknown {
     children.length ? children : node.getText(source),
   ];
 }
-function withSource<T>(text: string, read: (source: SourceFile) => T): T {
+function withSource<T>(
+  text: string,
+  read: (source: SourceFile, symbols: Map<Node, number | undefined>) => T,
+): T {
   const directory = "/exchange-read-fixture",
     config = directory + "/tsconfig.json";
   const api = new API({
@@ -93,9 +100,20 @@ function withSource<T>(text: string, read: (source: SourceFile) => T): T {
   });
   const snapshot = api.updateSnapshot({ openProjects: [config] });
   try {
-    const program = snapshot.getProject(config)!.program;
+    const project = snapshot.getProject(config)!,
+      program = project.program;
     assert.deepEqual(program.getSyntacticDiagnostics(), []);
-    return read(program.getSourceFile(directory + "/source.tsx")!);
+    const source = program.getSourceFile(directory + "/source.tsx")!,
+      identifiers: Node[] = [];
+    walk(source, (node) => {
+      if (isIdentifier(node)) identifiers.push(node);
+    });
+    const resolved = project.checker.getSymbolAtLocation(identifiers),
+      symbols = new Map<Node, number | undefined>();
+    identifiers.forEach((node, index) =>
+      symbols.set(node, resolved[index]?.id),
+    );
+    return read(source, symbols);
   } finally {
     snapshot.dispose();
     api.close();
@@ -537,8 +555,7 @@ test("actual Conversation keeps its original items/receipt initializers and allH
     extract(actual, "Conversation"),
     extract(fixedSource, "fixedHistoryRead"),
   );
-  assert(actual.includes("() => setAllHistory(false)"));
-  assert(actual.includes("[focusedArtifactId, focusedApplicationId]"));
+  verifyCognitiveHistoryReset(actual);
   // The renderer still owns receipt computation; its visibility/focus/modal
   // guards now live in the directly consumed complete viewport controller.
   const viewport = readFileSync(
@@ -555,6 +572,117 @@ test("actual Conversation keeps its original items/receipt initializers and allH
   assert(viewport.includes('document.visibilityState === "visible"'));
   assert(viewport.includes("document.hasFocus()"));
   assert(viewport.includes('!document.querySelector("dialog[open]")'));
+});
+
+function verifyCognitiveHistoryReset(text: string) {
+  const expected = withSource(
+    "useEffect(() => setAllHistory(false), [focusedArtifactId, focusedApplicationId, cognitiveFocusKey]);",
+    (source) => shape(source.statements[0]!, source),
+  );
+  withSource(text, (source, symbols) => {
+    const component = source.statements.find(
+      (node) =>
+        isFunctionDeclaration(node) && node.name?.text === "Conversation",
+    )!;
+    const setters: Node[] = [];
+    walk(component, (node) => {
+      if (isVariableDeclaration(node) && isArrayBindingPattern(node.name))
+        for (const entry of node.name.elements)
+          if (
+            isBindingElement(entry) &&
+            entry.name &&
+            isIdentifier(entry.name) &&
+            entry.name.text === "setAllHistory"
+          )
+            setters.push(entry.name);
+    });
+    assert.equal(setters.length, 1, "exact-cognitive-allHistory-reset");
+    const setter = symbols.get(setters[0]!);
+    assert.notEqual(setter, undefined, "exact-cognitive-allHistory-reset");
+    const effects: Node[] = [];
+    walk(component, (node) => {
+      if (
+        !isCallExpression(node) ||
+        !isIdentifier(node.expression) ||
+        node.expression.text !== "useEffect" ||
+        !node.arguments[0]
+      )
+        return;
+      let used = false;
+      walk(node.arguments[0], (child) => {
+        if (isIdentifier(child) && symbols.get(child) === setter) used = true;
+      });
+      if (used) effects.push(node);
+    });
+    assert.equal(effects.length, 1, "exact-cognitive-allHistory-reset");
+    const bindings: Node[] = [];
+    for (const declaration of source.statements.filter(isImportDeclaration)) {
+      const named = declaration.importClause?.namedBindings;
+      if (
+        !isStringLiteral(declaration.moduleSpecifier) ||
+        declaration.moduleSpecifier.text !== "react" ||
+        !named ||
+        !isNamedImports(named) ||
+        declaration.importClause?.phaseModifier === SyntaxKind.TypeKeyword
+      )
+        continue;
+      for (const entry of named.elements)
+        if (
+          (entry.propertyName ?? entry.name).text === "useEffect" &&
+          !entry.isTypeOnly
+        )
+          bindings.push(entry.name);
+    }
+    assert.equal(bindings.length, 1, "exact-cognitive-allHistory-reset");
+    const effect = effects[0]!;
+    assert.ok(isCallExpression(effect), "exact-cognitive-allHistory-reset");
+    assert.equal(
+      symbols.get(effect.expression),
+      symbols.get(bindings[0]!),
+      "exact-cognitive-allHistory-reset",
+    );
+    // Only this exact callback/dependency extension is approved. Receipt and
+    // original item initializers above still compare with the immutable 4ce.
+    assert.deepEqual(
+      shape(effect.parent, source),
+      expected,
+      "exact-cognitive-allHistory-reset",
+    );
+  });
+}
+test("actual cognitive history reset rejects a missing/wrong key, callback inversion and foreign effect", () => {
+  const actual = readFileSync(
+    new URL("../apps/web/src/Conversation.tsx", import.meta.url),
+    "utf8",
+  );
+  for (const [before, after] of [
+    [
+      "[focusedArtifactId, focusedApplicationId, cognitiveFocusKey]",
+      "[focusedArtifactId, focusedApplicationId]",
+    ],
+    [
+      "[focusedArtifactId, focusedApplicationId, cognitiveFocusKey]",
+      "[focusedArtifactId, focusedApplicationId, focusedCognitiveObject]",
+    ],
+    ["() => setAllHistory(false)", "() => setAllHistory(true)"],
+    [
+      "() => setAllHistory(false)",
+      "() => setAllHistory(false), () => setAllHistory(false)",
+    ],
+    ['from "react";', 'from "./fake-react.js";'],
+  ]) {
+    assert.equal(
+      actual.split(before!).length - 1,
+      1,
+      "unique cognitive read-reset seam",
+    );
+    const candidate = actual.replace(before!, after!);
+    withSource(candidate, () => undefined);
+    assert.throws(
+      () => verifyCognitiveHistoryReset(candidate),
+      assert.AssertionError,
+    );
+  }
 });
 
 // Isolated registration adapter, not a React renderer or a real visibility

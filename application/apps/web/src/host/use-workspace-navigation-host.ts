@@ -15,6 +15,7 @@ import type { ScriptLocation } from "../../../../packages/core/src/script-delive
 import type { LocalFileView } from "../../../../packages/core/src/local-files.js";
 import type { InteractionMode } from "../interaction.js";
 import type { WorkSurfaceView } from "./work-surface.js";
+import type { CognitiveNavigationLocation } from "./cognitive-navigation-location.js";
 import {
   useWorkspaceNavigationState,
   type PreferenceWriter,
@@ -53,6 +54,7 @@ export type Preferences = InterfacePreferences & {
   scriptLocation?:
     | (ScriptLocation & { requestId: string; view?: "library" | "editor" })
     | null;
+  cognitiveLocation?: CognitiveNavigationLocation | null;
   interactions?: Record<string, InteractionMode>;
   exchangeHeights?: Record<string, number>;
   pinnedInputs?: Record<string, boolean>;

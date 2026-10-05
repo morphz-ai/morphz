@@ -21,6 +21,7 @@ import type { LocalFileView } from "../../../../packages/core/src/local-files.js
 import type { ScriptLocation } from "../../../../packages/core/src/script-delivery.js";
 import type { WorkspaceClient } from "../client.js";
 import type { ExchangePreferences } from "./use-exchange-controller.js";
+import type { CognitiveNavigationLocation } from "./cognitive-navigation-location.js";
 import type {
   WorkSurfacePreferences,
   deriveWorkSurface,
@@ -38,6 +39,7 @@ export type NavigationPreferences = WorkSurfacePreferences &
     collaboration: boolean;
     subjectOpen: boolean;
     localFile?: { projectId: string; reference: LocalFileView["reference"] };
+    cognitiveLocation?: CognitiveNavigationLocation | null;
   };
 export type NavigationPlace = Pick<
   NavigationPreferences,
@@ -50,6 +52,7 @@ export type NavigationPlace = Pick<
   | "readerMode"
   | "applications"
   | "scriptLocation"
+  | "cognitiveLocation"
 >;
 type NavigationTrail = { places: NavigationPlace[]; index: number };
 export type PreferenceWriter<P> = (
@@ -70,6 +73,7 @@ export function isNavigationPreferenceChange(
     "artifactId" in change ||
     "applications" in change ||
     "scriptLocation" in change ||
+    "cognitiveLocation" in change ||
     "selectedConversations" in change
   );
 }
@@ -82,6 +86,26 @@ export function mergeNavigationPreferences<P extends NavigationPreferences>(
 ): P {
   return {
     ...previous,
+    ...(previous.cognitiveLocation !== undefined &&
+    ("view" in change ||
+      "projectId" in change ||
+      "artifactId" in change ||
+      "applications" in change ||
+      "scriptLocation" in change ||
+      "selectedConversations" in change)
+      ? { cognitiveLocation: null }
+      : {}),
+    ...(change.cognitiveLocation
+      ? {
+          artifactId: null,
+          artifactRevision: null,
+          artifactPage: null,
+          readerMode: false,
+          readingTarget: null,
+          scriptLocation: null,
+          localFile: undefined,
+        }
+      : {}),
     ...("view" in change ||
     "projectId" in change ||
     "selectedConversations" in change ||

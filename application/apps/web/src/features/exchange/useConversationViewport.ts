@@ -27,6 +27,7 @@ type ConversationViewportStateOptions = {
   focused: boolean;
   focusedArtifactId?: string;
   focusedApplicationId?: string;
+  focusedCognitiveKey?: string;
   positions: Map<string, ExchangePosition>;
   revealInputId: string | null;
 };
@@ -37,6 +38,7 @@ export function useConversationViewportState({
   focused,
   focusedArtifactId,
   focusedApplicationId,
+  focusedCognitiveKey,
   positions,
   revealInputId,
 }: ConversationViewportStateOptions) {
@@ -52,10 +54,12 @@ export function useConversationViewportState({
   const loadingQuote = useRef<string | null>(null);
   const latestButton = useRef<HTMLButtonElement>(null);
   const positionKey =
-    conversationId +
-    (focused
-      ? ":focus:" + (focusedArtifactId ?? focusedApplicationId)
-      : ":all");
+    focused && focusedCognitiveKey !== undefined
+      ? JSON.stringify(["cognitive", conversationId, focusedCognitiveKey])
+      : conversationId +
+        (focused
+          ? ":focus:" + (focusedArtifactId ?? focusedApplicationId)
+          : ":all");
   const saved = positions.get(positionKey);
   const previousPositionKey = useRef(positionKey);
   const following = useRef(saved?.following ?? true);

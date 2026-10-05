@@ -86,6 +86,13 @@ import { ProjectDirectory } from "./WorkspaceViews.js";
 import { TaskList } from "./TaskList.js";
 import { taskListOptions } from "./task-list.js";
 import { ApplicationHost } from "./ApplicationHost.js";
+import { CognitiveOriginalView } from "./CognitiveOriginalView.js";
+import { useCognitiveOriginal } from "./host/use-cognitive-original.js";
+import { createCognitiveDraftWriter } from "./host/cognitive-draft-writer.js";
+import {
+  parseCognitiveAppObjectLocator,
+  type CognitiveAppObjectLocator,
+} from "../../../packages/core/src/cognitive-app-object-locator.js";
 import { createApplicationComposePreparation } from "./host/application-compose-preparation.js";
 import { createBuiltinApplicationAdapters } from "./host/builtin-application-adapters.js";
 import { AgentDirectories, type DirectoryState } from "./AgentDirectories.js";
@@ -433,7 +440,12 @@ function WorkspaceApp({
     storage: { readLocal, writeLocal },
     onNotice: setNotice,
   });
-  const { writeInputs: writeDrafts } = draftCommands;
+  const writeDrafts = createCognitiveDraftWriter({
+    writeInputs: draftCommands.writeInputs,
+    captureScope: () =>
+      cognitiveSurface ? { key: contextKey, surface: cognitiveSurface } : null,
+    onError: setNotice,
+  });
   const startedConversations = startedProjectConversationIds({ state, client });
   useCommittedConversationDraftRetirement(draftCommands, state);
   const projectMetrics = useMemo(() => {
@@ -483,6 +495,46 @@ function WorkspaceApp({
     setExplicitWebsiteIntent: setWebsiteIntent,
   } = navigation;
   const renderNavigation = navigationGeneration.current;
+  // An explicit open reserves a navigation intent before its authorized read.
+  // Keep the current page's read witness until a location is actually committed;
+  // otherwise beginOpen would re-read that page and temporarily retarget drafts.
+  const cognitiveLocationKey = JSON.stringify(prefs.cognitiveLocation ?? null);
+  const cognitiveReadNavigation = useRef({
+    key: cognitiveLocationKey,
+    epoch: renderNavigation,
+  });
+  if (cognitiveReadNavigation.current.key !== cognitiveLocationKey)
+    cognitiveReadNavigation.current = {
+      key: cognitiveLocationKey,
+      epoch: renderNavigation,
+    };
+  const cognitive = useCognitiveOriginal({
+    location: prefs.cognitiveLocation,
+    identity: {
+      centerId: client.boot!.centerId,
+      principalId: client.boot!.principalId,
+      csrfToken: client.boot!.csrfToken,
+    },
+    navigationEpoch: cognitiveReadNavigation.current.epoch,
+    isCurrent: () => origin.isActive() && !!host.currentProjection(),
+  });
+  const cognitiveSurface = cognitive.value
+    ? { kind: "original" as const, locator: cognitive.value.locator }
+    : null;
+  const cognitiveOpen = useRef<{
+    abort: AbortController;
+    generation: number;
+  } | null>(null);
+  useEffect(() => {
+    const pending = cognitiveOpen.current;
+    if (pending && !navigation.isCurrent(pending.generation))
+      pending.abort.abort();
+  }, [renderNavigation]);
+  useEffect(() => () => cognitiveOpen.current?.abort.abort(), []);
+  const cognitiveInputBlocked =
+    cognitive.blocked ||
+    (!!cognitiveOpen.current &&
+      navigation.isCurrent(cognitiveOpen.current.generation));
   const [browserPage, setBrowserPage] = useState<BrowserView | null>(null);
   const [attachmentSlot, setAttachmentSlot] = useState<HTMLDivElement | null>(
     null,
@@ -523,6 +575,7 @@ function WorkspaceApp({
     contentScope,
     conversationDrafts,
     restoredPlace,
+    cognitiveSurface,
   });
   const {
     navigationProject,
@@ -714,6 +767,7 @@ function WorkspaceApp({
     sharedDefault,
   );
   const conversationFocus = {
+    cognitiveObject: !historyVisible ? cognitive.value?.locator : undefined,
     artifactId: !historyVisible ? artifact?.id : undefined,
     applicationId:
       !historyVisible && activeInstance?.applicationId === browserApplication.id
@@ -766,8 +820,14 @@ function WorkspaceApp({
     };
   }, [contextKey, activeId]);
   useEffect(() => {
-    document.title = `${artifact?.title ?? (prefs.view === "projects" && prefs.projectOpen ? project?.title : labels[prefs.view])} — Morphz`;
-  }, [artifact?.title, project?.title, prefs.view, prefs.projectOpen]);
+    document.title = `${cognitive.value?.original.title ?? artifact?.title ?? (prefs.view === "projects" && prefs.projectOpen ? project?.title : labels[prefs.view])} — Morphz`;
+  }, [
+    cognitive.value?.original.title,
+    artifact?.title,
+    project?.title,
+    prefs.view,
+    prefs.projectOpen,
+  ]);
   const currentContext = useRef(contextKey);
   currentContext.current = contextKey;
   const place: NavigationPlace = {
@@ -780,6 +840,7 @@ function WorkspaceApp({
     readerMode: prefs.readerMode,
     applications: prefs.applications,
     scriptLocation: prefs.scriptLocation ?? null,
+    cognitiveLocation: prefs.cognitiveLocation,
   };
   useWorkspaceNavigationCommit(navigation, { place, travel });
   useExchangeControllerFocus(exchangeController);
@@ -907,6 +968,78 @@ function WorkspaceApp({
     if (!origin.isActive()) return;
     setWebsiteIntent(null);
     void openUser(id, revision, page);
+  }
+  async function openCognitiveOriginal(raw: CognitiveAppObjectLocator) {
+    if (!origin.isActive()) return;
+    let locator: CognitiveAppObjectLocator;
+    try {
+      locator = parseCognitiveAppObjectLocator(raw);
+    } catch {
+      setNotice("原件引用无效，当前位置未改变。");
+      return;
+    }
+    cognitiveOpen.current?.abort.abort();
+    const generation = navigation.beginOpen();
+    const pending = { generation, abort: new AbortController() };
+    cognitiveOpen.current = pending;
+    const privateCommit = origin.capturePrivateCommit();
+    const intent = { generation };
+    const destination: CurrentDestination = (current) =>
+      privateCommit(current) &&
+      navigation.isCurrent(intent.generation) &&
+      current.workspace.projects.some((p) => p.id === locator.projectId);
+    const deadline = setTimeout(() => pending.abort.abort(), 30_000);
+    try {
+      const value = await cognitive.readOriginal(locator, pending.abort.signal);
+      const current = host.currentProjection();
+      if (pending.abort.signal.aborted || !current || !destination(current))
+        return;
+      setCreating(null);
+      setExecutions(null);
+      setWebsiteIntent(null);
+      const targetConversation = conversationKey(locator.projectId);
+      const targetExchangeKey =
+        targetConversation === defaultConversation
+          ? locator.projectId
+          : targetConversation;
+      const location = { kind: "original" as const, locator: value.locator };
+      continueNavigation(
+        {
+          view: "projects",
+          projectId: locator.projectId,
+          projectOpen: true,
+          artifactId: null,
+          artifactRevision: null,
+          cognitiveLocation: location,
+          ...(prefs.interactions?.[targetExchangeKey] === "history"
+            ? { interactions: { [targetExchangeKey]: "recent" as const } }
+            : {}),
+        },
+        intent,
+        destination,
+      );
+      cognitive.adopt(
+        value,
+        cognitiveReadNavigation.current.key === JSON.stringify(location)
+          ? cognitiveReadNavigation.current.epoch
+          : intent.generation,
+      );
+      host.recordContentVisit(value.entry.id, destination);
+    } catch (error) {
+      if (navigation.isCurrent(generation) && origin.isActive())
+        setNotice(
+          pending.abort.signal.aborted
+            ? "原件读取已取消或超时，当前位置未改变。"
+            : error instanceof Error
+              ? error.message
+              : "原件暂时无法读取。",
+        );
+    } finally {
+      clearTimeout(deadline);
+      pending.abort.abort();
+      if (cognitiveOpen.current === pending) cognitiveOpen.current = null;
+      navigation.finishOpen(intent.generation);
+    }
   }
   const {
     selectContentScope,
@@ -1132,6 +1265,7 @@ function WorkspaceApp({
   );
   const annotations = objectAnnotationItems(artifact, annotationResult);
   const contextTitle =
+    cognitive.value?.original.title ??
     artifact?.title ??
     (activeInstance?.applicationId === browserApplication.id
       ? browserPage?.title || "浏览器"
@@ -1163,6 +1297,7 @@ function WorkspaceApp({
   // A personal desk remains the real input owner, but is not an explicit
   // project association. Named conversations already belong to a project.
   const showPlainComposerScope = !!(
+    cognitive.requested ||
     draft.continuation ||
     artifact ||
     deliveredScript ||
@@ -1170,6 +1305,9 @@ function WorkspaceApp({
     spaceKind(project) === "project"
   );
   const composerScopeTitle =
+    (cognitive.requested
+      ? (cognitive.value?.original.title ?? "原件")
+      : undefined) ??
     artifact?.title ??
     deliveredScript?.production.title ??
     (activeInstance?.applicationId === browserApplication.id
@@ -1219,6 +1357,7 @@ function WorkspaceApp({
       browserPage,
       readingExpected,
       currentReading,
+      cognitiveSurface,
       canAuthorizeDirectories,
       directoryScope,
       directoryState,
@@ -1651,6 +1790,9 @@ function WorkspaceApp({
             artifact: artifact
               ? { title: artifact.title, kind: artifact.content.kind }
               : null,
+            cognitiveTitle: cognitive.requested
+              ? (cognitive.value?.original.title ?? "原件")
+              : undefined,
             openingObject,
             creating,
             collaborationVisible,
@@ -1696,20 +1838,22 @@ function WorkspaceApp({
                   : undefined
               }
               aria-label="主工作区"
-              {...quoteSource({
-                kind: "surface",
-                projectId: project.id,
-                title: activeInstance
-                  ? applicationFor(
-                      state,
-                      activeInstance.applicationId,
-                      activeInstance.applicationVersion,
-                    ).title
-                  : labels[prefs.view],
-                ...(activeInstance
-                  ? { applicationInstanceId: activeInstance.id }
-                  : {}),
-              })}
+              {...(!cognitive.requested
+                ? quoteSource({
+                    kind: "surface",
+                    projectId: project.id,
+                    title: activeInstance
+                      ? applicationFor(
+                          state,
+                          activeInstance.applicationId,
+                          activeInstance.applicationVersion,
+                        ).title
+                      : labels[prefs.view],
+                    ...(activeInstance
+                      ? { applicationInstanceId: activeInstance.id }
+                      : {}),
+                  })
+                : {})}
               hidden={historyVisible}
             >
               {creating === "document" && (
@@ -1739,7 +1883,7 @@ function WorkspaceApp({
                   workspaceId={project.id}
                   activeId={activeId}
                   recentContentVisits={recentContentVisits}
-                  enabled={applicationWorkspaceOpen}
+                  enabled={applicationWorkspaceOpen && !cognitive.requested}
                   navigationId={navigationGeneration.current}
                   applicationActions={applicationActions}
                   onOpen={open}
@@ -1748,9 +1892,18 @@ function WorkspaceApp({
                   renderBuiltin={builtinApplications.renderBuiltin}
                   onOpenRecent={builtinApplications.openRecentContent}
                 >
-                  {artifact &&
-                  (prefs.readerMode ||
-                    artifact.content.kind === "publication") ? (
+                  {cognitive.requested ? (
+                    <CognitiveOriginalView
+                      original={cognitive.value}
+                      message={cognitive.message}
+                      onRetry={cognitive.reload}
+                      toolbarTarget={detailToolbarTarget}
+                      state={state}
+                      onOpen={openUser}
+                    />
+                  ) : artifact &&
+                    (prefs.readerMode ||
+                      artifact.content.kind === "publication") ? (
                     <Reader
                       client={client}
                       projectId={project.id}
@@ -1960,6 +2113,7 @@ function WorkspaceApp({
                     }
                     focusedApplicationId={conversationFocus.applicationId}
                     focusedArtifactId={conversationFocus.artifactId}
+                    focusedCognitiveObject={conversationFocus.cognitiveObject}
                     key={conversationId}
                     inputs={inputs}
                     messages={replies}
@@ -1979,6 +2133,7 @@ function WorkspaceApp({
                     conversationId={conversationId}
                     client={client}
                     onOpen={openUser}
+                    onOpenCognitiveObject={openCognitiveOriginal}
                     onOpenScript={openScript}
                     onRetry={async (id) => {
                       // Retrying removes this focused button once the outbox
@@ -2075,7 +2230,11 @@ function WorkspaceApp({
                       {!!draft.textQuotes?.length && (
                         <TextQuoteDrafts
                           quotes={draft.textQuotes}
-                          disabled={sending || !!draft.pendingSupplement}
+                          disabled={
+                            sending ||
+                            !!draft.pendingSupplement ||
+                            cognitiveInputBlocked
+                          }
                         />
                       )}
                       {draft.continuation && (
@@ -2211,7 +2370,11 @@ function WorkspaceApp({
                           rows={2}
                           maxLength={30000}
                           value={draft.body}
-                          disabled={sending || !!draft.pendingSupplement}
+                          disabled={
+                            sending ||
+                            !!draft.pendingSupplement ||
+                            cognitiveInputBlocked
+                          }
                           onChange={(e) => {
                             setDraft(contextKey, {
                               ...draft,
@@ -2228,7 +2391,7 @@ function WorkspaceApp({
                             );
                             if (mode) {
                               event.preventDefault();
-                              if (client.online)
+                              if (client.online && !cognitiveInputBlocked)
                                 void send(draft.annotation === true, mode);
                             }
                           }}
@@ -2442,6 +2605,7 @@ function WorkspaceApp({
                               capture={{
                                 title: `截图输入（按住 ${/Mac/.test(navigator.platform) ? "Option" : "Alt"} 点击隐藏 Morphz）`,
                                 disabled:
+                                  cognitiveInputBlocked ||
                                   sending ||
                                   !!draft.pendingSupplement ||
                                   !!uploadingDrafts[contextKey] ||
@@ -2459,6 +2623,7 @@ function WorkspaceApp({
                                 (!draft.annotation && !draft.taskResult)
                               }
                               disabled={
+                                cognitiveInputBlocked ||
                                 sending ||
                                 !!draft.pendingSupplement ||
                                 !!uploadingDrafts[contextKey] ||
@@ -2478,7 +2643,8 @@ function WorkspaceApp({
                             data-recording={speechRecording || undefined}
                             title={speechRecording ? "停止听写" : "开始听写"}
                             disabled={
-                              (sending ||
+                              (cognitiveInputBlocked ||
+                                sending ||
                                 !!draft.pendingSupplement ||
                                 !client.online) &&
                               !speechRecording
@@ -2514,6 +2680,7 @@ function WorkspaceApp({
                                 directoryState.ready)
                             }
                             disabled={
+                              cognitiveInputBlocked ||
                               sending ||
                               !client.online ||
                               !client.boot!.runtime.connected ||
@@ -2592,6 +2759,7 @@ function WorkspaceApp({
                                 !draft.attachments?.length &&
                                 !draft.textQuotes?.length) ||
                               sending ||
+                              cognitiveInputBlocked ||
                               (selectedDraft &&
                                 client.boot?.localSavedInputIds.includes(
                                   selectedDraft.inputId,
@@ -2604,6 +2772,7 @@ function WorkspaceApp({
                               !client.online
                             }
                             onClick={(event) =>
+                              !cognitiveInputBlocked &&
                               void send(
                                 draft.annotation === true,
                                 event.altKey ? "parallel" : "interrupt",

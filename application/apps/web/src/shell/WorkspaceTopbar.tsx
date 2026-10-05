@@ -16,6 +16,7 @@ export type WorkspaceTopbarView = Readonly<{
   projectTitle: string;
   projectOpen: boolean;
   artifact: Readonly<{ title: string; kind: string }> | null;
+  cognitiveTitle?: string;
   openingObject: boolean;
   creating: "document" | "project" | null;
   collaborationVisible: boolean;
@@ -99,7 +100,7 @@ export function WorkspaceTopbar({
         !view.applicationWorkspaceOpen && (
           <div className="breadcrumb">
             <h1 className="toolbar-title">
-              {view.artifact ? (
+              {view.artifact || view.cognitiveTitle ? (
                 <button onClick={onNavigateView}>{view.viewLabel}</button>
               ) : (
                 view.viewLabel
@@ -118,19 +119,32 @@ export function WorkspaceTopbar({
                 <strong>{view.artifact.title}</strong>
               </>
             )}
+            {view.cognitiveTitle && (
+              <>
+                <ChevronRight />
+                <strong>{view.cognitiveTitle}</strong>
+              </>
+            )}
           </div>
         )
       )}
       <div
         className="page-toolbar-slot"
         ref={slots.page}
-        hidden={view.applicationWorkspaceOpen || !!view.artifact}
+        hidden={
+          view.applicationWorkspaceOpen ||
+          !!view.artifact ||
+          !!view.cognitiveTitle
+        }
       ></div>
       <div
         className="detail-toolbar-slot"
         ref={slots.detail}
         hidden={
-          view.openingObject || (!view.artifact && view.creating !== "document")
+          view.openingObject ||
+          (!view.artifact &&
+            !view.cognitiveTitle &&
+            view.creating !== "document")
         }
       />
       <div className="top-actions">

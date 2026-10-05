@@ -55,6 +55,8 @@ import { ApprovalCard } from "./ApprovalCard.js";
 import { liveToolPresentation } from "./execution-presentation.js";
 import { inputExecutionActivityPresentation } from "./execution-activity.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
+import type { CognitiveAppObjectLocator } from "../../../packages/core/src/cognitive-app-object-locator.js";
+import { cognitiveWorkSurfaceKey } from "./host/work-surface.js";
 
 import {
   useConversationViewportState,
@@ -84,6 +86,8 @@ export function Conversation({
   onSupplement,
   focusedArtifactId,
   focusedApplicationId,
+  focusedCognitiveObject,
+  onOpenCognitiveObject,
   toolbarTarget,
   onFocusComposer,
   onOpenQuote,
@@ -103,6 +107,8 @@ export function Conversation({
   toolbarTarget?: HTMLElement | null;
   focusedArtifactId?: string;
   focusedApplicationId?: string;
+  focusedCognitiveObject?: CognitiveAppObjectLocator;
+  onOpenCognitiveObject?: (locator: CognitiveAppObjectLocator) => void;
   inputs: Workspace["inputs"];
   state: Workspace;
   runtime: ConversationRuntime;
@@ -126,11 +132,19 @@ export function Conversation({
   onSupplement?: (target: InputContinuation) => void;
 }) {
   const [allHistory, setAllHistory] = useState(false);
+  const cognitiveFocusKey = focusedCognitiveObject
+    ? cognitiveWorkSurfaceKey({
+        kind: "original",
+        locator: focusedCognitiveObject,
+      })
+    : undefined;
   useEffect(
     () => setAllHistory(false),
-    [focusedArtifactId, focusedApplicationId],
+    [focusedArtifactId, focusedApplicationId, cognitiveFocusKey],
   );
-  const focused = !!(focusedArtifactId || focusedApplicationId) && !allHistory;
+  const focused =
+    !!(focusedArtifactId || focusedApplicationId || focusedCognitiveObject) &&
+    !allHistory;
   const readScope = projectConversationReadScope({
     inputs: allInputs,
     messages,
@@ -138,7 +152,11 @@ export function Conversation({
     scriptOutputs: client.boot?.scriptOutputs ?? [],
     scope: {
       focus: focused
-        ? { artifactId: focusedArtifactId, applicationId: focusedApplicationId }
+        ? {
+            artifactId: focusedArtifactId,
+            applicationId: focusedApplicationId,
+            cognitiveObject: focusedCognitiveObject,
+          }
         : {},
       messageArray: "filter-always",
     },
@@ -187,6 +205,7 @@ export function Conversation({
     focused,
     focusedArtifactId,
     focusedApplicationId,
+    focusedCognitiveKey: cognitiveFocusKey,
     positions,
     revealInputId,
   });
@@ -371,7 +390,7 @@ export function Conversation({
           {earlierError}
         </p>
       )}
-      {(focusedArtifactId || focusedApplicationId) &&
+      {(focusedArtifactId || focusedApplicationId || focusedCognitiveObject) &&
         toolbarTarget &&
         createPortal(
           <button
@@ -379,9 +398,11 @@ export function Conversation({
             onClick={() => setAllHistory(!allHistory)}
           >
             {allHistory
-              ? focusedArtifactId
-                ? "仅看当前对象的交流"
-                : "仅看当前应用的交流"
+              ? focusedCognitiveObject
+                ? "仅看当前原件的交流"
+                : focusedArtifactId
+                  ? "仅看当前对象的交流"
+                  : "仅看当前应用的交流"
               : "查看全部交流"}
           </button>,
           toolbarTarget,
@@ -723,6 +744,17 @@ export function Conversation({
                         {!item.reading &&
                           item.artifactRevision != null &&
                           ` · v${item.artifactRevision}`}
+                      </button>
+                    )}
+                    {item?.cognitiveObject && onOpenCognitiveObject && (
+                      <button
+                        className="message-object-link"
+                        title={`原件版本：${item.cognitiveObject.object.versionRef}`}
+                        onClick={() =>
+                          onOpenCognitiveObject(item.cognitiveObject!)
+                        }
+                      >
+                        关联原件 · {item.cognitiveObject.object.versionRef}
                       </button>
                     )}
                     {item?.localFile && (

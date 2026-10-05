@@ -1183,6 +1183,15 @@ const originalDraftCommands =
 const originalDraftCommandsSource = parse({
   "commands.ts": originalDraftCommands,
 }).get("commands.ts")!.source;
+const cognitiveWriterAdapter = parse({
+  "adapter.ts": `function WorkspaceApp() {
+  const writeDrafts = createCognitiveDraftWriter({
+    writeInputs: draftCommands.writeInputs,
+    captureScope: () => cognitiveSurface ? { key: contextKey, surface: cognitiveSurface } : null,
+    onError: setNotice,
+  });
+}`,
+}).get("adapter.ts")!.source;
 
 function currentDraftFacts(parsed: Parsed) {
   const aliases = new Map<number, number>();
@@ -1614,6 +1623,74 @@ function currentDraftOwnership(
     "writeDrafts",
   ]) {
     const found = bindApp(name);
+    if (name === "writeDrafts") {
+      const entries = importedCalls(
+        "createCognitiveDraftWriter",
+        "./host/cognitive-draft-writer.js",
+      );
+      const value = entries[0]?.arguments[0];
+      const properties =
+        value && isObjectLiteralExpression(value) ? value.properties : [];
+      const rawWriter = properties.find(
+        (property) =>
+          isPropertyAssignment(property) &&
+          property.name.getText() === "writeInputs",
+      );
+      const borrowed =
+        rawWriter && isPropertyAssignment(rawWriter)
+          ? rawWriter.initializer
+          : undefined;
+      check(
+        found.length === 1 &&
+          entries.length === 1 &&
+          found[0]?.initializer === entries[0] &&
+          entries[0]?.arguments.length === 1 &&
+          !entries[0]?.typeArguments?.length &&
+          a.same(
+            found[0],
+            declarations(cognitiveWriterAdapter, "writeDrafts")[0],
+          ) &&
+          !!borrowed &&
+          isPropertyAccessExpression(borrowed) &&
+          isIdentifier(borrowed.expression) &&
+          a.identity(borrowed.expression) === a.identity(command[0]!.name),
+        "exact-cognitive-public-writer-adapter-real-import-and-borrowed-owner",
+      );
+      for (const expected of ["cognitiveSurface", "contextKey", "setNotice"]) {
+        const variables = declarations(workspace, expected),
+          functionsFound =
+            expected === "setNotice" ? functions(workspace, expected) : [];
+        const identifiers: Identifier[] = [];
+        const target =
+          expected === "setNotice"
+            ? functionsFound[0]?.name
+            : variables[0]?.name;
+        if (target)
+          walk(target, (node) => {
+            if (isIdentifier(node) && node.text === expected)
+              identifiers.push(node);
+          });
+        const references: Identifier[] = [];
+        if (value)
+          walk(value, (node) => {
+            if (isIdentifier(node) && node.text === expected)
+              references.push(node);
+          });
+        check(
+          (expected === "setNotice"
+            ? functionsFound.length === 1
+            : variables.length === 1) &&
+            identifiers.length === 1 &&
+            references.length > 0 &&
+            a.identity(identifiers[0]!) !== undefined &&
+            references.every(
+              (node) => a.identity(node) === a.identity(identifiers[0]!),
+            ),
+          "exact-cognitive-public-writer-adapter-real-import-and-borrowed-owner",
+        );
+      }
+      continue;
+    }
     check(
       found.length === 1 &&
         a.same(
@@ -2335,6 +2412,57 @@ function registerCurrentDraftCounterfactuals() {
   });
 }
 registerCurrentDraftCounterfactuals();
+
+test("current cognitive writer requires the real factory, exact owner/scope/error ports and no legacy bypass", () => {
+  const parsed = parseCurrentDraft({ "App.tsx": app }).get("App.tsx")!;
+  const workspace = functions(parsed.source, "WorkspaceApp")[0]!;
+  const writer = declarations(workspace, "writeDrafts")[0]!;
+  const property = (name: string) => {
+    const found: Node[] = [];
+    walk(writer, (node) => {
+      if (isPropertyAssignment(node) && node.name.getText() === name)
+        found.push(node.initializer);
+    });
+    assert.equal(found.length, 1, "unique-new-writer-counterfactual:" + name);
+    return found[0]!;
+  };
+  const replaceNode = (node: Node, replacement: string) =>
+    app.slice(0, node.getStart()) + replacement + app.slice(node.end);
+  const factory = writer.initializer!;
+  assert.ok(isCallExpression(factory));
+  const imports = parsed.source.statements.filter(
+    (node) =>
+      isImportDeclaration(node) &&
+      isStringLiteral(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === "./host/cognitive-draft-writer.js",
+  );
+  assert.equal(imports.length, 1, "unique-new-writer-import-counterfactual");
+  const cases = [
+    replaceNode(
+      writer.parent.parent,
+      "const { writeInputs: writeDrafts } = draftCommands;",
+    ),
+    replaceNode(property("writeInputs"), "{ ...draftCommands }.writeInputs"),
+    replaceNode(property("key"), "conversationId"),
+    replaceNode(property("surface"), "{ ...cognitiveSurface }"),
+    replaceNode(property("captureScope"), "() => undefined"),
+    replaceNode(property("onError"), "() => {}"),
+    replaceNode(
+      imports[0]!,
+      'import type { createCognitiveDraftWriter } from "./host/cognitive-draft-writer.js";',
+    ),
+    'import { createCognitiveDraftWriter as foreignWriter } from "./foreign-writer.js";\n' +
+      replaceNode(factory.expression, "foreignWriter"),
+  ];
+  for (const candidate of cases) {
+    parseCurrentDraft({ "App.tsx": candidate });
+    assert.ok(
+      currentDraftOwnership(owner, candidate, privateOwner).includes(
+        "exact-cognitive-public-writer-adapter-real-import-and-borrowed-owner",
+      ),
+    );
+  }
+});
 
 test("current draft recipes permit real import/const aliases and independently consumed React growth", () => {
   const aliasedOwner = changed(

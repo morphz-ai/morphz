@@ -365,6 +365,109 @@ function properties(node: Node | undefined): Map<string, Node> {
     }
   return values;
 }
+// One approved persisted field, not a relaxed schema or a new whole golden.
+const cognitivePreferenceField = parse({
+  "field.ts":
+    "type Field = { cognitiveLocation?: CognitiveNavigationLocation | null; };",
+}).get("field.ts")!.source;
+const originalNavigationTypes = parse({
+  "original.ts": historicalNavigationSource("owner"),
+}).get("original.ts")!.source;
+function typeAlias(source: Node, name: string) {
+  const found: Node[] = [];
+  walk(source, (node) => {
+    if (isTypeAliasDeclaration(node) && node.name.text === name)
+      found.push(node.type);
+  });
+  return found;
+}
+function isPropertySignature(node: Node): node is Node & { name: Node } {
+  return node.kind === SyntaxKind.PropertySignature;
+}
+function removeCognitivePreferenceField(
+  parsed: Parsed,
+  type: Node,
+): Node | undefined {
+  const fields: Node[] = [],
+    expected: Node[] = [],
+    bindings: Identifier[] = [],
+    references: Identifier[] = [];
+  walk(type, (node) => {
+    if (
+      isPropertySignature(node) &&
+      node.name.getText() === "cognitiveLocation"
+    )
+      fields.push(node);
+  });
+  walk(cognitivePreferenceField, (node) => {
+    if (isPropertySignature(node)) expected.push(node);
+  });
+  if (fields.length !== 1 || !same(fields[0], expected[0])) return;
+  for (const declaration of parsed.source.statements.filter(
+    isImportDeclaration,
+  )) {
+    const named = declaration.importClause?.namedBindings;
+    if (
+      !isStringLiteral(declaration.moduleSpecifier) ||
+      declaration.moduleSpecifier.text !==
+        "./cognitive-navigation-location.js" ||
+      !named ||
+      !isNamedImports(named)
+    )
+      continue;
+    for (const binding of named.elements)
+      if (
+        (binding.propertyName ?? binding.name).text ===
+          "CognitiveNavigationLocation" &&
+        (declaration.importClause?.phaseModifier === SyntaxKind.TypeKeyword ||
+          binding.isTypeOnly)
+      )
+        bindings.push(binding.name);
+  }
+  walk(fields[0]!, (node) => {
+    if (isIdentifier(node) && node.text === "CognitiveNavigationLocation")
+      references.push(node);
+  });
+  if (
+    bindings.length !== 1 ||
+    references.length !== 1 ||
+    parsed.symbols.get(bindings[0]!) === undefined ||
+    parsed.symbols.get(bindings[0]!) !== parsed.symbols.get(references[0]!)
+  )
+    return;
+  const field = fields[0]!,
+    text = type.getText(),
+    start = field.getStart() - type.getStart(),
+    end = field.end - type.getStart();
+  return typeAlias(
+    parse({
+      "stripped.ts":
+        "type Stripped = " + text.slice(0, start) + text.slice(end) + ";",
+    }).get("stripped.ts")!.source,
+    "Stripped",
+  )[0];
+}
+function removeCognitivePlaceLiteral(type: Node): Node | undefined {
+  const literals: Node[] = [];
+  walk(type, (node) => {
+    if (isStringLiteral(node) && node.text === "cognitiveLocation")
+      literals.push(node);
+  });
+  if (literals.length !== 1) return;
+  const literal = literals[0]!,
+    text = type.getText(),
+    start = literal.getStart() - type.getStart(),
+    end = literal.end - type.getStart();
+  const pipe = text.lastIndexOf("|", start);
+  if (pipe < 0 || text.slice(pipe + 1, start).trim()) return;
+  return typeAlias(
+    parse({
+      "stripped.ts":
+        "type Stripped = " + text.slice(0, pipe) + text.slice(end) + ";",
+    }).get("stripped.ts")!.source,
+    "Stripped",
+  )[0];
+}
 function ownership(
   ownerText: string,
   appText: string,
@@ -1190,8 +1293,37 @@ function ownership(
     check(
       actual.length === 1 &&
         expected.length === 1 &&
-        same(actual[0], expected[0]),
+        same(
+          current && actual[0]
+            ? removeCognitivePreferenceField(host, actual[0])
+            : actual[0],
+          expected[0],
+        ),
       "original-persisted-preference-schema-and-defaults",
+    );
+  }
+  if (current) {
+    const actualPreferences = typeAlias(owner, "NavigationPreferences"),
+      originalPreferences = typeAlias(
+        originalNavigationTypes,
+        "NavigationPreferences",
+      );
+    const actualPlace = typeAlias(owner, "NavigationPlace"),
+      originalPlace = typeAlias(originalNavigationTypes, "NavigationPlace");
+    check(
+      actualPreferences.length === 1 &&
+        originalPreferences.length === 1 &&
+        same(
+          removeCognitivePreferenceField(ownerParsed, actualPreferences[0]!),
+          originalPreferences[0],
+        ),
+      "exact-cognitive-navigation-field-real-type-and-original-schema",
+    );
+    check(
+      actualPlace.length === 1 &&
+        originalPlace.length === 1 &&
+        same(removeCognitivePlaceLiteral(actualPlace[0]!), originalPlace[0]),
+      "exact-cognitive-navigation-place-single-new-key",
     );
   }
   const defaults: Node[] = [],
@@ -1312,6 +1444,24 @@ function currentOwnership(owner: string, app: string, host: string): string[] {
   return problems;
 }
 function changed(source: string, from: string, to: string) {
+  // Keep the literal historical mutation ledger unchanged. Its actual
+  // restoredPlace mutation now sits before exactly one new borrowed surface.
+  if (
+    from === "    restoredPlace,\n  });" &&
+    to === "    restoredPlace: null,\n  });" &&
+    !source.includes(from)
+  ) {
+    const actual = "    restoredPlace,\n    cognitiveSurface,\n  });";
+    assert.equal(
+      source.split(actual).length - 1,
+      1,
+      "one actual cognitive work-surface seam",
+    );
+    return source.replace(
+      actual,
+      "    restoredPlace: null,\n    cognitiveSurface,\n  });",
+    );
+  }
   assert.ok(source.includes(from), `Fixture target missing: ${from}`);
   return source.replace(from, to);
 }
@@ -1720,6 +1870,77 @@ test("new Host/private lifecycle rejects lost scope/session/updater checks, dupl
 }
 registerNavigationCounterfactuals("historical", historical, ownership);
 registerNavigationCounterfactuals("current", current, currentOwnership);
+
+nodeTest(
+  "current cognitive navigation permits only its real imported field and one exact place key",
+  () => {
+    const field = "cognitiveLocation?: CognitiveNavigationLocation | null;";
+    for (const host of [
+      changed(current.stableHost, field, "cognitiveLocation?: unknown;"),
+      changed(
+        current.stableHost,
+        field,
+        "cognitiveLocation: CognitiveNavigationLocation | null;",
+      ),
+      changed(current.stableHost, field, ""),
+      changed(current.stableHost, field, field + " leakedGrant?: unknown;"),
+      changed(current.stableHost, field, field + field),
+      changed(
+        current.stableHost,
+        'from "./cognitive-navigation-location.js"',
+        'from "./fake-cognitive-navigation-location.js"',
+      ),
+      changed(
+        current.stableHost,
+        "import type { CognitiveNavigationLocation }",
+        "import { CognitiveNavigationLocation }",
+      ),
+      changed(
+        current.stableHost,
+        "import type { CognitiveNavigationLocation }",
+        "import type { CognitiveNavigationLocation as UnusedLocation }",
+      ) + "\ntype CognitiveNavigationLocation = unknown;\n",
+    ]) {
+      parse({ "host.ts": host });
+      assert.ok(
+        currentOwnership(current.owner, current.app, host).includes(
+          "original-persisted-preference-schema-and-defaults",
+        ),
+      );
+    }
+    for (const owner of [
+      changed(current.owner, field, "cognitiveLocation?: unknown;"),
+      changed(current.owner, field, field + " leakedActor?: string;"),
+      changed(
+        current.owner,
+        'from "./cognitive-navigation-location.js"',
+        'from "./fake-cognitive-navigation-location.js"',
+      ),
+    ]) {
+      parse({ "owner.ts": owner });
+      assert.ok(
+        currentOwnership(owner, current.app, current.stableHost).includes(
+          "exact-cognitive-navigation-field-real-type-and-original-schema",
+        ),
+      );
+    }
+    for (const owner of [
+      changed(current.owner, '| "cognitiveLocation"', ""),
+      changed(
+        current.owner,
+        '| "cognitiveLocation"',
+        '| "cognitiveLocation" | "hiddenAuthority"',
+      ),
+    ]) {
+      parse({ "owner.ts": owner });
+      assert.ok(
+        currentOwnership(owner, current.app, current.stableHost).includes(
+          "exact-cognitive-navigation-place-single-new-key",
+        ),
+      );
+    }
+  },
+);
 
 nodeTest(
   "current raw navigation permits independently consumed React growth outside governed owners",

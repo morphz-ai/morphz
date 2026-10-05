@@ -12,8 +12,14 @@ import {
   inConversation,
   type Workspace,
 } from "../../../packages/core/src/model.js";
+import type { CognitiveAppObjectLocator } from "../../../packages/core/src/cognitive-app-object-locator.js";
+import { cognitiveWorkSurfaceKey } from "./host/work-surface.js";
 
-export type ConversationFocus = { artifactId?: string; applicationId?: string };
+export type ConversationFocus = {
+  artifactId?: string;
+  applicationId?: string;
+  cognitiveObject?: CognitiveAppObjectLocator;
+};
 export type ReplyReceipt = { keys: string[]; version: string };
 export type ReadReplies = Record<string, string>;
 
@@ -23,6 +29,20 @@ export function focusedInputs(
   outputs: ArtifactOutput[],
   focus: ConversationFocus,
 ) {
+  if (focus.cognitiveObject) {
+    const key = cognitiveWorkSurfaceKey({
+      kind: "original",
+      locator: focus.cognitiveObject,
+    });
+    return inputs.filter(
+      (input) =>
+        input.cognitiveObject &&
+        cognitiveWorkSurfaceKey({
+          kind: "original",
+          locator: input.cognitiveObject,
+        }) === key,
+    );
+  }
   if (focus.artifactId) {
     const outputInputIds = new Set(
       outputs
@@ -64,7 +84,11 @@ export function projectConversationReadScope({
 }) {
   const inputs = focusedInputs(allInputs, outputs, scope.focus);
   const inputIds = new Set(inputs.map((input) => input.id));
-  const focused = !!(scope.focus.artifactId || scope.focus.applicationId);
+  const focused = !!(
+    scope.focus.artifactId ||
+    scope.focus.applicationId ||
+    scope.focus.cognitiveObject
+  );
   return {
     inputs,
     messages:

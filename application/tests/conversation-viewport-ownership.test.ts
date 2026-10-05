@@ -14,6 +14,7 @@ import {
   isBindingElement,
   isCallExpression,
   isComputedPropertyName,
+  isConditionalExpression,
   isElementAccessExpression,
   isExpressionStatement,
   isFunctionDeclaration,
@@ -111,6 +112,7 @@ const statePorts = [
   "focused",
   "focusedArtifactId",
   "focusedApplicationId",
+  "focusedCognitiveKey",
   "positions",
   "revealInputId",
 ];
@@ -495,6 +497,24 @@ const reference = parse({
     fixedViewportSpans.returnLatest +
     ";",
 }).get("Reference")!;
+// The one new key branch and consumed focus, not a re-recorded old archive.
+const cognitiveReference = parse({
+  Cognitive: `
+const positionKey = focused && focusedCognitiveKey !== undefined
+  ? JSON.stringify(["cognitive", conversationId, focusedCognitiveKey]) : undefined;
+function cognitiveRenderer() {
+  const cognitiveFocusKey = focusedCognitiveObject
+    ? cognitiveWorkSurfaceKey({ kind: "original", locator: focusedCognitiveObject }) : undefined;
+  useEffect(() => setAllHistory(false), [focusedArtifactId, focusedApplicationId, cognitiveFocusKey]);
+  const focused = !!(focusedArtifactId || focusedApplicationId || focusedCognitiveObject) && !allHistory;
+  const readScope = projectConversationReadScope({
+    inputs: allInputs, messages, outputs: client.boot!.outputs,
+    scriptOutputs: client.boot?.scriptOutputs ?? [],
+    scope: { focus: focused ? { artifactId: focusedArtifactId, applicationId: focusedApplicationId,
+      cognitiveObject: focusedCognitiveObject } : {}, messageArray: "filter-always" },
+  });
+}`,
+}).get("Cognitive")!;
 
 function validate(sources: Sources) {
   const parsed = parse(sources),
@@ -502,6 +522,21 @@ function validate(sources: Sources) {
     renderer = parsed.get("Conversation")!;
   const state = fn(owner, "useConversationViewportState"),
     commit = fn(owner, "useConversationViewportCommit");
+  const keyTypes = owner.nodes.filter(
+    (node) =>
+      node.kind === SyntaxKind.PropertySignature &&
+      (node as Node & { name: Node }).name.getText() === "focusedCognitiveKey",
+  );
+  assert.equal(keyTypes.length, 1, "exact-cognitive-optional-state-key-type");
+  const keyChildren: Node[] = [];
+  keyTypes[0]!.forEachChild((child) => {
+    keyChildren.push(child);
+  });
+  assert.deepEqual(
+    keyChildren.map((node) => node.kind),
+    [SyntaxKind.Identifier, SyntaxKind.QuestionToken, SyntaxKind.StringKeyword],
+    "exact-cognitive-optional-state-key-type",
+  );
   for (const name of ["useRef", "useState", "useEffect", "useLayoutEffect"])
     imported(owner, name, "react");
   for (const [name, path] of [
@@ -574,12 +609,63 @@ function validate(sources: Sources) {
         refs.set(name.text, symbol(owner, name, "state-register-phase"));
         owner.names.set(symbol(owner, name, "state-register-phase"), name.text);
       }
-    same(
-      statement,
-      fn(reference, "registration").body!.statements[index]!,
-      owner,
-      "state-register-phase:" + stateNames[index],
-    );
+    if (stateNames[index] === "positionKey") {
+      const actual = entries[0]!.initializer,
+        expected = declaration(
+          cognitiveReference.source,
+          "positionKey",
+        ).initializer!;
+      assert.ok(
+        actual &&
+          isConditionalExpression(actual) &&
+          isConditionalExpression(expected),
+        "exact-cognitive-position-key-branch",
+      );
+      assert.equal(
+        statement.declarationList.flags & (NodeFlags.Const | NodeFlags.Let),
+        NodeFlags.Const,
+        "state-register-phase:positionKey",
+      );
+      same(
+        entries[0]!.name,
+        declaration(fn(reference, "registration"), "positionKey").name,
+        owner,
+        "state-register-phase:positionKey",
+      );
+      same(
+        actual.condition,
+        expected.condition,
+        owner,
+        "exact-cognitive-position-key-branch",
+      );
+      same(
+        actual.whenTrue,
+        expected.whenTrue,
+        owner,
+        "exact-cognitive-position-key-branch",
+      );
+      const json = walk(actual.whenTrue)
+        .filter(isIdentifier)
+        .filter((node) => node.text === "JSON");
+      assert.equal(json.length, 1, "exact-cognitive-position-key-branch");
+      assert.equal(
+        owner.symbols.get(json[0]!),
+        undefined,
+        "exact-cognitive-position-key-branch",
+      );
+      same(
+        actual.whenFalse,
+        declaration(fn(reference, "registration"), "positionKey").initializer!,
+        owner,
+        "state-register-phase:positionKey",
+      );
+    } else
+      same(
+        statement,
+        fn(reference, "registration").body!.statements[index]!,
+        owner,
+        "state-register-phase:" + stateNames[index],
+      );
   }
   const returned = statements.at(-1)!;
   assert.ok(
@@ -801,6 +887,11 @@ function validate(sources: Sources) {
   const handle = stateCall.parent.name,
     handleId = symbol(renderer, handle, "actual-state-hook-call");
   const parameterBindings = bindingNames(component.parameters[0]!.name, true);
+  for (const entry of parameterBindings)
+    renderer.names.set(
+      symbol(renderer, entry.value, "renderer-captured-ports"),
+      entry.key === "inputs" ? "allInputs" : entry.key,
+    );
   const renderRefs = new Map(
     parameterBindings.map((entry) => [
       entry.key,
@@ -810,6 +901,99 @@ function validate(sources: Sources) {
   // The original Conversation names its captured inputs parameter allInputs.
   renderRefs.set("allInputs", renderRefs.get("inputs")!);
   renderRefs.set("setAllHistory", allHistorySetter(renderer, component));
+  renderer.names.set(renderRefs.get("setAllHistory")!, "setAllHistory");
+  const focusKey = declaration(component, "cognitiveFocusKey");
+  renderRefs.set(
+    "focusedCognitiveKey",
+    symbol(renderer, focusKey.name, "exact-cognitive-renderer-focus"),
+  );
+  imported(renderer, "cognitiveWorkSurfaceKey", "./host/work-surface.js");
+  imported(renderer, "projectConversationReadScope", "./conversation-read.js");
+  same(
+    focusKey.initializer!,
+    declaration(cognitiveReference.source, "cognitiveFocusKey").initializer!,
+    renderer,
+    "exact-cognitive-renderer-focus",
+  );
+  unreassignedCapture(
+    renderer,
+    component,
+    renderRefs.get("focusedCognitiveObject")!,
+    focusKey,
+    "focusedCognitiveObject",
+  );
+  for (const name of ["focused", "readScope"])
+    same(
+      declaration(component, name).initializer!,
+      declaration(cognitiveReference.source, name).initializer!,
+      renderer,
+      "exact-cognitive-renderer-focus",
+    );
+  const keyExpression = focusKey.initializer!;
+  assert.ok(
+    isConditionalExpression(keyExpression) &&
+      isCallExpression(keyExpression.whenTrue),
+    "exact-cognitive-renderer-focus",
+  );
+  assert.equal(
+    symbol(
+      renderer,
+      keyExpression.whenTrue.expression,
+      "exact-cognitive-renderer-focus",
+    ),
+    imported(renderer, "cognitiveWorkSurfaceKey", "./host/work-surface.js"),
+    "exact-cognitive-renderer-focus",
+  );
+  const readExpression = declaration(component, "readScope").initializer!;
+  assert.ok(isCallExpression(readExpression), "exact-cognitive-renderer-focus");
+  assert.equal(
+    symbol(
+      renderer,
+      readExpression.expression,
+      "exact-cognitive-renderer-focus",
+    ),
+    imported(
+      renderer,
+      "projectConversationReadScope",
+      "./conversation-read.js",
+    ),
+    "exact-cognitive-renderer-focus",
+  );
+  const historyEffects = walk(component)
+    .filter(isCallExpression)
+    .filter(
+      (call) =>
+        walk(call).some(
+          (node) =>
+            isIdentifier(node) &&
+            renderer.symbols.get(node) === renderRefs.get("setAllHistory"),
+        ) &&
+        isIdentifier(call.expression) &&
+        renderer.imports.get(renderer.symbols.get(call.expression)!)?.name ===
+          "useEffect",
+    );
+  assert.equal(historyEffects.length, 1, "exact-cognitive-all-history-reset");
+  assert.equal(
+    symbol(
+      renderer,
+      historyEffects[0]!.expression,
+      "exact-cognitive-all-history-reset",
+    ),
+    imported(renderer, "useEffect", "react"),
+    "exact-cognitive-all-history-reset",
+  );
+  const expectedHistoryEffect = fn(cognitiveReference, "cognitiveRenderer")
+    .body!.statements[1]!;
+  assert.ok(
+    isExpressionStatement(expectedHistoryEffect),
+    "exact-cognitive-all-history-reset",
+  );
+  same(
+    historyEffects[0]!,
+    expectedHistoryEffect.expression,
+    renderer,
+    "exact-cognitive-all-history-reset",
+  );
   for (const name of ["focused", "contentVersion", "readVersion", "receipts"]) {
     const entry = walk(component)
       .filter(isVariableDeclaration)
@@ -1069,6 +1253,15 @@ function changed(
   before: string,
   after: string,
 ): Sources {
+  // Preserve the old literal state-call mutations while borrowing the one
+  // new key in that same actual call, including phase/wrapper counterfactuals.
+  if (key === "Conversation") {
+    const old = "    focusedApplicationId,\n    positions,",
+      next =
+        "    focusedApplicationId,\n    focusedCognitiveKey: cognitiveFocusKey,\n    positions,";
+    before = before.replace(old, next);
+    after = after.replace(old, next);
+  }
   assert.equal(
     source[key].split(before).length,
     2,
@@ -1112,6 +1305,157 @@ test("viewport finite original archive is immutable and needs no historical chec
 });
 test("actual viewport hooks preserve registration, phase and direct renderer/DOM consumption", () =>
   validate(current));
+test("cognitive viewport key accepts only the optional string and exact focused opaque tuple branch", () => {
+  for (const [before, after, rule] of [
+    [
+      "focusedCognitiveKey?: string;",
+      "focusedCognitiveKey: string;",
+      "exact-cognitive-optional-state-key-type",
+    ],
+    [
+      "focusedCognitiveKey?: string;",
+      "focusedCognitiveKey?: unknown;",
+      "exact-cognitive-optional-state-key-type",
+    ],
+    [
+      "focused && focusedCognitiveKey !== undefined",
+      "focusedCognitiveKey !== undefined",
+      "exact-cognitive-position-key-branch",
+    ],
+    [
+      "focused && focusedCognitiveKey !== undefined",
+      "focused && !!focusedCognitiveKey",
+      "exact-cognitive-position-key-branch",
+    ],
+    [
+      'JSON.stringify(["cognitive", conversationId, focusedCognitiveKey])',
+      'JSON.stringify(["cognitive", focusedCognitiveKey])',
+      "exact-cognitive-position-key-branch",
+    ],
+    [
+      'JSON.stringify(["cognitive", conversationId, focusedCognitiveKey])',
+      'conversationId + ":" + focusedCognitiveKey',
+      "exact-cognitive-position-key-branch",
+    ],
+    [
+      "const positionKey =",
+      "let positionKey =",
+      "state-register-phase:positionKey",
+    ],
+  ])
+    rejects("Owner", before!, after!, rule!);
+  const shadow = {
+    ...current,
+    Owner: 'import { JSON } from "../../fake-json.js";\n' + current.Owner,
+  };
+  parse(shadow);
+  assert.throws(
+    () => validate(shadow),
+    (error) =>
+      error instanceof assert.AssertionError &&
+      error.message.includes("exact-cognitive-position-key-branch"),
+  );
+});
+test("cognitive renderer focus requires the same original identity, real helper, key port and reset", () => {
+  const parsed = parse(current).get("Conversation")!;
+  const component = fn(parsed, "Conversation");
+  const property = (scope: Node, name: string) => {
+    const found = walk(scope)
+      .filter(isPropertyAssignment)
+      .filter((node) => node.name.getText() === name);
+    assert.equal(found.length, 1, "unique-new-counterfactual-property:" + name);
+    return found[0]!;
+  };
+  const replaceNode = (node: Node, replacement: string): Sources => {
+    const result = {
+      ...current,
+      Conversation:
+        current.Conversation.slice(0, node.getStart()) +
+        replacement +
+        current.Conversation.slice(node.end),
+    };
+    parse(result);
+    return result;
+  };
+  const keyPort = property(component, "focusedCognitiveKey");
+  const keyPorts = keyPort.parent;
+  assert.ok(isObjectLiteralExpression(keyPorts));
+  const focusKey = declaration(component, "cognitiveFocusKey").initializer!;
+  assert.ok(isConditionalExpression(focusKey));
+  assert.ok(isCallExpression(focusKey.whenTrue));
+  const focused = declaration(component, "focused").initializer!;
+  const focusedOriginal = walk(focused)
+    .filter(isBinaryExpression)
+    .filter(
+      (node) =>
+        node.operatorToken.kind === SyntaxKind.BarBarToken &&
+        isIdentifier(node.right) &&
+        node.right.text === "focusedCognitiveObject",
+    );
+  assert.equal(focusedOriginal.length, 1, "unique-new-focus-counterfactual");
+  const reset = walk(component)
+    .filter(isCallExpression)
+    .filter(
+      (node) =>
+        node.expression.getText() === "useEffect" &&
+        walk(node.arguments[1]!).some(
+          (child) => isIdentifier(child) && child.text === "cognitiveFocusKey",
+        ),
+    );
+  assert.equal(reset.length, 1, "unique-new-reset-counterfactual");
+  const cases: [Node, string, string][] = [
+    [
+      keyPorts,
+      "{" +
+        keyPorts.properties
+          .filter((node) => node !== keyPort)
+          .map((node) => node.getText())
+          .join(",") +
+        "}",
+      "renderer-state-captured-ports",
+    ],
+    [keyPort.initializer, "focusedArtifactId", "renderer-state-captured-ports"],
+    [
+      property(focusKey.whenTrue, "locator").initializer,
+      "{ ...focusedCognitiveObject }",
+      "exact-cognitive-renderer-focus",
+    ],
+    [
+      focusedOriginal[0]!,
+      focusedOriginal[0]!.left.getText(),
+      "exact-cognitive-renderer-focus",
+    ],
+    [
+      property(declaration(component, "readScope"), "cognitiveObject")
+        .initializer,
+      "undefined",
+      "exact-cognitive-renderer-focus",
+    ],
+    [
+      reset[0]!.arguments[1]!,
+      "[focusedArtifactId, focusedApplicationId]",
+      "exact-cognitive-all-history-reset",
+    ],
+  ];
+  for (const [node, replacement, rule] of cases)
+    assert.throws(
+      () => validate(replaceNode(node, replacement)),
+      (error) =>
+        error instanceof assert.AssertionError && error.message.includes(rule),
+      rule,
+    );
+  const foreign = replaceNode(focusKey.whenTrue.expression, "foreignKey");
+  foreign.Conversation =
+    'import { cognitiveWorkSurfaceKey as foreignKey } from "./fake-work-surface.js";\n' +
+    foreign.Conversation;
+  parse(foreign);
+  assert.throws(
+    () => validate(foreign),
+    (error) =>
+      error instanceof assert.AssertionError &&
+      error.message.includes("exact-cognitive-renderer-focus"),
+  );
+});
 test("viewport permits unrelated JSX/comments/type annotations/domain exports and real runtime aliases", () => {
   let candidate: Sources = {
     ...current,
