@@ -365,7 +365,9 @@ impl CustomStore for PostgresStore {
             .bind(thread_id)
             .fetch_optional(&mut *tx)
             .await?
-            .ok_or_else(|| CustomError::Invalid("Cannot bind Custom: Thread does not exist".into()))?;
+            .ok_or_else(|| {
+                CustomError::Invalid("Cannot bind Custom: Thread does not exist".into())
+            })?;
         // Same agent lock as put. Lock Thread only afterwards, then recheck
         // mount: concurrent first Attempts must receive exactly one manifest.
         sqlx::query("SELECT id FROM agents WHERE id=$1 FOR UPDATE")
@@ -379,9 +381,10 @@ impl CustomStore for PostgresStore {
         .fetch_one(&mut *tx)
         .await?;
         if row.try_get::<String, _>("agent_id")? != agent_id {
-            return Err(
-                CustomError::Integrity("Thread Agent changed during Custom binding".into()).into(),
-            );
+            return Err(CustomError::Integrity(
+                "Thread Agent changed during Custom binding".into(),
+            )
+            .into());
         }
         if let Some(manifest) = load_manifest(&mut tx, thread_id).await? {
             tx.commit().await?;

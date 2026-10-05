@@ -297,9 +297,10 @@ impl CustomStore for SqliteStore {
         } else {
             let updated=sqlx::query("UPDATE agent_rom_heads SET current_revision=?,updated_at=? WHERE entry_id=? AND current_revision=?").bind(revision as i64).bind(&timestamp).bind(&entry_id).bind(command.expected_revision as i64).execute(&mut *tx).await?;
             if updated.rows_affected() != 1 {
-                return Err(
-                    CustomError::Integrity("Custom CAS changed while write lock held".into()).into(),
-                );
+                return Err(CustomError::Integrity(
+                    "Custom CAS changed while write lock held".into(),
+                )
+                .into());
             }
         }
         sqlx::query("INSERT INTO agent_rom_versions(entry_id,revision,schema_tag,canonical_sexpr,canonical_authoring_state,canonical_format_version,content_hash,enabled,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
@@ -346,7 +347,9 @@ impl CustomStore for SqliteStore {
             .bind(thread_id)
             .fetch_optional(&mut *tx)
             .await?
-            .ok_or_else(|| CustomError::Invalid("Cannot bind Custom: Thread does not exist".into()))?;
+            .ok_or_else(|| {
+                CustomError::Invalid("Cannot bind Custom: Thread does not exist".into())
+            })?;
         let agent_id: String = row.try_get("agent_id")?;
         let principal: Option<String> = row.try_get("initiating_principal_id")?;
         let mut entries=sqlx::query(&format!("{SELECT_VERSION} WHERE h.agent_id=? AND (h.principal_scope IS NULL OR h.principal_scope=?) AND v.revision=h.current_revision AND v.enabled=1 ORDER BY h.namespace,h.principal_scope,h.entry_id"))

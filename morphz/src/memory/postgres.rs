@@ -5730,31 +5730,45 @@ impl EventStore for PostgresStore {
         thread_ids: &[String],
         per_thread_limit: usize,
     ) -> Result<Vec<Event>, StoreError> {
-        if thread_ids.is_empty() { return Ok(Vec::new()); }
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut builder = QueryBuilder::<Postgres>::new(
             "SELECT sequence,id,timestamp,actor,type,topic,payload FROM (SELECT sequence,id,timestamp,actor,type,topic,payload,ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY sequence DESC) AS source_rank FROM events WHERE context_id = "
         );
-        builder.push_bind(context_id)
-            .push(" AND type = ").push_bind(crate::event::TYPE_AGENT_CALL)
-            .push(" AND topic IN ('chat/assistant_call','runtime/thread_waiting') AND thread_id IN (");
+        builder
+            .push_bind(context_id)
+            .push(" AND type = ")
+            .push_bind(crate::event::TYPE_AGENT_CALL)
+            .push(
+                " AND topic IN ('chat/assistant_call','runtime/thread_waiting') AND thread_id IN (",
+            );
         let mut selected = builder.separated(", ");
-        for id in thread_ids.iter().take(2_000) { selected.push_bind(id); }
-        builder.push(")) AS bounded_sources WHERE source_rank <= ")
-            .push_bind(per_thread_limit.clamp(1,129) as i64)
+        for id in thread_ids.iter().take(2_000) {
+            selected.push_bind(id);
+        }
+        builder
+            .push(")) AS bounded_sources WHERE source_rank <= ")
+            .push_bind(per_thread_limit.clamp(1, 129) as i64)
             .push(" ORDER BY sequence ASC");
         let rows = builder.build().fetch_all(&self.pool).await?;
-        rows.into_iter().map(|row| {
-            let payload: JsonValue = row.get("payload");
-            Ok(Event {
-                id: row.get("id"),
-                sequence: u64::try_from(row.get::<i64,_>("sequence")).ok(),
-                timestamp: parse_time(&row.get::<String,_>("timestamp"))?,
-                actor: row.get("actor"),
-                event_type: row.get("type"),
-                topic: row.get("topic"),
-                payload: payload.as_object().cloned().ok_or("PostgreSQL Event payload must be an object")?,
+        rows.into_iter()
+            .map(|row| {
+                let payload: JsonValue = row.get("payload");
+                Ok(Event {
+                    id: row.get("id"),
+                    sequence: u64::try_from(row.get::<i64, _>("sequence")).ok(),
+                    timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
+                    actor: row.get("actor"),
+                    event_type: row.get("type"),
+                    topic: row.get("topic"),
+                    payload: payload
+                        .as_object()
+                        .cloned()
+                        .ok_or("PostgreSQL Event payload must be an object")?,
+                })
             })
-        }).collect()
+            .collect()
     }
 
     async fn backfill_causal_projection_for_thread(

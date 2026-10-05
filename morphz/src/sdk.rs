@@ -1226,10 +1226,13 @@ impl MorphzSdk {
         thread_id: &str,
     ) -> SdkResult<Option<crate::runtime::ThreadResponseAnnotations>> {
         let session = self.get_session(principal_id, session_id).await?;
-        let projection = self.runtime.session_thread_annotations(&session.context_id, session_id, thread_id)
-            .await.map_err(SdkError::internal)?
+        let projection = self
+            .runtime
+            .session_thread_annotations(&session.context_id, session_id, thread_id)
+            .await
+            .map_err(SdkError::internal)?
             .ok_or_else(|| SdkError::new(SdkErrorCode::NotFound, "Session Thread not found"))?;
-        self.get_session(principal_id,session_id).await?;
+        self.get_session(principal_id, session_id).await?;
         Ok(projection)
     }
 

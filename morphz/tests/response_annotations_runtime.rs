@@ -18,8 +18,7 @@ use morphz::{
     response_annotations::{
         normalize_response, records_from_authorized_event, AnnotationKind, ExecutionScope,
         NormalizationContext, PersistedAnnotations, Producer, Protocol, BUNDLE_PAYLOAD_KEY,
-        CONTRACT_V1,
-        CONTRACT_V2,
+        CONTRACT_V1, CONTRACT_V2,
     },
     runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy, SessionHandle},
     session_io::{Limits, Request},
@@ -720,10 +719,23 @@ async fn default_and_explicit_off_preserve_complete_system_and_tool_schema_bytes
             .unwrap()
             .unwrap();
         assert_eq!(thread.response_annotations, Protocol::Off);
-        assert!(fixture.runtime.session_thread_annotations("annotations-context","annotations-session",&thread.id)
-            .await.unwrap().unwrap().is_none());
-        let detail = fixture.runtime.thread_detail("annotations-context",&thread.id).await.unwrap().unwrap();
-        assert!(serde_json::to_value(&detail.snapshot).unwrap().get("response_annotations").is_none());
+        assert!(fixture
+            .runtime
+            .session_thread_annotations("annotations-context", "annotations-session", &thread.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none());
+        let detail = fixture
+            .runtime
+            .thread_detail("annotations-context", &thread.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(serde_json::to_value(&detail.snapshot)
+            .unwrap()
+            .get("response_annotations")
+            .is_none());
         for event in fixture.events(&root.id, Some("chat/assistant_call")).await {
             assert!(event.payload.get(BUNDLE_PAYLOAD_KEY).is_none());
             assert!(event.payload.get("response_annotations").is_none());
@@ -774,27 +786,74 @@ async fn v1_uses_exact_raw_native_replay_but_stripped_execution_and_durable_anno
         .unwrap();
     assert_eq!(thread.response_annotations, Protocol::V1);
     let sdk = morphz::sdk::MorphzSdk::new(fixture.runtime.clone());
-    let projected = sdk.session_thread_annotations("principal-default", "annotations-session", &thread.id)
-        .await.unwrap().unwrap();
-    assert_eq!(projected.title.as_deref(),Some("检查合成环境"));
-    assert!(projected.progress.is_none(), "terminal facts hide stage text");
-    assert_eq!(projected.result.as_deref(),Some("已确认合成系统为 Linux"));
-    assert_eq!(projected.steps.len(),1);
-    assert_eq!(projected.steps[0].job_id,jobs[0].id);
-    assert_eq!(projected.steps[0].intent.as_deref(),Some("读取合成系统"));
-    assert_eq!(projected.steps[0].result.as_deref(),Some("合成系统为 Linux"));
-    assert_eq!(projected.source_count,2);
+    let projected = sdk
+        .session_thread_annotations("principal-default", "annotations-session", &thread.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(projected.title.as_deref(), Some("检查合成环境"));
+    assert!(
+        projected.progress.is_none(),
+        "terminal facts hide stage text"
+    );
+    assert_eq!(projected.result.as_deref(), Some("已确认合成系统为 Linux"));
+    assert_eq!(projected.steps.len(), 1);
+    assert_eq!(projected.steps[0].job_id, jobs[0].id);
+    assert_eq!(projected.steps[0].intent.as_deref(), Some("读取合成系统"));
+    assert_eq!(
+        projected.steps[0].result.as_deref(),
+        Some("合成系统为 Linux")
+    );
+    assert_eq!(projected.source_count, 2);
     assert!(!projected.truncated);
     let public_projection = serde_json::to_value(&projected).unwrap();
-    assert!(public_projection.get("raw_response").is_none() && public_projection.get("records").is_none());
-    let board = fixture.runtime.scheduler_snapshot("annotations-context",morphz::runtime::SchedulerQuery {include_terminal:true,limit:200}).await.unwrap();
-    assert_eq!(board.threads.iter().find(|snapshot| snapshot.thread.id == thread.id).unwrap()
-        .response_annotations.as_ref(),Some(&projected));
-    let forbidden = sdk.session_thread_annotations("foreign-principal","annotations-session",&thread.id).await.unwrap_err();
-    assert_eq!(forbidden.code,morphz::sdk::SdkErrorCode::Forbidden);
-    assert!(fixture.runtime.session_thread_annotations("annotations-context","foreign-session",&thread.id).await.unwrap().is_none());
-    assert!(fixture.runtime.session_thread_annotations("foreign-context","annotations-session",&thread.id).await.unwrap().is_none());
-    assert_eq!(fixture.client.calls.load(Ordering::SeqCst),2,"projection never asks a model");
+    assert!(
+        public_projection.get("raw_response").is_none()
+            && public_projection.get("records").is_none()
+    );
+    let board = fixture
+        .runtime
+        .scheduler_snapshot(
+            "annotations-context",
+            morphz::runtime::SchedulerQuery {
+                include_terminal: true,
+                limit: 200,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        board
+            .threads
+            .iter()
+            .find(|snapshot| snapshot.thread.id == thread.id)
+            .unwrap()
+            .response_annotations
+            .as_ref(),
+        Some(&projected)
+    );
+    let forbidden = sdk
+        .session_thread_annotations("foreign-principal", "annotations-session", &thread.id)
+        .await
+        .unwrap_err();
+    assert_eq!(forbidden.code, morphz::sdk::SdkErrorCode::Forbidden);
+    assert!(fixture
+        .runtime
+        .session_thread_annotations("annotations-context", "foreign-session", &thread.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(fixture
+        .runtime
+        .session_thread_annotations("foreign-context", "annotations-session", &thread.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        fixture.client.calls.load(Ordering::SeqCst),
+        2,
+        "projection never asks a model"
+    );
     let scope = ExecutionScope {
         execution_id: thread.id.clone(),
         generation: thread.generation,
@@ -1590,9 +1649,19 @@ async fn real_kernel_supersede_keeps_v1_and_fences_old_generation_annotations() 
     assert_eq!(updated.id, thread.id);
     assert_eq!(updated.generation, thread.generation + 1);
     assert_eq!(updated.response_annotations, Protocol::V1);
-    let display = fixture.runtime.session_thread_annotations("annotations-context","annotations-session",&updated.id)
-        .await.unwrap().unwrap().unwrap();
-    assert!(display.title.is_none() && display.progress.is_none() && display.result.is_none() && display.steps.is_empty());
+    let display = fixture
+        .runtime
+        .session_thread_annotations("annotations-context", "annotations-session", &updated.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(
+        display.title.is_none()
+            && display.progress.is_none()
+            && display.result.is_none()
+            && display.steps.is_empty()
+    );
     let new_scope = ExecutionScope {
         execution_id: updated.id.clone(),
         generation: updated.generation,
@@ -2238,7 +2307,10 @@ async fn rejected_objective_completion_then_reply_has_distinct_v1_boundaries_in_
                 .iter()
                 .all(|event| !event.payload.contains_key(BUNDLE_PAYLOAD_KEY)));
             assert_eq!(final_event.payload["text"], "目标未绑定，因此未执行关闭。");
-            assert!(final_event.payload["tool_calls"].as_array().unwrap().is_empty());
+            assert!(final_event.payload["tool_calls"]
+                .as_array()
+                .unwrap()
+                .is_empty());
             continue;
         }
         let work_bundle: PersistedAnnotations =
@@ -3003,11 +3075,14 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
     .expect("genuine noninteractive delivery did not select and durably settle normal yield");
     assert_eq!(detail.snapshot.thread.lifecycle, ThreadLifecycle::Open);
     let display = detail.snapshot.response_annotations.as_ref().unwrap();
-    assert_eq!(display.title.as_deref(),Some("检查合成环境"));
-    assert_eq!(display.progress.as_deref(),Some("读取系统"));
-    assert!(display.result.is_none(),"a delivered candidate while waiting cannot establish a terminal result");
-    assert_eq!(display.steps.len(),1);
-    assert_eq!(display.steps[0].job_id,jobs[0].id);
+    assert_eq!(display.title.as_deref(), Some("检查合成环境"));
+    assert_eq!(display.progress.as_deref(), Some("读取系统"));
+    assert!(
+        display.result.is_none(),
+        "a delivered candidate while waiting cannot establish a terminal result"
+    );
+    assert_eq!(display.steps.len(), 1);
+    assert_eq!(display.steps[0].job_id, jobs[0].id);
     assert_eq!(detail.snapshot.thread.generation, thread.generation);
     assert!(detail.snapshot.outcome.is_none());
     assert!(
@@ -3231,48 +3306,108 @@ async fn v2_final_reply_persists_required_metadata_in_original_requests_and_nati
         let (accepted, reply) = fixture.submit(Some(Protocol::V2)).await;
         assert_eq!(reply.payload["text"], FINAL_TEXT);
         assert_eq!(fixture.client.calls.load(Ordering::SeqCst), expected_calls);
-        assert_eq!(fixture.jobs().await.len(), expected_jobs, "reply is never a physical Job");
-        let thread = fixture.runtime.session_thread_by_root("annotations-session", &accepted.id)
-            .await.unwrap().unwrap();
+        assert_eq!(
+            fixture.jobs().await.len(),
+            expected_jobs,
+            "reply is never a physical Job"
+        );
+        let thread = fixture
+            .runtime
+            .session_thread_by_root("annotations-session", &accepted.id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(thread.response_annotations, Protocol::V2);
         assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Completed);
-        let projection = fixture.runtime.session_thread_annotations("annotations-context", "annotations-session", &thread.id)
-            .await.unwrap().unwrap().unwrap();
+        let projection = fixture
+            .runtime
+            .session_thread_annotations("annotations-context", "annotations-session", &thread.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         assert_eq!(projection.protocol, Protocol::V2);
         assert_eq!(projection.title.as_deref(), Some("检查合成环境"));
         assert!(projection.result.is_some());
-        let events = fixture.events(&accepted.id, Some("chat/assistant_call")).await;
+        let events = fixture
+            .events(&accepted.id, Some("chat/assistant_call"))
+            .await;
         assert_eq!(events.len(), expected_calls);
-        let final_source = events.iter().find(|event| event.payload.get("terminal_outcome") == Some(&json!(true))).unwrap();
-        let scope = ExecutionScope { execution_id:thread.id.clone(), generation:thread.generation };
-        let bundle: PersistedAnnotations = serde_json::from_value(final_source.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
+        let final_source = events
+            .iter()
+            .find(|event| event.payload.get("terminal_outcome") == Some(&json!(true)))
+            .unwrap();
+        let scope = ExecutionScope {
+            execution_id: thread.id.clone(),
+            generation: thread.generation,
+        };
+        let bundle: PersistedAnnotations =
+            serde_json::from_value(final_source.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
         assert_eq!(bundle.protocol, Protocol::V2);
-        assert!(bundle.records.iter().all(|record| record.protocol == Protocol::V2));
-        assert!(bundle.records.iter().any(|record| record.kind == AnnotationKind::Title));
-        assert!(bundle.records.iter().any(|record| record.kind == AnnotationKind::Result));
+        assert!(bundle
+            .records
+            .iter()
+            .all(|record| record.protocol == Protocol::V2));
+        assert!(bundle
+            .records
+            .iter()
+            .any(|record| record.kind == AnnotationKind::Title));
+        assert!(bundle
+            .records
+            .iter()
+            .any(|record| record.kind == AnnotationKind::Result));
         assert_eq!(bundle.raw_response.tool_calls[0].func_name, "reply");
-        assert!(records_from_authorized_event(final_source, &scope).unwrap().iter()
+        assert!(records_from_authorized_event(final_source, &scope)
+            .unwrap()
+            .iter()
             .all(|record| record.source.sequence == final_source.sequence));
         for request in fixture.client.captured.lock().unwrap().iter() {
-            assert!(request.messages.iter().any(|message| message.role == "system" && message.content.contains(CONTRACT_V2)));
-            let schema = &request.tools.iter().find(|tool| tool.name == "reply").unwrap().parameters;
-            assert_eq!(schema["required"], json!(["content","annotations"]));
-            assert_eq!(schema["properties"]["annotations"]["properties"]["execution"]["required"], json!(["title","result"]));
+            assert!(request
+                .messages
+                .iter()
+                .any(|message| message.role == "system" && message.content.contains(CONTRACT_V2)));
+            let schema = &request
+                .tools
+                .iter()
+                .find(|tool| tool.name == "reply")
+                .unwrap()
+                .parameters;
+            assert_eq!(schema["required"], json!(["content", "annotations"]));
+            assert_eq!(
+                schema["properties"]["annotations"]["properties"]["execution"]["required"],
+                json!(["title", "result"])
+            );
         }
         let mut public_text = String::new();
         let mut increments = 0;
         while let Ok(event) = stream.try_recv() {
             let value = event.payload["stream"].clone();
             assert!(!value.to_string().contains("annotations"));
-            if let Ok(ModelStreamEvent::TextDelta {text}) = serde_json::from_value(value) {
-                public_text.push_str(&text); increments += 1;
+            if let Ok(ModelStreamEvent::TextDelta { text }) = serde_json::from_value(value) {
+                public_text.push_str(&text);
+                increments += 1;
             }
         }
         assert_eq!(public_text, FINAL_TEXT);
         assert!(increments > 1);
-        let reopened = SqliteStore::new(fixture.temp.path().join("annotations.db").to_str().unwrap()).await.unwrap();
-        assert_eq!(reopened.get_thread(&thread.id).await.unwrap().unwrap().response_annotations, Protocol::V2);
-        assert_eq!(fixture.client.calls.load(Ordering::SeqCst), expected_calls, "reading projection does not ask a model");
+        let reopened =
+            SqliteStore::new(fixture.temp.path().join("annotations.db").to_str().unwrap())
+                .await
+                .unwrap();
+        assert_eq!(
+            reopened
+                .get_thread(&thread.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .response_annotations,
+            Protocol::V2
+        );
+        assert_eq!(
+            fixture.client.calls.load(Ordering::SeqCst),
+            expected_calls,
+            "reading projection does not ask a model"
+        );
     }
 }
 
@@ -3282,43 +3417,98 @@ async fn v2_plain_or_invalid_required_final_fails_once_with_terminal_attempt_aud
         .chain((0..=6).map(Scenario::StrictBadFinal))
         .chain(std::iter::once(Scenario::WorkReply))
     {
-        let expected_calls = if matches!(scenario, Scenario::WorkReply) {2} else {1};
+        let expected_calls = if matches!(scenario, Scenario::WorkReply) {
+            2
+        } else {
+            1
+        };
         let fixture = Fixture::new(scenario, Protocol::Off).await;
-        let root = fixture.session.send_io_as_principal(Fixture::input(Some(Protocol::V2)),
-            &fixture.runtime.identity().principal_id).await.unwrap();
+        let root = fixture
+            .session
+            .send_io_as_principal(
+                Fixture::input(Some(Protocol::V2)),
+                &fixture.runtime.identity().principal_id,
+            )
+            .await
+            .unwrap();
         let (thread, failure) = tokio::time::timeout(Duration::from_secs(25), async {
             loop {
-                if let Some(thread) = fixture.runtime.session_thread_by_root("annotations-session", &root.id).await.unwrap() {
+                if let Some(thread) = fixture
+                    .runtime
+                    .session_thread_by_root("annotations-session", &root.id)
+                    .await
+                    .unwrap()
+                {
                     if thread.lifecycle.is_terminal() {
-                        if let Some(failure) = fixture.events(&root.id, None).await.into_iter().find(|event| {
-                            matches!(event.topic.as_str(), "chat/reply" | "session/io_state")
-                                && event.payload.get("terminal_kind") == Some(&json!("failed"))
-                        }) { break (thread, failure); }
+                        if let Some(failure) = fixture
+                            .events(&root.id, None)
+                            .await
+                            .into_iter()
+                            .find(|event| {
+                                matches!(event.topic.as_str(), "chat/reply" | "session/io_state")
+                                    && event.payload.get("terminal_kind") == Some(&json!("failed"))
+                            })
+                        {
+                            break (thread, failure);
+                        }
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-        }).await.expect("invalid final must produce the existing durable typed failure outcome");
+        })
+        .await
+        .expect("invalid final must produce the existing durable typed failure outcome");
         assert_eq!(failure.payload["terminal_kind"], "failed");
-        assert_eq!(failure.payload["runtime_failure_kind"], "response_annotations_protocol");
-        assert_ne!(failure.payload["text"], FINAL_TEXT, "a public draft is not a valid final delivery");
+        assert_eq!(
+            failure.payload["runtime_failure_kind"],
+            "response_annotations_protocol"
+        );
+        assert_ne!(
+            failure.payload["text"], FINAL_TEXT,
+            "a public draft is not a valid final delivery"
+        );
         assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Failed);
         assert_eq!(fixture.client.calls.load(Ordering::SeqCst), expected_calls);
-        assert_eq!(fixture.jobs().await.len(), expected_calls - 1, "invalid reply never dispatches or retries work");
-        let fused = fixture.events(&root.id, Some("runtime/response_protocol_fused")).await;
+        assert_eq!(
+            fixture.jobs().await.len(),
+            expected_calls - 1,
+            "invalid reply never dispatches or retries work"
+        );
+        let fused = fixture
+            .events(&root.id, Some("runtime/response_protocol_fused"))
+            .await;
         assert_eq!(fused.len(), 1);
         assert_eq!(fused[0].payload["invalid_responses"], 1);
-        let errors = fixture.events(&root.id, Some("runtime/response_protocol_error")).await;
+        let errors = fixture
+            .events(&root.id, Some("runtime/response_protocol_error"))
+            .await;
         assert_eq!(errors.len(), 1);
-        let states = fixture.events(&root.id, Some("runtime/model_attempt_state")).await;
-        let invalid = states.iter().filter(|event| event.payload["state"] == "protocol_invalid").collect::<Vec<_>>();
-        assert_eq!(invalid.len(), 1, "full-response normalization and stream failures use the same Attempt audit");
+        let states = fixture
+            .events(&root.id, Some("runtime/model_attempt_state"))
+            .await;
+        let invalid = states
+            .iter()
+            .filter(|event| event.payload["state"] == "protocol_invalid")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            invalid.len(),
+            1,
+            "full-response normalization and stream failures use the same Attempt audit"
+        );
         assert_eq!(invalid[0].payload["terminal"], true);
         assert_eq!(invalid[0].payload["response_annotations"], "v2");
-        assert!(states.iter().filter(|event| event.payload["attempt_id"] == invalid[0].payload["attempt_id"])
+        assert!(states
+            .iter()
+            .filter(|event| event.payload["attempt_id"] == invalid[0].payload["attempt_id"])
             .all(|event| event.payload["state"] != "completed"));
-        assert!(fixture.events(&root.id, Some("chat/assistant_call")).await.iter()
-            .all(|event| event.payload.get("terminal_outcome") != Some(&json!(true))), "invalid final source is not stored as a successful reply");
+        assert!(
+            fixture
+                .events(&root.id, Some("chat/assistant_call"))
+                .await
+                .iter()
+                .all(|event| event.payload.get("terminal_outcome") != Some(&json!(true))),
+            "invalid final source is not stored as a successful reply"
+        );
     }
 }
 
@@ -3331,72 +3521,196 @@ async fn v2_parent_does_not_augment_typed_infer_or_change_typed_result() {
     let captured = fixture.client.captured.lock().unwrap().clone();
     for request in &captured[1..3] {
         assert!(!request.tools.iter().any(|tool| tool.name == "reply"));
-        assert!(request.tools.iter().all(|tool| tool.parameters["properties"].get("_annotations").is_none()));
-        assert!(request.messages.iter().filter(|message| message.role == "system")
-            .all(|message| !message.content.contains(CONTRACT_V1) && !message.content.contains(CONTRACT_V2)));
+        assert!(request
+            .tools
+            .iter()
+            .all(|tool| tool.parameters["properties"].get("_annotations").is_none()));
+        assert!(request
+            .messages
+            .iter()
+            .filter(|message| message.role == "system")
+            .all(|message| !message.content.contains(CONTRACT_V1)
+                && !message.content.contains(CONTRACT_V2)));
     }
     let outputs = fixture.events(&root.id, Some("chat/tool_output")).await;
-    assert!(outputs.iter().any(|event| event.payload["tool_name"] == "eval" && event.payload["text"] == "\"Linux\""));
+    assert!(outputs
+        .iter()
+        .any(|event| event.payload["tool_name"] == "eval" && event.payload["text"] == "\"Linux\""));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn v2_no_reply_silent_preserves_grammar_without_required_final_metadata() {
     let fixture = Fixture::new(Scenario::NoReplySilent(true), Protocol::Off).await;
-    let accepted = fixture.session.send_io_as_principal(Fixture::input(Some(Protocol::V2)), "principal-default").await.unwrap();
+    let accepted = fixture
+        .session
+        .send_io_as_principal(Fixture::input(Some(Protocol::V2)), "principal-default")
+        .await
+        .unwrap();
     let thread = tokio::time::timeout(Duration::from_secs(25), async {
         loop {
-            if let Some(thread) = fixture.runtime.session_thread_by_root("annotations-session", &accepted.id).await.unwrap() {
-                if thread.lifecycle.is_terminal() { break thread; }
+            if let Some(thread) = fixture
+                .runtime
+                .session_thread_by_root("annotations-session", &accepted.id)
+                .await
+                .unwrap()
+            {
+                if thread.lifecycle.is_terminal() {
+                    break thread;
+                }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
     assert_eq!(thread.response_annotations, Protocol::V2);
     assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Completed);
     assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.jobs().await.len(), 1);
-    assert!(fixture.events(&accepted.id, Some("runtime/response_protocol_error")).await.is_empty());
-    let projected = fixture.runtime.session_thread_annotations("annotations-context", "annotations-session", &thread.id).await.unwrap().unwrap().unwrap();
+    assert!(fixture
+        .events(&accepted.id, Some("runtime/response_protocol_error"))
+        .await
+        .is_empty());
+    let projected = fixture
+        .runtime
+        .session_thread_annotations("annotations-context", "annotations-session", &thread.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     assert_eq!(projected.protocol, Protocol::V2);
     assert!(projected.result.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn schedule_annotation_override_is_frozen_and_none_keeps_legacy_retry_fingerprint() {
-    let fixture = Fixture::construct(Scenario::Plain,Protocol::Off,false).await;
-    let session = fixture.runtime.get_session("annotations-session").await.unwrap().unwrap();
+    let fixture = Fixture::construct(Scenario::Plain, Protocol::Off, false).await;
+    let session = fixture
+        .runtime
+        .get_session("annotations-session")
+        .await
+        .unwrap()
+        .unwrap();
     let request = morphz::sdk::SessionScheduleRequest {
-        response_annotations: None, id:"annotation-schedule-legacy".into(),intent:"Synthetic future work".into(),
-        model_alias:None,reasoning_effort:None,not_before:chrono::Utc::now()+chrono::Duration::days(1),
-        interval_seconds:None,dependency_thread_ids:vec![],
+        response_annotations: None,
+        id: "annotation-schedule-legacy".into(),
+        intent: "Synthetic future work".into(),
+        model_alias: None,
+        reasoning_effort: None,
+        not_before: chrono::Utc::now() + chrono::Duration::days(1),
+        interval_seconds: None,
+        dependency_thread_ids: vec![],
     };
-    assert!(serde_json::to_value(&request).unwrap().get("response_annotations").is_none());
-    let legacy = fixture.runtime.create_session_schedule(&session,"principal-default",request.clone()).await.unwrap();
-    assert_eq!(fixture.store.get_thread(&legacy.thread_id).await.unwrap().unwrap().response_annotations,Protocol::Off);
+    assert!(serde_json::to_value(&request)
+        .unwrap()
+        .get("response_annotations")
+        .is_none());
+    let legacy = fixture
+        .runtime
+        .create_session_schedule(&session, "principal-default", request.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .get_thread(&legacy.thread_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .response_annotations,
+        Protocol::Off
+    );
     let mut explicit = request.clone();
     explicit.id = "annotation-schedule-v1".into();
     explicit.response_annotations = Some(Protocol::V1);
-    let enabled = fixture.runtime.create_session_schedule(&session,"principal-default",explicit.clone()).await.unwrap();
-    let owner = fixture.store.get_thread(&enabled.thread_id).await.unwrap().unwrap();
-    assert_eq!(owner.response_annotations,Protocol::V1);
-    assert_eq!(fixture.runtime.create_session_schedule(&session,"principal-default",explicit.clone()).await.unwrap(),enabled);
+    let enabled = fixture
+        .runtime
+        .create_session_schedule(&session, "principal-default", explicit.clone())
+        .await
+        .unwrap();
+    let owner = fixture
+        .store
+        .get_thread(&enabled.thread_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(owner.response_annotations, Protocol::V1);
+    assert_eq!(
+        fixture
+            .runtime
+            .create_session_schedule(&session, "principal-default", explicit.clone())
+            .await
+            .unwrap(),
+        enabled
+    );
     explicit.response_annotations = Some(Protocol::Off);
-    assert!(fixture.runtime.create_session_schedule(&session,"principal-default",explicit).await.is_err());
-    assert_eq!(fixture.store.get_thread(&enabled.thread_id).await.unwrap().unwrap(),owner);
+    assert!(fixture
+        .runtime
+        .create_session_schedule(&session, "principal-default", explicit)
+        .await
+        .is_err());
+    assert_eq!(
+        fixture
+            .store
+            .get_thread(&enabled.thread_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        owner
+    );
     // Restore the real durable store under a changed new-execution default.
     // An accepted None request must still resolve its original immutable owner.
     let mut config = fixture.runtime.config().clone();
     config.orchestrator.response_annotations = Protocol::V1;
-    let restored = MorphzRuntime::builder(config,fixture.client.clone() as Arc<dyn Client>)
+    let restored = MorphzRuntime::builder(config, fixture.client.clone() as Arc<dyn Client>)
         .identity(fixture.runtime.identity().clone())
-        .store("sqlite:annotations-schedule-restored",fixture.store.clone() as Arc<dyn RuntimeStore>)
-        .extra_tool(Arc::new(ProbeTool {arguments:fixture.arguments.clone(),business_reserved:false}))
-        .build().await.unwrap();
-    assert_eq!(restored.create_session_schedule(&session,"principal-default",request.clone()).await.unwrap(),legacy);
-    assert_eq!(fixture.store.get_thread(&legacy.thread_id).await.unwrap().unwrap().response_annotations,Protocol::Off);
+        .store(
+            "sqlite:annotations-schedule-restored",
+            fixture.store.clone() as Arc<dyn RuntimeStore>,
+        )
+        .extra_tool(Arc::new(ProbeTool {
+            arguments: fixture.arguments.clone(),
+            business_reserved: false,
+        }))
+        .build()
+        .await
+        .unwrap();
+    assert_eq!(
+        restored
+            .create_session_schedule(&session, "principal-default", request.clone())
+            .await
+            .unwrap(),
+        legacy
+    );
+    assert_eq!(
+        fixture
+            .store
+            .get_thread(&legacy.thread_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .response_annotations,
+        Protocol::Off
+    );
     let mut fresh = request;
     fresh.id = "annotation-schedule-new-default".into();
-    let admitted = restored.create_session_schedule(&session,"principal-default",fresh).await.unwrap();
-    assert_eq!(fixture.store.get_thread(&admitted.thread_id).await.unwrap().unwrap().response_annotations,Protocol::V1);
-    assert_eq!(fixture.client.calls.load(Ordering::SeqCst),0,"future admission, retries and projection never infer");
+    let admitted = restored
+        .create_session_schedule(&session, "principal-default", fresh)
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .get_thread(&admitted.thread_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .response_annotations,
+        Protocol::V1
+    );
+    assert_eq!(
+        fixture.client.calls.load(Ordering::SeqCst),
+        0,
+        "future admission, retries and projection never infer"
+    );
 }

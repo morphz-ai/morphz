@@ -112,9 +112,9 @@ impl std::fmt::Display for CustomError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Invalid(message) | Self::Integrity(message) => f.write_str(message),
-            Self::CommandReuse => {
-                f.write_str("Custom command_id was already used with different authority or content")
-            }
+            Self::CommandReuse => f.write_str(
+                "Custom command_id was already used with different authority or content",
+            ),
         }
     }
 }
@@ -129,7 +129,9 @@ pub fn validate_key(key: &CustomKey) -> Result<(), CustomError> {
         || key.agent_id.len() > 512
         || key.agent_id.chars().any(char::is_control)
     {
-        return Err(invalid("Custom agent_id must be a nonempty bounded identity"));
+        return Err(invalid(
+            "Custom agent_id must be a nonempty bounded identity",
+        ));
     }
     if key.namespace.is_empty()
         || key.namespace.len() > 128

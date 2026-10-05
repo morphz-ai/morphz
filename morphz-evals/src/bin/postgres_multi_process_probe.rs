@@ -346,6 +346,17 @@ async fn parent() -> Result<(), ProbeError> {
         .unwrap()
         .clone(),
     );
+    let mut claimed_message = message.clone();
+    claimed_message
+        .payload
+        .insert("dispatch_mode".to_string(), json!("follow_up"));
+    claimed_message
+        .payload
+        .insert("principal_first_seen_in_context".to_string(), json!(true));
+    claimed_message.payload.insert(
+        "principal_encounter_id".to_string(),
+        json!(format!("principal_encounter_{}", message.id)),
+    );
     assert_eq!(
         store
             .claim_message(
@@ -356,7 +367,7 @@ async fn parent() -> Result<(), ProbeError> {
             )
             .await?,
         MessageClaim::Accepted {
-            event: message.clone(),
+            event: claimed_message,
             interrupted: None,
         }
     );
@@ -402,6 +413,7 @@ async fn parent() -> Result<(), ProbeError> {
 
     let thread = store
         .ensure_thread(NewThread {
+            response_annotations: morphz::response_annotations::Protocol::Off,
             model_alias: None,
             reasoning_effort: None,
             id: format!("process-probe-crash-thread-{suffix}"),
