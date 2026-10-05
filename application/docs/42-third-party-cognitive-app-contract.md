@@ -609,6 +609,42 @@ Root 十五文件 166/166、required PostgreSQL、零跳过及全工程类型
 都从未发出；普通 Web iframe 不因此宣称拥有这样的能力。再次 load 禁止
 续授旧桥，导航防护与消息权限分别验收，不以静态字符串过滤冒充 JS 隔离。
 
+2026-10-05 的独立 Chromium 安全回归复现了未提交挂载原型的入口风险：
+作者在首个 load 前替换文档，可能使新文档收到旧 init；仅用 CSP 精确路径
+包装也不足，允许路径的真实 302 跳转仍可把握手送至替换页面。正式隔离回归
+24 项中 20 通过、4 失败（含父项），失败原件保留；javascript 用例尚未
+证明实际重写，不能把它算作已证实漏洞或通过。该原型不接入生产 consumer。
+[CSP 标准的 URL 匹配](https://www.w3.org/TR/CSP3/#match-url-to-source-expression)
+仅在 redirect count 为零时检查路径，不能把路径白名单当作 Document 身份。
+[HTML 消息标准](https://html.spec.whatwg.org/multipage/web-messaging.html#posting-messages)
+中的 WindowProxy／异步投递也不固定其原 Document；opaque origin 的 `*`
+目标尤其不能证明接收页面是原字节。
+
+接续的安全装配模型已审查，仍须先做独立真实浏览器证明：Host 固定代码的
+可信 wrapper 使用自身 header CSP，不放宽主 App 策略；原作者 UTF-8 字节
+与哈希独立保留，经安全编码承载进 opaque srcdoc，不拼进 wrapper 的 JS
+字符串。Host prefix 必须在任何作者代码／事件处理器前执行，创建并私藏
+Document-owned port，固定一次性 proof 和实际 inner source／opaque origin
+后仅消费一个 peer。proof 本身不是独立权限凭据；安全依赖可信前缀先执行、
+先排队的一次端点与当前真实身份／窗口 gate，拒绝 guest 自报第二 peer。
+
+就绪由原 Document 的 parser-ready 和端口守门证明，不由 iframe 首次 load
+授予。SDK 只取得不可重配置的 document-local 同步 facade，不得到原生
+Host port；send、subscribe 与入站发布都在同一同步段先检查文档。不得再
+用第二异步 SDK port 转发正文，或退回 Window 消息发送 init／context／result。
+现旧 UI-only 协议保持独立，新 cognitive 装配没有该回退。
+
+前缀须先捕获原生 Document、root、doctype、observer／port 等所需方法；
+Document direct childList 移除原 root／doctype 即永久退休，包括同一 turn
+复插原节点。每次 ingress、egress 和 factory 调用都先同步处理 takeRecords
+再检查对象身份；不能只依赖较晚的 observer callback 或检查当前节点仍在。
+普通 body／组件重排不退休。doc.open、真实 javascript 重写、导航、原生
+prototype 污染、复制 proof／迟到 peer、慢正文返回及正常 DOM 更新均须
+实测；close port 不被当作清空远端消息队列或撤回已披露数据的证明。
+此边界防止另一 Document 继承旧 Host 能力，不承诺阻止已获权原作者故意
+代理本来获准的业务操作。该模型不新增业务授权、作者 endpoint／actor、
+任意宿主代码执行或 Desktop HTTP 依赖，未通过证明前仍不装入原 App。
+
 第三方 locator 固定实际 app／version／definition hash、instance／service／
 data authority、objectId、opaque versionRef 与原目录 content id。导航与
 草稿再经真实目录／精确读取核验；不得把 versionRef 转成 Number、丢成
@@ -711,6 +747,27 @@ Human 管理目录只查询本人登记与真实本人 grant，未授权版本�
 再核当前项目成员、精确版本、active grant、本人连接与安装状态；多个
 连接必须明确选择。无 GUI 应用可以准备显式输入上下文，不制造空窗口；
 导航、登记、预览、接入和开窗口都不自动发送输入或启动工作。
+
+输入目标的客户端接线模型（2026-10-05，已审查、实施中）：复用当前中心／
+Human／窗口 owner 和工作面键下的既有未发送草稿，不新增 renderer 数据库、
+第二份应用目录或后台输入。草稿的 `cognitiveApplication` 使用现 Core 严格
+类型，只保存原连接和完整 authority；业务定义、本人登记、许可与连接仍由
+Platform 权威关系持有，原件正文仍由作者服务持有。选择不改变工作面键、
+页面、Session 或原件版本；多个保存方必须明确选择，不取第一条连接。
+
+本阶段选择只适用于普通新输入。已有定向补充、未知送达重试、批注、任务
+结果、阅读或剧本专用请求，不允许改为另一应用；原请求必须先处理。普通
+输入可同时保留精确原件，但连接、完整 authority 和项目必须与目标一致，
+错配时保留原草稿并报错，不清原件、不猜最新版本。首次 await 前严格检查
+并脱离新目标槽位；其存在时不再自动附带旧 application／browser 槽位，
+仍沿现 Host 准入、不可变投递和 Runtime IO11／12 核验，不新增公开权限。
+
+发送消费正文及一次性原件来源，但保留当前最新的应用选择，和现 model／
+effort 的消费语义一致。旧 A 输入的迟到确认不能覆盖随后选择的 B；补充和
+未知重试仍继承其原投递的固定目标。原窗口 owner、reload、存储失败与身份
+退休沿既有草稿机制处理，不把本机选择冒充实际授权。验收须分别证明严格
+纯叶、原 App mounted、双后端／Runtime 及原用户应用；headless 接通不能
+代替作者 GUI 的安全挂载或最终跨宿主闭环。
 
 目录同时受条数和 UTF-8 JSON 字节预算约束。`limit≤100` 是条数上限，
 不是保证满页；图标随完整条目原样返回，超本页预算则留到下一页，不截断、
