@@ -8,6 +8,12 @@ import { DomainError } from "../../core/src/model.js";
 import { ManagedArtifactStore } from "../../managed-artifact-store/src/store.js";
 import type { S3ByteLocation } from "../../managed-artifact-store/src/s3-bytes.js";
 import type { S3Client } from "@aws-sdk/client-s3";
+import { parseCognitiveAppDefinition } from "../../cognitive-app-sdk/src/protocol.js";
+import { canonicalJsonBytes } from "../../cognitive-app-sdk/src/domain-wire.js";
+import {
+  parseCognitiveAppUiHeader,
+  verifyCognitiveAppUiBytes,
+} from "../../platform/src/cognitive-app-ui-proof.js";
 import {
   type PlatformActor,
   type PlatformAuthorityVerifier,
@@ -186,6 +192,99 @@ export class UiPackageService {
   async list(actor: PlatformActor) {
     await this.human(actor);
     return this.platform.listUiPackages(actor);
+  }
+
+  /** Host-only GUI installation: read real immutable bytes before presenting a
+   * process-local proof to Platform. This creates no grant, connection or view;
+   * a failure after the first commit can leave only a valid UI-only package. */
+  async installCognitive(
+    actor: PlatformActor,
+    commandId: string,
+    input: { definition: unknown; manifest: unknown },
+  ) {
+    // Copy the actual ingress credential and parsed declarations before any
+    // async permission/store work. Caller edits cannot change installed bytes.
+    const access = { credential: actor.credential };
+    if (
+      typeof commandId !== "string" ||
+      !/^[A-Za-z0-9_-]{1,100}$/.test(commandId)
+    )
+      throw new DomainError("invalid", "认知应用安装操作标识无效。");
+    const definition = parseCognitiveAppDefinition(
+      JSON.parse(
+        new TextDecoder().decode(
+          canonicalJsonBytes(parseCognitiveAppDefinition(input.definition)),
+        ),
+      ),
+    );
+    const manifest = applicationManifestSchema.parse(input.manifest);
+    if (manifest.ui.type !== "sandbox" || definition.ui === null)
+      throw new DomainError("invalid", "认知应用安装需要精确独立界面声明。");
+    parseCognitiveAppUiHeader(definition, uiPackageHeader(manifest));
+    const submittedBytes = Buffer.from(manifest.ui.html, "utf8");
+    if (
+      !submittedBytes.length ||
+      submittedBytes.length > maximumBytes ||
+      submittedBytes.toString("utf8") !== manifest.ui.html ||
+      createHash("sha256").update(submittedBytes).digest("hex") !==
+        definition.ui.sha256
+    )
+      throw new DomainError("invalid", "认知应用界面字节不符合精确声明。");
+    const principal = await this.human(access);
+    await this.install(access, commandId, manifest);
+    const entry = await this.platform.uiPackage(
+      access,
+      definition.id,
+      definition.version,
+    );
+    if (
+      entry.installedByPrincipalId !== principal.principalId ||
+      entry.storeId !== this.store.storeId ||
+      entry.artifactId !==
+        this.artifactId(
+          principal.principalId,
+          definition.id,
+          definition.version,
+        )
+    )
+      throw new DomainError(
+        "forbidden",
+        "认知应用包存储引用不属于本次安装者。",
+      );
+    const assertAccess = async () => {
+      const current = await this.platform.uiPackage(
+        access,
+        definition.id,
+        definition.version,
+      );
+      if (JSON.stringify(current) !== JSON.stringify(entry))
+        throw new DomainError("forbidden", "认知应用包授权或版本已变化。");
+    };
+    const { version: stored, bytes } = await this.scoped(
+      access,
+      entry.artifactId,
+      "read",
+      (credential) =>
+        this.store.readRange({
+          credential,
+          artifactId: entry.artifactId,
+          revision: entry.artifactRevision,
+        }),
+      assertAccess,
+    );
+    await assertAccess();
+    const verifiedUi = verifyCognitiveAppUiBytes({
+      tenantId: principal.tenantId,
+      principalId: principal.principalId,
+      definition,
+      entry,
+      stored,
+      bytes,
+    });
+    return this.platform.installCognitiveApp(access, {
+      definition,
+      verifiedUi,
+    });
   }
 
   async read(

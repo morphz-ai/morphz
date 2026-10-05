@@ -322,6 +322,22 @@ view binding 固定当前领域定义和连接；选择另一个数据实例使�
 通过独立的本人 grant 字节 gate；不放宽既有 UiPackageService.read 来
 共享旧私有包。安装新的定义显式核验界面来源和 SHA，不凭引用猜字节。
 
+GUI 安装模型（Host 安装链已验证，客户端未接线）：复用既有 `app_ui_packages` 的安装者、immutable Store
+版本和 byte SHA，不增加字节副本或新表。可信 UiPackageService 先安装并
+读回实际精确版本，再生成只存在于 Host 进程中的 frozen 字节证明；它不
+包含 HTML、不序列化、不对 Client／Agent／iframe 开放。registry 在同 q
+复核实际安装行、本人、定义 SHA、声明 SHA 和全部 Store 引用，不能接受
+一个 caller 的 verified 布尔值、结构相似对象或旧证明改绑新版本。
+字节安装先提交、定义核验后提交；第二步失败最多留下已验证的 UI-only
+不可变包，不创建许可／连接／窗口，不伪称领域定义已安装。重试保留原
+安装 commandId 与同一版本字节，不覆盖冲突内容。
+新 cognitive GUI 声明只可授 `input.compose`，不借旧 artifacts 权限创建
+另一份业务正文；业务读写仍走同一 Domain gateway。旧 UI-only 权限不改。
+安装入口同步捕获整个 bounded canonical 声明，Schema 子树也脱离 caller
+引用；首次异步身份校验期间的外部修改不改变实际安装定义。
+Host 安装链的实际双后端验证见实施记录；它不表示授予他人的精确只读字节能力、
+窗口 binding／channel 生命周期或实际客户端渲染已经验收。
+
 definition 是一份有界不可变声明，不是全工作空间 JSON。关系不保存作者
 正文、未发送草稿、任意业务数据库快照或凭据。command 不保留原业务参数副本；
 有原调用字节的正常重试可核 hash，没有参数的恢复只查询旧回执，不补造参数。

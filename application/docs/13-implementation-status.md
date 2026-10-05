@@ -1,5 +1,30 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：实际 GUI 字节安装与精确定义
+
+可信 UiPackageService 现安装并读回实际 Managed Store HTML 版本，检查
+精确 SHA／长度／MIME／fatal UTF-8，生成不可复制、仅进程内的冻结证明。
+registry 在同 q 再核真实 UI 安装者、声明 SHA 与全部 Store 版本引用；
+结构相似、序列化、Proxy、跨本人、元数据漂移及同版本改写均拒绝。
+旧 UI-only installedBy 读取未放宽。定义失败可留下已验证不可变 UI-only
+包，但不创建 grant／连接／窗口；原命令重试复用同一字节。
+
+Root 与独立 reviewer 全文核过生产链及分层证人；Root 正式十一文件
+260/260、实际 SQLite／PostgreSQL、零失败／跳过／取消，完整 typecheck
+通过，冻结后最终日志 `/tmp/morphz-cognitive-ui-install-ROOT-FROZEN-oct05.log`。
+其中 8 项实际 UiPackageService／Managed Store，另 28 项 Platform
+安装门禁使用明确字节＋实际 UI 安装行 fixture；不混称物理字节证据。
+Root 的嵌套 Schema 修改实际首 RED 为 6 通过／2 失败，日志
+`/tmp/morphz-cognitive-ui-nested-schema-ROOT-FIRST-RED-oct05.log`；Store
+同类 headless／GUI 首 RED 24 通过／4 失败，日志
+`/tmp/morphz-platform-gui-install-stage.ebJRXq/NESTED-SCHEMA-FIRST-RED.log`。
+两入口现同步捕获整个 bounded canonical 声明，包括 Schema 子树，
+不改公共 SDK 语义、不接受异步期间 caller 的新声明。
+
+这只完成 Host 安装链。其他获权用户的 purpose-specific 字节读取、
+view／binding、沙箱消息生命周期与真实 Application／Runtime／原窗口
+接线仍未完成；没有改变现有 UI 外观、资料或运行中的 App。
+
 ## 2026-10-05 第三方认知应用：真实独立服务网关
 
 新增 Host 内部网关，组合私有 purpose-bound 连接、实际 Store 权限／首次

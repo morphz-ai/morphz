@@ -43,8 +43,10 @@ import {
   createCognitiveAppProjection,
   type CognitiveAppProjectionResult,
 } from "./cognitive-app-projection.js";
+import { readCognitiveAppUiByteProof } from "./cognitive-app-ui-proof.js";
 import {
   domainProtocol,
+  parseCognitiveAppDefinition,
   validateOperationValue,
   parseOperationResources,
   parseProtocolValue,
@@ -922,17 +924,42 @@ export class PlatformStore {
     });
   }
 
-  /** Actual Human installation only. No grant is silently created. GUI
-   * definitions remain rejected until their real Store bytes are verified. */
+  /** Actual Human installation only. No grant is silently created. GUI bytes
+   * require a genuine Host proof and current exact UI row in the same q. */
   async installCognitiveApp(
     access: PlatformActor,
-    request: { definition: unknown; now?: string },
+    request: { definition: unknown; now?: string; verifiedUi?: unknown },
   ) {
+    const now = request.now ?? new Date().toISOString();
+    const proof = readCognitiveAppUiByteProof(request.verifiedUi);
+    let definition: CognitiveAppDefinition;
+    try {
+      // Independent bounded snapshot before identity I/O yields to the caller;
+      // retain the genuine frozen proof reference, never clone its capability.
+      // Schema parsers validate their JSON subtrees but may retain references.
+      // Detach the entire bounded declaration, including nested Schema enum,
+      // properties and required arrays, before the first identity await.
+      definition = parseCognitiveAppDefinition(
+        JSON.parse(
+          Buffer.from(
+            canonicalJsonBytes(parseCognitiveAppDefinition(request.definition)),
+          ).toString("utf8"),
+        ),
+      );
+    } catch {
+      throw new PlatformStorageError("invalid", "应用定义不符合有界声明协议。");
+    }
+    if (definition.ui !== null && !proof)
+      throw new PlatformStorageError(
+        "invalid",
+        "界面字节缺少实际 Host 核验的安装证明。",
+      );
     const { actor } = await this.prepareCognitiveActor(access, true);
     return this.transaction(async (q) => {
       const result = await this.cognitiveRegistry(q, actor).installVersion(
-        request.definition,
-        request.now ?? new Date().toISOString(),
+        definition,
+        now,
+        proof,
       );
       if (hasSqlChanges(q))
         await this.advanceNavigation(q, actor.tenantId, ["access"]);

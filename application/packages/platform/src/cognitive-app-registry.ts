@@ -7,6 +7,8 @@ import {
 import { canonicalJsonBytes } from "../../cognitive-app-sdk/src/domain-wire.js";
 import { safeInteger, type SqlQuery } from "../../storage/src/sql.js";
 import { ensureApplicationInstallation } from "./application-installation.js";
+import { uiPackageHeaderSchema } from "../../core/src/applications.js";
+import { readCognitiveAppUiByteProof } from "./cognitive-app-ui-proof.js";
 
 /** Platform-internal, scoped to the caller's existing transaction. The Store
  * resolves real Human/Runtime identity before opening that transaction and
@@ -393,6 +395,7 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
   async function installVersion(
     input: unknown,
     now: string,
+    verifiedUi?: unknown,
   ): Promise<CognitiveAppVersion> {
     time(now);
     let definition: CognitiveAppDefinition;
@@ -404,12 +407,23 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
       return fail("invalid", "应用定义不符合有界声明协议。");
     }
     app(definition.id);
-    if (definition.ui !== null)
-      fail(
-        "invalid",
-        "界面字节尚未通过真实 Store 来源与 SHA 核验；当前入口仅安装 headless 定义。",
-      );
     const definitionHash = digest(canonical);
+    const proof = readCognitiveAppUiByteProof(verifiedUi);
+    if (definition.ui !== null) {
+      if (!proof)
+        return fail("invalid", "界面字节缺少实际 Host 核验的安装证明。");
+      if (proof.tenantId !== tenantId || proof.principalId !== principalId)
+        fail("forbidden", "界面字节安装证明不属于当前真实本人。");
+      if (
+        proof.purpose !== "cognitive-ui-installation" ||
+        proof.appId !== definition.id ||
+        proof.version !== definition.version ||
+        proof.definitionHash !== definitionHash ||
+        proof.version !== definition.ui.packageVersion ||
+        proof.sha256 !== definition.ui.sha256
+      )
+        fail("conflict", "界面字节安装证明与精确应用定义不一致。");
+    }
     await advisory("installation", [definition.id]);
     const identity = await ensureApplicationInstallation(q, {
       tenantId,
@@ -418,6 +432,52 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
       installedAt: now,
     });
     await installation(definition.id);
+    if (definition.ui !== null) {
+      // The proof grants no SQL authority. Lock the actual immutable package
+      // after its shared installation and check current installer + exact ref.
+      const row = (
+        await q.all<{
+          app_id: string;
+          package_version: string;
+          installed_by_principal_id: string;
+          manifest_header: string;
+          store_id: string;
+          artifact_id: string;
+          artifact_revision: number | string;
+          sha256: string;
+          byte_length: number | string;
+        }>(
+          `SELECT app_id,package_version,installed_by_principal_id,manifest_header,store_id,artifact_id,artifact_revision,sha256,byte_length FROM app_ui_packages WHERE tenant_id=? AND app_id=? AND package_version=?${shared}`,
+          [tenantId, definition.id, definition.ui.packageVersion],
+        )
+      )[0];
+      if (!row) return fail("not_found", "精确界面包尚未实际安装。");
+      if (row.installed_by_principal_id !== principalId)
+        fail("forbidden", "精确界面包不属于当前实际安装者。");
+      let headerHash: string, artifactRevision: number, byteLength: number;
+      try {
+        headerHash = digest(
+          canonicalJsonBytes(
+            uiPackageHeaderSchema.parse(JSON.parse(row.manifest_header)),
+          ),
+        );
+        artifactRevision = safeInteger(row.artifact_revision, "界面包版本");
+        byteLength = safeInteger(row.byte_length, "界面包字节数");
+      } catch {
+        return fail("conflict", "精确界面包的已安装元数据无效。");
+      }
+      if (
+        row.app_id !== proof!.appId ||
+        row.package_version !== proof!.version ||
+        headerHash !== proof!.headerHash ||
+        row.store_id !== proof!.storeId ||
+        row.artifact_id !== proof!.artifactId ||
+        artifactRevision !== proof!.artifactRevision ||
+        row.sha256 !== proof!.sha256 ||
+        byteLength !== proof!.byteLength
+      )
+        fail("conflict", "精确界面包引用已变化；不能复用此前字节证明。");
+    }
     await q.change(
       "INSERT INTO cognitive_app_versions(tenant_id,app_id,version,installation_id,definition_hash,definition_json,installed_by_principal_id,installed_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(tenant_id,app_id,version) DO NOTHING",
       [
