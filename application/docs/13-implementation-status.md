@@ -1,5 +1,28 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：固定 wire 与语义身份
+
+纯 SDK 模块现有固定 describe／invoke／exact-object-read／receipt-read
+请求和响应、实际 Human／input／task-run 来源、精确定义／保存方／项目／
+operation／command/hash 绑定。read 与副作用回执分开，committed、rejected、
+unknown 字段互斥，not_seen 仅表示未知；已核完整 committed 的事实不因
+另行发现业务 output Schema 不合规而变为“没有提交”或允许重新执行。
+
+语义身份使用同一有界 JSON guard 和逐层排序的序列化 bytes，保留数组
+顺序、整数键与 `__proto__` 原文；不依赖赋值新对象、locale 或数值转换。
+实际 SHA-256 由 Host 计算，不在纯模块伪造认证，亦不称完整 RFC 8785。
+wire 为 512 KiB／深度 40／32,768 节点；参数／结果和正文另受各自预算。
+网络流式字节限制、认证、到期检查、强制 expected 及业务 Schema 检查仍由
+Host 执行，parser 成功不等于授权、真实接收或服务已运行。
+
+原 16 与新增 18 项，正式定向入口及 Root 独立重跑均 34/34、零失败／
+跳过／取消；旧协议测试全字节未改。Root 完整项目 typecheck 与五文件格式
+检查通过。反例涵盖身份／版本／目的错配、特殊键、有限预算、unsafe JS、
+精确版本与恢复来源；独立审查另作六项纯函数诊断，不冒称实际服务验收。
+原始 RED／GREEN 保留于 `/tmp/morphz-cognitive-app-domain-wire.12Vaer/`，
+Root 日志 `/tmp/morphz-cognitive-wire-ROOT-FINAL-oct05.log`。
+本阶段不包含可打包 SDK、Gateway、原应用接入或实际 Agent 调用。
+
 ## 2026-10-05 第三方认知应用：双后端 v11 存储迁移
 
 六项关系已加入唯一权威 `storage-model-v1/platform.sql`，生产 schema

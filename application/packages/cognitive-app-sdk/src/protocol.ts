@@ -206,6 +206,29 @@ function requireJson(
     }
   }
 }
+
+/** A fixed safety budget for actual operation parameters/results, not a schema. */
+export function parseProtocolValue(input: unknown): JsonValue {
+  requireJson(input, {
+    bytes: protocolLimits.valueBytes,
+    label: "Value",
+    depth: protocolLimits.valueDepth,
+    nodes: protocolLimits.valueNodes,
+  });
+  return input;
+}
+
+/** Wire framing budget; a successful parse does not establish any authority. */
+export function parseWireJson(input: unknown): JsonValue {
+  requireJson(input, {
+    bytes: 512 * 1024,
+    label: "Wire",
+    depth: 40,
+    nodes: 32768,
+  });
+  return input;
+}
+
 function sameJson(left: JsonValue, right: JsonValue): boolean {
   const pairs: Array<readonly [JsonValue, JsonValue]> = [[left, right]];
   while (pairs.length) {
@@ -389,12 +412,7 @@ export function validateOperationValue(
   value: unknown,
 ): JsonValue {
   const schema = parseOperationSchema(schemaInput);
-  requireJson(value, {
-    bytes: protocolLimits.valueBytes,
-    label: "Value",
-    depth: protocolLimits.valueDepth,
-    nodes: protocolLimits.valueNodes,
-  });
+  const actualValue = parseProtocolValue(value);
   function visit(current: JsonSchema, actual: JsonValue, path: string) {
     requireCondition(
       matchesType(current.type, actual),
@@ -464,8 +482,8 @@ export function validateOperationValue(
       }
     }
   }
-  visit(schema, value, "$value");
-  return value;
+  visit(schema, actualValue, "$value");
+  return actualValue;
 }
 
 const name = z

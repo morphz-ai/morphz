@@ -1,6 +1,6 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05。状态：纯声明校验及 v11 双后端迁移已验证；网关尚未接通。
+日期：2026-10-05。状态：纯声明／wire 校验及 v11 双后端迁移已验证；网关尚未接通。
 这是 Morphz Application 的实验接入版本，不是 Runtime 或 HNS 的新标准。
 文档存在不表示独立 SDK、服务网关或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
@@ -175,7 +175,8 @@ Host 目录入口使用专门的有界 app object 校验，tenant／Runtime 等�
 有副作用请求的稳定 requestHash 覆盖协议、精确定义、稳定数据实例、真实
 来源与项目、operation、参数和 resources；按键排序规范化 JSON、数组保持
 原顺序。credentials、expiry、诊断状态和每次 transport nonce 不参与业务
-hash。GUI 重试复用原 commandId；Agent 从实际工具 job/call 身份派生命令，
+hash；这些是 Host 私有传输事实，不意味着公共 wire 接受 nonce 或 credential
+字段。GUI 重试复用原 commandId；Agent 从实际工具 job/call 身份派生命令，
 不因模型重新措辞生成第二份“重试”。
 
 作者在自己的事务中原子提交业务变更及 commandId/requestHash 回执；同 id
@@ -302,7 +303,7 @@ owner/state/app/instance；command 的 source、state/updatedAt/commandId。
 Tenant 全部纳入身份和唯一约束。JSON 的字节／深度在应用层校验，SQL 提供
 有界字段、枚举、FK、revision 和 uniqueness，不依赖某后端专有 JSON 行为。
 
-当前 Platform schema v10。新关系通过 v10→v11 迁移，同时更新权威 DDL
+本契约设计基线为 Platform schema v10，当前已验证 v11。新关系通过 v10→v11 迁移，同时更新权威 DDL
 和生成 schema；冻结真实旧 v10 的 DDL/hash，v9→v10 先写旧 hash 再继续
 v11，不能让旧迁移误用新的当前 hash。旧库测试 fixture 使用准确旧基线，
 不得从新 DDL 仅减去头像字段而把新关系混进旧库。
@@ -351,7 +352,10 @@ admission 和已核 committed 摘要，不给予通用恢复写权。
 旧 admission 的真实来源与专用恢复目的，不伪装成当前 Human 的新业务调用。
 receipt-read 统一 committed／rejected／unknown；not_seen 是 unknown 的
 原因。rejected 必须是权威证明此命令没有提交，HTTP 403、异常、输出 Schema
-失败都不能直接当作 rejected；committedAt 只出现在 committed。
+失败都不能直接当作 rejected；committedAt 只出现在 committed。受认证响应
+若已完整符合协议及原 admission 的 committed 绑定，另行业务 output Schema
+失败仍保留已提交事实，并显式报告数据契约错误；不降为 unknown 或补做写入。
+认证、绑定或协议回执本身不成立时则不能据其宣称 committed，保留未知。
 后台核验有界、失败不阻塞整个 Host 启动，也不为每个页面加入定时轮询。
 使用启动／接入完成／真实回执／显式重试触发；没有状态变化时保持安静。
 
