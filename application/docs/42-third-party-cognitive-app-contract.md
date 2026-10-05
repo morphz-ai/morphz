@@ -620,10 +620,27 @@ UI read 的成功 JSON 有独立 8 MiB 有界 UTF-8 carrier，原 HTML 的
 
 | 边界 | 最小职责 | 保持的既有行为 |
 | --- | --- | --- |
-| Human 窗口 facade | launch、bind、metadata read、UI read、save、close；同步有限 DTO、原命令 ID、窗口／绑定双 CAS | 复用 Platform 窗口表与真实 UiPackageService；固定 mutation receipt 不假充最新窗口状态 |
+| Human 窗口 facade | locate、launch、bind、metadata read、UI read、save、close；同步有限 DTO、原命令 ID、窗口／绑定双 CAS | 复用 Platform 窗口表与真实 UiPackageService；只读 locate 不是许可租约，固定 mutation receipt 不假充最新窗口状态 |
 | 独立 CognitiveSandboxHost leaf | 使用既定八方法 Browser SDK；每次从真实窗口绑定确定目标，复用同一领域 Service | 不把新消息前缀塞进旧 UI-only bridge，不把作者 JS 加载到 Host |
 | 原导航／草稿 owner | 接受同一内容目录的精确应用原件 locator；compose 只准备未发送草稿 | 保留内置应用的数字修订、原 scoped 草稿和返回控件，不复制第三方正文 |
 | 同一目录与通知 | 安装、本人许可、连接和 own bound-view 的真实投影；变更仅作失效提示 | 不以旧 installer-only UI 授权代替认知 grant，不轮询或新增 Renderer 权威 store |
+
+草稿准备 leaf 已独立验证，但生产 owner 尚未装配。它接受当次已核验
+readUi 来源、当前真实 view 工作面／原草稿 key，以及 owner 捕获的
+incarnation／generation／身份／草稿拥有方 lease；这些不能用持久 prefs
+冒充。原件先走真实目录 locator，版本仍 opaque；无原件不猜内容 ID。
+await 后和原 functional updater 内均核 lease，从实际最新正文追加，
+保留设置、附件、共享引用和其他草稿；专用请求／不同原件版本拒绝。
+
+接入使用原 `draftCommands.writeInputs`，不经过会二次克隆原件引用的
+手动编辑 decorator。React StrictMode 的 purity 重放可以忽略最后一次
+计算结果，因此 ACK 只接受原 layout 已提交对象命中本次候选引用；不
+使用 render 快照、JSON 相等或 localStorage 当证明。flush 内未发布的
+延迟 updater 封口，不能在拒绝之后再改草稿。`prepared:true` 是本次
+输入准备的发布确认，不是磁盘保存确认，不自动发送或变更授权。
+Root 实际 Chromium／StrictMode／原 public writer 与 layout 十一项＋
+parent、纯 unit 七项均通过；元数据与 locator 明确受控，原 lease 接线
+和跨宿主业务仍待验证。真实 StrictMode 引用误判 RED 已保留。
 
 窗口 facade 的输入不得包含 actor、byte owner、Store 路径、endpoint、凭据
 或 caller 时间；Host 产生时间并从当前 Human session／HPA 取得身份。

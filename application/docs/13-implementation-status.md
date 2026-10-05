@@ -1,5 +1,34 @@
 # 桌面能力实施记录
 
+## 2026-10-06 认知界面准备原未发送草稿的提交确认
+
+新增纯 latest-draft 变换与准备 leaf，复用原 public functional writer、
+共享 quotes bucket 与 scoped 草稿；不新增 store、发送、授权或数字
+版本转换。来源与原件严格核同一应用／连接／保存方／项目，原件引用
+精确版本不替换；无 object 不猜目录 ID，专用请求与不同原件版本拒绝，
+原正文、附件、model/effort 和其他工作面保留。owner 必须提供当次真实
+identity/navigation incarnation/generation、持久草稿归属和 view lease。
+
+Root 正式六文件 96/96，日志
+`/tmp/morphz-cognitive-GUI-LEAVES-ROOT-FINAL-oct06.log`，required
+PostgreSQL、零失败／取消／跳过。新增七纯 unit 与实际 Chromium
+StrictMode 十一项＋parent，使用原 public writer、scopedStorage、
+flushSync、真实 layout 发布与 NavigationOriginLifetime；Host 元数据与
+locator 明确受控，不冒称 SQL 或生产 owner 已挂载。
+
+真实 RED 显示 updater 生成 A 后 StrictMode 仅为纯度重算 B，layout 发布
+A，旧 ACK 却取最后 B：`/tmp/morphz-cognitive-compose-ROOT-IDENTITY-RED-oct06.log`。
+修复以本次候选 WeakMap 校验实际提交引用，不降低为结构相等。另一次
+held fixture 直接改冻结原件导致 TypeError，原日志保留，仅把测试请求
+复制为可变载体，和生产引用 bug 分开。测试覆盖 locator await 中最新
+草稿／请求变化、退休后重激活、真实 unmount、binding CAS 改变、updater
+退休、延迟 updater 封口、缺提交证据以及实际 localStorage 失败仍保留
+React 已发布正文与原 notice。缺 quotes 的专用／不同原件拒绝不造空桶。
+
+全工程类型、生产构建及五文件格式通过。接线必须使用原未装饰 writer，
+不能让旧原件 pin decorator 二次克隆候选引用；`prepared` 不等于持久
+保存或发送。原生产 view owner 与实际授权链仍在目标内，未冒称完成。
+
 ## 2026-10-06 本人精确认知窗口只读定位
 
 补充 `cognitive-app-views.locate` Human-only 共享 API，严格要求当前项目、
