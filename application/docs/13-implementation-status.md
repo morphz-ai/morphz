@@ -1,5 +1,26 @@
 # 桌面能力实施记录
 
+## 2026-10-05 实际 Electron 的固定文档 origin 机制
+
+隔离自动化使用原生产 main／custom scheme／embedded adapter 和单个
+真实 `morphz://app/` owner；测试资料目录由原共享 fixture 隔离，不打开
+第二个人工验收应用、不触碰用户数据库／草稿／Session 或后台 Runtime。
+业务资源端口与同步 Host 明确受控，不冒称 SQL、生产 SDK 或原用户窗口。
+
+Root 组合独立一项通过，完整 GET／HEAD／iframe GET 的实际载体字节、
+CSP、UTF-8 SHA 与共享 source 构造器逐字相等；实际外层 origin 为
+`morphz://app`、作者为 `null`。复制 proof 的作者 peer 因 source／origin
+不符被拒，只接收实际外层单 peer；作者原文 DOM 可见、无 Node、桌面桥
+或父页面 DOM。parser-ready 一次与实际 credit `[1]` 通过，TCP／旧 raw／
+legacy 读取及 pageerror 均为零。证据
+`/tmp/morphz-document-credit-and-native-ROOT-PAIRED-FINAL-oct05.log`，
+另有 agent 原始 formal FINAL、类型与专项格式日志。
+
+初轮选到生产临时偏好读取窗、旧构建字节、转译辅助函数以及假设 author
+frame URL 为 about:srcdoc 的失败均保留。实际 Electron opaque OOPIF 的
+frame.url 是空字符串，改为真实 DOM frameLocator 后原文断言通过；
+不是取消断言或宣称环境缺失。下一阶段继续真实 SDK／业务 GUI consumer。
+
 ## 2026-10-05 认证文档载体贯通 Web／Local／Remote／embedded
 
 固定包装投影接入 UiPackageService 原不可变读取管线，完整 Store／SHA

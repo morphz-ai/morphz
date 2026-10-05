@@ -755,6 +755,14 @@ Host endpoint 双向 burst 与 FIFO credit 恢复通过；Doc 方向暂停使用
 明确的受控 native receive-start gate，不造 ACK 或消息。这些证据不代替生产 SDK、业务 consumer、
 领域业务或用户原 App 验收。私有端点尚不进入公共应用接口。
 
+另行实际 Electron 机制已通过：原生产 main／scheme／embedded adapter，
+单 owner `morphz://app`，外层 source／origin／proof／单 peer 匹配，作者
+`null` origin、复制 proof 的伪 peer 被拒。完整 GET／HEAD／frame GET
+字节与 source shared builder 一致，原文 DOM 可见、无 Node／桌面桥／
+父 DOM，parser-ready 与 credit 正常，TCP 和旧资源调用为零。此测试
+隔离资料，仅资源业务端口／Host 受控；不升级为 SQL、真实 SDK、生产
+GUI consumer 或原用户窗口验收。
+
 第三方 locator 固定实际 app／version／definition hash、instance／service／
 data authority、objectId、opaque versionRef 与原目录 content id。导航与
 草稿再经真实目录／精确读取核验；不得把 versionRef 转成 Number、丢成
