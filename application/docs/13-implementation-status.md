@@ -1,5 +1,37 @@
 # 桌面能力实施记录
 
+## 2026-10-06 固定认证 Document consumer 接线叶
+
+新增可信 consumer，不挂旧 unsafe prototype，不改 SDK、原 builtin／
+legacy sandbox、CSS 或用户资料。固定同实际 App origin 的认证 URL、
+唯一 proof、原 outer WindowProxy、一次 native peer；每个调用前后复核
+实际 owner／signal，初始 readUi 与 parser-ready 后才发 init，绝对30秒
+期限。presentation 更新仅合并当前 channel 的已确认 CAS／state；自身
+save2 后主题与隐藏／再显示不复写为1或重挂，隐藏请求仍拒绝。
+
+Root 冷读四路径，独立正式六文件 106/106，required PostgreSQL、零
+失败／取消／跳过，日志
+`/tmp/morphz-cognitive-document-consumer-ROOT-FINAL-oct06.log`；新二十二
+项实际双 SQL／HPA／原 Managed 字节／完整安全 header、Local readUi/
+save/撤grant 和实际 Chromium packed SDK/native port；作者业务 DTO
+明确 controlled。测试根壳仅递送 Host JS，不拦实际认证文档资源。
+
+实际正控包括两并发消费者不互清 peer、复制 exactproof 的 opaque
+作者拒绝后真 outer 可连接、自己带未知字段的 native peer、正常 DOM
+保暖、parser-ready 在真实 load 被 capture 屏蔽时仍初始化、原 owner
+abort／late continuation／期限／实际二次 navigation 清理。
+`FIFTH` 源 CAS 和未 init 残留、`SIXTH` held gate 原生timer1、
+`ELEVENTH` 复插新 WindowProxy仍被旧叶 init、`FIFTEENTH` 同步 abort
+后旧 true 导致 iframe1/timer1 的 RED 均保留；日志使用
+`/tmp/morphz-cognitive-document-consumer-` 前缀与 `-oct06.log` 后缀。
+修复在共享 channel保留原30秒语义但退休立即清 init timer／回调，
+固定原 mount身份且guard回调后再核，不能在退休之后重新append。
+
+全工程类型与四文件格式检查通过。生产 view owner／原 App 仍待装配；
+真实原生 custom origin业务另外验收，不假称互端即时取消／native队列
+GC 或原用户窗口可执行 GUI 完成。生产装配与 openObject交接边界已写
+入 docs42，仅为实施约束，无完整闭环完成声明。
+
 ## 2026-10-06 独立笔记作者可选 GUI 发布包
 
 只改独立 `examples/cognitive-notes` 作者项目：公开 Browser SDK 0.2.0
@@ -20,7 +52,7 @@ Platform／HPA 业务证明。独立 GUI 类型及全工程类型／生产构建
 实际点击核 opaque 历史原件、HTML 字符安全显示、显式列表／读取／
 新建／修订／状态／回执／引用／位置、未知命令 ID 不变与不重试、dirty
 离开确认、失败读保原草稿、退休 Document 不再发送。新作者 build 的
-replacement-string `$\`` 破坏脚本、原 sandbox 不允许 form submit、
+replacement-string 特殊替换序列破坏脚本、原 sandbox 不允许 form submit、
 回执 summary 多字段误入严格 resource 等 RED 原日志保留；分别改为
 callback 注入、明确按钮 click、精确两字段提取，不扩 sandbox 或 SDK。
 实际明亮 960px 与深色 380px 截图 Root 已查看，原宿主视觉完全未改。

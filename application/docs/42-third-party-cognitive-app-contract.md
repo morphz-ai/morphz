@@ -637,7 +637,7 @@ UI read 的成功 JSON 有独立 8 MiB 有界 UTF-8 carrier，原 HTML 的
 | 边界 | 最小职责 | 保持的既有行为 |
 | --- | --- | --- |
 | Human 窗口 facade | locate、launch、bind、metadata read、UI read、save、close；同步有限 DTO、原命令 ID、窗口／绑定双 CAS | 复用 Platform 窗口表与真实 UiPackageService；只读 locate 不是许可租约，固定 mutation receipt 不假充最新窗口状态 |
-| 独立 CognitiveSandboxHost leaf | 使用既定八方法 Browser SDK；每次从真实窗口绑定确定目标，复用同一领域 Service | 不把新消息前缀塞进旧 UI-only bridge，不把作者 JS 加载到 Host |
+| 固定 Document consumer leaf | 使用既定八方法 Browser SDK；每次从真实窗口绑定确定目标，复用同一领域 Service | 不挂旧 unsafe prototype／UI-only bridge，不把作者 JS 加载到 Host |
 | 原导航／草稿 owner | 接受同一内容目录的精确应用原件 locator；compose 只准备未发送草稿 | 保留内置应用的数字修订、原 scoped 草稿和返回控件，不复制第三方正文 |
 | 同一目录与通知 | 安装、本人许可、连接和 own bound-view 的真实投影；变更仅作失效提示 | 不以旧 installer-only UI 授权代替认知 grant，不轮询或新增 Renderer 权威 store |
 
@@ -657,6 +657,45 @@ await 后和原 functional updater 内均核 lease，从实际最新正文追加
 Root 实际 Chromium／StrictMode／原 public writer 与 layout 十一项＋
 parent、纯 unit 七项均通过；元数据与 locator 明确受控，原 lease 接线
 和跨宿主业务仍待验证。真实 StrictMode 引用误判 RED 已保留。
+
+生产 owner 的装配继续复用原 `prefs.cognitiveLocation`／trail／intent，
+位置扩为精确 original 或 view slot（project/app/version/hash），只存
+位置、不存正文或权限。新只读 view owner 在原 private boundary 内，
+捕获真实 center/Human/CSRF、私有 incarnation、已提交阅读 epoch／位置；
+恢复先 actual locate 后 exact readUi，null/closed/unbound/失效明确呈现，
+不自动 launch、grant、connect、bind 或改 prefs。未执行 GUI不伪造窗口。
+明确点击打开才可原 Human mutation，并发／不同保存方不后台重试。
+
+Document 展示仅借既有应用画布样式，不影响 builtin／旧 sandbox。主题
+与显隐只更新 presentation，普通 workspace change／自身 saveState
+不得每次重挂文档；身份／授权清树、固定绑定变化或实际 owner 退休则
+同步 abort。compose 当次已授权 source 可携自身保存推进后的 CAS，不
+固守初始 revision；仍核同一 owner/view/binding/authority/许可连接前提，
+最新输入 context／持久 draftOwner 与 actual layout 引用在 updater重查。
+这段是实施约束，不把新 hook 或 props 当权限租约。
+
+`openObject` 的原件实际发布与退出原 Document 有顺序冲突，需要单独
+验证可信 hand-off：既不能 nav 尚未提交便返回 opened，也不能为取得
+ACK 在测试壳并列保暖而冒称原 App行为。保留原 mutation／私有权限门，
+明确 ACK 的真实发布事实、物理响应与退休顺序后才实施该接线。
+
+可信 Document consumer 已独立验收，尚未生产挂载。只用实际 App origin
+下固定认证 resource URL、原 outer WindowProxy、当前 owner／signal 和
+唯一 proof／一次 native peer；不使用任意 src、Window业务、旧 raw 或
+fallback。parser-ready 而非 load 发初始化，绝对 30 秒到实际 init；
+初始授权拒绝及 signal／generation／mount／deadline 失活同步清 iframe、
+私有端口和 timer。shared listener 不清其他 mount 的合法 port；复制
+proof 的实际 opaque作者和自己未知字段 peer 拒绝，正常 DOM 保暖。
+
+presentation 合并 channel 当前已 ACK 的 CAS，不用初始 source 覆盖自己
+save2；显隐不换固定文档，隐藏操作拒绝、恢复仍同 CAS。初始 channel
+authorize 忽略 abort 也清原 timer；复插同 iframe 的新 WindowProxy 不被
+接纳，guard 同步 abort 后返回旧 true 不得重新挂载。Root 冷读并独立
+六文件 106/106、required PG、零跳过；新二十二项实际双 SQL/HPA/Store
+资源、readUi/save／撤 grant 和 Chromium packedSDK/native机制，作者
+业务结果明确 controlled。Root 类型及四文件格式通过，原失败可重放。
+不把测试壳、source props、ready、端口清理当完整授权、队列 GC、互端
+业务同步取消或生产 App/native consumer 的验收。
 
 窗口 facade 的输入不得包含 actor、byte owner、Store 路径、endpoint、凭据
 或 caller 时间；Host 产生时间并从当前 Human session／HPA 取得身份。

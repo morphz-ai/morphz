@@ -10,6 +10,7 @@ import {
   type BrowserRequest,
 } from "../../../../packages/cognitive-app-sdk/src/browser-wire.js";
 import { canonicalJsonBytes } from "../../../../packages/cognitive-app-sdk/src/domain-wire.js";
+import { parseWireJson } from "../../../../packages/cognitive-app-sdk/src/protocol.js";
 
 /** The leaf owns only one document's channel, not business authority, storage,
  * resource loading or navigation. Real adapters must authorize the fixed view
@@ -24,7 +25,12 @@ export interface CognitiveBrowserChannelPorts {
     context: BrowserContext,
     signal: AbortSignal,
   ): Promise<unknown>;
+  onRetire?(): void;
 }
+export type CognitiveBrowserPresentation = Pick<
+  BrowserContext,
+  "theme" | "presentation"
+> & { active: boolean };
 type Ingress = { source: unknown; origin: string; data: unknown };
 type Pending = {
   requestId: string;
@@ -72,6 +78,7 @@ export function createCognitiveBrowserChannel(
   let initialized = false;
   let visibilityEpoch = 0;
   let initializing: Promise<void> | undefined;
+  let initTimer: ReturnType<typeof setTimeout> | undefined;
 
   function post(message: unknown) {
     try {
@@ -102,6 +109,8 @@ export function createCognitiveBrowserChannel(
   function retire(notify = true) {
     if (retired) return;
     retired = true;
+    clearTimeout(initTimer);
+    initTimer = undefined;
     lifecycle.abort();
     if (notify) cancelPending("unavailable");
     else {
@@ -113,6 +122,11 @@ export function createCognitiveBrowserChannel(
     }
     if (notify && initialized)
       post({ type: "morphz-cognitive-ui/v1:retire", channel });
+    try {
+      ports.onRetire?.();
+    } catch {
+      /* Trusted owner cleanup cannot disclose a cause or revive the channel. */
+    }
   }
   function current() {
     if (retired) return false;
@@ -133,6 +147,7 @@ export function createCognitiveBrowserChannel(
     if (initializing) return initializing;
     const deadline = performance.now() + cognitiveBrowserLimits.deadlineMs;
     const timer = setTimeout(() => retire(), cognitiveBrowserLimits.deadlineMs);
+    initTimer = timer;
     initializing = (async () => {
       try {
         while (current()) {
@@ -156,12 +171,39 @@ export function createCognitiveBrowserChannel(
         retire();
       } finally {
         clearTimeout(timer);
+        if (initTimer === timer) initTimer = undefined;
         initializing = undefined;
       }
     })();
     return initializing;
   }
 
+  async function updateContext(input: BrowserContext) {
+    if (!current()) return;
+    let next: BrowserContext;
+    try {
+      next = parseBrowserContext(input);
+    } catch {
+      return retire();
+    }
+    if (
+      !equal(next.authority, context.authority) ||
+      !equal(next.definition, context.definition) ||
+      next.view.id !== context.view.id ||
+      next.view.bindingRevision !== context.view.bindingRevision ||
+      next.view.revision < context.view.revision ||
+      (next.view.revision === context.view.revision &&
+        !equal(next.view.state, context.view.state))
+    )
+      return retire();
+    if (next.view.revision !== context.view.revision) cancelPending("conflict");
+    if (next.view.active !== context.view.active) {
+      visibilityEpoch++;
+      cancelPending("forbidden");
+    }
+    context = next;
+    await initialize();
+  }
   return {
     /** A second document load retires the original channel. This detects a
      * completed navigation; it does not claim to prevent network navigation. */
@@ -170,32 +212,34 @@ export function createCognitiveBrowserChannel(
       loaded = true;
       await initialize();
     },
-    async updateContext(input: BrowserContext) {
+    updateContext,
+    /** Trusted presentation only. Merge the latest private acknowledged CAS,
+     * never a caller's initial source snapshot or a replacement view state. */
+    async updatePresentation(input: CognitiveBrowserPresentation) {
       if (!current()) return;
       let next: BrowserContext;
       try {
-        next = parseBrowserContext(input);
+        const value = parseWireJson(input);
+        if (!value || typeof value !== "object" || Array.isArray(value))
+          return retire();
+        const fields = Object.getOwnPropertyDescriptors(value);
+        if (
+          Reflect.ownKeys(fields).length !== 3 ||
+          !fields.theme ||
+          !fields.presentation ||
+          !fields.active
+        )
+          return retire();
+        next = parseBrowserContext({
+          ...context,
+          theme: fields.theme.value,
+          presentation: fields.presentation.value,
+          view: { ...context.view, active: fields.active.value },
+        });
       } catch {
         return retire();
       }
-      if (
-        !equal(next.authority, context.authority) ||
-        !equal(next.definition, context.definition) ||
-        next.view.id !== context.view.id ||
-        next.view.bindingRevision !== context.view.bindingRevision ||
-        next.view.revision < context.view.revision ||
-        (next.view.revision === context.view.revision &&
-          !equal(next.view.state, context.view.state))
-      )
-        return retire();
-      if (next.view.revision !== context.view.revision)
-        cancelPending("conflict");
-      if (next.view.active !== context.view.active) {
-        visibilityEpoch++;
-        cancelPending("forbidden");
-      }
-      context = next;
-      await initialize();
+      await updateContext(next);
     },
     async receive(event: Ingress) {
       // Check the exact source before inspecting untrusted message bytes.
