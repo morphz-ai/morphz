@@ -1,14 +1,95 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05（实施证据续至 2026-10-06）。状态：独立协议／Browser SDK、v12 双后端关系与本人登记管理、服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输、真实 Rust Agent input 链、只读原件工作区与工作台管理前端已分层验证；生产 Web 的独立作者 GUI、真实双 SQL／SDK／原导航草稿 owner 已验收，真实 native Local 与 Remote 当前矩阵及窗口关闭退休已通过，用户原 App 安全恢复尚未完成。下文早期阶段的“待接线”是该阶段历史，不代表最新接线仍未完成。
+日期：2026-10-05（实施证据续至 2026-10-06）。这是 Morphz Application 的实验接入契约，不是 Runtime 或 HNS 的新标准。
+
+## 最新交付与剩余
+
+独立协议／Browser SDK、v12 双后端关系与本人登记管理、服务网关、窗口与
+精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输、
+真实 Rust Agent input 链、只读原件工作区及工作台管理前端已分层验证。
+以下是当前交付边界；后文带阶段标签的旧“待接线”不再是当前待办。
 
 生产接线沿原私有导航／草稿边界，不增第二套权限或正文状态。显式 GUI
 选择、自有保存保温、主题更新、同窗重载、准备未发送草稿、精确原件
 终结导航，以及撤权后退场／重新授权后显式重开，由完整 Web、独立 packed
-作者、公开 SDK、真实 HPA 与 SQLite／PostgreSQL 验证，Root 4/4、零跳过。
+作者、公开 SDK、真实 HPA 与 SQLite／PostgreSQL 验证。此前正式 4/4 保留；
+最新增加双 SQL 的迟到 locator body 负控，Root 独立正式 6/6、零跳过。
 GUI 关闭通过事件提示核对 strict metadata 并同步退休，不以已有调用拒绝门
 替代；自有 save 的较高 CAS 保温，不自动重读 UI 或重挂。原 App 尚未验收。
 详细范围、首轮失败和可重放证据见 [实施记录](./13-implementation-status.md)。
+
+新增负控只在真实 SQL／授权操作已完成且写出原 JSON HTTP200 后暂缓
+同一 response body。Human 真导航离开后，源 Document 退场、该精确请求
+实际 abort／response-close；向已销毁 endpoint 释放一次原字节，不修改
+全体草稿、作者原表、命令或未发送 ledger，也无自动 POST。这证明实际
+取消／body discard，不声称销毁后的 SDK Promise 终态或私有 ACK 可观测。
+首轮 5P1F 的 grant3 helper 早采样失败及截图已连接事实保留，修正等待与
+当前 published DOM 的关联后取得上述 6/6；未改生产实现或扩大总预算。
+精确范围见[最新 Web 验收记录](./13-implementation-status.md#2026-10-06-真实-web-迟到-locator-响应与当前-document-验收)。
+
+真实 native 当前矩阵 20/20、零跳过：Remote 连接实际 SQLite／PostgreSQL，
+Local 由生产 main 创建隔离 SQLite 中心并走 typed IPC／私有 `morphz` 资源，
+不增加 Application HTTP。独立作者 Service、自管 SQLite、公开 SDK、真实
+Human／HPA 和当前生产 UI 共同验证历史原件、原回执、同 Document save2、
+compose、终结导航、撤权／显式重开及 close3 自动退场。Local 本轮不是
+PostgreSQL；自动隔离中心也不是用户原 App。Agent 普通输入、后台事项和
+infer 的真实 Rust 链另有下文证据，不把受控模型称作付费模型验收。
+
+尚未完成的是用户原 App 的安全恢复与原窗口验收：需保留原 profile、中心、
+资料、草稿和 Session，并由用户决定在途工具短暂离线／中断的处理，不自动
+停止 Runtime 或改原资料。因此不宣称整个目标已经完成。
+
+SDK 仍为 private 的实验包，未发布 npm；公网部署、应用市场、SaaS OAuth、
+签名发行及 Windows 私有配置 ACL 不在本轮交付。作者最低 Node 24.13 的
+单独验收尚无证据，示例当前实际验证版本为 25.8.1。详细运行和权限限制见
+下文[连接安全与本人授权](#连接安全与本人授权)，不是接入成功后可忽略的门禁。
+
+## 接入 quickstart
+
+1. 先实现独立领域 Service。作者拥有原件、精确版本、账户／项目 ACL、
+   原子业务事务与回执；实现下文四个固定路由。Human 与 Agent 共用这些
+   领域能力，GUI 可选，不要求作者导入 Host、React、Runtime 或平台数据库。
+   可从[独立笔记示例](../examples/cognitive-notes/README.md)及其
+   [数据模型](../examples/cognitive-notes/MODEL.md)开始。
+2. 安装[公开作者 SDK](../packages/cognitive-app-sdk/README.md)的本地 tarball，
+   或自行实现同一协议；不能假设 npm 已发布。headless 声明 `ui:null`。
+   需要界面时将 Browser SDK 打包进自包含 HTML，原字节 SHA、精确应用
+   version 与 `ui.packageVersion` 必须对应；笔记示例为保留 1.0.0 并显式
+   增加 1.1.0。业务对象的 opaque versionRef 与应用版本不同，不能转数字、
+   使用 `latest`、改旧 HTML/hash 或借旧 UI-only `morphz-app:*` 消息桥。
+3. 由可信 Host 操作者预先配置私有连接。服务启动给出的公开 serviceId／
+   dataAuthorityId、真实中心 tenant／Human principal、作者账户映射与固定
+   issuer 必须吻合。配置格式为 `morphz-host-cognitive-bindings/v1`；本人
+   tuple 及 `baseUrl`、`credentialEnv`、`current` 的严格字段见
+   [私有 resolver](../packages/application/src/cognitive-app-bindings.ts)。
+   `MORPHZ_APP_COGNITIVE_BINDINGS_FILE` 仅从实际启动进程环境读取绝对
+   路径，文件为当前 UID 的 0600／0400 普通文件；专用密钥只由
+   `MORPHZ_APP_COGNITIVE_CREDENTIAL_*` 环境引用提供。不放入声明、HTML、
+   Client、模型、项目 `.env` 或作者公开包。本机示例 HTTP 必须另作明确的
+   numeric loopback／固定端口批准；不把该例外当生产 HTTPS 身份验收。
+4. Human 在实际登录／HPA 和项目成员权限下，从工作台明确安装文件或登记
+   已安装的精确定义，查看声明后设置「数据访问权限」，再以服务提供方的
+   公开标识建立本人数据连接。这是应用资料权限，不是禁用 Agent 或每次
+   创作批准。安装、grant、connect 分别核验，不会互相隐式开启；界面不填写
+   私有地址或密钥。API 对接用下文十个 `cognitive-apps.*` 方法，不能自报
+   actor、tenant、凭据或 Host proof。
+5. 选择确切版本和本人连接。无 GUI 应用用于本次未发送输入；GUI 从同一
+   Dock／工作台明确打开，经 Human 的七项窗口 API（含只读 locate）和
+   完整字节门取得固定 Document。恢复不猜 viewId、不默认选第一条连接，
+   关闭 GUI 不取消已受理的 Runtime／作者工作。compose 只准备原草稿；
+   原件打开保留确切版本且可销毁源 Document，不保证作者收到导航回应。
+6. Agent 无需 GUI 或模拟点击。已有真实输入／task-run 来源经原
+   `host_morphz` 的 `cognitive.list/describe/invoke/read-object/status/recover`
+   能力使用同一网关；身份、项目和写命令来源由 Host／Runtime 取得，不
+   由模型提供。应用输入需要 Harness 时另固定实际已安装的确切 Harness，
+   普通领域调用不因没有 Harness 被阻止。未知副作用保留原 commandId／
+   requestHash，只核状态或原回执，不换 ID 自动补做。原件／输入边界见
+   [输入来源契约](./43-cognitive-app-input-provenance.md)。
+
+## 阶段验收历史
+
+下面保留各阶段当时的范围、失败与证据，不能将其局部通过相加成整个产品
+验收；这些历史记录中的未接线项以[最新交付与剩余](#最新交付与剩余)为准。
 
 Agent 的有限六操作 adapter 已独立通过八文件 82/82、required
 PostgreSQL／Runtime、零跳过及全工程类型检查。新认知测试实际使用
@@ -20,15 +101,13 @@ HTTP 请求，作者 1 命令／1 原件，原回执恢复不重执行；作者�
 Platform admission 与实际 Runtime Event 一致且 Thread 已 completed。
 最终四文件 21/21、required PostgreSQL／Runtime、零跳过与全工程类型
 检查通过。新认知 Runtime 中心为 SQLite，模型受控，不是付费模型、
-失联 Runtime 或原 App 验收，GUI 链仍待实现。后续独立实际后台事项＋
+失联 Runtime 或原 App 验收；在该阶段 GUI 链尚待实现。后续独立实际后台事项＋
 infer 测试现已通过：原任务准入／dispatcher、Schedule／Thread／Event
 与子 physical Job 均真实，作者两条命令都保持 task-run 及原输入关联，
 三个 Thread 在退出前 completed。infer BODY 与 child 操作一致，子写入
 恰一次；七次模型请求仅到本地受控第二跳，付费请求零。Root 四文件
 21/21、required PostgreSQL／Runtime 与独立 opt-in、零跳过及全工程类型
 检查通过。该新认知中心为隔离 SQLite，不泛称生产／原 App 验收。
-
-这是 Morphz Application 的实验接入版本，不是 Runtime 或 HNS 的新标准。
 
 认知原件的后端输入来源已独立验证：精确 opaque 引用贯穿不可变投递、
 IO10、实际 accepted Session Event、Agent read-input 与公开历史。目录头
@@ -56,7 +135,7 @@ Human 可在未授权时查看本人已登记的精确定义，登记不隐式�
 Local／HTTP／Remote；其连接 setup 受控，不称作者网络或原窗口验收。
 本组真实 Rust 沿已提交的显式应用／原件输入回归，模型受控、付费请求零；
 新认知 Runtime 中心为隔离 SQLite，PostgreSQL 是同组双后端回归。
-管理界面、输入框显式应用选择与作者 GUI consumer 仍待接线验收。
+在该后端阶段，管理界面、输入框选择与作者 GUI consumer 尚待接线验收。
 
 本人目录的客户端数据层现已接到原认证 caller 与导航 owner，不新增
 目录存储、HTTP 依赖或轮询；无界面应用不伪装成 UI-only 包。十方法
@@ -77,7 +156,7 @@ Dock／输入目标或作者 GUI，不冒称完整生态／原 App 已完成。
 真实 reload 和风险确认均有 Chromium 证据；logical transport 受控，不
 混报 SQL、native IPC、作者网络或用户原窗口。文档隔离原型随后已通过
 独立 Chromium 机制验证，原始失败证据保留；真实 SDK、消息背压、资源
-与 consumer 尚未接通，仍不接入生产 GUI。
+与 consumer 当时尚未接通，该机制原型不接入生产 GUI。
 
 第三方应用提供自己拥有的业务能力和原件，Morphz 负责让 Human 与 Agent
 以相同权限调用这些能力，并可选地承载作者的界面。接入不要求作者使用
@@ -389,8 +468,9 @@ Origin／CSRF，拒绝额外 query；Desktop Local 不新增本地 HTTP 依赖�
 安装 carrier 8 MiB、其他 JSON body 512 KiB，并检查 fatal UTF-8；这些
 传输上限不扩大定义／HTML／正文的原限制。真实 caller 在响应后仍复核。
 renderer bridge 的原 ID／取消／代次传输已经独立验证；headless 实际
-Runtime 普通输入、后台事项和 infer 已有隔离受控模型证据，GUI 与原
-窗口接线仍须单独验收。
+Runtime 普通输入、后台事项和 infer 已有隔离受控模型证据。此段记录
+早期公共入口阶段，当时 GUI 与原窗口尚未接线；当前状态见
+[最新交付与剩余](#最新交付与剩余)。
 
 操作发现继续已有 list／describe／invoke 语义，返回确切 app、version、
 definitionHash、instance、operationId、Schema、效果与真实不可用原因。
@@ -425,7 +505,8 @@ Service adapter。示例通过打包后的公开导出接入，自己的数据�
 Window 业务或回退旧桥；实际 tarball 消费与 Chromium opaque 沙箱测试
 验证逐观察者／解析／冻结／分配／结算退休、原命令 ID、十六 pending 与
 独立 native credit。Root 正式组合 300/300，证据及范围见实施记录。
-GUI 宿主接线仍在进行，不以受控 Browser Host 代替真实授权／业务验收。
+历史：这是 Browser SDK 机制阶段的证据，不以受控 Browser Host 代替真实
+授权／业务验收；后续 GUI 接线状态见[最新交付与剩余](#最新交付与剩余)。
 领域／UI 业务 wire 仍 v1；安装的旧 0.1.0 HTML／SHA 不自动改写，GUI
 作者显式重包并以新一致应用／UI版本升级，旧资料与绑定保留。headless
 仅因 npm 依赖升级不必改变业务应用版本；包尚未发布。
@@ -471,8 +552,9 @@ renderer 数据库、网络路由或独立授权状态。薄管理 owner 只向 
 只重新读取供 Human 判断，不自动选择新 revision 重试。连接只接受
 明确的公开 serviceId／dataAuthorityId 和 Host 私有配置，不让页面填写
 路由或凭据；当前十方法没有私有配置发现接口，不虚构可选服务目录。
-管理 owner 已接到生产 `useWorkspace` 的五个公开 typed 端口；实际
-工作台消费者尚待实现。Root 四十文件 387/387、required PostgreSQL、
+历史（2026-10-05 管理 owner 阶段）：当时已接到生产 `useWorkspace` 的五个
+公开 typed 端口，工作台消费者尚待实现；后续状态见
+[最新交付与剩余](#最新交付与剩余)。Root 四十文件 387/387、required PostgreSQL、
 零跳过与类型检查通过，其中新管理挂载二十项使用真实 Chromium／React
 owner 与受控 logical transport，不等同 native IPC、管理 UI 或原 App
 验收；完整范围与失败记录见实施记录，不能由这些规则推定原 App 已接入。
@@ -504,8 +586,9 @@ WebCrypto 和受控存储，不是实际 SQL 安装、工作台组合或原 App 
 
 ### 连接创建回执与关闭后的恢复设计
 
-Host 创建回执、本机原请求准备与只读查找已实现；以下也约定管理面板
-的恢复流程，其完整组合尚未验收，不能据此宣称连接恢复已完成。公开 connect
+历史（2026-10-05 创建回执／准备层阶段）：当时已实现 Host 创建回执、本机
+原请求准备与只读查找，管理面板完整组合尚未验收；后续状态见
+[最新交付与剩余](#最新交付与剩余)。以下仍约定恢复流程，公开 connect
 请求与响应保持不变；它表示 Human 明确提交或按原参数重试创建，不是
 缺回执时绝不创建的只读查询。没有回执不证明失败、未提交或没有在途请求。
 
@@ -574,9 +657,12 @@ CAS，后续原请求重试仍由 Host 判断已提交事实与当前首次创�
 管理页另验真实浏览器的关闭／权限刷新卸载／重载后原 ID 显式重试。受控
 组件测试不能代替同一个用户原 App、作者网络和跨宿主验收。
 
-### 可选 GUI 的宿主装配决策（实施中）
+### 可选 GUI 的宿主装配决策与分层历史
 
-独立笔记作者可选 GUI 已交付，不代表宿主接线完成。原 headless 1.0.0
+以下保留 2026-10-05 至 2026-10-06 的独立叶验收与当时待办，不将单一叶
+当完整 GUI 验收。生产装配的现状见[最新交付与剩余](#最新交付与剩余)。
+
+历史（独立作者包阶段）：作者可选 GUI 已交付，当时不代表宿主接线完成。原 headless 1.0.0
 定义原字节保持；仓库外真实 SDK 0.2.0 tarball 安装、固定 esbuild 构建
 自包含 HTML 与 1.1.0 一致 UI版本／实际 SHA。作者服务默认仍 headless，
 仅显式 `--gui` 静态支持两版，在原 schema／原事务追加精确定义，不
@@ -646,8 +732,9 @@ UI read 的成功 JSON 有独立 8 MiB 有界 UTF-8 carrier，原 HTML 的
 1,000,000 字节上限不变。Root 十三文件 176/176、required PostgreSQL、
 零跳过及全工程类型检查通过；新二十八项实际双 SQL 与 Managed Store，
 八项为明确传输 UNIT。authenticated resource 已独立接通，只读原件的
-导航／草稿现已接入共享工作区；作者 iframe 仍待接入，以下其他部分仍为
-实施约束，不是作者 GUI 完成证明。
+导航／草稿已接入共享工作区；当时作者 iframe 尚待接入。这是公共窗口
+入口阶段历史，不由此单独宣称作者 GUI 完成；当前见
+[最新交付与剩余](#最新交付与剩余)。
 
 | 边界 | 最小职责 | 保持的既有行为 |
 | --- | --- | --- |
@@ -656,7 +743,7 @@ UI read 的成功 JSON 有独立 8 MiB 有界 UTF-8 carrier，原 HTML 的
 | 原导航／草稿 owner | 接受同一内容目录的精确应用原件 locator；compose 只准备未发送草稿 | 保留内置应用的数字修订、原 scoped 草稿和返回控件，不复制第三方正文 |
 | 同一目录与通知 | 安装、本人许可、连接和 own bound-view 的真实投影；变更仅作失效提示 | 不以旧 installer-only UI 授权代替认知 grant，不轮询或新增 Renderer 权威 store |
 
-草稿准备 leaf 已独立验证，但生产 owner 尚未装配。它接受当次已核验
+历史（独立草稿准备 leaf 阶段）：当时生产 owner 尚未装配。它接受当次已核验
 readUi 来源、当前真实 view 工作面／原草稿 key，以及 owner 捕获的
 incarnation／generation／身份／草稿拥有方 lease；这些不能用持久 prefs
 冒充。原件先走真实目录 locator，版本仍 opaque；无原件不猜内容 ID。
@@ -670,8 +757,9 @@ await 后和原 functional updater 内均核 lease，从实际最新正文追加
 延迟 updater 封口，不能在拒绝之后再改草稿。`prepared:true` 是本次
 输入准备的发布确认，不是磁盘保存确认，不自动发送或变更授权。
 Root 实际 Chromium／StrictMode／原 public writer 与 layout 十一项＋
-parent、纯 unit 七项均通过；元数据与 locator 明确受控，原 lease 接线
-和跨宿主业务仍待验证。真实 StrictMode 引用误判 RED 已保留。
+parent、纯 unit 七项均通过；元数据与 locator 明确受控，该叶阶段的原
+lease 接线／跨宿主业务尚待验证。真实 StrictMode 引用误判 RED 已保留，
+后续范围见[最新交付与剩余](#最新交付与剩余)。
 
 生产 owner 的装配继续复用原 `prefs.cognitiveLocation`／trail／intent，
 位置扩为精确 original 或 view slot（project/app/version/hash），只存
@@ -689,22 +777,24 @@ Document 展示仅借既有应用画布样式，不影响 builtin／旧 sandbox�
 最新输入 context／持久 draftOwner 与 actual layout 引用在 updater重查。
 这段是实施约束，不把新 hook 或 props 当权限租约。
 
-共享 channel 已修实际 own save／presentation 旧 CAS 竞争。语义相同
+历史（2026-10-06 channel 并发修复阶段）：已修实际 own save／presentation 旧 CAS 竞争。语义相同
 展示不重复门；真主题只合并一个最新投影，待原保存最终门确认后按已
 ACK CAS 授权，不能请求任意 latest。先前 init 在途先完成再 mutation；
 隐藏即时取消，未知保存丢缓冲并退休，不猜 CAS、不重试。仍守原十六
 在途预算／三十秒期限。Root 独立五文件 119/119、required PG、零跳过；
 新十项为 UNIT，另真实生产 App 双 SQL happy 的同 Document save2／
-亮暗／compose／终结原件通过，整组 3P1F 的订阅恢复缺口另行修复。
-这不是完整 GUI／原用户 App 完成声明。
+亮暗／compose／终结原件通过，整组当时为 3P1F，订阅恢复缺口另行修复。
+这不是该阶段完整 GUI／原用户 App 完成声明；后续终态见
+[最新交付与剩余](#最新交付与剩余)。
 
-React 展示叶已独立验收：只借原 application-host／pane／frame 样式，
+历史（2026-10-06 独立 React 展示叶阶段）：只借原 application-host／pane／frame 样式，
 初始创建等父 layout 发布，固定原 source／owner；普通回调替换不更新
 权限，实际失活／卸载同步 abort，迟到 ready 不复活。真实双 SQL/HPA
 认证资源、Chromium／StrictMode、公开 SDK／native port 七项含父测试
 通过，Root 七文件合验 109/109、required PG、零跳过与类型／格式通过。
-父 owner 仍是受控 React，compose／openObject 未实作；生产 App 自有
-save 与展示刷新并发 RED 另在 shared channel 修复，不算本叶完成证明。
+该叶的父 owner 是受控 React，compose／openObject 未实作；当时生产
+App 自有 save／展示并发 RED 另在 shared channel 修复，不算本叶完成证明。
+后续生产业务证据见[最新交付与剩余](#最新交付与剩余)。
 
 只读位置／view owner 叶已实现：同一位置 DTO 增加 strict view slot，
 原 original 读取对合法 view 保持 idle；restore actual locate→readUi，
@@ -738,9 +828,10 @@ layout owner 实际发布、源 Document／owner 仍有效且末尾授权门通�
 源 iframe／channel 退休、零迟到成功 ACK／自动重试及原草稿／Session 不变。
 前置拒绝／取消／新导航抢占则不得发布或记录旧目标。已销毁 Document 的
 Promise 可无可观察终态；存活受控壳的成功 ACK 不是生产终结导航验收。
-此处规定语义，生产 publisher 和原 App 验收仍待完成。
+此处规定语义；在该独立导航叶阶段，生产 publisher 和原 App 验收尚待
+完成。当前生产接线与原 App 的不同状态见[最新交付与剩余](#最新交付与剩余)。
 
-独立 packed 作者的 GUI 业务链已另行验收，不以受控业务 DTO 冒称实际
+历史（独立三 adapter 业务壳阶段）：不以受控业务 DTO 冒称实际
 闭环。真实作者 SQLite、Platform SQLite／PostgreSQL、IdentityCenter／HPA、
 Managed UI bytes、公开 Web／Local／Remote adapters、固定 Document／SDK
 与原 public draft writer，共三入口新三十二项及作者原包十九项通过。
@@ -754,9 +845,10 @@ Runtime ledger变化。许可循环后旧 Document 真调用仍拒，关闭真�
 实际 embeddedResources 直取字节不走 application HTTP，Remote 实际认证
 resource 入口，二者自动壳不等于 Electron custom origin。openObject 显式
 拒绝，未并列保暖制造导航 ACK。没有把测试壳、组合项或这三十二项算作
-原 App mount／native／终结导航完成；剩余接线继续推进。
+原 App mount／native／终结导航完成。该阶段剩余接线的后续证据见
+[最新交付与剩余](#最新交付与剩余)。
 
-可信 Document consumer 已独立验收，尚未生产挂载。只用实际 App origin
+历史（独立 consumer 阶段）：当时尚未生产挂载。只用实际 App origin
 下固定认证 resource URL、原 outer WindowProxy、当前 owner／signal 和
 唯一 proof／一次 native peer；不使用任意 src、Window业务、旧 raw 或
 fallback。parser-ready 而非 load 发初始化，绝对 30 秒到实际 init；
@@ -790,8 +882,9 @@ session generation、导航 epoch、view／binding revision、定义 hash 及
 SDK 的十六 pending／三十秒预算，并在初始化竞态、导航 CAS 及 monotonic
 返回门处拒绝旧结果。十八项为明确控 Window／authority UNIT，合并旧
 SDK Browser／打包消费回归 29/29、零跳过、全工程类型检查通过。
-它尚未挂载生产 consumer；author DOM、channel 与实际 owner 的 compose
-接线仍须验收，不能把这份消息叶模块或只读原件页称作运行中的作者 GUI。
+在该独立 channel 阶段，尚未挂载生产 consumer，author DOM／owner 的
+compose 接线待验收；不能把单一消息叶或只读原件页称作运行中的作者 GUI。
+当前接线状态见[最新交付与剩余](#最新交付与剩余)。
 
 独立 `cognitive-browser-router.ts` 已将八方法映射到同一 Human 服务。
 窗口的定义、authority、项目、连接与许可固定；每次请求及返回都核真实
@@ -800,7 +893,8 @@ UI read 和双 CAS。保存使用原回执与原 state，不拿最新 head 冒�
 交给可信 owner，compose 只准备未发送草稿。新十四项中十二项为受控
 端口 UNIT、两项实际双 SQL Human 窗口／保存／撤权链，owner 回包仍
 受控。Root 五文件 54/54、required PostgreSQL、零跳过及全工程类型
-检查通过；实际 consumer 与 owner 接线、原窗口验收尚未完成。
+检查通过；在该独立 router 阶段，consumer／owner 接线与原窗口验收尚待
+完成。当前状态见[最新交付与剩余](#最新交付与剩余)。
 
 字节载体现已复用既有 authenticated resource 的 HTTP／Electron 两个
 adapter，固定 `/api/cognitive-app-view/<viewId>` 及两个精确修订 query，
@@ -830,7 +924,7 @@ Root 十五文件 166/166、required PostgreSQL、零跳过及全工程类型
 中的 WindowProxy／异步投递也不固定其原 Document；opaque origin 的 `*`
 目标尤其不能证明接收页面是原字节。
 
-接续的安全装配模型已审查，仍须先做独立真实浏览器证明：Host 固定代码的
+历史（2026-10-05 安全装配模型阶段）：当时须先做独立真实浏览器证明。Host 固定代码的
 可信 wrapper 使用自身 header CSP，不放宽主 App 策略；原作者 UTF-8 字节
 与哈希独立保留，经安全编码承载进 opaque srcdoc，不拼进 wrapper 的 JS
 字符串。Host prefix 必须在任何作者代码／事件处理器前执行，创建并私藏
@@ -918,7 +1012,7 @@ nonce、单次消费和当前真实 owner；作者不能用复制 proof 的新�
 结果解析／冻结／accept 和发送均需同步文档守门。SDK 十六 pending 不
 等于原生端口队列有界，private ingress 背压必须另行证明后才接 consumer。
 
-原生端口背压的实施模型（有限端口已验收，生产 consumer 未挂载）：固定前缀和可信 Host endpoint
+原生端口背压的实施模型（独立端口阶段历史；当时 consumer 未挂载）：固定前缀和可信 Host endpoint
 各持十六个发送 credit，只有可信端点处理完一个有界 wire frame 后才
 返还一个 credit；确认使用单调连续序号并核实际未偿发送，重复、跳号或
 超前确认不能增加窗口。该确认是传输消费，不是业务 ACK、commit 或许可。
@@ -937,8 +1031,9 @@ Host 在 parser-ready 前不发送 wire；接收仅准一次严格的既有 SDK 
 各方向的 native 队列分项上界为十六 wire＋十六反向确认，作者至 Host
 另有一个 parser-ready；不能简写为“整个原生队列最多十六条”。
 单端退休只关闭本端并阻止本端再次交付，不能推断另一端立即清除
-全部业务 pending；SDK 本地退休回调现已实现并实测清本地等待，Host
-owner／channel 联动仍待接线，不发送新的互端退休控制或取消命令，
+全部业务 pending；SDK 本地退休回调已实现并实测清本地等待，在该端口
+阶段 Host owner／channel 联动尚待接线，当前见[最新交付与剩余](#最新交付与剩余)。
+仍不发送新的互端退休控制或取消命令，
 不能把 MessagePort.close 当成 native 队列回收证明。
 
 这是原生消息队列与 SDK／业务 pending 两个不同边界；不是承诺阻止
@@ -970,8 +1065,9 @@ GUI consumer 或原用户窗口验收。
 data authority、objectId、opaque versionRef 与原目录 content id。导航与
 草稿再经真实目录／精确读取核验；不得把 versionRef 转成 Number、丢成
 null、猜当前 head，或伪装为 morphz.objects。`cognitiveObject` 已贯穿实际
-输入／Runtime 来源链，原件历史打开与未发送草稿也已接入共享工作区；作者
-GUI 的带对象 compose consumer 仍须实测，只填入文本不能代替其闭环验收。
+输入／Runtime 来源链，原件历史打开与未发送草稿也已接入共享工作区；该
+来源链阶段尚未实测 GUI 带对象 compose，后续见[最新交付与剩余](#最新交付与剩余)。
+只填入文本不能代替其闭环验收。
 安装、开关窗口和 compose 都不自动发送或执行。
 
 ## Platform 生产数据模型
@@ -981,7 +1077,8 @@ GUI 的带对象 compose consumer 仍须实测，只填入文本不能代替其�
 installationId；规范化创建入口，不能两边各生成一个互相冲突的安装 ID。
 新增以下关系，均由 Platform 拥有并走相同 SQLite／PostgreSQL 事务接口。
 下表原有六项已验证于 v11；本人登记关系的 v12 扩展现已通过双后端、
-真实旧库升级与公共入口验收。前端管理目录和原 App 验收仍未完成。
+真实旧库升级与公共入口验收。在该 v12 后端阶段，前端管理和原 App 尚待
+验收；当前不同交付范围见[最新交付与剩余](#最新交付与剩余)。
 
 | 关系 | 身份及字段 | 约束与主要查询 |
 | --- | --- | --- |
@@ -1017,7 +1114,7 @@ view binding 固定当前领域定义和连接；选择另一个数据实例使�
 通过独立的本人 grant 字节 gate；不放宽既有 UiPackageService.read 来
 共享旧私有包。安装新的定义显式核验界面来源和 SHA，不凭引用猜字节。
 
-GUI 安装模型（Host 安装链已验证，客户端未接线）：复用既有 `app_ui_packages` 的安装者、immutable Store
+GUI 安装模型（Host 安装阶段历史，当时客户端未接线）：复用既有 `app_ui_packages` 的安装者、immutable Store
 版本和 byte SHA，不增加字节副本或新表。可信 UiPackageService 先安装并
 读回实际精确版本，再生成只存在于 Host 进程中的 frozen 字节证明；它不
 包含 HTML、不序列化、不对 Client／Agent／iframe 开放。registry 在同 q
@@ -1036,8 +1133,9 @@ Host 安装链、独立授予获权用户的精确字节读取门与窗口 bindi
 当前导航；切换保存方清空导航，关闭窗口不撤销已接受的 Runtime 工作。
 实际字节读取使用只存在于 Host 的短期固定用途能力，读取前后核本人、
 项目、当前许可／连接与精确版本；公开结果不含安装者或私有 Store 引用。
-既有 installedBy-only UI 读取权限不变。实际 Client channel／渲染及原窗口
-仍需接线验收，不能由 Store 测试推定已经交付。
+既有 installedBy-only UI 读取权限不变。该 Store 阶段不证明 Client channel／
+渲染或原窗口验收，不能由 Store 测试推定交付；当前接线范围见
+[最新交付与剩余](#最新交付与剩余)。
 
 ### 本人登记与管理目录
 
@@ -1195,7 +1293,8 @@ Store 实际权限下的 admission／dispatch／原回执恢复和 begin／compl
 实际双后端与独立作者服务测试；共享薄 Service 和严格 DTO 已组合，公共
 Application／Local／HTTP／Remote 入口也已登记并通过真实公共集成；
 renderer bridge 与 Agent 输入／后台事项／infer 的后续证据已在上文分别
-列出，第三方可执行 GUI 与原窗口链路仍未完成，不由本段后端结果推定通过。
+列出；这些独立后端阶段不证明可执行 GUI 或原窗口，当前范围见
+[最新交付与剩余](#最新交付与剩余)，不由本段后端结果推定通过。
 
 Host 的 CognitiveAppGateway 负责固定连接、网络安全、实际 wire 校验和
 回执核验，只通过 Platform typed port 调用上述职责；由共享应用 Host 与

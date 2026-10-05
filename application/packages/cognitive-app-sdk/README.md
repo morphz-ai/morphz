@@ -4,6 +4,14 @@
 TypeScript 声明，并通过本地 npm tarball 安装。`private: true` 防止误发布，
 不妨碍 `npm pack` 或安装打包产物；未来公开发布需另行确认。
 
+完整接入流程见仓库的[第三方接入 quickstart](https://github.com/morphz-ai/morphz/blob/main/application/docs/42-third-party-cognitive-app-contract.md#接入-quickstart)，
+独立作者示例见[认知笔记 Service](https://github.com/morphz-ai/morphz/tree/main/application/examples/cognitive-notes)。
+这些是仓库文档链接，不是包内文件；若远端尚未包含本地阶段提交，以同一
+源码版本的 `application/docs/42-third-party-cognitive-app-contract.md` 为准。
+GUI 可选，作者领域 Service／账户 ACL／原件／事务与 Host 完全分离。
+Agent 无需 GUI，沿真实输入或后台来源调用同一领域网关；Human 明确管理
+安装、数据访问权限和本人连接，SDK 校验不替代这些门。
+
 ## 能力与边界
 
 本包提供认知应用定义、有限 JSON Schema 校验、精确对象引用、领域请求与
@@ -131,7 +139,7 @@ await app.saveState({
 `readObject` 读取精确原版本；`openObject` 请求宿主打开该引用；`compose`
 只准备文字及可选精确引用，不发送；`saveState` 只保存小型导航且带 CAS。
 `commandStatus(commandId)` 请求宿主账本事实；`recoverReceipt(commandId)`
-请求宿主按原命令恢复，不能当成重新执行。全部能力仍由未来宿主真实
+请求宿主按原命令恢复，不能当成重新执行。全部能力由宿主真实
 view owner、版本、许可、项目、连接及操作 gate 决定；SDK 的校验不授权。
 
 `openObject` 可导航离开并销毁调用它的 Document。只有原件已实际发布、
@@ -188,6 +196,14 @@ Document 中打包 HTML 的固定 facade／native port、Window 伪造正控、�
 的实际重写均同步拒绝，并保留原写命令 ID；清理异常不泄漏，重入调用
 也不能超过十六 pending。这是受控业务 Host 的隔离 SDK 验收，
 不是实际 SQL 授权、生产 GUI consumer 或原用户窗口验收。
-Host 精确 UI 字节 gate 与业务 Gateway 已另阶段分层验证；生产 GUI owner
-及其对象打开／输入引用接线仍待验收。本包不包含 Host 网关、安装管理
-或作者 Service 脚手架。
+Host 精确 UI 字节 gate、领域 Gateway 和生产 GUI owner 已另阶段分层验证：
+完整 Web 的独立 packed 作者／公开 SDK／HPA／SQLite＋PostgreSQL 4/4；
+实际 Electron Remote 的 SQLite＋PostgreSQL 与 embedded Local 的 SQLite
+同属当前原生 20/20、零跳过组合，核对象终结导航、原草稿引用、同 Document
+保存和关闭退休。真实 Rust 的普通输入、后台事项与 infer 链另有分层证据，
+不混报为 Browser SDK 测试或付费模型验收。范围与原失败见仓库的
+[最新交付与剩余](https://github.com/morphz-ai/morphz/blob/main/application/docs/42-third-party-cognitive-app-contract.md#最新交付与剩余)。
+这些是隔离自动中心，不是用户原 App；原 App 的安全恢复与窗口验收尚未
+完成，不能宣称整体目标完成。公网 TLS／真实第三方账户、市场／OAuth 和
+公开发布也不由上述测试证明。本包不包含 Host 网关、安装管理或作者
+Service 脚手架，不赋予任意网络或宿主代码执行权限。

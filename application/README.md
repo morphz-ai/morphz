@@ -162,7 +162,9 @@ PostgreSQL 工具创建随机端口、独立临时目录和数据库，结束或
 
 产品统一为 Morphz，应用工程包为 `morphz-application`，源码位于主仓库的 `application/`；Runtime 仍是独立模块。原 MorphzWork 仓库保留为历史与回退副本，不再作为日常开发源。仓库合并不迁移数据库、profile 或配置，也不重新命名历史协议。
 
-新应用包使用 `morphz-app/v1` 和 `morphz-app:*` 消息，新输入使用 `morphz.application.input`：普通输入为 v1，兼容本地文件引用为 v2，目录授权为 v3，定向补充／后续输入为 v4。对象工具为 `host_morphz`，HTTP CSRF 标头为 `X-Morphz-Token`，终端存储键为 `morphz:`。已安装旧包继续使用原协议；旧输入格式定义保持原字节，旧工具名继续接受且沿用同一幂等命令身份。旧登录态与同中心、同身份的草稿可读取，新值优先，原始数据不删除。历史文档、消息、对象 ID、Context/Session 命名空间以及兼容测试中的旧名称有意保留，不代表当前产品仍叫 MorphzWork。
+兼容的 UI-only 应用包使用 `morphz-app/v1` 和 `morphz-app:*` 消息；它们不等同于独立认知应用。第三方认知应用拥有独立领域服务与原件，GUI 可选，使用 `morphz-cognitive-app/v1` 及实验作者 SDK；接入步骤、身份／权限、精确版本与当前验收边界见[第三方认知应用契约](docs/42-third-party-cognitive-app-contract.md#接入-quickstart)和[独立笔记示例](examples/cognitive-notes/README.md)。SDK 尚未发布 npm，也不要求作者将业务并入宿主或使用 UI-only 消息桥。
+
+新输入使用 `morphz.application.input`：普通输入为 v1，兼容本地文件引用为 v2，目录授权为 v3，定向补充／后续输入为 v4。对象工具为 `host_morphz`，HTTP CSRF 标头为 `X-Morphz-Token`，终端存储键为 `morphz:`。已安装旧包继续使用原协议；旧输入格式定义保持原字节，旧工具名继续接受且沿用同一幂等命令身份。旧登录态与同中心、同身份的草稿可读取，新值优先，原始数据不删除。历史文档、消息、对象 ID、Context/Session 命名空间以及兼容测试中的旧名称有意保留，不代表当前产品仍叫 MorphzWork。
 
 已安装的兼容 macOS 开发启动器不会仅因名称更新被改写或重新签名；这避免破坏当前授权，但不代替未来正式发行所需的稳定签名与更新机制。
 

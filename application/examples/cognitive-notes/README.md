@@ -6,6 +6,13 @@
 实际跨 Host/Human/Agent、生产 TLS 和原 App 验收不由此示例测试替代。
 当前实际验证运行时为 Node 25.8.1；声明的最低 Node 版本尚未单独验证。
 
+宿主侧流程见[第三方接入 quickstart](https://github.com/morphz-ai/morphz/blob/main/application/docs/42-third-party-cognitive-app-contract.md#接入-quickstart)，
+SDK 的公开入口与生命周期见[作者 SDK](https://github.com/morphz-ai/morphz/blob/main/application/packages/cognitive-app-sdk/README.md)。
+这些仓库链接不是作者包内文件；若远端尚未包含本地阶段提交，以同一源码
+版本的对应文档为准。此示例只提供独立作者 Service／可选 GUI，不复制宿主
+目录或权限。Human 明确安装精确定义、同意数据访问权限并连接自己的保存方；
+Agent 无需界面，经原输入／后台来源使用相同领域接口，不能安装或自报身份。
+
 先在 SDK 包目录 `npm install && npm pack`，将 tarball 带到独立作者目录，
 再安装 `npm install /absolute/path/morphz-cognitive-app-sdk-0.2.0.tgz`。
 有完整缓存可用 `--offline`；包尚未发布，不能直接假设公网 npm 可安装。
@@ -63,8 +70,15 @@ commandId，提供状态/回执查询，不自动重试或生成新命令。关�
 必要保存步骤；没收到回应不证明导航未发生，不自动重试或重放写命令。
 
 作者包测试证明独立离线安装/构建、原字节绑定及作者 SQLite 双版本兼容。
-受控浏览器机制测试不代替真实 SQL/Service/HPA 的跨宿主 GUI 集成；正式宿主
-接入及实际 Web/Local/Remote/native 验收需另外完成，不能据作者包构建宣称完成。
+受控浏览器机制测试不代替真实 SQL/Service/HPA 的跨宿主 GUI 集成。后续生产
+接入已另验：完整 Web／独立作者／公开 SDK／真实 HPA／SQLite＋PostgreSQL
+4/4；实际 Electron Remote 的 SQLite＋PostgreSQL、embedded Local 的 SQLite
+及资源门组成当前原生 20/20、零跳过。原件终结导航、引用准备未发送草稿、
+原回执恢复、同 Document 保存与关闭退休均有实际证据。真实 Rust input／
+后台事项／infer 另分层验收，不把作者包或受控模型算作原 App／付费模型。
+当前范围与原失败见[最新交付与剩余](https://github.com/morphz-ai/morphz/blob/main/application/docs/42-third-party-cognitive-app-contract.md#最新交付与剩余)。
+用户原 App 的安全恢复和窗口验收尚未完成；没有由这些隔离测试接通用户
+真实第三方账户或验收公网 TLS、应用市场、OAuth、签名发行或公开 npm 发布。
 
 ## 作者服务与账户映射
 
