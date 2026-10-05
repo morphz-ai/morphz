@@ -2,11 +2,20 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { Pin, PinOff } from "lucide-react";
 import type { ApplicationCatalogEntry } from "../../../packages/core/src/applications.js";
 import { ComposerOptions } from "./ComposerOptions.js";
-import { AppIcon, ApplicationLauncherIcon } from "./ApplicationIcon.js";
 import {
-  applicationKey,
-  pinnedApplications,
-} from "./application-dock-model.js";
+  AppIcon,
+  ApplicationImage,
+  ApplicationLauncherIcon,
+} from "./ApplicationIcon.js";
+import { pinnedPresentationApplications } from "./application-dock-model.js";
+import {
+  normalizeApplicationPresentation,
+  presentationKey,
+  presentationTitle,
+  presentationVersion,
+  type ApplicationPresentationEntry,
+  type CognitiveApplicationEntry,
+} from "./application-presentation.js";
 import "./application-dock.css";
 import { useApplicationDockInteraction } from "./use-application-dock.js";
 
@@ -17,14 +26,23 @@ export function ApplicationDock({
   compactWithExchange = false,
   onPinned,
   onLaunch,
+  cognitiveChoice,
   onManage,
 }: {
-  applications: ApplicationCatalogEntry[];
+  applications: readonly (
+    ApplicationCatalogEntry | ApplicationPresentationEntry
+  )[];
   pinned?: string[];
   activeKey?: string;
   compactWithExchange?: boolean;
   onPinned(keys: string[]): void;
   onLaunch(app: ApplicationCatalogEntry): Promise<void>;
+  cognitiveChoice?: {
+    scopeKey: string;
+    selectedKey?: string;
+    disabled?: boolean;
+    onChoose(entry: CognitiveApplicationEntry, scopeKey: string): void;
+  };
   onManage(): void;
 }) {
   const [busy, setBusy] = useState(false),
@@ -33,6 +51,7 @@ export function ApplicationDock({
   const shortcuts = useRef<HTMLDivElement>(null);
   const pins = useRef<HTMLDivElement>(null);
   const launcher = useRef<HTMLButtonElement>(null);
+  const menuScope = useRef<string | undefined>(undefined);
   const [compact, setCompact] = useState(false);
   useLayoutEffect(() => {
     const panel = shortcuts.current?.closest<HTMLElement>(".exchange-panel");
@@ -50,28 +69,34 @@ export function ApplicationDock({
     measure();
     return () => observer.disconnect();
   }, [compactWithExchange]);
-  const fixed = pinnedApplications(applications, pinned);
+  const entries = normalizeApplicationPresentation(applications);
+  const fixed = pinnedPresentationApplications(entries, pinned);
   // A project-local catalog can hide pins belonging to another work scene.
   // Editing one visible shortcut must not remove those saved preferences.
-  const keys = pinned ?? fixed.map(applicationKey);
+  const keys = pinned ?? fixed.map(presentationKey);
   const interaction = useApplicationDockInteraction({
     keys,
-    available: applications.map(applicationKey),
+    available: entries.map(presentationKey),
     busy,
     compact,
     shortcuts,
     onPinned,
   });
   const insertionKeys = fixed
-    .map(applicationKey)
+    .map(presentationKey)
     .filter((key) => key !== interaction.preview?.key);
-  async function launch(app: ApplicationCatalogEntry) {
+  async function launch(app: ApplicationPresentationEntry, scopeKey?: string) {
+    if (app.kind === "cognitive") {
+      if (!cognitiveChoice?.disabled && scopeKey !== undefined)
+        cognitiveChoice?.onChoose(app, scopeKey);
+      return;
+    }
     if (launching.current) return;
     launching.current = true;
     setBusy(true);
     setError("");
     try {
-      await onLaunch(app);
+      await onLaunch(app.application);
     } catch (e) {
       setError(e instanceof Error ? e.message : "应用暂时无法打开。");
     } finally {
@@ -98,28 +123,52 @@ export function ApplicationDock({
           {fixed.map((app) => (
             <button
               className="application-dock-shortcut"
-              key={applicationKey(app)}
-              aria-label={`打开${app.title}`}
-              title={app.title}
-              disabled={busy}
-              aria-pressed={activeKey === applicationKey(app)}
+              key={presentationKey(app)}
+              aria-label={
+                app.kind === "cognitive"
+                  ? `用于本次输入：${presentationTitle(app)} ${presentationVersion(app)}`
+                  : `打开${presentationTitle(app)}`
+              }
+              title={
+                app.kind === "cognitive"
+                  ? `${presentationTitle(app)} ${presentationVersion(app)} · 用于本次输入`
+                  : presentationTitle(app)
+              }
+              disabled={
+                busy ||
+                (app.kind === "cognitive" &&
+                  (!cognitiveChoice || cognitiveChoice.disabled))
+              }
+              aria-pressed={
+                app.kind === "cognitive"
+                  ? cognitiveChoice?.selectedKey === app.key
+                  : activeKey === presentationKey(app)
+              }
               aria-description="拖动调整顺序，拖出仅移除快捷入口；也可按 Alt 加左右方向键排序，Delete 取消固定"
               aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight Delete"
-              data-dock-key={applicationKey(app)}
+              data-dock-key={presentationKey(app)}
               data-dock-source="dock"
               data-drag-source={
-                interaction.preview?.key === applicationKey(app) || undefined
+                interaction.preview?.key === presentationKey(app) || undefined
               }
               data-drop-before={
                 interaction.preview?.index ===
-                  insertionKeys.indexOf(applicationKey(app)) || undefined
+                  insertionKeys.indexOf(presentationKey(app)) || undefined
               }
               onKeyDown={(event) =>
-                interaction.keyboard(event, applicationKey(app))
+                interaction.keyboard(event, presentationKey(app))
               }
-              onClick={() => void launch(app)}
+              onClick={() => void launch(app, cognitiveChoice?.scopeKey)}
             >
-              <AppIcon app={app} />
+              {app.kind === "builtin" ? (
+                <AppIcon app={app.application} />
+              ) : (
+                <ApplicationImage
+                  app={
+                    app.kind === "cognitive" ? app.metadata : app.application
+                  }
+                />
+              )}
             </button>
           ))}
         </div>
@@ -129,13 +178,18 @@ export function ApplicationDock({
           menuLabel="选择应用"
           triggerIcon={<ApplicationLauncherIcon />}
           triggerClassName="application-dock-shortcut"
-          menuClassName={`application-dock-menu application-dock-menu-${Math.min(4, Math.max(1, applications.length))}`}
+          menuClassName={`application-dock-menu application-dock-menu-${Math.min(4, Math.max(1, entries.length))}`}
           // Opening the Launcher does not select the first app or reveal its
           // secondary pin action. Tab enters the existing launch/pin sequence.
           initialFocus="panel"
           align="center"
           horizontalAnchorRef={shortcuts}
-          onOpenChange={interaction.setMenuOpen}
+          onOpenChange={(open) => {
+            if (!open) menuScope.current = undefined;
+            else if (menuScope.current === undefined)
+              menuScope.current = cognitiveChoice?.scopeKey;
+            interaction.setMenuOpen(open);
+          }}
           options={[]}
           content={(close) => (
             <>
@@ -144,8 +198,8 @@ export function ApplicationDock({
                 role="list"
                 aria-label="已授权应用"
               >
-                {applications.map((app) => {
-                  const key = applicationKey(app),
+                {entries.map((app) => {
+                  const key = presentationKey(app),
                     selected = keys.includes(key);
                   return (
                     <div
@@ -155,9 +209,21 @@ export function ApplicationDock({
                     >
                       <button
                         className="application-dock-launch"
-                        aria-label={`打开${app.title}`}
-                        title={app.title}
-                        disabled={busy}
+                        aria-label={
+                          app.kind === "cognitive"
+                            ? `用于本次输入：${presentationTitle(app)} ${presentationVersion(app)}`
+                            : `打开${presentationTitle(app)}`
+                        }
+                        title={
+                          app.kind === "cognitive"
+                            ? `${presentationTitle(app)} ${presentationVersion(app)} · 用于本次输入`
+                            : presentationTitle(app)
+                        }
+                        disabled={
+                          busy ||
+                          (app.kind === "cognitive" &&
+                            (!cognitiveChoice || cognitiveChoice.disabled))
+                        }
                         data-dock-key={key}
                         data-dock-source="launcher"
                         data-drag-source={
@@ -166,20 +232,37 @@ export function ApplicationDock({
                         aria-description="拖到 Dock 固定；也可使用旁边的图钉"
                         onKeyDown={(event) => interaction.keyboard(event, key)}
                         onClick={() => {
+                          const scope = menuScope.current;
                           close();
-                          void launch(app);
+                          void launch(app, scope);
                         }}
                       >
                         <span className="application-dock-app-icon">
-                          <AppIcon app={app} presentation="tile" />
+                          {app.kind === "builtin" ? (
+                            <AppIcon
+                              app={app.application}
+                              presentation="tile"
+                            />
+                          ) : (
+                            <ApplicationImage
+                              app={
+                                app.kind === "cognitive"
+                                  ? app.metadata
+                                  : app.application
+                              }
+                            />
+                          )}
                         </span>
                         <span className="application-dock-app-name">
-                          {app.title}
+                          {presentationTitle(app)}
+                          {app.kind === "cognitive"
+                            ? ` ${presentationVersion(app)}`
+                            : ""}
                         </span>
                       </button>
                       <button
                         className="icon-button application-dock-pin"
-                        aria-label={`${selected ? "从 Dock 移除" : "固定到 Dock"}：${app.title}`}
+                        aria-label={`${selected ? "从 Dock 移除" : "固定到 Dock"}：${presentationTitle(app)}`}
                         title={selected ? "从 Dock 移除" : "固定到 Dock"}
                         aria-pressed={selected}
                         onClick={() =>

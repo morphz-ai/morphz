@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-05 共同应用目录与显式输入选择
+
+工作台、Launcher、Dock 与输入关联消费同一判别投影及连接选择内容。
+内置、旧 UI-only 与认知应用保持各自真实身份；认知版本不伪造旧 manifest，
+多个连接不选首条。选择只更新原未发送草稿，既不打开 GUI、读取作者正文，
+也不授权、发送或启动工作。未开放 GUI 与无 GUI 分别明确呈现。
+
+新选择在 latest-state writer 内再核中心／Human／CSRF、持久窗口 owner、
+工作面及实际目录。V1 原件错配拒绝此前会经旧 helper 新增空引用 bucket，
+现只在新选择分支提前拒绝并保留完整原存储，不改变旧 composer 行为。
+旧固定键、不可用隐藏键和明确空 Dock 保持；恢复的矛盾旧实例不借旧沙箱
+执行，不删除原标签、偏好或草稿。当前 SQL 已过滤认知包，此项是防御
+测试，不是宣称发现了当前 SQL 可达漏洞。
+
+Root 正式五文件 56/56、required PostgreSQL 入口、零失败／取消／跳过，
+专项格式、全工程类型及生产构建通过；日志
+`/tmp/morphz-directory-choice-ROOT-FINAL-oct05.log`、
+`/tmp/morphz-directory-choice-ROOT-FORMAT-oct05.log` 和
+`/tmp/morphz-directory-document-ROOT-BUILD-oct05.log`。其中完整生产 App／
+CSS／StrictMode 的 29 项使用受控 logical transport，不冒称 SQL、作者
+服务、native IPC 或原用户窗口。同阶段另跑未修改旧 Dock Playwright
+27/27，实际 Chromium 下验证拖拽、移除、空偏好、原几何与放大动效；
+日志 `/tmp/morphz-directory-legacy-dock-CHROMIUM-oct05.log`。
+
+四场景最终截图均等待入口动画完成并逐张审查：宽屏浅／深色、窄屏和
+CSS 200%。新列表 header 与公共 dialog 样式冲突的 RED 已保留，修复
+只限新组件；原材料与布局不改。截图为实际生产组件加受控目录，不将
+测试图标或 CSS zoom 冒称真实作者品牌／原生缩放验收。原始失败、无效
+负向选择器及 fixture 常量自证均先纠正，保留真实 DOM 正控与完整草稿
+断言。作者 GUI、安全资源、跨宿主和原 App 的最终验收仍在活动目标内。
+
 ## 2026-10-05 作者界面的文档隔离原型
 
 独立原型先执行固定 Host 前缀，私藏原生端口，再加载原作者字节；SDK

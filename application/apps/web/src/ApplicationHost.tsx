@@ -36,8 +36,21 @@ import {
 import type { WorkspaceClient } from "./client.js";
 import { useModal } from "./useModal.js";
 import { useTextQuotes } from "./TextQuotes.js";
-import { authorizedApplications } from "./application-dock-model.js";
-import { AppIcon, ApplicationLauncherIcon } from "./ApplicationIcon.js";
+import {
+  cognitiveAvailabilityReason,
+  cognitiveApplicationForPackage,
+  presentationKey,
+  presentationTitle,
+  presentationVersion,
+  projectApplicationPresentation,
+  type ApplicationPresentationDirectory,
+  type CognitiveApplicationEntry,
+} from "./application-presentation.js";
+import {
+  AppIcon,
+  ApplicationImage,
+  ApplicationLauncherIcon,
+} from "./ApplicationIcon.js";
 import { CognitiveAppManager } from "./features/applications/CognitiveAppManager.js";
 import type { ApplicationNavigationActions } from "./host/use-workspace-navigation.js";
 
@@ -75,6 +88,9 @@ export function ApplicationHost({
   projectControls,
   renderBuiltin,
   onOpenRecent,
+  applicationDirectory,
+  cognitiveChoiceScopeKey,
+  onChooseCognitiveApplication,
 }: {
   client: WorkspaceClient;
   workspaceId: string;
@@ -92,6 +108,12 @@ export function ApplicationHost({
   projectControls?: ReactNode;
   renderBuiltin: BuiltinApplicationRenderer;
   onOpenRecent: (entry: CatalogContentEntry) => void;
+  applicationDirectory?: ApplicationPresentationDirectory;
+  cognitiveChoiceScopeKey?: string;
+  onChooseCognitiveApplication?(
+    entry: CognitiveApplicationEntry,
+    scopeKey: string,
+  ): void;
 }) {
   const state = client.boot!.workspace;
   const space = state.projects.find((p) => p.id === workspaceId)!;
@@ -106,10 +128,17 @@ export function ApplicationHost({
     catalogContentEntries(state, client.contentCatalog),
     spaceKind(space) === "project" ? workspaceId : null,
   );
-  const applications = authorizedApplications(
-    state,
-    client.boot!.principalId,
-    workspaceId,
+  const applications = (
+    applicationDirectory ??
+    projectApplicationPresentation({
+      workspace: state,
+      principalId: client.boot!.principalId,
+      workspaceId,
+      cognitiveCatalog: client.cognitiveAppCatalog,
+    })
+  ).entries;
+  const cognitiveVersions = applications.flatMap((entry) =>
+    entry.kind === "cognitive" ? [entry.metadata] : [],
   );
   const [busy, setBusy] = useState(false),
     [installing, setInstalling] = useState<ApplicationManifest | null>(null);
@@ -351,19 +380,62 @@ export function ApplicationHost({
               aria-busy={busy}
             >
               {applications.map((app) => (
-                <div role="listitem" key={`${app.id}@${app.version}`}>
+                <div role="listitem" key={presentationKey(app)}>
                   <button
                     type="button"
                     className="application-tile"
-                    aria-label={`${app.title} ${app.version}`}
-                    disabled={busy}
-                    onClick={() => void launch(app)}
+                    aria-label={
+                      app.kind === "cognitive"
+                        ? `用于本次输入：${presentationTitle(app)} ${presentationVersion(app)}`
+                        : `${presentationTitle(app)} ${presentationVersion(app)}`
+                    }
+                    title={
+                      app.kind === "cognitive"
+                        ? cognitiveAvailabilityReason(app) ||
+                          "用于本次输入，不打开界面或开始工作"
+                        : undefined
+                    }
+                    disabled={
+                      busy ||
+                      (app.kind === "cognitive" &&
+                        (app.inputAvailability !== "selectable" ||
+                          !onChooseCognitiveApplication ||
+                          cognitiveChoiceScopeKey === undefined))
+                    }
+                    onClick={() => {
+                      if (app.kind === "cognitive") {
+                        if (cognitiveChoiceScopeKey !== undefined)
+                          onChooseCognitiveApplication?.(
+                            app,
+                            cognitiveChoiceScopeKey,
+                          );
+                      } else void launch(app.application);
+                    }}
                   >
                     <span className="application-icon">
-                      <AppIcon app={app} presentation="tile" />
+                      {app.kind === "builtin" ? (
+                        <AppIcon app={app.application} presentation="tile" />
+                      ) : (
+                        <ApplicationImage
+                          app={
+                            app.kind === "cognitive"
+                              ? app.metadata
+                              : app.application
+                          }
+                        />
+                      )}
                     </span>
-                    <strong>{app.title}</strong>
-                    <small>{applicationDescription(app)}</small>
+                    <strong>
+                      {presentationTitle(app)}
+                      {app.kind === "cognitive"
+                        ? ` ${presentationVersion(app)}`
+                        : ""}
+                    </strong>
+                    <small>
+                      {app.kind === "cognitive"
+                        ? cognitiveAvailabilityReason(app) || "用于本次输入"
+                        : applicationDescription(app.application)}
+                    </small>
                   </button>
                 </div>
               ))}
@@ -377,6 +449,13 @@ export function ApplicationHost({
           instance.applicationId,
           instance.applicationVersion,
         );
+        // The current SQL catalog already excludes cognitive packages from
+        // legacy windows. Also fail closed for a stale/contradictory projection
+        // without deleting or closing its persisted instance or local draft.
+        const cognitive = cognitiveApplicationForPackage(
+          app,
+          cognitiveVersions,
+        );
         return (
           <div
             className="application-pane"
@@ -385,7 +464,22 @@ export function ApplicationHost({
             hidden={active?.id !== instance.id}
             key={instance.id}
           >
-            {app.ui.type === "builtin" ? (
+            {cognitive ? (
+              <section className="workspace-launcher">
+                <p role="status">
+                  {cognitive.ui === null
+                    ? "此应用没有独立界面，原应用现场和草稿已保留。"
+                    : "应用界面尚未开放，原应用现场和草稿已保留。"}
+                </p>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => onActivate(null)}
+                >
+                  {spaceKind(space) === "desk" ? "返回工作台" : "返回项目"}
+                </button>
+              </section>
+            ) : app.ui.type === "builtin" ? (
               renderBuiltin({
                 view: app.ui.view,
                 instance,

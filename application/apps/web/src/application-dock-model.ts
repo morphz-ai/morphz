@@ -5,6 +5,7 @@ import {
   type ApplicationCatalogEntry,
 } from "../../../packages/core/src/applications.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
+import type { ApplicationPresentationEntry } from "./application-presentation.js";
 
 export const applicationKey = (
   app: Pick<ApplicationCatalogEntry, "id" | "version">,
@@ -49,4 +50,21 @@ export function pinnedApplications(
   return [...new Set(pinned)].flatMap((key) =>
     catalog.has(key) ? [catalog.get(key)!] : [],
   );
+}
+
+/** The existing full preference array is reused; exact cognitive keys do not
+ * reinterpret old pins, hidden keys or the explicit empty-list preference. */
+export function pinnedPresentationApplications(
+  apps: readonly ApplicationPresentationEntry[],
+  keys?: readonly string[],
+) {
+  const pinned = keys ?? [
+    applicationKey(scriptStudioApplication),
+    applicationKey(browserApplication),
+  ];
+  const catalog = new Map(apps.map((entry) => [entry.key, entry]));
+  return [...new Set(pinned)].flatMap((key) => {
+    const entry = catalog.get(key);
+    return entry ? [entry] : [];
+  });
 }

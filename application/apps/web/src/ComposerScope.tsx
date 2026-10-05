@@ -10,6 +10,7 @@ export function ComposerScope({
   children,
   expandable = false,
   showPlainScope = true,
+  onOpenChange,
 }: {
   label: string;
   description?: string;
@@ -17,6 +18,7 @@ export function ComposerScope({
   expandable?: boolean;
   /** An implicit personal desk is routing, not a visible association. */
   showPlainScope?: boolean;
+  onOpenChange?(open: boolean): void;
 }) {
   if (!expandable && !showPlainScope) return null;
   if (!expandable)
@@ -47,6 +49,7 @@ export function ComposerScope({
       options={[]}
       header={<h3>本次输入关联</h3>}
       persistentContent={children || <p>{description || label}</p>}
+      onOpenChange={onOpenChange}
     />
   );
 }

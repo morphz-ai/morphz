@@ -1,0 +1,128 @@
+.cognitive-application-picker {
+  --ui-dialog-width: 560px;
+  display: flex;
+  flex-direction: column;
+  max-height: min(680px, var(--modal-max-height, calc(100dvh - 32px)));
+  overflow: hidden;
+}
+.cognitive-application-picker:not([open]) {
+  display: none;
+}
+.cognitive-application-picker h2:focus {
+  outline: none;
+}
+.cognitive-application-picker-body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.cognitive-application-choices {
+  color: var(--ink);
+}
+.cognitive-application-choices :is(p, h3, ul) {
+  margin: 0;
+}
+.cognitive-application-choices-help,
+.cognitive-application-choices-unavailable,
+.cognitive-application-choices header p {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.cognitive-application-choices section {
+  margin-top: 16px;
+}
+.cognitive-application-choices section > header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  margin: 0;
+}
+.cognitive-application-choices header > div {
+  min-width: 0;
+}
+.cognitive-application-choices h3 {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.cognitive-application-choices h3 small {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+.cognitive-application-choices-image {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+}
+.cognitive-application-choices-image :is(img, svg) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.cognitive-application-choices ul {
+  list-style: none;
+  padding: 0;
+}
+.cognitive-application-choices li {
+  margin-top: 6px;
+}
+.cognitive-application-choices li button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+.cognitive-application-choices li button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.cognitive-application-choices li button[aria-pressed="true"] {
+  background: var(--selection);
+}
+.cognitive-application-choices li button > span {
+  flex: 1;
+  min-width: 0;
+}
+.cognitive-application-choices li :is(strong, small) {
+  display: block;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.cognitive-application-choices li strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.cognitive-application-choices li small {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.cognitive-application-choices li svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.cognitive-application-scope {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.cognitive-application-scope strong {
+  font-size: 12px;
+}
+.cognitive-application-scope small {
+  overflow-wrap: anywhere;
+}
+.cognitive-application-scope-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

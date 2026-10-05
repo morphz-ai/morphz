@@ -47,6 +47,10 @@ import { ProfileMenu } from "./ProfileMenu.js";
 import { useProfile } from "./useProfile.js";
 import { AppearanceMenu } from "./AppearanceControls.js";
 import { inputDispatchMode } from "./interface-preferences.js";
+import {
+  draftOwner,
+  requirePersistentDraftOwner,
+} from "./local-preferences.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
 import { WorkspaceNotice } from "./WorkspaceNotice.js";
@@ -63,7 +67,19 @@ import { subjectLogoState } from "./subject-sidebar-model.js";
 import { SubjectLogo } from "./SubjectLogo.js";
 import { ApplicationDock } from "./ApplicationDock.js";
 import { WorkspaceTopbar } from "./shell/WorkspaceTopbar.js";
-import { authorizedApplications } from "./application-dock-model.js";
+import {
+  cognitiveApplicationTargets,
+  projectApplicationPresentation,
+  type CognitiveApplicationEntry,
+} from "./application-presentation.js";
+import { CognitiveApplicationPicker } from "./features/applications/CognitiveApplicationChoices.js";
+import { chooseCognitiveApplication } from "./host/cognitive-application-choice.js";
+import {
+  guardCognitiveAppApplicationCommand,
+  parseCognitiveAppApplicationTarget,
+  sameCognitiveAppApplicationTarget,
+  type CognitiveAppApplicationTarget,
+} from "../../../packages/core/src/cognitive-app-application-target.js";
 import "./execution.css";
 import { ProjectConversations } from "./ProjectConversations.js";
 import {
@@ -596,6 +612,51 @@ function WorkspaceApp({
     contextKey,
     dialogueCanvas,
   } = workSurface;
+  const applicationDirectory =
+    state && project
+      ? projectApplicationPresentation({
+          workspace: state,
+          principalId: client.boot!.principalId,
+          workspaceId: project.id,
+          cognitiveCatalog: client.cognitiveAppCatalog,
+        })
+      : { entries: [], quickEntries: [] };
+  const cognitiveApplications = applicationDirectory.entries.filter(
+    (entry) => entry.kind === "cognitive",
+  );
+  const cognitiveChoiceScopeKey = JSON.stringify([
+    client.boot!.centerId,
+    client.boot!.principalId,
+    client.boot!.csrfToken,
+    draftOwner,
+    contextKey,
+  ]);
+  const [cognitiveChoice, setCognitiveChoice] = useState<{
+    scopeKey: string;
+    contextKey: string;
+    entryKey?: string;
+  } | null>(null);
+  const cognitiveChoiceOwner = useRef({
+    scopeKey: cognitiveChoiceScopeKey,
+    contextKey,
+    project,
+    artifact,
+    cognitiveSurface,
+    directory: applicationDirectory,
+  });
+  cognitiveChoiceOwner.current = {
+    scopeKey: cognitiveChoiceScopeKey,
+    contextKey,
+    project,
+    artifact,
+    cognitiveSurface,
+    directory: applicationDirectory,
+  };
+  const scopeMenuOrigin = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (cognitiveChoice && cognitiveChoice.scopeKey !== cognitiveChoiceScopeKey)
+      setCognitiveChoice(null);
+  }, [cognitiveChoice, cognitiveChoiceScopeKey]);
   const [readingSurface, setReadingSurface] = useState<ReadingSurface | null>(
     null,
   );
@@ -670,6 +731,7 @@ function WorkspaceApp({
       settingsSection !== null ||
       !!creating ||
       !!executions ||
+      !!cognitiveChoice ||
       nativeExportDialog ||
       directoryPickerScope === directoryScope ||
       !!uploadingDrafts[contextKey],
@@ -963,6 +1025,112 @@ function WorkspaceApp({
     writeDrafts((previous) =>
       updateComposerDraft(previous, key, emptyDraft, update, initial),
     );
+  }
+  function requestCognitiveApplicationChoice(
+    entry?: CognitiveApplicationEntry,
+    expectedScopeKey = cognitiveChoiceScopeKey,
+  ) {
+    if (
+      !currentCognitiveChoiceWindow() ||
+      !origin.isActive() ||
+      !host.currentProjection() ||
+      expectedScopeKey !== cognitiveChoiceOwner.current.scopeKey ||
+      currentContext.current !== contextKey
+    ) {
+      setNotice("输入工作范围已有变化，原草稿已保留。");
+      return;
+    }
+    setCognitiveChoice({
+      scopeKey: expectedScopeKey,
+      contextKey,
+      ...(entry ? { entryKey: entry.key } : {}),
+    });
+  }
+  function chooseInputApplication(
+    target: CognitiveAppApplicationTarget | null,
+    expectedScopeKey: string,
+    expectedContextKey: string,
+  ) {
+    let selected: CognitiveAppApplicationTarget | null;
+    try {
+      selected =
+        target === null ? null : parseCognitiveAppApplicationTarget(target);
+    } catch {
+      setNotice("应用目标无效，原草稿已保留。");
+      return;
+    }
+    const current = cognitiveChoiceOwner.current;
+    if (
+      !currentCognitiveChoiceWindow() ||
+      !origin.isActive() ||
+      !host.currentProjection() ||
+      current.scopeKey !== expectedScopeKey ||
+      currentContext.current !== expectedContextKey
+    ) {
+      setNotice("输入工作范围已有变化，原草稿已保留。");
+      return;
+    }
+    writeDrafts((previous) => {
+      const live = cognitiveChoiceOwner.current;
+      if (
+        !currentCognitiveChoiceWindow() ||
+        !origin.isActive() ||
+        !host.currentProjection() ||
+        live.scopeKey !== expectedScopeKey ||
+        currentContext.current !== expectedContextKey ||
+        !live.project
+      )
+        return previous;
+      if (
+        selected &&
+        !live.directory.quickEntries.some(
+          (entry) =>
+            entry.kind === "cognitive" &&
+            cognitiveApplicationTargets(entry).some((candidate) =>
+              sameCognitiveAppApplicationTarget(candidate, selected),
+            ),
+        )
+      ) {
+        setNotice("应用或数据连接当前不可用，原草稿已保留。");
+        return previous;
+      }
+      // Prepare the same latest surface/quote carrier as the original composer
+      // helper, but reject before invoking it. Its accepted legacy behavior
+      // creates the quote bucket even when a surface callback is a no-op.
+      const quotesKey = expectedContextKey.split(":")[0] + ":quotes";
+      const latest = {
+        ...(previous[expectedContextKey] ?? emptyDraft),
+        textQuotes: previous[quotesKey]?.textQuotes ?? [],
+      };
+      const result = chooseCognitiveApplication(latest, selected, {
+        projectId: live.project.id,
+        expectedContextKey,
+        currentContextKey: currentContext.current,
+        artifactId: live.artifact?.id ?? null,
+        cognitiveSurface: live.cognitiveSurface ?? null,
+      });
+      if (!result.ok) {
+        setNotice(result.error);
+        return previous;
+      }
+      return updateComposerDraft(
+        previous,
+        expectedContextKey,
+        emptyDraft,
+        () => result.draft,
+      );
+    });
+    setCognitiveChoice(null);
+  }
+  /** Choosing a new input target uses this same persisted draft owner. Only
+   * these new mutations fail closed; existing no-target input behavior stays
+   * with its original owner and lenient presentation preferences. */
+  function currentCognitiveChoiceWindow() {
+    try {
+      return requirePersistentDraftOwner() === draftOwner;
+    } catch {
+      return false;
+    }
   }
   function open(id: string, revision?: number, page?: number) {
     if (!origin.isActive()) return;
@@ -1297,6 +1465,7 @@ function WorkspaceApp({
   // A personal desk remains the real input owner, but is not an explicit
   // project association. Named conversations already belong to a project.
   const showPlainComposerScope = !!(
+    draft.cognitiveApplication ||
     cognitive.requested ||
     draft.continuation ||
     artifact ||
@@ -1315,6 +1484,50 @@ function WorkspaceApp({
       : spaceKind(project) === "project"
         ? project.title
         : "无项目");
+  let cognitiveInputTarget: CognitiveAppApplicationTarget | undefined;
+  try {
+    guardCognitiveAppApplicationCommand({ operation: draft });
+    if (draft.cognitiveApplication !== undefined)
+      cognitiveInputTarget = parseCognitiveAppApplicationTarget(
+        draft.cognitiveApplication,
+      );
+  } catch {
+    /* Invalid restored facts stay in the original draft; no fallback selection. */
+  }
+  const cognitiveInputEntry =
+    cognitiveInputTarget &&
+    cognitiveApplications.find(
+      (entry) =>
+        entry.metadata.appId === cognitiveInputTarget.authority.appId &&
+        entry.metadata.version === cognitiveInputTarget.authority.version &&
+        entry.metadata.definitionHash ===
+          cognitiveInputTarget.authority.definitionHash,
+    );
+  const cognitiveInputLabel = cognitiveInputTarget
+    ? cognitiveInputEntry
+      ? `${cognitiveInputEntry.metadata.title} · ${cognitiveInputEntry.metadata.version}`
+      : "应用目标"
+    : undefined;
+  const cognitiveInputUnavailable =
+    cognitiveInputTarget &&
+    (!cognitiveInputEntry ||
+      !cognitiveApplicationTargets(cognitiveInputEntry).some((target) =>
+        sameCognitiveAppApplicationTarget(target, cognitiveInputTarget),
+      ));
+  const cognitiveChoiceBlocked =
+    artifact ||
+    draft.continuation ||
+    draft.pendingSupplement ||
+    draft.continuationFailure ||
+    draft.annotation ||
+    draft.taskResult ||
+    draft.reading ||
+    draft.scriptGeneration ||
+    draft.selection ||
+    draft.revision != null ||
+    draft.page !== undefined
+      ? "原输入中已有来源或专用请求，请先处理原请求；原草稿已保留。"
+      : undefined;
   const rememberedInspector = inspectorSelections.current.get(contextKey);
   const subjectInspector = createSubjectInspectorCommands({
     activity: subjectActivity,
@@ -1891,6 +2104,11 @@ function WorkspaceApp({
                   onCompose={applicationCompose}
                   renderBuiltin={builtinApplications.renderBuiltin}
                   onOpenRecent={builtinApplications.openRecentContent}
+                  applicationDirectory={applicationDirectory}
+                  cognitiveChoiceScopeKey={cognitiveChoiceScopeKey}
+                  onChooseCognitiveApplication={
+                    requestCognitiveApplicationChoice
+                  }
                 >
                   {cognitive.requested ? (
                     <CognitiveOriginalView
@@ -2162,11 +2380,12 @@ function WorkspaceApp({
                       >
                         <ApplicationDock
                           compactWithExchange={!dialogueCanvas && inputVisible}
-                          applications={authorizedApplications(
-                            state,
-                            client.boot!.principalId,
-                            project.id,
-                          )}
+                          applications={applicationDirectory.quickEntries}
+                          cognitiveChoice={{
+                            scopeKey: cognitiveChoiceScopeKey,
+                            selectedKey: cognitiveInputEntry?.key,
+                            onChoose: requestCognitiveApplicationChoice,
+                          }}
                           pinned={prefs.dockApplications}
                           activeKey={
                             activeInstance
@@ -2467,6 +2686,9 @@ function WorkspaceApp({
                             showPlainScope={showPlainComposerScope}
                             expandable={
                               !!(
+                                cognitiveInputTarget ||
+                                (showPlainComposerScope &&
+                                  cognitiveApplications.length > 0) ||
                                 draft.scriptGeneration ||
                                 (!draft.continuation &&
                                   (draft.taskResult ||
@@ -2479,14 +2701,85 @@ function WorkspaceApp({
                                 ? "补充原工作"
                                 : draft.taskResult
                                   ? "提交事项结果"
-                                  : composerScopeTitle
+                                  : (cognitiveInputLabel ?? composerScopeTitle)
                             }
                             description={
-                              composerScopeTitle +
+                              (cognitiveInputLabel ?? composerScopeTitle) +
                               (draft.revision ? " · v" + draft.revision : "")
                             }
+                            onOpenChange={(open) => {
+                              if (!open) scopeMenuOrigin.current = undefined;
+                              else if (scopeMenuOrigin.current === undefined)
+                                scopeMenuOrigin.current =
+                                  cognitiveChoiceScopeKey;
+                            }}
                           >
                             <div className="composer-meta">
+                              {(cognitiveInputTarget ||
+                                cognitiveApplications.length > 0) && (
+                                <div className="cognitive-application-scope">
+                                  <strong>本次输入使用的应用</strong>
+                                  {cognitiveInputTarget && (
+                                    <>
+                                      <small>{cognitiveInputLabel}</small>
+                                      <small>
+                                        {
+                                          cognitiveInputTarget.authority
+                                            .serviceId
+                                        }{" "}
+                                        ·{" "}
+                                        {
+                                          cognitiveInputTarget.authority
+                                            .dataAuthorityId
+                                        }{" "}
+                                        · 数据连接{" "}
+                                        {cognitiveInputTarget.connectionId}
+                                      </small>
+                                      {cognitiveInputUnavailable && (
+                                        <small role="status">
+                                          应用或数据连接当前不可用，目标和原草稿仍保留。
+                                        </small>
+                                      )}
+                                    </>
+                                  )}
+                                  <div className="cognitive-application-scope-actions">
+                                    <button
+                                      type="button"
+                                      className="text-button"
+                                      disabled={!!cognitiveChoiceBlocked}
+                                      onClick={() =>
+                                        requestCognitiveApplicationChoice(
+                                          undefined,
+                                          scopeMenuOrigin.current ?? "",
+                                        )
+                                      }
+                                    >
+                                      {cognitiveInputTarget
+                                        ? "更改本次输入应用"
+                                        : "选择本次输入应用"}
+                                    </button>
+                                    {cognitiveInputTarget && (
+                                      <button
+                                        type="button"
+                                        className="text-button"
+                                        disabled={!!cognitiveChoiceBlocked}
+                                        onClick={() =>
+                                          chooseInputApplication(
+                                            null,
+                                            scopeMenuOrigin.current ?? "",
+                                            contextKey,
+                                          )
+                                        }
+                                      >
+                                        移除本次输入应用
+                                      </button>
+                                    )}
+                                  </div>
+                                  {cognitiveChoiceBlocked && (
+                                    <small>{cognitiveChoiceBlocked}</small>
+                                  )}
+                                </div>
+                              )}
                               {draft.scriptGeneration && (
                                 <span
                                   className="composer-intent"
@@ -2968,6 +3261,26 @@ function WorkspaceApp({
           onClose={() => setConnectionOpen(false)}
         />
       )}
+      {cognitiveChoice &&
+        cognitiveChoice.scopeKey === cognitiveChoiceScopeKey && (
+          <CognitiveApplicationPicker
+            entries={cognitiveApplications.filter(
+              (entry) =>
+                !cognitiveChoice.entryKey ||
+                entry.key === cognitiveChoice.entryKey,
+            )}
+            current={cognitiveInputTarget}
+            disabledReason={cognitiveChoiceBlocked}
+            onChoose={(target) =>
+              chooseInputApplication(
+                target,
+                cognitiveChoice.scopeKey,
+                cognitiveChoice.contextKey,
+              )
+            }
+            onClose={() => setCognitiveChoice(null)}
+          />
+        )}
       {settingsSection !== null && (
         <SettingsDialog
           client={client}
