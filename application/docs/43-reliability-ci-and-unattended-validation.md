@@ -35,15 +35,27 @@ CI 固定 Node 24.13.0；未推送前不声称托管 CI 已通过。
 | 来源 | 证据与结论 | 处理状态 |
 | --- | --- | --- |
 | Application `37370373780` IPC | 持久 `runtime/response_protocol_error`：测试最终回复漏必填标题和结果标注；物理对象已成功写入 | 修测试 Provider，不关闭 Runtime 协议检查；当前源 IPC 已通过 |
-| CI `37372641618` Check/Lint | Format check 指出 12 个 Rust 文件；Clippy 尚未执行 | 机械格式修正及原检查复验 |
-| 同 run Test/Release | `postgres_multi_process_probe.rs` 的 `NewThread` 漏新增字段，E0063；尚未运行测试 | 显式保持该无模型探针的 Off 协议，并验证真实 PostgreSQL 探针 |
+| CI `37372641618` Check/Lint | Format check 指出 12 个 Rust 文件；Clippy 尚未执行 | 格式、语言及 379 项日志检查已通过；后续又发现核心错误诊断语言违规，原异常协议回归保持通过；完整 Clippy 另核 |
+| 同 run Test/Release | `postgres_multi_process_probe.rs` 的 `NewThread` 漏新增字段，E0063；尚未运行测试 | 保持无模型探针的 Off 协议，修正精确准入事件断言；真实临时 PostgreSQL 多进程、single-flight、崩溃恢复及 schema 清理通过 |
 | 同 run Native macOS/Linux | `runner_id=0`、无 steps；GitHub 原注释为 hosted Runner 多次未接单 | 托管容量失败，不计 native 通过，不猜为本地环境缺失 |
 | Application storage PostgreSQL | 服务准备和 build 成功，测试步骤被取消 | 取消不计成功，也不推测所有测试失败；保留原记录 |
-| 真实 message smoke 第二条输入 | typed IO 默认 interrupt 的新 Thread 重复插入，准入回滚 503 | 正在最小修复，SQLite/PostgreSQL 同契约回归，不改成 parallel 绕过 |
-| 真实 trusted-gateway identity smoke | 来源读取错误使用 operator Context 端点及 service Principal，401 | 正在修正为原发起 Human 的只读 Session 证据，权限不升级 |
+| 同 run Dashboard/Website | `npm audit --audit-level=low` 失败；后续 lint/test/build 未执行 | 两边分别 5/7 条传递链都指向暂缓的同一 braces 公告；不把破坏性升级或降版当补丁 |
+| 同 run Native Windows | 原生边界 3 项、非 PG Session IO lib 22 项及 integration 13 项成功，构建产物上传成功 | 3 项明确需 PostgreSQL 的 ignored 不冒充已执行；真实 PG 用独立必跑 job 验证 |
+| 真实 message smoke 第二条输入 | typed IO 默认 interrupt 的新 Thread 重复插入，准入回滚 503；PG 快速路径还错误合并 typed pending 输入 | 精确复用本事务已建的替代 Thread；SQLite/PG 同一合约 2 项实际通过，PG 原 legacy 合约通过；两种数据库的 HTTP 附件/引用/权限/重启原断言通过，不改 parallel 绕过 |
+| 真实 trusted-gateway identity smoke | 来源读取错误使用 operator Context 端点及 service Principal，401 | 原 Human 只读 Session 证据已修复；真实双身份/共享/撤权/重启 smoke 与 Rust gateway 拒绝边界通过，不升级权限或 claim membership |
 
 用户暂缓的无已发布补丁 `braces` 告警仍独立披露；不删除安全门来宣称全 CI 绿。
 此前原 11 项依赖告警已关闭，不代表当前所有 npm 审计没有新告警。
+
+查看者与作者仍分离：团队查看者使用自己的既有 Session 权限读取原作者来源，
+不改写作者，也不借来源读取获得成员权限；Agent 签名来源仍须原作者当前有效。
+新增 16 项正式 Node 回归含受控 HTTP 边界，明确不冒称真实 Rust；另有真实 Rust
+gateway 回归。其他管理界面的 operator 读取不在本次来源修复的完成声明中。
+
+本地阶段提交：`b3c4915d` 必跑 CI；`87da7c3a` 最终回复 fixture/脱敏证据；
+`cff2d230` 探针与格式；`142d017b` 长跑 harness；`f639141c` 只读身份来源；
+`ed2cb57f` 核心诊断；`7c91f248` typed interrupt 两端修复及 PG CI 必跑门。
+这些提交未推送，新托管 run 尚未产生。
 
 ## 第二阶段：连续长跑
 
@@ -74,6 +86,21 @@ CI 固定 Node 24.13.0；未推送前不声称托管 CI 已通过。
 
 ## 当前检查点
 
-目标活跃，尚未完成。CI 独立认知六契约与门禁负控已验证；真实 IPC 首个失败
-已复现、定位并修正。其他真链新暴露的错误正在逐项修复；长跑 harness 正进行
-独立评审和短时预检，8 小时正式结果仍待实际取得。
+目标活跃，尚未完成。CI 独立认知六契约与门禁负控、上述实际失败修复已验证；
+`7c91f248` 二进制的 IPC、双身份与四文件六项正式门再次通过，零失败/跳过/取消；
+正式门证据 `application/test-results/cognitive-runtime-ci-MYbbOb/summary.json`。
+
+隔离生产 Electron 的 `7c91f248` 严格验收通过：
+`/private/tmp/morphz-embedded-electron-DqKIo4/result.json`。真实关窗/activate
+保持同 main，app.quit 正常 main exit 0 后同 Profile 冷启动；Runtime 全程同 PID。
+两个原根、唯一物理 Job、实际 DOM 回复、未发送草稿的原始字节/owner/key、原件、
+来源、权限及回执均保全。旧二进制和超短 deadline 两种负控确实失败且保留取证。
+它不冒称用户原窗口验收，原 App 未触碰。
+
+初次 `7c91f248` 长跑 `/private/tmp/morphz-reliability-soak-I1NLGr` 实际运行
+279090 ms、5 轮、41 个完成根，八种故障/事务场景均执行，清理失败为零。
+此时完整 Clippy 又发现 13 项历史警告（此前 CI 被格式门挡住），需最终源码收尾。
+为重新冻结最终版本，主执行者只对 owned harness 发 SIGTERM；原 result 如实记录
+failed/interrupted，目录与原证据保留。这不是产品故障，也不是 8 小时通过；
+不会拼接前后时长。机械 lint 修正及独立复验完成后，正式连续 8 小时另行冻结、
+启动并记录结果。
