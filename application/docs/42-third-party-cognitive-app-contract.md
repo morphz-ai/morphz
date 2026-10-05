@@ -368,6 +368,10 @@ Host 的 CognitiveAppGateway 负责固定连接、网络安全、实际 wire 校
 
 Scheduled task-run 即使带 sourceInputId，也仍是 task-run；来源分类须依
 持久 task-run evidence／resolved actor，不能仅按 inputId 是否为空猜测。
+现 PlatformStore 已提供真实身份、本人许可和逐资源操作解析；结果是当前
+策略快照，不可跨事务当成发送许可。Host-only 连接证明尚不注册在公开
+Client、Agent 或 iframe 接口，后续实际网关先认证固定 describe 再构造。
+本人目录当前只列已同意的版本，尚不是安装管理／安装前发现的全部入口。
 第三方原件核验组合进已有 Host verifier，不替换内置核验，更不能一律放行。
 现有 active-instance 新业务写规则保持，停用后的目录补齐只允许确切持久
 admission 和已核 committed 摘要，不给予通用恢复写权。

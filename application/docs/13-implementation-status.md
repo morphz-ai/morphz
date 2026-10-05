@@ -1,5 +1,28 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：真实 Platform 身份和逐资源权限
+
+PlatformStore 现用既有 capabilities 解析实际 Human／Agent 与发起 Human，
+在 SQL 之前完成身份 I/O；同一 q 内复用原成员、持久输入范围、Agent 成员、
+项目写 fence 与真实目录权限。task-run 即使保留非空 sourceInputId 也不降级
+为 input；真实 prepared 准入失效时拒绝，不信模型自报 actor 或当前页面。
+
+新增 Human-only 安装／精确版本 grant、Host-only 接入准备／已核连接端口、
+本人目录和操作解析；Host proof 是可信内部参数，尚未公开到任何 transport。
+操作效果、范围、输入 Schema 来自已安装固定定义；每一个资源核实际
+project／app／instance、可用性与写基线。授权锁使用稳定排序副本，实际
+resources 原顺序不变。只读历史许可不证明作者真的保存该历史版本。
+变化时使用既有 access navigation 通知，no-op 安装不加修订，无新增轮询。
+
+Root 审查完整 Store diff／新权限测试，并独立组合重跑 242/242，SQLite
+和 PostgreSQL 实际执行、零失败／跳过／取消；新增权限 22 项，含实际 Store
+task-run 准入、回调不在事务内、撤权和旧授权行为回归。完整类型检查及
+diff 检查通过，日志 `/tmp/morphz-cognitive-stage-types-ROOT-oct05.log`。
+首次 producer fixture 清理未释放连接导致 RED 被中断的日志保留，不称完整
+RED 套通过。只使用隔离数据库；未启动／改动原 App 或真实业务资料。
+这些解析结果只是当前策略快照，后续 admission／dispatch 必须再核，
+还未交付网络网关、命令／目录／退休组合、GUI 或真实 Runtime 调用。
+
 ## 2026-10-05 第三方认知应用：持久命令事实与发送 fence
 
 Platform 内部 commands 模块现保存副作用调用的实际来源、精确定义、保存方、

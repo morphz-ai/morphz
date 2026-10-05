@@ -24,6 +24,26 @@ import {
 import { platformSchemaSql } from "./schema.js";
 import { ensureApplicationInstallation } from "./application-installation.js";
 import {
+  createCognitiveAppRegistry,
+  type CognitiveAppConsentRequest,
+  type CognitiveAppGrantChange,
+  type CognitiveAppRegistryCatalogRequest,
+  type CognitiveAppHostConnectionRequest,
+  type CognitiveAppTargetRequest,
+  type CognitiveAppTargetSnapshot,
+} from "./cognitive-app-registry.js";
+import {
+  validateOperationValue,
+  parseOperationResources,
+  type JsonValue,
+  type OperationDefinition,
+  type OperationResourceReference,
+} from "../../cognitive-app-sdk/src/protocol.js";
+import {
+  parseDomainActor,
+  type DomainActor,
+} from "../../cognitive-app-sdk/src/domain-wire.js";
+import {
   profileAvatarMediaSchema, profileAvatarSnapshotSchema,
   type ProfileAvatarMedia, type ProfileAvatarSnapshot, type ProfileSubject,
 } from "../../core/src/profile.js";
@@ -53,6 +73,7 @@ import {
   withSqliteWriteGate,
   prepareSqlCommit,
   publishSqlCommit,
+  hasSqlChanges,
   type SqlQuery as Query,
   type SqlRow as Row,
   type SqlScalar as Scalar,
@@ -206,6 +227,62 @@ type ResolvedActor = {
   };
   /** Outbox recovery retains the committed source without a live credential. */
   committedTaskRunEventId?: string;
+};
+/** Only created privately after the real capabilities resolver succeeds,
+ * before SQL. The optional legacy guard argument is never a caller port. */
+type PreparedExecutor = {
+  tenantId: string;
+  actantId: string;
+  principalId: string;
+  kind: "agent";
+};
+type PreparedCognitiveActor = {
+  actor: ResolvedActor;
+  domainActor: DomainActor;
+  executor?: PreparedExecutor;
+};
+/** Host-internal describe/alias proof. Not part of SDK, Client, Agent or iframe
+ * requests. The Gateway must authenticate describe before supplying it; this
+ * Store boundary checks exact installation/consent and never verifies network. */
+export type HostVerifiedCognitiveConnectionProof = {
+  purpose: "connection-setup";
+  appId: string;
+  version: string;
+  definitionHash: string;
+  serviceId: string;
+  dataAuthorityId: string;
+  hostBindingId: string;
+};
+export type HostVerifiedCognitiveConnectionCreate = {
+  proof: HostVerifiedCognitiveConnectionProof;
+  connectionId: string;
+  expectedRevision: 0;
+  expectedGrantRevision?: number;
+  now?: string;
+};
+export type HostVerifiedCognitiveConnectionChange = {
+  proof: HostVerifiedCognitiveConnectionProof;
+  connectionId: string;
+  expectedRevision: number;
+  expectedGrantRevision?: number;
+  state: "active" | "disabled" | "unavailable";
+  now?: string;
+};
+export type CognitiveAppOperationResolutionRequest =
+  CognitiveAppTargetRequest & {
+    projectId: string;
+    operationId: string;
+    parameters: unknown;
+    resources: unknown;
+  };
+/** A current policy snapshot, NOT permission to dispatch later. Command
+ * admission/first dispatch must recheck this same authority in their own q. */
+export type ResolvedCognitiveAppOperation = {
+  actor: DomainActor;
+  target: CognitiveAppTargetSnapshot;
+  operation: OperationDefinition;
+  parameters: JsonValue;
+  resources: readonly OperationResourceReference[];
 };
 export type ContentRow = {
   content_id: string;
@@ -680,6 +757,343 @@ export class PlatformStore {
       actant.principalId !== actor.principalId
     )
       throw new PlatformStorageError("forbidden", "当前负责人身份已失效。");
+  }
+
+  private async prepareCognitiveActor(
+    access: PlatformActor,
+    humanOnly = false,
+  ): Promise<PreparedCognitiveActor> {
+    const resolved = await this.authorize(access);
+    const actor: ResolvedActor = {
+      ...resolved,
+      ...(resolved.runtimeTaskRun
+        ? { runtimeTaskRun: { ...resolved.runtimeTaskRun } }
+        : {}),
+    };
+    if (actor.kind === "provider" || (humanOnly && actor.kind !== "human"))
+      throw new PlatformStorageError(
+        "forbidden",
+        "只有已认证 Human 可以管理本人应用许可与连接。",
+      );
+    const humanActantId =
+      actor.kind === "human" ? actor.actantId : actor.initiatingHumanActantId;
+    if (!humanActantId)
+      throw new PlatformStorageError(
+        "forbidden",
+        "应用调用缺少实际发起 Human。",
+      );
+    requireId(humanActantId, "发起 Human 标识");
+    const human = await this.capabilities.resolveActant({
+      tenantId: actor.tenantId,
+      actantId: humanActantId,
+    });
+    if (human?.kind !== "human" || human.principalId !== actor.principalId)
+      throw new PlatformStorageError(
+        "forbidden",
+        "应用调用的实际发起 Human 已失效或不匹配。",
+      );
+    let executor: PreparedExecutor | undefined;
+    if (actor.kind === "agent") {
+      const actual = await this.capabilities.resolveActant({
+        tenantId: actor.tenantId,
+        actantId: actor.actantId,
+      });
+      if (actual?.kind !== "agent")
+        throw new PlatformStorageError("forbidden", "Agent 执行身份已失效。");
+      requireId(actual.principalId, "Agent 成员标识");
+      executor = {
+        tenantId: actor.tenantId,
+        actantId: actor.actantId,
+        principalId: actual.principalId,
+        kind: "agent",
+      };
+    }
+    // A scheduled source remains a task-run even if it retained an original
+    // input. authorize() has checked the actual prepared Platform admission.
+    const source =
+      actor.kind === "human"
+        ? { kind: "human" }
+        : actor.runtimeTaskRun
+          ? {
+              kind: "task-run",
+              ...actor.runtimeTaskRun,
+              sourceInputId: actor.runtimeInputId,
+              humanActantId,
+            }
+          : { kind: "input", inputId: actor.runtimeInputId, humanActantId };
+    return {
+      actor,
+      executor,
+      domainActor: parseDomainActor({
+        tenantId: actor.tenantId,
+        principalId: actor.principalId,
+        actantId: actor.actantId,
+        kind: actor.kind,
+        source,
+      }),
+    };
+  }
+
+  private cognitiveRegistry(q: Query, actor: ResolvedActor) {
+    return createCognitiveAppRegistry({
+      q,
+      backend: this.backend.kind,
+      tenantId: actor.tenantId,
+      principalId: actor.principalId,
+      fail: (code, message) => {
+        throw new PlatformStorageError(code, message);
+      },
+    });
+  }
+
+  /** Actual Human installation only. No grant is silently created. GUI
+   * definitions remain rejected until their real Store bytes are verified. */
+  async installCognitiveApp(
+    access: PlatformActor,
+    request: { definition: unknown; now?: string },
+  ) {
+    const { actor } = await this.prepareCognitiveActor(access, true);
+    return this.transaction(async (q) => {
+      const result = await this.cognitiveRegistry(q, actor).installVersion(
+        request.definition,
+        request.now ?? new Date().toISOString(),
+      );
+      if (hasSqlChanges(q))
+        await this.advanceNavigation(q, actor.tenantId, ["access"]);
+      return result;
+    });
+  }
+
+  async changeCognitiveAppGrant(
+    access: PlatformActor,
+    request: Omit<CognitiveAppGrantChange, "now"> & { now?: string },
+  ) {
+    const { actor } = await this.prepareCognitiveActor(access, true);
+    return this.transaction(async (q) => {
+      const result = await this.cognitiveRegistry(q, actor).changeOwnGrant({
+        ...request,
+        now: request.now ?? new Date().toISOString(),
+      });
+      if (hasSqlChanges(q))
+        await this.advanceNavigation(q, actor.tenantId, ["access"]);
+      return result;
+    });
+  }
+
+  async listCognitiveApps(
+    access: PlatformActor,
+    request: CognitiveAppRegistryCatalogRequest,
+  ) {
+    const { actor, executor } = await this.prepareCognitiveActor(access);
+    return this.transaction(async (q) => {
+      if (actor.kind === "agent")
+        await this.assertProjectReader(
+          q,
+          actor,
+          actor.scopeProjectId!,
+          executor,
+        );
+      return this.cognitiveRegistry(q, actor).readOwnRegistry(request);
+    }, "read");
+  }
+
+  /** Host-only pre-describe consent snapshot. Not registered on transports. */
+  async prepareCognitiveAppConnection(
+    access: PlatformActor,
+    request: CognitiveAppConsentRequest,
+  ) {
+    const prepared = await this.prepareCognitiveActor(access, true);
+    return this.transaction(async (q) => ({
+      actor: prepared.domainActor,
+      ...(await this.cognitiveRegistry(q, prepared.actor).lockOwnConsent(
+        request,
+      )),
+    }));
+  }
+
+  private assertCognitiveConnectionProof(
+    proof: HostVerifiedCognitiveConnectionProof,
+  ) {
+    if (
+      !proof ||
+      proof.purpose !== "connection-setup" ||
+      typeof proof.definitionHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(proof.definitionHash)
+    )
+      throw new PlatformStorageError("invalid", "Host 连接设置证明无效。");
+  }
+
+  /** Host-internal only: a trusted Gateway's authenticated describe result.
+   * No URL or credential is accepted or published by this relational port. */
+  async createVerifiedCognitiveAppConnection(
+    access: PlatformActor,
+    request: HostVerifiedCognitiveConnectionCreate,
+  ) {
+    const { actor } = await this.prepareCognitiveActor(access, true);
+    this.assertCognitiveConnectionProof(request.proof);
+    return this.transaction(async (q) => {
+      const registry = this.cognitiveRegistry(q, actor);
+      await registry.lockOwnConsent({
+        appId: request.proof.appId,
+        version: request.proof.version,
+        expectedDefinitionHash: request.proof.definitionHash,
+        expectedGrantRevision: request.expectedGrantRevision,
+      });
+      const result = await registry.createOwnConnection({
+        ...request.proof,
+        connectionId: request.connectionId,
+        expectedRevision: request.expectedRevision,
+        now: request.now ?? new Date().toISOString(),
+      });
+      if (hasSqlChanges(q))
+        await this.advanceNavigation(q, actor.tenantId, ["access"]);
+      return result;
+    });
+  }
+
+  async changeVerifiedCognitiveAppConnection(
+    access: PlatformActor,
+    request: HostVerifiedCognitiveConnectionChange,
+  ) {
+    const { actor } = await this.prepareCognitiveActor(access, true);
+    this.assertCognitiveConnectionProof(request.proof);
+    return this.transaction(async (q) => {
+      const registry = this.cognitiveRegistry(q, actor);
+      // Exact versions are immutable. Do not let disabling a connection depend
+      // on a still-active consent, but never admit a new active target revoked.
+      await registry.lockRetainedVersion({
+        appId: request.proof.appId,
+        version: request.proof.version,
+        expectedDefinitionHash: request.proof.definitionHash,
+      });
+      if (request.state === "active")
+        await registry.lockOwnConsent({
+          appId: request.proof.appId,
+          version: request.proof.version,
+          expectedDefinitionHash: request.proof.definitionHash,
+          expectedGrantRevision: request.expectedGrantRevision,
+        });
+      const result = await registry.changeOwnConnection({
+        ...request.proof,
+        expectedAppId: request.proof.appId,
+        connectionId: request.connectionId,
+        expectedRevision: request.expectedRevision,
+        state: request.state,
+        now: request.now ?? new Date().toISOString(),
+      });
+      if (hasSqlChanges(q))
+        await this.advanceNavigation(q, actor.tenantId, ["access"]);
+      return result;
+    });
+  }
+
+  /** Private alias read is purpose-neutral; later Gateway dispatch/recovery
+   * must prove its own durable command purpose. This is not send authority. */
+  async getCognitiveAppHostConnection(
+    access: PlatformActor,
+    request: CognitiveAppHostConnectionRequest & { projectId: string },
+  ) {
+    const { actor, executor } = await this.prepareCognitiveActor(access);
+    requireId(request.projectId, "项目标识");
+    return this.transaction(async (q) => {
+      await this.assertProjectReader(q, actor, request.projectId, executor);
+      return this.cognitiveRegistry(q, actor).readHostConnection(request);
+    });
+  }
+
+  async resolveCognitiveAppOperation(
+    access: PlatformActor,
+    request: CognitiveAppOperationResolutionRequest,
+  ): Promise<ResolvedCognitiveAppOperation> {
+    const { actor, executor, domainActor } =
+      await this.prepareCognitiveActor(access);
+    requireId(request.projectId, "项目标识");
+    // FOR SHARE target locks use a write transaction even for a declared read;
+    // no data changes or navigation invalidation occur during this resolution.
+    return this.transaction(async (q) => {
+      const registry = this.cognitiveRegistry(q, actor);
+      // Read immutable declaration first so project/member/source locks precede
+      // mutable registry locks, matching command admission lock order.
+      const version = await registry.readExactVersion(
+        request.appId,
+        request.version,
+      );
+      const operation = version.definition.operations.find(
+        (op) => op.id === request.operationId,
+      );
+      if (!operation)
+        throw new PlatformStorageError("not_found", "应用未声明这项操作。");
+      let parameters: JsonValue,
+        resources: readonly OperationResourceReference[];
+      try {
+        parameters = validateOperationValue(
+          operation.inputSchema,
+          request.parameters,
+        );
+        resources = parseOperationResources(operation.scope, request.resources);
+      } catch {
+        throw new PlatformStorageError(
+          "invalid",
+          "应用参数或精确资源引用不符合固定声明。",
+        );
+      }
+      if (operation.effect === "read")
+        await this.assertProjectReader(q, actor, request.projectId, executor);
+      else
+        await this.assertMember(
+          q,
+          actor,
+          request.projectId,
+          true,
+          true,
+          executor,
+        );
+      const target = await registry.lockCurrentTarget({
+        ...request,
+        expectedDefinitionHash:
+          request.expectedDefinitionHash ?? version.definitionHash,
+      });
+      if (target.definitionHash !== version.definitionHash)
+        throw new PlatformStorageError(
+          "conflict",
+          "应用固定声明在权限核验时已变化。",
+        );
+      // Stable catalog lock order without changing author semantics, parameter
+      // canonicalization or the caller's original resource order.
+      const authorizationResources = [...resources].sort((a, b) =>
+        a.objectId < b.objectId ? -1 : a.objectId > b.objectId ? 1 : 0,
+      );
+      for (const resource of authorizationResources) {
+        const row = await this.authorizeApplicationObjectRow(
+          q,
+          actor,
+          target.instanceId,
+          target.appId,
+          resource.objectId,
+          operation.effect === "read" ? "read" : "write",
+          undefined,
+          executor,
+          operation.effect !== "read",
+        );
+        if (row.project_id !== request.projectId)
+          throw new PlatformStorageError(
+            "forbidden",
+            "应用资源不属于本次实际项目。",
+          );
+        if (row.availability !== "available")
+          throw new PlatformStorageError("not_found", "应用资源当前不可用。");
+        if (
+          operation.effect !== "read" &&
+          row.observed_version_ref !== resource.versionRef
+        )
+          throw new PlatformStorageError(
+            "conflict",
+            "写入或执行的目录基线已变化。",
+          );
+      }
+      // Exact historical existence is App authority, not a catalog claim.
+      return { actor: domainActor, target, operation, parameters, resources };
+    });
   }
 
   static async sqlite(
@@ -4749,6 +5163,7 @@ export class PlatformStore {
     actor: ResolvedActor,
     projectId: string,
     forWrite: boolean,
+    executor?: PreparedExecutor,
   ) {
     if (
       actor.kind !== "agent" ||
@@ -4784,7 +5199,7 @@ export class PlatformStore {
         actor.scopeProjectId,
         projectId,
       ]);
-    await this.assertProjectReader(q, actor, actor.scopeProjectId);
+    await this.assertProjectReader(q, actor, actor.scopeProjectId, executor);
     const audience = async (id: string) =>
       (
         await q.all<{ principal_id: string }>(
@@ -4804,9 +5219,10 @@ export class PlatformStore {
     projectId: string,
     forWrite = true,
     enforceInputScope = true,
+    executor?: PreparedExecutor,
   ) {
     if (enforceInputScope)
-      await this.assertAgentInputScope(q, actor, projectId, forWrite);
+      await this.assertAgentInputScope(q, actor, projectId, forWrite, executor);
     // A write must hold the project and membership rows until commit. A
     // concurrent archive or revocation must serialize after this command,
     // not slip between authorization and its business mutation. SQLite's
@@ -4818,7 +5234,13 @@ export class PlatformStore {
     if (!rows.length)
       throw new PlatformStorageError("forbidden", "无权访问这个项目。");
     if (forWrite) await this.assertProjectNotRetiring(q, actor, projectId);
-    await this.assertAgentExecutorMember(q, actor, projectId, forWrite);
+    await this.assertAgentExecutorMember(
+      q,
+      actor,
+      projectId,
+      forWrite,
+      executor,
+    );
   }
 
   private async assertProjectNotRetiring(
@@ -4861,12 +5283,24 @@ export class PlatformStore {
     actor: ResolvedActor,
     projectId: string,
     forWrite = false,
+    preparedExecutor?: PreparedExecutor,
   ) {
     if (actor.kind !== "agent") return;
-    const executor = await this.capabilities.resolveActant({
-      tenantId: actor.tenantId,
-      actantId: actor.actantId,
-    });
+    if (
+      preparedExecutor &&
+      (preparedExecutor.tenantId !== actor.tenantId ||
+        preparedExecutor.actantId !== actor.actantId)
+    )
+      throw new PlatformStorageError(
+        "forbidden",
+        "预检 Agent 身份与当前操作不符。",
+      );
+    const executor =
+      preparedExecutor ??
+      (await this.capabilities.resolveActant({
+        tenantId: actor.tenantId,
+        actantId: actor.actantId,
+      }));
     if (!executor || executor.kind !== "agent")
       throw new PlatformStorageError("forbidden", "Agent 执行身份已失效。");
     const membership = await q.all(
@@ -4886,15 +5320,16 @@ export class PlatformStore {
     q: Query,
     actor: ResolvedActor,
     projectId: string,
+    executor?: PreparedExecutor,
   ) {
-    await this.assertAgentInputScope(q, actor, projectId, false);
+    await this.assertAgentInputScope(q, actor, projectId, false, executor);
     const membership = await q.all(
       "SELECT 1 AS allowed FROM project_members WHERE tenant_id=? AND project_id=? AND principal_id=?",
       [actor.tenantId, projectId, actor.principalId],
     );
     if (!membership.length)
       throw new PlatformStorageError("forbidden", "无权访问这个项目。");
-    await this.assertAgentExecutorMember(q, actor, projectId);
+    await this.assertAgentExecutorMember(q, actor, projectId, false, executor);
   }
 
   /** Before the first input is committed, only the project and recipient can
@@ -6338,34 +6773,19 @@ export class PlatformStore {
     requireId(instanceId, "应用实例标识");
     requireAppId(appId);
     requireId(objectId, "应用原件标识");
-    const entry = await this.transaction(async (q) => {
-      const row = (
-        await q.all<{
-          content_id: string;
-          project_id: string;
-          kind: string;
-          observed_version_ref: string | null;
-          revision: number | string;
-          route_kind: string;
-          route_ref: string;
-          node_id: string | null;
-        }>(
-          "SELECT c.content_id,c.project_id,c.kind,c.observed_version_ref,c.revision,i.route_kind,i.route_ref,i.node_id FROM content_entries c JOIN app_instances i ON i.tenant_id=c.tenant_id AND i.instance_id=c.instance_id AND i.app_id=c.app_id WHERE c.tenant_id=? AND c.instance_id=? AND c.app_id=? AND c.app_object_id=? AND c.deleted_at IS NULL AND i.state='active'",
-          [actor.tenantId, instanceId, appId, objectId],
-        )
-      )[0];
-      if (!row)
-        throw new PlatformStorageError("not_found", "内容或应用实例不可用。");
-      if (provider && !matchesApplicationProviderRoute(row, provider))
-        throw new PlatformStorageError(
-          "conflict",
-          "应用原件已不由当前保存方提供。",
-        );
-      if (operation === "read")
-        await this.assertProjectReader(q, actor, row.project_id);
-      else await this.assertMember(q, actor, row.project_id, false);
-      return row;
-    }, "read");
+    const entry = await this.transaction(
+      (q) =>
+        this.authorizeApplicationObjectRow(
+          q,
+          actor,
+          instanceId,
+          appId,
+          objectId,
+          operation,
+          provider,
+        ),
+      "read",
+    );
     return {
       tenantId: actor.tenantId,
       principalId: actor.principalId,
@@ -6379,6 +6799,57 @@ export class PlatformStore {
       observedVersionRef: entry.observed_version_ref,
       catalogRevision: safeInteger(entry.revision, "目录修订"),
     };
+  }
+
+  /** Shared exact catalog guard. Legacy callers retain their existing policy;
+   * new operation resolution also holds the live row and supplies its already
+   * capabilities-verified executor, without identity I/O inside this q. */
+  private async authorizeApplicationObjectRow(
+    q: Query,
+    actor: ResolvedActor,
+    instanceId: string,
+    appId: string,
+    objectId: string,
+    operation: "read" | "write",
+    provider?: ApplicationProviderRoute,
+    executor?: PreparedExecutor,
+    forWrite = false,
+  ) {
+    const row = (
+      await q.all<{
+        content_id: string;
+        project_id: string;
+        kind: string;
+        observed_version_ref: string | null;
+        availability: string;
+        revision: number | string;
+        route_kind: string;
+        route_ref: string;
+        node_id: string | null;
+      }>(
+        `SELECT c.content_id,c.project_id,c.kind,c.observed_version_ref,c.availability,c.revision,i.route_kind,i.route_ref,i.node_id FROM content_entries c JOIN app_instances i ON i.tenant_id=c.tenant_id AND i.instance_id=c.instance_id AND i.app_id=c.app_id WHERE c.tenant_id=? AND c.instance_id=? AND c.app_id=? AND c.app_object_id=? AND c.deleted_at IS NULL AND i.state='active'${forWrite && this.backend.kind === "postgres" ? " FOR SHARE OF c,i" : ""}`,
+        [actor.tenantId, instanceId, appId, objectId],
+      )
+    )[0];
+    if (!row)
+      throw new PlatformStorageError("not_found", "内容或应用实例不可用。");
+    if (provider && !matchesApplicationProviderRoute(row, provider))
+      throw new PlatformStorageError(
+        "conflict",
+        "应用原件已不由当前保存方提供。",
+      );
+    if (operation === "read")
+      await this.assertProjectReader(q, actor, row.project_id, executor);
+    else
+      await this.assertMember(
+        q,
+        actor,
+        row.project_id,
+        forWrite,
+        true,
+        executor,
+      );
+    return row;
   }
 
   /** A previously pinned App citation may survive moving its source only
