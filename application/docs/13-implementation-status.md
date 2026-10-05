@@ -1,5 +1,35 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：真实后台事项与 infer 来源闭环
+
+隔离实际 Rust 测试经原 Human HTTP 创建事项，实际 Agent `work-task.start`
+提交准入，原共享 Host dispatcher 投递 Runtime Schedule。后台 Thread
+及真实 `eval`／`infer` 子求值各写一份作者自管 SQLite 原件；infer BODY
+明确同一 create 意图，未用目录读取伪装写授权或绕过实际来源守门。
+
+两份作者 Actor 和 Platform admission 均保留 `task-run`、原 session／
+schedule／event 与非空 sourceInputId。原输入独立锚定到真实普通 Thread
+的 Session-Client Event、client_message_id 和 typed session_io.input_id。
+infer 的实际 infer_request 固定父来源，子 physical Job 与 Host 稳定
+commandId 精确一致，不能只用父字段或模型 marker 冒充子执行。
+三个实际 Thread 均在清理之前 completed；作者只有两个命令／原件，
+真实 child physical write 恰一次。模型七次 HTTP 请求都到本地受控
+第二跳，付费请求为零；这不是原用户 App 或生产 Provider 验收。
+
+Root 全文复核唯一新增测试和三个既有文件有限 delta，冻结 SHA 匹配，
+独立正式四文件 21/21，required PostgreSQL／Runtime 和三个准确 opt-in
+显式启用，零失败／取消／跳过；旧实际输入链、Profile 与严格 skip 防线
+同时通过。日志 `/tmp/morphz-cognitive-SOURCES-ROOT-ACCEPTED-oct05.log`；
+全工程类型检查通过，日志
+`/tmp/morphz-cognitive-SOURCES-ROOT-types-ACCEPTED-oct05.log`。
+
+测试夹具仅增加显式 dispatcher 启动和隔离 evalCallableTools 配置，省略
+时原行为不变。Production 模型、来源守门和 Runtime 无改动；认知中心
+为隔离 SQLite，PostgreSQL 在同组旧实际 Profile 集成运行。早期 infer
+夹具的 typed JSON／监督 parent 假设错误保留于
+`/tmp/morphz-cognitive-SOURCES-INFER-*.log`，未称生产 bug 或弱化断言。
+GUI、未知回执的实际 Runtime 场景和原 App 仍单独验收。
+
 ## 2026-10-05 第三方认知应用：独立 Human 窗口公共入口
 
 六个 `cognitive-app-views.*` logical 方法使用独立固定映射，公开到同一

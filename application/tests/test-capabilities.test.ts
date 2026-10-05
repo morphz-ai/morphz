@@ -108,6 +108,12 @@ const declarations = [
     capability: "runtime",
     flag: "MORPHZ_COGNITIVE_RUNTIME_E2E",
   },
+  {
+    file: "cognitive-app-actual-runtime-sources.test.ts",
+    name: "actual Rust scheduled task + infer: cognitive calls retain task-run source and original input provenance",
+    capability: "runtime",
+    flag: "MORPHZ_COGNITIVE_SOURCES_RUNTIME_E2E",
+  },
 ] as const;
 const darwin = [
   {
@@ -183,7 +189,7 @@ test("required capability CSV is finite and cannot remove PostgreSQL", () => {
   assert.deepEqual(actual.selected, []);
 });
 
-test("exact ten optional integrations are declared opt-outs, not environment-unavailable successes", () => {
+test("exact eleven optional integrations are declared opt-outs, not environment-unavailable successes", () => {
   const actual = plan({}, { platform: "darwin" });
   for (const item of declarations) {
     assert.deepEqual(classifySkippedTest(data(item), actual), {
@@ -372,6 +378,29 @@ test("actual cognitive Runtime opt-in is exact, cannot borrow Profile's flag, an
   );
   const actual = plan(
     { ...runtime, MORPHZ_COGNITIVE_RUNTIME_E2E: "1" },
+    selection,
+  );
+  assert.equal(actual.selected.length, 1);
+  assert.throws(
+    () => classifySkippedTest(data(item), actual),
+    /Required or prepared test was skipped/,
+  );
+});
+
+test("scheduled cognitive infer opt-in cannot borrow the input-only flag or excuse a prepared skip", () => {
+  const item = declarations[10];
+  const selection = { files: [item.file] };
+  const runtime = {
+    MORPHZ_TEST_REQUIRED_CAPABILITIES: "runtime",
+    MORPHZ_APP_RUNTIME_BINARY: "/fixture/runtime",
+    MORPHZ_COGNITIVE_RUNTIME_E2E: "1",
+  };
+  assert.throws(
+    () => plan(runtime, selection),
+    /Selected Runtime integration requires MORPHZ_COGNITIVE_SOURCES_RUNTIME_E2E=1/,
+  );
+  const actual = plan(
+    { ...runtime, MORPHZ_COGNITIVE_SOURCES_RUNTIME_E2E: "1" },
     selection,
   );
   assert.equal(actual.selected.length, 1);

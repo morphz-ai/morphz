@@ -93,6 +93,12 @@ export async function profileActualTransportFixture(
       directory: string;
       tenantId: string;
     }) => Promise<CognitiveAppHostOptions>;
+    /** Start the actual shared Host task dispatcher only for explicit scheduled
+     * Runtime acceptance; the original input-only fixture remains unchanged. */
+    startTaskDispatcher?: boolean;
+    /** Explicit eval tool allowlist for this isolated Runtime's config only.
+     * This never changes the production default or bypasses Host authority. */
+    evalCallableTools?: readonly string[];
     /** Optional controlled provider script for parallel real-Thread tests.
      * Never consulted for realProvider; existing default replies stay intact. */
     deterministicTool?: (
@@ -245,9 +251,12 @@ export async function profileActualTransportFixture(
   const configFile = join(runtimeRoot, "morphz.toml");
   const model = options.realProvider?.model ?? "profile-actual";
   const protocol = options.realProvider?.protocol ?? "openai-chat";
+  const evalConfiguration = options.evalCallableTools
+    ? `[orchestrator]\neval_callable_tools=${JSON.stringify(options.evalCallableTools)}\n`
+    : "";
   writeFileSync(
     configFile,
-    `[llm]\nmodel=${JSON.stringify(model)}\nreasoning_effort="low"\n[accounts.fixture]\nauth_adapter="credential"\ncredential_ref="fixture"\nprovider="fixture"\n[services.fixture]\nadapter="protocol-compatible"\nprotocol=${JSON.stringify(protocol)}\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["fixture"]\n[[models.${JSON.stringify(model)}.targets]]\nservice="fixture"\naccount="fixture"\nphysical_model=${JSON.stringify(model)}\ncapabilities=["tools"]\n[credentials.fixture]\nsource="env"\nname="PROFILE_ACTUAL_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeRoot)}\n`,
+    `${evalConfiguration}[llm]\nmodel=${JSON.stringify(model)}\nreasoning_effort="low"\n[accounts.fixture]\nauth_adapter="credential"\ncredential_ref="fixture"\nprovider="fixture"\n[services.fixture]\nadapter="protocol-compatible"\nprotocol=${JSON.stringify(protocol)}\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["fixture"]\n[[models.${JSON.stringify(model)}.targets]]\nservice="fixture"\naccount="fixture"\nphysical_model=${JSON.stringify(model)}\ncapabilities=["tools"]\n[credentials.fixture]\nsource="env"\nname="PROFILE_ACTUAL_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeRoot)}\n`,
     { mode: 0o600 },
   );
   let child: ChildProcess | undefined;
@@ -385,6 +394,7 @@ export async function profileActualTransportFixture(
       server!.listen(hostPort, "127.0.0.1", done),
     );
     runtime.start();
+    if (options.startTaskDispatcher) bindingAuthority.dispatcher.start();
     const client = new HttpApplicationClient(origin);
     const boot = (await client.call("platform.bootstrap")) as {
       csrfToken: string;

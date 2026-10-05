@@ -60,6 +60,12 @@ const optionalTests = [
     "MORPHZ_COGNITIVE_RUNTIME_E2E",
   ],
   [
+    "cognitive-app-actual-runtime-sources.test.ts",
+    "actual Rust scheduled task + infer: cognitive calls retain task-run source and original input provenance",
+    "runtime",
+    "MORPHZ_COGNITIVE_SOURCES_RUNTIME_E2E",
+  ],
+  [
     "response-annotations-runtime.test.ts",
     "actual Runtime + Platform HTTP: two commands form one activity, three original model rounds, durable refresh and exact Job receipts",
     "runtime",

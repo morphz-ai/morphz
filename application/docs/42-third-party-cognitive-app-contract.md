@@ -12,7 +12,13 @@ HTTP 请求，作者 1 命令／1 原件，原回执恢复不重执行；作者�
 Platform admission 与实际 Runtime Event 一致且 Thread 已 completed。
 最终四文件 21/21、required PostgreSQL／Runtime、零跳过与全工程类型
 检查通过。新认知 Runtime 中心为 SQLite，模型受控，不是付费模型、
-实际 task-run／infer／失联 Runtime 或原 App 验收，GUI 链仍待实现。
+失联 Runtime 或原 App 验收，GUI 链仍待实现。后续独立实际后台事项＋
+infer 测试现已通过：原任务准入／dispatcher、Schedule／Thread／Event
+与子 physical Job 均真实，作者两条命令都保持 task-run 及原输入关联，
+三个 Thread 在退出前 completed。infer BODY 与 child 操作一致，子写入
+恰一次；七次模型请求仅到本地受控第二跳，付费请求零。Root 四文件
+21/21、required PostgreSQL／Runtime 与独立 opt-in、零跳过及全工程类型
+检查通过。该新认知中心为隔离 SQLite，不泛称生产／原 App 验收。
 
 这是 Morphz Application 的实验接入版本，不是 Runtime 或 HNS 的新标准。
 文档存在不表示独立 SDK、服务网关或跨宿主闭环已经交付；实际完成项见
@@ -315,8 +321,9 @@ read-object、command-status、recover。所有 HTTP 方法沿原 cookie／
 Origin／CSRF，拒绝额外 query；Desktop Local 不新增本地 HTTP 依赖。
 安装 carrier 8 MiB、其他 JSON body 512 KiB，并检查 fatal UTF-8；这些
 传输上限不扩大定义／HTML／正文的原限制。真实 caller 在响应后仍复核。
-renderer bridge 的原 ID／取消／代次传输已经独立验证；真实 Runtime／GUI
-与原窗口接线仍须单独验收。
+renderer bridge 的原 ID／取消／代次传输已经独立验证；headless 实际
+Runtime 普通输入、后台事项和 infer 已有隔离受控模型证据，GUI 与原
+窗口接线仍须单独验收。
 
 操作发现继续已有 list／describe／invoke 语义，返回确切 app、version、
 definitionHash、instance、operationId、Schema、效果与真实不可用原因。
@@ -545,7 +552,8 @@ admission 和已核 committed 摘要，不给予通用恢复写权。
 最多 4 页／每页 32，10 秒预算停止新工作并取消网络，不强制回滚已开始
 的原子存储。关闭先拒绝新调用、取消网络并等待在途处理，再关闭数据。
 实际 Runtime verifier 读取当下绑定实例，不把候选构造当成运行中 Agent。
-这套生命周期已在隔离真实后端验收，不代表原 App 或真实 Agent 已接通。
+这套生命周期已在隔离真实后端验收；实际 Agent 来源另有普通输入与
+后台事项／infer 的独立 Rust 证据，不据此宣称原 App 或 GUI 已接通。
 
 | 状态或变化 | 行为 |
 | --- | --- |
