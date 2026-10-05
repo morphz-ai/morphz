@@ -71,6 +71,13 @@ export function createCognitiveBrowserChannel(
   let context = parseBrowserContext(initialContext);
   const channel = crypto.randomUUID();
   const pending = new Map<string, Pending>();
+  // Save requests retain their original deadlines even after visibility or an
+  // own CAS advance cancels their replies. One coalesced projection must never
+  // authorize a CAS that an admitted save may already have changed.
+  const saves = new Set<Pending>();
+  let presentation: Pick<BrowserContext, "theme" | "presentation"> | undefined;
+  let initializeRequested = false;
+  let uncertainSaveRevision = 0;
   const lifecycle = new AbortController();
   let retired = false;
   let loaded = false;
@@ -101,7 +108,7 @@ export function createCognitiveBrowserChannel(
     const previous = [...pending.values()];
     pending.clear();
     for (const item of previous) {
-      clearTimeout(item.timer);
+      if (!saves.has(item)) clearTimeout(item.timer);
       item.controller.abort();
       error(item, code);
     }
@@ -109,6 +116,8 @@ export function createCognitiveBrowserChannel(
   function retire(notify = true) {
     if (retired) return;
     retired = true;
+    presentation = undefined;
+    initializeRequested = false;
     clearTimeout(initTimer);
     initTimer = undefined;
     lifecycle.abort();
@@ -120,6 +129,11 @@ export function createCognitiveBrowserChannel(
       }
       pending.clear();
     }
+    for (const item of saves) {
+      clearTimeout(item.timer);
+      item.controller.abort();
+    }
+    saves.clear();
     if (notify && initialized)
       post({ type: "morphz-cognitive-ui/v1:retire", channel });
     try {
@@ -145,6 +159,11 @@ export function createCognitiveBrowserChannel(
   async function initialize() {
     if (!loaded || !connected || !current()) return;
     if (initializing) return initializing;
+    if (saves.size) {
+      initializeRequested = true;
+      return;
+    }
+    initializeRequested = false;
     const deadline = performance.now() + cognitiveBrowserLimits.deadlineMs;
     const timer = setTimeout(() => retire(), cognitiveBrowserLimits.deadlineMs);
     initTimer = timer;
@@ -157,7 +176,13 @@ export function createCognitiveBrowserChannel(
           if (performance.now() >= deadline) return retire();
           // A concurrent trusted update must cross its own actual gate before
           // being published. Never authorize C1 and send unverified C2.
-          if (!equal(start, context)) continue;
+          if (!equal(start, context)) {
+            if (saves.size) {
+              initializeRequested = true;
+              return;
+            }
+            continue;
+          }
           if (performance.now() >= deadline) return retire();
           initialized = true;
           post({
@@ -204,6 +229,20 @@ export function createCognitiveBrowserChannel(
     context = next;
     await initialize();
   }
+  async function releasePresentation() {
+    if (saves.size || retired || (!presentation && !initializeRequested))
+      return;
+    // An unacknowledged mutation is not proof that its old CAS survived. Do
+    // not refresh using a guessed latest revision or silently resend the save.
+    if (uncertainSaveRevision >= context.view.revision) return retire();
+    const latest = presentation;
+    presentation = undefined;
+    if (latest) {
+      const next = parseBrowserContext({ ...context, ...latest });
+      if (!equal(next, context)) return updateContext(next);
+    }
+    if (initializeRequested) await initialize();
+  }
   return {
     /** A second document load retires the original channel. This detects a
      * completed navigation; it does not claim to prevent network navigation. */
@@ -238,6 +277,25 @@ export function createCognitiveBrowserChannel(
         });
       } catch {
         return retire();
+      }
+      if (equal(next, context) && !presentation) return;
+      if (saves.size) {
+        // Only trusted presentation is coalesced. Visibility is restricted
+        // synchronously and cannot keep old requests alive behind this buffer.
+        presentation = {
+          theme: next.theme,
+          presentation: next.presentation,
+        };
+        if (next.view.active !== context.view.active) {
+          visibilityEpoch++;
+          cancelPending("forbidden");
+          context = parseBrowserContext({
+            ...context,
+            view: { ...context.view, active: next.view.active },
+          });
+          initializeRequested = true;
+        }
+        return;
       }
       await updateContext(next);
     },
@@ -285,7 +343,10 @@ export function createCognitiveBrowserChannel(
         error(item, "forbidden");
         return;
       }
-      if (pending.size >= cognitiveBrowserLimits.pending) {
+      let occupied = pending.size;
+      for (const save of saves)
+        if (pending.get(save.requestId) !== save) occupied++;
+      if (occupied >= cognitiveBrowserLimits.pending) {
         error(item, "busy");
         return;
       }
@@ -296,6 +357,12 @@ export function createCognitiveBrowserChannel(
         Math.max(0, Math.ceil(item.deadline - performance.now())),
       );
       pending.set(item.requestId, item);
+      const saveRevision =
+        request.method === "saveState" ? request.expectedRevision : null;
+      const earlierInitialization = initializing;
+      if (saveRevision !== null) saves.add(item);
+      let mutationStarted = false;
+      let saveAcknowledged = false;
       const startVisibility = visibilityEpoch;
       const stillPending = () => {
         if (!current()) return false;
@@ -311,8 +378,16 @@ export function createCognitiveBrowserChannel(
         );
       };
       try {
+        // A gate already reading the old CAS must complete before this save
+        // can mutate it. Later presentation requests wait behind the save,
+        // while the existing initialization never waits on itself.
+        if (saveRevision !== null && earlierInitialization) {
+          await earlierInitialization;
+          if (!stillPending()) return;
+        }
         await ports.authorize(start, item.controller.signal);
         if (!stillPending()) return;
+        mutationStarted = saveRevision !== null;
         const raw = await ports.request(request, start, item.controller.signal);
         if (!stillPending()) return;
         let result: ReturnType<typeof parseBrowserResult>;
@@ -342,6 +417,7 @@ export function createCognitiveBrowserChannel(
         if (request.method === "saveState") {
           cancelPending("conflict");
           context = parseBrowserContext({ ...context, view: end.view });
+          saveAcknowledged = true;
         }
         post({
           type: "morphz-cognitive-ui/v1:response",
@@ -361,6 +437,15 @@ export function createCognitiveBrowserChannel(
         clearTimeout(item.timer);
         if (pending.get(item.requestId) === item)
           pending.delete(item.requestId);
+        if (saveRevision !== null) {
+          saves.delete(item);
+          if (mutationStarted && !saveAcknowledged)
+            uncertainSaveRevision = Math.max(
+              uncertainSaveRevision,
+              saveRevision,
+            );
+          await releasePresentation();
+        }
       }
     },
     retire() {

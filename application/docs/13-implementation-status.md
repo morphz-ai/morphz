@@ -1,5 +1,27 @@
 # 桌面能力实施记录
 
+## 2026-10-06 自有保存与展示刷新共用 CAS 的并发修复
+
+真实生产 App／独立作者／SQLite 与 PostgreSQL 发现同一失败：save1 已提交
+CAS2，普通展示刷新并发 readUi1 返回 conflict，旧 Document 被错误退休。
+真实请求／响应／DOM detach 时间证据保留，不归因环境。共享 channel 修复
+语义相同的展示不重读；真主题投影只保留一个最新值，等待原 save 的最终
+真实 gate／ACK 后合并 CAS2。已在途的 init gate 先完成，save 才可 mutation。
+
+隐藏仍同步取消，身份／权限门不放松；取消但未结算的 save 仍占原十六项
+预算及原三十秒 deadline。未知保存不猜最新 CAS、不重试写，缓冲投影清除
+并退休。未新增方法或并发保存协议，不以 Root memo、关闭 SSE 或重挂救场。
+
+Root 完整冷读两路径并独立正式五文件 119/119、required PostgreSQL、零
+失败／取消／跳过，日志 `/tmp/morphz-cognitive-channel-presentation-ROOT-FIRST-oct06.log`；
+新十项明确 UNIT，旧十八项断言保留，相邻含真实 native port／公开 SDK／
+双 SQL/HPA 认证 Document 资源。原四项 RED 与后续集中／相邻日志保留。
+Root 全工程类型与两源文件格式通过；首轮类型失败为在途新测试导入的
+不存在 parser，修实际导入后重验，不删除断言或冒称环境缺失。
+真实生产 App FOURTH 双后端 happy 均通过，同 Document save2、原设置亮暗
+转换、compose 与历史原件终结导航通过；整组为 3P1F，授权恢复订阅断链
+另已定位并继续修复，绝不把 happy 通过算作完整闭环或原用户窗口验收。
+
 ## 2026-10-06 固定 Document 的 React 展示叶
 
 新增 React 生命周期组件，只借原应用画布／pane／frame 样式，未改 CSS、

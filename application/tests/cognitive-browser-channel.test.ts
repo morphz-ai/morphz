@@ -764,3 +764,416 @@ test("UNIT channel: a failing current-state port retires safely without publishi
   assert.equal(f.messages.at(-1)!.type, "morphz-cognitive-ui/v1:retire");
   assert.doesNotMatch(JSON.stringify(f.messages), /PRIVATE-CURRENT-CAUSE/);
 });
+
+test("UNIT channel: semantically equal presentation does not reauthorize or republish a warm Document", async (t) => {
+  const f = await fixture();
+  t.after(() => f.channel.retire());
+  const gates = f.gates.length;
+  const messages = f.messages.length;
+  const value = context();
+  for (let index = 0; index < 3; index++)
+    await f.channel.updatePresentation({
+      theme: structuredClone(value.theme),
+      presentation: structuredClone(value.presentation),
+      active: value.view.active,
+    });
+  assert.equal(f.gates.length, gates);
+  assert.equal(f.messages.length, messages);
+});
+
+for (const phase of ["mutation", "final-gate"] as const)
+  test(`UNIT channel: latest presentation coalesces during held save ${phase}, then merges its exact acknowledged CAS`, async (t) => {
+    const held = deferred<void>();
+    const entered = deferred<void>();
+    const authorized: number[] = [];
+    let actualRevision = 1;
+    let saves = 0;
+    const state = { view: "remember", object };
+    const f = await fixture({
+      authorize: async (scope) => {
+        authorized.push(scope.view.revision);
+        if (phase === "final-gate" && scope.view.revision === 2) {
+          entered.resolve();
+          await held.promise;
+        }
+        if (scope.view.revision !== actualRevision) throw { code: "conflict" };
+      },
+      request: async (request, scope) => {
+        assert.equal(request.method, "saveState");
+        saves++;
+        actualRevision = 2;
+        if (phase === "mutation") {
+          entered.resolve();
+          await held.promise;
+        }
+        return defaultResult(request, scope);
+      },
+    });
+    t.after(() => {
+      held.resolve();
+      f.channel.retire();
+    });
+    const saveId = crypto.randomUUID();
+    const saving = f.sendRequest(
+      { method: "saveState", expectedRevision: 1, state },
+      saveId,
+    );
+    await entered.promise;
+    const before = authorized.length;
+    const coral = f.channel.updatePresentation({
+      theme: { appearance: "light", accent: "coral" },
+      presentation: context().presentation,
+      active: true,
+    });
+    const iris = f.channel.updatePresentation({
+      theme: { appearance: "light", accent: "iris" },
+      presentation: context().presentation,
+      active: true,
+    });
+    // The controlled store has already committed CAS2. No stale CAS1 read may
+    // race the own-save result, even when a real theme update is requested.
+    assert.equal(authorized.length, before);
+    assert.equal(
+      f.messages.some((m) => m.type === "morphz-cognitive-ui/v1:retire"),
+      false,
+    );
+    held.resolve();
+    await Promise.all([saving, coral, iris]);
+    const response = f.messages.find(
+      (m) =>
+        m.type === "morphz-cognitive-ui/v1:response" && m.requestId === saveId,
+    );
+    assert.ok(response);
+    if (response.type !== "morphz-cognitive-ui/v1:response" || !response.ok)
+      throw new Error("Expected the original save's exact acknowledged result");
+    assert.deepEqual(response.result, { revision: 2, state });
+    const init = f.messages.at(-1)!;
+    if (init.type !== "morphz-cognitive-ui/v1:init")
+      throw new Error("Expected the same warm Document's presentation");
+    assert.equal(init.channel, f.init.channel);
+    assert.equal(init.context.view.revision, 2);
+    assert.deepEqual(init.context.view.state, state);
+    assert.deepEqual(init.context.theme, {
+      appearance: "light",
+      accent: "iris",
+    });
+    assert.deepEqual(authorized, [1, 1, 2, 2]);
+    assert.equal(saves, 1);
+    assert.equal(
+      f.messages.some((m) => m.type === "morphz-cognitive-ui/v1:retire"),
+      false,
+    );
+  });
+
+test("UNIT channel: a save waits for already-inflight initialization rather than committing under its old CAS authorization", async (t) => {
+  const held = deferred<void>();
+  const entered = deferred<void>();
+  const authorized: number[] = [];
+  let actualRevision = 1;
+  let gates = 0;
+  let saves = 0;
+  const f = await fixture({
+    authorize: async (scope) => {
+      authorized.push(scope.view.revision);
+      if (++gates === 2) {
+        entered.resolve();
+        await held.promise;
+      }
+      if (scope.view.revision !== actualRevision) throw { code: "conflict" };
+    },
+    request: async (request, scope) => {
+      assert.equal(request.method, "saveState");
+      saves++;
+      actualRevision = 2;
+      return defaultResult(request, scope);
+    },
+  });
+  t.after(() => {
+    held.resolve();
+    f.channel.retire();
+  });
+  const presenting = f.channel.updatePresentation({
+    theme: { appearance: "light", accent: "coral" },
+    presentation: context().presentation,
+    active: true,
+  });
+  await entered.promise;
+  const saveId = crypto.randomUUID();
+  const saving = f.sendRequest(
+    { method: "saveState", expectedRevision: 1, state: { view: "after" } },
+    saveId,
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(saves, 0, "The earlier exact-CAS gate must settle first");
+  held.resolve();
+  await Promise.all([presenting, saving]);
+  assert.equal(saves, 1);
+  const response = f.messages.find(
+    (m) =>
+      m.type === "morphz-cognitive-ui/v1:response" && m.requestId === saveId,
+  );
+  assert.ok(response);
+  assert.equal(response.type, "morphz-cognitive-ui/v1:response");
+  if (response.type !== "morphz-cognitive-ui/v1:response")
+    throw new Error("Expected original save response");
+  assert.equal(response.ok, true);
+  assert.deepEqual(authorized, [1, 1, 1, 2]);
+  assert.equal(
+    f.messages.some((m) => m.type === "morphz-cognitive-ui/v1:retire"),
+    false,
+  );
+});
+
+test("UNIT channel: equal presentation still checks the real owner and rejects hostile own-data without invoking accessors", async () => {
+  let getterReads = 0;
+  for (const failure of ["accessor", "unknown", "owner"] as const) {
+    let live = true;
+    const f = await fixture({ current: () => live });
+    const value = context();
+    const projection = {
+      theme: value.theme,
+      presentation: value.presentation,
+      active: true,
+    };
+    const raw =
+      failure === "accessor"
+        ? Object.defineProperty({ ...projection }, "active", {
+            enumerable: true,
+            get() {
+              getterReads++;
+              return true;
+            },
+          })
+        : failure === "unknown"
+          ? { ...projection, actor: "forged" }
+          : projection;
+    if (failure === "owner") live = false;
+    await f.channel.updatePresentation(raw);
+    assert.equal(f.gates.length, 1);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.messages.at(-1)!.type, "morphz-cognitive-ui/v1:retire");
+  }
+  assert.equal(getterReads, 0);
+});
+
+test("UNIT channel: latest coalesced presentation may revert to the original theme without an extra CAS gate", async (t) => {
+  const entered = deferred<void>();
+  const held = deferred<void>();
+  const f = await fixture({
+    request: async (request, scope) => {
+      entered.resolve();
+      await held.promise;
+      return defaultResult(request, scope);
+    },
+  });
+  t.after(() => {
+    held.resolve();
+    f.channel.retire();
+  });
+  const saving = f.sendRequest({
+    method: "saveState",
+    expectedRevision: 1,
+    state: { view: "remember" },
+  });
+  await entered.promise;
+  await f.channel.updatePresentation({
+    theme: { appearance: "light", accent: "coral" },
+    presentation: context().presentation,
+    active: true,
+  });
+  await f.channel.updatePresentation({
+    theme: context().theme,
+    presentation: context().presentation,
+    active: true,
+  });
+  assert.equal(f.gates.length, 2);
+  held.resolve();
+  await saving;
+  assert.deepEqual(
+    f.gates.map((gate) => gate.view.revision),
+    [1, 1, 2],
+  );
+  const init = f.messages.at(-1)!;
+  if (init.type !== "morphz-cognitive-ui/v1:init")
+    throw new Error("Expected actual acknowledged context");
+  assert.equal(init.context.view.revision, 2);
+  assert.deepEqual(init.context.theme, context().theme);
+});
+
+test("UNIT channel: visibility cancels a held save immediately; buffered UI cannot invent its unknown CAS or send a replacement", async (t) => {
+  const entered = deferred<void>();
+  const held = deferred<void>();
+  let mutations = 0;
+  const f = await fixture({
+    request: async (request, scope) => {
+      mutations++;
+      entered.resolve();
+      await held.promise;
+      return defaultResult(request, scope);
+    },
+  });
+  t.after(() => {
+    held.resolve();
+    f.channel.retire();
+  });
+  const saveId = crypto.randomUUID();
+  const saving = f.sendRequest(
+    { method: "saveState", expectedRevision: 1, state: { view: "held" } },
+    saveId,
+  );
+  await entered.promise;
+  await f.channel.updatePresentation({
+    theme: { appearance: "light", accent: "iris" },
+    presentation: context().presentation,
+    active: false,
+  });
+  const denied = f.messages.find(
+    (m) =>
+      m.type === "morphz-cognitive-ui/v1:response" && m.requestId === saveId,
+  );
+  if (!denied || denied.type !== "morphz-cognitive-ui/v1:response" || denied.ok)
+    throw new Error("Expected synchronous visibility cancellation");
+  assert.deepEqual(denied.error, { code: "forbidden" });
+  await f.sendRequest(write());
+  assert.equal(mutations, 1);
+  assert.deepEqual(
+    f.gates.map((gate) => gate.view.revision),
+    [1, 1],
+  );
+  held.resolve();
+  await saving;
+  assert.equal(f.messages.at(-1)!.type, "morphz-cognitive-ui/v1:retire");
+  assert.equal(
+    f.messages.filter((m) => m.type === "morphz-cognitive-ui/v1:init").length,
+    1,
+    "No unconfirmed state, theme or foreground authority was published",
+  );
+});
+
+test("UNIT channel: unknown save discards its coalesced projection and retires without retrying the mutation or guessing latest", async (t) => {
+  const entered = deferred<void>();
+  const held = deferred<void>();
+  let mutations = 0;
+  const f = await fixture({
+    request: async () => {
+      mutations++;
+      entered.resolve();
+      await held.promise;
+      // A controlled lost reply, not evidence that the store did not commit.
+      throw { code: "unavailable" };
+    },
+  });
+  t.after(() => {
+    held.resolve();
+    f.channel.retire();
+  });
+  const saveId = crypto.randomUUID();
+  const saving = f.sendRequest(
+    { method: "saveState", expectedRevision: 1, state: { view: "unknown" } },
+    saveId,
+  );
+  await entered.promise;
+  await f.channel.updatePresentation({
+    theme: { appearance: "light", accent: "coral" },
+    presentation: context().presentation,
+    active: true,
+  });
+  held.resolve();
+  await saving;
+  const result = f.messages.find(
+    (m) =>
+      m.type === "morphz-cognitive-ui/v1:response" && m.requestId === saveId,
+  );
+  if (!result || result.type !== "morphz-cognitive-ui/v1:response" || result.ok)
+    throw new Error("Expected the original uncertain save error");
+  assert.deepEqual(result.error, { code: "unavailable" });
+  assert.equal(f.messages.at(-1)!.type, "morphz-cognitive-ui/v1:retire");
+  assert.deepEqual(
+    f.gates.map((gate) => gate.view.revision),
+    [1, 1],
+  );
+  assert.equal(mutations, 1);
+});
+
+test("UNIT channel: buffered presentation does not extend a visibility-cancelled save's original 30-second deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const entered = deferred<void>();
+  const held = deferred<void>();
+  const f = await fixture({
+    request: async (request, scope) => {
+      entered.resolve();
+      await held.promise;
+      return defaultResult(request, scope);
+    },
+  });
+  t.after(() => {
+    held.resolve();
+    f.channel.retire();
+  });
+  const saving = f.sendRequest({
+    method: "saveState",
+    expectedRevision: 1,
+    state: { view: "held" },
+  });
+  await entered.promise;
+  await f.channel.updatePresentation({
+    theme: context().theme,
+    presentation: context().presentation,
+    active: false,
+  });
+  t.mock.timers.tick(cognitiveBrowserLimits.deadlineMs - 1);
+  assert.equal(f.messages.at(-1)!.type, "morphz-cognitive-ui/v1:response");
+  t.mock.timers.tick(1);
+  assert.equal(f.messages.at(-1)!.type, "morphz-cognitive-ui/v1:retire");
+  held.resolve();
+  await saving;
+  assert.equal(
+    f.messages.filter((m) => m.type === "morphz-cognitive-ui/v1:retire").length,
+    1,
+  );
+});
+
+test("UNIT channel: cancelled but unsettled saves still occupy the original bounded request window", async (t) => {
+  const held = deferred<void>();
+  const signals: AbortSignal[] = [];
+  let mutations = 0;
+  const f = await fixture({
+    request: async (request, scope, signal) => {
+      mutations++;
+      signals.push(signal);
+      await held.promise;
+      return defaultResult(request, scope);
+    },
+  });
+  t.after(() => {
+    held.resolve();
+    f.channel.retire();
+  });
+  const runs = Array.from({ length: cognitiveBrowserLimits.pending }, () =>
+    f.sendRequest({
+      method: "saveState",
+      expectedRevision: 1,
+      state: { view: "held" },
+    }),
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(mutations, cognitiveBrowserLimits.pending);
+  const projection = {
+    theme: context().theme,
+    presentation: context().presentation,
+  };
+  await f.channel.updatePresentation({ ...projection, active: false });
+  assert.ok(signals.every((signal) => signal.aborted));
+  await f.channel.updatePresentation({ ...projection, active: true });
+  await f.sendRequest({ method: "ready" });
+  const busy = f.messages.at(-1)!;
+  if (busy.type !== "morphz-cognitive-ui/v1:response" || busy.ok)
+    throw new Error("Expected bounded occupied save capacity");
+  assert.deepEqual(busy.error, { code: "busy" });
+  assert.equal(mutations, cognitiveBrowserLimits.pending);
+  held.resolve();
+  await Promise.all(runs);
+  assert.equal(f.messages.at(-1)!.type, "morphz-cognitive-ui/v1:retire");
+});

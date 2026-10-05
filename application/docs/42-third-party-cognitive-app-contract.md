@@ -674,6 +674,15 @@ Document 展示仅借既有应用画布样式，不影响 builtin／旧 sandbox�
 最新输入 context／持久 draftOwner 与 actual layout 引用在 updater重查。
 这段是实施约束，不把新 hook 或 props 当权限租约。
 
+共享 channel 已修实际 own save／presentation 旧 CAS 竞争。语义相同
+展示不重复门；真主题只合并一个最新投影，待原保存最终门确认后按已
+ACK CAS 授权，不能请求任意 latest。先前 init 在途先完成再 mutation；
+隐藏即时取消，未知保存丢缓冲并退休，不猜 CAS、不重试。仍守原十六
+在途预算／三十秒期限。Root 独立五文件 119/119、required PG、零跳过；
+新十项为 UNIT，另真实生产 App 双 SQL happy 的同 Document save2／
+亮暗／compose／终结原件通过，整组 3P1F 的订阅恢复缺口另行修复。
+这不是完整 GUI／原用户 App 完成声明。
+
 React 展示叶已独立验收：只借原 application-host／pane／frame 样式，
 初始创建等父 layout 发布，固定原 source／owner；普通回调替换不更新
 权限，实际失活／卸载同步 abort，迟到 ready 不复活。真实双 SQL/HPA
