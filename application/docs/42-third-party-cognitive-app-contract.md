@@ -67,8 +67,9 @@ Dock／输入目标或作者 GUI，不冒称完整生态／原 App 已完成。
 生产 App 入口 16/16，required PostgreSQL 入口、零跳过，全工程类型／
 构建／专项格式通过。组件、实际 owner、原草稿／重试身份、权限刷新卸载、
 真实 reload 和风险确认均有 Chromium 证据；logical transport 受控，不
-混报 SQL、native IPC、作者网络或用户原窗口。新文档安全装配仍有独立
-失败证据，未验收原型不接入生产 GUI。
+混报 SQL、native IPC、作者网络或用户原窗口。文档隔离原型随后已通过
+独立 Chromium 机制验证，原始失败证据保留；真实 SDK、消息背压、资源
+与 consumer 尚未接通，仍不接入生产 GUI。
 
 第三方应用提供自己拥有的业务能力和原件，Morphz 负责让 Human 与 Agent
 以相同权限调用这些能力，并可选地承载作者的界面。接入不要求作者使用
@@ -651,6 +652,46 @@ prototype 污染、复制 proof／迟到 peer、慢正文返回及正常 DOM 更
 此边界防止另一 Document 继承旧 Host 能力，不承诺阻止已获权原作者故意
 代理本来获准的业务操作。该模型不新增业务授权、作者 endpoint／actor、
 任意宿主代码执行或 Desktop HTTP 依赖，未通过证明前仍不装入原 App。
+
+上述隔离原型现已有新 20 项纯字节与实际 Chromium 证据；Root 独立组合既有
+channel／router 共三文件 53/53，零失败／取消／跳过，类型与专项格式
+通过。新原型只使用受控同步 SDK／Host，不代替实际公开 Browser SDK、
+领域操作或 native 验收。原 FIRST 至 SEVENTH 失败日志保留；真实
+JavaScript URL 重写仅在明确的非生产 sandbox 对照中执行并核退休，
+原 opaque sandbox 中浏览器未执行 URL，单独记录为机制观察。
+实际 doc.open、同 turn 节点复插、原生方法污染、慢正文、复制 peer 和
+正常 DOM 更新均有对应实测，不将 close port 当成消息队列清空。
+
+### 作者文档的共享资源设计
+
+下一阶段把固定包装器移至共享 Application，Web consumer 不拥有 HTML
+构造或字节权限。新增专用只读 `/api/cognitive-app-document/<viewId>`，
+严格接受窗口／绑定两个确切修订和唯一 `documentProof`；拒绝额外或
+重复 query、片段、URL 凭据及非法 nonce。proof 由可信 consumer 为每个
+文档生成，属于一次端点的传输关联，不是凭据、安装许可、业务授权、
+mutation hash 或数据库状态，不能绕过当前 session／view／binding 门。
+
+原 `/api/cognitive-app-view`、公开 readUi DTO 和 Remote 有界原字节读取
+保持。HTTP 先通过当前 Human 的实际 readUi／Store 门再构造；Desktop
+embedded adapter 借用当前 Local／Remote 原资源读取后调用同一构造器，
+不增加应用 HTTP server。构造的 SHA await 前固定原字节，返回前再次
+核当前身份／连接代次和取消，不把请求初始许可当作异步后的披露许可。
+HEAD 也走同一门，返回实际包装字节长度，不执行作者代码。
+
+作者上限仍为 1,000,000 个 UTF-8 字节，BOM、原字节 SHA 与安装证明
+不变。拟为包装载体单独设 1,500,000 字节上限：当前最大作者字节与
+128 字符 proof 实测为 1,341,611 字节，包含 Base64 扩张和 8,275 字节
+固定开销；该预算是工程决定，不扩大原作者或消息预算。生成后仍须
+验证实际 UTF-8 长度，未来固定前缀增长也不能绕过该门。
+
+可信外层只执行固定 Host 代码，使用专属 header CSP；不更改主 App
+策略，不给外层加会使它失去可信 origin 的 sandbox header。只有原作者
+inner 使用 opaque sandbox。Host 接收 peer 须核实际外层 source／origin、
+nonce、单次消费和当前真实 owner；作者不能用复制 proof 的新页面续授。
+真实 SDK 只能领取固定 document-local facade，不退回 Window 消息或
+第二个 SDK port；每次 context accessor、观察者注册、逐个观察者通知、
+结果解析／冻结／accept 和发送均需同步文档守门。SDK 十六 pending 不
+等于原生端口队列有界，private ingress 背压必须另行证明后才接 consumer。
 
 第三方 locator 固定实际 app／version／definition hash、instance／service／
 data authority、objectId、opaque versionRef 与原目录 content id。导航与

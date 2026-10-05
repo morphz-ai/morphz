@@ -1,5 +1,33 @@
 # 桌面能力实施记录
 
+## 2026-10-05 作者界面的文档隔离原型
+
+独立原型先执行固定 Host 前缀，私藏原生端口，再加载原作者字节；SDK
+只可领取一次同步 facade。原 Document 的 root／doctype 移除永久退休，
+同一 turn 复插也不能续用。就绪来自原 parser-ready，不把首次 load 或
+WindowProxy 当作原文档身份证明。作者 UTF-8、BOM 和 SHA 独立保持。
+
+Root 独立正式三文件 53/53，required PostgreSQL 入口、零失败／取消／
+跳过，类型、三文件专项格式和 diff 检查通过。日志
+`/tmp/morphz-cognitive-document-ROOT-FIRST-oct05.log`、
+`/tmp/morphz-cognitive-document-ROOT-TYPES-oct05.log` 和
+`/tmp/morphz-cognitive-document-ROOT-FORMAT-oct05.log`。
+其中新原型 20 项含纯字节校验与实际 Chromium，SDK／Host 是明确受控的同步 stub；
+另外两个文件是既有 channel／router 回归。不能把数据库准备入口当成
+新原型的 SQL 业务验收，也不是实际 Browser SDK、Electron 或原 App。
+
+JavaScript URL 首先没有执行，原失败日志 FIRST 至 SEVENTH 全部保留。
+随后同代码、真实鼠标点击与同 header 的非生产 sandbox 对照实际执行
+doc.open 并替换 root；同一执行段的 check／send／subscribe／factory
+均明确返回已退休。原 opaque sandbox 的真实点击仍未执行该 URL，
+原 Document／root／peer 保持、原回复只到原页；此项是浏览器机制观察，
+不是重写隔离通过，也不推断标准禁止一切 opaque origin 的此类 URL。
+生产 CSP 未放宽；网络自导航阻断与允许导航的机制对照分别留证。
+
+原型尚未挂载。原生消息背压、真实 SDK 的逐观察者／结果发布守门、共享
+认证资源、Electron custom scheme、实际 owner／compose 与原 App 验收
+仍需实现。下一阶段的共享资源职责与独立包装预算见第三方接入契约。
+
 ## 2026-10-05 普通输入的显式应用目标准备层
 
 既有 scoped 草稿增加严格的完整应用目标，选择／清除复用原 latest-state
