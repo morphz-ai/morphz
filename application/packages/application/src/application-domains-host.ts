@@ -47,6 +47,10 @@ import { ImageService } from "./image-service.js";
 import { ProfileAvatarService } from "./profile-avatar-service.js";
 import { ProfileService } from "./profile-service.js";
 import { UiPackageService } from "./ui-package-service.js";
+import {
+  createCognitiveAppHost,
+  type CognitiveAppHostOptions,
+} from "./cognitive-app-host.js";
 import { sourceContainsSelection } from "./platform-message-source.js";
 import {
   embeddedApplicationInstanceIds,
@@ -244,6 +248,7 @@ export async function openApplicationDomainsHost(
       schemas: { ui: string; reader: string; images: string; avatars?: string };
       s3Client?: S3Client;
     };
+    cognitiveApps?: CognitiveAppHostOptions;
   } = {},
 ) {
   const tenantId = workspace.identity();
@@ -555,6 +560,7 @@ export async function openApplicationDomainsHost(
   let browser: BrowserStore | undefined;
   let readerOriginals: ManagedArtifactStore | undefined;
   let uiPackages: UiPackageService | undefined;
+  let cognitiveHost: ReturnType<typeof createCognitiveAppHost> | undefined;
   try {
     await platform.provisionTenant(tenantId);
     if (identity) await identity.bindPlatform(platform, tenantId);
@@ -940,7 +946,15 @@ export async function openApplicationDomainsHost(
       readerOriginalStoreId,
     );
     const notifications = new Notifications(platform, human);
+    cognitiveHost = createCognitiveAppHost({
+      tenantId,
+      platform,
+      ...(uiPackages ? { uiPackages } : {}),
+      ...(options.cognitiveApps ? { config: options.cognitiveApps } : {}),
+    });
+    cognitiveHost.start();
     return {
+      cognitiveApps: { authority: human, service: cognitiveHost.service },
       workspaceChanges: {
         sources: [platform.changeSource(), contentObjects.changeSource(), contentBrowser.changeSource(), contentReader.changeSource(),
           contentStudio.changeSource()],
@@ -1291,6 +1305,7 @@ export async function openApplicationDomainsHost(
         }
       },
       async close() {
+        await cognitiveHost?.close();
         await activeAgent?.dispatcher.stop();
         activeAgent = undefined;
         await contentBrowser.close();
@@ -1306,6 +1321,7 @@ export async function openApplicationDomainsHost(
       },
     };
   } catch (error) {
+    await cognitiveHost?.close();
     await browser?.close();
     await reader?.close();
     await readerOriginals?.close();

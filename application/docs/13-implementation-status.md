@@ -1,5 +1,30 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：共享宿主与事件恢复生命周期
+
+同一 domains Host 在实际 Platform／可选 UI Store 就绪后组装一个私有
+连接解析器、Gateway、Service 与恢复协调器。无私有接入配置仍可管理
+定义／许可和补投已知 committed 目录；不会凭空生成连接文件或凭据。
+Runtime 校验取当前已绑定的实际实例，不捕获启动时的候选 Runtime。
+
+恢复只核原命令回执，不重新 invoke。启动、接入成功、真实数据库变更
+触发有限恢复；没有页面轮询或周期 SQL 读取。网络每轮最多 8 项、并发
+2 项，目录最多 4 页／每页 32 项、轮次 10 秒预算；已开始的原子事务
+仍须完成，期限不等于可强制回滚。关闭先拒绝新调用／取消网络，再等
+协调器和在途存储处理结束，最后关闭数据库；未知结果保留原 commandId。
+
+Root 全文复核五条生产／测试路径，独立正式五文件 30/30，required
+PostgreSQL 实际执行，零失败／取消／跳过；日志
+`/tmp/morphz-cognitive-host-ROOT-FROZEN-oct05.log`。Host 9 项包含实际
+双后端、独立 packed 作者 SQLite、响应丢失后冷重开及关闭链；Recovery
+3 项是明确 FakePort 单元证据，不称实际空闲 SQL trace 验收。Root 当前
+全工程类型检查通过，日志 `/tmp/morphz-cognitive-host-ROOT-TYPES-oct05.log`。
+原 domains 文件仅 16 行装配新增，未夹带无关整文件格式修改。
+
+公共 ingress 新增的两项真实会话撤销分类 RED 另案修正／复验，不把本
+阶段绿灯称为公共入口整体通过。启动器配置、实际 Agent、GUI channel
+与原 App 仍待接线／验收；未改真实配置、资料或运行中的 App。
+
 ## 2026-10-05 第三方认知应用：共享 DTO、薄 Service 与当前 caller 披露
 
 新增十项固定共享方法与严格公开 DTO，复用同一实际 Store／Gateway／可选

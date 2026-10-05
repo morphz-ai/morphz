@@ -283,9 +283,10 @@ UI 安装 JSON 使用固定 8 MiB carrier，避免转义压缩合法 HTML 容量
 HTML 仍分别服从原预算，其他 wire／正文预算不变。所有入口先 guard 纯 JSON
 再独立快照，不执行 caller getter 或 toJSON。
 
-本阶段 Service 已组合实际 Platform／Gateway／UiPackageService 验证；
-公共 Application／Desktop／HTTP 路由、Host 生命周期与真实 Runtime 接线
-仍在进行，不能把这个表当作已开放网络端点清单。
+本阶段 Service 已组合实际 Platform／Gateway／UiPackageService 验证，
+共享 domains Host 的单例装配、事件恢复和安全关闭已通过隔离实际后端。
+公共 Application／Desktop／HTTP 路由与真实 Runtime 接线仍在进行，
+不能把这个表当作已开放网络端点清单。
 
 操作发现继续已有 list／describe／invoke 语义，返回确切 app、version、
 definitionHash、instance、operationId、Schema、效果与真实不可用原因。
@@ -452,6 +453,14 @@ Client、Agent 或 iframe 接口；内部实际网关先认证固定 describe �
 admission 和已核 committed 摘要，不给予通用恢复写权。
 
 ## 超时撤销升级与恢复
+
+共享 Host 持有同一 Gateway／Service 和恢复协调器，先等真实存储就绪。
+启动、接入成功及实际 SQL 变更提示触发有限轮次，没有页面轮询；提示
+只用于失效，不当作授权或成功回执。每轮网络最多 8 项／并发 2，目录
+最多 4 页／每页 32，10 秒预算停止新工作并取消网络，不强制回滚已开始
+的原子存储。关闭先拒绝新调用、取消网络并等待在途处理，再关闭数据。
+实际 Runtime verifier 读取当下绑定实例，不把候选构造当成运行中 Agent。
+这套生命周期已在隔离真实后端验收，不代表原 App 或真实 Agent 已接通。
 
 | 状态或变化 | 行为 |
 | --- | --- |
