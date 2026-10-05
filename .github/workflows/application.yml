@@ -173,6 +173,56 @@ jobs:
           path: application/test-results/
           if-no-files-found: ignore
 
+  cognitive-runtime-contract:
+    name: Cognitive application and actual Runtime contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - run: cargo build --locked --manifest-path ../Cargo.toml -p morphz --bin morphz
+      - run: npm ci
+      - run: npm run build
+      - run: sudo apt-get update && sudo apt-get install -y postgresql
+      - name: Verify cognitive CI completion, omission and redaction gates
+        run: npm test -- tests/ci-cognitive-runtime.test.ts
+      - name: Require all four actual cognitive Runtime groups without omissions
+        env:
+          MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres,runtime
+          MORPHZ_COGNITIVE_RUNTIME_E2E: "1"
+          MORPHZ_COGNITIVE_SOURCES_RUNTIME_E2E: "1"
+          MORPHZ_COGNITIVE_INPUT_RUNTIME_E2E: "1"
+          MORPHZ_COGNITIVE_APPLICATION_RUNTIME_E2E: "1"
+        run: npm exec --offline -- node scripts/ci-cognitive-runtime.mjs
+      # Only the gate's bounded, redacted text/summary; never fixture databases,
+      # private bindings, provider request bodies or the user's profile.
+      # Cancellation attempts finalization; runner loss may leave only running.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() }}
+        with:
+          name: cognitive-runtime-contract-evidence
+          path: |
+            application/test-results/cognitive-runtime-ci-*/summary.json
+            application/test-results/cognitive-runtime-ci-*/test-output.redacted.log
+          if-no-files-found: warn
+          retention-days: 7
+
   runtime-contract:
     name: Application and Runtime contract
     runs-on: ubuntu-latest
@@ -211,7 +261,10 @@ jobs:
           tests/response-annotations-runtime.test.ts
           tests/workspace-changes-actual-runtime.test.ts
       # Real Runtime, local synthetic provider, isolated databases; no user secrets.
-      - run: npm --prefix application run test:runtime-ipc
+      - name: Actual Runtime IPC with bounded failure diagnostics
+        env:
+          MORPHZ_TEST_EVIDENCE_DIRECTORY: ${{ runner.temp }}/morphz-runtime-contract-evidence
+        run: npm --prefix application run test:runtime-ipc
       - run: npm --prefix application run test:continuation-runtime
       - run: npm --prefix application run test:runtime-identity
       - run: npm --prefix application run test:platform-task-runtime
@@ -226,3 +279,14 @@ jobs:
         run: |
           npm --prefix application run test:script-runtime
           npm --prefix application run test:script-recovery
+      # IPC publishes only synthetic, sanitized causal/terminal diagnostics.
+      # Runner loss may prevent this upload; missing evidence is not success.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ always() && (failure() || cancelled()) }}
+        with:
+          name: runtime-contract-failure-evidence
+          path: |
+            ${{ runner.temp }}/morphz-runtime-contract-evidence/failure.json
+            ${{ runner.temp }}/morphz-runtime-contract-evidence/runtime.log
+          if-no-files-found: warn
+          retention-days: 7

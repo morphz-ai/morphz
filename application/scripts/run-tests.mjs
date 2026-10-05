@@ -80,6 +80,12 @@ export async function runTests({
         "--test-reporter-destination=stdout",
         `--test-reporter=${reporter}`,
         "--test-reporter-destination=stdout",
+        ...(testEnv.MORPHZ_TEST_COGNITIVE_CI === "1"
+          ? [
+              `--test-reporter=${fileURLToPath(new URL("./ci-cognitive-runtime-reporter.mjs", import.meta.url))}`,
+              "--test-reporter-destination=stdout",
+            ]
+          : []),
         ...options,
         ...files,
       ],
