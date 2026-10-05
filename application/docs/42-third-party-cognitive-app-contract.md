@@ -685,6 +685,14 @@ Root 冷审九路径，正式联合九文件 120/120、required PostgreSQL、零
 联合全工程类型与十四源文件格式通过。这是独立读取叶，不等于生产
 App 的 mount、真实 private lease 接线、业务 HPA 或作者执行全部验收。
 
+显式打开叶现已独立落地。只定位同完整保存方 slot：open 只读，closed
+使用确切现有 CAS，人明确打开的 absent 才 launch 0/0 且核 1/1 回执。
+最后仍核原 readUi 的字节／身份／许可门；unbound、另一保存方、矛盾
+receipt 或 source 不授信，不后台 bind／重试／改写 prefs／回滚未知副作用。
+Root 两路径冷审，七文件正式 109/109、required PostgreSQL、零跳过；
+新十二项明确 finite UNIT，其余为原叶与原受控 App 回归。类型、五源
+格式通过，不冒称该新叶自身已走真实 SQL／原 App／native 导航。
+
 `openObject` 是可终结调用 Document 的精确原件导航。只有原件已由原
 layout owner 实际发布、源 Document／owner 仍有效且末尾授权门通过时，
 才可返回 `opened:true`；它不承诺离开窗口后的响应或 JavaScript 后续执行。

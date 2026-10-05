@@ -1,5 +1,22 @@
 # 桌面能力实施记录
 
+## 2026-10-06 显式认知窗口打开叶
+
+新增纯边界叶复用实际 Human 的 locate／launch／readUi 三方法；已有同保存方
+窗口只读，确切 absent 的 0/0 创建只接受 1/1 回执，closed 使用原窗口／绑定
+CAS 显式重开。固定完整 authority、定义版本／hash、许可与连接修订；历史
+unbound、另一保存方、矛盾回执或晚到结果均拒绝，不隐式 bind、授权、换连接、
+重试或“清理回滚”。回执不是可执行权限，最后仍要求原 readUi gate。
+
+Root 完整冷读两路径，独立正式七文件 109/109、required PostgreSQL、零
+失败／取消／跳过；其中新十二项是明确 finite UNIT，不冒称 SQL／HPA 或
+生产导航。日志 `/tmp/morphz-cognitive-opening-and-component-ROOT-THIRD-oct06.log`；
+全工程类型与五叶源文件格式检查通过。Root 第二轮误选不存在的测试和脚本，
+入口拒绝的原日志保留；改用实际名称重跑，未归因环境或跳过。
+
+生产 App 显式打开接线另行验证中；真实作者 own save 与展示刷新旧 CAS 的
+并发失败已保留，不能将本叶通过算作原 App／native 完成。
+
 ## 2026-10-06 独立作者 GUI 的真实三入口业务矩阵
 
 新增三测试路径，沿独立 tgz 作者的真实 SQLite、原 Platform SQLite／
