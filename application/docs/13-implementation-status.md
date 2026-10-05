@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-06 原输入根线程取消后的有限投递恢复
+
+原 App 的只读持久链核验发现：一项 Host ledger 仍为 running，但其原输入、
+唯一根 Thread、旧 generation 取消 Event 和 no_reply outcome 已在 10 月 3 日
+提交；Activation／Job／Plan 均无在途执行。旧 Host 过滤取消事件却推进 cursor，
+仅重开不能恢复已越过的终态，不能据 running 投影声称后台仍在工作。
+
+修复只核已接受普通输入的精确原根：启动时有限候选，以及新提交的同根取消
+事件触发；不新增定时器／轮询，连接失败或重连不触发核对。每轮最多八项，
+每项最多四页一百事件。原 Human 的 Platform 读权、完整输入来源与原请求
+语义、当前 cancelled 根／family 身份和 revision、旧 generation 取消事实、
+末次权限／owner 核验全部成立，才只更新该 delivery 的取消状态元数据。
+不回退 cursor、不重发 IO、不产生回复；保留原输入字节、历史、草稿及请求身份。
+子线程取消／父级 terminal barrier 不结算，未知／超页／撤权／退休保留原账本。
+
+Root 完整冷审并独立正式五文件 46/46、required PostgreSQL、零跳过，日志
+`/tmp/morphz-runtime-root-cancellation-ROOT-FINAL-oct06.log`；全工程类型、
+新测试格式与差异检查通过。新三十一项使用真实 Host SQLite／Human 门和
+受控 Runtime HTTP，不冒称本轮真实 Rust／付费模型或用户原窗口验收。
+原 RED、真实 Rust Option 为 null 的比较失败与连接重试重复核对风险均保留；
+修正仅归一比较副本，并移除连接 observer 的额外触发，不改原请求或旧断言。
+
+原窗口为已有单用户模式，沿用原令牌和 Host Human 权限；隔离 gateway 测试
+另验证真实 IdentityCenter／Human headers，不能据此声称原 Runtime 识别
+Human role。跨 Runtime／Platform 的读取不是原子事务；未知旧事实只由新
+Host 或新提交的同根取消事件重新核验，不做无限重试。此阶段尚未重开原 App。
+
 ## 2026-10-06 原用户中心备份与 schema-only 副本升级审计
 
 原 App 安全恢复前，已独立在线备份十二个原数据库并逐库做完整性、FK、

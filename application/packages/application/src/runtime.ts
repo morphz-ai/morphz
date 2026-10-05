@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isDeepStrictEqual } from "node:util";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -2100,6 +2101,10 @@ export class RuntimeBridge {
   private executionObserver?: RuntimeChangeObserver;
   private executionObserverSessions = "";
   private executionChangeVersions = new Map<string, number>();
+  // Finite startup work and committed-event wakeups, not a second polling
+  // loop. Failed/unknown proofs leave the ledger intact and are not retried
+  // until another actual Runtime change (or a fresh Host incarnation).
+  private rootCancellationChecks = new Set<StoredDelivery>();
   /** Host-only wake-up for actual public Runtime projection changes. */
   observeWorkspaceChanges(listener: () => void): () => void {
     this.workspaceChangeListeners.add(listener);
@@ -2283,6 +2288,8 @@ export class RuntimeBridge {
       // Validate/recover every retained row once, including parsed defaults.
       // Subsequent commits contain only mutations explicitly marked below.
       this.markDeliveryDirty(delivery);
+      if (delivery.state === "running" && delivery.rootId)
+        this.rootCancellationChecks.add(delivery);
       if (
         delivery.state === "sending" &&
         !!delivery.platformSource &&
@@ -2741,7 +2748,13 @@ export class RuntimeBridge {
     access = this.actor(),
     binary?: { bytes: Buffer; offset: number },
     responseType: "json" | "bytes" = "json",
+    readOnlySession = false,
   ): Promise<unknown> {
+    // Internal reconciliation must use the original Human's read authority,
+    // but must never reclaim membership as a side effect of a read. This is
+    // not an option in a public request/SDK DTO; ordinary calls keep claiming.
+    if (readOnlySession && (method !== "GET" || body !== undefined || binary))
+      throw new Error("只读 Runtime 核对不能执行写入。");
     if (
       this.teamIdentity &&
       access.principalId !== "morphz-service" &&
@@ -2762,6 +2775,7 @@ export class RuntimeBridge {
     // Claiming is idempotent and rechecked on every request, including after revocation.
     if (
       this.teamIdentity &&
+      !readOnlySession &&
       session?.runtimePrincipalId &&
       access.principalId !== "morphz-service"
     ) {
@@ -5724,6 +5738,306 @@ export class RuntimeBridge {
       this.save(delivery);
     }
   }
+  private queueRootCancellationChecks(sessionId: string, rootId?: string) {
+    for (const delivery of this.activeDeliveries())
+      if (
+        delivery.state === "running" &&
+        delivery.rootId &&
+        delivery.sessionId === sessionId &&
+        (!rootId || delivery.rootId === rootId)
+      )
+        this.rootCancellationChecks.add(delivery);
+  }
+
+  /** Repair only an already accepted ordinary input's exact root cancellation.
+   * Runtime's cancellation Event and outcome are atomic: the Event carries
+   * the OLD generation while the cancelled Thread advances by one. A child
+   * terminal barrier can route to a parent, so it is never a settlement fact.
+   * Reads do not rewind the Session cursor, replay IO, or create chat replies. */
+  private async reconcileRootCancellation(delivery: StoredDelivery) {
+    const source = delivery.platformSource;
+    const authorize = this.authorizePlatformRead;
+    const binding = this.state.sessions[delivery.sessionId];
+    if (
+      !source ||
+      !authorize ||
+      !binding?.platform ||
+      delivery.state !== "running" ||
+      !delivery.rootId ||
+      delivery.supplement ||
+      source.continuation
+    )
+      return;
+    const config = this.config;
+    const rootId = delivery.rootId;
+    const sessionId = delivery.sessionId;
+    const frozen = JSON.stringify(delivery);
+    const bindingIdentity = JSON.stringify({
+      id: binding.id,
+      projectId: binding.projectId,
+      conversationId: binding.conversationId,
+      sharedDefault: binding.sharedDefault,
+      platform: binding.platform,
+      runtimePrincipalId: binding.runtimePrincipalId,
+    });
+    const scope = {
+      projectId: source.projectId,
+      conversationId: source.conversationId,
+    };
+    const current = () =>
+      !this.stopped &&
+      this.config === config &&
+      this.authorizePlatformRead === authorize &&
+      this.state.sessions[sessionId] === binding &&
+      JSON.stringify({
+        id: binding.id,
+        projectId: binding.projectId,
+        conversationId: binding.conversationId,
+        sharedDefault: binding.sharedDefault,
+        platform: binding.platform,
+        runtimePrincipalId: binding.runtimePrincipalId,
+      }) === bindingIdentity &&
+      this.state.deliveries.includes(delivery) &&
+      JSON.stringify(delivery) === frozen &&
+      (!this.teamIdentity || this.identity!.allows(source.author));
+    const authorized = async () => {
+      if (!current()) return false;
+      const grant = await authorize(scope, source.author);
+      return (
+        current() &&
+        grant.personalDefault === source.sharedDefault &&
+        this.platformSourceReadable(source, scope, source.author, grant) &&
+        sessionId ===
+          this.objectSessionId(
+            source.projectId,
+            source.conversationId,
+            source.sharedDefault,
+          )
+      );
+    };
+    const read = async (path: string) => {
+      if (!current()) throw new Error("Runtime 核对已失效。");
+      const value = await this.request(
+        path,
+        "GET",
+        undefined,
+        source.author,
+        undefined,
+        "json",
+        true,
+      );
+      if (!current()) throw new Error("Runtime 核对已失效。");
+      return value;
+    };
+    try {
+      if (!(await authorized())) return;
+      const base = `/api/sessions/${encodeURIComponent(sessionId)}`;
+      const root = z
+        .object({ event: eventSchema })
+        .parse(
+          await read(
+            `${base}/messages/by-client-id/${encodeURIComponent(delivery.inputId)}`,
+          ),
+        ).event;
+      if (
+        root.id !== rootId ||
+        root.topic !== "chat/user_message" ||
+        root.actor !== "Session-Client" ||
+        root.type !== "session_message"
+      )
+        return;
+      const acceptedSource = platformSourceFromRuntimeRoot(
+        root,
+        sessionId,
+        delivery.inputId,
+        (id) => (this.teamIdentity ? this.principalId(id) : null),
+      );
+      if (!isDeepStrictEqual(acceptedSource, source)) return;
+      const accepted = z
+        .object({
+          request: z.object({
+            io_version: z.string(),
+            client_metadata: z.unknown(),
+            message: z.object({
+              format: z.unknown(),
+              content: z.object({
+                encoding: z.literal("json"),
+                value: z.unknown(),
+              }),
+            }),
+            activation: z.record(z.string(), z.unknown()),
+            delivery: z.record(z.string(), z.unknown()),
+          }),
+        })
+        .parse(root.payload.session_io).request;
+      const original = z
+        .object({
+          io_version: z.string(),
+          client_metadata: z.unknown(),
+          message: z.object({
+            format: z.unknown(),
+            content: z.object({
+              encoding: z.literal("json"),
+              value: z.unknown(),
+            }),
+          }),
+          activation: z.record(z.string(), z.unknown()),
+          delivery: z.record(z.string(), z.unknown()),
+        })
+        .parse(delivery.request);
+      const budget = { nodes: 0 };
+      // Rust Activation/Delivery serialize absent Option fields as null and
+      // default vectors/booleans explicitly. Normalize copies only: never
+      // rewrite the submitted IO bytes or compare a subset of its intent.
+      const activation = (value: Record<string, unknown>) => ({
+        mode: "evaluate",
+        dispatch_mode: null,
+        model_alias: null,
+        reasoning_effort: null,
+        target_id: null,
+        harness: null,
+        input_destination: null,
+        ...value,
+      });
+      const outputDelivery = (value: Record<string, unknown>) => ({
+        accept_formats: null,
+        required_formats: [],
+        require_schema: false,
+        ...value,
+      });
+      if (
+        accepted.io_version !== original.io_version ||
+        !isDeepStrictEqual(
+          storedDataValue(accepted.client_metadata, budget),
+          original.client_metadata,
+        ) ||
+        !isDeepStrictEqual(
+          storedDataValue(accepted.message.content.value, budget),
+          original.message.content.value,
+        ) ||
+        !isDeepStrictEqual(accepted.message.format, original.message.format) ||
+        !isDeepStrictEqual(
+          activation(accepted.activation),
+          activation(original.activation),
+        ) ||
+        !isDeepStrictEqual(
+          outputDelivery(accepted.delivery),
+          outputDelivery(original.delivery),
+        )
+      )
+        return;
+      const turnSchema = z.object({
+        thread_id: z.string().min(1),
+        session_id: z.literal(sessionId),
+        root_turn_id: z.literal(rootId),
+        revision: z.number().int().positive(),
+        lifecycle: z.literal("cancelled"),
+      });
+      const turnPath = `${base}/turns/${encodeURIComponent(rootId)}/thread`;
+      const turn = turnSchema.parse(await read(turnPath));
+      const family = z
+        .object({
+          session_id: z.literal(sessionId),
+          context_id: z.literal(this.contextId(binding.projectId)),
+          selected_thread_id: z.literal(turn.thread_id),
+          threads: z
+            .array(
+              z.object({
+                id: z.string(),
+                session_id: z.string(),
+                context_id: z.string(),
+                root_turn_id: z.string(),
+                parent_thread_id: z.string().nullable(),
+                revision: z.number().int().positive(),
+                generation: z.number().int().positive(),
+              }),
+            )
+            .max(1),
+        })
+        .parse(
+          await read(
+            `${base}/threads/${encodeURIComponent(turn.thread_id)}/family?limit=1`,
+          ),
+        );
+      const thread = family.threads[0];
+      if (
+        !thread ||
+        thread.id !== turn.thread_id ||
+        thread.session_id !== sessionId ||
+        thread.context_id !== family.context_id ||
+        thread.root_turn_id !== rootId ||
+        thread.parent_thread_id !== null ||
+        thread.revision !== turn.revision
+      )
+        return;
+      let before: number | undefined;
+      let proven = false;
+      for (let page = 0; page < 4 && !proven; page++) {
+        const data = z
+          .object({
+            events: z.array(eventSchema).max(100),
+            next_before_sequence: z.number().int().positive().nullable(),
+          })
+          .parse(
+            await read(
+              `${base}/events?root_turn_id=${encodeURIComponent(rootId)}&limit=100${before === undefined ? "" : `&before_sequence=${before}`}`,
+            ),
+          );
+        const upper = before;
+        if (
+          upper !== undefined &&
+          data.events.some((event) => event.sequence >= upper)
+        )
+          return;
+        proven = data.events.some((event) => {
+          const p = event.payload;
+          return (
+            event.topic === "runtime/thread_cancelled" &&
+            event.type === "runtime_control" &&
+            event.id ===
+              `thread_cancelled_${thread.id}_g${thread.generation - 1}` &&
+            event.sequence > root.sequence &&
+            p.session_id === sessionId &&
+            p.context_id === family.context_id &&
+            p.root_turn_id === rootId &&
+            p.thread_id === thread.id &&
+            p.thread_generation === thread.generation - 1 &&
+            p.terminal_kind === "cancelled" &&
+            p.disposition === "no_reply" &&
+            p.runtime_failure_kind === "thread_cancelled" &&
+            p.wake_policy === "none"
+          );
+        });
+        if (proven || data.next_before_sequence === null) break;
+        if (before !== undefined && data.next_before_sequence >= before) return;
+        before = data.next_before_sequence;
+      }
+      if (!proven) return;
+      const finalTurn = turnSchema.parse(await read(turnPath));
+      if (
+        !isDeepStrictEqual(finalTurn, turn) ||
+        !(await authorized()) ||
+        !current()
+      )
+        return;
+      delivery.state = "cancelled";
+      delivery.cancelRequested = false;
+      delivery.error = null;
+      this.markDeliveryDirty(delivery);
+    } catch {
+      // Unknown, unavailable, revoked, or pagination-insufficient evidence is
+      // not a cancellation. Preserve the complete original ledger and error.
+    }
+  }
+  private async processRootCancellationChecks() {
+    if (!this.authorizePlatformRead) return;
+    let count = 0;
+    for (const delivery of this.rootCancellationChecks) {
+      if (this.stopped || count++ === 8) break;
+      this.rootCancellationChecks.delete(delivery);
+      await this.reconcileRootCancellation(delivery);
+    }
+  }
   async stop() {
     this.stopped = true;
     clearInterval(this.timer);
@@ -6119,6 +6433,10 @@ export class RuntimeBridge {
               payloadString(event, "session_id") !== session.id
             )
               throw new Error("Runtime 返回了不属于当前会话的事件。");
+            if (event.topic === "runtime/thread_cancelled") {
+              const root = payloadString(event, "root_turn_id");
+              if (root) this.queueRootCancellationChecks(session.id, root);
+            }
             if (
               terminal.has(event.topic) ||
               ["runtime/thread_result", "chat/progress"].includes(event.topic)
@@ -6213,6 +6531,7 @@ export class RuntimeBridge {
           this.markDeliveryDirty(delivery);
         }
       }
+      await this.processRootCancellationChecks();
       await this.refreshActivity();
       await this.refreshAttention();
     } catch (error) {
