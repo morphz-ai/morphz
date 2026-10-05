@@ -1,5 +1,25 @@
 # 桌面能力实施记录
 
+## 2026-10-05 单源的共享作者文档资源叶层
+
+已验收固定文档构造器移入共享 Application，Web 旧路径仅 reexport，
+固定前缀逐字节不变，不形成第二套构造／CSP。Core 的专用只读请求严格
+接受窗口和绑定双 CAS＋唯一 `documentProof`，拒绝额外字段、getter、
+重复 query、片段或 URL 凭据；proof 只关联传输，不是权限。
+
+构造器在摘要 await 前脱离原作者字节，保留 BOM、SHA 与原 1,000,000
+字节上限。包装载体另外验证实际 UTF-8 字节和 1,500,000 上限，未扩大
+作者或消息预算。旧字符串 API 的异步拒绝语义不变；迁移初轮错误把它
+改成同步抛出，真实 RED 保留，修复后原断言与原型 test／fixture 不变。
+
+Root 独立四文件 61/61、零失败／取消／跳过、专项格式与生产构建通过，
+日志 `/tmp/morphz-document-resource-ROOT-FINAL-SECOND-oct05.log`、
+`/tmp/morphz-document-resource-ROOT-FORMAT-oct05.log` 和
+`/tmp/morphz-directory-document-ROOT-BUILD-oct05.log`。这组包括新纯叶
+八项与既有原型／channel／router 53 项，后者范围不升级为真实 SDK。
+本阶段尚未接 HTTP、Local／Remote、embedded 或可执行 GUI；完整
+许可复核必须覆盖包装 await，不能以窗口 metadata read 代替。
+
 ## 2026-10-05 共同应用目录与显式输入选择
 
 工作台、Launcher、Dock 与输入关联消费同一判别投影及连接选择内容。

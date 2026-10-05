@@ -664,8 +664,8 @@ JavaScript URL 重写仅在明确的非生产 sandbox 对照中执行并核退�
 
 ### 作者文档的共享资源设计
 
-下一阶段把固定包装器移至共享 Application，Web consumer 不拥有 HTML
-构造或字节权限。新增专用只读 `/api/cognitive-app-document/<viewId>`，
+固定包装器已移至共享 Application，Web 旧路径只 reexport，不拥有 HTML
+构造或字节权限。Core 已定义专用只读 `/api/cognitive-app-document/<viewId>`，
 严格接受窗口／绑定两个确切修订和唯一 `documentProof`；拒绝额外或
 重复 query、片段、URL 凭据及非法 nonce。proof 由可信 consumer 为每个
 文档生成，属于一次端点的传输关联，不是凭据、安装许可、业务授权、
@@ -679,10 +679,15 @@ embedded adapter 借用当前 Local／Remote 原资源读取后调用同一构�
 HEAD 也走同一门，返回实际包装字节长度，不执行作者代码。
 
 作者上限仍为 1,000,000 个 UTF-8 字节，BOM、原字节 SHA 与安装证明
-不变。拟为包装载体单独设 1,500,000 字节上限：当前最大作者字节与
+不变。包装载体单独验证 1,500,000 字节上限：当前最大作者字节与
 128 字符 proof 实测为 1,341,611 字节，包含 Base64 扩张和 8,275 字节
 固定开销；该预算是工程决定，不扩大原作者或消息预算。生成后仍须
 验证实际 UTF-8 长度，未来固定前缀增长也不能绕过该门。
+
+共享资源叶层 Root 正式四文件 61/61，含新纯叶八项及原 53 项回归，
+零跳过，类型、生产构建和专项格式通过。原 Web API 的异步拒绝语义
+和固定前缀字节保持；原始失败保留在实施记录。这里只交付单源构造与
+严格资源契约，尚不代表已接通认证适配器、真实 SDK 或可执行 GUI。
 
 可信外层只执行固定 Host 代码，使用专属 header CSP；不更改主 App
 策略，不给外层加会使它失去可信 origin 的 sandbox header。只有原作者
