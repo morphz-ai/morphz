@@ -26,6 +26,7 @@ const original = cognitiveNavigationLocation({
     object: { objectId: "笔记/001", versionRef: "0009007199254740993\n版本😀" },
   },
 })!;
+assert(original.kind === "original");
 function preferences(): NavigationPreferences {
   return {
     view: "projects",
@@ -51,6 +52,7 @@ test("committed cognitive original clears builtin reading slots without replacin
     cognitiveLocation: original,
   });
   assert.equal(next.cognitiveLocation, original);
+  assert(next.cognitiveLocation?.kind === "original");
   assert.equal(next.artifactId, null);
   assert.equal(next.artifactRevision, null);
   assert.equal(next.artifactPage, null);
@@ -93,6 +95,7 @@ test("ordinary destination changes retire cognitive location while settings pres
     subjectOpen: false,
   });
   assert.equal(next.cognitiveLocation, original);
+  assert(next.cognitiveLocation?.kind === "original");
   assert.equal(
     next.cognitiveLocation?.locator.object.versionRef,
     original.locator.object.versionRef,

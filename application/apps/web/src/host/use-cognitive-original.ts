@@ -44,7 +44,7 @@ export function useCognitiveOriginal({
   const request = useMemo(() => {
     try {
       const parsed = cognitiveNavigationLocation(location);
-      return parsed
+      return parsed?.kind === "original"
         ? { location: parsed, key: JSON.stringify(parsed), invalid: false }
         : { location: null, key: "", invalid: false };
     } catch {
@@ -203,9 +203,10 @@ export function useCognitiveOriginal({
       ? seed.current
       : null;
   const value = selected?.status === "ready" ? selected.value : null;
+  const requested = !!location && (request.invalid || !!request.location);
   return {
-    requested: !!location,
-    blocked: !!location && !value,
+    requested,
+    blocked: requested && !value,
     value,
     message: request.invalid
       ? "原件阅读位置无效，请重新打开历史引用。"
@@ -220,7 +221,10 @@ export function useCognitiveOriginal({
       setRetry((value) => value + 1);
     },
     async readOriginal(
-      locator: CognitiveNavigationLocation["locator"],
+      locator: Extract<
+        CognitiveNavigationLocation,
+        { kind: "original" }
+      >["locator"],
       signal: AbortSignal,
     ) {
       const life = lifetime.current;

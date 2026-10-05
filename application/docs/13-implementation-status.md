@@ -1,5 +1,25 @@
 # 桌面能力实施记录
 
+## 2026-10-06 原导航位置的只读认知窗口 owner
+
+原 `prefs.cognitiveLocation` 扩为 exact original 或 view slot，不存权限、
+正文或 mutable CAS。view 恢复只 locate→exact readUi，absent／closed／
+unbound 明确拒输入；没有 launch、grant、connect、bind、默认连接或轮询。
+原 original 合法 view 不读取／阻断，旧 falsey-invalid 行为保持。捕获
+原身份、读取 epoch 与 layout incarnation；失活／清树／重试拒迟到结果
+及旧回调，合法 own save CAS 推进不偷换固定绑定、字节与授权前提。
+
+Root 冷读九路径，独立正式九文件 120/120、required PostgreSQL、零失败／
+取消／跳过，日志 `/tmp/morphz-cognitive-view-AND-GUI-ROOT-SECOND-oct06.log`。
+其中新二十项为六 finite UNIT＋十四真实 Chromium／React StrictMode 机制，
+metadata／current-Human 回调明确受控，不冒称 SQL／HPA／SHA／生产 App。
+其余一百项为原读导航与独立作者实际跨适配器组合。全工程类型／十四
+源文件格式通过。Root 首轮误选不存在测试名被正式入口拒绝，日志保留，
+不是环境缺失；重新使用实际文件，没有跳过或削弱断言。
+
+该阶段未接原 App GUI。新 hook、source props 或 lease 比较不是权限租约，
+真实 private owner 接线与后续业务／原生／原用户窗口仍在活动目标内。
+
 ## 2026-10-06 精确原件终结导航语义
 
 明确实验 SDK `openObject` 可销毁调用的 Document：只有真实原 layout

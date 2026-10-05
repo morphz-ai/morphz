@@ -674,6 +674,17 @@ Document 展示仅借既有应用画布样式，不影响 builtin／旧 sandbox�
 最新输入 context／持久 draftOwner 与 actual layout 引用在 updater重查。
 这段是实施约束，不把新 hook 或 props 当权限租约。
 
+只读位置／view owner 叶已实现：同一位置 DTO 增加 strict view slot，
+原 original 读取对合法 view 保持 idle；restore actual locate→readUi，
+absent／closed／unbound 如实阻断输入，不做 mutation。React layout 生命周期
+与原身份／位置／读取 epoch 门退休旧 lease；当次可信 readUi 的自身新 CAS
+可推进，但固定绑定、定义／字节、保存方、许可与连接修订不可改变。
+Root 冷审九路径，正式联合九文件 120/120、required PostgreSQL、零跳过；
+其中 view 新六 unit＋十四真实 Chromium／StrictMode 项的服务／owner
+回调明确 controlled，其余七十九项为原读取和实际作者跨适配器链。
+联合全工程类型与十四源文件格式通过。这是独立读取叶，不等于生产
+App 的 mount、真实 private lease 接线、业务 HPA 或作者执行全部验收。
+
 `openObject` 是可终结调用 Document 的精确原件导航。只有原件已由原
 layout owner 实际发布、源 Document／owner 仍有效且末尾授权门通过时，
 才可返回 `opened:true`；它不承诺离开窗口后的响应或 JavaScript 后续执行。

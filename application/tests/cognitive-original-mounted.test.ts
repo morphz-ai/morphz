@@ -33,6 +33,7 @@ test("local original navigation stores only a detached exact locator and rejects
     locator: { ...locator, object: { ...locator.object } },
   };
   const parsed = cognitiveNavigationLocation(raw)!;
+  assert(parsed.kind === "original");
   assert.equal(Object.isFrozen(parsed), true);
   assert.notEqual(parsed.locator, raw.locator);
   raw.locator.object.versionRef = "new-head";
