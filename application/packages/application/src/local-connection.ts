@@ -35,6 +35,12 @@ import {
   cognitiveAppViewHtmlResource,
   type CognitiveAppViewResource,
 } from "../../core/src/cognitive-app-view-resource.js";
+import {
+  cognitiveAppDocumentResourceMime,
+  parseCognitiveAppDocumentResourceRequest,
+  parseCognitiveAppDocumentHtmlBytes,
+  type CognitiveAppDocumentResource,
+} from "../../core/src/cognitive-app-document-resource.js";
 
 const invocationSchema = z
   .object({
@@ -481,6 +487,87 @@ export class LocalApplicationConnection {
           ? failure.status
           : 503,
         "界面资源不可用或已无访问权限。",
+        [
+          "invalid",
+          "forbidden",
+          "not_found",
+          "conflict",
+          "busy",
+          "contract",
+        ].includes(failure.code)
+          ? failure.code
+          : "unavailable",
+      );
+    } finally {
+      if (id) this.requests.delete(id);
+    }
+  }
+  /** Internal fixed document carrier uses the same request budget and issued
+   * identity as ordinary Local reads, including all asynchronous preparation. */
+  async cognitiveAppDocumentResource(
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<CognitiveAppDocumentResource> {
+    let request;
+    try {
+      request = parseCognitiveAppDocumentResourceRequest(raw);
+    } catch {
+      throw new ApplicationRequestError(400, "文档资源请求无效。", "invalid");
+    }
+    const cancelled = () =>
+      new ApplicationRequestError(408, "文档资源读取已取消。", "cancelled");
+    if (signal?.aborted) throw cancelled();
+    let id: string | undefined,
+      issued = false;
+    try {
+      const { generation, session } = this.session();
+      issued = true;
+      if (this.requests.size >= 64)
+        throw new ApplicationRequestError(429, "文档资源读取正忙。", "busy");
+      const controller = new AbortController();
+      id = randomUUID();
+      this.requests.set(id, controller);
+      const incoming = signal
+        ? AbortSignal.any([controller.signal, signal])
+        : controller.signal;
+      const active = () => {
+        this.session(generation);
+        if (incoming.aborted) throw cancelled();
+      };
+      active();
+      const result = await session.cognitiveAppDocumentResource(
+        request,
+        incoming,
+      );
+      active();
+      let bytes;
+      try {
+        if (result.mime !== cognitiveAppDocumentResourceMime) throw new Error();
+        bytes = parseCognitiveAppDocumentHtmlBytes(result.bytes);
+      } catch {
+        throw new ApplicationRequestError(
+          502,
+          "文档资源不符合固定契约。",
+          "contract",
+        );
+      }
+      active();
+      return { mime: cognitiveAppDocumentResourceMime, bytes };
+    } catch (error) {
+      if (error instanceof ApplicationRequestError) throw error;
+      if (signal?.aborted) throw cancelled();
+      if (error instanceof AuthenticationRequired)
+        throw new ApplicationRequestError(
+          issued ? 403 : 401,
+          "文档资源已无访问权限。",
+          "forbidden",
+        );
+      const failure = applicationFailure(error);
+      throw new ApplicationRequestError(
+        [400, 403, 404, 409, 429, 502].includes(failure.status)
+          ? failure.status
+          : 503,
+        "文档资源不可用或已无访问权限。",
         [
           "invalid",
           "forbidden",

@@ -1,4 +1,5 @@
 import type { PlatformActor } from "../../platform/src/store.js";
+import { parseCognitiveAppDocumentResourceRequest } from "../../core/src/cognitive-app-document-resource.js";
 import {
   parseCognitiveAppRequest,
   type CognitiveAppRequestMap,
@@ -267,6 +268,17 @@ export function createCognitiveAppHost(options: {
   }
   const views: CognitiveAppViewService | undefined = originalViews
     ? {
+        documentResource: (actor, input, incoming) => {
+          let request;
+          try {
+            request = parseCognitiveAppDocumentResourceRequest(input);
+          } catch {
+            return Promise.reject(new CognitiveAppServiceError("invalid"));
+          }
+          return track(() =>
+            originalViews.documentResource(actor, request, signal(incoming)),
+          );
+        },
         launch: (actor, input) => callView("launch", actor, input),
         bind: (actor, input) => callView("bind", actor, input),
         read: (actor, input) => callView("read", actor, input),

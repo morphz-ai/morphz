@@ -14,6 +14,8 @@ import type { S3ByteLocation } from "../../managed-artifact-store/src/s3-bytes.j
 import type { S3Client } from "@aws-sdk/client-s3";
 import { parseCognitiveAppDefinition } from "../../cognitive-app-sdk/src/protocol.js";
 import { canonicalJsonBytes } from "../../cognitive-app-sdk/src/domain-wire.js";
+import { parseCognitiveAppDocumentResourceRequest } from "../../core/src/cognitive-app-document-resource.js";
+import { createCognitiveDocumentBootstrapFromBytes } from "./cognitive-document-bootstrap.js";
 import {
   parseCognitiveAppUiHeader,
   verifyCognitiveAppUiBytes,
@@ -137,7 +139,10 @@ export class UiPackageService {
     const store = request.cloud
       ? await ManagedArtifactStore.cloud({ ...options, ...request.cloud })
       : request.postgres
-        ? await ManagedArtifactStore.postgres({ ...options, ...request.postgres })
+        ? await ManagedArtifactStore.postgres({
+            ...options,
+            ...request.postgres,
+          })
         : await ManagedArtifactStore.sqlite(options);
     return new UiPackageService(
       request.tenantId,
@@ -386,7 +391,15 @@ export class UiPackageService {
    * package, service or address. Human ownership/current consent and exact
    * view/binding CAS are checked by the real Platform before, during and after
    * the actual immutable Store read. UI-only reads remain installer-only. */
-  async readCognitive(actor: PlatformActor, input: unknown) {
+  private async readCognitivePrepared<T>(
+    actor: PlatformActor,
+    input: unknown,
+    project: (
+      prepared: PreparedCognitiveAppUiRead,
+      bytes: Uint8Array,
+    ) => T | Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
     const access = { credential: actor.credential };
     let request: z.infer<typeof viewReadShape>;
     try {
@@ -396,10 +409,16 @@ export class UiPackageService {
     } catch {
       throw new DomainError("invalid", "认知窗口读取请求无效。");
     }
+    const active = () => {
+      if (signal?.aborted)
+        throw new DomainError("forbidden", "认知文档读取已取消。");
+    };
+    active();
     const prepared = await this.platform.prepareCognitiveAppUiRead(
       access,
       request,
     );
+    active();
     const { target, uiPackage: entry } = prepared;
     if (
       prepared.actor.kind !== "human" ||
@@ -415,10 +434,12 @@ export class UiPackageService {
       throw new DomainError("forbidden", "认知窗口的固定界面存储引用不可用。");
     const original = Buffer.from(canonicalJsonBytes(prepared));
     const assertAccess = async (): Promise<PreparedCognitiveAppUiRead> => {
+      active();
       const current = await this.platform.prepareCognitiveAppUiRead(
         access,
         request,
       );
+      active();
       if (!original.equals(Buffer.from(canonicalJsonBytes(current))))
         throw new DomainError(
           "conflict",
@@ -441,11 +462,13 @@ export class UiPackageService {
       },
     });
     try {
+      active();
       const { version: stored, bytes } = await this.store.readRange({
         credential,
         artifactId: entry.artifactId,
         revision: entry.artifactRevision,
       });
+      active();
       // Re-use the same complete byte/metadata validator. The proof is private
       // and discarded; it neither installs anything nor grants UI permissions.
       verifyCognitiveAppUiBytes({
@@ -456,6 +479,23 @@ export class UiPackageService {
         stored,
         bytes,
       });
+      // This callback is private trusted Host code, never a caller projection.
+      // An asynchronous wrapper digest must finish before the SAME complete
+      // prepare gate compares the original current-consent/installation CAS.
+      active();
+      const result = await project(prepared, bytes);
+      active();
+      await assertAccess();
+      active();
+      return result;
+    } finally {
+      this.scopes.delete(credential);
+    }
+  }
+
+  async readCognitive(actor: PlatformActor, input: unknown) {
+    return this.readCognitivePrepared(actor, input, (prepared, bytes) => {
+      const { target, uiPackage: entry } = prepared;
       const html = new TextDecoder("utf-8", {
         fatal: true,
         ignoreBOM: true,
@@ -464,7 +504,6 @@ export class UiPackageService {
         ...entry.header,
         ui: { ...entry.header.ui, html },
       });
-      await assertAccess();
       const {
         appId,
         version,
@@ -491,9 +530,34 @@ export class UiPackageService {
         grantRevision: target.grantRevision,
         connectionRevision: target.connectionRevision,
       };
-    } finally {
-      this.scopes.delete(credential);
+    });
+  }
+
+  /** Internal document carrier; nonce is correlation, not Platform authority. */
+  async readCognitiveDocument(
+    actor: PlatformActor,
+    input: unknown,
+    signal?: AbortSignal,
+  ) {
+    let request;
+    try {
+      request = parseCognitiveAppDocumentResourceRequest(input);
+    } catch {
+      throw new DomainError("invalid", "认知文档读取请求无效。");
     }
+    const { documentProof, ...cas } = request;
+    return this.readCognitivePrepared(
+      actor,
+      cas,
+      async (_prepared, bytes) => {
+        const document = await createCognitiveDocumentBootstrapFromBytes(
+          bytes,
+          documentProof,
+        );
+        return { mime: document.mime, bytes: document.bytes };
+      },
+      signal,
+    );
   }
 
   async close() {

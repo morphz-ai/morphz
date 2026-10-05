@@ -32,6 +32,15 @@ import {
   type CognitiveAppViewResource,
 } from "../../packages/core/src/cognitive-app-view-resource.js";
 import {
+  parseCognitiveAppDocumentResourceRequest,
+  cognitiveAppDocumentResourcePath,
+  parseCognitiveAppDocumentHtmlBytes,
+  cognitiveAppDocumentResourceMime,
+  maxCognitiveAppDocumentHtmlBytes,
+  type CognitiveAppDocumentResource,
+} from "../../packages/core/src/cognitive-app-document-resource.js";
+import { cognitiveDocumentBootstrapPolicy } from "../../packages/application/src/cognitive-document-bootstrap.js";
+import {
   applicationViewPolicy,
   applicationViewPermissions,
 } from "../../packages/core/src/resource-policy.js";
@@ -256,14 +265,48 @@ export class RemoteApplicationConnection {
     if (typeof id === "string") this.requests.get(id)?.abort();
   }
   /** Fixed bound-window HTML only. No legacy resource lookup or caller URL. */
-  async cognitiveAppViewResource(
+  cognitiveAppViewResource(
     raw: unknown,
     signal?: AbortSignal,
   ): Promise<CognitiveAppViewResource> {
+    return this.readCognitiveHtmlResource("raw", raw, signal);
+  }
+  /** Authenticated fixed carrier bytes, already built and authorized by the Host. */
+  cognitiveAppDocumentResource(
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<CognitiveAppDocumentResource> {
+    return this.readCognitiveHtmlResource("document", raw, signal);
+  }
+  private async readCognitiveHtmlResource(
+    kind: "raw" | "document",
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<CognitiveAppViewResource | CognitiveAppDocumentResource> {
     const deadlineAt = performance.now() + 30000;
+    // Both alternatives are fixed Host contracts, never caller URLs, budgets
+    // or policy overrides. Raw retains its original endpoint and byte rules.
+    const contract =
+      kind === "raw"
+        ? ({
+            parse: parseCognitiveAppViewResourceRequest,
+            path: cognitiveAppViewResourcePath,
+            bytes: parseCognitiveAppViewHtmlBytes,
+            mime: cognitiveAppViewResourceMime,
+            maximum: maxCognitiveAppViewHtmlBytes,
+            policy: applicationViewPolicy,
+          } as const)
+        : ({
+            parse: parseCognitiveAppDocumentResourceRequest,
+            path: cognitiveAppDocumentResourcePath,
+            bytes: parseCognitiveAppDocumentHtmlBytes,
+            mime: cognitiveAppDocumentResourceMime,
+            maximum: maxCognitiveAppDocumentHtmlBytes,
+            policy: cognitiveDocumentBootstrapPolicy,
+          } as const);
     let request;
     try {
-      request = parseCognitiveAppViewResourceRequest(raw);
+      request = contract.parse(raw);
     } catch {
       throw new ApplicationRequestError(400, "界面资源请求无效。", "invalid");
     }
@@ -313,7 +356,7 @@ export class RemoteApplicationConnection {
     try {
       active();
       const response = await this.request(
-        new URL(cognitiveAppViewResourcePath(request), this.origin).toString(),
+        new URL(contract.path(request), this.origin).toString(),
         {
           credentials: "include",
           redirect: "error",
@@ -332,9 +375,8 @@ export class RemoteApplicationConnection {
           response.status === 403 ? "forbidden" : "unavailable",
         );
       if (
-        response.headers.get("content-type") !== cognitiveAppViewResourceMime ||
-        response.headers.get("content-security-policy") !==
-          applicationViewPolicy ||
+        response.headers.get("content-type") !== contract.mime ||
+        response.headers.get("content-security-policy") !== contract.policy ||
         response.headers.get("permissions-policy") !==
           applicationViewPermissions
       )
@@ -347,7 +389,7 @@ export class RemoteApplicationConnection {
       if (
         length === null ||
         !/^[1-9]\d{0,6}$/.test(length) ||
-        Number(length) > maxCognitiveAppViewHtmlBytes
+        Number(length) > contract.maximum
       )
         throw new ApplicationRequestError(
           413,
@@ -368,7 +410,7 @@ export class RemoteApplicationConnection {
         active();
         if (done) break;
         size += value.byteLength;
-        if (size > maxCognitiveAppViewHtmlBytes)
+        if (size > contract.maximum)
           throw new ApplicationRequestError(
             413,
             "界面资源超过大小限制。",
@@ -390,7 +432,7 @@ export class RemoteApplicationConnection {
       }
       let validated;
       try {
-        validated = parseCognitiveAppViewHtmlBytes(bytes);
+        validated = contract.bytes(bytes);
       } catch {
         throw new ApplicationRequestError(
           502,
@@ -399,7 +441,7 @@ export class RemoteApplicationConnection {
         );
       }
       active();
-      return { mime: cognitiveAppViewResourceMime, bytes: validated };
+      return { mime: contract.mime, bytes: validated };
     } catch (error) {
       active();
       if (error instanceof ApplicationRequestError) throw error;

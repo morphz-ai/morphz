@@ -1,5 +1,30 @@
 # 桌面能力实施记录
 
+## 2026-10-05 认证文档载体贯通 Web／Local／Remote／embedded
+
+固定包装投影接入 UiPackageService 原不可变读取管线，完整 Store／SHA
+await 都处于 SAME HPA credential 生命周期；摘要之后重核原完整
+prepareCognitiveAppUiRead 快照。metadata read 不能代替 Human／项目／
+grant／connection／安装字节及窗口双 CAS 的披露许可复核。
+
+HTTP 与 Local 使用同一私有 ApplicationSession document resource；
+Remote 直接读取已认证专用 endpoint，不先拿 raw 再客户端包装。
+embedded 消费同一有界载体，不新增 HTTP server。旧 raw endpoint、
+readUi DTO、公开方法表及 64 槽／30 秒绝对期限保持；HEAD 同样授权，
+socket abort、身份 epoch 与 close 按真实 task signal 等待清理。
+
+Root 独立正式四文件 127/127，零失败／取消／跳过，包括 Local 三十四、
+HTTP 三十八、Host 十五和旧 raw 四十项；真实 SQLite／PostgreSQL、
+HPA、Store、HTTP／Local／Remote 及 embedded 适配验证与明确的 Remote
+单元故障注入分别标注。真实摘要已计算后 held result，撤权、关闭、重绑、
+connection／membership／logout／HPA 到期均拒绝披露；无作者服务或
+Runtime 业务调用，原行与旧资源字节不变。
+日志 `/tmp/morphz-document-authorized-adapters-ROOT-FINAL-oct05.log`。
+九路径专项格式、全工程类型和生产构建通过；Application／HTTP 原文件
+有既有全文件格式欠账，本次新增片段独立比较通过，不格式化无关内容。
+初轮入口缺失和后续 fixture／错误码假设失败全部保留，不归因环境缺失。
+本阶段不执行 GUI，真实 SDK、实际 owner／compose 与原 App 仍待验收。
+
 ## 2026-10-05 固定文档原生端口的有限窗口
 
 独立 Chromium 实测原 v1 facade 绕开 SDK 后能一次排入 1,000 条 wire，

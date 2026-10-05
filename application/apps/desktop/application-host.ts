@@ -54,6 +54,14 @@ import {
   type CognitiveAppViewResource,
   type CognitiveAppViewResourceRequest,
 } from "../../packages/core/src/cognitive-app-view-resource.js";
+import {
+  parseCognitiveAppDocumentResourceURL,
+  parseCognitiveAppDocumentHtmlBytes,
+  cognitiveAppDocumentResourceMime,
+  type CognitiveAppDocumentResource,
+  type CognitiveAppDocumentResourceRequest,
+} from "../../packages/core/src/cognitive-app-document-resource.js";
+import { cognitiveDocumentBootstrapPolicy } from "../../packages/application/src/cognitive-document-bootstrap.js";
 
 const authSchema = z
   .object({
@@ -307,6 +315,10 @@ export async function openEmbeddedApplication(
 export function embeddedResources(
   webRoot: string,
   connection: {
+    cognitiveAppDocumentResource?(
+      request: CognitiveAppDocumentResourceRequest,
+      signal?: AbortSignal,
+    ): CognitiveAppDocumentResource | Promise<CognitiveAppDocumentResource>;
     cognitiveAppViewResource?(
       request: CognitiveAppViewResourceRequest,
       signal?: AbortSignal,
@@ -350,6 +362,64 @@ export function embeddedResources(
         return new Response("Forbidden", { status: 403, headers });
       if (!["GET", "HEAD"].includes(request.method))
         return new Response("Method not allowed", { status: 405, headers });
+      let cognitiveDocument;
+      try {
+        cognitiveDocument = parseCognitiveAppDocumentResourceURL(url);
+      } catch {
+        throw new ApplicationRequestError(400, "界面资源请求无效。", "invalid");
+      }
+      if (cognitiveDocument) {
+        if (request.signal.aborted)
+          throw new ApplicationRequestError(
+            408,
+            "界面资源读取已取消。",
+            "cancelled",
+          );
+        if (!connection.cognitiveAppDocumentResource)
+          throw new ApplicationRequestError(
+            503,
+            "界面资源尚不可用。",
+            "unavailable",
+          );
+        const resource = await connection.cognitiveAppDocumentResource(
+          cognitiveDocument,
+          request.signal,
+        );
+        if (request.signal.aborted)
+          throw new ApplicationRequestError(
+            408,
+            "界面资源读取已取消。",
+            "cancelled",
+          );
+        if (resource.mime !== cognitiveAppDocumentResourceMime)
+          throw new ApplicationRequestError(
+            502,
+            "界面资源不符合固定契约。",
+            "contract",
+          );
+        let bytes;
+        try {
+          bytes = parseCognitiveAppDocumentHtmlBytes(resource.bytes);
+        } catch {
+          throw new ApplicationRequestError(
+            502,
+            "界面资源不符合固定契约。",
+            "contract",
+          );
+        }
+        return new Response(
+          request.method === "HEAD" ? null : new Uint8Array(bytes),
+          {
+            headers: {
+              ...headers,
+              "Content-Type": cognitiveAppDocumentResourceMime,
+              "Content-Length": String(bytes.byteLength),
+              "Content-Security-Policy": cognitiveDocumentBootstrapPolicy,
+              "Permissions-Policy": applicationViewPermissions,
+            },
+          },
+        );
+      }
       let cognitiveView;
       try {
         cognitiveView = parseCognitiveAppViewResourceURL(url);

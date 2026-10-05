@@ -34,6 +34,8 @@ import {
   parseCognitiveAppViewResourceURL,
   cognitiveAppViewHtmlResource,
 } from "../../../packages/core/src/cognitive-app-view-resource.js";
+import { parseCognitiveAppDocumentResourceURL } from "../../../packages/core/src/cognitive-app-document-resource.js";
+import { cognitiveDocumentBootstrapPolicy } from "../../../packages/application/src/cognitive-document-bootstrap.js";
 
 async function body(req: IncomingMessage, limit: number) {
   const chunks: Buffer[] = [];
@@ -266,6 +268,44 @@ export function createAppServer(
           "forbidden",
           "请在本机 Morphz 中管理模型；远端或多人工作空间请联系管理员。",
         );
+      let cognitiveDocument;
+      try {
+        cognitiveDocument = parseCognitiveAppDocumentResourceURL(url);
+      } catch {
+        throw new DomainError("invalid", "界面文档请求无效。");
+      }
+      if (cognitiveDocument) {
+        if (!["GET", "HEAD"].includes(req.method ?? "")) {
+          json(res, 405, { message: "界面文档只支持读取。", code: "invalid" });
+          return;
+        }
+        const controller = new AbortController();
+        const abort = () => {
+          if (!res.writableEnded) controller.abort();
+        };
+        req.on("aborted", abort);
+        res.on("close", abort);
+        try {
+          if (req.aborted || res.destroyed) controller.abort();
+          const resource = await business.cognitiveAppDocumentResource(
+            cognitiveDocument,
+            controller.signal,
+          );
+          assertIdentity();
+          if (controller.signal.aborted || req.aborted || res.destroyed) return;
+          res.writeHead(200, {
+            "Content-Type": resource.mime,
+            "Content-Length": String(resource.bytes.byteLength),
+            "Content-Security-Policy": cognitiveDocumentBootstrapPolicy,
+            "Permissions-Policy": applicationViewPermissions,
+          });
+          res.end(req.method === "HEAD" ? undefined : resource.bytes);
+        } finally {
+          req.off("aborted", abort);
+          res.off("close", abort);
+        }
+        return;
+      }
       let cognitiveView;
       try {
         cognitiveView = parseCognitiveAppViewResourceURL(url);

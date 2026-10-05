@@ -6,6 +6,7 @@ import {
   type CognitiveAppViewResponseMap,
 } from "../../core/src/cognitive-app-view-api.js";
 import { DomainError } from "../../core/src/model.js";
+import { parseCognitiveAppDocumentResourceRequest } from "../../core/src/cognitive-app-document-resource.js";
 import {
   PlatformStorageError,
   type PlatformActor,
@@ -136,6 +137,26 @@ export function createCognitiveAppViewService(options: {
     }
   }
   return {
+    /** Private Host carrier, not a seventh public view method. */
+    async documentResource(
+      actor: PlatformActor,
+      input: unknown,
+      signal?: AbortSignal,
+    ) {
+      try {
+        let request;
+        try {
+          request = parseCognitiveAppDocumentResourceRequest(input);
+        } catch {
+          throw new CognitiveAppServiceError("invalid");
+        }
+        const access = { credential: actor.credential };
+        if (!uiPackages) throw new CognitiveAppServiceError("unavailable");
+        return await uiPackages.readCognitiveDocument(access, request, signal);
+      } catch (error) {
+        throw safe(error);
+      }
+    },
     launch(actor: PlatformActor, input: unknown) {
       return run("launch", actor, input, (access, request) =>
         platform.launchCognitiveAppView(access, request),

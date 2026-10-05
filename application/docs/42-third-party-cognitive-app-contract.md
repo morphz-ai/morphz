@@ -672,7 +672,7 @@ JavaScript URL 重写仅在明确的非生产 sandbox 对照中执行并核退�
 mutation hash 或数据库状态，不能绕过当前 session／view／binding 门。
 
 原 `/api/cognitive-app-view`、公开 readUi DTO 和 Remote 有界原字节读取
-保持。认证载体的接线修正（2026-10-05，已审查、实施中）：固定包装
+保持。认证载体的接线修正（2026-10-05，已实现并独立验收）：固定包装
 投影放入 UiPackageService 的同一私有不可变字节读取管线及 SAME HPA
 会话，不暴露可由 UI／caller 提交的构造 callback。原 Store 校验完成后
 生成固定包装，SHA await 结束再次执行原完整 prepareCognitiveAppUiRead
@@ -689,6 +689,13 @@ server，不在最终权限检查后再次等待摘要。响应适配器只同�
 当前身份／取消并披露，不把请求初始许可当作异步后的披露许可。
 HEAD 也走同一门，返回实际包装字节长度，不执行作者代码。
 
+认证适配器 Root 正式四文件 127/127，零跳过：Local 三十四、HTTP
+三十八、Host 十五与旧 raw 四十。真实双 SQL／HPA／Store／HTTP 及
+资源适配与明确的 Remote 单元故障注入分开留证，实际 digest 后撤权、
+close、重绑、停用连接、membership／logout 和 HPA 到期均拒绝旧载体。
+原 public DTO、方法表、旧 raw 字节与私有能力 cleanup 保持，作者领域
+业务调用为零；这些资源测试不执行 GUI 或代替 SDK／原 App 验收。
+
 作者上限仍为 1,000,000 个 UTF-8 字节，BOM、原字节 SHA 与安装证明
 不变。包装载体单独验证 1,500,000 字节上限：当前最大作者字节与
 128 字符 proof 在 v2 实测为 1,342,767 字节，包含 Base64 扩张和 9,431 字节
@@ -698,7 +705,7 @@ HEAD 也走同一门，返回实际包装字节长度，不执行作者代码。
 共享资源叶层 Root 正式四文件 61/61，含新纯叶八项及原 53 项回归，
 零跳过，类型、生产构建和专项格式通过。原 Web API 的异步拒绝语义
 和固定前缀字节保持；原始失败保留在实施记录。这里只交付单源构造与
-严格资源契约，尚不代表已接通认证适配器、真实 SDK 或可执行 GUI。
+严格资源契约；其后的认证适配器另验收如上，仍不代表真实 SDK 或可执行 GUI。
 
 可信外层只执行固定 Host 代码，使用专属 header CSP；不更改主 App
 策略，不给外层加会使它失去可信 origin 的 sandbox header。只有原作者

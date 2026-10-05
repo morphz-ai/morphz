@@ -162,6 +162,12 @@ import {
 import { guardCognitiveAppInputCommand } from "../../core/src/cognitive-app-object-locator.js";
 import { guardCognitiveAppApplicationCommand } from "../../core/src/cognitive-app-application-target.js";
 import type { CognitiveAppViewService } from "./cognitive-app-view-service.js";
+import {
+  cognitiveAppDocumentResourceMime,
+  parseCognitiveAppDocumentResourceRequest,
+  parseCognitiveAppDocumentHtmlBytes,
+  type CognitiveAppDocumentResource,
+} from "../../core/src/cognitive-app-document-resource.js";
 
 export type ApplicationOptions = {
   cognitiveApps?: {
@@ -722,6 +728,53 @@ export class ApplicationSession {
       if (error instanceof DomainError || error instanceof PlatformStorageError)
         throw new CognitiveAppServiceError(error.code, commandId);
       throw new CognitiveAppServiceError("unavailable", commandId);
+    }
+  }
+  /** Host-only fixed carrier. Keep its entire byte/digest/permission pipeline
+   * under one HPA credential; no public method, fresh authority or GUI callback. */
+  async cognitiveAppDocumentResource(
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<CognitiveAppDocumentResource> {
+    try {
+      let request;
+      try {
+        request = parseCognitiveAppDocumentResourceRequest(raw);
+      } catch {
+        throw new CognitiveAppServiceError("invalid");
+      }
+      const active = () => {
+        this.active();
+        if (signal?.aborted) throw new CognitiveAppServiceError("forbidden");
+      };
+      active();
+      const domain = this.options.cognitiveApps;
+      if (!domain?.views) throw new CognitiveAppServiceError("unavailable");
+      const views = domain.views;
+      const result = await domain.authority.withSession(
+        this.access,
+        active,
+        (actor) => {
+          active();
+          return views.documentResource(actor, request, signal);
+        },
+      );
+      active();
+      let bytes;
+      try {
+        if (result.mime !== cognitiveAppDocumentResourceMime) throw new Error();
+        bytes = parseCognitiveAppDocumentHtmlBytes(result.bytes);
+      } catch {
+        throw new CognitiveAppServiceError("contract");
+      }
+      active();
+      return { mime: cognitiveAppDocumentResourceMime, bytes };
+    } catch (error) {
+      if (error instanceof CognitiveAppServiceError)
+        throw new CognitiveAppServiceError(error.reason);
+      if (error instanceof DomainError || error instanceof PlatformStorageError)
+        throw new CognitiveAppServiceError(error.code);
+      throw new CognitiveAppServiceError("unavailable");
     }
   }
   private runtime() {
