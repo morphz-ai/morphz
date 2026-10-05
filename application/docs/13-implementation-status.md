@@ -1,5 +1,44 @@
 # 桌面能力实施记录
 
+## 2026-10-06 实际打包 Browser SDK 的固定 Document 生命周期
+
+实验 SDK 升为 0.2.0，八方法业务 wire 仍 v1、领域协议不变。Browser
+只领取原 Document 的同步 facade，没有 Window 业务回退或第二个 SDK
+port。固定前缀的可选本地退休回调在同步守门／实际 MutationObserver
+发现 root／doctype 移除时清本地 pending、订阅和 deadline；正在解析
+和结算的请求仍被覆盖。原写 commandId 保留，关闭不宣称业务回滚。
+
+Root 独立正式十五文件 300/300，required PostgreSQL、零失败／取消／
+跳过，日志 `/tmp/morphz-cognitive-browser-document-SDK-ROOT-FINAL-oct06.log`。
+其中新二十四项使用仓库外真实 npm pack／安装、实际共享包装／完整
+header、Chromium opaque Document、真实 native port 和原 channel；
+Host 授权／业务结果明确受控，不冒称这二十四项有真实 SQL 或生产 GUI。
+旧打包与独立作者 Service／Gateway／Human／Agent 回归保持，双 SQL
+业务证据和纯协议／隔离机制范围分开，不因组合通过就混报完整生态。
+
+初次本地退休漏清、UUID／timer 分配中退休、清 timer 成功结算重入及
+第十七 pending 的真实 RED 均保留：`SDK-THIRD-RED`、
+`SDK-ALLOCATION-RACE-RED`、`SDK-SETTLE-RACE-RED`、
+`SDK-SETTLE-BUDGET-RED`，同 `/tmp/morphz-cognitive-browser-document-`
+前缀和 `-oct06.log` 后缀。修复在分配后／插入前重核生命周期和预算，
+结算保持当前项到实际清 timer／clock／guard 后，再移除且再核失活。
+真实 native clear 后作者抛错不泄漏、不打断其他 pending；十五个 held
+请求的 native credit 已实际返还后 UUID 重入，第十七 wire 仍零发送。
+不承诺阻止作者的任意自身 renderer 自毁或无限循环。
+
+固定前缀三项新实际 Chromium 回归及原打包矩阵保留；旧纯 wire 六项
+不改，旧真实 browser 迁移只将退休后的重连换成真实新 Document，保留
+全部原业务／ID／deadline／攻击断言。当前最大载体实测 1,343,325 字节，
+固定开销 9,989，作者百万字节与包装 1.5 MB 上限均不改。
+
+全工程类型、生产构建、十五路径专项格式通过；fresh 生产构建另跑
+实际隔离 Electron 原 scheme／adapter 一项通过，日志
+`/tmp/morphz-document-sdk-ROOT-NATIVE-oct06.log`，这里只核更新后共享
+字节／origin／port，不称实际 SDK native 业务或原用户窗口。SDK 的本地
+退休不是互端业务同步取消。已安装 0.1.0 HTML／SHA 不自动改写，作者
+显式重包并以新一致应用／UI版本升级；headless 仅更新依赖不改业务版本。
+生产 owner／compose、独立可选 GUI 与原 App 跨宿主验收继续在目标内。
+
 ## 2026-10-06 本人认知许可与连接的事件失效
 
 真实 SQLite／PostgreSQL 的提交提示已被原 Session observer 消费，但旧

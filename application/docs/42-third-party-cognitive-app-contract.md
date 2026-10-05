@@ -407,15 +407,20 @@ Service adapter。示例通过打包后的公开导出接入，自己的数据�
 不能 import Host 内部模块、复制 builtin handler，或把手写 postMessage
 便笺称为 Agent 业务闭环。SDK 不拥有作者事务或替作者决定备份责任。
 
-当前纯协议包 `@morphz/cognitive-app-sdk@0.1.0` 已可独立严格构建、prepack
+当前实验协议包 `@morphz/cognitive-app-sdk@0.2.0` 已可独立严格构建、prepack
 为 ESM＋声明、本地 tgz 安装；仅 Zod 4.5.4 为运行依赖。仓库外 consumer
 实际安装、导入四个公开入口及严格类型消费已验证，包不含 Host／Node／
 数据库／浏览器私有实现或凭据。标准声明库使用 ES2023＋DOM（Zod 引用
 标准 URL），不宣称缺少全局类型的任意配置通过。包仍 private、防误发布，
 尚未发布 npm；独立 headless 作者 Service 已仅依赖该 tarball 实际测试。
-可选 browser bridge 已通过实际打包消费与 Chromium opaque 沙箱测试，
-消息有界并固定当前绑定；GUI 宿主接线和完整共享入口仍在进行，不以作者
-独立测试或 Browser 消息测试替代 Host／真实 Agent 的接入验收。
+可选 browser bridge 已迁移为原 Document 的一次性同步 facade，不监听
+Window 业务或回退旧桥；实际 tarball 消费与 Chromium opaque 沙箱测试
+验证逐观察者／解析／冻结／分配／结算退休、原命令 ID、十六 pending 与
+独立 native credit。Root 正式组合 300/300，证据及范围见实施记录。
+GUI 宿主接线仍在进行，不以受控 Browser Host 代替真实授权／业务验收。
+领域／UI 业务 wire 仍 v1；安装的旧 0.1.0 HTML／SHA 不自动改写，GUI
+作者显式重包并以新一致应用／UI版本升级，旧资料与绑定保留。headless
+仅因 npm 依赖升级不必改变业务应用版本；包尚未发布。
 
 ### 客户端管理操作的生命周期
 
@@ -705,7 +710,7 @@ close、重绑、停用连接、membership／logout 和 HPA 到期均拒绝旧�
 
 作者上限仍为 1,000,000 个 UTF-8 字节，BOM、原字节 SHA 与安装证明
 不变。包装载体单独验证 1,500,000 字节上限：当前最大作者字节与
-128 字符 proof 在 v2 实测为 1,342,767 字节，包含 Base64 扩张和 9,431 字节
+128 字符 proof 在当前 v2 实测为 1,343,325 字节，包含 Base64 扩张和 9,989 字节
 固定开销；该预算是工程决定，不扩大原作者或消息预算。生成后仍须
 验证实际 UTF-8 长度，未来固定前缀增长也不能绕过该门。
 
@@ -742,7 +747,8 @@ Host 在 parser-ready 前不发送 wire；接收仅准一次严格的既有 SDK 
 各方向的 native 队列分项上界为十六 wire＋十六反向确认，作者至 Host
 另有一个 parser-ready；不能简写为“整个原生队列最多十六条”。
 单端退休只关闭本端并阻止本端再次交付，不能推断另一端立即清除
-全部业务 pending；SDK 退休通知和 Host owner／channel 联动仍须实现，
+全部业务 pending；SDK 本地退休回调现已实现并实测清本地等待，Host
+owner／channel 联动仍待接线，不发送新的互端退休控制或取消命令，
 不能把 MessagePort.close 当成 native 队列回收证明。
 
 这是原生消息队列与 SDK／业务 pending 两个不同边界；不是承诺阻止

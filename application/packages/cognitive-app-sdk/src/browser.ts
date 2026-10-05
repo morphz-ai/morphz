@@ -31,7 +31,7 @@ const messages: Record<BrowserErrorCode, string> = {
   disposed:
     "This application channel has retired; existing writes are not implicitly cancelled.",
   unsupported:
-    "The browser SDK requires an embedded sandbox with a parent window.",
+    "The browser SDK requires the original Document's fixed local facade.",
 };
 export class CognitiveBrowserError extends Error {
   constructor(
@@ -97,26 +97,72 @@ const commandOf = (request: BrowserRequest): string | undefined =>
       ? request.commandId
       : undefined;
 let activeConnection: Promise<CognitiveBrowserClient> | undefined;
+let activeDocument: (() => boolean) | undefined;
+let claimedDocument = false;
+type DocumentTransport = Readonly<{
+  check(): void;
+  send(text: string): void;
+  subscribe(onText: (text: string) => void, onRetire?: () => void): () => void;
+  dispose(): void;
+}>;
+const documentFacadeName = "__morphzCognitiveDocument";
+function clearLocalTimer(timer: ReturnType<typeof setTimeout>) {
+  try {
+    clearTimeout(timer);
+  } catch {
+    /* Author cleanup errors must not strand a local request or escape as cause. */
+  }
+}
+function transportFailure(error: unknown): "busy" | "unavailable" {
+  try {
+    if (
+      error === null ||
+      (typeof error !== "object" && typeof error !== "function")
+    )
+      return "unavailable";
+    const code = Object.getOwnPropertyDescriptor(error, "code");
+    return code && "value" in code && code.value === "busy"
+      ? "busy"
+      : "unavailable";
+  } catch {
+    return "unavailable";
+  }
+}
 
-/** Importing this module does nothing. Only this explicit call attaches a
- * listener to the actual browser window and its fixed parent. No caller URL,
+/** Importing this module does nothing. Only this explicit call claims the
+ * original Document's fixed local facade. No Window message fallback, caller URL,
  * identity, transport adapter, deadline override or private binding is accepted. */
 export function connectMorphz(): Promise<CognitiveBrowserClient> {
-  if (
-    typeof window === "undefined" ||
-    window.parent === window ||
-    window.parent === null
-  )
+  if (typeof window === "undefined")
     return Promise.reject(new CognitiveBrowserError("unsupported"));
-  if (activeConnection) return activeConnection;
-  const guest = window,
-    parent = window.parent;
+  if (activeConnection) {
+    return activeDocument?.()
+      ? activeConnection!
+      : Promise.reject(new CognitiveBrowserError("disposed"));
+  }
+  if (claimedDocument)
+    return Promise.reject(new CognitiveBrowserError("disposed"));
+  let transport: DocumentTransport;
+  try {
+    const factory = Object.getOwnPropertyDescriptor(window, documentFacadeName);
+    if (
+      !factory ||
+      !("value" in factory) ||
+      typeof factory.value !== "function"
+    )
+      return Promise.reject(new CognitiveBrowserError("unsupported"));
+    claimedDocument = true;
+    transport = factory.value() as DocumentTransport;
+    transport.check();
+  } catch {
+    return Promise.reject(new CognitiveBrowserError("disposed"));
+  }
   const started = performance.now(),
     deadline = started + cognitiveBrowserLimits.deadlineMs;
-  let channel: string | null = null,
-    parentOrigin: string | null = null;
+  let channel: string | null = null;
   let context: BrowserContext | null = null,
     disposed = false;
+  let unsubscribe: (() => void) | undefined;
   const pending = new Map<string, Pending>();
   const observers = new Set<(context: BrowserContext) => void>();
   let resolveConnection: (client: CognitiveBrowserClient) => void;
@@ -133,30 +179,74 @@ export function connectMorphz(): Promise<CognitiveBrowserClient> {
     if (disposed) return;
     disposed = true;
     if (activeConnection === connected) activeConnection = undefined;
-    clearTimeout(connectionTimer);
-    guest.removeEventListener("message", receive);
+    clearLocalTimer(connectionTimer);
     rejectConnection(new CognitiveBrowserError(code));
     for (const item of pending.values()) {
-      clearTimeout(item.timer);
+      clearLocalTimer(item.timer);
       item.reject(new CognitiveBrowserError(code, commandOf(item.request)));
     }
     pending.clear();
     observers.clear();
+    try {
+      unsubscribe?.();
+    } catch {
+      /* Cleanup discloses nothing. */
+    }
+    try {
+      transport.dispose();
+    } catch {
+      /* A retired document stays retired. */
+    }
+  }
+  function active() {
+    if (disposed) return false;
+    try {
+      transport.check();
+      return !disposed;
+    } catch {
+      retire("disposed");
+      return false;
+    }
+  }
+  function settlePending(requestId: string, item: Pending): boolean {
+    // Keep this item covered by retire() while cleanup can re-enter author code.
+    clearLocalTimer(item.timer);
+    const expired = performance.now() >= item.deadline;
+    const beforeRemoval = active();
+    pending.delete(requestId);
+    if (!beforeRemoval || !active()) {
+      item.reject(
+        new CognitiveBrowserError("disposed", commandOf(item.request)),
+      );
+      return false;
+    }
+    if (expired) {
+      item.reject(
+        new CognitiveBrowserError("timeout", commandOf(item.request)),
+      );
+      return false;
+    }
+    return true;
   }
   function publish(next: BrowserContext) {
+    if (!active()) return;
     if (context !== null && next.view.revision < context.view.revision) return;
     const changed = context === null || !sameJson(next, context);
-    context = freeze(next);
+    if (!active()) return;
+    const frozen = freeze(next);
+    if (!active()) return;
+    context = frozen;
     if (!changed) return;
     // Notification is UI-only: no operation/read/recovery is triggered here.
     // Isolate author callback failures; never log its potentially private data.
     for (const observer of [...observers]) {
-      if (disposed) break;
+      if (!active()) break;
       try {
         observer(context);
       } catch {
         /* An author UI error grants nothing. */
       }
+      if (!active()) break;
     }
   }
   function sameBinding(next: BrowserContext, original: BrowserContext) {
@@ -167,19 +257,16 @@ export function connectMorphz(): Promise<CognitiveBrowserClient> {
       sameJson(next.definition, original.definition)
     );
   }
-  function receive(event: MessageEvent<unknown>) {
-    if (
-      disposed ||
-      event.source !== parent ||
-      (parentOrigin !== null && event.origin !== parentOrigin)
-    )
-      return;
+  function receive(text: string) {
+    if (!active()) return;
     let message;
     try {
-      message = parseBrowserMessage(event.data);
+      message = parseBrowserMessage(JSON.parse(text));
     } catch {
+      active();
       return;
     }
+    if (!active()) return;
     if (message.type === "morphz-cognitive-ui/v1:init") {
       if (channel !== null) {
         if (
@@ -197,11 +284,14 @@ export function connectMorphz(): Promise<CognitiveBrowserClient> {
         retire("timeout");
         return;
       }
-      parentOrigin = event.origin;
       channel = message.channel;
-      context = freeze(message.context);
-      clearTimeout(connectionTimer);
+      const frozen = freeze(message.context);
+      if (!active()) return;
+      context = frozen;
+      clearLocalTimer(connectionTimer);
+      if (!active()) return;
       resolveConnection(client);
+      active();
       return;
     }
     if (
@@ -217,12 +307,12 @@ export function connectMorphz(): Promise<CognitiveBrowserClient> {
     }
     const item = pending.get(message.requestId);
     if (!item) return;
-    pending.delete(message.requestId);
-    clearTimeout(item.timer);
+    // Keep even the currently parsing request covered by retire() until settle.
+    const rejectItem = (error: CognitiveBrowserError) => {
+      if (settlePending(message.requestId, item)) item.reject(error);
+    };
     if (performance.now() >= item.deadline) {
-      item.reject(
-        new CognitiveBrowserError("timeout", commandOf(item.request)),
-      );
+      rejectItem(new CognitiveBrowserError("timeout", commandOf(item.request)));
       return;
     }
     if (!message.ok) {
@@ -231,20 +321,23 @@ export function connectMorphz(): Promise<CognitiveBrowserClient> {
         message.error.commandId !== undefined &&
         message.error.commandId !== original
       ) {
-        item.reject(new CognitiveBrowserError("contract", original));
+        rejectItem(new CognitiveBrowserError("contract", original));
         return;
       }
-      item.reject(new CognitiveBrowserError(message.error.code, original));
+      if (!active()) return;
+      rejectItem(new CognitiveBrowserError(message.error.code, original));
       return;
     }
     try {
+      if (!active()) return;
       const result = parseBrowserResult(
         item.request,
         message.result,
         item.context,
       );
+      if (!active()) return;
       if (performance.now() >= item.deadline) {
-        item.reject(
+        rejectItem(
           new CognitiveBrowserError("timeout", commandOf(item.request)),
         );
         return;
@@ -253,28 +346,25 @@ export function connectMorphz(): Promise<CognitiveBrowserClient> {
         const next = result as BrowserContext;
         if (context === null || !sameBinding(next, context)) {
           retire("disposed");
-          item.reject(
-            new CognitiveBrowserError("disposed", commandOf(item.request)),
-          );
           return;
         }
         publish(next);
       }
-      if (disposed) {
-        item.reject(
-          new CognitiveBrowserError("disposed", commandOf(item.request)),
-        );
-        return;
-      }
+      if (!active()) return;
       if (performance.now() >= item.deadline) {
-        item.reject(
+        rejectItem(
           new CognitiveBrowserError("timeout", commandOf(item.request)),
         );
         return;
       }
-      item.accept(freeze(result));
+      const frozen = freeze(result);
+      if (!active()) return;
+      if (!settlePending(message.requestId, item)) return;
+      item.accept(frozen);
+      active();
     } catch {
-      item.reject(
+      if (!active()) return;
+      rejectItem(
         new CognitiveBrowserError(
           performance.now() >= item.deadline ? "timeout" : "contract",
           commandOf(item.request),
@@ -288,7 +378,7 @@ export function connectMorphz(): Promise<CognitiveBrowserClient> {
   ): Promise<BrowserResultMap[M]> {
     const requestDeadline =
       performance.now() + cognitiveBrowserLimits.deadlineMs;
-    if (disposed || context === null || channel === null)
+    if (!active() || context === null || channel === null)
       return Promise.reject(new CognitiveBrowserError("disposed"));
     if (pending.size >= cognitiveBrowserLimits.pending)
       return Promise.reject(new CognitiveBrowserError("busy"));
@@ -309,65 +399,96 @@ export function connectMorphz(): Promise<CognitiveBrowserClient> {
         throw new CognitiveBrowserError("invalid");
       parsed = parseBrowserRequest({ ...input, method }, context);
     } catch {
+      if (!active())
+        return Promise.reject(new CognitiveBrowserError("disposed"));
       return Promise.reject(
         new CognitiveBrowserError(
           performance.now() >= requestDeadline ? "timeout" : "invalid",
         ),
       );
     }
+    if (!active()) return Promise.reject(new CognitiveBrowserError("disposed"));
     if (performance.now() >= requestDeadline)
       return Promise.reject(
         new CognitiveBrowserError("timeout", commandOf(parsed)),
       );
-    const requestId = crypto.randomUUID(),
-      originalContext = context;
+    const requestId = crypto.randomUUID();
+    if (!active())
+      return Promise.reject(
+        new CognitiveBrowserError("disposed", commandOf(parsed)),
+      );
+    const originalContext = context;
     return new Promise<BrowserResultMap[M]>((accept, reject) => {
       const timer = setTimeout(
         () => {
           const item = pending.get(requestId);
           if (!item) return;
-          pending.delete(requestId);
-          item.reject(new CognitiveBrowserError("timeout", commandOf(parsed)));
+          if (settlePending(requestId, item))
+            item.reject(
+              new CognitiveBrowserError("timeout", commandOf(parsed)),
+            );
         },
         Math.max(0, requestDeadline - performance.now()),
       );
-      pending.set(requestId, {
+      if (!active()) {
+        clearLocalTimer(timer);
+        reject(new CognitiveBrowserError("disposed", commandOf(parsed)));
+        return;
+      }
+      if (pending.size >= cognitiveBrowserLimits.pending) {
+        clearLocalTimer(timer);
+        reject(
+          new CognitiveBrowserError(
+            active() ? "busy" : "disposed",
+            commandOf(parsed),
+          ),
+        );
+        return;
+      }
+      const item: Pending = {
         request: parsed,
         context: originalContext,
         deadline: requestDeadline,
         timer,
         accept: (value) => accept(value as BrowserResultMap[M]),
         reject,
-      });
+      };
+      pending.set(requestId, item);
+      const continuing = () => {
+        if (active()) return true;
+        // Earlier retirement may predate this item; do not rely on retire twice.
+        clearLocalTimer(timer);
+        pending.delete(requestId);
+        reject(new CognitiveBrowserError("disposed", commandOf(parsed)));
+        return false;
+      };
       try {
-        // Only the actual parent can receive this; targetOrigin '*' is necessary
-        // for an opaque/custom-scheme parent and is not a broadcast/network API.
+        if (!continuing()) return;
         if (performance.now() >= requestDeadline)
           throw new CognitiveBrowserError("timeout", commandOf(parsed));
-        parent.postMessage(
-          {
+        const text = new TextDecoder().decode(
+          canonicalJsonBytes({
             type: `${cognitiveBrowserProtocol}:request`,
             channel,
             requestId,
             request: parsed,
-          },
-          "*",
+          }),
         );
-      } catch {
-        clearTimeout(timer);
-        pending.delete(requestId);
-        reject(
-          new CognitiveBrowserError(
-            performance.now() >= requestDeadline ? "timeout" : "unavailable",
-            commandOf(parsed),
-          ),
-        );
+        if (!continuing()) return;
+        if (performance.now() >= requestDeadline)
+          throw new CognitiveBrowserError("timeout", commandOf(parsed));
+        transport.send(text);
+        continuing();
+      } catch (error) {
+        const failure = transportFailure(error);
+        if (!continuing() || !settlePending(requestId, item)) return;
+        reject(new CognitiveBrowserError(failure, commandOf(parsed)));
       }
     });
   }
   const client: CognitiveBrowserClient = Object.freeze({
     get context() {
-      if (disposed || context === null)
+      if (!active() || context === null)
         throw new CognitiveBrowserError("disposed");
       return context;
     },
@@ -380,13 +501,14 @@ export function connectMorphz(): Promise<CognitiveBrowserClient> {
     commandStatus: (commandId) => request("commandStatus", { commandId }),
     recoverReceipt: (commandId) => request("recoverReceipt", { commandId }),
     onContextChange: (listener) => {
-      if (disposed) throw new CognitiveBrowserError("disposed");
+      if (!active()) throw new CognitiveBrowserError("disposed");
       if (typeof listener !== "function")
         throw new CognitiveBrowserError("invalid");
       if (observers.size >= cognitiveBrowserLimits.pending)
         throw new CognitiveBrowserError("busy");
       const observer = (value: BrowserContext) => listener(value);
       observers.add(observer);
+      if (!active()) throw new CognitiveBrowserError("disposed");
       return () => {
         observers.delete(observer);
       };
@@ -394,9 +516,15 @@ export function connectMorphz(): Promise<CognitiveBrowserClient> {
     dispose: () => retire("disposed"),
   });
   activeConnection = connected;
-  guest.addEventListener("message", receive);
+  activeDocument = active;
   try {
-    parent.postMessage({ type: `${cognitiveBrowserProtocol}:connect` }, "*");
+    if (!active()) return connected;
+    unsubscribe = transport.subscribe(receive, () => retire("disposed"));
+    if (!active()) return connected;
+    transport.send(
+      JSON.stringify({ type: `${cognitiveBrowserProtocol}:connect` }),
+    );
+    active();
   } catch {
     retire("disposed");
   }

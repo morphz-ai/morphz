@@ -1,12 +1,12 @@
 # 独立认知笔记 Service
 
 实验 headless 示例，Node >=24.13.0；作者进程和数据库独立，只有打包后的
-`@morphz/cognitive-app-sdk@0.1.0` 依赖。无 GUI、Host 内部模块或 Runtime 依赖。
+`@morphz/cognitive-app-sdk@0.2.0` 依赖。无 GUI、Host 内部模块或 Runtime 依赖。
 实际跨 Host/Human/Agent、生产 TLS 和原 App 验收不由此示例测试替代。
 当前实际验证运行时为 Node 25.8.1；声明的最低 Node 版本尚未单独验证。
 
 先在 SDK 包目录 `npm install && npm pack`，将 tarball 带到独立作者目录，
-再安装 `npm install /absolute/path/morphz-cognitive-app-sdk-0.1.0.tgz`。
+再安装 `npm install /absolute/path/morphz-cognitive-app-sdk-0.2.0.tgz`。
 有完整缓存可用 `--offline`；包尚未发布，不能直接假设公网 npm 可安装。
 把此目录复制到独立项目即可，不复制 Morphz Host/UI/Platform 代码。
 

@@ -27,6 +27,7 @@ const documentPrefix = String.raw`(() => {
   const descriptor = Object.getOwnPropertyDescriptor;
   const define = Object.defineProperty;
   const freeze = Object.freeze;
+  const NativeError = Error;
   const keys = Object.keys;
   const array = Array.isArray;
   const finite = Number.isFinite;
@@ -57,15 +58,21 @@ const documentPrefix = String.raw`(() => {
   const timerSet = win.setTimeout, timerClear = win.clearTimeout;
   const channel = new MessageChannel();
   const hostPort = channel.port1, peer = channel.port2;
-  let retired = false, claimed = false, subscriber = null, ready = false;
+  let retired = false, claimed = false, subscriber = null, retirement = null, ready = false;
   let sentSequence = 0, creditedSequence = 0, receivedSequence = 0;
   function retire() {
     if (retired) return;
     retired = true;
+    const notify = retirement;
     subscriber = null;
+    retirement = null;
     apply(timerClear, win, [parserTimer]);
     apply(disconnect, observer, []);
     apply(close, hostPort, []);
+    if (notify !== null) {
+      try { notify(); }
+      catch { /* Author cleanup errors disclose no data and cannot revive a document. */ }
+    }
   }
   function records(items) {
     for (let i = 0; i < items.length; i++) {
@@ -121,8 +128,11 @@ const documentPrefix = String.raw`(() => {
     check() { check(); },
     send(text) {
       check();
-      if (sentSequence - creditedSequence >= 16)
-        throw new Error("Cognitive document is busy.");
+      if (sentSequence - creditedSequence >= 16) {
+        const error = new NativeError("Cognitive document is busy.");
+        define(error, "code", {value: "busy"});
+        throw error;
+      }
       const detachedText = wire(text);
       check();
       if (!safeInteger(sentSequence + 1)) {
@@ -133,13 +143,18 @@ const documentPrefix = String.raw`(() => {
       try { apply(post, hostPort, [{kind: "wire", text: detachedText}]); }
       catch(error) { retire(); throw error; }
     },
-    subscribe(callback) {
+    subscribe(callback, onRetire) {
       check();
-      if (typeof callback !== "function" || subscriber !== null)
+      if (typeof callback !== "function" || subscriber !== null ||
+          (onRetire !== undefined && typeof onRetire !== "function"))
         throw new Error("Invalid cognitive document subscriber.");
       subscriber = callback;
+      retirement = onRetire === undefined ? null : onRetire;
       return function unsubscribe() {
-        if (subscriber === callback) subscriber = null;
+        if (subscriber === callback) {
+          subscriber = null;
+          retirement = null;
+        }
       };
     },
     dispose() { retire(); }

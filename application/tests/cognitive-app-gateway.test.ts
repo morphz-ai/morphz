@@ -1257,7 +1257,7 @@ function preparePackedAuthor(): Promise<string> {
     );
     assert.ok(Array.isArray(packed) && packed.length === 1);
     const filename: unknown = Reflect.get(packed[0] as object, "filename");
-    assert.equal(filename, "morphz-cognitive-app-sdk-0.1.0.tgz");
+    assert.equal(filename, "morphz-cognitive-app-sdk-0.2.0.tgz");
     npm(authorRoot, [
       "install",
       "--offline",

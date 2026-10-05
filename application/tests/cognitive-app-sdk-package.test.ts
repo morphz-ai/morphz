@@ -23,7 +23,7 @@ test("experimental author package declares only pure public ESM and portable typ
     readFileSync(join(packageRoot, "package.json"), "utf8"),
   );
   assert.equal(pkg.name, "@morphz/cognitive-app-sdk");
-  assert.equal(pkg.version, "0.1.0");
+  assert.equal(pkg.version, "0.2.0");
   assert.equal(
     pkg.private,
     true,
@@ -152,7 +152,7 @@ test(
       }[];
       assert.equal(report.length, 1);
       const archive = report[0]!;
-      assert.equal(archive.filename, "morphz-cognitive-app-sdk-0.1.0.tgz");
+      assert.equal(archive.filename, "morphz-cognitive-app-sdk-0.2.0.tgz");
       const expectedFiles = [
         "LICENSE",
         "README.md",
@@ -251,7 +251,7 @@ test(
       ]);
       assert.equal(
         graph.dependencies["@morphz/cognitive-app-sdk"].version,
-        "0.1.0",
+        "0.2.0",
       );
       assert.deepEqual(
         Object.keys(
@@ -382,7 +382,7 @@ export { definition, describe, request, result, value };
       );
       assert.equal(runtime.sdk, true);
       console.log(
-        `[independent SDK package] ${JSON.stringify({ name: "@morphz/cognitive-app-sdk", version: "0.1.0", runtimeDependency: "zod@4.5.4", packedFiles: expectedFiles, tarballIntegrity: archive.integrity, bytes: archive.size, strictConsumer: true, invalidConsumerRejected: true, realNodeImports: [".", "./protocol", "./domain-wire", "./browser"], offline: true })}`,
+        `[independent SDK package] ${JSON.stringify({ name: "@morphz/cognitive-app-sdk", version: "0.2.0", runtimeDependency: "zod@4.5.4", packedFiles: expectedFiles, tarballIntegrity: archive.integrity, bytes: archive.size, strictConsumer: true, invalidConsumerRejected: true, realNodeImports: [".", "./protocol", "./domain-wire", "./browser"], offline: true })}`,
       );
     } finally {
       rmSync(directory, { recursive: true, force: true });

@@ -30,6 +30,7 @@ import {
 } from "../packages/cognitive-app-sdk/src/browser-wire.js";
 import type { CognitiveAppCommandState } from "../packages/platform/src/cognitive-app-commands.js";
 import { parseBrowserNavigationState } from "../packages/cognitive-app-sdk/src/browser.js";
+import { createSdkDocumentBrowserFixture } from "./fixtures/cognitive-app-sdk-document-browser.js";
 
 const opaque = { objectId: "原件/ 😀\n", versionRef: "v:opaque/first" };
 const contextValue = () => ({
@@ -446,7 +447,7 @@ test("browser bounded DTOs reject oversized values and retain legal business JSO
 });
 
 test(
-  "packed author Browser SDK runs in a real opaque sandbox with bounded channels and no network capability (fixture, not Host authorization)",
+  "packed author Browser SDK runs in an actual fixed Document facade/native port with bounded channels and no network capability (controlled business DTOs, not Host authorization)",
   { timeout: 180_000 },
   async (t) => {
     const directory = mkdtempSync(join(tmpdir(), "morphz-browser-sdk-"));
@@ -524,9 +525,9 @@ test(
     await npm([...install, join(author, packed[0]!.filename)], consumer);
     const source = `
 import {connectMorphz,parseBrowserNavigationState} from '@morphz/cognitive-app-sdk/browser';
-let client;const outcomes={},running={},notifications=[];let stopObserver;
+let client;const outcomes={},running={},notifications=[],windowMessages=[];let stopObserver;
 const handle=(key,promise)=>{running[key]=true;promise.then(value=>{outcomes[key]={ok:true,value};delete running[key];},error=>{outcomes[key]={ok:false,code:error.code,commandId:error.commandId};delete running[key];});};
-globalThis.fixture={outcomes,running,context:()=>client.context,
+globalThis.fixture={outcomes,running,windowMessages,context:()=>client.context,
  async hostileInputs(){let calls=0;const reports=[];const accessor=()=>{calls++;throw Error('TEST-private-input-error');};const root=Object.defineProperty({text:'Question'},'secret',{enumerable:true,get:accessor}),nested=Object.defineProperty({objectId:'original'},'versionRef',{enumerable:true,get:accessor}),methodGetter=Object.defineProperty({text:'Question'},'method',{enumerable:true,get:accessor});for(const input of [root,{text:'Question',object:nested},methodGetter,{text:'Question',method:'compose'},Object.assign(Object.create({authorOnly:true}),{text:'Question'})]){let promise;let sync=false;try{promise=client.compose(input);}catch(error){sync=true;promise=Promise.reject(error);}reports.push(await Promise.resolve(promise).then(()=>({ok:true}),error=>({ok:false,sync,name:error.name,code:error.code,privateLeak:String(error).includes('TEST-private-input-error')})));}return {calls,reports};},
  navigation(){const input={object:{objectId:'原件/ 😀\\n',versionRef:'v:opaque/first'},view:'reader'},snapshot=parseBrowserNavigationState(input);input.object.versionRef='caller mutated';const rejected=[];for(const value of [{body:'not navigation'},{draft:'not navigation'},{unknown:true},{object:{objectId:'original',versionRef:1}}]){try{parseBrowserNavigationState(value);rejected.push(false);}catch{rejected.push(true);}}return {snapshot,rejected};},
  notifications,
@@ -543,6 +544,7 @@ globalThis.fixture={outcomes,running,context:()=>client.context,
  resetClock(){delete performance.now;},
  async security(){let network=false,parentReadable=false,storage=false;try{await fetch('/forbidden-network');network=true;}catch{}try{parentReadable=!!parent.document;}catch{}try{localStorage.setItem('x','x');storage=true;}catch{}return {network,parentReadable,storage,origin:location.origin,hasNode:typeof process!=='undefined'||typeof require!=='undefined'};}
 };
+addEventListener('message',event=>windowMessages.push({type:event.data?.type,origin:event.origin,fromParent:event.source===parent}));
 setTimeout(()=>handle('connect',connectMorphz().then(value=>{client=value;return client.context;})),20);
 `;
     const entry = join(consumer, "author.js");
@@ -568,54 +570,22 @@ setTimeout(()=>handle('connect',connectMorphz().then(value=>{client=value;return
     );
     const childHtml = `<!doctype html><meta charset="utf-8"><script>${chunk.code}</script>`;
     const initial = contextValue();
-    const parentHtml = `<!doctype html><iframe id="guest" sandbox="allow-scripts" src="/guest"></iframe><script>
-const frame=document.getElementById('guest');let channel=crypto.randomUUID(),context=${JSON.stringify(initial)};
-const reverseKeys=value=>Array.isArray(value)?value.map(reverseKeys):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).reverse().map(key=>[key,reverseKeys(value[key])])):value;
-const records=[],respond=(request,result)=>frame.contentWindow.postMessage({type:'morphz-cognitive-ui/v1:response',channel,requestId:request.requestId,ok:true,result},'*');
-const init=()=>frame.contentWindow.postMessage({type:'morphz-cognitive-ui/v1:init',channel,context},'*');
-window.hostFixture={records,hold:false,connects:0,init,channel:()=>channel,
- context:()=>context,
- reviseSilent(){context={...context,view:{...context.view,revision:context.view.revision+1}};},
- reorderInit(){context=reverseKeys(context);init();},
- reorderReady(){context=reverseKeys(context);const request=records.at(-1);respond(request,context);},
- changeSchema(){context={...context,definition:{...context.definition,operations:context.definition.operations.map(operation=>operation.id==='notes.create'?{...operation,inputSchema:{...operation.inputSchema,maxLength:31}}:operation)}};init();},
- reset(){channel=crypto.randomUUID();context=${JSON.stringify(initial)};window.hostFixture.hold=false;init();},
- send(data){frame.contentWindow.postMessage(data,'*');},respond,
- rotate(){channel=crypto.randomUUID();context={...context,view:{...context.view,bindingRevision:context.view.bindingRevision+1}};init();},
- update(){context={...context,theme:{appearance:'light',accent:'coral'},view:{...context.view,revision:context.view.revision+1,active:false,state:{object:{objectId:'原件/ 😀\\n',versionRef:'opaque:next'},view:'reader'}}};init();},
- invalidInit(){frame.contentWindow.postMessage({type:'morphz-cognitive-ui/v1:init',channel,context:{...context,actor:'not accepted'}},'*');},
- sibling(data){const sibling=document.createElement('iframe');sibling.sandbox='allow-scripts';sibling.srcdoc='<script>parent.frames[0].postMessage('+JSON.stringify(data)+',"*")<\\/script>';document.body.append(sibling);},
-};
-frame.onload=()=>init();
-window.addEventListener('message',event=>{
- if(event.source!==frame.contentWindow||event.origin!=='null')return;
- const data=event.data;
- if(data.type==='morphz-cognitive-ui/v1:connect'){window.hostFixture.connects++;init();return;}
- if(data.type!=='morphz-cognitive-ui/v1:request'||data.channel!==channel)return;
- records.push(data);if(window.hostFixture.hold)return;
- const request=data.request;
- if(request.method==='ready')respond(data,context);
- else if(request.method==='readObject')respond(data,{protocol:'morphz-domain/v1',authority:context.authority,object:request.object,kind:'document',title:'Original',content:{format:'text',text:'Body'}});
- else if(request.method==='openObject')respond(data,{opened:true,object:request.object});
- else if(request.method==='compose')respond(data,{prepared:true});
- else if(request.method==='saveState'){context={...context,view:{...context.view,revision:request.expectedRevision+1,state:request.state}};respond(data,{revision:context.view.revision,state:request.state});}
- else if(request.method==='invoke'&&request.commandId===null)respond(data,{protocol:'morphz-domain/v1',authority:context.authority,operationId:request.operationId,result:'Read original'});
- else {
- const command={...${JSON.stringify(facts())},commandId:request.commandId,state:'committed',projectionState:'pending',receiptRef:'author/receipt',receiptHash:'${"c".repeat(64)}',committedAt:'2026-10-05T10:00:01Z',objects:[]};
- respond(data,request.method==='commandStatus'?command:{kind:'command',commandId:request.commandId,command,hostIssue:'projection-pending'});
- }
-});</script>`;
+    const documentFixture = await createSdkDocumentBrowserFixture(
+      childHtml,
+      initial,
+      facts(),
+    );
     const urls: string[] = [];
     const server = createServer((request, response) => {
       urls.push(request.url ?? "");
       response.setHeader("Content-Type", "text/html; charset=utf-8");
-      if (request.url === "/guest") {
+      if (request.url?.split("?")[0] === "/guest") {
         response.setHeader(
           "Content-Security-Policy",
-          "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+          documentFixture.document.contentSecurityPolicy,
         );
-        response.end(childHtml);
-      } else if (request.url === "/") response.end(parentHtml);
+        response.end(documentFixture.document.bytes);
+      } else if (request.url === "/") response.end(documentFixture.parentHtml);
       else {
         response.statusCode = 404;
         response.end();
@@ -649,11 +619,41 @@ window.addEventListener('message',event=>{
       if (request.method() !== "GET") writes.push(request.method());
     });
     await page.goto(`http://127.0.0.1:${address.port}/`);
-    const guest = page.frames().find((frame) => frame.url().endsWith("/guest"));
-    assert.ok(guest);
-    await guest.waitForFunction(
-      () => Reflect.get(window, "fixture")?.outcomes.connect?.ok === true,
-    );
+    const currentGuest = async () => {
+      await page
+        .frameLocator("#guest")
+        .frameLocator("iframe")
+        .locator("body")
+        .waitFor({ state: "attached" });
+      const frame = page
+        .frames()
+        .find(
+          (frame) =>
+            frame.url() === "about:srcdoc" &&
+            frame.parentFrame()?.url().includes("/guest"),
+        );
+      assert.ok(
+        frame,
+        "the actual shared prefix owns the opaque author Document",
+      );
+      await frame.waitForFunction(
+        () => Reflect.get(window, "fixture")?.outcomes.connect?.ok === true,
+      );
+      return frame;
+    };
+    let guest = await currentGuest();
+    const freshDocument = async () => {
+      const carrier = guest.parentFrame();
+      assert.ok(carrier);
+      const generation = await page.evaluate(() =>
+        Reflect.get(window, "hostFixture").newDocument(),
+      );
+      await carrier.waitForURL(
+        (url) =>
+          url.searchParams.get("documentGeneration") === String(generation),
+      );
+      guest = await currentGuest();
+    };
     const run = async (
       key: string,
       method: string,
@@ -682,6 +682,18 @@ window.addEventListener('message',event=>{
       await page.evaluate(() => Reflect.get(window, "hostFixture").connects),
       1,
       "Late SDK recovers from an init sent before it subscribed; no automatic retry.",
+    );
+    assert.deepEqual(
+      await page.evaluate(() => Reflect.get(window, "hostFixture").accepted),
+      [
+        {
+          origin: `http://127.0.0.1:${address.port}`,
+          actualCarrierSource: true,
+          proof: documentFixture.proof,
+          ports: 1,
+        },
+      ],
+      "Only the actual trusted carrier hands one real fixed Document port to this Host.",
     );
     assert.equal(
       await guest.evaluate(() => Reflect.get(window, "fixture").shared()),
@@ -793,15 +805,24 @@ window.addEventListener('message',event=>{
           );
         } finally {
           await guest.evaluate(() => Reflect.get(window, "fixture").dispose());
-          await page.evaluate(() => Reflect.get(window, "hostFixture").reset());
           await guest.evaluate(() =>
-            Reflect.get(window, "fixture").reconnect("semanticCleanup"),
+            Reflect.get(window, "fixture").reconnect("semanticRefused"),
           );
           await guest.waitForFunction(
             () =>
-              Reflect.get(window, "fixture").outcomes.semanticCleanup?.ok ===
-              true,
+              Reflect.get(window, "fixture").outcomes.semanticRefused !==
+              undefined,
           );
+          assert.equal(
+            await guest.evaluate(
+              () =>
+                Reflect.get(window, "fixture").outcomes.semanticRefused.code,
+            ),
+            "disposed",
+            "Retired original Document cannot reclaim its one fixed transport.",
+          );
+          await page.evaluate(() => Reflect.get(window, "hostFixture").reset());
+          await freshDocument();
         }
       },
     );
@@ -821,7 +842,7 @@ window.addEventListener('message',event=>{
         network: false,
         parentReadable: false,
         storage: false,
-        origin: `http://127.0.0.1:${address.port}`,
+        origin: "null",
         hasNode: false,
       },
     );
@@ -977,6 +998,30 @@ window.addEventListener('message',event=>{
           }),
         ),
       guarded,
+    );
+    await guest.waitForFunction(
+      () => Reflect.get(window, "fixture").windowMessages.length === 2,
+    );
+    assert.deepEqual(
+      (
+        await guest.evaluate(
+          () => Reflect.get(window, "fixture").windowMessages,
+        )
+      ).sort((left: { origin: string }, right: { origin: string }) =>
+        left.origin.localeCompare(right.origin),
+      ),
+      [
+        {
+          type: "morphz-cognitive-ui/v1:response",
+          origin: "null",
+          fromParent: false,
+        },
+        {
+          type: "morphz-cognitive-ui/v1:response",
+          origin: "https://wrong-origin.example",
+          fromParent: true,
+        },
+      ].sort((left, right) => left.origin.localeCompare(right.origin)),
     );
     await page.waitForTimeout(30);
     assert.equal(
@@ -1145,17 +1190,14 @@ window.addEventListener('message',event=>{
       Reflect.get(window, "fixture").reconnect("reconnected"),
     );
     await guest.waitForFunction(
-      () => Reflect.get(window, "fixture").outcomes.reconnected?.ok === true,
+      () => Reflect.get(window, "fixture").outcomes.reconnected !== undefined,
     );
     assert.equal(
       await guest.evaluate(
-        () => Reflect.get(window, "fixture").context().view.bindingRevision,
+        () => Reflect.get(window, "fixture").outcomes.reconnected.code,
       ),
-      2,
-    );
-    assert.equal(
-      await page.evaluate(() => Reflect.get(window, "hostFixture").connects),
-      initialConnections + 1,
+      "disposed",
+      "Binding retirement cannot reuse the same original Document or its port.",
     );
     await page.evaluate(() => Reflect.get(window, "hostFixture").update());
     await page.waitForTimeout(30);
@@ -1164,9 +1206,33 @@ window.addEventListener('message',event=>{
         () => Reflect.get(window, "fixture").notifications.length,
       ),
       2,
+      "Old observer callbacks remain retired, including after refused same-Document reconnect.",
+    );
+    await freshDocument();
+    assert.equal(
+      await page.evaluate(() => Reflect.get(window, "hostFixture").connects),
+      initialConnections + 1,
+      "Only a genuinely new Document, module and native port reconnect.",
+    );
+    assert.equal(
+      await guest.evaluate(
+        () => Reflect.get(window, "fixture").context().view.bindingRevision,
+      ),
+      2,
+    );
+    await page.evaluate(() => Reflect.get(window, "hostFixture").update());
+    await page.waitForTimeout(30);
+    assert.equal(
+      await guest.evaluate(
+        () => Reflect.get(window, "fixture").notifications.length,
+      ),
+      0,
       "Old observer callbacks are not rebound to a new connection.",
     );
     const beforeObserverDisposal = await seen();
+    await page.evaluate(() => {
+      Reflect.get(window, "hostFixture").hold = true;
+    });
     await guest.evaluate(() => {
       const fixture = Reflect.get(window, "fixture");
       fixture.retireOnUpdate();
@@ -1195,10 +1261,21 @@ window.addEventListener('message',event=>{
     );
     await guest.evaluate(() => Reflect.get(window, "fixture").dispose());
     assert.equal((await run("disposed", "ready")).code, "disposed");
+    assert.equal(
+      await page.evaluate(
+        () => Reflect.get(window, "hostFixture").accepted.length,
+      ),
+      3,
+      "Each of the three genuine author Documents hands exactly one native peer; refused same-Document reconnect adds none.",
+    );
+    assert.deepEqual(
+      await page.evaluate(() => Reflect.get(window, "hostFixture").rejected),
+      [],
+    );
     assert.deepEqual(errors, []);
     assert.deepEqual(writes, []);
     console.log(
-      `[browser SDK fixture] ${JSON.stringify({ packedIntegrity: packed[0]!.integrity, outsideRepository: true, selfContainedHtml: true, opaqueSandbox: true, sourceAndChannel: true, pending: 16, absoluteDeadlineMs: 30000, clockControlledDeadline: true, retiredChannel: true, noBusinessRequests: true, hostAuthorization: "not implemented by this fixture" })}`,
+      `[browser SDK fixture] ${JSON.stringify({ sdkVersion: "0.2.0", packedIntegrity: packed[0]!.integrity, outsideRepository: true, selfContainedHtml: true, opaqueSandbox: true, fixedDocumentFacadeAndNativePort: true, sourceAndChannel: true, windowForgeryPositiveControl: true, sameDocumentReclaimRejected: true, genuineNewDocumentReconnect: true, pending: 16, absoluteDeadlineMs: 30000, clockControlledDeadline: true, retiredChannel: true, noBusinessRequests: true, hostAuthorization: "not implemented by this fixture" })}`,
     );
   },
 );
