@@ -77,8 +77,10 @@ commandId，提供状态/回执查询，不自动重试或生成新命令。关�
 原回执恢复、同 Document 保存与关闭退休均有实际证据。真实 Rust input／
 后台事项／infer 另分层验收，不把作者包或受控模型算作原 App／付费模型。
 当前范围与原失败见[最新交付与剩余](https://github.com/morphz-ai/morphz/blob/main/application/docs/42-third-party-cognitive-app-contract.md#最新交付与剩余)。
-用户原 App 的安全恢复和窗口验收尚未完成；没有由这些隔离测试接通用户
-真实第三方账户或验收公网 TLS、应用市场、OAuth、签名发行或公开 npm 发布。
+用户原 App 已沿原 bundle／profile／中心重开并显示完整 UI，Runtime 未停止，
+原库差异另有逐字段复核；全部逻辑草稿／窗口交互验收仍在核查，不由隔离
+作者测试替代。没有自动接通用户真实第三方账户，也未验收公网 TLS、应用
+市场、OAuth、签名发行或公开 npm 发布。
 
 ## 作者服务与账户映射
 

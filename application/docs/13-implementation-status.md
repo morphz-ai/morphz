@@ -1,5 +1,51 @@
 # 桌面能力实施记录
 
+## 2026-10-06 原 App 同中心恢复与持久保全复核
+
+最终构建通过后，冻结真实 service／desktop 依赖和实际 renderer 入口图。
+按用户已有的「备份后恢复原应用」批准，先重新核实际 Runtime／Platform
+无在途工作、Host 无已连接工具请求；正常退出和 SIGTERM 仍被旧模态阻塞，
+两次失败及回执保留。仅对原 main PID 82919 发出一次 SIGKILL，未对 Runtime、
+进程组或猜测的子进程发信号。内核空闲不证明旧内存断开 Promise 为零；
+此前批准也不保证尚未落盘的临时内容可保留。
+
+确认 profile／center 无文件持有者后，独占复制停止后的 7,491 个普通文件、
+逐份核原字节 hash，保留三个原 Singleton symlink 而不跟随。随后只重开原
+`/Users/shafreeck/Applications/Morphz.app`，原 profile／中心 UUID／身份路径
+不变；新 main 为 38448，原 Runtime 68670 的 start／executable／cwd 保持。
+CoreGraphics 的原窗口连续两次截图均显示完整对话、项目、Dock／输入框和
+「智能体已连接」，无旧 destroyed-object 弹窗或 bootstrap 空白。截图为
+`/tmp/morphz-original-app-recovered-ROOT-oct06.png` 与
+`/tmp/morphz-original-app-recovered-ROOT-STABLE-oct06.png`，不是隔离测试窗口。
+
+Root 实际 query-only 复核原十一个中心库：163 张原表全部主键列／顺序保持，
+完整性与 FK 通过；160 张字段／键集／完整 typed 行摘要精确不变。三项差异
+逐项解释而非整类豁免：Platform schema marker 升级；runtime_deliveries 中
+旧 running 根仅 state→cancelled，另一 completed 行仅顶层 JSON 键序；
+runtime_state 仅连接、旧错误及活动读取完整标志恢复。两条投递的 request、
+source、root、input、Session、causal IDs 保持，历史／Session 原表保持，
+cursor 仍为 6484，没有回退或伪造回复。
+
+Root 完整冷审并在独立私有目录再次实际核原 Runtime 77 张表：全部原主键、
+行数、typed 全行 digest 精确不变，旧取消链七个事件保持；未来 10 月 23 日
+Schedule 仍 queued／revision 1。成功日志
+`/tmp/morphz-runtime-original-postreopen-ROOT-oct06.log`，回执 SHA-256
+`7b26980da5e61a6cdef6257076d7b3f6c0b68d6c7749a066aa5bcc085b78c0a2`。
+这证明没有新增持久 IO、模型尝试或执行记录，不是物理网络尝试的完整审计。
+
+原 App 已恢复不等于第三方真实账户已连接；没有安装作者应用、改本人许可、
+发送模型请求或改变原业务资料。停止后 profile 字节备份也尚不等于全部逻辑
+草稿及原窗口交互验收；这些保全边界继续单独核查，不据截图宣称整个目标完成。
+
+Root 另完整冷审并实际执行固定停止后快照的有限离线 LevelDB 解码：十个
+manifest 活文件的 SHA 前后保持，WAL／SST CRC、序列与 tombstone 检查通过；
+分别取得 1,292 个草稿记录的 origin／原编码键／UTF16LE 值摘要和五个 session
+owner。八组合成 codec 检查通过，但自制窄解析器不是 Chromium 等价实现。
+只读逻辑报告 SHA-256 为
+`7123b0103085044d982902d50d54352eac15df6190cbcfa3f5a8ded07784d491`。
+未读取运行中的 profile；owner 跨 map 交集和 JSON 有效不能证明当前窗口
+选择或显示该草稿，canonical 空值遮蔽旧 legacy 值也不能据摘要推断不存在。
+
 ## 2026-10-06 原输入根线程取消后的有限投递恢复
 
 原 App 的只读持久链核验发现：一项 Host ledger 仍为 running，但其原输入、

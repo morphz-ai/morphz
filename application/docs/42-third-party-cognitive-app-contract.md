@@ -15,7 +15,8 @@
 作者、公开 SDK、真实 HPA 与 SQLite／PostgreSQL 验证。此前正式 4/4 保留；
 最新增加双 SQL 的迟到 locator body 负控，Root 独立正式 6/6、零跳过。
 GUI 关闭通过事件提示核对 strict metadata 并同步退休，不以已有调用拒绝门
-替代；自有 save 的较高 CAS 保温，不自动重读 UI 或重挂。原 App 尚未验收。
+替代；自有 save 的较高 CAS 保温，不自动重读 UI 或重挂。原 App 的恢复证据
+与隔离作者 GUI 验收分别记录，不互相替代。
 详细范围、首轮失败和可重放证据见 [实施记录](./13-implementation-status.md)。
 
 新增负控只在真实 SQL／授权操作已完成且写出原 JSON HTTP200 后暂缓
@@ -35,9 +36,13 @@ compose、终结导航、撤权／显式重开及 close3 自动退场。Local �
 PostgreSQL；自动隔离中心也不是用户原 App。Agent 普通输入、后台事项和
 infer 的真实 Rust 链另有下文证据，不把受控模型称作付费模型验收。
 
-尚未完成的是用户原 App 的安全恢复与原窗口验收：需保留原 profile、中心、
-资料、草稿和 Session，并由用户决定在途工具短暂离线／中断的处理，不自动
-停止 Runtime 或改原资料。因此不宣称整个目标已经完成。
+用户原 App 已按此前批准、完整备份后沿同一 bundle／profile／中心安全重开，
+原窗连续显示完整 UI 与 Runtime 已连接。此前 running 投影对应已取消旧根，
+不是仍有在途工作；新有限恢复只改该状态，原请求、Session／历史／游标保持。
+原 Runtime 未停止，全部 77 张原表精确不变，未来 Schedule 保持。原中心
+163 张原表的三项差异已逐字段解释，其余 160 张精确不变。停止后的 profile
+字节备份不等于全部逻辑草稿／窗口交互验收，仍在核查；没有自动连接第三方
+真实账户或扩大原许可，因此目前不宣称整个目标已经完成。
 
 SDK 仍为 private 的实验包，未发布 npm；公网部署、应用市场、SaaS OAuth、
 签名发行及 Windows 私有配置 ACL 不在本轮交付。作者最低 Node 24.13 的
