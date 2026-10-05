@@ -480,6 +480,40 @@ export function expandWorkspaceContentOpeningConsumption(
 
 // Verify the two current methods and their actual render-local port. This does
 // not call any historical inverse or lock the module's unrelated declarations.
+function currentContentFunction(parsed: Parsed, name: string, parent: Node) {
+  const found = parsed.nodes
+    .filter(isFunctionDeclaration)
+    .filter((node) => node.name?.text === name && node.parent === parent);
+  assert.equal(
+    found.length,
+    1,
+    "unique current content-opening declaration " + name,
+  );
+  assert.ok(found[0]!.body);
+  return found[0]!;
+}
+function currentContentMethod(
+  parsed: Parsed,
+  factory: FunctionDeclaration,
+  name: string,
+) {
+  const found = parsed.nodes
+    .filter(isFunctionDeclaration)
+    .filter(
+      (node) =>
+        node.name?.text === name &&
+        node.getStart() > factory.getStart() &&
+        node.end < factory.end,
+    );
+  assert.equal(found.length, 1, "unique owned content-opening method " + name);
+  assert.equal(
+    found[0]!.parent,
+    factory.body,
+    "content opening belongs to the existing factory",
+  );
+  assert.ok(found[0]!.body);
+  return found[0]!;
+}
 export function verifyCurrentWorkspaceContentOpeningConsumption(
   appText: string,
   ownerText: string,
@@ -508,8 +542,12 @@ export function verifyCurrentWorkspaceContentOpeningConsumption(
     for (const node of app.nodes.filter(isIdentifier))
       if (app.symbols.get(node) === id) app.symbols.set(node, value);
   }
-  const factory = fn(owner, "createWorkspaceNavigationCommands"),
-    workspaceApp = fn(app, "WorkspaceApp");
+  const factory = currentContentFunction(
+      owner,
+      "createWorkspaceNavigationCommands",
+      owner.source,
+    ),
+    workspaceApp = currentContentFunction(app, "WorkspaceApp", app.source);
   for (const name of methods) {
     const original = fn(fixed, name);
     assert.equal(
@@ -517,7 +555,7 @@ export function verifyCurrentWorkspaceContentOpeningConsumption(
       fixedContentOpeningBaseline[name],
       "fixed actual Git complete " + name,
     );
-    const candidate = fn(owner, name);
+    const candidate = currentContentMethod(owner, factory, name);
     assert.equal(
       candidate.parent,
       factory.body,
@@ -538,7 +576,12 @@ export function verifyCurrentWorkspaceContentOpeningConsumption(
     assert.equal(
       app.nodes
         .filter(isFunctionDeclaration)
-        .filter((node) => node.name?.text === name).length,
+        .filter(
+          (node) =>
+            node.name?.text === name &&
+            node.getStart() > workspaceApp.getStart() &&
+            node.end < workspaceApp.end,
+        ).length,
       0,
       "no duplicate App content-opening algorithm",
     );
@@ -594,11 +637,11 @@ export function verifyCurrentWorkspaceContentOpeningConsumption(
     assert.equal(members.length, 1, "direct current return " + name);
     assert.equal(
       owner.symbols.get(members[0]!.name),
-      owner.symbols.get(fn(owner, name).name!),
+      owner.symbols.get(currentContentMethod(owner, factory, name).name!),
       "actual current method return " + name,
     );
   }
-  const imports = app.source.statements
+  const candidates = app.source.statements
     .filter(isImportDeclaration)
     .filter(
       (node) =>
@@ -606,20 +649,38 @@ export function verifyCurrentWorkspaceContentOpeningConsumption(
         "./host/use-workspace-navigation.js",
     )
     .flatMap((node) => {
-      assert.notEqual(
-        node.importClause?.phaseModifier,
-        SyntaxKind.TypeKeyword,
-        "runtime navigation import",
-      );
       const named = node.importClause?.namedBindings;
-      assert.ok(named && isNamedImports(named));
-      return named.elements.filter(
+      if (!named || !isNamedImports(named)) return [];
+      const members = named.elements.filter(
         (item) =>
           !item.isTypeOnly &&
           (item.propertyName?.text ?? item.name.text) ===
             "createWorkspaceNavigationCommands",
       );
+      return members.map((item) => ({ item, clause: node.importClause! }));
     });
+  const consumed = candidates.filter(({ item }) =>
+    app.nodes
+      .filter(isIdentifier)
+      .some(
+        (use) =>
+          use.getStart() > workspaceApp.getStart() &&
+          use.end < workspaceApp.end &&
+          app.symbols.get(use) !== undefined &&
+          app.symbols.get(use) === app.symbols.get(item.name),
+      ),
+  );
+  // If the real call is shadowed or orphaned, retain its original missing-call
+  // diagnostic instead of letting an unrelated feature satisfy the seam.
+  const selected = consumed.length ? consumed : candidates;
+  const imports = selected.map(({ item, clause }) => {
+    assert.notEqual(
+      clause.phaseModifier,
+      SyntaxKind.TypeKeyword,
+      "runtime navigation import",
+    );
+    return item;
+  });
   assert.equal(imports.length, 1, "single real navigation factory import");
   const symbol = app.symbols.get(imports[0]!.name);
   assert.ok(symbol !== undefined);
@@ -662,13 +723,21 @@ export function verifyCurrentWorkspaceContentOpeningConsumption(
   );
   assert.equal(call.arguments.length, 1);
   assert.equal(call.typeArguments?.length ?? 0, 0);
+  const positions = app.nodes
+    .filter(isVariableDeclaration)
+    .filter(
+      (node) =>
+        isIdentifier(node.name) &&
+        node.name.text === "positions" &&
+        node.parent.parent.parent === workspaceApp.body,
+    );
+  assert.equal(
+    positions.length,
+    1,
+    "one original WorkspaceApp positions neighbor",
+  );
   assert.ok(
-    call.end <
-      app.nodes
-        .filter(isVariableDeclaration)
-        .find(
-          (node) => isIdentifier(node.name) && node.name.text === "positions",
-        )!.pos,
+    call.end < positions[0]!.pos,
     "navigation capture before original positions",
   );
   for (const name of methods) {
@@ -710,7 +779,7 @@ export function verifyRawCurrentWorkspaceContentOpeningConsumption(
   ownerText: string,
 ) {
   const owner = parse({ Owner: ownerText }).get("Owner")!;
-  const client = owner.nodes
+  const client = owner.source.statements
     .filter(isTypeAliasDeclaration)
     .filter((node) => node.name.text === "NavigationClient");
   assert.equal(client.length, 1, "only three required captured Client fields");
@@ -751,15 +820,21 @@ export function verifyRawCurrentWorkspaceContentOpeningConsumption(
   walk(client[0]!.type, (node) => {
     if (isIdentifier(node) && node.text !== "Pick") typeReference.push(node);
   });
-  assert.ok(
-    clientImports.length === 1 &&
+  const actualClientImports = clientImports.filter(
+    (entry) =>
       typeReference.length === 1 &&
       owner.symbols.get(typeReference[0]!) !== undefined &&
-      owner.symbols.get(typeReference[0]!) ===
-        owner.symbols.get(clientImports[0]!.name),
+      owner.symbols.get(typeReference[0]!) === owner.symbols.get(entry.name),
+  );
+  assert.ok(
+    actualClientImports.length === 1,
     "narrow captured Client type uses its actual type-only source",
   );
-  const factory = fn(owner, "createWorkspaceNavigationCommands");
+  const factory = currentContentFunction(
+    owner,
+    "createWorkspaceNavigationCommands",
+    owner.source,
+  );
   function noEagerWork(node: Node): boolean {
     // Function bodies execute on explicit invocation, not construction. The
     // original applicationActions object is intentionally a closure recipe.

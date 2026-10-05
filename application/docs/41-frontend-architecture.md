@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-05 · 版本：1.22 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-05 · 版本：1.23 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-05。
 
@@ -934,8 +934,13 @@ Electron证据边界。normal App 的完整10轴／57状态与实际 Page bytes
 `app-BMwOPwmX.js`和`app-CJ1ddL5s.css`，且仍显示连接正常的原项目页。
 这是实际载入URL和窗口证据，不把disk hash称为live bytes；原生命中和
 最终验收仍在进行。WindowFrame之后仅收敛必要剩余：
-导航两个当前测试入口断开peer inverse及其实际叶子作用域收口、
-最终全回归与同一原App验收。data gateway／owner登记见第4.3节；
+阶段61已将导航两个当前入口交给raw-current合同，实际叶子按module／
+WorkspaceApp及真实import binding收口；原七组literal在固定历史及当前
+各执行，两个历史prefix／旧API/default和mounted完整执行尾保持。
+独立实际消费、同名局部方法和第二factory alias有正例，owner重复／
+shadow／移动／orphan和身份／CSRF／撤权反例不删。13选定文件182项
+通过及完整类型／格式检查另见实施记录，不代替全量或原生验收。
+剩余为最终全回归与同一原App验收。data gateway／owner登记见第4.3节；
 没有实证重复或越界，不按App／Client行数
 继续新增controller、facade、cache或第二套状态权威。
 

@@ -1,5 +1,44 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 61：导航当前合同与历史证明分离
+
+本阶段只改四条测试路径，不改生产、界面、持久键或用户数据。
+两个 navigation 当前入口直接检查 raw App／owner／Host，不再依赖
+Private→Human→Object→Reference 的历史 inverse 链。原七组完整安全
+literal 在固定历史与当前各执行一次；12,999 bytes 的原 ledger SHA
+`073b12d55894903b896f11fbfe5332048628372fce6b1e8862c507362dccb9a2`
+保持，包括格式化后的原缩进。两个 fixture 的完整历史 prefix、旧 API／
+default／inverse 以及 mounted 的 Report 后完整执行尾逐字保留。
+
+当前查找限定实际 module owner／WorkspaceApp 及其真实 import binding：
+仍拒绝 owning scope 的重复、嵌套 shadow、移动注册与 orphan，独立且
+实际消费的 React feature、default／namespace imports、同名局部方法
+和第二个真实 factory alias 可增长。第二 alias 放在原 import 之后的
+消费正例覆盖了先前 last-import map 的误拦，历史 lookup 本身不改变。
+这只是有限源码合同，不是任意 TypeScript 数据流或安全沙箱证明。
+
+mounted 夹具直接使用生产 CreateDialog 与 private scope factory，九条
+原 App bridge 从各自 owning scope 提取，未执行的 private ports 显式
+throw。原 StrictMode、身份／CSRF／撤权、晚回执及原七子测试／十场景
+的断言、预算和生命周期保持，不借此宣称原 App 或第三方 SDK 验收。
+
+根审与独立冷审发现的两个准备期问题保留：orphan regex 未匹配既有
+wrapper 翻译，以及独立第二 import 覆盖原 binding；均修复在测试 current
+lane，不修改生产以配合门禁。首轮完整 typecheck 的 TS7022 也保留，
+仅为 mounted 容器补既有 `Node` 类型，后续完整 typecheck terminal0。
+
+最终十三个选定文件通过统一 npm test manager 一次运行：**182/182**，
+零失败／取消／跳过；required PostgreSQL／Runtime 保持，专用 PostgreSQL
+实际启动，unexpectedSkips 为空。四路径格式检查与 diff check 通过。
+完整最新 Node 及原 App 最后收口仍须独立记录，不借用阶段 60 的全量
+结果宣称本批已全量复验。原窗口已加载阶段 60；本批不需重新安装或 Reload。
+
+冻结四源、完整 patch、两个首轮冷审发现和最终冷审在
+`/tmp/morphz-navigation-stage61-preparation.jQAaVn/`。Root 应用后仅类型
+注解、保留 ledger 的 formatter 指令及四文件格式化；原历史前缀／
+ledger／mounted 执行尾再次逐字核准。实际选定回归日志为
+`/tmp/morphz-navigation-stage61-focused-first.log`；整体目标保持 active。
+
 ## 2026-10-05 前端阶段 60：窗口布局样式所有权与完整复验
 
 `shell/window-frame-base.css` 和 `window-frame-composition.css` 接管

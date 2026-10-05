@@ -5,21 +5,41 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
-import { isFunctionDeclaration, type Node } from "typescript/unstable/ast";
+import {
+  isFunctionDeclaration,
+  type FunctionDeclaration,
+  type Node,
+} from "typescript/unstable/ast";
 import { chromium } from "@playwright/test";
 import react from "@vitejs/plugin-react";
 import { createServer, transformWithOxc } from "vite";
-import { inversePrivateProjectConversationScope } from "./fixtures/private-project-conversation-scope-consumption.js";
+import { verifyCurrentPrivateProjectConversationScopeConsumption } from "./fixtures/private-project-conversation-scope-consumption.js";
+import { verifyCurrentHumanCreationConsumption } from "./fixtures/human-creation-consumption.js";
 
 // Execute the actual finite App boundary/dialog functions, not a hand-written
 // copy of their identity or completion algorithms. Private WorkspaceApp below
 // is only a hook/port adapter; this does not replace compiled full App+Client
 // regression or prove actual Platform authorization/HTTP persistence.
 function appFunctions() {
-  // Validate the actual new owner, then restore only this finite App seam;
-  // the old mounted algorithms remain the original, not direct new-owner calls.
-  const text = inversePrivateProjectConversationScope(
-    readFileSync(resolve("apps/web/src/App.tsx"), "utf8"),
+  // Read the actual current boundary/bridge functions. The migrated component
+  // and private-scope factory below are real production imports, not restored
+  // App algorithms or a peer inverse prerequisite.
+  const text = readFileSync(resolve("apps/web/src/App.tsx"), "utf8");
+  verifyCurrentPrivateProjectConversationScopeConsumption(
+    text,
+    readFileSync(
+      resolve("apps/web/src/host/private-project-conversation-scope.ts"),
+      "utf8",
+    ),
+  );
+  verifyCurrentHumanCreationConsumption(
+    text,
+    readFileSync(
+      resolve("apps/web/src/features/creation/CreateDialog.tsx"),
+      "utf8",
+    ),
+    readFileSync(resolve("apps/web/src/client.ts"), "utf8"),
+    readFileSync(resolve("apps/web/src/local-preferences.ts"), "utf8"),
   );
   const api = new API({
     cwd: "/app",
@@ -43,29 +63,46 @@ function appFunctions() {
       "PrivateNavigationBoundary",
       "WorkspaceConnection",
       "WorkspaceLogin",
-      "CreateDialog",
       "prefer",
       "writePreferences",
       "continueNavigation",
-      "prepareCreatedProject",
       "setNotice",
     ];
-    function visit(node: Node) {
-      if (
-        isFunctionDeclaration(node) &&
-        node.name &&
-        names.includes(node.name.text)
-      ) {
-        assert.equal(
-          result.has(node.name.text),
-          false,
-          "unique actual function " + node.name.text,
-        );
-        result.set(node.name.text, node.getText());
+    const workspace = file.statements
+      .filter(isFunctionDeclaration)
+      .filter((node) => node.name?.text === "WorkspaceApp");
+    assert.equal(workspace.length, 1, "unique actual module WorkspaceApp");
+    assert.ok(workspace[0]!.body);
+    for (const name of names) {
+      const container: Node = [
+        "prefer",
+        "writePreferences",
+        "continueNavigation",
+        "setNotice",
+      ].includes(name)
+        ? workspace[0]!.body!
+        : file;
+      const found: FunctionDeclaration[] = [];
+      function visit(node: Node) {
+        if (isFunctionDeclaration(node) && node.name?.text === name)
+          found.push(node);
+        node.forEachChild(visit);
       }
-      node.forEachChild(visit);
+      if (container === file)
+        found.push(
+          ...file.statements
+            .filter(isFunctionDeclaration)
+            .filter((node) => node.name?.text === name),
+        );
+      else visit(container);
+      assert.equal(found.length, 1, "unique actual owning function " + name);
+      assert.equal(
+        found[0]!.parent,
+        container,
+        "direct actual owning function " + name,
+      );
+      result.set(name, found[0]!.getText());
     }
-    visit(file);
     assert.equal(result.size, names.length);
     return result;
   } finally {
@@ -85,6 +122,8 @@ import {useModal} from '/src/useModal.ts';
 import {BrandMark} from '/src/BrandMark.tsx';
 import {NavigationHostLifetime, NavigationOriginLifetime, useWorkspaceNavigationHost, useWorkspaceNavigationOrigin} from '/src/host/use-workspace-navigation-host.ts';
 import {isNavigationPreferenceChange, mergeNavigationPreferences} from '/src/host/use-workspace-navigation.ts';
+import {CreateDialog} from '/src/features/creation/CreateDialog.tsx';
+import {createPrivateProjectConversationScope} from '/src/host/private-project-conversation-scope.ts';
 const now='2026-10-04T00:00:00.000Z';
 function boot(label='A', session=label, includeProject=false) {
  const workspace=initialWorkspace(now);
@@ -106,7 +145,6 @@ ${functions.get("WorkspaceNavigationHost")}
 ${functions.get("PrivateNavigationBoundary")}
 ${functions.get("WorkspaceConnection")}
 ${functions.get("WorkspaceLogin")}
-${functions.get("CreateDialog")}
 function LayoutChild({onNotice,prefer}){useLayoutEffect(()=>{events.childLayouts++;onNotice('exact child layout notice');prefer({subjectOpen:true});},[]);return null;}
 function WorkspaceApp({client,host,origin}) {
  const {prefs,navigation}=host, navigationGeneration=navigation.navigationGeneration;
@@ -117,7 +155,19 @@ function WorkspaceApp({client,host,origin}) {
  ${functions.get("prefer")}
  ${functions.get("writePreferences")}
  ${functions.get("continueNavigation")}
- ${functions.get("prepareCreatedProject")}
+ // This finite adapter borrows exactly the Host/Origin/render ports used by
+ // the real prepareCreatedProject action. Other private actions must fail if
+ // unexpectedly reached; this is not a fixture for the complete scope UI.
+ const unusedScopePort=()=>{throw new Error("unexercised private scope port");};
+ const {prepareCreatedProject}=createPrivateProjectConversationScope({
+  render:{state:client.boot?.workspace,prefs,navigationProject:undefined,project:undefined,sharedDefault:false,
+   defaultConversation:undefined,conversationId:undefined,hasConversationDraft:unusedScopePort,personalSpace:unusedScopePort},
+  origin,host,
+  navigation:{navigationGeneration,isCurrent:navigation.isCurrent,setWebsiteIntent:unusedScopePort,prefer,continueNavigation},
+  draftCommands:{createConversation:unusedScopePort,discardConversation:unusedScopePort,restoreConversation:unusedScopePort},
+  sendPending:{current:false},privateUi:{setContentScope:unusedScopePort,setCreating,setExecutions:unusedScopePort},
+  exchange:{keepExchangeOpen:unusedScopePort,requestConversationFocus:unusedScopePort},onNotice:setNotice,
+ });
  if(suspend&&client.boot?.centerId==='center-B'){suspendedRenders++;throw new Promise(()=>{});}
  useLayoutEffect(()=>{
   if(!hostIds.has(navigationGeneration))hostIds.set(navigationGeneration,++nextHost);

@@ -642,6 +642,43 @@ export function assertPrivateProjectConversationWholeApp(
 // The original historical inverse above keeps its API/defaults/body intact.
 // Current checking has no Human/Object/Reference inverse prerequisite.
 import * as scopeAst from "typescript/unstable/ast";
+function currentScopeFunction(parsed: Parsed, name: string, parent: Node) {
+  const found = parsed.nodes
+    .filter(isFunctionDeclaration)
+    .filter((node) => node.name?.text === name && node.parent === parent);
+  assert.equal(
+    found.length,
+    1,
+    "unique current private scope declaration " + name,
+  );
+  assert.ok(found[0]!.body);
+  return found[0]!;
+}
+function currentScopeMethod(
+  parsed: Parsed,
+  factory: FunctionDeclaration,
+  name: string,
+) {
+  const found = parsed.nodes
+    .filter(isFunctionDeclaration)
+    .filter(
+      (node) =>
+        node.name?.text === name &&
+        node.getStart() > factory.getStart() &&
+        node.end < factory.end,
+    );
+  assert.equal(found.length, 1, "unique owned private scope method " + name);
+  assert.equal(
+    found[0]!.parent,
+    factory.body,
+    "seven actions share one private scope owner",
+  );
+  assert.ok(found[0]!.body);
+  return found[0]!;
+}
+function inCurrentWorkspace(node: Node, workspace: FunctionDeclaration) {
+  return node.getStart() > workspace.getStart() && node.end < workspace.end;
+}
 function scopeSymbol(parsed: Parsed, node: Node): number | undefined {
   for (let depth = 0; depth < 8 && isIdentifier(node); depth++) {
     const symbol = parsed.symbols.get(node);
@@ -780,11 +817,11 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
     owner = parsed.get("Owner")!,
     expected = parsed.get("ExpectedOwner")!,
     expectedApp = parsed.get("ExpectedApp")!;
-  const workspace = fn(app, "WorkspaceApp"),
+  const workspace = currentScopeFunction(app, "WorkspaceApp", app.source),
     calls = new Map<string, Statement>(),
     actualCalls = new Map<string, scopeAst.CallExpression>();
   for (const name of exports) {
-    const bindings = app.source.statements
+    const candidates = app.source.statements
       .filter(isImportDeclaration)
       .flatMap((node) => {
         const clause = node.importClause;
@@ -799,6 +836,19 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
               .map((member) => ({ clause, member }))
           : [];
       });
+    const consumed = candidates.filter(({ member }) =>
+      app.nodes
+        .filter(isIdentifier)
+        .some(
+          (use) =>
+            inCurrentWorkspace(use, workspace) &&
+            scopeSymbol(app, use) !== undefined &&
+            scopeSymbol(app, use) === app.symbols.get(member.name),
+        ),
+    );
+    // Orphan/shadow still reaches the original actual-call rejection; another
+    // lexical feature's calls never satisfy this WorkspaceApp registration.
+    const bindings = consumed.length ? consumed : candidates;
     assert.equal(
       bindings.length,
       1,
@@ -813,7 +863,11 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
     assert.notEqual(symbol, undefined, "resolved private scope import " + name);
     const found = app.nodes
       .filter(isCallExpression)
-      .filter((node) => scopeSymbol(app, node.expression) === symbol);
+      .filter(
+        (node) =>
+          inCurrentWorkspace(node, workspace) &&
+          scopeSymbol(app, node.expression) === symbol,
+      );
     assert.equal(
       found.length,
       1,
@@ -845,7 +899,11 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
     calls.set(name, statement);
     actualCalls.set(name, found[0]!);
   }
-  const factory = fn(owner, "createPrivateProjectConversationScope"),
+  const factory = currentScopeFunction(
+      owner,
+      "createPrivateProjectConversationScope",
+      owner.source,
+    ),
     original = fn(expected, "createPrivateProjectConversationScope");
   for (const statement of owner.source.statements) {
     if (scopeAst.isExpressionStatement(statement)) {
@@ -890,7 +948,7 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
       "four constructor captures borrow original render values without reads",
     );
   for (const name of privateProjectScopeActions) {
-    const actual = fn(owner, name),
+    const actual = currentScopeMethod(owner, factory, name),
       recipe = fn(expected, name);
     assert.equal(
       actual.parent,
@@ -907,7 +965,10 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
     assert.equal(
       app.nodes
         .filter(isFunctionDeclaration)
-        .filter((node) => node.name?.text === name).length,
+        .filter(
+          (node) =>
+            node.name?.text === name && inCurrentWorkspace(node, workspace),
+        ).length,
       0,
       "no copied private scope App action " + name,
     );
@@ -921,7 +982,7 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
   );
   for (const name of exports.slice(1))
     scopeSame(
-      fn(owner, name),
+      currentScopeFunction(owner, name, owner.source),
       owner,
       fn(expected, name),
       expected,
@@ -955,7 +1016,7 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
   const body = workspace.body!.statements,
     factoryStatement = calls.get("createPrivateProjectConversationScope")!;
   assert.ok(
-    fn(app, "open").end <= factoryStatement.pos,
+    currentScopeMethod(app, workspace, "open").end <= factoryStatement.pos,
     "scope factory follows original open before real reference consumer",
   );
   const reference = app.nodes
@@ -963,7 +1024,8 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
     .filter(
       (node) =>
         isIdentifier(node.expression) &&
-        node.expression.text === "createExchangeReferenceCommands",
+        node.expression.text === "createExchangeReferenceCommands" &&
+        inCurrentWorkspace(node, workspace),
     );
   assert.equal(
     reference.length,
@@ -1056,6 +1118,7 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
   }
   const actions = app.nodes
     .filter(scopeAst.isJsxAttribute)
+    .filter((node) => inCurrentWorkspace(node, workspace))
     .filter((node) =>
       [
         "onScopeChange",
@@ -1083,7 +1146,11 @@ export function verifyCurrentPrivateProjectConversationScopeConsumption(
   }
   const launcher = app.nodes
     .filter(scopeAst.isPropertyAssignment)
-    .filter((node) => node.name.getText() === "selectAllContent");
+    .filter(
+      (node) =>
+        node.name.getText() === "selectAllContent" &&
+        inCurrentWorkspace(node, workspace),
+    );
   assert.equal(launcher.length, 1, "one original Launcher scope bridge");
   assert.equal(
     launcher[0]!.initializer.getText(),
