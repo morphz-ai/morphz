@@ -19,6 +19,7 @@ import {
 import { openApplicationDomainsHost } from "../packages/application/src/application-domains-host.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import type { CognitiveAppHostOptions } from "../packages/application/src/cognitive-app-host.js";
 import {
   profileCustom,
   profileSnapshotSchema,
@@ -86,6 +87,12 @@ async function port() {
 }
 export async function profileActualTransportFixture(
   options: {
+    /** Optional trusted isolated-author setup. Only integration fixtures use
+     * this hook; the original Profile fixture's default Host is unchanged. */
+    cognitiveHost?: (scope: {
+      directory: string;
+      tenantId: string;
+    }) => Promise<CognitiveAppHostOptions>;
     /** Optional controlled provider script for parallel real-Thread tests.
      * Never consulted for realProvider; existing default replies stay intact. */
     deterministicTool?: (
@@ -340,7 +347,13 @@ export async function profileActualTransportFixture(
       token: operator,
       namespace,
     });
-    domains = await openApplicationDomainsHost(directory, store);
+    const cognitiveApps = await options.cognitiveHost?.({
+      directory,
+      tenantId: await store.identity(),
+    });
+    domains = await openApplicationDomainsHost(directory, store, undefined, {
+      ...(cognitiveApps ? { cognitiveApps } : {}),
+    });
     const bindingAuthority = domains.bindRuntime(runtime);
     server = createAppServer(store, {
       port: hostPort,
@@ -354,6 +367,7 @@ export async function profileActualTransportFixture(
       messageAttachments: domains.messageAttachments,
       images: domains.images,
       uiPackages: domains.uiPackages,
+      cognitiveApps: domains.cognitiveApps,
       bookmarkDomain: domains.browser,
       notifications: domains.notifications,
       workspaceChanges: domains.workspaceChanges,
@@ -364,6 +378,7 @@ export async function profileActualTransportFixture(
         content: domains.content,
         profile: domains.profiles.service,
         reader: domains.reader.service,
+        cognitiveApps: domains.cognitiveApps.service,
       }),
     });
     await new Promise<void>((done) =>
@@ -374,7 +389,7 @@ export async function profileActualTransportFixture(
     const boot = (await client.call("platform.bootstrap")) as {
       csrfToken: string;
     };
-    const options = { identityGeneration: boot.csrfToken };
+    const callOptions = { identityGeneration: boot.csrfToken };
     return {
       origin,
       requests,
@@ -385,13 +400,13 @@ export async function profileActualTransportFixture(
       sql,
       runtime,
       client,
-      options,
+      options: callOptions,
       read: async () =>
         profileSnapshotSchema.parse(
-          await client.call("profile.read", {}, options),
+          await client.call("profile.read", {}, callOptions),
         ),
       update: (command: ProfileUpdate) =>
-        client.call("profile.update", command, options),
+        client.call("profile.update", command, callOptions),
       custom: async (subject: "agent" | "human", scope?: string) => {
         const response = await fetch(
           `${runtimeUrl}/api/agents/${status.agent_id}/custom/${profileCustom[subject].namespace}${scope ? "?principal_scope=" + encodeURIComponent(scope) : ""}`,

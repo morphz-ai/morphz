@@ -1,5 +1,33 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：真实 Rust Agent 输入链与启动接线
+
+Desktop 初始／后绑定及 Web RuntimeAgentTools 注入同一既有认知业务
+Service，不重建网关或修改当前窗口。新增隔离集成实际运行 canonical
+Rust binary、原 HTTP Application／Human 入口、真实 Runtime source
+verifier、Host 工具和仓库外 tgz 安装的独立作者 Service／SQLite。
+一次真实 input 的七个连续工具步骤覆盖目录、精确定义、写、目录读、
+精确原件读、状态及旧回执恢复。只解析当次最新物理工具输出，不回退旧
+成功；作者绑定、Platform admission 和 Runtime 原输入 Event 交叉一致。
+最后等待实际 Thread `completed`，不是在 held 中关进程当作整轮成功。
+
+最终实际认知链 8 次模型 HTTP 请求、0 次上游付费请求，作者账本 1 个
+命令、1 份原件，状态／恢复没有重执行。正式四文件独立回归 21/21，
+required PostgreSQL／Runtime、两个准确 opt-in 显式开启，零失败／取消／
+跳过；旧 Profile 实际 Rust、启动装配及严格 skip 防线同时通过。日志
+`/tmp/morphz-cognitive-actual-RUST-ROOT-ACCEPTED-FINAL-oct05.log`。
+同代码全工程类型检查通过，日志
+`/tmp/morphz-cognitive-actual-RUST-ROOT-TYPES-ACCEPTED-FROZEN-oct05.log`。
+独立只读复审无阻塞，原 Profile 默认夹具／返回接口未改，清理只针对
+本测试的临时文件和子进程。Root 自有夹具中曾有 options shadow、工具
+输出 envelope、对象 ref 额外字段和 Event／input ID 混用，真实失败日志
+全保留在 `/tmp/morphz-cognitive-actual-RUST-*.log`，未弱化生产授权。
+
+模型响应受控，不是付费模型或原 App 验收；新实际 Runtime 认知中心为
+SQLite，PostgreSQL 在同组旧 Profile 与此前双后端 adapter 回归实际运行。
+真实 task-run、infer、丢回执 Runtime 与 GUI／原窗口仍单独验收，本阶段
+不宣称生态目标完成。未接触用户真实账号、原件、草稿或运行中 Runtime。
+
 ## 2026-10-05 第三方认知应用：有限 Agent adapter
 
 六个 adapter 复用同一业务 Service：list、describe、invoke、read-object、

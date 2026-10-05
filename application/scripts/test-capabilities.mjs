@@ -54,6 +54,12 @@ const optionalTests = [
     "MORPHZ_PROFILE_RUNTIME_E2E",
   ],
   [
+    "cognitive-app-actual-runtime.test.ts",
+    "actual Rust Runtime + independent packed author: Agent discovery, write, exact read and receipt recovery retain real provenance",
+    "runtime",
+    "MORPHZ_COGNITIVE_RUNTIME_E2E",
+  ],
+  [
     "response-annotations-runtime.test.ts",
     "actual Runtime + Platform HTTP: two commands form one activity, three original model rounds, durable refresh and exact Job receipts",
     "runtime",

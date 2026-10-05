@@ -251,6 +251,7 @@ const server = createAppServer(store, {
             content: domains.content,
             profile: domains.profiles.service,
             reader: domains.reader.service,
+            cognitiveApps: domains.cognitiveApps.service,
           },
           {
             browser: browser,

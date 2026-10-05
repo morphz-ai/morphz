@@ -181,6 +181,7 @@ export async function openEmbeddedApplication(
             content: domains.content,
             profile: domains.profiles.service,
             reader: domains.reader.service,
+            cognitiveApps: domains.cognitiveApps.service,
           },
           {
             browser: browser,
@@ -226,6 +227,7 @@ export async function openEmbeddedApplication(
                   content: domains!.content,
                   profile: domains!.profiles.service,
                   reader: domains!.reader.service,
+                  cognitiveApps: domains!.cognitiveApps.service,
                 },
                 {
                   browser: browser,
