@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-06 真实 Web 迟到 locator 响应与当前 Document 验收
+
+新增两个完整生产 App 的负控分别使用真实 SQLite／PostgreSQL、HPA、
+独立 packed 作者与公开 SDK。唯一受控项是 Node 在原 SQL／授权操作完成
+且写出真实 JSON HTTP200 后暂缓该 response body；没有替换 DTO、权限、
+浏览器 API、SDK 或原请求。Human 真导航到「对话」后，源 Document 退场、
+该精确请求实际 `net::ERR_ABORTED`、ServerResponse `close` 且 destroyed。
+随后只向同一个已销毁 endpoint 释放一次原 end／原字节；全体旧／新范围
+草稿、作者六组原表、Platform 命令和未发送 ledger 保持，零自动 POST。
+这是实际取消／body discard 的负控，不声称销毁后的 SDK Promise 终态或
+私有 wire ACK 可观测；忽略 abort 的迟到末门仍由独立受控 owner 测试证明。
+
+Root 首轮正式六项 5P1F 保留于
+`/tmp/morphz-cognitive-late-compose-ROOT-FINAL-oct06.log`：grant3 的 helper
+捕获 Frame 后等 inner 超时，但真实截图已显示完整作者 GUI 和「工作区已
+连接」，不能据此声称生产空白或数据库缺失。helper 的早采样与当前
+published DOM 不绑定是可达缝隙；修正为同一十二秒总预算内，以当前 DOM
+FrameLocator 先等真实 inner／connection，再捕获并核 DOM 节点、src／URL
+及 documentProof 一致。原断言保留，不重试 read／click，不扩大 timeout。
+相关 selector／只读 parser 诊断失败也保留；裸事件等待增加同预算失败
+清理，准确称 response-close，不冒称 TCP socket 见证。
+
+Root 完整冷审两路径并独立正式 6/6、required PostgreSQL、零跳过；日志
+`/tmp/morphz-cognitive-late-compose-ROOT-PUBLISHED-oct06.log`。这扩展此前
+真实生产双 SQL 的 4/4，并未改生产实现或用户原 App；类型、格式与相邻
+回归另有独立记录：全工程类型与三路径格式通过；只读 owner／提示、显式
+选择和原呈现四文件 71/71、零跳过，日志
+`/tmp/morphz-cognitive-neighbor-ROOT-SECOND-oct06.log`。该相邻 React transport
+受控，不能混算真实作者 SQL；第一次选错不存在的测试文件，入口直接拒绝，
+原日志保留，不是环境缺失。原窗口安全恢复仍未完成。
+
 ## 2026-10-06 独立作者 GUI 的当前原生 Local／Remote 业务矩阵
 
 新增自动验收使用 unchanged 当前二十七个 desktop 文件的逐份 hash 副本、

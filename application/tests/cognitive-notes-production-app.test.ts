@@ -19,7 +19,8 @@ import { parseCognitiveAppViewResponse } from "../packages/core/src/cognitive-ap
 
 /** Production main/App/useWorkspace/navigation/input writer/consumer and real
  * HTTP, HPA, dual Platform SQL, independent packed author SQLite. Only setup
- * identity, loopback approval and own ephemeral automated server are controlled.
+ * identity, loopback approval and own ephemeral automated server are controlled;
+ * the explicitly named late case also controls delivery timing of real HTTP200.
  * No native Electron/user-window/Runtime-online acceptance is claimed. */
 let packed: NotesGuiPack;
 let ui: Awaited<ReturnType<typeof buildNotesProductionUi>>;
@@ -111,6 +112,19 @@ async function settledPaint(guest: Frame) {
     );
   await guest.evaluate(finish);
   await guest.parentFrame()!.parentFrame()!.evaluate(finish);
+}
+function actualEventDeadline<T>(event: Promise<T>, label: string) {
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_done, fail) => {
+    // Same event budget as this fixture's real Playwright waiters. A missing
+    // event fails into owner cleanup; it cannot strand a bare pending promise
+    // until the outer Node test timeout or fabricate an observed event.
+    timer = setTimeout(
+      () => fail(new Error(`Actual event timed out: ${label}`)),
+      12_000,
+    );
+  });
+  return Promise.race([event, deadline]).finally(() => clearTimeout(timer));
 }
 for (const backend of ["sqlite", "postgres"] as const) {
   test(
@@ -569,6 +583,226 @@ for (const backend of ["sqlite", "postgres"] as const) {
         assert.deepEqual(await app.stored(), storedBefore);
       } catch (error) {
         await app.diagnostics(`${backend}-live-failure`, error);
+        throw error;
+      } finally {
+        try {
+          await app.close();
+        } finally {
+          await f.close();
+        }
+      }
+    },
+  );
+  test(
+    `ACTUAL production App Web + ${backend}: controlled delivery hold of a real SQL/HPA locator HTTP200 cannot alter old/new drafts after real Human navigation`,
+    { timeout: 120_000 },
+    async () => {
+      const f = await openNotesGuiTransports(backend, packed);
+      const app = await openNotesProductionApp(f, ui.webRoot).catch(
+        async (error) => {
+          await f.close();
+          throw error;
+        },
+      );
+      try {
+        const { guest, outerElement } = await app.openGui();
+        const created = await create(
+          guest,
+          `TEST actual late compose ${backend}`,
+          "原作者版本一\n未发送的原文引用。",
+        );
+        const originalSource = await f.source();
+        const note = f.authorRows("notes")[0]!;
+        assert.equal(typeof note.object_id, "string");
+        assert.equal(note.current_version_ref, created.version);
+        const input = app.page.getByRole("textbox", {
+          name: "AI 输入内容",
+          exact: true,
+        });
+        if (!(await input.isVisible()))
+          await app.page.keyboard.press("Control+j");
+        const oldBody = `原应用旧范围草稿 ${backend}\n原内容不可改。`;
+        await input.fill(oldBody);
+        const before = await app.stored();
+        const oldKeys = Object.keys(before).filter(
+          (key) => before[key]!.body === oldBody,
+        );
+        assert.equal(
+          oldKeys.length,
+          1,
+          "actual original scope owns this draft",
+        );
+        const oldKey = oldKeys[0]!;
+        assert.ok(oldKey.includes(":cognitive:"));
+        const beforeLocation = (await app.preferences()).cognitiveLocation;
+        assert.equal(beforeLocation.kind, "view");
+        const noSend = await unsent(f);
+        const platformCommands = await f.rows("cognitive_app_commands");
+        const authorFacts = {
+          notes: f.authorRows("notes"),
+          versions: f.authorRows("note_versions"),
+          commands: f.authorRows("author_commands"),
+          definitions: f.authorRows("author_definitions"),
+          metadata: f.authorRows("metadata"),
+          acl: f.authorRows("project_acl"),
+        };
+        const authorBefore = f.authorCalls.length;
+        const hold = app.holdNextResolution(
+          note.object_id as string,
+          originalSource.authority.instanceId,
+        );
+        const actual200 = app.page.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return (
+            url.pathname === "/api/platform/content/resolve" &&
+            url.searchParams.get("appObjectId") === note.object_id &&
+            response.status() === 200
+          );
+        });
+        void actual200.catch(() => undefined);
+        // The actual installed author calls the public SDK through its original
+        // private port. There is no guest-to-Host test call or synthetic reply.
+        await guest.locator("#compose").click();
+        // Both events are required; the real response waiter's existing
+        // deadline also retires a capture when no matching request is sent.
+        const [held, response] = await Promise.all([hold.captured, actual200]);
+        assert.match(
+          (await response.headerValue("content-type")) ?? "",
+          /^application\/json; charset=utf-8$/i,
+        );
+        assert.equal(held.status, 200);
+        assert.equal(held.source.projectId, f.projectId);
+        assert.equal(held.source.appId, f.target.appId);
+        assert.equal(
+          held.source.instanceId,
+          originalSource.authority.instanceId,
+        );
+        assert.equal(held.source.appObjectId, note.object_id);
+        assert.equal(held.query.appObjectId, note.object_id);
+        assert.deepEqual(JSON.parse(held.body), held.source);
+        await guest.locator("#compose:disabled").waitFor();
+        assert.deepEqual(await app.stored(), before);
+        const cancellation = app.page.waitForEvent("requestfailed", {
+          predicate: (request) => request === response.request(),
+        });
+        void cancellation.catch(() => undefined);
+
+        // The original App navigation retires the source lease/consumer and
+        // its real HTTP signal. This is not the author's SDK cancel/dispose.
+        await app.page
+          .getByRole("navigation", { name: "主导航", exact: true })
+          .getByRole("button", { name: "对话", exact: true })
+          .click();
+        await outerElement.waitFor({ state: "detached" });
+        assert.equal(guest.isDetached(), true);
+        const afterLocation = (await app.preferences()).cognitiveLocation;
+        assert.equal(afterLocation, null);
+        if (!(await input.isVisible()))
+          await app.page.keyboard.press("Control+j");
+        const newBody = `正常导航新范围草稿 ${backend}\n不得追加旧应用的文字。`;
+        await input.fill(newBody);
+        const afterNavigation = await app.stored();
+        const newKeys = Object.keys(afterNavigation).filter(
+          (key) => afterNavigation[key]!.body === newBody,
+        );
+        assert.equal(newKeys.length, 1);
+        const newKey = newKeys[0]!;
+        assert.notEqual(newKey, oldKey, "actual persistent scope key changed");
+        assert.deepEqual(afterNavigation[oldKey], before[oldKey]);
+        for (const [key, value] of Object.entries(before))
+          if (key !== newKey) assert.deepEqual(afterNavigation[key], value);
+        assert.equal(afterNavigation[newKey]!.body, newBody);
+        const cancelledRequest = await cancellation;
+        assert.equal(cancelledRequest, response.request());
+        assert.equal(cancelledRequest.failure()?.errorText, "net::ERR_ABORTED");
+        const closed = await actualEventDeadline(
+          hold.closed,
+          "this exact resolver response endpoint close",
+        );
+        assert.equal(closed.destroyed, true);
+        assert.ok(closed.at >= held.at);
+        assert.equal(
+          hold.events.some((event) => event.event === "real-finish"),
+          false,
+          "this exact real resolver body was not consumed before retirement",
+        );
+        const retireAt = Date.now();
+        hold.release();
+        assert.equal(
+          hold.events.filter((event) => event.event === "release-original-end")
+            .length,
+          1,
+        );
+        assert.ok(
+          hold.events.some(
+            (event) =>
+              event.event === "release-original-end" && event.at >= retireAt,
+          ),
+        );
+        // Chromium's actual abort/body-discard is the bounded Web negative.
+        // Do not fake ignoring AbortSignal or claim a destroyed SDK Promise
+        // terminal state/physical private-wire ACK count is observable here.
+        await app.page.waitForFunction(
+          () => !document.querySelector("iframe.cognitive-application-frame"),
+        );
+        assert.deepEqual(await app.stored(), afterNavigation);
+        assert.equal(await input.inputValue(), newBody);
+        assert.deepEqual(await unsent(f), noSend);
+        assert.deepEqual(
+          await f.rows("cognitive_app_commands"),
+          platformCommands,
+        );
+        assert.deepEqual(
+          {
+            notes: f.authorRows("notes"),
+            versions: f.authorRows("note_versions"),
+            commands: f.authorRows("author_commands"),
+            definitions: f.authorRows("author_definitions"),
+            metadata: f.authorRows("metadata"),
+            acl: f.authorRows("project_acl"),
+          },
+          authorFacts,
+        );
+        assert.equal(f.authorCalls.length, authorBefore);
+        assert.ok(
+          !app.requests.some(
+            (request) =>
+              request.path === "/api/platform/messages" &&
+              request.method === "POST",
+          ),
+        );
+        assert.deepEqual(app.errors, []);
+        console.log(
+          JSON.stringify({
+            backend,
+            scope:
+              "actual production App, real SQL/HPA response; Node delivery timing controlled",
+            original: {
+              viewId: originalSource.view.id,
+              viewRevision: originalSource.view.revision,
+              bindingRevision: originalSource.binding.revision,
+              object: { objectId: note.object_id, versionRef: created.version },
+              location: beforeLocation,
+              key: oldKey,
+            },
+            destination: { location: afterLocation, key: newKey },
+            held: {
+              path: held.path,
+              query: held.query,
+              status: held.status,
+              source: held.source,
+              at: held.at,
+            },
+            delivery: hold.events,
+            network: app.trace.filter((event) =>
+              event.event.startsWith("resolver-"),
+            ),
+            sourceDocumentDetached: guest.isDetached(),
+            promiseTerminalState: "not observable after Document retirement",
+          }),
+        );
+      } catch (error) {
+        await app.diagnostics(`${backend}-late-compose-failure`, error);
         throw error;
       } finally {
         try {
