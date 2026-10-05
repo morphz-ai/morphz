@@ -78,6 +78,58 @@ function unavailable(error: unknown) {
   return true;
 }
 
+for (const field of ["issuer", "serviceId", "dataAuthorityId"] as const) {
+  test(`private config rejects non-portable ${field} before reading any credential`, () => {
+    const f = fixture();
+    let reads = 0;
+    const resolver = new CognitiveAppBindings({
+      filename: f.filename,
+      readSecret: () => {
+        reads++;
+        return fixtureSecret;
+      },
+    });
+    try {
+      for (const text of ["before\0after", "bad\uD800", "bad\uDC00"]) {
+        const invalidTuple =
+          field === "issuer" ? tuple : { ...tuple, [field]: text };
+        f.replace(
+          config(
+            [{ ...entry, ...invalidTuple }],
+            field === "issuer" ? text : "fixture-host",
+          ),
+        );
+        assert.throws(
+          () => resolver.prepareConnection(invalidTuple),
+          unavailable,
+        );
+        assert.equal(reads, 0);
+        if (field !== "issuer") {
+          f.replace(
+            config([entry, { ...entry, principalId: "other", [field]: text }]),
+          );
+          assert.throws(() => resolver.prepareConnection(tuple), unavailable);
+          assert.equal(reads, 0);
+        }
+      }
+      const legal = " 原件\n\t👩‍💻é ";
+      const validTuple =
+        field === "issuer" ? tuple : { ...tuple, [field]: legal };
+      f.replace(
+        config(
+          [{ ...entry, ...validTuple }],
+          field === "issuer" ? legal : "fixture-host",
+        ),
+      );
+      const handle = resolver.prepareConnection(validTuple);
+      assert.equal(handle.issuer, field === "issuer" ? legal : "fixture-host");
+      assert.equal(reads, 1);
+    } finally {
+      f.close();
+    }
+  });
+}
+
 test("private resolver is lazy and fails closed without leaking file or secret details", () => {
   assert.throws(
     () => new CognitiveAppBindings({ filename: "relative.json" }),

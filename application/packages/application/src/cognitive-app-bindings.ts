@@ -11,7 +11,10 @@ import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
 import { inspect } from "node:util";
 import { z } from "zod";
-import type { JsonValue } from "../../cognitive-app-sdk/src/protocol.js";
+import {
+  isPortableText,
+  type JsonValue,
+} from "../../cognitive-app-sdk/src/protocol.js";
 import {
   isCognitiveAppTransportLease,
   isPublicCognitiveAppAddress,
@@ -22,7 +25,7 @@ import {
 
 const maxFileBytes = 128 * 1024;
 const internalId = z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);
-const opaque = z.string().min(1).max(200);
+const opaque = z.string().min(1).max(200).refine(isPortableText);
 const tupleSchema = z
   .object({
     tenantId: internalId,

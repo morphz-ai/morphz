@@ -1,5 +1,20 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：私有配置也遵守身份载体校验
+
+Root 新增反例实际复现私有 resolver 会接受 protocol／SQL 禁止的 NUL 或
+未配对 surrogate issuer／保存方标识，并进入凭据读取。首 RED 18 项中
+15 通过／3 失败，日志
+`/tmp/morphz-cognitive-bindings-portable-ROOT-FIRST-RED-oct05.log`。
+配置和实际 tuple 现复用 SDK portable guard，包括非选中条目的完整配置
+校验；坏身份在任何凭据读取前安全拒绝。正常 Unicode、换行、tab 与空格
+保持原样，私有诊断仍不含路径、alias、凭据或 cause。
+
+Root 正式重跑 bindings／transport／纯协议／wire 75/75、零失败／跳过／
+取消，新增文件格式、strict scoped 类型及 diff 检查通过。最终日志
+`/tmp/morphz-cognitive-bindings-portable-ROOT-FINAL-oct05.log`。
+本项只修配置契约一致性，不宣称公共 TLS 或共享网关已完成。
+
 ## 2026-10-05 第三方认知应用：真实 Platform 身份和逐资源权限
 
 PlatformStore 现用既有 capabilities 解析实际 Human／Agent 与发起 Human，
