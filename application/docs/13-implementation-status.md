@@ -1,5 +1,23 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：持久提交事实的目录投影
+
+新增同 q 的内部投影器，只读取 ledger 已核 committed／pending 原摘要，
+同事务写既有 `content_entries`、真实原件交付 receipt／outbox，最后标记
+projected。不保存参数、业务 result 或正文；确定性标识碰撞精确拒绝。
+目录同版本保留人工标题／修订，但仍留下本次真实交付来源；不同版本只在
+原 resource baseline 精确匹配时更新，不比较 opaque 版本大小或提交时间。
+跨项目、kind 变化、deleted、目录漂移和原保存方路由变化均不覆盖。
+停用／撤权后只能补原持久提交事实，不能获得新的调用权限。
+
+Root 独立通读源码与全部测试，并正式重跑投影器＋registry＋commands
+124/124、SQLite／PostgreSQL 实际执行、零失败／跳过／取消。
+实际 SQL final-mark 故障前已有两份目录、receipt、outbox，冷重开确认全部
+回滚，原命令仍 committed／pending；不是仅断言函数存在。日志
+`/tmp/morphz-cognitive-projection-ROOT-FINAL-oct05.log`，strict scoped 类型、
+格式／diff 通过。Store 通知、退休 guard 和网络 Gateway 尚须接线，
+本阶段不宣称客户端或原窗口已完成。
+
 ## 2026-10-05 第三方认知应用：独立作者原件服务
 
 新增 `examples/cognitive-notes`，单独进程只依赖打包后的公开 SDK，自管

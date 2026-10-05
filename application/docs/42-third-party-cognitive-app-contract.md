@@ -356,9 +356,11 @@ Platform 内部分为 registry（版本、本人许可、保存方、连接、�
 commands（副作用受理、发送 fence、未知结果、回执投影、退休保护）两项
 职责；Store 保留薄入口，复用单一 backend／事务／策略，不自开第二连接，
 不把 SQL Query 暴露给作者 SDK 或 Renderer。不是按文件行数重写整个 Store。
-目前内部注册表与命令事实已通过双后端测试；实际 Store 目录写入和项目
-退役纳入 ledger 还须接线，不能把内部 markProjected／hasOpenCommands
-存在当成业务目录与退休保护已经完成。
+目前内部注册表、命令事实及 committed 目录投影器已通过双后端测试。
+投影器同 q 写既有目录与逐原件真实交付来源，最后标记 projected；业务正文
+不落 Platform，opaque 版本只做精确基线匹配，不按大小或时间覆盖。
+实际 Store 通知组合和项目退役纳入 ledger 还须接线，不能把内部
+markProjected／hasOpenCommands 存在当成客户端链路已经完成。
 
 Host 的 CognitiveAppGateway 负责固定连接、网络安全、实际 wire 校验和
 回执核验，只通过 Platform typed port 调用上述职责；由共享应用 Host 与
