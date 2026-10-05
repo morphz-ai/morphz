@@ -368,6 +368,13 @@ export type CognitiveAppTransportLease = {
   ): Promise<JsonValue>;
   release(): void;
 };
+const issuedLeases = new WeakSet<object>();
+/** Host-private runtime brand. Structural copies/Proxies are not permits. */
+export function isCognitiveAppTransportLease(
+  value: unknown,
+): value is CognitiveAppTransportLease {
+  return typeof value === "object" && value !== null && issuedLeases.has(value);
+}
 // Shared by every transport in this Host process; creating another instance is
 // not a way around capacity. Keys are trusted connection identities, not URLs.
 let hostActive = 0;
@@ -405,7 +412,7 @@ export class CognitiveAppTransport {
       if (remaining) connectionActive.set(connectionKey, remaining);
       else connectionActive.delete(connectionKey);
     };
-    return Object.freeze({
+    const lease: CognitiveAppTransportLease = Object.freeze({
       release: () => {
         if (state === "ready") {
           state = "finished";
@@ -504,5 +511,7 @@ export class CognitiveAppTransport {
         }
       },
     });
+    issuedLeases.add(lease);
+    return lease;
   }
 }

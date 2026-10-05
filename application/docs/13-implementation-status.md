@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：Host 私有连接解析
+
+本人连接现在可从 Host 操作者指定的私有文件解析，配置仅引用专用
+`MORPHZ_APP_COGNITIVE_CREDENTIAL_*` 环境凭据。每次按实际 tenant／本人／
+app／service／dataAuthority 精确选取，所有条目先通过校验，再读取选中凭据；
+不复用 Runtime token、登录 cookie 或其他人的连接。SQL alias 来自 Host
+issuer、实际保存方及 canonical origin 的 hash，凭据轮换不改变 alias；
+地址或保存方改变必须另行接入，不能偷偷替换已 admission 的目标。
+
+私有文件限 128 KiB／128 条，POSIX 上必须是当前 UID 的 0600／0400
+普通文件。固定 fd、不跟随最终 symlink、不阻塞 FIFO、核读取前后 stat、
+fatal UTF-8；Windows 尚未实现等价 ACL 检验，明确拒绝而非绕过权限。
+配置无监听或轮询，操作者应以 atomic rename 更换。凭据、URL、环境名
+不进入公开 DTO、错误或普通诊断；用途隔离的冻结 handle 只开放 setup
+describe、active invoke／object-read 或历史 receipt-read，且已准备请求保留
+当时快照。历史地址只用于核回执，不因此取得执行方法。
+
+独立评审另外复现内部结构型假 lease 可取得私有 binding；现以 transport
+模块私有 WeakSet 核实际冻结许可，复制、继承或 Proxy 包装均无品牌，先核
+同一对象再调用其 post。不是远程作者漏洞或平台权限证明，真实许可仍按
+原单次使用／全局并发限制执行；Gateway 必须使用实际 connection key。
+
+Root 独立重跑私有解析与传输 30/30、零失败／跳过／取消，新增文件格式、
+strict scoped 与完整类型检查通过。实际网络证据仅隔离 numeric-loopback HTTP 四路径；
+还包含两身份拒绝借用、current／retired 路由、权限／字节／条数／坏 UTF-8、
+in-place 改动、用途隔离及冷重新解析。日志
+`/tmp/morphz-cognitive-bindings-BRAND-ROOT-FINAL-oct05.log`；假 lease 首次
+14 通过／1 失败的 RED 另存，不删除反例。本阶段未读取真实
+配置或凭据，未操作原 App；resolver 不是授权，Gateway 仍须核 Platform
+许可、连接状态／修订和真实来源，完整第三方闭环尚未接通。
+
 ## 2026-10-05 第三方认知应用：协议与 ledger 字节边界一致
 
 接账模块复核发现：32 个各自合法的 Unicode 原件引用／摘要仍可能超过

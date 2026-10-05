@@ -206,6 +206,20 @@ SQL 只保存 opaque `hostBindingId`，不保存 URL、文件路径、环境变�
 secret locator；这些由 Host 私有配置解析。公开目录、模型、iframe、错误
 与诊断导出不含凭据、私有配置或这个 Host alias。
 
+已实现的私有 resolver 读取 Host 指定的绝对路径；v1 文件为
+`morphz-host-cognitive-bindings/v1`，包含 stable issuer 与本人精确 tuple、
+canonical origin、专用环境凭据引用和显式 current 的条目。POSIX 要求
+当前 UID、0600／0400 普通文件，并按固定 fd 核前后 stat；最多 128 KiB／
+128 条。尚无 Windows ACL 实现，该平台明确不可用。配置逐次读取、不轮询，
+建议操作者 atomic rename 更新，不通过 Client、模型或 iframe 编辑。
+alias 不含凭据引用：secret 轮换不变，issuer／地址／保存方变化产生新 alias。
+setup、active、receipt-recovery handle 分开，已准备调用保留不可变快照；
+旧 alias 只可读取旧回执，不可调用新写入。resolver 选择不是授权，Gateway
+仍须先核实际本人、当前连接与命令来源，未撤销连接才可核原回执。
+handle 只接受 transport 实际签发且冻结的许可；模块私有 WeakSet 品牌使
+结构伪造、复制、继承或 Proxy 包装不能取得私有 binding。品牌不替代本人
+授权、实际 connection key、发送 fence 或 TLS／Service 身份核验。
+
 共享 Web Host 的应用接入还须满足操作者批准的 egress policy；普通页面
 不能临时指向本机／内网管理服务。禁止 URL userinfo、fragment、查询凭据、
 非 HTTPS 协议和跨目标重定向。远端拒绝私网、loopback、link-local、metadata
