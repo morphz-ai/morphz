@@ -3,6 +3,7 @@ import type {
   ConversationRuntime,
 } from "../../../packages/core/src/conversation.js";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
+import { reconcileConversationPublications } from "../../../packages/core/src/conversation-publications.js";
 import {
   scriptOutputKey,
   type ScriptOutput,
@@ -88,7 +89,10 @@ export function conversationMessages(
   sharedDefault: boolean,
 ) {
   const messages = new Map<string, LiveMessage>();
-  for (const m of [...runtime.messages, ...live])
+  for (const m of reconcileConversationPublications([
+    ...runtime.messages,
+    ...live,
+  ]))
     if (inConversation(state, conversationId, m, sharedDefault)) {
       // A child infer result is execution output, not a reply to a user input.
       // Keep it in the execution inspector; never flash it on the main timeline.

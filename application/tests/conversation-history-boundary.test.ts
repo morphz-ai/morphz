@@ -6,12 +6,20 @@ import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
   SyntaxKind,
   isCallExpression,
+  isBindingElement,
+  isFunctionDeclaration,
   isIdentifier,
   isImportDeclaration,
   isImportTypeNode,
   isNamedImports,
+  isParameterDeclaration,
   isPropertyAccessExpression,
+  isPropertyAssignment,
+  isShorthandPropertyAssignment,
   isStringLiteral,
+  isTypeAliasDeclaration,
+  isTypeNode,
+  isTypeParameterDeclaration,
   isVariableDeclaration,
   type Identifier,
   type Node,
@@ -23,6 +31,12 @@ import {
 const path = "apps/web/src/data/conversation-history.ts";
 const contractTypes = "../platform-client.js";
 const scriptIdentity = "../../../../packages/core/src/script-delivery.js";
+const publicationIdentity =
+  "../../../../packages/core/src/conversation-publications.js";
+const namedRuntimeDependencies = new Map([
+  [scriptIdentity, "scriptOutputKey"],
+  [publicationIdentity, "reconcileConversationPublications"],
+]);
 const forbiddenGlobals = new Set([
   "window",
   "document",
@@ -46,7 +60,7 @@ const forbiddenGlobals = new Set([
   "storageScope",
 ]);
 
-function violations(text: string) {
+function violations(text: string, purePublications = false) {
   const directory = "/conversation-history-boundary-fixture";
   const sourcePath = `${directory}/owner.ts`,
     config = `${directory}/tsconfig.json`;
@@ -68,25 +82,48 @@ function violations(text: string) {
     const issues: string[] = [],
       names: Identifier[] = [],
       bindings: Identifier[] = [];
+    if (
+      purePublications &&
+      source.statements.some(
+        (statement) =>
+          !isTypeAliasDeclaration(statement) &&
+          !isFunctionDeclaration(statement),
+      )
+    )
+      issues.push("module-state-or-dependency");
     const visit = (node: Node) => {
       if (isIdentifier(node)) names.push(node);
       if (isVariableDeclaration(node) && isIdentifier(node.name))
+        bindings.push(node.name);
+      if (
+        purePublications &&
+        (isFunctionDeclaration(node) ||
+          isParameterDeclaration(node) ||
+          isBindingElement(node) ||
+          isTypeAliasDeclaration(node) ||
+          isTypeParameterDeclaration(node)) &&
+        node.name &&
+        isIdentifier(node.name)
+      )
         bindings.push(node.name);
       if (isImportDeclaration(node)) {
         const from = isStringLiteral(node.moduleSpecifier)
           ? node.moduleSpecifier.text
           : "";
         const clause = node.importClause;
-        if (clause?.phaseModifier === SyntaxKind.TypeKeyword) {
+        if (purePublications) issues.push("pure-dependency");
+        else if (clause?.phaseModifier === SyntaxKind.TypeKeyword) {
           if (from !== contractTypes) issues.push("type-dependency");
         } else if (
-          from !== scriptIdentity ||
+          !namedRuntimeDependencies.has(from) ||
           clause?.name ||
           !clause?.namedBindings ||
           !isNamedImports(clause.namedBindings) ||
+          !clause.namedBindings.elements.length ||
           clause.namedBindings.elements.some(
             (item) =>
-              (item.propertyName ?? item.name).text !== "scriptOutputKey",
+              (item.propertyName ?? item.name).text !==
+              namedRuntimeDependencies.get(from),
           )
         )
           issues.push("runtime-dependency");
@@ -94,6 +131,12 @@ function violations(text: string) {
       if (isImportTypeNode(node)) issues.push("indirect-type-dependency");
       if (node.kind === SyntaxKind.ExportDeclaration) issues.push("re-export");
       if (node.kind === SyntaxKind.AnyKeyword) issues.push("untyped-contract");
+      if (
+        purePublications &&
+        (node.kind === SyntaxKind.AwaitExpression ||
+          node.kind === SyntaxKind.AsyncKeyword)
+      )
+        issues.push("pure-async-effect");
       if (
         isCallExpression(node) &&
         node.expression.kind === SyntaxKind.ImportKeyword
@@ -119,6 +162,32 @@ function violations(text: string) {
         isPropertyAccessExpression(name.parent) && name.parent.name === name;
       if (!local && !property && forbiddenGlobals.has(name.text))
         issues.push("ambient-effect");
+      if (purePublications) {
+        let typePosition = false;
+        for (
+          let parent: Node | undefined = name.parent;
+          parent;
+          parent = parent.parent
+        )
+          if (isTypeNode(parent)) {
+            typePosition = true;
+            break;
+          }
+        const propertyName =
+          isPropertyAssignment(name.parent) && name.parent.name === name;
+        const valueSymbol = isShorthandPropertyAssignment(name.parent)
+          ? project.checker.getShorthandAssignmentValueSymbol(name.parent)
+          : symbols[index];
+        const localValue = valueSymbol && declared.has(valueSymbol.id);
+        if (
+          !localValue &&
+          !property &&
+          !propertyName &&
+          !typePosition &&
+          !["Map", "JSON", "undefined"].includes(name.text)
+        )
+          issues.push("pure-ambient-dependency");
+      }
     });
     return issues;
   } finally {
@@ -132,6 +201,113 @@ test("conversation history owns disposable queries, not React, storage, transpor
     violations(readFileSync(new URL(`../${path}`, import.meta.url), "utf8")),
     [],
   );
+});
+
+test("history permits the exact publication helper, not arbitrary core or effect imports", () => {
+  const valid = `import type { PlatformHistory } from "${contractTypes}";
+    import { scriptOutputKey as outputKey } from "${scriptIdentity}";
+    import { reconcileConversationPublications as reconcile } from "${publicationIdentity}";
+    export function page(value: PlatformHistory) {
+      const key = outputKey(value.scriptOutputs[0]);
+      return [key, reconcile(value.runtime.messages)];
+    }`;
+  assert.deepEqual(violations(valid), []);
+  for (const addition of [
+    `import { otherHelper } from "${publicationIdentity}";`,
+    `import { reconcileConversationPublications, otherHelper } from "${publicationIdentity}";`,
+    `import reconcileConversationPublications from "${publicationIdentity}";`,
+    `import * as publications from "${publicationIdentity}";`,
+    `import "${publicationIdentity}";`,
+    `import {} from "${publicationIdentity}";`,
+    `import { reconcileConversationPublications } from "../../../../packages/core/src/conversation.js";`,
+    'import { applicationCall } from "../application-transport.js";',
+    'import { useState } from "react";',
+  ])
+    assert.ok(
+      violations(valid + "\n" + addition).includes("runtime-dependency"),
+      addition,
+    );
+});
+
+test("the actual publication helper owns only synchronous dependency-free message data", () => {
+  const helper = readFileSync(
+    new URL(
+      "../packages/core/src/conversation-publications.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.deepEqual(violations(helper, true), []);
+});
+
+test("the pure publication gate retains local data growth but rejects environment and transport dependencies", () => {
+  const helper = readFileSync(
+    new URL(
+      "../packages/core/src/conversation-publications.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const localGrowth = `
+    function localFields(window: { rootId: string }) {
+      const { rootId } = window;
+      const localStorage = { rootId };
+      return JSON.stringify(localStorage);
+    }
+    export function describe(messages: readonly PublicationMessage[]) {
+      return messages.map(message => localFields({ rootId: message.rootId ?? "" }));
+    }`;
+  assert.deepEqual(violations(helper + localGrowth, true), []);
+  const fixtures: [string, string][] = [
+    [`import { useState } from "react";`, "pure-dependency"],
+    [`import { readFileSync } from "node:fs";`, "pure-dependency"],
+    [
+      `import { applicationCall } from "../application-transport.js";`,
+      "pure-dependency",
+    ],
+    [
+      `import type { PlatformHistory } from "${contractTypes}";`,
+      "pure-dependency",
+    ],
+    ['export { readFileSync } from "node:fs";', "re-export"],
+    ['type Imported = import("node:fs").Stats;', "indirect-type-dependency"],
+    ['function read() { return import("node:fs"); }', "dynamic-dependency"],
+    ["const remembered = new Map();", "module-state-or-dependency"],
+    [
+      'function read() { return localStorage.getItem("messages"); }',
+      "pure-ambient-dependency",
+    ],
+    [
+      'function read() { return fetch("/api/platform/history"); }',
+      "pure-ambient-dependency",
+    ],
+    ["function read() { return process.env; }", "pure-ambient-dependency"],
+    [
+      'function read() { return globalThis["fetch"]; }',
+      "pure-ambient-dependency",
+    ],
+    [
+      "function read() { return hostTransport.readHistory(); }",
+      "pure-ambient-dependency",
+    ],
+    [
+      'function read() { return new WebSocket("ws://localhost"); }',
+      "pure-ambient-dependency",
+    ],
+    [
+      "function read() { return setTimeout(() => {}, 1); }",
+      "pure-ambient-dependency",
+    ],
+    ["function read() { return Date.now(); }", "pure-ambient-dependency"],
+    ["function read() { return Math.random(); }", "pure-ambient-dependency"],
+    ["async function read() { return []; }", "pure-async-effect"],
+    ["function read(value: any) { return value; }", "untyped-contract"],
+  ];
+  for (const [addition, rule] of fixtures)
+    assert.ok(
+      violations(helper + "\n" + addition, true).includes(rule),
+      addition,
+    );
 });
 
 test("the same gate rejects alternate imports, ambient state and direct subscriptions", () => {

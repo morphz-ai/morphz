@@ -1,5 +1,6 @@
 import type { HistoryCursor, PlatformHistory } from "../platform-client.js";
 import { scriptOutputKey } from "../../../../packages/core/src/script-delivery.js";
+import { reconcileConversationPublications } from "../../../../packages/core/src/conversation-publications.js";
 
 export type HistoryScope = { projectId: string; conversationId: string };
 export type CachedHistory = {
@@ -64,7 +65,9 @@ export function mergePlatformHistories(
           ),
         ).values(),
       ],
-      messages: byId(older.runtime.messages, latest.runtime.messages),
+      messages: reconcileConversationPublications(
+        byId(older.runtime.messages, latest.runtime.messages),
+      ),
     },
   };
 }

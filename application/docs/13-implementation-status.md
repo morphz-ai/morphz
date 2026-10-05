@@ -1,5 +1,59 @@
 # 桌面能力实施记录
 
+## 2026-10-05 同一回复重复展示：修复与最终回归
+
+实际问题是同一 Runtime publication 的公共流前缀与正式终轮分别用
+`stream:<attempt>` 和 `publication:<attempt>` 进入历史／实时合并；只按
+消息 id 合并会留下两行。已核实际 Runtime 的一次完成、一个 attempt 和
+一份正式回复，不将其说成模型调用或执行发生了两次。
+
+历史与主对话现在共用无环境依赖的 publication 对账函数，仅在实际项目、
+对话、输入、root 和 publication 身份吻合时，由正式终轮取代其公共前缀。
+两边均有 Thread 身份时也必须吻合。相同文字的独立回复、来源不全的消息、
+工具与进度保持；不改存活消息的对象、id、首见时间，也不删除数据库记录。
+
+实际 Conversation／StrictMode 挂载回归覆盖终轮、断连、重放、重连、历史
+刷新与重新挂载，证明前缀不会复活；独立同文回复仍为两行，最终错误也不
+吞掉独立回复。旧历史与游标保持，测试没有业务 POST。聚焦正式回归
+54/54 通过，类型检查与 diff 检查通过。
+
+首次完整回归暴露旧历史边界仅允许一个纯函数 import 的真实断言失败，
+不是 PostgreSQL 或 Runtime 缺失。边界仅追加这一个精确模块／导出，并
+另外约束该函数同步、无 imports／顶层状态／环境与传输依赖；保留原负例，
+增加合法局部数据增长正例与依赖／副作用反例，不放宽为任意 core imports。
+旧失败日志 `/tmp/morphz-ui-icons-publications-oct05-final-node.log` 保留。
+
+最终按 `npm test` 正式入口强制 PostgreSQL／Runtime，显式启用 nested
+activity、Profile、response annotations 与 workspace 集成：2,483 项中
+2,479 通过，零失败／取消，`unexpectedSkips=[]`，耗时 296,816.416833ms。
+另四项是明确未启用的三个 S3 与一个 native-focus 专项，不计通过。
+完整日志 `/tmp/morphz-ui-icons-publications-oct05-final-node-green.log` 保留。
+
+## 2026-10-05 侧栏／图标／回复最终候选：原应用有限验收
+
+新备份包含 12 个各自一致且 integrity／SHA 正常的在线 SQLite snapshot、
+7,282 个已核 SHA 的原文件副本；不冒称跨数据库原子快照或活跃 Chromium
+profile 停写一致。本轮未重新解码全部隐藏草稿，不将原文件副本说成所有
+逻辑存储键前后相等。
+
+仅追加四个冻结 hash assets、原子切换 index，旧 Web 2,710 文件与 Service
+438 文件 SHA 保持，旧资产未移除。原 App PID82919 与 Runtime PID68670
+及启动时间不变，没有第二 App、Runtime 重启或服务／配置替换。Root 再核
+候选全部 209 文件的源／目标 SHA 均吻合。
+
+同一原 App 单次正常 View→Reload；短暂启动卡自行恢复，没有点击重试。
+实际 Sources URL 确认 `app-B2UtfaOl.js` 与 `app-DgwvV-98.css` 已载入，
+不把磁盘 hash 当作 live response bytes。Launcher 开闭、左右栏显隐通过，
+恢复 Human 当前双栏隐藏布局；原可见 ping／pong 各一行、输入空且发送禁用。
+没有发送、补充、批准或业务编辑。Root 实际查看 Launcher、双栏及最终正常
+原窗截图；不以这一个既有交换证明所有执行完成或新生成的动效均已验证。
+
+本轮使用标准原生 AX 点击，不冒称持续拖动验收。Sources 的 Console 红色
+计数 1 保留；本轮未重新读取错误文本，尽管 helper 字节与旧版一致，也不
+宣称零 Console 错误。调试面板与 Launcher 已关闭，原窗控制已释放。
+私有证据为 `/tmp/morphz-ui-final-original-run.RwYCLp/NATIVE-ACCEPTANCE-RECEIPT.json`。
+图标审美仍为候选，待 Human 反馈；这不表示第三方认知应用生态目标已完成。
+
 ## 2026-10-05 侧栏表面与应用图标：实现及隔离验证
 
 左右全高侧栏现在消费同一中性外壳底面与分隔线；中央画布、侧栏内控件、
