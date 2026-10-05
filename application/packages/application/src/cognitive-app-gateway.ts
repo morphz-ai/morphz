@@ -267,6 +267,27 @@ const authority = (
     dataAuthorityId,
   };
 };
+// Compare immutable read premises, not mutable permission revisions. Each
+// fresh Platform resolution checks current policy and any caller-supplied CAS.
+const operationReadPremises = (
+  resolved: Awaited<
+    ReturnType<CognitiveAppGatewayPlatform["resolveCognitiveAppOperation"]>
+  >,
+) => ({
+  actor: resolved.actor,
+  authority: authority(resolved.target),
+  connectionId: resolved.target.connectionId,
+  operation: resolved.operation,
+  parameters: resolved.parameters,
+  resources: resolved.resources,
+});
+const objectReadPremises = (resolved: CognitiveAppResolvedObjectRead) => ({
+  actor: resolved.actor,
+  authority: authority(resolved.target),
+  connectionId: resolved.target.connectionId,
+  object: resolved.object,
+  maxBytes: resolved.maxBytes,
+});
 const expected = (
   command: CognitiveAppCommandSnapshot,
 ): DomainReceiptBinding => ({
@@ -551,11 +572,7 @@ export function createCognitiveAppGateway(options: {
       if (resolved.operation.effect === "read") {
         if (commandId) throw new CognitiveAppGatewayError("invalid", commandId);
         lease = acquire(resolved.actor.tenantId, resolved.target.connectionId);
-        const bound = captured({
-          actor: resolved.actor,
-          authority: authority(resolved.target),
-          connectionId: resolved.target.connectionId,
-        });
+        const bound = captured(operationReadPremises(resolved));
         const handle = await active(
           access,
           bound.actor,
@@ -563,13 +580,7 @@ export function createCognitiveAppGateway(options: {
           request.projectId,
         );
         resolved = await platform.resolveCognitiveAppOperation(access, request);
-        if (
-          !same(bound, {
-            actor: resolved.actor,
-            authority: authority(resolved.target),
-            connectionId: resolved.target.connectionId,
-          })
-        )
+        if (!same(bound, operationReadPremises(resolved)))
           throw new CognitiveAppGatewayError("conflict");
         if (resolved.operation.effect !== "read")
           throw new CognitiveAppGatewayError("conflict");
@@ -607,6 +618,16 @@ export function createCognitiveAppGateway(options: {
         } catch {
           throw new CognitiveAppGatewayError("contract");
         }
+        // The authenticated author has already returned data, not a write.
+        // Network wait must not preserve revoked disclosure authority. Recheck
+        // current policy in its own completed transaction before returning any
+        // result, keeping the original actor/source/target and request exact.
+        const current = await platform.resolveCognitiveAppOperation(
+          access,
+          request,
+        );
+        if (!same(bound, operationReadPremises(current)))
+          throw new CognitiveAppGatewayError("conflict");
         return {
           kind: "read",
           authority: wire.delegation.authority,
@@ -735,13 +756,7 @@ export function createCognitiveAppGateway(options: {
         request,
       );
       lease = acquire(resolved.actor.tenantId, resolved.target.connectionId);
-      const bound = captured({
-        actor: resolved.actor,
-        authority: authority(resolved.target),
-        connectionId: resolved.target.connectionId,
-        object: resolved.object,
-        maxBytes: resolved.maxBytes,
-      });
+      const bound = captured(objectReadPremises(resolved));
       const handle = await active(
         access,
         bound.actor,
@@ -749,15 +764,7 @@ export function createCognitiveAppGateway(options: {
         request.projectId,
       );
       resolved = await platform.resolveCognitiveAppObjectRead(access, request);
-      if (
-        !same(bound, {
-          actor: resolved.actor,
-          authority: authority(resolved.target),
-          connectionId: resolved.target.connectionId,
-          object: resolved.object,
-          maxBytes: resolved.maxBytes,
-        })
-      )
+      if (!same(bound, objectReadPremises(resolved)))
         throw new CognitiveAppGatewayError("conflict");
       const wire = parseObjectReadRequest({
         protocol: domainProtocol,
@@ -774,11 +781,19 @@ export function createCognitiveAppGateway(options: {
         maxBytes: resolved.maxBytes,
       });
       const raw = await handle.readObject(lease, wire, signal);
+      let result: DomainObjectReadResponse;
       try {
-        return parseObjectReadResponse(raw, wire);
+        result = parseObjectReadResponse(raw, wire);
       } catch {
         throw new CognitiveAppGatewayError("contract");
       }
+      const current = await platform.resolveCognitiveAppObjectRead(
+        access,
+        request,
+      );
+      if (!same(bound, objectReadPremises(current)))
+        throw new CognitiveAppGatewayError("conflict");
+      return result;
     } catch (error) {
       throw safe(error);
     } finally {

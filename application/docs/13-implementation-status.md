@@ -1,5 +1,24 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：响应后的读取披露门
+
+内部 Gateway 的 operation read／exact object read 在作者响应完整校验后、
+返回前，再经实际 Store 核当前许可、项目成员、连接和真实身份／来源，
+并比较原固定保存方与精确请求；等待期间撤权或来源改变不披露旧正文，
+不重发读取，也不把拒绝披露说成作者事务回滚。默认不暗中固定 mutable
+grant／connection revision；只有 caller 显式 CAS 才拒绝有效授权下的修订
+漂移。副作用账本、写回执和恢复流程未改。
+
+Root 与独立 reviewer 全文核新增 delta，Root 正式四文件 138/138、实际
+SQLite／PostgreSQL、零失败／跳过／取消；日志
+`/tmp/morphz-cognitive-gateway-disclosure-ROOT-FROZEN-oct05.log`。
+新增 28 项真实独立 packed 作者 HTTP 响应暂停证人：完整私有正文已实际
+读取后改变授权，20 项拒绝、4 项无 CAS 的同精确身份仍有效、4 项显式 CAS
+拒绝修订漂移；真实历史版本未 fallback 为当前版本。完整 Gateway 首次
+RED 34 通过／26 失败，随后 60/60；身份 ingress 仍是明确隔离 verifier
+fixture，不称原 Runtime／App 验收。并行 Service 测试还在开发，未称当时
+全工程类型门通过；本阶段路径无类型错误。
+
 ## 2026-10-05 第三方认知应用：窗口生命周期与精确界面读取
 
 实际 Store 复用既有 view／binding／UI 安装关系，提供独立 launch、bind、

@@ -261,6 +261,11 @@ definitionHash、instance、operationId、Schema、效果与真实不可用原�
 注册源是已获权版本，不把所有
 Schema 常驻模型输入。调用固定同一 gateway，经身份、安装、本人许可、
 当前项目／对象、连接与版本检查，分别验证输入和实际结果。
+read／objects/read 在实际作者响应校验后、正文交付前再核当前策略与原真实
+caller／来源／保存方／精确请求；等待期间撤权不返回旧数据、不重发读取。
+许可或连接修订默认不作为隐式 CAS，只有显式请求的 revision guard 才固定
+修订；当前授权仍有效且同精确身份时允许无 CAS 的修订变化。该披露门不是
+写回滚或取消在途事务，也不能代替 GUI 自身固定 frame epoch 的迟到门。
 
 GUI SDK 仅提供绑定当前 view 的 ready、operations、object exact read、
 导航状态与 compose；不接受作者传入 Host identity、endpoint 或 credentials。

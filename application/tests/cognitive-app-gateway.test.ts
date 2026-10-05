@@ -957,12 +957,12 @@ test("unit FakePort: read has null command/no ledger and exact object read uses 
   );
   assert.equal(f.control.admitCalls, 0);
   assert.equal(f.control.dispatchCalls, 0);
-  assert.equal(f.control.resolveCalls, 2);
+  assert.equal(f.control.resolveCalls, 3);
   const old = await f.gateway.readObject(access, f.objectRequest());
   assert.equal(old.object.versionRef, "old-version");
   assert.equal(f.control.objectReads, 1);
   assert.equal(f.control.posts, 1);
-  assert.equal(f.control.objectResolves, 2);
+  assert.equal(f.control.objectResolves, 3);
   f.control.badObject = true;
   await assert.rejects(
     f.gateway.readObject(access, f.objectRequest()),
@@ -970,7 +970,7 @@ test("unit FakePort: read has null command/no ledger and exact object read uses 
       error instanceof CognitiveAppGatewayError && error.reason === "contract",
   );
 });
-test("unit FakePort: read owner/authority/source change between real purpose preparation and second resolution fails before network", async () => {
+test("unit FakePort: immutable owner/authority/source drift rejects before sending or after reading without re-sending", async () => {
   const agent = parseDomainActor({
     ...human,
     actantId: "agent",
@@ -1016,28 +1016,30 @@ test("unit FakePort: read owner/authority/source change between real purpose pre
             : "different";
     }),
   ]) {
-    const f = fixture(agent);
-    f.control.onResolve = (call) => {
-      if (call === 2) mutate(f);
-    };
-    await assert.rejects(
-      f.gateway.invoke(access, f.readRequest()),
-      (error: unknown) =>
-        error instanceof CognitiveAppGatewayError &&
-        error.reason === "conflict",
-    );
-    assert.equal(f.control.posts, 0);
-    const o = fixture(agent);
-    o.control.onObject = (call) => {
-      if (call === 2) mutate(o);
-    };
-    await assert.rejects(
-      o.gateway.readObject(access, o.objectRequest()),
-      (error: unknown) =>
-        error instanceof CognitiveAppGatewayError &&
-        error.reason === "conflict",
-    );
-    assert.equal(o.control.objectReads, 0);
+    for (const phase of [2, 3]) {
+      const f = fixture(agent);
+      f.control.onResolve = (call) => {
+        if (call === phase) mutate(f);
+      };
+      await assert.rejects(
+        f.gateway.invoke(access, f.readRequest()),
+        (error: unknown) =>
+          error instanceof CognitiveAppGatewayError &&
+          error.reason === "conflict",
+      );
+      assert.equal(f.control.posts, phase === 2 ? 0 : 1);
+      const o = fixture(agent);
+      o.control.onObject = (call) => {
+        if (call === phase) mutate(o);
+      };
+      await assert.rejects(
+        o.gateway.readObject(access, o.objectRequest()),
+        (error: unknown) =>
+          error instanceof CognitiveAppGatewayError &&
+          error.reason === "conflict",
+      );
+      assert.equal(o.control.objectReads, phase === 2 ? 0 : 1);
+    }
   }
   const f = fixture();
   f.control.onResolve = (call) => {
@@ -1372,6 +1374,11 @@ type ActualFixture = {
     credential: string;
     paths: string[];
     droppedReceipts: Array<ReturnType<typeof parseDomainReceipt>>;
+    heldRead?: {
+      path: "/invoke" | "/objects/read";
+      received(value: { statusCode: number; body: unknown }): void;
+      released: Promise<void>;
+    };
   };
   identities: Map<
     string,
@@ -1381,6 +1388,10 @@ type ActualFixture = {
   reopen(): Promise<void>;
   restartAuthor(): Promise<void>;
   authorRows(sql: string): Record<string, unknown>[];
+  holdNextRead(path: "/invoke" | "/objects/read"): {
+    received: Promise<{ statusCode: number; body: unknown }>;
+    release(): void;
+  };
 };
 async function actualFixture(
   backend: "sqlite" | "postgres",
@@ -1617,8 +1628,26 @@ async function actualFixture(
               "content-length": String(body.length),
             };
             delete headers["transfer-encoding"];
-            response.writeHead(received.statusCode!, headers);
-            response.end(body);
+            const send = () => {
+              response.writeHead(received.statusCode!, headers);
+              response.end(body);
+            };
+            const hold = control.heldRead;
+            if (
+              hold &&
+              hold.path === request.url &&
+              received.statusCode === 200
+            ) {
+              control.heldRead = undefined;
+              // Hold only after the separate author process returned its real,
+              // complete response. Policy changes below are actual Store writes,
+              // not a fake read resolver or post-dispatch cancellation.
+              hold.received({
+                statusCode: received.statusCode,
+                body: parseWireJson(JSON.parse(body.toString("utf8"))),
+              });
+              void hold.released.then(send);
+            } else send();
           });
           received.once("error", () => response.destroy());
         },
@@ -1781,6 +1810,22 @@ async function actualFixture(
           db.close();
         }
       },
+      holdNextRead(path) {
+        assert.equal(control.heldRead, undefined);
+        const released = deferred();
+        let receive!: (value: { statusCode: number; body: unknown }) => void;
+        const received = new Promise<{ statusCode: number; body: unknown }>(
+          (resolve) => {
+            receive = resolve;
+          },
+        );
+        control.heldRead = {
+          path,
+          received: receive,
+          released: released.promise,
+        };
+        return { received, release: released.resolve };
+      },
     };
     await run(f);
   } finally {
@@ -1838,6 +1883,283 @@ async function assertNoBusinessBodyInPlatform(f: ActualFixture) {
   );
 }
 for (const backend of ["sqlite", "postgres"] as const) {
+  test(
+    `real packed author + ${backend}: reads recheck current policy after a complete held HTTP response before disclosing data`,
+    { timeout: 120000 },
+    async (t) =>
+      actualFixture(backend, async (f) => {
+        const humanAccess = { credential: "alice" };
+        const created = await f.gateway.invoke(
+          humanAccess,
+          f.request("disclosure-original"),
+        );
+        assert.ok(created.kind === "command");
+        const first = returnedObject(created.result);
+        const revised = await f.gateway.invoke(humanAccess, {
+          ...f.request("disclosure-revised"),
+          operationId: "notes.revise",
+          resources: [
+            { objectId: first.objectId, versionRef: first.versionRef },
+          ],
+          parameters: {
+            objectId: first.objectId,
+            baselineVersionRef: first.versionRef,
+            title: "Current private title",
+            markdown: "PRIVATE-BUSINESS-BODY-newer-not-the-requested-history",
+          },
+        });
+        assert.ok(revised.kind === "command");
+        const second = returnedObject(revised.result);
+        let grantRevision = 1,
+          connectionRevision = 1;
+        const grant = async (state: "active" | "disabled") => {
+          const result = await f.store.changeCognitiveAppGrant(humanAccess, {
+            appId: definition.id,
+            version: definition.version,
+            expectedRevision: grantRevision,
+            state,
+            now: at,
+          });
+          grantRevision = result.revision;
+        };
+        const connection = async (state: "active" | "disabled") => {
+          const result = await f.gateway.changeConnectionState(humanAccess, {
+            appId: definition.id,
+            version: definition.version,
+            connectionId: f.connectionId,
+            expectedRevision: connectionRevision,
+            state,
+          });
+          connectionRevision = result.revision;
+        };
+        const read = (
+          path: "/invoke" | "/objects/read",
+          credential: string,
+          explicitRevisions = false,
+        ) => {
+          const target = {
+            appId: definition.id,
+            version: definition.version,
+            connectionId: f.connectionId,
+            projectId: "project-a",
+            ...(explicitRevisions
+              ? {
+                  expectedGrantRevision: grantRevision,
+                  expectedConnectionRevision: connectionRevision,
+                }
+              : {}),
+          };
+          return path === "/invoke"
+            ? f.gateway.invoke(
+                { credential },
+                {
+                  ...target,
+                  operationId: "notes.list",
+                  resources: [],
+                  parameters: { limit: 32 },
+                },
+              )
+            : f.gateway.readObject(
+                { credential },
+                {
+                  ...target,
+                  object: {
+                    objectId: first.objectId,
+                    versionRef: first.versionRef,
+                  },
+                  maxBytes: 262144,
+                },
+              );
+        };
+        const cases = [
+          {
+            name: "grant disabled in actual Platform",
+            credential: "alice",
+            mutate: () => grant("disabled"),
+            restore: () => grant("active"),
+            reason: "forbidden",
+          },
+          {
+            name: "actual project membership removed",
+            credential: "alice",
+            mutate: async () => {
+              await f.q.change(
+                "DELETE FROM project_members WHERE tenant_id='tenant-a' AND project_id='project-a' AND principal_id='alice'",
+                [],
+              );
+            },
+            restore: async () => {
+              await f.q.change(
+                "INSERT INTO project_members(tenant_id,project_id,principal_id) VALUES('tenant-a','project-a','alice')",
+                [],
+              );
+            },
+            reason: "forbidden",
+          },
+          {
+            name: "本人 connection disabled in actual Platform",
+            credential: "alice",
+            mutate: () => connection("disabled"),
+            restore: () => connection("active"),
+            reason: "forbidden",
+          },
+          {
+            name: "ingress credential removed by explicit test authority port",
+            credential: "alice",
+            mutate: async () => {
+              f.identities.delete("alice");
+            },
+            restore: async () => {
+              f.identities.set("alice", {
+                tenantId: "tenant-a",
+                principalId: "alice",
+                actantId: "alice-human",
+                kind: "human",
+                runtimeInputId: null,
+              });
+            },
+            reason: "forbidden",
+          },
+          {
+            name: "valid original Agent input source changed by explicit test authority port",
+            credential: "agent",
+            mutate: async () => {
+              const before = f.identities.get("agent")!;
+              f.identities.set("agent", {
+                ...before,
+                runtimeInputId: "input-two",
+              });
+            },
+            restore: async () => {
+              const before = f.identities.get("agent")!;
+              f.identities.set("agent", {
+                ...before,
+                runtimeInputId: "input-one",
+              });
+            },
+            reason: "conflict",
+          },
+        ] as const;
+        for (const path of ["/invoke", "/objects/read"] as const) {
+          for (const change of cases) {
+            await t.test(`${path}: ${change.name}`, async () => {
+              const posts = f.control.paths.filter(
+                (item) => item === path,
+              ).length;
+              const hold = f.holdNextRead(path);
+              const outcome = read(path, change.credential).then(
+                (value) => ({ ok: true as const, value }),
+                (error: unknown) => ({ ok: false as const, error }),
+              );
+              try {
+                const authorResponse = await hold.received;
+                assert.equal(authorResponse.statusCode, 200);
+                assert.equal(
+                  f.control.paths.filter((item) => item === path).length,
+                  posts + 1,
+                  "The actual HTTP read already reached the packed independent author.",
+                );
+                assert.ok(
+                  JSON.stringify(authorResponse.body).includes(
+                    path === "/invoke" ? second.title : first.markdown,
+                  ),
+                  "The held body is the real author's private data, not a fake denial fixture.",
+                );
+                await change.mutate();
+                hold.release();
+                const answer = await outcome;
+                assert.equal(
+                  answer.ok,
+                  false,
+                  "No previously read data may be disclosed after loss/change of current authority.",
+                );
+                assert.ok(!answer.ok);
+                assert.ok(answer.error instanceof CognitiveAppGatewayError);
+                assert.equal(answer.error.reason, change.reason);
+                assert.equal(
+                  JSON.stringify(answer.error).includes(first.markdown),
+                  false,
+                );
+                assert.equal(
+                  String(answer.error).includes(second.title),
+                  false,
+                );
+              } finally {
+                hold.release();
+                await outcome;
+                await change.restore();
+              }
+              assert.equal(
+                f.control.paths.filter((item) => item === path).length,
+                posts + 1,
+                "Reads are not resent by the disclosure gate.",
+              );
+            });
+          }
+          for (const explicitRevisions of [false, true]) {
+            await t.test(
+              `${path}: still-active exact identity with ${explicitRevisions ? "explicit CAS rejects revision drift" : "no CAS accepts mutable revision drift and exact history"}`,
+              async () => {
+                const hold = f.holdNextRead(path);
+                const outcome = read(path, "alice", explicitRevisions).then(
+                  (value) => ({ ok: true as const, value }),
+                  (error: unknown) => ({ ok: false as const, error }),
+                );
+                await hold.received;
+                try {
+                  await grant("disabled");
+                  await grant("active");
+                  await connection("disabled");
+                  await connection("active");
+                  hold.release();
+                  const answer = await outcome;
+                  if (explicitRevisions) {
+                    assert.equal(answer.ok, false);
+                    assert.ok(
+                      !answer.ok &&
+                        answer.error instanceof CognitiveAppGatewayError,
+                    );
+                    assert.equal(answer.error.reason, "conflict");
+                  } else {
+                    assert.equal(answer.ok, true);
+                    assert.ok(answer.ok);
+                    if ("content" in answer.value) {
+                      assert.equal(
+                        answer.value.object.versionRef,
+                        first.versionRef,
+                      );
+                      assert.notEqual(
+                        answer.value.object.versionRef,
+                        second.versionRef,
+                      );
+                      assert.deepEqual(answer.value.content, {
+                        format: "json",
+                        value: { title: first.title, markdown: first.markdown },
+                      });
+                    } else {
+                      assert.equal(answer.value.kind, "read");
+                      assert.ok(answer.value.kind === "read");
+                      assert.equal(answer.value.command, null);
+                    }
+                  }
+                } finally {
+                  hold.release();
+                  await outcome;
+                }
+              },
+            );
+          }
+        }
+        assert.equal(f.authorRows("SELECT * FROM notes").length, 1);
+        assert.equal(f.authorRows("SELECT * FROM note_versions").length, 2);
+        assert.equal(
+          f.authorRows("SELECT * FROM author_commands").length,
+          2,
+          "Read rejection never cancels or replays the two real writes.",
+        );
+        await assertNoBusinessBodyInPlatform(f);
+      }),
+  );
   test(
     `real packed author + ${backend}: create/read/revise/exact old object and cold reopen retain originals only in author`,
     { timeout: 120000 },
