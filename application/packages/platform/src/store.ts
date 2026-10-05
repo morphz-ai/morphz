@@ -22,6 +22,7 @@ import {
   type NotificationState,
 } from "../../core/src/notification-state.js";
 import { platformSchemaSql } from "./schema.js";
+import { ensureApplicationInstallation } from "./application-installation.js";
 import {
   profileAvatarMediaSchema, profileAvatarSnapshotSchema,
   type ProfileAvatarMedia, type ProfileAvatarSnapshot, type ProfileSubject,
@@ -8934,20 +8935,13 @@ export class PlatformStore {
       const replay = await this.replay(q, actor, request.commandId, hash);
       if (replay) return replay;
       const installationId = `install_ui_${fingerprint([actor.tenantId, header.id]).slice(0, 32)}`;
-      await q.change(
-        "INSERT INTO app_installations(tenant_id,app_id,installation_id,state,installed_at) VALUES(?,?,?,'active',?) ON CONFLICT(tenant_id,app_id) DO NOTHING",
-        [actor.tenantId, header.id, installationId, installedAt],
-      );
-      const installation = (
-        await q.all<{ installation_id: string; state: string }>(
-          "SELECT installation_id,state FROM app_installations WHERE tenant_id=? AND app_id=?",
-          [actor.tenantId, header.id],
-        )
-      )[0];
-      if (
-        installation?.installation_id !== installationId ||
-        installation.state !== "active"
-      )
+      const installation = await ensureApplicationInstallation(q, {
+        tenantId: actor.tenantId,
+        appId: header.id,
+        proposedInstallationId: installationId,
+        installedAt,
+      });
+      if (installation.state !== "active")
         throw new PlatformStorageError(
           "conflict",
           "应用安装状态已变化，不能覆盖。",
@@ -9128,17 +9122,19 @@ export class PlatformStore {
     if (request.nodeId) requireId(request.nodeId, "节点标识");
     const now = request.now ?? new Date().toISOString();
     await this.transaction(async (q) => {
-      await q.change(
-        "INSERT INTO app_installations(tenant_id,app_id,installation_id,state,installed_at) VALUES(?,?,?,'active',?) ON CONFLICT(tenant_id,app_id) DO NOTHING",
-        [tenantId, request.appId, request.installationId, now],
-      );
-      const installation = (
-        await q.all<{ installation_id: string }>(
-          "SELECT installation_id FROM app_installations WHERE tenant_id=? AND app_id=? AND state='active'",
-          [tenantId, request.appId],
-        )
-      )[0];
-      if (installation?.installation_id !== request.installationId)
+      const installation = await ensureApplicationInstallation(q, {
+        tenantId,
+        appId: request.appId,
+        proposedInstallationId: request.installationId,
+        installedAt: now,
+      });
+      // Reserved builtins retain their exact Host provisioning identity. An
+      // external application's UI and service reuse its first installation.
+      if (
+        installation.state !== "active" ||
+        (request.appId.startsWith("morphz.") &&
+          installation.installationId !== request.installationId)
+      )
         throw new PlatformStorageError(
           "conflict",
           "应用安装记录与当前实例不一致。",

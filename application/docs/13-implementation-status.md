@@ -1,5 +1,24 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：UI／领域共用首安装身份
+
+真实安装路径首轮在 SQLite 与 PostgreSQL 都复现 UI-first 后注册领域服务
+因安装 ID 不同而失败（4 项中 2 项失败）。UI 与外部领域注册现经同一
+transaction-scoped helper 取得 tenant/app 的首安装 ID，保留原 ID／时间及
+停用状态；不覆盖身份、不自动重新启用。内置应用仍须精确 Host 安装 ID，
+既有实例的 app／路由／节点／state 冲突检查，以及原包版本、字节与回执
+逻辑不变；领域接入不解锁他人的旧 HTML。
+
+正式五文件回归 91/91，实际隔离 PostgreSQL 与 SQLite、零跳过／失败／
+取消；包含两种顺序、并发 UI／领域安装与重放、停用／不可用时两入口
+新请求拒绝，原安装者读取、Bob／Agent 拒绝、旧包冷重开、内置／路由冲突。
+严格类型与新增文件格式检查通过。首补充反例错误复用同版字节的新命令，
+触发既有 immutable Artifact 冲突；改用各自独立版本后通过，未放宽生产
+不可变约束，原 RED 保留。日志前缀 `/tmp/morphz-installation-`。
+
+这里只修复既有两条安装路径的身份冲突，不称新 registry、本人 cognitive
+grant、领域网关、作者 Service 或实际 Agent 已接通；原 App 与业务资料未改。
+
 ## 2026-10-05 第三方认知应用：固定 wire 与语义身份
 
 纯 SDK 模块现有固定 describe／invoke／exact-object-read／receipt-read
