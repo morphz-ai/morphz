@@ -1,5 +1,26 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：Renderer 传输保留原命令事实
+
+实际 renderer adapter 在 native invoke 前同步使用 Core 严格 DTO 做独立
+快照，不执行 getter／toJSON；认知调用的拒绝、取消、身份代次变化、IPC
+和 Web 网络错误均保留调用方原有效 commandId，不采用回包中的异 ID，
+不自动重发。失联时 cancel 本身失败也不泄露私有 IPC 错误、不证明回滚。
+只有认知方法走新处理，非认知错误／取消与订阅行为不变，视觉未改。
+
+首 RED 11 项全失败；额外 native cancel 异常一项 RED 保留于
+`/tmp/morphz-cognitive-renderer-transport.5ktgtc/`。Root 全文审阅生产
+delta 和新增测试，正式七文件独立回归 94/94，required PostgreSQL 实际
+执行，零失败／取消／跳过；全工程类型检查通过。日志
+`/tmp/morphz-cognitive-renderer-ROOT-FROZEN-oct05.log` 与
+`/tmp/morphz-cognitive-renderer-ROOT-TYPES-oct05.log`。
+
+新增 12 项为明确 preload／fetch UNIT 及实际 Local／Application／HPA
+加完整 FakeService 的传输组合，不能代替新认知 GUI 或原 App 验收。
+组合旧套件还覆盖真实 packed 作者／双 SQL 公共链和 React 浏览器身份。
+订阅段与已接受 HEAD 的 5,937 字节相同；未改真实资料、账号或运行中的
+App。下一阶段继续实际 Agent 与可选 GUI，不称生态闭环完成。
+
 ## 2026-10-05 Agent 接入前置：后台事项来源不按 inputId 猜测
 
 Runtime authority callback 显式传递已经核验的 `input`／`task-run` 类型，

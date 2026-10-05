@@ -1,4 +1,8 @@
-import type { ApplicationMethod } from "../../../packages/core/src/application-api.js";
+import {
+  cognitiveAppApplicationRoute,
+  type ApplicationMethod,
+} from "../../../packages/core/src/application-api.js";
+import { parseCognitiveAppRequest } from "../../../packages/core/src/cognitive-app-api.js";
 import {
   HttpApplicationClient,
   ApplicationRequestError,
@@ -42,9 +46,41 @@ export async function applicationCall(
   params?: unknown,
   options: CallOptions = {},
 ): Promise<unknown> {
-  options.signal?.throwIfAborted();
+  const cognitive = cognitiveAppApplicationRoute(method);
+  let commandId: string | undefined;
+  if (cognitive) {
+    try {
+      params = parseCognitiveAppRequest(cognitive.method, params);
+    } catch {
+      throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
+    }
+    if (
+      params &&
+      typeof params === "object" &&
+      "commandId" in params &&
+      typeof params.commandId === "string"
+    )
+      commandId = params.commandId;
+  }
+  const cancelled = () =>
+    new ApplicationRequestError(
+      408,
+      "请求已取消；已提交的操作不会回滚。",
+      "cancelled",
+      commandId,
+    );
+  const assertNotAborted = () => {
+    if (cognitive && options.signal?.aborted) throw cancelled();
+    options.signal?.throwIfAborted();
+  };
+  assertNotAborted();
   if (identityTransition)
-    throw new ApplicationRequestError(409, "身份正在切换，请稍后重试。");
+    throw new ApplicationRequestError(
+      409,
+      "身份正在切换，请稍后重试。",
+      cognitive ? "conflict" : undefined,
+      commandId,
+    );
   const changesIdentity = method === "login" || method === "logout";
   if (changesIdentity) {
     identityTransition = true;
@@ -60,7 +96,7 @@ export async function applicationCall(
       ...options,
       identityGeneration: options.identityGeneration ?? generation,
     };
-    options.signal?.throwIfAborted();
+    assertNotAborted();
     let value: unknown;
     if (!bridge) value = await http.call(method, params, requestOptions);
     else {
@@ -69,6 +105,16 @@ export async function applicationCall(
         import("../../../packages/core/src/application-api.js").ApplicationReply
       >((resolve, reject) => {
         const abort = () => {
+          if (cognitive) {
+            try {
+              bridge.cancel(id);
+            } catch {
+              // A disconnected IPC channel cannot confirm cancellation. Keep
+              // the original command for receipt recovery, never a resend.
+            }
+            reject(cancelled());
+            return;
+          }
           bridge.cancel(id);
           reject(
             options.signal?.reason ??
@@ -88,24 +134,49 @@ export async function applicationCall(
           .then(resolve, reject)
           .finally(() => options.signal?.removeEventListener("abort", abort));
       });
-      options.signal?.throwIfAborted();
+      assertNotAborted();
       if (!reply.ok)
         throw new ApplicationRequestError(
           reply.error.status,
           reply.error.message,
           reply.error.code,
+          commandId,
         );
       value = reply.value;
     }
-    options.signal?.throwIfAborted();
-    if (epoch !== connectionEpoch)
+    assertNotAborted();
+    if (epoch !== connectionEpoch) {
+      if (cognitive)
+        throw new ApplicationRequestError(
+          408,
+          "身份已切换，旧响应已丢弃。",
+          "cancelled",
+          commandId,
+        );
       throw new DOMException("身份已切换，旧响应已丢弃。", "AbortError");
+    }
     if (method === "platform.bootstrap") observeIdentity(value);
     if (method === "login" || method === "logout") {
       identity = "disconnected";
       generation = "";
     }
     return value;
+  } catch (error) {
+    if (!cognitive) throw error;
+    if (options.signal?.aborted) throw cancelled();
+    if (error instanceof ApplicationRequestError)
+      throw new ApplicationRequestError(
+        error.status,
+        error.message,
+        error.code,
+        commandId,
+      );
+    throw new ApplicationRequestError(
+      503,
+      "应用暂时不可用。",
+      "unavailable",
+      commandId,
+    );
   } finally {
     if (changesIdentity) {
       identityTransition = false;
