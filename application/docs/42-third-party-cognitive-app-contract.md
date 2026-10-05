@@ -674,10 +674,20 @@ Document 展示仅借既有应用画布样式，不影响 builtin／旧 sandbox�
 最新输入 context／持久 draftOwner 与 actual layout 引用在 updater重查。
 这段是实施约束，不把新 hook 或 props 当权限租约。
 
-`openObject` 的原件实际发布与退出原 Document 有顺序冲突，需要单独
-验证可信 hand-off：既不能 nav 尚未提交便返回 opened，也不能为取得
-ACK 在测试壳并列保暖而冒称原 App行为。保留原 mutation／私有权限门，
-明确 ACK 的真实发布事实、物理响应与退休顺序后才实施该接线。
+`openObject` 是可终结调用 Document 的精确原件导航。只有原件已由原
+layout owner 实际发布、源 Document／owner 仍有效且末尾授权门通过时，
+才可返回 `opened:true`；它不承诺离开窗口后的响应或 JavaScript 后续执行。
+生产导航提交后立即退休源 GUI，不为 ACK 并列保暖、延后导航或设 drain。
+无回包、disposed、unavailable 或超时不证明导航未发生，不自动重试，也
+不撤销真实发布事实；导航无领域 commandId，不能套用写命令 recovery。
+保存或确认放弃作者编辑须在调用前完成，不能依赖 await 后保存或清理。
+
+验收核原获权原件对象引用、完整 locator、epoch 与目的地的实际 layout
+提交；排队 prefs、函数返回或 JSON 相等不是证明。随后核目标原文可见、
+源 iframe／channel 退休、零迟到成功 ACK／自动重试及原草稿／Session 不变。
+前置拒绝／取消／新导航抢占则不得发布或记录旧目标。已销毁 Document 的
+Promise 可无可观察终态；存活受控壳的成功 ACK 不是生产终结导航验收。
+此处规定语义，生产 publisher 和原 App 验收仍待完成。
 
 可信 Document consumer 已独立验收，尚未生产挂载。只用实际 App origin
 下固定认证 resource URL、原 outer WindowProxy、当前 owner／signal 和

@@ -134,6 +134,13 @@ await app.saveState({
 请求宿主按原命令恢复，不能当成重新执行。全部能力仍由未来宿主真实
 view owner、版本、许可、项目、连接及操作 gate 决定；SDK 的校验不授权。
 
+`openObject` 可导航离开并销毁调用它的 Document。只有原件已实际发布、
+源 Document／owner 仍有效且末尾授权门通过时，才可收到 `opened:true`；
+不保证离开后的响应或 JavaScript 后续执行。保存或确认放弃编辑必须在
+调用前完成，不依赖 `await openObject()` 后保存、清理或显示必要提示。
+无回包、disposed、unavailable 或超时不证明导航未发生，不自动重试；
+导航没有领域 commandId，不能按写命令 recovery 重放。
+
 `parseBrowserNavigationState(input)` 是同一公开导航规则的独立解析入口，
 仅接受 `{ object?: { objectId, versionRef }, view?: string }` 并捕获独立快照。
 正文、草稿、未知字段及数字版本被拒绝；不透明引用不转换或规范化。
@@ -152,11 +159,13 @@ write/execute 的 `commandId` 必须由作者明确提供，并在未知结果�
 回调异常被隔离，不转发或记录原始错误。上下文被冻结，不能改成新的调用
 身份或目标。
 
-当前 Document 或 binding/channel 退役后，旧实例拒绝所有本地 pending、
+SDK 观察到本地 Document 或 binding/channel 退役后，旧实例拒绝所有本地 pending、
 清除订阅和计时器，并忽略迟到响应；正在解析的结果也属于 pending。
 每次 context 读取、订阅、逐位通知、解析／冻结／完成及发送均同步核原
 Document；移除再插回原 root／doctype 不能复活该实例。它不会用旧 callback
 自动绑定新窗口，同一退役 Document 再调用 `connectMorphz()` 返回 `disposed`。
+宿主移除 iframe 不保证已销毁的 JavaScript 能继续执行或立即观察到 disposed，
+也不承诺另一端同步取消；不能据没有回应判断业务或导航未发生。
 只有真正新 Document、新模块与新固定端点才能明确重新连接；组件结束时
 调用 `app.dispose()`。主题和同绑定导航
 更新不授予新权限。SDK 错误仅有固定安全说明，不转发宿主原始异常。

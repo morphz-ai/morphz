@@ -51,6 +51,10 @@ export type CognitiveBrowserClient = Readonly<{
   readObject(
     request: Omit<BrowserRequestFor<"readObject">, "method">,
   ): Promise<BrowserResultMap["readObject"]>;
+  /** Exact-original navigation may terminate this Document. A received success
+   * confirms actual Host publication, not durable storage or continued authority;
+   * it does not promise a response after exit. Save/confirm edits before calling.
+   * Silence or disposal is not evidence of no navigation and must not auto-retry. */
   openObject(
     request: Omit<BrowserRequestFor<"openObject">, "method">,
   ): Promise<BrowserResultMap["openObject"]>;

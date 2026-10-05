@@ -5,6 +5,13 @@
 本文补充 `42-third-party-cognitive-app-contract.md`，说明精确原件引用和显式应用上下文如何贯穿草稿、不可变投递、Runtime 输入与历史。
 它不新增应用数据库、不复制原件、不改变既有内置 Artifact 的数值版本。共享工作区的原件打开、历史导航和草稿已通过受控浏览器验收；第三方可执行 GUI、完整跨宿主链和用户原 App 尚未完成验收。
 
+GUI 的 `openObject` 是可终结源 Document 的精确导航。真实原 layout owner
+必须先提交获权原件对象引用、完整 locator、读取 epoch 与目的地，之后源
+GUI 立即退休；prefs 排队、函数返回或结构相等不算发布证明。只有源仍有效
+且末尾授权门通过时才可回成功 ACK，退出后的无回应不证明未导航，也不
+自动重试。compose 则仍须在源有效时核原 functional writer 的实际 layout
+候选引用，不把准备草稿当发送、持久保存或权限。上述生产接线仍待验收。
+
 - 作者服务拥有原件及不可解释的 `objectId` / `versionRef`。
 - Platform 的既有内容目录拥有 `contentId`、实际项目、应用数据实例及已观察版本；许可、本人连接、定义与保存方仍由既有关系表拥有。
 - Host 的 `runtime_deliveries.body` 拥有一次待投递输入的不可变请求、精确来源和回执状态，不是另一份会话数据库。

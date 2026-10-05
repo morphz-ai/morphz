@@ -302,6 +302,8 @@ export type BrowserResultMap = {
   ready: BrowserContext;
   invoke: DomainReadResult | BrowserCommandResult;
   readObject: DomainObjectReadResponse;
+  /** A received acknowledgement of actual original publication. Navigation may
+   * destroy the source Document, so delivery/continuation is not guaranteed. */
   openObject: {
     readonly opened: true;
     readonly object: OperationResourceReference;

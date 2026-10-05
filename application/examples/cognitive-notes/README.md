@@ -58,6 +58,10 @@ node service.mjs --db /absolute/private-author-data/notes.sqlite --config /absol
 commandId，提供状态/回执查询，不自动重试或生成新命令。关闭窗口前应妥善保存
 编辑及原命令 ID；此示例不是跨窗口草稿同步或命令恢复管理器。
 
+打开原文可立即离开并销毁作者 Document。按钮先确认脏编辑；保存或确认
+放弃必须在调用前完成。成功后的状态提示仅供仍存活的源界面反馈，不作为
+必要保存步骤；没收到回应不证明导航未发生，不自动重试或重放写命令。
+
 作者包测试证明独立离线安装/构建、原字节绑定及作者 SQLite 双版本兼容。
 受控浏览器机制测试不代替真实 SQL/Service/HPA 的跨宿主 GUI 集成；正式宿主
 接入及实际 Web/Local/Remote/native 验收需另外完成，不能据作者包构建宣称完成。

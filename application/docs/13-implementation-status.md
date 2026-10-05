@@ -1,5 +1,20 @@
 # 桌面能力实施记录
 
+## 2026-10-06 精确原件终结导航语义
+
+明确实验 SDK `openObject` 可销毁调用的 Document：只有真实原 layout
+已发布获权原件、源仍有效且末尾授权门通过才可返回成功；离开后不保证
+响应或后续 JavaScript。保存／确认放弃编辑在调用前完成，无回包不证明
+未导航，不自动重试或套用领域写命令 recovery。更新 docs42／43、公开
+SDK 与独立作者说明和类型注释，不改八方法 wire／业务代码／旧原字节。
+
+只读独立审查确认没有外部契约要求销毁后 Promise 必达。生产 publisher
+仍需实际对象引用／完整 locator／epoch／目的地的 layout 证据，并即时
+退休源 GUI；不能用函数返回、prefs 排队、结构相等或并列保暖当验收。
+该记录是明确语义，不宣称生产接线或原 App 已完成。Root 全工程类型与
+两 SDK 源文件格式通过；联合叶回归 120/120 的业务部分不属于此语义的
+原 App 完成证明。
+
 ## 2026-10-06 固定认证 Document consumer 接线叶
 
 新增可信 consumer，不挂旧 unsafe prototype，不改 SDK、原 builtin／
