@@ -204,7 +204,8 @@ Host 精确 UI 字节 gate、领域 Gateway 和生产 GUI owner 已另阶段分�
 不混报为 Browser SDK 测试或付费模型验收。范围与原失败见仓库的
 [最新交付与剩余](https://github.com/morphz-ai/morphz/blob/main/application/docs/42-third-party-cognitive-app-contract.md#最新交付与剩余)。
 这些是隔离自动中心，不是用户原 App。原 App 已沿原 profile／中心重开，
-完整 UI 与持久保全另有证据；全部逻辑草稿／窗口交互仍在核查，尚不宣称
-整体目标完成。公网 TLS／真实第三方账户、市场／OAuth 和
+完整 UI 与持久保全另有证据；重开前后 1,292 条落盘草稿 key/value 全等。
+这收尾本轮实验接入目标，不证明未落盘编辑或逐个旧草稿当前选择。
+公网 TLS／真实第三方账户、市场／OAuth 和
 公开发布也不由上述测试证明。本包不包含 Host 网关、安装管理或作者
 Service 脚手架，不赋予任意网络或宿主代码执行权限。

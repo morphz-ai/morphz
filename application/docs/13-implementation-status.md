@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-06 接入目标收尾：重开后落盘草稿逐键保全
+
+Root 完整冷审后，对原已恢复 profile 的两个固定 Local／Session Storage
+目录只执行一次有界 read／copy／read。十六个普通文件的完整 SHA、文件名集、
+inode／size／mtime／ctime／权限前后保持，才发布新私有 0700／0600 副本回执；
+没有数据库句柄、锁／flush／checkpoint、原文件写入、重试、网络或第二 App。
+这是运行中的顺序稳定观察，不是停机、事务或跨库原子快照。
+
+仅在私有副本复用同一受审 codec，核实际成功回执、原 baseline 与代码 SHA，
+按 exact origin＋UTF16LE key/value 摘要逐条比较，不合并 canonical／legacy。
+1,292 条旧草稿全部存在且逻辑字符串精确相同，缺失／改写／新增均零；两个
+last-window 标记亦全等，五个持久 session owner hash 无缺失／新增。Root 实际
+日志为 `/tmp/morphz-original-app-recovery-ROOT-LIVE-DRAFT-COMPARE-oct06.log`，
+比较回执 SHA-256 为
+`d8a2f5a75e4576b6269ac91aad8b26f90d5744d49805e7c27c55f19c3610455f`。
+一次采样稳定门及六组值变化／origin／key 分离合成检查另通过，原失败保留。
+
+这完成本轮原 App 恢复后的落盘保全核验，与原中心／Runtime 全行核验及原窗
+连续截图一起收尾。没有逐个打开旧草稿声称当前窗口已选择它，也无法证明
+强制结束前未落盘内存编辑；这些是证据边界，不伪装成已测能力。
+
+本轮实验生态接入目标的实现与分层验收已交付：独立契约／薄型 SDK／作者
+示例、同 Human／Agent 权限与真实来源、可选 GUI、完整 Web 双 SQL、原生
+Local／Remote 和真实 Rust input／task／infer 链。未进行 GitHub 推送、发布、
+第三方真实账户接通、任意宿主代码执行或权限扩大；没有建应用市场。
+各阶段准确范围、受控部分和原失败见下文，不相加测试数量冒称全产品验收。
+
 ## 2026-10-06 原 App 同中心恢复与持久保全复核
 
 最终构建通过后，冻结真实 service／desktop 依赖和实际 renderer 入口图。
