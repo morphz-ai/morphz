@@ -28,6 +28,7 @@ import {
 import type { TaskRunLink } from "../packages/platform/src/store.js";
 import { taskSourceStoredData } from "../packages/platform/src/task-run-source.js";
 import { runtimeBinaryPath } from "./runtime-path.mjs";
+import { runtimeFixtureFinalReply } from "./runtime-fixture-reply.js";
 
 const binary = runtimeBinaryPath();
 assert.ok(existsSync(binary), "Build the compatible Runtime binary first.");
@@ -124,14 +125,19 @@ const provider = createServer(async (request, response) => {
           },
         }
       : null;
+    const final = runtimeFixtureFinalReply(body, {
+      content: `合成 ${requestPhase} 处理结束。`,
+      title: `处理合成事项来源 ${requestPhase}`,
+      result: `合成 ${requestPhase} 处理结束。`,
+    });
     const message = call
       ? { role: "assistant", content: "", tool_calls: [call] }
-      : { role: "assistant", content: `合成 ${requestPhase} 处理结束。` };
-    const finish = call ? "tool_calls" : "stop";
+      : final.message;
+    const finish = call ? "tool_calls" : final.finishReason;
     if (body.stream) {
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       response.end(
-        `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: call ? { role: "assistant", tool_calls: [{ ...call, index: 0 }] } : message, finish_reason: finish }] })}\n\ndata: [DONE]\n\n`,
+        `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: { ...message, ...(message.tool_calls ? { tool_calls: message.tool_calls.map((tool, index) => ({ ...tool, index })) } : {}) }, finish_reason: finish }] })}\n\ndata: [DONE]\n\n`,
       );
     } else {
       response.setHeader("Content-Type", "application/json");

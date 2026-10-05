@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { runtimeBinaryPath } from "./runtime-path.mjs";
+import { runtimeFixtureFinalReply } from "./runtime-fixture-reply.js";
 import { tmpdir } from "node:os";
 import { randomBytes, randomUUID } from "node:crypto";
 import { openEmbeddedApplication } from "../apps/desktop/application-host.js";
@@ -44,23 +45,26 @@ const provider = createServer(async (req, res) => {
   providerCalls++;
   if (blocked) await new Promise<void>((r) => release.push(r));
   if (res.destroyed) return;
-  const message = {
-    role: "assistant",
+  const { message, finishReason } = runtimeFixtureFinalReply(body, {
     content: text.includes("TEST_SUPPLEMENT_A_ONLY")
       ? "报告 A 已采用补充要求。"
       : "原任务已完成。",
-  };
+    title: "执行定向补充验收",
+    result: text.includes("TEST_SUPPLEMENT_A_ONLY")
+      ? "报告 A 已采用定向补充要求。"
+      : "原任务已完成。",
+  });
   if (body.stream) {
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     res.end(
-      `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: message, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+      `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: { ...message, ...(message.tool_calls ? { tool_calls: message.tool_calls.map((tool, index) => ({ ...tool, index })) } : {}) }, finish_reason: finishReason }] })}\n\ndata: [DONE]\n\n`,
     );
   } else {
     res.setHeader("Content-Type", "application/json");
     res.end(
       JSON.stringify({
         id: randomUUID(),
-        choices: [{ index: 0, message, finish_reason: "stop" }],
+        choices: [{ index: 0, message, finish_reason: finishReason }],
       }),
     );
   }
@@ -189,6 +193,9 @@ try {
       selection: "",
       body,
       targetActantId: "morphz-agent",
+      // This acceptance specifically exercises concurrent independent roots;
+      // the ordinary composer default now intentionally interrupts instead.
+      dispatchMode: "parallel",
     },
   });
   const a = await message(ordinary("TEST_DIRECTED_A：整理报告 A。")),

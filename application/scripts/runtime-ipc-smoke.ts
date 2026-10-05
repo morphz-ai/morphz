@@ -1,6 +1,10 @@
 /** Real Runtime + embedded application + Unix callback; synthetic provider and fresh databases only. */
 import assert from "node:assert/strict";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  execFileSync,
+  spawn,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import { createServer } from "node:http";
 import { Server } from "node:net";
 import {
@@ -25,9 +29,15 @@ import {
   type ReadingSection,
 } from "../packages/core/src/reader.js";
 import { readingInputFormat } from "../packages/application/src/session-io.js";
+import { runtimeFixtureFinalReply } from "./runtime-fixture-reply.js";
+import { retainFixtureFailure } from "./runtime-fixture-evidence.js";
 
 const binary = runtimeBinaryPath();
 assert.ok(existsSync(binary), "Build the compatible Runtime binary first.");
+const binaryVersion = execFileSync(binary, ["--version"], {
+  encoding: "utf8",
+  timeout: 10000,
+}).trim();
 const directory = mkdtempSync(join(tmpdir(), "morphz-runtime-ipc-"));
 const runtimeDirectory = join(directory, "runtime"),
   workDirectory = join(directory, "application");
@@ -62,22 +72,26 @@ const provider = createServer(async (req, res) => {
             },
           }
         : null;
+    const final = runtimeFixtureFinalReply(input, {
+      content: "已保存联合验收交付。",
+      title: "保存 IPC 联合验收交付",
+      result: "联合验收交付文档已保存。",
+    });
     const message = call
       ? { role: "assistant", content: "", tool_calls: [call] }
-      : { role: "assistant", content: "已保存联合验收交付。" };
+      : final.message;
+    const finishReason = call ? "tool_calls" : final.finishReason;
     if (input.stream) {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       res.end(
-        `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: call ? { role: "assistant", tool_calls: [{ ...call, index: 0 }] } : message, finish_reason: call ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`,
+        `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: { ...message, ...(message.tool_calls ? { tool_calls: message.tool_calls.map((tool, index) => ({ ...tool, index })) } : {}) }, finish_reason: finishReason }] })}\n\ndata: [DONE]\n\n`,
       );
     } else {
       res.setHeader("Content-Type", "application/json");
       res.end(
         JSON.stringify({
           id: randomUUID(),
-          choices: [
-            { index: 0, message, finish_reason: call ? "tool_calls" : "stop" },
-          ],
+          choices: [{ index: 0, message, finish_reason: finishReason }],
         }),
       );
     }
@@ -383,6 +397,32 @@ try {
     "PASS: real Runtime reading v6 → Reader original + immutable quote → Platform input → private Unix callback → Objects version + exact Platform delivery receipt; Host reopen preserves originals and retry does not replay the model. No legacy workspace tables or application TCP listener.",
   );
 } catch (error) {
+  try {
+    const cause = retainFixtureFailure({
+      databasePath: join(runtimeDirectory, "runtime.sqlite"),
+      directory:
+        process.env.MORPHZ_TEST_EVIDENCE_DIRECTORY ??
+        join(directory, "public-evidence"),
+      logs,
+      error,
+      secrets: [
+        runtimeToken,
+        ...(manifest?.tools.map((tool) => tool.token) ?? []),
+      ],
+      metadata: {
+        test: "runtime-ipc",
+        nodeVersion: process.version,
+        providerCalls,
+        binaryVersion,
+      },
+    });
+    if (cause) console.error("Runtime protocol failure:", cause);
+  } catch (evidenceError) {
+    console.error(
+      "Could not export public fixture evidence; original failure preserved:",
+      evidenceError,
+    );
+  }
   console.error(
     logs
       .split(runtimeToken)

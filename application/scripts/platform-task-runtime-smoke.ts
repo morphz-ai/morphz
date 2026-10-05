@@ -25,6 +25,7 @@ import {
 } from "../packages/platform/src/store.js";
 import { localAccess } from "../packages/core/src/model.js";
 import { runtimeBinaryPath } from "./runtime-path.mjs";
+import { runtimeFixtureFinalReply } from "./runtime-fixture-reply.js";
 
 const binary = runtimeBinaryPath();
 assert.ok(existsSync(binary), "先构建 Morphz Runtime，再运行事项联合验收。");
@@ -58,18 +59,22 @@ const provider = createHttpServer(async (request, response) => {
     sourceStarted();
     await sourceGate;
   }
-  const message = { role: "assistant", content: "合成事项执行已结束。" };
+  const { message, finishReason } = runtimeFixtureFinalReply(input, {
+    content: "合成事项执行已结束。",
+    title: "完成合成事项执行",
+    result: "合成事项执行已结束。",
+  });
   if (input.stream) {
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(
-      `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: message, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+      `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: { ...message, ...(message.tool_calls ? { tool_calls: message.tool_calls.map((tool, index) => ({ ...tool, index })) } : {}) }, finish_reason: finishReason }] })}\n\ndata: [DONE]\n\n`,
     );
   } else {
     response.setHeader("Content-Type", "application/json");
     response.end(
       JSON.stringify({
         id: randomUUID(),
-        choices: [{ index: 0, message, finish_reason: "stop" }],
+        choices: [{ index: 0, message, finish_reason: finishReason }],
       }),
     );
   }
@@ -115,6 +120,7 @@ async function freePort() {
 let processHandle: ChildProcess | undefined;
 let runtimeURL = "";
 let runtimeDiagnostics = "";
+let passed = false;
 async function startRuntime() {
   // A restarted Runtime keeps its configured endpoint; only the process changes.
   const port = runtimeURL ? Number(new URL(runtimeURL).port) : await freePort();
@@ -242,11 +248,13 @@ try {
   });
   assert.equal(sessionResponse.status, 201);
   assert.equal((await sessionResponse.json()).context_id, contextId);
+  // Establish the fresh Host's center identity before opening authoritative
+  // domain stores; existing-domain recovery must never mint a new identity.
+  workspace = new WorkspaceStore(join(root, "workspace.sqlite"));
   platform = await PlatformStore.sqlite(
     join(root, "platform.sqlite"),
     verifier,
   );
-  workspace = new WorkspaceStore(join(root, "workspace.sqlite"));
   await platform.provisionTenant(tenantId);
   await platform.createProject(human, {
     commandId: "project-command",
@@ -627,6 +635,7 @@ try {
   );
   assert.equal(agentSource.request.id, sourceLink.runtime.scheduleId);
   assert.equal(agentDependent.request.id, dependentLink.runtime.scheduleId);
+  passed = true;
   console.log(
     "PASS: real Runtime restart, exact controls, Human result gate and actual dependency Thread execution; synthetic provider only.",
   );
@@ -637,5 +646,6 @@ try {
   workspace?.close();
   if (provider.listening)
     await new Promise<void>((resolve) => provider.close(() => resolve()));
-  rmSync(root, { recursive: true, force: true });
+  if (passed) rmSync(root, { recursive: true, force: true });
+  else console.error(`Isolated failure evidence retained: ${root}`);
 }
