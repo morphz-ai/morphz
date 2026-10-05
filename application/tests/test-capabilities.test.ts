@@ -126,6 +126,18 @@ const declarations = [
     capability: "runtime",
     flag: "MORPHZ_COGNITIVE_INPUT_RUNTIME_E2E",
   },
+  {
+    file: "cognitive-app-application-actual-runtime.test.ts",
+    name: "ACTUAL canonical Runtime explicit headless cognitive application activates installed Harness and preserves supplemented source",
+    capability: "runtime",
+    flag: "MORPHZ_COGNITIVE_APPLICATION_RUNTIME_E2E",
+  },
+  {
+    file: "cognitive-app-application-actual-runtime.test.ts",
+    name: "ACTUAL canonical Runtime without IO11/12 registrations rejects explicit application without fallback",
+    capability: "runtime",
+    flag: "MORPHZ_COGNITIVE_APPLICATION_RUNTIME_E2E",
+  },
 ] as const;
 const darwin = [
   {
@@ -201,7 +213,7 @@ test("required capability CSV is finite and cannot remove PostgreSQL", () => {
   assert.deepEqual(actual.selected, []);
 });
 
-test("exact thirteen optional integrations are declared opt-outs, not environment-unavailable successes", () => {
+test("exact fifteen optional integrations are declared opt-outs, not environment-unavailable successes", () => {
   const actual = plan({}, { platform: "darwin" });
   for (const item of declarations) {
     assert.deepEqual(classifySkippedTest(data(item), actual), {
@@ -423,7 +435,7 @@ test("scheduled cognitive infer opt-in cannot borrow the input-only flag or excu
 });
 
 test("exact-original IO10 Runtime cases cannot borrow other cognitive flags or excuse either prepared skip", () => {
-  const items = declarations.slice(11);
+  const items = declarations.slice(11, 13);
   assert.equal(items.length, 2);
   const selection = { files: [items[0]!.file] };
   const runtime = {
@@ -439,6 +451,42 @@ test("exact-original IO10 Runtime cases cannot borrow other cognitive flags or e
   );
   const actual = plan(
     { ...runtime, MORPHZ_COGNITIVE_INPUT_RUNTIME_E2E: "1" },
+    selection,
+  );
+  assert.equal(actual.selected.length, 2);
+  for (const item of items) {
+    assert.throws(
+      () => classifySkippedTest(data(item), actual),
+      /Required or prepared test was skipped/,
+    );
+    assert.throws(
+      () =>
+        classifySkippedTest(
+          { file: "copied.test.ts", name: item.name },
+          actual,
+        ),
+      /Unexpected skipped test/,
+    );
+  }
+});
+
+test("explicit IO11/12 integrations require their own opt-in and cannot excuse an enabled skip", () => {
+  const items = declarations.slice(13);
+  assert.equal(items.length, 2);
+  const selection = { files: [items[0]!.file] };
+  const runtime = {
+    MORPHZ_TEST_REQUIRED_CAPABILITIES: "runtime",
+    MORPHZ_APP_RUNTIME_BINARY: "/fixture/runtime",
+    MORPHZ_COGNITIVE_RUNTIME_E2E: "1",
+    MORPHZ_COGNITIVE_SOURCES_RUNTIME_E2E: "1",
+    MORPHZ_COGNITIVE_INPUT_RUNTIME_E2E: "1",
+  };
+  assert.throws(
+    () => plan(runtime, selection),
+    /Selected Runtime integration requires MORPHZ_COGNITIVE_APPLICATION_RUNTIME_E2E=1/,
+  );
+  const actual = plan(
+    { ...runtime, MORPHZ_COGNITIVE_APPLICATION_RUNTIME_E2E: "1" },
     selection,
   );
   assert.equal(actual.selected.length, 2);

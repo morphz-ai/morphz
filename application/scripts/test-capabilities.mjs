@@ -78,6 +78,18 @@ const optionalTests = [
     "MORPHZ_COGNITIVE_INPUT_RUNTIME_E2E",
   ],
   [
+    "cognitive-app-application-actual-runtime.test.ts",
+    "ACTUAL canonical Runtime explicit headless cognitive application activates installed Harness and preserves supplemented source",
+    "runtime",
+    "MORPHZ_COGNITIVE_APPLICATION_RUNTIME_E2E",
+  ],
+  [
+    "cognitive-app-application-actual-runtime.test.ts",
+    "ACTUAL canonical Runtime without IO11/12 registrations rejects explicit application without fallback",
+    "runtime",
+    "MORPHZ_COGNITIVE_APPLICATION_RUNTIME_E2E",
+  ],
+  [
     "response-annotations-runtime.test.ts",
     "actual Runtime + Platform HTTP: two commands form one activity, three original model rounds, durable refresh and exact Job receipts",
     "runtime",

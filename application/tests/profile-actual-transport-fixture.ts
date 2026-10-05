@@ -2,7 +2,7 @@
  * model provider response is deterministic: captured requests are real outbound
  * HTTP bytes, not mocked Profile RPC or a replacement Context compiler. */
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   mkdtempSync,
@@ -109,6 +109,9 @@ export async function profileActualTransportFixture(
     /** Trusted descriptor selection for this test-owned startup manifest only.
      * Omitting it preserves the canonical Host formats and all old fixtures. */
     inputFormats?: readonly (typeof workInputFormats)[number][];
+    /** Test-owned packages installed by the actual canonical CLI before serve.
+     * No production installation, existing Runtime or account is touched. */
+    harnessPackages?: readonly { filename: string; source: string }[];
     /** Optional controlled provider script for parallel real-Thread tests.
      * Never consulted for realProvider; existing default replies stay intact. */
     deterministicTool?: (
@@ -129,6 +132,25 @@ export async function profileActualTransportFixture(
     options.inputFormats === undefined
       ? undefined
       : structuredClone(options.inputFormats);
+  const harnessPackages =
+    options.harnessPackages === undefined
+      ? undefined
+      : options.harnessPackages.map((value) => ({ ...value }));
+  if (harnessPackages !== undefined) {
+    assert.ok(harnessPackages.length <= 8, "Bounded explicit fixture packages");
+    const filenames = new Set<string>();
+    for (const value of harnessPackages) {
+      assert.match(value.filename, /^[A-Za-z0-9_-]{1,80}\.hns$/);
+      assert.equal(
+        filenames.has(value.filename),
+        false,
+        "Duplicate fixture package filename",
+      );
+      filenames.add(value.filename);
+      assert.equal(typeof value.source, "string");
+      assert.ok(Buffer.byteLength(value.source, "utf8") <= 1_000_000);
+    }
+  }
   // Dynamic URL import leaves the canonical .mjs helper native under both tsx
   // and Playwright's CJS TypeScript transform; no alternate binary search.
   const { runtimeBinaryPath } = (await import(
@@ -282,6 +304,11 @@ export async function profileActualTransportFixture(
   );
   let child: ChildProcess | undefined;
   let logs = "";
+  const harnessInstallations: {
+    id: string;
+    version: string;
+    artifactHash: string;
+  }[] = [];
   const store = new WorkspaceStore(join(directory, "transport.sqlite"), {
     mode: "transport",
   });
@@ -321,6 +348,69 @@ export async function profileActualTransportFixture(
     rmSync(directory, { recursive: true, force: true });
   };
   try {
+    if (harnessPackages !== undefined) {
+      const packageRoot = join(directory, "fixture-harness-packages");
+      mkdirSync(packageRoot, { mode: 0o700 });
+      for (const value of harnessPackages) {
+        const file = join(packageRoot, value.filename);
+        writeFileSync(file, value.source, { mode: 0o600, flag: "wx" });
+        const installed = await new Promise<string>((done, reject) => {
+          execFile(
+            runtimeBinaryPath(),
+            [
+              "harness",
+              "install",
+              file,
+              "--cwd",
+              runtimeRoot,
+              "--config-file",
+              configFile,
+              "--format",
+              "json",
+              "--log-level",
+              "off",
+            ],
+            {
+              env: {
+                PATH: process.env.PATH,
+                HOME: process.env.HOME,
+                TMPDIR: process.env.TMPDIR,
+                MORPHZ_HOME: runtimeRoot,
+                MORPHZ_STORAGE_SQLITE_PATH: databasePath,
+                MORPHZ_DASHBOARD_TOKEN: operator,
+                PROFILE_ACTUAL_KEY: "synthetic-test-only",
+                MORPHZ_HOST_TOOLS_FILE: manifest.path,
+              },
+              timeout: 15_000,
+              maxBuffer: 64 * 1024,
+              encoding: "utf8",
+            },
+            (error, stdout, stderr) => {
+              if (error)
+                reject(
+                  new Error(
+                    "Isolated actual Harness installation failed: " + stderr,
+                    { cause: error },
+                  ),
+                );
+              else done(stdout);
+            },
+          );
+        });
+        const receipt = JSON.parse(installed) as Record<string, unknown>;
+        assert.equal(typeof receipt.id, "string");
+        assert.match(receipt.id as string, /^[A-Za-z0-9_.-]{1,100}$/);
+        assert.equal(typeof receipt.version, "string");
+        assert.match(receipt.version as string, /^\d+\.\d+\.\d+$/);
+        assert.equal(typeof receipt.artifact_hash, "string");
+        assert.match(receipt.artifact_hash as string, /^sha256:[a-f0-9]{64}$/);
+        harnessInstallations.push({
+          id: receipt.id as string,
+          version: receipt.version as string,
+          artifactHash: receipt.artifact_hash as string,
+        });
+      }
+    }
     child = spawn(
       runtimeBinaryPath(),
       [
@@ -425,6 +515,7 @@ export async function profileActualTransportFixture(
       origin,
       requests,
       modelReplies,
+      harnessInstallations,
       get realCalls() {
         return liveCalls;
       },
