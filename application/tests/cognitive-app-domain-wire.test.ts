@@ -18,6 +18,7 @@ import {
   type DomainActor,
 } from "../packages/cognitive-app-sdk/src/domain-wire.js";
 import {
+  CognitiveAppProtocolError,
   parseWireJson,
   validateOperationValue,
 } from "../packages/cognitive-app-sdk/src/protocol.js";
@@ -164,6 +165,7 @@ test("wire modules stay pure and reuse one bounded JSON validator", () => {
     bytes: 524288,
     depth: 40,
     nodes: 32768,
+    receiptSummaryBytes: 65536,
     objectReadBytes: 262144,
   });
 });
@@ -888,4 +890,46 @@ test("non-JSON and cyclic data fail before Zod, canonicalization or successful r
   }
   assert.equal(getterRead, false);
   assert.throws(() => parseDescribeResponse(cyclic));
+});
+
+test("committed summaries fit the ledger's exact UTF-8 budget before establishing a complete protocol fact", () => {
+  const objects = Array.from({ length: 32 }, (_, index) => ({
+    objectId: String(index).padEnd(200, "x"),
+    versionRef: "x".repeat(200),
+    kind: "x".repeat(100),
+    title: "x".repeat(180),
+  }));
+  let remaining = 65536 - bytes(objects);
+  for (const object of objects) {
+    for (const field of ["objectId", "versionRef", "kind", "title"] as const) {
+      for (
+        let index = 2;
+        index < object[field].length && remaining > 0;
+        index++
+      ) {
+        const character = remaining >= 2 ? "界" : "\n";
+        object[field] =
+          object[field].slice(0, index) +
+          character +
+          object[field].slice(index + 1);
+        remaining -= character === "界" ? 2 : 1;
+      }
+    }
+  }
+  assert.equal(remaining, 0);
+  assert.equal(bytes(objects), 65536);
+  const receipt = { ...committed(), objects };
+  assert.equal(parseDomainReceipt(receipt, binding()).status, "committed");
+  const above = objects.map((object) => ({ ...object }));
+  const last = above.at(-1)!;
+  const lastIndex = last.title.lastIndexOf("x");
+  assert.ok(lastIndex >= 0);
+  last.title =
+    last.title.slice(0, lastIndex) + "\n" + last.title.slice(lastIndex + 1);
+  assert.equal(bytes(above), 65537);
+  assert.throws(
+    () => parseDomainReceipt({ ...receipt, objects: above }, binding()),
+    CognitiveAppProtocolError,
+  );
+  assert.equal(bytes(objects), 65536);
 });

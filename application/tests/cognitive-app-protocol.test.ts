@@ -51,6 +51,7 @@ test("the author protocol has only its installed Zod dependency, with immutable 
     enumValues: 128,
     operations: 128,
     resources: 32,
+    resourceBytes: 32768,
     referenceLength: 200,
     valueBytes: 262144,
     valueDepth: 32,
@@ -717,4 +718,45 @@ test("actual operation values have independent UTF-8, depth and aggregate-node b
     () => parseCognitiveAppDefinition(deep(140000)),
     CognitiveAppProtocolError,
   );
+});
+
+test("resource identities fit the admission ledger's exact UTF-8 budget without truncation", () => {
+  const resources = Array.from({ length: 32 }, (_, index) => ({
+    objectId: String(index).padEnd(200, "x"),
+    versionRef: "x".repeat(200),
+  }));
+  const byteSize = () =>
+    new TextEncoder().encode(JSON.stringify(resources)).byteLength;
+  let remaining = 32768 - byteSize();
+  for (const resource of resources) {
+    for (const field of ["objectId", "versionRef"] as const) {
+      for (
+        let index = 2;
+        index < resource[field].length && remaining > 0;
+        index++
+      ) {
+        const character = remaining >= 2 ? "界" : "\n";
+        resource[field] =
+          resource[field].slice(0, index) +
+          character +
+          resource[field].slice(index + 1);
+        remaining -= character === "界" ? 2 : 1;
+      }
+    }
+  }
+  assert.equal(remaining, 0);
+  assert.equal(byteSize(), 32768);
+  assert.deepEqual(parseOperationResources("objects", resources), resources);
+  const above = resources.map((resource) => ({ ...resource }));
+  const last = above.at(-1)!;
+  last.versionRef = "\n" + last.versionRef.slice(1);
+  assert.equal(
+    new TextEncoder().encode(JSON.stringify(above)).byteLength,
+    32769,
+  );
+  assert.throws(
+    () => parseOperationResources("objects", above),
+    CognitiveAppProtocolError,
+  );
+  assert.equal(byteSize(), 32768);
 });

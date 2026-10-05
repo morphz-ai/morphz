@@ -16,6 +16,7 @@ export const domainWireLimits = Object.freeze({
   bytes: 512 * 1024,
   depth: 40,
   nodes: 32768,
+  receiptSummaryBytes: 64 * 1024,
   objectReadBytes: 256 * 1024,
 } as const);
 type Effect = OperationDefinition["effect"];
@@ -384,6 +385,11 @@ export function parseDomainReceipt(
     );
   if (receipt.status !== "committed") return receipt;
   uniqueObjects(receipt.objects);
+  check(
+    new TextEncoder().encode(JSON.stringify(receipt.objects)).byteLength <=
+      domainWireLimits.receiptSummaryBytes,
+    "Receipt summaries exceed their UTF-8 byte budget.",
+  );
   // Output-schema failure is separate from an otherwise validated committed fact.
   return { ...receipt, result: parseProtocolValue(receipt.result) };
 }

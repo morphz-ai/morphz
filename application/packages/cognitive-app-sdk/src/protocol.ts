@@ -13,6 +13,7 @@ export const protocolLimits = Object.freeze({
   enumValues: 128,
   operations: 128,
   resources: 32,
+  resourceBytes: 32 * 1024,
   referenceLength: 200,
   valueBytes: 256 * 1024,
   valueDepth: 32,
@@ -569,7 +570,7 @@ export function parseOperationResources(
 ): readonly OperationResourceReference[] {
   z.enum(["project", "objects"]).parse(scope);
   requireJson(input, {
-    bytes: protocolLimits.definitionBytes,
+    bytes: protocolLimits.resourceBytes,
     label: "Resources",
   });
   const resources = z

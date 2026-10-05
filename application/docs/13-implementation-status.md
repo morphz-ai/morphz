@@ -1,5 +1,24 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：协议与 ledger 字节边界一致
+
+接账模块复核发现：32 个各自合法的 Unicode 原件引用／摘要仍可能超过
+ledger 的总 UTF-8 预算。若先宣称回执完全合法，再为落库截断摘要，会丢掉
+目录补偿事实。现在 resources 总 JSON 明确限 32 KiB，committed objects
+摘要总 JSON 限 64 KiB，在协议完整性解析时拒绝超限，不截断原件或正文，
+也不扩大 SQL 关系。超限的回执不是已核完整 committed；保持未知并修复
+服务契约，不能据此补做写入。合法 committed 后的业务 output Schema
+错误仍按前阶段保留已提交事实，两种边界不混为一谈。
+
+两项精确 UTF-8 负例先复现，34 项旧测试通过、两新测试失败；补守卫后
+分别在 32,768／65,536 bytes 接受，超 1 byte 拒绝并保全输入。已有全部
+不可变预算断言只显式增加这两个总预算，没有删除严格比较或 purity 检查。
+含 transport 的正式三文件回归 51/51、零失败／跳过／取消，strict scoped
+typecheck 与格式检查通过；并行 commands 的 test-first 完整项目类型失败
+不计为全局门禁通过。日志 `/tmp/morphz-cognitive-ledger-budget-` 保留
+首测试缺 import、真实超限 RED 与预算常量期待尚未同步的中间失败。
+本阶段仍是协议／存储契约补强，不是实际应用接通。
+
 ## 2026-10-05 第三方认知应用：Host 有界固定传输
 
 Host-private transport 已实现 canonical HTTPS origin 下四个固定根路径，
