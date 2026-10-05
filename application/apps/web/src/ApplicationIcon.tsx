@@ -126,7 +126,18 @@ export function AppIcon({
   app: ApplicationCatalogEntry;
   presentation?: "symbol" | "tile";
 }) {
-  const identity = applicationIdentity(app);
+  return <ApplicationImage app={app} identity={applicationIdentity(app)} />;
+}
+
+/** Author images and declared fallback symbols need no UI-only manifest.
+ * Trusted bundled consumers alone supply a verified built-in identity. */
+export function ApplicationImage({
+  app,
+  identity,
+}: {
+  app: Pick<ApplicationCatalogEntry, "icon" | "iconImage">;
+  identity?: ApplicationIdentity;
+}) {
   if (app.iconImage) return <img src={app.iconImage} alt="" />;
   if (identity) return <ApplicationEmblem identity={identity} />;
   const Icon = {

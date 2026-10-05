@@ -38,6 +38,7 @@ import { useModal } from "./useModal.js";
 import { useTextQuotes } from "./TextQuotes.js";
 import { authorizedApplications } from "./application-dock-model.js";
 import { AppIcon, ApplicationLauncherIcon } from "./ApplicationIcon.js";
+import { CognitiveAppManager } from "./features/applications/CognitiveAppManager.js";
 import type { ApplicationNavigationActions } from "./host/use-workspace-navigation.js";
 
 export type ApplicationComposeResult =
@@ -112,6 +113,11 @@ export function ApplicationHost({
   );
   const [busy, setBusy] = useState(false),
     [installing, setInstalling] = useState<ApplicationManifest | null>(null);
+  const [managing, setManaging] = useState(false);
+  useEffect(() => {
+    if (!enabled || !foreground || active || spaceKind(space) !== "desk")
+      setManaging(false);
+  }, [enabled, foreground, active?.id, space.id]);
   const launching = useRef(false);
   const upload = useRef<HTMLInputElement>(null);
   const strip = useRef<HTMLDivElement>(null);
@@ -328,6 +334,15 @@ export function ApplicationHost({
           <section className="workspace-section" aria-label="应用">
             <div className="workspace-section-heading">
               <h2>应用</h2>
+              {spaceKind(space) === "desk" && (
+                <button
+                  type="button"
+                  className="secondary-action"
+                  onClick={() => setManaging(true)}
+                >
+                  管理应用
+                </button>
+              )}
             </div>
             <div
               className="application-grid"
@@ -443,6 +458,22 @@ export function ApplicationHost({
           }}
         />
       )}
+      {managing &&
+        enabled &&
+        foreground &&
+        !active &&
+        spaceKind(space) === "desk" && (
+          <CognitiveAppManager
+            catalog={client.cognitiveAppCatalog}
+            management={client.cognitiveManagement}
+            identity={{
+              centerId: client.boot!.centerId,
+              principalId: client.boot!.principalId,
+              csrfToken: client.boot!.csrfToken,
+            }}
+            onClose={() => setManaging(false)}
+          />
+        )}
     </section>
   );
 }

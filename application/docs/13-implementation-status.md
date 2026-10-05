@@ -1,5 +1,44 @@
 # 桌面能力实施记录
 
+## 2026-10-05 工作台的认知应用管理入口
+
+原工作台现有应用区接入共享管理面板，沿本人目录与原管理 owner 查看精确
+版本、预览能力、明确安装／登记、许可和连接 CAS。没有把无界面应用变成
+UI-only manifest，也不在打开面板、文件预览或连接恢复时自动授权、开窗、
+读取原件、发送输入或启动 Runtime。图像呈现提取为同一 metadata-only
+原图组件，内置图标和作者原图保持原画法，不新增装饰或改 Dock 外观。
+
+原连接未知结果保留完整 DTO、ID 和原 CAS；目录出现连接不是 ACK。
+重开／真实刷新可只读查找原记录，明确重试仍用原请求。放弃有就地风险
+确认，并在旧等待超时后重新只读核验当前身份／窗口／目标，才清本机原
+记录；不撤销连接或创建第二条。关闭或自身访问刷新卸载视觉面板不取消
+已发事务；真实 ACK 仍清原固定 scope，迟到结果不重开面板或披露旧预览。
+
+Root 独立正式五文件 80/80、相邻四文件 32/32、随后真实完整 App 入口
+十六项 16/16，均 required PostgreSQL 入口、零失败／取消／跳过；全工程
+类型、生产构建和专项格式检查通过。日志
+`/tmp/morphz-manager-ROOT-ACCEPTED-oct05.log`、
+`/tmp/morphz-manager-ROOT-ADJACENT-oct05.log`、
+`/tmp/morphz-manager-ROOT-REAL-ENTRY-SECOND-oct05.log`、
+`/tmp/morphz-manager-ROOT-TYPES-oct05.log`、
+`/tmp/morphz-manager-ROOT-BUILD-oct05.log` 和
+`/tmp/morphz-manager-ROOT-FORMAT-oct05.log`。这些组合有重叠，不相加称为
+独立总数。宽／窄／200% 截图和实际焦点、滚动、viewport 边界已审查。
+
+完整 App 入口检查使用生产 App／ApplicationHost／原 CSS，核真实工作台
+按钮、原草稿字节、零副作用和关闭后的焦点返回；管理细节挂载实际组件和
+useWorkspace。logical transport 受控，没有在本组执行 SQL／native IPC
+或作者网络，不能把 PostgreSQL 准备入口冒称数据库管理或用户原窗口验收。
+输入目标／共同 Dock 目录、作者 GUI 和原用户应用跨宿主验收仍在目标内。
+
+首次联合 74/77 的失败日志保留；独立实际 Vite reloadModule 又复现了夹具
+没有退休旧 React root 的缺陷，现标准 hot.dispose 真正 unmount 并还原
+自身拦截，不过滤 console error、不禁用 HMR，原重试字节仍保留。该失败
+证据在 `/tmp/morphz-manager-connection-HMR-LIFECYCLE-RED-oct05.log`；
+不能据此断言首次所有失败都由该缺陷造成。Root 新入口检查首轮错误只是
+空文案预期不符，改为实际文案，原禁止副作用／草稿／焦点断言均保留，日志
+`/tmp/morphz-manager-ROOT-REAL-ENTRY-FIRST-oct05.log`。
+
 ## 2026-10-05 认知连接的本机原请求恢复
 
 独立准备层以实际中心、Human、持久窗口身份和精确目标定位重试记录，

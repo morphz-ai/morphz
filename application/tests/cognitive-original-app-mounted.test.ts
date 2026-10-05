@@ -130,6 +130,58 @@ test(
       },
     );
     await t.test(
+      "real Workbench management entry opens and closes the shared modal without touching original conversation drafts or starting work",
+      async () => {
+        await load();
+        await page
+          .getByRole("textbox", { name: "AI 输入内容" })
+          .fill("UNSENT_BEFORE_REAL_MANAGEMENT\n原字节 😀");
+        const before = await report(page);
+        const draftBytes = Object.entries(before.stored).filter(([key]) =>
+          key.endsWith(":inputs"),
+        );
+        assert.ok(draftBytes.length > 0, "actual original scoped draft exists");
+        await page.getByRole("button", { name: "工作台", exact: true }).click();
+        await page
+          .getByRole("button", { name: "管理应用", exact: true })
+          .click();
+        const dialog = page.getByRole("dialog", {
+          name: "管理应用",
+          exact: true,
+        });
+        await dialog.waitFor();
+        assert.ok((await dialog.textContent())?.includes("尚未接入应用"));
+        const opened = await report(page);
+        for (const [key, bytes] of draftBytes)
+          assert.equal(
+            opened.stored[key],
+            bytes,
+            "management preserves original draft bytes",
+          );
+        assert.deepEqual(opened.unknown, []);
+        assert.deepEqual(forbidden(opened), []);
+        assert.deepEqual(
+          opened.requests.filter((request: any) =>
+            /^(?:cognitive-apps\.(?:install|grant|connect|connection-state|invoke|read-object)$|cognitive-app-views\.)/.test(
+              request.method,
+            ),
+          ),
+          [],
+          "opening real management does not acquire authority, create windows, read originals or execute work",
+        );
+        await page
+          .getByRole("button", { name: "关闭应用管理", exact: true })
+          .click();
+        await dialog.waitFor({ state: "detached" });
+        assert.equal(
+          await page.evaluate(() => document.activeElement?.textContent),
+          "管理应用",
+          "the real entry regains focus without navigating or sending",
+        );
+        assert.deepEqual(errors, []);
+      },
+    );
+    await t.test(
       "real message open blocks textarea/send, reads pinned opaque V1 not V2 head, adopts once and stores no original body",
       async () => {
         await load();

@@ -1,0 +1,353 @@
+.cognitive-app-manager {
+  --ui-dialog-width: 780px;
+  display: flex;
+  flex-direction: column;
+  max-height: min(720px, var(--modal-max-height, calc(100dvh - 32px)));
+  overflow: hidden;
+}
+.cognitive-app-manager:not([open]) {
+  display: none;
+}
+.cognitive-app-manager h2:focus {
+  outline: none;
+}
+.cognitive-app-manager :is(h3, h4, p, ul, dl) {
+  margin: 0;
+}
+.cognitive-app-manager :is(h3, h4) {
+  color: var(--ink);
+  font-size: 13px;
+}
+.cognitive-app-manager-modes,
+.cognitive-app-manager-add-modes {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-block: 4px;
+}
+.cognitive-app-manager-modes {
+  flex-shrink: 0;
+}
+.cognitive-app-manager
+  :is(.cognitive-app-manager-modes, .cognitive-app-manager-add-modes)
+  button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.cognitive-app-manager
+  :is(.cognitive-app-manager-modes, .cognitive-app-manager-add-modes)
+  button[aria-pressed="true"] {
+  background: var(--selection);
+  color: var(--ink);
+  font-weight: 600;
+}
+.cognitive-app-manager
+  :is(.cognitive-app-manager-modes, .cognitive-app-manager-add-modes)
+  svg {
+  width: 15px;
+  height: 15px;
+}
+.cognitive-app-manager-body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  container-type: inline-size;
+  container-name: cognitive-app-manager;
+}
+.cognitive-app-manager-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(0, 1.8fr);
+  align-items: start;
+}
+.cognitive-app-manager-directory {
+  min-width: 0;
+  padding: 4px 12px 4px 0;
+}
+.cognitive-app-manager-directory ul {
+  list-style: none;
+  padding: 0;
+}
+.cognitive-app-manager-directory button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 60px;
+  padding: 8px;
+  text-align: left;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+}
+.cognitive-app-manager-directory button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.cognitive-app-manager-directory button[aria-pressed="true"] {
+  background: var(--selection);
+}
+.cognitive-app-manager-directory button > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.cognitive-app-manager-directory :is(strong, small) {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.cognitive-app-manager-directory strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.cognitive-app-manager-directory small {
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.cognitive-app-manager-directory button > svg {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.cognitive-app-manager-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+}
+.cognitive-app-manager-image :is(svg, img) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.cognitive-app-manager-detail {
+  min-width: 0;
+  padding: 8px 0 8px 16px;
+  border-left: 1px solid var(--hairline);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.cognitive-app-manager-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.cognitive-app-manager-identity h3 {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+.cognitive-app-manager-identity p {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.cognitive-app-manager-definition > p {
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+.cognitive-app-manager-definition ul {
+  list-style: none;
+  padding: 0;
+}
+.cognitive-app-manager-definition li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+  padding-block: 7px;
+}
+.cognitive-app-manager-definition li strong {
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.cognitive-app-manager-definition li span {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.cognitive-app-manager-definition li p {
+  grid-column: 1 / -1;
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.cognitive-app-manager-section {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+.cognitive-app-manager-section h4 {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+.cognitive-app-manager-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.cognitive-app-manager-action-row p {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.cognitive-app-manager .cognitive-app-manager-hint {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.cognitive-app-manager-connection {
+  margin-top: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.cognitive-app-manager-connection dl {
+  margin-bottom: 8px;
+}
+.cognitive-app-manager-connection dl > div {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 8px;
+}
+.cognitive-app-manager-connection dt {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.cognitive-app-manager-connection dd {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.cognitive-app-manager-connect {
+  margin-top: 12px;
+}
+.cognitive-app-manager-connect summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: 13px;
+}
+.cognitive-app-manager-connect form {
+  margin-top: 10px;
+}
+.cognitive-app-manager
+  :is(.cognitive-app-manager-connect, .cognitive-app-manager-add)
+  label {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.cognitive-app-manager :is(input, .cognitive-app-manager-add) {
+  min-width: 0;
+}
+.cognitive-app-manager-add {
+  max-width: 540px;
+  margin-inline: auto;
+  padding: 6px 4px 12px;
+  font-size: 13px;
+}
+.cognitive-app-manager-add-modes {
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.cognitive-app-manager-add-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+.cognitive-app-manager-install-preview {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+.cognitive-app-manager-install-preview h3 {
+  margin-bottom: 10px;
+}
+.cognitive-app-manager-install-preview h3 small {
+  margin-left: 6px;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.cognitive-app-manager .cognitive-app-manager-empty {
+  padding-block: 18px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.cognitive-app-manager-notice {
+  flex-shrink: 0;
+  padding: 7px 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  max-height: 88px;
+  overflow: auto;
+}
+.cognitive-app-manager-notice[data-kind="error"] {
+  color: light-dark(#a72a32, #f8a9ad);
+}
+.cognitive-app-manager-uncertain {
+  display: grid;
+  gap: 8px;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.cognitive-app-manager-uncertain dl > div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px;
+}
+.cognitive-app-manager-uncertain dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.cognitive-app-manager-forget {
+  display: grid;
+  gap: 8px;
+  padding-block: 8px;
+}
+@container cognitive-app-manager (max-width: 560px) {
+  .cognitive-app-manager-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cognitive-app-manager-directory {
+    padding-right: 0;
+    max-height: 190px;
+    overflow: auto;
+  }
+  .cognitive-app-manager-detail {
+    border-left: 0;
+    border-top: 1px solid var(--hairline);
+    margin-top: 8px;
+    padding: 12px 4px;
+  }
+  .cognitive-app-manager-definition li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .cognitive-app-manager-definition li p {
+    grid-column: 1;
+  }
+}
+@media (pointer: coarse) {
+  .cognitive-app-manager :is(button, input, summary) {
+    min-height: 44px;
+  }
+}

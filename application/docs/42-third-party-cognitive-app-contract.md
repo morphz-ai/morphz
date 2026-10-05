@@ -1,6 +1,6 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05。状态：独立协议／Browser SDK、v12 双后端关系与本人登记管理、服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输、真实 Rust Agent input 链及只读原件工作区已验证；管理前端、第三方可执行 GUI 与原 App 的跨宿主闭环尚未完成。
+日期：2026-10-05。状态：独立协议／Browser SDK、v12 双后端关系与本人登记管理、服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输、真实 Rust Agent input 链、只读原件工作区与工作台管理前端已分层验证；输入目标／共同 Dock 目录、第三方可执行 GUI 与原 App 的跨宿主闭环尚未完成。
 
 Agent 的有限六操作 adapter 已独立通过八文件 82/82、required
 PostgreSQL／Runtime、零跳过及全工程类型检查。新认知测试实际使用
@@ -62,6 +62,13 @@ Dock／输入目标或作者 GUI，不冒称完整生态／原 App 已完成。
 
 文档存在不表示列出的未来能力或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
+
+工作台管理前端随后通过 Root 独立五文件 80/80、相邻四文件 32/32 和完整
+生产 App 入口 16/16，required PostgreSQL 入口、零跳过，全工程类型／
+构建／专项格式通过。组件、实际 owner、原草稿／重试身份、权限刷新卸载、
+真实 reload 和风险确认均有 Chromium 证据；logical transport 受控，不
+混报 SQL、native IPC、作者网络或用户原窗口。新文档安全装配仍有独立
+失败证据，未验收原型不接入生产 GUI。
 
 第三方应用提供自己拥有的业务能力和原件，Morphz 负责让 Human 与 Agent
 以相同权限调用这些能力，并可选地承载作者的界面。接入不要求作者使用
