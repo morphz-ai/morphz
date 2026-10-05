@@ -1,6 +1,6 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05。状态：独立协议／Browser SDK、v11 双后端关系、内部服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输与真实 Rust Agent input 链已验证；GUI 与原 App 的跨宿主闭环尚未完成。
+日期：2026-10-05。状态：独立协议／Browser SDK、v11 双后端关系、服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输、真实 Rust Agent input 链及只读原件工作区已验证；第三方可执行 GUI 与原 App 的跨宿主闭环尚未完成。
 
 Agent 的有限六操作 adapter 已独立通过八文件 82/82、required
 PostgreSQL／Runtime、零跳过及全工程类型检查。新认知测试实际使用
@@ -26,9 +26,20 @@ infer 测试现已通过：原任务准入／dispatcher、Schedule／Thread／Ev
 IO10、实际 accepted Session Event、Agent read-input 与公开历史。目录头
 更新后仍读取原引用；真实补充继承同一原件与 Thread，执行结束后恢复
 原回执不重复执行。Root 正式十二文件 96/96，required PostgreSQL／Runtime，
-零跳过及类型检查通过。数据模型、19→20 语义 fence、默认与显式历史
-测试边界见 [原件输入来源](./43-cognitive-app-input-provenance.md)。此处不
-宣称前端历史投影、原件导航、未发送草稿或 GUI 跨宿主链已完成。
+零跳过及类型检查通过。后续显式应用目标阶段 Root 九文件 58/58，
+原件工作区阶段 Root 十四文件 170/170，均 required PostgreSQL、零跳过
+与全工程类型检查通过。后者实际挂载生产 App 与原 CSS，但 logical transport
+受控，不是作者 GUI 或原窗口。目标／原件／草稿、19→20→21 语义 fence、
+默认与显式历史测试边界见 [原件输入来源](./43-cognitive-app-input-provenance.md)。
+
+显式无界面应用的实际 Harness 链现已验证：真实 canonical CLI 安装包，
+IO11／12 固定同一声明与 artifact hash，两个入口 Plan、四个 Host Job
+成功，两个根线程完成；独立作者保存两笔 Agent 命令和两个原件，补充继承
+原目标，终态回执重放不重复入口。Root 正式十二文件 79/79、required
+PostgreSQL／Runtime、零跳过及类型／格式检查通过。新 Rust 与作者中心
+是隔离 SQLite，PostgreSQL 来自同组双后端回归；模型受控、付费请求零。
+精确原件的本轮核验是 Human API，不冒称 Agent 读；旧 IO10 Agent 读取
+回归同时保留。本段不是作者 GUI、原用户 App 或真实付费模型验收。
 
 文档存在不表示独立 SDK、服务网关或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
@@ -61,15 +72,17 @@ ID 猜测。后台 `task-run` 可保留原 `sourceInputId` 关联，但不因此
 托管、Node relay、任意网络 iframe 或新的执行器。现有 `routeKind=node`
 只是路由关系，不能作为第三方领域 API 已经沿执行节点转发的证据。
 
-## 现有基础与需要补齐的边界
+## 接入前基础与扩展边界
 
-当前界面包 `morphz-app/v1` 的 `ui` 必填，能经 immutable Store 引用安装
+接入前的界面包 `morphz-app/v1` 的 `ui` 必填，能经 immutable Store 引用安装
 HTML，并使用 opaque-origin iframe、CSP、source/channel 检查。它不是无界面
 业务应用定义；旧 `morphz-work-app/v1` 的 HTML 与消息前缀继续原样读取。
 
-当前操作目录有 `operations/list`、`describe`、`invoke`，但注册源是内置处理器，
-结果 Schema 尚未形成第三方版本契约。当前输入的应用激活也只解析四个内置
-manifest。`content_entries` 已有应用／实例／原件／opaque 版本引用，不能为
+接入前的操作目录有 `operations/list`、`describe`、`invoke`，但注册源是内置处理器，
+结果 Schema 尚未形成第三方版本契约，输入激活也仅解析四个内置 manifest。
+本轮已增加下文的第三方声明与受权服务；输入使用独立 `cognitiveApplication`
+选择精确上下文，Host 从当前定义固定 Harness，不借用窗口或内置类型。
+`content_entries` 已有应用／实例／原件／opaque 版本引用，不能为
 第三方另造一套 Artifact 正文或把版本字符串转成数字。
 
 已有 Renderer 包权限检查不能代替服务端校验真实 view、包版本及操作。
@@ -142,6 +155,9 @@ Runtime 检查已经加载的精确版本，不自动安装执行包、不改绑
 普通领域操作不以加载 Harness 为前置；只有应用认知模式的输入激活才检查
 和固定 Harness。纯类型中的版本是精确字符串，Host 不解析版本范围或浮动
 alias，直接核 Runtime 注册身份和真实 `.hns` artifact_hash。
+新输入的显式上下文和原件引用是两个独立槽位：单有原件不激活 Harness，
+无 GUI／无原件也可选择已获权应用。完整字段、互斥范围和 canonical IO10／
+11／12 见 [原件输入来源](./43-cognitive-app-input-provenance.md)。
 
 操作声明是调用与发现的唯一版本源，不接受运行中服务返回一份可扩权的动态
 Schema。`effect` 是 read、write 或 execute；副作用与实际结果说明由作者
@@ -381,8 +397,9 @@ CSRF 与无额外 query 规则。Local、HTTP、Remote、typed renderer 复用
 UI read 的成功 JSON 有独立 8 MiB 有界 UTF-8 carrier，原 HTML 的
 1,000,000 字节上限不变。Root 十三文件 176/176、required PostgreSQL、
 零跳过及全工程类型检查通过；新二十八项实际双 SQL 与 Managed Store，
-八项为明确传输 UNIT。authenticated resource 已独立接通，iframe 及
-导航／草稿仍待接入；以下其他部分仍为实施约束，不是 GUI 完成证明。
+八项为明确传输 UNIT。authenticated resource 已独立接通，只读原件的
+导航／草稿现已接入共享工作区；作者 iframe 仍待接入，以下其他部分仍为
+实施约束，不是作者 GUI 完成证明。
 
 | 边界 | 最小职责 | 保持的既有行为 |
 | --- | --- | --- |
@@ -407,8 +424,8 @@ session generation、导航 epoch、view／binding revision、定义 hash 及
 SDK 的十六 pending／三十秒预算，并在初始化竞态、导航 CAS 及 monotonic
 返回门处拒绝旧结果。十八项为明确控 Window／authority UNIT，合并旧
 SDK Browser／打包消费回归 29/29、零跳过、全工程类型检查通过。
-它尚未挂载生产 consumer；资源、DOM 和实际导航／草稿 owner 仍须接入
-与验收，不能把这份消息叶模块称作运行中的 GUI 功能。
+它尚未挂载生产 consumer；author DOM、channel 与实际 owner 的 compose
+接线仍须验收，不能把这份消息叶模块或只读原件页称作运行中的作者 GUI。
 
 独立 `cognitive-browser-router.ts` 已将八方法映射到同一 Human 服务。
 窗口的定义、authority、项目、连接与许可固定；每次请求及返回都核真实
@@ -439,9 +456,10 @@ Root 十五文件 166/166、required PostgreSQL、零跳过及全工程类型
 第三方 locator 固定实际 app／version／definition hash、instance／service／
 data authority、objectId、opaque versionRef 与原目录 content id。导航与
 草稿再经真实目录／精确读取核验；不得把 versionRef 转成 Number、丢成
-null、猜当前 head，或伪装为 morphz.objects。带对象 compose 的引用须
-一直保留到实际输入／Runtime 来源链，这条槽位尚待实现；只填入文本不能
-代替带对象的闭环验收。安装、开关窗口和 compose 都不自动发送或执行。
+null、猜当前 head，或伪装为 morphz.objects。`cognitiveObject` 已贯穿实际
+输入／Runtime 来源链，原件历史打开与未发送草稿也已接入共享工作区；作者
+GUI 的带对象 compose consumer 仍须实测，只填入文本不能代替其闭环验收。
+安装、开关窗口和 compose 都不自动发送或执行。
 
 ## Platform 生产数据模型
 
@@ -556,7 +574,8 @@ Store 实际权限下的 admission／dispatch／原回执恢复和 begin／compl
 实际 Store 目录通知、内部网络 Gateway 和独立 objects/read 已组合通过
 实际双后端与独立作者服务测试；共享薄 Service 和严格 DTO 已组合，公共
 Application／Local／HTTP／Remote 入口也已登记并通过真实公共集成；
-renderer bridge／Agent／GUI 尚未完成，不把此结果当作原窗口链路通过。
+renderer bridge 与 Agent 输入／后台事项／infer 的后续证据已在上文分别
+列出，第三方可执行 GUI 与原窗口链路仍未完成，不由本段后端结果推定通过。
 
 Host 的 CognitiveAppGateway 负责固定连接、网络安全、实际 wire 校验和
 回执核验，只通过 Platform typed port 调用上述职责；由共享应用 Host 与

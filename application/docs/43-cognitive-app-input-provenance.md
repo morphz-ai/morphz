@@ -2,8 +2,8 @@
 
 ## 范围与权威 owner
 
-这是第三方认知应用接入的后端来源阶段，补充 `42-third-party-cognitive-app-contract.md`。
-它不新增应用数据库、不复制原件、不改变既有内置 Artifact 的数值版本，也不证明 GUI、导航或未发送草稿已经接通。
+本文补充 `42-third-party-cognitive-app-contract.md`，说明精确原件引用和显式应用上下文如何贯穿草稿、不可变投递、Runtime 输入与历史。
+它不新增应用数据库、不复制原件、不改变既有内置 Artifact 的数值版本。共享工作区的原件打开、历史导航和草稿已通过受控浏览器验收；第三方可执行 GUI、完整跨宿主链和用户原 App 尚未完成验收。
 
 - 作者服务拥有原件及不可解释的 `objectId` / `versionRef`。
 - Platform 的既有内容目录拥有 `contentId`、实际项目、应用数据实例及已观察版本；许可、本人连接、定义与保存方仍由既有关系表拥有。
@@ -38,6 +38,20 @@ Core 的 `CognitiveAppObjectLocator` 是一个有界、独立快照：
 所有 opaque 字符串原样保存；没有 trim、数值转换、排序版本、latest/head 替换。禁止 NUL、未配对 UTF-16 surrogate、未知字段及 getter；合法 Unicode、空格与换行按原协议保留。
 这个槽位没有业务正文、凭据、私有路由、actor、许可修订或 iframe 状态。引用不是权限，也不自动选择、启动或激活 Harness。
 
+## 显式应用上下文
+
+Human 可在新输入中显式提供 `cognitiveApplication`。它只包含 `connectionId` 和上述完整六字段 `authority`，不要求 GUI 或原件，不接受 actor、服务地址、view ID 或调用者选择的 Harness。Host 根据当前获权的精确定义生成内部 `application`，而不是信任页面状态。
+
+| 显式选择 | canonical 输入版本 | 语义 |
+| --- | --- | --- |
+| 只有 `cognitiveObject` | 10 | 讨论精确原件，不因此激活应用 Harness |
+| 只有 `cognitiveApplication` | 11 | 使用精确应用上下文；模型可见的 `cognitiveObject` 必须为 null |
+| 两者同时存在 | 12 | 同时保留完整目标与原件；connection 和六字段 authority 必须全部相等，原件项目必须等于输入项目 |
+
+新目标与旧 `application`／`applicationInstanceId` 槽位互斥，即使填写相同应用也拒绝；不与 reading、scriptGeneration 或 scriptTarget 的专用输入范围混用。旧输入以及旧应用＋原件的已支持路径保持原语义，不改写旧请求。
+
+无界面应用不需要空窗口。普通能力发现、读取与调用不以 Harness 为前置；定义的 `harness:null` 可作为应用上下文，但不冒称激活自定义 Harness。非空声明必须由 Runtime 核验已安装的精确版本与 artifact hash；缺失时如实失败并保留原请求，不转为默认聊天。
+
 ## 准入、重发与实际读取
 
 发送端在任何 awaited policy 前解析并脱离调用者的引用。既有 `commandSchema` 与旧消息载体预算保持不变；仅新槽位使用独立 own-data / 协议预算检查。
@@ -51,10 +65,12 @@ Core 的 `CognitiveAppObjectLocator` 是一个有界、独立快照：
 
 若输入显式包含 `application`，它必须与引用的应用、版本和真实数据实例吻合；Host 从精确定义固定 Harness，redispatch 复核同一值。单有引用不激活 Harness，也不把第三方对象伪装成 `morphz.objects`。
 
+新的 `cognitiveApplication` 复用 Platform 当前真实 actor、项目成员、本人许可、本人连接与精确定义的核验；比较完整 authority，dispatch 再比较 Host 从定义生成的 application。选择目标不为核上下文而读取作者正文，不授予新权限，也不使 Agent 获得不同于同一 Human 来源的业务能力。
+
 ## 定向补充与幂等
 
-新补充只能选择既有真实活动投影给出的 continuation；不得显式提供另一 `cognitiveObject`。Host 从本人、同项目/对话的原投递记录继承完整引用，并通过既有实际 Thread / generation 门准入。
-它保留原 Session、执行目标和引用，不创建另一根执行；补充本身仍有独立输入 ID 与 accepted Event。
+新补充只能选择既有真实活动投影给出的 continuation；不得显式提供 `cognitiveObject` 或 `cognitiveApplication`。Host 从本人、同项目/对话的原投递记录继承完整原件、应用目标及派生 application，并通过既有实际 Thread / generation 门准入。
+它保留原 Session、执行节点和引用，不创建另一根执行、不重新激活 Harness；补充本身仍有独立输入 ID 与 accepted Event。
 
 对已接收补充的同命令重试，先沿用其持久来源与原请求，再返回原回执。此路径不再次要求原 Thread 仍打开，因而执行完成后的回执恢复不被误拒；仍复核当前本人和项目/对象权限。
 相同输入 ID 不得变更引用、来源或请求，也不重写原投递正文。当前授权撤销阻断新准入/重发/披露，不删除或伪造已提交的历史事实。
@@ -62,11 +78,12 @@ Core 的 `CognitiveAppObjectLocator` 是一个有界、独立快照：
 ## Session IO 与迁移
 
 新增 canonical `morphz.application.input` 版本 `10`，以既有 immutable v4 的 continuation 结构为基础，要求整个 `cognitiveObject`，并在 `required_visible_paths` 包含 `/cognitiveObject`。
-Runtime 必须接受这个精确已安装格式；没有旧格式 fallback。模型可见的引用与 Host 来源 metadata 必须全值一致；accepted 历史解析拒绝缺失或不一致的引用。
+版本 `11` 要求整个 `cognitiveApplication` 和严格 null 的 `cognitiveObject`；版本 `12` 要求两个完整对象。两者均显式列出 `/cognitiveApplication` 与 `/cognitiveObject`，沿用 Runtime 的单类型 Schema，不新增 anyOf／组合方言。
+Runtime 必须接受对应精确已安装格式；没有旧格式 fallback。模型可见的完整引用和目标与 Host 来源 metadata 必须全值一致；IO11 的可见原件是严格 null，来源 metadata 不新增原件字段。accepted 历史解析同时核真实格式，拒绝缺失或不一致的来源。
 
 旧 canonical 1–9 的实际已注册描述（1、2、3、4、5、8、9）及两个 legacy 描述的 SHA 保持不变。旧排队请求、客户端消息 ID、格式、正文及指纹不重写。
 
-Host transport 的 SQLite `user_version` 从 19 升到 20，是语义 downlevel fence，不新增表、回填原输入或迁移作者原件。旧 Host 的 source parser 会剥掉未知引用，却保留 IO 请求且可能重新准入，因此必须阻止它打开新版投递库。Platform 的既有 SQLite/PostgreSQL 关系迁移不变。
+Host transport 的 SQLite `user_version` 由 19→20→21 增加语义 downlevel fence，分别保护原件引用与显式应用上下文；不新增表、回填原输入或迁移作者原件。旧 Host 的 source parser 会剥掉未知来源，却保留 IO 请求且可能重新准入，因此必须阻止它打开新版投递库。Platform 的既有 SQLite/PostgreSQL 关系迁移不变。
 
 ## 验收层次与查询
 
@@ -76,4 +93,20 @@ Host transport 的 SQLite `user_version` 从 19 升到 20，是语义 downlevel 
 
 `scripts/cognitive-input-old-reader-smoke.ts` 是显式历史验收：从固定真实 Git revision 归档旧 Host，在独立临时数据上证明旧 source 剥字段/保留 IO10/旧 retry 准入，以及旧 Store 拒 20。默认 CI 不依赖该历史；显式执行缺少 revision 时立即失败，不 fetch、不 skip、不复制旧 parser 冒充原件。
 
-后续 GUI owner 仍须把这个同一槽位贯穿精确原件打开、导航、未发送草稿与真实发送；不得创建 fake content ID、把 opaque ref 转数值，或从任意当前页面猜连接。此文不将该后续接线列为已交付。
+显式目标阶段的 Root 正式九文件 58/58、required PostgreSQL、零跳过及全工程类型检查通过，覆盖实际双 SQL 的准入、拒绝、重试和来源。该阶段 Runtime HTTP 受控，不等于真正执行安装的 HNS。`scripts/cognitive-application-old-reader-smoke.ts` 另从真实旧 transport 20 Host 归档验证 source 降级及拒绝 21；同样是显式历史测试，不 fetch、不 skip，也不复制旧 parser。
+
+后续 `tests/cognitive-app-application-actual-runtime.test.ts` 使用真实 canonical CLI，在隔离 Runtime 安装 test-owned `.hns`，再沿实际 Human 输入、IO11／12、Harness binding、入口 Plan 与 Host Job 执行。成功用例有两个已完成根线程、两个成功入口 Plan、四个成功 Host Job，以及独立 packed 作者服务的两笔 Agent 命令／两个原件；每笔作者来源固定对应的真实输入 ID。定向补充产生实际 steering Event，继承完整目标与原件；终态回执重放不再运行入口。
+
+精确原件读取另由真实 Human API 核验，不冒称该用例已经执行 Agent 原件读；既有 IO10 实际 Agent 读取回归仍单独保留。未注册 IO11／12 的真实 Runtime 分别拒绝两种输入，不创建根线程、不发模型请求、不执行 Agent 写入，原请求格式保持；Human 为 IO12 准备的基线原件不归为 Agent 成果，旧 IO1 仍正常完成。
+
+本次 Root 正式十二文件 79/79、required PostgreSQL／Runtime、零跳过，包含新真实 HNS、原 IO10、双 SQL 准入及 capability 门，类型与格式检查通过。新 Runtime、Host 与作者中心均为隔离 SQLite，PostgreSQL 证据来自组合内的双后端测试；模型 HTTP 受控、付费请求为零。runtime-owned HNS 入口完成后模型只解释结果，遵守既有执行契约；本阶段不改 Rust、Schema 方言或工具权限。
+
+## 共享工作区的原件打开与草稿
+
+公开历史保留完整 locator。显式打开先经当前 Human 的目录与精确作者读取门，成功后才切换原工作区并记录本人近期打开；不创建 Session、不发送输入、不复制正文到导航偏好。标题与正文采用真实返回的原件，不用目录 head 的标题冒充历史版本。
+
+读取、失败重试或更新导航期间，未发送输入保持原草稿与来源，不能把旧内容发向尚未核验的新原件。用户主动打开原件才展开其内容；后台读取或被动恢复不制造近期记录。身份／项目变化和迟到结果不能改变当前工作面或披露旧正文。同一原件再打开不会重复初始化草稿；首个草稿修改即固定完整 opaque 引用，后续目录升级不改绑。
+
+Root 正式十四文件 170/170、required PostgreSQL、零跳过及全工程类型检查通过。新集成测试实际挂载生产 App、Conversation 与原 CSS，使用 Chromium StrictMode 和受控 logical transport，并保留旧导航、草稿、viewport、回执与 topbar 门。它不是 native Electron、真实作者网络或用户原窗口验收。
+
+第三方可执行 GUI 的 compose consumer、安全沙箱与统一安装／应用选择入口仍须接通；不得以只读原件工作面或消息叶模块冒称完整作者 GUI。Desktop／Web／Agent 的整体链和原 App 更新验收仍属剩余交付。
