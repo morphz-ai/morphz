@@ -1,5 +1,21 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：实际 Store 原件读取与目录通知
+
+Host-only 投影入口现组合真实 ledger／catalog／delivery receipt／outbox，
+同 q 完成 projected 标记与一次导航通知；空摘要或同版本交付也通知，
+幂等重放不重复通知。实际导航写入后故障会回滚全部目录和交付状态。
+精确原件读取另走真实身份／来源／项目／目录／当前许可门禁，不捏造一个
+invoke 操作；保留历史 opaque versionRef，由作者服务证明该版本实际存在，
+不替换成目录当前版本。同步捕获目标及原件引用，异步调用中的 caller 修改
+不能漂移读取目标。撤权后的旧提交可补目录，不因此取得新的读取权限。
+
+Root 全文审查两端口与全部新增测试后，独立正式重跑 12 文件 282/282，
+实际 SQLite／PostgreSQL、零失败／跳过／取消；日志
+`/tmp/morphz-cognitive-platform-object-ROOT-FINAL-oct05.log`。
+本阶段只接通 Store 组合；网络 Gateway、公共宿主入口、GUI 和实际 Runtime
+／原用户 App 闭环仍在进行，不将上述测试数冒称整项目标完成。
+
 ## 2026-10-05 第三方认知应用：实际 Store 命令组合与退役保护
 
 Store 现组合实际 Human／Agent 的副作用受理、仅一次首次发送 fence、本人

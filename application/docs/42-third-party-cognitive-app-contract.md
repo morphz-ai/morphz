@@ -311,6 +311,12 @@ view binding 固定当前领域定义和连接；选择另一个数据实例使�
 不能带入新实例，已经 admitted 的工作仍固定原目标。沿用现有每本人／项目／
 应用／版本的窗口语义，不用 view id 充当领域实例。
 
+实际 Store 原件读取单独核当前真实身份、项目、目录和连接／许可，不复用
+一个虚构的 invoke 操作。历史 versionRef 保持原样，不要求等于目录 head；
+作者的精确读取响应仍必须证明同一原件和该版本，不能 fallback 为最新正文。
+已核 committed 事实的目录投影同事务完成导航通知；同版本或空摘要也只通知
+一次，重放不再通知。通知失败与目录／交付／projected 标记一并回滚。
+
 旧 UI-only 读取仍仅限其 installedBy，本人的领域 grant 不自动解锁他人的
 历史 HTML。新的 cognitive UI 必须从已同意定义的精确 Store 引用读取，
 通过独立的本人 grant 字节 gate；不放宽既有 UiPackageService.read 来

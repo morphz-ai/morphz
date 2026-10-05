@@ -40,6 +40,10 @@ import {
   type CognitiveAppCommandPage,
 } from "./cognitive-app-commands.js";
 import {
+  createCognitiveAppProjection,
+  type CognitiveAppProjectionResult,
+} from "./cognitive-app-projection.js";
+import {
   domainProtocol,
   validateOperationValue,
   parseOperationResources,
@@ -51,6 +55,7 @@ import {
 } from "../../cognitive-app-sdk/src/protocol.js";
 import {
   canonicalJsonBytes,
+  domainWireLimits,
   parseDomainActor,
   type DomainActor,
 } from "../../cognitive-app-sdk/src/domain-wire.js";
@@ -294,6 +299,19 @@ export type ResolvedCognitiveAppOperation = {
   operation: OperationDefinition;
   parameters: JsonValue;
   resources: readonly OperationResourceReference[];
+};
+export type CognitiveAppObjectReadRequest = CognitiveAppTargetRequest & {
+  projectId: string;
+  object: OperationResourceReference;
+  maxBytes: number;
+};
+/** Current read-policy snapshot only. The owning App must still prove the
+ * exact requested historical version and bounded original response. */
+export type ResolvedCognitiveAppObjectRead = {
+  actor: DomainActor;
+  target: CognitiveAppTargetSnapshot;
+  object: OperationResourceReference;
+  maxBytes: number;
 };
 export type CognitiveAppCommandRequest =
   CognitiveAppOperationResolutionRequest & { commandId: string };
@@ -1294,6 +1312,106 @@ export class PlatformStore {
         request,
         declaration,
       );
+    });
+  }
+
+  /** Actual source/member/catalog policy without inventing an invoke operation
+   * or treating the observed catalog head as an authority on App history. */
+  async resolveCognitiveAppObjectRead(
+    access: PlatformActor,
+    input: CognitiveAppObjectReadRequest,
+  ): Promise<ResolvedCognitiveAppObjectRead> {
+    // Snapshot known identity scalars and independently parsed references
+    // before asynchronous identity/SQL work can yield to the caller.
+    const {
+      projectId,
+      appId,
+      version,
+      connectionId,
+      expectedDefinitionHash,
+      expectedGrantRevision,
+      expectedConnectionRevision,
+      maxBytes,
+    } = input;
+    let object: OperationResourceReference;
+    try {
+      object = parseOperationResources("objects", [input.object])[0]!;
+    } catch {
+      throw new PlatformStorageError("invalid", "精确原件引用无效。");
+    }
+    if (
+      !Number.isSafeInteger(maxBytes) ||
+      maxBytes < 1 ||
+      maxBytes > domainWireLimits.objectReadBytes
+    )
+      throw new PlatformStorageError("invalid", "原件读取字节上限无效。");
+    requireId(projectId, "项目标识");
+    const prepared = await this.prepareCognitiveActor(access);
+    return this.transaction(async (q) => {
+      await this.assertProjectReader(
+        q,
+        prepared.actor,
+        projectId,
+        prepared.executor,
+      );
+      const target = await this.cognitiveRegistry(
+        q,
+        prepared.actor,
+      ).lockCurrentTarget({
+        appId,
+        version,
+        connectionId,
+        expectedDefinitionHash,
+        expectedGrantRevision,
+        expectedConnectionRevision,
+      });
+      const row = await this.authorizeApplicationObjectRow(
+        q,
+        prepared.actor,
+        target.instanceId,
+        target.appId,
+        object.objectId,
+        "read",
+        undefined,
+        prepared.executor,
+      );
+      if (row.project_id !== projectId)
+        throw new PlatformStorageError(
+          "forbidden",
+          "应用原件不属于本次实际项目。",
+        );
+      if (row.availability !== "available")
+        throw new PlatformStorageError("not_found", "应用原件当前不可用。");
+      return { actor: prepared.domainActor, target, object, maxBytes };
+    });
+  }
+
+  /** Host-only committed-fact projection. Never a caller-supplied business
+   * result or a public permission/dispatch port. All bookkeeping and its one
+   * navigation notification commit or roll back in the same transaction. */
+  async projectCognitiveAppCommand(
+    input: CognitiveAppHostCommandRequest & {
+      expectedCommandRevision: number;
+    },
+  ): Promise<CognitiveAppProjectionResult | null> {
+    const { tenantId, commandId, expectedCommandRevision } = input;
+    requireId(tenantId, "租户标识");
+    return this.transaction(async (q) => {
+      const result = await createCognitiveAppProjection({
+        q,
+        backend: this.backend.kind,
+        tenantId,
+        fail: (code, message) => {
+          throw new PlatformStorageError(code, message);
+        },
+      }).projectCommitted({
+        commandId,
+        expectedRevision: expectedCommandRevision,
+      });
+      // A same-head or empty summary is still a first committed delivery.
+      // A replay returns null and must not notify navigation again.
+      if (result !== null) await this.advanceNavigation(q, tenantId, []);
+      return result;
     });
   }
 
