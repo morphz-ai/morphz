@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-05 · 版本：1.21 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-05 · 版本：1.22 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-05。
 
@@ -21,7 +21,7 @@
 | 本机输入投递与确认   | `data/local-input-delivery.ts`；Client 直接消费保存／投递、重试及刷新确认                                                        | 完整冻结载荷、身份范围、同步准备与原 Promise 顺序；storage lazy 端口、发送 refs 与身份／刷新权威仍在 Client，不建第二份 store，不重放旧输入或改请求策略。                                    |
 | 共享工作区顶栏       | `shell/WorkspaceTopbar.tsx`；App 保留原三个 portal target state/ref 与语义动作                                                   | 一个原生 header、原面包屑／显隐／导航按钮与三个常驻插槽，无新包装／key／样式；固定旧 markup、实际挂载及真实 App 导入／消费门禁，不接管领域画布或路由。                                       |
 | 共享顶栏样式         | `shell/workspace-topbar-base.css`、`workspace-topbar-composition.css`、`workspace-topbar-packing.css`；main 保留三个原 phase     | 完整 64 条／171 声明归 shell；C11 混合规则原位保留，PDF Host packing 不归 PDF feature。有限 owner、来源／编译与实际 normal-App 12 轴／312 状态分层验证，不更改原 UI 或替代原生验收。         |
-| 窗口／侧栏布局       | `shell/window-frame-base.css`、`window-frame-composition.css`；main 保留两个原 phase                                           | 完整26条／83声明归shell，状态、portal和唯一宽度writer保留；有限门禁、完整compiled余树、14项交互及57状态严格对照分层验证，不改UI，不替代原窗／原生命中验收。                               |
+| 窗口／侧栏布局       | `shell/window-frame-base.css`、`window-frame-composition.css`；main 保留两个原 phase                                             | 完整26条／83声明归shell，状态、portal和唯一宽度writer保留；有限门禁、完整compiled余树、14项交互及57状态严格对照分层验证，不改UI，不替代原窗／原生命中验收。                                  |
 | 会话历史查询         | `data/conversation-history.ts`；Client 持有唯一实例，workspace view 消费 head 策略                                               | 原 scope／缓存／分页 promise、head 复用与合并实际迁入；身份、epoch、catalogVersion、授权清理及 Boot 发布仍在 Client。固定旧实现对照及有限依赖门禁，不是全查询层或新的授权 owner。            |
 | 回应等待事实         | `conversation-presentation.ts` 的 `isPendingResponse`；Conversation 与 subject Logo 消费                                         | 纯事实组合与两个旧谓词等价；输入归属、流式来源与取消策略仍由原消费方负责，不生成回复或执行事实。51 项 Node／SSR 与 31 项 Host 浏览器回归通过，原窗最终复验待解锁。                           |
 | Thread 状态图形      | `ExecutionStatusIcon.tsx`；ExecutionSidebar 与 ExecutionDialog 的原外层 span 消费                                                | 七状态图形与缺省回退共用，原状态权威／标签／静态尺寸及运行波形保留，无新 DOM、effect 或请求；固定旧 oracle、实际 StrictMode 及有限门禁 7/7，原旧 Host 29/29，新合并回归 61/61。              |
@@ -640,6 +640,33 @@ workspace view 仍解析真实授权范围并通过该模块决定 head。既有
 
 Session 流负责实时前缀；workspace change 负责持久事实失效；两者不能互相冒充。token delta 不触发活动全量读取。重连按序号和实际持久来源校准，缺少前缀不能拼接假完整正文。
 
+### 4.3 当前数据入口的责任登记
+
+2026-10-05 按实际 `useWorkspace` 构造、公开方法与 logical RPC 消费核验。
+下表登记现有责任，不添加一层无行为的 facade，也不把所有查询归一成同一
+缓存、取消或重试合同。`WorkspaceClient` 是宿主的 typed 组合出口，
+`applicationCall` 是受限传输入口；二者不是第二份领域数据权威。
+
+| 入口 family              | 实际 owner／入口                                                                                                            | 保留的责任边界                                                                                                                         |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| 身份、Boot、刷新、撤权   | `client.ts` 的 `useWorkspace`；`platform-client.ts`／`application-transport.ts`                                             | Client 持有唯一身份、epoch、受保护投影和刷新发布；transport 持有 HTTP／受限 IPC、取消和跨身份响应守门。不把这些 ref 复制到各 feature。 |
+| 内容目录与原件、剧本概览 | `data/content-reads.ts`；Client 的 `readScriptOverview` → `readCachedScriptOverview`                                        | scoped 原件资格与目录发布借 Client 权威；概览使用既有 key、两 Map 及读代次，不另建缓存。                                               |
+| 会话、剧本编辑、阅读查询 | `data/conversation-history.ts`、`data/script-editor-reads.ts`、`data/reader-reads.ts`                                       | 分别拥有完整原查询 family；公开方法直接消费既有 owner，保留各自分页、版本、迟到和取消语义。                                            |
+| 阅读交互、书签、对象关联 | `data/reader-interactions.ts`、`data/bookmark-interactions.ts`、`data/object-interactions.ts`                               | 导入／OCR／阅读、个人书签和对象批注／关联保持独立合同，不因为都是 CRUD 就共用重试或 scope。                                            |
+| 事项、执行和输入投递     | `data/task-interactions.ts`、`data/execution-interactions.ts`、`data/local-input-delivery.ts`、`data/operation-delivery.ts` | 借同一 Client 身份、刷新和审批 ledger；输入与非输入命令保持原稳定 command identity、字节和不确定回执政策。                             |
+| 二进制上传与旧 PDF 导入  | Client 的 `upload`／`uploadAttachment`／`importPdf`；`pending-file-import.ts`                                               | 上传是有限 logical gateway，PDF 导入已有完整 pending owner；原载荷、身份、30s 导入期限及目录确认保持，不增加自动重发。                 |
+| 搜索、通知与连接诊断     | Client 的 `search`／`notifications`／`checkConnection`／`configureConnection`                                               | 保留显式参数、schema 和各自 signal／8s／6s 策略；不把诊断当健康轮询，也不把通知读取改成 workspace 全量刷新。                           |
+| 语音状态、采集命令与音频 | Client 的 `speechStatus`／`createSpeechStream`／`transcribe`／`synthesize`；既有输入工具 owner                              | logical gateway 只传原 scope、stream ID、二进制与 caller signal；设备、录音和 UI 生命周期仍归输入工具，不复制到 data store。           |
+| Profile 与头像           | `useProfile.ts`／`profile-autosave.ts`；`ProfileEditor`                                                                     | 既有 scoped controller 拥有读取排队、保存回执、自动保存与媒体清理；renderer 不成为身份或持久化权威。                                   |
+| 模型选择与账户设置       | `ModelPicker` 的 `models`；`ModelSettings` 的 `model-settings.read/update`                                                  | 两个不同资源及 feature 生命周期，均走同一 logical transport；不将可用模型目录与账户／登录状态强并或添加第二份缓存。                    |
+| Session 审批与目录权限   | `ComposerSessionPermissions`；`AgentDirectories`＋受限 native directory bridge                                              | 完整现有 scope、fingerprint／确认、busy／晚回执、原生选择器与焦点恢复由各自 feature 拥有；本地草稿不因此创建 Session 或获得权限。      |
+
+这份登记是源码责任审计，不是新增产品能力、全部授权测试或原 App／硬件
+验收。已有有限门禁继续约束被迁移算法的实际值来源与消费；新 feature
+必须复用 logical gateway，并在发现重复的完整合同或实际越界时扩展对应
+owner／门禁。仅有相似名称、同一 ID 或文件行数，不足以创建新的 broker、
+store 或 feature controller。
+
 ## 5. Presentation：一套规则，五种权威
 
 不要建立新的客户端 Activity 状态机。保留 Runtime Thread 生命周期，抽出纯、可测试的展示映射，并统一每个领域自身的优先级；不是把五类事实压成 `running/completed` 一个 enum。
@@ -824,7 +851,8 @@ R3，阶段 42 已落地 R1，阶段 43 已落地 R4，阶段 46 已落地 R5；
 清单。已有 ArtifactEditor、Reader／Browser feature、Client 唯一 identity／
 refresh 权威、App 的 portal／布局／全局快捷键／显式文件导航桥属于合法
 组合，不为凑目录新增 facade、cache、store 或第二套控制器。其余 data 入口
-仍须逐项登记为已拥有职责或明确 gateway，不能只凭删除 Client 方法宣称完成。
+已按第 4.3 节登记其实际 owner 或明确 gateway；这是职责核验，不是新增
+缓存／查询协议或全部原生验收，不能只凭删除 Client 方法宣称完成。
 
 当前生产约束与历史整文件迁移证明的测试治理也须收口，不能把不断增长
 的跨 owner inverse 链作为正常新增功能的永久前提。
@@ -901,10 +929,14 @@ Electron证据边界。normal App 的完整10轴／57状态与实际 Page bytes
 原生命中或动效内部插值验收。统一359文件2,453项通过，零失败／取消，
 4明确未启用。原RED保持，具体接线修复和完整证据见实施记录。
 
-原App已恢复同一路径及原资料，Runtime未停止；恢复窗实际仍为Brh，
-候选原窗加载和最终验收不因此完成。WindowFrame之后仅收敛必要剩余：
-导航两个当前测试入口断开peer inverse、剩余合法data gateway／owner登记、
-最终全回归与同一原App验收。没有实证重复或越界，不按App／Client行数
+原App已恢复同一路径及原资料，Runtime未停止；恢复时Sources为Brh，
+10月5日原窗一次正常Reload后，实际Sources已核到Stage60的
+`app-BMwOPwmX.js`和`app-CJ1ddL5s.css`，且仍显示连接正常的原项目页。
+这是实际载入URL和窗口证据，不把disk hash称为live bytes；原生命中和
+最终验收仍在进行。WindowFrame之后仅收敛必要剩余：
+导航两个当前测试入口断开peer inverse及其实际叶子作用域收口、
+最终全回归与同一原App验收。data gateway／owner登记见第4.3节；
+没有实证重复或越界，不按App／Client行数
 继续新增controller、facade、cache或第二套状态权威。
 
 整体跨页面外观／交互回归及原 App 的原生焦点、硬件和系统命中验收仍未完成。
