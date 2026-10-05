@@ -1,5 +1,20 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：内部组合锁与停用管理
+
+内部 ledger 现公开既有同 q 的 command identity／row 锁给 Store 组合，
+维持 project／member → command → registry → 排序目录锁的顺序，不是新增
+调用者权限。新增独立 pending-projection 检查，不改变开放命令的既有语义。
+Host-only 本人连接管理可读取固定 alias／保存方，即使连接、grant 或实例
+已停用；这仅用于管理，实际业务和回执仍通过各自的 active-purpose gate，
+不要求用户先找回网络凭据才能停用连接。
+
+Root 正式双后端 registry／commands 87/87、零失败／跳过／取消，strict
+scoped 类型、格式及 diff 检查通过。新增管理门禁与协调端口的缺口 RED
+分别为 44 通过／2 失败、39 通过／2 失败，均保留；最终日志
+`/tmp/morphz-cognitive-coordination-ROOT-FINAL-oct05.log`。
+完整 Store 命令组合和退休守门仍在实现，不凭内部检查函数存在称已接通。
+
 ## 2026-10-05 第三方认知应用：私有配置也遵守身份载体校验
 
 Root 新增反例实际复现私有 resolver 会接受 protocol／SQL 禁止的 NUL 或

@@ -237,6 +237,60 @@ async function view(h: Harness, owner = "alice", viewId = "view-a") {
 }
 
 for (const backend of ["sqlite", "postgres"] as const) {
+  test(`registry exact own connection management remains available after disabling on ${backend}`, async () =>
+    isolated(backend, async (h) => {
+      await installed(h);
+      const created = await h.tx("alice", (r) =>
+        r.createOwnConnection(connection("manage-one")),
+      );
+      await h.tx("alice", async (r, q) => {
+        await r.changeOwnGrant({
+          appId: definition.id,
+          version: definition.version,
+          expectedRevision: 1,
+          state: "disabled",
+          now: later,
+        });
+        await r.changeOwnConnection({
+          ...connection("manage-one"),
+          expectedRevision: 1,
+          state: "disabled",
+          now: later,
+        });
+        await q.change(
+          "UPDATE app_instances SET state='disabled' WHERE tenant_id='tenant-a' AND instance_id=?",
+          [created.instanceId],
+        );
+      });
+      const request = {
+        appId: definition.id,
+        connectionId: created.connectionId,
+      };
+      const current = await h.tx("alice", (r) =>
+        r.readOwnConnectionForManagement(request),
+      );
+      assert.equal(current.state, "disabled");
+      assert.equal(current.hostBindingId, "private_alias_alice");
+      assert.equal(current.instanceId, created.instanceId);
+      await assert.rejects(
+        () => h.tx("bob", (r) => r.readOwnConnectionForManagement(request)),
+        code("not_found"),
+      );
+      await assert.rejects(
+        () =>
+          h.tx("alice", (r) =>
+            r.readOwnConnectionForManagement({
+              ...request,
+              appId: "example.foreign",
+            }),
+          ),
+        code("not_found"),
+      );
+      await assert.rejects(
+        () => h.tx("alice", (r) => r.readHostConnection(created)),
+        code("forbidden"),
+      );
+    }));
   test(`registry Host describe locks exact own active consent before connections on ${backend}`, async () =>
     isolated(backend, async (h) => {
       const version = await installed(h);

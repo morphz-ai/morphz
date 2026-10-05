@@ -949,6 +949,18 @@ for (const backend of ["sqlite", "postgres"] as const) {
       );
       assert.equal(await h.run((c) => c.hasOpenCommands("project_one")), false);
       assert.equal(
+        await h.run((c) => c.hasPendingProjection("project_one")),
+        true,
+      );
+      assert.equal(
+        await h.run((c) => c.hasPendingProjection("project_two")),
+        false,
+      );
+      assert.deepEqual(
+        await h.run((c) => c.lockForAdmission(request.commandId)),
+        actual,
+      );
+      assert.equal(
         await h.run((c) =>
           c.markProjected(request.commandId, actual.revision - 1, later),
         ),
@@ -958,6 +970,10 @@ for (const backend of ["sqlite", "postgres"] as const) {
         c.markProjected(request.commandId, actual.revision, later),
       );
       assert.equal(projected!.projectionState, "projected");
+      assert.equal(
+        await h.run((c) => c.hasPendingProjection("project_one")),
+        false,
+      );
       assert.equal(
         await h.run((c) =>
           c.markProjected(request.commandId, projected!.revision, later),

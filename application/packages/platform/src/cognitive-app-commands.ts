@@ -625,6 +625,17 @@ export function createCognitiveAppCommands(ctx: CognitiveAppCommandsContext) {
       ).length > 0
     );
   }
+  async function hasPendingProjection(projectId: string) {
+    checkId(projectId);
+    return (
+      (
+        await q.all(
+          "SELECT 1 AS present FROM cognitive_app_commands WHERE tenant_id=? AND project_id=? AND state='committed' AND projection_state='pending' LIMIT 1",
+          [tenantId, projectId],
+        )
+      ).length > 0
+    );
+  }
   return {
     admit,
     dispatch,
@@ -646,5 +657,10 @@ export function createCognitiveAppCommands(ctx: CognitiveAppCommandsContext) {
     listPendingProjection: (request?: CognitiveAppCommandPage) =>
       page("projection", request),
     hasOpenCommands,
+    hasPendingProjection,
+    /** Internal coordination only: caller holds actual project/source policy
+     * before taking command identity, then mutable registry/catalog locks.
+     * Reentrant admit/dispatch in this same q retain their exact checks. */
+    lockForAdmission: lock,
   };
 }

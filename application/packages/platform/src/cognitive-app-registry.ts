@@ -1021,6 +1021,20 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
     return dto(row, request.expectedViewRevision + 1);
   }
 
+  /** Host-only Human management metadata. Disabling an owned connection must
+   * not require credentials or a still-active instance/grant. This does not
+   * grant dispatch or receipt-read authority; those purposes use their gates. */
+  async function readOwnConnectionForManagement(request: {
+    appId: string;
+    connectionId: string;
+  }): Promise<CognitiveAppConnection & { hostBindingId: string }> {
+    app(request.appId);
+    const row = await ownConnection(request.connectionId);
+    if (row.app_id !== request.appId)
+      return fail("not_found", "应用连接不存在或不属于本人。");
+    return { ...connectionDto(row), hostBindingId: row.host_binding_id };
+  }
+
   return {
     installVersion,
     changeOwnGrant,
@@ -1034,6 +1048,7 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
     /** Immutable declaration read only, not consent/connection authority. */
     readExactVersion: exactVersion,
     readHostConnection,
+    readOwnConnectionForManagement,
     bindOwnView,
   };
 }
