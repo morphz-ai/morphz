@@ -1,5 +1,26 @@
 # 桌面能力实施记录
 
+## 2026-10-06 旧 SSR Client 测试迁移至真实挂载 owner
+
+原五项业务测试通过 SSR 构造取得 Client 后直接操作，未挂载 effects。
+生产已收紧 mounted 门，故原正式运行 0P／5F；不是 PostgreSQL 缺失，也
+不应为适配旧测试放松私有投影生命周期。原失败记录保留。
+
+两组旧测试迁移为真正 Chromium／createRoot／原 Client，接同一个隔离
+SQLite／HTTP／身份／SSE，真实 cookie 和 localStorage；唯一时序 seam
+暂缓消费已实际收到的 HTTP response，不发假回包。纯 SSR 构造仍单独
+以原生网络观测断言零 API／EventSource，不代替业务 owner。
+
+原头版本／历史字节／版本 union／一次 live GET／零多余 body、真同 realm
+引用相等、授权 V3 延迟跨真实 V4 后拒绝、冻结输入及原 commandId／createdAt、
+真正卸载再挂载零自动 POST、实际 503 单 POST 和 logout／新 login 后旧
+503 不发布到新 Boot 的断言全部保留。没有修改生产 mounted 门。
+
+Root 完整冷审四路径并独立正式七文件 45/45、required PostgreSQL、零跳过，
+日志 `/tmp/morphz-client-migration-ROOT-FINAL-oct06.log`；五项新挂载业务自身
+为原 SQLite／HTTP，不混报双 SQL、完整生产 App、Electron 或用户原窗口。
+全工程类型与四路径格式通过；所有原失败及缺 domain 的诊断记录保留。
+
 ## 2026-10-06 原生网页句柄销毁后的启动／焦点崩溃
 
 原用户 App 的只读窗口截图与线程采样见证 native 网页销毁后，focus 的
