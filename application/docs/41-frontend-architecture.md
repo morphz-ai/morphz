@@ -1,6 +1,6 @@
 # Morphz 前端整体架构
 
-日期：2026-10-05 · 版本：1.23 · 状态：分阶段实施中，整体迁移尚未完成。
+日期：2026-10-05 · 版本：1.24 · 状态：分阶段实施中，整体迁移尚未完成。
 
 阶段清单更新：2026-10-05。
 
@@ -932,19 +932,31 @@ Electron证据边界。normal App 的完整10轴／57状态与实际 Page bytes
 原App已恢复同一路径及原资料，Runtime未停止；恢复时Sources为Brh，
 10月5日原窗一次正常Reload后，实际Sources已核到Stage60的
 `app-BMwOPwmX.js`和`app-CJ1ddL5s.css`，且仍显示连接正常的原项目页。
-这是实际载入URL和窗口证据，不把disk hash称为live bytes；原生命中和
-最终验收仍在进行。WindowFrame之后仅收敛必要剩余：
+这是实际载入URL和窗口证据，不把disk hash称为live bytes。原窗坐标
+菜单／外部点击／相邻控件、左右栏显隐、Dock／历史／Reader往返及
+既有活动详情已验证；原草稿／权限／owner原始组SHA一致，原布局偏好
+恢复。总storage digest变化没有逐键基线，不称全部storage不变。
+右栏真实held mouse drag仍缺见证；工具实际move没有保持按下／捕获，
+不判为产品故障或改生产配合。最后关闭DevTools遇明确Mac锁屏，解锁
+后的关闭／最终图仍待做。具体有限收据与边界见实施记录。
+WindowFrame之后仅收敛必要剩余：
 阶段61已将导航两个当前入口交给raw-current合同，实际叶子按module／
 WorkspaceApp及真实import binding收口；原七组literal在固定历史及当前
 各执行，两个历史prefix／旧API/default和mounted完整执行尾保持。
 独立实际消费、同名局部方法和第二factory alias有正例，owner重复／
 shadow／移动／orphan和身份／CSRF／撤权反例不删。13选定文件182项
-通过及完整类型／格式检查另见实施记录，不代替全量或原生验收。
-剩余为最终全回归与同一原App验收。data gateway／owner登记见第4.3节；
+通过及完整类型／格式检查另见实施记录。其后在已提交的49ba70d9上，
+正式完整Node入口359文件2,467项通过，零失败／取消；PostgreSQL与
+Runtime必测能力实际执行，4项明确未启用的专项集成不计通过，
+unexpectedSkips为空。完整回归不代替原生验收；剩余为同一原App最后
+关闭调试面板／最终截图与右栏真实持续拖动见证。
+data gateway／owner登记见第4.3节；
 没有实证重复或越界，不按App／Client行数
 继续新增controller、facade、cache或第二套状态权威。
 
-整体跨页面外观／交互回归及原 App 的原生焦点、硬件和系统命中验收仍未完成。
+已定义的跨页面有限外观／交互等价证据与最终完整Node回归已经记录，
+不外推为任意页面、动效内部插值或全部原生焦点／硬件验证；当前目标的
+原窗收尾仍未完成，具体剩余以以上两项为准。
 图示和文档不代替代码、生产测试及用户设计评审；不把工程拆分自动等同于审美
 改善。每一批分别记录代码实现、自动回归、原 App 验收与未完成边界，目标保持
 active，不以阶段编号、行数或局部测试数量计算完成百分比。

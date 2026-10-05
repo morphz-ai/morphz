@@ -1,5 +1,62 @@
 # 桌面能力实施记录
 
+## 2026-10-05 前端阶段 61：最终完整 Node 回归
+
+在已提交的 `49ba70d9` 上按正式入口一次运行 `npm test`，强制
+`MORPHZ_TEST_REQUIRED_CAPABILITIES=postgres,runtime`，并显式启用
+nested activity／Profile／response annotations／workspace 的 Runtime
+集成。进程正常退出0；359文件、2,471项中2,467通过，0失败、0取消、
+0todo，耗时287,866.870292ms。能力报告 `unexpectedSkips=[]`。
+
+4项未执行均为明确未启用的专项集成：3项S3云对象／备份、1项原生
+前后台焦点读回执；不计通过，也不是PostgreSQL或Runtime环境缺失。
+完整日志保留在
+`/tmp/morphz-navigation-stage61-full-node-first.log`，旧阶段日志与RED
+不覆盖。本轮完整回归已完成，不再将其列为剩余项；原App最后关闭
+调试面板／最终截图及右栏真实持续拖动见证仍待完成，整体目标保持active。
+
+## 2026-10-05 原 App：阶段 60 实际载入与有限原生验收
+
+在新的私有备份与真实原窗前检之后，仅追加五个冻结 Web assets、原子
+切换 index，旧 assets 与 service 保留。Root 独立核12份在线 SQLite
+snapshot 的 hash／integrity 与7,284份原始文件复制 hash；活跃 profile
+复制不冒称停写一致，也没有跨数据库事务快照。原 App main PID82919、
+原 Runtime PID68670及其启动时间保持，没有重启 Runtime或另起手工验收应用。
+
+同一原 App 仅一次正常 View→Reload，实际 Sources／Console 页面引用
+确认 `app-BMwOPwmX.js`、`app-CJ1ddL5s.css`，连接正常的原项目页可见。
+这是实际载入 URL 与窗口证据，不把磁盘 hash 冒充 live response bytes。
+正常窗口最后截图为10月5日08:23:58，Root 已实际查看，不是隔离夹具。
+
+原生坐标验证通过左右栏显隐、右栏键盘调整、现有对象批注菜单开闭、
+菜单外画布／输入／导航点击、相邻版本按钮、Launcher、历史显隐与
+焦点不重新打开、现有 Reader 前后回跳以及 Subject 既有完成活动详情。
+左栏 drag 的最终宽度318→338→318通过，但不称持续按住 move 已证明；
+空批注文档只证明开闭／菜单／布局，不称已有批注正文或消息卡路由已验。
+没有发送、补充、批准、创建执行、编辑正文或保存配置。
+
+原项目页／左宽318／右宽365.07421875／legacy executionWidth454、
+Subject activity/current-work、输入隐藏与未固定已实际恢复。scoped
+storage键总数前后均为1,202；1,126原始draft键值、22目录／native权限组、
+2窗口owner组及session owner的raw SHA均与前检一致。94份输入草稿记录中
+18份语义非空隐藏草稿、2附件、1具名未发送草稿保持，outbox与pending
+均为0。总storage SHA已改变；前检没有逐键逻辑基线，不能将其余差异
+一概断言只是偏好或声称全部storage不变。原26份LevelDB文件备份仍保留。
+
+右栏真实持续按住拖动未证明：标准Mac工具按下实际命中并成功捕获，
+随后却发出buttons=0、capture=false的move；没有可用held-down/move/up
+接口。原产物不为工具改写，键盘通过不冒称mouse通过。DevTools唯一
+CSP提示来自旧新相同的Zod能力探测，异常已捕获回退；未放宽CSP或清
+Console，不把它判成新未捕获异常。末次关闭DevTools的标准动作在
+08:26:31明确返回Mac已锁定，因此最后关闭动作／新最终截图仍未完成。
+已向Human请求解锁，不改系统设置。右栏真实人工拖动见证也仍待完成。
+
+完整有限收据为
+`/tmp/morphz-stage60-original-preflight.jbuV1g/native-stage60-acceptance-receipt.json`，
+备份／前检同目录；一次部署收据为
+`/tmp/morphz-stage60-original-web-deploy.YDKEEy/APPLY-RECEIPT.json`。
+不将本记录称为全产品原生／硬件或整个目标已完成。
+
 ## 2026-10-05 前端阶段 61：导航当前合同与历史证明分离
 
 本阶段只改四条测试路径，不改生产、界面、持久键或用户数据。
