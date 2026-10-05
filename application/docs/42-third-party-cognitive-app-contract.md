@@ -50,6 +50,16 @@ Local／HTTP／Remote；其连接 setup 受控，不称作者网络或原窗口�
 新认知 Runtime 中心为隔离 SQLite，PostgreSQL 是同组双后端回归。
 管理界面、输入框显式应用选择与作者 GUI consumer 仍待接线验收。
 
+本人目录的客户端数据层现已接到原认证 caller 与导航 owner，不新增
+目录存储、HTTP 依赖或轮询；无界面应用不伪装成 UI-only 包。十方法
+使用既有严格请求／响应契约，完整两流分页保留原图和 opaque 元数据。
+访问／身份失效、并行读取失败和 React 卸载取消旧读取；迟到结果不
+重新发布，不清理本地未发送草稿。Root 正式三十七文件 348/348、
+required PostgreSQL、零失败／取消／跳过，类型与专项格式检查通过。
+实际双 SQL／HPA／Local／HTTP／Remote 证据与受控 transport 的
+Chromium owner 挂载分别记录于实施记录；该阶段没有接入管理 UI、
+Dock／输入目标或作者 GUI，不冒称完整生态／原 App 已完成。
+
 文档存在不表示列出的未来能力或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
 

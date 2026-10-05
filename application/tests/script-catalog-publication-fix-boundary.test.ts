@@ -313,8 +313,8 @@ test("legal refresh variants reject wrong CAS, lost invalidation, authority-orde
 test("finite inverse preserves unapproved old Client mutations rather than erasing them or pretending equivalence", () => {
   const drift = changed(
     client,
-    "function clearProtectedProjection() {\n    protectedReadGeneration.current++;",
-    "function clearProtectedProjection() {\n    protectedReadGeneration.current += 0;",
+    "function clearProtectedProjection(keepRead?: AbortController) {\n    protectedReadGeneration.current++;",
+    "function clearProtectedProjection(keepRead?: AbortController) {\n    protectedReadGeneration.current += 0;",
   );
   const restored = inverseScriptCatalogPublicationFix(drift);
   assert.ok(restored.includes("protectedReadGeneration.current += 0;"));

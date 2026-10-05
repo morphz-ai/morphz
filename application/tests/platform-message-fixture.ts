@@ -158,6 +158,7 @@ export async function platformMessageFixture(
       messageAttachments: domains.messageAttachments,
       images: domains.images,
       uiPackages: domains.uiPackages,
+      cognitiveApps: domains.cognitiveApps,
       bookmarkDomain: domains.browser,
       notifications: domains.notifications,
       platformTaskRuns: domains.taskRuns(runtime),

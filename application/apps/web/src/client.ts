@@ -82,6 +82,7 @@ import {
   type ConversationHistory,
 } from "./data/conversation-history.js";
 import { contentVisits } from "./recent-content.js";
+import type { CognitiveAppCatalogSnapshot } from "./cognitive-app-client.js";
 import { runPendingFileImport } from "./pending-file-import.js";
 export { RequestError } from "./application-transport.js";
 import type {
@@ -760,6 +761,8 @@ export function useWorkspace() {
       import("./platform-client.js").PlatformContent[]
     >([]),
     [contentCounts, setContentCounts] = useState<PlatformContentCount[]>([]),
+    [cognitiveAppCatalog, setCognitiveAppCatalog] =
+      useState<CognitiveAppCatalogSnapshot>({ versions: [], connections: [] }),
     [taskCounts, setTaskCounts] = useState<
       import("./platform-client.js").PlatformTaskCount[]
     >([]),
@@ -780,6 +783,8 @@ export function useWorkspace() {
     pendingScriptOverviews = useRef(new Map<string, Promise<ScriptOverview>>()),
     protectedReadGeneration = useRef(0),
     navigationCacheKey = useRef(""),
+    navigationReadController = useRef<AbortController | null>(null),
+    projectionMounted = useRef(false),
     epoch = useRef(0),
     snapshotText = useRef(""),
     refreshing = useRef<Promise<boolean> | null>(null),
@@ -904,12 +909,14 @@ export function useWorkspace() {
     call: applicationCall,
     refreshAfterMutation,
   });
-  function clearProtectedProjection() {
+  function clearProtectedProjection(keepRead?: AbortController) {
     protectedReadGeneration.current++;
     current.current = null;
     platform.current = null;
     conversationHistory.clear();
     catalogCache.current = null;
+    if (navigationReadController.current !== keepRead)
+      navigationReadController.current?.abort();
     scriptOverviews.current.clear();
     pendingScriptOverviews.current.clear();
     scriptEditorReads.clear();
@@ -918,6 +925,7 @@ export function useWorkspace() {
     setBoot(null);
     setContentCatalog([]);
     setContentCounts([]);
+    setCognitiveAppCatalog({ versions: [], connections: [] });
     setTaskCounts([]);
     setContentCatalogVersion(0);
   }
@@ -932,10 +940,18 @@ export function useWorkspace() {
     return pending;
   }
   async function refreshOnce() {
+    // An invalidation already queued in the shared drain must not start a
+    // fresh read after its React owner has unmounted.
+    if (!projectionMounted.current) return false;
     const version = epoch.current;
+    const controller = new AbortController();
+    navigationReadController.current = controller;
     return (async () => {
       try {
-        const signal = AbortSignal.timeout(15000);
+        const signal = AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(15000),
+        ]);
         const source = await PlatformClient.connect(
           { call: applicationCall },
           signal,
@@ -947,7 +963,7 @@ export function useWorkspace() {
             current.current.principalId !== source.boot.principalId ||
             current.current.csrfToken !== source.boot.csrfToken)
         ) {
-          clearProtectedProjection();
+          clearProtectedProjection(controller);
         }
         storageScope(source.boot.centerId, source.boot.principalId);
         const scope = `${source.boot.centerId}:${source.boot.principalId}`;
@@ -984,7 +1000,7 @@ export function useWorkspace() {
         ) {
           // Permission loss must clear displayed projections even when a
           // later page request fails. Unsubmitted local drafts are untouched.
-          clearProtectedProjection();
+          clearProtectedProjection(controller);
           requestedScope = null;
         }
         const navigationKey = JSON.stringify({
@@ -1169,6 +1185,7 @@ export function useWorkspace() {
         };
         setContentCatalog(catalog.contents);
         setContentCounts(catalog.contentCounts);
+        setCognitiveAppCatalog(catalog.cognitiveApps);
         setTaskCounts(catalog.taskCounts);
         setContentCatalogVersion(navigation.catalogVersion);
         const serialized = JSON.stringify({
@@ -1241,6 +1258,12 @@ export function useWorkspace() {
           e instanceof Error ? e.message : "暂时无法读取应用数据，请重试。",
         );
         return false;
+      } finally {
+        // A parallel domain may have failed while another directory page is
+        // still pending. Retire that read before dropping its cancel handle.
+        controller.abort();
+        if (navigationReadController.current === controller)
+          navigationReadController.current = null;
       }
     })();
   }
@@ -1299,6 +1322,8 @@ export function useWorkspace() {
   }
   async function login(token: string) {
     epoch.current++;
+    navigationReadController.current?.abort();
+    setCognitiveAppCatalog({ versions: [], connections: [] });
     await applicationCall(
       "login",
       { token },
@@ -1327,6 +1352,8 @@ export function useWorkspace() {
     });
     // Drop the mounted workspace and all in-memory object state immediately.
     epoch.current++;
+    navigationReadController.current?.abort();
+    setCognitiveAppCatalog({ versions: [], connections: [] });
     protectedReadGeneration.current++;
     scriptEditorReads.clear();
     current.current = null;
@@ -1342,6 +1369,7 @@ export function useWorkspace() {
     storageScope("disconnected", "anonymous");
   }
   useEffect(() => {
+    projectionMounted.current = true;
     void refresh();
     // Startup and foregrounding reconcile authoritative state after sleep or
     // best-effort filesystem hints. Healthy idle windows do no periodic reads.
@@ -1356,6 +1384,9 @@ export function useWorkspace() {
     window.addEventListener("focus", wake);
     document.addEventListener("visibilitychange", wake);
     return () => {
+      projectionMounted.current = false;
+      epoch.current++;
+      navigationReadController.current?.abort();
       window.removeEventListener("focus", wake);
       document.removeEventListener("visibilitychange", wake);
     };
@@ -1580,6 +1611,7 @@ export function useWorkspace() {
     boot,
     contentCatalog,
     contentCounts,
+    cognitiveAppCatalog,
     taskCounts,
     contentCatalogVersion,
     contentVersionTitle: (contentId: string, revision?: number) =>

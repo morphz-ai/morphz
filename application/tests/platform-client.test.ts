@@ -1346,6 +1346,9 @@ test("原界面刷新仅重读变化的应用原件，不重复读取未变版�
       };
     },
     uiPackages: async () => [],
+    cognitiveApps: {
+      allCatalog: async () => ({ versions: [], connections: [] }),
+    },
     taskOrder: async () => ({ revision: 0 }),
   } as unknown as PlatformClient;
   const selection = { preferences: { artifactId: "content-one" } };
@@ -1541,6 +1544,9 @@ test("恢复选中的历史正文时按目录原件读取指定版本，不拿�
       };
     },
     uiPackages: async () => [],
+    cognitiveApps: {
+      allCatalog: async () => ({ versions: [], connections: [] }),
+    },
     taskOrder: async () => ({ revision: 0 }),
   } as unknown as PlatformClient;
   const first = await readPlatformWorkspace(
@@ -1639,6 +1645,9 @@ test("冷启动只读目录；多个已打开原件使用全局并发上限", as
       };
     },
     uiPackages: async () => [],
+    cognitiveApps: {
+      allCatalog: async () => ({ versions: [], connections: [] }),
+    },
     taskOrder: async () => ({ revision: 0 }),
   } as unknown as PlatformClient;
   const cold = await readPlatformWorkspace(source, [], 1, disconnectedRuntime);
@@ -1780,6 +1789,9 @@ test("事项列表使用页内当前版本，打开事项时才补齐版本历�
     content: async () => ({ items: [], nextCursor: null }),
     contentByIds: async () => [],
     uiPackages: async () => [],
+    cognitiveApps: {
+      allCatalog: async () => ({ versions: [], connections: [] }),
+    },
     taskOrder: async () => ({ revision: 0 }),
     taskVersion: async (_id: string, revision: number) => {
       exactReads.push(revision);
@@ -1909,6 +1921,9 @@ test("导航只读取当前会话正文，切换项目不拉取其他会话", as
     contentByIds: async () => [],
     contentDeliveries: async () => [],
     uiPackages: async () => [],
+    cognitiveApps: {
+      allCatalog: async () => ({ versions: [], connections: [] }),
+    },
     taskOrder: async () => {
       catalogCalls++;
       return { revision: 0 };
@@ -2370,6 +2385,9 @@ test("剧本目录与打开定位始终只投影元数据，不预读正文和�
       throw new Error("导航投影不能读取完整剧本。");
     },
     uiPackages: async () => [],
+    cognitiveApps: {
+      allCatalog: async () => ({ versions: [], connections: [] }),
+    },
     taskOrder: async () => ({ revision: 0 }),
   } as unknown as PlatformClient;
   const first = await readPlatformWorkspace(source, [], 1, disconnectedRuntime);

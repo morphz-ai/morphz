@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { verifyClientProjectionLifetime } from "./fixtures/client-projection-lifetime-21cb34dc.js";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -463,6 +464,12 @@ function violations(contents: typeof sources) {
     }
   });
   rule("original-generation-and-synchronous-clear-order", () => {
+    // The same fixed historical clear now has a finite reviewed extension:
+    // old synchronous retirement first, guarded pending-read cancellation and
+    // empty cognitive projection. Compare its complete function through the
+    // shared provenance-checked oracle, not a broad statement filter or a new
+    // candidate-derived historical template. Auth clears remain unchanged.
+    verifyClientProjectionLifetime(contents.Client);
     const binding = variable(client, "scriptEditorReads");
     assert.ok(isIdentifier(binding.name));
     const ownerSymbol = client.symbols.get(binding.name);
@@ -477,20 +484,19 @@ function violations(contents: typeof sources) {
     assert.equal(clears.length, 3);
     for (const name of ["clearProtectedProjection", "login", "logout"]) {
       const statements = fn(client, name).body!.statements;
-      const target = fn(
-        expected,
-        name === "clearProtectedProjection" ? name : "authClear",
-      ).body!.statements;
-      const start = statements.findIndex(
-        (statement) =>
-          JSON.stringify(syntax(statement)) ===
-          JSON.stringify(syntax(target[0]!)),
-      );
-      assert.ok(start >= 0);
-      assert.deepEqual(
-        statements.slice(start, start + target.length).map(syntax),
-        target.map(syntax),
-      );
+      if (name !== "clearProtectedProjection") {
+        const target = fn(expected, "authClear").body!.statements;
+        const start = statements.findIndex(
+          (statement) =>
+            JSON.stringify(syntax(statement)) ===
+            JSON.stringify(syntax(target[0]!)),
+        );
+        assert.ok(start >= 0);
+        assert.deepEqual(
+          statements.slice(start, start + target.length).map(syntax),
+          target.map(syntax),
+        );
+      }
       assert.equal(
         clears.filter(
           (call) =>
@@ -700,6 +706,65 @@ function violations(contents: typeof sources) {
 
 test("Client directly consumes one inert ScriptEditor read owner and original authority/cache refs", () => {
   assert.deepEqual(violations(sources), []);
+});
+
+test("finite projection growth cannot omit or reorder original synchronous clears, broaden cancellation or retain the new catalog", () => {
+  const clear = fn(
+    parse(sources).get("Client")!,
+    "clearProtectedProjection",
+  ).getText();
+  const cancellation =
+    "if (navigationReadController.current !== keepRead)\n      navigationReadController.current?.abort();";
+  assert.ok(clear.includes(cancellation));
+  const change = (before: string, after: string) => {
+    assert.ok(
+      clear.includes(before),
+      "finite clear fixture target exists: " + before,
+    );
+    return clear.replace(before, after);
+  };
+  const candidates = [
+    // Every old generation/cache statement remains mandatory in this named
+    // ScriptEditor gate as well as the shared complete lifetime oracle.
+    ...fn(expected, "clearProtectedProjection").body!.statements.map(
+      (statement) => change(statement.getText(), ""),
+    ),
+    change("keepRead?: AbortController", "keepRead?: AbortSignal"),
+    change("if (navigationReadController.current !== keepRead)", "if (true)"),
+    change(cancellation, ""),
+    change(
+      "navigationReadController.current?.abort();",
+      "void Promise.resolve().then(() => navigationReadController.current?.abort());",
+    ),
+    change(cancellation, "").replace(
+      "protectedReadGeneration.current++;",
+      cancellation + "\n    protectedReadGeneration.current++;",
+    ),
+    change(cancellation, "").replace(
+      "scriptEditorReads.clear();",
+      "scriptEditorReads.clear();\n    " + cancellation,
+    ),
+    change("setCognitiveAppCatalog({ versions: [], connections: [] });", ""),
+    change(
+      "setCognitiveAppCatalog({ versions: [], connections: [] });",
+      "setCognitiveAppCatalog({ versions: [], connections: retainedConnections });",
+    ),
+    change(
+      "setCognitiveAppCatalog({ versions: [], connections: [] });",
+      "void Promise.resolve().then(() => setCognitiveAppCatalog({ versions: [], connections: [] }));",
+    ),
+  ];
+  for (const candidate of candidates) {
+    assert.notEqual(candidate, clear);
+    assert.ok(
+      violations({
+        ...sources,
+        Client: sources.Client.replace(clear, candidate),
+      }).includes("original-generation-and-synchronous-clear-order"),
+      "the original named synchronous-clear rule rejects this finite change: " +
+        candidate,
+    );
+  }
 });
 
 test("finite ownership rules accept formatting and reject parsed counterexamples by named AssertionError", () => {

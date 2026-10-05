@@ -8,6 +8,8 @@ import {
 } from "./fixtures/application-navigation-governance-history.js";
 import {
   verifyRawSubmissionConsumption,
+  verifySubmissionCommands,
+  submissionOwnerText,
   expandSubmissionConsumption,
 } from "./fixtures/exchange-submission-contract.js";
 import { verifyCurrentWorkspaceContentOpeningConsumption } from "./fixtures/workspace-content-opening-consumption.js";
@@ -1970,6 +1972,52 @@ function withRule(rule: string, check: () => void) {
     throw new assert.AssertionError({ message: rule + ": " + error.message });
   }
 }
+// This one approved optional navigation field is not an authority whitelist.
+// Verify its real type binding before projecting it out of the unchanged schema.
+const cognitivePreferenceField = parse({
+  Field:
+    "type Field = { cognitiveLocation?: CognitiveNavigationLocation | null; };",
+})
+  .get("Field")!
+  .nodes.find((node) => node.kind === SyntaxKind.PropertySignature)!;
+function preferencesWithoutCognitiveLocation(stable: Parsed, type: Node) {
+  const fields: Node[] = [];
+  walk(type, (node) => {
+    if (
+      node.kind === SyntaxKind.PropertySignature &&
+      node.getText().startsWith("cognitiveLocation")
+    )
+      fields.push(node);
+  });
+  assert.equal(fields.length, 1, "one exact cognitive navigation field");
+  const field = fields[0]!;
+  assert.deepEqual(
+    scalarSyntax(field),
+    scalarSyntax(cognitivePreferenceField),
+    "exact optional cognitive navigation type",
+  );
+  const binding = imported(
+    stable,
+    "./cognitive-navigation-location.js",
+    "CognitiveNavigationLocation",
+    true,
+  );
+  const references: Identifier[] = [];
+  walk(field, (node) => {
+    if (isIdentifier(node) && node.text === "CognitiveNavigationLocation")
+      references.push(node);
+  });
+  assert.equal(references.length, 1, "single cognitive type reference");
+  assert.equal(
+    stable.symbols.get(references[0]!),
+    binding,
+    "cognitive field uses its real imported type",
+  );
+  const source = stable.source.getFullText();
+  return parse({
+    Preferences: source.slice(0, field.getStart()) + source.slice(field.end),
+  }).get("Preferences")!;
+}
 function currentNavigationHost(app: Parsed, stable: Parsed) {
   withRule("navigation-host-owner-seams", () => {
     const originalApp = parse({
@@ -2068,23 +2116,16 @@ function currentNavigationHost(app: Parsed, stable: Parsed) {
         .filter((node) => node.name.text === "Preferences");
     assert.equal(types(stable).length, 1);
     assert.equal(types(original).length, 1);
-    const required: Node[] = [];
-    types(original)[0]!.type.forEachChild((node) => {
-      required.push(node);
-    });
-    const actual: Node[] = [];
-    types(stable)[0]!.type.forEachChild((node) => {
-      actual.push(node);
-    });
-    for (const field of required)
-      assert.ok(
-        actual.some(
-          (node) =>
-            JSON.stringify(currentRecipe(stable, node)) ===
-            JSON.stringify(currentRecipe(original, field)),
-        ),
-        "governed persisted preference field: " + field.getText(),
-      );
+    const stripped = preferencesWithoutCognitiveLocation(
+      stable,
+      types(stable)[0]!.type,
+    );
+    assert.equal(types(stripped).length, 1);
+    assert.deepEqual(
+      currentRecipe(stripped, types(stripped)[0]!.type),
+      currentRecipe(original, types(original)[0]!.type),
+      "governed persisted Preferences whole original schema",
+    );
     const defaults = oneVariable(stable, "defaultPrefs").initializer!,
       oldDefaults = oneVariable(original, "defaultPrefs").initializer!;
     assert.ok(
@@ -2660,6 +2701,7 @@ function historicalConsumption(
   appText = expandSubmissionConsumption(
     appText,
     historicalNavigationSource("submissionOwner"),
+    "historical",
   );
   const parsed = parse({
     App: appText,
@@ -3736,6 +3778,157 @@ function currentConsumption(sources: CurrentSources = rawSources) {
 nodeTest(
   "current raw App/Host actual navigation, authority and borrowed owners; no historical inverse",
   () => currentConsumption(),
+);
+nodeTest(
+  "submission profiles retain their own complete algorithms and reject cross-profile consumers, guards and mirrors",
+  () => {
+    const historicalOwner = historicalNavigationSource("submissionOwner"),
+      historicalApp = historicalNavigationSource("app");
+    verifySubmissionCommands(historicalOwner, true, false, "historical");
+    verifySubmissionCommands(submissionOwnerText, true, true, "cognitive");
+    for (const [source, profile] of [
+      [historicalOwner, "cognitive"],
+      [submissionOwnerText, "historical"],
+    ] as const)
+      assert.throws(
+        () => verifySubmissionCommands(source, true, false, profile),
+        /exact borrowed captures and direct public commands/,
+      );
+    assert.throws(
+      () => verifyRawSubmissionConsumption(historicalApp, submissionOwnerText),
+      /exact captured submission ports/,
+    );
+    assert.throws(
+      () =>
+        expandSubmissionConsumption(
+          rawSources.app,
+          historicalOwner,
+          "historical",
+        ),
+      /exact captured submission ports/,
+    );
+    for (const [source, profile] of [
+      [historicalOwner, "historical"],
+      [submissionOwnerText, "cognitive"],
+    ] as const) {
+      assert.throws(
+        () =>
+          verifySubmissionCommands(
+            changed(source, "} = render;", "} = { ...render };"),
+            true,
+            false,
+            profile,
+          ),
+        /exact borrowed captures and direct public commands/,
+      );
+      assert.throws(
+        () =>
+          verifySubmissionCommands(
+            changed(source, "if (staged) return;", "if (false) return;"),
+            true,
+            false,
+            profile,
+          ),
+        /whole original submission algorithm send/,
+      );
+    }
+    const owner = parse({ Owner: submissionOwnerText }).get("Owner")!,
+      send = oneFunction(owner, "send"),
+      guards = send.body!.statements.filter(
+        (node) => node.kind === SyntaxKind.TryStatement,
+      );
+    assert.equal(guards.length, 1);
+    const guard = guards[0]!;
+    assert.throws(
+      () =>
+        verifySubmissionCommands(
+          submissionOwnerText.slice(0, guard.getStart()) +
+            submissionOwnerText.slice(guard.end),
+          true,
+          true,
+          "cognitive",
+        ),
+      /one cognitive own-slot pre-spread guard/,
+    );
+    assert.throws(
+      () =>
+        verifyRawSubmissionConsumption(
+          changed(
+            rawSources.app,
+            "      cognitiveSurface,\n      canAuthorizeDirectories,",
+            "      cognitiveSurface: { ...cognitiveSurface },\n      canAuthorizeDirectories,",
+          ),
+        ),
+      /exact captured submission ports/,
+    );
+  },
+);
+nodeTest(
+  "raw-current permits only the exact cognitive preference field and its real type-only binding",
+  () => {
+    const field = "cognitiveLocation?: CognitiveNavigationLocation | null;";
+    for (const stableNavigationHost of [
+      changed(rawSources.stableNavigationHost, field, ""),
+      changed(rawSources.stableNavigationHost, field, field + field),
+      changed(
+        rawSources.stableNavigationHost,
+        field,
+        "cognitiveLocation?: unknown;",
+      ),
+      changed(
+        rawSources.stableNavigationHost,
+        field,
+        "cognitiveLocation: CognitiveNavigationLocation | null;",
+      ),
+      changed(
+        rawSources.stableNavigationHost,
+        field,
+        "cognitiveLocation?: { value: CognitiveNavigationLocation } | null;",
+      ),
+      changed(
+        rawSources.stableNavigationHost,
+        field,
+        field + " leakedGrant?: unknown;",
+      ),
+      changed(
+        rawSources.stableNavigationHost,
+        'from "./cognitive-navigation-location.js"',
+        'from "./fake-cognitive-navigation-location.js"',
+      ),
+      changed(
+        rawSources.stableNavigationHost,
+        "import type { CognitiveNavigationLocation }",
+        "import { CognitiveNavigationLocation }",
+      ),
+      changed(
+        rawSources.stableNavigationHost,
+        "import type { CognitiveNavigationLocation }",
+        "import type { CognitiveNavigationLocation as UnusedLocation }",
+      ) + "\ntype CognitiveNavigationLocation = unknown;\n",
+    ]) {
+      parse({ Host: stableNavigationHost });
+      assert.throws(
+        () => currentConsumption({ ...rawSources, stableNavigationHost }),
+        (error) =>
+          error instanceof assert.AssertionError &&
+          error.message.startsWith(
+            "navigation-current-consumption: navigation-host-owner-seams:",
+          ),
+      );
+    }
+    assert.throws(
+      () =>
+        currentConsumption({
+          ...rawSources,
+          stableNavigationHost: changed(
+            rawSources.stableNavigationHost,
+            "subjectOpen: boolean;",
+            "subjectOpen: string;",
+          ),
+        }),
+      /governed persisted Preferences whole original schema/,
+    );
+  },
 );
 nodeTest(
   "historical archive retains original cb metrics and all 104 literal negatives",

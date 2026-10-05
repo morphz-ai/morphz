@@ -111,13 +111,13 @@ test("legal Client counterfactuals fail real import, captures, placement, hooks,
       "original approval state registration",
     ],
     [
-      "function clearProtectedProjection() {",
-      "function clearProtectedProjection() { approvalSubmissions.current.clear();",
+      "function clearProtectedProjection(keepRead?: AbortController) {",
+      "function clearProtectedProjection(keepRead?: AbortController) { approvalSubmissions.current.clear();",
       "complete original protected projection clear and approval lifetime",
     ],
     [
-      "function clearProtectedProjection() {\n    protectedReadGeneration.current++;",
-      "function clearProtectedProjection() {\n    protectedReadGeneration.current += 0;",
+      "function clearProtectedProjection(keepRead?: AbortController) {\n    protectedReadGeneration.current++;",
+      "function clearProtectedProjection(keepRead?: AbortController) {\n    protectedReadGeneration.current += 0;",
       "complete original protected projection clear and approval lifetime",
     ],
   ];

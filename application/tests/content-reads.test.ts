@@ -292,6 +292,7 @@ function catalog(
       scriptLibrary: [],
       taskOrderRevision: 1,
       uiPackages: [],
+      cognitiveApps: { versions: [], connections: [] },
     },
   };
 }

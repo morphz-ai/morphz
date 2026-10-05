@@ -618,6 +618,7 @@ async function clientFor(host: Host, access = localAccess) {
         platformReader: host.domains.reader,
         images: host.domains.images,
         uiPackages: host.domains.uiPackages,
+        cognitiveApps: host.domains.cognitiveApps,
       });
       try {
         const result = await invokeApplication(

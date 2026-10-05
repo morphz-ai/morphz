@@ -25,6 +25,23 @@ export const projectionLifetimeMetadata = {
 } as const;
 export const originalProjectionClear =
   'function clearProtectedProjection() {\n    protectedReadGeneration.current++;\n    current.current = null;\n    platform.current = null;\n    conversationHistory.clear();\n    catalogCache.current = null;\n    scriptOverviews.current.clear();\n    pendingScriptOverviews.current.clear();\n    scriptEditorReads.clear();\n    navigationCacheKey.current = "";\n    snapshotText.current = "";\n    setBoot(null);\n    setContentCatalog([]);\n    setContentCounts([]);\n    setTaskCounts([]);\n    setContentCatalogVersion(0);\n  }';
+
+// Finite, reviewed growth of the actual historical clear. Keep the archived
+// algorithm and its digest above unchanged: cancellation and this separate
+// read-only catalog must supplement every old clear, not replace its lifetime.
+export const cognitiveProjectionClear = originalProjectionClear
+  .replace(
+    "function clearProtectedProjection()",
+    "function clearProtectedProjection(keepRead?: AbortController)",
+  )
+  .replace(
+    "catalogCache.current = null;",
+    "catalogCache.current = null;\n    if (navigationReadController.current !== keepRead)\n      navigationReadController.current?.abort();",
+  )
+  .replace(
+    "setContentCounts([]);",
+    "setContentCounts([]);\n    setCognitiveAppCatalog({ versions: [], connections: [] });",
+  );
 export const originalTaskInteractionRefs = {
   current: "current = useRef<Boot | null>(null)",
   platform: "platform = useRef<PlatformClient | null>(null)",
@@ -58,7 +75,7 @@ export function verifyClientProjectionLifetime(source: string) {
   );
   const parsed = parseReaderSources({
     Client: source,
-    Fixed: originalProjectionClear,
+    Fixed: cognitiveProjectionClear,
   });
   const clear = readerFunction(parsed.get("Client")!, "useWorkspace")
     .body!.statements.filter(isFunctionDeclaration)
@@ -73,6 +90,6 @@ export function verifyClientProjectionLifetime(source: string) {
     readerShape(
       readerFunction(parsed.get("Fixed")!, "clearProtectedProjection"),
     ),
-    "complete original protected projection clear and approval lifetime",
+    "complete original protected projection clear and approval lifetime with finite catalog cancellation extension",
   );
 }

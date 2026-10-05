@@ -116,8 +116,15 @@ export function fixedSubmissionDeclarations() {
     }),
   ) as Record<"send" | "supplement", string>;
 }
+type SubmissionProfile = "historical" | "cognitive";
+// Literal historical ports stay independent of the current source. Only the
+// explicitly selected cognitive profile adds its one trusted surface capture.
 const captureText =
-  "function createExchangeSubmissionCommands({ render, client, profile, feedback, dictationControls, drafts: draftPorts, exchange, inspector, onNotice: setNotice, focusAfterSupplement }: ExchangeSubmissionCommandOptions) {\nconst { project, selectedConversation, selectedDraft, draft, sending, uploadingDrafts, contextKey, conversationId, workspace: state, emptyDraft, artifact, activeInstance, browserPage, readingExpected, currentReading, cognitiveSurface, canAuthorizeDirectories, directoryScope, directoryState, rightInspector } = render;\nconst { sendPending, currentContext, setSending, setInputErrors, setRevealedInputs, setAnnotationRefresh } = feedback;\nconst { replace: setDraft, update: updateDraft } = draftPorts;\nconst { setMobileCollaboration, showSentInput, requestSentInputFocus, showInput } = exchange;\nconst { openCollaboration, closeInspector } = inspector;\nreturn { send, supplement };\n}";
+  "function createExchangeSubmissionCommands({ render, client, profile, feedback, dictationControls, drafts: draftPorts, exchange, inspector, onNotice: setNotice, focusAfterSupplement }: ExchangeSubmissionCommandOptions) {\nconst { project, selectedConversation, selectedDraft, draft, sending, uploadingDrafts, contextKey, conversationId, workspace: state, emptyDraft, artifact, activeInstance, browserPage, readingExpected, currentReading, canAuthorizeDirectories, directoryScope, directoryState, rightInspector } = render;\nconst { sendPending, currentContext, setSending, setInputErrors, setRevealedInputs, setAnnotationRefresh } = feedback;\nconst { replace: setDraft, update: updateDraft } = draftPorts;\nconst { setMobileCollaboration, showSentInput, requestSentInputFocus, showInput } = exchange;\nconst { openCollaboration, closeInspector } = inspector;\nreturn { send, supplement };\n}";
+const cognitiveCaptureText = captureText.replace(
+  "currentReading, canAuthorizeDirectories",
+  "currentReading, cognitiveSurface, canAuthorizeDirectories",
+);
 export const submissionAppAdapter =
   "const { send, supplement } = createExchangeSubmissionCommands({\nrender: { project, selectedConversation, selectedDraft, draft, sending, uploadingDrafts, contextKey, conversationId, workspace: state, emptyDraft, artifact, activeInstance, browserPage, readingExpected, currentReading, canAuthorizeDirectories, directoryScope, directoryState, rightInspector },\nclient, profile,\nfeedback: { sendPending, currentContext, setSending, setInputErrors, setRevealedInputs, setAnnotationRefresh },\ndictationControls,\ndrafts: { replace: setDraft, update: updateDraft },\nexchange: { setMobileCollaboration, showSentInput, requestSentInputFocus, showInput },\ninspector: { openCollaboration, closeInspector },\nonNotice: setNotice,\nfocusAfterSupplement: () => requestAnimationFrame(() => input.current?.focus({ preventScroll: true })),\n});";
 export const cognitiveSubmissionAppAdapter = submissionAppAdapter.replace(
@@ -137,7 +144,9 @@ export function verifySubmissionCommands(
   text = submissionOwnerText,
   algorithms = true,
   current = false,
+  profile: SubmissionProfile = "cognitive",
 ) {
+  assert.ok(profile === "historical" || profile === "cognitive");
   const parsed = parseSubmission(text),
     factory = oneFunction(parsed, "createExchangeSubmissionCommands");
   assert.deepEqual(
@@ -146,7 +155,9 @@ export function verifySubmissionCommands(
     "synchronous inert submission factory",
   );
   const expected = oneFunction(
-    parseSubmission(captureText),
+    parseSubmission(
+      profile === "historical" ? captureText : cognitiveCaptureText,
+    ),
     "createExchangeSubmissionCommands",
   );
   const captures = factory.body!.statements.filter(
@@ -164,10 +175,14 @@ export function verifySubmissionCommands(
     ["../composer-drafts.js", "consumeComposerDraft"],
     ["../application-transport.js", "RequestError"],
     ["./submit-exchange-draft.js", "submitExchangeDraft"],
-    [
-      "../../../../packages/core/src/cognitive-app-object-locator.js",
-      "guardCognitiveAppInputCommand",
-    ],
+    ...(profile === "cognitive"
+      ? [
+          [
+            "../../../../packages/core/src/cognitive-app-object-locator.js",
+            "guardCognitiveAppInputCommand",
+          ],
+        ]
+      : []),
   ];
   const actualRuntime: string[][] = [];
   for (const statement of parsed.source.statements) {
@@ -243,7 +258,7 @@ export function verifySubmissionCommands(
   );
   for (const name of ["send", "supplement"] as const) {
     let source = oneFunction(parsed, name).getText();
-    if (name === "send") {
+    if (name === "send" && profile === "cognitive") {
       // Validate the complete finite new guard and single source carry first.
       // Only then remove those exact additions to compare the unchanged
       // complete algorithm with the immutable Git9122 witness.
@@ -294,6 +309,22 @@ export function verifySubmissionCommands(
       for (const edit of edits.sort((a, b) => b.start - a.start))
         source = source.slice(0, edit.start) + source.slice(edit.end);
     }
+    if (name === "send" && profile === "historical") {
+      const candidate = parseSubmission(source),
+        fn = oneFunction(candidate, name);
+      assert.equal(
+        fn.body!.statements.filter(isTryStatement).length,
+        0,
+        "historical send has no cognitive pre-spread guard",
+      );
+      assert.equal(
+        candidate.nodes
+          .filter(isShorthandPropertyAssignment)
+          .filter((node) => node.name.getText() === "cognitiveSurface").length,
+        0,
+        "historical send has no cognitive source carry",
+      );
+    }
     if (name === "supplement") {
       assert.equal(
         source.split("focusAfterSupplement();").length,
@@ -318,8 +349,9 @@ function checkedConsumption(
   ownerText: string,
   algorithms: boolean,
   current = false,
+  profile: SubmissionProfile = "cognitive",
 ) {
-  verifySubmissionCommands(ownerText, algorithms, current);
+  verifySubmissionCommands(ownerText, algorithms, current, profile);
   const parsed = parseSubmission(appText);
   if (current)
     for (const declaration of parsed.nodes.filter(isVariableDeclaration)) {
@@ -389,13 +421,12 @@ function checkedConsumption(
     ["send", "supplement"],
     "two original direct aliases",
   );
-  // Two finite literal adapters: historical consumers omit the new optional
-  // source; actual current App must borrow its trusted surface explicitly.
-  const hasCognitiveSurface = call.arguments[0]
-    ?.getText()
-    .includes("cognitiveSurface");
+  // Selection is explicit, not inferred from a candidate's borrowed fields.
+  // Neither profile may silently accept the other profile's consumer.
   const expected = parseSubmission(
-    hasCognitiveSurface ? cognitiveSubmissionAppAdapter : submissionAppAdapter,
+    profile === "historical"
+      ? submissionAppAdapter
+      : cognitiveSubmissionAppAdapter,
   ).nodes.filter(isCallExpression)[0]!;
   assert.equal(call.typeArguments?.length ?? 0, 0, "no submission type bridge");
   assert.equal(call.arguments.length, 1);
@@ -469,11 +500,14 @@ function checkedConsumption(
 export function expandSubmissionConsumption(
   appText: string,
   ownerText = submissionOwnerText,
+  profile: SubmissionProfile = "cognitive",
 ) {
   const { parsed, statement, declaration } = checkedConsumption(
     appText,
     ownerText,
     true,
+    false,
+    profile,
   );
   const old = fixedSubmissionDeclarations(),
     image = oneFunction(parsed, "importImage");
@@ -564,7 +598,8 @@ export function verifySubmissionConsumption(
 }
 
 // Raw-current seam only: no inverse, whole-App hash or module inventory.
-// Existing expand/verify entry points retain their historical peer semantics.
+// Default peers also require cognitive ports; archived inverses opt into the
+// separate historical profile rather than borrowing the current candidate.
 export function verifyRawSubmissionConsumption(
   appText: string,
   ownerText = submissionOwnerText,

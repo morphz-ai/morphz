@@ -157,8 +157,8 @@ test("object original React refs, retirement, ports, direct methods and dispatch
       /object-original-ref-retirement/,
     ],
     [
-      "  function clearProtectedProjection() {\n    protectedReadGeneration.current++;",
-      "  function clearProtectedProjection() {\n    return;\n    protectedReadGeneration.current++;",
+      "  function clearProtectedProjection(keepRead?: AbortController) {\n    protectedReadGeneration.current++;",
+      "  function clearProtectedProjection(keepRead?: AbortController) {\n    return;\n    protectedReadGeneration.current++;",
       /object-original-ref-retirement/,
     ],
     [
@@ -190,7 +190,7 @@ test("object original React refs, retirement, ports, direct methods and dispatch
     const clears = /ref-retirement/.test(rule.source);
     const oldClear = clears
       ? client.match(
-          /  function clearProtectedProjection\(\) \{[\s\S]*?\n  \}/,
+          /  function clearProtectedProjection\(keepRead\?: AbortController\) \{[\s\S]*?\n  \}/,
         )![0]
       : undefined;
     const candidate = oldClear

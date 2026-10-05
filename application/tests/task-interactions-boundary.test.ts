@@ -354,8 +354,8 @@ test("legal task factory and projection authority variants reject actual typed i
       "one public task member taskResponses",
     ],
     [
-      "  function clearProtectedProjection() {",
-      "  async function taskResponses() { return undefined; }\n  function clearProtectedProjection() {",
+      "  function clearProtectedProjection(keepRead?: AbortController) {",
+      "  async function taskResponses() { return undefined; }\n  function clearProtectedProjection(keepRead?: AbortController) {",
       "no duplicate actual Client task algorithms",
     ],
     [
@@ -379,13 +379,13 @@ test("legal task factory and projection authority variants reject actual typed i
       "original task Client ref taskRuntimeReadGeneration",
     ],
     [
-      "function clearProtectedProjection() {",
-      "function clearProtectedProjection() { taskRuntimeReads.current.clear();",
+      "function clearProtectedProjection(keepRead?: AbortController) {",
+      "function clearProtectedProjection(keepRead?: AbortController) { taskRuntimeReads.current.clear();",
       "complete original protected projection clear and approval lifetime",
     ],
     [
-      "function clearProtectedProjection() {\n    protectedReadGeneration.current++;",
-      "function clearProtectedProjection() {\n    protectedReadGeneration.current += 0;",
+      "function clearProtectedProjection(keepRead?: AbortController) {\n    protectedReadGeneration.current++;",
+      "function clearProtectedProjection(keepRead?: AbortController) {\n    protectedReadGeneration.current += 0;",
       "complete original protected projection clear and approval lifetime",
     ],
   ]) {

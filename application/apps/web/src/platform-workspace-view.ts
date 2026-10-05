@@ -32,10 +32,10 @@ import type {
   ScriptOverview,
   UiPackageSummary,
 } from "./platform-client.js";
-import {
-} from "../../../packages/core/src/script-studio.js";
+import {} from "../../../packages/core/src/script-studio.js";
 import { RequestError } from "./application-transport.js";
 import type { NavigationRevisions } from "../../../packages/core/src/application-api.js";
+import type { CognitiveAppCatalogSnapshot } from "./cognitive-app-client.js";
 import {
   readHistoryHead,
   type CachedHistory,
@@ -90,6 +90,9 @@ export type PlatformWorkspaceCatalog = {
   scriptLibrary: ScriptLibraryEntry[];
   taskOrderRevision: number;
   uiPackages: UiPackageSummary[];
+  // Display facts from the same identity-bound navigation read. A headless
+  // definition is not a UI package or an authorization to launch/execute.
+  cognitiveApps: CognitiveAppCatalogSnapshot;
   versionTitles?: ContentVersionTitle[];
 };
 
@@ -450,6 +453,7 @@ export async function readPlatformWorkspace(
       contentCounts,
       taskOrder,
       uiPackages,
+      cognitiveApps,
     ] = await Promise.all([
       cachedCatalog?.projects ?? client.allProjects(signal),
       cachedCatalog?.conversations ?? client.allNavigationConversations(signal),
@@ -467,6 +471,8 @@ export async function readPlatformWorkspace(
         ? { revision: cachedCatalog.taskOrderRevision }
         : client.taskOrder(undefined, signal),
       cachedCatalog?.uiPackages ?? client.uiPackages(signal),
+      cachedCatalog?.cognitiveApps ??
+        client.cognitiveApps.allCatalog({}, signal),
     ]);
     return {
       personal,
@@ -481,6 +487,7 @@ export async function readPlatformWorkspace(
       scriptLibrary: [],
       taskOrderRevision: taskOrder.revision,
       uiPackages,
+      cognitiveApps,
       versionTitles: cachedCatalog?.versionTitles,
     };
   })();
@@ -727,102 +734,100 @@ export async function readPlatformWorkspace(
   // App-owned scripts have an independent paged editor read model. Only the
   // selected object originals are projected here; no script body is hydrated.
   const readOriginal = limitConcurrentReads(8, signal);
-  const [taskArtifacts, contentArtifacts] =
-    await Promise.all([
-      Promise.all(
-        tasks.map((task) => {
-          const prior = priorArtifacts.get(task.id);
-          const needsHistory = openedArtifactIds.has(task.id);
-          return prior?.content.kind === "task" &&
-            prior.revision === task.revision &&
-            prior.projectId === task.projectId &&
-            prior.title === task.title &&
-            prior.updatedAt === task.updatedAt &&
-            (!needsHistory || prior.versions.length === task.revision)
-            ? Promise.resolve(prior)
-            : needsHistory
-              ? readOriginal(() => readTaskArtifact(client, task, true, signal))
-              : Promise.resolve(taskArtifactFromHead(task));
-        }),
-      ),
-      Promise.all(
-        contents.map((entry): Promise<Artifact | null> => {
-          const prior = priorArtifacts.get(entry.id);
-          const requestedRevision =
-            entry.id === selection.preferences?.artifactId &&
-            selection.preferences.artifactRevision &&
-            selection.preferences.artifactRevision <
-              Number(entry.observedVersionRef)
-              ? selection.preferences.artifactRevision
-              : undefined;
-          const sameOriginal =
-            prior?.content.kind !== "task" &&
-            prior?.revision.toString() === entry.observedVersionRef &&
-            prior?.providerRevision === entry.providerRevision;
-          if (
-            !["morphz.objects", "morphz.reader"].includes(entry.appId) ||
-            entry.availability !== "available"
-          )
-            return Promise.resolve(null);
-          // Catalog browsing never materializes an app-owned original. A
-          // previously opened matching version may remain cached in this
-          // renderer; a changed unopened version waits until explicit open.
-          if (!openedArtifactIds.has(entry.id) && !sameOriginal)
-            return Promise.resolve(null);
-          if (
-            sameOriginal &&
-            prior &&
-            (!requestedRevision ||
-              prior.versions.some(
-                (version) => version.revision === requestedRevision,
-              ))
-          )
-            return Promise.resolve({
-              ...prior,
-              projectId: entry.projectId,
-              catalogRevision: entry.revision,
-              title: entry.title,
-              updatedAt: entry.updatedAt,
-            });
-          return readOriginal(async () => {
-            const current = sameOriginal
-              ? prior
-              : await readContentArtifact(client, entry, signal);
-            if (!current) return null;
-            const historical = requestedRevision
-              ? await readContentArtifact(
-                  client,
-                  entry,
-                  signal,
-                  requestedRevision,
-                )
-              : null;
-            const versions = new Map(
-              [
-                ...(prior &&
-                prior.content.kind !== "task" &&
-                prior.providerRevision === entry.providerRevision
-                  ? prior.versions
-                  : []),
-                ...current.versions,
-                ...(historical?.versions ?? []),
-              ].map((version) => [version.revision, version]),
-            );
-            return {
-              ...current,
-              projectId: entry.projectId,
-              catalogRevision: entry.revision,
-              title: entry.title,
-              updatedAt: entry.updatedAt,
-              versions: [...versions.values()].sort(
-                (a, b) => a.revision - b.revision,
-              ),
-            };
+  const [taskArtifacts, contentArtifacts] = await Promise.all([
+    Promise.all(
+      tasks.map((task) => {
+        const prior = priorArtifacts.get(task.id);
+        const needsHistory = openedArtifactIds.has(task.id);
+        return prior?.content.kind === "task" &&
+          prior.revision === task.revision &&
+          prior.projectId === task.projectId &&
+          prior.title === task.title &&
+          prior.updatedAt === task.updatedAt &&
+          (!needsHistory || prior.versions.length === task.revision)
+          ? Promise.resolve(prior)
+          : needsHistory
+            ? readOriginal(() => readTaskArtifact(client, task, true, signal))
+            : Promise.resolve(taskArtifactFromHead(task));
+      }),
+    ),
+    Promise.all(
+      contents.map((entry): Promise<Artifact | null> => {
+        const prior = priorArtifacts.get(entry.id);
+        const requestedRevision =
+          entry.id === selection.preferences?.artifactId &&
+          selection.preferences.artifactRevision &&
+          selection.preferences.artifactRevision <
+            Number(entry.observedVersionRef)
+            ? selection.preferences.artifactRevision
+            : undefined;
+        const sameOriginal =
+          prior?.content.kind !== "task" &&
+          prior?.revision.toString() === entry.observedVersionRef &&
+          prior?.providerRevision === entry.providerRevision;
+        if (
+          !["morphz.objects", "morphz.reader"].includes(entry.appId) ||
+          entry.availability !== "available"
+        )
+          return Promise.resolve(null);
+        // Catalog browsing never materializes an app-owned original. A
+        // previously opened matching version may remain cached in this
+        // renderer; a changed unopened version waits until explicit open.
+        if (!openedArtifactIds.has(entry.id) && !sameOriginal)
+          return Promise.resolve(null);
+        if (
+          sameOriginal &&
+          prior &&
+          (!requestedRevision ||
+            prior.versions.some(
+              (version) => version.revision === requestedRevision,
+            ))
+        )
+          return Promise.resolve({
+            ...prior,
+            projectId: entry.projectId,
+            catalogRevision: entry.revision,
+            title: entry.title,
+            updatedAt: entry.updatedAt,
           });
-        }),
-      ),
-
-    ]);
+        return readOriginal(async () => {
+          const current = sameOriginal
+            ? prior
+            : await readContentArtifact(client, entry, signal);
+          if (!current) return null;
+          const historical = requestedRevision
+            ? await readContentArtifact(
+                client,
+                entry,
+                signal,
+                requestedRevision,
+              )
+            : null;
+          const versions = new Map(
+            [
+              ...(prior &&
+              prior.content.kind !== "task" &&
+              prior.providerRevision === entry.providerRevision
+                ? prior.versions
+                : []),
+              ...current.versions,
+              ...(historical?.versions ?? []),
+            ].map((version) => [version.revision, version]),
+          );
+          return {
+            ...current,
+            projectId: entry.projectId,
+            catalogRevision: entry.revision,
+            title: entry.title,
+            updatedAt: entry.updatedAt,
+            versions: [...versions.values()].sort(
+              (a, b) => a.revision - b.revision,
+            ),
+          };
+        });
+      }),
+    ),
+  ]);
   const principals = new Set<string>([
     client.boot.principalId,
     morphzAgentAccess.principalId,

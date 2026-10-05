@@ -10,6 +10,7 @@ import type {
 } from "../../../packages/core/src/application-api.js";
 import { navigationRevisionsSchema } from "../../../packages/core/src/application-api.js";
 import { applicationCall, RequestError } from "./application-transport.js";
+import { createCognitiveAppClient } from "./cognitive-app-client.js";
 import { storageScope } from "./local-preferences.js";
 import {
   morphzAgentAccess,
@@ -344,6 +345,10 @@ function page<T, C>(
  * Workspace JSON or renderer-owned database credential is involved.
  */
 export class PlatformClient {
+  readonly cognitiveApps = createCognitiveAppClient((method, params, signal) =>
+    this.call(method, params, signal),
+  );
+
   private constructor(
     private readonly caller: ApplicationCaller,
     readonly boot: PlatformBoot,

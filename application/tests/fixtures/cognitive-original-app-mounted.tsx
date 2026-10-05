@@ -173,6 +173,13 @@ const bridge = {
         return ok(structuredClone(boot));
       case "spaces.ensure":
         return ok({ deskId: "desk", inboxId: "inbox", dialogueId: "dialogue" });
+      case "cognitive-apps.list":
+        return ok({
+          versions: [],
+          connections: [],
+          nextVersionsAfter: null,
+          nextConnectionsAfter: null,
+        });
       case "app-views.list":
       case "apps.list":
       case "tasks.counts":

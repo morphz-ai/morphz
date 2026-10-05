@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-05 本人认知应用目录的客户端接入
+
+十方法 typed facade 已接到原 `PlatformClient` 的认证 logical caller；
+本人版本和连接目录沿既有导航读取、缓存与刷新 owner 发布，不新增
+HTTP 依赖、renderer 数据库、第二份目录或轮询。两个分页流必须完整
+结束，不能把短页当 EOF；完整图标及 UTF-8 元数据保留，超过明确加载
+预算时整次失败，不偷偷截断。无界面定义不转成 UI-only 包或空窗口。
+
+访问范围、身份或窗口生命周期失效时取消旧读取并清空受保护目录；
+并行域失败也取消尚未结束的目录请求。迟到结果不能重新发布，既有
+草稿、原件、历史、审批和在途写入不被清理。历史守门夹具现明确区分
+固定历史和当前认知捕获模板；旧归档、哈希、完整算法与拒绝反例保持。
+
+Root 正式三十七文件 348/348，required PostgreSQL，零失败、取消或
+跳过；全工程类型及专项格式检查通过。日志
+`/tmp/morphz-cognitive-catalog-ROOT-ACCEPTED-oct05.log` 和
+`/tmp/morphz-cognitive-catalog-ROOT-ACCEPTED-TYPES-oct05.log`。
+目录传输测试实际经过隔离 SQLite／PostgreSQL、IdentityCenter／HPA
+和 Local／HTTP／Remote。十二项 owner 挂载测试运行真实 Chromium
+StrictMode 和生产 React owner，但 logical transport 受控；不是作者
+网络或用户原 App 验收。先前联合回归的十五项旧检查失败记录保留，
+本次全部通过，不删断言或以环境能力跳过。
+
+该阶段交付目录数据层，不等于工作台管理、Dock／Launcher 和输入框
+选择已经可用。这些真实消费者、作者 GUI 与原 App 跨宿主验收仍待
+接通；本阶段不修改用户资料、凭据、Session 或原窗口的 UI。
+
 ## 2026-10-05 本人认知应用登记与管理后端
 
 已提交 `d1b54ad8`。Platform v12 新增本人精确定义登记关系，不复制作者

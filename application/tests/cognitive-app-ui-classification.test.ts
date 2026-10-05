@@ -344,6 +344,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
           scriptLibrary: [],
           taskOrderRevision: 0,
           uiPackages: typed,
+          cognitiveApps: { versions: [], connections: [] },
         };
         const at = project.createdAt;
         const window = (
