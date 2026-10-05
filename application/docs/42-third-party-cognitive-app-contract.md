@@ -1,6 +1,6 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05。状态：纯协议、独立 SDK 包、v11 双后端迁移及内部注册表已验证；共享网关尚未接通。
+日期：2026-10-05。状态：纯协议、独立 SDK 包、v11 双后端迁移及内部注册表／命令账本已验证；共享网关尚未接通。
 这是 Morphz Application 的实验接入版本，不是 Runtime 或 HNS 的新标准。
 文档存在不表示独立 SDK、服务网关或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
@@ -356,6 +356,9 @@ Platform 内部分为 registry（版本、本人许可、保存方、连接、�
 commands（副作用受理、发送 fence、未知结果、回执投影、退休保护）两项
 职责；Store 保留薄入口，复用单一 backend／事务／策略，不自开第二连接，
 不把 SQL Query 暴露给作者 SDK 或 Renderer。不是按文件行数重写整个 Store。
+目前内部注册表与命令事实已通过双后端测试；实际 Store 目录写入和项目
+退役纳入 ledger 还须接线，不能把内部 markProjected／hasOpenCommands
+存在当成业务目录与退休保护已经完成。
 
 Host 的 CognitiveAppGateway 负责固定连接、网络安全、实际 wire 校验和
 回执核验，只通过 Platform typed port 调用上述职责；由共享应用 Host 与

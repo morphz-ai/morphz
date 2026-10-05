@@ -1,5 +1,26 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：持久命令事实与发送 fence
+
+Platform 内部 commands 模块现保存副作用调用的实际来源、精确定义、保存方、
+本人连接／许可修订、project、operation、资源及 requestHash。相同 commandId
+必须所有不可变字段相同；已受理命令在撤权、重开数据库后仍保留原事实，
+但 admitted 首次转 dispatching 再核当前精确目标，不等于获得重发许可。
+只有确知未发送的 admitted 可取消；dispatching／unknown 不自动再执行。
+
+完整终态回执核原 admission，计算实际 canonical SHA；committed 与独立
+目录 pending 状态分开，exact replay 不增加修订，不复制业务 result／正文。
+合法 committed 后的业务 output Schema 错误不改写提交事实。目录 ack 必须
+与未来 Store 的真实目录写同一 q，本模块测试的组合回滚不是目录已接通证据。
+恢复分页限 32，不出版 private alias、参数、地址或凭据。
+
+Root 独立组合回归 242/242，其中命令模块 41 项，双后端真实执行、零跳过。
+新增 operationId portable guard 的首次 RED（39 通过／2 失败）与 SQL raw
+TEXT 损失、64 KiB 摘要预算诊断均保留，不删除失败断言。完整类型检查、
+新增文件格式和 diff 检查通过。主日志同下段注册表。这里仅交付内部账本，
+实际权限／目录／退役组合、共享网关与网络恢复仍未完成，不称真实 Runtime
+Agent 或用户当前窗口已验收。
+
 ## 2026-10-05 第三方认知应用：同一事务注册表
 
 Platform 内部 registry 现维护不可变 headless 定义、本人精确版本许可、
