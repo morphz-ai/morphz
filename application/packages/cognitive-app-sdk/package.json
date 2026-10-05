@@ -1,0 +1,41 @@
+{
+  "name": "@morphz/cognitive-app-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Experimental pure author protocol and validators for Morphz cognitive applications",
+  "type": "module",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    },
+    "./domain-wire": {
+      "types": "./dist/domain-wire.d.ts",
+      "import": "./dist/domain-wire.js"
+    }
+  },
+  "files": [
+    "dist/*.js",
+    "dist/*.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2"
+  }
+}

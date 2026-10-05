@@ -1,6 +1,6 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05。状态：纯声明／wire 校验及 v11 双后端迁移已验证；网关尚未接通。
+日期：2026-10-05。状态：纯协议、独立 SDK 包及 v11 双后端迁移已验证；共享网关尚未接通。
 这是 Morphz Application 的实验接入版本，不是 Runtime 或 HNS 的新标准。
 文档存在不表示独立 SDK、服务网关或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
@@ -269,6 +269,13 @@ compose 只准备输入，打开／关闭／安装都不发送消息或启动任
 Service adapter。示例通过打包后的公开导出接入，自己的数据库与进程独立，
 不能 import Host 内部模块、复制 builtin handler，或把手写 postMessage
 便笺称为 Agent 业务闭环。SDK 不拥有作者事务或替作者决定备份责任。
+
+当前纯协议包 `@morphz/cognitive-app-sdk@0.1.0` 已可独立严格构建、prepack
+为 ESM＋声明、本地 tgz 安装；仅 Zod 4.5.4 为运行依赖。仓库外 consumer
+实际安装、导入三个公开入口及严格类型消费已验证，包不含 Host／Node／
+数据库／浏览器私有实现或凭据。标准声明库使用 ES2023＋DOM（Zod 引用
+标准 URL），不宣称缺少全局类型的任意配置通过。包仍 private、防误发布，
+尚未发布 npm；可选 browser bridge、Service 和完整共享入口另阶段实现。
 
 ## Platform 生产数据模型
 

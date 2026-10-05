@@ -1,5 +1,29 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：实际独立 SDK 包
+
+纯协议现在形成实验 ESM／TypeScript 作者包
+`@morphz/cognitive-app-sdk@0.1.0`，主入口及 protocol／domain-wire 子入口。
+唯一运行依赖固定 Zod 4.5.4，独立严格构建与 prepack 只读取作者包内三份
+源码；tarball 白名单 9 个文件含 JS／d.ts、清单、说明和完整 Apache-2.0
+许可证，不包含 Host、源码、测试、source maps、环境或私有实现。
+`private: true` 防误发布；已实现本地打包／消费，没有发布 npm 或推送。
+
+Root 正式独立重跑 package／纯协议／wire 44/44、零失败／跳过／取消。
+测试在仓库外从作者自有源码真正安装 public 离线依赖、prepack 构建、打包，
+再以另一 consumer 安装真实 tgz。安装后的六份 JS／声明逐字节等于被审
+构建产物，实际 Node 导入三个入口、严格消费并执行 invoke／read 校验，
+额外类型反例确实拒绝 endpoint／伪造来源。测试子进程只继承必要非密钥
+环境，使用空 npm config，不读取真实配置或 App；runtime dependency graph
+仅 SDK→Zod。补充声明标准库说明后的最终日志为
+`/tmp/morphz-cognitive-sdk-package-ROOT-SECOND-FINAL-oct05.log`。
+
+独立构建／声明消费与 strict scoped 类型、格式检查通过；主工程 Store 正在
+test-first 接入，不计为本阶段完整项目类型通过。正式 consumer 的标准库
+为 ES2023＋DOM、types 空、skipLibCheck false；额外无 DOM 实验缺 Zod
+标准 URL 类型并失败，明确保留边界，不冒称所有 tsconfig 均支持。
+本阶段不含 browser bridge、共享网关、作者独立 Service 或实际 Agent 验收。
+
 ## 2026-10-05 第三方认知应用：可移植身份与业务正文分开
 
 接账模块在真实隔离 SQLite／PostgreSQL 复现 raw TEXT 的身份损失：NUL
