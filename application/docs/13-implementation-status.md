@@ -1,5 +1,25 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：真实独立服务网关
+
+新增 Host 内部网关，组合私有 purpose-bound 连接、实际 Store 权限／首次
+发送 fence、固定网络协议与原件目录。首次副作用先受理再只发送一次；
+未知结果只核旧回执，不重新 invoke。read 无命令账本；精确原件单独门禁。
+回执 binding／语义 SHA／终态冲突严格核验；业务输出 Schema 错误仍保留
+真实 committed，存储失败的 observedCommitted 与最后持久状态分开表示。
+异步准备后的真实 actor／source／保存方漂移在发网络前拒绝。
+
+Root 全文审查生产源码与 30 项分层测试后，独立正式七文件回归 131/131、
+零失败／跳过／取消；日志
+`/tmp/morphz-cognitive-gateway-ROOT-PACK-FINAL-oct05.log`。
+其中网关 16 项为明确 FakePort 单元证据，14 项实际运行离线打包 SDK、
+独立作者进程与其 SQLite 原件，并经实际 Platform SQLite／PostgreSQL。
+实际 commit 后外部代理断响应、双侧冷重开、旧来源与撤权恢复、终态冲突
+均保留真实持久事实。Runtime ingress 身份校验仍为明确隔离 fixture，
+不是实际 Runtime 或原 App 验收。
+共享 Application 的公开方法／HTTP／Desktop IPC／AgentTools、可选 GUI
+及事件恢复生命周期尚未登记，不能把内部网关称为产品闭环已经完成。
+
 ## 2026-10-05 第三方认知应用：实际 Store 原件读取与目录通知
 
 Host-only 投影入口现组合真实 ledger／catalog／delivery receipt／outbox，
