@@ -398,8 +398,17 @@ session generation、导航 epoch、view／binding revision、定义 hash 及
 SDK 的十六 pending／三十秒预算，并在初始化竞态、导航 CAS 及 monotonic
 返回门处拒绝旧结果。十八项为明确控 Window／authority UNIT，合并旧
 SDK Browser／打包消费回归 29/29、零跳过、全工程类型检查通过。
-它尚未挂载生产 consumer；真实权限端口、资源、DOM 和 GUI Router 仍
-须接入与验收，不能把这份消息叶模块称作运行中的 GUI 功能。
+它尚未挂载生产 consumer；资源、DOM 和实际导航／草稿 owner 仍须接入
+与验收，不能把这份消息叶模块称作运行中的 GUI 功能。
+
+独立 `cognitive-browser-router.ts` 已将八方法映射到同一 Human 服务。
+窗口的定义、authority、项目、连接与许可固定；每次请求及返回都核真实
+UI read 和双 CAS。保存使用原回执与原 state，不拿最新 head 冒充 ack；
+状态／恢复不重发原操作。原件打开及 compose 保留精确 object ref，
+交给可信 owner，compose 只准备未发送草稿。新十四项中十二项为受控
+端口 UNIT、两项实际双 SQL Human 窗口／保存／撤权链，owner 回包仍
+受控。Root 五文件 54/54、required PostgreSQL、零跳过及全工程类型
+检查通过；实际 consumer 与 owner 接线、原窗口验收尚未完成。
 
 字节载体优先扩展既有 authenticated resource 的 HTTP／Electron 两个
 adapter，按 bound view 和双修订读取，发送共享完整 CSP／权限策略；这

@@ -1,5 +1,23 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用 Browser 八方法路由
+
+新增独立路由，固定同一真实窗口的定义、authority、项目和本人连接，
+不允许作者消息改绑目标。八方法沿已有 Human 业务与窗口公共服务；
+操作前后都核当前 UI read 的双修订、许可和连接，迟到正文不返回。
+状态与恢复只查原命令，不再次 invoke；保存使用原 CAS 回执和原 state，
+不能以稍后的最新窗口冒充保存结果。打开原件和准备未发送草稿由可信
+owner 端口承接，guest 不能制造内容 ID、提交输入或调用 Agent 工具。
+
+Root 独立正式五文件 54/54，required PostgreSQL，零失败／取消／跳过，
+日志 `/tmp/morphz-cognitive-router-ROOT-ACCEPTED-oct05.log`；全工程类型
+检查通过，日志 `/tmp/morphz-cognitive-router-ROOT-types-CLEAN-oct05.log`。
+新增十四项中十二项为受控业务／owner／channel UNIT，两项实际运行
+隔离 SQLite／PostgreSQL、原 Human 窗口和真实保存／撤权链；其中导航
+与草稿 owner 的回包仍受控，不称真实导航或原 App 验收。独立只读复审
+通过，最终返回门的撤权／abort 和 own save 的 channel 更新均有见证。
+生产 DOM consumer、资源载体、实际 owner 接线仍待完成，用户 UI 未改。
+
 ## 2026-10-05 第三方认知应用：有限 Browser Host channel leaf
 
 新增独立叶模块，仅管理一个 opaque 文档的既定 Browser SDK 八方法通道。
