@@ -31,15 +31,26 @@ import {
   type CognitiveAppHostConnectionRequest,
   type CognitiveAppTargetRequest,
   type CognitiveAppTargetSnapshot,
+  type CognitiveAppVersion,
+  type CognitiveAppConnection,
 } from "./cognitive-app-registry.js";
 import {
+  createCognitiveAppCommands,
+  type CognitiveAppCommandSnapshot,
+  type CognitiveAppCommandPage,
+} from "./cognitive-app-commands.js";
+import {
+  domainProtocol,
   validateOperationValue,
   parseOperationResources,
+  parseProtocolValue,
+  type CognitiveAppDefinition,
   type JsonValue,
   type OperationDefinition,
   type OperationResourceReference,
 } from "../../cognitive-app-sdk/src/protocol.js";
 import {
+  canonicalJsonBytes,
   parseDomainActor,
   type DomainActor,
 } from "../../cognitive-app-sdk/src/domain-wire.js";
@@ -280,6 +291,39 @@ export type CognitiveAppOperationResolutionRequest =
 export type ResolvedCognitiveAppOperation = {
   actor: DomainActor;
   target: CognitiveAppTargetSnapshot;
+  operation: OperationDefinition;
+  parameters: JsonValue;
+  resources: readonly OperationResourceReference[];
+};
+export type CognitiveAppCommandRequest =
+  CognitiveAppOperationResolutionRequest & { commandId: string };
+export type PreparedCognitiveAppCommand = {
+  command: CognitiveAppCommandSnapshot;
+  operation: OperationDefinition;
+  parameters: JsonValue;
+};
+export type PreparedCognitiveAppReceiptRecovery = {
+  command: CognitiveAppCommandSnapshot;
+  definition: CognitiveAppDefinition;
+  connection: CognitiveAppConnection & { hostBindingId: string };
+};
+export type CognitiveAppConnectionStateRequest = {
+  appId: string;
+  version: string;
+  connectionId: string;
+  expectedRevision: number;
+  state: "active" | "disabled" | "unavailable";
+  expectedDefinitionHash?: string;
+  expectedGrantRevision?: number;
+  now?: string;
+};
+/** Fixed Host authority, never registered on Client/Agent/iframe transports. */
+export type CognitiveAppHostCommandRequest = {
+  tenantId: string;
+  commandId: string;
+};
+type CognitiveAppOperationDeclaration = {
+  version: CognitiveAppVersion;
   operation: OperationDefinition;
   parameters: JsonValue;
   resources: readonly OperationResourceReference[];
@@ -834,12 +878,26 @@ export class PlatformStore {
     };
   }
 
-  private cognitiveRegistry(q: Query, actor: ResolvedActor) {
+  private cognitiveRegistry(
+    q: Query,
+    actor: Pick<ResolvedActor, "tenantId" | "principalId">,
+  ) {
     return createCognitiveAppRegistry({
       q,
       backend: this.backend.kind,
       tenantId: actor.tenantId,
       principalId: actor.principalId,
+      fail: (code, message) => {
+        throw new PlatformStorageError(code, message);
+      },
+    });
+  }
+
+  private cognitiveCommands(q: Query, tenantId: string) {
+    return createCognitiveAppCommands({
+      q,
+      backend: this.backend.kind,
+      tenantId,
       fail: (code, message) => {
         throw new PlatformStorageError(code, message);
       },
@@ -987,6 +1045,48 @@ export class PlatformStore {
     });
   }
 
+  /** Actual Human state management derives the immutable private route from
+   * its owned relation. Disabling needs no secret, network, or active consent.
+   */
+  async changeCognitiveAppConnectionState(
+    access: PlatformActor,
+    request: CognitiveAppConnectionStateRequest,
+  ): Promise<CognitiveAppConnection> {
+    const { actor } = await this.prepareCognitiveActor(access, true);
+    return this.transaction(async (q) => {
+      const registry = this.cognitiveRegistry(q, actor);
+      await registry.lockRetainedVersion({
+        appId: request.appId,
+        version: request.version,
+        expectedDefinitionHash: request.expectedDefinitionHash,
+      });
+      if (request.state === "active")
+        await registry.lockOwnConsent({
+          appId: request.appId,
+          version: request.version,
+          expectedDefinitionHash: request.expectedDefinitionHash,
+          expectedGrantRevision: request.expectedGrantRevision,
+        });
+      const connection = await registry.readOwnConnectionForManagement({
+        appId: request.appId,
+        connectionId: request.connectionId,
+      });
+      const result = await registry.changeOwnConnection({
+        expectedAppId: request.appId,
+        connectionId: connection.connectionId,
+        serviceId: connection.serviceId,
+        dataAuthorityId: connection.dataAuthorityId,
+        hostBindingId: connection.hostBindingId,
+        expectedRevision: request.expectedRevision,
+        state: request.state,
+        now: request.now ?? new Date().toISOString(),
+      });
+      if (hasSqlChanges(q))
+        await this.advanceNavigation(q, actor.tenantId, ["access"]);
+      return result;
+    });
+  }
+
   /** Private alias read is purpose-neutral; later Gateway dispatch/recovery
    * must prove its own durable command purpose. This is not send authority. */
   async getCognitiveAppHostConnection(
@@ -1001,99 +1101,645 @@ export class PlatformStore {
     });
   }
 
-  async resolveCognitiveAppOperation(
-    access: PlatformActor,
+  private snapshotCognitiveOperationRequest(
+    input: CognitiveAppOperationResolutionRequest,
+  ): CognitiveAppOperationResolutionRequest {
+    // Capture known tuple scalars before the first asynchronous identity/SQL
+    // read. Do not canonicalize the whole request: optional undefined premises
+    // are legitimate, and caller-added identity/effect/hash fields are ignored.
+    const {
+      projectId,
+      appId,
+      version,
+      connectionId,
+      operationId,
+      expectedDefinitionHash,
+      expectedGrantRevision,
+      expectedConnectionRevision,
+    } = input;
+    try {
+      // A detached JSON carrier, not persisted business data. The JSON budget
+      // allows legal NUL/surrogate body text; raw identity guards do not apply.
+      const parameters = JSON.parse(
+        Buffer.from(
+          canonicalJsonBytes(parseProtocolValue(input.parameters)),
+        ).toString("utf8"),
+      ) as JsonValue;
+      // Zod's array/object parser returns new references. Project is only the
+      // framing shape here; the fixed declaration's scope is checked below.
+      const resources = parseOperationResources("project", input.resources);
+      return {
+        projectId,
+        appId,
+        version,
+        connectionId,
+        operationId,
+        expectedDefinitionHash,
+        expectedGrantRevision,
+        expectedConnectionRevision,
+        parameters,
+        resources,
+      };
+    } catch {
+      throw new PlatformStorageError(
+        "invalid",
+        "应用参数或资源不是有界 JSON。",
+      );
+    }
+  }
+
+  private async cognitiveOperationDeclaration(
+    q: Query,
+    actor: Pick<ResolvedActor, "tenantId" | "principalId">,
     request: CognitiveAppOperationResolutionRequest,
-  ): Promise<ResolvedCognitiveAppOperation> {
-    const { actor, executor, domainActor } =
-      await this.prepareCognitiveActor(access);
+  ): Promise<CognitiveAppOperationDeclaration> {
     requireId(request.projectId, "项目标识");
-    // FOR SHARE target locks use a write transaction even for a declared read;
-    // no data changes or navigation invalidation occur during this resolution.
-    return this.transaction(async (q) => {
-      const registry = this.cognitiveRegistry(q, actor);
-      // Read immutable declaration first so project/member/source locks precede
-      // mutable registry locks, matching command admission lock order.
-      const version = await registry.readExactVersion(
-        request.appId,
-        request.version,
-      );
-      const operation = version.definition.operations.find(
-        (op) => op.id === request.operationId,
-      );
-      if (!operation)
-        throw new PlatformStorageError("not_found", "应用未声明这项操作。");
-      let parameters: JsonValue,
-        resources: readonly OperationResourceReference[];
-      try {
-        parameters = validateOperationValue(
+    const version = await this.cognitiveRegistry(q, actor).readExactVersion(
+      request.appId,
+      request.version,
+    );
+    const operation = version.definition.operations.find(
+      (op) => op.id === request.operationId,
+    );
+    if (!operation)
+      throw new PlatformStorageError("not_found", "应用未声明这项操作。");
+    try {
+      return {
+        version,
+        operation,
+        parameters: validateOperationValue(
           operation.inputSchema,
           request.parameters,
-        );
-        resources = parseOperationResources(operation.scope, request.resources);
-      } catch {
+        ),
+        resources: parseOperationResources(operation.scope, request.resources),
+      };
+    } catch {
+      throw new PlatformStorageError(
+        "invalid",
+        "应用参数或精确资源引用不符合固定声明。",
+      );
+    }
+  }
+
+  private async assertCognitiveOperationPolicy(
+    q: Query,
+    prepared: PreparedCognitiveActor,
+    projectId: string,
+    operation: OperationDefinition,
+  ) {
+    if (operation.effect === "read")
+      await this.assertProjectReader(
+        q,
+        prepared.actor,
+        projectId,
+        prepared.executor,
+      );
+    else
+      await this.assertMember(
+        q,
+        prepared.actor,
+        projectId,
+        true,
+        true,
+        prepared.executor,
+      );
+  }
+
+  private async resolveCognitiveOperationTarget(
+    q: Query,
+    prepared: PreparedCognitiveActor,
+    request: CognitiveAppOperationResolutionRequest,
+    declaration: CognitiveAppOperationDeclaration,
+  ): Promise<ResolvedCognitiveAppOperation> {
+    const { version, operation, parameters, resources } = declaration;
+    const target = await this.cognitiveRegistry(
+      q,
+      prepared.actor,
+    ).lockCurrentTarget({
+      appId: request.appId,
+      version: request.version,
+      connectionId: request.connectionId,
+      expectedDefinitionHash:
+        request.expectedDefinitionHash ?? version.definitionHash,
+      expectedGrantRevision: request.expectedGrantRevision,
+      expectedConnectionRevision: request.expectedConnectionRevision,
+    });
+    if (target.definitionHash !== version.definitionHash)
+      throw new PlatformStorageError(
+        "conflict",
+        "应用固定声明在权限核验时已变化。",
+      );
+    // Lock a sorted COPY; semantic resources and the request hash retain order.
+    const authorizationResources = [...resources].sort((a, b) =>
+      a.objectId < b.objectId ? -1 : a.objectId > b.objectId ? 1 : 0,
+    );
+    for (const resource of authorizationResources) {
+      const row = await this.authorizeApplicationObjectRow(
+        q,
+        prepared.actor,
+        target.instanceId,
+        target.appId,
+        resource.objectId,
+        operation.effect === "read" ? "read" : "write",
+        undefined,
+        prepared.executor,
+        operation.effect !== "read",
+      );
+      if (row.project_id !== request.projectId)
         throw new PlatformStorageError(
-          "invalid",
-          "应用参数或精确资源引用不符合固定声明。",
+          "forbidden",
+          "应用资源不属于本次实际项目。",
         );
-      }
-      if (operation.effect === "read")
-        await this.assertProjectReader(q, actor, request.projectId, executor);
-      else
-        await this.assertMember(
-          q,
-          actor,
-          request.projectId,
-          true,
-          true,
-          executor,
-        );
-      const target = await registry.lockCurrentTarget({
-        ...request,
-        expectedDefinitionHash:
-          request.expectedDefinitionHash ?? version.definitionHash,
-      });
-      if (target.definitionHash !== version.definitionHash)
+      if (row.availability !== "available")
+        throw new PlatformStorageError("not_found", "应用资源当前不可用。");
+      if (
+        operation.effect !== "read" &&
+        row.observed_version_ref !== resource.versionRef
+      )
         throw new PlatformStorageError(
           "conflict",
-          "应用固定声明在权限核验时已变化。",
+          "写入或执行的目录基线已变化。",
         );
-      // Stable catalog lock order without changing author semantics, parameter
-      // canonicalization or the caller's original resource order.
-      const authorizationResources = [...resources].sort((a, b) =>
-        a.objectId < b.objectId ? -1 : a.objectId > b.objectId ? 1 : 0,
+    }
+    return {
+      actor: prepared.domainActor,
+      target,
+      operation,
+      parameters,
+      resources,
+    };
+  }
+
+  async resolveCognitiveAppOperation(
+    access: PlatformActor,
+    input: CognitiveAppOperationResolutionRequest,
+  ): Promise<ResolvedCognitiveAppOperation> {
+    const request = this.snapshotCognitiveOperationRequest(input);
+    const prepared = await this.prepareCognitiveActor(access);
+    return this.transaction(async (q) => {
+      const declaration = await this.cognitiveOperationDeclaration(
+        q,
+        prepared.actor,
+        request,
       );
-      for (const resource of authorizationResources) {
-        const row = await this.authorizeApplicationObjectRow(
-          q,
-          actor,
-          target.instanceId,
-          target.appId,
-          resource.objectId,
-          operation.effect === "read" ? "read" : "write",
-          undefined,
-          executor,
-          operation.effect !== "read",
-        );
-        if (row.project_id !== request.projectId)
-          throw new PlatformStorageError(
-            "forbidden",
-            "应用资源不属于本次实际项目。",
-          );
-        if (row.availability !== "available")
-          throw new PlatformStorageError("not_found", "应用资源当前不可用。");
-        if (
-          operation.effect !== "read" &&
-          row.observed_version_ref !== resource.versionRef
-        )
-          throw new PlatformStorageError(
-            "conflict",
-            "写入或执行的目录基线已变化。",
-          );
-      }
-      // Exact historical existence is App authority, not a catalog claim.
-      return { actor: domainActor, target, operation, parameters, resources };
+      await this.assertCognitiveOperationPolicy(
+        q,
+        prepared,
+        request.projectId,
+        declaration.operation,
+      );
+      return this.resolveCognitiveOperationTarget(
+        q,
+        prepared,
+        request,
+        declaration,
+      );
     });
+  }
+
+  private cognitiveRequestHash(
+    authority: CognitiveAppCommandSnapshot["authority"],
+    actor: DomainActor,
+    projectId: string,
+    operationId: string,
+    parameters: JsonValue,
+    resources: readonly OperationResourceReference[],
+  ) {
+    // Exactly the SDK's normative semantic object, without inventing a transport
+    // issuer/expiry. Neither a caller hash nor a current mutable revision is input.
+    return createHash("sha256")
+      .update(
+        canonicalJsonBytes({
+          protocol: domainProtocol,
+          authority,
+          actor,
+          projectId,
+          operationId,
+          parameters,
+          resources,
+        }),
+      )
+      .digest("hex");
+  }
+
+  private assertCognitiveCommandOwner(
+    current: CognitiveAppCommandSnapshot,
+    actual: DomainActor,
+  ) {
+    if (
+      !Buffer.from(canonicalJsonBytes(current.actor)).equals(
+        Buffer.from(canonicalJsonBytes(actual)),
+      )
+    )
+      throw new PlatformStorageError(
+        "forbidden",
+        "命令不属于本次实际参与者与持久来源。",
+      );
+  }
+
+  private cognitiveCommandAdmission(current: CognitiveAppCommandSnapshot) {
+    const {
+      commandId,
+      requestHash,
+      authority,
+      actor,
+      projectId,
+      operationId,
+      effect,
+      operationScope,
+      resources,
+      connectionId,
+      connectionRevision,
+      grantRevision,
+    } = current;
+    return {
+      commandId,
+      requestHash,
+      authority,
+      actor,
+      projectId,
+      operationId,
+      effect,
+      operationScope,
+      resources,
+      connectionId,
+      connectionRevision,
+      grantRevision,
+    };
+  }
+
+  private assertCognitiveCommandReplay(
+    current: CognitiveAppCommandSnapshot,
+    request: CognitiveAppCommandRequest,
+    declaration: CognitiveAppOperationDeclaration,
+  ) {
+    if (
+      request.projectId !== current.projectId ||
+      request.appId !== current.authority.appId ||
+      request.version !== current.authority.version ||
+      request.connectionId !== current.connectionId ||
+      request.operationId !== current.operationId ||
+      declaration.version.definitionHash !== current.authority.definitionHash ||
+      declaration.operation.effect !== current.effect ||
+      declaration.operation.scope !== current.operationScope ||
+      (request.expectedDefinitionHash !== undefined &&
+        request.expectedDefinitionHash !== current.authority.definitionHash) ||
+      (request.expectedGrantRevision !== undefined &&
+        request.expectedGrantRevision !== current.grantRevision) ||
+      (request.expectedConnectionRevision !== undefined &&
+        request.expectedConnectionRevision !== current.connectionRevision) ||
+      !Buffer.from(canonicalJsonBytes(declaration.resources)).equals(
+        Buffer.from(canonicalJsonBytes(current.resources)),
+      ) ||
+      this.cognitiveRequestHash(
+        current.authority,
+        current.actor,
+        current.projectId,
+        current.operationId,
+        declaration.parameters,
+        current.resources,
+      ) !== current.requestHash
+    )
+      throw new PlatformStorageError(
+        "conflict",
+        "原命令的固定目标、资源或参数身份不一致。",
+      );
+  }
+
+  async admitCognitiveAppCommand(
+    access: PlatformActor,
+    input: CognitiveAppCommandRequest,
+  ): Promise<PreparedCognitiveAppCommand> {
+    const commandId = input.commandId;
+    const request = {
+      ...this.snapshotCognitiveOperationRequest(input),
+      commandId,
+    };
+    const prepared = await this.prepareCognitiveActor(access);
+    requireId(request.commandId, "命令标识");
+    return this.transaction(async (q) => {
+      const commands = this.cognitiveCommands(q, prepared.actor.tenantId);
+      const declaration = await this.cognitiveOperationDeclaration(
+        q,
+        prepared.actor,
+        request,
+      );
+      if (declaration.operation.effect === "read")
+        throw new PlatformStorageError(
+          "invalid",
+          "只读操作不能受理副作用命令。",
+        );
+      const prior = await commands.read(request.commandId);
+      if (prior) {
+        await this.assertProjectReader(
+          q,
+          prepared.actor,
+          prior.projectId,
+          prepared.executor,
+        );
+        this.assertCognitiveCommandOwner(prior, prepared.domainActor);
+        this.assertCognitiveCommandReplay(prior, request, declaration);
+        // The ledger re-locks and compares its complete immutable admission.
+        // Revoked current consent cannot rewrite or hide original facts.
+        const command = await commands.admit(
+          this.cognitiveCommandAdmission(prior),
+        );
+        return {
+          command,
+          operation: declaration.operation,
+          parameters: declaration.parameters,
+        };
+      }
+      await this.assertCognitiveOperationPolicy(
+        q,
+        prepared,
+        request.projectId,
+        declaration.operation,
+      );
+      const raced = await commands.lockForAdmission(request.commandId);
+      if (raced) {
+        this.assertCognitiveCommandOwner(raced, prepared.domainActor);
+        this.assertCognitiveCommandReplay(raced, request, declaration);
+        return {
+          command: await commands.admit(this.cognitiveCommandAdmission(raced)),
+          operation: declaration.operation,
+          parameters: declaration.parameters,
+        };
+      }
+      const resolved = await this.resolveCognitiveOperationTarget(
+        q,
+        prepared,
+        request,
+        declaration,
+      );
+      const {
+        appId,
+        version,
+        definitionHash,
+        instanceId,
+        serviceId,
+        dataAuthorityId,
+      } = resolved.target;
+      const authority = {
+        appId,
+        version,
+        definitionHash,
+        instanceId,
+        serviceId,
+        dataAuthorityId,
+      };
+      const command = await commands.admit({
+        commandId: request.commandId,
+        requestHash: this.cognitiveRequestHash(
+          authority,
+          resolved.actor,
+          request.projectId,
+          request.operationId,
+          resolved.parameters,
+          resolved.resources,
+        ),
+        authority,
+        actor: resolved.actor,
+        projectId: request.projectId,
+        operationId: resolved.operation.id,
+        effect: resolved.operation.effect as "write" | "execute",
+        operationScope: resolved.operation.scope,
+        resources: resolved.resources,
+        connectionId: resolved.target.connectionId,
+        connectionRevision: resolved.target.connectionRevision,
+        grantRevision: resolved.target.grantRevision,
+      });
+      return {
+        command,
+        operation: resolved.operation,
+        parameters: resolved.parameters,
+      };
+    });
+  }
+
+  async dispatchCognitiveAppCommand(
+    access: PlatformActor,
+    input: CognitiveAppCommandRequest & { expectedCommandRevision: number },
+  ): Promise<PreparedCognitiveAppCommand | null> {
+    const { commandId, expectedCommandRevision } = input;
+    const request = {
+      ...this.snapshotCognitiveOperationRequest(input),
+      commandId,
+      expectedCommandRevision,
+    };
+    const prepared = await this.prepareCognitiveActor(access);
+    requireId(request.commandId, "命令标识");
+    if (
+      !Number.isSafeInteger(request.expectedCommandRevision) ||
+      request.expectedCommandRevision < 1 ||
+      request.expectedCommandRevision >= Number.MAX_SAFE_INTEGER
+    )
+      throw new PlatformStorageError("invalid", "命令发送修订前提无效。");
+    return this.transaction(async (q) => {
+      const commands = this.cognitiveCommands(q, prepared.actor.tenantId);
+      const prior = await commands.read(request.commandId);
+      if (!prior) throw new PlatformStorageError("not_found", "命令尚未受理。");
+      this.assertCognitiveCommandOwner(prior, prepared.domainActor);
+      const declaration = await this.cognitiveOperationDeclaration(
+        q,
+        prepared.actor,
+        request,
+      );
+      this.assertCognitiveCommandReplay(prior, request, declaration);
+      // Policy/project locks precede the command lock. Known terminal/unknown
+      // results are inspection, never permission to resend or to change target.
+      if (
+        prior.state !== "admitted" ||
+        prior.revision !== request.expectedCommandRevision
+      ) {
+        await this.assertProjectReader(
+          q,
+          prepared.actor,
+          prior.projectId,
+          prepared.executor,
+        );
+        return null;
+      }
+      await this.assertCognitiveOperationPolicy(
+        q,
+        prepared,
+        prior.projectId,
+        declaration.operation,
+      );
+      const current = await commands.lockForAdmission(request.commandId);
+      if (
+        !current ||
+        current.state !== "admitted" ||
+        current.revision !== request.expectedCommandRevision
+      )
+        return null;
+      this.assertCognitiveCommandOwner(current, prepared.domainActor);
+      this.assertCognitiveCommandReplay(current, request, declaration);
+      await this.resolveCognitiveOperationTarget(
+        q,
+        prepared,
+        {
+          ...request,
+          expectedDefinitionHash: current.authority.definitionHash,
+          expectedGrantRevision: current.grantRevision,
+          expectedConnectionRevision: current.connectionRevision,
+        },
+        declaration,
+      );
+      const command = await commands.dispatch(
+        request.commandId,
+        request.expectedCommandRevision,
+      );
+      return command
+        ? {
+            command,
+            operation: declaration.operation,
+            parameters: declaration.parameters,
+          }
+        : null;
+    });
+  }
+
+  async inspectCognitiveAppCommand(
+    access: PlatformActor,
+    request: { projectId: string; commandId: string },
+  ): Promise<CognitiveAppCommandSnapshot> {
+    const prepared = await this.prepareCognitiveActor(access);
+    requireId(request.projectId, "项目标识");
+    return this.transaction(async (q) => {
+      await this.assertProjectReader(
+        q,
+        prepared.actor,
+        request.projectId,
+        prepared.executor,
+      );
+      const command = await this.cognitiveCommands(
+        q,
+        prepared.actor.tenantId,
+      ).read(request.commandId);
+      if (!command || command.projectId !== request.projectId)
+        throw new PlatformStorageError("not_found", "命令不存在于这个项目。");
+      if (command.actor.principalId !== prepared.actor.principalId)
+        throw new PlatformStorageError(
+          "forbidden",
+          "不能查看另一位参与者的本人命令。",
+        );
+      if (prepared.actor.kind === "agent")
+        this.assertCognitiveCommandOwner(command, prepared.domainActor);
+      return command;
+    }, "read");
+  }
+
+  /** Receipt-only Host recovery derives ALL authority/source from a durable old
+   * admission. No live Runtime credential or generic disabled-target flag exists.
+   * The exact original personal connection must still be active for network use.
+   */
+  async prepareCognitiveAppReceiptRecovery(
+    request: CognitiveAppHostCommandRequest,
+  ): Promise<PreparedCognitiveAppReceiptRecovery> {
+    requireId(request.tenantId, "租户标识");
+    return this.transaction(async (q) => {
+      const command = await this.cognitiveCommands(q, request.tenantId).read(
+        request.commandId,
+      );
+      if (!command)
+        throw new PlatformStorageError("not_found", "命令尚未受理。");
+      if (command.state === "admitted" || command.state === "cancelled")
+        throw new PlatformStorageError(
+          "conflict",
+          "确知未发送的命令不能读取服务回执。",
+        );
+      const registry = this.cognitiveRegistry(q, {
+        tenantId: request.tenantId,
+        principalId: command.actor.principalId,
+      });
+      const version = await registry.readExactVersion(
+        command.authority.appId,
+        command.authority.version,
+      );
+      if (version.definitionHash !== command.authority.definitionHash)
+        throw new PlatformStorageError(
+          "conflict",
+          "原命令的不可变应用定义不一致。",
+        );
+      const connection = await registry.readHostConnection({
+        ...command.authority,
+        connectionId: command.connectionId,
+      });
+      return { command, definition: version.definition, connection };
+    });
+  }
+
+  /** Only the Gateway's authenticated fixed-route response may enter this port.
+   * Full expected binding is revalidated by the ledger, even after revocation.
+   */
+  async recordCognitiveAppCommandReceipt(
+    request: CognitiveAppHostCommandRequest & { receipt: unknown },
+  ): Promise<CognitiveAppCommandSnapshot> {
+    requireId(request.tenantId, "租户标识");
+    return this.transaction((q) =>
+      this.cognitiveCommands(q, request.tenantId).recordReceipt(
+        request.commandId,
+        request.receipt,
+      ),
+    );
+  }
+
+  async markCognitiveAppCommandUnknown(
+    request: CognitiveAppHostCommandRequest & {
+      expectedCommandRevision: number;
+    },
+  ): Promise<CognitiveAppCommandSnapshot | null> {
+    requireId(request.tenantId, "租户标识");
+    return this.transaction((q) =>
+      this.cognitiveCommands(q, request.tenantId).markUnknown(
+        request.commandId,
+        request.expectedCommandRevision,
+      ),
+    );
+  }
+
+  /** Explicit known-unsent cancellation only, never a timeout workaround. */
+  async cancelAdmittedCognitiveAppCommand(
+    request: CognitiveAppHostCommandRequest & {
+      expectedCommandRevision: number;
+    },
+  ): Promise<CognitiveAppCommandSnapshot | null> {
+    requireId(request.tenantId, "租户标识");
+    return this.transaction((q) =>
+      this.cognitiveCommands(q, request.tenantId).cancelAdmitted(
+        request.commandId,
+        request.expectedCommandRevision,
+      ),
+    );
+  }
+
+  async listRecoverableCognitiveAppCommands(
+    request: { tenantId: string } & CognitiveAppCommandPage,
+  ): Promise<CognitiveAppCommandSnapshot[]> {
+    requireId(request.tenantId, "租户标识");
+    return this.transaction(
+      (q) =>
+        this.cognitiveCommands(q, request.tenantId).listRecoverable({
+          afterCommandId: request.afterCommandId,
+          limit: request.limit,
+        }),
+      "read",
+    );
+  }
+
+  async listPendingCognitiveAppCommandProjections(
+    request: { tenantId: string } & CognitiveAppCommandPage,
+  ): Promise<CognitiveAppCommandSnapshot[]> {
+    requireId(request.tenantId, "租户标识");
+    return this.transaction(
+      (q) =>
+        this.cognitiveCommands(q, request.tenantId).listPendingProjection({
+          afterCommandId: request.afterCommandId,
+          limit: request.limit,
+        }),
+      "read",
+    );
   }
 
   static async sqlite(
@@ -6315,6 +6961,24 @@ export class PlatformStore {
     });
   }
 
+  private async assertCognitiveRetirementQuiescent(
+    q: Query,
+    tenantId: string,
+    projectId: string,
+  ) {
+    const commands = this.cognitiveCommands(q, tenantId);
+    if (await commands.hasOpenCommands(projectId))
+      throw new PlatformStorageError(
+        "conflict",
+        "项目仍有尚未确定结果的应用命令，不能归档或删除。",
+      );
+    if (await commands.hasPendingProjection(projectId))
+      throw new PlatformStorageError(
+        "conflict",
+        "应用命令已提交，但原件目录尚未补齐，不能归档或删除。",
+      );
+  }
+
   /** Hold new work out while the trusted Host checks exact Runtime work.
    * A retry of the same command resumes the fence; another command cannot
    * replace it. No visible project state or revision changes here. */
@@ -6358,6 +7022,11 @@ export class PlatformStore {
         current.deleted_at !== null
       )
         throw new PlatformStorageError("conflict", "项目状态未变化。");
+      await this.assertCognitiveRetirementQuiescent(
+        q,
+        actor.tenantId,
+        request.projectId,
+      );
       const pending = (
         await q.all<{ command_id: string; request_hash: string }>(
           "SELECT command_id,request_hash FROM project_retirements WHERE tenant_id=? AND project_id=?",
@@ -6546,6 +7215,11 @@ export class PlatformStore {
         safeInteger(current.revision, "项目修订") !== request.expectedRevision
       )
         throw new PlatformStorageError("conflict", "项目退役状态已变化。");
+      await this.assertCognitiveRetirementQuiescent(
+        q,
+        actor.tenantId,
+        request.projectId,
+      );
       const changed = await q.change(
         "UPDATE projects SET archived_at=?,deleted_at=?,revision=revision+1,updated_at=? WHERE tenant_id=? AND project_id=? AND revision=?",
         [

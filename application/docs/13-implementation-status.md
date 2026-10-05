@@ -1,5 +1,28 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：实际 Store 命令组合与退役保护
+
+Store 现组合实际 Human／Agent 的副作用受理、仅一次首次发送 fence、本人
+旧事实检查、Host-only 回执恢复／保存／未知状态／有界分页，以及已知未发
+命令的显式取消。语义 SHA 来自固定参数、资源、来源和保存方，逐字节等同
+公开 SDK；不信 caller hash，不保存参数／正文，不借新许可改绑旧命令。
+同 q 保持 project／member → command → registry → 排序资源锁；Runtime
+身份 I/O 在 SQL 前。连接停用不需要凭据，未知命令不自动重发。
+项目归档／删除的 begin 和 complete 均拦开放命令与 committed／pending
+目录；终态拒绝可释放保护，不靠超时伪造取消。
+
+新增 28 项实际 Store 双后端证人。Root 全部代码／测试审查后独立重跑两组
+正式回归 254/254、243/243，均真实 SQLite／PostgreSQL、零失败／跳过／
+取消；完整 typecheck、strict scoped 类型、新测试格式与 diff 通过。日志
+`/tmp/morphz-cognitive-platform-command-ROOT-BROAD-oct05.log` 和
+`/tmp/morphz-cognitive-platform-command-ROOT-FINAL-oct05.log`。
+参数引用漂移先实际 RED 26 通过／2 失败；现入口同步捕获脱离 caller 的
+有界参数／资源／标识快照，真实 SQL await 中修改原对象不改变命令，合法
+NUL／surrogate 业务正文保留。首 RED 日志
+`/tmp/morphz-platform-command-stage.UfFneP/PARAMETER-SNAPSHOT-FIRST-RED.log`。
+网络 Gateway、Store 目录通知接线、独立精确对象读取、GUI 和真实 Runtime
+／原 App 验收仍未完成；上述通过数不代表它们已交付。
+
 ## 2026-10-05 第三方认知应用：持久提交事实的目录投影
 
 新增同 q 的内部投影器，只读取 ledger 已核 committed／pending 原摘要，

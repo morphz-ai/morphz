@@ -278,7 +278,9 @@ Service adapter。示例通过打包后的公开导出接入，自己的数据�
 实际安装、导入三个公开入口及严格类型消费已验证，包不含 Host／Node／
 数据库／浏览器私有实现或凭据。标准声明库使用 ES2023＋DOM（Zod 引用
 标准 URL），不宣称缺少全局类型的任意配置通过。包仍 private、防误发布，
-尚未发布 npm；可选 browser bridge、Service 和完整共享入口另阶段实现。
+尚未发布 npm；独立 headless 作者 Service 已仅依赖该 tarball 实际测试。
+可选 browser bridge、GUI 和完整共享入口另阶段实现，不以作者独立测试
+替代 Host／真实 Agent 的接入验收。
 
 ## Platform 生产数据模型
 
@@ -359,8 +361,11 @@ commands（副作用受理、发送 fence、未知结果、回执投影、退休
 目前内部注册表、命令事实及 committed 目录投影器已通过双后端测试。
 投影器同 q 写既有目录与逐原件真实交付来源，最后标记 projected；业务正文
 不落 Platform，opaque 版本只做精确基线匹配，不按大小或时间覆盖。
-实际 Store 通知组合和项目退役纳入 ledger 还须接线，不能把内部
-markProjected／hasOpenCommands 存在当成客户端链路已经完成。
+Store 实际权限下的 admission／dispatch／原回执恢复和 begin／complete
+项目退役保护已组合验证；开放命令和 committed／pending 目录都阻挡退役。
+入口同步捕获有界参数／资源／目标快照，避免异步期间 caller 改变已核字节。
+实际 Store 目录通知、网络 Gateway 和独立 objects/read 仍须接线，不能把
+内部 markProjected／hasOpenCommands 存在当成客户端链路已经完成。
 
 Host 的 CognitiveAppGateway 负责固定连接、网络安全、实际 wire 校验和
 回执核验，只通过 Platform typed port 调用上述职责；由共享应用 Host 与

@@ -44,11 +44,12 @@ node service.mjs --db /absolute/private-author-data/notes.sqlite --config /absol
 
 四条 POST JSON 路由 `/describe`、`/invoke`、`/objects/read`、`/receipts/read`
 均须专用 Bearer。声明包含 notes.list(project read)、notes.create(project write)、
-JSON 接受不带参数或显式 UTF-8 charset 的 application/json；不接受其他
-charset、额外参数或 Content-Encoding。宿主的实际 UTF-8 请求头已单独覆盖。
 notes.revise(objects write)。修订须一项显式原件/当前精确基线，参数引用必须相同。
 读取旧版本返回旧原文，不回退 latest。list 最大 32，更多时给 nextAfterObjectId；
 没有更多时该可选字段省略。
+
+JSON 接受不带参数或显式 UTF-8 charset 的 application/json；不接受其他
+charset、额外参数或 Content-Encoding。宿主的实际 UTF-8 请求头已单独覆盖。
 
 作者重新计算真实 semantic SHA，完整绑定与命令回执持久化。同 command 不同
 内容/来源/实例冲突；同 command/hash 回放同一事实，无第二次写。rejected 只证明
