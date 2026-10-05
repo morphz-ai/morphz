@@ -35,7 +35,7 @@ export type CognitiveApplicationEntry = Readonly<{
     | "installation-inactive"
     | "not-granted"
     | "no-active-connection";
-  gui: "absent" | "host-not-accepted";
+  gui: "absent" | "host-not-accepted" | "available";
 }>;
 export type ApplicationPresentationEntry =
   LegacyEntry<"builtin"> | LegacyEntry<"ui-only"> | CognitiveApplicationEntry;
@@ -127,11 +127,14 @@ export function projectApplicationPresentation({
   principalId,
   workspaceId,
   cognitiveCatalog,
+  cognitiveGuiAccepted = false,
 }: {
   workspace: Workspace;
   principalId: string;
   workspaceId: string;
   cognitiveCatalog?: Pick<CognitiveAppCatalogDto, "versions" | "connections">;
+  /** This Host has the fixed Document consumer, not a grant or online proof. */
+  cognitiveGuiAccepted?: boolean;
 }): ApplicationPresentationDirectory {
   const project = workspace.projects.find((entry) => entry.id === workspaceId);
   const currentProject = !!project && projectStatus(project) === "active";
@@ -161,7 +164,12 @@ export function projectApplicationPresentation({
       metadata,
       connections,
       inputAvailability,
-      gui: metadata.ui === null ? "absent" : "host-not-accepted",
+      gui:
+        metadata.ui === null
+          ? "absent"
+          : cognitiveGuiAccepted
+            ? "available"
+            : "host-not-accepted",
     };
   });
   const entries = [...legacy, ...cognitive];

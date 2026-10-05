@@ -234,6 +234,40 @@ test("declared cognitive GUI remains honestly unavailable and cannot become the 
   assert.equal(cognitiveApplicationTargets(entry).length, 1);
 });
 
+test("fixed Document consumer acceptance is an explicit Host fact, never permission or a default target", () => {
+  const metadata = version({
+    ui: { packageVersion: "1.0.0", sha256: "c".repeat(64) },
+  });
+  for (const grant of [metadata.grant, null]) {
+    const catalog = {
+      versions: [{ ...metadata, grant }, version({ appId: "headless.notes" })],
+      connections: [connection()],
+    };
+    const projected = projectApplicationPresentation({
+      workspace: initialWorkspace(now),
+      principalId: "local-owner",
+      workspaceId: "first-project",
+      cognitiveCatalog: catalog,
+      cognitiveGuiAccepted: true,
+    });
+    const gui = projected.entries.find(
+      (entry) =>
+        entry.kind === "cognitive" && entry.metadata.appId === "author.notes",
+    );
+    const headless = projected.entries.find(
+      (entry) =>
+        entry.kind === "cognitive" && entry.metadata.appId === "headless.notes",
+    );
+    assert(gui?.kind === "cognitive" && headless?.kind === "cognitive");
+    assert.equal(gui.gui, "available");
+    assert.equal(headless.gui, "absent");
+    assert.equal(cognitiveApplicationTargets(gui).length, grant ? 1 : 0);
+    assert.equal(Object.hasOwn(gui, "selectedConnection"), false);
+    assert.equal(Object.hasOwn(gui, "application"), false);
+    assert.equal(projected.quickEntries.includes(gui), !!grant);
+  }
+});
+
 test("old raw compatibility uses the same typed presentation and keeps supplied entries unchanged", () => {
   const raw = [browserApplication, readerApplication];
   const normalized = normalizeApplicationPresentation(raw);

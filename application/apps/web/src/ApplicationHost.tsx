@@ -91,6 +91,7 @@ export function ApplicationHost({
   applicationDirectory,
   cognitiveChoiceScopeKey,
   onChooseCognitiveApplication,
+  onOpenCognitiveApplication,
 }: {
   client: WorkspaceClient;
   workspaceId: string;
@@ -111,6 +112,10 @@ export function ApplicationHost({
   applicationDirectory?: ApplicationPresentationDirectory;
   cognitiveChoiceScopeKey?: string;
   onChooseCognitiveApplication?(
+    entry: CognitiveApplicationEntry,
+    scopeKey: string,
+  ): void;
+  onOpenCognitiveApplication?(
     entry: CognitiveApplicationEntry,
     scopeKey: string,
   ): void;
@@ -386,26 +391,32 @@ export function ApplicationHost({
                     className="application-tile"
                     aria-label={
                       app.kind === "cognitive"
-                        ? `用于本次输入：${presentationTitle(app)} ${presentationVersion(app)}`
+                        ? `${app.gui === "available" ? "打开界面" : "用于本次输入"}：${presentationTitle(app)} ${presentationVersion(app)}`
                         : `${presentationTitle(app)} ${presentationVersion(app)}`
                     }
                     title={
                       app.kind === "cognitive"
                         ? cognitiveAvailabilityReason(app) ||
-                          "用于本次输入，不打开界面或开始工作"
+                          (app.gui === "available"
+                            ? "明确选择数据连接后打开界面，不开始工作"
+                            : "用于本次输入，不打开界面或开始工作")
                         : undefined
                     }
                     disabled={
                       busy ||
                       (app.kind === "cognitive" &&
                         (app.inputAvailability !== "selectable" ||
-                          !onChooseCognitiveApplication ||
+                          !(app.gui === "available"
+                            ? onOpenCognitiveApplication
+                            : onChooseCognitiveApplication) ||
                           cognitiveChoiceScopeKey === undefined))
                     }
                     onClick={() => {
                       if (app.kind === "cognitive") {
                         if (cognitiveChoiceScopeKey !== undefined)
-                          onChooseCognitiveApplication?.(
+                          (app.gui === "available"
+                            ? onOpenCognitiveApplication
+                            : onChooseCognitiveApplication)?.(
                             app,
                             cognitiveChoiceScopeKey,
                           );
@@ -433,7 +444,10 @@ export function ApplicationHost({
                     </strong>
                     <small>
                       {app.kind === "cognitive"
-                        ? cognitiveAvailabilityReason(app) || "用于本次输入"
+                        ? cognitiveAvailabilityReason(app) ||
+                          (app.gui === "available"
+                            ? "打开独立界面"
+                            : "用于本次输入")
                         : applicationDescription(app.application)}
                     </small>
                   </button>

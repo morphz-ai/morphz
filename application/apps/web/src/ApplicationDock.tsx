@@ -42,6 +42,7 @@ export function ApplicationDock({
     selectedKey?: string;
     disabled?: boolean;
     onChoose(entry: CognitiveApplicationEntry, scopeKey: string): void;
+    onOpen?(entry: CognitiveApplicationEntry, scopeKey: string): void;
   };
   onManage(): void;
 }) {
@@ -88,7 +89,9 @@ export function ApplicationDock({
   async function launch(app: ApplicationPresentationEntry, scopeKey?: string) {
     if (app.kind === "cognitive") {
       if (!cognitiveChoice?.disabled && scopeKey !== undefined)
-        cognitiveChoice?.onChoose(app, scopeKey);
+        (app.gui === "available" && cognitiveChoice?.onOpen
+          ? cognitiveChoice.onOpen
+          : cognitiveChoice?.onChoose)?.(app, scopeKey);
       return;
     }
     if (launching.current) return;
@@ -126,12 +129,12 @@ export function ApplicationDock({
               key={presentationKey(app)}
               aria-label={
                 app.kind === "cognitive"
-                  ? `用于本次输入：${presentationTitle(app)} ${presentationVersion(app)}`
+                  ? `${app.gui === "available" && cognitiveChoice?.onOpen ? "打开界面" : "用于本次输入"}：${presentationTitle(app)} ${presentationVersion(app)}`
                   : `打开${presentationTitle(app)}`
               }
               title={
                 app.kind === "cognitive"
-                  ? `${presentationTitle(app)} ${presentationVersion(app)} · 用于本次输入`
+                  ? `${presentationTitle(app)} ${presentationVersion(app)} · ${app.gui === "available" && cognitiveChoice?.onOpen ? "打开独立界面" : "用于本次输入"}`
                   : presentationTitle(app)
               }
               disabled={
@@ -140,7 +143,8 @@ export function ApplicationDock({
                   (!cognitiveChoice || cognitiveChoice.disabled))
               }
               aria-pressed={
-                app.kind === "cognitive"
+                app.kind === "cognitive" &&
+                !(app.gui === "available" && cognitiveChoice?.onOpen)
                   ? cognitiveChoice?.selectedKey === app.key
                   : activeKey === presentationKey(app)
               }
@@ -211,12 +215,14 @@ export function ApplicationDock({
                         className="application-dock-launch"
                         aria-label={
                           app.kind === "cognitive"
-                            ? `用于本次输入：${presentationTitle(app)} ${presentationVersion(app)}`
+                            ? app.gui === "available" && cognitiveChoice?.onOpen
+                              ? `打开界面：${presentationTitle(app)} ${presentationVersion(app)}`
+                              : `用于本次输入：${presentationTitle(app)} ${presentationVersion(app)}`
                             : `打开${presentationTitle(app)}`
                         }
                         title={
                           app.kind === "cognitive"
-                            ? `${presentationTitle(app)} ${presentationVersion(app)} · 用于本次输入`
+                            ? `${presentationTitle(app)} ${presentationVersion(app)} · ${app.gui === "available" && cognitiveChoice?.onOpen ? "打开界面" : "用于本次输入"}`
                             : presentationTitle(app)
                         }
                         disabled={

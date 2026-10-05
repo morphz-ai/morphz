@@ -103,7 +103,19 @@ import { TaskList } from "./TaskList.js";
 import { taskListOptions } from "./task-list.js";
 import { ApplicationHost } from "./ApplicationHost.js";
 import { CognitiveOriginalView } from "./CognitiveOriginalView.js";
-import { useCognitiveOriginal } from "./host/use-cognitive-original.js";
+import {
+  useCognitiveOriginal,
+  type CognitiveOriginal,
+} from "./host/use-cognitive-original.js";
+import type { CognitiveNavigationLocation } from "./host/cognitive-navigation-location.js";
+import { useCognitiveView } from "./host/use-cognitive-view.js";
+import { CognitiveDocumentView } from "./features/applications/CognitiveDocumentView.js";
+import { createCognitiveComposePreparation } from "./host/cognitive-compose-preparation.js";
+import { createCognitiveObjectOwner } from "./host/cognitive-object-owner.js";
+import { createCognitiveViewOpening } from "./host/cognitive-view-opening.js";
+import { applicationCall } from "./application-transport.js";
+import type { CognitiveAppViewUi } from "../../../packages/core/src/cognitive-app-view-api.js";
+import type { CognitiveBrowserRouterPorts } from "./host/cognitive-browser-router.js";
 import { createCognitiveDraftWriter } from "./host/cognitive-draft-writer.js";
 import {
   parseCognitiveAppObjectLocator,
@@ -534,21 +546,48 @@ function WorkspaceApp({
     navigationEpoch: cognitiveReadNavigation.current.epoch,
     isCurrent: () => origin.isActive() && !!host.currentProjection(),
   });
+  const cognitiveView = useCognitiveView({
+    location: prefs.cognitiveLocation,
+    identity: {
+      centerId: client.boot!.centerId,
+      principalId: client.boot!.principalId,
+      csrfToken: client.boot!.csrfToken,
+    },
+    navigationEpoch: cognitiveReadNavigation.current.epoch,
+    isCurrent: () => origin.isActive() && !!host.currentProjection(),
+  });
+  const cognitiveRequested = cognitive.requested || cognitiveView.requested;
   const cognitiveSurface = cognitive.value
     ? { kind: "original" as const, locator: cognitive.value.locator }
-    : null;
+    : cognitiveView.value
+      ? {
+          kind: "view" as const,
+          projectId: cognitiveView.value.binding.projectId,
+          viewId: cognitiveView.value.view.id,
+          connectionId: cognitiveView.value.binding.connectionId,
+          authority: cognitiveView.value.authority,
+        }
+      : null;
   const cognitiveOpen = useRef<{
     abort: AbortController;
     generation: number;
+    active: boolean;
+    publication?: {
+      value: CognitiveOriginal;
+      location: Extract<CognitiveNavigationLocation, { kind: "original" }>;
+      epoch: number;
+      committed: boolean;
+    };
   } | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const pending = cognitiveOpen.current;
     if (pending && !navigation.isCurrent(pending.generation))
       pending.abort.abort();
   }, [renderNavigation]);
-  useEffect(() => () => cognitiveOpen.current?.abort.abort(), []);
+  useLayoutEffect(() => () => cognitiveOpen.current?.abort.abort(), []);
   const cognitiveInputBlocked =
     cognitive.blocked ||
+    cognitiveView.blocked ||
     (!!cognitiveOpen.current &&
       navigation.isCurrent(cognitiveOpen.current.generation));
   const [browserPage, setBrowserPage] = useState<BrowserView | null>(null);
@@ -563,6 +602,30 @@ function WorkspaceApp({
     main = useRef<HTMLElement>(null),
     toggle = useRef<HTMLButtonElement>(null),
     file = useRef<HTMLInputElement>(null);
+  // A private publication witness, not a render snapshot or a navigation ACK.
+  // The acquired original and exact candidate location must be the objects
+  // actually committed by this App's original reader branch and live main.
+  useLayoutEffect(() => {
+    const pending = cognitiveOpen.current;
+    const expected = pending?.publication;
+    if (
+      !pending?.active ||
+      !expected ||
+      pending.abort.signal.aborted ||
+      !origin.isActive() ||
+      !host.currentProjection() ||
+      !navigation.isCurrent(pending.generation) ||
+      prefs.cognitiveLocation !== expected.location ||
+      cognitive.value !== expected.value ||
+      !cognitive.requested ||
+      cognitiveReadNavigation.current.epoch !== expected.epoch ||
+      !main.current?.isConnected ||
+      main.current.hidden ||
+      !main.current.querySelector("article.object-paper")
+    )
+      return;
+    expected.committed = true;
+  });
   const [importing, setImporting] = useState(false);
   const [compact, setCompact] = useState(
       () => matchMedia("(max-width:850px)").matches,
@@ -619,6 +682,7 @@ function WorkspaceApp({
           principalId: client.boot!.principalId,
           workspaceId: project.id,
           cognitiveCatalog: client.cognitiveAppCatalog,
+          cognitiveGuiAccepted: true,
         })
       : { entries: [], quickEntries: [] };
   const cognitiveApplications = applicationDirectory.entries.filter(
@@ -644,6 +708,14 @@ function WorkspaceApp({
     cognitiveSurface,
     directory: applicationDirectory,
   });
+  const [cognitiveGuiChoice, setCognitiveGuiChoice] = useState<{
+    scopeKey: string;
+    entryKey: string;
+  } | null>(null);
+  useEffect(() => {
+    if (cognitiveGuiChoice?.scopeKey !== cognitiveChoiceScopeKey)
+      setCognitiveGuiChoice(null);
+  }, [cognitiveGuiChoice, cognitiveChoiceScopeKey]);
   cognitiveChoiceOwner.current = {
     scopeKey: cognitiveChoiceScopeKey,
     contextKey,
@@ -882,9 +954,10 @@ function WorkspaceApp({
     };
   }, [contextKey, activeId]);
   useEffect(() => {
-    document.title = `${cognitive.value?.original.title ?? artifact?.title ?? (prefs.view === "projects" && prefs.projectOpen ? project?.title : labels[prefs.view])} — Morphz`;
+    document.title = `${cognitive.value?.original.title ?? cognitiveView.value?.manifest.title ?? artifact?.title ?? (prefs.view === "projects" && prefs.projectOpen ? project?.title : labels[prefs.view])} — Morphz`;
   }, [
     cognitive.value?.original.title,
+    cognitiveView.value?.manifest.title,
     artifact?.title,
     project?.title,
     prefs.view,
@@ -892,6 +965,86 @@ function WorkspaceApp({
   ]);
   const currentContext = useRef(contextKey);
   currentContext.current = contextKey;
+  // Only a committed original App render lends its current draft/navigation
+  // owner to requests. The GUI keeps its immutable read owner; each request
+  // captures an independent lease and the latest committed input context.
+  const cognitivePublication = useRef<{
+    source: CognitiveAppViewUi | null;
+    view: typeof cognitiveView;
+    contextKey: string;
+    drafts: typeof drafts;
+    writeInputs: typeof draftCommands.writeInputs;
+    prepare: CognitiveBrowserRouterPorts["compose"];
+    openObject: CognitiveBrowserRouterPorts["openObject"];
+    location: Preferences["cognitiveLocation"];
+  } | null>(null);
+  useLayoutEffect(() => {
+    cognitivePublication.current = {
+      source: cognitiveView.value,
+      view: cognitiveView,
+      contextKey,
+      drafts,
+      writeInputs: draftCommands.writeInputs,
+      prepare: prepareCognitiveInput,
+      openObject: openCognitiveDocumentObject,
+      location: prefs.cognitiveLocation,
+    };
+  });
+  useLayoutEffect(
+    () => () => {
+      cognitivePublication.current = null;
+    },
+    [],
+  );
+  const cognitiveDocumentKey = JSON.stringify([
+    client.boot!.centerId,
+    client.boot!.principalId,
+    client.boot!.csrfToken,
+    cognitiveReadNavigation.current.epoch,
+    cognitiveLocationKey,
+  ]);
+  const cognitiveDocumentLease = cognitiveView.value
+    ? cognitiveView.captureLease(cognitiveView.value)
+    : null;
+  const cognitiveDocumentSource = cognitiveView.value;
+  const cognitiveDocumentPrivateCommit = origin.capturePrivateCommit();
+  const cognitiveIdentityGeneration = client.boot!.csrfToken;
+  const documentCurrent = () => {
+    const current = host.currentProjection();
+    return (
+      !!current &&
+      cognitiveDocumentPrivateCommit(current) &&
+      !!cognitiveDocumentLease?.isCurrent() &&
+      cognitivePublication.current?.source === cognitiveDocumentSource &&
+      !!cognitiveDocumentSource &&
+      currentCognitiveViewSource(cognitiveDocumentSource)
+    );
+  };
+  const cognitiveRouterPorts: CognitiveBrowserRouterPorts = {
+    async call(method, parameters, options) {
+      if (!documentCurrent() || options.signal?.aborted)
+        throw { code: "unavailable" };
+      const value = await applicationCall(method, parameters, {
+        ...options,
+        identityGeneration: cognitiveIdentityGeneration,
+      });
+      if (!documentCurrent() || options.signal?.aborted)
+        throw { code: "unavailable" };
+      return value;
+    },
+    async compose(request, signal) {
+      if (!documentCurrent() || signal.aborted) throw { code: "unavailable" };
+      const owner = cognitivePublication.current;
+      if (!owner) throw { code: "unavailable" };
+      return owner.prepare(request, signal);
+    },
+    async openObject(request, signal) {
+      if (!documentCurrent() || signal.aborted) throw { code: "unavailable" };
+      const owner = cognitivePublication.current;
+      if (!owner) throw { code: "unavailable" };
+      return owner.openObject(request, signal);
+    },
+  };
   const place: NavigationPlace = {
     view: prefs.view,
     projectId: navigationProject?.id ?? prefs.projectId,
@@ -1132,69 +1285,419 @@ function WorkspaceApp({
       return false;
     }
   }
+  function requestCognitiveGui(
+    entry: CognitiveApplicationEntry,
+    scopeKey: string,
+  ) {
+    const current = cognitiveChoiceOwner.current;
+    if (
+      !currentCognitiveChoiceWindow() ||
+      !origin.isActive() ||
+      !host.currentProjection() ||
+      current.scopeKey !== scopeKey ||
+      !current.directory.entries.some(
+        (candidate) =>
+          candidate.kind === "cognitive" &&
+          candidate.key === entry.key &&
+          candidate.gui === "available" &&
+          candidate.inputAvailability === "selectable",
+      )
+    )
+      return;
+    setCognitiveGuiChoice({ scopeKey, entryKey: entry.key });
+  }
+  async function openCognitiveGui(
+    target: CognitiveAppApplicationTarget,
+    scopeKey: string,
+  ) {
+    const currentChoice = cognitiveChoiceOwner.current;
+    const entry = currentChoice.directory.entries.find(
+      (entry) =>
+        entry.kind === "cognitive" &&
+        entry.gui === "available" &&
+        cognitiveApplicationTargets(entry).some((candidate) =>
+          sameCognitiveAppApplicationTarget(candidate, target),
+        ),
+    );
+    const connection =
+      entry?.kind === "cognitive"
+        ? entry.connections.find(
+            (connection) => connection.connectionId === target.connectionId,
+          )
+        : null;
+    if (
+      !currentCognitiveChoiceWindow() ||
+      currentChoice.scopeKey !== scopeKey ||
+      !currentChoice.project ||
+      entry?.kind !== "cognitive" ||
+      !entry.metadata.grant ||
+      !connection ||
+      !origin.isActive()
+    )
+      return;
+    const projectId = currentChoice.project.id;
+    const grantRevision = entry.metadata.grant.revision;
+    const connectionRevision = connection.revision;
+    const key = currentChoice.contextKey;
+    const identityGeneration = cognitiveIdentityGeneration;
+    setCognitiveGuiChoice(null);
+    cognitiveOpen.current?.abort.abort();
+    const pending: NonNullable<typeof cognitiveOpen.current> = {
+      generation: navigation.beginOpen(),
+      abort: new AbortController(),
+      active: true,
+    };
+    cognitiveOpen.current = pending;
+    const privateCommit = origin.capturePrivateCommit();
+    const intent = { generation: pending.generation };
+    const destination: CurrentDestination = (current) =>
+      privateCommit(current) &&
+      navigation.isCurrent(intent.generation) &&
+      current.workspace.projects.some(
+        (p) => p.id === projectId && projectStatus(p) === "active",
+      );
+    const current = () => {
+      const projection = host.currentProjection();
+      const choice = cognitiveChoiceOwner.current;
+      const candidate = choice.directory.entries.find(
+        (candidate) =>
+          candidate.kind === "cognitive" && candidate.key === entry.key,
+      );
+      return (
+        pending.active &&
+        !pending.abort.signal.aborted &&
+        !!projection &&
+        destination(projection) &&
+        currentCognitiveChoiceWindow() &&
+        choice.scopeKey === scopeKey &&
+        choice.contextKey === key &&
+        candidate?.kind === "cognitive" &&
+        candidate.metadata.grant?.revision === grantRevision &&
+        candidate.connections.some(
+          (connection) =>
+            connection.connectionId === target.connectionId &&
+            connection.revision === connectionRevision,
+        ) &&
+        cognitiveApplicationTargets(candidate).some((candidate) =>
+          sameCognitiveAppApplicationTarget(candidate, target),
+        )
+      );
+    };
+    const timer = setTimeout(() => pending.abort.abort(), 30_000);
+    try {
+      const opened = await createCognitiveViewOpening({
+        current,
+        call: (method, parameters, options) =>
+          applicationCall(method, parameters, {
+            ...options,
+            identityGeneration,
+          }),
+      }).open(
+        {
+          projectId,
+          target,
+          expectedGrantRevision: grantRevision,
+          expectedConnectionRevision: connectionRevision,
+          commandId: crypto.randomUUID(),
+        },
+        pending.abort.signal,
+      );
+      if (!current()) return;
+      // Restoring this committed position reads through the original view owner;
+      // a launch receipt or an opening-source prop never becomes a permission.
+      let committing = true;
+      const commit: CurrentDestination = (current) =>
+        committing && destination(current);
+      try {
+        flushSync(() => {
+          setCreating(null);
+          setExecutions(null);
+          setWebsiteIntent(null);
+          continueNavigation(
+            {
+              view: "projects",
+              projectId,
+              projectOpen: true,
+              artifactId: null,
+              cognitiveLocation: opened.location,
+            },
+            intent,
+            commit,
+          );
+          pending.generation = intent.generation;
+          if (cognitiveLocationKey === JSON.stringify(opened.location))
+            cognitiveView.reload();
+        });
+      } finally {
+        committing = false;
+      }
+    } catch (error) {
+      const projection = host.currentProjection();
+      if (projection && destination(projection) && origin.isActive())
+        setNotice(
+          error instanceof Error
+            ? error.message
+            : "应用界面暂时无法打开，原资料与草稿仍保留。",
+        );
+    } finally {
+      pending.active = false;
+      clearTimeout(timer);
+      pending.abort.abort();
+      if (cognitiveOpen.current === pending) cognitiveOpen.current = null;
+      navigation.finishOpen(intent.generation);
+    }
+  }
+  function currentCognitiveViewSource(source: CognitiveAppViewUi) {
+    const directory = cognitiveChoiceOwner.current.directory;
+    const entry = directory.entries.find(
+      (entry) =>
+        entry.kind === "cognitive" &&
+        entry.metadata.appId === source.authority.appId &&
+        entry.metadata.version === source.authority.version &&
+        entry.metadata.definitionHash === source.authority.definitionHash,
+    );
+    return (
+      entry?.kind === "cognitive" &&
+      entry.inputAvailability === "selectable" &&
+      entry.metadata.grant?.revision === source.grantRevision &&
+      entry.connections.some(
+        (connection) =>
+          connection.state === "active" &&
+          connection.connectionId === source.binding.connectionId &&
+          connection.revision === source.connectionRevision &&
+          connection.instanceId === source.authority.instanceId &&
+          connection.serviceId === source.authority.serviceId &&
+          connection.dataAuthorityId === source.authority.dataAuthorityId,
+      )
+    );
+  }
+  function captureCognitiveInputSource(source: CognitiveAppViewUi) {
+    const published = cognitivePublication.current;
+    const viewLease = published?.view.captureLease(source);
+    if (
+      !published ||
+      !viewLease ||
+      !currentCognitiveChoiceWindow() ||
+      !currentCognitiveViewSource(source) ||
+      cognitiveOpen.current
+    )
+      return null;
+    const key = published.contextKey;
+    const initialSource = published.source;
+    const privateCommit = origin.capturePrivateCommit();
+    const current = () => {
+      const current = host.currentProjection();
+      return (
+        !!current &&
+        privateCommit(current) &&
+        viewLease.isCurrent() &&
+        currentCognitiveChoiceWindow() &&
+        currentCognitiveViewSource(source) &&
+        !cognitiveOpen.current &&
+        currentContext.current === key &&
+        cognitivePublication.current?.source === initialSource &&
+        cognitivePublication.current.contextKey === key
+      );
+    };
+    if (!current()) return null;
+    return { published, viewLease, key, current };
+  }
+  async function prepareCognitiveInput(
+    request: Parameters<CognitiveBrowserRouterPorts["compose"]>[0],
+    signal: AbortSignal,
+  ) {
+    const identityGeneration = cognitiveIdentityGeneration;
+    const objectOwner = createCognitiveObjectOwner({
+      call: (method, parameters, options) =>
+        applicationCall(method, parameters, {
+          ...options,
+          identityGeneration,
+        }),
+    });
+    return createCognitiveComposePreparation({
+      captureScope(source) {
+        const lease = captureCognitiveInputSource(source);
+        return lease
+          ? {
+              scope: {
+                key: lease.key,
+                surface: lease.viewLease.surface,
+                viewRevision: source.view.revision,
+                bindingRevision: source.binding.revision,
+              },
+              isCurrent: lease.current,
+            }
+          : null;
+      },
+      locatorForView: objectOwner.locatorForView,
+      writeInputs: draftCommands.writeInputs,
+      flushSync,
+      publishedDraft: (key) => cognitivePublication.current?.drafts[key],
+      emptyDraft,
+      onPrepared(bodyChanged) {
+        if (bodyChanged) dictationControls.current?.interrupt();
+        showInput();
+      },
+    })(request, signal);
+  }
+  async function openCognitiveDocumentObject(
+    request: Parameters<CognitiveBrowserRouterPorts["openObject"]>[0],
+    signal: AbortSignal,
+  ) {
+    const published = cognitivePublication.current;
+    const lease = published?.view.captureLease(request.source);
+    if (
+      !published ||
+      !lease ||
+      !currentCognitiveViewSource(request.source) ||
+      signal.aborted
+    )
+      throw { code: "unavailable" };
+    const initialSource = published.source;
+    const privateCommit = origin.capturePrivateCommit();
+    const current = () => {
+      const current = host.currentProjection();
+      return (
+        !!current &&
+        privateCommit(current) &&
+        lease.isCurrent() &&
+        currentCognitiveViewSource(request.source) &&
+        cognitivePublication.current?.source === initialSource
+      );
+    };
+    const identityGeneration = cognitiveIdentityGeneration;
+    const objectOwner = createCognitiveObjectOwner({
+      call: (method, parameters, options) =>
+        applicationCall(method, parameters, {
+          ...options,
+          identityGeneration,
+        }),
+    });
+    if (!current()) throw { code: "unavailable" };
+    const locator = await objectOwner.locatorForView(
+      request.source,
+      request.object,
+      signal,
+    );
+    if (signal.aborted || !current()) throw { code: "unavailable" };
+    if (!(await openCognitiveOriginal(locator, { signal, current })))
+      throw { code: "unavailable" };
+    // Internal real publication fact. A terminal navigation normally destroys
+    // this source; the accepted router/consumer post-gates then suppress ACK.
+    return { opened: true as const, object: request.object };
+  }
   function open(id: string, revision?: number, page?: number) {
     if (!origin.isActive()) return;
     setWebsiteIntent(null);
     void openUser(id, revision, page);
   }
-  async function openCognitiveOriginal(raw: CognitiveAppObjectLocator) {
-    if (!origin.isActive()) return;
+  async function openCognitiveOriginal(
+    raw: CognitiveAppObjectLocator,
+    options?: { signal: AbortSignal; current(): boolean },
+  ): Promise<boolean> {
+    if (
+      !origin.isActive() ||
+      options?.signal.aborted ||
+      options?.current() === false
+    )
+      return false;
     let locator: CognitiveAppObjectLocator;
     try {
       locator = parseCognitiveAppObjectLocator(raw);
     } catch {
       setNotice("原件引用无效，当前位置未改变。");
-      return;
+      return false;
     }
     cognitiveOpen.current?.abort.abort();
     const generation = navigation.beginOpen();
-    const pending = { generation, abort: new AbortController() };
+    const pending: NonNullable<typeof cognitiveOpen.current> = {
+      generation,
+      abort: new AbortController(),
+      active: true,
+    };
     cognitiveOpen.current = pending;
     const privateCommit = origin.capturePrivateCommit();
     const intent = { generation };
     const destination: CurrentDestination = (current) =>
+      (pending.active || pending.publication?.committed === true) &&
       privateCommit(current) &&
       navigation.isCurrent(intent.generation) &&
       current.workspace.projects.some((p) => p.id === locator.projectId);
     const deadline = setTimeout(() => pending.abort.abort(), 30_000);
+    // A source Document may disappear during the synchronous destination
+    // commit. Before that attempt it cancels the acquired read; after it begins
+    // only the destination's original private owner decides publication. The
+    // consumer's post-gate still suppresses replies to a retired source.
+    const cancel = () => {
+      if (!pending.publication) pending.abort.abort();
+    };
+    options?.signal.addEventListener("abort", cancel, { once: true });
     try {
       const value = await cognitive.readOriginal(locator, pending.abort.signal);
       const current = host.currentProjection();
-      if (pending.abort.signal.aborted || !current || !destination(current))
-        return;
-      setCreating(null);
-      setExecutions(null);
-      setWebsiteIntent(null);
+      if (
+        pending.abort.signal.aborted ||
+        options?.current() === false ||
+        !current ||
+        !destination(current)
+      )
+        return false;
       const targetConversation = conversationKey(locator.projectId);
       const targetExchangeKey =
         targetConversation === defaultConversation
           ? locator.projectId
           : targetConversation;
       const location = { kind: "original" as const, locator: value.locator };
-      continueNavigation(
-        {
-          view: "projects",
-          projectId: locator.projectId,
-          projectOpen: true,
-          artifactId: null,
-          artifactRevision: null,
-          cognitiveLocation: location,
-          ...(prefs.interactions?.[targetExchangeKey] === "history"
-            ? { interactions: { [targetExchangeKey]: "recent" as const } }
-            : {}),
-        },
-        intent,
-        destination,
-      );
-      cognitive.adopt(
-        value,
-        cognitiveReadNavigation.current.key === JSON.stringify(location)
-          ? cognitiveReadNavigation.current.epoch
-          : intent.generation,
-      );
+      // One synchronous original-owner commit. The destination is sealed when
+      // this publication attempt ends, so a deferred updater cannot navigate
+      // after a refusal. Successful navigation may retire its source Document;
+      // that retirement must not roll back the newly published original.
+      flushSync(() => {
+        setCreating(null);
+        setExecutions(null);
+        setWebsiteIntent(null);
+        continueNavigation(
+          {
+            view: "projects",
+            projectId: locator.projectId,
+            projectOpen: true,
+            artifactId: null,
+            artifactRevision: null,
+            cognitiveLocation: location,
+            ...(prefs.interactions?.[targetExchangeKey] === "history"
+              ? { interactions: { [targetExchangeKey]: "recent" as const } }
+              : {}),
+          },
+          intent,
+          destination,
+        );
+        // continueNavigation owns its own new intent. Do not mistake this
+        // successful transition for an external navigation that cancels us.
+        pending.generation = intent.generation;
+        const epoch =
+          cognitiveReadNavigation.current.key === JSON.stringify(location)
+            ? cognitiveReadNavigation.current.epoch
+            : intent.generation;
+        pending.publication = { value, location, epoch, committed: false };
+        cognitive.adopt(value, epoch);
+      });
+      pending.active = false;
+      const published = pending.publication?.committed === true;
+      const committedProjection = host.currentProjection();
+      if (
+        !published ||
+        !committedProjection ||
+        !destination(committedProjection)
+      )
+        return false;
       host.recordContentVisit(value.entry.id, destination);
+      return true;
     } catch (error) {
-      if (navigation.isCurrent(generation) && origin.isActive())
+      if (
+        !pending.publication?.committed &&
+        navigation.isCurrent(intent.generation) &&
+        origin.isActive()
+      )
         setNotice(
           pending.abort.signal.aborted
             ? "原件读取已取消或超时，当前位置未改变。"
@@ -1202,8 +1705,11 @@ function WorkspaceApp({
               ? error.message
               : "原件暂时无法读取。",
         );
+      return pending.publication?.committed === true;
     } finally {
+      pending.active = false;
       clearTimeout(deadline);
+      options?.signal.removeEventListener("abort", cancel);
       pending.abort.abort();
       if (cognitiveOpen.current === pending) cognitiveOpen.current = null;
       navigation.finishOpen(intent.generation);
@@ -1434,6 +1940,7 @@ function WorkspaceApp({
   const annotations = objectAnnotationItems(artifact, annotationResult);
   const contextTitle =
     cognitive.value?.original.title ??
+    cognitiveView.value?.manifest.title ??
     artifact?.title ??
     (activeInstance?.applicationId === browserApplication.id
       ? browserPage?.title || "浏览器"
@@ -1466,7 +1973,7 @@ function WorkspaceApp({
   // project association. Named conversations already belong to a project.
   const showPlainComposerScope = !!(
     draft.cognitiveApplication ||
-    cognitive.requested ||
+    cognitiveRequested ||
     draft.continuation ||
     artifact ||
     deliveredScript ||
@@ -1476,7 +1983,9 @@ function WorkspaceApp({
   const composerScopeTitle =
     (cognitive.requested
       ? (cognitive.value?.original.title ?? "原件")
-      : undefined) ??
+      : cognitiveView.requested
+        ? (cognitiveView.value?.manifest.title ?? "应用界面")
+        : undefined) ??
     artifact?.title ??
     deliveredScript?.production.title ??
     (activeInstance?.applicationId === browserApplication.id
@@ -2005,7 +2514,9 @@ function WorkspaceApp({
               : null,
             cognitiveTitle: cognitive.requested
               ? (cognitive.value?.original.title ?? "原件")
-              : undefined,
+              : cognitiveView.requested
+                ? (cognitiveView.value?.manifest.title ?? "应用界面")
+                : undefined,
             openingObject,
             creating,
             collaborationVisible,
@@ -2044,14 +2555,15 @@ function WorkspaceApp({
             <main
               ref={main}
               className={
-                (applicationWorkspaceOpen ||
+                (cognitiveView.requested ||
+                  applicationWorkspaceOpen ||
                   (prefs.view === "content" && !artifact)) &&
                 creating !== "document"
                   ? "application-canvas"
                   : undefined
               }
               aria-label="主工作区"
-              {...(!cognitive.requested
+              {...(!cognitiveRequested
                 ? quoteSource({
                     kind: "surface",
                     projectId: project.id,
@@ -2096,7 +2608,7 @@ function WorkspaceApp({
                   workspaceId={project.id}
                   activeId={activeId}
                   recentContentVisits={recentContentVisits}
-                  enabled={applicationWorkspaceOpen && !cognitive.requested}
+                  enabled={applicationWorkspaceOpen && !cognitiveRequested}
                   navigationId={navigationGeneration.current}
                   applicationActions={applicationActions}
                   onOpen={open}
@@ -2109,8 +2621,31 @@ function WorkspaceApp({
                   onChooseCognitiveApplication={
                     requestCognitiveApplicationChoice
                   }
+                  onOpenCognitiveApplication={requestCognitiveGui}
                 >
-                  {cognitive.requested ? (
+                  {cognitiveView.requested ? (
+                    <CognitiveDocumentView
+                      source={cognitiveView.value}
+                      mountKey={cognitiveDocumentKey}
+                      status={cognitiveView.status}
+                      message={cognitiveView.message}
+                      current={documentCurrent}
+                      routerPorts={cognitiveRouterPorts}
+                      presentation={{
+                        theme: {
+                          appearance: prefs.appearance,
+                          accent: prefs.accent,
+                        },
+                        presentation: {
+                          mode: "workspace",
+                          returnControl: null,
+                        },
+                        active: !historyVisible && creating !== "document",
+                      }}
+                      onRetry={cognitiveView.reload}
+                      onClose={() => prefer({ cognitiveLocation: null })}
+                    />
+                  ) : cognitive.requested ? (
                     <CognitiveOriginalView
                       original={cognitive.value}
                       message={cognitive.message}
@@ -2385,12 +2920,15 @@ function WorkspaceApp({
                             scopeKey: cognitiveChoiceScopeKey,
                             selectedKey: cognitiveInputEntry?.key,
                             onChoose: requestCognitiveApplicationChoice,
+                            onOpen: requestCognitiveGui,
                           }}
                           pinned={prefs.dockApplications}
                           activeKey={
-                            activeInstance
-                              ? `${activeInstance.applicationId}@${activeInstance.applicationVersion}`
-                              : undefined
+                            cognitiveView.value
+                              ? `cognitive:${cognitiveView.value.authority.appId}@${cognitiveView.value.authority.version}#${cognitiveView.value.authority.definitionHash}`
+                              : activeInstance
+                                ? `${activeInstance.applicationId}@${activeInstance.applicationVersion}`
+                                : undefined
                           }
                           onPinned={(dockApplications) =>
                             prefer({ dockApplications })
@@ -3279,6 +3817,19 @@ function WorkspaceApp({
               )
             }
             onClose={() => setCognitiveChoice(null)}
+          />
+        )}
+      {cognitiveGuiChoice &&
+        cognitiveGuiChoice.scopeKey === cognitiveChoiceScopeKey && (
+          <CognitiveApplicationPicker
+            purpose="view"
+            entries={cognitiveApplications.filter(
+              (entry) => entry.key === cognitiveGuiChoice.entryKey,
+            )}
+            onChoose={(target) =>
+              void openCognitiveGui(target, cognitiveGuiChoice.scopeKey)
+            }
+            onClose={() => setCognitiveGuiChoice(null)}
           />
         )}
       {settingsSection !== null && (

@@ -353,7 +353,7 @@ test(
       },
     );
     await t.test(
-      "GUI absence and declared-but-unaccepted GUI are honest; the same installed cognitive GUI never offers old sandbox launch",
+      "GUI absence stays honest; an accepted GUI opens only its explicit picker, never the old sandbox launch",
       async () => {
         await load();
         await action(page, "clearRequests");
@@ -379,14 +379,29 @@ test(
         );
         await menu
           .getByRole("button", {
-            name: "用于本次输入：作者界面 1.0.0",
+            name: "打开界面：作者界面 1.0.0",
             exact: true,
           })
           .click();
-        await picker().waitFor();
-        assert.ok((await picker().textContent())?.includes("应用界面尚未开放"));
+        const viewPicker = page.getByRole("dialog", {
+          name: "打开应用界面",
+          exact: true,
+        });
+        await viewPicker.waitFor();
+        assert.ok((await viewPicker.textContent())?.includes("可打开独立界面"));
+        assert.ok((await viewPicker.textContent())?.includes("不会授权新访问"));
+        assert.equal(
+          await viewPicker
+            .getByRole("button", {
+              name: "打开作者界面 1.0.0，数据连接 connection-GUI",
+              exact: true,
+            })
+            .count(),
+          1,
+        );
         assert.equal((await report(page)).iframes.length, 0);
         assert.deepEqual(selectionIo(await report(page)), []);
+        assert.deepEqual(authorResources, []);
       },
     );
     await t.test(

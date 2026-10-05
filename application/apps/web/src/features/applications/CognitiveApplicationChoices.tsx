@@ -19,17 +19,21 @@ export function CognitiveApplicationChoices({
   entries,
   current,
   disabledReason,
+  purpose = "input",
   onChoose,
 }: {
   entries: readonly CognitiveApplicationEntry[];
   current?: CognitiveAppApplicationTarget;
   disabledReason?: string;
+  purpose?: "input" | "view";
   onChoose(target: CognitiveAppApplicationTarget): void;
 }) {
   return (
     <div className="cognitive-application-choices">
       <p className="cognitive-application-choices-help">
-        选择应用和数据连接，仅用于本次输入；不会打开界面或开始工作。
+        {purpose === "view"
+          ? "明确选择此界面的数据连接；不会授权新访问、开始任务或发送输入。"
+          : "选择应用和数据连接，仅用于本次输入；不会打开界面或开始工作。"}
       </p>
       {disabledReason && <p role="status">{disabledReason}</p>}
       {entries.length === 0 && (
@@ -54,7 +58,9 @@ export function CognitiveApplicationChoices({
                 <p>
                   {entry.gui === "absent"
                     ? "此应用没有独立界面。"
-                    : "应用界面尚未开放，仍可用于本次输入。"}
+                    : entry.gui === "available"
+                      ? "可打开独立界面，也可用于本次输入。"
+                      : "应用界面尚未开放，仍可用于本次输入。"}
                 </p>
               </div>
             </header>
@@ -76,13 +82,15 @@ export function CognitiveApplicationChoices({
                   <li key={connection.connectionId}>
                     <button
                       type="button"
-                      aria-label={`使用${entry.metadata.title} ${entry.metadata.version}，数据连接 ${connection.connectionId}`}
+                      aria-label={`${purpose === "view" ? "打开" : "使用"}${entry.metadata.title} ${entry.metadata.version}，数据连接 ${connection.connectionId}`}
                       aria-pressed={selected}
                       disabled={!!reason || !target}
                       title={
                         reason ||
                         (connection.state === "active"
-                          ? "仅指定下一次输入，不发送或开始执行"
+                          ? purpose === "view"
+                            ? "打开已获权的独立界面，不发送或开始执行"
+                            : "仅指定下一次输入，不发送或开始执行"
                           : "此数据连接已停用或不可用")
                       }
                       onClick={() => {
@@ -120,12 +128,14 @@ export function CognitiveApplicationPicker({
   entries,
   current,
   disabledReason,
+  purpose = "input",
   onChoose,
   onClose,
 }: {
   entries: readonly CognitiveApplicationEntry[];
   current?: CognitiveAppApplicationTarget;
   disabledReason?: string;
+  purpose?: "input" | "view";
   onChoose(target: CognitiveAppApplicationTarget): void;
   onClose(): void;
 }) {
@@ -145,7 +155,7 @@ export function CognitiveApplicationPicker({
     >
       <header>
         <h2 id={id} ref={heading} tabIndex={-1}>
-          本次输入使用的应用
+          {purpose === "view" ? "打开应用界面" : "本次输入使用的应用"}
         </h2>
         <button
           type="button"
@@ -161,6 +171,7 @@ export function CognitiveApplicationPicker({
           entries={entries}
           current={current}
           disabledReason={disabledReason}
+          purpose={purpose}
           onChoose={onChoose}
         />
       </div>

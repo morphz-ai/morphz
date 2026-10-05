@@ -1,6 +1,13 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05。状态：独立协议／Browser SDK、v12 双后端关系与本人登记管理、服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输、真实 Rust Agent input 链、只读原件工作区与工作台管理前端已分层验证；输入目标／共同 Dock 目录及独立可选 GUI 作者包已验证，生产 GUI owner 与原 App 的跨宿主闭环尚未完成。
+日期：2026-10-05（实施证据续至 2026-10-06）。状态：独立协议／Browser SDK、v12 双后端关系与本人登记管理、服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输、真实 Rust Agent input 链、只读原件工作区与工作台管理前端已分层验证；生产 Web 的独立作者 GUI、真实双 SQL／SDK／原导航草稿 owner 已验收，native Local 的关闭失效与用户原 App 恢复尚未完成。下文早期阶段的“待接线”是该阶段历史，不代表最新 Web 接线仍未完成。
+
+生产接线沿原私有导航／草稿边界，不增第二套权限或正文状态。显式 GUI
+选择、自有保存保温、主题更新、同窗重载、准备未发送草稿、精确原件
+终结导航，以及撤权后退场／重新授权后显式重开，由完整 Web、独立 packed
+作者、公开 SDK、真实 HPA 与 SQLite／PostgreSQL 验证，Root 4/4、零跳过。
+GUI 关闭的 metadata 提示退场和原 App 尚未验收，不以已有调用拒绝门替代。
+详细范围、首轮失败和可重放证据见 [实施记录](./13-implementation-status.md)。
 
 Agent 的有限六操作 adapter 已独立通过八文件 82/82、required
 PostgreSQL／Runtime、零跳过及全工程类型检查。新认知测试实际使用

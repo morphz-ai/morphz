@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-06 独立作者 GUI 接入生产 Web 原导航／草稿
+
+生产 App 复用原 private incarnation、身份、导航和未发送草稿 owner，
+不增加正文缓存、授权存储或另一套工作台。GUI 应用从原 Dock／工作台
+进入显式连接选择；无 GUI 应用仍关联本次输入，不伪造窗口。窗口位置
+只存固定 slot，不存许可／CAS／正文；Document 不因普通主题、草稿、
+上下文刷新或自有 save2 重挂。原布局、图标、CSS 和动效未改。
+
+compose 在实际父 layout 提交后确认准备的原 scoped 草稿，末尾再核固定
+来源与私有 lease，不自动发送、不复制第三方正文。openOriginal 提交原
+精确目录原件导航与实际 layout 见证，然后同步退休源 GUI；不以假 ACK、
+第二个并列窗口或延迟导航维持作者 Promise。原件保留 opaque 精确版本。
+
+Root 独立真实完整生产 Web／原 CSS／独立 packed 作者／公开 SDK／HPA／
+SQLite＋PostgreSQL 4/4、required PostgreSQL、零跳过；日志
+`/tmp/morphz-notes-production-app-ROOT-SECOND-FINAL-oct06.log`。
+初次 3P1F 是测试 CDP 观测已退休 response body 的 No data 错误；仅此精确
+观测失败记入 trace 并等另一真实 response，未重发 API、改业务或松断言。
+实际 grant2 撤销自动清旧 Document，grant3 后显式重开使用新许可。真实
+SQL／命令／原件／草稿／不新增输入和 Runtime ledger 都有独立证据；此前
+受控 React 的 109 项 owner／consumer 和 28 项呈现回归不混算作者网络。
+
+这不代表用户原 App 已更新或完整跨宿主目标完成。原 App 的 native 网页
+对象销毁异常仍待安全恢复；隔离 native Local 已发现关闭窗口只拒绝后续
+调用、旧 GUI 未自动退场的 RED，正在修复只读 metadata 失效机制。原失败
+日志保留；不停止原 Runtime、不改用户资料、不自动推送 GitHub。
+
 ## 2026-10-06 私有投影清空后的会话提示与退出边界
 
 真实生产 App 发现最终授权／导航读取冲突清空私有 Boot 后，变更订阅随
