@@ -544,3 +544,186 @@ CREATE TABLE outbox (
   FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id)
 );
 CREATE INDEX outbox_pending ON outbox(delivered_at, created_at, event_id);
+
+-- BEGIN cognitive-app-v1
+-- Only new cognitive bindings use these exact identities. Old installations,
+-- UI-only ownership and personal windows retain their original rows and IDs.
+CREATE UNIQUE INDEX app_installations_exact_identity
+  ON app_installations(tenant_id, app_id, installation_id);
+CREATE UNIQUE INDEX app_view_instances_exact_identity
+  ON app_view_instances(tenant_id, view_id, owner_principal_id, project_id, app_id, package_version);
+
+CREATE TABLE cognitive_app_versions (
+  tenant_id TEXT NOT NULL,
+  app_id TEXT NOT NULL,
+  version TEXT NOT NULL CHECK (length(version) BETWEEN 1 AND 100),
+  installation_id TEXT NOT NULL,
+  definition_hash TEXT NOT NULL CHECK (length(definition_hash) = 64),
+  definition_json TEXT NOT NULL CHECK (length(definition_json) BETWEEN 2 AND 262144),
+  installed_by_principal_id TEXT NOT NULL,
+  installed_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, app_id, version),
+  UNIQUE (tenant_id, app_id, version, definition_hash),
+  FOREIGN KEY (tenant_id, app_id, installation_id)
+    REFERENCES app_installations(tenant_id, app_id, installation_id)
+);
+
+CREATE TABLE cognitive_app_grants (
+  tenant_id TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  app_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('active','disabled')),
+  revision BIGINT NOT NULL CHECK (revision > 0),
+  consented_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, principal_id, app_id, version),
+  FOREIGN KEY (tenant_id, app_id, version)
+    REFERENCES cognitive_app_versions(tenant_id, app_id, version)
+);
+CREATE INDEX cognitive_app_grants_by_principal
+  ON cognitive_app_grants(tenant_id, principal_id, state, app_id, version);
+
+-- A stable saving authority is shared by personal connections. It is not a
+-- URL or a Host credential alias; replacing the saved data requires a new ID.
+CREATE TABLE cognitive_app_authorities (
+  tenant_id TEXT NOT NULL,
+  app_id TEXT NOT NULL,
+  instance_id TEXT NOT NULL,
+  service_id TEXT NOT NULL CHECK (length(service_id) BETWEEN 1 AND 200),
+  data_authority_id TEXT NOT NULL CHECK (length(data_authority_id) BETWEEN 1 AND 200),
+  PRIMARY KEY (tenant_id, app_id, instance_id),
+  UNIQUE (tenant_id, app_id, service_id, data_authority_id),
+  UNIQUE (tenant_id, app_id, instance_id, service_id, data_authority_id),
+  FOREIGN KEY (tenant_id, app_id, instance_id)
+    REFERENCES app_instances(tenant_id, app_id, instance_id)
+);
+
+CREATE TABLE cognitive_app_connections (
+  tenant_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL CHECK (length(connection_id) BETWEEN 1 AND 100),
+  owner_principal_id TEXT NOT NULL,
+  app_id TEXT NOT NULL,
+  instance_id TEXT NOT NULL,
+  service_id TEXT NOT NULL,
+  data_authority_id TEXT NOT NULL,
+  host_binding_id TEXT NOT NULL CHECK (length(host_binding_id) BETWEEN 1 AND 200),
+  state TEXT NOT NULL CHECK (state IN ('active','disabled','unavailable')),
+  revision BIGINT NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, connection_id),
+  UNIQUE (tenant_id, connection_id, owner_principal_id, app_id, instance_id, service_id, data_authority_id),
+  UNIQUE (tenant_id, connection_id, owner_principal_id, app_id, instance_id),
+  FOREIGN KEY (tenant_id, app_id, instance_id, service_id, data_authority_id)
+    REFERENCES cognitive_app_authorities(tenant_id, app_id, instance_id, service_id, data_authority_id)
+);
+CREATE INDEX cognitive_app_connections_by_owner
+  ON cognitive_app_connections(tenant_id, owner_principal_id, state, app_id, instance_id, connection_id);
+
+CREATE TABLE cognitive_app_view_bindings (
+  tenant_id TEXT NOT NULL,
+  view_id TEXT NOT NULL,
+  owner_principal_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  app_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  instance_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  revision BIGINT NOT NULL CHECK (revision > 0),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, view_id),
+  FOREIGN KEY (tenant_id, view_id, owner_principal_id, project_id, app_id, version)
+    REFERENCES app_view_instances(tenant_id, view_id, owner_principal_id, project_id, app_id, package_version),
+  FOREIGN KEY (tenant_id, app_id, version)
+    REFERENCES cognitive_app_versions(tenant_id, app_id, version),
+  FOREIGN KEY (tenant_id, owner_principal_id, app_id, version)
+    REFERENCES cognitive_app_grants(tenant_id, principal_id, app_id, version),
+  FOREIGN KEY (tenant_id, connection_id, owner_principal_id, app_id, instance_id)
+    REFERENCES cognitive_app_connections(tenant_id, connection_id, owner_principal_id, app_id, instance_id)
+);
+
+-- This is a side-effect admission ledger, not command_receipts or a business
+-- request/result archive. JSON byte/shape budgets are also checked by Host.
+-- Mutable grant/connection revisions are snapshots, never foreign keys to
+-- current revisions: revocation cannot erase already admitted provenance.
+CREATE TABLE cognitive_app_commands (
+  tenant_id TEXT NOT NULL,
+  command_id TEXT NOT NULL CHECK (length(command_id) BETWEEN 1 AND 100),
+  app_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  definition_hash TEXT NOT NULL CHECK (length(definition_hash) = 64),
+  instance_id TEXT NOT NULL,
+  service_id TEXT NOT NULL,
+  data_authority_id TEXT NOT NULL,
+  connection_id TEXT NOT NULL,
+  connection_revision BIGINT NOT NULL CHECK (connection_revision > 0),
+  grant_principal_id TEXT NOT NULL,
+  grant_revision BIGINT NOT NULL CHECK (grant_revision > 0),
+  project_id TEXT NOT NULL,
+  operation_id TEXT NOT NULL CHECK (length(operation_id) BETWEEN 1 AND 200),
+  operation_scope TEXT NOT NULL CHECK (operation_scope IN ('project','objects')),
+  effect TEXT NOT NULL CHECK (effect IN ('write','execute')),
+  actor_kind TEXT NOT NULL CHECK (actor_kind IN ('human','agent')),
+  actor_principal_id TEXT NOT NULL,
+  actor_actant_id TEXT NOT NULL,
+  initiating_human_actant_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL CHECK (source_kind IN ('human','input','task-run')),
+  runtime_input_id TEXT,
+  runtime_session_id TEXT,
+  runtime_schedule_id TEXT,
+  runtime_task_run_event_id TEXT,
+  request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+  resources_json TEXT NOT NULL CHECK (length(resources_json) BETWEEN 2 AND 32768),
+  revision BIGINT NOT NULL CHECK (revision > 0),
+  state TEXT NOT NULL CHECK (state IN ('admitted','dispatching','unknown','committed','rejected','cancelled')),
+  receipt_ref TEXT CHECK (receipt_ref IS NULL OR length(receipt_ref) BETWEEN 1 AND 200),
+  receipt_hash TEXT CHECK (receipt_hash IS NULL OR length(receipt_hash) = 64),
+  receipt_summary_json TEXT CHECK (receipt_summary_json IS NULL OR length(receipt_summary_json) BETWEEN 2 AND 65536),
+  committed_at TEXT,
+  projection_state TEXT NOT NULL CHECK (projection_state IN ('none','pending','projected')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, command_id),
+  FOREIGN KEY (tenant_id, app_id, version, definition_hash)
+    REFERENCES cognitive_app_versions(tenant_id, app_id, version, definition_hash),
+  FOREIGN KEY (tenant_id, grant_principal_id, app_id, version)
+    REFERENCES cognitive_app_grants(tenant_id, principal_id, app_id, version),
+  FOREIGN KEY (tenant_id, connection_id, actor_principal_id, app_id, instance_id, service_id, data_authority_id)
+    REFERENCES cognitive_app_connections(tenant_id, connection_id, owner_principal_id, app_id, instance_id, service_id, data_authority_id),
+  FOREIGN KEY (tenant_id, app_id, instance_id, service_id, data_authority_id)
+    REFERENCES cognitive_app_authorities(tenant_id, app_id, instance_id, service_id, data_authority_id),
+  FOREIGN KEY (tenant_id, project_id) REFERENCES projects(tenant_id, project_id),
+  CHECK (actor_principal_id = grant_principal_id),
+  CHECK (
+    (actor_kind = 'human' AND source_kind = 'human'
+      AND actor_actant_id = initiating_human_actant_id
+      AND runtime_input_id IS NULL AND runtime_session_id IS NULL
+      AND runtime_schedule_id IS NULL AND runtime_task_run_event_id IS NULL)
+    OR (actor_kind = 'agent' AND source_kind = 'input'
+      AND runtime_input_id IS NOT NULL AND runtime_session_id IS NULL
+      AND runtime_schedule_id IS NULL AND runtime_task_run_event_id IS NULL)
+    OR (actor_kind = 'agent' AND source_kind = 'task-run'
+      AND runtime_session_id IS NOT NULL AND runtime_schedule_id IS NOT NULL
+      AND runtime_task_run_event_id IS NOT NULL)
+  ),
+  CHECK (
+    (state = 'committed' AND receipt_ref IS NOT NULL AND receipt_hash IS NOT NULL
+      AND committed_at IS NOT NULL AND receipt_summary_json IS NOT NULL)
+    OR (state = 'rejected' AND receipt_ref IS NOT NULL AND receipt_hash IS NOT NULL
+      AND committed_at IS NULL AND receipt_summary_json IS NULL AND projection_state = 'none')
+    OR (state IN ('admitted','dispatching','unknown','cancelled')
+      AND receipt_ref IS NULL AND receipt_hash IS NULL AND committed_at IS NULL
+      AND receipt_summary_json IS NULL AND projection_state = 'none')
+  )
+);
+CREATE INDEX cognitive_app_commands_by_project
+  ON cognitive_app_commands(tenant_id, project_id, state, command_id);
+CREATE INDEX cognitive_app_commands_by_input
+  ON cognitive_app_commands(tenant_id, runtime_input_id, command_id);
+CREATE INDEX cognitive_app_commands_by_task_run
+  ON cognitive_app_commands(tenant_id, runtime_session_id, runtime_schedule_id, runtime_task_run_event_id, command_id);
+CREATE INDEX cognitive_app_commands_by_state
+  ON cognitive_app_commands(tenant_id, state, updated_at, command_id);
+-- END cognitive-app-v1

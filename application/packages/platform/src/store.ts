@@ -877,6 +877,8 @@ export class PlatformStore {
         "eb0eb5d3dd4dea09b39b5b9c2ec317973225eff0f0dd953931d0255cef378780";
       const v9SchemaSha256 =
         "95bd108425eacc274efd75837ea7f47e5dcea853d4c23128171efe87e18f0161";
+      const v10SchemaSha256 =
+        "57b923d57efc09d0e722246916e083237f988836d82042029039c45ffd704cdd";
       if (versions.length > 1)
         throw new PlatformStorageError(
           "conflict",
@@ -906,7 +908,8 @@ export class PlatformStore {
           version !== 7 &&
           version !== 8 &&
           version !== 9 &&
-          version !== 10
+          version !== 10 &&
+          version !== 11
         )
           throw new PlatformStorageError(
             "conflict",
@@ -936,7 +939,8 @@ export class PlatformStore {
           (version === 7 && installedHash !== v7SchemaSha256) ||
           (version === 8 && installedHash !== v8SchemaSha256) ||
           (version === 9 && installedHash !== v9SchemaSha256) ||
-          (version === 10 && installedHash !== schemaSha256)
+          (version === 10 && installedHash !== v10SchemaSha256) ||
+          (version === 11 && installedHash !== schemaSha256)
         )
           throw new PlatformStorageError(
             "conflict",
@@ -949,7 +953,8 @@ export class PlatformStore {
           version !== 7 &&
           version !== 8 &&
           version !== 9 &&
-          version !== 10
+          version !== 10 &&
+          version !== 11
         ) {
           await q.exec(
             "CREATE INDEX content_by_app_object ON content_entries(tenant_id, app_id, app_object_id, deleted_at, content_id)",
@@ -1074,7 +1079,24 @@ export class PlatformStore {
           const end = platformSchemaSql.indexOf("-- END profile-avatar-v1", begin);
           if (begin < 0 || end < begin) throw new PlatformStorageError("conflict", "头像存储迁移定义不完整。");
           await q.exec(platformSchemaSql.slice(begin, end));
-          await q.change("UPDATE platform_schema_version SET version=10,schema_sha256=? WHERE version=9 AND schema_sha256=?", [schemaSha256, v9SchemaSha256]);
+          await q.change(
+            "UPDATE platform_schema_version SET version=10,schema_sha256=? WHERE version=9 AND schema_sha256=?",
+            [v10SchemaSha256, v9SchemaSha256],
+          );
+        }
+        if (version < 11) {
+          const begin = platformSchemaSql.indexOf("-- BEGIN cognitive-app-v1");
+          const end = platformSchemaSql.indexOf("-- END cognitive-app-v1", begin);
+          if (begin < 0 || end < begin)
+            throw new PlatformStorageError(
+              "conflict",
+              "认知应用存储迁移定义不完整。",
+            );
+          await q.exec(platformSchemaSql.slice(begin, end));
+          await q.change(
+            "UPDATE platform_schema_version SET version=11,schema_sha256=? WHERE version=10 AND schema_sha256=?",
+            [schemaSha256, v10SchemaSha256],
+          );
         }
         try {
           await verifySchemaObjects(q, this.backend.kind, platformSchemaSql, [
@@ -1092,7 +1114,7 @@ export class PlatformStore {
         );
       await q.exec(platformSchemaSql);
       await q.change(
-        "INSERT INTO platform_schema_version(version,schema_sha256) VALUES(10,?)",
+        "INSERT INTO platform_schema_version(version,schema_sha256) VALUES(11,?)",
         [schemaSha256],
       );
     });

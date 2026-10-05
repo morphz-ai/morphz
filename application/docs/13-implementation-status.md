@@ -1,12 +1,38 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：双后端 v11 存储迁移
+
+六项关系已加入唯一权威 `storage-model-v1/platform.sql`，生产 schema
+由其生成；安装／版本、本人许可、共享数据权威、个人连接、精确窗口绑定
+与副作用 admission ledger 复用现有 Platform，不保存作者正文或完整请求。
+连接与许可修订号保存为历史快照，撤销不删除已接收命令的来源。
+来源约束区分 Human、真实输入与 scheduled task-run（可有或没有输入）；
+committed／rejected 必须有相应回执事实，目录投影状态不冒充业务状态。
+这些结构约束不代替尚未接通的 Host 授权、服务身份验证或注册业务方法。
+
+冻结旧 v10 真实结构 hash，再在同一事务执行 v9→v10→v11 或 v10→v11；
+fresh 初始化为 v11。坏 hash、未来版本、缺表与失败 DDL 拒绝并回滚，
+不重建旧表或悄悄改写旧安装 ID。标准定向入口两份原／新增存储测试
+84/84 通过，强制 PostgreSQL／Runtime，零失败／跳过／取消；Root 独立
+重跑结果相同，`unexpectedSkips=[]`。覆盖 SQLite 与实际隔离 PostgreSQL
+的旧安装、内置实例、头像、UI 引用／窗口、目录保全、重开、并发初始化、
+复合 FK、typed source、终态证据与撤销后快照，未操作原 App 或业务库。
+
+首轮真实 RED（6 项）和最终源码冻结收据保存于
+`/tmp/morphz-cognitive-storage-migration.mtCZCL/`；Root 原始回归日志为
+`/tmp/morphz-cognitive-storage-ROOT-FINAL-oct05.log`。本阶段聚焦提交迁移，
+不是 registry、受权网关、完整 SDK 或跨宿主闭环交付。其他并行模块的
+test-first 中间类型失败另行保留，不解释为 PostgreSQL 不可用。Root 对
+本阶段 Store 与两测试及依赖的严格 scoped typecheck 通过；并行 transport
+模块未落盘时的完整项目 typecheck 失败不计为全局门禁通过。
+
 ## 2026-10-05 第三方认知应用：契约与纯校验第一阶段
 
 [接入契约](./42-third-party-cognitive-app-contract.md) 明确作者 Service 的
 原件／事务／备份权威、无 GUI 接入、固定四接口、Human／Agent 共用受权
 网关、本人许可与连接、精确版本／窗口绑定、未知结果与回执恢复。六项
-Platform 关系复用既有安装、实例及原件目录；它们及 v10→v11 迁移目前
-仍为实施设计，不称数据库关系已经上线。已复核旧安装 ID、旧 UI 字节
+Platform 关系复用既有安装、实例及原件目录；第一阶段提交时它们及
+v10→v11 迁移仍为实施设计，后续已验证的迁移见上节。已复核旧安装 ID、旧 UI 字节
 ownership、scheduled task-run 分类、事务重入与项目退休保护的真实入口。
 
 `packages/cognitive-app-sdk/src/protocol.ts` 只依赖已安装 Zod，提供独立

@@ -30,7 +30,18 @@ test("Platform 生产 schema 与评审 SQL 相同", () => {
   assert.equal(platformSchemaSql.trim(), reviewed.trim());
 });
 
-const priorAvatarSql = platformSchemaSql.replace(
+const priorCognitiveAppSql = platformSchemaSql.replace(
+  /\n-- BEGIN cognitive-app-v1\n[\s\S]*?-- END cognitive-app-v1\n?$/,
+  "",
+);
+test("Platform 旧 v10 fixture 保留真实前代 hash", () => {
+  assert.notEqual(priorCognitiveAppSql, platformSchemaSql);
+  assert.equal(
+    schemaHash(priorCognitiveAppSql),
+    "57b923d57efc09d0e722246916e083237f988836d82042029039c45ffd704cdd",
+  );
+});
+const priorAvatarSql = priorCognitiveAppSql.replace(
   /^-- BEGIN profile-avatar-v1\n[\s\S]*?^-- END profile-avatar-v1\n\n/gm,
   "",
 );
@@ -93,7 +104,7 @@ test("Platform SQLite 从 v9 增加头像关系，项目原件和空头像跨重
             )
             .get(),
         },
-        { version: 10, schema_sha256: schemaHash(platformSchemaSql) },
+        { version: 11, schema_sha256: schemaHash(platformSchemaSql) },
       );
       assert.deepEqual(
         {
@@ -189,7 +200,7 @@ test(
         )
       ).rows[0];
       assert.deepEqual(version, {
-        version: "10",
+        version: "11",
         schema_sha256: schemaHash(platformSchemaSql),
       });
       const project = (
@@ -286,7 +297,7 @@ test("Platform SQLite 从 v7 增加当前理解视图并保留项目", async () 
             version: number;
           }
         ).version,
-        10,
+        11,
       );
     } finally {
       migrated.close();
@@ -359,7 +370,7 @@ test(
       const result = await admin.query<{ version: string }>(
         `SELECT version FROM "${schema}".platform_schema_version`,
       );
-      assert.equal(Number(result.rows[0]?.version), 10);
+      assert.equal(Number(result.rows[0]?.version), 11);
     } finally {
       await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
       await admin.end();
@@ -419,7 +430,7 @@ test("Platform SQLite 从 v6 增加应用窗口关系并保留项目", async () 
             .prepare("SELECT version FROM platform_schema_version")
             .get() as { version: number }
         ).version,
-        10,
+        11,
       );
       assert.equal(
         (
@@ -661,7 +672,7 @@ test("Platform SQLite 从 v5 增加团队会话关系，不改已有项目", asy
             .prepare("SELECT version FROM platform_schema_version")
             .get() as { version: number }
         ).version,
-        10,
+        11,
       );
       assert.equal(
         (
@@ -940,7 +951,7 @@ test("Platform SQLite 从 v4 原位增加安装包索引，保留既有应用安
             version: number;
           }
         ).version,
-        10,
+        11,
       );
       assert.equal(
         (
@@ -1024,7 +1035,7 @@ test("Platform SQLite 从 v3 增加对象定位索引并保留目录数据", asy
             .prepare("SELECT version FROM platform_schema_version")
             .get() as { version: number }
         ).version,
-        10,
+        11,
       );
       assert.equal(
         (
@@ -1101,7 +1112,7 @@ test(
       const version = await admin.query(
         `SELECT version FROM "${schema}".platform_schema_version`,
       );
-      assert.equal(Number(version.rows[0].version), 10);
+      assert.equal(Number(version.rows[0].version), 11);
       const index = await admin.query(
         "SELECT count(*)::integer AS count FROM pg_indexes WHERE schemaname=$1 AND indexname='content_by_app_object'",
         [schema],
@@ -1174,7 +1185,7 @@ test("Platform SQLite 从已存在的 v1 库原位迁移栅栏表且保留项目
             .prepare("SELECT version FROM platform_schema_version")
             .get() as { version: number }
         ).version,
-        10,
+        11,
       );
       assert.equal(
         (
@@ -1250,7 +1261,7 @@ test("Platform SQLite 将已有目录迁入事务修订号", async () => {
             .prepare("SELECT version FROM platform_schema_version")
             .get() as { version: number }
         ).version,
-        10,
+        11,
       );
     } finally {
       upgraded.close();
