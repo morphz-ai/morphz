@@ -15950,13 +15950,26 @@ impl Orchestrator {
                 .await;
         }
         if annotation_failure {
-            return self.publish_reply_with_attributes(session_id, attempt_id, None,
-                "模型返回了非法回复控制格式，本次执行已安全停止。未执行混入的工具，也未追加模型请求；之前已提交的结果保持不变。".to_string(),
-                parent_session_id,
-                vec![("terminal_kind".to_string(), json!("failed")),
-                    ("runtime_failure_kind".to_string(), json!("response_annotations_protocol")),
-                    ("runtime_failure_stage".to_string(), json!("response_normalization"))],
-            ).await;
+            return self
+                .publish_reply_with_attributes(
+                    session_id,
+                    attempt_id,
+                    None,
+                    "The model returned invalid response-annotation control syntax. This execution safely stopped without executing mixed-in tools or sending another model request; previously committed results were preserved.".to_string(),
+                    parent_session_id,
+                    vec![
+                        ("terminal_kind".to_string(), json!("failed")),
+                        (
+                            "runtime_failure_kind".to_string(),
+                            json!("response_annotations_protocol"),
+                        ),
+                        (
+                            "runtime_failure_stage".to_string(),
+                            json!("response_normalization"),
+                        ),
+                    ],
+                )
+                .await;
         }
         self.publish_reply(
             session_id,
