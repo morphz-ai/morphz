@@ -1,5 +1,26 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：Desktop／Web 启动装配
+
+两个启动入口把同一 `domains.cognitiveApps` 交给 Application，不新增
+本地 HTTP 或另一份 Service。仅接受可信进程环境中的明确绝对路径
+`MORPHZ_APP_COGNITIVE_BINDINGS_FILE`，空／未设不创建配置；私有文件、
+凭据和 egress 校验仍归既有 resolver。项目 `.env` 白名单未扩展，不能
+通过它注入此路径或应用凭据。原登录、团队身份防降级与资料路径不变。
+
+Root 与独立 reviewer 全文核四条接线／测试路径。Root 正式四文件
+16/16、零失败／取消／跳过，日志
+`/tmp/morphz-cognitive-launcher-ROOT-FROZEN-oct05.log`；此前真实缺接线
+首 RED 0 通过／1 失败保存于
+`/tmp/morphz-cognitive-launcher-ROOT-FIRST-RED-oct05.log`。同当前代码
+全工程类型检查通过，见公开链的 Root 类型日志。
+
+新夹具是实际隔离 embedded Application／domains／HPA／SQLite：没有
+Runtime 或接入配置也能安装 headless 定义、授权、列目录，同中心重开
+仍保留目录及定义 SHA。目录比较不是 SQL 行 ID／时间逐字保全证明，
+也不是 Web main 实际启动、作者网络、原生 IPC 或原 App 验收。
+Agent 工具及 GUI channel 仍在接入，未改用户真实配置或重启原应用。
+
 ## 2026-10-05 第三方认知应用：公开 Application／Local／HTTP／Remote 入口
 
 十个 logical `cognitive-apps.*` 方法与固定 POST 路由已登记，同一个

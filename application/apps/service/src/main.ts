@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { dataDirectory } from "./paths.js";
 import { WorkspaceStore } from "./store.js";
 import { openApplicationDomainsHost } from "../../../packages/application/src/application-domains-host.js";
+import { cognitiveAppLaunchConfig } from "../../../packages/application/src/cognitive-app-launch-config.js";
 import { createAppServer } from "./http.js";
 import { loadRuntimeConfig, RuntimeBridge } from "./runtime.js";
 import { loadServiceEnvironment } from "./environment.js";
@@ -127,6 +128,7 @@ const domains = await openApplicationDomainsHost(
   store,
   identity,
   {
+    cognitiveApps: cognitiveAppLaunchConfig(),
     retirementInputCoverage: platformPostgresUrl
       ? "cross-host-unverified"
       : "single-host",
@@ -234,6 +236,7 @@ const server = createAppServer(store, {
   profiles: domains.profiles,
   workspaceChanges: domains.workspaceChanges,
   uiPackages: domains.uiPackages,
+  cognitiveApps: domains.cognitiveApps,
   notifications: domains.notifications,
   platformTaskRuns: domains.taskRuns(runtime),
   speech: new SpeechService(process.env.DOUBAO_API_KEY),

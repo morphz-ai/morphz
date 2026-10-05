@@ -18,6 +18,7 @@ import {
 import { LocalApplicationConnection } from "../../packages/application/src/local-connection.js";
 import { WorkspaceStore } from "../../packages/application/src/store.js";
 import { openApplicationDomainsHost } from "../../packages/application/src/application-domains-host.js";
+import { cognitiveAppLaunchConfig } from "../../packages/application/src/cognitive-app-launch-config.js";
 import {
   loadRuntimeConfig,
   RuntimeBridge,
@@ -113,7 +114,9 @@ export async function openEmbeddedApplication(
       join(profile, "local-file-references.json"),
       store.identity(),
     );
-    domains = await openApplicationDomainsHost(directory, store, identity);
+    domains = await openApplicationDomainsHost(directory, store, identity, {
+      cognitiveApps: cognitiveAppLaunchConfig(),
+    });
     const browser = new BrowserBroker(
       store,
       platformBrowserPageAuthority(domains),
@@ -139,6 +142,7 @@ export async function openEmbeddedApplication(
       profiles: domains.profiles,
       workspaceChanges: domains.workspaceChanges,
       uiPackages: domains.uiPackages,
+      cognitiveApps: domains.cognitiveApps,
       notifications: domains.notifications,
       platformTaskRuns: domains.taskRuns(runtime),
     });

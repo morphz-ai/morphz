@@ -217,6 +217,11 @@ canonical origin、专用环境凭据引用和显式 current 的条目。POSIX �
 当前 UID、0600／0400 普通文件，并按固定 fd 核前后 stat；最多 128 KiB／
 128 条。尚无 Windows ACL 实现，该平台明确不可用。配置逐次读取、不轮询，
 建议操作者 atomic rename 更新，不通过 Client、模型或 iframe 编辑。
+Desktop／Web 正式启动入口只从可信进程环境的
+`MORPHZ_APP_COGNITIVE_BINDINGS_FILE` 读取这条明确绝对路径；未设时
+不生成配置／凭据。项目 `.env` 的既有白名单不加载这个路径或应用机密，
+操作者应在实际启动环境提供配置。两个入口沿同一 domains Host 装配，
+私有文件读取与机密／网络检查仍由上述 resolver 执行。
 alias 不含凭据引用：secret 轮换不变，issuer／地址／保存方变化产生新 alias。
 同一 connectionId 的保存方和 alias 不可改写；接入新地址使用新的本人
 connectionId，同一 service／dataAuthority 仍复用原 instance。旧 admission
