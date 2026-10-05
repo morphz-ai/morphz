@@ -62,6 +62,11 @@ import {
   submitScriptCandidate,
   submitScriptReviewBatch,
 } from "./script-production-service.js";
+import { parseCognitiveAppToolRequest } from "../../core/src/cognitive-app-tool.js";
+import {
+  CognitiveAppServiceError,
+  type CognitiveAppService,
+} from "./cognitive-app-service.js";
 
 function generationReferences(generations: ScriptGeneration[]) {
   return [
@@ -93,6 +98,7 @@ const workflowDeliveriesSchema = z
   .max(12);
 
 export type PlatformAgentDomain = {
+  cognitiveApps?: CognitiveAppService;
   profile?: ProfileService;
   authority: RuntimePlatformAuthority;
   work: PlatformWorkService;
@@ -140,6 +146,9 @@ export class PlatformAgentTools {
   get supportsProfile() {
     return !!this.domain.profile;
   }
+  get supportsCognitiveApps() {
+    return !!this.domain.cognitiveApps;
+  }
 
   get supportsReader() {
     return !!this.domain.reader;
@@ -176,6 +185,8 @@ export class PlatformAgentTools {
         if (
           !scope.platform ||
           source.projectId !== scope.projectId ||
+          (scope.platformSource !== undefined &&
+            scope.platformSource !== source.kind) ||
           (source.inputId ?? undefined) !== scope.inputId
         )
           throw new DomainError("forbidden", "工具来源与当前输入不一致。");
@@ -185,7 +196,7 @@ export class PlatformAgentTools {
           scope,
           source.projectId,
           source.inputId,
-          scope.platformSource,
+          source.kind,
           identity,
           args,
         );
@@ -240,6 +251,44 @@ export class PlatformAgentTools {
       }))
     )
       throw new DomainError("forbidden", "固定剧本生成只能使用本次剧本工具。");
+    if (args.action === "cognitive") {
+      if (!this.domain.cognitiveApps || !args.cognitive)
+        throw new DomainError("invalid", "认知应用操作尚未接入。");
+      const request = parseCognitiveAppToolRequest(args.cognitive);
+      try {
+        const service = this.domain.cognitiveApps;
+        const result = await (() => {
+          if (request.action === "invoke") {
+            const { action: _action, mode, ...fields } = request;
+            return service.invoke(actor, {
+              ...fields,
+              projectId,
+              commandId: mode === "command" ? this.commandId(route) : null,
+            });
+          }
+          const { action, ...fields } = request;
+          if (action === "list") return service.list(actor, fields);
+          if (action === "describe")
+            return service.describe(actor, { ...fields, projectId });
+          if (action === "read-object")
+            return service.readObject(actor, { ...fields, projectId });
+          if (action === "status")
+            return service.commandStatus(actor, { ...fields, projectId });
+          return service.recover(actor, { ...fields, projectId });
+        })();
+        return { ok: true, result };
+      } catch (error) {
+        if (!(error instanceof CognitiveAppServiceError)) throw error;
+        return {
+          ok: false,
+          code: error.reason,
+          message: error.message,
+          ...(error.commandId === undefined
+            ? {}
+            : { commandId: error.commandId }),
+        };
+      }
+    }
     if (args.action === "read-understanding") {
       return {
         ok: true,

@@ -7,6 +7,7 @@ import { bookmarkRequestSchema } from "../../core/src/bookmarks.js";
 import { readerToolSchema } from "../../core/src/reader.js";
 import { applicationToolSchema } from "../../core/src/application-tool.js";
 import { profileToolSchema } from "../../core/src/profile.js";
+import { cognitiveAppToolSchema } from "../../core/src/cognitive-app-tool.js";
 
 export const operationRequestSchema = z.discriminatedUnion("action", [
   z
@@ -109,6 +110,24 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
         action: "applications",
         applications: { action, ...params },
       }),
+    );
+  }
+  const cognitiveLabels = {
+    list: "查找本人获权认知应用和连接，不加载全部业务 Schema",
+    describe: "读取精确应用版本的操作 Schema 与实际许可",
+    invoke: "调用精确领域操作；新命令由 Host 派生，read 不创建命令",
+    "read-object": "读取原件的精确 opaque 版本，不以当前版本替代",
+    status: "核已有命令的持久事实，不重新执行",
+    recover: "核已有命令的真实回执，不重新发送业务调用",
+  };
+  for (const schema of cognitiveAppToolSchema.options) {
+    const action = schema.shape.action.value;
+    add(
+      `cognitive.${action}`,
+      cognitiveLabels[action],
+      action === "invoke" || action === "recover" ? "execute" : "read",
+      withoutAction(schema),
+      (params) => ({ action: "cognitive", cognitive: { action, ...params } }),
     );
   }
   const readingLabels: Record<string, string> = {

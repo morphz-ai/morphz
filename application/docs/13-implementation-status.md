@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：有限 Agent adapter
+
+六个 adapter 复用同一业务 Service：list、describe、invoke、read-object、
+status、recover。模型不能提供身份、项目、来源、凭据、安装／本人许可
+或新写命令 ID；Host 从实际 ToolJob 派生新写 ID，只读不建命令。原件
+保留 opaque 版本；状态／恢复只核旧事实，不重新 invoke。实际来源类型
+核验在固定剧本守门之前，冲突拒绝，缺少旧 scope 类型也不能绕过守门。
+认知 ingress 在 await 前快照，有界纯 JSON，不执行 getter／toJSON；
+不把新 wire 预算套到旧合法文档载体。安全失败保留原命令 ID，包括
+实际 Desktop 私有 IPC，错误不披露连接／凭据或已读私有正文。
+
+Root 全文复核六路径与冻结指纹，独立正式八文件 82/82，required
+PostgreSQL、Runtime 且显式启用旧 Profile 实际 Runtime 集成，零失败／
+取消／跳过。日志 `/tmp/morphz-agent-cognitive-ROOT-FROZEN-oct05.log`。
+全工程类型检查通过，日志
+`/tmp/morphz-agent-cognitive-ROOT-TYPES-FROZEN-oct05.log`。
+
+新 31 项覆盖 Core UNIT、独立 packed 作者真实 SQLite、Platform 双
+SQL、真实 HTTP／私有 IPC、原回执重放、断响应恢复、撤权不披露、实际
+固定剧本与后台准入；Thread／Event／Schedule 来源读取仍为明确夹具。
+旧 Profile 单独通过实际 Rust 21 次受控模型请求，不调用付费上游。
+真实首 RED、入口 getter／长度 RED 及新夹具实参错误均保留。新增说明
+曾超过 Rust 的既有 16,000 UTF-8 字节上限，已压缩重复说明到
+15,610／15,682；新测试要求不超过 15,800，不放宽 Runtime 校验。
+本阶段不把受控来源测试称作新认知实际 Rust 或原 App 验收；真实启动
+装配和原件链在下一独立提交，不修改用户资料或视觉。
+
 ## 2026-10-05 第三方认知应用：Human 窗口生命周期 facade
 
 新增独立六方法 facade：launch、bind、metadata read、UI read、save、

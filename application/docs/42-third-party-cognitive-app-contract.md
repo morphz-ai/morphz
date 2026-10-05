@@ -1,6 +1,13 @@
 # 第三方认知应用接入契约
 
 日期：2026-10-05。状态：独立协议／Browser SDK、v11 双后端关系、内部服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链及 renderer 传输已验证；真实 Agent／GUI 与原 App 的跨宿主闭环尚未完成。
+
+Agent 的有限六操作 adapter 已独立通过八文件 82/82、required
+PostgreSQL／Runtime、零跳过及全工程类型检查。新认知测试实际使用
+packed 作者、双 SQL 和私有 IPC，来源读取明确受控；同组旧 Profile
+通过实际 Rust。新认知实际 Runtime 装配、GUI 与原 App 仍分别验收，
+不把该阶段回归混报为完整生态闭环。
+
 这是 Morphz Application 的实验接入版本，不是 Runtime 或 HNS 的新标准。
 文档存在不表示独立 SDK、服务网关或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
