@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>笔记</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font:
+          14px/1.5 system-ui,
+          sans-serif;
+        --surface: #fff;
+        --panel: #f7f8fa;
+        --text: #202126;
+        --muted: #646971;
+        --line: #d9dde3;
+        --accent: #006879;
+        --focus: #007d93;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-appearance="light"]) {
+          --surface: #202126;
+          --panel: #282a30;
+          --text: #f0f2f5;
+          --muted: #aeb4bf;
+          --line: #484d58;
+          --accent: #7ce1f2;
+          --focus: #7ce1f2;
+        }
+      }
+      :root[data-appearance="dark"] {
+        --surface: #202126;
+        --panel: #282a30;
+        --text: #f0f2f5;
+        --muted: #aeb4bf;
+        --line: #484d58;
+        --accent: #7ce1f2;
+        --focus: #7ce1f2;
+      }
+      :root[data-accent="iris"] {
+        --accent: #725de6;
+        --focus: #725de6;
+      }
+      :root[data-accent="coral"] {
+        --accent: #b84235;
+        --focus: #b84235;
+      }
+      :root[data-accent="mono"] {
+        --accent: var(--text);
+        --focus: var(--text);
+      }
+      :root[data-appearance="dark"][data-accent="iris"] {
+        --accent: #bdadff;
+        --focus: #bdadff;
+      }
+      :root[data-appearance="dark"][data-accent="coral"] {
+        --accent: #ffada1;
+        --focus: #ffada1;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--surface);
+        color: var(--text);
+      }
+      button,
+      input,
+      textarea {
+        font: inherit;
+      }
+      button {
+        min-height: 32px;
+        padding: 5px 10px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--surface);
+        color: var(--text);
+        cursor: pointer;
+      }
+      button:hover:not(:disabled) {
+        background: var(--panel);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: var(--surface);
+      }
+      :focus-visible {
+        outline: 2px solid var(--focus);
+        outline-offset: 3px;
+      }
+      input,
+      textarea {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 8px 10px;
+        background: var(--surface);
+        color: var(--text);
+      }
+      textarea {
+        min-height: 240px;
+        resize: vertical;
+        font-size: 15px;
+        line-height: 1.65;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(180px, 230px) minmax(0, 1fr);
+        min-height: calc(100dvh - 57px);
+      }
+      aside {
+        padding: 16px 12px;
+        background: var(--panel);
+        border-right: 1px solid var(--line);
+      }
+      #list {
+        display: grid;
+        gap: 4px;
+        margin: 0 0 12px;
+        padding: 0;
+        list-style: none;
+      }
+      #list button {
+        width: 100%;
+        text-align: left;
+        overflow-wrap: anywhere;
+        background: transparent;
+        border-color: transparent;
+      }
+      #list button[aria-pressed="true"] {
+        background: var(--surface);
+        border-color: var(--line);
+        color: var(--accent);
+      }
+      .workspace {
+        min-width: 0;
+        padding: 20px 24px 24px;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      .muted,
+      .hint {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .hint {
+        margin: 8px 0 16px;
+      }
+      #original {
+        margin: 16px 0 24px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font:
+          15px/1.75 system-ui,
+          sans-serif;
+      }
+      #editor label {
+        display: block;
+        margin: 0 0 12px;
+      }
+      #editor label span {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--muted);
+      }
+      .recovery {
+        padding-top: 16px;
+        border-top: 1px solid var(--line);
+      }
+      .recovery summary {
+        cursor: pointer;
+        color: var(--muted);
+      }
+      .recovery label {
+        display: block;
+        margin: 12px 0 8px;
+      }
+      #status {
+        min-height: 24px;
+        margin: 12px 0;
+        overflow-wrap: anywhere;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      dialog {
+        max-width: min(420px, calc(100vw - 32px));
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface);
+        color: var(--text);
+      }
+      dialog::backdrop {
+        background: #0006;
+      }
+      dialog .actions {
+        justify-content: flex-end;
+        margin: 20px 0 0;
+      }
+      @media (max-width: 600px) {
+        .layout {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        aside {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+        .workspace {
+          padding: 16px;
+        }
+        textarea {
+          min-height: 200px;
+        }
+      }
+      @media (pointer: coarse) {
+        button,
+        input {
+          min-height: 44px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header aria-label="笔记操作">
+      <button id="refresh" disabled>刷新列表</button>
+      <button id="new" disabled>新笔记</button>
+      <span class="muted" id="connection">正在连接工作区…</span>
+    </header>
+    <div class="layout">
+      <aside aria-label="笔记列表">
+        <p class="hint" id="list-hint">点击刷新，读取当前项目的笔记。</p>
+        <ul id="list"></ul>
+        <button id="next" disabled hidden>更多笔记</button>
+        <button id="read" disabled>读取所选原文</button>
+      </aside>
+      <main class="workspace">
+        <div class="actions" aria-label="当前笔记操作">
+          <button id="edit" disabled>编辑</button>
+          <button id="open" disabled>在工作区打开</button>
+          <button id="compose" disabled>引用协作</button>
+          <button id="remember" disabled>记住阅读位置</button>
+        </div>
+        <section id="reader" aria-label="笔记原文">
+          <h1 id="heading">选择一份笔记</h1>
+          <div class="muted" id="version">
+            原文保留精确版本，不自动切换到最新。
+          </div>
+          <pre id="original">也可以新建笔记，从一段想法开始。</pre>
+        </section>
+        <form id="editor" hidden>
+          <label
+            ><span>标题</span
+            ><input id="title" maxlength="180" required autocomplete="off"
+          /></label>
+          <label
+            ><span>正文（Markdown 原文）</span
+            ><textarea id="markdown" maxlength="30000"></textarea>
+          </label>
+          <p class="hint" id="draft-hint">
+            未保存编辑仅留在当前窗口，关闭后可能丢失。
+          </p>
+          <button id="save" type="button" class="primary" disabled>
+            保存笔记
+          </button>
+        </form>
+        <p id="status" role="status" aria-live="polite"></p>
+        <details class="recovery" id="recovery">
+          <summary>查询原命令与恢复回执</summary>
+          <label for="command">原命令 ID</label>
+          <input
+            id="command"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="粘贴原命令 ID，不会创建或重发命令"
+          />
+          <p class="hint">
+            未收到响应不等于保存失败。只查询这条原命令；不会自动重试或生成新
+            ID。
+          </p>
+          <div class="actions">
+            <button id="status-command" disabled>查询状态</button>
+            <button id="recover" disabled>恢复回执</button>
+          </div>
+        </details>
+      </main>
+    </div>
+    <dialog id="discard" aria-labelledby="discard-title">
+      <h1 id="discard-title">放弃未保存编辑？</h1>
+      <p>当前编辑尚未保存。继续操作可能替换或离开当前编辑。</p>
+      <div class="actions">
+        <button id="keep">保留编辑</button
+        ><button id="discard-confirm">放弃并继续</button>
+      </div>
+    </dialog>
+    <!-- APP_SCRIPT -->
+  </body>
+</html>

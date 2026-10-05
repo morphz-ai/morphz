@@ -17,8 +17,23 @@ SQLite 启用外键、WAL、FULL 同步；每次变更使用 `BEGIN IMMEDIATE`�
 | author_commands       | tenant/command PK、semantic hash、完整固定绑定、terminal receipt JSON/SHA；业务版本与回执一次提交，禁止 UPDATE/DELETE       |
 
 metadata 不绑定单一应用版本。代码可在明确支持旧接口的前提下追加新精确定义；
-同版本不能改变 hash，也不从 DB 读取任意 Schema 来执行。当前只实现 headless
-1.0.0，未提供 GUI、版本升级管理或删除／迁移原件 API。
+同版本不能改变 hash，也不从 DB 读取任意 Schema 来执行。默认仅静态支持
+headless 1.0.0；显式 `--gui` 可加入固定路径构建的 1.1.0，非 UI 元数据与操作
+必须逐字义匹配旧合同，版本与 UI 包版本必须同为 1.1.0。
+
+启动先验证这个固定作者发布，再打开 SQLite。在原有 `BEGIN IMMEDIATE` 中
+校验旧新精确定义并仅 INSERT 缺失版本；同版本 SHA 或 canonical JSON 冲突
+即回滚，metadata、旧定义、原文、命令回执、集成映射与 ACL 全部保留。
+没有 schema 迁移或业务资料回写；仍为 schema v1。默认模式不因数据库含有
+1.1.0 就自动启用它，已有旧/new 定义不因此被删除。请求版本是固定权威绑定
+的一部分，旧命令只能按旧完整绑定恢复，不能借新 UI 改写原 command。
+
+GUI 仅是可选作者交互入口，不拥有保存方或账本。readObject 仍由作者服务读取
+不可变原版本，Host 投影不是原文权威。界面 `saveState` 只有精确原件引用与
+reading 导航标记；草稿、正文、原 commandId 不写入宿主状态。编辑及结果不明
+的原命令仅存在当前 Document 内存，关闭窗口不代表事务取消。
+
+未提供任意版本升级管理、删除／迁移原件 API、外部同步或草稿持久化机制。
 
 只有本地同步笔记事务，没有外部 execute 效果。因此 author_commands 只在同一
 原子事务内提交 committed/rejected 终态，无独立对外可见 admitted 中间行。

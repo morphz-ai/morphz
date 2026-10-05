@@ -1,6 +1,6 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05。状态：独立协议／Browser SDK、v12 双后端关系与本人登记管理、服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输、真实 Rust Agent input 链、只读原件工作区与工作台管理前端已分层验证；输入目标／共同 Dock 目录、第三方可执行 GUI 与原 App 的跨宿主闭环尚未完成。
+日期：2026-10-05。状态：独立协议／Browser SDK、v12 双后端关系与本人登记管理、服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输、真实 Rust Agent input 链、只读原件工作区与工作台管理前端已分层验证；输入目标／共同 Dock 目录及独立可选 GUI 作者包已验证，生产 GUI owner 与原 App 的跨宿主闭环尚未完成。
 
 Agent 的有限六操作 adapter 已独立通过八文件 82/82、required
 PostgreSQL／Runtime、零跳过及全工程类型检查。新认知测试实际使用
@@ -560,6 +560,22 @@ CAS，后续原请求重试仍由 Host 判断已提交事实与当前首次创�
 组件测试不能代替同一个用户原 App、作者网络和跨宿主验收。
 
 ### 可选 GUI 的宿主装配决策（实施中）
+
+独立笔记作者可选 GUI 已交付，不代表宿主接线完成。原 headless 1.0.0
+定义原字节保持；仓库外真实 SDK 0.2.0 tarball 安装、固定 esbuild 构建
+自包含 HTML 与 1.1.0 一致 UI版本／实际 SHA。作者服务默认仍 headless，
+仅显式 `--gui` 静态支持两版，在原 schema／原事务追加精确定义，不
+改保存方、原文、ACL、旧命令或回执，同版 hash 冲突原子拒绝。
+
+GUI 首次仅接 context；列表、读取、创建、修订、状态／回执、打开、
+引用与记住位置皆显式点击。原件版本 opaque，不读 latest、不复制正文
+到 Host；正文安全 textContent，保留原始换行。未保存编辑需确认离开；
+未知写保留原 commandId／草稿、锁住重复写，不自动重试。只在当前
+Document 内存保留编辑，不冒称跨窗口草稿持久化或交易取消。
+Root 独立六文件组合 96/96 含新作者九项，另相邻七文件 75/75 含原作者
+十项；打包／作者 SQLite 双版本与 controlled Host 的 Chromium Document／
+SDK／native port 机制分开注明，不假称后者有生产 HPA／Platform SQL。
+实际明暗宽窄截图已查看，未改宿主 UI 或虚构后台进度。
 
 #### 本人精确窗口定位（共享 API 已验收，2026-10-06）
 

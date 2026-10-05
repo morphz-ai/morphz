@@ -1,5 +1,34 @@
 # 桌面能力实施记录
 
+## 2026-10-06 独立笔记作者可选 GUI 发布包
+
+只改独立 `examples/cognitive-notes` 作者项目：公开 Browser SDK 0.2.0
+与固定 esbuild 0.28.2，真实仓库外源码 tgz 安装／构建／二次确定性构建／
+含产物 tgz 打包。产物自包含 HTML、精确 SHA 的 1.1.0 定义及安装载体；
+原 1.0.0 原字节 SHA `9fb7bbea47fb891a103fb342e4d2d7cb3d75f74221ba8bfaa1bcc79027af7acd`
+不变。默认服务仍 headless，显式 `--gui` 支持两版；无 schema 迁移，
+原文、dataAuthority、ACL 与原命令回执保持，同版新 hash 事务拒绝。
+
+Root 冷审九路径，独立六文件 96/96 含作者新九项，相邻七文件 75/75
+含原作者十项，日志分别为
+`/tmp/morphz-cognitive-GUI-LEAVES-ROOT-FINAL-oct06.log` 与
+`/tmp/morphz-compose-author-ROOT-ADJACENT-oct06.log`；required PostgreSQL、
+零失败／取消／跳过。作者数据是独立实际 SQLite；Browser GUI 的 Host
+业务 DTO 明确 controlled，不能把组合内 required PG 当 GUI 的真实
+Platform／HPA 业务证明。独立 GUI 类型及全工程类型／生产构建通过。
+
+实际点击核 opaque 历史原件、HTML 字符安全显示、显式列表／读取／
+新建／修订／状态／回执／引用／位置、未知命令 ID 不变与不重试、dirty
+离开确认、失败读保原草稿、退休 Document 不再发送。新作者 build 的
+replacement-string `$\`` 破坏脚本、原 sandbox 不允许 form submit、
+回执 summary 多字段误入严格 resource 等 RED 原日志保留；分别改为
+callback 注入、明确按钮 click、精确两字段提取，不扩 sandbox 或 SDK。
+实际明亮 960px 与深色 380px 截图 Root 已查看，原宿主视觉完全未改。
+
+编辑仅 Document 内存，没有跨窗口持久化或任意版本管理。此阶段不
+表示真实授权连接／GUI owner／Web-Local-Remote-native／原 App 闭环
+完成；这些继续在活动目标内，无 GitHub 推送或外部发布。
+
 ## 2026-10-06 认知界面准备原未发送草稿的提交确认
 
 新增纯 latest-draft 变换与准备 leaf，复用原 public functional writer、

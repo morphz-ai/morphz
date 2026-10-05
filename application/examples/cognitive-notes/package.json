@@ -8,15 +8,22 @@
     "node": ">=24.13.0"
   },
   "scripts": {
-    "start": "node service.mjs"
+    "start": "node service.mjs",
+    "build:gui": "node build-gui.mjs"
   },
   "dependencies": {
     "@morphz/cognitive-app-sdk": "0.2.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   },
   "files": [
     "service.mjs",
     "definition.json",
     "README.md",
-    "MODEL.md"
+    "MODEL.md",
+    "build-gui.mjs",
+    "gui",
+    "dist"
   ]
 }

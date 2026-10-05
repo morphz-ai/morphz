@@ -149,6 +149,7 @@ const { values } = parseArgs({
     db: { type: "string" },
     config: { type: "string" },
     port: { type: "string", default: "0" },
+    gui: { type: "boolean", default: false },
   },
 });
 if (
@@ -166,6 +167,33 @@ process.umask(0o077);
 let db;
 let metadata;
 try {
+  // Explicit, fixed release only. Existing headless bytes, hashes, schema,
+  // authority and ACLs are never rewritten, nor is a stored Schema executed.
+  // Validate before opening SQLite so a bad GUI release cannot touch a DB.
+  if (values.gui) {
+    const filename = new URL("./dist/definition.gui.json", import.meta.url);
+    const stat = statSync(filename);
+    if (!stat.isFile() || stat.size > 65536) deny();
+    const gui = parseCognitiveAppDefinition(
+      JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(
+          readFileSync(filename),
+        ),
+      ),
+    );
+    const { version: oldVersion, ui: oldUi, ...oldContract } = knownDefinition;
+    const { version, ui, ...guiContract } = gui;
+    if (
+      oldVersion !== "1.0.0" ||
+      oldUi !== null ||
+      version !== "1.1.0" ||
+      ui === null ||
+      ui.packageVersion !== "1.1.0" ||
+      !equal(oldContract, guiContract)
+    )
+      deny();
+    supported.set("1.1.0", { definition: gui, hash: hash(gui) });
+  }
   db = new DatabaseSync(values.db);
   const version = db.prepare("PRAGMA user_version").get().user_version;
   const empty =
