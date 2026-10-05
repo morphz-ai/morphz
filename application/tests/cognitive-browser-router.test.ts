@@ -633,6 +633,101 @@ test("UNIT composed channel and router publish their own saved CAS, then gate th
   channel.retire();
 });
 
+test("UNIT composed router and channel hide without work, then restore the same document channel", async () => {
+  const f = unit();
+  const messages: ReturnType<typeof parseBrowserMessage>[] = [];
+  const frame = {
+    postMessage(message: unknown) {
+      messages.push(parseBrowserMessage(message));
+    },
+  };
+  const channel = createCognitiveBrowserChannel(f.context, {
+    frame,
+    current: () => true,
+    authorize: f.router.authorize,
+    request: f.router.request,
+  });
+  try {
+    await channel.receive({
+      source: frame,
+      origin: "null",
+      data: { type: "morphz-cognitive-ui/v1:connect" },
+    });
+    await channel.loaded();
+    const first = messages.at(-1)!;
+    assert.equal(first.type, "morphz-cognitive-ui/v1:init");
+    if (first.type !== "morphz-cognitive-ui/v1:init")
+      throw new Error("Missing init");
+    const hidden = parseBrowserContext({
+      ...f.context,
+      view: { ...f.context.view, active: false },
+    });
+    await channel.updateContext(hidden);
+    const inactive = messages.at(-1)!;
+    assert.equal(
+      inactive.type,
+      "morphz-cognitive-ui/v1:init",
+      "Temporary hiding must not retire the document",
+    );
+    if (inactive.type !== "morphz-cognitive-ui/v1:init")
+      throw new Error("Missing hidden context");
+    assert.equal(inactive.channel, first.channel);
+    assert.equal(inactive.context.view.active, false);
+    await assert.rejects(f.router.request(write(), hidden, signal()), {
+      code: "forbidden",
+    });
+    const blockedId = crypto.randomUUID();
+    await channel.receive({
+      source: frame,
+      origin: "null",
+      data: {
+        type: "morphz-cognitive-ui/v1:request",
+        channel: first.channel,
+        requestId: blockedId,
+        request: write(),
+      },
+    });
+    assert.equal(
+      f.calls.filter(({ method }) => method === "cognitive-apps.invoke").length,
+      0,
+    );
+    await channel.updateContext(f.context);
+    const visible = messages.at(-1)!;
+    assert.equal(visible.type, "morphz-cognitive-ui/v1:init");
+    if (visible.type !== "morphz-cognitive-ui/v1:init")
+      throw new Error("Missing restored context");
+    assert.equal(visible.channel, first.channel);
+    assert.equal(visible.context.view.active, true);
+    const requestId = crypto.randomUUID();
+    await channel.receive({
+      source: frame,
+      origin: "null",
+      data: {
+        type: "morphz-cognitive-ui/v1:request",
+        channel: first.channel,
+        requestId,
+        request: { method: "ready" },
+      },
+    });
+    const result = messages.find(
+      (message) =>
+        message.type === "morphz-cognitive-ui/v1:response" &&
+        message.requestId === requestId,
+    );
+    assert.ok(
+      result && result.type === "morphz-cognitive-ui/v1:response" && result.ok,
+    );
+    assert.equal(
+      messages.some(
+        (message) => message.type === "morphz-cognitive-ui/v1:retire",
+      ),
+      false,
+    );
+  } finally {
+    channel.retire();
+  }
+});
+
 for (const backend of ["sqlite", "postgres"] as const) {
   test(`${backend}: router uses actual Human views/readUi, original SQL CAS and exact bound owner source`, async () => {
     await withViewTransport(backend, async (f) => {

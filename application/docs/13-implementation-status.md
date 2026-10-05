@@ -1,5 +1,17 @@
 # 桌面能力实施记录
 
+## 2026-10-05 Browser 路由隐藏与恢复
+
+接线复审复现了两叶组合缺陷：暂时隐藏时，路由的 active 守门阻止当前
+metadata 授权，通道因此永久退休。现将 metadata 生命周期授权与操作
+准入分开；隐藏仍核真实窗口／绑定／许可，但任何业务操作必须 active。
+受控真实 channel／router 组合验证隐藏无 invoke、显示保留同一 channel
+并可 ready；不是 mounted DOM 或原 App 验收。独立正式五文件 55/55、
+required PostgreSQL、零失败／取消／跳过及全工程类型检查通过，日志
+`/tmp/morphz-cognitive-router-HIDE-ROOT-ACCEPTED-oct05.log` 和
+`/tmp/morphz-cognitive-router-HIDE-ROOT-types-oct05.log`。首次失败保留于
+`/tmp/morphz-cognitive-router-HIDE-FIRST-RED-oct05.log`，未弱化业务授权。
+
 ## 2026-10-05 第三方认知应用认证界面资源
 
 同一 bound view 的原 HTML 已沿 Local、HTTP／Remote 和 Electron 内嵌

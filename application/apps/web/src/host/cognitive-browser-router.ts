@@ -81,7 +81,7 @@ export function createCognitiveBrowserRouter(
     connectionId: target.connectionId,
     expectedDefinitionHash: target.expectedDefinitionHash,
   };
-  function scope(input: BrowserContext): BrowserContext {
+  function scope(input: BrowserContext, requireActive = true): BrowserContext {
     const context = parseBrowserContext(input);
     requireMatch(
       equal(context.definition, fixed.definition) &&
@@ -91,14 +91,16 @@ export function createCognitiveBrowserRouter(
         context.ui.compose === compose,
       "forbidden",
     );
-    requireMatch(context.view.active, "forbidden");
+    if (requireActive) requireMatch(context.view.active, "forbidden");
     return context;
   }
   function active(signal: AbortSignal) {
     if (signal.aborted) throw new RouterError("unavailable");
   }
   async function authorize(input: BrowserContext, signal: AbortSignal) {
-    const context = scope(input);
+    // Hidden presentation still needs current metadata authorization to keep
+    // this document warm. Operation admission separately requires active=true.
+    const context = scope(input, false);
     active(signal);
     const current = parseCognitiveAppViewResponse(
       "readUi",
