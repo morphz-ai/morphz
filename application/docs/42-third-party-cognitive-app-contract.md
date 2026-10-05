@@ -467,6 +467,8 @@ GUI 的带对象 compose consumer 仍须实测，只填入文本不能代替其�
 `content_entries`。UI-only 安装和 Service 接入同一 app 必须复用既有
 installationId；规范化创建入口，不能两边各生成一个互相冲突的安装 ID。
 新增以下关系，均由 Platform 拥有并走相同 SQLite／PostgreSQL 事务接口。
+下表原有六项已验证于 v11；本人登记关系的 v12 扩展已完成模型审查，正在实施，
+尚不作为管理目录已交付的证据。
 
 | 关系 | 身份及字段 | 约束与主要查询 |
 | --- | --- | --- |
@@ -476,6 +478,7 @@ installationId；规范化创建入口，不能两边各生成一个互相冲突
 | `cognitive_app_connections` | tenant/connectionId、ownerPrincipal、app/instance、serviceId/dataAuthorityId、opaque hostBindingId、state/revision、createdAt/updatedAt | FK 同一 app/instance；本人绑定与固定保存方；CAS 接入／许可；Host alias 不含凭据位置，公开 catalog 排除 |
 | `cognitive_app_view_bindings` | tenant/viewId、ownerPrincipal、app/version、instance、connectionId、revision | FK 真实 view、精确定义与本人连接；同版 GUI 不猜保存方；CAS 选择与后端迟到守门 |
 | `cognitive_app_commands` | tenant/commandId、app/version/hash、instance/dataAuthority、connection/revision、grant/revision、真实 actor/source、project、operation、requestHash、bounded resources、state、receiptHash/ref、有界原件回执摘要、目录状态、createdAt/updatedAt | PK tenant/commandId；FK 精确定义、连接、实例、项目；只为副作用调用持久 admission；查询命令、input/source 与待核结果 |
+| `cognitive_app_registrations`（v12 实施中） | tenant/principal/app/version、definitionHash、registeredAt | PK tenant/principal/app/version；复合 FK 指向同一精确定义；本人明确接入关系，不是 grant，也不改变首 installer |
 
 一个 tenant/app/serviceId/dataAuthorityId 对应唯一数据实例；多个 Human
 接同一原件库复用该 instance，分别保留本人连接，不复制内容目录。
@@ -523,6 +526,50 @@ Host 安装链、独立授予获权用户的精确字节读取门与窗口 bindi
 既有 installedBy-only UI 读取权限不变。实际 Client channel／渲染及原窗口
 仍需接线验收，不能由 Store 测试推定已经交付。
 
+### 本人登记与管理目录
+
+应用定义与安装字节可以由租户中的首次安装者固定，但“本人接入了哪个
+精确版本”必须另有真实关系。重复导入不能把首 installer 改成当前人，
+也不能靠自动创建 active 或 disabled grant 让应用出现在本人目录。
+登记只保存精确版本关联与时间，不复制定义、HTML、正文或连接凭据。
+
+完整定义安装成功、同一 headless 定义的重复安装、本人明确修改 grant，
+分别在各自原事务中确保本人登记。GUI 仍须走实际私有字节证明；已知租户
+内既有精确定义的 Human 可通过 `install` 的严格 `register-installed` 分支，
+显式提交 app/version/hash 与 commandId，仅登记该定义。这个分支不访问
+作者网络、不读 HTML、不转移字节 owner、不创建 grant 或 connection。
+登记命令复用既有持久回执：同命令同内容返回原结果，异内容拒绝；新关系
+与回执原子提交，真实新增只发送一次 access 失效通知，重放不再通知。
+原 headless 安装仍以不可变 tuple/hash 幂等，不补称它已有 commandId 回执。
+
+Human 管理目录只查询本人登记与真实本人 grant，未授权版本返回
+`grant:null`，并提供真实安装状态、登记时间与作者声明的图标。它不公开
+租户全部版本、首安装者、别人的连接或私有存储引用。未授权的 Human
+应能预览本人已登记的真实有界声明后再同意；该预览不调用作者 Service，
+通过 `describe` 的严格 `registered-management` 分支固定 app/version/hash，
+返回带管理模式判别的声明与真实可空 grant，不伪造业务 grantRevision，
+也不放宽原业务 `describe` 的 active grant 与项目门。Agent 目录仍只读本人
+真实 grant 集合，模式由 Host 的实际 actor 派生，不能由请求选择。
+
+管理可见不等于可启动。工作台、Dock 和 Launcher 复用同一投影，启动
+再核当前项目成员、精确版本、active grant、本人连接与安装状态；多个
+连接必须明确选择。无 GUI 应用可以准备显式输入上下文，不制造空窗口；
+导航、登记、预览、接入和开窗口都不自动发送输入或启动工作。
+
+目录同时受条数和 UTF-8 JSON 字节预算约束。`limit≤100` 是条数上限，
+不是保证满页；图标随完整条目原样返回，超本页预算则留到下一页，不截断、
+省略或换图。版本页内部预算为 384 KiB，连接页为 80 KiB，完整公开结果
+含游标不超过 480 KiB，并保留既有 512 KiB wire 上限。两个序列独立
+以实际最后发出的条目推进；游标绑定真实身份、查询模式、筛选与 access
+revision，目录变化后重新查询，不能混接不同授权状态的页面。
+
+v11→v12 只回填真实首 installer 和已存在的本人 grant（含 disabled），
+不从窗口、连接或 UI-only 包推测登记。旧版未授权的 Bob 重复 headless
+导入没有留下本人事实，无法可靠补造；需本人再次明确登记。停用许可、
+连接或安装均不删除登记、原件或命令证据，本阶段不增加登记卸载操作。
+SQLite／PostgreSQL 均须验证真实旧 v11 升级、原字段不变、事务回滚、
+并发登记与回执、本人隔离及最大图标完整翻页；客户端和原 App 另行验收。
+
 definition 是一份有界不可变声明，不是全工作空间 JSON。关系不保存作者
 正文、未发送草稿、任意业务数据库快照或凭据。command 不保留原业务参数副本；
 有原调用字节的正常重试可核 hash，没有参数的恢复只查询旧回执，不补造参数。
@@ -550,7 +597,8 @@ owner/state/app/instance；command 的 source、state/updatedAt/commandId。
 Tenant 全部纳入身份和唯一约束。JSON 的字节／深度在应用层校验，SQL 提供
 有界字段、枚举、FK、revision 和 uniqueness，不依赖某后端专有 JSON 行为。
 
-本契约设计基线为 Platform schema v10，当前已验证 v11。新关系通过 v10→v11 迁移，同时更新权威 DDL
+本契约设计基线为 Platform schema v10，当前已验证 v11；v12 本人登记扩展正在实施。
+六项领域关系通过 v10→v11 迁移，同时更新权威 DDL
 和生成 schema；冻结真实旧 v10 的 DDL/hash，v9→v10 先写旧 hash 再继续
 v11，不能让旧迁移误用新的当前 hash。旧库测试 fixture 使用准确旧基线，
 不得从新 DDL 仅减去头像字段而把新关系混进旧库。
@@ -588,7 +636,8 @@ Scheduled task-run 即使带 sourceInputId，也仍是 task-run；来源分类�
 现 PlatformStore 已提供真实身份、本人许可和逐资源操作解析；结果是当前
 策略快照，不可跨事务当成发送许可。Host-only 连接证明尚不注册在公开
 Client、Agent 或 iframe 接口；内部实际网关先认证固定 describe 再构造。
-本人目录当前只列已同意的版本，尚不是安装管理／安装前发现的全部入口。
+当前已验证 v11 的本人目录只列已同意版本；上文 v12 登记与管理扩展尚待
+实现验收，不把已有业务能力目录冒称为完整安装管理入口。
 第三方原件核验组合进已有 Host verifier，不替换内置核验，更不能一律放行。
 现有 active-instance 新业务写规则保持，停用后的目录补齐只允许确切持久
 admission 和已核 committed 摘要，不给予通用恢复写权。
