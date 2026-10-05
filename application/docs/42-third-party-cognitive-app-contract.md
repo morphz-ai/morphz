@@ -463,6 +463,67 @@ sessionStorage，不能用临时 UUID 代替可重开的身份。失效／取消
 WebCrypto 和受控存储，不是实际 SQL 安装、工作台组合或原 App 界面
 验收完成证明，完整范围见实施记录。
 
+### 连接创建回执与关闭后的恢复设计
+
+此节是经源码审查的实施设计，尚不表示连接恢复已完成。公开 connect
+请求与响应保持不变；它表示 Human 明确提交或按原参数重试创建，不是
+缺回执时绝不创建的只读查询。没有回执不证明失败、未提交或没有在途请求。
+
+连接及创建事实仍由 Platform 的关系存储负责。复用既有 command_receipts，
+不新增表、renderer 数据库、领域执行 admission 或第二份连接目录。
+内部 operation 固定为 cognitive-app-connect-create/v1；回执键为
+cognitive.connect.v1: 加完整 SHA-256，摘要输入包含该操作域、实际 tenant、
+实际 Human principal 和原 connectionId。冒号不能由公开 commandId 正则
+构造，避免其他业务命令占用该内部域。request_hash 绑定操作域、实际 Human
+owner 和完整原 Core connect 请求，保留可选字段的原缺省；不加入 CSRF、
+当前目录修订、Host alias、时间或后来的许可。result_ref 只保存原 connectionId。
+既有主键与索引即可支持精确查询，不改历史 schema 或迁移旧连接的回执。
+
+Host-only readCognitiveAppConnectionCreation 每次重新核实际 Human，严格
+检查回执的 operation、principal、request_hash 和 result_ref；命中后核保留的
+固定版本并读取本人连接当前 state／revision，核原 app／service／保存方，
+不披露私有 hostBindingId。已关闭许可、停用安装或不可用实例不被重新激活。
+缺少连接、错误回执或固定关系不一致是完整性错误，不能回落到另建连接。
+Agent、provider 和其他 Human 不从此取得管理读取能力。
+
+Gateway 先按此端口查成功事实；命中不再 describe 或选择新路由。缺回执
+才沿原许可准备、私有绑定和只读 describe 取得握手证明。内部创建 envelope
+包含完整原 request、proof、verifiedGrantRevision 和 verifiedActor；这些都
+在第一个 await 前严格解析并独立复制。当次握手身份与实际 Human 必须
+吻合，不能把另一身份的 Host proof 提交过来。原请求的许可前提与当次
+准备得到的许可修订分开，后者不能替换原请求后参与持久摘要。
+
+真正创建事务先取原统一 receipt 锁，再检查同一成功事实，命中先于 active
+grant 检查并只返回当前元数据。仅未命中时核 proof 与完整公开目标、原许可
+前提和当次 verified CAS，再创建连接、同事务写回执并推进一次 access revision。
+SQLite 沿原 BEGIN IMMEDIATE；PostgreSQL 沿原 tenant／receipt-key advisory
+锁，再借用原 consent、authority 和 connection 锁。并发 describe 的两个请求
+只创建一条连接、一条回执；重放不写、不通知、不启用。旧连接没有成功回执
+时同 ID 仍冲突，不推断原尝试、不补造历史。保留原连接生命周期，不新增硬删除。
+
+本机仅保存有界的公开待确认请求、原 connectionId 和摘要，按实际中心、
+Human、持久窗口身份隔离；不保存 URL、alias、凭据、正文或授权权威快照。
+查找键固定 app／version／定义 hash／service／保存方，排除候选 ID 和许可
+修订，以便目录刷新后仍找到旧尝试。记录仍保留完整原 CAS，不依当前许可
+静默升级。严格解析、完整摘要及原目标核验失败就阻止发送，保存并回读成功
+才允许提交。重新选择目标遇旧记录时先展示原尝试，不自动 POST；Human
+明确点「按原请求重试」才使用原 DTO／ID。关闭、重开、未知结果与取消都
+保留记录，明确选择不同目标才是另一尝试。真实 ACK 先按原 scope 比对并
+清理本次原记录，再判断界面是否存活；清理失败不改写提交事实或自动重发。
+
+原请求没有成功回执且许可修订已经变化时，旧 CAS 可能持续冲突。Human
+可明确选择「不再重试」并确认风险：原请求可能已经提交，放弃本机记录
+不会撤销旧连接，之后另建可能产生第二条连接。该动作仅按固定 scope、
+目标、完整摘要和原 ID 比对后清除本机记录，不调用 connect、撤权或停用，
+也不把原请求标成失败／回滚。记录已被别的尝试替换时不删除；当前界面
+仍等待写入时不能放弃。新的连接须另一次明确选择和提交，不自动生成或发送。
+
+实施验收须覆盖实际 SQLite／PostgreSQL 的重复、并发、失联后恢复、撤权
+或停用后重放、完整请求冲突、错误身份／回执、旧无回执连接、握手期间变化
+以及 CAS 回滚；沿现 Local／HTTP／Remote 公共 connect 验证不增公开权限。
+管理页另验真实浏览器的关闭／权限刷新卸载／重载后原 ID 显式重试。受控
+组件测试不能代替同一个用户原 App、作者网络和跨宿主验收。
+
 ### 可选 GUI 的宿主装配决策（实施中）
 
 后端生命周期和界面消息分层，不扩充作者的权限声明或另造业务目录。
