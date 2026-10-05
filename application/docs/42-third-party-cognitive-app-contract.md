@@ -1,6 +1,6 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05。状态：独立协议／Browser SDK、v11 双后端关系、服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输、真实 Rust Agent input 链及只读原件工作区已验证；第三方可执行 GUI 与原 App 的跨宿主闭环尚未完成。
+日期：2026-10-05。状态：独立协议／Browser SDK、v12 双后端关系与本人登记管理、服务网关、窗口与精确界面字节门、共享宿主、公开 Local／HTTP／Remote 链、renderer 传输、真实 Rust Agent input 链及只读原件工作区已验证；管理前端、第三方可执行 GUI 与原 App 的跨宿主闭环尚未完成。
 
 Agent 的有限六操作 adapter 已独立通过八文件 82/82、required
 PostgreSQL／Runtime、零跳过及全工程类型检查。新认知测试实际使用
@@ -41,7 +41,16 @@ PostgreSQL／Runtime、零跳过及类型／格式检查通过。新 Rust 与作
 精确原件的本轮核验是 Human API，不冒称 Agent 读；旧 IO10 Agent 读取
 回归同时保留。本段不是作者 GUI、原用户 App 或真实付费模型验收。
 
-文档存在不表示独立 SDK、服务网关或跨宿主闭环已经交付；实际完成项见
+本人登记管理后端已提交于 `d1b54ad8`：独立正式三十七文件 621/621，
+required PostgreSQL／Runtime，零失败、取消与跳过，全工程类型检查通过。
+Human 可在未授权时查看本人已登记的精确定义，登记不隐式创建许可、连接
+或窗口。六项新公共入口测试实际运行 IdentityCenter／HPA、双 SQL 和
+Local／HTTP／Remote；其连接 setup 受控，不称作者网络或原窗口验收。
+本组真实 Rust 沿已提交的显式应用／原件输入回归，模型受控、付费请求零；
+新认知 Runtime 中心为隔离 SQLite，PostgreSQL 是同组双后端回归。
+管理界面、输入框显式应用选择与作者 GUI consumer 仍待接线验收。
+
+文档存在不表示列出的未来能力或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
 
 第三方应用提供自己拥有的业务能力和原件，Morphz 负责让 Human 与 Agent
@@ -316,9 +325,9 @@ principal、actor／source、凭据、服务 URL、Host proof 或调用者时间
 
 | Service 方法 | 固定用途与边界 |
 | --- | --- |
-| `list` | 本人获权版本的元数据与本人连接分页，不把所有操作 Schema 常驻模型输入 |
-| `describe` | 当前项目与本人许可下读取精确定义和完整操作 Schema；无 GUI／连接也可发现 |
-| `install` | Human 安装不可变定义；可选 GUI 必须提供原命令与精确 manifest／实际字节，不隐式授权或开窗口 |
+| `list` | Human 读取本人已登记版本与真实可空 grant，Agent 仍读取本人实际 grant 集合；本人连接共同分页，不把所有操作 Schema 常驻模型输入 |
+| `describe` | 业务模式仍核当前项目与 active grant；Human 的 `registered-management` 模式仅预览本人登记的精确 hash，不产生操作许可 |
+| `install` | Human 安装不可变定义，或以 `register-installed` 登记租户内已知精确定义；可选 GUI 仍需原命令与真实字节证明，不隐式授权或开窗口 |
 | `grant` | Human 对本人精确版本 CAS 启用／停用 |
 | `connect` | Human 核验固定 service／data authority，使用 Host 私有接入配置，不接受服务 URL |
 | `connectionState` | Human 对本人固定连接 CAS 修改使用状态 |
@@ -467,8 +476,8 @@ GUI 的带对象 compose consumer 仍须实测，只填入文本不能代替其�
 `content_entries`。UI-only 安装和 Service 接入同一 app 必须复用既有
 installationId；规范化创建入口，不能两边各生成一个互相冲突的安装 ID。
 新增以下关系，均由 Platform 拥有并走相同 SQLite／PostgreSQL 事务接口。
-下表原有六项已验证于 v11；本人登记关系的 v12 扩展已完成模型审查，正在实施，
-尚不作为管理目录已交付的证据。
+下表原有六项已验证于 v11；本人登记关系的 v12 扩展现已通过双后端、
+真实旧库升级与公共入口验收。前端管理目录和原 App 验收仍未完成。
 
 | 关系 | 身份及字段 | 约束与主要查询 |
 | --- | --- | --- |
@@ -478,7 +487,7 @@ installationId；规范化创建入口，不能两边各生成一个互相冲突
 | `cognitive_app_connections` | tenant/connectionId、ownerPrincipal、app/instance、serviceId/dataAuthorityId、opaque hostBindingId、state/revision、createdAt/updatedAt | FK 同一 app/instance；本人绑定与固定保存方；CAS 接入／许可；Host alias 不含凭据位置，公开 catalog 排除 |
 | `cognitive_app_view_bindings` | tenant/viewId、ownerPrincipal、app/version、instance、connectionId、revision | FK 真实 view、精确定义与本人连接；同版 GUI 不猜保存方；CAS 选择与后端迟到守门 |
 | `cognitive_app_commands` | tenant/commandId、app/version/hash、instance/dataAuthority、connection/revision、grant/revision、真实 actor/source、project、operation、requestHash、bounded resources、state、receiptHash/ref、有界原件回执摘要、目录状态、createdAt/updatedAt | PK tenant/commandId；FK 精确定义、连接、实例、项目；只为副作用调用持久 admission；查询命令、input/source 与待核结果 |
-| `cognitive_app_registrations`（v12 实施中） | tenant/principal/app/version、definitionHash、registeredAt | PK tenant/principal/app/version；复合 FK 指向同一精确定义；本人明确接入关系，不是 grant，也不改变首 installer |
+| `cognitive_app_registrations`（v12） | tenant/principal/app/version、definitionHash、registeredAt | PK tenant/principal/app/version；复合 FK 指向同一精确定义；本人明确接入关系，不是 grant，也不改变首 installer |
 
 一个 tenant/app/serviceId/dataAuthorityId 对应唯一数据实例；多个 Human
 接同一原件库复用该 instance，分别保留本人连接，不复制内容目录。
@@ -560,8 +569,11 @@ Human 管理目录只查询本人登记与真实本人 grant，未授权版本�
 不是保证满页；图标随完整条目原样返回，超本页预算则留到下一页，不截断、
 省略或换图。版本页内部预算为 384 KiB，连接页为 80 KiB，完整公开结果
 含游标不超过 480 KiB，并保留既有 512 KiB wire 上限。两个序列独立
-以实际最后发出的条目推进；游标绑定真实身份、查询模式、筛选与 access
-revision，目录变化后重新查询，不能混接不同授权状态的页面。
+以实际最后发出的条目推进。每个非空 continuation 保存本响应两流的共同
+位置，传入任一个即可续页；同时传入两个时，位置必须一致。某流已结束
+也保留其末位置，不能因 next 为 null 而在另一流续页时重读第一页。游标
+绑定真实身份、查询模式、项目范围、筛选与 access revision，目录变化后
+重新查询，不能混接不同授权状态的页面。
 
 v11→v12 只回填真实首 installer 和已存在的本人 grant（含 disabled），
 不从窗口、连接或 UI-only 包推测登记。旧版未授权的 Bob 重复 headless
@@ -597,10 +609,12 @@ owner/state/app/instance；command 的 source、state/updatedAt/commandId。
 Tenant 全部纳入身份和唯一约束。JSON 的字节／深度在应用层校验，SQL 提供
 有界字段、枚举、FK、revision 和 uniqueness，不依赖某后端专有 JSON 行为。
 
-本契约设计基线为 Platform schema v10，当前已验证 v11；v12 本人登记扩展正在实施。
+本契约设计基线为 Platform schema v10，当前已验证 v12。
 六项领域关系通过 v10→v11 迁移，同时更新权威 DDL
 和生成 schema；冻结真实旧 v10 的 DDL/hash，v9→v10 先写旧 hash 再继续
-v11，不能让旧迁移误用新的当前 hash。旧库测试 fixture 使用准确旧基线，
+v11，不能让旧迁移误用新的当前 hash。v11→v12 同样先核冻结的真实 v11
+hash，登记回填、DDL 与 schema marker 在同一事务提交；中途索引失败不
+残留新表。旧库测试 fixture 使用准确旧基线，
 不得从新 DDL 仅减去头像字段而把新关系混进旧库。
 新关系只增加真实接入事实，既有内置实例、原件和 UI 包不重建、不
 重签、不重命名。迁移自身事务化、schema hash 严格校验，SQLite／PostgreSQL
@@ -636,8 +650,9 @@ Scheduled task-run 即使带 sourceInputId，也仍是 task-run；来源分类�
 现 PlatformStore 已提供真实身份、本人许可和逐资源操作解析；结果是当前
 策略快照，不可跨事务当成发送许可。Host-only 连接证明尚不注册在公开
 Client、Agent 或 iframe 接口；内部实际网关先认证固定 describe 再构造。
-当前已验证 v11 的本人目录只列已同意版本；上文 v12 登记与管理扩展尚待
-实现验收，不把已有业务能力目录冒称为完整安装管理入口。
+v12 后端管理目录现已独立于操作许可；Human 可预览本人已登记但未授权的
+声明，Agent 操作目录仍核真实 grant 与项目。现有前端仍消费旧 UI-only
+目录，不把后端管理 API 冒称为完整工作台／Dock／Launcher 管理入口。
 第三方原件核验组合进已有 Host verifier，不替换内置核验，更不能一律放行。
 现有 active-instance 新业务写规则保持，停用后的目录补齐只允许确切持久
 admission 和已核 committed 摘要，不给予通用恢复写权。

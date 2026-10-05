@@ -1,5 +1,35 @@
 # 桌面能力实施记录
 
+## 2026-10-05 本人认知应用登记与管理后端
+
+已提交 `d1b54ad8`。Platform v12 新增本人精确定义登记关系，不复制作者
+正文或界面字节，不改首 installer，也不以自动 grant 代替本人接入。
+Human 的登记与预览走既有 `cognitive-apps.install/describe` 严格分支；
+管理目录可保留未授权和已停用事实，原业务发现与调用仍核 active grant、
+实际项目与本人连接，Agent 没有取得安装或授权管理能力。
+
+登记、持久回执和真实新增的 access revision 同事务；重复命令不通知或
+重新授权。v11→v12 只回填真实首次安装者与既有 grant，冻结历史 DDL/hash，
+旧数据、UI 字节 owner 与命令事实保持。目录按完整 UTF-8 条目分页，原图
+不截断或省略；两个 continuation 共用两流位置，已结束的流不重新开始。
+完整接口、预算与生命周期见[第三方接入契约](./42-third-party-cognitive-app-contract.md)。
+
+Root 独立正式三十七文件 621/621，required PostgreSQL／Runtime，零失败、
+取消与跳过；全工程类型及专项格式检查通过。日志
+`/tmp/morphz-cognitive-registration-ROOT-ACCEPTED-oct05.log` 和
+`/tmp/morphz-cognitive-registration-ROOT-ACCEPTED-TYPES-oct05.log`。
+六项新公开入口测试实际使用 IdentityCenter／HPA、SQLite／PostgreSQL、
+Local／HTTP／Remote，连接 setup 为明确受控夹具。实际 Rust 回归保留
+既有 IO10／11／12 输入、补充、精确原件和终态回执链；新认知 Runtime
+中心是隔离 SQLite，模型受控、付费请求零，不混报为原 App 或作者网络验收。
+
+首次扩大联合回归为 615 通过、6 失败，日志
+`/tmp/morphz-cognitive-registration-ROOT-FROZEN-oct05.log`。六项旧窗口
+夹具在认知声明登记后才调用已禁止的 UI-only 开窗入口；现改为真实历史
+顺序，保留原 bind／convert、CAS、回执及并发断言，不放宽生产权限。
+管理前端、输入框的显式应用选择、作者 GUI 与原 App 跨宿主验收仍待完成；
+本阶段没有改用户窗口、资料、凭据、Session 或在途工作。
+
 ## 2026-10-05 第三方认知原件与补充执行来源
 
 独立原件引用沿 Human 输入、不可变 Host 投递、canonical IO10、实际
