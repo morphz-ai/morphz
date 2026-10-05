@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：契约与纯校验第一阶段
+
+[接入契约](./42-third-party-cognitive-app-contract.md) 明确作者 Service 的
+原件／事务／备份权威、无 GUI 接入、固定四接口、Human／Agent 共用受权
+网关、本人许可与连接、精确版本／窗口绑定、未知结果与回执恢复。六项
+Platform 关系复用既有安装、实例及原件目录；它们及 v10→v11 迁移目前
+仍为实施设计，不称数据库关系已经上线。已复核旧安装 ID、旧 UI 字节
+ownership、scheduled task-run 分类、事务重入与项目退休保护的真实入口。
+
+`packages/cognitive-app-sdk/src/protocol.ts` 只依赖已安装 Zod，提供独立
+声明类型、严格有限 JSON Schema、实际值和 opaque 资源引用校验；没有
+Host、SQL、Node、browser bridge、网络或凭据依赖，不作安装／授权判断。
+拒绝未知关键字、不默认填值／类型转换，并实际检查 UTF-8、有限数字、
+循环、getter／toJSON、深度、节点、重复身份与同版 GUI 引用。数值预算是
+初始安全边界，不称产品审美或无限数据性能已被验证。
+
+正式定向入口 `npm test -- tests/cognitive-app-protocol.test.ts` 两次冻结
+验证均 16/16 通过、零跳过／失败／取消，`unexpectedSkips=[]`；Root 重跑
+与类型检查通过。独立审查还补明同次原件 id 唯一及不同版本重复 id 拒绝
+断言，最终再验证；协议源码保持冻结。Root 另实际解析
+文档 JSON 示例、核输入／结果，并用 27 组文本／对象／数组检查包含中文、
+emoji、转义、孤立 surrogate 的序列化 UTF-8 精确边界；没有服务或业务调用。
+日志保留于 `/tmp/morphz-cognitive-app-pure-contract.RZd2hW/`，初始缺模块、
+旧机械 purity 误匹配和真实超长版本边界的 RED 也未覆盖。
+
+这是契约与纯校验基础，不是已发布／已打包的完整作者 SDK；服务 wire
+envelope、受权网关、双后端迁移、optional GUI 与独立 Service／实际 Agent／
+跨宿主闭环尚未交付。当前原 App、Runtime、配置和业务资料未因这阶段修改。
+下一阶段先实现生产 registry／commands 与共享 gateway，不重建市场或
+第二执行器；每个验证完成阶段聚焦本地提交，不自动推送。
+
 ## 2026-10-05 同一回复重复展示：修复与最终回归
 
 实际问题是同一 Runtime publication 的公共流前缀与正式终轮分别用
