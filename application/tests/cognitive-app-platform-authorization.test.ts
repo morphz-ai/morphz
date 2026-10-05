@@ -1,4 +1,5 @@
 import test from "node:test";
+import { prepareConnectionCreation } from "./fixtures/cognitive-connection-creation.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -262,12 +263,15 @@ async function connected(h: Harness) {
     dataAuthorityId: "database:notes",
     hostBindingId: "host_private_alias",
   };
-  const connection = await h.store.createVerifiedCognitiveAppConnection(human, {
-    proof,
-    connectionId: "conn-alice",
-    expectedRevision: 0,
-    now,
-  });
+  const connection = await h.store.createVerifiedCognitiveAppConnection(
+    human,
+    await prepareConnectionCreation(h.store, human, {
+      proof,
+      connectionId: "conn-alice",
+      expectedRevision: 0,
+      now,
+    }),
+  );
   return { version, connection, proof };
 }
 function request(
@@ -651,36 +655,40 @@ for (const backend of ["sqlite", "postgres"] as const) {
   test(`Platform cognitive Host proof and connection route privacy on ${backend}`, async () =>
     isolated(backend, async (h) => {
       const { version, connection, proof } = await connected(h);
+      // Prepare a valid actual Human handshake first. The negative calls below
+      // still exercise the real create boundary, not a fixture preflight denial.
+      const validCreation = await prepareConnectionCreation(h.store, human, {
+        proof,
+        connectionId: "agent-conn",
+        expectedRevision: 0,
+        now,
+      });
       await assert.rejects(
         () =>
-          h.store.createVerifiedCognitiveAppConnection(agent, {
-            proof,
-            connectionId: "agent-conn",
-            expectedRevision: 0,
-            now,
-          }),
+          h.store.createVerifiedCognitiveAppConnection(agent, validCreation),
         denied("forbidden"),
       );
       await assert.rejects(
         () =>
           h.store.createVerifiedCognitiveAppConnection(human, {
+            ...validCreation,
             proof: {
               ...proof,
               purpose: "receipt-recovery" as "connection-setup",
             },
-            connectionId: "bad-purpose",
-            expectedRevision: 0,
-            now,
+            request: { ...validCreation.request, connectionId: "bad-purpose" },
           }),
         denied("invalid"),
       );
       await assert.rejects(
         () =>
           h.store.createVerifiedCognitiveAppConnection(human, {
+            ...validCreation,
             proof: { ...proof, definitionHash: "0".repeat(64) },
-            connectionId: "bad-definition",
-            expectedRevision: 0,
-            now,
+            request: {
+              ...validCreation.request,
+              connectionId: "bad-definition",
+            },
           }),
         denied("conflict"),
       );
@@ -706,12 +714,15 @@ for (const backend of ["sqlite", "postgres"] as const) {
         },
       );
       assert.equal(changed.revision, 2);
-      const other = await h.store.createVerifiedCognitiveAppConnection(human, {
-        proof,
-        connectionId: "conn-second",
-        expectedRevision: 0,
-        now,
-      });
+      const other = await h.store.createVerifiedCognitiveAppConnection(
+        human,
+        await prepareConnectionCreation(h.store, human, {
+          proof,
+          connectionId: "conn-second",
+          expectedRevision: 0,
+          now,
+        }),
+      );
       assert.equal(other.instanceId, connection.instanceId);
       const publicCatalog = await h.store.listCognitiveApps(human, {
         limit: 20,

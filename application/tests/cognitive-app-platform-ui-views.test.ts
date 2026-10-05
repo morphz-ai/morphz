@@ -1,3 +1,4 @@
+import { prepareConnectionCreation } from "./fixtures/cognitive-connection-creation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -353,7 +354,7 @@ async function connected(
   });
   const connection = await h.store.createVerifiedCognitiveAppConnection(
     access,
-    {
+    await prepareConnectionCreation(h.store, access, {
       proof: {
         purpose: "connection-setup",
         appId: "example.notes",
@@ -366,7 +367,7 @@ async function connected(
       connectionId: "conn-" + access.credential + "-" + suffix,
       expectedRevision: 0,
       now,
-    },
+    }),
   );
   return { fixture, declaration, connection };
 }
@@ -695,7 +696,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
         });
         const second = await h.store.createVerifiedCognitiveAppConnection(
           human,
-          {
+          await prepareConnectionCreation(h.store, human, {
             proof: {
               purpose: "connection-setup",
               appId: "example.notes",
@@ -708,7 +709,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
             connectionId: "conn-second",
             expectedRevision: 0,
             now,
-          },
+          }),
         );
         assert.notEqual(second.instanceId, c.connection.instanceId);
         const request = {
@@ -1373,20 +1374,23 @@ for (const backend of ["sqlite", "postgres"] as const) {
           state: "active",
           now,
         });
-        await h.store.createVerifiedCognitiveAppConnection(human, {
-          proof: {
-            purpose: "connection-setup",
-            appId: "example.notes",
-            version: "1.0.0",
-            definitionHash: version.definitionHash,
-            serviceId: "service",
-            dataAuthorityId: "data",
-            hostBindingId: "host_alias",
-          },
-          connectionId: "headless-conn",
-          expectedRevision: 0,
-          now,
-        });
+        await h.store.createVerifiedCognitiveAppConnection(
+          human,
+          await prepareConnectionCreation(h.store, human, {
+            proof: {
+              purpose: "connection-setup",
+              appId: "example.notes",
+              version: "1.0.0",
+              definitionHash: version.definitionHash,
+              serviceId: "service",
+              dataAuthorityId: "data",
+              hostBindingId: "host_alias",
+            },
+            connectionId: "headless-conn",
+            expectedRevision: 0,
+            now,
+          }),
+        );
         await assert.rejects(
           h.store.launchCognitiveAppView(
             human,
@@ -1482,20 +1486,23 @@ for (const backend of ["sqlite", "postgres"] as const) {
           state: "active",
           now,
         });
-        await h.store.createVerifiedCognitiveAppConnection(bob, {
-          proof: {
-            purpose: "connection-setup",
-            appId: "example.notes",
-            version: "1.0.0",
-            definitionHash: c.declaration.definitionHash,
-            serviceId: "service/notes",
-            dataAuthorityId: "database:notes",
-            hostBindingId: "host_private_alias",
-          },
-          connectionId: "conn-bob",
-          expectedRevision: 0,
-          now,
-        });
+        await h.store.createVerifiedCognitiveAppConnection(
+          bob,
+          await prepareConnectionCreation(h.store, bob, {
+            proof: {
+              purpose: "connection-setup",
+              appId: "example.notes",
+              version: "1.0.0",
+              definitionHash: c.declaration.definitionHash,
+              serviceId: "service/notes",
+              dataAuthorityId: "database:notes",
+              hostBindingId: "host_private_alias",
+            },
+            connectionId: "conn-bob",
+            expectedRevision: 0,
+            now,
+          }),
+        );
         await assert.rejects(
           h.store.launchCognitiveAppView(human, launch("foreign", "conn-bob")),
           denied("not_found"),

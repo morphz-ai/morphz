@@ -1,3 +1,4 @@
+import { prepareConnectionCreation } from "./fixtures/cognitive-connection-creation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -218,19 +219,22 @@ async function prepared(f: Fixture) {
   });
   // Trusted describe proof is an explicit fixture at this Host-only port.
   // Domain Gateway's actual external describe is tested separately.
-  await f.platform.createVerifiedCognitiveAppConnection(bob, {
-    proof: {
-      purpose: "connection-setup",
-      appId: input.definition.id,
-      version: input.definition.version,
-      definitionHash: declaration.definitionHash,
-      serviceId: "service/notes",
-      dataAuthorityId: "database/notes",
-      hostBindingId: "host-private-fixture",
-    },
-    connectionId: "connection-bob",
-    expectedRevision: 0,
-  });
+  await f.platform.createVerifiedCognitiveAppConnection(
+    bob,
+    await prepareConnectionCreation(f.platform, bob, {
+      proof: {
+        purpose: "connection-setup",
+        appId: input.definition.id,
+        version: input.definition.version,
+        definitionHash: declaration.definitionHash,
+        serviceId: "service/notes",
+        dataAuthorityId: "database/notes",
+        hostBindingId: "host-private-fixture",
+      },
+      connectionId: "connection-bob",
+      expectedRevision: 0,
+    }),
+  );
   const launched = await f.platform.launchCognitiveAppView(bob, {
     commandId: "view-bob",
     projectId: "project-a",

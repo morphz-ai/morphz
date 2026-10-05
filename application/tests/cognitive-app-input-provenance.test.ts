@@ -1,3 +1,4 @@
+import { prepareConnectionCreation } from "./fixtures/cognitive-connection-creation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -153,20 +154,23 @@ async function fixture(backend: "sqlite" | "postgres") {
         state: "active",
       }),
     );
-    const connection = await withActor((platform, actor) =>
-      platform.createVerifiedCognitiveAppConnection(actor, {
-        connectionId: "connection_exact",
-        expectedRevision: 0,
-        proof: {
-          purpose: "connection-setup",
-          appId: definition.id,
-          version: definition.version,
-          definitionHash: installed.definitionHash,
-          serviceId: "service/notes",
-          dataAuthorityId: "database:notes",
-          hostBindingId: "isolated_metadata_only",
-        },
-      }),
+    const connection = await withActor(async (platform, actor) =>
+      platform.createVerifiedCognitiveAppConnection(
+        actor,
+        await prepareConnectionCreation(platform, actor, {
+          connectionId: "connection_exact",
+          expectedRevision: 0,
+          proof: {
+            purpose: "connection-setup",
+            appId: definition.id,
+            version: definition.version,
+            definitionHash: installed.definitionHash,
+            serviceId: "service/notes",
+            dataAuthorityId: "database:notes",
+            hostBindingId: "isolated_metadata_only",
+          },
+        }),
+      ),
     );
     const locator = parseCognitiveAppObjectLocator({
       contentId: "content_exact",

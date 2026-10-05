@@ -1,5 +1,35 @@
 # 桌面能力实施记录
 
+## 2026-10-05 认知应用连接创建的持久回执
+
+公开 connect DTO 不变。Host 同步捕获原请求、实际 Human 握手身份和
+许可修订，沿既有回执关系保存连接创建事实；连接、回执与一次访问
+修订同事务。回执标识属于不能由公开 commandId 输入的内部命名域，
+完整请求指纹保留原可选参数是否缺省，不以当前许可或握手路由替换它。
+
+未知结果的原请求重试先查回执，再判断首次创建权限。命中只读取本人
+当前连接状态，不重新请求作者、读取凭据、启用连接或更换原路由；
+并发晚握手同样在事务内先锁和重读回执。本人重新认证后可查看旧结果，
+不同 Human 不能消费握手。新创建仍检查完整实际身份和两项许可前提；
+已有无回执连接不被收养，损坏回执或缺失连接不被自动重建。
+
+Root 独立正式十八文件 383/383，required PostgreSQL，零失败、取消
+与跳过；全工程类型和十七文件专项格式检查通过。日志
+`/tmp/morphz-connect-creation-ROOT-ACCEPTED-oct05.log`、
+`/tmp/morphz-cognitive-connect-ROOT-TYPES-SECOND-oct05.log` 和
+`/tmp/morphz-connect-creation-ROOT-FORMAT-oct05.log`。Store 只规范新增
+片段，不重写原有整文件格式。新二十项实际运行隔离 SQLite／PostgreSQL、
+IdentityCenter／HPA 和 Local／HTTP／Remote，另有受控真实 loopback
+作者 HTTP；覆盖撤权、同本人 actant 轮换、并发、原始可选参数、证据
+同步捕获及回执写入失败的事务回滚。旧 Service／Host／Renderer 回归
+也保留实际独立打包作者的 HTTP 首次创建路径。
+
+首轮十六项 RED 保留于 `/tmp/morphz-connect-creation-FIRST-oct05.log`，
+原因是旧 setup 没有必需的完整原请求和实际握手快照。有限迁移只先
+获取真实 Human 快照，负例随后仍调用实际创建边界；没有删业务断言
+或伪造授权。本阶段不等于管理面板、native IPC、生产作者或用户原
+App 验收，不改变用户资料、Session、原窗口和在途工作。
+
 ## 2026-10-05 本机重试记录的严格清理
 
 复现当前前缀遮住旧兼容前缀时，安装 ACK 可能误删另一条重试记录。

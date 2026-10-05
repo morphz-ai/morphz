@@ -21,6 +21,10 @@ import {
   type CognitiveAppApplicationTarget,
 } from "../../core/src/cognitive-app-application-target.js";
 import {
+  parseCognitiveAppRequest,
+  type CognitiveAppRequestMap,
+} from "../../core/src/cognitive-app-api.js";
+import {
   notificationStateSchema,
   notificationIdSchema,
   type NotificationState,
@@ -285,10 +289,12 @@ export type HostVerifiedCognitiveConnectionProof = {
   hostBindingId: string;
 };
 export type HostVerifiedCognitiveConnectionCreate = {
+  /** Original public request, including its original optional CAS premises. */
+  request: CognitiveAppRequestMap["connect"];
   proof: HostVerifiedCognitiveConnectionProof;
-  connectionId: string;
-  expectedRevision: 0;
-  expectedGrantRevision?: number;
+  /** The actual handshake snapshot is separate from durable request identity. */
+  verifiedGrantRevision: number;
+  verifiedActor: DomainActor;
   now?: string;
 };
 export type HostVerifiedCognitiveConnectionChange = {
@@ -1176,30 +1182,235 @@ export class PlatformStore {
       throw new PlatformStorageError("invalid", "Host 连接设置证明无效。");
   }
 
+  private captureCognitiveConnectionCreation(
+    request: HostVerifiedCognitiveConnectionCreate,
+  ): HostVerifiedCognitiveConnectionCreate {
+    try {
+      // Validate own data before serialization. All Host evidence and the
+      // original public premises are detached before any identity I/O.
+      const value = z
+        .object({
+          request: z.unknown(),
+          proof: z
+            .object({
+              purpose: z.literal("connection-setup"),
+              appId: z.string().regex(/^[a-z][a-z0-9.-]{2,80}$/),
+              version: z
+                .string()
+                .max(100)
+                .regex(/^\d+\.\d+\.\d+$/),
+              definitionHash: z.string().regex(/^[a-f0-9]{64}$/),
+              serviceId: z.string().min(1).max(200),
+              dataAuthorityId: z.string().min(1).max(200),
+              hostBindingId: z
+                .string()
+                .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,199}$/),
+            })
+            .strict(),
+          verifiedGrantRevision: z
+            .number()
+            .int()
+            .min(1)
+            .max(Number.MAX_SAFE_INTEGER - 1),
+          verifiedActor: z.unknown(),
+          now: z.iso.datetime().optional(),
+        })
+        .strict()
+        .parse(JSON.parse(JSON.stringify(parseWireJson(request))));
+      return {
+        ...value,
+        request: parseCognitiveAppRequest("connect", value.request),
+        verifiedActor: parseDomainActor(value.verifiedActor),
+      };
+    } catch {
+      throw new PlatformStorageError("invalid", "Host 连接创建请求无效。");
+    }
+  }
+
+  private cognitiveConnectionCreationIdentity(
+    actor: ResolvedActor,
+    request: CognitiveAppRequestMap["connect"],
+  ) {
+    const operation = "cognitive-app-connect-create/v1";
+    const digest = (value: unknown) =>
+      createHash("sha256").update(canonicalJsonBytes(value)).digest("hex");
+    return {
+      operation,
+      // This Host-only domain cannot be supplied as a public commandId.
+      commandId: `cognitive.connect.v1:${digest([
+        operation,
+        actor.tenantId,
+        actor.principalId,
+        request.connectionId,
+      ])}`,
+      hash: digest({
+        operation,
+        owner: {
+          tenantId: actor.tenantId,
+          principalId: actor.principalId,
+          kind: "human",
+        },
+        request,
+      }),
+    };
+  }
+
+  private async readCognitiveConnectionCreationReceipt(
+    q: Query,
+    actor: ResolvedActor,
+    request: CognitiveAppRequestMap["connect"],
+    identity: ReturnType<PlatformStore["cognitiveConnectionCreationIdentity"]>,
+  ): Promise<CognitiveAppConnection | null> {
+    const row = (
+      await q.all<{
+        request_hash: string;
+        actor_principal_id: string;
+        operation: string;
+        result_ref: string;
+      }>(
+        "SELECT request_hash,actor_principal_id,operation,result_ref FROM command_receipts WHERE tenant_id=? AND command_id=?",
+        [actor.tenantId, identity.commandId],
+      )
+    )[0];
+    if (!row) return null;
+    if (
+      row.request_hash !== identity.hash ||
+      row.actor_principal_id !== actor.principalId ||
+      row.operation !== identity.operation ||
+      row.result_ref !== request.connectionId
+    )
+      throw new PlatformStorageError(
+        "conflict",
+        "连接创建的原请求与已提交回执不一致。",
+      );
+    const registry = this.cognitiveRegistry(q, actor);
+    // A retained declaration and current owned metadata are not dispatch
+    // permission. Revocation cannot turn a replay into a new activation.
+    await registry.lockRetainedVersion(request);
+    const { hostBindingId: _privateBinding, ...connection } =
+      await registry.readOwnConnectionForManagement(request);
+    if (
+      connection.appId !== request.appId ||
+      connection.serviceId !== request.serviceId ||
+      connection.dataAuthorityId !== request.dataAuthorityId
+    )
+      throw new PlatformStorageError(
+        "conflict",
+        "连接创建回执与原保存方不一致。",
+      );
+    return connection;
+  }
+
+  /** Host-only committed creation lookup. No network, active consent or route
+   * resolution is required to inspect the actual Human's retained metadata. */
+  async readCognitiveAppConnectionCreation(
+    access: PlatformActor,
+    request: CognitiveAppRequestMap["connect"],
+  ): Promise<CognitiveAppConnection | null> {
+    let input: CognitiveAppRequestMap["connect"];
+    try {
+      input = parseCognitiveAppRequest("connect", request);
+    } catch {
+      throw new PlatformStorageError("invalid", "连接创建原请求无效。");
+    }
+    const { actor } = await this.prepareCognitiveActor(access, true);
+    const identity = this.cognitiveConnectionCreationIdentity(actor, input);
+    // The existing retained-version reader takes a shared installation lock;
+    // PostgreSQL READ ONLY forbids that lock. This transaction makes no writes.
+    return this.transaction((q) =>
+      this.readCognitiveConnectionCreationReceipt(q, actor, input, identity),
+    );
+  }
+
   /** Host-internal only: a trusted Gateway's authenticated describe result.
    * No URL or credential is accepted or published by this relational port. */
   async createVerifiedCognitiveAppConnection(
     access: PlatformActor,
     request: HostVerifiedCognitiveConnectionCreate,
   ) {
-    const { actor } = await this.prepareCognitiveActor(access, true);
-    this.assertCognitiveConnectionProof(request.proof);
+    const input = this.captureCognitiveConnectionCreation(request);
+    const { actor, domainActor } = await this.prepareCognitiveActor(
+      access,
+      true,
+    );
+    if (
+      input.verifiedActor.kind !== "human" ||
+      input.verifiedActor.tenantId !== actor.tenantId ||
+      input.verifiedActor.principalId !== actor.principalId
+    )
+      throw new PlatformStorageError(
+        "forbidden",
+        "连接握手不属于本次实际 Human。",
+      );
+    const identity = this.cognitiveConnectionCreationIdentity(
+      actor,
+      input.request,
+    );
     return this.transaction(async (q) => {
+      // Pre-describe lookups can race. Serialize the actual creation identity
+      // and replay BEFORE active-consent checks, even after later revocation.
+      await this.replay(q, actor, identity.commandId, identity.hash);
+      const replay = await this.readCognitiveConnectionCreationReceipt(
+        q,
+        actor,
+        input.request,
+        identity,
+      );
+      if (replay) return replay;
+      // Only a new creation consumes this specific handshake. Reauthenticated
+      // Human actants may inspect their old principal-owned committed result,
+      // but cannot use a different actant's still-uncommitted Host evidence.
+      if (
+        !Buffer.from(canonicalJsonBytes(domainActor)).equals(
+          Buffer.from(canonicalJsonBytes(input.verifiedActor)),
+        )
+      )
+        throw new PlatformStorageError(
+          "forbidden",
+          "连接握手不属于本次实际 Human。",
+        );
+      const { proof } = input;
+      if (
+        proof.appId !== input.request.appId ||
+        proof.version !== input.request.version ||
+        proof.serviceId !== input.request.serviceId ||
+        proof.dataAuthorityId !== input.request.dataAuthorityId ||
+        (input.request.expectedDefinitionHash !== undefined &&
+          proof.definitionHash !== input.request.expectedDefinitionHash)
+      )
+        throw new PlatformStorageError(
+          "conflict",
+          "Host 握手与原连接请求不一致。",
+        );
       const registry = this.cognitiveRegistry(q, actor);
-      await registry.lockOwnConsent({
-        appId: request.proof.appId,
-        version: request.proof.version,
-        expectedDefinitionHash: request.proof.definitionHash,
-        expectedGrantRevision: request.expectedGrantRevision,
+      const { grant } = await registry.lockOwnConsent({
+        ...input.request,
+        expectedDefinitionHash: proof.definitionHash,
       });
+      if (grant.revision !== input.verifiedGrantRevision)
+        throw new PlatformStorageError(
+          "conflict",
+          "连接握手后的本人许可修订已变化。",
+        );
+      const now = input.now ?? new Date().toISOString();
       const result = await registry.createOwnConnection({
-        ...request.proof,
-        connectionId: request.connectionId,
-        expectedRevision: request.expectedRevision,
-        now: request.now ?? new Date().toISOString(),
+        ...proof,
+        connectionId: input.request.connectionId,
+        expectedRevision: input.request.expectedRevision,
+        now,
       });
-      if (hasSqlChanges(q))
-        await this.advanceNavigation(q, actor.tenantId, ["access"]);
+      await this.receipt(
+        q,
+        actor,
+        identity.commandId,
+        identity.hash,
+        identity.operation,
+        input.request.connectionId,
+        now,
+        null,
+        false,
+      );
+      await this.advanceNavigation(q, actor.tenantId, ["access"]);
       return result;
     });
   }

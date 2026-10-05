@@ -204,6 +204,11 @@ function fixture(actualActor: DomainActor = human) {
       resources: request.resources,
     });
   const platform: CognitiveAppGatewayPlatform = {
+    // This bounded unit fixture has no SQL receipt owner; actual replay is
+    // exercised separately through the genuine Store and both SQL backends.
+    async readCognitiveAppConnectionCreation() {
+      return null;
+    },
     async prepareCognitiveAppConnection(_access, request) {
       if (control.actor.kind !== "human") fail("forbidden");
       assert.equal(request.appId, definition.id);
@@ -233,6 +238,9 @@ function fixture(actualActor: DomainActor = human) {
       events.push("create-connection");
       assert.equal(request.proof.definitionHash, definitionHash);
       assert.equal(request.proof.hostBindingId, "unit-private-alias");
+      assert.equal(request.request.connectionId, "connection");
+      assert.equal(request.verifiedGrantRevision, 1);
+      assert.deepEqual(request.verifiedActor, control.actor);
       return connection();
     },
     async changeCognitiveAppConnectionState() {

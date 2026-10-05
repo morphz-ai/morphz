@@ -152,6 +152,7 @@ export type CognitiveAppGatewayProjection = {
  * catalog writes before acknowledging; this module cannot acknowledge itself. */
 export type CognitiveAppGatewayPlatform = Pick<
   PlatformStore,
+  | "readCognitiveAppConnectionCreation"
   | "prepareCognitiveAppConnection"
   | "createVerifiedCognitiveAppConnection"
   | "changeCognitiveAppConnectionState"
@@ -462,6 +463,11 @@ export function createCognitiveAppGateway(options: {
     let lease: CognitiveAppTransportLease | undefined;
     try {
       const request = detached(connectShape, input);
+      const committed = await platform.readCognitiveAppConnectionCreation(
+        access,
+        request,
+      );
+      if (committed) return committed;
       const prepared = await platform.prepareCognitiveAppConnection(access, {
         appId: request.appId,
         version: request.version,
@@ -497,9 +503,9 @@ export function createCognitiveAppGateway(options: {
       )
         throw new CognitiveAppGatewayError("contract");
       return await platform.createVerifiedCognitiveAppConnection(access, {
-        connectionId: request.connectionId,
-        expectedRevision: 0,
-        expectedGrantRevision: prepared.grant.revision,
+        request,
+        verifiedGrantRevision: prepared.grant.revision,
+        verifiedActor: prepared.actor,
         proof: {
           purpose: "connection-setup",
           ...response.definition,

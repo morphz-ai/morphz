@@ -1,3 +1,4 @@
+import { prepareConnectionCreation } from "./fixtures/cognitive-connection-creation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -183,19 +184,22 @@ test(
           });
           // Explicit metadata fixture proof. No author endpoint/credential is used.
           const connection =
-            await domain.platform.createVerifiedCognitiveAppConnection(actor, {
-              connectionId: "connection_exact",
-              expectedRevision: 0,
-              proof: {
-                purpose: "connection-setup",
-                appId: definition.id,
-                version: definition.version,
-                definitionHash: installed.definitionHash,
-                serviceId: "service/notes",
-                dataAuthorityId: "database:notes",
-                hostBindingId: "test_metadata_only",
-              },
-            });
+            await domain.platform.createVerifiedCognitiveAppConnection(
+              actor,
+              await prepareConnectionCreation(domain.platform, actor, {
+                connectionId: "connection_exact",
+                expectedRevision: 0,
+                proof: {
+                  purpose: "connection-setup",
+                  appId: definition.id,
+                  version: definition.version,
+                  definitionHash: installed.definitionHash,
+                  serviceId: "service/notes",
+                  dataAuthorityId: "database:notes",
+                  hostBindingId: "test_metadata_only",
+                },
+              }),
+            );
           return parseCognitiveAppObjectLocator({
             ...locator,
             authority: {

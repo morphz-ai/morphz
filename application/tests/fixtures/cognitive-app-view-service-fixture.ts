@@ -1,3 +1,4 @@
+import { prepareConnectionCreation } from "./cognitive-connection-creation.js";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -231,19 +232,22 @@ export async function prepareView(f: ViewFixture, html?: string) {
     state: "active",
   });
   const create = async (connectionId: string, dataAuthorityId: string) =>
-    f.platform.createVerifiedCognitiveAppConnection(bob, {
-      proof: {
-        purpose: "connection-setup",
-        appId: input.manifest.id,
-        version: input.manifest.version,
-        definitionHash: installed.definitionHash,
-        serviceId: "service/notes",
-        dataAuthorityId,
-        hostBindingId: `private_${connectionId}`,
-      },
-      connectionId,
-      expectedRevision: 0,
-    });
+    f.platform.createVerifiedCognitiveAppConnection(
+      bob,
+      await prepareConnectionCreation(f.platform, bob, {
+        proof: {
+          purpose: "connection-setup",
+          appId: input.manifest.id,
+          version: input.manifest.version,
+          definitionHash: installed.definitionHash,
+          serviceId: "service/notes",
+          dataAuthorityId,
+          hostBindingId: `private_${connectionId}`,
+        },
+        connectionId,
+        expectedRevision: 0,
+      }),
+    );
   const connection = await create("connection-bob", "database/notes");
   const other = await create("connection-other", "database/other");
   return {

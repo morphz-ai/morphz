@@ -1,3 +1,4 @@
+import { prepareConnectionCreation } from "./fixtures/cognitive-connection-creation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -285,12 +286,15 @@ async function connected(h: Harness) {
     dataAuthorityId: "database:notes",
     hostBindingId: "host_private_alias",
   };
-  const connection = await h.store.createVerifiedCognitiveAppConnection(human, {
-    proof,
-    connectionId: "conn-alice",
-    expectedRevision: 0,
-    now,
-  });
+  const connection = await h.store.createVerifiedCognitiveAppConnection(
+    human,
+    await prepareConnectionCreation(h.store, human, {
+      proof,
+      connectionId: "conn-alice",
+      expectedRevision: 0,
+      now,
+    }),
+  );
   return { version, connection, proof };
 }
 function request(

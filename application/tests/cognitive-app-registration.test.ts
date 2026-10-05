@@ -1,3 +1,4 @@
+import { prepareConnectionCreation } from "./fixtures/cognitive-connection-creation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -252,20 +253,23 @@ async function connections(
     state: "active",
   });
   for (let index = 0; index < count; index++)
-    await f.platform.createVerifiedCognitiveAppConnection(actor("alice"), {
-      connectionId: `conn-${String(index).padStart(3, "0")}`,
-      expectedRevision: 0,
-      now,
-      // Controlled Host /describe evidence for catalogue-only persistence, not
-      // a claim of actual author authentication or Runtime execution.
-      proof: {
-        purpose: "connection-setup",
-        ...exact,
-        serviceId: "服".repeat(200),
-        dataAuthorityId: "据".repeat(200),
-        hostBindingId: "host-fixture-private",
-      },
-    });
+    await f.platform.createVerifiedCognitiveAppConnection(
+      actor("alice"),
+      await prepareConnectionCreation(f.platform, actor("alice"), {
+        connectionId: `conn-${String(index).padStart(3, "0")}`,
+        expectedRevision: 0,
+        now,
+        // Controlled Host /describe evidence for catalogue-only persistence, not
+        // a claim of actual author authentication or Runtime execution.
+        proof: {
+          purpose: "connection-setup",
+          ...exact,
+          serviceId: "服".repeat(200),
+          dataAuthorityId: "据".repeat(200),
+          hostBindingId: "host-fixture-private",
+        },
+      }),
+    );
 }
 
 test("personal registration strict carriers reject self-reported identity and unsafe accessors", () => {

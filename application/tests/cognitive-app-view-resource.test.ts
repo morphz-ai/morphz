@@ -1,3 +1,4 @@
+import { prepareConnectionCreation } from "./fixtures/cognitive-connection-creation.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -329,19 +330,23 @@ for (const backend of ["sqlite", "postgres"] as const) {
         const connection =
           await f.platform.createVerifiedCognitiveAppConnection(
             { credential: "setup-alice" },
-            {
-              connectionId: "connection-alice",
-              expectedRevision: 0,
-              proof: {
-                purpose: "connection-setup",
-                appId: f.launch.appId,
-                version: f.launch.version,
-                definitionHash: f.installed.definitionHash,
-                serviceId: "service/notes",
-                dataAuthorityId: "database/alice",
-                hostBindingId: "PRIVATE-alice",
+            await prepareConnectionCreation(
+              f.platform,
+              { credential: "setup-alice" },
+              {
+                connectionId: "connection-alice",
+                expectedRevision: 0,
+                proof: {
+                  purpose: "connection-setup",
+                  appId: f.launch.appId,
+                  version: f.launch.version,
+                  definitionHash: f.installed.definitionHash,
+                  serviceId: "service/notes",
+                  dataAuthorityId: "database/alice",
+                  hostBindingId: "PRIVATE-alice",
+                },
               },
-            },
+            ),
           );
         const receipt = await f.platform.launchCognitiveAppView(
           { credential: "setup-alice" },
