@@ -1,5 +1,25 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用认证界面资源
+
+同一 bound view 的原 HTML 已沿 Local、HTTP／Remote 和 Electron 内嵌
+资源通道接通。新固定 GET／HEAD 入口复用本人 session、当前许可／连接
+及窗口双修订，发送既有完整 CSP／Permissions-Policy；不建 Desktop
+HTTP server，不用 srcdoc、不改安装字节。fatal UTF-8、原 BOM、精确
+1,000,000 字节上限及 SHA 保持；HEAD 同样过实际授权门但无正文。
+
+Root 复核六路径与冻结指纹，独立正式十五文件 166/166，required
+PostgreSQL，零失败／取消／跳过；全工程类型检查通过。日志
+`/tmp/morphz-cognitive-view-resource-ROOT-ACCEPTED-oct05.log` 和
+`/tmp/morphz-cognitive-view-resource-ROOT-types-oct05.log`。新增四十项
+中三十四项实际运行隔离双 SQL、HPA、Store 与各传输端口；六项为
+受控 Response／stream UNIT。撤权、退出、关闭、重绑及连接关闭的
+held-byte 结果均不披露；迟到 fetch 和永不结束的 cancel 均清理请求槽。
+四份旧生产文件只插入，原资源路径与完整安全策略未改。早期缺入口和
+夹具失败均保留于 `/tmp/morphz-cognitive-view-resource-c2b.kBnmxC/`。
+这不证明 mounted iframe、真实浏览器 CSP、原生硬件或原 App 验收；
+生产 DOM、目录与原导航／草稿 owner 接线仍待完成，用户资料未修改。
+
 ## 2026-10-05 第三方认知应用 Browser 八方法路由
 
 新增独立路由，固定同一真实窗口的定义、authority、项目和本人连接，

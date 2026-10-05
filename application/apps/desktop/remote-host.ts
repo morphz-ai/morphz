@@ -24,6 +24,18 @@ import {
 import { applicationFailure } from "../../packages/application/src/application.js";
 import { maxReadingFileBytes } from "../../packages/core/src/reader.js";
 import {
+  parseCognitiveAppViewResourceRequest,
+  cognitiveAppViewResourcePath,
+  parseCognitiveAppViewHtmlBytes,
+  cognitiveAppViewResourceMime,
+  maxCognitiveAppViewHtmlBytes,
+  type CognitiveAppViewResource,
+} from "../../packages/core/src/cognitive-app-view-resource.js";
+import {
+  applicationViewPolicy,
+  applicationViewPermissions,
+} from "../../packages/core/src/resource-policy.js";
+import {
   workspaceChangeScopeSchema,
   workspaceChangeSchema,
   type WorkspaceChange,
@@ -242,6 +254,174 @@ export class RemoteApplicationConnection {
   }
   cancel(id: unknown) {
     if (typeof id === "string") this.requests.get(id)?.abort();
+  }
+  /** Fixed bound-window HTML only. No legacy resource lookup or caller URL. */
+  async cognitiveAppViewResource(
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<CognitiveAppViewResource> {
+    const deadlineAt = performance.now() + 30000;
+    let request;
+    try {
+      request = parseCognitiveAppViewResourceRequest(raw);
+    } catch {
+      throw new ApplicationRequestError(400, "界面资源请求无效。", "invalid");
+    }
+    this.assertOpen();
+    if (this.identityTransition)
+      throw new ApplicationRequestError(409, "身份正在切换。", "conflict");
+    if (this.requests.size >= 64)
+      throw new ApplicationRequestError(429, "界面资源读取正忙。", "busy");
+    const epoch = this.epoch,
+      id = randomUUID(),
+      controller = new AbortController();
+    let timedOut = false;
+    const cancel = () => controller.abort();
+    signal?.addEventListener("abort", cancel, { once: true });
+    this.requests.set(id, controller);
+    const timeout = setTimeout(
+      () => {
+        timedOut = true;
+        controller.abort();
+      },
+      Math.max(0, deadlineAt - performance.now()),
+    );
+    const active = () => {
+      if (timedOut || performance.now() >= deadlineAt) {
+        timedOut = true;
+        controller.abort();
+        throw new ApplicationRequestError(
+          408,
+          "界面资源读取超过期限。",
+          "timeout",
+        );
+      }
+      if (this.closed || epoch !== this.epoch)
+        throw new ApplicationRequestError(
+          403,
+          "连接身份已变化，界面资源已丢弃。",
+          "forbidden",
+        );
+      if (controller.signal.aborted || signal?.aborted)
+        throw new ApplicationRequestError(
+          408,
+          "界面资源读取已取消。",
+          "cancelled",
+        );
+    };
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      active();
+      const response = await this.request(
+        new URL(cognitiveAppViewResourcePath(request), this.origin).toString(),
+        {
+          credentials: "include",
+          redirect: "error",
+          cache: "no-store",
+          signal: controller.signal,
+        },
+      );
+      reader = response.body?.getReader();
+      active();
+      if (!response.ok)
+        throw new ApplicationRequestError(
+          [401, 403, 404, 409, 429, 502].includes(response.status)
+            ? response.status
+            : 503,
+          "界面资源不存在或已无访问权限。",
+          response.status === 403 ? "forbidden" : "unavailable",
+        );
+      if (
+        response.headers.get("content-type") !== cognitiveAppViewResourceMime ||
+        response.headers.get("content-security-policy") !==
+          applicationViewPolicy ||
+        response.headers.get("permissions-policy") !==
+          applicationViewPermissions
+      )
+        throw new ApplicationRequestError(
+          502,
+          "界面资源不符合固定契约。",
+          "contract",
+        );
+      const length = response.headers.get("content-length");
+      if (
+        length === null ||
+        !/^[1-9]\d{0,6}$/.test(length) ||
+        Number(length) > maxCognitiveAppViewHtmlBytes
+      )
+        throw new ApplicationRequestError(
+          413,
+          "界面资源超过大小限制或长度无效。",
+          "invalid",
+        );
+      if (!reader)
+        throw new ApplicationRequestError(
+          502,
+          "界面资源正文缺失。",
+          "contract",
+        );
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      for (;;) {
+        active();
+        const { done, value } = await reader.read();
+        active();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxCognitiveAppViewHtmlBytes)
+          throw new ApplicationRequestError(
+            413,
+            "界面资源超过大小限制。",
+            "invalid",
+          );
+        chunks.push(new Uint8Array(value));
+      }
+      if (size !== Number(length))
+        throw new ApplicationRequestError(
+          502,
+          "界面资源正文长度不符。",
+          "contract",
+        );
+      const bytes = new Uint8Array(size);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      let validated;
+      try {
+        validated = parseCognitiveAppViewHtmlBytes(bytes);
+      } catch {
+        throw new ApplicationRequestError(
+          502,
+          "界面资源不符合固定契约。",
+          "contract",
+        );
+      }
+      active();
+      return { mime: cognitiveAppViewResourceMime, bytes: validated };
+    } catch (error) {
+      active();
+      if (error instanceof ApplicationRequestError) throw error;
+      throw new ApplicationRequestError(
+        503,
+        "界面资源暂不可用。",
+        "unavailable",
+      );
+    } finally {
+      try {
+        // Initiate cancellation, but a misbehaving response body cannot retain
+        // a request slot or extend the absolute deadline through its promise.
+        void reader?.cancel().catch(() => undefined);
+        active();
+      } finally {
+        reader?.releaseLock();
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", cancel);
+        controller.abort();
+        this.requests.delete(id);
+      }
+    }
   }
   async resource(
     kind: "assets" | "attachments" | "application-view",

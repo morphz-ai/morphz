@@ -47,6 +47,13 @@ import {
   applicationViewPermissions,
   resourceMime,
 } from "../../packages/core/src/resource-policy.js";
+import {
+  parseCognitiveAppViewResourceURL,
+  parseCognitiveAppViewHtmlBytes,
+  cognitiveAppViewResourceMime,
+  type CognitiveAppViewResource,
+  type CognitiveAppViewResourceRequest,
+} from "../../packages/core/src/cognitive-app-view-resource.js";
 
 const authSchema = z
   .object({
@@ -300,6 +307,10 @@ export async function openEmbeddedApplication(
 export function embeddedResources(
   webRoot: string,
   connection: {
+    cognitiveAppViewResource?(
+      request: CognitiveAppViewResourceRequest,
+      signal?: AbortSignal,
+    ): CognitiveAppViewResource | Promise<CognitiveAppViewResource>;
     resource(
       kind: "assets" | "attachments" | "application-view",
       id: string,
@@ -339,6 +350,64 @@ export function embeddedResources(
         return new Response("Forbidden", { status: 403, headers });
       if (!["GET", "HEAD"].includes(request.method))
         return new Response("Method not allowed", { status: 405, headers });
+      let cognitiveView;
+      try {
+        cognitiveView = parseCognitiveAppViewResourceURL(url);
+      } catch {
+        throw new ApplicationRequestError(400, "界面资源请求无效。", "invalid");
+      }
+      if (cognitiveView) {
+        if (request.signal.aborted)
+          throw new ApplicationRequestError(
+            408,
+            "界面资源读取已取消。",
+            "cancelled",
+          );
+        if (!connection.cognitiveAppViewResource)
+          throw new ApplicationRequestError(
+            503,
+            "界面资源尚不可用。",
+            "unavailable",
+          );
+        const resource = await connection.cognitiveAppViewResource(
+          cognitiveView,
+          request.signal,
+        );
+        if (request.signal.aborted)
+          throw new ApplicationRequestError(
+            408,
+            "界面资源读取已取消。",
+            "cancelled",
+          );
+        if (resource.mime !== cognitiveAppViewResourceMime)
+          throw new ApplicationRequestError(
+            502,
+            "界面资源不符合固定契约。",
+            "contract",
+          );
+        let bytes;
+        try {
+          bytes = parseCognitiveAppViewHtmlBytes(resource.bytes);
+        } catch {
+          throw new ApplicationRequestError(
+            502,
+            "界面资源不符合固定契约。",
+            "contract",
+          );
+        }
+        return new Response(
+          request.method === "HEAD" ? null : new Uint8Array(bytes),
+          {
+            headers: {
+              ...headers,
+              "Content-Type": cognitiveAppViewResourceMime,
+              "Content-Length": String(bytes.byteLength),
+              "Content-Security-Policy": applicationViewPolicy,
+              "Permissions-Policy": applicationViewPermissions,
+            },
+          },
+        );
+      }
       if (url.pathname === "/api/reader/original") {
         const artifactId = url.searchParams.get("artifactId");
         const revisionText = url.searchParams.get("revision");

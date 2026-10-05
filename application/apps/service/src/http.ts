@@ -29,6 +29,11 @@ import type { WorkspaceStore } from "../../../packages/application/src/store.js"
 import type { AgentTools } from "../../../packages/application/src/agent-tools.js";
 import { cognitiveAppApplicationRoutes } from "../../../packages/core/src/application-api.js";
 import { cognitiveAppViewApplicationRoutes } from "../../../packages/core/src/cognitive-app-view-methods.js";
+import { parseCognitiveAppViewResponse } from "../../../packages/core/src/cognitive-app-view-api.js";
+import {
+  parseCognitiveAppViewResourceURL,
+  cognitiveAppViewHtmlResource,
+} from "../../../packages/core/src/cognitive-app-view-resource.js";
 
 async function body(req: IncomingMessage, limit: number) {
   const chunks: Buffer[] = [];
@@ -261,6 +266,35 @@ export function createAppServer(
           "forbidden",
           "请在本机 Morphz 中管理模型；远端或多人工作空间请联系管理员。",
         );
+      let cognitiveView;
+      try {
+        cognitiveView = parseCognitiveAppViewResourceURL(url);
+      } catch {
+        throw new DomainError("invalid", "界面资源请求无效。");
+      }
+      if (cognitiveView) {
+        if (!["GET", "HEAD"].includes(req.method ?? "")) {
+          json(res, 405, { message: "界面资源只支持读取。", code: "invalid" });
+          return;
+        }
+        const ui = parseCognitiveAppViewResponse(
+          "readUi",
+          await business.cognitiveAppView("readUi", cognitiveView),
+        );
+        if (ui.manifest.ui.type !== "sandbox")
+          throw new DomainError("invalid", "不是独立界面。");
+        const resource = cognitiveAppViewHtmlResource(ui.manifest.ui.html);
+        assertIdentity();
+        if (req.aborted || res.destroyed) return;
+        res.writeHead(200, {
+          "Content-Type": resource.mime,
+          "Content-Length": String(resource.bytes.byteLength),
+          "Content-Security-Policy": applicationViewPolicy,
+          "Permissions-Policy": applicationViewPermissions,
+        });
+        res.end(req.method === "HEAD" ? undefined : resource.bytes);
+        return;
+      }
       if (req.method === "GET") {
         if (url.pathname === "/api/reader/original") {
           const artifactId = url.searchParams.get("artifactId");

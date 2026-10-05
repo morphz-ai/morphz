@@ -372,8 +372,8 @@ CSRF 与无额外 query 规则。Local、HTTP、Remote、typed renderer 复用
 UI read 的成功 JSON 有独立 8 MiB 有界 UTF-8 carrier，原 HTML 的
 1,000,000 字节上限不变。Root 十三文件 176/176、required PostgreSQL、
 零跳过及全工程类型检查通过；新二十八项实际双 SQL 与 Managed Store，
-八项为明确传输 UNIT。authenticated resource、iframe 及导航／草稿仍
-待接入；以下其他部分仍为实施约束，不是 GUI 完成证明。
+八项为明确传输 UNIT。authenticated resource 已独立接通，iframe 及
+导航／草稿仍待接入；以下其他部分仍为实施约束，不是 GUI 完成证明。
 
 | 边界 | 最小职责 | 保持的既有行为 |
 | --- | --- | --- |
@@ -410,12 +410,17 @@ UI read 和双 CAS。保存使用原回执与原 state，不拿最新 head 冒�
 受控。Root 五文件 54/54、required PostgreSQL、零跳过及全工程类型
 检查通过；实际 consumer 与 owner 接线、原窗口验收尚未完成。
 
-字节载体优先扩展既有 authenticated resource 的 HTTP／Electron 两个
-adapter，按 bound view 和双修订读取，发送共享完整 CSP／权限策略；这
-不是新增 Desktop HTTP server。若实现改用 typed UI-read＋srcdoc，必须
-单独声明包装并在作者字节前置内容 CSP，iframe sandbox／permissions 仍
-由 Host 固定；CSP 的 header-only sandbox／frame-ancestors 不得冒称可
-由 meta 等价替代。安装原 HTML 与 SHA 不因载体包装改写。
+字节载体现已复用既有 authenticated resource 的 HTTP／Electron 两个
+adapter，固定 `/api/cognitive-app-view/<viewId>` 及两个精确修订 query，
+GET／HEAD 通过同一 bound owner／许可／连接与实际 Store 门，发送共享
+完整 CSP／权限策略。Desktop 没有新增 HTTP server，也没有 srcdoc 或
+HTML 包装。1,000,000 UTF-8 字节、原 BOM 和 SHA 保持不变；Remote
+有界逐 chunk 读取、三十秒 timer／monotonic 门及失效后的清理。
+Root 十五文件 166/166、required PostgreSQL、零跳过及全工程类型
+检查通过。新三十四项为实际双 SQL／HPA／Store／传输端口，六项为
+受控流机制 UNIT；不是执行 iframe 或原 App 的证据。任何未来包装
+改动都须独立声明；CSP 的 header-only sandbox／frame-ancestors 不得
+冒称能由 meta 等价替代。
 
 实际浏览器必须验证外部资源、fetch、form、嵌套 frame、作者 meta／base
 和 JS 自导航的边界。共享 CSP 及 channel 退休不证明任何外部自导航请求

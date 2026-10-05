@@ -30,6 +30,11 @@ import {
   type CognitiveAppViewApplicationRequest,
   type CognitiveAppViewApplicationResponse,
 } from "../../core/src/cognitive-app-view-methods.js";
+import {
+  parseCognitiveAppViewResourceRequest,
+  cognitiveAppViewHtmlResource,
+  type CognitiveAppViewResource,
+} from "../../core/src/cognitive-app-view-resource.js";
 
 const invocationSchema = z
   .object({
@@ -401,6 +406,95 @@ export class LocalApplicationConnection {
     const dispose = this.subscriptions.get(id);
     this.subscriptions.delete(id);
     dispose?.();
+  }
+  /** Separate bound-window resource. Legacy resource lookup stays unchanged. */
+  async cognitiveAppViewResource(
+    raw: unknown,
+    signal?: AbortSignal,
+  ): Promise<CognitiveAppViewResource> {
+    let request;
+    try {
+      request = parseCognitiveAppViewResourceRequest(raw);
+    } catch {
+      throw new ApplicationRequestError(400, "界面资源请求无效。", "invalid");
+    }
+    if (signal?.aborted)
+      throw new ApplicationRequestError(
+        408,
+        "界面资源读取已取消。",
+        "cancelled",
+      );
+    let id: string | undefined,
+      issued = false;
+    try {
+      const { generation, session } = this.session();
+      issued = true;
+      if (this.requests.size >= 64)
+        throw new ApplicationRequestError(429, "界面资源读取正忙。", "busy");
+      const controller = new AbortController();
+      id = randomUUID();
+      this.requests.set(id, controller);
+      const active = () => {
+        this.session(generation);
+        if (controller.signal.aborted || signal?.aborted)
+          throw new ApplicationRequestError(
+            408,
+            "界面资源读取已取消。",
+            "cancelled",
+          );
+      };
+      active();
+      const ui = parseCognitiveAppViewResponse(
+        "readUi",
+        await session.cognitiveAppView("readUi", request),
+      );
+      active();
+      if (ui.manifest.ui.type !== "sandbox")
+        throw new ApplicationRequestError(
+          502,
+          "界面资源不符合固定契约。",
+          "contract",
+        );
+      let resource;
+      try {
+        resource = cognitiveAppViewHtmlResource(ui.manifest.ui.html);
+      } catch {
+        throw new ApplicationRequestError(
+          502,
+          "界面资源不符合固定契约。",
+          "contract",
+        );
+      }
+      active();
+      return resource;
+    } catch (error) {
+      if (error instanceof ApplicationRequestError) throw error;
+      if (error instanceof AuthenticationRequired)
+        throw new ApplicationRequestError(
+          issued ? 403 : 401,
+          "界面资源已无访问权限。",
+          "forbidden",
+        );
+      const failure = applicationFailure(error);
+      throw new ApplicationRequestError(
+        [400, 403, 404, 409, 429, 502].includes(failure.status)
+          ? failure.status
+          : 503,
+        "界面资源不可用或已无访问权限。",
+        [
+          "invalid",
+          "forbidden",
+          "not_found",
+          "conflict",
+          "busy",
+          "contract",
+        ].includes(failure.code)
+          ? failure.code
+          : "unavailable",
+      );
+    } finally {
+      if (id) this.requests.delete(id);
+    }
   }
   async resource(
     kind: "assets" | "attachments" | "application-view",
