@@ -561,6 +561,40 @@ CAS，后续原请求重试仍由 Host 判断已提交事实与当前首次创�
 
 ### 可选 GUI 的宿主装配决策（实施中）
 
+#### 本人精确窗口定位（实施前约束，2026-10-06）
+
+现有通用 app-views.list 有意排除认知窗口，不能把空列表当成不存在。
+六项认知窗口入口又要求已知 viewId；恢复不能猜 ID、取最新版本或调用
+launch(0/0) 探测并暗改保存方。补一个 Human-only 只读
+`cognitive-app-views.locate`，不增加 guest／Agent 工具或领域 operation。
+请求严格为 `{projectId, appId, version, expectedDefinitionHash}`，hash 必填。
+
+响应固定为 `{slot:{projectId,appId,version,definitionHash},view:null|{viewId,
+viewRevision,status,binding:null|{bindingRevision,connectionId,instanceId,
+serviceId,dataAuthorityId}}}`。只披露真实本人槽／绑定标量，不读或返回
+导航 state、HTML、Host alias、密钥或业务正文；输出不是权限租约。
+实际 Human/HPA、项目 reader 和本人精确登记／声明 hash 在原只读
+repeatable snapshot 内核验，以既有唯一键
+`(tenant,Human,project,app,version)` 定位。连接不属于此唯一键，故请求
+不按希望使用的 connection 过滤，也不假造多个连接窗口。
+
+closed 行仍占槽；binding:null 是真实存在但尚未认知绑定的历史槽，不是
+absent 或允许旧桥。仅 null 可在用户显式打开时尝试原 launch 0/0；并发
+创建的冲突不自动重试。closed 的恢复不后台重开，显式打开使用真实
+CAS。绑定不同或为空必须保留实际槽和 CAS，不自动 bind／换保存方。
+项目 reader 可读取归档／删除项目的恢复元数据，原 active-project
+readUi／launch 门保持，不能凭定位结果 mount。定位不写 command receipt、
+view、binding、grant、connection 或导航修订，无 schema／迁移。
+
+Core strict DTO／方法映射、Platform 精确只读查询、原 ViewService 和
+ApplicationSession/HPA 构成共享链；Web／Remote 走原认证 JSON 路由，
+Local 直接同一 Application。后续实际 owner 在 await 前捕获原导航
+incarnation／generation，迟到定位仍需当前授权投影；prefs 不是活 owner。
+验收须包括双 SQL／三宿主的 absent/open/closed/unbound、不同绑定、
+外人／跨 tenant／项目／旧 hash、并发冲突和后续旧 CAS、归档只读而
+不能执行、身份切换迟到结果、原行不变及零业务／UI字节调用。
+这段是已确定实施边界，不冒称 API 或 GUI 接线已经完成。
+
 后端生命周期和界面消息分层，不扩充作者的权限声明或另造业务目录。
 六方法 Human 窗口 facade 已实现并独立验证：同步严格 DTO、原 mutation
 receipt、双 CAS 及 actual Store 字节授权门。Root 七文件 86/86、真实
