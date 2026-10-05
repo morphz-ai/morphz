@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   CognitiveAppProtocolError,
   domainProtocol,
+  isPortableText,
   parseOperationResources,
   parseProtocolValue,
   parseWireJson,
@@ -21,20 +22,21 @@ export const domainWireLimits = Object.freeze({
 } as const);
 type Effect = OperationDefinition["effect"];
 const internalId = z.string().regex(/^[A-Za-z0-9_-]{1,100}$/);
-const opaque = z.string().min(1).max(200);
+const portableText = z.string().refine(isPortableText, {
+  error: "Persistent text must contain no NUL or unpaired UTF-16 surrogate.",
+});
+const opaque = portableText.min(1).max(200);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const version = z
   .string()
   .max(100)
   .regex(/^\d+\.\d+\.\d+$/);
 const timestamp = z.string().max(64).pipe(z.iso.datetime());
-const kind = z
-  .string()
+const kind = portableText
   .min(1)
   .max(100)
   .refine((value) => value.trim().length > 0);
-const title = z
-  .string()
+const title = portableText
   .min(1)
   .max(180)
   .refine((value) => value.trim().length > 0);
@@ -212,7 +214,7 @@ export type DomainReceiptBinding = Readonly<
 const summaryShape = resourceShape.extend({ kind, title }).strict();
 export type DomainObjectSummary = Readonly<z.infer<typeof summaryShape>>;
 const reasonShape = z
-  .object({ code: kind, message: z.string().max(500) })
+  .object({ code: kind, message: portableText.max(500) })
   .strict();
 const receiptFields = {
   protocol: z.literal(domainProtocol),

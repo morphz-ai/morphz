@@ -175,6 +175,11 @@ project，read 操作检查读权，write／execute 检查对应写权与基线�
 opaque 原件与版本字符串原样保留，不 trim、转数字或限制为内部 UUID；
 Host 目录入口使用专门的有界 app object 校验，tenant／Runtime 等内部身份
 继续自己的严格校验。
+需持久为 raw TEXT 的身份与目录元数据拒绝 NUL 和未配对 UTF-16
+surrogate，防止 SQLite 读回截断、PostgreSQL 拒绝及 UTF-8 替换造成身份
+变化。共同 portable guard 保留正常 Unicode、换行、tab、空格与组合序列，
+不自动纠正。业务 JSON 的参数、结果、schema enum／字段名和第三方正文
+不套用这个身份门禁，仍按各自有界 JSON／正文协议原样保存与传递。
 过期是接收新请求的截止时间，不是假定在途事务已经回滚的证据。
 
 有副作用请求的稳定 requestHash 覆盖协议、精确定义、稳定数据实例、真实

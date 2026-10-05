@@ -138,6 +138,226 @@ const identityText = (value: unknown) =>
     canonicalInvokeIdentityBytes(value, "write", "objects"),
   );
 
+test("wire persistent authority/receipt/catalog metadata reject nonportable text before publication", () => {
+  for (const text of [
+    "before\u0000after",
+    "before\ud800after",
+    "before\udc00after",
+    "\ud800",
+    "\udc00",
+    "\ud800\ud800",
+    "\udc00\ud800",
+  ]) {
+    for (const field of ["serviceId", "dataAuthorityId"] as const) {
+      assert.throws(() =>
+        parseDomainAuthority({ ...authority, [field]: text }),
+      );
+      assert.throws(() =>
+        parseDescribeResponse({
+          protocol: "morphz-domain/v1",
+          definition,
+          serviceId: "service",
+          dataAuthorityId: "data",
+          [field]: text,
+        }),
+      );
+    }
+    const request = invocation();
+    for (const field of ["issuer", "operationId"] as const)
+      assert.throws(() =>
+        parseInvokeRequest(
+          { ...request, delegation: { ...request.delegation, [field]: text } },
+          "write",
+          "objects",
+        ),
+      );
+    assert.throws(() =>
+      parseDomainReceipt({ ...committed(), receiptId: text }),
+    );
+    assert.throws(() =>
+      parseDomainReceipt({
+        ...committed(),
+        binding: { ...binding(), operationId: text },
+      }),
+    );
+    for (const field of ["objectId", "versionRef", "kind", "title"] as const)
+      assert.throws(() =>
+        parseDomainReceipt({
+          ...committed(),
+          objects: [{ ...summary, [field]: text }],
+        }),
+      );
+    for (const field of ["code", "message"] as const)
+      assert.throws(() =>
+        parseDomainReceipt({
+          protocol: "morphz-domain/v1",
+          status: "rejected",
+          binding: binding(),
+          receiptId: "receipt",
+          reason: { code: "denied", message: "Rejected", [field]: text },
+        }),
+      );
+    assert.throws(() =>
+      parseInvokeResponse(
+        {
+          protocol: "morphz-domain/v1",
+          authority,
+          operationId: text,
+          result: {},
+        },
+        "read",
+      ),
+    );
+    const prior = recovery();
+    assert.throws(() =>
+      parseReceiptReadRequest({
+        ...prior,
+        delegation: { ...prior.delegation, originalOperationId: text },
+      }),
+    );
+    for (const field of ["kind", "title"] as const)
+      assert.throws(() =>
+        parseObjectReadResponse({
+          protocol: "morphz-domain/v1",
+          authority,
+          object: resources[0],
+          kind: "document",
+          title: "Original",
+          content: { format: "text", text: "Content" },
+          [field]: text,
+        }),
+      );
+  }
+});
+
+test("portable authority and catalog text preserve paired Unicode, newline, tab and literal spaces", () => {
+  const text = "  原件/😀\ud800\udc00\udbff\udfff\ne\u0301\tα  ";
+  const exactAuthority = {
+    ...authority,
+    serviceId: text,
+    dataAuthorityId: text,
+  };
+  assert.deepEqual(parseDomainAuthority(exactAuthority), exactAuthority);
+  assert.equal(
+    parseDescribeResponse({
+      protocol: "morphz-domain/v1",
+      definition,
+      serviceId: text,
+      dataAuthorityId: text,
+    }).serviceId,
+    text,
+  );
+  const request = invocation();
+  const exactResources = [{ objectId: text, versionRef: text }];
+  const exactRequest = {
+    ...request,
+    delegation: {
+      ...request.delegation,
+      authority: exactAuthority,
+      issuer: text,
+      operationId: text,
+      resources: exactResources,
+    },
+  };
+  const parsed = parseInvokeRequest(exactRequest, "write", "objects");
+  assert.equal(parsed.delegation.issuer, text);
+  assert.equal(parsed.delegation.operationId, text);
+  assert.deepEqual(parsed.delegation.resources, exactResources);
+  const exactObjects = [{ ...exactResources[0]!, kind: text, title: text }];
+  const receipt = {
+    ...committed(),
+    binding: { ...binding(), authority: exactAuthority, operationId: text },
+    receiptId: text,
+    objects: exactObjects,
+  };
+  const parsedReceipt = parseDomainReceipt(receipt);
+  assert.equal(parsedReceipt.status, "committed");
+  assert.equal(parsedReceipt.receiptId, text);
+  if (parsedReceipt.status === "committed")
+    assert.deepEqual(parsedReceipt.objects, exactObjects);
+  const rejected = parseDomainReceipt({
+    protocol: "morphz-domain/v1",
+    status: "rejected",
+    binding: binding(),
+    receiptId: text,
+    reason: { code: text, message: text },
+  });
+  assert.equal(rejected.status, "rejected");
+  if (rejected.status === "rejected")
+    assert.deepEqual(rejected.reason, { code: text, message: text });
+  const prior = recovery();
+  const history = parseReceiptReadRequest({
+    ...prior,
+    delegation: {
+      ...prior.delegation,
+      originalOperationId: text,
+      originalResources: exactResources,
+    },
+  });
+  assert.equal(history.delegation.originalOperationId, text);
+  assert.deepEqual(history.delegation.originalResources, exactResources);
+  const read = parseObjectReadResponse({
+    protocol: "morphz-domain/v1",
+    authority: exactAuthority,
+    object: exactResources[0],
+    kind: text,
+    title: text,
+    content: { format: "text", text },
+  });
+  assert.equal(read.kind, text);
+  assert.equal(read.title, text);
+  assert.deepEqual(read.object, exactResources[0]);
+});
+
+test("business invocation/result/content JSON stays exact instead of inheriting metadata's portable restriction", () => {
+  const text = "business\u0000\ud800\udfff\ud800";
+  const value = { [text]: [text, { text }] };
+  const request = { ...invocation(), parameters: value };
+  assert.equal(
+    parseInvokeRequest(request, "write", "objects").parameters,
+    value,
+  );
+  const parsedReceipt = parseDomainReceipt({ ...committed(), result: value });
+  assert.equal(parsedReceipt.status, "committed");
+  if (parsedReceipt.status === "committed")
+    assert.equal(parsedReceipt.result, value);
+  assert.equal(
+    parseInvokeResponse(
+      {
+        protocol: "morphz-domain/v1",
+        authority,
+        operationId: "read",
+        result: value,
+      },
+      "read",
+    ).result,
+    value,
+  );
+  const object = {
+    protocol: "morphz-domain/v1",
+    authority,
+    object: resources[0],
+    kind: "document",
+    title: "Original",
+  };
+  assert.deepEqual(
+    parseObjectReadResponse({ ...object, content: { format: "json", value } })
+      .content,
+    { format: "json", value },
+  );
+  for (const format of ["text", "markdown"] as const)
+    assert.deepEqual(
+      parseObjectReadResponse({ ...object, content: { format, text } }).content,
+      { format, text },
+    );
+  assert.deepEqual(
+    JSON.parse(new TextDecoder().decode(canonicalJsonBytes(value))),
+    value,
+  );
+  assert.equal(JSON.parse(identityText(request)).parameters[text][0], text);
+  assert.deepEqual(JSON.parse(JSON.stringify(parseWireJson(value))), value);
+});
+
 test("wire modules stay pure and reuse one bounded JSON validator", () => {
   const source = readFileSync(
     new URL(

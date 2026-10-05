@@ -103,6 +103,32 @@ function requireCondition(
 ): asserts condition {
   if (!condition) throw new CognitiveAppProtocolError(message);
 }
+/** Exact text safe for raw SQL/UTF-8 identity and metadata carriers. This does
+ * not constrain JSON business data, trim whitespace or normalize Unicode.
+ */
+export function isPortableText(input: unknown): input is string {
+  if (typeof input !== "string") return false;
+  for (let index = 0; index < input.length; index++) {
+    const unit = input.charCodeAt(index);
+    if (unit === 0) return false;
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = input.charCodeAt(++index);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) return false;
+  }
+  return true;
+}
+/** Field-specific length/nonempty checks remain with each bounded schema. */
+export function parsePortableText(input: unknown): string {
+  requireCondition(
+    isPortableText(input),
+    "Persistent text must contain no NUL or unpaired UTF-16 surrogate.",
+  );
+  return input;
+}
+const portableText = z.string().refine(isPortableText, {
+  error: "Persistent text must contain no NUL or unpaired UTF-16 surrogate.",
+});
 const own = (object: object, key: string) => Object.hasOwn(object, key);
 const record = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
@@ -487,8 +513,7 @@ export function validateOperationValue(
   return actualValue;
 }
 
-const name = z
-  .string()
+const name = portableText
   .min(1)
   .max(100)
   .refine((value) => value.trim().length > 0);
@@ -496,12 +521,12 @@ const exactVersion = z
   .string()
   .max(100)
   .regex(/^\d+\.\d+\.\d+$/);
-const reference = z.string().min(1).max(protocolLimits.referenceLength);
+const reference = portableText.min(1).max(protocolLimits.referenceLength);
 const operationShape = z
   .object({
     id: reference,
     title: name,
-    description: z.string().max(500),
+    description: portableText.max(500),
     effect: z.enum(["read", "write", "execute"]),
     scope: z.enum(["project", "objects"]),
     inputSchema: z.unknown(),
@@ -515,7 +540,7 @@ const definitionShape = z
     id: z.string().regex(/^[a-z][a-z0-9.-]{2,80}$/),
     version: exactVersion,
     title: name,
-    description: z.string().max(500),
+    description: portableText.max(500),
     icon: z.enum(["layers", "document", "globe", "code", "book", "film"]),
     iconImage: z
       .string()

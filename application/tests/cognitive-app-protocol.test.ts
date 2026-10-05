@@ -8,6 +8,10 @@ import {
   parseCognitiveAppDefinition,
   parseOperationResources,
   parseOperationSchema,
+  isPortableText,
+  parsePortableText,
+  parseProtocolValue,
+  parseWireJson,
   validateOperationValue,
   CognitiveAppProtocolError,
   protocolLimits,
@@ -57,6 +61,132 @@ test("the author protocol has only its installed Zod dependency, with immutable 
     valueDepth: 32,
     valueNodes: 16384,
   });
+});
+
+test("persisted references and definition text reject NUL and unpaired UTF-16 instead of changing identity", () => {
+  const unsafe = [
+    "before\u0000after",
+    "before\ud800after",
+    "before\udc00after",
+    "\ud800",
+    "\udc00",
+    "\ud800\ud800",
+    "\udc00\ud800",
+  ];
+  for (const text of unsafe) {
+    for (const field of ["objectId", "versionRef"] as const)
+      assert.throws(() =>
+        parseOperationResources("objects", [
+          { objectId: "object", versionRef: "version", [field]: text },
+        ]),
+      );
+    for (const field of ["title", "description"] as const)
+      assert.throws(() =>
+        parseCognitiveAppDefinition({ ...definition(), [field]: text }),
+      );
+    for (const field of ["id", "version"] as const)
+      assert.throws(() =>
+        parseCognitiveAppDefinition({
+          ...definition(),
+          harness: { id: "harness", version: "opaque-version", [field]: text },
+        }),
+      );
+    for (const field of ["id", "title", "description"] as const)
+      assert.throws(() =>
+        parseCognitiveAppDefinition({
+          ...definition(),
+          operations: [{ ...definition().operations[0], [field]: text }],
+        }),
+      );
+  }
+});
+
+test("portable scalar guard preserves exact legal Unicode and whitespace without coercion or broad control bans", () => {
+  const valid = [
+    "",
+    "  原件/中文 \n\tα e\u0301 é  ",
+    "\u0001\u001f\u007f\u0085",
+    "😀\ud800\udc00\udbff\udfff",
+    "\ufffd\ufffe\uffff",
+  ];
+  for (const text of valid) {
+    assert.equal(isPortableText(text), true);
+    assert.equal(parsePortableText(text), text);
+  }
+  for (const value of [
+    null,
+    undefined,
+    1,
+    true,
+    {},
+    [],
+    new String("text"),
+    "\u0000",
+    "\ud800",
+    "\udfff",
+    "\ud800A",
+    "A\udc00",
+    "\ud800\ud800\udc00",
+    "\ud800\udc00\udc00",
+  ]) {
+    assert.equal(isPortableText(value), false);
+    assert.throws(() => parsePortableText(value), CognitiveAppProtocolError);
+  }
+  // Every single UTF-16 code unit: only NUL and surrogate halves are rejected.
+  for (let unit = 0; unit <= 0xffff; unit++)
+    assert.equal(
+      isPortableText(String.fromCharCode(unit)),
+      unit !== 0 && !(unit >= 0xd800 && unit <= 0xdfff),
+    );
+  const text = valid[1]!;
+  const resources = [{ objectId: text, versionRef: text }];
+  assert.deepEqual(parseOperationResources("objects", resources), resources);
+  const parsed = parseCognitiveAppDefinition({
+    ...definition(),
+    title: text,
+    description: text,
+    harness: { id: text, version: text },
+    operations: [
+      {
+        ...definition().operations[0],
+        id: text,
+        title: text,
+        description: text,
+      },
+    ],
+  });
+  assert.equal(parsed.title, text);
+  assert.equal(parsed.description, text);
+  assert.deepEqual(parsed.harness, { id: text, version: text });
+  assert.equal(parsed.operations[0]!.id, text);
+  assert.equal(parsed.operations[0]!.title, text);
+  assert.equal(parsed.operations[0]!.description, text);
+});
+
+test("business JSON keys/values and schema enums retain literal NUL and unmatched surrogate data", () => {
+  const text = "business\u0000\ud800\udc00\udfff";
+  const business = { [text]: [text, { text }] };
+  assert.equal(parseProtocolValue(business), business);
+  assert.equal(parseWireJson(business), business);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(parseProtocolValue(business))),
+    business,
+  );
+  assert.equal(
+    validateOperationValue({ type: "string", enum: [text] }, text),
+    text,
+  );
+  const schema = {
+    type: "object",
+    title: text,
+    description: text,
+    properties: { [text]: { type: "string", enum: [text] } },
+    required: [text],
+    additionalProperties: false,
+  };
+  assert.equal(parseOperationSchema(schema), schema);
+  const value = { [text]: text };
+  assert.equal(validateOperationValue(schema, value), value);
 });
 function definition() {
   return {

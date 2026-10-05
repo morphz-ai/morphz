@@ -1,5 +1,25 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：可移植身份与业务正文分开
+
+接账模块在真实隔离 SQLite／PostgreSQL 复现 raw TEXT 的身份损失：NUL
+在 SQLite 读回截断、PostgreSQL 返回 22021，未配对 UTF-16 surrogate
+在两后端被 UTF-8 转换替换为 U+FFFD。JSON 载体的 escaped 原文则都保留。
+原始诊断 RED 为 37 项中 35 通过、2 失败，日志
+`/tmp/morphz-cognitive-app-commands.sJOJSu/focused-RAW-TEXT-FIRST-RED.log`。
+
+纯 SDK 现提供同一 portable text guard，持久身份、原件版本、回执编号与
+目录元数据在进入 raw SQL／UTF-8 载体前拒绝 NUL 或未配对 surrogate。
+不 trim、转数值或 Unicode normalize；正常配对 Unicode、换行、tab 和
+空格逐字保留。业务 parameters／result、JSON Schema enum／字段名及
+第三方正文仍保留原始 JSON 字符串，不把身份限制扩成正文审查。
+
+Root 正式独立重跑纯协议／wire 42/42、零失败／跳过／取消，strict scoped
+typecheck 和四文件格式检查通过。所有旧预算与严格断言保留，新增负例
+先复现；逐个 UTF-16 单元、有效配对、组合序列、业务 JSON round-trip
+均有证人。日志 `/tmp/morphz-cognitive-portable-ROOT-FINAL-oct05.log`。
+Host／ledger 还须复用此守卫；本阶段不称实际 Runtime 或作者服务已接通。
+
 ## 2026-10-05 第三方认知应用：Host 私有连接解析
 
 本人连接现在可从 Host 操作者指定的私有文件解析，配置仅引用专用
