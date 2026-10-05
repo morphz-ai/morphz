@@ -1,0 +1,127 @@
+{
+  "format": "morphz-cognitive-app/v1",
+  "protocol": "morphz-domain/v1",
+  "id": "example.notes",
+  "version": "1.0.0",
+  "title": "独立笔记",
+  "description": "作者自管原件、精确版本与事务回执的无界面示例。",
+  "icon": "document",
+  "harness": null,
+  "ui": null,
+  "operations": [
+    {
+      "id": "notes.list",
+      "title": "列出笔记",
+      "description": "读取获权项目内的笔记摘要。",
+      "effect": "read",
+      "scope": "project",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "integer", "minimum": 1, "maximum": 32 },
+          "afterObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": ["limit"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "objects": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "properties": {
+                "objectId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "versionRef": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "title": { "type": "string", "minLength": 1, "maxLength": 180 }
+              },
+              "required": ["objectId", "versionRef", "title"],
+              "additionalProperties": false
+            }
+          },
+          "nextAfterObjectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": ["objects"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "notes.create",
+      "title": "创建笔记",
+      "description": "在获权项目原子保存原件和真实回执。",
+      "effect": "write",
+      "scope": "project",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 180 },
+          "markdown": { "type": "string", "maxLength": 30000 }
+        },
+        "required": ["title", "markdown"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "objectId": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "versionRef": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "title": { "type": "string", "minLength": 1, "maxLength": 180 },
+          "markdown": { "type": "string", "maxLength": 30000 }
+        },
+        "required": ["objectId", "versionRef", "title", "markdown"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "id": "notes.revise",
+      "title": "修订笔记",
+      "description": "只以显式单一原件当前精确基线创建新不可变版本。",
+      "effect": "write",
+      "scope": "objects",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "objectId": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "baselineVersionRef": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "title": { "type": "string", "minLength": 1, "maxLength": 180 },
+          "markdown": { "type": "string", "maxLength": 30000 }
+        },
+        "required": ["objectId", "baselineVersionRef", "title", "markdown"],
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "objectId": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "versionRef": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "title": { "type": "string", "minLength": 1, "maxLength": 180 },
+          "markdown": { "type": "string", "maxLength": 30000 }
+        },
+        "required": ["objectId", "versionRef", "title", "markdown"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

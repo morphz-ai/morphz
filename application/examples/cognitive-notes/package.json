@@ -1,0 +1,22 @@
+{
+  "name": "morphz-example-cognitive-notes",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=24.13.0"
+  },
+  "scripts": {
+    "start": "node service.mjs"
+  },
+  "dependencies": {
+    "@morphz/cognitive-app-sdk": "0.1.0"
+  },
+  "files": [
+    "service.mjs",
+    "definition.json",
+    "README.md",
+    "MODEL.md"
+  ]
+}

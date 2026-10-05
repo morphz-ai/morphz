@@ -1,5 +1,22 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：独立作者原件服务
+
+新增 `examples/cognitive-notes`，单独进程只依赖打包后的公开 SDK，自管
+SQLite 原件／不可变版本／账户 ACL／原子命令回执；不导入 Host、Platform、
+Runtime 或 UI 内部模块。cold restart 不重新 seed 或恢复已停用许可。
+实际 HTTP 断响应后核原回执、同 ID 异内容拒绝、旧版本精确读、跨项目隔离、
+损坏库拒绝和业务 JSON 保留均有隔离进程测试；测试没有继承宿主私有环境。
+
+联调审查实际发现 Host 的 `application/json; charset=utf-8` 被示例拒绝：
+Root 首 RED 9 通过／1 失败，413 与预期 200 不符，日志
+`/tmp/morphz-cognitive-author-header-ROOT-FIRST-RED-oct05.log`。现严格支持
+UTF-8 JSON；其他 charset／参数／编码仍拒绝。Root 正式示例＋独立 SDK
+打包组合 12/12、零失败／跳过／取消，strict scoped 类型、格式／diff 通过，
+日志 `/tmp/morphz-cognitive-author-charset-ROOT-FINAL-oct05.log`。
+实际 Node 为 25.8.1，不宣称最低 Node、生产 TLS、宿主已接通、真实 Runtime
+或原用户 App 已验收。这里只提交作者示例，不修改业务库或运行中应用。
+
 ## 2026-10-05 第三方认知应用：内部组合锁与停用管理
 
 内部 ledger 现公开既有同 q 的 command identity／row 锁给 Store 组合，
