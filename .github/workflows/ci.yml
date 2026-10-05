@@ -31,6 +31,8 @@ jobs:
           components: clippy, rustfmt
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Verify dependency audit refusal boundaries
+        run: bash scripts/test_audit_rust_dependencies.sh
       - name: Audit Rust dependency advisories
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
