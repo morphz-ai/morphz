@@ -191,10 +191,15 @@ for (const backend of ["sqlite", "postgres"] as const) {
               ),
             );
             assert.equal(response.status, 403);
-            assert.doesNotMatch(
-              await response.text(),
-              /PRIVATE|doctype|作者原字节/,
-            );
+            const text = await response.text();
+            assert.doesNotMatch(text, /PRIVATE|doctype|作者原字节/);
+            if (method === "HEAD")
+              assert.equal(
+                text,
+                "",
+                "native HEAD denies without an error body",
+              );
+            else assert.ok(text.length, "GET keeps its safe error explanation");
           }
         }
       });
@@ -249,6 +254,37 @@ test("UNIT Remote document: exact fixed endpoint, detached ingress, authenticati
   } finally {
     release();
     remote.close();
+  }
+});
+
+test("UNIT embedded HEAD: every success or refusal preserves status/security headers but has no body; GET errors stay readable", async () => {
+  const connection = {
+    async resource() {
+      throw new ApplicationRequestError(403, "资源访问已拒绝。", "forbidden");
+    },
+  };
+  const resources = embeddedResources("/nonexistent", connection);
+  for (const [url, status] of [
+    ["morphz://other/api/unknown", 403],
+    ["morphz://app/api/unknown", 404],
+    ["morphz://app/missing.html", 404],
+    ["morphz://app/api/assets/private", 403],
+    ["morphz://app" + cognitiveAppDocumentResourcePath(request), 503],
+  ] as const) {
+    const get = await resources(new Request(url));
+    const head = await resources(new Request(url, { method: "HEAD" }));
+    assert.equal(get.status, status);
+    assert.equal(head.status, status);
+    assert.deepEqual([...head.headers], [...get.headers]);
+    assert.ok((await get.text()).length, "GET preserves the safe error body");
+    assert.equal(head.body, null);
+    assert.equal(await head.text(), "");
+    assert.equal(head.headers.get("Cache-Control"), "no-store");
+    assert.equal(head.headers.get("X-Content-Type-Options"), "nosniff");
+    assert.equal(
+      head.headers.get("Cross-Origin-Resource-Policy"),
+      "same-origin",
+    );
   }
 });
 

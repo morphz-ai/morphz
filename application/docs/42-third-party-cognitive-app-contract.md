@@ -1240,6 +1240,12 @@ receipt-read 统一 committed／rejected／unknown；not_seen 是 unknown 的
 
 ## 分阶段提交与验收
 
+原生 `morphz` carrier 与 HTTP 都遵循 HEAD 无正文：共享原生响应边界
+保留原状态／安全 header，并在成功、提前拒绝与安全 JSON 错误时统一
+清空 body。GET 错误解释和授权检查不改变；不能把 Node HTTP 自动抑制
+正文当作 Electron custom protocol 已自动实现的证据。此边界已独立验证
+真实 SQLite／PostgreSQL carrier，不据此声称整个 native GUI 已验收。
+
 1. 契约与校验。复核职责、数据模型、作者声明与严格 wire 校验；不称服务已接通。
 2. 受权网关与双后端关系。共享 Human／Agent 来源、版本、连接、admission、
    回执及同一目录；真实独立 headless Service 先通过。

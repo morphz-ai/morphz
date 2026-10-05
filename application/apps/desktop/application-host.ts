@@ -343,7 +343,7 @@ export function embeddedResources(
     ): Promise<Uint8Array>;
   },
 ) {
-  return async (request: Request): Promise<Response> => {
+  const handle = async (request: Request): Promise<Response> => {
     const headers = {
       "X-Content-Type-Options": "nosniff",
       "Referrer-Policy": "no-referrer",
@@ -663,5 +663,18 @@ export function embeddedResources(
         },
       );
     }
+  };
+  // Electron's custom protocol does not apply Node HTTP's automatic HEAD
+  // body suppression. Enforce it once at the carrier boundary, including
+  // early refusals and safe JSON failures; authorization and GET stay intact.
+  return async (request: Request): Promise<Response> => {
+    const response = await handle(request);
+    return request.method === "HEAD"
+      ? new Response(null, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        })
+      : response;
   };
 }

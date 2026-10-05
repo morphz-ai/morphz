@@ -1,5 +1,20 @@
 # 桌面能力实施记录
 
+## 2026-10-06 原生资源 HEAD 错误体边界
+
+真实 native Local 自动验收发现：授权已拒绝的 HEAD 返回 403，但 Electron
+custom protocol 仍递送 81 字节安全 JSON；Node HTTP 自动抑制 body，不能
+据此推定原生协议相同。共享 embedded carrier 在唯一响应边界统一清除
+HEAD body，包括提前拒绝和异常；原 GET 错误说明、状态、安全 header、
+HPA／精确资源授权检查均保持，没有增加公开资源方法或 HTTP 依赖。
+
+Root 独立正式双 SQL carrier／view transport 44/44，required PostgreSQL、
+零失败／取消／跳过，日志 `/tmp/morphz-native-head-body-ROOT-THIRD-FIX-oct06.log`。
+原真实 403 错误体负控及 16 项中的 3 个 RED 保留；第二轮 43P1F 是新 UNIT
+写错了既有 assets 路径（漏 /api），改为真实路径后再验，未松生产授权。
+新 UNIT 明确受控，双后端真实原件字节／撤权门保留；Local 完整闭环另有
+关闭窗口后旧 GUI 未自动退休的 RED，不能以本 carrier 修复算作全部完成。
+
 ## 2026-10-06 自有保存与展示刷新共用 CAS 的并发修复
 
 真实生产 App／独立作者／SQLite 与 PostgreSQL 发现同一失败：save1 已提交
