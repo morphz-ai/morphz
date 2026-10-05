@@ -7,6 +7,25 @@ import {
   type PlatformActor,
   type PlatformStore,
 } from "../../platform/src/store.js";
+import {
+  parseCognitiveAppApplicationTarget,
+  type CognitiveAppApplicationTarget,
+} from "../../core/src/cognitive-app-application-target.js";
+
+/** Explicit context uses current policy without fetching author original bytes. */
+export async function authorizeCognitiveAppInputTarget(
+  platform: PlatformStore,
+  actor: PlatformActor,
+  projectId: string,
+  reference: CognitiveAppApplicationTarget,
+) {
+  const cognitiveApplication = parseCognitiveAppApplicationTarget(reference);
+  return (
+    await platform.resolveCognitiveAppInputTarget(actor, {
+      projectId, cognitiveApplication,
+    })
+  ).target;
+}
 
 /** Current catalog/connection policy only. No author network call, no head
  * substitution and no grant created by retaining this original reference. */

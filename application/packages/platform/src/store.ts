@@ -17,6 +17,10 @@ import {
 } from "../../core/src/applications.js";
 import { morphzAgentAccess } from "../../core/src/model.js";
 import {
+  parseCognitiveAppApplicationTarget,
+  type CognitiveAppApplicationTarget,
+} from "../../core/src/cognitive-app-application-target.js";
+import {
   notificationStateSchema,
   notificationIdSchema,
   type NotificationState,
@@ -1824,6 +1828,48 @@ export class PlatformStore {
 
   /** Actual source/member/catalog policy without inventing an invoke operation
    * or treating the observed catalog head as an authority on App history. */
+  async resolveCognitiveAppInputTarget(
+    access: PlatformActor,
+    input: {
+      projectId: string;
+      cognitiveApplication: CognitiveAppApplicationTarget;
+    },
+  ): Promise<{ actor: DomainActor; target: CognitiveAppTargetSnapshot }> {
+    const projectId = input.projectId;
+    let reference: CognitiveAppApplicationTarget;
+    try {
+      reference = parseCognitiveAppApplicationTarget(input.cognitiveApplication);
+    } catch {
+      throw new PlatformStorageError("invalid", "认知应用目标无效。");
+    }
+    requireId(projectId, "项目标识");
+    const prepared = await this.prepareCognitiveActor(access);
+    return this.transaction(async (q) => {
+      await this.assertProjectReader(
+        q, prepared.actor, projectId, prepared.executor,
+      );
+      const expected = reference.authority;
+      const target = await this.cognitiveRegistry(q, prepared.actor).lockCurrentTarget({
+        appId: expected.appId,
+        version: expected.version,
+        connectionId: reference.connectionId,
+        expectedDefinitionHash: expected.definitionHash,
+      });
+      if (
+        expected.appId !== target.appId ||
+        expected.version !== target.version ||
+        expected.definitionHash !== target.definitionHash ||
+        expected.instanceId !== target.instanceId ||
+        expected.serviceId !== target.serviceId ||
+        expected.dataAuthorityId !== target.dataAuthorityId
+      )
+        throw new PlatformStorageError(
+          "conflict", "认知应用目标的保存方已变化，未发送。",
+        );
+      return { actor: prepared.domainActor, target };
+    });
+  }
+
   async resolveCognitiveAppObjectRead(
     access: PlatformActor,
     input: CognitiveAppObjectReadRequest,

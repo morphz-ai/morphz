@@ -16,6 +16,10 @@ import {
 } from "./cognitive-app-object-locator.js";
 import { textQuotesSchema } from "./text-quotes.js";
 import {
+  cognitiveAppApplicationTargetSchema,
+  coherentCognitiveAppApplicationInput,
+} from "./cognitive-app-application-target.js";
+import {
   localFileReferenceSchema,
   directoryGrantSchema,
 } from "./local-files.js";
@@ -417,6 +421,7 @@ export const stateSchema = z
           artifactId: id.nullable(),
           artifactRevision: z.number().int().positive().nullable(),
           cognitiveObject: cognitiveAppObjectLocatorSchema.optional(),
+          cognitiveApplication: cognitiveAppApplicationTargetSchema.optional(),
           selection: z.string().max(10000),
           body: z.string().trim().max(30000),
           textQuotes: textQuotesSchema.optional(),
@@ -435,7 +440,11 @@ export const stateSchema = z
           createdAt: timestamp,
         })
         .strict()
-        .refine(coherentCognitiveAppInput, "认知应用原件不能混用其他原件范围。"),
+        .refine(coherentCognitiveAppInput, "认知应用原件不能混用其他原件范围。")
+        .refine(
+          coherentCognitiveAppApplicationInput,
+          "认知应用目标与输入范围不一致。",
+        ),
     ),
     taskResponses: z
       .array(
@@ -665,6 +674,7 @@ export const operationSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("record-input"),
       cognitiveObject: cognitiveAppObjectLocatorSchema.optional(),
+      cognitiveApplication: cognitiveAppApplicationTargetSchema.optional(),
       reading: readingInputSchema.optional(),
       continuation: continuationSchema.optional(),
       scriptGeneration: scriptGenerationSchema.optional(),
@@ -696,6 +706,16 @@ export const operationSchema = z.discriminatedUnion("type", [
     })
     .strict()
     .refine(coherentCognitiveAppInput, "认知应用原件不能混用其他原件范围。")
+    .refine(
+      coherentCognitiveAppApplicationInput,
+      "认知应用目标与输入范围不一致。",
+    )
+    .refine(
+      (value) =>
+        !value.cognitiveApplication ||
+        (!value.application && !value.applicationInstanceId),
+      "不能同时选择两个应用目标。",
+    )
     .refine(
       (value) =>
         !!value.body.trim() ||

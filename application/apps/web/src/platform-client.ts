@@ -20,6 +20,7 @@ import {
 } from "../../../packages/core/src/model.js";
 import { continuationSchema } from "../../../packages/core/src/continuation.js";
 import { cognitiveAppObjectLocatorSchema } from "../../../packages/core/src/cognitive-app-object-locator.js";
+import { cognitiveAppApplicationTargetSchema } from "../../../packages/core/src/cognitive-app-application-target.js";
 import { conversationRuntimeSchema } from "../../../packages/core/src/conversation.js";
 import type { ReasoningEffort } from "../../../packages/core/src/inference.js";
 import type { LiveScriptDraft } from "../../../packages/script-studio/src/store.js";
@@ -261,6 +262,7 @@ export const platformHistorySchema = z.object({
       reading: readingInputSchema.optional(),
       continuation: continuationSchema.optional(),
       cognitiveObject: cognitiveAppObjectLocatorSchema.optional(),
+      cognitiveApplication: cognitiveAppApplicationTargetSchema.optional(),
       application: inputApplicationSchema.optional(),
       browser: browserReferenceSchema.optional(),
       textQuotes: textQuotesSchema.optional(),

@@ -22,6 +22,13 @@ import {
   coherentCognitiveAppInput,
   type CognitiveAppObjectLocator,
 } from "../../core/src/cognitive-app-object-locator.js";
+import {
+  cognitiveAppApplicationTargetSchema,
+  parseCognitiveAppApplicationTarget,
+  sameCognitiveAppApplicationTarget,
+  coherentCognitiveAppApplicationInput,
+  type CognitiveAppApplicationTarget,
+} from "../../core/src/cognitive-app-application-target.js";
 import { textQuotesSchema } from "../../core/src/text-quotes.js";
 import { isoTimeAtMicros, isoTimeMicros } from "./iso-time.js";
 import {
@@ -359,6 +366,7 @@ const platformInputSourceSchema = z.object({
   artifactId: z.string().optional(),
   artifactRevision: z.number().int().positive().optional(),
   cognitiveObject: cognitiveAppObjectLocatorSchema.optional(),
+  cognitiveApplication: cognitiveAppApplicationTargetSchema.optional(),
   selection: z.string().optional(),
   reading: readingInputSchema.optional(),
   continuation: continuationSchema.optional(),
@@ -437,6 +445,7 @@ function platformSourceFromRuntimeRoot(
         client_message_id: z.literal(inputId),
         client_metadata: z.unknown(),
         message: z.object({
+          format: z.object({ id: z.string(), version: z.string() }).optional(),
           content: z.object({
             encoding: z.literal("json"),
             value: z.unknown(),
@@ -455,23 +464,40 @@ function platformSourceFromRuntimeRoot(
         source: platformInputSourceSchema,
       })
       .parse(storedDataValue(accepted.data.request.client_metadata, budget));
+    const value = storedDataValue(
+      accepted.data.request.message.content.value, budget,
+    );
+    const targeted = !!metadata.source.cognitiveApplication;
     const visible = z
       .object({
         input_id: z.literal(inputId),
         workspace_id: z.literal(metadata.source.projectId),
         author_actant_id: z.literal(metadata.source.author.actantId),
-        cognitiveObject: cognitiveAppObjectLocatorSchema.optional(),
+        cognitiveObject: targeted
+          ? cognitiveAppObjectLocatorSchema.nullable()
+          : cognitiveAppObjectLocatorSchema.optional(),
+        cognitiveApplication: targeted
+          ? cognitiveAppApplicationTargetSchema
+          : cognitiveAppApplicationTargetSchema.optional(),
       })
       .parse(
-        storedDataValue(accepted.data.request.message.content.value, budget),
+        value,
       );
     const expectedPrincipal = principalId(metadata.source.author.principalId);
     if (
       !visible ||
       !coherentCognitiveAppInput(metadata.source) ||
+      !coherentCognitiveAppApplicationInput(metadata.source) ||
+      !sameCognitiveAppApplicationTarget(
+        metadata.source.cognitiveApplication, visible.cognitiveApplication,
+      ) ||
+      (targeted &&
+        (accepted.data.request.message.format?.id !== "morphz.application.input" ||
+          accepted.data.request.message.format.version !==
+            (metadata.source.cognitiveObject ? "12" : "11"))) ||
       !sameCognitiveAppObjectLocator(
         metadata.source.cognitiveObject,
-        visible.cognitiveObject,
+        visible.cognitiveObject ?? undefined,
       ) ||
       (expectedPrincipal !== null &&
         payloadString(event, "principal_id") !== expectedPrincipal)
@@ -588,6 +614,7 @@ export type PlatformConversationHistory = {
     artifactId?: string;
     artifactRevision?: number;
     cognitiveObject?: CognitiveAppObjectLocator;
+    cognitiveApplication?: CognitiveAppApplicationTarget;
     selection?: string;
     reading?: RecordedInput["reading"];
     continuation?: RecordedInput["continuation"];
@@ -3491,6 +3518,9 @@ export class RuntimeBridge {
         ...(source.cognitiveObject
           ? { cognitiveObject: source.cognitiveObject }
           : {}),
+        ...(source.cognitiveApplication
+          ? { cognitiveApplication: source.cognitiveApplication }
+          : {}),
         ...(source.artifactRevision
           ? { artifactRevision: source.artifactRevision }
           : {}),
@@ -3668,6 +3698,9 @@ export class RuntimeBridge {
         ...(source.artifactId ? { artifactId: source.artifactId } : {}),
         ...(source.cognitiveObject
           ? { cognitiveObject: source.cognitiveObject }
+          : {}),
+        ...(source.cognitiveApplication
+          ? { cognitiveApplication: source.cognitiveApplication }
           : {}),
         ...(source.artifactRevision
           ? { artifactRevision: source.artifactRevision }
@@ -4986,6 +5019,9 @@ export class RuntimeBridge {
     // The new reference is an independent snapshot before any awaited policy.
     input = {
       ...input,
+      ...(input.cognitiveApplication
+        ? { cognitiveApplication: parseCognitiveAppApplicationTarget(input.cognitiveApplication) }
+        : {}),
       ...(input.cognitiveObject
         ? {
             cognitiveObject: parseCognitiveAppObjectLocator(
@@ -4994,7 +5030,7 @@ export class RuntimeBridge {
           }
         : {}),
     };
-    if (input.continuation && input.cognitiveObject)
+    if (input.continuation && (input.cognitiveObject || input.cognitiveApplication))
       throw new DomainError("invalid", "补充不能指定另一个认知应用原件。");
     const actor = this.actor();
     if (
@@ -5008,6 +5044,7 @@ export class RuntimeBridge {
       !!input.artifactId !== !!input.artifactRevision ||
       (!input.artifactId && (input.selection || input.reading)) ||
       !coherentCognitiveAppInput(input) ||
+      !coherentCognitiveAppApplicationInput(input) ||
       (input.continuation &&
         (input.continuation.mode !== "supplement" ||
           !!newConversation ||
@@ -5051,6 +5088,16 @@ export class RuntimeBridge {
           inheritedSource.cognitiveObject,
         ),
       };
+    if (inheritedSource?.cognitiveApplication)
+      input = {
+        ...input,
+        cognitiveApplication: parseCognitiveAppApplicationTarget(
+          inheritedSource.cognitiveApplication,
+        ),
+        ...(inheritedSource.application
+          ? { application: structuredClone(inheritedSource.application) }
+          : {}),
+      };
     const target: PlatformInputTarget = {
       projectId: input.projectId,
       conversationId: discussionId(input),
@@ -5058,6 +5105,9 @@ export class RuntimeBridge {
       author: input.author,
       ...(input.artifactId ? { artifactId: input.artifactId } : {}),
       ...(input.cognitiveObject ? { cognitiveObject: input.cognitiveObject } : {}),
+      ...(input.cognitiveApplication
+        ? { cognitiveApplication: input.cognitiveApplication }
+        : {}),
       ...(input.artifactRevision
         ? { artifactRevision: input.artifactRevision }
         : {}),
@@ -5118,6 +5168,9 @@ export class RuntimeBridge {
       body: input.body,
       ...(input.artifactId ? { artifactId: input.artifactId } : {}),
       ...(input.cognitiveObject ? { cognitiveObject: input.cognitiveObject } : {}),
+      ...(input.cognitiveApplication
+        ? { cognitiveApplication: input.cognitiveApplication }
+        : {}),
       ...(input.artifactRevision
         ? { artifactRevision: input.artifactRevision }
         : {}),
@@ -5263,6 +5316,10 @@ export class RuntimeBridge {
           previous.platformSource.cognitiveObject,
           platformSource.cognitiveObject,
         ) ||
+        !sameCognitiveAppApplicationTarget(
+          previous.platformSource.cognitiveApplication,
+          platformSource.cognitiveApplication,
+        ) ||
         previous.platformSource.selection !== platformSource.selection ||
         JSON.stringify(previous.platformSource.reading) !==
           JSON.stringify(platformSource.reading) ||
@@ -5315,7 +5372,14 @@ export class RuntimeBridge {
         !sameCognitiveAppObjectLocator(
           originalDelivery.platformSource.cognitiveObject,
           input.cognitiveObject,
-        ))
+        ) ||
+        !sameCognitiveAppApplicationTarget(
+          originalDelivery.platformSource.cognitiveApplication,
+          input.cognitiveApplication,
+        ) ||
+        (input.cognitiveApplication &&
+          JSON.stringify(originalDelivery.platformSource.application) !==
+            JSON.stringify(input.application)))
     )
       throw new DomainError("forbidden", "补充不能更换原工作的对象或接收者。");
     const sessionId =
@@ -5797,6 +5861,9 @@ export class RuntimeBridge {
               ...(source.artifactId ? { artifactId: source.artifactId } : {}),
               ...(source.cognitiveObject
                 ? { cognitiveObject: source.cognitiveObject }
+                : {}),
+              ...(source.cognitiveApplication
+                ? { cognitiveApplication: source.cognitiveApplication }
                 : {}),
               ...(source.artifactRevision
                 ? { artifactRevision: source.artifactRevision }

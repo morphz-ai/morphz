@@ -52,8 +52,12 @@ import {
   type CognitiveAppHostOptions,
 } from "./cognitive-app-host.js";
 import { sourceContainsSelection } from "./platform-message-source.js";
-import { authorizeCognitiveAppInputObject } from "./cognitive-app-input-source.js";
+import {
+  authorizeCognitiveAppInputObject,
+  authorizeCognitiveAppInputTarget,
+} from "./cognitive-app-input-source.js";
 import { coherentCognitiveAppInput } from "../../core/src/cognitive-app-object-locator.js";
+import { coherentCognitiveAppApplicationInput } from "../../core/src/cognitive-app-application-target.js";
 import {
   embeddedApplicationInstanceIds,
   sealEmbeddedApplicationInstances,
@@ -1061,11 +1065,30 @@ export async function openApplicationDomainsHost(
                         : {}),
                     });
               const authorized = await route;
-              if (!coherentCognitiveAppInput(source))
+              if (
+                !coherentCognitiveAppInput(source) ||
+                !coherentCognitiveAppApplicationInput(source)
+              )
                 throw new PlatformStorageError(
                   "invalid",
                   "认知应用原件范围不完整，未发送。",
                 );
+              if (source.cognitiveApplication) {
+                const target = await authorizeCognitiveAppInputTarget(
+                  platform, actor, source.projectId, source.cognitiveApplication,
+                );
+                if (
+                  !source.application ||
+                  source.application.id !== target.appId ||
+                  source.application.version !== target.version ||
+                  source.application.instanceId !== target.instanceId ||
+                  JSON.stringify(source.application.harness) !==
+                    JSON.stringify(target.definition.harness)
+                )
+                  throw new PlatformStorageError(
+                    "conflict", "消息应用与显式认知目标不一致。",
+                  );
+              }
               if (source.cognitiveObject) {
                 const target = await authorizeCognitiveAppInputObject(
                   platform,

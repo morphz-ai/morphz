@@ -70,7 +70,7 @@ export class WorkspaceStore {
     const version = this.db.prepare("PRAGMA user_version").get() as {
       user_version: number;
     };
-    if (version.user_version > 20) {
+    if (version.user_version > 21) {
       this.db.close();
       throw new Error("数据库版本高于当前应用支持范围，请使用更新的 Morphz。");
     }
@@ -112,7 +112,9 @@ export class WorkspaceStore {
       // Semantic fence: old Hosts strip cognitive source fields while retaining
       // typed requests. Do not let them dispatch these immutable envelopes.
       // No existing request, ledger row or fingerprint is rewritten here.
-      this.db.exec("PRAGMA user_version=20; COMMIT");
+      // Semantic downlevel fence: a Host20 reader strips explicit cognitive
+      // targets while retaining executable IO requests. No delivery is rewritten.
+      this.db.exec("PRAGMA user_version=21; COMMIT");
     } catch (error) {
       this.db.close();
       throw error;

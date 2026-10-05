@@ -196,7 +196,7 @@ test("only cognitive inputs select IO10 and their whole exact locator is require
 
 test("all pre-existing registered descriptors remain byte-for-byte unchanged", () => {
   const old = workInputFormats
-    .filter((f) => f.version !== "10")
+    .filter((f) => !["10", "11", "12"].includes(f.version))
     .map((f) => [
       f.id,
       f.version,
@@ -251,7 +251,7 @@ test("all pre-existing registered descriptors remain byte-for-byte unchanged", (
   ]);
 });
 
-test("Host delivery schema20 fences downlevel19 readers without rewriting old delivery bytes", () => {
+test("Host delivery schema21 fences downlevel readers without rewriting old delivery bytes", () => {
   const directory = mkdtempSync(
     join(tmpdir(), "morphz-cognitive-input-fence-"),
   );
@@ -294,7 +294,7 @@ test("Host delivery schema20 fences downlevel19 readers without rewriting old de
       assert.equal(
         (db.prepare("PRAGMA user_version").get() as { user_version: number })
           .user_version,
-        20,
+        21,
       );
       retainedBytes = (
         db
@@ -315,7 +315,7 @@ test("Host delivery schema20 fences downlevel19 readers without rewriting old de
             user_version: number;
           }
         ).user_version,
-        20,
+        21,
       );
       assert.equal(
         (

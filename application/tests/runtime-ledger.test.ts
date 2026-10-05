@@ -94,7 +94,7 @@ test("Runtime bridge persists deliveries and events outside the singleton envelo
     assert.equal(
       (db.prepare("PRAGMA user_version").get() as { user_version: number })
         .user_version,
-      20,
+      21,
     );
     db.close();
 
