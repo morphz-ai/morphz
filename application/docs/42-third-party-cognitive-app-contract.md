@@ -341,7 +341,11 @@ Service adapter。示例通过打包后的公开导出接入，自己的数据�
 ### 可选 GUI 的宿主装配决策（实施中）
 
 后端生命周期和界面消息分层，不扩充作者的权限声明或另造业务目录。
-以下是下一阶段的实施约束，不是 GUI 已经完成的证明。
+六方法 Human 窗口 facade 已实现并独立验证：同步严格 DTO、原 mutation
+receipt、双 CAS 及 actual Store 字节授权门。Root 七文件 86/86、真实
+required PostgreSQL、零跳过；全工程类型检查通过。该阶段仅是后端
+生命周期，未接 public ingress 或执行 iframe。以下其他部分仍为实施
+约束，不是 GUI 已经完成的证明。
 
 | 边界 | 最小职责 | 保持的既有行为 |
 | --- | --- | --- |

@@ -1,5 +1,28 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：Human 窗口生命周期 facade
+
+新增独立六方法 facade：launch、bind、metadata read、UI read、save、
+close。复用既有 Platform 窗口和实际 UiPackageService／Managed Store，
+不新增业务目录、表、调度器或作者协议。输入在身份／SQL await 前同步
+限界并快照；mutation 保留原命令回执和窗口／绑定双 CAS，不假充最新
+窗口。metadata 可读不代表 frame 有权执行，读取 HTML 仍验证当前本人
+许可／连接、完整原包字节及读取前后的身份／项目权限。
+
+Root 全文复核五条新增路径并比对冻结指纹，独立正式七文件 86/86，
+required PostgreSQL 实际执行，零失败／取消／跳过；全工程类型检查
+通过。日志 `/tmp/morphz-cognitive-view-ROOT-COMBINED-FINAL-oct05.log`
+和 `/tmp/morphz-cognitive-view-ROOT-TYPES-FINAL-oct05.log`。此前真实
+缺模块及调用形状／夹具 schema 错误保留在
+`/tmp/morphz-cognitive-view-c1.2KO1V2/`，旧测试断言未删除或弱化。
+
+新增十项为明确 Core UNIT，二十项在实际隔离 SQLite／PostgreSQL 和
+原界面包 Store 上执行，覆盖重开、并发 CAS、原回执重放、撤权后元数据
+与 UI 权限分离、读取中撤权、字节损坏、精确 opaque 引用与 1MB HTML。
+身份和连接描述端口为明确夹具，不是作者网络、模型或原 App 验收。
+公开 ingress、iframe channel 和导航／草稿／Runtime 引用链仍待接入；
+这一提交不称可选 GUI 或生态目标已完成，不改生产视觉及真实资料。
+
 ## 2026-10-05 第三方认知应用：Renderer 传输保留原命令事实
 
 实际 renderer adapter 在 native invoke 前同步使用 Core 严格 DTO 做独立
