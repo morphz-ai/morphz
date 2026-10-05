@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知原件与补充执行来源
+
+独立原件引用沿 Human 输入、不可变 Host 投递、canonical IO10、实际
+accepted Session Event、Agent read-input 和公开历史贯通。引用保留作者
+的 opaque objectId／versionRef，不借用内置数值版本、不替换为目录新头，
+也不凭引用自动激活 Harness。新补充从真实活动 continuation 继承原引用，
+仍在同一 Thread 执行；完成后同命令恢复原回执，不新增执行或作者命令。
+发送仅复核当前元数据授权，不为准入额外读取作者正文。数据模型、语义
+迁移与重试边界见 [原件输入来源](./43-cognitive-app-input-provenance.md)。
+
+Root 独立正式十二文件 96/96，required PostgreSQL／Runtime，零失败、
+取消与跳过；全工程类型检查通过。日志
+`/tmp/morphz-cognitive-input-ROOT-ACCEPTED-oct05.log` 和
+`/tmp/morphz-cognitive-input-ROOT-TYPES-oct05.log`。新实际 Rust 用独立
+npm-packed 作者 SQLite，先写 V1 再写 V2，实际输入、精确读取、补充与
+历史始终引用 V1；只有两次作者写入、两个 accepted inputs、一个 completed
+Thread、四次受控模型 HTTP，付费请求为零。旧格式描述选择的实际 Runtime
+拒绝 IO10，不静默降级、无 Thread 或模型请求。双 SQL 元数据准入另验
+撤权、保存方／目录错配、冷重开、旧载体兼容和输入快照。
+
+Host transport 格式 19→20 仅作防旧读器误投递的语义 fence，旧请求、
+指纹与状态逐字节保留。显式历史 smoke 从固定真实 Git revision 归档，
+不在默认 CI 依赖完整 Git 历史、不抓网络或默默跳过。此阶段未接用户
+真实资料，也不证明前端历史 parser、GUI 原件打开或未发送草稿已经接通。
+Root 显式历史验收 1/1、零跳过，日志
+`/tmp/morphz-cognitive-input-ROOT-HISTORICAL-oct05.log`，不混入上述 96 项。
+
 ## 2026-10-05 Browser 路由隐藏与恢复
 
 接线复审复现了两叶组合缺陷：暂时隐藏时，路由的 active 守门阻止当前

@@ -21,6 +21,15 @@ infer 测试现已通过：原任务准入／dispatcher、Schedule／Thread／Ev
 检查通过。该新认知中心为隔离 SQLite，不泛称生产／原 App 验收。
 
 这是 Morphz Application 的实验接入版本，不是 Runtime 或 HNS 的新标准。
+
+认知原件的后端输入来源已独立验证：精确 opaque 引用贯穿不可变投递、
+IO10、实际 accepted Session Event、Agent read-input 与公开历史。目录头
+更新后仍读取原引用；真实补充继承同一原件与 Thread，执行结束后恢复
+原回执不重复执行。Root 正式十二文件 96/96，required PostgreSQL／Runtime，
+零跳过及类型检查通过。数据模型、19→20 语义 fence、默认与显式历史
+测试边界见 [原件输入来源](./43-cognitive-app-input-provenance.md)。此处不
+宣称前端历史投影、原件导航、未发送草稿或 GUI 跨宿主链已完成。
+
 文档存在不表示独立 SDK、服务网关或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
 

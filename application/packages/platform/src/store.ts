@@ -312,6 +312,8 @@ export type CognitiveAppObjectReadRequest = CognitiveAppTargetRequest & {
   projectId: string;
   object: OperationResourceReference;
   maxBytes: number;
+  /** Internal exact-directory constraint; not part of author/browser wire. */
+  contentId?: string;
 };
 /** Current read-policy snapshot only. The owning App must still prove the
  * exact requested historical version and bounded original response. */
@@ -1835,6 +1837,7 @@ export class PlatformStore {
       expectedGrantRevision,
       expectedConnectionRevision,
       maxBytes,
+      contentId,
     } = input;
     let object: OperationResourceReference;
     try {
@@ -1849,6 +1852,7 @@ export class PlatformStore {
     )
       throw new PlatformStorageError("invalid", "原件读取字节上限无效。");
     requireId(projectId, "项目标识");
+    if (contentId !== undefined) requireId(contentId, "内容标识");
     const prepared = await this.prepareCognitiveActor(access);
     return this.transaction(async (q) => {
       await this.assertProjectReader(
@@ -1878,7 +1882,10 @@ export class PlatformStore {
         undefined,
         prepared.executor,
       );
-      if (row.project_id !== projectId)
+      if (
+        row.project_id !== projectId ||
+        (contentId !== undefined && row.content_id !== contentId)
+      )
         throw new PlatformStorageError(
           "forbidden",
           "应用原件不属于本次实际项目。",

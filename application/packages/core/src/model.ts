@@ -10,6 +10,10 @@ import {
 import { reasoningEffortSchema } from "./inference.js";
 import { inputIntentSchema } from "./input-intent.js";
 import { continuationSchema } from "./continuation.js";
+import {
+  cognitiveAppObjectLocatorSchema,
+  coherentCognitiveAppInput,
+} from "./cognitive-app-object-locator.js";
 import { textQuotesSchema } from "./text-quotes.js";
 import {
   localFileReferenceSchema,
@@ -412,6 +416,7 @@ export const stateSchema = z
           conversationId: id.optional(),
           artifactId: id.nullable(),
           artifactRevision: z.number().int().positive().nullable(),
+          cognitiveObject: cognitiveAppObjectLocatorSchema.optional(),
           selection: z.string().max(10000),
           body: z.string().trim().max(30000),
           textQuotes: textQuotesSchema.optional(),
@@ -429,7 +434,8 @@ export const stateSchema = z
           application: inputApplicationSchema.optional(),
           createdAt: timestamp,
         })
-        .strict(),
+        .strict()
+        .refine(coherentCognitiveAppInput, "认知应用原件不能混用其他原件范围。"),
     ),
     taskResponses: z
       .array(
@@ -658,6 +664,7 @@ export const operationSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("record-input"),
+      cognitiveObject: cognitiveAppObjectLocatorSchema.optional(),
       reading: readingInputSchema.optional(),
       continuation: continuationSchema.optional(),
       scriptGeneration: scriptGenerationSchema.optional(),
@@ -688,6 +695,7 @@ export const operationSchema = z.discriminatedUnion("type", [
       targetActantId: id,
     })
     .strict()
+    .refine(coherentCognitiveAppInput, "认知应用原件不能混用其他原件范围。")
     .refine(
       (value) =>
         !!value.body.trim() ||

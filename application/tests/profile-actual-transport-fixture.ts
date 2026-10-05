@@ -4,7 +4,13 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -20,6 +26,7 @@ import { openApplicationDomainsHost } from "../packages/application/src/applicat
 import { createAppServer } from "../apps/service/src/http.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import type { CognitiveAppHostOptions } from "../packages/application/src/cognitive-app-host.js";
+import type { workInputFormats } from "../packages/application/src/session-io.js";
 import {
   profileCustom,
   profileSnapshotSchema,
@@ -99,6 +106,9 @@ export async function profileActualTransportFixture(
     /** Explicit eval tool allowlist for this isolated Runtime's config only.
      * This never changes the production default or bypasses Host authority. */
     evalCallableTools?: readonly string[];
+    /** Trusted descriptor selection for this test-owned startup manifest only.
+     * Omitting it preserves the canonical Host formats and all old fixtures. */
+    inputFormats?: readonly (typeof workInputFormats)[number][];
     /** Optional controlled provider script for parallel real-Thread tests.
      * Never consulted for realProvider; existing default replies stay intact. */
     deterministicTool?: (
@@ -113,6 +123,12 @@ export async function profileActualTransportFixture(
     };
   } = {},
 ) {
+  // Snapshot the explicit test setup before any port or Host awaits. This hook
+  // never edits a production manifest or changes prepareHostTools defaults.
+  const inputFormats =
+    options.inputFormats === undefined
+      ? undefined
+      : structuredClone(options.inputFormats);
   // Dynamic URL import leaves the canonical .mjs helper native under both tsx
   // and Playwright's CJS TypeScript transform; no alternate binary search.
   const { runtimeBinaryPath } = (await import(
@@ -127,6 +143,11 @@ export async function profileActualTransportFixture(
     hostPort = await port();
   const namespace = randomUUID();
   const manifest = prepareHostTools(directory, hostPort, namespace);
+  if (inputFormats !== undefined) {
+    const value = JSON.parse(readFileSync(manifest.path, "utf8"));
+    value.formats = inputFormats;
+    writeFileSync(manifest.path, JSON.stringify(value), { mode: 0o600 });
+  }
   const runtimeUrl = `http://127.0.0.1:${runtimePort}`;
   const origin = `http://127.0.0.1:${hostPort}`;
   const requests: CapturedRequest[] = [];

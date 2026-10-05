@@ -15,6 +15,13 @@ import {
 import { workInputRequest } from "./session-io.js";
 import { scriptGenerationSchema } from "../../core/src/script-studio.js";
 import { readingInputSchema } from "../../core/src/reader.js";
+import {
+  cognitiveAppObjectLocatorSchema,
+  parseCognitiveAppObjectLocator,
+  sameCognitiveAppObjectLocator,
+  coherentCognitiveAppInput,
+  type CognitiveAppObjectLocator,
+} from "../../core/src/cognitive-app-object-locator.js";
 import { textQuotesSchema } from "../../core/src/text-quotes.js";
 import { isoTimeAtMicros, isoTimeMicros } from "./iso-time.js";
 import {
@@ -351,6 +358,7 @@ const platformInputSourceSchema = z.object({
   attachments: z.array(inputAttachmentSchema).optional(),
   artifactId: z.string().optional(),
   artifactRevision: z.number().int().positive().optional(),
+  cognitiveObject: cognitiveAppObjectLocatorSchema.optional(),
   selection: z.string().optional(),
   reading: readingInputSchema.optional(),
   continuation: continuationSchema.optional(),
@@ -452,6 +460,7 @@ function platformSourceFromRuntimeRoot(
         input_id: z.literal(inputId),
         workspace_id: z.literal(metadata.source.projectId),
         author_actant_id: z.literal(metadata.source.author.actantId),
+        cognitiveObject: cognitiveAppObjectLocatorSchema.optional(),
       })
       .parse(
         storedDataValue(accepted.data.request.message.content.value, budget),
@@ -459,6 +468,11 @@ function platformSourceFromRuntimeRoot(
     const expectedPrincipal = principalId(metadata.source.author.principalId);
     if (
       !visible ||
+      !coherentCognitiveAppInput(metadata.source) ||
+      !sameCognitiveAppObjectLocator(
+        metadata.source.cognitiveObject,
+        visible.cognitiveObject,
+      ) ||
       (expectedPrincipal !== null &&
         payloadString(event, "principal_id") !== expectedPrincipal)
     )
@@ -573,6 +587,7 @@ export type PlatformConversationHistory = {
     attachments?: RecordedInput["attachments"];
     artifactId?: string;
     artifactRevision?: number;
+    cognitiveObject?: CognitiveAppObjectLocator;
     selection?: string;
     reading?: RecordedInput["reading"];
     continuation?: RecordedInput["continuation"];
@@ -3473,6 +3488,9 @@ export class RuntimeBridge {
         targetActantId: source.targetActantId,
         body: source.body,
         ...(source.artifactId ? { artifactId: source.artifactId } : {}),
+        ...(source.cognitiveObject
+          ? { cognitiveObject: source.cognitiveObject }
+          : {}),
         ...(source.artifactRevision
           ? { artifactRevision: source.artifactRevision }
           : {}),
@@ -3648,6 +3666,9 @@ export class RuntimeBridge {
         targetActantId: source.targetActantId,
         body: platformInputBody(delivery),
         ...(source.artifactId ? { artifactId: source.artifactId } : {}),
+        ...(source.cognitiveObject
+          ? { cognitiveObject: source.cognitiveObject }
+          : {}),
         ...(source.artifactRevision
           ? { artifactRevision: source.artifactRevision }
           : {}),
@@ -4962,6 +4983,19 @@ export class RuntimeBridge {
     input: RecordedInput,
     newConversation?: { title: string },
   ) {
+    // The new reference is an independent snapshot before any awaited policy.
+    input = {
+      ...input,
+      ...(input.cognitiveObject
+        ? {
+            cognitiveObject: parseCognitiveAppObjectLocator(
+              input.cognitiveObject,
+            ),
+          }
+        : {}),
+    };
+    if (input.continuation && input.cognitiveObject)
+      throw new DomainError("invalid", "补充不能指定另一个认知应用原件。");
     const actor = this.actor();
     if (
       input.author.principalId !== actor.principalId ||
@@ -4973,6 +5007,7 @@ export class RuntimeBridge {
         !input.directories?.length) ||
       !!input.artifactId !== !!input.artifactRevision ||
       (!input.artifactId && (input.selection || input.reading)) ||
+      !coherentCognitiveAppInput(input) ||
       (input.continuation &&
         (input.continuation.mode !== "supplement" ||
           !!newConversation ||
@@ -4993,12 +5028,36 @@ export class RuntimeBridge {
     if (!authorize)
       throw new DomainError("invalid", "Platform 消息授权尚未接入。");
     let previous = this.state.deliveries.find((d) => d.inputId === input.id);
+    // Receipt retries inherit their already-persisted reference without a new
+    // live Thread/generation check. Only a NEW supplement admits live work.
+    const inheritedSource = input.continuation
+      ? (previous?.platformSource ??
+        this.state.deliveries.find(
+          (delivery) =>
+            delivery.inputId === input.continuation!.inputId &&
+            !!delivery.rootId &&
+            !delivery.supplement &&
+            delivery.platformSource?.author.principalId ===
+              input.author.principalId &&
+            delivery.platformSource.author.actantId === input.author.actantId &&
+            delivery.platformSource.projectId === input.projectId &&
+            delivery.platformSource.conversationId === discussionId(input),
+        )?.platformSource)
+      : undefined;
+    if (inheritedSource?.cognitiveObject)
+      input = {
+        ...input,
+        cognitiveObject: parseCognitiveAppObjectLocator(
+          inheritedSource.cognitiveObject,
+        ),
+      };
     const target: PlatformInputTarget = {
       projectId: input.projectId,
       conversationId: discussionId(input),
       targetActantId: input.targetActantId,
       author: input.author,
       ...(input.artifactId ? { artifactId: input.artifactId } : {}),
+      ...(input.cognitiveObject ? { cognitiveObject: input.cognitiveObject } : {}),
       ...(input.artifactRevision
         ? { artifactRevision: input.artifactRevision }
         : {}),
@@ -5058,6 +5117,7 @@ export class RuntimeBridge {
       createdAt: input.createdAt,
       body: input.body,
       ...(input.artifactId ? { artifactId: input.artifactId } : {}),
+      ...(input.cognitiveObject ? { cognitiveObject: input.cognitiveObject } : {}),
       ...(input.artifactRevision
         ? { artifactRevision: input.artifactRevision }
         : {}),
@@ -5199,6 +5259,10 @@ export class RuntimeBridge {
         previous.platformSource.artifactId !== platformSource.artifactId ||
         previous.platformSource.artifactRevision !==
           platformSource.artifactRevision ||
+        !sameCognitiveAppObjectLocator(
+          previous.platformSource.cognitiveObject,
+          platformSource.cognitiveObject,
+        ) ||
         previous.platformSource.selection !== platformSource.selection ||
         JSON.stringify(previous.platformSource.reading) !==
           JSON.stringify(platformSource.reading) ||
@@ -5247,7 +5311,11 @@ export class RuntimeBridge {
         (originalDelivery.platformSource.artifactId ?? null) !==
           (input.artifactId ?? null) ||
         (originalDelivery.platformSource.artifactRevision ?? null) !==
-          (input.artifactRevision ?? null))
+          (input.artifactRevision ?? null) ||
+        !sameCognitiveAppObjectLocator(
+          originalDelivery.platformSource.cognitiveObject,
+          input.cognitiveObject,
+        ))
     )
       throw new DomainError("forbidden", "补充不能更换原工作的对象或接收者。");
     const sessionId =
@@ -5727,6 +5795,9 @@ export class RuntimeBridge {
               targetActantId: source.targetActantId,
               author: source.author,
               ...(source.artifactId ? { artifactId: source.artifactId } : {}),
+              ...(source.cognitiveObject
+                ? { cognitiveObject: source.cognitiveObject }
+                : {}),
               ...(source.artifactRevision
                 ? { artifactRevision: source.artifactRevision }
                 : {}),

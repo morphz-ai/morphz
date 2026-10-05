@@ -155,6 +155,8 @@ import {
   type CognitiveAppViewMethod,
 } from "../../core/src/cognitive-app-view-api.js";
 import { cognitiveAppViewApplicationRoute } from "../../core/src/cognitive-app-view-methods.js";
+import { authorizeCognitiveAppInputObject } from "./cognitive-app-input-source.js";
+import { guardCognitiveAppInputCommand } from "../../core/src/cognitive-app-object-locator.js";
 import type { CognitiveAppViewService } from "./cognitive-app-view-service.js";
 
 export type ApplicationOptions = {
@@ -2033,6 +2035,9 @@ export class ApplicationSession {
    */
   async platformMessage(raw: unknown) {
     const runtime = this.runtime();
+    // Snapshot only the new reference; old carriers retain their original
+    // optional-field and quote budgets. No accessor may supply the new slot.
+    guardCognitiveAppInputCommand(raw);
     const command = commandSchema.parse(raw);
     const op = command.operation;
     if (op.type !== "record-input" || command.applicationInstanceId)
@@ -2053,6 +2058,7 @@ export class ApplicationSession {
         !!op.localFile ||
         !!op.directories?.length ||
         !!op.selection ||
+        !!op.cognitiveObject ||
         (op.dispatchMode !== undefined && op.dispatchMode !== "parallel") ||
         !!op.model ||
         !!op.reasoningEffort)
@@ -2076,7 +2082,35 @@ export class ApplicationSession {
     // A Client window ID is presentation state, not a Platform app-data
     // instance or an execution grant. Resolve the requested built-in app to
     // the Host's registered data authority before pinning its Harness.
-    const application = op.application
+    const cognitiveTarget = op.cognitiveObject
+      ? await this.document((domain, actor) =>
+          authorizeCognitiveAppInputObject(
+            domain.platform,
+            actor,
+            op.cognitiveObject!,
+          ),
+        )
+      : undefined;
+    if (
+      cognitiveTarget &&
+      op.application &&
+      (op.application.id !== cognitiveTarget.appId ||
+        op.application.version !== cognitiveTarget.version ||
+        (op.applicationInstanceId &&
+          op.applicationInstanceId !== cognitiveTarget.instanceId))
+    )
+      throw new DomainError(
+        "conflict",
+        "应用与认知原件保存方不一致，草稿已保留。",
+      );
+    const application = op.application && cognitiveTarget
+      ? {
+          instanceId: cognitiveTarget.instanceId,
+          id: cognitiveTarget.appId,
+          version: cognitiveTarget.version,
+          harness: cognitiveTarget.definition.harness,
+        }
+      : op.application
       ? await this.document(async (domain, actor) => {
           const manifest = [
             objectsApplication,
@@ -2333,6 +2367,7 @@ export class ApplicationSession {
       conversationId: op.conversationId ?? op.projectId,
       artifactId: op.artifactId,
       artifactRevision: op.artifactRevision,
+      ...(op.cognitiveObject ? { cognitiveObject: op.cognitiveObject } : {}),
       selection: op.selection,
       body: op.body,
       author: { ...this.access },

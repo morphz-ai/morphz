@@ -52,6 +52,8 @@ import {
   type CognitiveAppHostOptions,
 } from "./cognitive-app-host.js";
 import { sourceContainsSelection } from "./platform-message-source.js";
+import { authorizeCognitiveAppInputObject } from "./cognitive-app-input-source.js";
+import { coherentCognitiveAppInput } from "../../core/src/cognitive-app-object-locator.js";
 import {
   embeddedApplicationInstanceIds,
   sealEmbeddedApplicationInstances,
@@ -1059,6 +1061,30 @@ export async function openApplicationDomainsHost(
                         : {}),
                     });
               const authorized = await route;
+              if (!coherentCognitiveAppInput(source))
+                throw new PlatformStorageError(
+                  "invalid",
+                  "认知应用原件范围不完整，未发送。",
+                );
+              if (source.cognitiveObject) {
+                const target = await authorizeCognitiveAppInputObject(
+                  platform,
+                  actor,
+                  source.cognitiveObject,
+                );
+                if (
+                  source.application &&
+                  (source.application.id !== target.appId ||
+                    source.application.version !== target.version ||
+                    source.application.instanceId !== target.instanceId ||
+                    JSON.stringify(source.application.harness) !==
+                      JSON.stringify(target.definition.harness))
+                )
+                  throw new PlatformStorageError(
+                    "conflict",
+                    "消息应用与认知原件保存方不一致。",
+                  );
+              }
               if (source.application)
                 await platform.authorizeApplicationProject(
                   actor,

@@ -66,6 +66,18 @@ const optionalTests = [
     "MORPHZ_COGNITIVE_SOURCES_RUNTIME_E2E",
   ],
   [
+    "cognitive-app-input-actual-runtime.test.ts",
+    "actual Rust cognitive original locator: IO10 source, read-input and exact historical author version",
+    "runtime",
+    "MORPHZ_COGNITIVE_INPUT_RUNTIME_E2E",
+  ],
+  [
+    "cognitive-app-input-actual-runtime.test.ts",
+    "actual old-format Runtime rejects IO10 without downgrade or model work",
+    "runtime",
+    "MORPHZ_COGNITIVE_INPUT_RUNTIME_E2E",
+  ],
+  [
     "response-annotations-runtime.test.ts",
     "actual Runtime + Platform HTTP: two commands form one activity, three original model rounds, durable refresh and exact Job receipts",
     "runtime",

@@ -61,6 +61,7 @@
     "desktop": "node scripts/desktop.mjs",
     "desktop:dev": "node scripts/desktop-dev.mjs",
     "test": "node scripts/run-tests.mjs",
+    "test:cognitive-input-old-reader": "node --import tsx --test scripts/cognitive-input-old-reader-smoke.ts",
     "test:e2e": "npm run build && playwright test",
     "test:desktop": "node scripts/desktop-smoke.mjs",
     "test:platform-desktop": "node scripts/platform-desktop-smoke.mjs",

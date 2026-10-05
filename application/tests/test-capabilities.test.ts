@@ -114,6 +114,18 @@ const declarations = [
     capability: "runtime",
     flag: "MORPHZ_COGNITIVE_SOURCES_RUNTIME_E2E",
   },
+  {
+    file: "cognitive-app-input-actual-runtime.test.ts",
+    name: "actual Rust cognitive original locator: IO10 source, read-input and exact historical author version",
+    capability: "runtime",
+    flag: "MORPHZ_COGNITIVE_INPUT_RUNTIME_E2E",
+  },
+  {
+    file: "cognitive-app-input-actual-runtime.test.ts",
+    name: "actual old-format Runtime rejects IO10 without downgrade or model work",
+    capability: "runtime",
+    flag: "MORPHZ_COGNITIVE_INPUT_RUNTIME_E2E",
+  },
 ] as const;
 const darwin = [
   {
@@ -189,7 +201,7 @@ test("required capability CSV is finite and cannot remove PostgreSQL", () => {
   assert.deepEqual(actual.selected, []);
 });
 
-test("exact eleven optional integrations are declared opt-outs, not environment-unavailable successes", () => {
+test("exact thirteen optional integrations are declared opt-outs, not environment-unavailable successes", () => {
   const actual = plan({}, { platform: "darwin" });
   for (const item of declarations) {
     assert.deepEqual(classifySkippedTest(data(item), actual), {
@@ -408,6 +420,42 @@ test("scheduled cognitive infer opt-in cannot borrow the input-only flag or excu
     () => classifySkippedTest(data(item), actual),
     /Required or prepared test was skipped/,
   );
+});
+
+test("exact-original IO10 Runtime cases cannot borrow other cognitive flags or excuse either prepared skip", () => {
+  const items = declarations.slice(11);
+  assert.equal(items.length, 2);
+  const selection = { files: [items[0]!.file] };
+  const runtime = {
+    MORPHZ_TEST_REQUIRED_CAPABILITIES: "runtime",
+    MORPHZ_APP_RUNTIME_BINARY: "/fixture/runtime",
+    MORPHZ_PROFILE_RUNTIME_E2E: "1",
+    MORPHZ_COGNITIVE_RUNTIME_E2E: "1",
+    MORPHZ_COGNITIVE_SOURCES_RUNTIME_E2E: "1",
+  };
+  assert.throws(
+    () => plan(runtime, selection),
+    /Selected Runtime integration requires MORPHZ_COGNITIVE_INPUT_RUNTIME_E2E=1/,
+  );
+  const actual = plan(
+    { ...runtime, MORPHZ_COGNITIVE_INPUT_RUNTIME_E2E: "1" },
+    selection,
+  );
+  assert.equal(actual.selected.length, 2);
+  for (const item of items) {
+    assert.throws(
+      () => classifySkippedTest(data(item), actual),
+      /Required or prepared test was skipped/,
+    );
+    assert.throws(
+      () =>
+        classifySkippedTest(
+          { file: "copied.test.ts", name: item.name },
+          actual,
+        ),
+      /Unexpected skipped test/,
+    );
+  }
 });
 
 test("enabled Runtime cases require the canonical existing binary even without a required mode", () => {
