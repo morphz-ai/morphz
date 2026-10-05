@@ -1,5 +1,33 @@
 # 桌面能力实施记录
 
+## 2026-10-06 独立作者 GUI 的真实三入口业务矩阵
+
+新增三测试路径，沿独立 tgz 作者的真实 SQLite、原 Platform SQLite／
+PostgreSQL、IdentityCenter／HPA、Managed 原字节、公开 Web／Local／Remote
+adapters、固定 Document／SDK／私有 port 及原 public draft writer。
+连接通过作者真实 describe/admission，没有伪造 connection proof、业务
+回执、contentId 或正文。创建／修订与历史 V1 重开、实际 COMMIT 后丢响应
+原 ID 恢复、最新未发送草稿及附件／设置／共享引用保持均通过。许可恢复
+后真操作旧 Document仍拒；真 close 后拒 protected读取，用真实 receipt
+CAS和当前grant再explicit launch，未自动 bind／换authority／重试0/0。
+
+Root 冷读三路径并独立联合九文件 120/120、required PostgreSQL、零失败／
+取消／跳过；其中该矩阵三十二项，作者旧包十九项，原读／导航／新 view
+owner 六十九项。日志 `/tmp/morphz-cognitive-view-AND-GUI-ROOT-SECOND-oct06.log`；
+作者 freeze 联合 51/51 日志另保留。全工程类型、十四源文件格式通过。
+真实无发送证据读取 Host delivery/session/event/publication/thread账本，
+不是不存在的 Platform inputs 表；近期设置不动，作者定义／ACL／authority不变。
+
+初版状态／恢复等待旧已显示文案的 oracle 已独立审查补强为本次真实
+调用、同原命令回执／requestHash／authority以及实际 SDK busy完成。
+初版 fixture inputs 表／过期 grant revision 的 RED 保留，修测试不松生产。
+拒绝迟到 compose 的标题只说实际无发布，不冒称量测物理成功 ACK 零。
+
+private owner和Local／Remote browser resource递送壳受控；后两者实际
+embedded adapter／认证 bytes，但不是 native origin。openObject仍明确
+拒绝，不用并列保暖制造假导航 ACK。不称原用户 App／Electron完成，
+不改原业务资料、Session、Runtime或已冻结作者代码，无外部推送／发布。
+
 ## 2026-10-06 原导航位置的只读认知窗口 owner
 
 原 `prefs.cognitiveLocation` 扩为 exact original 或 view slot，不存权限、

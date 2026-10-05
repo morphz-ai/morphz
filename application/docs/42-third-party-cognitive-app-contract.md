@@ -681,7 +681,7 @@ absent／closed／unbound 如实阻断输入，不做 mutation。React layout �
 可推进，但固定绑定、定义／字节、保存方、许可与连接修订不可改变。
 Root 冷审九路径，正式联合九文件 120/120、required PostgreSQL、零跳过；
 其中 view 新六 unit＋十四真实 Chromium／StrictMode 项的服务／owner
-回调明确 controlled，其余七十九项为原读取和实际作者跨适配器链。
+回调明确 controlled，其余一百项为原读取和实际作者跨适配器链。
 联合全工程类型与十四源文件格式通过。这是独立读取叶，不等于生产
 App 的 mount、真实 private lease 接线、业务 HPA 或作者执行全部验收。
 
@@ -699,6 +699,22 @@ layout owner 实际发布、源 Document／owner 仍有效且末尾授权门通�
 前置拒绝／取消／新导航抢占则不得发布或记录旧目标。已销毁 Document 的
 Promise 可无可观察终态；存活受控壳的成功 ACK 不是生产终结导航验收。
 此处规定语义，生产 publisher 和原 App 验收仍待完成。
+
+独立 packed 作者的 GUI 业务链已另行验收，不以受控业务 DTO 冒称实际
+闭环。真实作者 SQLite、Platform SQLite／PostgreSQL、IdentityCenter／HPA、
+Managed UI bytes、公开 Web／Local／Remote adapters、固定 Document／SDK
+与原 public draft writer，共三入口新三十二项及作者原包十九项通过。
+Root 冷审三路径，独立联合九文件 120/120、required PostgreSQL、零跳过；
+三十二项核新建／修订／历史 V1 重开、实际提交后丢回复原 ID 状态／回执
+恢复、真正 layout 草稿引用、最新设置／附件／共享引用保持、零输入和
+Runtime ledger变化。许可循环后旧 Document 真调用仍拒，关闭真窗口后
+作者读取拒绝，显式按真实关闭 CAS／当前许可重开，不重放 0/0。
+
+浏览器 private owner 与 Local／Remote delivery 壳明确 controlled；Local
+实际 embeddedResources 直取字节不走 application HTTP，Remote 实际认证
+resource 入口，二者自动壳不等于 Electron custom origin。openObject 显式
+拒绝，未并列保暖制造导航 ACK。没有把测试壳、组合项或这三十二项算作
+原 App mount／native／终结导航完成；剩余接线继续推进。
 
 可信 Document consumer 已独立验收，尚未生产挂载。只用实际 App origin
 下固定认证 resource URL、原 outer WindowProxy、当前 owner／signal 和
