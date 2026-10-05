@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runtimeBinaryPath } from "./runtime-path.mjs";
+import { runtimeFixtureFinalReply } from "./runtime-fixture-reply.js";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { WorkspaceStore } from "../apps/service/src/store.js";
 import { RuntimeBridge } from "../apps/service/src/runtime.js";
@@ -123,22 +124,26 @@ const provider = createServer(async (req, res) => {
     };
     rememberedProjects.add(marker);
   }
+  const final = runtimeFixtureFinalReply(data, {
+    content: "隔离测试：已收到。",
+    title: "完成隔离身份验收",
+    result: "对应身份的请求已处理。",
+  });
   const message = call
     ? { role: "assistant", content: "", tool_calls: [call] }
-    : { role: "assistant", content: "隔离测试：已收到。" };
+    : final.message;
+  const finishReason = call ? "tool_calls" : final.finishReason;
   if (data.stream) {
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     res.end(
-      `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: call ? { role: "assistant", tool_calls: [{ ...call, index: 0 }] } : message, finish_reason: call ? "tool_calls" : "stop" }] })}\n\ndata: [DONE]\n\n`,
+      `data: ${JSON.stringify({ id: randomUUID(), choices: [{ index: 0, delta: { ...message, ...(message.tool_calls ? { tool_calls: message.tool_calls.map((tool, index) => ({ ...tool, index })) } : {}) }, finish_reason: finishReason }] })}\n\ndata: [DONE]\n\n`,
     );
   } else {
     res.setHeader("Content-Type", "application/json");
     res.end(
       JSON.stringify({
         id: randomUUID(),
-        choices: [
-          { index: 0, message, finish_reason: call ? "tool_calls" : "stop" },
-        ],
+        choices: [{ index: 0, message, finish_reason: finishReason }],
       }),
     );
   }

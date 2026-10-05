@@ -320,6 +320,13 @@ export class IdentityCenter {
       ? { principalId: member.principalId, kind: "human" as const }
       : null;
   }
+  /** Host-only directory snapshot; no login tokens or session credentials.
+   * Runtime provenance reads still recheck the authoritative team revision. */
+  currentHumanAccesses(): AccessContext[] {
+    return this.config.members
+      .filter((member) => member.enabled)
+      .map(({ principalId, actantId }) => ({ principalId, actantId }));
+  }
   private access(s: { principalId: string; actantId: string }): AccessContext {
     if (!this.allows(s)) throw new DomainError("forbidden", "当前身份已撤销。");
     return { principalId: s.principalId, actantId: s.actantId };

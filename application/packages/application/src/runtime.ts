@@ -466,7 +466,8 @@ function platformSourceFromRuntimeRoot(
       })
       .parse(storedDataValue(accepted.data.request.client_metadata, budget));
     const value = storedDataValue(
-      accepted.data.request.message.content.value, budget,
+      accepted.data.request.message.content.value,
+      budget,
     );
     const targeted = !!metadata.source.cognitiveApplication;
     const visible = z
@@ -481,19 +482,19 @@ function platformSourceFromRuntimeRoot(
           ? cognitiveAppApplicationTargetSchema
           : cognitiveAppApplicationTargetSchema.optional(),
       })
-      .parse(
-        value,
-      );
+      .parse(value);
     const expectedPrincipal = principalId(metadata.source.author.principalId);
     if (
       !visible ||
       !coherentCognitiveAppInput(metadata.source) ||
       !coherentCognitiveAppApplicationInput(metadata.source) ||
       !sameCognitiveAppApplicationTarget(
-        metadata.source.cognitiveApplication, visible.cognitiveApplication,
+        metadata.source.cognitiveApplication,
+        visible.cognitiveApplication,
       ) ||
       (targeted &&
-        (accepted.data.request.message.format?.id !== "morphz.application.input" ||
+        (accepted.data.request.message.format?.id !==
+          "morphz.application.input" ||
           accepted.data.request.message.format.version !==
             (metadata.source.cognitiveObject ? "12" : "11"))) ||
       !sameCognitiveAppObjectLocator(
@@ -1337,12 +1338,47 @@ export class RuntimeBridge {
   /** Read Runtime-owned evidence through the configured, authenticated bridge.
    * A model or browser cannot choose the Runtime origin or credentials.
    */
-  inputEvidenceReader(): RuntimeInputEvidenceReader {
-    return runtimeHttpInputEvidenceReader((path) =>
-      this.request(path, "GET", undefined, {
-        principalId: "morphz-service",
-        actantId: "morphz-agent",
-      }),
+  inputEvidenceReader(viewer?: AccessContext): RuntimeInputEvidenceReader {
+    return runtimeHttpInputEvidenceReader(
+      async (path, runtimePrincipalId) => {
+        if (!this.teamIdentity)
+          return this.request(
+            path,
+            "GET",
+            undefined,
+            localAccess,
+            undefined,
+            "json",
+            true,
+          );
+        // Only a signed Runtime invocation supplies this identity. Map it back
+        // to a current Host Human, never elevate a gateway to the operator plane
+        // or reclaim Session membership as a side effect of reading evidence.
+        const access =
+          viewer ??
+          (runtimePrincipalId
+            ? this.identity!.currentHumanAccesses().find(
+                (candidate) =>
+                  this.principalId(candidate.principalId) ===
+                  runtimePrincipalId,
+              )
+            : this.caller.getStore());
+        if (!access || !(await this.identity!.allowsShared(access)))
+          throw new DomainError(
+            "forbidden",
+            "原始 Runtime 发起身份不可用或已撤销。",
+          );
+        return this.request(
+          path,
+          "GET",
+          undefined,
+          access,
+          undefined,
+          "json",
+          true,
+        );
+      },
+      { sessionScoped: this.teamIdentity },
     );
   }
   /** The Platform link is authorized before this reader is called. Runtime
@@ -1956,7 +1992,7 @@ export class RuntimeBridge {
       throw new DomainError("conflict", "执行会话与事项项目不一致。");
     const additionalRoot = sourceForExecution
       ? async (rootId: string, threadId: string) => {
-          const reader = this.inputEvidenceReader();
+          const reader = this.inputEvidenceReader(access);
           const thread = z
             .object({
               snapshot: z.object({
@@ -1970,8 +2006,14 @@ export class RuntimeBridge {
                 }),
               }),
             })
-            .parse(await reader.readThread(ref.sessionId, threadId))
-            .snapshot.thread;
+            .parse(
+              await reader.readThread(
+                ref.sessionId,
+                threadId,
+                undefined,
+                this.principalId(access.principalId),
+              ),
+            ).snapshot.thread;
           if (
             thread.id !== threadId ||
             thread.session_id !== ref.sessionId ||
@@ -5034,7 +5076,11 @@ export class RuntimeBridge {
     input = {
       ...input,
       ...(input.cognitiveApplication
-        ? { cognitiveApplication: parseCognitiveAppApplicationTarget(input.cognitiveApplication) }
+        ? {
+            cognitiveApplication: parseCognitiveAppApplicationTarget(
+              input.cognitiveApplication,
+            ),
+          }
         : {}),
       ...(input.cognitiveObject
         ? {
@@ -5044,7 +5090,10 @@ export class RuntimeBridge {
           }
         : {}),
     };
-    if (input.continuation && (input.cognitiveObject || input.cognitiveApplication))
+    if (
+      input.continuation &&
+      (input.cognitiveObject || input.cognitiveApplication)
+    )
       throw new DomainError("invalid", "补充不能指定另一个认知应用原件。");
     const actor = this.actor();
     if (
@@ -5118,7 +5167,9 @@ export class RuntimeBridge {
       targetActantId: input.targetActantId,
       author: input.author,
       ...(input.artifactId ? { artifactId: input.artifactId } : {}),
-      ...(input.cognitiveObject ? { cognitiveObject: input.cognitiveObject } : {}),
+      ...(input.cognitiveObject
+        ? { cognitiveObject: input.cognitiveObject }
+        : {}),
       ...(input.cognitiveApplication
         ? { cognitiveApplication: input.cognitiveApplication }
         : {}),
@@ -5181,7 +5232,9 @@ export class RuntimeBridge {
       createdAt: input.createdAt,
       body: input.body,
       ...(input.artifactId ? { artifactId: input.artifactId } : {}),
-      ...(input.cognitiveObject ? { cognitiveObject: input.cognitiveObject } : {}),
+      ...(input.cognitiveObject
+        ? { cognitiveObject: input.cognitiveObject }
+        : {}),
       ...(input.cognitiveApplication
         ? { cognitiveApplication: input.cognitiveApplication }
         : {}),

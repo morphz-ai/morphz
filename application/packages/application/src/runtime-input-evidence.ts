@@ -81,37 +81,50 @@ export type RuntimeInputEvidenceReader = {
     sessionId: string,
     threadId: string,
     contextId?: string,
+    runtimePrincipalId?: string,
   ): Promise<unknown>;
-  readSessionEvent(sessionId: string, eventId: string): Promise<unknown>;
-  readSessionSchedule?(sessionId: string, scheduleId: string): Promise<unknown>;
+  readSessionEvent(
+    sessionId: string,
+    eventId: string,
+    runtimePrincipalId?: string,
+  ): Promise<unknown>;
+  readSessionSchedule?(
+    sessionId: string,
+    scheduleId: string,
+    runtimePrincipalId?: string,
+  ): Promise<unknown>;
 };
 
 /** Adapt an authenticated Runtime request function; it must not accept a
  * browser-supplied bearer token or a model-selected Runtime origin.
  */
 export function runtimeHttpInputEvidenceReader(
-  request: (path: string) => Promise<unknown>,
+  request: (path: string, runtimePrincipalId?: string) => Promise<unknown>,
+  options: { sessionScoped?: boolean } = {},
 ): RuntimeInputEvidenceReader {
   return {
-    readThread: (sessionId, threadId, contextId) =>
+    readThread: (sessionId, threadId, contextId, runtimePrincipalId) =>
       request(
-        contextId
+        contextId && !options.sessionScoped
           ? `/api/contexts/${encodeURIComponent(contextId)}/threads/${encodeURIComponent(threadId)}`
           : `/api/sessions/${encodeURIComponent(sessionId)}/threads/${encodeURIComponent(threadId)}`,
+        runtimePrincipalId,
       ),
-    async readSessionEvent(sessionId, eventId) {
+    async readSessionEvent(sessionId, eventId, runtimePrincipalId) {
       const result = z
         .object({ event: z.unknown() })
         .parse(
           await request(
             `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}`,
+            runtimePrincipalId,
           ),
         );
       return result.event;
     },
-    readSessionSchedule: (sessionId, scheduleId) =>
+    readSessionSchedule: (sessionId, scheduleId, runtimePrincipalId) =>
       request(
         `/api/sessions/${encodeURIComponent(sessionId)}/schedules/${encodeURIComponent(scheduleId)}`,
+        runtimePrincipalId,
       ),
   };
 }
@@ -143,7 +156,12 @@ async function resolveRuntimeRoot(
     if (seen.has(threadId)) invalid();
     seen.add(threadId);
     const parsed = threadSchema.safeParse(
-      await reader.readThread(route.session_id, threadId, route.context_id),
+      await reader.readThread(
+        route.session_id,
+        threadId,
+        route.context_id,
+        route.principal_id,
+      ),
     );
     if (!parsed.success) invalid();
     const thread = parsed.data.snapshot.thread;
@@ -170,7 +188,11 @@ async function resolveRuntimeRoot(
       break;
     }
     const inferResult = eventSchema.safeParse(
-      await reader.readSessionEvent(route.session_id, thread.root_turn_id),
+      await reader.readSessionEvent(
+        route.session_id,
+        thread.root_turn_id,
+        route.principal_id,
+      ),
     );
     if (!inferResult.success) invalid();
     const infer = inferResult.data;
@@ -212,7 +234,11 @@ async function inputEvidenceFromRoot(
   runtimePrincipalId: string,
 ) {
   const rootResult = eventSchema.safeParse(
-    await reader.readSessionEvent(route.session_id, rootId),
+    await reader.readSessionEvent(
+      route.session_id,
+      rootId,
+      route.principal_id ?? undefined,
+    ),
   );
   if (!rootResult.success) invalid();
   const root = rootResult.data;
@@ -281,7 +307,11 @@ async function taskRunEvidenceFromRoot(
   const scheduleId = rootId.slice("client-schedule-".length);
   if (!reader.readSessionSchedule) invalid();
   const schedule = scheduleSchema.safeParse(
-    await reader.readSessionSchedule(route.session_id, scheduleId),
+    await reader.readSessionSchedule(
+      route.session_id,
+      scheduleId,
+      route.principal_id ?? undefined,
+    ),
   );
   if (
     !schedule.success ||
@@ -356,7 +386,11 @@ export async function resolveRuntimeInvocationEvidence(
     };
   }
   const observed = eventSchema.parse(
-    await reader.readSessionEvent(route.session_id, root.rootId),
+    await reader.readSessionEvent(
+      route.session_id,
+      root.rootId,
+      route.principal_id ?? undefined,
+    ),
   );
   const clientId = field(observed, "client_message_id");
   if (clientId?.startsWith("task_source_")) {
