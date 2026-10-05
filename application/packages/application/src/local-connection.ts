@@ -20,6 +20,16 @@ import {
   invokeApplication,
 } from "./application.js";
 import { parseCognitiveAppRequest } from "../../core/src/cognitive-app-api.js";
+import {
+  parseCognitiveAppViewRequest,
+  parseCognitiveAppViewResponse,
+} from "../../core/src/cognitive-app-view-api.js";
+import {
+  cognitiveAppViewApplicationRoute,
+  type CognitiveAppViewApplicationMethod,
+  type CognitiveAppViewApplicationRequest,
+  type CognitiveAppViewApplicationResponse,
+} from "../../core/src/cognitive-app-view-methods.js";
 
 const invocationSchema = z
   .object({
@@ -83,12 +93,23 @@ export class LocalApplicationConnection {
   authenticationCookie() {
     return this.cookie;
   }
+  call<M extends CognitiveAppViewApplicationMethod>(
+    method: M,
+    params: CognitiveAppViewApplicationRequest<M>,
+    options?: ApplicationCallOptions,
+  ): Promise<CognitiveAppViewApplicationResponse<M>>;
+  call(
+    method: ApplicationMethod,
+    params?: unknown,
+    options?: ApplicationCallOptions,
+  ): Promise<unknown>;
   async call(
     method: ApplicationMethod,
     params?: unknown,
     options: ApplicationCallOptions = {},
   ) {
     const cognitive = cognitiveAppApplicationRoute(method);
+    const view = cognitiveAppViewApplicationRoute(method);
     if (cognitive) {
       try {
         params = parseCognitiveAppRequest(cognitive.method, params);
@@ -96,8 +117,15 @@ export class LocalApplicationConnection {
         throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
       }
     }
+    if (view) {
+      try {
+        params = parseCognitiveAppViewRequest(view.method, params);
+      } catch {
+        throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
+      }
+    }
     const commandId =
-      cognitive &&
+      (cognitive || view) &&
       params &&
       typeof params === "object" &&
       "commandId" in params &&
@@ -105,7 +133,7 @@ export class LocalApplicationConnection {
         ? params.commandId
         : undefined;
     const assertNotAborted = () => {
-      if (cognitive && options.signal?.aborted)
+      if ((cognitive || view) && options.signal?.aborted)
         throw new ApplicationRequestError(
           408,
           "请求已取消；已提交的操作不会回滚。",
@@ -133,6 +161,18 @@ export class LocalApplicationConnection {
           reply.error.code,
           reply.error.commandId,
         );
+      if (view) {
+        try {
+          return parseCognitiveAppViewResponse(view.method, reply.value);
+        } catch {
+          throw new ApplicationRequestError(
+            503,
+            "窗口响应不符合固定契约。",
+            "contract",
+            commandId,
+          );
+        }
+      }
       return reply.value;
     } finally {
       options.signal?.removeEventListener("abort", abort);
@@ -144,10 +184,28 @@ export class LocalApplicationConnection {
     try {
       const request = invocationSchema.parse(raw);
       const cognitive = cognitiveAppApplicationRoute(request.method);
+      const view = cognitiveAppViewApplicationRoute(request.method);
       if (cognitive) {
         try {
           request.params = parseCognitiveAppRequest(
             cognitive.method,
+            request.params,
+          );
+        } catch {
+          throw new DomainError("invalid", "请求格式无效。");
+        }
+        if (
+          request.params &&
+          typeof request.params === "object" &&
+          "commandId" in request.params &&
+          typeof request.params.commandId === "string"
+        )
+          commandId = request.params.commandId;
+      }
+      if (view) {
+        try {
+          request.params = parseCognitiveAppViewRequest(
+            view.method,
             request.params,
           );
         } catch {

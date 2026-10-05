@@ -2,6 +2,7 @@
 // Both hosts call the same business layer; only their transport adapters differ.
 import { z } from "zod";
 import type { CognitiveAppMethod } from "./cognitive-app-api.js";
+import { cognitiveAppViewApplicationMethods } from "./cognitive-app-view-methods.js";
 
 /** Exact public facade ingress. Host-only capabilities never enter this map. */
 export const cognitiveAppApplicationMethods = [
@@ -94,6 +95,7 @@ export const runtimeNavigationRequestSchema = z
 
 export const applicationMethods = [
   ...cognitiveAppApplicationMethods,
+  ...cognitiveAppViewApplicationMethods,
   "platform.bootstrap",
   "profile.read",
   "profile.update",

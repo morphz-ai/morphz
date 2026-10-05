@@ -949,12 +949,17 @@ export async function openApplicationDomainsHost(
     cognitiveHost = createCognitiveAppHost({
       tenantId,
       platform,
+      viewPlatform: platform,
       ...(uiPackages ? { uiPackages } : {}),
       ...(options.cognitiveApps ? { config: options.cognitiveApps } : {}),
     });
     cognitiveHost.start();
     return {
-      cognitiveApps: { authority: human, service: cognitiveHost.service },
+      cognitiveApps: {
+        authority: human,
+        service: cognitiveHost.service,
+        views: cognitiveHost.views,
+      },
       workspaceChanges: {
         sources: [platform.changeSource(), contentObjects.changeSource(), contentBrowser.changeSource(), contentReader.changeSource(),
           contentStudio.changeSource()],

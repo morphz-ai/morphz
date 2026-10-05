@@ -28,6 +28,7 @@ import {
 import type { WorkspaceStore } from "../../../packages/application/src/store.js";
 import type { AgentTools } from "../../../packages/application/src/agent-tools.js";
 import { cognitiveAppApplicationRoutes } from "../../../packages/core/src/application-api.js";
+import { cognitiveAppViewApplicationRoutes } from "../../../packages/core/src/cognitive-app-view-methods.js";
 
 async function body(req: IncomingMessage, limit: number) {
   const chunks: Buffer[] = [];
@@ -1394,6 +1395,26 @@ export function createAppServer(
                 req,
                 route.method === "install" ? 8 * 1024 * 1024 : 512 * 1024,
               ),
+            ),
+          );
+          return;
+        }
+        if (url.pathname.startsWith("/api/platform/cognitive-app-views/")) {
+          const route = Object.values(cognitiveAppViewApplicationRoutes).find(
+            (entry) => entry.path === url.pathname,
+          );
+          if (!route) throw new DomainError("not_found", "接口不存在。");
+          platformQuery(url, []);
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.cognitiveAppView(
+              route.method,
+              await cognitiveJsonBody(req, 512 * 1024),
             ),
           );
           return;

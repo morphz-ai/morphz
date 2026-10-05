@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：独立 Human 窗口公共入口
+
+六个 `cognitive-app-views.*` logical 方法使用独立固定映射，公开到同一
+Application／Local／HTTP／Remote 与 typed renderer client。窗口 facade
+在同一个 domains Host 取得显式、同一 Platform 的 presentation ports，
+沿原 pending／关闭生命周期；业务十方法与作者 Browser 八方法不变。
+入参在任何身份／SQL await 前快照，实际 HPA 与回包身份继续复核；
+失败、取消、代次切换保留原有效 commandId，不重发或把取消当回滚。
+
+UI read 通过真实原包 Store 和授权门，独立 8 MiB JSON carrier 不挤掉
+原 1,000,000 UTF-8 字节 HTML；按 chunk 限界、fatal UTF-8、固定 JSON
+类型及读取中代次／abort 检查。不新增 Desktop HTTP 或资源／iframe 路由。
+
+Root 全文复核十四路径及冻结指纹，独立正式十三文件回归 176/176，
+required PostgreSQL，零失败／取消／跳过；全工程类型检查通过。日志
+`/tmp/morphz-cognitive-view-ROOT-C2A-FROZEN-oct05.log` 和
+`/tmp/morphz-cognitive-C2A-ROOT-types-ACCEPTED-oct05.log`。独立源码保护
+检查确认三十份既有完整文件与六段成熟代码未变，原业务十方法、SDK、
+旧窗口／资源和既有测试未删除或弱化。
+
+新三十六项中，二十八项实际运行隔离双 SQL、IdentityCenter／HPA、
+Local／HTTP／Remote 和 Managed UI Store；八项明确为 preload-shaped
+及 Response stream UNIT，不冒称原生 Electron 验收。连接 setup proof
+是明确夹具，不是作者网络验证。早期真实缺入口 RED、后续流夹具的路径
+与预取错误保留在 `/tmp/morphz-cognitive-view-c2a.xg3M8p/`。
+认证资源、实际 iframe 和原 App 接线仍待完成，用户视觉与资料未修改。
+
 ## 2026-10-05 第三方认知应用：真实 Rust Agent 输入链与启动接线
 
 Desktop 初始／后绑定及 Web RuntimeAgentTools 注入同一既有认知业务

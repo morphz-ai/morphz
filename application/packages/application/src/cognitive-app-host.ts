@@ -20,6 +20,16 @@ import {
   type CognitiveAppRecoveryWake,
 } from "./cognitive-app-recovery.js";
 import type { UiPackageService } from "./ui-package-service.js";
+import {
+  createCognitiveAppViewService,
+  type CognitiveAppViewPlatform,
+  type CognitiveAppViewService,
+} from "./cognitive-app-view-service.js";
+import {
+  parseCognitiveAppViewRequest,
+  type CognitiveAppViewMethod,
+  type CognitiveAppViewRequestMap,
+} from "../../core/src/cognitive-app-view-api.js";
 
 /** Trusted Host operator input. Never exposed through a public request/schema. */
 export type CognitiveAppHostOptions = {
@@ -36,9 +46,13 @@ export type CognitiveAppHostOptions = {
 export function createCognitiveAppHost(options: {
   tenantId: string;
   platform: CognitiveAppServicePlatform;
+  viewPlatform?: CognitiveAppViewPlatform;
   uiPackages?: UiPackageService;
   config?: CognitiveAppHostOptions;
 }) {
+  // Trusted presentation ports must address the same authoritative Platform.
+  if (options.viewPlatform && options.viewPlatform !== options.platform)
+    throw new CognitiveAppServiceError("unavailable");
   const unavailable = () => {
     throw new CognitiveAppBindingsError();
   };
@@ -225,8 +239,45 @@ export function createCognitiveAppHost(options: {
     commandStatus: (actor, input) => call("commandStatus", actor, input),
     recover: (actor, input) => call("recover", actor, input),
   };
+  const originalViews = options.viewPlatform
+    ? createCognitiveAppViewService({
+        platform: options.viewPlatform,
+        ...(options.uiPackages ? { uiPackages: options.uiPackages } : {}),
+      })
+    : undefined;
+  function callView<K extends CognitiveAppViewMethod>(
+    method: K,
+    actor: PlatformActor,
+    input: unknown,
+  ): ReturnType<CognitiveAppViewService[K]> {
+    let request: CognitiveAppViewRequestMap[K];
+    try {
+      request = parseCognitiveAppViewRequest(method, input);
+    } catch {
+      return Promise.reject(
+        new CognitiveAppServiceError("invalid"),
+      ) as ReturnType<CognitiveAppViewService[K]>;
+    }
+    const commandId = "commandId" in request ? request.commandId : undefined;
+    return track<unknown>(() => {
+      if (!originalViews)
+        throw new CognitiveAppServiceError("unavailable", commandId);
+      return originalViews[method](actor, request);
+    }, commandId) as ReturnType<CognitiveAppViewService[K]>;
+  }
+  const views: CognitiveAppViewService | undefined = originalViews
+    ? {
+        launch: (actor, input) => callView("launch", actor, input),
+        bind: (actor, input) => callView("bind", actor, input),
+        read: (actor, input) => callView("read", actor, input),
+        readUi: (actor, input) => callView("readUi", actor, input),
+        save: (actor, input) => callView("save", actor, input),
+        close: (actor, input) => callView("close", actor, input),
+      }
+    : undefined;
   return {
     service,
+    views,
     start: () => recovery.start(),
     /** Host-only lifecycle trigger. Public explicit recovery stays scoped to
      * its already-authorized original command through Service.recover. */

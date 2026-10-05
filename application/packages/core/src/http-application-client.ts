@@ -6,6 +6,17 @@ import {
   type ApplicationCallOptions as CallOptions,
 } from "./application-api.js";
 import { parseCognitiveAppRequest } from "./cognitive-app-api.js";
+import {
+  parseCognitiveAppViewRequest,
+  parseCognitiveAppViewResponse,
+  type CognitiveAppViewMethod,
+} from "./cognitive-app-view-api.js";
+import {
+  cognitiveAppViewApplicationRoute,
+  type CognitiveAppViewApplicationMethod,
+  type CognitiveAppViewApplicationRequest,
+  type CognitiveAppViewApplicationResponse,
+} from "./cognitive-app-view-methods.js";
 export { ApplicationRequestError } from "./application-api.js";
 export type { ApplicationCallOptions as CallOptions } from "./application-api.js";
 
@@ -41,6 +52,51 @@ const contentPathId = (value: unknown) => {
   return encodeURIComponent(value);
 };
 
+/** Only new window replies use this fixed bounded UTF-8 carrier. Legacy/domain
+ * HTTP response semantics stay unchanged; UI HTML retains its own 1 MB limit. */
+async function viewResponse(
+  response: Response,
+  method: CognitiveAppViewMethod,
+  active: () => void,
+) {
+  if (
+    !/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(
+      response.headers.get("content-type") ?? "",
+    )
+  )
+    throw new Error("Invalid window response.");
+  const limit = method === "readUi" ? 8 * 1024 * 1024 : 512 * 1024;
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Missing window response.");
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      active();
+      const chunk = await reader.read();
+      active();
+      if (chunk.done) break;
+      bytes += chunk.value.byteLength;
+      if (bytes > limit) throw new Error("Window response exceeds carrier.");
+      chunks.push(chunk.value);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  active();
+  return parseCognitiveAppViewResponse(
+    method,
+    JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)),
+  );
+}
+
 /** HTTP is one adapter for logical application calls, used by Web and remote Desktop. */
 export class HttpApplicationClient {
   private epoch = 0;
@@ -48,16 +104,42 @@ export class HttpApplicationClient {
     private origin = "",
     private request: typeof fetch = (...args) => globalThis.fetch(...args),
   ) {}
+  call<M extends CognitiveAppViewApplicationMethod>(
+    method: M,
+    params: CognitiveAppViewApplicationRequest<M>,
+    options?: CallOptions,
+  ): Promise<CognitiveAppViewApplicationResponse<M>>;
+  call(
+    method: ApplicationMethod,
+    params?: unknown,
+    options?: CallOptions,
+  ): Promise<unknown>;
   async call(
     method: ApplicationMethod,
     params?: unknown,
     options: CallOptions = {},
   ): Promise<unknown> {
     const cognitive = cognitiveAppApplicationRoute(method);
+    const view = cognitiveAppViewApplicationRoute(method);
+    const guarded = cognitive || view;
     let originalCommandId: string | undefined;
     if (cognitive) {
       try {
         params = parseCognitiveAppRequest(cognitive.method, params);
+      } catch {
+        throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
+      }
+      if (
+        params &&
+        typeof params === "object" &&
+        "commandId" in params &&
+        typeof params.commandId === "string"
+      )
+        originalCommandId = params.commandId;
+    }
+    if (view) {
+      try {
+        params = parseCognitiveAppViewRequest(view.method, params);
       } catch {
         throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
       }
@@ -87,6 +169,15 @@ export class HttpApplicationClient {
       }
     };
     switch (method) {
+      case "cognitive-app-views.launch":
+      case "cognitive-app-views.bind":
+      case "cognitive-app-views.read":
+      case "cognitive-app-views.read-ui":
+      case "cognitive-app-views.save":
+      case "cognitive-app-views.close":
+        path = view!.path;
+        post(params);
+        break;
       case "cognitive-apps.list":
       case "cognitive-apps.describe":
       case "cognitive-apps.install":
@@ -800,7 +891,7 @@ export class HttpApplicationClient {
     // In a browser Origin is managed by the browser; a trusted native remote adapter supplies it explicitly.
     if (verb === "POST" && this.origin) headers.Origin = this.origin;
     try {
-      if (cognitive && options.signal?.aborted)
+      if (guarded && options.signal?.aborted)
         throw new ApplicationRequestError(
           408,
           "请求已取消；已提交的操作不会回滚。",
@@ -816,7 +907,7 @@ export class HttpApplicationClient {
         redirect: "error",
         cache: "no-store",
       });
-      if (cognitive && options.signal?.aborted)
+      if (guarded && options.signal?.aborted)
         throw new ApplicationRequestError(
           408,
           "请求已取消；已提交的操作不会回滚。",
@@ -838,7 +929,7 @@ export class HttpApplicationClient {
           if (typeof failure?.message === "string") message = failure.message;
           if (typeof failure?.code === "string") code = failure.code;
         } catch {}
-        if (cognitive && options.signal?.aborted)
+        if (guarded && options.signal?.aborted)
           throw new ApplicationRequestError(
             408,
             "请求已取消；已提交的操作不会回滚。",
@@ -859,15 +950,38 @@ export class HttpApplicationClient {
           originalCommandId,
         );
       }
-      const value: unknown = avatarBytes
-        ? {
-            bytes: new Uint8Array(await response.arrayBuffer()),
-            mime: response.headers.get("Content-Type"),
-          }
-        : wav
-          ? new Uint8Array(await response.arrayBuffer())
-          : await response.json();
-      if (cognitive && options.signal?.aborted)
+      const receiveView = async () => {
+        try {
+          return await viewResponse(response, view!.method, () => {
+            if (options.signal?.aborted || epoch !== this.epoch)
+              throw new ApplicationRequestError(
+                408,
+                "身份或请求已改变；旧响应已丢弃。",
+                "cancelled",
+                originalCommandId,
+              );
+          });
+        } catch (error) {
+          if (error instanceof ApplicationRequestError) throw error;
+          throw new ApplicationRequestError(
+            503,
+            "窗口响应不符合固定契约。",
+            "contract",
+            originalCommandId,
+          );
+        }
+      };
+      const value: unknown = view
+        ? await receiveView()
+        : avatarBytes
+          ? {
+              bytes: new Uint8Array(await response.arrayBuffer()),
+              mime: response.headers.get("Content-Type"),
+            }
+          : wav
+            ? new Uint8Array(await response.arrayBuffer())
+            : await response.json();
+      if (guarded && options.signal?.aborted)
         throw new ApplicationRequestError(
           408,
           "请求已取消；已提交的操作不会回滚。",
@@ -883,7 +997,7 @@ export class HttpApplicationClient {
         );
       return value;
     } catch (error) {
-      if (!cognitive || error instanceof ApplicationRequestError) throw error;
+      if (!guarded || error instanceof ApplicationRequestError) throw error;
       throw new ApplicationRequestError(
         options.signal?.aborted ? 408 : 503,
         options.signal?.aborted

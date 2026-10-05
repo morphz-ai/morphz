@@ -357,8 +357,16 @@ Service adapter。示例通过打包后的公开导出接入，自己的数据�
 六方法 Human 窗口 facade 已实现并独立验证：同步严格 DTO、原 mutation
 receipt、双 CAS 及 actual Store 字节授权门。Root 七文件 86/86、真实
 required PostgreSQL、零跳过；全工程类型检查通过。该阶段仅是后端
-生命周期，未接 public ingress 或执行 iframe。以下其他部分仍为实施
-约束，不是 GUI 已经完成的证明。
+生命周期，不是执行 iframe。独立 Human 公共入口现已接入：固定六个
+`cognitive-app-views.launch/bind/read/read-ui/save/close` 方法，HTTP 均为
+`POST /api/platform/cognitive-app-views/<suffix>`，沿原 cookie／Origin／
+CSRF 与无额外 query 规则。Local、HTTP、Remote、typed renderer 复用
+同一 facade；不把窗口方法加到业务十方法或作者 Browser 八方法中。
+UI read 的成功 JSON 有独立 8 MiB 有界 UTF-8 carrier，原 HTML 的
+1,000,000 字节上限不变。Root 十三文件 176/176、required PostgreSQL、
+零跳过及全工程类型检查通过；新二十八项实际双 SQL 与 Managed Store，
+八项为明确传输 UNIT。authenticated resource、iframe 及导航／草稿仍
+待接入；以下其他部分仍为实施约束，不是 GUI 完成证明。
 
 | 边界 | 最小职责 | 保持的既有行为 |
 | --- | --- | --- |

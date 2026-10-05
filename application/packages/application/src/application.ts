@@ -149,11 +149,19 @@ import {
   CognitiveAppServiceError,
   type CognitiveAppService,
 } from "./cognitive-app-service.js";
+import {
+  parseCognitiveAppViewRequest,
+  parseCognitiveAppViewResponse,
+  type CognitiveAppViewMethod,
+} from "../../core/src/cognitive-app-view-api.js";
+import { cognitiveAppViewApplicationRoute } from "../../core/src/cognitive-app-view-methods.js";
+import type { CognitiveAppViewService } from "./cognitive-app-view-service.js";
 
 export type ApplicationOptions = {
   cognitiveApps?: {
     authority: HumanPlatformAuthority;
     service: CognitiveAppService;
+    views?: CognitiveAppViewService;
   };
   /** Trusted Host capabilities, never accepted from a Client/Agent request. */
   workspaceChanges?: {
@@ -659,6 +667,46 @@ export class ApplicationSession {
       );
       this.active();
       return result;
+    } catch (error) {
+      if (error instanceof CognitiveAppServiceError)
+        throw new CognitiveAppServiceError(
+          error.reason,
+          commandId ?? error.commandId,
+        );
+      if (error instanceof DomainError || error instanceof PlatformStorageError)
+        throw new CognitiveAppServiceError(error.code, commandId);
+      throw new CognitiveAppServiceError("unavailable", commandId);
+    }
+  }
+  async cognitiveAppView(method: CognitiveAppViewMethod, raw: unknown) {
+    let commandId: string | undefined;
+    try {
+      let request;
+      try {
+        request = parseCognitiveAppViewRequest(method, raw);
+      } catch {
+        throw new CognitiveAppServiceError("invalid");
+      }
+      if ("commandId" in request) commandId = request.commandId;
+      this.active();
+      const domain = this.options.cognitiveApps;
+      if (!domain?.views)
+        throw new CognitiveAppServiceError("unavailable", commandId);
+      const views = domain.views;
+      const result = await domain.authority.withSession<unknown>(
+        this.access,
+        () => this.active(),
+        (actor) => {
+          this.active();
+          return views[method](actor, request);
+        },
+      );
+      this.active();
+      try {
+        return parseCognitiveAppViewResponse(method, result);
+      } catch {
+        throw new CognitiveAppServiceError("contract", commandId);
+      }
     } catch (error) {
       if (error instanceof CognitiveAppServiceError)
         throw new CognitiveAppServiceError(
@@ -3586,6 +3634,8 @@ export function invokeApplication(
 ) {
   const cognitive = cognitiveAppApplicationRoute(method);
   if (cognitive) return session.cognitiveApp(cognitive.method, params);
+  const view = cognitiveAppViewApplicationRoute(method);
+  if (view) return session.cognitiveAppView(view.method, params);
   switch (method) {
     case "platform.bootstrap":
       return session.platformBootstrap(identityGeneration);

@@ -9,6 +9,13 @@ import {
   type ApplicationCallOptions,
 } from "../../packages/core/src/application-api.js";
 import { parseCognitiveAppRequest } from "../../packages/core/src/cognitive-app-api.js";
+import { parseCognitiveAppViewRequest } from "../../packages/core/src/cognitive-app-view-api.js";
+import {
+  cognitiveAppViewApplicationRoute,
+  type CognitiveAppViewApplicationMethod,
+  type CognitiveAppViewApplicationRequest,
+  type CognitiveAppViewApplicationResponse,
+} from "../../packages/core/src/cognitive-app-view-methods.js";
 import { HttpApplicationClient } from "../../packages/core/src/http-application-client.js";
 import {
   conversationFrameSchema,
@@ -52,12 +59,23 @@ export class RemoteApplicationConnection {
   ) {
     this.client = new HttpApplicationClient(origin, request);
   }
+  call<M extends CognitiveAppViewApplicationMethod>(
+    method: M,
+    params: CognitiveAppViewApplicationRequest<M>,
+    options?: ApplicationCallOptions,
+  ): Promise<CognitiveAppViewApplicationResponse<M>>;
+  call(
+    method: ApplicationMethod,
+    params?: unknown,
+    options?: ApplicationCallOptions,
+  ): Promise<unknown>;
   async call(
     method: ApplicationMethod,
     params?: unknown,
     options: ApplicationCallOptions = {},
   ) {
     const cognitive = cognitiveAppApplicationRoute(method);
+    const view = cognitiveAppViewApplicationRoute(method);
     if (cognitive) {
       try {
         params = parseCognitiveAppRequest(cognitive.method, params);
@@ -65,8 +83,15 @@ export class RemoteApplicationConnection {
         throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
       }
     }
+    if (view) {
+      try {
+        params = parseCognitiveAppViewRequest(view.method, params);
+      } catch {
+        throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
+      }
+    }
     const commandId =
-      cognitive &&
+      (cognitive || view) &&
       params &&
       typeof params === "object" &&
       "commandId" in params &&
@@ -74,7 +99,7 @@ export class RemoteApplicationConnection {
         ? params.commandId
         : undefined;
     const assertNotAborted = () => {
-      if (cognitive && options.signal?.aborted)
+      if ((cognitive || view) && options.signal?.aborted)
         throw new ApplicationRequestError(
           408,
           "请求已取消；已提交的操作不会回滚。",
@@ -99,7 +124,7 @@ export class RemoteApplicationConnection {
         throw new ApplicationRequestError(
           reply.error.status,
           reply.error.message,
-          cognitive ? reply.error.code : undefined,
+          cognitive || view ? reply.error.code : undefined,
           reply.error.commandId,
         );
       return reply.value;
@@ -115,11 +140,29 @@ export class RemoteApplicationConnection {
     try {
       const request = requestSchema.parse(raw);
       const route = cognitiveAppApplicationRoute(request.method);
-      cognitive = route !== null;
+      const view = cognitiveAppViewApplicationRoute(request.method);
+      cognitive = route !== null || view !== null;
       if (route) {
         try {
           request.params = parseCognitiveAppRequest(
             route.method,
+            request.params,
+          );
+        } catch {
+          throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
+        }
+        if (
+          request.params &&
+          typeof request.params === "object" &&
+          "commandId" in request.params &&
+          typeof request.params.commandId === "string"
+        )
+          commandId = request.params.commandId;
+      }
+      if (view) {
+        try {
+          request.params = parseCognitiveAppViewRequest(
+            view.method,
             request.params,
           );
         } catch {

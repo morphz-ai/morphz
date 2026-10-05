@@ -4,6 +4,16 @@ import {
 } from "../../../packages/core/src/application-api.js";
 import { parseCognitiveAppRequest } from "../../../packages/core/src/cognitive-app-api.js";
 import {
+  parseCognitiveAppViewRequest,
+  parseCognitiveAppViewResponse,
+} from "../../../packages/core/src/cognitive-app-view-api.js";
+import {
+  cognitiveAppViewApplicationRoute,
+  type CognitiveAppViewApplicationMethod,
+  type CognitiveAppViewApplicationRequest,
+  type CognitiveAppViewApplicationResponse,
+} from "../../../packages/core/src/cognitive-app-view-methods.js";
+import {
   HttpApplicationClient,
   ApplicationRequestError,
   type CallOptions,
@@ -47,10 +57,26 @@ export async function applicationCall(
   options: CallOptions = {},
 ): Promise<unknown> {
   const cognitive = cognitiveAppApplicationRoute(method);
+  const view = cognitiveAppViewApplicationRoute(method);
+  const guarded = cognitive || view;
   let commandId: string | undefined;
   if (cognitive) {
     try {
       params = parseCognitiveAppRequest(cognitive.method, params);
+    } catch {
+      throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
+    }
+    if (
+      params &&
+      typeof params === "object" &&
+      "commandId" in params &&
+      typeof params.commandId === "string"
+    )
+      commandId = params.commandId;
+  }
+  if (view) {
+    try {
+      params = parseCognitiveAppViewRequest(view.method, params);
     } catch {
       throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
     }
@@ -70,7 +96,7 @@ export async function applicationCall(
       commandId,
     );
   const assertNotAborted = () => {
-    if (cognitive && options.signal?.aborted) throw cancelled();
+    if (guarded && options.signal?.aborted) throw cancelled();
     options.signal?.throwIfAborted();
   };
   assertNotAborted();
@@ -78,7 +104,7 @@ export async function applicationCall(
     throw new ApplicationRequestError(
       409,
       "身份正在切换，请稍后重试。",
-      cognitive ? "conflict" : undefined,
+      guarded ? "conflict" : undefined,
       commandId,
     );
   const changesIdentity = method === "login" || method === "logout";
@@ -105,7 +131,7 @@ export async function applicationCall(
         import("../../../packages/core/src/application-api.js").ApplicationReply
       >((resolve, reject) => {
         const abort = () => {
-          if (cognitive) {
+          if (guarded) {
             try {
               bridge.cancel(id);
             } catch {
@@ -146,7 +172,7 @@ export async function applicationCall(
     }
     assertNotAborted();
     if (epoch !== connectionEpoch) {
-      if (cognitive)
+      if (guarded)
         throw new ApplicationRequestError(
           408,
           "身份已切换，旧响应已丢弃。",
@@ -160,9 +186,21 @@ export async function applicationCall(
       identity = "disconnected";
       generation = "";
     }
+    if (view) {
+      try {
+        return parseCognitiveAppViewResponse(view.method, value);
+      } catch {
+        throw new ApplicationRequestError(
+          503,
+          "窗口响应不符合固定契约。",
+          "contract",
+          commandId,
+        );
+      }
+    }
     return value;
   } catch (error) {
-    if (!cognitive) throw error;
+    if (!guarded) throw error;
     if (options.signal?.aborted) throw cancelled();
     if (error instanceof ApplicationRequestError)
       throw new ApplicationRequestError(
@@ -183,6 +221,20 @@ export async function applicationCall(
       connectionEpoch++;
     }
   }
+}
+
+/** Typed presentation client; the mature general function's contextual type
+ * remains unchanged for existing consumers and interaction-owner ports. */
+export function cognitiveAppViewCall<
+  M extends CognitiveAppViewApplicationMethod,
+>(
+  method: M,
+  params: CognitiveAppViewApplicationRequest<M>,
+  options?: CallOptions,
+): Promise<CognitiveAppViewApplicationResponse<M>> {
+  return applicationCall(method, params, options) as Promise<
+    CognitiveAppViewApplicationResponse<M>
+  >;
 }
 
 /** The formal exchange and execution inspector share the Platform Session stream. */

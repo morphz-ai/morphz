@@ -94,8 +94,15 @@ function publicMetadata(
 }
 /** Six Human-only presentation methods. No guest operation, new registry,
  * lifecycle scheduler, transport, authority construction or business write. */
+export type CognitiveAppViewPlatform = Pick<
+  PlatformStore,
+  | "launchCognitiveAppView"
+  | "bindCognitiveAppView"
+  | "readCognitiveAppView"
+  | "changeCognitiveAppView"
+>;
 export function createCognitiveAppViewService(options: {
-  platform: PlatformStore;
+  platform: CognitiveAppViewPlatform;
   uiPackages?: UiPackageService;
 }) {
   const { platform, uiPackages } = options;
