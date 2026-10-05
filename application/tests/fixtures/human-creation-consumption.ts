@@ -86,6 +86,19 @@ export const humanCreationFixed = {
 } as const;
 
 const componentModule = "./features/creation/CreateDialog.js";
+// Current delivery metadata adds two scoped methods; the frozen Git 778
+// definition above and historical verifier remain unchanged. This is a finite
+// recipe, not permission to alter creation's original read/write/remove paths.
+const currentScopedStorageDefinition = `export function scopedStorage(scope = localScope) {
+  return {
+    readLocal: <T>(key: string, fallback: T) => readLocal(key, fallback, scope),
+    readLocalStrict: (key: string) => readLocalStrict(key, scope),
+    writeLocal: (key: string, value: unknown) => writeLocal(key, value, scope),
+    removeLocal: (key: string) => removeLocal(key, scope),
+    removeLocalStrict: (key: string, matches: (value: unknown) => boolean) =>
+      removeLocalStrict(key, matches, scope),
+  };
+}`;
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 assert.equal(
@@ -676,7 +689,7 @@ export function verifyCurrentHumanCreationConsumption(
     Client: clientText,
     Storage: storageText,
     Runtime:
-      humanCreationFixed.runtime.scopedStorageDefinition +
+      currentScopedStorageDefinition +
       "\n" +
       humanCreationFixed.runtime.draftKeyDefinition,
   });
@@ -853,7 +866,7 @@ export function verifyCurrentHumanCreationConsumption(
     storage,
     oneFunction(runtime, "scopedStorage"),
     runtime,
-    "same original scoped storage definition",
+    "same reviewed current scoped storage definition with unchanged creation paths",
   );
   const key = storage.source.statements
     .filter(isVariableStatement)

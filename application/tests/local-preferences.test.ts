@@ -165,3 +165,94 @@ test("durable delivery requires the actual existing window owner without rewriti
     else Reflect.deleteProperty(globalThis, "sessionStorage");
   }
 });
+
+test("strict cleanup validates both prefixes before removal, retaining hidden foreign attempts", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const storage = new MemoryStorage();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: storage,
+  });
+  const canonical = `${applicationStoragePrefix}center:human:retry`;
+  const legacy = `${legacyApplicationStoragePrefix}center:human:retry`;
+  const own = scopedStorage("center:human");
+  const match = (value: unknown) =>
+    JSON.stringify(value) === '{"id":"original"}';
+  try {
+    own.removeLocalStrict("retry", match);
+    for (const foreign of ['{"id":"other"}', "null", "{broken"]) {
+      storage.setItem(canonical, '{"id":"original"}');
+      storage.setItem(legacy, foreign);
+      assert.throws(() => own.removeLocalStrict("retry", match));
+      assert.equal(storage.getItem(canonical), '{"id":"original"}');
+      assert.equal(storage.getItem(legacy), foreign);
+    }
+    storage.setItem(legacy, '{"id":"original"}');
+    storage.setItem(
+      `${applicationStoragePrefix}other:human:retry`,
+      '{"id":"other"}',
+    );
+    storageScope("other", "human");
+    own.removeLocalStrict("retry", match);
+    assert.equal(storage.getItem(canonical), null);
+    assert.equal(storage.getItem(legacy), null);
+    assert.equal(
+      storage.getItem(`${applicationStoragePrefix}other:human:retry`),
+      '{"id":"other"}',
+    );
+    storage.setItem(legacy, '{"id":"original"}');
+    own.removeLocalStrict("retry", match);
+    assert.equal(storage.getItem(legacy), null);
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+    storageScope("disconnected", "anonymous");
+  }
+});
+
+test("strict cleanup rechecks original bytes and surfaces IO failures without clearing a replacement", () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const storage = new MemoryStorage();
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: storage,
+  });
+  const key = `${applicationStoragePrefix}center:human:retry`;
+  const legacy = `${legacyApplicationStoragePrefix}center:human:retry`;
+  const own = scopedStorage("center:human");
+  try {
+    storage.setItem(key, '{"id":"original"}');
+    assert.throws(
+      () =>
+        own.removeLocalStrict("retry", () => {
+          storage.setItem(key, '{"id":"replacement"}');
+          return true;
+        }),
+      /另一操作/,
+    );
+    assert.equal(storage.getItem(key), '{"id":"replacement"}');
+    storage.setItem(key, '{"id":"original"}');
+    storage.setItem(legacy, '{"id":"original"}');
+    const originalRemove = storage.removeItem.bind(storage);
+    storage.removeItem = (storageKey) => {
+      if (storageKey === legacy) throw new Error("cleanup unavailable");
+      originalRemove(storageKey);
+    };
+    assert.throws(
+      () => own.removeLocalStrict("retry", () => true),
+      /cleanup unavailable/,
+    );
+    assert.equal(storage.getItem(key), null);
+    assert.equal(storage.getItem(legacy), '{"id":"original"}');
+    storage.getItem = () => {
+      throw new Error("read unavailable");
+    };
+    assert.throws(
+      () => own.removeLocalStrict("retry", () => true),
+      /read unavailable/,
+    );
+  } finally {
+    if (previous) Object.defineProperty(globalThis, "localStorage", previous);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  }
+});

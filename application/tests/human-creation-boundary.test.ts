@@ -64,6 +64,35 @@ function rejected(
 test("current Human: actual raw owner, two guarded consumers and defining storage values", () => {
   verifyCurrentHumanCreationConsumption(app, feature, client, storage);
 });
+test("current Human: reviewed strict metadata extensions keep both delegates and all original creation paths scoped", () => {
+  const mutations = [
+    [
+      "readLocalStrict: (key: string) => readLocalStrict(key, scope),",
+      "readLocalStrict: (key: string) => readLocalStrict(key),",
+    ],
+    [
+      "readLocalStrict: (key: string) => readLocalStrict(key, scope),",
+      "readLocalStrict: (key: string) => readLocal(key, null, scope),",
+    ],
+    ["readLocalStrict: (key: string) => readLocalStrict(key, scope),", ""],
+    [
+      "removeLocalStrict(key, matches, scope),",
+      "removeLocalStrict(key, matches),",
+    ],
+    ["removeLocalStrict(key, matches, scope),", "removeLocal(key, scope),"],
+    ["readLocal(key, fallback, scope),", "readLocal(key, fallback),"],
+    ["writeLocal(key, value, scope),", "writeLocal(key, value),"],
+    ["removeLocal: (key: string) => removeLocal(key, scope),", ""],
+  ];
+  for (const [before, after] of mutations)
+    rejected(
+      app,
+      feature,
+      /same reviewed current scoped storage definition with unchanged creation paths/,
+      client,
+      changed(storage, before!, after!),
+    );
+});
 test("current Human creation consumes the sole same-name runtime import, not a copy or local shadow", () => {
   const shadow = changed(
     app,

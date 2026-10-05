@@ -50,12 +50,42 @@ export function removeLocal(key: string, scope = localScope) {
   localStorage.removeItem(legacyApplicationStoragePrefix + scope + ":" + key);
 }
 
+/** Only clear matching delivery metadata in either supported prefix. Validate
+ * every present copy before removing any; a hidden legacy attempt is not part
+ * of a different canonical ACK. Storage is not a cross-window atomic CAS. */
+export function removeLocalStrict(
+  key: string,
+  matches: (value: unknown) => boolean,
+  scope = localScope,
+): void {
+  const keys = [applicationStoragePrefix, legacyApplicationStoragePrefix].map(
+    (prefix) => prefix + scope + ":" + key,
+  );
+  const copies = keys.map((storageKey) => ({
+    key: storageKey,
+    raw: localStorage.getItem(storageKey),
+  }));
+  const changed = () =>
+    new Error("本机重试记录已被另一操作修改，未清理该记录。");
+  for (const copy of copies)
+    if (copy.raw !== null && !matches(JSON.parse(copy.raw) as unknown))
+      throw changed();
+  for (const copy of copies)
+    if (localStorage.getItem(copy.key) !== copy.raw) throw changed();
+  for (const copy of copies) {
+    if (localStorage.getItem(copy.key) !== copy.raw) throw changed();
+    if (copy.raw !== null) localStorage.removeItem(copy.key);
+  }
+}
+
 export function scopedStorage(scope = localScope) {
   return {
     readLocal: <T>(key: string, fallback: T) => readLocal(key, fallback, scope),
     readLocalStrict: (key: string) => readLocalStrict(key, scope),
     writeLocal: (key: string, value: unknown) => writeLocal(key, value, scope),
     removeLocal: (key: string) => removeLocal(key, scope),
+    removeLocalStrict: (key: string, matches: (value: unknown) => boolean) =>
+      removeLocalStrict(key, matches, scope),
   };
 }
 

@@ -186,6 +186,7 @@ function harness(lane: Lane) {
     return {
       readLocal: <T>(_key: string, fallback: T) => fallback,
       readLocalStrict: () => ({ found: false }),
+      removeLocalStrict: () => {},
       writeLocal: (key: string, value: unknown) => {
         events.push(["preferenceWrite", key, value]);
       },

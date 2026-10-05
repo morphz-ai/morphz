@@ -1,5 +1,31 @@
 # 桌面能力实施记录
 
+## 2026-10-05 本机重试记录的严格清理
+
+复现当前前缀遮住旧兼容前缀时，安装 ACK 可能误删另一条重试记录。
+共享清理端口现先核验两个前缀的所有现存记录，写前复读原始字节；
+损坏、替换和存储失败均明确报错，不删除别人的记录。安装与连接借用
+同一端口，原宽容偏好读取、普通清理和草稿写入保持不变。本机存储不
+提供跨窗口原子 CAS，第二次删除失败仍可能留下另一份原记录，不能
+把局部清理失败说成业务提交失败或自动重发。
+
+Root 正式三文件 42/42，扩大到五文件 88/88，required PostgreSQL
+入口，零失败、取消与跳过；七文件专项格式和全工程类型检查通过。日志
+`/tmp/morphz-cognitive-strict-cleanup-ROOT-ACCEPTED-oct05.log`、
+`/tmp/morphz-cognitive-strict-cleanup-ROOT-ADJACENT-SECOND-oct05.log` 和
+`/tmp/morphz-cognitive-strict-cleanup-ROOT-FORMAT-oct05.log`、
+`/tmp/morphz-cognitive-connect-ROOT-TYPES-SECOND-oct05.log`。
+真实误删反例保留于 `/tmp/morphz-installation-cleanup-ROOT-RED-oct05.log`。
+这些新测试运行生产 bundle、WebCrypto 和受控存储，没有实际 SQL 或
+native IPC；required PostgreSQL 入口不是数据库写入验收。
+
+扩大首轮的四项失败属于旧当前创建夹具固定了原三方法定义，日志
+`/tmp/morphz-cognitive-strict-cleanup-ROOT-ADJACENT-oct05.log`。
+现仅为当前有限 recipe 补上已验证的两个严格方法，保留原三条草稿
+路径、冻结历史检查和原拒绝反例；新增八个错误 scope、宽容替代及
+遗漏方法的拒绝变体。本阶段不提交仍在接线的管理界面，也不证明
+第三方 GUI 或用户原 App 已验收。
+
 ## 2026-10-05 原件消费守门夹具的当前输入包装器
 
 已提交的当前 App 以认知原件保护包装器借用原八命令草稿 owner，旧夹具

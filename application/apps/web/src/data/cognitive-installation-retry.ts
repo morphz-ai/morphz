@@ -100,7 +100,11 @@ export async function prepareCognitiveInstallation(
       if (
         retryIdentity(current.value, requestSha).commandId === pending.commandId
       )
-        storage.removeLocal(key);
+        storage.removeLocalStrict(
+          key,
+          (value) =>
+            retryIdentity(value, requestSha).commandId === pending.commandId,
+        );
     },
   };
 }

@@ -613,6 +613,33 @@ test("actual installation retry leaf: fixed identity, strict persistence and exa
   );
 
   await t.test(
+    "ACK never erases a different hidden legacy attempt under the same full-request key",
+    async () => {
+      const env = windowModule();
+      const prepared = await env.prepare(register());
+      const record = onlyRecord(env.local);
+      const legacy = record.key.replace(
+        applicationStoragePrefix,
+        legacyApplicationStoragePrefix,
+      );
+      const other = JSON.stringify({
+        ...record.value,
+        commandId: "other_legacy",
+      });
+      env.local.values.set(legacy, other);
+      assert.throws(() => prepared.acknowledge(), /另一操作/);
+      assert.equal(
+        env.local.values.get(record.key),
+        JSON.stringify(record.value),
+      );
+      assert.equal(env.local.values.get(legacy), other);
+      env.local.values.set(legacy, JSON.stringify(record.value));
+      prepared.acknowledge();
+      assert.equal(env.local.length, 0);
+    },
+  );
+
+  await t.test(
     "cleanup failure is a distinct synchronous error and retains the original retry identity after real ACK",
     async () => {
       const env = windowModule();
