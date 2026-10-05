@@ -1,5 +1,35 @@
 # 桌面能力实施记录
 
+## 2026-10-06 原用户中心备份与 schema-only 副本升级审计
+
+原 App 安全恢复前，已独立在线备份十二个原数据库并逐库做完整性、FK、
+字段／键集／行数／完整行 digest 基线；另复制中心原文件、原客户端资料、
+Runtime 工作目录和启动配置。源只读，不 checkpoint、停止 Runtime 或
+执行测试业务；原 App／Runtime 的 PID、start、executable 在前后相同。
+各 SQLite 快照一致，但不是跨数据库同一原子时刻；仍运行的 profile 原
+文件复制仅 best-effort，四十三个 opaque draft/storage 文件 SHA 不等于
+逐项逻辑草稿解码证明。私有备份保持 0700 目录／0600 文件，不提交原数据。
+
+另以全新私有目录、COPYFILE_EXCL 只复制审批快照的 Platform／Workspace。
+脚本先复现原 manifest 的六十二张表全部字段、主键、行数和 typed full-row
+digest，随后只在副本调用生产 Store 的 schema 初始化；不打开原库，甚至
+不为备份快照创建 SQLite 句柄，不启动 Host／Application／Center／Runtime。
+Workspace 19→21、原 UUID 不变；Platform 10→12。六十一张原业务表及
+sqlite_sequence 全部精确不变，另一表只有 schema marker 更新；新增七张
+认知表为空，真实注册派生集合也为空，四项 authority verifier 调用数为零。
+前后原 App／Runtime 身份及审批 manifest／快照 hash 保持。
+
+Root 完整冷审、实际执行的成功日志为
+`/tmp/morphz-schema-copy-audit-ROOT-THIRD-oct06.log`，私有回执 SHA-256 为
+`a05cb6e2f10d6edcef54408c2b8f5d32c3947c476dc4dca66b93d5edf55a4002`。
+首轮外部脚本缺 ESM 上下文、第二轮 Node SQLite null-prototype 行对象与普通
+期望对象比较失败的原日志和副本均保留；后者尚未运行初始化。修正仅增加
+私有 module 配置、以原字段 spread 归一查询对象，并在新目录重新审计。
+没有删除数据断言、覆盖失败、改迁移或把脚本错误归因数据库环境。
+
+这不是原中心已经升级、原 App 已恢复、在途工作连续性或跨库原子恢复证明。
+复制副本的最终主文件 hash 也不代表忽略 WAL 的独立迁移后备份可用。
+
 ## 2026-10-06 真实 Web 迟到 locator 响应与当前 Document 验收
 
 新增两个完整生产 App 的负控分别使用真实 SQLite／PostgreSQL、HPA、
