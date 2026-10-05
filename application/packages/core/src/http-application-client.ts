@@ -1,9 +1,11 @@
 import {
   ApplicationRequestError,
   runtimeNavigationRequestSchema,
+  cognitiveAppApplicationRoute,
   type ApplicationMethod,
   type ApplicationCallOptions as CallOptions,
 } from "./application-api.js";
+import { parseCognitiveAppRequest } from "./cognitive-app-api.js";
 export { ApplicationRequestError } from "./application-api.js";
 export type { ApplicationCallOptions as CallOptions } from "./application-api.js";
 
@@ -51,6 +53,22 @@ export class HttpApplicationClient {
     params?: unknown,
     options: CallOptions = {},
   ): Promise<unknown> {
+    const cognitive = cognitiveAppApplicationRoute(method);
+    let originalCommandId: string | undefined;
+    if (cognitive) {
+      try {
+        params = parseCognitiveAppRequest(cognitive.method, params);
+      } catch {
+        throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
+      }
+      if (
+        params &&
+        typeof params === "object" &&
+        "commandId" in params &&
+        typeof params.commandId === "string"
+      )
+        originalCommandId = params.commandId;
+    }
     if (method === "login" || method === "logout") {
       this.epoch++;
     }
@@ -69,6 +87,19 @@ export class HttpApplicationClient {
       }
     };
     switch (method) {
+      case "cognitive-apps.list":
+      case "cognitive-apps.describe":
+      case "cognitive-apps.install":
+      case "cognitive-apps.grant":
+      case "cognitive-apps.connect":
+      case "cognitive-apps.connection-state":
+      case "cognitive-apps.invoke":
+      case "cognitive-apps.read-object":
+      case "cognitive-apps.command-status":
+      case "cognitive-apps.recover":
+        path = cognitive!.path;
+        post(params);
+        break;
       case "platform.bootstrap":
         path = "/api/platform/bootstrap";
         break;
@@ -768,40 +799,100 @@ export class HttpApplicationClient {
     }
     // In a browser Origin is managed by the browser; a trusted native remote adapter supplies it explicitly.
     if (verb === "POST" && this.origin) headers.Origin = this.origin;
-    const response = await this.request(this.origin + path, {
-      method: verb,
-      headers,
-      body: data,
-      signal: options.signal,
-      credentials: "include",
-      redirect: "error",
-      cache: "no-store",
-    });
-    if (epoch !== this.epoch)
-      throw new ApplicationRequestError(408, "身份已切换，旧响应已丢弃。");
-    if (!response.ok) {
-      let message = "请求失败。",
-        code: string | undefined;
-      try {
-        const failure = await response.json();
-        if (typeof failure?.message === "string") message = failure.message;
-        if (typeof failure?.code === "string") code = failure.code;
-      } catch {}
+    try {
+      if (cognitive && options.signal?.aborted)
+        throw new ApplicationRequestError(
+          408,
+          "请求已取消；已提交的操作不会回滚。",
+          "cancelled",
+          originalCommandId,
+        );
+      const response = await this.request(this.origin + path, {
+        method: verb,
+        headers,
+        body: data,
+        signal: options.signal,
+        credentials: "include",
+        redirect: "error",
+        cache: "no-store",
+      });
+      if (cognitive && options.signal?.aborted)
+        throw new ApplicationRequestError(
+          408,
+          "请求已取消；已提交的操作不会回滚。",
+          "cancelled",
+          originalCommandId,
+        );
       if (epoch !== this.epoch)
-        throw new ApplicationRequestError(408, "身份已切换，旧响应已丢弃。");
-      throw new ApplicationRequestError(response.status, message, code);
+        throw new ApplicationRequestError(
+          408,
+          "身份已切换，旧响应已丢弃。",
+          undefined,
+          originalCommandId,
+        );
+      if (!response.ok) {
+        let message = "请求失败。",
+          code: string | undefined;
+        try {
+          const failure = await response.json();
+          if (typeof failure?.message === "string") message = failure.message;
+          if (typeof failure?.code === "string") code = failure.code;
+        } catch {}
+        if (cognitive && options.signal?.aborted)
+          throw new ApplicationRequestError(
+            408,
+            "请求已取消；已提交的操作不会回滚。",
+            "cancelled",
+            originalCommandId,
+          );
+        if (epoch !== this.epoch)
+          throw new ApplicationRequestError(
+            408,
+            "身份已切换，旧响应已丢弃。",
+            undefined,
+            originalCommandId,
+          );
+        throw new ApplicationRequestError(
+          response.status,
+          message,
+          code,
+          originalCommandId,
+        );
+      }
+      const value: unknown = avatarBytes
+        ? {
+            bytes: new Uint8Array(await response.arrayBuffer()),
+            mime: response.headers.get("Content-Type"),
+          }
+        : wav
+          ? new Uint8Array(await response.arrayBuffer())
+          : await response.json();
+      if (cognitive && options.signal?.aborted)
+        throw new ApplicationRequestError(
+          408,
+          "请求已取消；已提交的操作不会回滚。",
+          "cancelled",
+          originalCommandId,
+        );
+      if (epoch !== this.epoch)
+        throw new ApplicationRequestError(
+          408,
+          "身份已切换，旧响应已丢弃。",
+          undefined,
+          originalCommandId,
+        );
+      return value;
+    } catch (error) {
+      if (!cognitive || error instanceof ApplicationRequestError) throw error;
+      throw new ApplicationRequestError(
+        options.signal?.aborted ? 408 : 503,
+        options.signal?.aborted
+          ? "请求已取消；已提交的操作不会回滚。"
+          : "应用服务暂不可用；已有命令事实保留。",
+        options.signal?.aborted ? "cancelled" : "unavailable",
+        originalCommandId,
+      );
     }
-    const value: unknown = avatarBytes
-      ? {
-          bytes: new Uint8Array(await response.arrayBuffer()),
-          mime: response.headers.get("Content-Type"),
-        }
-      : wav
-        ? new Uint8Array(await response.arrayBuffer())
-        : await response.json();
-    if (epoch !== this.epoch)
-      throw new ApplicationRequestError(408, "身份已切换，旧响应已丢弃。");
-    return value;
   }
 }
 import {

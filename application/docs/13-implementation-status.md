@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：公开 Application／Local／HTTP／Remote 入口
+
+十个 logical `cognitive-apps.*` 方法与固定 POST 路由已登记，同一个
+ApplicationSession 先同步捕获严格 DTO，再通过当前 Human session／HPA
+调用同一 Service。HTTP 沿原 cookie、Origin、CSRF；只开放固定白名单，
+拒绝 Host-only 方法、GET、额外 query、非法 UTF-8 与超限 body。
+Local／HTTP／Remote 先 guard 再序列化，不执行参数 getter／toJSON；
+取消、网络失败、身份变更与服务拒绝保留原有效 commandId，不自动重发。
+
+真实公共测试复现已签发 Local session 撤销被错误分类为 503（应 403）。
+仅该 session 的 live assertActive 将 AuthenticationRequired 转 forbidden，
+初始匿名 bootstrap 仍 401；作者已 committed 的事实不因拒绝披露而删除。
+首 RED 保留于 `/tmp/morphz-cognitive-public-ingress.0WinFx/FIRST-REQUIRED.log`
+及 `/tmp/morphz-cognitive-app-ingress.Y8ggbS/LIVE-SESSION-FIRST-RED.log`。
+
+Root 全文复核公开生产 delta、新测试及原测试保全，独立正式八文件
+110/110，required PostgreSQL 实际执行，零失败／取消／跳过；日志
+`/tmp/morphz-cognitive-public-pipeline-ROOT-FROZEN-oct05.log`。全工程类型
+检查通过，日志 `/tmp/morphz-cognitive-public-pipeline-ROOT-TYPES-oct05.log`。
+12 项公开传输测试为明确 FakeService 单元；另 8 项实际公共集成覆盖双
+后端、真实同一中心 UUID／Identity／HPA／cookie、十 API、独立 packed
+作者 SQLite、原件回读、断响应后双侧冷恢复及撤销，未改旧安全断言。
+
+这不是 renderer／原生窗口、真实 Runtime Agent 或生产 TLS 验收。
+实际 renderer 桥的错误 ID／取消／代次传播留独立阶段；启动器配置、
+GUI channel 与 Agent 接线尚未整体完成。没有改 UI 外观或真实业务资料。
+
 ## 2026-10-05 第三方认知应用：共享宿主与事件恢复生命周期
 
 同一 domains Host 在实际 Platform／可选 UI Store 就绪后组装一个私有

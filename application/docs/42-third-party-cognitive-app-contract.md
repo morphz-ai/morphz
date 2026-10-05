@@ -1,6 +1,6 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05。状态：独立协议／Browser SDK、v11 双后端关系、内部服务网关、窗口与精确界面字节门已验证；公共宿主接线与真实跨宿主闭环尚未完成。
+日期：2026-10-05。状态：独立协议／Browser SDK、v11 双后端关系、内部服务网关、窗口与精确界面字节门、共享宿主及公开 Local／HTTP／Remote 链已验证；renderer、真实 Agent／GUI 与原 App 的跨宿主闭环尚未完成。
 这是 Morphz Application 的实验接入版本，不是 Runtime 或 HNS 的新标准。
 文档存在不表示独立 SDK、服务网关或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
@@ -285,8 +285,15 @@ HTML 仍分别服从原预算，其他 wire／正文预算不变。所有入口�
 
 本阶段 Service 已组合实际 Platform／Gateway／UiPackageService 验证，
 共享 domains Host 的单例装配、事件恢复和安全关闭已通过隔离实际后端。
-公共 Application／Desktop／HTTP 路由与真实 Runtime 接线仍在进行，
-不能把这个表当作已开放网络端点清单。
+公开 Application／Local／HTTP／Remote 现使用同一映射：
+`core/src/application-api.ts` 的十个 `cognitive-apps.*` logical 方法，
+HTTP 均为 `POST /api/platform/cognitive-apps/<suffix>`，固定 suffix 为
+list、describe、install、grant、connect、connection-state、invoke、
+read-object、command-status、recover。所有 HTTP 方法沿原 cookie／
+Origin／CSRF，拒绝额外 query；Desktop Local 不新增本地 HTTP 依赖。
+安装 carrier 8 MiB、其他 JSON body 512 KiB，并检查 fatal UTF-8；这些
+传输上限不扩大定义／HTML／正文的原限制。真实 caller 在响应后仍复核。
+renderer bridge、真实 Runtime／GUI 与原窗口接线尚待单独验收。
 
 操作发现继续已有 list／describe／invoke 语义，返回确切 app、version、
 definitionHash、instance、operationId、Schema、效果与真实不可用原因。
@@ -433,8 +440,8 @@ Store 实际权限下的 admission／dispatch／原回执恢复和 begin／compl
 入口同步捕获有界参数／资源／目标快照，避免异步期间 caller 改变已核字节。
 实际 Store 目录通知、内部网络 Gateway 和独立 objects/read 已组合通过
 实际双后端与独立作者服务测试；共享薄 Service 和严格 DTO 已组合，公共
-Application／HTTP／IPC／Agent 入口仍未登记，不能把内部组件通过当成
-客户端链路已经完成。
+Application／Local／HTTP／Remote 入口也已登记并通过真实公共集成；
+renderer bridge／Agent／GUI 尚未完成，不把此结果当作原窗口链路通过。
 
 Host 的 CognitiveAppGateway 负责固定连接、网络安全、实际 wire 校验和
 回执核验，只通过 Platform typed port 调用上述职责；由共享应用 Host 与

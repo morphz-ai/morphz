@@ -27,6 +27,7 @@ import {
 } from "../../../packages/application/src/application.js";
 import type { WorkspaceStore } from "../../../packages/application/src/store.js";
 import type { AgentTools } from "../../../packages/application/src/agent-tools.js";
+import { cognitiveAppApplicationRoutes } from "../../../packages/core/src/application-api.js";
 
 async function body(req: IncomingMessage, limit: number) {
   const chunks: Buffer[] = [];
@@ -41,6 +42,20 @@ async function body(req: IncomingMessage, limit: number) {
 }
 const jsonBody = async (req: IncomingMessage, limit: number) =>
   JSON.parse((await body(req, limit)).toString()) as unknown;
+// Domain ingress must not silently replace invalid UTF-8. Other legacy body
+// readers intentionally retain their existing semantics.
+async function cognitiveJsonBody(req: IncomingMessage, limit: number) {
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(
+      await body(req, limit),
+    );
+  } catch (error) {
+    if (error instanceof DomainError) throw error;
+    throw new DomainError("invalid", "请求格式无效。");
+  }
+  return JSON.parse(text) as unknown;
+}
 function json(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
   res.end(JSON.stringify(value));
@@ -1360,6 +1375,29 @@ export function createAppServer(
           });
           return;
         }
+        if (url.pathname.startsWith("/api/platform/cognitive-apps/")) {
+          const route = Object.values(cognitiveAppApplicationRoutes).find(
+            (entry) => entry.path === url.pathname,
+          );
+          if (!route) throw new DomainError("not_found", "接口不存在。");
+          platformQuery(url, []);
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.cognitiveApp(
+              route.method,
+              await cognitiveJsonBody(
+                req,
+                route.method === "install" ? 8 * 1024 * 1024 : 512 * 1024,
+              ),
+            ),
+          );
+          return;
+        }
         const scriptEditor =
           /^\/api\/platform\/scripts\/editor\/(head|page|detail)$/.exec(
             url.pathname,
@@ -2049,6 +2087,7 @@ export function createAppServer(
       json(res, failure.status, {
         code: failure.code,
         message: failure.message,
+        ...(failure.commandId === undefined ? {} : { commandId: failure.commandId }),
       });
     }
   });

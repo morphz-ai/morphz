@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { createServer, request as httpRequest, type Server } from "node:http";
+import { createServer as createPortProbe } from "node:net";
 import { once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 import { Pool } from "pg";
@@ -42,6 +43,24 @@ import {
 import { CognitiveAppBindings } from "../packages/application/src/cognitive-app-bindings.js";
 import { CognitiveAppTransport } from "../packages/application/src/cognitive-app-transport.js";
 import { UiPackageService } from "../packages/application/src/ui-package-service.js";
+import { Application } from "../packages/application/src/application.js";
+import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
+import { HumanPlatformAuthority } from "../packages/application/src/human-platform-authority.js";
+import { WorkspaceStore } from "../packages/application/src/store.js";
+import { IdentityCenter } from "../packages/application/src/identity.js";
+import { createAppServer } from "../apps/service/src/http.js";
+import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { ApplicationRequestError } from "../packages/core/src/application-api.js";
+import {
+  parseCognitiveAppCatalog,
+  parseCognitiveAppCommandResult,
+  parseCognitiveAppDescription,
+  parseCognitiveAppReadResult,
+  parseCognitiveAppInstalled,
+  parseCognitiveAppGrant,
+  parseCognitiveAppConnection,
+} from "../packages/core/src/cognitive-app-api.js";
+import { parseBrowserCommandFacts } from "../packages/cognitive-app-sdk/src/browser-wire.js";
 import type { CognitiveAppCommandSnapshot } from "../packages/platform/src/cognitive-app-commands.js";
 import {
   parseCognitiveAppDefinition,
@@ -53,6 +72,7 @@ import {
   canonicalJsonBytes,
   parseDomainActor,
   parseDomainReceipt,
+  parseObjectReadResponse,
 } from "../packages/cognitive-app-sdk/src/domain-wire.js";
 
 const definition = parseCognitiveAppDefinition(
@@ -140,6 +160,661 @@ function command(
     createdAt: at,
     updatedAt: at,
   };
+}
+
+function publicFields(value: unknown): Record<string, unknown> {
+  const parsed = parseWireJson(value);
+  assert.ok(
+    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed),
+  );
+  return parsed as Record<string, unknown>;
+}
+function publicCsrf(value: unknown): string {
+  const token = publicFields(value).csrfToken;
+  assert.equal(typeof token, "string");
+  assert.match(token as string, /^[a-f0-9]{64}$/);
+  return token as string;
+}
+function publicFailure(status: number, commandId?: string) {
+  return (error: unknown) => {
+    assert.ok(error instanceof ApplicationRequestError);
+    assert.equal(error.status, status);
+    assert.equal(error.commandId, commandId);
+    assert.doesNotMatch(
+      error.message,
+      /PRIVATE-BUSINESS-BODY|127\.0\.0\.1|credential|bindings\.json/,
+    );
+    return true;
+  };
+}
+
+/** ACTUAL public ingress, not UNIT fakeService: one real Facade/Gateway instance
+ * is shared by both Application hosts, using durable IdentityCenter sessions,
+ * live HPA assertions, the actual Platform backend and separately packed author.
+ * Node fetch needs a cookie jar; this adapter only transports actual Set-Cookie
+ * bytes and leaves all HTTP bodies/statuses and the client's Origin/CSRF intact.
+ * Runtime identities remain the explicit resolver in actualFixture, not a Rust
+ * Runtime or renderer/Agent registration acceptance claim. */
+async function actualPublicFixture(
+  backend: "sqlite" | "postgres",
+  run: (
+    f: ActualFixture,
+    open: () => Promise<Awaited<ReturnType<typeof openPublicIngress>>>,
+  ) => Promise<void>,
+) {
+  const workspace = new WorkspaceStore(":memory:", { mode: "transport" });
+  const token = "e".repeat(64);
+  const configuration = {
+    version: 1,
+    members: [
+      {
+        principalId: "alice",
+        actantId: "alice-human",
+        enabled: true,
+        loginTokenHash: createHash("sha256").update(token).digest("hex"),
+      },
+    ],
+  };
+  let identity = new IdentityCenter(workspace, configuration);
+  const humanAuthority = new HumanPlatformAuthority(
+    workspace.identity(),
+    (access) => identity.allowsShared(access),
+  );
+  const opened: Array<Awaited<ReturnType<typeof openPublicIngress>>> = [];
+  try {
+    await actualFixture(
+      backend,
+      async (f) => {
+        const open = async () => {
+          identity = new IdentityCenter(workspace, configuration);
+          await identity.bindPlatform(f.store, workspace.identity());
+          const entry = await openPublicIngress(
+            f,
+            workspace,
+            identity,
+            humanAuthority,
+            token,
+          );
+          opened.push(entry);
+          return entry;
+        };
+        try {
+          await run(f, open);
+        } finally {
+          for (const entry of opened) await entry.close();
+        }
+      },
+      { tenantId: workspace.identity(), humanAuthority },
+    );
+  } finally {
+    workspace.close();
+  }
+}
+
+async function openPublicIngress(
+  f: ActualFixture,
+  workspace: WorkspaceStore,
+  identity: IdentityCenter,
+  authority: HumanPlatformAuthority,
+  token: string,
+) {
+  const service = actualService(f);
+  const options = { identity, cognitiveApps: { authority, service } };
+  const localApplication = new Application(workspace, options);
+  const local = new LocalApplicationConnection(localApplication);
+  // HTTP's allowlisted Host/Origin includes its actual ephemeral port.
+  const probe = createPortProbe();
+  probe.listen(0, "127.0.0.1");
+  await once(probe, "listening");
+  const address = probe.address();
+  assert.ok(address && typeof address !== "string");
+  const port = address.port;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  const server = createAppServer(workspace, {
+    ...options,
+    port,
+    webRoot: "/nonexistent",
+  });
+  server.listen(port, "127.0.0.1");
+  await once(server, "listening");
+  const origin = `http://127.0.0.1:${port}`;
+  let cookie: string | undefined;
+  const requests: Array<{
+    path: string;
+    method: string;
+    origin: string | null;
+    csrf: string | null;
+    hasCookie: boolean;
+  }> = [];
+  const client = new HttpApplicationClient(origin, async (input, init) => {
+    const headers = new Headers(init?.headers);
+    if (cookie) headers.set("Cookie", cookie);
+    requests.push({
+      path: new URL(String(input)).pathname,
+      method: init?.method ?? "GET",
+      origin: headers.get("Origin"),
+      csrf: headers.get("X-Morphz-Token"),
+      hasCookie: headers.has("Cookie"),
+    });
+    const response = await fetch(input, { ...init, headers });
+    const current = response.headers
+      .getSetCookie()
+      .find((value) => value.startsWith(identity.cookieName + "="));
+    if (current) cookie = current.split(";")[0]!;
+    return response;
+  });
+  let closed = false;
+  return {
+    service,
+    identity,
+    localApplication,
+    local,
+    server,
+    client,
+    origin,
+    requests,
+    cookie: () => cookie,
+    async login() {
+      assert.deepEqual(await local.call("login", { token }), {
+        connected: true,
+      });
+      const localCsrf = publicCsrf(await local.call("platform.bootstrap"));
+      assert.deepEqual(await client.call("login", { token }), {
+        connected: true,
+      });
+      const httpCsrf = publicCsrf(await client.call("platform.bootstrap"));
+      assert.notEqual(
+        localCsrf,
+        httpCsrf,
+        "Two actual sessions have independent CSRF generations.",
+      );
+      assert.ok(cookie && identity.authenticate(cookie));
+      assert.ok(identity.authenticate(local.authenticationCookie()));
+      return { localCsrf, httpCsrf };
+    },
+    async close() {
+      if (closed) return;
+      closed = true;
+      local.close();
+      localApplication.speechStreams.close();
+      server.closeStreams();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+for (const backend of ["sqlite", "postgres"] as const) {
+  test(
+    `ACTUAL public Local + HTTP + packed author + ${backend}: same Facade, live cookie/HPA, exact original read and stable write replay`,
+    { timeout: 120000 },
+    async () => {
+      await actualPublicFixture(backend, async (f, open) => {
+        const p = await open(),
+          { localCsrf, httpCsrf } = await p.login();
+        assert.equal(
+          p.localApplication.options.cognitiveApps?.service,
+          p.service,
+        );
+        assert.equal(p.localApplication.options.identity, p.identity);
+        const catalog = parseCognitiveAppCatalog(
+          await p.client.call(
+            "cognitive-apps.list",
+            { limit: 10 },
+            { identityGeneration: httpCsrf },
+          ),
+        );
+        assert.equal(catalog.versions.length, 1);
+        const description = parseCognitiveAppDescription(
+          await p.local.call(
+            "cognitive-apps.describe",
+            {
+              projectId: "project-a",
+              appId: definition.id,
+              version: definition.version,
+            },
+            { identityGeneration: localCsrf },
+          ),
+        );
+        assert.equal(description.definitionHash, definitionHash);
+        assert.equal(description.definition.ui, null);
+        const input = f.request("public_actual_create");
+        const created = parseCognitiveAppCommandResult(
+          await p.local.call("cognitive-apps.invoke", input, {
+            identityGeneration: localCsrf,
+          }),
+        );
+        assert.equal(created.command.state, "committed");
+        assert.equal(created.command.projectionState, "projected");
+        assert.equal(created.contentIds?.length, 1);
+        const original = originalFromResult(created.result);
+        const durable = await f.store.inspectCognitiveAppCommand(
+          { credential: "alice" },
+          { projectId: "project-a", commandId: input.commandId! },
+        );
+        assert.equal(
+          durable.actor.tenantId,
+          p.localApplication.store.identity(),
+        );
+        assert.equal(durable.actor.principalId, "alice");
+        assert.equal(durable.actor.actantId, "alice-human");
+        assert.deepEqual(durable.actor.source, { kind: "human" });
+        const objectRead = parseObjectReadResponse(
+          await p.client.call(
+            "cognitive-apps.read-object",
+            {
+              appId: definition.id,
+              version: definition.version,
+              connectionId: f.connectionId,
+              projectId: "project-a",
+              object: {
+                objectId: original.objectId,
+                versionRef: original.versionRef,
+              },
+              maxBytes: 262144,
+            },
+            { identityGeneration: httpCsrf },
+          ),
+        );
+        assert.deepEqual(objectRead.object, {
+          objectId: original.objectId,
+          versionRef: original.versionRef,
+        });
+        assert.deepEqual(objectRead.authority, durable.authority);
+        assert.deepEqual(objectRead.content, {
+          format: "json",
+          value: { title: original.title, markdown: original.markdown },
+        });
+        const read = parseCognitiveAppReadResult(
+          await p.client.call(
+            "cognitive-apps.invoke",
+            {
+              ...input,
+              commandId: null,
+              operationId: "notes.list",
+              parameters: { limit: 32 },
+              resources: [],
+            },
+            { identityGeneration: httpCsrf },
+          ),
+        );
+        assert.equal(publicFields(read.result).objects instanceof Array, true);
+        assert.equal(
+          (publicFields(read.result).objects as unknown[]).length,
+          1,
+        );
+        assert.equal(Reflect.has(read, "command"), false);
+        const writes = f.control.paths.filter(
+          (path) => path === "/invoke",
+        ).length;
+        const replay = parseCognitiveAppCommandResult(
+          await p.client.call("cognitive-apps.invoke", input, {
+            identityGeneration: httpCsrf,
+          }),
+        );
+        assert.deepEqual(replay.command, created.command);
+        assert.equal(
+          f.control.paths.filter((path) => path === "/invoke").length,
+          writes,
+        );
+        assert.equal(f.authorRows("SELECT * FROM notes").length, 1);
+        const status = parseBrowserCommandFacts(
+          await p.client.call(
+            "cognitive-apps.command-status",
+            actualStatus(f, input.commandId!),
+            { identityGeneration: httpCsrf },
+          ),
+        );
+        assert.deepEqual(status, replay.command);
+        await assert.rejects(
+          p.client.call(
+            "cognitive-apps.invoke",
+            { ...input, parameters: { title: "changed", markdown: "changed" } },
+            { identityGeneration: httpCsrf },
+          ),
+          publicFailure(409, input.commandId!),
+        );
+        assert.equal(
+          f.control.paths.filter((path) => path === "/invoke").length,
+          writes,
+        );
+        const recovered = parseCognitiveAppCommandResult(
+          await p.client.call(
+            "cognitive-apps.recover",
+            actualStatus(f, input.commandId!),
+            { identityGeneration: httpCsrf },
+          ),
+        );
+        assert.deepEqual(recovered.command, status);
+        assert.equal(
+          f.control.paths.filter((path) => path === "/invoke").length,
+          writes,
+        );
+        for (const record of p.requests.filter((record) =>
+          record.path.startsWith("/api/platform/cognitive-apps/"),
+        )) {
+          assert.equal(record.method, "POST");
+          assert.equal(record.origin, p.origin);
+          assert.equal(record.csrf, httpCsrf);
+          assert.equal(record.hasCookie, true);
+        }
+        const installed = parseCognitiveAppInstalled(
+          await p.local.call(
+            "cognitive-apps.install",
+            { definition: { ...definition, version: "1.0.1" } },
+            { identityGeneration: localCsrf },
+          ),
+        );
+        assert.equal(installed.version, "1.0.1");
+        const grant = parseCognitiveAppGrant(
+          await p.client.call(
+            "cognitive-apps.grant",
+            {
+              appId: definition.id,
+              version: "1.0.1",
+              expectedRevision: 0,
+              state: "active",
+            },
+            { identityGeneration: httpCsrf },
+          ),
+        );
+        assert.equal(grant.state, "active");
+        assert.equal(grant.revision, 1);
+        const connected = parseCognitiveAppConnection(
+          await p.client.call(
+            "cognitive-apps.connect",
+            {
+              appId: definition.id,
+              version: definition.version,
+              expectedDefinitionHash: definitionHash,
+              expectedGrantRevision: 1,
+              connectionId: "public-secondary-connection",
+              expectedRevision: 0,
+              serviceId: durable.authority.serviceId,
+              dataAuthorityId: durable.authority.dataAuthorityId,
+            },
+            { identityGeneration: httpCsrf },
+          ),
+        );
+        assert.equal(connected.instanceId, durable.authority.instanceId);
+        assert.equal(connected.connectionId, "public-secondary-connection");
+        assert.equal(connected.revision, 1);
+        const disabled = parseCognitiveAppConnection(
+          await p.local.call(
+            "cognitive-apps.connection-state",
+            {
+              appId: definition.id,
+              version: definition.version,
+              connectionId: connected.connectionId,
+              expectedRevision: 1,
+              state: "disabled",
+            },
+            { identityGeneration: localCsrf },
+          ),
+        );
+        assert.equal(disabled.state, "disabled");
+        assert.equal(disabled.revision, 2);
+        assert.equal(
+          f.control.paths.filter((path) => path === "/invoke").length,
+          writes,
+        );
+        assert.equal(f.authorRows("SELECT * FROM notes").length, 1);
+        await noBusinessSql(f);
+      });
+    },
+  );
+
+  test(
+    `ACTUAL public Local + HTTP + packed author + ${backend}: anonymous, Origin/CSRF/cookie mismatch and private routes never reach author or ledger`,
+    { timeout: 120000 },
+    async () => {
+      await actualPublicFixture(backend, async (f, open) => {
+        const p = await open(),
+          input = f.request("unauthorized_public_command");
+        await assert.rejects(
+          p.local.call("platform.bootstrap"),
+          publicFailure(401),
+        );
+        await assert.rejects(
+          p.local.call("cognitive-apps.invoke", input),
+          publicFailure(403, input.commandId!),
+        );
+        await assert.rejects(
+          p.client.call("cognitive-apps.invoke", input),
+          publicFailure(401, input.commandId!),
+        );
+        const { localCsrf, httpCsrf } = await p.login();
+        const before = f.control.paths.length;
+        await assert.rejects(
+          p.local.call("cognitive-apps.invoke", input, {
+            identityGeneration: "stale",
+          }),
+          publicFailure(403, input.commandId!),
+        );
+        await assert.rejects(
+          p.client.call("cognitive-apps.invoke", input, {
+            identityGeneration: localCsrf,
+          }),
+          publicFailure(403, input.commandId!),
+        );
+        const post = (path: string, extra: Record<string, string> = {}) =>
+          fetch(p.origin + path, {
+            method: "POST",
+            headers: {
+              Cookie: p.cookie()!,
+              Origin: p.origin,
+              "Content-Type": "application/json",
+              "X-Morphz-Token": httpCsrf,
+              ...extra,
+            },
+            body: JSON.stringify(input),
+          });
+        assert.equal(
+          (
+            await post("/api/platform/cognitive-apps/invoke", {
+              Origin: "https://foreign.invalid",
+            })
+          ).status,
+          403,
+        );
+        assert.equal(
+          (
+            await post("/api/platform/cognitive-apps/invoke", {
+              "X-Morphz-Token": "stale",
+            })
+          ).status,
+          403,
+        );
+        assert.equal(
+          (await post("/api/platform/cognitive-apps/invoke", { Origin: "" }))
+            .status,
+          403,
+        );
+        for (const suffix of [
+          "record-receipt",
+          "prepare-recovery",
+          "list-recoverable",
+          "sql",
+        ]) {
+          assert.equal(
+            (await post(`/api/platform/cognitive-apps/${suffix}`)).status,
+            404,
+          );
+          const local = await p.local.invoke({
+            id: randomUUID(),
+            method: `cognitive-apps.${suffix}`,
+            params: input,
+            identityGeneration: localCsrf,
+          });
+          assert.equal(local.ok, false);
+        }
+        assert.notEqual(
+          (
+            await fetch(p.origin + "/api/platform/cognitive-apps/invoke", {
+              headers: { Cookie: p.cookie()! },
+            })
+          ).status,
+          200,
+        );
+        assert.equal(f.control.paths.length, before);
+        assert.equal(
+          (await f.q.all("SELECT * FROM cognitive_app_commands")).length,
+          0,
+        );
+        assert.equal(f.authorRows("SELECT * FROM notes").length, 0);
+        await p.identity.logout(
+          p.identity.authenticate(p.cookie())!.sessionHash,
+        );
+        await assert.rejects(
+          p.client.call("cognitive-apps.invoke", input, {
+            identityGeneration: httpCsrf,
+          }),
+          publicFailure(401, input.commandId!),
+        );
+        assert.equal(f.control.paths.length, before);
+      });
+    },
+  );
+
+  test(
+    `ACTUAL public Local + HTTP + packed author + ${backend}: post-COMMIT response loss, both cold stores and new login recover original command without reinvoke`,
+    { timeout: 120000 },
+    async () => {
+      await actualPublicFixture(backend, async (f, open) => {
+        let p = await open();
+        const firstSession = await p.login();
+        const input = f.request("public_lost_response");
+        f.control.dropNextInvoke = true;
+        const first = parseCognitiveAppCommandResult(
+          await p.client.call("cognitive-apps.invoke", input, {
+            identityGeneration: firstSession.httpCsrf,
+          }),
+        );
+        assert.equal(first.commandId, input.commandId);
+        assert.equal(first.command.state, "unknown");
+        assert.equal(first.command.receiptRef, null);
+        assert.equal(first.hostIssue, "unconfirmed");
+        assert.equal(f.authorRows("SELECT * FROM notes").length, 1);
+        const actualReceipt = f.control.droppedReceipts[0]!;
+        assert.equal(actualReceipt.status, "committed");
+        assert.equal(
+          f.control.paths.filter((path) => path === "/invoke").length,
+          1,
+        );
+        await p.close();
+        await f.restartAuthor();
+        await f.reopen();
+        p = await open();
+        const current = await p.login();
+        assert.notEqual(current.httpCsrf, firstSession.httpCsrf);
+        const recovered = parseCognitiveAppCommandResult(
+          await p.local.call(
+            "cognitive-apps.recover",
+            actualStatus(f, input.commandId!),
+            { identityGeneration: current.localCsrf },
+          ),
+        );
+        assert.equal(recovered.command.state, "committed");
+        assert.equal(recovered.command.projectionState, "projected");
+        assert.equal(
+          recovered.command.receiptRef,
+          actualReceipt.status === "committed" ? actualReceipt.receiptId : null,
+        );
+        assert.equal(
+          recovered.command.committedAt,
+          actualReceipt.status === "committed"
+            ? actualReceipt.committedAt
+            : null,
+        );
+        const status = parseBrowserCommandFacts(
+          await p.client.call(
+            "cognitive-apps.command-status",
+            actualStatus(f, input.commandId!),
+            { identityGeneration: current.httpCsrf },
+          ),
+        );
+        assert.deepEqual(status, recovered.command);
+        const replay = parseCognitiveAppCommandResult(
+          await p.client.call("cognitive-apps.invoke", input, {
+            identityGeneration: current.httpCsrf,
+          }),
+        );
+        assert.deepEqual(replay.command, status);
+        assert.equal(
+          f.control.paths.filter((path) => path === "/invoke").length,
+          1,
+        );
+        assert.ok(f.control.paths.includes("/receipts/read"));
+        assert.equal(f.authorRows("SELECT * FROM notes").length, 1);
+        await noBusinessSql(f);
+      });
+    },
+  );
+
+  test(
+    `ACTUAL public Local + HTTP + packed author + ${backend}: real live-session revocation after author commit suppresses reply without erasing durable fact`,
+    { timeout: 120000 },
+    async () => {
+      await actualPublicFixture(backend, async (f, open) => {
+        const p = await open();
+        let current = await p.login();
+        for (const transport of ["local", "http"] as const) {
+          const input = f.request(`public_${transport}_revoked`);
+          const cookie =
+            transport === "local" ? p.local.authenticationCookie() : p.cookie();
+          const session = p.identity.authenticate(cookie)!;
+          assert.equal(session.access.principalId, "alice");
+          let revocations = 0;
+          f.control.afterResponse = async (path) => {
+            if (path !== "/invoke") return;
+            revocations++;
+            await p.identity.logout(session.sessionHash);
+            assert.equal(p.identity.authenticate(cookie), null);
+          };
+          const pending =
+            transport === "local"
+              ? p.local.call("cognitive-apps.invoke", input, {
+                  identityGeneration: current.localCsrf,
+                })
+              : p.client.call("cognitive-apps.invoke", input, {
+                  identityGeneration: current.httpCsrf,
+                });
+          await assert.rejects(pending, publicFailure(403, input.commandId!));
+          assert.equal(revocations, 1);
+          f.control.afterResponse = undefined;
+          const stored = await f.store.inspectCognitiveAppCommand(
+            { credential: "alice" },
+            { projectId: "project-a", commandId: input.commandId! },
+          );
+          assert.equal(stored.state, "committed");
+          assert.ok(stored.receiptRef);
+          current = await p.login();
+          const before = f.control.paths.filter(
+            (path) => path === "/invoke",
+          ).length;
+          const recovered = parseCognitiveAppCommandResult(
+            await p.client.call(
+              "cognitive-apps.recover",
+              actualStatus(f, input.commandId!),
+              { identityGeneration: current.httpCsrf },
+            ),
+          );
+          assert.equal(recovered.command.state, "committed");
+          assert.equal(recovered.command.receiptRef, stored.receiptRef);
+          assert.equal(
+            f.control.paths.filter((path) => path === "/invoke").length,
+            before,
+          );
+        }
+        assert.equal(f.authorRows("SELECT * FROM notes").length, 2);
+        assert.equal(
+          f.control.paths.filter((path) => path === "/invoke").length,
+          2,
+        );
+        await noBusinessSql(f);
+      });
+    },
+  );
 }
 /** Explicit FakePort units: authorization/network/SQL below are simulated.
  * Separate actual Store + independently packed author tests follow below.
@@ -980,7 +1655,9 @@ type ActualFixture = {
 async function actualFixture(
   backend: "sqlite" | "postgres",
   run: (f: ActualFixture) => Promise<void>,
+  options: { tenantId?: string; humanAuthority?: HumanPlatformAuthority } = {},
 ) {
+  const tenantId = options.tenantId ?? "tenant-a";
   const authorRoot = await preparePackedAuthor();
   const directory = mkdtempSync(join(tmpdir(), "morphz-gateway-integration-"));
   const authorDb = join(directory, "author.sqlite"),
@@ -995,7 +1672,7 @@ async function actualFixture(
             .update(integrationCredential)
             .digest("hex"),
           issuer: "trusted_host",
-          tenantId: "tenant-a",
+          tenantId,
           principalId: "alice",
           humanActantId: "alice-human",
           agentActantIds: ["agent-one"],
@@ -1025,7 +1702,7 @@ async function actualFixture(
     [
       "alice",
       {
-        tenantId: "tenant-a",
+        tenantId,
         principalId: "alice",
         actantId: "alice-human",
         kind: "human",
@@ -1035,7 +1712,7 @@ async function actualFixture(
     [
       "bob",
       {
-        tenantId: "tenant-a",
+        tenantId,
         principalId: "bob",
         actantId: "bob-human",
         kind: "human",
@@ -1045,7 +1722,7 @@ async function actualFixture(
     [
       "agent",
       {
-        tenantId: "tenant-a",
+        tenantId,
         principalId: "alice",
         actantId: "agent-one",
         kind: "agent",
@@ -1055,12 +1732,12 @@ async function actualFixture(
       },
     ],
   ]);
-  const capabilities: PlatformAuthorityVerifier = {
+  const remainingCapabilities: PlatformAuthorityVerifier = {
     async resolveActor(access) {
       return identities.get(access.credential) ?? null;
     },
-    async resolveActant({ tenantId, actantId }) {
-      return tenantId !== "tenant-a"
+    async resolveActant({ tenantId: actualTenantId, actantId }) {
+      return actualTenantId !== tenantId
         ? null
         : actantId === "alice-human" || actantId === "alice-second-human"
           ? { principalId: "alice", kind: "human" }
@@ -1077,6 +1754,9 @@ async function actualFixture(
       return false;
     },
   };
+  const capabilities = options.humanAuthority
+    ? options.humanAuthority.verifier(remainingCapabilities)
+    : remainingCapabilities;
   const control: ActualFixture["control"] = {
     dropNextInvoke: false,
     responseMode: "exact",
@@ -1241,7 +1921,7 @@ async function actualFixture(
         issuer: "trusted_host",
         bindings: [
           {
-            tenantId: "tenant-a",
+            tenantId,
             principalId: "alice",
             appId: definition.id,
             serviceId: author.ready.serviceId,
@@ -1282,16 +1962,16 @@ async function actualFixture(
       database.exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000");
       q = sqliteQuery(database);
     }
-    await store.provisionTenant("tenant-a", at);
+    await store.provisionTenant(tenantId, at);
     for (const projectId of ["project-a", "project-b"]) {
       await q.change(
-        "INSERT INTO projects(tenant_id,project_id,kind,owner_principal_id,title,revision,created_at,updated_at) VALUES('tenant-a',?,'project','alice',?,1,?,?)",
-        [projectId, projectId, at, at],
+        "INSERT INTO projects(tenant_id,project_id,kind,owner_principal_id,title,revision,created_at,updated_at) VALUES(?,?,'project','alice',?,1,?,?)",
+        [tenantId, projectId, projectId, at, at],
       );
       for (const member of ["alice", "agent-service"])
         await q.change(
-          "INSERT INTO project_members(tenant_id,project_id,principal_id) VALUES('tenant-a',?,?)",
-          [projectId, member],
+          "INSERT INTO project_members(tenant_id,project_id,principal_id) VALUES(?,?,?)",
+          [tenantId, projectId, member],
         );
     }
     const version = await store.installCognitiveApp(
@@ -1386,7 +2066,7 @@ async function actualFixture(
       openUi() {
         return UiPackageService.open({
           root: join(directory, "ui-packages"),
-          tenantId: "tenant-a",
+          tenantId,
           platform: store!,
           verifier: capabilities,
         });

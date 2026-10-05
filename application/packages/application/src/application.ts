@@ -38,6 +38,7 @@ import {
 } from "../../../packages/core/src/audio.js";
 import {
   runtimeNavigationRequestSchema,
+  cognitiveAppApplicationRoute,
   type ApplicationMethod,
   type ApplicationFailure,
 } from "../../../packages/core/src/application-api.js";
@@ -140,8 +141,20 @@ import {
   type SqlChangeSource,
 } from "../../storage/src/commit-notifications.js";
 import type { WorkspaceChange } from "../../core/src/workspace-changes.js";
+import {
+  parseCognitiveAppRequest,
+  type CognitiveAppMethod,
+} from "../../core/src/cognitive-app-api.js";
+import {
+  CognitiveAppServiceError,
+  type CognitiveAppService,
+} from "./cognitive-app-service.js";
 
 export type ApplicationOptions = {
+  cognitiveApps?: {
+    authority: HumanPlatformAuthority;
+    service: CognitiveAppService;
+  };
   /** Trusted Host capabilities, never accepted from a Client/Agent request. */
   workspaceChanges?: {
     sources: readonly SqlChangeSource[];
@@ -216,6 +229,21 @@ export class ApplicationUnavailable extends Error {
   readonly status = 503;
 }
 export function applicationFailure(error: unknown): ApplicationFailure {
+  if (error instanceof CognitiveAppServiceError)
+    return {
+      status: {
+        invalid: 400,
+        forbidden: 403,
+        not_found: 404,
+        conflict: 409,
+        busy: 429,
+        unavailable: 503,
+        contract: 502,
+      }[error.reason],
+      code: error.reason,
+      message: error.message,
+      ...(error.commandId === undefined ? {} : { commandId: error.commandId }),
+    };
   if (error instanceof ContinuationConflict)
     return {
       status: 409,
@@ -604,6 +632,43 @@ export class ApplicationSession {
     this.assertActive();
     if (this.options.identity && !this.options.identity.allows(this.access))
       throw new DomainError("forbidden", "身份已失效，操作未执行。");
+  }
+  /** Parse an independent public request before any asynchronous identity work.
+   * The same facade serves both local and HTTP ingress; no caller authority. */
+  async cognitiveApp(method: CognitiveAppMethod, raw: unknown) {
+    let commandId: string | undefined;
+    try {
+      let request;
+      try {
+        request = parseCognitiveAppRequest(method, raw);
+      } catch {
+        throw new CognitiveAppServiceError("invalid");
+      }
+      if ("commandId" in request && typeof request.commandId === "string")
+        commandId = request.commandId;
+      this.active();
+      const domain = this.options.cognitiveApps;
+      if (!domain) throw new CognitiveAppServiceError("unavailable", commandId);
+      const result = await domain.authority.withSession<unknown>(
+        this.access,
+        () => this.active(),
+        (actor) => {
+          this.active();
+          return domain.service[method](actor, request);
+        },
+      );
+      this.active();
+      return result;
+    } catch (error) {
+      if (error instanceof CognitiveAppServiceError)
+        throw new CognitiveAppServiceError(
+          error.reason,
+          commandId ?? error.commandId,
+        );
+      if (error instanceof DomainError || error instanceof PlatformStorageError)
+        throw new CognitiveAppServiceError(error.code, commandId);
+      throw new CognitiveAppServiceError("unavailable", commandId);
+    }
   }
   private runtime() {
     this.active();
@@ -3519,6 +3584,8 @@ export function invokeApplication(
   identityGeneration: string,
   signal: AbortSignal,
 ) {
+  const cognitive = cognitiveAppApplicationRoute(method);
+  if (cognitive) return session.cognitiveApp(cognitive.method, params);
   switch (method) {
     case "platform.bootstrap":
       return session.platformBootstrap(identityGeneration);

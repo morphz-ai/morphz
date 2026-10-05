@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   applicationMethods,
+  cognitiveAppApplicationRoute,
   ApplicationRequestError,
   type ApplicationReply,
   type ApplicationMethod,
   type ApplicationCallOptions,
 } from "../../packages/core/src/application-api.js";
+import { parseCognitiveAppRequest } from "../../packages/core/src/cognitive-app-api.js";
 import { HttpApplicationClient } from "../../packages/core/src/http-application-client.js";
 import {
   conversationFrameSchema,
@@ -55,7 +57,33 @@ export class RemoteApplicationConnection {
     params?: unknown,
     options: ApplicationCallOptions = {},
   ) {
-    options.signal?.throwIfAborted();
+    const cognitive = cognitiveAppApplicationRoute(method);
+    if (cognitive) {
+      try {
+        params = parseCognitiveAppRequest(cognitive.method, params);
+      } catch {
+        throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
+      }
+    }
+    const commandId =
+      cognitive &&
+      params &&
+      typeof params === "object" &&
+      "commandId" in params &&
+      typeof params.commandId === "string"
+        ? params.commandId
+        : undefined;
+    const assertNotAborted = () => {
+      if (cognitive && options.signal?.aborted)
+        throw new ApplicationRequestError(
+          408,
+          "请求已取消；已提交的操作不会回滚。",
+          "cancelled",
+          commandId,
+        );
+      options.signal?.throwIfAborted();
+    };
+    assertNotAborted();
     const id = randomUUID(),
       abort = () => this.cancel(id);
     options.signal?.addEventListener("abort", abort, { once: true });
@@ -66,11 +94,13 @@ export class RemoteApplicationConnection {
         params,
         identityGeneration: options.identityGeneration,
       });
-      options.signal?.throwIfAborted();
+      assertNotAborted();
       if (!reply.ok)
         throw new ApplicationRequestError(
           reply.error.status,
           reply.error.message,
+          cognitive ? reply.error.code : undefined,
+          reply.error.commandId,
         );
       return reply.value;
     } finally {
@@ -80,9 +110,30 @@ export class RemoteApplicationConnection {
   async invoke(raw: unknown): Promise<ApplicationReply> {
     let id: string | undefined;
     let changingIdentity = false;
+    let commandId: string | undefined;
+    let cognitive = false;
     try {
-      this.assertOpen();
       const request = requestSchema.parse(raw);
+      const route = cognitiveAppApplicationRoute(request.method);
+      cognitive = route !== null;
+      if (route) {
+        try {
+          request.params = parseCognitiveAppRequest(
+            route.method,
+            request.params,
+          );
+        } catch {
+          throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
+        }
+        if (
+          request.params &&
+          typeof request.params === "object" &&
+          "commandId" in request.params &&
+          typeof request.params.commandId === "string"
+        )
+          commandId = request.params.commandId;
+      }
+      this.assertOpen();
       if (this.identityTransition)
         throw new ApplicationRequestError(409, "身份正在切换，请稍后重试。");
       if (this.requests.size >= 64 || this.requests.has(request.id))
@@ -118,22 +169,28 @@ export class RemoteApplicationConnection {
       if (["login", "logout"].includes(request.method)) this.invalidate();
       return { ok: true, value: result };
     } catch (error) {
+      const failure =
+        id && this.requests.get(id)?.signal.aborted
+          ? {
+              status: 408,
+              code: "cancelled",
+              message: "请求已取消；已提交的操作不会回滚。",
+            }
+          : error instanceof ApplicationRequestError
+            ? {
+                status: error.status,
+                code: cognitive
+                  ? (error.code ?? "remote_error")
+                  : "remote_error",
+                message: error.message,
+              }
+            : applicationFailure(error);
       return {
         ok: false,
-        error:
-          id && this.requests.get(id)?.signal.aborted
-            ? {
-                status: 408,
-                code: "cancelled",
-                message: "请求已取消；已提交的操作不会回滚。",
-              }
-            : error instanceof ApplicationRequestError
-              ? {
-                  status: error.status,
-                  code: "remote_error",
-                  message: error.message,
-                }
-              : applicationFailure(error),
+        error: {
+          ...failure,
+          ...(commandId === undefined ? {} : { commandId }),
+        },
       };
     } finally {
       if (id) this.requests.delete(id);

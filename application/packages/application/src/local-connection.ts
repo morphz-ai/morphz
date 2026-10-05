@@ -3,6 +3,7 @@ import { z } from "zod";
 import { DomainError, localAccess } from "../../core/src/model.js";
 import {
   applicationMethods,
+  cognitiveAppApplicationRoute,
   ApplicationRequestError,
   type ApplicationMethod,
   type ApplicationCallOptions,
@@ -18,6 +19,7 @@ import {
   applicationFailure,
   invokeApplication,
 } from "./application.js";
+import { parseCognitiveAppRequest } from "../../core/src/cognitive-app-api.js";
 
 const invocationSchema = z
   .object({
@@ -57,7 +59,15 @@ export class LocalApplicationConnection {
       throw new DomainError("forbidden", "身份已切换，操作未执行。");
     const cookie = this.cookie;
     const assertActive = () => {
-      this.authentication();
+      try {
+        this.authentication();
+      } catch (error) {
+        // An issued session becoming invalid is revoked authority, not a new
+        // anonymous login attempt. Initial authentication still reports 401.
+        if (error instanceof AuthenticationRequired)
+          throw new DomainError("forbidden", "身份已失效，操作未执行。");
+        throw error;
+      }
       if (cookie !== this.cookie || generation !== this.generation)
         throw new DomainError("forbidden", "身份已切换，操作未执行。");
     };
@@ -78,7 +88,33 @@ export class LocalApplicationConnection {
     params?: unknown,
     options: ApplicationCallOptions = {},
   ) {
-    options.signal?.throwIfAborted();
+    const cognitive = cognitiveAppApplicationRoute(method);
+    if (cognitive) {
+      try {
+        params = parseCognitiveAppRequest(cognitive.method, params);
+      } catch {
+        throw new ApplicationRequestError(400, "请求格式无效。", "invalid");
+      }
+    }
+    const commandId =
+      cognitive &&
+      params &&
+      typeof params === "object" &&
+      "commandId" in params &&
+      typeof params.commandId === "string"
+        ? params.commandId
+        : undefined;
+    const assertNotAborted = () => {
+      if (cognitive && options.signal?.aborted)
+        throw new ApplicationRequestError(
+          408,
+          "请求已取消；已提交的操作不会回滚。",
+          "cancelled",
+          commandId,
+        );
+      options.signal?.throwIfAborted();
+    };
+    assertNotAborted();
     const id = randomUUID(),
       abort = () => this.cancel(id);
     options.signal?.addEventListener("abort", abort, { once: true });
@@ -89,12 +125,13 @@ export class LocalApplicationConnection {
         params,
         identityGeneration: options.identityGeneration,
       });
-      options.signal?.throwIfAborted();
+      assertNotAborted();
       if (!reply.ok)
         throw new ApplicationRequestError(
           reply.error.status,
           reply.error.message,
           reply.error.code,
+          reply.error.commandId,
         );
       return reply.value;
     } finally {
@@ -103,8 +140,27 @@ export class LocalApplicationConnection {
   }
   async invoke(raw: unknown): Promise<ApplicationReply> {
     let requestId: string | undefined;
+    let commandId: string | undefined;
     try {
       const request = invocationSchema.parse(raw);
+      const cognitive = cognitiveAppApplicationRoute(request.method);
+      if (cognitive) {
+        try {
+          request.params = parseCognitiveAppRequest(
+            cognitive.method,
+            request.params,
+          );
+        } catch {
+          throw new DomainError("invalid", "请求格式无效。");
+        }
+        if (
+          request.params &&
+          typeof request.params === "object" &&
+          "commandId" in request.params &&
+          typeof request.params.commandId === "string"
+        )
+          commandId = request.params.commandId;
+      }
       if (this.closing) throw new DomainError("forbidden", "应用连接已关闭。");
       if (this.requests.has(request.id) || this.requests.size >= 64)
         throw new DomainError("invalid", "应用请求过多或标识重复。");
@@ -153,26 +209,31 @@ export class LocalApplicationConnection {
             status: 408,
             code: "cancelled",
             message: "请求已取消；已提交的操作不会回滚。",
+            ...(commandId === undefined ? {} : { commandId }),
           },
         };
       return { ok: true, value };
     } catch (error) {
+      const failure =
+        requestId && this.requests.get(requestId)?.signal.aborted
+          ? {
+              status: 408,
+              code: "cancelled",
+              message: "请求已取消；已提交的操作不会回滚。",
+            }
+          : error instanceof AuthenticationRequired
+            ? {
+                status: 401,
+                code: "authentication_required",
+                message: error.message,
+              }
+            : applicationFailure(error);
       return {
         ok: false,
-        error:
-          requestId && this.requests.get(requestId)?.signal.aborted
-            ? {
-                status: 408,
-                code: "cancelled",
-                message: "请求已取消；已提交的操作不会回滚。",
-              }
-            : error instanceof AuthenticationRequired
-              ? {
-                  status: 401,
-                  code: "authentication_required",
-                  message: error.message,
-                }
-              : applicationFailure(error),
+        error: {
+          ...failure,
+          ...(commandId === undefined ? {} : { commandId }),
+        },
       };
     } finally {
       if (requestId) this.requests.delete(requestId);

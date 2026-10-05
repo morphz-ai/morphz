@@ -1,6 +1,75 @@
 // Logical application operations. No HTTP, Electron, filesystem or credentials.
 // Both hosts call the same business layer; only their transport adapters differ.
 import { z } from "zod";
+import type { CognitiveAppMethod } from "./cognitive-app-api.js";
+
+/** Exact public facade ingress. Host-only capabilities never enter this map. */
+export const cognitiveAppApplicationMethods = [
+  "cognitive-apps.list",
+  "cognitive-apps.describe",
+  "cognitive-apps.install",
+  "cognitive-apps.grant",
+  "cognitive-apps.connect",
+  "cognitive-apps.connection-state",
+  "cognitive-apps.invoke",
+  "cognitive-apps.read-object",
+  "cognitive-apps.command-status",
+  "cognitive-apps.recover",
+] as const;
+export const cognitiveAppApplicationRoutes = Object.freeze({
+  "cognitive-apps.list": {
+    method: "list",
+    path: "/api/platform/cognitive-apps/list",
+  },
+  "cognitive-apps.describe": {
+    method: "describe",
+    path: "/api/platform/cognitive-apps/describe",
+  },
+  "cognitive-apps.install": {
+    method: "install",
+    path: "/api/platform/cognitive-apps/install",
+  },
+  "cognitive-apps.grant": {
+    method: "grant",
+    path: "/api/platform/cognitive-apps/grant",
+  },
+  "cognitive-apps.connect": {
+    method: "connect",
+    path: "/api/platform/cognitive-apps/connect",
+  },
+  "cognitive-apps.connection-state": {
+    method: "connectionState",
+    path: "/api/platform/cognitive-apps/connection-state",
+  },
+  "cognitive-apps.invoke": {
+    method: "invoke",
+    path: "/api/platform/cognitive-apps/invoke",
+  },
+  "cognitive-apps.read-object": {
+    method: "readObject",
+    path: "/api/platform/cognitive-apps/read-object",
+  },
+  "cognitive-apps.command-status": {
+    method: "commandStatus",
+    path: "/api/platform/cognitive-apps/command-status",
+  },
+  "cognitive-apps.recover": {
+    method: "recover",
+    path: "/api/platform/cognitive-apps/recover",
+  },
+} as const satisfies Record<
+  (typeof cognitiveAppApplicationMethods)[number],
+  { method: CognitiveAppMethod; path: string }
+>);
+for (const route of Object.values(cognitiveAppApplicationRoutes))
+  Object.freeze(route);
+export function cognitiveAppApplicationRoute(method: string) {
+  return Object.hasOwn(cognitiveAppApplicationRoutes, method)
+    ? cognitiveAppApplicationRoutes[
+        method as keyof typeof cognitiveAppApplicationRoutes
+      ]
+    : null;
+}
 
 /** Invalidation metadata, never permission grants or Client-owned revisions. */
 export const navigationRevisionsSchema = z.object({
@@ -24,6 +93,7 @@ export const runtimeNavigationRequestSchema = z
   );
 
 export const applicationMethods = [
+  ...cognitiveAppApplicationMethods,
   "platform.bootstrap",
   "profile.read",
   "profile.update",
@@ -156,6 +226,8 @@ export type ApplicationFailure = {
   status: number;
   code: string;
   message: string;
+  /** Original operation identity; never an invitation to regenerate/retry it. */
+  commandId?: string;
 };
 export type ApplicationReply =
   { ok: true; value: unknown } | { ok: false; error: ApplicationFailure };
@@ -183,6 +255,7 @@ export class ApplicationRequestError extends Error {
     public status: number,
     message: string,
     public code?: string,
+    public commandId?: string,
   ) {
     super(message);
   }
