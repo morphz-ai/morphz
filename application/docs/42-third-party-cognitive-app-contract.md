@@ -1,6 +1,6 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05。状态：纯协议、独立 SDK 包及 v11 双后端迁移已验证；共享网关尚未接通。
+日期：2026-10-05。状态：纯协议、独立 SDK 包、v11 双后端迁移及内部注册表已验证；共享网关尚未接通。
 这是 Morphz Application 的实验接入版本，不是 Runtime 或 HNS 的新标准。
 文档存在不表示独立 SDK、服务网关或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
@@ -218,6 +218,9 @@ canonical origin、专用环境凭据引用和显式 current 的条目。POSIX �
 128 条。尚无 Windows ACL 实现，该平台明确不可用。配置逐次读取、不轮询，
 建议操作者 atomic rename 更新，不通过 Client、模型或 iframe 编辑。
 alias 不含凭据引用：secret 轮换不变，issuer／地址／保存方变化产生新 alias。
+同一 connectionId 的保存方和 alias 不可改写；接入新地址使用新的本人
+connectionId，同一 service／dataAuthority 仍复用原 instance。旧 admission
+保留旧连接，旧配置可仅开放 receipt-read；缺失旧 alias 时不回退新地址。
 setup、active、receipt-recovery handle 分开，已准备调用保留不可变快照；
 旧 alias 只可读取旧回执，不可调用新写入。resolver 选择不是授权，Gateway
 仍须先核实际本人、当前连接与命令来源，未撤销连接才可核原回执。
@@ -377,7 +380,7 @@ admission 和已核 committed 摘要，不给予通用恢复写权。
 | 停用本人 grant | 禁止该版本新的 admission／dispatch；在途响应仍可留下真实结果 |
 | 撤销连接 | 不再发新调用或回执查询；未知结果保留；本人重接原保存方后才能核验 |
 | 安装新版本 | 重新同意其声明；不改绑旧输入、在途命令、旧 UI 或已固定引用 |
-| 路由迁移 | 本人同意和 revision CAS，核验仍是同一 service/data authority；旧回执不改身份 |
+| 路由迁移 | 本人同意后新建连接，核验同一 service/data authority 则复用实例；旧连接及回执不改路由身份 |
 | 原件库被替换 | 新 data authority、新实例；不能把旧目录指向空库／新对象 |
 
 现有 `recordCommittedContent` 仍要求 active instance，新的恢复必须专门允许

@@ -1,5 +1,27 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：同一事务注册表
+
+Platform 内部 registry 现维护不可变 headless 定义、本人精确版本许可、
+固定保存方、本人连接、CAS 与独立 keyset 分页；复用既有安装身份和数据
+实例，不自开数据库连接。定义使用实际 canonical bytes／SHA，旧同版内容
+冲突拒绝；本人未同意的安装不进入个人许可目录，安装本身不生成 grant。
+这里尚不是完整工作台安装管理入口。
+
+同一 connection 的保存方和 Host alias 都不可变。地址／issuer 改动必须
+新建连接；同一保存方复用原 instance，旧连接仍可解析其原 alias 核旧回执，
+不会把旧 admission 改送新地址。凭据轮换保留 alias；停用和恢复使用本人
+revision CAS。公开 DTO 不选出 alias。原件身份复用 portable guard，不 trim
+正常 Unicode、换行和空格。非 null GUI 仍拒绝，不能凭旧窗口冒称已核字节。
+
+Root 独立组合重跑注册表、命令账本、真实 Platform 权限、迁移、旧关系／
+Runtime 来源及 SDK 10 文件共 242/242；SQLite／PostgreSQL 均实际执行，
+零失败／跳过／取消。注册表自身 44 项。日志
+`/tmp/morphz-cognitive-registry-commands-platform-ROOT-CORRECTED-oct05.log`；
+首选测试名错误被 runner 拒绝的日志另留，不计为测试通过。
+新增模块／测试格式检查通过。本段只交付 q-scoped 注册表；命令组合、
+共享 Host 接线、网络认证、实际 Agent 与原 App 仍另阶段验收。
+
 ## 2026-10-05 第三方认知应用：实际独立 SDK 包
 
 纯协议现在形成实验 ESM／TypeScript 作者包
