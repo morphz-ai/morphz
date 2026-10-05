@@ -1,5 +1,26 @@
 # 桌面能力实施记录
 
+## 2026-10-06 私有投影清空后的会话提示与退出边界
+
+真实生产 App 发现最终授权／导航读取冲突清空私有 Boot 后，变更订阅随
+Boot 退出，后续 grant3 提示无人接收。现由已校验 bootstrap 的 center／
+principal／csrf 三字段会话元数据拥有提示生命周期；不保留私有树或权限，
+恢复仍走原完整读取和末授权门。同会话普通刷新稳定复用 owner，真正退休
+后再校验安装的新生命周期对象会重订阅，即使 token 相同。
+
+私有投影为空时仍能真正退出登录；退休立即封原读取 epoch/controller，
+不等退出回包才封门。500／实际原 8 秒超时保持原错误，仅在同 epoch、
+仍挂载时请求一次完整授权重读，供下一次显式退出；不重发 logout、不
+恢复旧 owner、不越过登录／401／卸载。没有新增轮询或变更传输协议。
+
+Root 完整冷审并独立正式 40/40、required PostgreSQL、零失败／取消／跳过，
+日志 `/tmp/morphz-workspace-change-owner-ROOT-FINAL-oct06.log`；新 mounted
+矩阵是实际 Chromium／React／原 Client、受控 logical bridge，不冒称 SQL
+或 native。真实生产双 SQL App 的恢复已由 Root 后续 4/4 验证。原 clear
+算法、历史 raw/hash 和负控保留；有限当前生命周期 raw／AST 期望单独
+扩展，未改历史原文。旧 SSR 业务五项的未挂载假设另行迁移真实 owner，
+不能放松生产 mounted 门或把原失败归因环境。原 RED 日志均保留。
+
 ## 2026-10-06 原生资源 HEAD 错误体边界
 
 真实 native Local 自动验收发现：授权已拒绝的 HEAD 返回 403，但 Electron

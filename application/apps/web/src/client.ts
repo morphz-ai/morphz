@@ -775,6 +775,14 @@ export function useWorkspace() {
     [online, setOnline] = useState(false),
     [error, setError] = useState(""),
     [authenticationRequired, setAuthenticationRequired] = useState(false);
+  // Session metadata owns invalidation listening, never protected content or
+  // permission. Clearing a private projection must not lose the hint that
+  // requests its next complete, independently authorized read.
+  type ChangeIdentity = Pick<Boot, "centerId" | "principalId" | "csrfToken">;
+  const [changeIdentity, setChangeIdentity] = useState<ChangeIdentity | null>(
+    null,
+  );
+  const changeOwner = useRef<ChangeIdentity | null>(null);
   const current = useRef<Boot | null>(null),
     inputSends = useRef(new Map<string, Promise<Receipt>>()),
     platform = useRef<PlatformClient | null>(null),
@@ -944,6 +952,10 @@ export function useWorkspace() {
     void pending.then(settled, settled);
     return pending;
   }
+  function retireChangeOwner() {
+    changeOwner.current = null;
+    setChangeIdentity(null);
+  }
   async function refreshOnce() {
     // An invalidation already queued in the shared drain must not start a
     // fresh read after its React owner has unmounted.
@@ -962,6 +974,22 @@ export function useWorkspace() {
           signal,
         );
         if (version !== epoch.current) return false;
+        // Only PlatformClient's validated bootstrap establishes this owner.
+        // Replace the synchronous guard before any new identity's later read;
+        // React cleanup may follow, but old hints cannot cross this boundary.
+        const nextIdentity: ChangeIdentity = {
+          centerId: source.boot.centerId,
+          principalId: source.boot.principalId,
+          csrfToken: source.boot.csrfToken,
+        };
+        changeOwner.current = nextIdentity;
+        setChangeIdentity((previous) =>
+          previous?.centerId === nextIdentity.centerId &&
+          previous.principalId === nextIdentity.principalId &&
+          previous.csrfToken === nextIdentity.csrfToken
+            ? previous
+            : nextIdentity,
+        );
         cognitiveManagement.observeIdentity(source.boot);
         if (
           current.current &&
@@ -1256,6 +1284,7 @@ export function useWorkspace() {
           clearProtectedProjection();
         }
         if (e instanceof RequestError && e.status === 401) {
+          retireChangeOwner();
           cognitiveManagement.retireIdentity();
           storageScope("disconnected", "anonymous");
           setAuthenticationRequired(true);
@@ -1328,6 +1357,7 @@ export function useWorkspace() {
     );
   }
   async function login(token: string) {
+    retireChangeOwner();
     cognitiveManagement.retireIdentity();
     epoch.current++;
     navigationReadController.current?.abort();
@@ -1353,15 +1383,26 @@ export function useWorkspace() {
     await refresh();
   }
   async function logout() {
-    if (!current.current) return;
+    const identity = changeOwner.current;
+    if (!identity) return;
+    retireChangeOwner();
     cognitiveManagement.retireIdentity();
-    await applicationCall("logout", undefined, {
-      identityGeneration: current.current.csrfToken,
-      signal: AbortSignal.timeout(8000),
-    });
-    // Drop the mounted workspace and all in-memory object state immediately.
-    epoch.current++;
+    const version = ++epoch.current;
     navigationReadController.current?.abort();
+    try {
+      await applicationCall("logout", undefined, {
+        identityGeneration: identity.csrfToken,
+        signal: AbortSignal.timeout(8000),
+      });
+    } catch (error) {
+      // A failed/unknown logout is not permission to resurrect its old owner.
+      // One fresh authorized read can restore an explicit retry; retain the
+      // original failure, never retry logout or cross a later identity boundary.
+      if (projectionMounted.current && version === epoch.current)
+        void refresh();
+      throw error;
+    }
+    // Drop the mounted workspace and all in-memory object state immediately.
     setCognitiveAppCatalog({ versions: [], connections: [] });
     protectedReadGeneration.current++;
     scriptEditorReads.clear();
@@ -1394,6 +1435,7 @@ export function useWorkspace() {
     document.addEventListener("visibilitychange", wake);
     return () => {
       projectionMounted.current = false;
+      changeOwner.current = null;
       cognitiveManagement.retireIdentity();
       epoch.current++;
       navigationReadController.current?.abort();
@@ -1402,12 +1444,20 @@ export function useWorkspace() {
     };
   }, []);
   useEffect(() => {
-    const expected = boot?.csrfToken;
+    const expected = changeIdentity;
     if (!expected || authenticationRequired) return;
+    const owned = () => {
+      const latest = changeOwner.current;
+      return (
+        latest?.centerId === expected.centerId &&
+        latest.principalId === expected.principalId &&
+        latest.csrfToken === expected.csrfToken
+      );
+    };
     setWorkspaceConnection("connecting");
     return subscribeWorkspaceChanges(
       (change) => {
-        if (current.current?.csrfToken !== expected) return;
+        if (!owned()) return;
         if (change.accessChanged) {
           // Invalidate in-flight publication as well as mounted private data.
           // Drafts and unsent input are deliberately not part of this clear.
@@ -1421,11 +1471,11 @@ export function useWorkspace() {
       },
       {
         onConnected: () => {
-          if (current.current?.csrfToken !== expected) return;
+          if (!owned()) return;
           setWorkspaceConnection("connected");
         },
         onClosed: () => {
-          if (current.current?.csrfToken !== expected) return;
+          if (!owned()) return;
           // Losing change hints does not mean the authoritative RPC channel
           // is unavailable. Keep drafts and usable commands available while
           // the transport reconnects and requests its resync snapshot.
@@ -1433,12 +1483,7 @@ export function useWorkspace() {
         },
       },
     );
-  }, [
-    boot?.centerId,
-    boot?.principalId,
-    boot?.csrfToken,
-    authenticationRequired,
-  ]);
+  }, [changeIdentity, authenticationRequired]);
   async function upload(
     file: File,
   ): Promise<{ assetId: string; mime: string }> {

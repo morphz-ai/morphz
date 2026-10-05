@@ -6,6 +6,7 @@ import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
   verifyCurrentObjectAnnotationsConsumption,
   objectAnnotationsFixed,
+  currentWorkspaceInvalidations,
 } from "./fixtures/object-annotations-consumption.js";
 import { readObjectInteractionOwner } from "./fixtures/object-interactions-consumption.js";
 import {
@@ -474,7 +475,7 @@ test("object annotations preserve complete read, abort and five-dependency recip
     client,
     changed(objectOwner, reader, changedReader),
   );
-  const wake = objectAnnotationsFixed.invalidation[0]!.raw;
+  const wake = currentWorkspaceInvalidations[0]!;
   const changedWake = changed(
     wake,
     "setWorkspaceChangeRevision((value) => value + 1);",

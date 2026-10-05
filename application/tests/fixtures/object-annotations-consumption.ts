@@ -117,6 +117,54 @@ for (const span of [
     span.sha256,
     "fixed complete actual Git annotation span",
   );
+// The archived raw/hash recipes remain immutable. This separately reviewed,
+// finite lifecycle extension keeps their original annotation invalidation
+// algorithm, while a validated session owns hints independently of private Boot.
+// It is a source-contract check, not mounted authorization or SQL evidence.
+const currentStartupInvalidation = uniqueReplace(
+  uniqueReplace(
+    objectAnnotationsFixed.invalidation[0].raw,
+    "useEffect(() => {\n    void refresh();",
+    "useEffect(() => {\n    projectionMounted.current = true;\n    void refresh();",
+    "one approved mounted startup extension",
+  ),
+  "return () => {\n      window.removeEventListener",
+  "return () => {\n      projectionMounted.current = false;\n      changeOwner.current = null;\n      cognitiveManagement.retireIdentity();\n      epoch.current++;\n      navigationReadController.current?.abort();\n      window.removeEventListener",
+  "one approved synchronous session retirement cleanup",
+);
+let currentSessionInvalidation = uniqueReplace(
+  objectAnnotationsFixed.invalidation[1].raw,
+  "const expected = boot?.csrfToken;",
+  "const expected = changeIdentity;",
+  "one approved metadata-only hint identity",
+);
+currentSessionInvalidation = uniqueReplace(
+  currentSessionInvalidation,
+  '    setWorkspaceConnection("connecting");',
+  '    const owned = () => {\n      const latest = changeOwner.current;\n      return (\n        latest?.centerId === expected.centerId &&\n        latest.principalId === expected.principalId &&\n        latest.csrfToken === expected.csrfToken\n      );\n    };\n    setWorkspaceConnection("connecting");',
+  "one approved exact three-field synchronous ownership guard",
+);
+const previousHintGuard =
+  "if (current.current?.csrfToken !== expected) return;";
+assert.equal(
+  currentSessionInvalidation.split(previousHintGuard).length - 1,
+  3,
+  "all and only update / connected / closed hint ownership guards migrate",
+);
+currentSessionInvalidation = currentSessionInvalidation.replaceAll(
+  previousHintGuard,
+  "if (!owned()) return;",
+);
+currentSessionInvalidation = uniqueReplace(
+  currentSessionInvalidation,
+  "}, [\n    boot?.centerId,\n    boot?.principalId,\n    boot?.csrfToken,\n    authenticationRequired,\n  ])",
+  "}, [changeIdentity, authenticationRequired])",
+  "one approved stable lifecycle dependency, including same-session reinstatement",
+);
+export const currentWorkspaceInvalidations = [
+  currentStartupInvalidation,
+  currentSessionInvalidation,
+];
 const featureModule = "./features/content/ObjectAnnotations.js";
 const exports = [
   "useObjectAnnotations",
@@ -338,6 +386,104 @@ function uniqueReplace(
 ) {
   assert.equal(text.split(before).length - 1, 1, rule);
   return text.replace(before, after);
+}
+function verifyCurrentWorkspaceChangeOwner(client: Parsed) {
+  const workspace = oneFunction(client, "useWorkspace");
+  const direct = workspace.body!.statements;
+  assert.equal(
+    direct
+      .filter(
+        (node) =>
+          node.kind === SyntaxKind.TypeAliasDeclaration &&
+          node.getText().startsWith("type ChangeIdentity ="),
+      )
+      .map((node) => node.getText())
+      .join("\n"),
+    'type ChangeIdentity = Pick<Boot, "centerId" | "principalId" | "csrfToken">;',
+    "hint owner contains only validated authentication metadata, not private content",
+  );
+  const states = direct
+    .filter(isVariableStatement)
+    .filter((node) =>
+      node.declarationList.declarations.some((declaration) =>
+        ["[changeIdentity, setChangeIdentity]", "changeOwner"].includes(
+          declaration.name.getText(),
+        ),
+      ),
+    );
+  assert.deepEqual(
+    states.map((node) => node.getText()),
+    [
+      "const [changeIdentity, setChangeIdentity] = useState<ChangeIdentity | null>(\n    null,\n  );",
+      "const changeOwner = useRef<ChangeIdentity | null>(null);",
+    ],
+    "session state starts unauthenticated, never from local storage or private Boot",
+  );
+  const refresh = oneFunction(client, "refreshOnce");
+  const installation = client.nodes
+    .filter(isVariableDeclaration)
+    .filter((node) => node.name.getText() === "nextIdentity");
+  assert.equal(installation.length, 1, "one validated session installation");
+  const statement = installation[0]!.parent.parent;
+  assert.ok(isVariableStatement(statement));
+  const scope = statement.parent;
+  assert.ok(scope.kind === SyntaxKind.Block);
+  assert.ok(
+    statement.pos > refresh.pos && statement.end < refresh.end,
+    "metadata installation belongs only to the real refresh read",
+  );
+  const statements: Node[] = [];
+  scope.forEachChild((node) => {
+    statements.push(node);
+  });
+  const index = statements.indexOf(statement);
+  assert.deepEqual(
+    statements.slice(index - 2, index + 3).map((node) => node.getText()),
+    [
+      "const source = await PlatformClient.connect(\n          { call: applicationCall },\n          signal,\n        );",
+      "if (version !== epoch.current) return false;",
+      "const nextIdentity: ChangeIdentity = {\n          centerId: source.boot.centerId,\n          principalId: source.boot.principalId,\n          csrfToken: source.boot.csrfToken,\n        };",
+      "changeOwner.current = nextIdentity;",
+      "setChangeIdentity((previous) =>\n          previous?.centerId === nextIdentity.centerId &&\n          previous.principalId === nextIdentity.principalId &&\n          previous.csrfToken === nextIdentity.csrfToken\n            ? previous\n            : nextIdentity,\n        );",
+    ],
+    "only validated source.boot three-field identity installs after the refresh epoch gate",
+  );
+  const platform = annotationImported(
+    client,
+    "./platform-client.js",
+    "PlatformClient",
+  );
+  const connectIdentifier = client.nodes
+    .filter(isIdentifier)
+    .filter(
+      (node) =>
+        node.text === "PlatformClient" &&
+        node.pos > statements[index - 2]!.pos &&
+        node.end < statement.pos,
+    );
+  assert.equal(connectIdentifier.length, 1);
+  assert.equal(
+    client.symbols.get(connectIdentifier[0]!),
+    client.symbols.get(platform),
+    "real validated PlatformClient bootstrap, not a locally shadowed authority",
+  );
+  assert.deepEqual(
+    client.nodes
+      .filter(isBinaryExpression)
+      .filter((node) => node.left.getText() === "changeOwner.current")
+      .map((node) => node.getText()),
+    [
+      "changeOwner.current = null",
+      "changeOwner.current = nextIdentity",
+      "changeOwner.current = null",
+    ],
+    "all metadata owner writes are explicit retire, validated bootstrap, or unmount",
+  );
+  assert.equal(
+    oneFunction(client, "retireChangeOwner").getText(),
+    "function retireChangeOwner() {\n    changeOwner.current = null;\n    setChangeIdentity(null);\n  }",
+    "session retirement synchronously closes the live guard before React effect cleanup",
+  );
 }
 function expand(
   appText: string,
@@ -724,6 +870,7 @@ function expand(
   // Preserve the original raw/hash above; verify its current owner instead of
   // repairing Client with another historical inverse chain.
   verifyObjectInteractionConsumption(clientText, ownerText);
+  verifyCurrentWorkspaceChangeOwner(client);
   const invalidation = client.nodes
     .filter(isCallExpression)
     .filter(
@@ -733,8 +880,8 @@ function expand(
     );
   assert.deepEqual(
     invalidation.map((node) => node.getText()),
-    objectAnnotationsFixed.invalidation.map((span) => span.raw),
-    "original annotation cross-domain refresh and access invalidation effects",
+    currentWorkspaceInvalidations,
+    "original annotation cross-domain refresh and access invalidation effects with approved mounted session lifecycle",
   );
   // Replace only the approved exact spans. Unknown surrounding bytes, extra
   // hooks, old counterfactuals or unrelated App changes are never stripped.
@@ -994,9 +1141,7 @@ export function verifyCurrentObjectAnnotationsConsumption(
     Client: clientText,
     Expected: expectedFeature,
     Caller: `${expectedRegistration}\n${expectedProjection}\nconst panel = (${expectedConsumer});\n${objectAnnotationsFixed.beforeHook}\n${objectAnnotationsFixed.afterHook}`,
-    Invalidations: objectAnnotationsFixed.invalidation
-      .map((span) => span.raw)
-      .join("\n"),
+    Invalidations: currentWorkspaceInvalidations.join("\n"),
   });
   const app = parsed.get("App")!,
     feature = parsed.get("Feature")!,
@@ -1185,6 +1330,7 @@ export function verifyCurrentObjectAnnotationsConsumption(
     "author reads original render workspace, not latest projection",
   );
   verifyObjectInteractionConsumption(clientText, ownerText);
+  verifyCurrentWorkspaceChangeOwner(client);
   const effectSymbol = client.symbols.get(
     annotationImported(client, "react", "useEffect"),
   );
@@ -1202,6 +1348,6 @@ export function verifyCurrentObjectAnnotationsConsumption(
   assert.deepEqual(
     invalidation.map((node) => annotationShape(client, node)),
     old.map((node) => annotationShape(parsed.get("Invalidations")!, node)),
-    "original annotation cross-domain refresh and access invalidation effects",
+    "original annotation cross-domain refresh and access invalidation effects with approved mounted session lifecycle",
   );
 }
