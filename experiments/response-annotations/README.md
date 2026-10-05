@@ -11,6 +11,7 @@ The design and acceptance gate are in
 
 ```sh
 node --test experiments/response-annotations/protocol.test.mjs
+node --test experiments/response-annotations/dependency-boundary.test.mjs
 CARGO_TARGET_DIR=target cargo test --offline --manifest-path experiments/response-annotations/Cargo.toml --lib
 CARGO_TARGET_DIR=target cargo test --offline --manifest-path experiments/response-annotations/Cargo.toml --bin response-annotations-probe
 ```
@@ -19,6 +20,16 @@ The JavaScript prototype checks schema opt-in, raw/business argument separation,
 exact observation references, projection ordering and incremental terminal-body
 decoding. The Rust prototype uses the real `morphz::llm` data types and checks
 Unicode, stream event preservation and controlled terminal normalization.
+
+This experiment is a separate Cargo workspace, so it does not inherit the
+repository root's dependency patches. Its manifest deliberately resolves the
+same audited local Codex adapters as production. In particular, Morphz uses
+only the serialized network-policy types, not Codex's proxy or DNS service;
+the protocol-only adapter keeps those types while excluding the unused
+Hickory 0.25.2 implementation affected by GHSA-q2qq-hmj6-3wpp and
+GHSA-3v94-mw7p-v465. The dependency-boundary check prevents either patch drift
+or a stale lockfile from restoring that dependency chain. This does not remove
+annotation tests, tools, provider transports, or the experiment itself.
 
 Intentional prototype differences: Rust accepts the existing full `u64`
 `no_reply.wait_secs` range, requires valid Unicode scalar values, and limits

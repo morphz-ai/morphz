@@ -11,6 +11,15 @@ path = "src/main.rs"
 # This is an isolated experiment, not another production Runtime member.
 [workspace]
 
+# Cargo patches apply only at the workspace root. This isolated experiment
+# must preserve Morphz's audited Windows protocol-only boundary too; otherwise
+# its lockfile resolves Codex's unused proxy, DNS and telemetry implementations.
+[patch."https://github.com/openai/codex"]
+codex-otel = { path = "../../third_party/codex-otel-stub" }
+codex-network-proxy = { path = "../../third_party/codex-network-proxy-stub" }
+codex-utils-absolute-path = { path = "../../third_party/codex-utils-absolute-path" }
+codex-utils-pty = { path = "../../third_party/codex-utils-pty" }
+
 [dependencies]
 morphz = { path = "../../morphz" }
 serde = { version = "1.0", features = ["derive"] }
