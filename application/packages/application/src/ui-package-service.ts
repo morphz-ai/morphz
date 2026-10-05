@@ -339,6 +339,8 @@ export class UiPackageService {
   ): Promise<ApplicationManifest> {
     const principal = await this.human(actor);
     const entry = await this.platform.uiPackage(actor, appId, version);
+    if (entry.cognitive)
+      throw new DomainError("forbidden", "认知应用不能通过旧界面入口读取。");
     if (
       entry.installedByPrincipalId !== principal.principalId ||
       entry.storeId !== this.store.storeId ||
@@ -348,7 +350,10 @@ export class UiPackageService {
       throw new DomainError("forbidden", "应用包存储引用不属于当前用户。");
     const assertAccess = async () => {
       const current = await this.platform.uiPackage(actor, appId, version);
-      if (JSON.stringify(current) !== JSON.stringify(entry))
+      if (
+        current.cognitive ||
+        JSON.stringify(current) !== JSON.stringify(entry)
+      )
         throw new DomainError("forbidden", "应用包授权或版本已变化。");
     };
     const { version: stored, bytes } = await this.scoped(
@@ -380,7 +385,7 @@ export class UiPackageService {
   /** Host-only bound-window read. The requester never names a byte owner,
    * package, service or address. Human ownership/current consent and exact
    * view/binding CAS are checked by the real Platform before, during and after
-   * the actual immutable Store read. Legacy installer-only read is unchanged. */
+   * the actual immutable Store read. UI-only reads remain installer-only. */
   async readCognitive(actor: PlatformActor, input: unknown) {
     const access = { credential: actor.credential };
     let request: z.infer<typeof viewReadShape>;

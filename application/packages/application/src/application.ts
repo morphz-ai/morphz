@@ -2627,6 +2627,9 @@ export class ApplicationSession {
         (await domain.service.list(actor)).map((entry) => ({
           header: entry.header,
           installedAt: entry.installedAt,
+          ...(entry.cognitive
+            ? { cognitive: { definitionHash: entry.cognitive.definitionHash } }
+            : {}),
         })),
     );
   }

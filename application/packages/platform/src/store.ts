@@ -222,6 +222,8 @@ export type UiPackageVersion = {
   sha256: string;
   byteLength: number;
   installedAt: string;
+  /** Exact immutable declaration classification, never a consent grant. */
+  cognitive?: { definitionHash: string };
 };
 /** Host-internal evidence from an owning App's committed outbox. This is not
  * a Client credential: every projection is checked against the exact App
@@ -10803,11 +10805,15 @@ export class PlatformStore {
         sha256: string;
         byte_length: number | string;
         installed_at: string;
+        cognitive_definition_hash: string | null;
       }>(
         `SELECT p.app_id,p.package_version,p.installed_by_principal_id,p.manifest_header,
-                p.store_id,p.artifact_id,p.artifact_revision,p.sha256,p.byte_length,p.installed_at
+                p.store_id,p.artifact_id,p.artifact_revision,p.sha256,p.byte_length,p.installed_at,
+                cv.definition_hash AS cognitive_definition_hash
            FROM app_ui_packages p JOIN app_installations i
              ON i.tenant_id=p.tenant_id AND i.app_id=p.app_id
+           LEFT JOIN cognitive_app_versions cv
+             ON cv.tenant_id=p.tenant_id AND cv.app_id=p.app_id AND cv.version=p.package_version
           WHERE p.tenant_id=? AND p.installed_by_principal_id=? AND i.state='active'
           ORDER BY p.installed_at,p.app_id,p.package_version LIMIT 101`,
         [actor.tenantId, actor.principalId],
@@ -10828,6 +10834,9 @@ export class PlatformStore {
         sha256: row.sha256,
         byteLength: safeInteger(row.byte_length, "界面包字节数"),
         installedAt: row.installed_at,
+        ...(row.cognitive_definition_hash === null
+          ? {}
+          : { cognitive: { definitionHash: row.cognitive_definition_hash } }),
       }));
     }, "read");
   }
@@ -10854,11 +10863,15 @@ export class PlatformStore {
           sha256: string;
           byte_length: number | string;
           installed_at: string;
+          cognitive_definition_hash: string | null;
         }>(
           `SELECT p.app_id,p.package_version,p.installed_by_principal_id,p.manifest_header,
-                  p.store_id,p.artifact_id,p.artifact_revision,p.sha256,p.byte_length,p.installed_at
+                  p.store_id,p.artifact_id,p.artifact_revision,p.sha256,p.byte_length,p.installed_at,
+                  cv.definition_hash AS cognitive_definition_hash
              FROM app_ui_packages p JOIN app_installations i
                ON i.tenant_id=p.tenant_id AND i.app_id=p.app_id
+             LEFT JOIN cognitive_app_versions cv
+               ON cv.tenant_id=p.tenant_id AND cv.app_id=p.app_id AND cv.version=p.package_version
             WHERE p.tenant_id=? AND p.installed_by_principal_id=?
               AND p.app_id=? AND p.package_version=? AND i.state='active'`,
           [actor.tenantId, actor.principalId, appId, version],
@@ -10879,6 +10892,9 @@ export class PlatformStore {
       sha256: row.sha256,
       byteLength: safeInteger(row.byte_length, "界面包字节数"),
       installedAt: row.installed_at,
+      ...(row.cognitive_definition_hash === null
+        ? {}
+        : { cognitive: { definitionHash: row.cognitive_definition_hash } }),
     };
   }
 
@@ -12486,6 +12502,18 @@ export class PlatformStore {
     if (!/^\d+\.\d+\.\d+$/.test(packageVersion))
       throw new PlatformStorageError("invalid", "应用版本无效。");
     if (
+      (
+        await q.all(
+          "SELECT 1 AS present FROM cognitive_app_versions WHERE tenant_id=? AND app_id=? AND version=?",
+          [actor.tenantId, appId, packageVersion],
+        )
+      ).length
+    )
+      throw new PlatformStorageError(
+        "forbidden",
+        "认知应用必须通过精确绑定的领域窗口入口打开。",
+      );
+    if (
       builtinViewApps.some(
         (app) => app.id === appId && app.version === packageVersion,
       )
@@ -12547,6 +12575,14 @@ export class PlatformStore {
          WHERE v.tenant_id=? AND v.owner_principal_id=? AND v.status='open'
            ${actor.kind === "agent" ? "AND v.project_id=?" : ""}
            AND pr.archived_at IS NULL AND pr.deleted_at IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM cognitive_app_view_bindings b
+             WHERE b.tenant_id=v.tenant_id AND b.view_id=v.view_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM cognitive_app_versions cv
+             WHERE cv.tenant_id=v.tenant_id AND cv.app_id=v.app_id AND cv.version=v.package_version
+           )
            AND (${builtin} OR EXISTS (
              SELECT 1 FROM app_ui_packages p
              JOIN app_installations i ON i.tenant_id=p.tenant_id AND i.app_id=p.app_id

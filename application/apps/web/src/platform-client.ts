@@ -52,6 +52,10 @@ const pageSize = z.number().int().min(1).max(100);
 const uiPackageSummarySchema = z.object({
   header: uiPackageHeaderSchema,
   installedAt: isoTime,
+  cognitive: z
+    .object({ definitionHash: z.string().regex(/^[a-f0-9]{64}$/) })
+    .strict()
+    .optional(),
 });
 export type UiPackageSummary = z.infer<typeof uiPackageSummarySchema>;
 

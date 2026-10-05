@@ -9,6 +9,7 @@ import {
 } from "../../../packages/core/src/model.js";
 import {
   browserApplication,
+  objectsApplication,
   readerApplication,
   scriptStudioApplication,
 } from "../../../packages/core/src/applications.js";
@@ -484,6 +485,24 @@ export async function readPlatformWorkspace(
     };
   })();
   const { personal, projects, conversations, tasks: headTasks } = baseCatalog;
+  // These are only the legacy UI-only windows. Cognitive windows have their
+  // own exact binding/channel and must never trigger builtin object reads.
+  const legacyApplicationKeys = new Set(
+    [
+      objectsApplication,
+      browserApplication,
+      readerApplication,
+      scriptStudioApplication,
+      ...baseCatalog.uiPackages
+        .filter((entry) => !entry.cognitive)
+        .map((entry) => entry.header),
+    ].map((app) => `${app.id}@${app.version}`),
+  );
+  const legacyInstances = instances.filter((instance) =>
+    legacyApplicationKeys.has(
+      `${instance.applicationId}@${instance.applicationVersion}`,
+    ),
+  );
   const priorArtifacts = new Map(
     previous?.artifacts.map((artifact) => [artifact.id, artifact]) ?? [],
   );
@@ -497,7 +516,7 @@ export async function readPlatformWorkspace(
   const openedArtifactIds = new Set(
     [
       selection.preferences?.artifactId,
-      ...instances
+      ...legacyInstances
         .filter((instance) => instance.status === "open")
         .map((instance) => instance.state.artifactId),
     ].filter((value): value is string => typeof value === "string" && !!value),
@@ -505,7 +524,7 @@ export async function readPlatformWorkspace(
   const openedScriptIds = new Set(
     [
       selection.preferences?.scriptLocation?.productionId,
-      ...instances
+      ...legacyInstances
         .filter(
           (instance) =>
             instance.status === "open" &&
@@ -891,12 +910,14 @@ export async function readPlatformWorkspace(
           installedBy: client.boot.principalId,
         }),
       ),
-      ...catalog.uiPackages.map(({ header }) => ({
-        ...header,
-        installedBy: client.boot.principalId,
-      })),
+      ...catalog.uiPackages
+        .filter((entry) => !entry.cognitive)
+        .map(({ header }) => ({
+          ...header,
+          installedBy: client.boot.principalId,
+        })),
     ],
-    applicationInstances: instances,
+    applicationInstances: legacyInstances,
     relations: [],
     annotations: [],
     inputs: [...inputs.values()].sort((a, b) =>
