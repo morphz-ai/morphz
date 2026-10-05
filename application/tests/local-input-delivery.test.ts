@@ -185,6 +185,7 @@ function harness(lane: Lane) {
     events.push(["scopedStorage", capturedScope]);
     return {
       readLocal: <T>(_key: string, fallback: T) => fallback,
+      readLocalStrict: () => ({ found: false }),
       writeLocal: (key: string, value: unknown) => {
         events.push(["preferenceWrite", key, value]);
       },

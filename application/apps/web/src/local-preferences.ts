@@ -23,6 +23,21 @@ export function readLocal<T>(key: string, fallback: T, scope = localScope): T {
   }
 }
 
+/** Delivery identities must distinguish a missing record from unreadable data.
+ * Existing presentation preferences deliberately retain their lenient reader. */
+export function readLocalStrict(
+  key: string,
+  scope = localScope,
+): { found: false } | { found: true; value: unknown } {
+  const suffix = scope + ":" + key;
+  const raw =
+    localStorage.getItem(applicationStoragePrefix + suffix) ??
+    localStorage.getItem(legacyApplicationStoragePrefix + suffix);
+  return raw === null
+    ? { found: false }
+    : { found: true, value: JSON.parse(raw) as unknown };
+}
+
 export function writeLocal(key: string, value: unknown, scope = localScope) {
   localStorage.setItem(
     applicationStoragePrefix + scope + ":" + key,
@@ -38,6 +53,7 @@ export function removeLocal(key: string, scope = localScope) {
 export function scopedStorage(scope = localScope) {
   return {
     readLocal: <T>(key: string, fallback: T) => readLocal(key, fallback, scope),
+    readLocalStrict: (key: string) => readLocalStrict(key, scope),
     writeLocal: (key: string, value: unknown) => writeLocal(key, value, scope),
     removeLocal: (key: string) => removeLocal(key, scope),
   };
@@ -57,5 +73,16 @@ export const draftOwner = (() => {
     return crypto.randomUUID();
   }
 })();
+
+/** A mutation retry key must survive this window's reload. The presentation
+ * fallback above is not sufficient evidence that session storage persisted it. */
+export function requirePersistentDraftOwner(): string {
+  if (
+    !draftOwner ||
+    sessionStorage.getItem(applicationWindowKey) !== draftOwner
+  )
+    throw new Error("无法保存本窗口的安装重试标识，请恢复本机存储后重试。");
+  return draftOwner;
+}
 
 export const draftKey = (key: string) => "draft:" + draftOwner + ":" + key;

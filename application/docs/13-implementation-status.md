@@ -1,5 +1,29 @@
 # 桌面能力实施记录
 
+## 2026-10-05 认知应用安装的本机重试标识
+
+GUI 安装与精确定义登记的独立准备层已实现：Core 同步解析完整参数，
+以中心、Human、窗口和完整请求 SHA-256 固定原 commandId。沿原本机
+偏好存储只保存指纹和命令 ID，不复制声明、HTML、权限或凭据，不提交
+网络请求。损坏 JSON、存储失败、未持久化的窗口身份与取消均阻止准备；
+headless 安装保持原无 commandId 契约。真实 ACK 只清除仍匹配原 ID 的
+记录，失败、结果未知和关闭保留它，重新选择文件也不自动安装。
+
+Root 正式三文件 39/39，required PostgreSQL 入口，零失败、取消或跳过；
+全工程类型检查和五文件专项格式检查通过。日志
+`/tmp/morphz-cognitive-installation-ROOT-ACCEPTED-oct05.log`、
+`/tmp/morphz-cognitive-manager-ROOT-TYPES-FIRST-oct05.log` 和
+`/tmp/morphz-cognitive-installation-ROOT-FORMAT-oct05.log`。
+新重试测试使用实际生产 bundle、独立窗口 VM、真实 WebCrypto 和受控
+本机存储；覆盖冷重开、身份／窗口隔离、原始 HTML 指纹、取消、存储损坏、
+配额失败及清理时的原 ID 比对。此 leaf 没有实际 SQL 或 native IPC 操作，
+required PostgreSQL 入口不被混报为数据库安装验收。
+
+本阶段仅提交安装重试准备层，不证明工作台组合已完成。管理面板的写入
+等待与权限刷新卸载衔接、跨面板未知连接恢复仍在验证；Dock／输入目标、
+作者 GUI 和用户原 App 跨宿主验收仍待完成。没有改用户窗口、资料、凭据、
+Session 或在途工作。
+
 ## 2026-10-05 认知应用管理操作的客户端生命周期
 
 生产 `useWorkspace` 已提供本人定义预览、安装／登记、数据访问权限、
