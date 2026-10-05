@@ -56,7 +56,63 @@ async fn append_dialogue_signal_in_tx(
     let batch_limit = i64::try_from(DEFAULT_THREAD_SIGNAL_BATCH_LIMIT)?;
     let now = now_text();
 
-    let queued = if dispatch_mode == MessageDispatchMode::Interrupt
+    // The interrupt transaction already created this replacement in order to
+    // replay input Signals without violating their Thread foreign key. Reuse
+    // only the exact untouched route; typed formats remain outside the legacy
+    // queued/pending user_message batching contract below.
+    let replacement =
+        if dispatch_mode == MessageDispatchMode::Interrupt && crate::event::is_input_event(event) {
+            sqlx::query(
+                r#"SELECT thread.generation,
+                  (thread.agent_id = $1 AND thread.context_id = $2
+                   AND thread.session_id = $3 AND thread.root_turn_id = $4
+                   AND thread.generation = 1 AND thread.kind = 'dialogue_turn'
+                   AND thread.status = 'open' AND thread.control_state = 'active'
+                   AND thread.executor_kind = 'self' AND thread.executor_id IS NULL
+                   AND thread.lifetime = 'durable' AND thread.supervisor_kind = 'runtime'
+                   AND thread.supervisor_id = 'dialogue-router'
+                   AND thread.supervision_generation = 1
+                   AND thread.initiating_principal_id IS NOT DISTINCT FROM $5
+                   AND (thread.target_id IS NULL OR thread.target_id IS NOT DISTINCT FROM $6)
+                   AND thread.model_alias IS NOT DISTINCT FROM $7
+                   AND thread.reasoning_effort IS NOT DISTINCT FROM $8
+                   AND thread.response_annotations = $9
+                   AND NOT EXISTS (
+                     SELECT 1 FROM thread_activations activation
+                     WHERE activation.root_turn_id = thread.root_turn_id
+                       AND activation.generation = thread.generation
+                   )) AS matches_input
+               FROM threads thread WHERE thread.id = $10 FOR UPDATE OF thread"#,
+            )
+            .bind(agent_id)
+            .bind(context_id)
+            .bind(session_id)
+            .bind(&event.id)
+            .bind(principal_id)
+            .bind(requested_target_id)
+            .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+            .bind(
+                event
+                    .payload
+                    .get("reasoning_effort")
+                    .and_then(JsonValue::as_str),
+            )
+            .bind(response_annotations.as_str())
+            .bind(stable_thread_id(&event.id))
+            .fetch_optional(&mut **tx)
+            .await?
+        } else {
+            None
+        };
+    if replacement
+        .as_ref()
+        .is_some_and(|row| !row.get::<bool, _>("matches_input"))
+    {
+        return Err("Interrupt replacement Thread does not match the accepted input route".into());
+    }
+
+    let queued = if replacement.is_none()
+        && dispatch_mode == MessageDispatchMode::Interrupt
         && event.event_type == crate::event::TYPE_USER_MESSAGE
     {
         sqlx::query(
@@ -107,7 +163,13 @@ async fn append_dialogue_signal_in_tx(
         None
     };
 
-    let (thread_id, thread_generation, activation_id) = if let Some(row) = queued {
+    let (thread_id, thread_generation, activation_id) = if let Some(row) = replacement {
+        (
+            stable_thread_id(&event.id),
+            row.get::<i64, _>("generation"),
+            None,
+        )
+    } else if let Some(row) = queued {
         (
             row.get::<String, _>("thread_id"),
             row.get::<i64, _>("thread_generation"),
@@ -1068,8 +1130,9 @@ async fn claim_ordered_message_fast_path(
               AND thread.generation = activation.generation
              LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
              WHERE $17 = 'interrupt'
+               AND $11 = 'user_message'
                AND NOT EXISTS (SELECT 1 FROM interrupted_candidate)
-               AND root_event.type IN ('user_message', 'session_message')
+               AND root_event.type = 'user_message'
                AND root_event.topic = 'chat/user_message'
                AND thread.kind = 'dialogue_turn'
                AND thread.status = 'open'
@@ -1095,12 +1158,13 @@ async fn claim_ordered_message_fast_path(
              JOIN threads thread ON thread.session_id = $1
              LEFT JOIN events root_event ON root_event.id = thread.root_turn_id
              WHERE $17 = 'interrupt'
+               AND $11 = 'user_message'
                AND NOT EXISTS (SELECT 1 FROM interrupted_candidate)
                AND NOT EXISTS (SELECT 1 FROM queued_candidate)
                AND thread.kind = 'dialogue_turn'
                AND thread.status = 'open'
                AND thread.control_state = 'active'
-               AND root_event.type IN ('user_message', 'session_message')
+               AND root_event.type = 'user_message'
                AND root_event.topic = 'chat/user_message'
                AND COALESCE(root_event.payload ->> 'dispatch_mode', 'interrupt') = 'interrupt'
                AND thread.initiating_principal_id IS NOT DISTINCT FROM $7

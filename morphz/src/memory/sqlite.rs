@@ -8498,9 +8498,65 @@ async fn append_dialogue_signal_in_transaction(
     let batch_limit = i64::try_from(DEFAULT_THREAD_SIGNAL_BATCH_LIMIT)?;
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
 
+    // Interrupt precreates this exact replacement before moving the original
+    // Signals (their Thread foreign key must remain valid). Typed inputs do
+    // not participate in legacy batching, but must reuse their own replacement
+    // rather than inserting the same root twice. Never adopt a different route
+    // or an already-activated generation under this identity.
+    let replacement =
+        if dispatch_mode == MessageDispatchMode::Interrupt && crate::event::is_input_event(event) {
+            sqlx::query(
+                r#"SELECT thread.generation,
+                  (thread.agent_id = ? AND thread.context_id = ?
+                   AND thread.session_id = ? AND thread.root_turn_id = ?
+                   AND thread.generation = 1 AND thread.kind = 'dialogue_turn'
+                   AND thread.status = 'open' AND thread.control_state = 'active'
+                   AND thread.executor_kind = 'self' AND thread.executor_id IS NULL
+                   AND thread.lifetime = 'durable' AND thread.supervisor_kind = 'runtime'
+                   AND thread.supervisor_id = 'dialogue-router'
+                   AND thread.supervision_generation = 1
+                   AND thread.initiating_principal_id IS ?
+                   AND (thread.target_id IS NULL OR thread.target_id IS ?)
+                   AND thread.model_alias IS ? AND thread.reasoning_effort IS ?
+                   AND thread.response_annotations = ?
+                   AND NOT EXISTS (
+                     SELECT 1 FROM thread_activations activation
+                     WHERE activation.root_turn_id = thread.root_turn_id
+                       AND activation.generation = thread.generation
+                   )) AS matches_input
+               FROM threads thread WHERE thread.id = ?"#,
+            )
+            .bind(&session.agent_id)
+            .bind(&session.context_id)
+            .bind(&session.id)
+            .bind(&event.id)
+            .bind(principal_id)
+            .bind(requested_target_id)
+            .bind(event.payload.get("model_alias").and_then(JsonValue::as_str))
+            .bind(
+                event
+                    .payload
+                    .get("reasoning_effort")
+                    .and_then(JsonValue::as_str),
+            )
+            .bind(response_annotations.as_str())
+            .bind(stable_thread_id(&event.id))
+            .fetch_optional(&mut **tx)
+            .await?
+        } else {
+            None
+        };
+    if replacement
+        .as_ref()
+        .is_some_and(|row| row.get::<i64, _>("matches_input") != 1)
+    {
+        return Err("Interrupt replacement Thread does not match the accepted input route".into());
+    }
+
     // Prefer the already-queued next DialogueTurn.  Its model input has not
     // started, so a consecutive user message belongs to that same batch.
-    let queued = if dispatch_mode == MessageDispatchMode::Interrupt
+    let queued = if replacement.is_none()
+        && dispatch_mode == MessageDispatchMode::Interrupt
         && event.event_type == crate::event::TYPE_USER_MESSAGE
     {
         sqlx::query(
@@ -8558,7 +8614,13 @@ async fn append_dialogue_signal_in_transaction(
         None
     };
 
-    let (thread_id, thread_generation, activation_id) = if let Some(row) = queued {
+    let (thread_id, thread_generation, activation_id) = if let Some(row) = replacement {
+        (
+            stable_thread_id(&event.id),
+            row.get::<i64, _>("generation"),
+            None,
+        )
+    } else if let Some(row) = queued {
         (
             row.get::<String, _>("thread_id"),
             row.get::<i64, _>("thread_generation"),
@@ -12908,18 +12970,32 @@ impl ActivationStore for SqliteStore {
         thread_ids: &[String],
         event_ids: &[String],
     ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        if thread_ids.is_empty() || event_ids.is_empty() { return Ok(Vec::new()); }
+        if thread_ids.is_empty() || event_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut query = QueryBuilder::<sqlx::Sqlite>::new(
             "SELECT signals.* FROM thread_signals signals JOIN threads ON threads.id = signals.thread_id WHERE threads.context_id = "
         );
-        query.push_bind(context_id).push(" AND signals.thread_id IN (");
+        query
+            .push_bind(context_id)
+            .push(" AND signals.thread_id IN (");
         let mut values = query.separated(", ");
-        for id in thread_ids.iter().take(2_000) { values.push_bind(id); }
+        for id in thread_ids.iter().take(2_000) {
+            values.push_bind(id);
+        }
         query.push(") AND signals.event_id IN (");
         let mut values = query.separated(", ");
-        for id in event_ids.iter().take(256) { values.push_bind(id); }
+        for id in event_ids.iter().take(256) {
+            values.push_bind(id);
+        }
         query.push(") ORDER BY signals.sequence, signals.id");
-        query.build().fetch_all(&self.pool).await?.iter().map(thread_signal_from_row).collect()
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(thread_signal_from_row)
+            .collect()
     }
 
     async fn list_activation_signals(
@@ -26934,32 +27010,43 @@ impl EventStore for SqliteStore {
         thread_ids: &[String],
         per_thread_limit: usize,
     ) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
-        if thread_ids.is_empty() { return Ok(Vec::new()); }
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut builder = QueryBuilder::new(
             "SELECT event_sequence,id,timestamp,actor,type,topic,payload FROM (SELECT rowid AS event_sequence,id,timestamp,actor,type,topic,payload,ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY rowid DESC) AS source_rank FROM events WHERE context_id = "
         );
-        builder.push_bind(context_id)
-            .push(" AND type = ").push_bind(crate::event::TYPE_AGENT_CALL)
-            .push(" AND topic IN ('chat/assistant_call','runtime/thread_waiting') AND thread_id IN (");
+        builder
+            .push_bind(context_id)
+            .push(" AND type = ")
+            .push_bind(crate::event::TYPE_AGENT_CALL)
+            .push(
+                " AND topic IN ('chat/assistant_call','runtime/thread_waiting') AND thread_id IN (",
+            );
         let mut selected = builder.separated(", ");
-        for id in thread_ids.iter().take(2_000) { selected.push_bind(id); }
-        builder.push(")) AS bounded_sources WHERE source_rank <= ")
-            .push_bind(per_thread_limit.clamp(1,129) as i64)
+        for id in thread_ids.iter().take(2_000) {
+            selected.push_bind(id);
+        }
+        builder
+            .push(")) AS bounded_sources WHERE source_rank <= ")
+            .push_bind(per_thread_limit.clamp(1, 129) as i64)
             .push(" ORDER BY event_sequence ASC");
         let rows = builder.build().fetch_all(&self.pool).await?;
-        rows.into_iter().map(|row| {
-            let payload: String = row.get("payload");
-            let timestamp: String = row.get("timestamp");
-            Ok(Event {
-                id: row.get("id"),
-                sequence: u64::try_from(row.get::<i64,_>("event_sequence")).ok(),
-                timestamp: parse_time(&timestamp),
-                actor: row.get("actor"),
-                event_type: row.get("type"),
-                topic: row.get("topic"),
-                payload: serde_json::from_str(&payload)?,
+        rows.into_iter()
+            .map(|row| {
+                let payload: String = row.get("payload");
+                let timestamp: String = row.get("timestamp");
+                Ok(Event {
+                    id: row.get("id"),
+                    sequence: u64::try_from(row.get::<i64, _>("event_sequence")).ok(),
+                    timestamp: parse_time(&timestamp),
+                    actor: row.get("actor"),
+                    event_type: row.get("type"),
+                    topic: row.get("topic"),
+                    payload: serde_json::from_str(&payload)?,
+                })
             })
-        }).collect()
+            .collect()
     }
 
     async fn backfill_causal_projection_for_thread(

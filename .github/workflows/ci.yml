@@ -122,6 +122,8 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Run PostgreSQL conformance tests
         run: cargo test -p morphz --test runtime_store_conformance -- --nocapture
+      - name: Verify typed interrupt delivery on SQLite and PostgreSQL
+        run: cargo test --locked -p morphz --test typed_io_interrupt -- --include-ignored --nocapture
 
   native-sandbox-macos:
     name: Native Sandbox (macOS)

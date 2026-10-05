@@ -5,9 +5,8 @@ use crate::approval::{
     CAPABILITY_LEASE_APPROVED_RISK_TAG, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
 };
 
-mod session_approval;
 mod response_annotation_projection;
-pub use response_annotation_projection::{ThreadResponseAnnotations, ThreadStepAnnotation};
+mod session_approval;
 use crate::artifact::{
     execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
     ARTIFACT_TRANSFER_TOOL_NAME, CURRENT_ARTIFACT_TRANSFER_PROGRESS,
@@ -113,6 +112,7 @@ use crate::tool::{
     ReadFileTool, Registry, ScheduleTxTool, SearchTool, SendMessageTool, SessionSignalTool,
     TaskStatusTool, ThreadScheduler, Tool, WriteFileTool,
 };
+pub use response_annotation_projection::{ThreadResponseAnnotations, ThreadStepAnnotation};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 pub use session_approval::{
@@ -3820,10 +3820,13 @@ impl MorphzRuntime {
             // current model/depth may have legitimately changed via reschedule.
             return Ok(existing);
         }
-        let response_annotations = request.response_annotations
+        let response_annotations = request
+            .response_annotations
             .unwrap_or(self.inner.config.orchestrator.response_annotations);
         if !response_annotations.is_off() {
-            self.inner.orchestrator.validate_response_annotations_protocol(response_annotations)?;
+            self.inner
+                .orchestrator
+                .validate_response_annotations_protocol(response_annotations)?;
         }
         let thread = NewThread {
             response_annotations,
@@ -8315,7 +8318,8 @@ impl MorphzRuntime {
                 schedules,
             });
         }
-        self.attach_response_annotations(context_id, &mut threads).await?;
+        self.attach_response_annotations(context_id, &mut threads)
+            .await?;
         orphan_activations.extend(activations_by_thread.into_values().flatten());
         orphan_signals.extend(pending_signals_by_thread.into_values().flatten());
         orphan_approvals.extend(
@@ -9642,7 +9646,8 @@ impl MorphzRuntime {
             },
             model_attempt_events,
         };
-        self.attach_response_annotations(context_id, std::slice::from_mut(&mut detail.snapshot)).await?;
+        self.attach_response_annotations(context_id, std::slice::from_mut(&mut detail.snapshot))
+            .await?;
         Ok(Some(detail))
     }
 
@@ -11240,6 +11245,14 @@ impl SessionHandle {
         let claim = match claim {
             Ok(claim) => claim,
             Err(error) => {
+                tracing::error!(
+                    session_id = %self.id,
+                    client_message_id = %client_message_id,
+                    event_id = %event_id,
+                    error = %error,
+                    event_code = "runtime.message_claim_failed",
+                    "Session message acceptance transaction failed"
+                );
                 self.runtime
                     .inner
                     .observability

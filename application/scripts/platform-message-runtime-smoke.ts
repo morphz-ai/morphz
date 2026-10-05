@@ -36,6 +36,7 @@ import {
 import { localAccess, type RecordedInput } from "../packages/core/src/model.js";
 import { runtimeBinaryPath } from "./runtime-path.mjs";
 import { RuntimeBackupFixture } from "./runtime-backup-fixture.js";
+import { runtimeFixtureFinalReply } from "./runtime-fixture-reply.js";
 
 const binary = runtimeBinaryPath();
 assert.ok(existsSync(binary), "先构建 Morphz Runtime，再运行消息联合验收。");
@@ -78,12 +79,16 @@ const provider = createServer(async (request, response) => {
   }
   const body = JSON.parse(Buffer.concat(chunks).toString());
   providerCalls++;
-  const message = { role: "assistant", content: assistantText };
-  const choice = { index: 0, finish_reason: "stop" };
+  const { message, finishReason } = runtimeFixtureFinalReply(body, {
+    content: assistantText,
+    title: "确认合成提醒要求",
+    result: "已说明提醒时间，等待明确确认。",
+  });
+  const choice = { index: 0, finish_reason: finishReason };
   if (body.stream) {
     response.writeHead(200, { "Content-Type": "text/event-stream" });
     response.end(
-      `data: ${JSON.stringify({ id: randomUUID(), choices: [{ ...choice, delta: message }] })}\n\ndata: [DONE]\n\n`,
+      `data: ${JSON.stringify({ id: randomUUID(), choices: [{ ...choice, delta: { ...message, ...(message.tool_calls ? { tool_calls: message.tool_calls.map((tool, index) => ({ ...tool, index })) } : {}) } }] })}\n\ndata: [DONE]\n\n`,
     );
   } else {
     response.setHeader("Content-Type", "application/json");
@@ -137,6 +142,7 @@ let processHandle: ChildProcess | undefined;
 let runtimeURL = "";
 let runtimeStderr = "";
 let phase = "initialize";
+let passed = false;
 async function startRuntime() {
   phase = "start Runtime";
   runtimeStderr = "";
@@ -551,6 +557,36 @@ try {
     otherResponse.status,
     403,
     "another Human cannot read this Session",
+  );
+  // This fixture quotes the first input's real publication later. The next
+  // input is an independent attachment check, not a correction that should
+  // cancel that unfinished turn under the composer's default Interrupt mode.
+  // The separate typed_io_interrupt regression exercises the actual race.
+  phase = "wait for original publication before independent attachment";
+  const firstPublicationDeadline = Date.now() + 20_000;
+  let firstPublicationHistory = await secondBridge.platformConversationHistory(
+    { projectId, conversationId: projectId },
+    localAccess,
+  );
+  while (
+    !firstPublicationHistory.runtime.messages.some(
+      (message) =>
+        message.inputId === inputId && message.text === assistantText,
+    ) &&
+    Date.now() < firstPublicationDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    firstPublicationHistory = await secondBridge.platformConversationHistory(
+      { projectId, conversationId: projectId },
+      localAccess,
+    );
+  }
+  assert.ok(
+    firstPublicationHistory.runtime.messages.some(
+      (message) =>
+        message.inputId === inputId && message.text === assistantText,
+    ),
+    "First input must actually publish before the independent attachment input",
   );
   const attachmentBytes = Buffer.from("# 阅读摘录\n实际附件字节。\n", "utf8");
   const attachment = await messageAttachments.upload(
@@ -1034,6 +1070,7 @@ try {
     );
   }
   backupFixture?.assertVerified();
+  passed = true;
 } catch (error) {
   console.error(`Runtime smoke failed during ${phase}. ${runtimeStderr}`);
   throw error;
@@ -1047,5 +1084,6 @@ try {
   workspace?.close();
   secondWorkspace?.close();
   await backupFixture?.close();
-  rmSync(root, { recursive: true, force: true });
+  if (passed) rmSync(root, { recursive: true, force: true });
+  else console.error(`Isolated failure evidence retained: ${root}`);
 }
