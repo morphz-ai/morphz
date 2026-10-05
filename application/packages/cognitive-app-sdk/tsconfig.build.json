@@ -19,5 +19,11 @@
     "types": [],
     "skipLibCheck": false
   },
-  "include": ["src/index.ts", "src/protocol.ts", "src/domain-wire.ts"]
+  "include": [
+    "src/index.ts",
+    "src/protocol.ts",
+    "src/domain-wire.ts",
+    "src/browser.ts",
+    "src/browser-wire.ts"
+  ]
 }

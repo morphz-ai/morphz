@@ -20,6 +20,10 @@
     "./domain-wire": {
       "types": "./dist/domain-wire.d.ts",
       "import": "./dist/domain-wire.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js"
     }
   },
   "files": [

@@ -35,6 +35,7 @@ test("experimental author package declares only pure public ESM and portable typ
   assert.deepEqual(pkg.devDependencies, { typescript: "7.0.2" });
   assert.deepEqual(Object.keys(pkg.exports).sort(), [
     ".",
+    "./browser",
     "./domain-wire",
     "./protocol",
   ]);
@@ -132,6 +133,8 @@ test(
         "src/index.ts",
         "src/protocol.ts",
         "src/domain-wire.ts",
+        "src/browser.ts",
+        "src/browser-wire.ts",
       ])
         copyFileSync(join(packageRoot, filename), join(author, filename));
       await npm("author dependency installation", installArgs, author);
@@ -154,10 +157,13 @@ test(
         "LICENSE",
         "README.md",
         "package.json",
-        ...["index", "protocol", "domain-wire"].flatMap((name) => [
-          `dist/${name}.js`,
-          `dist/${name}.d.ts`,
-        ]),
+        ...[
+          "index",
+          "protocol",
+          "domain-wire",
+          "browser",
+          "browser-wire",
+        ].flatMap((name) => [`dist/${name}.js`, `dist/${name}.d.ts`]),
       ].sort();
       assert.deepEqual(
         archive.files.map(({ path }) => path).sort(),
@@ -176,14 +182,17 @@ test(
         assert.ok(
           imports.every(
             (name) =>
-              name === "zod" || /^\.\/(?:protocol|domain-wire)\.js$/.test(name),
+              name === "zod" ||
+              /^\.\/(?:protocol|domain-wire|browser-wire)\.js$/.test(name),
           ),
         );
         assert.doesNotMatch(source, /\b(?:import|require)\s*\(/);
         assert.doesNotMatch(
           source,
-          /\b(?:process|Buffer|XMLHttpRequest|WebSocket)\b|\b(?:fetch|setTimeout|setInterval)\s*\(/,
+          /\b(?:process|Buffer|XMLHttpRequest|WebSocket)\b|\b(?:fetch|setInterval)\s*\(/,
         );
+        if (!/^dist\/browser\./.test(filename))
+          assert.doesNotMatch(source, /\bsetTimeout\s*\(/);
         assert.doesNotMatch(
           source,
           /sourceMappingURL|node:|Host_private|MORPHZ_APP_|credentials|\.env/,
@@ -264,6 +273,15 @@ test(
 import { parseCognitiveAppDefinition, parseInvokeRequest, parseInvokeResponse, parsePortableText, type CognitiveAppDefinition, type DomainInvokeRequest, type DomainReadResult, type DomainDescribeRequest, type JsonValue } from "@morphz/cognitive-app-sdk";
 import { parseOperationResources } from "@morphz/cognitive-app-sdk/protocol";
 import { canonicalInvokeIdentityBytes, parseDescribeRequest } from "@morphz/cognitive-app-sdk/domain-wire";
+import { connectMorphz, parseBrowserContext, parseBrowserNavigationState, type CognitiveBrowserClient, type BrowserNavigationState } from "@morphz/cognitive-app-sdk/browser";
+const browserFactory: () => Promise<CognitiveBrowserClient> = connectMorphz;
+const contextParser: typeof parseBrowserContext = parseBrowserContext;
+if (typeof browserFactory !== "function" || typeof contextParser !== "function") throw new Error("browser subentry unavailable");
+const navigationInput = {object:{objectId:"opaque/original 😀",versionRef:"opaque:exact"},view:"reader"};
+const navigation: BrowserNavigationState = parseBrowserNavigationState(navigationInput);
+navigationInput.object.versionRef="later caller mutation";
+if(navigation.object!.versionRef!=="opaque:exact")throw new Error("navigation did not capture its own snapshot");
+for(const value of [{body:"not navigation"},{draft:"not navigation"},{unknown:true},{object:{objectId:"original",versionRef:1}}]){let rejected=false;try{parseBrowserNavigationState(value);}catch{rejected=true;}if(!rejected)throw new Error("navigation accepted undeclared business state or numeric version");}
 const definition: CognitiveAppDefinition = parseCognitiveAppDefinition({ format: "morphz-cognitive-app/v1", protocol: "morphz-domain/v1", id: "example.notes", version: "1.0.0", title: "Notes", description: "Independent author", icon: "document", harness: null, ui: null, operations: [{ id: "notes.read", title: "Read", description: "Read original", effect: "read", scope: "objects", inputSchema: { type: "null" }, outputSchema: { type: "string" } }] });
 const describe: DomainDescribeRequest = parseDescribeRequest({ protocol: "morphz-domain/v1", definition: { appId: definition.id, version: definition.version, definitionHash: "a".repeat(64) } });
 const authority = { ...describe.definition, instanceId: "instance", serviceId: "author/service", dataAuthorityId: "author/original" };
@@ -316,7 +334,7 @@ export { definition, describe, request, result, value };
       );
       writeFileSync(
         join(consumer, "invalid.ts"),
-        `import type { DomainDescribeRequest, DomainInvokeRequest } from "@morphz/cognitive-app-sdk"; const a: DomainDescribeRequest = { protocol: "morphz-domain/v1", definition: { appId: "example.notes", version: "1.0.0", definitionHash: "a".repeat(64) }, endpoint: "https://not-authority.example" }; const b: DomainInvokeRequest["delegation"]["actor"] = { kind: "human", tenantId: "tenant", principalId: "person", actantId: "human", source: { kind: "input", inputId: "input", humanActantId: "human" } }; export { a, b };`,
+        `import type { DomainDescribeRequest, DomainInvokeRequest } from "@morphz/cognitive-app-sdk"; import type { CognitiveBrowserClient, BrowserNavigationState } from "@morphz/cognitive-app-sdk/browser"; const a: DomainDescribeRequest = { protocol: "morphz-domain/v1", definition: { appId: "example.notes", version: "1.0.0", definitionHash: "a".repeat(64) }, endpoint: "https://not-authority.example" }; const b: DomainInvokeRequest["delegation"]["actor"] = { kind: "human", tenantId: "tenant", principalId: "person", actantId: "human", source: { kind: "input", inputId: "input", humanActantId: "human" } }; const c:BrowserNavigationState={view:"reader",body:"not navigation"}; function bad(client:CognitiveBrowserClient) { return client.invoke({operationId:"notes.read",parameters:null,resources:[],commandId:null,actor:"forged"}); } export { a, b, c, bad };`,
       );
       writeFileSync(
         join(consumer, "tsconfig.invalid.json"),
@@ -345,10 +363,12 @@ export { definition, describe, request, result, value };
       const diagnostics = `${invalid.stdout ?? ""}${invalid.stderr ?? ""}`;
       assert.match(diagnostics, /endpoint/);
       assert.match(diagnostics, /input/);
+      assert.match(diagnostics, /actor/);
+      assert.match(diagnostics, /body/);
       const consumerModule = join(consumer, "runtime.mjs");
       writeFileSync(
         consumerModule,
-        `import * as sdk from "@morphz/cognitive-app-sdk"; import * as protocol from "@morphz/cognitive-app-sdk/protocol"; import * as wire from "@morphz/cognitive-app-sdk/domain-wire"; if (sdk.parsePortableText !== protocol.parsePortableText || sdk.parseDomainReceipt !== wire.parseDomainReceipt) throw new Error("entry mismatch"); for (const name of ["CognitiveAppBindings", "CognitiveAppTransport", "PlatformStore", "createApp", "fetch", "BrowserBridge"]) if (name in sdk) throw new Error("private implementation exported"); try { await import("@morphz/cognitive-app-sdk/src/protocol.js"); throw new Error("source subpath exposed"); } catch (error) { if (error.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error; } console.log(JSON.stringify({ sdk: true, exports: Object.keys(sdk).sort() }));`,
+        `import * as sdk from "@morphz/cognitive-app-sdk"; import * as protocol from "@morphz/cognitive-app-sdk/protocol"; import * as wire from "@morphz/cognitive-app-sdk/domain-wire"; import * as browser from "@morphz/cognitive-app-sdk/browser"; if (sdk.parsePortableText !== protocol.parsePortableText || sdk.parseDomainReceipt !== wire.parseDomainReceipt || typeof browser.connectMorphz !== "function" || "connectMorphz" in sdk) throw new Error("entry mismatch"); await browser.connectMorphz().then(()=>{throw Error("Node acquired a browser channel")},error=>{if(error.code!=="unsupported")throw error;}); for (const name of ["CognitiveAppBindings", "CognitiveAppTransport", "PlatformStore", "createApp", "fetch", "BrowserBridge"]) if (name in sdk || name in browser) throw new Error("private implementation exported"); try { await import("@morphz/cognitive-app-sdk/src/protocol.js"); throw new Error("source subpath exposed"); } catch (error) { if (error.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw error; } console.log(JSON.stringify({ sdk: true, exports: Object.keys(sdk).sort() }));`,
       );
       const runtime = JSON.parse(
         (
@@ -362,7 +382,7 @@ export { definition, describe, request, result, value };
       );
       assert.equal(runtime.sdk, true);
       console.log(
-        `[independent SDK package] ${JSON.stringify({ name: "@morphz/cognitive-app-sdk", version: "0.1.0", runtimeDependency: "zod@4.5.4", packedFiles: expectedFiles, tarballIntegrity: archive.integrity, bytes: archive.size, strictConsumer: true, invalidConsumerRejected: true, realNodeImports: [".", "./protocol", "./domain-wire"], offline: true })}`,
+        `[independent SDK package] ${JSON.stringify({ name: "@morphz/cognitive-app-sdk", version: "0.1.0", runtimeDependency: "zod@4.5.4", packedFiles: expectedFiles, tarballIntegrity: archive.integrity, bytes: archive.size, strictConsumer: true, invalidConsumerRejected: true, realNodeImports: [".", "./protocol", "./domain-wire", "./browser"], offline: true })}`,
       );
     } finally {
       rmSync(directory, { recursive: true, force: true });
