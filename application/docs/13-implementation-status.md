@@ -1,5 +1,23 @@
 # 桌面能力实施记录
 
+## 2026-10-05 原件消费守门夹具的当前输入包装器
+
+已提交的当前 App 以认知原件保护包装器借用原八命令草稿 owner，旧夹具
+却只接受直接解构 writeInputs，导致五项检查失败。现保留完整历史 oracle、
+原直接解构分支和原拒绝反例，只新增有限的当前包装器分支；核验实际运行时
+导入、完整固定 options、原 writer 以及同步捕获的真实 Host 绑定，不以
+整个 App 快照或名义相同的镜像对象代替来源证明。新增独立正例与九个
+拒绝变体，本次只提交夹具和检查，没有回退生产 App 或删断言。
+
+正式夹具及邻接导航检查 32/32，Root 独立扩大至五文件 55/55，required
+PostgreSQL 入口，零失败、取消与跳过；全工程类型及专项格式检查通过。
+日志 `/tmp/morphz-reference-writer-focused-FINAL-oct05.log`、
+`/tmp/morphz-cognitive-manager-ROOT-THIRD-oct05.log` 和
+`/tmp/morphz-cognitive-manager-ROOT-SECOND-TYPES-oct05.log`。首轮五失败
+保留于 `/tmp/morphz-cognitive-manager-ROOT-ADJACENT-FIRST-oct05.log`，
+不是数据库能力跳过。扩大组还验证实际 Chromium owner、草稿写入及管理
+面板，但传输受控；这些不是实际 SQL、native IPC 或用户原 App 验收。
+
 ## 2026-10-05 认知应用安装的本机重试标识
 
 GUI 安装与精确定义登记的独立准备层已实现：Core 同步解析完整参数，

@@ -423,6 +423,135 @@ test("raw current App borrows the real eight-command owner without whole-App inv
     );
 });
 
+// Independently written finite recipe for the already accepted decorator seam;
+// this is not extracted from today's App and does not replace historical peers.
+const cognitiveWriterRecipe = `  const writeDrafts = createCognitiveDraftWriter({
+    writeInputs: draftCommands.writeInputs,
+    captureScope: () =>
+      cognitiveSurface ? { key: contextKey, surface: cognitiveSurface } : null,
+    onError: setNotice,
+  });`;
+const cognitiveWriterImport =
+  'import { createCognitiveDraftWriter } from "./host/cognitive-draft-writer.js";';
+
+test("current guarded draft writer and original direct writer remain finite distinct accepted profiles", () => {
+  assert.equal(currentApp.split(cognitiveWriterRecipe).length, 2);
+  verifyExchangeReferencePreparationConsumption(currentApp, currentOwner);
+  const direct = currentApp.replace(
+    cognitiveWriterRecipe,
+    "  const { writeInputs: writeDrafts } = draftCommands;",
+  );
+  verifyExchangeReferencePreparationConsumption(direct, currentOwner);
+  const actualImportAlias = currentApp
+    .replace(
+      cognitiveWriterImport,
+      'import { createCognitiveDraftWriter as guardedWriter } from "./host/cognitive-draft-writer.js";',
+    )
+    .replace(
+      "  const writeDrafts = createCognitiveDraftWriter({",
+      "  const writeDrafts = guardedWriter({",
+    );
+  verifyExchangeReferencePreparationConsumption(
+    actualImportAlias,
+    currentOwner,
+  );
+});
+
+test("current cognitive writer rejects foreign factories, captures, mirrored scopes and deferred substitutions", () => {
+  const variants: [string, string][] = [
+    [
+      "foreign factory module",
+      currentApp.replace(
+        cognitiveWriterImport,
+        'import { createCognitiveDraftWriter } from "./host/foreign-draft-writer.js";',
+      ),
+    ],
+    [
+      "type-only factory is not a runtime capability",
+      currentApp.replace(
+        cognitiveWriterImport,
+        'import type { createCognitiveDraftWriter } from "./host/cognitive-draft-writer.js";',
+      ),
+    ],
+    [
+      "same-spelling local factory cannot borrow an unused real import",
+      currentApp
+        .replace(
+          cognitiveWriterImport,
+          'import { createCognitiveDraftWriter as originalWriterFactory } from "./host/cognitive-draft-writer.js";',
+        )
+        .replace(
+          cognitiveWriterRecipe,
+          "  const createCognitiveDraftWriter = () => draftCommands.writeInputs;\n" +
+            cognitiveWriterRecipe,
+        ),
+    ],
+    [
+      "foreign original writer",
+      currentApp.replace(
+        cognitiveWriterRecipe,
+        cognitiveWriterRecipe.replace(
+          "writeInputs: draftCommands.writeInputs",
+          "writeInputs: foreignDraftCommands.writeInputs",
+        ),
+      ),
+    ],
+    [
+      "wrong original context key",
+      currentApp.replace(
+        cognitiveWriterRecipe,
+        cognitiveWriterRecipe.replace("key: contextKey", "key: conversationId"),
+      ),
+    ],
+    [
+      "mirrored nominal surface is not the captured original",
+      currentApp.replace(
+        cognitiveWriterRecipe,
+        cognitiveWriterRecipe.replace(
+          "surface: cognitiveSurface",
+          "surface: { ...cognitiveSurface }",
+        ),
+      ),
+    ],
+    [
+      "asynchronous late capture",
+      currentApp.replace(
+        cognitiveWriterRecipe,
+        cognitiveWriterRecipe.replace(
+          "captureScope: () =>",
+          "captureScope: async () =>",
+        ),
+      ),
+    ],
+    [
+      "eager capture cannot replace the original lazy boundary",
+      currentApp.replace(
+        cognitiveWriterRecipe,
+        cognitiveWriterRecipe.replace("captureScope: () =>", "captureScope:"),
+      ),
+    ],
+    [
+      "notice wrapper is not the original captured port",
+      currentApp.replace(
+        cognitiveWriterRecipe,
+        cognitiveWriterRecipe.replace(
+          "onError: setNotice",
+          "onError: (message) => setNotice(message)",
+        ),
+      ),
+    ],
+  ];
+  for (const [label, candidate] of variants) {
+    assert.notEqual(candidate, currentApp, label);
+    assert.throws(
+      () =>
+        verifyExchangeReferencePreparationConsumption(candidate, currentOwner),
+      /reference cognitive draft writer exact original capture/,
+      label,
+    );
+  }
+});
+
 test("current reference consumption permits actually consumed independent React features and actual import/command aliases", () => {
   const independent = `\nfunction IndependentReferenceFeature(){ const [value,setValue]=useState(0);useEffect(()=>setValue(v=>v+1),[]);return <aside>{value}</aside>; }\n`;
   // This new feature has an actual JSX consumer, not an unused helper.

@@ -1714,6 +1714,12 @@ export function verifyExchangeReferencePreparationConsumption(
     Host: integration.host,
     BuiltinIntent: 'const value = () => onComposeIntent("script");',
     Factory: expectedFactory,
+    CognitiveWriter: `const writeDrafts = createCognitiveDraftWriter({
+      writeInputs: draftCommands.writeInputs,
+      captureScope: () =>
+        cognitiveSurface ? { key: contextKey, surface: cognitiveSurface } : null,
+      onError: setNotice,
+    });`,
     State: stateRegistration,
     Commit: commitRegistration,
     Witness:
@@ -2175,26 +2181,73 @@ export function verifyExchangeReferencePreparationConsumption(
       .filter(isVariableDeclaration)
       .filter(
         (v) =>
-          isObjectBindingPattern(v.name) &&
-          v.name.elements.some((e) => e.name?.getText() === "writeDrafts"),
+          (isObjectBindingPattern(v.name) &&
+            v.name.elements.some((e) => e.name?.getText() === "writeDrafts")) ||
+          (isIdentifier(v.name) && v.name.text === "writeDrafts"),
       ),
     "reference original writeInputs writer",
   );
-  assert(
-    write.initializer &&
-      isIdentifier(write.initializer) &&
-      write.initializer.text === "draftCommands",
-    "reference original writeInputs writer",
-  );
-  assert(isObjectBindingPattern(write.name));
-  assert.deepEqual(
-    write.name.elements.map((e) => ({
-      key: e.propertyName?.getText(),
-      name: e.name?.getText(),
-    })),
-    [{ key: "writeInputs", name: "writeDrafts" }],
-    "reference original writeInputs writer",
-  );
+  if (isObjectBindingPattern(write.name)) {
+    // The actual original direct writer remains a distinct exact profile.
+    assert(
+      write.initializer &&
+        isIdentifier(write.initializer) &&
+        write.initializer.text === "draftCommands",
+      "reference original writeInputs writer",
+    );
+    assert.deepEqual(
+      write.name.elements.map((e) => ({
+        key: e.propertyName?.getText(),
+        name: e.name?.getText(),
+      })),
+      [{ key: "writeInputs", name: "writeDrafts" }],
+      "reference original writeInputs writer",
+    );
+  } else {
+    const rule = "reference cognitive draft writer exact original capture";
+    const imported = currentImport(
+      app,
+      "./host/cognitive-draft-writer.js",
+      "createCognitiveDraftWriter",
+      false,
+      rule,
+    );
+    assert(
+      write.initializer &&
+        isCallExpression(write.initializer) &&
+        isIdentifier(write.initializer.expression),
+      rule,
+    );
+    assert.equal(
+      aliasOrigin(app, write.initializer.expression),
+      app.symbols.get(imported),
+      rule,
+    );
+    const original = parsed.get("CognitiveWriter")!;
+    currentSame(
+      directStatement(write, rule),
+      app,
+      original.source.statements[0]!,
+      original,
+      rule,
+      names,
+    );
+    // The fixed recipe proves shape, not authority. Every lazy capture must
+    // resolve to the actual Host binding, never a nominal or mirrored scope.
+    for (const name of [
+      "draftCommands",
+      "cognitiveSurface",
+      "contextKey",
+      "setNotice",
+    ]) {
+      const captures: Identifier[] = ownedNodes(write.initializer)
+        .filter(isIdentifier)
+        .filter((id) => (names.get(app.symbols.get(id)!) ?? id.text) === name);
+      assert(captures.length > 0, rule);
+      for (const capture of captures)
+        assert.equal(aliasOrigin(app, capture), hostOrigins.get(name), rule);
+    }
+  }
   function directValue(value: Node | undefined, name: string, rule: string) {
     assert(
       value &&
