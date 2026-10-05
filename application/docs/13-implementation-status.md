@@ -1,5 +1,28 @@
 # 桌面能力实施记录
 
+## 2026-10-06 窗口关闭的事件驱动 metadata 退休
+
+真实 native Local 的 close RED：SQL 已 closed／CAS3、原 preload 已收到
+changed 且 accessChanged=false，后续 readUi2 已 409，但旧 Document 仍
+显示。普通变更不是撤权，不应清整个私有树；也不能只靠下一次作者请求
+才退场，更不能把每个 CAS／提示塞进 mountKey。
+
+共享只读 leaf 捕获初始 readUi 的固定 slot／hash／view／binding／authority
+和同一 private lease。真实 Client hint 仅触发 strict locate，首轮 metadata
+核验覆盖 readUi 到安装 observer 间的关闭；没有轮询、正文／HTML／UI重读、
+自动 launch、binding、保存或授权。最多一个在途读取＋一个最新 dirty token，
+绝对三十秒期限；旧 token 回复不发布、失败不重试、导航／身份／layout
+cleanup 同步取消。关闭、缺失、解绑或固定关系变化先同步退休业务 lease，
+再显示当前 owner 的诚实状态；同固定元组的较高 CAS 只保温，不制造 ACK
+或改 channel/source。自有真实 save2 仍是同一个 Document。
+
+Root 完整冷审并独立五文件 84/84、required PostgreSQL、零跳过；日志
+`/tmp/morphz-cognitive-view-invalidation-ROOT-FINAL-oct06.log`。新有限 UNIT／
+React 测试的时序／transport 明确受控，原 owner／consumer／channel 断言
+全部保留。独立 native 当前矩阵 20/20、零跳过另见原生验收记录：真实
+Local close3 提示使旧 GUI 在任何 guest 业务调用前退场，原命令、作者
+版本、草稿及未发送 ledger 均不变。早期关闭 RED 保留，不归因数据库环境。
+
 ## 2026-10-06 旧 SSR Client 测试迁移至真实挂载 owner
 
 原五项业务测试通过 SSR 构造取得 Client 后直接操作，未挂载 effects。

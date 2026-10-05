@@ -30,6 +30,7 @@ type Config = {
   location: CognitiveNavigationLocation | null;
   epoch: number;
   valid: boolean;
+  hintRevision: number;
 };
 type Pending = {
   method: string;
@@ -103,6 +104,7 @@ function Reader({ config }: { config: Config }) {
     location: config.location,
     identity: config.identity,
     navigationEpoch: config.epoch,
+    hintRevision: config.hintRevision,
     isCurrent: () => config.valid,
     call,
   });
@@ -144,6 +146,7 @@ function Fixture({ initial }: { initial: Partial<Config> }) {
     location: { kind: "view", slot },
     epoch: 1,
     valid: true,
+    hintRevision: 0,
     ...initial,
   });
   const [visible, setVisible] = useState(true);
@@ -212,7 +215,12 @@ function report() {
     initialRecords: records,
   };
 }
-function settle(index: number, status = "ready", label = "PRIVATE_INITIAL") {
+function settle(
+  index: number,
+  status = "ready",
+  label = "PRIVATE_INITIAL",
+  metadata?: { revision: number; change?: string },
+) {
   const p = pending[index];
   if (!p || p.done) throw Error("No pending read " + index);
   p.done = true;
@@ -220,7 +228,7 @@ function settle(index: number, status = "ready", label = "PRIVATE_INITIAL") {
   if (p.method === "cognitive-app-views.locate") {
     const viewId = "view_" + s.projectId;
     byView.set(viewId, s);
-    p.resolve({
+    const reply = {
       slot: {
         projectId: s.projectId,
         appId: s.appId,
@@ -232,7 +240,7 @@ function settle(index: number, status = "ready", label = "PRIVATE_INITIAL") {
           ? null
           : {
               viewId,
-              viewRevision: 2,
+              viewRevision: metadata?.revision ?? 2,
               status: status === "closed" ? "closed" : "open",
               binding:
                 status === "unbound"
@@ -245,7 +253,18 @@ function settle(index: number, status = "ready", label = "PRIVATE_INITIAL") {
                       dataAuthorityId: "author/data",
                     },
             },
-    });
+    };
+    if (metadata?.change && reply.view?.binding) {
+      if (metadata.change === "view") reply.view.viewId = "other_view";
+      else if (metadata.change === "binding")
+        reply.view.binding.bindingRevision++;
+      else if (metadata.change === "connection")
+        reply.view.binding.connectionId = "other";
+      else if (metadata.change === "authority")
+        reply.view.binding.dataAuthorityId = "other/data";
+      else throw Error("Unexpected controlled metadata mutation");
+    }
+    p.resolve(reply);
   } else {
     const source = structuredClone(composeSource());
     source.view.id = source.binding.viewId = p.parameters.viewId;
@@ -270,6 +289,15 @@ Object.assign(window, {
       flushSync(() => controls.config(change)),
     mount: (visible: boolean) => flushSync(() => controls.mount(visible)),
     settle,
+    metadata(index: number, status = "ready", revision = 2, change?: string) {
+      if (!pending[index]?.method.endsWith("locate"))
+        throw Error("Metadata control only accepts the actual locator port");
+      settle(index, status, "UNUSED_METADATA_HTML", { revision, change });
+    },
+    hints(tokens: number[]) {
+      for (const hintRevision of tokens)
+        flushSync(() => controls.config({ hintRevision }));
+    },
     fail(index: number) {
       pending[index]!.done = true;
       pending[index]!.reject(Error("ACTUAL_CONTROLLED_READ_DENIED"));

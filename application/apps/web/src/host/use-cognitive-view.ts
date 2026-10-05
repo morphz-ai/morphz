@@ -13,6 +13,10 @@ import {
 import type { CognitiveAppViewUi } from "../../../../packages/core/src/cognitive-app-view-api.js";
 import type { NavigationIdentity } from "./use-workspace-navigation-host.js";
 import type { CognitiveWorkSurface } from "./work-surface.js";
+import {
+  createCognitiveViewInvalidation,
+  type CognitiveViewInvalidation,
+} from "./cognitive-view-invalidation.js";
 
 const READ_DEADLINE_MS = 30_000;
 type Status = "idle" | "loading" | "error" | CognitiveViewRead["status"];
@@ -22,6 +26,7 @@ type Result = {
   epoch: number;
   generation: number;
   isCurrent(): boolean;
+  retire?(value: CognitiveViewInvalidation): void;
 } & ({ read: CognitiveViewRead } | { error: string });
 export type CognitiveViewLease = Readonly<{
   source: CognitiveAppViewUi;
@@ -39,11 +44,14 @@ export function useCognitiveView({
   navigationEpoch,
   isCurrent,
   call,
+  hintRevision = 0,
 }: {
   location: CognitiveNavigationLocation | null | undefined;
   identity: NavigationIdentity;
   navigationEpoch: number;
   isCurrent(): boolean;
+  /** Real Client invalidation token only; never an authority or mount epoch. */
+  hintRevision?: number;
   /** Controlled acceptance seam or the actual current-Human transport. */
   call?: CognitiveViewOwnerPorts["call"];
 }) {
@@ -62,9 +70,9 @@ export function useCognitiveView({
     identity.principalId,
     identity.csrfToken,
   ]);
-  const owner = useMemo(() => {
+  const ports = useMemo<CognitiveViewOwnerPorts>(() => {
     const identityGeneration = identity.csrfToken;
-    return createCognitiveViewOwner({
+    return {
       call:
         call ??
         ((method, parameters, options) =>
@@ -72,8 +80,9 @@ export function useCognitiveView({
             ...options,
             identityGeneration,
           })),
-    });
+    };
   }, [scope, call]);
+  const owner = useMemo(() => createCognitiveViewOwner(ports), [ports]);
   const [result, setResult] = useState<Result | null>(null);
   const [retry, setRetry] = useState(0);
   const current = useRef({
@@ -103,6 +112,12 @@ export function useCognitiveView({
   };
   const lifetime = useRef({ active: false, incarnation: 0 });
   const reads = useRef(new Set<AbortController>());
+  const invalidation = useRef<{
+    candidate: Result;
+    observer: ReturnType<typeof createCognitiveViewInvalidation>;
+  } | null>(null);
+  const latestHint = useRef(hintRevision);
+  latestHint.current = hintRevision;
 
   // A same-scope cleanup/replay is a new lease, even if every prop is identical.
   // Layout cleanup retires captured references before passive-effect cleanup.
@@ -112,6 +127,8 @@ export function useCognitiveView({
     return () => {
       lifetime.current.active = false;
       lifetime.current.incarnation++;
+      invalidation.current?.observer.dispose();
+      invalidation.current = null;
       for (const abort of reads.current) abort.abort();
       reads.current.clear();
     };
@@ -121,7 +138,8 @@ export function useCognitiveView({
     if (!request.location) return;
     const key = request.key,
       epoch = navigationEpoch,
-      incarnation = lifetime.current.incarnation;
+      incarnation = lifetime.current.incarnation,
+      capturedPrivateCurrent = isCurrent;
     const abort = new AbortController();
     reads.current.add(abort);
     let live = true;
@@ -137,6 +155,7 @@ export function useCognitiveView({
           current.current.epoch === epoch &&
           current.current.key === key &&
           current.current.generation === generation &&
+          capturedPrivateCurrent() &&
           current.current.isCurrent();
       } catch {
         /* The actual private owner can retire while evaluating its lease. */
@@ -173,7 +192,26 @@ export function useCognitiveView({
           (read) => {
             if (!readCurrent()) return;
             if (performance.now() >= expiresAt) timeout();
-            else setResult({ ...premise, isCurrent: readCurrent, read });
+            else
+              setResult({
+                ...premise,
+                isCurrent: readCurrent,
+                read,
+                retire(value) {
+                  if (!readCurrent()) return;
+                  // Business/source leases retire synchronously. Display of
+                  // the same owner's honest closed/error fact uses the
+                  // independent owner gate, just like the read deadline.
+                  abort.abort();
+                  setResult({
+                    ...premise,
+                    isCurrent: ownerCurrent,
+                    ...(value.status === "error"
+                      ? { error: value.message }
+                      : { read: value }),
+                  });
+                },
+              });
           },
           (error: unknown) => {
             if (!readCurrent()) return;
@@ -218,6 +256,47 @@ export function useCognitiveView({
   const selected = matching ? result : null;
   const read = selected && "read" in selected ? selected.read : null;
   const value = read?.status === "ready" ? read.source : null;
+  // Source/scope retirement is a layout boundary, not merely later passive
+  // cleanup. Metadata never turns a retired initial source into a new one.
+  useLayoutEffect(() => {
+    if (invalidation.current?.candidate !== selected) {
+      invalidation.current?.observer.dispose();
+      invalidation.current = null;
+    }
+  }, [selected]);
+  useEffect(() => {
+    if (!selected?.retire || !value || !request.location) return;
+    const retire = selected.retire;
+    let observer: ReturnType<typeof createCognitiveViewInvalidation>;
+    try {
+      observer = createCognitiveViewInvalidation({
+        slot: request.location.slot,
+        source: value,
+        current: selected.isCurrent,
+        locate: (slot, signal) =>
+          ports.call("cognitive-app-views.locate", slot, { signal }),
+        onRetire: retire,
+      });
+    } catch {
+      retire({
+        status: "error",
+        message: "应用窗口状态无法核验，请重新打开。",
+      });
+      return;
+    }
+    invalidation.current = { candidate: selected, observer };
+    // Cover close/rebind between the readUi reply and observer installation,
+    // including a close whose metadata hint was already consumed earlier.
+    observer.invalidate(latestHint.current);
+    return () => {
+      observer.dispose();
+      if (invalidation.current?.observer === observer)
+        invalidation.current = null;
+    };
+  }, [selected, value, request.key, ports]);
+  useEffect(() => {
+    invalidation.current?.observer.invalidate(hintRevision);
+  }, [hintRevision]);
   const requested = request.invalid || !!request.location;
   const status: Status = !requested
     ? "idle"

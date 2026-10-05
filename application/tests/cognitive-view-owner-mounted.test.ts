@@ -435,6 +435,160 @@ test(
         assert.deepEqual(state.records, state.initialRecords);
       },
     );
+    await t.test(
+      "initial metadata-only verification covers close before observer install and immediately retires captured business lease while displaying honest closed fact",
+      async () => {
+        await action(page, "reset");
+        await ready(page, "INITIAL_OBSERVER_SOURCE");
+        await action(page, "capture");
+        const held = await waitPending(page, "locate");
+        await action(page, "metadata", held, "closed", 3);
+        await page.waitForFunction(
+          () =>
+            Reflect.get(window, "cognitiveViewFixture").report().state
+              ?.status === "closed",
+        );
+        const state = await report(page);
+        assert.equal(state.state.blocked, true);
+        assert.equal(state.state.html, null);
+        assert.equal(state.leases[0].current, false);
+        assert.equal(state.state.message, "此应用窗口已关闭。");
+        assert.equal(
+          state.pending.filter((p: any) => p.method.endsWith("read-ui")).length,
+          1,
+        );
+        assert.deepEqual(state.pending[held].parameters, {
+          projectId: "project",
+          appId: "example.notes",
+          version: "1.1.0",
+          expectedDefinitionHash: "a".repeat(64),
+        });
+        const count = state.pending.length;
+        await action(page, "hints", [1, 2, 3]);
+        assert.equal((await report(page)).pending.length, count);
+        assert.deepEqual(state.records, state.initialRecords);
+      },
+    );
+    await t.test(
+      "metadata hint storm coalesces one latest read, own-save CAS keeps the exact source warm, and only latest closed reply retires it",
+      async () => {
+        await action(page, "reset");
+        const initial = await ready(page, "WARM_OBSERVER_SOURCE");
+        await action(page, "capture", 3);
+        const held = await waitPending(page, "locate");
+        await action(
+          page,
+          "hints",
+          Array.from({ length: 20 }, (_, i) => i + 1),
+        );
+        assert.equal(
+          (await report(page)).pending.length,
+          initial.pending.length,
+        );
+        await action(page, "metadata", held, "closed", 3);
+        const latest = await waitPending(page, "locate");
+        assert.notEqual(latest, held);
+        assert.equal((await report(page)).state.status, "ready");
+        await action(page, "metadata", latest, "ready", 3);
+        await page.evaluate(
+          () => new Promise<void>((resolve) => queueMicrotask(resolve)),
+        );
+        let state = await report(page);
+        assert.equal(state.state.html, "WARM_OBSERVER_SOURCE");
+        assert.equal(
+          state.state.viewRevision,
+          2,
+          "metadata does not impersonate own CAS3 ACK",
+        );
+        assert.equal(state.leases[0].revision, 3);
+        assert.equal(state.leases[0].current, true);
+        assert.equal(
+          state.pending.filter((p: any) => p.method.endsWith("read-ui")).length,
+          1,
+        );
+        await action(page, "hints", [21]);
+        await action(
+          page,
+          "metadata",
+          await waitPending(page, "locate"),
+          "closed",
+          3,
+        );
+        await page.waitForFunction(
+          () =>
+            Reflect.get(window, "cognitiveViewFixture").report().state
+              ?.status === "closed",
+        );
+        state = await report(page);
+        assert.equal(state.leases[0].current, false);
+        assert.deepEqual(state.records, state.initialRecords);
+      },
+    );
+    await t.test(
+      "pending observer layout disposal and ignored-abort old metadata never retire a newer identity/navigation incarnation",
+      async () => {
+        for (const change of [
+          { epoch: 2 },
+          {
+            identity: {
+              centerId: "center",
+              principalId: "other",
+              csrfToken: "other-session",
+            },
+          },
+        ]) {
+          await action(page, "reset");
+          await ready(page, "OLD_OBSERVER_SOURCE");
+          await action(page, "capture");
+          const held = await waitPending(page, "locate");
+          await action(page, "config", change);
+          assert.equal((await report(page)).pending[held].aborted, true);
+          await ready(page, "NEW_OBSERVER_SOURCE");
+          await action(page, "metadata", held, "closed", 3);
+          await page.evaluate(
+            () => new Promise<void>((resolve) => queueMicrotask(resolve)),
+          );
+          const state = await report(page);
+          assert.equal(state.state.status, "ready");
+          assert.equal(state.state.html, "NEW_OBSERVER_SOURCE");
+          assert.equal(state.leases[0].current, false);
+          assert.deepEqual(state.records, state.initialRecords);
+        }
+      },
+    );
+    await t.test(
+      "observer metadata denial or absolute deadline retires the source but keeps honest error without automatic UI read/retry",
+      async () => {
+        for (const event of ["fail", "expire"]) {
+          await action(page, "reset");
+          await ready(page, "OBSERVER_PENDING_SOURCE");
+          await action(page, "capture");
+          const held = await waitPending(page, "locate");
+          if (event === "fail") await action(page, "fail", held);
+          else await action(page, "expire");
+          await page.waitForFunction(
+            () =>
+              Reflect.get(window, "cognitiveViewFixture").report().state
+                ?.status === "error",
+          );
+          const state = await report(page);
+          assert.equal(state.state.html, null);
+          assert.equal(state.state.blocked, true);
+          assert.equal(state.leases[0].current, false);
+          assert.equal(state.pending[held].aborted, true);
+          assert.equal(
+            state.pending.filter((p: any) => p.method.endsWith("read-ui"))
+              .length,
+            1,
+          );
+          if (event === "expire") assert.match(state.state.message, /超时/);
+          const count = state.pending.length;
+          await action(page, "hints", [1, 2]);
+          assert.equal((await report(page)).pending.length, count);
+          assert.deepEqual(state.records, state.initialRecords);
+        }
+      },
+    );
     assert.deepEqual(errors, []);
     assert.deepEqual(forbiddenRequests, []);
   },

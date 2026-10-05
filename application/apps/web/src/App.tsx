@@ -555,6 +555,7 @@ function WorkspaceApp({
     },
     navigationEpoch: cognitiveReadNavigation.current.epoch,
     isCurrent: () => origin.isActive() && !!host.currentProjection(),
+    hintRevision: client.workspaceChangeRevision,
   });
   const cognitiveRequested = cognitive.requested || cognitiveView.requested;
   const cognitiveSurface = cognitive.value
