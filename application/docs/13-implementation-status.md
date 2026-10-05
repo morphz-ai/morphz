@@ -1,5 +1,30 @@
 # 桌面能力实施记录
 
+## 2026-10-06 本人认知许可与连接的事件失效
+
+真实 SQLite／PostgreSQL 的提交提示已被原 Session observer 消费，但旧
+工作区摘要缺少本人认知许可和连接；停用后仍只有 initial frame。原始
+RED 为 4/8 失败，补充读取已完成的正控后仍 4/8 失败，日志
+`/tmp/morphz-cognitive-workspace-observer-CONSUMED-HINT-RED-oct06.log`。
+
+修复只在原 workspaceChangeVersion 的同一只读事务加入当前 Human 的
+登记／不可变版本／安装／许可与本人连接标量元数据，同时纳入 version
+和 accessVersion。没有正文读取、轮询、全租户访问计数器、新表或迁移；
+目录分页不是数据行数上限，摘要不加 LIMIT 静默漏掉后续许可。
+
+Root 独立正式五文件 39/39，required PostgreSQL、零失败／取消／跳过，
+日志 `/tmp/morphz-workspace-observer-ROOT-FINAL-oct06.log`。新增十二项
+使用真实 IdentityCenter／HPA、双 SQL、Local 与原 Session drain，证明
+本人许可／连接停用及恢复发 accessChanged，已存在的外人许可／连接
+状态改变不清本人，自己的窗口状态保存发 changed 但不退休访问；第
+101 项真实登记／连接不在首屏仍能失效。observer 不调用作者业务或
+读取 UI 字节，观察前后的持久行一致。既有安装／route 的全租户摘要
+保持，不能将有限外人负控概括为所有外人活动完全隔离。
+
+全工程类型与生产构建通过，新增测试及新增生产片段格式通过；store
+既有全文件格式欠账保持，不重排无关代码。GUI owner／document consumer
+仍待接线，事件修复不冒称已经完成可执行界面或原 App 验收。
+
 ## 2026-10-05 实际 Electron 的固定文档 origin 机制
 
 隔离自动化使用原生产 main／custom scheme／embedded adapter 和单个

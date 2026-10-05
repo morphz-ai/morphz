@@ -7351,6 +7351,19 @@ export class PlatformStore {
         "SELECT app_id,package_version,sha256 FROM app_ui_packages WHERE tenant_id=? AND installed_by_principal_id=? ORDER BY app_id,package_version",
         args,
       );
+      // Read the complete current Human's exact registry/consent metadata in
+      // this same snapshot. Catalogue page budgets are not a database row cap:
+      // no LIMIT may silently omit a later grant. The existing principal/owner
+      // indexes scope these scalar-only reads; no declaration or UI body is read.
+      // A tenant navigation access counter would also invalidate other Humans.
+      const cognitiveVersions = await q.all(
+        "SELECT r.app_id,r.version,r.definition_hash,v.installation_id,i.state AS installation_state,g.state AS grant_state,g.revision AS grant_revision FROM cognitive_app_registrations r JOIN cognitive_app_versions v ON v.tenant_id=r.tenant_id AND v.app_id=r.app_id AND v.version=r.version AND v.definition_hash=r.definition_hash JOIN app_installations i ON i.tenant_id=v.tenant_id AND i.app_id=v.app_id AND i.installation_id=v.installation_id LEFT JOIN cognitive_app_grants g ON g.tenant_id=r.tenant_id AND g.principal_id=r.principal_id AND g.app_id=r.app_id AND g.version=r.version WHERE r.tenant_id=? AND r.principal_id=? ORDER BY r.app_id,r.version",
+        args,
+      );
+      const cognitiveConnections = await q.all(
+        "SELECT connection_id,app_id,instance_id,service_id,data_authority_id,state,revision FROM cognitive_app_connections WHERE tenant_id=? AND owner_principal_id=? ORDER BY connection_id",
+        args,
+      );
       const notifications = await q.all(
         "SELECT mode,revision FROM notification_preferences WHERE tenant_id=? AND principal_id=?",
         args,
@@ -7382,6 +7395,8 @@ export class PlatformStore {
           installations,
           routes,
           packages,
+          cognitiveVersions,
+          cognitiveConnections,
           notifications,
           reads,
           avatars,
@@ -7392,6 +7407,8 @@ export class PlatformStore {
           projects: projects.map((p) => [p.project_id, p.deleted_at]),
           members,
           routes,
+          cognitiveVersions,
+          cognitiveConnections,
         }),
         projectIds: projects
           .filter((p) => p.deleted_at === null)
