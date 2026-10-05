@@ -31,6 +31,7 @@ import {
 } from "../../platform/src/store.js";
 import type { CognitiveAppCommandSnapshot } from "../../platform/src/cognitive-app-commands.js";
 import type { CognitiveAppTargetSnapshot } from "../../platform/src/cognitive-app-registry.js";
+import { cognitiveAppCatalogMetadata } from "../../platform/src/cognitive-app-registry.js";
 import {
   CognitiveAppGatewayError,
   type CognitiveAppGatewayCommandResult,
@@ -329,19 +330,7 @@ export function createCognitiveAppService(options: {
       return run("list", actor, input, async (access, request) => {
         const result = await platform.listCognitiveApps(access, request);
         return parseCognitiveAppCatalog({
-          versions: result.versions.map(
-            ({ appId, version, definitionHash, definition, grant }) => ({
-              appId,
-              version,
-              definitionHash,
-              title: definition.title,
-              description: definition.description,
-              icon: definition.icon,
-              harness: definition.harness,
-              ui: definition.ui,
-              grant,
-            }),
-          ),
+          versions: result.versions.map(cognitiveAppCatalogMetadata),
           connections: result.connections,
           nextVersionsAfter: result.nextVersionsAfter,
           nextConnectionsAfter: result.nextConnectionsAfter,
@@ -350,6 +339,21 @@ export function createCognitiveAppService(options: {
     },
     describe(actor: PlatformActor, input: unknown) {
       return run("describe", actor, input, async (access, request) => {
+        if ("mode" in request) {
+          const { mode, ...exact } = request;
+          const registered = await platform.describeRegisteredCognitiveApp(
+            access,
+            exact,
+          );
+          return parseCognitiveAppDescription({
+            mode,
+            definition: registered.definition,
+            definitionHash: registered.definitionHash,
+            registeredAt: registered.registeredAt,
+            installationState: registered.installationState,
+            grant: registered.grant,
+          });
+        }
         const { definition, definitionHash, grantRevision } =
           await platform.resolveCognitiveAppDescription(access, request);
         return parseCognitiveAppDescription({
@@ -361,6 +365,15 @@ export function createCognitiveAppService(options: {
     },
     install(actor: PlatformActor, input: unknown) {
       return run("install", actor, input, async (access, request) => {
+        if ("mode" in request) {
+          const { mode: _mode, ...exact } = request;
+          const registered = await platform.registerCognitiveApp(access, exact);
+          return parseCognitiveAppInstalled({
+            appId: registered.appId,
+            version: registered.version,
+            definitionHash: registered.definitionHash,
+          });
+        }
         const result =
           request.definition.ui === null
             ? await platform.installCognitiveApp(access, {

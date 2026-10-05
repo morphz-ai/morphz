@@ -177,6 +177,11 @@ async function isolated(
     await h.tx("alice", async (_, q) => {
       for (const tenant of ["tenant-a", "tenant-b"])
         await q.change("INSERT INTO tenants VALUES(?,?)", [tenant, now]);
+      for (const tenant of ["tenant-a", "tenant-b"])
+        await q.change(
+          "INSERT INTO navigation_heads(tenant_id,revision) VALUES(?,0)",
+          [tenant],
+        );
       await q.change(
         "INSERT INTO projects(tenant_id,project_id,kind,owner_principal_id,title,revision,created_at,updated_at) VALUES('tenant-a','project-a','project','alice','Project',1,?,?)",
         [now, now],
@@ -619,6 +624,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
       );
       const own = await h.tx("alice", (r) => r.readOwnRegistry({ limit: 20 }));
       assert.equal(own.versions.length, 1);
+      assert.ok(own.versions[0]!.grant);
       assert.equal(own.versions[0]!.grant.state, "disabled");
       assert.equal(
         (await h.tx("bob", (r) => r.readOwnRegistry({ limit: 20 }))).versions
@@ -1349,7 +1355,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
         ),
       );
     }));
-  test(`registry independent scoped continuations cover more than 100 versions and connections on ${backend}`, async () =>
+  test(`registry paired scoped checkpoints advance both independent keysets past 100 rows on ${backend}`, async () =>
     isolated(backend, async (h) => {
       await installed(h);
       await h.tx("alice", async (r) => {
@@ -1400,6 +1406,8 @@ for (const backend of ["sqlite", "postgres"] as const) {
         ).size,
         104,
       );
+      // Either non-null token carries both actual positions; the other stream
+      // does not restart merely because its continuation was not supplied.
       const independent = await h.tx("alice", (r) =>
         r.readOwnRegistry({
           limit: 100,
@@ -1407,7 +1415,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
         }),
       );
       assert.equal(independent.versions.length, 4);
-      assert.equal(independent.connections.length, 100);
+      assert.equal(independent.connections.length, 4);
       assert.ok(
         !JSON.stringify([first, second, independent]).includes("private_alias"),
       );

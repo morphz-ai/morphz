@@ -727,3 +727,21 @@ CREATE INDEX cognitive_app_commands_by_task_run
 CREATE INDEX cognitive_app_commands_by_state
   ON cognitive_app_commands(tenant_id, state, updated_at, command_id);
 -- END cognitive-app-v1
+
+-- BEGIN cognitive-app-registration-v1
+-- Personal explicit imports are metadata associations, not grants or UI byte
+-- ownership. Exact immutable declarations and first installers remain intact.
+CREATE TABLE cognitive_app_registrations (
+  tenant_id TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  app_id TEXT NOT NULL,
+  version TEXT NOT NULL,
+  definition_hash TEXT NOT NULL CHECK (length(definition_hash) = 64),
+  registered_at TEXT NOT NULL,
+  PRIMARY KEY (tenant_id, principal_id, app_id, version),
+  FOREIGN KEY (tenant_id, app_id, version, definition_hash)
+    REFERENCES cognitive_app_versions(tenant_id, app_id, version, definition_hash)
+);
+CREATE INDEX cognitive_app_registrations_by_version
+  ON cognitive_app_registrations(tenant_id, app_id, version, definition_hash);
+-- END cognitive-app-registration-v1

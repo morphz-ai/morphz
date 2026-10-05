@@ -597,7 +597,8 @@ for (const backend of ["sqlite", "postgres"] as const) {
       await h.store.installCognitiveApp(human, { definition, now });
       assert.equal(await nav(), 1);
       const catalog = await h.store.listCognitiveApps(human, { limit: 20 });
-      assert.equal(catalog.versions.length, 0);
+      assert.equal(catalog.versions.length, 1);
+      assert.equal(catalog.versions[0]!.grant, null);
       assert.equal(
         (await h.q.all("SELECT * FROM cognitive_app_grants")).length,
         0,

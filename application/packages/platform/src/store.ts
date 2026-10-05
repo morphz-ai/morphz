@@ -60,6 +60,7 @@ import {
   validateOperationValue,
   parseOperationResources,
   parseProtocolValue,
+  parseWireJson,
   type CognitiveAppDefinition,
   type JsonValue,
   type OperationDefinition,
@@ -1018,6 +1019,101 @@ export class PlatformStore {
     });
   }
 
+  /** Human explicitly records an already-known immutable declaration. No UI
+   * byte proof/read, author request, grant, connection or activation is made. */
+  async registerCognitiveApp(
+    access: PlatformActor,
+    request: {
+      commandId: string;
+      appId: string;
+      version: string;
+      definitionHash: string;
+      now?: string;
+    },
+  ) {
+    let input: typeof request;
+    try {
+      input = z
+        .object({
+          commandId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+          appId: z.string().regex(/^[a-z][a-z0-9.-]{2,80}$/),
+          version: z.string().max(100).regex(/^\d+\.\d+\.\d+$/),
+          definitionHash: z.string().regex(/^[a-f0-9]{64}$/),
+          now: z.iso.datetime().optional(),
+        })
+        .strict()
+        .parse(JSON.parse(JSON.stringify(parseWireJson(request))));
+    } catch {
+      throw new PlatformStorageError("invalid", "本人应用登记请求无效。");
+    }
+    const { actor } = await this.prepareCognitiveActor(access, true);
+    const hash = fingerprint({
+      actor,
+      operation: "register-cognitive-app",
+      commandId: input.commandId,
+      appId: input.appId,
+      version: input.version,
+      definitionHash: input.definitionHash,
+    });
+    return this.transaction(async (q) => {
+      const replay = await this.replay(q, actor, input.commandId, hash);
+      const registry = this.cognitiveRegistry(q, actor);
+      if (replay) {
+        if (replay !== `${input.appId}@${input.version}`)
+          throw new PlatformStorageError(
+            "conflict",
+            "本人登记原回执与精确定义不一致。",
+          );
+        return registry.readRegisteredDefinition({
+          appId: input.appId,
+          version: input.version,
+          expectedDefinitionHash: input.definitionHash,
+        });
+      }
+      const now = input.now ?? new Date().toISOString();
+      const registered = await registry.registerInstalled({ ...input, now });
+      await this.receipt(
+        q,
+        actor,
+        input.commandId,
+        hash,
+        "register-cognitive-app",
+        `${input.appId}@${input.version}`,
+        now,
+        null,
+        false,
+      );
+      if (registered.changed)
+        await this.advanceNavigation(q, actor.tenantId, ["access"]);
+      return registered.version;
+    });
+  }
+
+  /** Own registered immutable declaration only; not operational consent. */
+  async describeRegisteredCognitiveApp(
+    access: PlatformActor,
+    request: { appId: string; version: string; expectedDefinitionHash: string },
+  ) {
+    let input: typeof request;
+    try {
+      input = z
+        .object({
+          appId: z.string().regex(/^[a-z][a-z0-9.-]{2,80}$/),
+          version: z.string().max(100).regex(/^\d+\.\d+\.\d+$/),
+          expectedDefinitionHash: z.string().regex(/^[a-f0-9]{64}$/),
+        })
+        .strict()
+        .parse(JSON.parse(JSON.stringify(parseWireJson(request))));
+    } catch {
+      throw new PlatformStorageError("invalid", "本人应用定义预览请求无效。");
+    }
+    const { actor } = await this.prepareCognitiveActor(access, true);
+    return this.transaction(
+      (q) => this.cognitiveRegistry(q, actor).readRegisteredDefinition(input),
+      "read",
+    );
+  }
+
   async changeCognitiveAppGrant(
     access: PlatformActor,
     request: Omit<CognitiveAppGrantChange, "now"> & { now?: string },
@@ -1047,7 +1143,10 @@ export class PlatformStore {
           actor.scopeProjectId!,
           executor,
         );
-      return this.cognitiveRegistry(q, actor).readOwnRegistry(request);
+      return this.cognitiveRegistry(q, actor).readOwnRegistry(request, {
+        mode: actor.kind === "human" ? "registered" : "granted",
+        ...(actor.kind === "agent" ? { projectId: actor.scopeProjectId! } : {}),
+      });
     }, "read");
   }
 
@@ -2645,6 +2744,8 @@ export class PlatformStore {
         "95bd108425eacc274efd75837ea7f47e5dcea853d4c23128171efe87e18f0161";
       const v10SchemaSha256 =
         "57b923d57efc09d0e722246916e083237f988836d82042029039c45ffd704cdd";
+      const v11SchemaSha256 =
+        "d4b180364680faffd2956dc079b3f0838ef31c9252e2aa975df8d4d05455837d";
       if (versions.length > 1)
         throw new PlatformStorageError(
           "conflict",
@@ -2675,7 +2776,8 @@ export class PlatformStore {
           version !== 8 &&
           version !== 9 &&
           version !== 10 &&
-          version !== 11
+          version !== 11 &&
+          version !== 12
         )
           throw new PlatformStorageError(
             "conflict",
@@ -2706,7 +2808,8 @@ export class PlatformStore {
           (version === 8 && installedHash !== v8SchemaSha256) ||
           (version === 9 && installedHash !== v9SchemaSha256) ||
           (version === 10 && installedHash !== v10SchemaSha256) ||
-          (version === 11 && installedHash !== schemaSha256)
+          (version === 11 && installedHash !== v11SchemaSha256) ||
+          (version === 12 && installedHash !== schemaSha256)
         )
           throw new PlatformStorageError(
             "conflict",
@@ -2720,7 +2823,8 @@ export class PlatformStore {
           version !== 8 &&
           version !== 9 &&
           version !== 10 &&
-          version !== 11
+          version !== 11 &&
+          version !== 12
         ) {
           await q.exec(
             "CREATE INDEX content_by_app_object ON content_entries(tenant_id, app_id, app_object_id, deleted_at, content_id)",
@@ -2861,7 +2965,34 @@ export class PlatformStore {
           await q.exec(platformSchemaSql.slice(begin, end));
           await q.change(
             "UPDATE platform_schema_version SET version=11,schema_sha256=? WHERE version=10 AND schema_sha256=?",
-            [schemaSha256, v10SchemaSha256],
+            [v11SchemaSha256, v10SchemaSha256],
+          );
+        }
+        if (version < 12) {
+          const begin = platformSchemaSql.indexOf(
+            "-- BEGIN cognitive-app-registration-v1",
+          );
+          const end = platformSchemaSql.indexOf(
+            "-- END cognitive-app-registration-v1",
+            begin,
+          );
+          if (begin < 0 || end < begin)
+            throw new PlatformStorageError(
+              "conflict",
+              "本人应用登记迁移定义不完整。",
+            );
+          await q.exec(platformSchemaSql.slice(begin, end));
+          // Only durable explicit facts can seed personal metadata visibility.
+          // A past unrecorded Bob import cannot be inferred from UI or projects.
+          await q.change(
+            "INSERT INTO cognitive_app_registrations(tenant_id,principal_id,app_id,version,definition_hash,registered_at) SELECT tenant_id,installed_by_principal_id,app_id,version,definition_hash,installed_at FROM cognitive_app_versions",
+          );
+          await q.change(
+            "INSERT INTO cognitive_app_registrations(tenant_id,principal_id,app_id,version,definition_hash,registered_at) SELECT g.tenant_id,g.principal_id,g.app_id,g.version,v.definition_hash,g.consented_at FROM cognitive_app_grants g JOIN cognitive_app_versions v ON v.tenant_id=g.tenant_id AND v.app_id=g.app_id AND v.version=g.version WHERE NOT EXISTS(SELECT 1 FROM cognitive_app_registrations r WHERE r.tenant_id=g.tenant_id AND r.principal_id=g.principal_id AND r.app_id=g.app_id AND r.version=g.version)",
+          );
+          await q.change(
+            "UPDATE platform_schema_version SET version=12,schema_sha256=? WHERE version=11 AND schema_sha256=?",
+            [schemaSha256, v11SchemaSha256],
           );
         }
         try {
@@ -2880,7 +3011,7 @@ export class PlatformStore {
         );
       await q.exec(platformSchemaSql);
       await q.change(
-        "INSERT INTO platform_schema_version(version,schema_sha256) VALUES(11,?)",
+        "INSERT INTO platform_schema_version(version,schema_sha256) VALUES(12,?)",
         [schemaSha256],
       );
     });

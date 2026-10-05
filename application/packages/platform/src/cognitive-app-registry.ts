@@ -21,6 +21,7 @@ import {
   parseBrowserNavigationState,
   type BrowserNavigationState,
 } from "../../cognitive-app-sdk/src/browser-wire.js";
+import { parseCognitiveAppCatalog } from "../../core/src/cognitive-app-api.js";
 
 /** Platform-internal, scoped to the caller's existing transaction. The Store
  * resolves real Human/Runtime identity before opening that transaction and
@@ -68,11 +69,44 @@ export type CognitiveAppConnection = CognitiveAppAuthority & {
   updatedAt: string;
 };
 export type CognitiveAppRegistryCatalog = {
-  versions: Array<CognitiveAppVersion & { grant: CognitiveAppGrant }>;
+  versions: CognitiveAppCatalogVersion[];
   connections: CognitiveAppConnection[];
   nextVersionsAfter: string | null;
   nextConnectionsAfter: string | null;
 };
+export type CognitiveAppCatalogVersion = CognitiveAppVersion & {
+  grant: CognitiveAppGrant | null;
+  registeredAt: string;
+  installationState: "active" | "disabled" | "unavailable";
+};
+/** Shared exact whitelist for paging budgets and the public Service projection. */
+export function cognitiveAppCatalogMetadata(entry: CognitiveAppCatalogVersion) {
+  const {
+    appId,
+    version,
+    definitionHash,
+    definition,
+    grant,
+    registeredAt,
+    installationState,
+  } = entry;
+  return {
+    appId,
+    version,
+    definitionHash,
+    title: definition.title,
+    description: definition.description,
+    icon: definition.icon,
+    ...(definition.iconImage === undefined
+      ? {}
+      : { iconImage: definition.iconImage }),
+    harness: definition.harness,
+    ui: definition.ui,
+    grant,
+    registeredAt,
+    installationState,
+  };
+}
 export type CognitiveAppRegistryCatalogRequest = {
   limit: number;
   appId?: string;
@@ -539,7 +573,125 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
     const retained = await exactVersion(definition.id, definition.version);
     if (retained.definitionHash !== definitionHash)
       fail("conflict", "同一应用版本已经固定另一份不可变定义。");
+    await ensureOwnRegistration(retained, now);
     return retained;
+  }
+
+  async function ensureOwnRegistration(
+    version: CognitiveAppVersion,
+    now: string,
+  ): Promise<boolean> {
+    time(now);
+    const changed = await q.change(
+      "INSERT INTO cognitive_app_registrations(tenant_id,principal_id,app_id,version,definition_hash,registered_at) VALUES(?,?,?,?,?,?) ON CONFLICT(tenant_id,principal_id,app_id,version) DO NOTHING",
+      [
+        tenantId,
+        principalId,
+        version.appId,
+        version.version,
+        version.definitionHash,
+        now,
+      ],
+    );
+    const own = (
+      await q.all<{ definition_hash: string }>(
+        "SELECT definition_hash FROM cognitive_app_registrations WHERE tenant_id=? AND principal_id=? AND app_id=? AND version=?",
+        [tenantId, principalId, version.appId, version.version],
+      )
+    )[0];
+    if (!own || own.definition_hash !== version.definitionHash)
+      fail("conflict", "本人登记与不可变应用定义不一致。");
+    return changed === 1;
+  }
+
+  /** A metadata import has no byte-proof, consent, connection or activation. */
+  async function registerInstalled(request: {
+    appId: string;
+    version: string;
+    definitionHash: string;
+    now: string;
+  }) {
+    app(request.appId);
+    versionId(request.version);
+    time(request.now);
+    if (!/^[a-f0-9]{64}$/.test(request.definitionHash))
+      fail("invalid", "应用定义校验值无效。");
+    await installation(request.appId, false);
+    const version = await exactVersion(request.appId, request.version);
+    if (version.definitionHash !== request.definitionHash)
+      fail("not_found", "精确应用定义不存在或不可登记。");
+    return {
+      version,
+      changed: await ensureOwnRegistration(version, request.now),
+    };
+  }
+
+  async function readRegisteredDefinition(request: {
+    appId: string;
+    version: string;
+    expectedDefinitionHash: string;
+  }): Promise<CognitiveAppCatalogVersion> {
+    app(request.appId);
+    versionId(request.version);
+    if (!/^[a-f0-9]{64}$/.test(request.expectedDefinitionHash))
+      fail("invalid", "应用定义校验值无效。");
+    const row = (
+      await q.all<
+        VersionRow & {
+          registered_at: string;
+          installation_state: CognitiveAppCatalogVersion["installationState"];
+          grant_state: CognitiveAppGrant["state"] | null;
+          grant_revision: number | string | null;
+          consented_at: string | null;
+          grant_updated_at: string | null;
+        }
+      >(
+        "SELECT v.*,r.registered_at,i.state AS installation_state,g.state AS grant_state,g.revision AS grant_revision,g.consented_at,g.updated_at AS grant_updated_at FROM cognitive_app_registrations r JOIN cognitive_app_versions v ON v.tenant_id=r.tenant_id AND v.app_id=r.app_id AND v.version=r.version AND v.definition_hash=r.definition_hash JOIN app_installations i ON i.tenant_id=v.tenant_id AND i.app_id=v.app_id AND i.installation_id=v.installation_id LEFT JOIN cognitive_app_grants g ON g.tenant_id=r.tenant_id AND g.principal_id=r.principal_id AND g.app_id=r.app_id AND g.version=r.version WHERE r.tenant_id=? AND r.principal_id=? AND r.app_id=? AND r.version=? AND r.definition_hash=?",
+        [
+          tenantId,
+          principalId,
+          request.appId,
+          request.version,
+          request.expectedDefinitionHash,
+        ],
+      )
+    )[0];
+    if (!row) return fail("not_found", "本人尚未登记此精确应用定义。");
+    return catalogDto(row);
+  }
+
+  type CatalogRow = VersionRow & {
+    registered_at: string;
+    installation_state: CognitiveAppCatalogVersion["installationState"];
+    grant_state: CognitiveAppGrant["state"] | null;
+    grant_revision: number | string | null;
+    consented_at: string | null;
+    grant_updated_at: string | null;
+  };
+  function catalogDto(row: CatalogRow): CognitiveAppCatalogVersion {
+    if (
+      row.grant_state !== null &&
+      (row.grant_revision === null ||
+        row.consented_at === null ||
+        row.grant_updated_at === null)
+    )
+      return fail("conflict", "应用许可元数据不完整。");
+    return {
+      ...definitionDto(row),
+      registeredAt: row.registered_at,
+      installationState: row.installation_state,
+      grant:
+        row.grant_state === null
+          ? null
+          : grantDto({
+              app_id: row.app_id,
+              version: row.version,
+              state: row.grant_state,
+              revision: row.grant_revision!,
+              consented_at: row.consented_at!,
+              updated_at: row.grant_updated_at!,
+            }),
+    };
   }
 
   async function changeOwnGrant(
@@ -553,7 +705,7 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
     if (state !== "active" && state !== "disabled")
       fail("invalid", "应用许可状态无效。");
     await installation(appId);
-    await exactVersion(appId, version);
+    const definition = await exactVersion(appId, version);
     await advisory("grant", [principalId, appId, version]);
     const current = (
       await q.all<GrantRow>(
@@ -577,6 +729,7 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
       );
       if (changed !== 1) fail("conflict", "应用许可修订冲突。");
     }
+    await ensureOwnRegistration(definition, now);
     return grantDto(
       (
         await q.all<GrantRow>(
@@ -754,6 +907,9 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
 
   async function readOwnRegistry(
     request: CognitiveAppRegistryCatalogRequest,
+    visibility: { mode: "registered" | "granted"; projectId?: string } = {
+      mode: "granted",
+    },
   ): Promise<CognitiveAppRegistryCatalog> {
     if (
       !Number.isSafeInteger(request.limit) ||
@@ -762,23 +918,35 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
     )
       fail("invalid", "应用目录分页范围为 1 到 100。");
     if (request.appId !== undefined) app(request.appId);
-    // Cursors are bounded scoped sort positions, not credentials or a stored
-    // workspace snapshot. Versions and connections advance independently.
-    const cursorScope = (kind: string) => [
-      1,
-      kind,
-      tenantId,
-      principalId,
-      request.appId ?? null,
-    ];
-    const cursor = (kind: string, sortApp: string, tail: string) =>
-      Buffer.from(
-        JSON.stringify([...cursorScope(kind), sortApp, tail]),
-      ).toString("base64url");
+    const head = (
+      await q.all<{ access_revision: number | string }>(
+        "SELECT access_revision FROM navigation_heads WHERE tenant_id=?",
+        [tenantId],
+      )
+    )[0];
+    if (!head) return fail("conflict", "应用目录权限修订缺失。");
+    const scope = digest(
+      JSON.stringify([
+        tenantId,
+        principalId,
+        visibility.mode,
+        visibility.projectId ?? null,
+        request.appId ?? null,
+        safeInteger(head.access_revision, "应用目录权限修订"),
+      ]),
+    );
+    type Position = [string, string] | null;
+    type Checkpoint = [Position, Position];
+    // Both tokens retain the last actually emitted position of BOTH streams.
+    // Continuing one non-null token cannot restart the stream already at EOF.
+    const cursor = (kind: string, checkpoint: Checkpoint) =>
+      Buffer.from(JSON.stringify([2, kind, scope, ...checkpoint])).toString(
+        "base64url",
+      );
     const decode = (
       value: string | undefined,
       kind: "versions" | "connections",
-    ): [string, string] | null => {
+    ): Checkpoint | null => {
       if (value === undefined) return null;
       let parsed: unknown;
       try {
@@ -796,30 +964,40 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
       }
       if (
         !Array.isArray(parsed) ||
-        parsed.length !== 7 ||
-        JSON.stringify(parsed.slice(0, 5)) !==
-          JSON.stringify(cursorScope(kind)) ||
-        typeof parsed[5] !== "string" ||
-        typeof parsed[6] !== "string"
+        parsed.length !== 5 ||
+        parsed[0] !== 2 ||
+        parsed[1] !== kind ||
+        parsed[2] !== scope
       )
         return fail("invalid", "应用目录 continuation 不属于当前查询范围。");
-      app(parsed[5]);
-      if (kind === "versions") versionId(parsed[6]);
-      else id(parsed[6]);
-      return [parsed[5], parsed[6]];
-    };
-    const versionAfter = decode(request.versionsAfter, "versions");
-    const connectionAfter = decode(request.connectionsAfter, "connections");
-    const filter = request.appId === undefined ? "" : " AND v.app_id=?";
-    const versions = await q.all<
-      VersionRow & {
-        grant_state: CognitiveAppGrant["state"];
-        grant_revision: number | string;
-        consented_at: string;
-        grant_updated_at: string;
+      for (const [index, position] of [parsed[3], parsed[4]].entries()) {
+        if (position === null) continue;
+        if (
+          !Array.isArray(position) ||
+          position.length !== 2 ||
+          typeof position[0] !== "string" ||
+          typeof position[1] !== "string"
+        )
+          return fail("invalid", "应用目录 continuation 位置无效。");
+        app(position[0]);
+        if (index === 0) versionId(position[1]);
+        else id(position[1]);
       }
-    >(
-      `SELECT v.app_id,v.version,v.installation_id,v.definition_hash,v.definition_json,v.installed_by_principal_id,v.installed_at,g.state AS grant_state,g.revision AS grant_revision,g.consented_at,g.updated_at AS grant_updated_at FROM cognitive_app_versions v JOIN cognitive_app_grants g ON g.tenant_id=v.tenant_id AND g.app_id=v.app_id AND g.version=v.version WHERE g.tenant_id=? AND g.principal_id=?${filter}${versionAfter ? " AND (v.app_id>? OR (v.app_id=? AND v.version>?))" : ""} ORDER BY v.app_id,v.version LIMIT ?`,
+      return [parsed[3] as Position, parsed[4] as Position];
+    };
+    const vCheckpoint = decode(request.versionsAfter, "versions");
+    const cCheckpoint = decode(request.connectionsAfter, "connections");
+    if (
+      vCheckpoint &&
+      cCheckpoint &&
+      JSON.stringify(vCheckpoint) !== JSON.stringify(cCheckpoint)
+    )
+      return fail("invalid", "应用目录 continuation 不属于同一分页检查点。");
+    const before = vCheckpoint ?? cCheckpoint ?? [null, null];
+    const [versionAfter, connectionAfter] = before;
+    const filter = request.appId === undefined ? "" : " AND v.app_id=?";
+    const versions = await q.all<CatalogRow>(
+      `SELECT v.app_id,v.version,v.installation_id,v.definition_hash,v.definition_json,v.installed_by_principal_id,v.installed_at,r.registered_at,i.state AS installation_state,g.state AS grant_state,g.revision AS grant_revision,g.consented_at,g.updated_at AS grant_updated_at FROM cognitive_app_registrations r JOIN cognitive_app_versions v ON v.tenant_id=r.tenant_id AND v.app_id=r.app_id AND v.version=r.version AND v.definition_hash=r.definition_hash JOIN app_installations i ON i.tenant_id=v.tenant_id AND i.app_id=v.app_id AND i.installation_id=v.installation_id LEFT JOIN cognitive_app_grants g ON g.tenant_id=r.tenant_id AND g.principal_id=r.principal_id AND g.app_id=r.app_id AND g.version=r.version WHERE r.tenant_id=? AND r.principal_id=?${visibility.mode === "granted" ? " AND g.version IS NOT NULL" : ""}${filter}${versionAfter ? " AND (v.app_id>? OR (v.app_id=? AND v.version>?))" : ""} ORDER BY v.app_id,v.version LIMIT ?`,
       [
         tenantId,
         principalId,
@@ -842,36 +1020,60 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
         request.limit + 1,
       ],
     );
-    return {
-      versions: versions.slice(0, request.limit).map((row) => ({
-        ...definitionDto(row),
-        grant: grantDto({
-          app_id: row.app_id,
-          version: row.version,
-          state: row.grant_state,
-          revision: row.grant_revision,
-          consented_at: row.consented_at,
-          updated_at: row.grant_updated_at,
-        }),
-      })),
-      connections: rows.slice(0, request.limit).map(connectionDto),
+    const selectedVersions: CognitiveAppCatalogVersion[] = [],
+      selectedConnections: CognitiveAppConnection[] = [];
+    let versionBytes = 2,
+      connectionBytes = 2;
+    for (const row of versions.slice(0, request.limit)) {
+      const entry = catalogDto(row);
+      const bytes =
+        Buffer.byteLength(JSON.stringify(cognitiveAppCatalogMetadata(entry))) +
+        (selectedVersions.length ? 1 : 0);
+      if (versionBytes + bytes > 384 * 1024) break;
+      selectedVersions.push(entry);
+      versionBytes += bytes;
+    }
+    for (const row of rows.slice(0, request.limit)) {
+      const entry = connectionDto(row);
+      const bytes =
+        Buffer.byteLength(JSON.stringify(entry)) +
+        (selectedConnections.length ? 1 : 0);
+      if (connectionBytes + bytes > 80 * 1024) break;
+      selectedConnections.push(entry);
+      connectionBytes += bytes;
+    }
+    if (
+      (versions.length && !selectedVersions.length) ||
+      (rows.length && !selectedConnections.length)
+    )
+      return fail("conflict", "单项应用目录元数据超过分页预算。");
+    const lastV = selectedVersions.at(-1),
+      lastC = selectedConnections.at(-1);
+    const checkpoint: Checkpoint = [
+      lastV ? [lastV.appId, lastV.version] : versionAfter,
+      lastC ? [lastC.appId, lastC.connectionId] : connectionAfter,
+    ];
+    const result: CognitiveAppRegistryCatalog = {
+      versions: selectedVersions,
+      connections: selectedConnections,
       nextVersionsAfter:
-        versions.length > request.limit
-          ? cursor(
-              "versions",
-              versions[request.limit - 1]!.app_id,
-              versions[request.limit - 1]!.version,
-            )
+        versions.length > selectedVersions.length
+          ? cursor("versions", checkpoint)
           : null,
       nextConnectionsAfter:
-        rows.length > request.limit
-          ? cursor(
-              "connections",
-              rows[request.limit - 1]!.app_id,
-              rows[request.limit - 1]!.connection_id,
-            )
+        rows.length > selectedConnections.length
+          ? cursor("connections", checkpoint)
           : null,
     };
+    try {
+      parseCognitiveAppCatalog({
+        ...result,
+        versions: result.versions.map(cognitiveAppCatalogMetadata),
+      });
+    } catch {
+      return fail("conflict", "应用目录元数据不符合有界公开契约。");
+    }
+    return result;
   }
 
   /** Exact immutable version retained for Host recovery/state management even
@@ -1464,6 +1666,8 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
 
   return {
     installVersion,
+    registerInstalled,
+    readRegisteredDefinition,
     changeOwnGrant,
     ensureAuthority,
     createOwnConnection,

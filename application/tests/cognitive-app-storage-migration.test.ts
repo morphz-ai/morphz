@@ -19,7 +19,13 @@ const v10Hash =
   "57b923d57efc09d0e722246916e083237f988836d82042029039c45ffd704cdd";
 const v9Hash =
   "95bd108425eacc274efd75837ea7f47e5dcea853d4c23128171efe87e18f0161";
-const v10Sql = platformSchemaSql.replace(
+const v11Hash =
+  "d4b180364680faffd2956dc079b3f0838ef31c9252e2aa975df8d4d05455837d";
+const v11Sql = platformSchemaSql.replace(
+  /\n-- BEGIN cognitive-app-registration-v1\n[\s\S]*?-- END cognitive-app-registration-v1\n?$/,
+  "",
+);
+const v10Sql = v11Sql.replace(
   /\n-- BEGIN cognitive-app-v1\n[\s\S]*?-- END cognitive-app-v1\n?$/,
   "",
 );
@@ -142,14 +148,14 @@ async function isolated(
   }
 }
 
-async function prior(q: TestQuery, version: 9 | 10) {
-  await q.exec(version === 10 ? v10Sql : v9Sql);
+async function prior(q: TestQuery, version: 9 | 10 | 11) {
+  await q.exec(version === 11 ? v11Sql : version === 10 ? v10Sql : v9Sql);
   await q.exec(
     "CREATE TABLE platform_schema_version (version BIGINT PRIMARY KEY CHECK(version>0),schema_sha256 TEXT NOT NULL)",
   );
   await q.all("INSERT INTO platform_schema_version VALUES(?,?)", [
     version,
-    version === 10 ? v10Hash : v9Hash,
+    version === 11 ? v11Hash : version === 10 ? v10Hash : v9Hash,
   ]);
 }
 async function insert(q: TestQuery, table: string, row: Row) {
@@ -281,12 +287,10 @@ function command(commandId: string, overrides: Row = {}): Row {
   };
 }
 async function snapshot(q: TestQuery) {
-  return Promise.all(
-    legacyTables.map(async (table) => [
-      table,
-      await q.all(`SELECT * FROM ${table} ORDER BY 1,2`),
-    ]),
-  );
+  const result: Array<[string, Row[]]> = [];
+  for (const table of legacyTables)
+    result.push([table, await q.all(`SELECT * FROM ${table} ORDER BY 1,2`)]);
+  return result;
 }
 async function current(h: Harness) {
   const store = await h.open();
@@ -296,6 +300,7 @@ async function current(h: Harness) {
 }
 
 test("cognitive migration fixtures freeze exact v10 and v9 identities", () => {
+  assert.equal(schemaHash(v11Sql), v11Hash);
   assert.equal(schemaHash(v10Sql), v10Hash);
   assert.equal(schemaHash(v9Sql), v9Hash);
   assert.notEqual(v10Sql, platformSchemaSql);
@@ -307,7 +312,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
     skip: backend === "postgres" && !process.env.MORPHZ_TEST_POSTGRES_URL,
   };
   test(
-    `cognitive ${backend} fresh initialization is v11 and concurrent-safe`,
+    `cognitive ${backend} fresh initialization is v12 and concurrent-safe`,
     options,
     async () => {
       await isolated(backend, async (h) => {
@@ -317,7 +322,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
           "SELECT version,schema_sha256 FROM platform_schema_version",
         );
         assert.equal(rows.length, 1);
-        assert.equal(Number(rows[0]!.version), 11);
+        assert.equal(Number(rows[0]!.version), 12);
         assert.equal(rows[0]!.schema_sha256, schemaHash(platformSchemaSql));
         for (const table of cognitiveTables)
           assert.equal((await h.q.all(`SELECT * FROM ${table}`)).length, 0);
@@ -326,7 +331,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
   );
   for (const version of [9, 10] as const)
     test(
-      `cognitive ${backend} v${version} upgrades to v11 preserving exact originals and reopens`,
+      `cognitive ${backend} v${version} upgrades to v12 preserving exact originals and reopens`,
       options,
       async () => {
         await isolated(backend, async (h) => {
@@ -353,7 +358,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
             const rows = await h.q.all(
               "SELECT version,schema_sha256 FROM platform_schema_version",
             );
-            assert.equal(Number(rows[0]!.version), 11);
+            assert.equal(Number(rows[0]!.version), 12);
             assert.equal(rows[0]!.schema_sha256, schemaHash(platformSchemaSql));
             assert.deepEqual(
               await h.q.all("SELECT * FROM profile_avatar_versions"),
@@ -365,6 +370,162 @@ for (const backend of ["sqlite", "postgres"] as const) {
         });
       },
     );
+  test(
+    `cognitive ${backend} exact v11 upgrades personal registrations from facts only and reopens`,
+    options,
+    async () =>
+      isolated(backend, async (h) => {
+        await prior(h.q, 11);
+        await seedLegacy(h.q);
+        await seedCognitive(h.q);
+        await h.q.all(
+          "UPDATE cognitive_app_grants SET state='disabled' WHERE principal_id='bob'",
+        );
+        const before = await snapshot(h.q);
+        const grants = await h.q.all(
+          "SELECT * FROM cognitive_app_grants ORDER BY principal_id",
+        );
+        const originalUi = await h.q.all("SELECT * FROM app_ui_packages");
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const stores = await Promise.all([h.open(), h.open()]);
+          for (const store of stores) await store.close();
+          assert.deepEqual(await snapshot(h.q), before);
+          assert.deepEqual(
+            await h.q.all(
+              "SELECT * FROM cognitive_app_grants ORDER BY principal_id",
+            ),
+            grants,
+          );
+          assert.deepEqual(
+            await h.q.all("SELECT * FROM app_ui_packages"),
+            originalUi,
+          );
+          const registered = await h.q.all(
+            "SELECT principal_id,app_id,version,definition_hash,registered_at FROM cognitive_app_registrations ORDER BY principal_id",
+          );
+          assert.deepEqual(
+            registered.map((r) => ({ ...r })),
+            ["alice", "bob"].map((principal_id) => ({
+              principal_id,
+              app_id: "example.notes",
+              version: "1.0.0",
+              definition_hash: hash,
+              registered_at: now,
+            })),
+          );
+          assert.equal(
+            Number(
+              (await h.q.all("SELECT version FROM platform_schema_version"))[0]!
+                .version,
+            ),
+            12,
+          );
+        }
+      }),
+  );
+  test(
+    `cognitive ${backend} v11 registration DDL conflict rolls back facts and marker`,
+    options,
+    async () =>
+      isolated(backend, async (h) => {
+        await prior(h.q, 11);
+        await seedLegacy(h.q);
+        await seedCognitive(h.q);
+        const before = await snapshot(h.q);
+        await h.q.exec(
+          "CREATE TABLE cognitive_app_registrations (fixture_failure TEXT)",
+        );
+        await assert.rejects(h.open());
+        assert.deepEqual(await snapshot(h.q), before);
+        assert.deepEqual(
+          (
+            await h.q.all(
+              "SELECT version,schema_sha256 FROM platform_schema_version",
+            )
+          ).map((r) => ({ ...r })),
+          [
+            {
+              version: backend === "postgres" ? "11" : 11,
+              schema_sha256: v11Hash,
+            },
+          ],
+        );
+        const indices = await h.q.all(
+          backend === "sqlite"
+            ? "SELECT name FROM sqlite_schema WHERE type='index' AND name='cognitive_app_registrations_by_version'"
+            : "SELECT indexname FROM pg_indexes WHERE schemaname=current_schema() AND indexname='cognitive_app_registrations_by_version'",
+        );
+        assert.equal(indices.length, 0);
+      }),
+  );
+  test(
+    `cognitive ${backend} v11 mid-DDL failure leaves no new registration table`,
+    options,
+    async () =>
+      isolated(backend, async (h) => {
+        await prior(h.q, 11);
+        await seedLegacy(h.q);
+        await seedCognitive(h.q);
+        const before = await snapshot(h.q);
+        await h.q.exec(
+          "CREATE INDEX cognitive_app_registrations_by_version ON tenants(tenant_id)",
+        );
+        await assert.rejects(h.open());
+        assert.deepEqual(await snapshot(h.q), before);
+        await assert.rejects(
+          h.q.all("SELECT * FROM cognitive_app_registrations"),
+        );
+        assert.equal(
+          Number(
+            (await h.q.all("SELECT version FROM platform_schema_version"))[0]!
+              .version,
+          ),
+          11,
+        );
+        assert.equal(
+          (
+            await h.q.all("SELECT schema_sha256 FROM platform_schema_version")
+          )[0]!.schema_sha256,
+          v11Hash,
+        );
+      }),
+  );
+  test(
+    `cognitive ${backend} forged v11 marker refuses registration backfill`,
+    options,
+    async () =>
+      isolated(backend, async (h) => {
+        await prior(h.q, 11);
+        await seedLegacy(h.q);
+        await seedCognitive(h.q);
+        const before = await snapshot(h.q);
+        await h.q.all("UPDATE platform_schema_version SET schema_sha256=?", [
+          hash,
+        ]);
+        await assert.rejects(
+          h.open(),
+          (error: unknown) =>
+            error instanceof PlatformStorageError && error.code === "conflict",
+        );
+        assert.deepEqual(await snapshot(h.q), before);
+        await assert.rejects(
+          h.q.all("SELECT * FROM cognitive_app_registrations"),
+        );
+        assert.equal(
+          Number(
+            (await h.q.all("SELECT version FROM platform_schema_version"))[0]!
+              .version,
+          ),
+          11,
+        );
+        assert.equal(
+          (
+            await h.q.all("SELECT schema_sha256 FROM platform_schema_version")
+          )[0]!.schema_sha256,
+          hash,
+        );
+      }),
+  );
   test(
     `cognitive ${backend} rejects a forged v10 hash without changing old records`,
     options,
@@ -391,7 +552,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
     },
   );
   test(
-    `cognitive ${backend} rejects future markers forged v11 hashes and interrupted schemas`,
+    `cognitive ${backend} rejects future markers forged v12 hashes and interrupted schemas`,
     options,
     async () => {
       await isolated(backend, async (h) => {
@@ -399,17 +560,17 @@ for (const backend of ["sqlite", "postgres"] as const) {
         await store.close();
         const conflict = (error: unknown) =>
           error instanceof PlatformStorageError && error.code === "conflict";
-        await h.q.all("UPDATE platform_schema_version SET version=12");
+        await h.q.all("UPDATE platform_schema_version SET version=13");
         await assert.rejects(h.open(), conflict);
         assert.equal(
           Number(
             (await h.q.all("SELECT version FROM platform_schema_version"))[0]!
               .version,
           ),
-          12,
+          13,
         );
         await h.q.all(
-          "UPDATE platform_schema_version SET version=11,schema_sha256=?",
+          "UPDATE platform_schema_version SET version=12,schema_sha256=?",
           [hash],
         );
         await assert.rejects(h.open(), conflict);
@@ -432,7 +593,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
             (await h.q.all("SELECT version FROM platform_schema_version"))[0]!
               .version,
           ),
-          11,
+          12,
         );
       });
     },

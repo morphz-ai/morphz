@@ -923,6 +923,8 @@ function unit() {
             installationId: "private_installation",
             installedByPrincipalId: "private_owner",
             installedAt: at,
+            registeredAt: at,
+            installationState: "active" as const,
             grant,
           },
         ],
@@ -1054,6 +1056,8 @@ test("UNIT: safe metadata/description whitelist excludes private owner, installa
       "harness",
       "ui",
       "grant",
+      "registeredAt",
+      "installationState",
     ].sort(),
   );
   assert.equal(JSON.stringify(list).includes("private_"), false);
@@ -2816,9 +2820,12 @@ for (const backend of ["sqlite", "postgres"] as const) {
             await service.install({ credential: "alice" }, input),
             installed,
           );
-          assert.deepEqual(
-            await ui.read({ credential: "alice" }, definition.id, version),
-            manifest,
+          await assert.rejects(
+            ui.read({ credential: "alice" }, definition.id, version),
+            (error: unknown) => {
+              assert.equal(Reflect.get(error as object, "code"), "forbidden");
+              return true;
+            },
           );
           const entry = await f.store.uiPackage(
             { credential: "alice" },
@@ -2836,6 +2843,39 @@ for (const backend of ["sqlite", "postgres"] as const) {
             "SELECT * FROM cognitive_app_view_bindings",
           );
           assert.equal(views.length, 0);
+          // The classifier intentionally retired legacy UI-only reads. Keep
+          // full immutable-byte proof through explicit consent and the actual
+          // fixed cognitive view, not by weakening that production boundary.
+          await service.grant(
+            { credential: "alice" },
+            {
+              appId: definition.id,
+              version,
+              expectedRevision: 0,
+              state: "active",
+            },
+          );
+          const launched = await f.store.launchCognitiveAppView(
+            { credential: "alice" },
+            {
+              commandId: "actual_ui_open",
+              projectId: "project-a",
+              appId: definition.id,
+              version,
+              connectionId: f.connectionId,
+              expectedViewRevision: 0,
+              expectedBindingRevision: 0,
+            },
+          );
+          const original = await ui.readCognitive(
+            { credential: "alice" },
+            {
+              viewId: launched.receipt.viewId,
+              expectedViewRevision: launched.receipt.viewRevision,
+              expectedBindingRevision: launched.receipt.bindingRevision,
+            },
+          );
+          assert.deepEqual(original.manifest, manifest);
           await assert.rejects(
             service.install(
               { credential: "agent" },

@@ -76,14 +76,35 @@ const schemas = {
       connectionsAfter: cursor.optional(),
     })
     .strict(),
-  describe: consent.extend({ projectId: id }).strict(),
-  install: z
-    .object({
-      definition: z.unknown(),
-      manifest: z.unknown().optional(),
-      commandId: id.optional(),
-    })
-    .strict(),
+  describe: z.union([
+    consent.extend({ projectId: id }).strict(),
+    z
+      .object({
+        mode: z.literal("registered-management"),
+        appId,
+        version,
+        expectedDefinitionHash: hash,
+      })
+      .strict(),
+  ]),
+  install: z.union([
+    z
+      .object({
+        definition: z.unknown(),
+        manifest: z.unknown().optional(),
+        commandId: id.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        mode: z.literal("register-installed"),
+        commandId: id,
+        appId,
+        version,
+        definitionHash: hash,
+      })
+      .strict(),
+  ]),
   grant: z
     .object({
       appId,
@@ -133,6 +154,13 @@ const schemas = {
   recover: commandTarget,
 };
 export type CognitiveAppInstallRequest =
+  | {
+      mode: "register-installed";
+      commandId: string;
+      appId: string;
+      version: string;
+      definitionHash: string;
+    }
   | { definition: CognitiveAppDefinition; manifest?: never; commandId?: never }
   | {
       definition: CognitiveAppDefinition;
@@ -165,6 +193,7 @@ export function parseCognitiveAppRequest<M extends CognitiveAppMethod>(
   const request = schemas[method].parse(detached);
   if (method === "install") {
     const install = request as z.infer<typeof schemas.install>;
+    if ("mode" in install) return install as CognitiveAppRequestMap[M];
     const definition = parseCognitiveAppDefinition(install.definition);
     if (definition.ui === null) {
       if (install.manifest !== undefined || install.commandId !== undefined)
@@ -229,6 +258,13 @@ const metadataShape = z
     title: z.string().min(1).max(100).refine(isPortableText),
     description: z.string().max(500).refine(isPortableText),
     icon: z.enum(["layers", "document", "globe", "code", "book", "film"]),
+    iconImage: z
+      .string()
+      .max(180000)
+      .regex(/^data:image\/png;base64,[A-Za-z0-9+/]+=*$/)
+      .optional(),
+    registeredAt: timestamp,
+    installationState: z.enum(["active", "disabled", "unavailable"]),
     harness: z
       .object({
         id: z.string().min(1).max(100).refine(isPortableText),
@@ -237,7 +273,7 @@ const metadataShape = z
       .strict()
       .nullable(),
     ui: z.object({ packageVersion: version, sha256: hash }).strict().nullable(),
-    grant: grantShape,
+    grant: grantShape.nullable(),
   })
   .strict();
 const listShape = z
@@ -258,6 +294,16 @@ const descriptionShape = z
     grantRevision: revision,
   })
   .strict();
+const registeredDescriptionShape = z
+  .object({
+    mode: z.literal("registered-management"),
+    definition: z.unknown(),
+    definitionHash: hash,
+    registeredAt: timestamp,
+    installationState: z.enum(["active", "disabled", "unavailable"]),
+    grant: grantShape.nullable(),
+  })
+  .strict();
 export type CognitiveAppGrantDto = z.infer<typeof grantShape>;
 export type CognitiveAppConnectionDto = z.infer<typeof connectionShape>;
 export type CognitiveAppCatalogDto = z.infer<typeof listShape>;
@@ -267,10 +313,14 @@ export type CognitiveAppDescriptionDto = {
   definitionHash: string;
   grantRevision: number;
 };
+export type CognitiveAppRegisteredDescriptionDto = Omit<
+  z.infer<typeof registeredDescriptionShape>,
+  "definition"
+> & { definition: CognitiveAppDefinition };
 export type CognitiveAppInvokeResult = DomainReadResult | BrowserCommandResult;
 export type CognitiveAppResponseMap = {
   list: CognitiveAppCatalogDto;
-  describe: CognitiveAppDescriptionDto;
+  describe: CognitiveAppDescriptionDto | CognitiveAppRegisteredDescriptionDto;
   install: CognitiveAppInstalledDto;
   grant: CognitiveAppGrantDto;
   connect: CognitiveAppConnectionDto;
@@ -376,21 +426,30 @@ export function parseCognitiveAppCatalog(
   );
   for (const v of result.versions)
     check(
-      v.appId === v.grant.appId &&
-        v.version === v.grant.version &&
+      (v.grant === null ||
+        (v.appId === v.grant.appId && v.version === v.grant.version)) &&
         (v.ui === null || v.ui.packageVersion === v.version),
     );
+  check(
+    new TextEncoder().encode(JSON.stringify(result)).byteLength <= 480 * 1024,
+  );
   return result;
 }
 export function parseCognitiveAppDescription(
   input: unknown,
-): CognitiveAppDescriptionDto {
-  const result = descriptionShape.parse(
-    JSON.parse(JSON.stringify(parseWireJson(input))),
-  );
+): CognitiveAppDescriptionDto | CognitiveAppRegisteredDescriptionDto {
+  const result = z
+    .union([descriptionShape, registeredDescriptionShape])
+    .parse(JSON.parse(JSON.stringify(parseWireJson(input))));
+  const definition = parseCognitiveAppDefinition(result.definition);
+  if ("mode" in result && result.grant !== null)
+    check(
+      result.grant.appId === definition.id &&
+        result.grant.version === definition.version,
+    );
   return {
     ...result,
-    definition: parseCognitiveAppDefinition(result.definition),
+    definition,
   };
 }
 export const parseCognitiveAppInstalled = (

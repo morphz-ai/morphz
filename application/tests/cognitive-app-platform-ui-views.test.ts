@@ -370,6 +370,59 @@ async function connected(
   );
   return { fixture, declaration, connection };
 }
+async function connectedWithLegacy(
+  h: Harness,
+  commandId: string,
+  state: { view: string },
+) {
+  // A retained UI-only window predates its exact cognitive declaration. Build
+  // that history through the real APIs, not by bypassing the classifier or
+  // inserting a synthetic window row.
+  await installed(h);
+  assert.deepEqual(await h.q.all("SELECT * FROM cognitive_app_versions"), []);
+  const legacyRequest = {
+    commandId,
+    projectId: "project-a",
+    appId: "example.notes",
+    packageVersion: "1.0.0",
+    state,
+    now,
+  };
+  const legacy = await h.store.launchAppView(human, legacyRequest);
+  assert.equal(legacy.id, commandId);
+  assert.equal(legacy.revision, 1);
+  assert.deepEqual(legacy.state, state);
+  const original = await h.q.all(
+    "SELECT * FROM app_view_instances ORDER BY tenant_id,view_id",
+  );
+  const connection = await connected(h);
+  assert.deepEqual(
+    await h.q.all(
+      "SELECT * FROM app_view_instances ORDER BY tenant_id,view_id",
+    ),
+    original,
+  );
+  assert.deepEqual(
+    await h.q.all("SELECT * FROM cognitive_app_view_bindings"),
+    [],
+  );
+  // Once declared, even this still-unbound old window cannot be launched via
+  // the UI-only entry. The explicit bind/conversion paths below remain required.
+  await assert.rejects(
+    h.store.launchAppView(human, {
+      ...legacyRequest,
+      commandId: `${commandId}-after-declaration`,
+    }),
+    denied("forbidden"),
+  );
+  assert.deepEqual(
+    await h.q.all(
+      "SELECT * FROM app_view_instances ORDER BY tenant_id,view_id",
+    ),
+    original,
+  );
+  return { ...connection, legacy };
+}
 const launch = (commandId = "view-one", connectionId = "conn-alice-one") => ({
   commandId,
   projectId: "project-a",
@@ -468,14 +521,8 @@ for (const backend of ["sqlite", "postgres"] as const) {
       backend,
     async () =>
       isolated(backend, async (h) => {
-        await connected(h);
-        const legacy = await h.store.launchAppView(human, {
-          commandId: "legacy",
-          projectId: "project-a",
-          appId: "example.notes",
-          packageVersion: "1.0.0",
-          state: { view: "old" },
-          now,
+        const { legacy } = await connectedWithLegacy(h, "legacy", {
+          view: "old",
         });
         const bound = await h.store.bindCognitiveAppView(human, {
           commandId: "bind-one",
@@ -1205,14 +1252,8 @@ for (const backend of ["sqlite", "postgres"] as const) {
       backend,
     async () =>
       isolated(backend, async (h) => {
-        await connected(h);
-        const legacy = await h.store.launchAppView(human, {
-          commandId: "legacy",
-          projectId: "project-a",
-          appId: "example.notes",
-          packageVersion: "1.0.0",
-          state: { view: "legacy" },
-          now,
+        const { legacy } = await connectedWithLegacy(h, "legacy", {
+          view: "legacy",
         });
         assert.equal(
           (await h.store.readCognitiveAppView(human, { viewId: legacy.id }))
@@ -1431,8 +1472,8 @@ for (const backend of ["sqlite", "postgres"] as const) {
   test(
     "Cognitive GUI exact owned connection and legacy concurrent bind fence on " +
       backend,
-    async () =>
-      isolated(backend, async (h) => {
+    async () => {
+      await isolated(backend, async (h) => {
         const c = await connected(h);
         await h.store.changeCognitiveAppGrant(bob, {
           appId: "example.notes",
@@ -1460,13 +1501,14 @@ for (const backend of ["sqlite", "postgres"] as const) {
           denied("not_found"),
         );
         assert.deepEqual(await h.q.all("SELECT * FROM app_view_instances"), []);
-        const legacy = await h.store.launchAppView(human, {
-          commandId: "legacy-race",
-          projectId: "project-a",
-          appId: "example.notes",
-          packageVersion: "1.0.0",
-          state: { view: "legacy" },
-          now,
+        assert.deepEqual(
+          await h.q.all("SELECT * FROM cognitive_app_view_bindings"),
+          [],
+        );
+      });
+      await isolated(backend, async (h) => {
+        const { legacy } = await connectedWithLegacy(h, "legacy-race", {
+          view: "legacy",
         });
         const results = await Promise.allSettled([
           h.store.bindCognitiveAppView(human, {
@@ -1492,6 +1534,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
           assert.equal(metadata.view.status, "open");
           assert.deepEqual(metadata.view.state, {});
         } else assert.equal(metadata.view.status, "closed");
-      }),
+      });
+    },
   );
 }

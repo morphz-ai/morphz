@@ -346,7 +346,12 @@ for (const backend of ["sqlite", "postgres"] as const) {
       );
       assert.equal(
         (await h.store.listCognitiveApps(human, { limit: 10 })).versions.length,
-        0,
+        1,
+      );
+      assert.equal(
+        (await h.store.listCognitiveApps(human, { limit: 10 })).versions[0]!
+          .grant,
+        null,
       );
       assert.ok(h.callbackDepths.every((x) => x === 0));
     }));

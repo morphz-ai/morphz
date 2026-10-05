@@ -160,6 +160,7 @@ test("headless and exact UI installation are distinct; valid million-byte escape
     manifest,
     commandId: "stable_ui_install",
   });
+  assert.ok("definition" in result);
   assert.equal(result.manifest?.ui.type, "sandbox");
   assert.equal(
     result.manifest?.ui.type === "sandbox" ? result.manifest.ui.html.length : 0,
@@ -190,6 +191,8 @@ test("metadata catalog and exact description are separate, finite, and refuse le
     harness: null,
     ui: null,
     grant,
+    registeredAt: at,
+    installationState: "active",
   };
   const catalog = {
     versions: [meta],
@@ -198,6 +201,12 @@ test("metadata catalog and exact description are separate, finite, and refuse le
     nextConnectionsAfter: null,
   };
   assert.deepEqual(parseCognitiveAppCatalog(catalog), catalog);
+  const iconImage = "data:image/png;base64,AAAA";
+  assert.deepEqual(
+    parseCognitiveAppCatalog({ ...catalog, versions: [{ ...meta, iconImage }] })
+      .versions[0],
+    { ...meta, iconImage },
+  );
   for (const field of [
     "definition",
     "operations",
@@ -242,6 +251,8 @@ test("one hundred worst-sized metadata entries and connections fit the declared 
     title: "中".repeat(100),
     description: "中".repeat(500),
     icon: "book",
+    registeredAt: at,
+    installationState: "active",
     harness: { id: "中".repeat(100), version: "中".repeat(100) },
     ui: { packageVersion: "1.0.0", sha256: hash },
     grant: { ...grant, appId: `example.app${index}`, version: "1.0.0" },
