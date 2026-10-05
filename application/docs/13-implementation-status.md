@@ -1,5 +1,35 @@
 # 桌面能力实施记录
 
+## 2026-10-06 独立作者 GUI 的当前原生 Local／Remote 业务矩阵
+
+新增自动验收使用 unchanged 当前二十七个 desktop 文件的逐份 hash 副本、
+当前完整生产 Web／CSS 和真实 Service 编译，不改 main、资源 resolver、
+Client、API 或 SDK 回包。实际 Electron `morphz://app` 走共享 Document／
+沙箱；作者独立 packed 包、自有 SQLite／Service／公开 SDK 与真实 HPA。
+这些是隔离自动测试，不创建第二个人工验收 App／Center，不触及用户原资料。
+
+Remote 两项分别连接真实 SQLite／PostgreSQL Application：实际身份登录，
+原生认证资源转发、作者原件／历史保存、原回执恢复、CAS2 同 Document、
+同窗重载、原草稿准备和精确原件终结导航。Local 两项由真实 production
+main `--data-dir` 自己创建 SQLite UUID 中心，配置只有已有 synthetic
+成员和固定 loopback 作者接入，公开 Human IPC 设置许可／连接；没有
+Application HTTP 服务、listener、Runtime配置或工具 socket。作者 Service
+自身的隔离 HTTP 不冒称 Host HTTP。原生偏好 sandbox／no Node／context
+isolation 与 opaque author origin／无 parent DOM 均实际观测。
+
+Local 自有保存、恢复、compose／terminal 导航、真 grant2 撤权→旧 GUI
+退场→同精确资源 HEAD403／零 body、grant3 显式重开，以及 close3 元数据
+提示→在任何 guest 业务调用前自动退场→按已知 closed CAS 显式 reopen4
+全部通过。许可循环不创建第二个 own slot、重放命令或改原作者版本／草稿；
+未发送任务／Session／投递／事件 ledger 保持。真实两个中心 SQL 的资源
+授权门仍在同组回归，不泛称 Local 本轮也用 PostgreSQL。
+
+Root 完整冷审四新路径并独立正式三文件 20/20、required PostgreSQL、
+零失败／取消／跳过；日志 `/tmp/morphz-native-cognitive-current-matrix-ROOT-FIRST-oct06.log`。
+全工程类型／十路径格式通过。原 Local 授权 hash／reload generation／HEAD
+错误体／close 退场 RED 保留并分别定位，未删断言或归因“环境不可用”。
+这不是付费模型或用户原 App 验收；原 App 恢复仍需处理在途工具离线边界。
+
 ## 2026-10-06 窗口关闭的事件驱动 metadata 退休
 
 真实 native Local 的 close RED：SQL 已 closed／CAS3、原 preload 已收到
