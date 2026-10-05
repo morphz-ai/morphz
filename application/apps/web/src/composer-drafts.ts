@@ -1,10 +1,16 @@
 import type { TextQuote } from "../../../packages/core/src/text-quotes.js";
 import type { ReasoningEffort } from "../../../packages/core/src/inference.js";
+import {
+  guardCognitiveAppApplicationCommand,
+  parseCognitiveAppApplicationTarget,
+  type CognitiveAppApplicationTarget,
+} from "../../../packages/core/src/cognitive-app-application-target.js";
 
 type QuotedDraft = { textQuotes?: TextQuote[] };
 type ComposerExecutionChoice = {
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  cognitiveApplication?: CognitiveAppApplicationTarget;
 };
 type ArtifactComposeDraft = QuotedDraft &
   ComposerExecutionChoice & {
@@ -79,10 +85,15 @@ export function composeArtifactDrafts<T extends ArtifactComposeDraft>(
 export function consumeComposerDraft<
   T extends QuotedDraft & ComposerExecutionChoice,
 >(current: T, empty: T): T {
+  guardCognitiveAppApplicationCommand({ operation: current });
+  const slot = Object.getOwnPropertyDescriptor(current, "cognitiveApplication");
   return {
     ...empty,
     model: current.model,
     reasoningEffort: current.reasoningEffort,
+    ...(slot?.value !== undefined
+      ? { cognitiveApplication: parseCognitiveAppApplicationTarget(slot.value) }
+      : {}),
     textQuotes: [],
   };
 }

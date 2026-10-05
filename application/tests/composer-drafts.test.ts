@@ -7,6 +7,7 @@ import {
   updateComposerDraft,
 } from "../apps/web/src/composer-drafts.js";
 import type { TextQuote } from "../packages/core/src/text-quotes.js";
+import { parseCognitiveAppApplicationTarget } from "../packages/core/src/cognitive-app-application-target.js";
 
 type Draft = {
   body: string;
@@ -14,8 +15,21 @@ type Draft = {
   textQuotes?: TextQuote[];
   model?: string;
   reasoningEffort?: import("../packages/core/src/inference.js").ReasoningEffort;
+  cognitiveApplication?: import("../packages/core/src/cognitive-app-application-target.js").CognitiveAppApplicationTarget;
 };
 const empty: Draft = { body: "", selection: "" };
+const target = (connectionId = "connection-A") =>
+  parseCognitiveAppApplicationTarget({
+    connectionId,
+    authority: {
+      appId: "author.notes",
+      version: "1.0.0",
+      definitionHash: "a".repeat(64),
+      instanceId: "instance-one",
+      serviceId: "service-one",
+      dataAuthorityId: "data-one",
+    },
+  });
 const conversation = "conversation-1";
 const surface = `${conversation}:desk`;
 const otherSurface = `${conversation}:artifact-1`;
@@ -157,4 +171,18 @@ test("首次设置承接legacy草稿，随后functional设置不覆盖更新正�
   assert.equal(changed[surface]!.body, "新正文");
   assert.equal(changed[surface]!.reasoningEffort, "max");
   assert.equal(changed[surface]!.model, "new-route");
+});
+
+test("UNIT old A acknowledgement consumes contents but preserves actual latest B application choice", () => {
+  const admitted = { ...empty, body: "sent A", cognitiveApplication: target() };
+  const current = { ...admitted, cognitiveApplication: target("connection-B") };
+  const next = consumeComposerDraft(current, empty);
+  assert.deepEqual(next.cognitiveApplication, target("connection-B"));
+  assert.equal(next.body, "");
+  assert.deepEqual(admitted.cognitiveApplication, target());
+  const cleared = consumeComposerDraft(
+    { ...current, cognitiveApplication: undefined },
+    empty,
+  );
+  assert.equal(cleared.cognitiveApplication, undefined);
 });

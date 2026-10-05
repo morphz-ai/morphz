@@ -109,6 +109,7 @@ function profileOrder() { await ports.profile.flush(); ports.profile.assertCurre
 const cognitiveFields = {
   ...(activeInstance && !cognitive ? { application: { id: activeInstance.applicationId, version: activeInstance.applicationVersion } } : {}),
   ...(cognitiveObject ? { cognitiveObject } : {}),
+  ...(cognitiveApplication ? { cognitiveApplication } : {}),
   ...(browserPage && !cognitive && activeInstance?.applicationId === "morphz.browser" ? { browser: { pageId: browserPage.pageId, epoch: browserPage.epoch, url: browserPage.url, title: browserPage.title } } : {}),
 };
 `;
@@ -334,6 +335,14 @@ function ownership(
       new Set(["parseCognitiveAppObjectLocator"]),
     ],
     [
+      "../../../../packages/core/src/cognitive-app-application-target.js",
+      new Set([
+        "guardCognitiveAppApplicationCommand",
+        "parseCognitiveAppApplicationTarget",
+        "sameCognitiveAppApplicationTarget",
+      ]),
+    ],
+    [
       "../../../../packages/cognitive-app-sdk/src/protocol.js",
       new Set(["parseWireJson"]),
     ],
@@ -426,16 +435,16 @@ function ownership(
     // branch/receipt/async/command mutation gates remain below unchanged.
     const fullSequence = transaction.tryBlock.statements;
     check(
-      fullSequence.length === 18 &&
+      fullSequence.length === 23 &&
         createHash("sha256")
           .update(
-            JSON.stringify(fullSequence.slice(0, 11).map(submissionSyntax)),
+            JSON.stringify(fullSequence.slice(0, 16).map(submissionSyntax)),
           )
           .digest("hex") ===
-          "ed3535f8aa3c0db3627e5618fb6007f2a48e9046ee0332d185dcd37185d17c8d",
+          "ee01e38158987ed6ca799972ad9716bea5881591876b3052cd1b9cc87df3fd36",
       "exact-cognitive-source-snapshot-admission-before-first-await",
     );
-    const sequence = fullSequence.slice(11);
+    const sequence = fullSequence.slice(16);
     check(
       sequence.length === 7 && sequence.slice(0, 4).every(isIfStatement),
       "original-preflight-order-before-four-branches",
@@ -472,7 +481,7 @@ function ownership(
       "type,continuation,projectId,conversationId,artifactId,artifactRevision,selection,body,textQuotes,targetActantId,attachments",
       "type,taskId,expectedRevision,body",
       "type,artifactId,artifactRevision,quote,page,body",
-      "type,dispatchMode,model,reasoningEffort,projectId,conversationId,newConversation,application,artifactId,artifactRevision,selection,cognitiveObject,reading,body,textQuotes,scriptGeneration,directories,attachments,browser,intent,targetActantId",
+      "type,dispatchMode,model,reasoningEffort,projectId,conversationId,newConversation,application,artifactId,artifactRevision,selection,cognitiveObject,cognitiveApplication,reading,body,textQuotes,scriptGeneration,directories,attachments,browser,intent,targetActantId",
     ];
     branches.forEach((branch, index) => {
       const execute = calls(branch, "ports.execute");
@@ -556,9 +565,12 @@ function ownership(
             fieldIndex,
             expectedSpread,
           ] of cognitiveFields.properties.entries()) {
-            const family = ["application", "cognitiveObject", "browser"][
-              fieldIndex
-            ]!;
+            const family = [
+              "application",
+              "cognitiveObject",
+              "cognitiveApplication",
+              "browser",
+            ][fieldIndex]!;
             const candidates = operation.properties
               .filter(isSpreadAssignment)
               .filter((prop) => {
@@ -650,6 +662,9 @@ function ownership(
   const allowedCalls = new Set([
     "Object.getOwnPropertyDescriptor",
     "parseCognitiveAppObjectLocator",
+    "guardCognitiveAppApplicationCommand",
+    "parseCognitiveAppApplicationTarget",
+    "sameCognitiveAppApplicationTarget",
     "parseWireJson",
     "parseDomainAuthority",
     "cognitiveWorkSurfaceKey",
@@ -1047,6 +1062,56 @@ test("submission gate rejects cognitive source dropping, current-head substituti
           submissionOwnerText,
           "guardCognitiveAppInputCommand({ operation: draft });",
           "void draft.cognitiveObject;",
+        ),
+      ),
+    { message: /exact cognitive own-slot guard/ },
+  );
+  for (const [before, after, rule] of [
+    [
+      "parseCognitiveAppApplicationTarget(applicationSlot.value)",
+      "applicationSlot.value",
+      "exact-cognitive-source-snapshot-admission-before-first-await",
+    ],
+    [
+      "...(cognitiveApplication ? { cognitiveApplication } : {}),",
+      "",
+      "exact-operation-field-families-no-supplement-scope-escalation",
+    ],
+    [
+      "...(cognitiveApplication ? { cognitiveApplication } : {}),",
+      "...(cognitiveApplication ? { cognitiveApplication: captured.cognitiveApplication } : {}),",
+      "exact-cognitive-payload-no-implicit-harness-or-head",
+    ],
+    [
+      "!captured.continuation && applicationSlot?.value !== undefined",
+      "applicationSlot?.value !== undefined",
+      "exact-cognitive-source-snapshot-admission-before-first-await",
+    ],
+    [
+      "sameCognitiveAppApplicationTarget(cognitiveApplication, {",
+      "sameCognitiveAppApplicationTarget(cognitiveApplication, cognitiveApplication, {",
+      "exact-cognitive-source-snapshot-admission-before-first-await",
+    ],
+    [
+      "          continuation: captured.continuation,",
+      "          continuation: captured.continuation, cognitiveApplication,",
+      "exact-operation-field-families-no-supplement-scope-escalation",
+    ],
+  ]) {
+    // An exact additive target recipe never changes the historical witness or
+    // grants a general parser/import/extra payload exception.
+    reject(changed(owner, before!, after!), app, rule!);
+  }
+  assert.throws(
+    () =>
+      ownership(
+        owner,
+        app,
+        model,
+        changed(
+          submissionOwnerText,
+          "guardCognitiveAppApplicationCommand({ operation: draft });",
+          "void draft.cognitiveApplication;",
         ),
       ),
     { message: /exact cognitive own-slot guard/ },

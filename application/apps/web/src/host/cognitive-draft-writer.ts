@@ -4,6 +4,7 @@ import {
 } from "../../../../packages/core/src/cognitive-app-object-locator.js";
 import { parseWireJson } from "../../../../packages/cognitive-app-sdk/src/protocol.js";
 import { parseDomainAuthority } from "../../../../packages/cognitive-app-sdk/src/domain-wire.js";
+import { guardCognitiveAppApplicationCommand } from "../../../../packages/core/src/cognitive-app-application-target.js";
 import type {
   createExchangeDraftCommands,
   InputDraft,
@@ -109,17 +110,30 @@ export function createCognitiveDraftWriter({
       };
       try {
         guardCognitiveAppInputCommand({ operation: candidate });
+        guardCognitiveAppApplicationCommand({ operation: candidate });
         // Cleanup and specialized operations retain their exact old behavior.
-        if (
-          special(candidate) ||
-          (!candidate.body.trim() && !candidate.attachments?.length)
-        )
-          return next;
-        if (old) guardCognitiveAppInputCommand({ operation: old });
+        if (special(candidate)) return next;
+        if (!candidate.body.trim() && !candidate.attachments?.length) {
+          if (
+            Object.getOwnPropertyDescriptor(candidate, "cognitiveApplication")
+              ?.value === undefined
+          )
+            return next;
+          // Consuming an input clears its old original even though its latest
+          // application choice remains. Validate that choice without restoring
+          // the previous draft's already-consumed object reference.
+          const result = pinCognitiveDraftOriginal(candidate, captured.surface);
+          return result.ok ? next : refuse(result.error);
+        }
+        if (old) {
+          guardCognitiveAppInputCommand({ operation: old });
+          guardCognitiveAppApplicationCommand({ operation: old });
+        }
         const changed =
           !old ||
           candidate.body !== old.body ||
-          candidate.attachments !== old.attachments;
+          candidate.attachments !== old.attachments ||
+          candidate.cognitiveApplication !== old.cognitiveApplication;
         const oldSlot =
           old && Object.getOwnPropertyDescriptor(old, "cognitiveObject");
         if (!changed && !oldSlot?.value) return next;

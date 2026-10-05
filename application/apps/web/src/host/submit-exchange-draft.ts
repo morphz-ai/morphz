@@ -11,6 +11,11 @@ import { quotedInputText } from "../../../../packages/core/src/text-quotes.js";
 import type { ReadingSurface } from "../reading-context-model.js";
 import type { ConversationDraft, InputDraft } from "./exchange-drafts.js";
 import { parseCognitiveAppObjectLocator } from "../../../../packages/core/src/cognitive-app-object-locator.js";
+import {
+  guardCognitiveAppApplicationCommand,
+  parseCognitiveAppApplicationTarget,
+  sameCognitiveAppApplicationTarget,
+} from "../../../../packages/core/src/cognitive-app-application-target.js";
 import { parseWireJson } from "../../../../packages/cognitive-app-sdk/src/protocol.js";
 import { parseDomainAuthority } from "../../../../packages/cognitive-app-sdk/src/domain-wire.js";
 import {
@@ -95,6 +100,15 @@ export async function submitExchangeDraft(
     capabilities,
   } = context;
   try {
+    guardCognitiveAppApplicationCommand({ operation: captured });
+    const applicationSlot = Object.getOwnPropertyDescriptor(
+      captured,
+      "cognitiveApplication",
+    );
+    const cognitiveApplication =
+      !captured.continuation && applicationSlot?.value !== undefined
+        ? parseCognitiveAppApplicationTarget(applicationSlot.value)
+        : undefined;
     // Only the new source is detached here; unrelated legacy carriers keep
     // their original snapshot/budget behavior. Supplements never take a new
     // caller source: their immutable original is inherited by the backend.
@@ -116,7 +130,11 @@ export async function submitExchangeDraft(
             ? parseCognitiveAppObjectLocator(cognitiveSource.locator)
             : undefined
         : undefined;
-    const cognitive = !!(cognitiveSource || cognitiveObject);
+    const cognitive = !!(
+      cognitiveSource ||
+      cognitiveObject ||
+      cognitiveApplication
+    );
     if (
       cognitiveSource &&
       cognitiveSource.kind !== "view" &&
@@ -151,6 +169,28 @@ export async function submitExchangeDraft(
     )
       throw new Error("原件工作范围已有变化，草稿已保留。");
     if (
+      cognitiveApplication &&
+      ((cognitiveObject &&
+        !sameCognitiveAppApplicationTarget(cognitiveApplication, {
+          connectionId: cognitiveObject.connectionId,
+          authority: cognitiveObject.authority,
+        })) ||
+        (cognitiveSource &&
+          !sameCognitiveAppApplicationTarget(
+            cognitiveApplication,
+            cognitiveSource.kind === "original"
+              ? {
+                  connectionId: cognitiveSource.locator.connectionId,
+                  authority: cognitiveSource.locator.authority,
+                }
+              : {
+                  connectionId: cognitiveSource.connectionId,
+                  authority: cognitiveSource.authority,
+                },
+          )))
+    )
+      throw new Error("应用目标与原件工作范围不一致，草稿已保留。");
+    if (
       cognitive &&
       (asAnnotation ||
         captured.taskResult ||
@@ -161,6 +201,14 @@ export async function submitExchangeDraft(
         captured.scriptGeneration)
     )
       throw new Error("原输入中已有其他来源或专用请求，草稿已保留。");
+    if (
+      cognitiveApplication &&
+      (captured.annotation ||
+        captured.pendingSupplement ||
+        captured.continuationFailure ||
+        captured.page !== undefined)
+    )
+      throw new Error("原输入中已有专用请求，草稿已保留。");
     if (
       !asAnnotation &&
       !captured.continuation &&
@@ -298,6 +346,7 @@ export async function submitExchangeDraft(
             : null,
           selection: captured.selection,
           ...(cognitiveObject ? { cognitiveObject } : {}),
+          ...(cognitiveApplication ? { cognitiveApplication } : {}),
           ...(captured.reading ? { reading: captured.reading } : {}),
           body: captured.body,
           ...(captured.textQuotes?.length

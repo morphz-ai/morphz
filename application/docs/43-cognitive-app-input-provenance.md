@@ -110,3 +110,24 @@ Host transport 的 SQLite `user_version` 由 19→20→21 增加语义 downlevel
 Root 正式十四文件 170/170、required PostgreSQL、零跳过及全工程类型检查通过。新集成测试实际挂载生产 App、Conversation 与原 CSS，使用 Chromium StrictMode 和受控 logical transport，并保留旧导航、草稿、viewport、回执与 topbar 门。它不是 native Electron、真实作者网络或用户原窗口验收。
 
 第三方可执行 GUI 的 compose consumer、安全沙箱与统一安装／应用选择入口仍须接通；不得以只读原件工作面或消息叶模块冒称完整作者 GUI。Desktop／Web／Agent 的整体链和原 App 更新验收仍属剩余交付。
+
+## 普通草稿的显式应用目标准备
+
+现 InputDraft 的独立 `cognitiveApplication` 槽位复用完整 Core target。
+纯选择／清除在原 latest-state updater 中处理，不改变工作面键、原件 opaque
+版本、正文、附件、引用或执行参数，不产生 Session／导航／网络或授权。
+特殊输入拒绝改绑；普通输入已有原件或 view 时核实际项目、完整连接与
+authority，选择本身不制造原件。新目标 own-data 门在原 command 首次
+浅拷贝前执行，发送快照在 Profile await 前固定，只限制独立槽位，不收紧
+旧消息载体预算。显式目标不再自动夹带旧应用或 Browser 页面。
+
+消费沿旧草稿 owner 保留当前最新目标，发送 A 后选 B，迟到 A 回执既不
+覆盖 B，也不复活已消费的原件；定向补充与不确定重试不注入当前选择。
+没有目标的空稿／清理继续原有 no-op，不开始解析未使用的工作面。
+
+Root 独立八文件 118/118、相邻五文件 101/101，required PostgreSQL
+入口、零跳过及类型／格式检查通过；实际 command 的受控端口与相邻
+生产 App／writer Chromium 回归分开保留。该阶段不运行新的选择界面、
+SQL 业务、native IPC 或用户原窗口，不代替已独立验证的后端 IO11／12，
+也不冒称共同应用目录和 GUI 已完成。原始空稿／清理失败与验收日志见
+实施记录。

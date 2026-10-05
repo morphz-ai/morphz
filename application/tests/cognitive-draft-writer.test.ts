@@ -9,6 +9,7 @@ import {
   type InputDraft,
 } from "../apps/web/src/host/exchange-drafts.js";
 import { parseCognitiveAppObjectLocator } from "../packages/core/src/cognitive-app-object-locator.js";
+import { parseCognitiveAppApplicationTarget } from "../packages/core/src/cognitive-app-application-target.js";
 import { cognitiveWorkSurfaceKey } from "../apps/web/src/host/work-surface.js";
 import {
   replaceComposerSurface,
@@ -300,6 +301,20 @@ test("UNIT unrelated keys, cleanup and special requests are never pinned or repu
   }
   assert.deepEqual(f.errors, []);
 });
+test("UNIT empty legacy cleanup does not acquire new original coherence checks", () => {
+  const other = parseCognitiveAppObjectLocator({
+    ...locator(),
+    contentId: "other-content",
+  });
+  const old = { ...empty, body: "old", cognitiveObject: other };
+  const f = fixture({ [key]: old });
+  const cleanup = { ...old, body: "" };
+  f.write((previous) => ({ ...previous, [key]: cleanup }));
+  assert.strictEqual(f.drafts()[key], cleanup);
+  assert.deepEqual(f.drafts()[key]?.cognitiveObject, other);
+  assert.deepEqual(f.errors, []);
+  assert.deepEqual(f.stored(), { [key]: cleanup });
+});
 test("UNIT absent cognitive scope delegates the exact original updater; model-only edits do not guess a source", () => {
   const f = fixture({ [key]: { ...empty, body: "restored unbound" } });
   f.write((previous) => ({
@@ -394,5 +409,39 @@ test("UNIT a JSON-restored invalid old source cannot be replaced by a new head",
     [key]: { ...empty, body: "no old slot in this stale replacement" },
   }));
   assert.strictEqual(f.drafts()[key], old);
+  assert.equal(f.errors.length, 1);
+});
+
+test("UNIT actual writer consumption retains selected target without restoring consumed original", () => {
+  const target = parseCognitiveAppApplicationTarget({
+    connectionId: locator().connectionId,
+    authority: locator().authority,
+  });
+  const old = {
+    ...empty,
+    body: "sent",
+    cognitiveObject: locator(),
+    cognitiveApplication: target,
+  };
+  const f = fixture({ [key]: old });
+  f.write((previous) => ({
+    ...previous,
+    [key]: consumeComposerDraft(previous[key]!, empty),
+  }));
+  assert.equal(f.drafts()[key]!.cognitiveObject, undefined);
+  assert.deepEqual(f.drafts()[key]!.cognitiveApplication, target);
+  assert.equal(f.drafts()[key]!.body, "");
+  assert.deepEqual(f.errors, []);
+  f.write((previous) => ({
+    ...previous,
+    [key]: {
+      ...previous[key]!,
+      cognitiveApplication: parseCognitiveAppApplicationTarget({
+        ...target,
+        connectionId: "other",
+      }),
+    },
+  }));
+  assert.deepEqual(f.drafts()[key]!.cognitiveApplication, target);
   assert.equal(f.errors.length, 1);
 });

@@ -13,6 +13,7 @@ import {
   type ExchangeSubmissionCommandOptions,
 } from "../apps/web/src/host/exchange-submission-commands.js";
 import { parseCognitiveAppObjectLocator } from "../packages/core/src/cognitive-app-object-locator.js";
+import { parseCognitiveAppApplicationTarget } from "../packages/core/src/cognitive-app-application-target.js";
 import {
   deriveWorkSurface,
   readWorkSurfaceDraft,
@@ -44,6 +45,11 @@ const locator = (versionRef = "old:版@1") =>
     object: { objectId: "opaque:原件@id", versionRef },
   });
 const empty: InputDraft = { body: "", selection: "", revision: null };
+const applicationTarget = () =>
+  parseCognitiveAppApplicationTarget({
+    connectionId: "notes-connection",
+    authority,
+  });
 const original = (versionRef = "old:版@1") => ({
   kind: "original" as const,
   locator: locator(versionRef),
@@ -534,7 +540,24 @@ test("UNIT legacy valid large quote carrier is not restricted by new source wire
     })),
   );
   assert.ok(Buffer.byteLength(JSON.stringify(quotes)) > 512 * 1024);
-  for (const cognitiveSurface of [null, original()]) {
+  for (const [cognitiveSurface, cognitiveApplication] of [
+    [null, undefined],
+    [original(), undefined],
+    [
+      null,
+      parseCognitiveAppApplicationTarget({
+        connectionId: locator().connectionId,
+        authority: locator().authority,
+      }),
+    ],
+    [
+      original(),
+      parseCognitiveAppApplicationTarget({
+        connectionId: locator().connectionId,
+        authority: locator().authority,
+      }),
+    ],
+  ] as const) {
     const f = ports();
     await submitExchangeDraft(
       {
@@ -543,6 +566,7 @@ test("UNIT legacy valid large quote carrier is not restricted by new source wire
         reading: undefined,
         scriptGeneration: undefined,
         textQuotes: quotes,
+        ...(cognitiveApplication ? { cognitiveApplication } : {}),
       },
       false,
       "interrupt",
@@ -554,85 +578,92 @@ test("UNIT legacy valid large quote carrier is not restricted by new source wire
       (f.calls[0] as Extract<Operation, { type: "record-input" }>).textQuotes,
       quotes,
     );
+    assert.deepEqual(
+      (f.calls[0] as Extract<Operation, { type: "record-input" }>)
+        .cognitiveApplication,
+      cognitiveApplication,
+    );
   }
 });
 test("UNIT actual submission command rejects new slot getter before its original shallow spread", async () => {
-  let reads = 0;
-  const draft = { ...empty, body: "must remain" };
-  Object.defineProperty(draft, "cognitiveObject", {
-    enumerable: true,
-    get() {
-      reads++;
-      return locator();
-    },
-  });
-  const f = ports(),
-    errors: Record<string, string> = {};
-  const noop = () => {};
-  const options: ExchangeSubmissionCommandOptions = {
-    render: {
-      ...context(),
-      project: surface().project,
-      selectedConversation: undefined,
-      selectedDraft: undefined,
-      draft,
-      sending: false,
-      uploadingDrafts: {},
-      contextKey: surface().contextKey,
-      workspace: undefined,
-      emptyDraft: empty,
-      rightInspector: { mode: "docked" },
-    },
-    client: {
-      boot: null,
-      execute: (
-        operation,
-        dispatch,
-        applicationInstanceId,
-        commandId,
-        onInputStaged,
-      ) => {
-        assert.equal(applicationInstanceId, undefined);
-        return f.value.execute(
+  for (const field of ["cognitiveObject", "cognitiveApplication"] as const) {
+    let reads = 0;
+    const draft = { ...empty, body: "must remain" };
+    Object.defineProperty(draft, field, {
+      enumerable: true,
+      get() {
+        reads++;
+        return locator();
+      },
+    });
+    const f = ports(),
+      errors: Record<string, string> = {};
+    const noop = () => {};
+    const options: ExchangeSubmissionCommandOptions = {
+      render: {
+        ...context(),
+        project: surface().project,
+        selectedConversation: undefined,
+        selectedDraft: undefined,
+        draft,
+        sending: false,
+        uploadingDrafts: {},
+        contextKey: surface().contextKey,
+        workspace: undefined,
+        emptyDraft: empty,
+        rightInspector: { mode: "docked" },
+      },
+      client: {
+        boot: null,
+        execute: (
           operation,
           dispatch,
-          undefined,
+          applicationInstanceId,
           commandId,
           onInputStaged,
-        );
+        ) => {
+          assert.equal(applicationInstanceId, undefined);
+          return f.value.execute(
+            operation,
+            dispatch,
+            undefined,
+            commandId,
+            onInputStaged,
+          );
+        },
       },
-    },
-    profile: f.value.profile,
-    feedback: {
-      sendPending: { current: false },
-      currentContext: { current: surface().contextKey },
-      setSending: noop,
-      setInputErrors: (update) =>
-        Object.assign(
-          errors,
-          typeof update === "function" ? update(errors) : update,
-        ),
-      setRevealedInputs: noop,
-      setAnnotationRefresh: noop,
-    },
-    dictationControls: { current: null },
-    drafts: { replace: noop, update: noop },
-    exchange: {
-      setMobileCollaboration: noop,
-      showSentInput: noop,
-      requestSentInputFocus: noop,
-      showInput: noop,
-    },
-    inspector: { openCollaboration: noop, closeInspector: noop },
-    onNotice: noop,
-    focusAfterSupplement: noop,
-  };
-  await createExchangeSubmissionCommands(options).send();
-  assert.equal(reads, 0);
-  assert.equal(f.calls.length, 0);
-  assert.equal(f.events.length, 0);
-  assert.equal(errors[surface().contextKey], "原件引用无效，草稿已保留。");
-  assert.equal(draft.body, "must remain");
+      profile: f.value.profile,
+      feedback: {
+        sendPending: { current: false },
+        currentContext: { current: surface().contextKey },
+        setSending: noop,
+        setInputErrors: (update) =>
+          Object.assign(
+            errors,
+            typeof update === "function" ? update(errors) : update,
+          ),
+        setRevealedInputs: noop,
+        setAnnotationRefresh: noop,
+      },
+      dictationControls: { current: null },
+      drafts: { replace: noop, update: noop },
+      exchange: {
+        setMobileCollaboration: noop,
+        showSentInput: noop,
+        requestSentInputFocus: noop,
+        showInput: noop,
+      },
+      inspector: { openCollaboration: noop, closeInspector: noop },
+      onNotice: noop,
+      focusAfterSupplement: noop,
+    };
+    await createExchangeSubmissionCommands(options).send();
+    assert.equal(reads, 0);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.events.length, 0);
+    assert.equal(errors[surface().contextKey], "原件引用无效，草稿已保留。");
+    assert.equal(draft.body, "must remain");
+  }
 });
 test("UNIT new source slot accessor is not evaluated", async () => {
   let reads = 0;
@@ -649,4 +680,219 @@ test("UNIT new source slot accessor is not evaluated", async () => {
   assert.equal(reads, 0);
   assert.equal(f.calls.length, 0);
   assert.equal(f.errors.length, 1);
+});
+
+test("UNIT explicit headless target is detached before Profile and suppresses old UI application/browser", async () => {
+  let release!: () => void;
+  const f = ports(
+    new Promise<void>((resolve) => {
+      release = resolve;
+    }),
+  );
+  const raw = structuredClone(applicationTarget());
+  const c = context(null);
+  c.activeInstance = {
+    applicationId: "morphz.browser",
+    applicationVersion: "1.0.0",
+  };
+  c.browserPage = {
+    pageId: "old-page",
+    epoch: "old-epoch",
+    url: "https://example.invalid",
+    title: "Old",
+  };
+  const pending = submitExchangeDraft(
+    { ...empty, body: "headless choice", cognitiveApplication: raw },
+    false,
+    "interrupt",
+    c,
+    f.value,
+  );
+  assert.deepEqual(f.events, ["flush"]);
+  Object.defineProperty(raw.authority, "serviceId", {
+    value: "mutated",
+    enumerable: true,
+  });
+  release();
+  await pending;
+  assert.deepEqual(f.errors, []);
+  const op = f.calls[0] as Extract<Operation, { type: "record-input" }>;
+  assert.deepEqual(op.cognitiveApplication, applicationTarget());
+  assert.equal(op.cognitiveObject, undefined);
+  assert.equal(op.application, undefined);
+  assert.equal(op.browser, undefined);
+});
+
+test("UNIT explicit target and original keep opaque V1; changed full authority fails before effects", async () => {
+  const f = ports();
+  await submitExchangeDraft(
+    {
+      ...empty,
+      body: "both",
+      cognitiveApplication: applicationTarget(),
+      cognitiveObject: locator(),
+    },
+    false,
+    "interrupt",
+    context(original("current:V2")),
+    f.value,
+  );
+  assert.deepEqual(f.errors, []);
+  const op = f.calls[0] as Extract<Operation, { type: "record-input" }>;
+  assert.deepEqual(op.cognitiveApplication, applicationTarget());
+  assert.deepEqual(op.cognitiveObject, locator());
+  for (const field of [
+    "appId",
+    "version",
+    "definitionHash",
+    "instanceId",
+    "serviceId",
+    "dataAuthorityId",
+  ] as const) {
+    const changed = parseCognitiveAppApplicationTarget({
+      ...applicationTarget(),
+      authority: {
+        ...authority,
+        [field]:
+          field === "appId"
+            ? "other.notes"
+            : field === "version"
+              ? "2.0.0"
+              : field === "definitionHash"
+                ? "b".repeat(64)
+                : "other",
+      },
+    });
+    const denied = ports();
+    await submitExchangeDraft(
+      {
+        ...empty,
+        body: "keep original",
+        cognitiveApplication: changed,
+        cognitiveObject: locator(),
+      },
+      false,
+      "interrupt",
+      context(),
+      denied.value,
+    );
+    assert.equal(denied.calls.length, 0, field);
+    assert.equal(denied.errors.length, 1, field);
+    assert.deepEqual(denied.events, ["settled"], field);
+  }
+});
+
+test("UNIT inherited, non-enumerable and nested target accessors reject before Profile with zero reads", async () => {
+  let reads = 0;
+  const nested = structuredClone(applicationTarget());
+  Object.defineProperty(nested.authority, "serviceId", {
+    enumerable: true,
+    get() {
+      reads++;
+      return "secret";
+    },
+  });
+  const inherited = Object.assign(
+    Object.create({ cognitiveApplication: applicationTarget() }),
+    { ...empty, body: "retain inherited" },
+  );
+  const hidden = Object.defineProperty(
+    { ...empty, body: "retain hidden" },
+    "cognitiveApplication",
+    { value: applicationTarget(), enumerable: false },
+  );
+  const getter = Object.defineProperty(
+    { ...empty, body: "retain getter" },
+    "cognitiveApplication",
+    {
+      enumerable: true,
+      get() {
+        reads++;
+        return applicationTarget();
+      },
+    },
+  );
+  for (const captured of [
+    inherited,
+    hidden,
+    getter,
+    { ...empty, body: "nested", cognitiveApplication: nested },
+  ]) {
+    const f = ports();
+    await submitExchangeDraft(
+      captured,
+      false,
+      "interrupt",
+      context(null),
+      f.value,
+    );
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.errors.length, 1);
+    assert.deepEqual(f.events, ["settled"]);
+  }
+  assert.equal(reads, 0);
+});
+
+test("UNIT supplements never inject the current choice and unknown retry keeps its exact command", async () => {
+  const f = ports();
+  const originalInput: RecordedInput = {
+    id: "original-input",
+    projectId: "first-project",
+    conversationId: "local-dialogue",
+    author: { principalId: "local-owner", actantId: "local-human" },
+    targetActantId: "morphz-agent",
+    artifactId: null,
+    artifactRevision: null,
+    selection: "",
+    body: "A",
+    status: "recorded",
+    createdAt: "2026-10-05T00:00:00.000Z",
+    cognitiveApplication: applicationTarget(),
+  };
+  f.value.originalInput = () => originalInput;
+  const continuation = {
+    mode: "supplement" as const,
+    inputId: originalInput.id,
+    threadId: "thread-one",
+    generation: 1,
+  };
+  const pending: NonNullable<InputDraft["pendingSupplement"]> = {
+    commandId: "same-uncertain-command",
+    operation: {
+      type: "record-input",
+      continuation,
+      projectId: originalInput.projectId,
+      conversationId: originalInput.conversationId,
+      artifactId: null,
+      artifactRevision: null,
+      selection: "",
+      body: "same retry bytes",
+      targetActantId: originalInput.targetActantId,
+    },
+  };
+  await submitExchangeDraft(
+    {
+      ...empty,
+      body: "not retry",
+      continuation,
+      pendingSupplement: pending,
+      cognitiveApplication: parseCognitiveAppApplicationTarget({
+        ...applicationTarget(),
+        connectionId: "new-B",
+      }),
+    },
+    false,
+    "interrupt",
+    context(),
+    f.value,
+  );
+  assert.deepEqual(f.errors, []);
+  assert.strictEqual(f.envelopes[0]![0], pending.operation);
+  assert.equal(f.envelopes[0]![3], pending.commandId);
+  assert.equal(
+    (f.calls[0] as Extract<Operation, { type: "record-input" }>)
+      .cognitiveApplication,
+    undefined,
+  );
+  assert.deepEqual(f.events, ["persist", "execute", "resolved", "settled"]);
 });

@@ -4,6 +4,7 @@ import { pinCognitiveDraftOriginal } from "../apps/web/src/host/cognitive-draft-
 import type { InputDraft } from "../apps/web/src/host/exchange-drafts.js";
 import type { CognitiveWorkSurface } from "../apps/web/src/host/work-surface.js";
 import { parseCognitiveAppObjectLocator } from "../packages/core/src/cognitive-app-object-locator.js";
+import { parseCognitiveAppApplicationTarget } from "../packages/core/src/cognitive-app-application-target.js";
 
 // Pure preparation UNIT, not current Human authorization, persistence,
 // mounted App, author HTTP or actual Runtime acceptance.
@@ -142,6 +143,51 @@ test("UNIT text-only view, absent surface and empty original never guess an obje
   assert.deepEqual(result, { ok: true, draft: empty });
   if (result.ok) assert.strictEqual(result.draft, empty);
 });
+test("UNIT legacy empty draft without a selected target does not inspect or budget an unused surface", () => {
+  let reads = 0;
+  const withGetter = structuredClone(source());
+  Object.defineProperty(withGetter, "unused", {
+    enumerable: true,
+    get() {
+      reads++;
+      return "not part of an empty input";
+    },
+  });
+  const overBudget = {
+    ...source(),
+    unused: "x".repeat(512 * 1024 + 1),
+  };
+  const invalid = { kind: "bad-source", privateBytes: "keep original bytes" };
+  for (const surface of [withGetter, overBudget, invalid]) {
+    const empty = draft({ body: "  " });
+    const result = pinCognitiveDraftOriginal(
+      empty,
+      surface as CognitiveWorkSurface,
+    );
+    assert.deepEqual(result, { ok: true, draft: empty });
+    if (result.ok) assert.strictEqual(result.draft, empty);
+    assert.equal(empty.cognitiveObject, undefined);
+  }
+  assert.equal(reads, 0);
+  assert.equal(overBudget.unused.length, 512 * 1024 + 1);
+  assert.equal(invalid.privateBytes, "keep original bytes");
+  const selected = draft({
+    body: "  ",
+    cognitiveApplication: parseCognitiveAppApplicationTarget({
+      connectionId: "connection-one",
+      authority,
+    }),
+  });
+  for (const surface of [withGetter, overBudget, invalid]) {
+    assert.equal(
+      pinCognitiveDraftOriginal(selected, surface as CognitiveWorkSurface).ok,
+      false,
+    );
+    assert.equal(selected.cognitiveObject, undefined);
+  }
+  assert.equal(reads, 0);
+  assert.equal(invalid.privateBytes, "keep original bytes");
+});
 test("UNIT special requests and old builtin source are left untouched", () => {
   const operation = {
     type: "record-input" as const,
@@ -219,4 +265,43 @@ test("UNIT removing body retains old V1 slot until an explicit reference clear",
   });
   assert.equal(result.ok, true);
   if (result.ok) assert.deepEqual(result.draft.cognitiveObject, locator());
+});
+
+test("UNIT an application choice is not a new source and must match actual original/view even on empty draft", () => {
+  const target = parseCognitiveAppApplicationTarget({
+    connectionId: "connection-one",
+    authority,
+  });
+  for (const surface of [
+    source(),
+    {
+      kind: "view" as const,
+      projectId: "project-one",
+      viewId: "view-one",
+      ...target,
+    },
+  ]) {
+    const empty = draft({ body: "", cognitiveApplication: target });
+    const result = pinCognitiveDraftOriginal(empty, surface);
+    assert.deepEqual(result, { ok: true, draft: empty });
+    if (result.ok) assert.equal(result.draft.cognitiveObject, undefined);
+    const bad = draft({
+      body: "",
+      cognitiveApplication: parseCognitiveAppApplicationTarget({
+        ...target,
+        connectionId: "other",
+      }),
+    });
+    assert.equal(pinCognitiveDraftOriginal(bad, surface).ok, false);
+  }
+  const current = draft({
+    cognitiveApplication: target,
+    cognitiveObject: locator(),
+  });
+  const good = pinCognitiveDraftOriginal(current, {
+    kind: "original",
+    locator: locator("V2-current-head"),
+  });
+  assert.ok(good.ok);
+  assert.deepEqual(good.draft.cognitiveObject, locator());
 });

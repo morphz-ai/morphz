@@ -11,10 +11,12 @@ import type { ReadingInput } from "../../../../packages/core/src/reader.js";
 import type { ScriptGeneration } from "../../../../packages/core/src/script-studio.js";
 import type { TextQuote } from "../../../../packages/core/src/text-quotes.js";
 import type { CognitiveAppObjectLocator } from "../../../../packages/core/src/cognitive-app-object-locator.js";
+import type { CognitiveAppApplicationTarget } from "../../../../packages/core/src/cognitive-app-application-target.js";
 import { draftKey, type scopedStorage } from "../local-preferences.js";
 
 export type InputDraft = {
   cognitiveObject?: CognitiveAppObjectLocator;
+  cognitiveApplication?: CognitiveAppApplicationTarget;
   textQuotes?: TextQuote[];
   reading?: ReadingInput;
   skipReading?: boolean;

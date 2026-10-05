@@ -14,6 +14,7 @@ import { consumeComposerDraft } from "../composer-drafts.js";
 import { RequestError } from "../application-transport.js";
 import { submitExchangeDraft } from "./submit-exchange-draft.js";
 import { guardCognitiveAppInputCommand } from "../../../../packages/core/src/cognitive-app-object-locator.js";
+import { guardCognitiveAppApplicationCommand } from "../../../../packages/core/src/cognitive-app-application-target.js";
 
 type RecordSetter<T> = Dispatch<SetStateAction<Record<string, T>>>;
 export type ExchangeSubmissionCommandOptions = {
@@ -140,6 +141,7 @@ export function createExchangeSubmissionCommands({
     // Do not execute a slot getter or constrain unrelated legacy draft bytes.
     try {
       guardCognitiveAppInputCommand({ operation: draft });
+      guardCognitiveAppApplicationCommand({ operation: draft });
     } catch {
       setInputErrors((old) => ({
         ...old,

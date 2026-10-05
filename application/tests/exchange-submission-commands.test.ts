@@ -15,6 +15,7 @@ import {
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { Boot } from "../apps/web/src/client.js";
 import type { InputDraft } from "../apps/web/src/host/exchange-drafts.js";
+import { parseCognitiveAppApplicationTarget } from "../packages/core/src/cognitive-app-application-target.js";
 import {
   createFixedSubmissionCommands,
   type FixedSubmissionBindings,
@@ -466,6 +467,56 @@ test("staged success preserves new contents and originating revealed receipt des
       false,
     );
   });
+});
+
+test("UNIT real command stage retains choice A, and its late receipt never overwrites newer B", async () => {
+  const application = (connectionId: string) =>
+    parseCognitiveAppApplicationTarget({
+      connectionId,
+      authority: {
+        appId: "author.notes",
+        version: "1.0.0",
+        definitionHash: "a".repeat(64),
+        instanceId: "instance-one",
+        serviceId: "service-one",
+        dataAuthorityId: "data-one",
+      },
+    });
+  const h = harness("owner", {
+    draft: {
+      ...empty,
+      body: "send A",
+      cognitiveApplication: application("connection-A"),
+    },
+  });
+  const pending = h.commands.send();
+  h.flush.resolve();
+  await h.started.promise;
+  h.stage("accepted-A");
+  assert.deepEqual(
+    h.stored().cognitiveApplication,
+    application("connection-A"),
+  );
+  h.replaceStored({
+    ...empty,
+    body: "new B bytes",
+    cognitiveApplication: application("connection-B"),
+  });
+  h.execution.resolve(receipt);
+  await pending;
+  assert.equal(h.stored().body, "new B bytes");
+  assert.deepEqual(
+    h.stored().cognitiveApplication,
+    application("connection-B"),
+  );
+  assert.deepEqual(
+    (
+      h.events.find((event) => event[0] === "execute")![1] as {
+        cognitiveApplication: unknown;
+      }
+    ).cognitiveApplication,
+    application("connection-A"),
+  );
 });
 test("scope change during profile flush rejects without execute and retains original draft", async () => {
   await parity(async (h) => {

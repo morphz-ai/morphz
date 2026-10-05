@@ -6,6 +6,11 @@ import { parseWireJson } from "../../../../packages/cognitive-app-sdk/src/protoc
 import { parseDomainAuthority } from "../../../../packages/cognitive-app-sdk/src/domain-wire.js";
 import type { InputDraft } from "./exchange-drafts.js";
 import {
+  guardCognitiveAppApplicationCommand,
+  parseCognitiveAppApplicationTarget,
+  sameCognitiveAppApplicationTarget,
+} from "../../../../packages/core/src/cognitive-app-application-target.js";
+import {
   cognitiveWorkSurfaceKey,
   type CognitiveWorkSurface,
 } from "./work-surface.js";
@@ -24,6 +29,7 @@ export function pinCognitiveDraftOriginal(
     // Inspect the new independent slot before any spread or field access.
     // Never apply a whole-carrier wire budget to old drafts/quotes/attachments.
     guardCognitiveAppInputCommand({ operation: draft });
+    guardCognitiveAppApplicationCommand({ operation: draft });
     if (
       !surface ||
       draft.continuation ||
@@ -39,7 +45,22 @@ export function pinCognitiveDraftOriginal(
     )
       return { ok: true, draft };
     const slot = Object.getOwnPropertyDescriptor(draft, "cognitiveObject");
-    if (!slot?.value && !draft.body.trim() && !draft.attachments?.length)
+    const applicationSlot = Object.getOwnPropertyDescriptor(
+      draft,
+      "cognitiveApplication",
+    );
+    const target =
+      applicationSlot?.value !== undefined
+        ? parseCognitiveAppApplicationTarget(applicationSlot.value)
+        : undefined;
+    // An unused legacy surface is not part of an empty input. Preserve the
+    // original early no-op; only an explicit target requires new coherence.
+    if (
+      !target &&
+      !slot?.value &&
+      !draft.body.trim() &&
+      !draft.attachments?.length
+    )
       return { ok: true, draft };
     const source: CognitiveWorkSurface = JSON.parse(
       JSON.stringify(parseWireJson(surface)),
@@ -50,11 +71,43 @@ export function pinCognitiveDraftOriginal(
       source.kind === "original"
         ? parseCognitiveAppObjectLocator(source.locator)
         : undefined;
+    if (
+      target &&
+      !sameCognitiveAppApplicationTarget(
+        target,
+        source.kind === "original"
+          ? {
+              connectionId: original!.connectionId,
+              authority: original!.authority,
+            }
+          : {
+              connectionId: source.connectionId,
+              authority: parseDomainAuthority(source.authority),
+            },
+      )
+    )
+      return {
+        ok: false,
+        error: "应用目标与原件工作范围不一致，原草稿已保留。",
+      };
+    if (!slot?.value && !draft.body.trim() && !draft.attachments?.length)
+      return { ok: true, draft };
     const pinned =
       slot?.value !== undefined
         ? parseCognitiveAppObjectLocator(slot.value)
         : original;
     if (!pinned) return { ok: true, draft };
+    if (
+      target &&
+      !sameCognitiveAppApplicationTarget(target, {
+        connectionId: pinned.connectionId,
+        authority: pinned.authority,
+      })
+    )
+      return {
+        ok: false,
+        error: "应用目标与原件工作范围不一致，原草稿已保留。",
+      };
     if (
       (original &&
         cognitiveWorkSurfaceKey({ kind: "original", locator: pinned }) !==

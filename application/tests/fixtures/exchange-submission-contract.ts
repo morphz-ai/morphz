@@ -134,6 +134,7 @@ export const cognitiveSubmissionAppAdapter = submissionAppAdapter.replace(
 const cognitiveSlotGuard = `function expectedGuard() {
   try {
     guardCognitiveAppInputCommand({ operation: draft });
+    guardCognitiveAppApplicationCommand({ operation: draft });
   } catch {
     setInputErrors((old) => ({ ...old, [contextKey]: "原件引用无效，草稿已保留。" }));
     return;
@@ -180,6 +181,10 @@ export function verifySubmissionCommands(
           [
             "../../../../packages/core/src/cognitive-app-object-locator.js",
             "guardCognitiveAppInputCommand",
+          ],
+          [
+            "../../../../packages/core/src/cognitive-app-application-target.js",
+            "guardCognitiveAppApplicationCommand",
           ],
         ]
       : []),

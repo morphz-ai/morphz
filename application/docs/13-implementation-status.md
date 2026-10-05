@@ -1,5 +1,31 @@
 # 桌面能力实施记录
 
+## 2026-10-05 普通输入的显式应用目标准备层
+
+既有 scoped 草稿增加严格的完整应用目标，选择／清除复用原 latest-state
+owner，不新建目录、存储或发送入口。仅普通新输入可选择；原件、项目与
+完整 authority 错配时保留原稿。发送首次 await 前脱离目标，显式目标抑制
+旧应用／Browser 注入；补充与未知重试沿原请求，不注入当前新选择。
+正文消费保留最新目标，旧 A 回执不覆盖后来 B 的正文或选择。
+
+Root 独立正式八文件 118/118，相邻五文件 101/101，required PostgreSQL
+入口、零失败／取消／跳过；全工程类型、十五文件专项格式和 diff 检查通过。
+日志 `/tmp/morphz-headless-target-ROOT-ACCEPTED-oct05.log`、
+`/tmp/morphz-headless-target-ROOT-ADJACENT-oct05.log`、
+`/tmp/morphz-headless-target-ROOT-TYPES-ACCEPTED-oct05.log` 和
+`/tmp/morphz-headless-target-ROOT-FORMAT-oct05.log`。纯准备与受控 command
+端口不是 SQL 业务验收；相邻 Chromium 挂载实际生产 App／writer／CSS，
+但没有新增选择 UI，logical transport 受控，不是 native 或原用户窗口。
+
+两个新增旧行为回归均先真实失败再修复：无目标空稿不解析未使用工作面，
+既有空稿清理不引入新的原件一致性检查。日志分别为
+`/tmp/morphz-headless-target-LEGACY-NOOP-RED-oct05.log` 和
+`/tmp/morphz-headless-target-LEGACY-CLEANUP-RED-oct05.log`。合法超过
+512 KiB 的旧引用载体即使带新目标也保持原预算和数组引用，不将独立槽位
+预算扩为整个草稿预算；历史固定提交 fixture 字节未变，当前有限 recipe
+只增加确切新目标门，并保留丢字段／原始对象／补充越权的负例。
+共同 Dock／工作台／输入关联消费、作者 GUI 与跨宿主原 App 仍须完成。
+
 ## 2026-10-05 工作台的认知应用管理入口
 
 原工作台现有应用区接入共享管理面板，沿本人目录与原管理 owner 查看精确
