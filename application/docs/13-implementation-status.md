@@ -1,5 +1,28 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：有限 Browser Host channel leaf
+
+新增独立叶模块，仅管理一个 opaque 文档的既定 Browser SDK 八方法通道。
+严格核消息 source／origin／channel，同步解析并快照，最多十六个 pending；
+初始化和操作共用原三十秒预算，timer 与 monotonic 发布门并行。重绑、
+身份失效、第二次 document load 退休通道，取消或超时不证明写回滚、不
+自动重发。错误只给有限 code 和原命令 ID，不披露私有原因或采用伪 ID。
+
+初始化等待中上下文改变必须重新授权，不能核 C1 却发 C2；保存导航后
+核精确原 CAS 回执，推进自己的上下文并拒绝其他旧修订 pending。隐藏
+与外部修订变化也清除旧请求，迟到私有结果不能发给新的文档或作用范围。
+共享业务／窗口授权、资源载体和导航仍由实际 adapter 提供，不把 wire
+Schema 或同步 current callback 当成真实权限验证。
+
+十八项新测试明确为 controlled Window／authority ports UNIT。正式合并
+既有 Browser SDK／包消费回归为三文件 29/29，零失败／取消／跳过，日志
+`/tmp/morphz-cognitive-channel-ROOT-COMBINED-ACCEPTED-oct05.log`；同代码
+全工程类型检查通过，日志
+`/tmp/morphz-cognitive-SOURCES-ROOT-types-ACCEPTED-oct05.log`。
+独立只读复审提出的初始化竞态、own save 旧请求和 monotonic 边界已补
+测试与修正，旧 SDK 八方法未改。该 leaf 尚无生产 consumer，不称实际
+iframe／Host／原 App 已接通；第二次 load 退休也不证明阻止网络自导航。
+
 ## 2026-10-05 第三方认知应用：真实后台事项与 infer 来源闭环
 
 隔离实际 Rust 测试经原 Human HTTP 创建事项，实际 Agent `work-task.start`

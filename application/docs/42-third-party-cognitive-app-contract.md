@@ -394,6 +394,13 @@ session generation、导航 epoch、view／binding revision、定义 hash 及
 文档再次加载退休原 channel 和 pending 集合，迟到正文不披露，新文档不
 自动获得 init；已有副作用事实及原 ID 仍留在领域账本，不重新 invoke。
 
+独立 `cognitive-browser-channel.ts` leaf 已实现上述消息生命周期，保持
+SDK 的十六 pending／三十秒预算，并在初始化竞态、导航 CAS 及 monotonic
+返回门处拒绝旧结果。十八项为明确控 Window／authority UNIT，合并旧
+SDK Browser／打包消费回归 29/29、零跳过、全工程类型检查通过。
+它尚未挂载生产 consumer；真实权限端口、资源、DOM 和 GUI Router 仍
+须接入与验收，不能把这份消息叶模块称作运行中的 GUI 功能。
+
 字节载体优先扩展既有 authenticated resource 的 HTTP／Electron 两个
 adapter，按 bound view 和双修订读取，发送共享完整 CSP／权限策略；这
 不是新增 Desktop HTTP server。若实现改用 typed UI-read＋srcdoc，必须
