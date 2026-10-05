@@ -10,6 +10,10 @@
 Morphz 数据库、React、Yao、Runtime 或特定云服务。首轮以作者自行运行的
 独立 Service 验证真实链路，不把作者代码加载进 Host。
 
+Agent scope 使用 Runtime authority 已核验的来源类型，不按是否含输入
+ID 猜测。后台 `task-run` 可保留原 `sourceInputId` 关联，但不因此成为聊天
+或继承聊天中固定剧本流程的能力；目录／操作调用仍核其实际项目和准入。
+
 ## 职责与接入范围
 
 | 参与方 | 拥有的事实与职责 | 不因此获得的能力 |

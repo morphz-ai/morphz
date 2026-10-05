@@ -172,6 +172,7 @@ test("Runtime 持久输入经当前身份映射后创建剧本，不能借其他
         async (actor, scope) => {
           escaped = actor;
           assert.deepEqual(scope, {
+            kind: "input",
             projectId: "project-one",
             inputId: "input-one",
           });
@@ -391,7 +392,11 @@ test("后台事项在未确认回执时仍用已提交准入证明身份，撤�
       { ...route, thread_id: scheduledThread.id },
       async (actor, scope) => {
         escaped = actor;
-        assert.deepEqual(scope, { projectId: "project-one", inputId: null });
+        assert.deepEqual(scope, {
+          kind: "task-run",
+          projectId: "project-one",
+          inputId: null,
+        });
         const tasks = await platform.listTasks(actor, "project-one");
         assert.equal(tasks.length, 1);
         active = false;

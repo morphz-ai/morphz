@@ -1220,7 +1220,7 @@ export async function openApplicationDomainsHost(
           authority.withInvocation(route, async (_actor, source) => ({
             projectId: source.projectId,
             platform: true,
-            platformSource: source.inputId ? "input" : "task-run",
+            platformSource: source.kind,
             ...(source.inputId ? { inputId: source.inputId } : {}),
             access: {
               principalId: "morphz-service",

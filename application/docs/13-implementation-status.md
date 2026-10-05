@@ -1,5 +1,24 @@
 # 桌面能力实施记录
 
+## 2026-10-05 Agent 接入前置：后台事项来源不按 inputId 猜测
+
+Runtime authority callback 显式传递已经核验的 `input`／`task-run` 类型，
+domains scope 直接采用它。实际后台准入可以保留非空 `sourceInputId`，
+该关联不把后台事项变成原聊天或授予固定剧本流程权限。普通聊天的固定
+生成守门、后台应用窗口限制、原项目／输入和实时身份核验均保持。
+
+新夹具在实际 SQLite／PostgreSQL 和 Script Studio 准备原件上复现：
+旧实现将此事项误归为聊天，普通目录读取被不相干的固定剧本流程拒绝。
+首 RED 六项全失败、零跳过，日志
+`/tmp/morphz-agent-sourcekind-FIRST-RED-20261005.log`。Thread／Schedule
+读取是明确受控 Runtime 证据，不是实际 Rust／模型或原 App 验收。
+仅两处旧 scope 全对象断言增加真实 kind，其他旧值和守门断言未弱化。
+Root 全文复核四条路径，独立正式五文件 47/47，required PostgreSQL
+实际执行，零失败／取消／跳过；全工程类型检查通过。日志
+`/tmp/morphz-agent-sourcekind-ROOT-FROZEN-oct05.log` 与
+`/tmp/morphz-agent-sourcekind-ROOT-TYPES-oct05.log`。认知 Agent adapter
+留下一独立阶段，不把来源修复当作该适配或真实 Agent 已验收。
+
 ## 2026-10-05 第三方认知应用：Desktop／Web 启动装配
 
 两个启动入口把同一 `domains.cognitiveApps` 交给 Application，不新增

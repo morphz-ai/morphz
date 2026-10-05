@@ -98,7 +98,11 @@ export class RuntimePlatformAuthority {
     route: HostInvocation,
     work: (
       actor: PlatformActor,
-      scope: { projectId: string; inputId: string | null },
+      scope: {
+        kind: "input" | "task-run";
+        projectId: string;
+        inputId: string | null;
+      },
       identity: RuntimePlatformIdentity,
     ) => Promise<T>,
   ): Promise<T> {
@@ -149,6 +153,7 @@ export class RuntimePlatformAuthority {
       return await work(
         { credential },
         {
+          kind: issuedSource.kind,
           projectId:
             issuedSource.kind === "input"
               ? issuedSource.projectId
