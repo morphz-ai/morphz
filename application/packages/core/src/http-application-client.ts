@@ -169,6 +169,7 @@ export class HttpApplicationClient {
       }
     };
     switch (method) {
+      case "cognitive-app-views.locate":
       case "cognitive-app-views.launch":
       case "cognitive-app-views.bind":
       case "cognitive-app-views.read":

@@ -93,13 +93,14 @@ function publicMetadata(
     },
   };
 }
-/** Six Human-only presentation methods. No guest operation, new registry,
+/** Human-only presentation methods. No guest operation, new registry,
  * lifecycle scheduler, transport, authority construction or business write. */
 export type CognitiveAppViewPlatform = Pick<
   PlatformStore,
   | "launchCognitiveAppView"
   | "bindCognitiveAppView"
   | "readCognitiveAppView"
+  | "locateCognitiveAppView"
   | "changeCognitiveAppView"
 >;
 export function createCognitiveAppViewService(options: {
@@ -137,7 +138,20 @@ export function createCognitiveAppViewService(options: {
     }
   }
   return {
-    /** Private Host carrier, not a seventh public view method. */
+    locate(actor: PlatformActor, input: unknown) {
+      return run("locate", actor, input, async (access, request) => {
+        const result = await platform.locateCognitiveAppView(access, request);
+        if (
+          result.slot.projectId !== request.projectId ||
+          result.slot.appId !== request.appId ||
+          result.slot.version !== request.version ||
+          result.slot.definitionHash !== request.expectedDefinitionHash
+        )
+          throw new CognitiveAppServiceError("contract");
+        return result;
+      });
+    },
+    /** Private Host carrier, never a public view method. */
     async documentResource(
       actor: PlatformActor,
       input: unknown,

@@ -23,6 +23,12 @@ const cas = {
   expectedBindingRevision: 1,
 };
 const inputs: Record<CognitiveAppViewMethod, unknown> = {
+  locate: {
+    projectId: launch.projectId,
+    appId: launch.appId,
+    version: launch.version,
+    expectedDefinitionHash: "a".repeat(64),
+  },
   launch,
   bind: { ...launch, ...cas },
   read: { viewId: cas.viewId },
@@ -121,7 +127,7 @@ test("view lifecycle has independent strict requests and fixed mutation receipts
   );
 });
 
-test("six finite requests never accept caller authority, address, owner, time or credentials", () => {
+test("seven finite requests never accept caller authority, address, owner, time or credentials", () => {
   for (const method of Object.keys(inputs) as CognitiveAppViewMethod[]) {
     assert.deepEqual(
       parseCognitiveAppViewRequest(method, inputs[method]),

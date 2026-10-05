@@ -1,5 +1,28 @@
 # 桌面能力实施记录
 
+## 2026-10-06 本人精确认知窗口只读定位
+
+补充 `cognitive-app-views.locate` Human-only 共享 API，严格要求当前项目、
+精确 app/version/definitionHash；原 Human/HPA、项目 reader 和同一只读
+事务核本人登记，原唯一槽覆盖 open/closed/历史未绑定状态。只读绑定／
+CAS 标量，不读正文、导航 state 或 UI 字节；不启动、不重绑、不新增
+权限、schema、迁移或轮询。Web／Local／Remote 复用同一 Application。
+
+Root 冷审七个生产路径与新五十一项，独立六文件组合 96/96、required
+PostgreSQL、零失败／取消／跳过，日志
+`/tmp/morphz-cognitive-GUI-LEAVES-ROOT-FINAL-oct06.log`。定位专项包含
+真实双 SQL／三适配器的缺失、已关闭、历史未绑定、不同连接、两个
+版本／项目、本人登记撤回、外人／tenant、归档恢复元数据而无执行
+许可、并发开窗冲突与旧 CAS、真实身份换代／撤销、后读取消与 Host
+close。locator 前后持久行不变且正文列、作者业务与 UI 字节调用零。
+受控错误 DTO 的 Service 防御与真实 SQL 证据分开标注。
+
+原缺方法 Local 400、tracked Host 漏映射 503／类型失败日志保留。
+全工程类型和生产构建通过；新增片段格式通过，Store 原全文件格式债
+保持。两个旧契约测试仅加入第七 Human 方法的合法请求／固定路由，
+旧断言不删不放宽。定位结果不是授权租约，不冒称生产 GUI owner、
+原用户窗口或完整生态已完成。
+
 ## 2026-10-06 实际打包 Browser SDK 的固定 Document 生命周期
 
 实验 SDK 升为 0.2.0，八方法业务 wire 仍 v1、领域协议不变。Browser

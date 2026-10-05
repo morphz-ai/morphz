@@ -192,11 +192,18 @@ test("UNIT view renderer: malformed successful receipt is a contract failure wit
     },
   );
 });
-test("UNIT view map: exactly six deeply frozen own entries, separate from domain and guest protocols", () => {
+test("UNIT view map: exactly seven deeply frozen own entries, separate from domain and guest protocols", () => {
   assert.ok(Object.isFrozen(cognitiveAppViewApplicationMethods));
   assert.ok(Object.isFrozen(cognitiveAppViewApplicationRoutes));
-  assert.equal(cognitiveAppViewApplicationMethods.length, 6);
-  assert.equal(Object.keys(cognitiveAppViewApplicationRoutes).length, 6);
+  assert.equal(cognitiveAppViewApplicationMethods.length, 7);
+  assert.equal(Object.keys(cognitiveAppViewApplicationRoutes).length, 7);
+  assert.deepEqual(
+    cognitiveAppViewApplicationRoute("cognitive-app-views.locate"),
+    {
+      method: "locate",
+      path: "/api/platform/cognitive-app-views/locate",
+    },
+  );
   for (const method of cognitiveAppViewApplicationMethods) {
     const route = cognitiveAppViewApplicationRoute(method);
     assert.ok(route && Object.isFrozen(route));

@@ -22,6 +22,10 @@ import {
   type BrowserNavigationState,
 } from "../../cognitive-app-sdk/src/browser-wire.js";
 import { parseCognitiveAppCatalog } from "../../core/src/cognitive-app-api.js";
+import type {
+  CognitiveAppViewLocation,
+  CognitiveAppViewRequestMap,
+} from "../../core/src/cognitive-app-view-api.js";
 
 /** Platform-internal, scoped to the caller's existing transaction. The Store
  * resolves real Human/Runtime identity before opening that transaction and
@@ -1299,7 +1303,10 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
     return row;
   }
   async function ownBinding(
-    row: ViewRow,
+    row: Pick<
+      ViewRow,
+      "view_id" | "project_id" | "app_id" | "package_version" | "revision"
+    >,
     lock = "",
   ): Promise<CognitiveAppViewBinding | null> {
     const binding = (
@@ -1353,6 +1360,75 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
       }
     }
     return { view, binding };
+  }
+  /** Exact unique Human/project/app/version slot. This is discovery metadata,
+   * not an active-target gate: disabled, closed and unbound facts stay readable.
+   * Its caller has checked the actual project's reader in this same read q. */
+  async function locateOwnView(
+    request: CognitiveAppViewRequestMap["locate"],
+  ): Promise<CognitiveAppViewLocation> {
+    const registered = (
+      await q.all<{ definition_hash: string }>(
+        "SELECT v.definition_hash FROM cognitive_app_registrations r JOIN cognitive_app_versions v ON v.tenant_id=r.tenant_id AND v.app_id=r.app_id AND v.version=r.version AND v.definition_hash=r.definition_hash WHERE r.tenant_id=? AND r.principal_id=? AND r.app_id=? AND r.version=? AND r.definition_hash=?",
+        [
+          tenantId,
+          principalId,
+          request.appId,
+          request.version,
+          request.expectedDefinitionHash,
+        ],
+      )
+    )[0];
+    if (!registered) return fail("not_found", "本人精确应用登记不存在。");
+    const rows = await q.all<
+      Pick<
+        ViewRow,
+        | "view_id"
+        | "project_id"
+        | "app_id"
+        | "package_version"
+        | "revision"
+        | "status"
+      >
+    >(
+      "SELECT view_id,project_id,app_id,package_version,revision,status FROM app_view_instances WHERE tenant_id=? AND owner_principal_id=? AND project_id=? AND app_id=? AND package_version=?",
+      [
+        tenantId,
+        principalId,
+        request.projectId,
+        request.appId,
+        request.version,
+      ],
+    );
+    // The actual UNIQUE constraint includes closed rows. Do not hide or select
+    // one duplicate if a damaged projection ever violates that premise.
+    if (rows.length > 1) return fail("conflict", "本人精确窗口槽不唯一。");
+    const row = rows[0],
+      binding = row ? await ownBinding(row) : null;
+    return {
+      slot: {
+        projectId: request.projectId,
+        appId: request.appId,
+        version: request.version,
+        definitionHash: registered.definition_hash,
+      },
+      view: row
+        ? {
+            viewId: row.view_id,
+            viewRevision: safeInteger(row.revision, "窗口修订"),
+            status: row.status,
+            binding: binding
+              ? {
+                  bindingRevision: binding.revision,
+                  connectionId: binding.connectionId,
+                  instanceId: binding.instanceId,
+                  serviceId: binding.serviceId,
+                  dataAuthorityId: binding.dataAuthorityId,
+                }
+              : null,
+          }
+        : null,
+    };
   }
   async function uiPackageForTarget(
     target: CognitiveAppTargetSnapshot,
@@ -1682,6 +1758,7 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
     readOwnConnectionForManagement,
     bindOwnView,
     readOwnView,
+    locateOwnView,
     readOwnViewForFrame,
     launchOwnView,
     changeOwnView,

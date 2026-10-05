@@ -561,7 +561,7 @@ CAS，后续原请求重试仍由 Host 判断已提交事实与当前首次创�
 
 ### 可选 GUI 的宿主装配决策（实施中）
 
-#### 本人精确窗口定位（实施前约束，2026-10-06）
+#### 本人精确窗口定位（共享 API 已验收，2026-10-06）
 
 现有通用 app-views.list 有意排除认知窗口，不能把空列表当成不存在。
 六项认知窗口入口又要求已知 viewId；恢复不能猜 ID、取最新版本或调用
@@ -593,7 +593,14 @@ incarnation／generation，迟到定位仍需当前授权投影；prefs 不是�
 验收须包括双 SQL／三宿主的 absent/open/closed/unbound、不同绑定、
 外人／跨 tenant／项目／旧 hash、并发冲突和后续旧 CAS、归档只读而
 不能执行、身份切换迟到结果、原行不变及零业务／UI字节调用。
-这段是已确定实施边界，不冒称 API 或 GUI 接线已经完成。
+共享 API 已实现。Root 冷审并独立正式组合六文件 96/96，required
+PostgreSQL、零跳过，其中定位新五十一项实际运行 IdentityCenter／HPA、
+SQLite／PostgreSQL 和 Local／HTTP／Remote；其余组合项分属草稿／作者
+包机制，不合称整体 GUI。测试核原行不变、零业务／UI字节调用、本人
+登记／项目 reader、闭合与未绑定槽、两个版本／项目、并发 CAS、三入口
+真实登录换代／撤销及读取后取消。Service 另防御受控矛盾 DTO，明确不是
+SQL 产生的真实矛盾行。全工程类型与生产构建通过。原缺方法及 tracked
+Host 漏映射的 RED 保留；定位不等于生产 owner／GUI 接线完成。
 
 后端生命周期和界面消息分层，不扩充作者的权限声明或另造业务目录。
 六方法 Human 窗口 facade 已实现并独立验证：同步严格 DTO、原 mutation

@@ -51,6 +51,9 @@ const cas = z.object({
   expectedBindingRevision: revision,
 });
 const schemas = {
+  locate: z
+    .object({ projectId: id, appId, version, expectedDefinitionHash: hash })
+    .strict(),
   launch: target
     .extend({
       commandId: id,
@@ -119,6 +122,34 @@ const bindingShape = z
 const metadataShape = z
   .object({ view: viewShape, binding: bindingShape })
   .strict();
+// Own slot metadata only, including closed and not-yet-bound historical rows.
+// No state/body/byte or activation authority is part of this locator.
+const locationShape = z
+  .object({
+    slot: z
+      .object({ projectId: id, appId, version, definitionHash: hash })
+      .strict(),
+    view: z
+      .object({
+        viewId: id,
+        viewRevision: revision,
+        status: z.enum(["open", "closed"]),
+        binding: z
+          .object({
+            bindingRevision: revision,
+            connectionId: id,
+            instanceId: id,
+            serviceId: opaque,
+            dataAuthorityId: opaque,
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+export type CognitiveAppViewLocation = z.infer<typeof locationShape>;
 const uiShape = metadataShape
   .extend({
     manifest: z.unknown(),
@@ -143,6 +174,7 @@ export type CognitiveAppViewUi = CognitiveAppViewMetadata & {
   connectionRevision: number;
 };
 export type CognitiveAppViewResponseMap = {
+  locate: CognitiveAppViewLocation;
   launch: CognitiveAppViewMutation;
   bind: CognitiveAppViewMutation;
   read: CognitiveAppViewMetadata;
@@ -195,6 +227,8 @@ export function parseCognitiveAppViewResponse<M extends CognitiveAppViewMethod>(
   input: unknown,
 ): CognitiveAppViewResponseMap[M] {
   const safe = detached(input, method === "readUi");
+  if (method === "locate")
+    return locationShape.parse(safe) as CognitiveAppViewResponseMap[M];
   if (method === "read")
     return metadata(safe) as CognitiveAppViewResponseMap[M];
   if (method !== "readUi")

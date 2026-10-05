@@ -6,6 +6,7 @@ import type {
 
 /** Human presentation ingress only, separate from domain/guest operations. */
 export const cognitiveAppViewApplicationMethods = Object.freeze([
+  "cognitive-app-views.locate",
   "cognitive-app-views.launch",
   "cognitive-app-views.bind",
   "cognitive-app-views.read",
@@ -14,6 +15,10 @@ export const cognitiveAppViewApplicationMethods = Object.freeze([
   "cognitive-app-views.close",
 ] as const);
 export const cognitiveAppViewApplicationRoutes = Object.freeze({
+  "cognitive-app-views.locate": {
+    method: "locate",
+    path: "/api/platform/cognitive-app-views/locate",
+  },
   "cognitive-app-views.launch": {
     method: "launch",
     path: "/api/platform/cognitive-app-views/launch",

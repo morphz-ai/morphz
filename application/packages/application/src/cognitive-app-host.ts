@@ -268,6 +268,7 @@ export function createCognitiveAppHost(options: {
   }
   const views: CognitiveAppViewService | undefined = originalViews
     ? {
+        locate: (actor, input) => callView("locate", actor, input),
         documentResource: (actor, input, incoming) => {
           let request;
           try {

@@ -25,6 +25,11 @@ import {
   type CognitiveAppRequestMap,
 } from "../../core/src/cognitive-app-api.js";
 import {
+  parseCognitiveAppViewRequest,
+  type CognitiveAppViewRequestMap,
+  type CognitiveAppViewLocation,
+} from "../../core/src/cognitive-app-view-api.js";
+import {
   notificationStateSchema,
   notificationIdSchema,
   type NotificationState,
@@ -2000,6 +2005,24 @@ export class PlatformStore {
         metadata.view.workspaceId,
       );
       return metadata;
+    }, "read");
+  }
+  /** Read-only exact own slot discovery. Capture before identity I/O; neither
+   * locating a closed row nor an absent row opens or changes an application. */
+  async locateCognitiveAppView(
+    access: PlatformActor,
+    input: CognitiveAppViewRequestMap["locate"],
+  ): Promise<CognitiveAppViewLocation> {
+    let request: CognitiveAppViewRequestMap["locate"];
+    try {
+      request = parseCognitiveAppViewRequest("locate", input);
+    } catch {
+      throw new PlatformStorageError("invalid", "本人窗口定位请求无效。");
+    }
+    const prepared = await this.prepareCognitiveActor(access, true);
+    return this.transaction(async (q) => {
+      await this.assertProjectReader(q, prepared.actor, request.projectId);
+      return this.cognitiveRegistry(q, prepared.actor).locateOwnView(request);
     }, "read");
   }
   async changeCognitiveAppView(
