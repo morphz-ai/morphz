@@ -359,6 +359,12 @@ export type PreparedCognitiveAppCommand = {
   operation: OperationDefinition;
   parameters: JsonValue;
 };
+/** Host-private disclosure gate: original admission and this actual reader are
+ * different facts. The old command's actor cannot prove a current caller. */
+export type CognitiveAppCommandDisclosure = {
+  command: CognitiveAppCommandSnapshot;
+  actor: DomainActor;
+};
 export type PreparedCognitiveAppReceiptRecovery = {
   command: CognitiveAppCommandSnapshot;
   definition: CognitiveAppDefinition;
@@ -2219,7 +2225,36 @@ export class PlatformStore {
     access: PlatformActor,
     request: { projectId: string; commandId: string },
   ): Promise<CognitiveAppCommandSnapshot> {
-    const prepared = await this.prepareCognitiveActor(access);
+    const { projectId, commandId } = request;
+    const credential = access.credential;
+    const prepared = await this.prepareCognitiveActor({ credential });
+    return this.inspectCognitiveCommandForActor(prepared, {
+      projectId,
+      commandId,
+    });
+  }
+
+  /** Read an old admitted fact with the same policy as inspect, while retaining
+   * the actual actor for post-await disclosure checks. Not current grant,
+   * describe, dispatch or receipt-network authority. */
+  async inspectCognitiveAppCommandDisclosure(
+    access: PlatformActor,
+    request: { projectId: string; commandId: string },
+  ): Promise<CognitiveAppCommandDisclosure> {
+    const { projectId, commandId } = request;
+    const credential = access.credential;
+    const prepared = await this.prepareCognitiveActor({ credential });
+    const command = await this.inspectCognitiveCommandForActor(prepared, {
+      projectId,
+      commandId,
+    });
+    return { command, actor: prepared.domainActor };
+  }
+
+  private async inspectCognitiveCommandForActor(
+    prepared: PreparedCognitiveActor,
+    request: { projectId: string; commandId: string },
+  ): Promise<CognitiveAppCommandSnapshot> {
     requireId(request.projectId, "项目标识");
     return this.transaction(async (q) => {
       await this.assertProjectReader(

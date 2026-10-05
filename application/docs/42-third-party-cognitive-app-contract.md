@@ -255,6 +255,38 @@ Service 检查每次真实 actor；本人接入关系不自动成为全租户共
 Desktop 嵌入调用，Web 经 HTTP 调用，Agent 经现有真实来源工具适配调用。
 不存在另一套仅按钮可用的第三方执行器或一个绕过授权的直连浏览器 SDK。
 
+当前已实现共享 typed DTO 与薄 `CognitiveAppService`，不是另一套业务存储。
+可信 ingress 另传已认证 `PlatformActor`；下面的请求 JSON 不接受 tenant、
+principal、actor／source、凭据、服务 URL、Host proof 或调用者时间。
+完整严格字段以 `core/src/cognitive-app-api.ts` 为准，响应只返回公开白名单，
+不交付原 admission 的身份／来源／资源、私有路由或 SQL。
+
+| Service 方法 | 固定用途与边界 |
+| --- | --- |
+| `list` | 本人获权版本的元数据与本人连接分页，不把所有操作 Schema 常驻模型输入 |
+| `describe` | 当前项目与本人许可下读取精确定义和完整操作 Schema；无 GUI／连接也可发现 |
+| `install` | Human 安装不可变定义；可选 GUI 必须提供原命令与精确 manifest／实际字节，不隐式授权或开窗口 |
+| `grant` | Human 对本人精确版本 CAS 启用／停用 |
+| `connect` | Human 核验固定 service／data authority，使用 Host 私有接入配置，不接受服务 URL |
+| `connectionState` | Human 对本人固定连接 CAS 修改使用状态 |
+| `invoke` | 精确版本／连接／项目／操作；read 显式 `commandId:null`，副作用必须保留非空原 ID |
+| `readObject` | 精确 objectId／opaque versionRef 与有界正文，不以当前版本替代历史版本 |
+| `commandStatus` | 核当前真实 caller 对旧命令的读取权，返回持久事实而非重新执行 |
+| `recover` | 核旧命令回执，不新建业务调用、换 ID 或把网络异常当 rejected |
+
+副作用响应和回执恢复返回前，再核本次真实 caller 与原固定 admission；旧
+Agent admission 的身份不能冒充当前 Human 的身份。同一 Human 可读取自己
+旧 Agent 的命令事实，但等待期间凭据变成另一 Human actant／来源不能继续
+披露正文。撤权不回滚作者已 committed 的事务，observed commit 与实际持久
+状态分别报告；并发补齐后只采用精确匹配的真实终态，不制造交付 ID。
+UI 安装 JSON 使用固定 8 MiB carrier，避免转义压缩合法 HTML 容量；定义与
+HTML 仍分别服从原预算，其他 wire／正文预算不变。所有入口先 guard 纯 JSON
+再独立快照，不执行 caller getter 或 toJSON。
+
+本阶段 Service 已组合实际 Platform／Gateway／UiPackageService 验证；
+公共 Application／Desktop／HTTP 路由、Host 生命周期与真实 Runtime 接线
+仍在进行，不能把这个表当作已开放网络端点清单。
+
 操作发现继续已有 list／describe／invoke 语义，返回确切 app、version、
 definitionHash、instance、operationId、Schema、效果与真实不可用原因。
 五个身份共同定位操作，不以孤立 operationId 猜版本或保存方。
@@ -399,8 +431,9 @@ Store 实际权限下的 admission／dispatch／原回执恢复和 begin／compl
 项目退役保护已组合验证；开放命令和 committed／pending 目录都阻挡退役。
 入口同步捕获有界参数／资源／目标快照，避免异步期间 caller 改变已核字节。
 实际 Store 目录通知、内部网络 Gateway 和独立 objects/read 已组合通过
-实际双后端与独立作者服务测试；公共共享 Application／HTTP／IPC／Agent
-入口尚未登记，不能把内部组件通过当成客户端链路已经完成。
+实际双后端与独立作者服务测试；共享薄 Service 和严格 DTO 已组合，公共
+Application／HTTP／IPC／Agent 入口仍未登记，不能把内部组件通过当成
+客户端链路已经完成。
 
 Host 的 CognitiveAppGateway 负责固定连接、网络安全、实际 wire 校验和
 回执核验，只通过 Platform typed port 调用上述职责；由共享应用 Host 与

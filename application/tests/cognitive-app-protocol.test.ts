@@ -12,6 +12,7 @@ import {
   parsePortableText,
   parseProtocolValue,
   parseWireJson,
+  parseUiInstallJson,
   validateOperationValue,
   CognitiveAppProtocolError,
   protocolLimits,
@@ -24,6 +25,64 @@ const objectSchema = {
   required: ["text"],
   additionalProperties: false,
 } as const;
+
+test("UI installation has one fixed 8 MiB safe carrier without shrinking wire/value budgets", () => {
+  const bytes = 8 * 1024 * 1024;
+  assert.equal(
+    parseUiInstallJson("a".repeat(bytes - 2)),
+    "a".repeat(bytes - 2),
+  );
+  assert.throws(
+    () => parseUiInstallJson("a".repeat(bytes - 1)),
+    CognitiveAppProtocolError,
+  );
+  const html = "\u0001".repeat(1_000_000);
+  const carrier = {
+    definition: { ui: { sha256: "a".repeat(64) } },
+    manifest: { ui: { type: "sandbox", html } },
+  };
+  assert.equal(new TextEncoder().encode(html).byteLength, 1_000_000);
+  assert.equal(parseUiInstallJson(carrier), carrier);
+  assert.throws(() => parseWireJson(carrier));
+  assert.throws(() => parseProtocolValue(html));
+});
+test("UI install carrier never invokes accessors or toJSON, and keeps finite/plain/dense limits", () => {
+  let calls = 0;
+  for (const value of [
+    Object.defineProperty({}, "data", {
+      enumerable: true,
+      get() {
+        calls++;
+        return "x";
+      },
+    }),
+    {
+      toJSON() {
+        calls++;
+        return {};
+      },
+    },
+  ])
+    assert.throws(() => parseUiInstallJson(value));
+  assert.equal(calls, 0);
+  for (const value of [
+    new Date(),
+    new Array(2),
+    [...Array(32768)].map(() => null),
+    { fn: () => 1 },
+    Object.assign([1], { extra: true }),
+  ])
+    assert.throws(() => parseUiInstallJson(value));
+  let deep: unknown = null;
+  for (let i = 0; i < 40; i++) deep = { next: deep };
+  assert.throws(() => parseUiInstallJson(deep));
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  assert.throws(() => parseUiInstallJson(cyclic));
+  const plain = Object.assign(Object.create(null), { safe: [1, null, true] });
+  assert.equal(parseUiInstallJson(plain), plain);
+  assert.deepEqual(plain.safe, [1, null, true]);
+});
 
 test("the author protocol has only its installed Zod dependency, with immutable security budgets", () => {
   const source = readFileSync(

@@ -1,5 +1,38 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：共享 DTO、薄 Service 与当前 caller 披露
+
+新增十项固定共享方法与严格公开 DTO，复用同一实际 Store／Gateway／可选
+UiPackageService。可信身份另由 ingress 传入，JSON 不接受身份、来源、地址、
+凭据、Host proof 或 caller 时间；元数据与确切 Schema 发现分开。read 显式
+null 命令，副作用保留原 ID；历史事实不先要求当前 grant。GUI 安装有独立
+8 MiB 转义 carrier，原定义／HTML／其他 wire 预算不放宽。
+
+Store 新的 Host-private 披露组合门复用旧 inspect 的同一 policy／事务，
+区分旧 admission.actor 与本次实际 caller。写／恢复交付前再核当前来源和
+固定事实；Human 可读自己的旧 Agent 命令，但等待期间身份／来源漂移不
+披露正文，不抹去作者真实 commit。observed commit 与实际持久状态分开，
+并发精确终态可收敛旧 unconfirmed／存储待补标记，不制造正文或交付 ID。
+
+Root 全文核生产链与所有新增测试，独立正式六文件 157/157，另披露门五
+文件回归 150/150；均实际 SQLite／PostgreSQL、零失败／取消／跳过，数字
+存在重叠不相加。日志 `/tmp/morphz-cognitive-facade-ROOT-FINAL-oct05.log`
+与 `/tmp/morphz-cognitive-disclosure-ROOT-FROZEN-oct05.log`。Root 本阶段
+严格 scoped 类型与独立 SDK 构建通过；当时全工程类型检查仍有其他 owner
+在途 Host／公开路由测试的诊断，不冒称全局通过。
+
+Service 45 项中 15 项明确 FakePort 单元、30 项实际独立 packed 作者进程／
+真实作者 SQLite／Platform 双后端结果（含 8 子用例），真实 commit 后断
+响应／冷重开、撤权和 Managed Store 百万字节 GUI 均有证人；Runtime
+ingress verifier 仍是明确 fixture，不是真实模型／Runtime／原 App 验收。
+Service 缺模块首 RED 与 stale-unconfirmed 首 RED 分别见
+`/tmp/morphz-cognitive-service.BTRH1y/FIRST-RED-required.log` 与
+`/tmp/morphz-cognitive-service.BTRH1y/UNCONFIRMED-FIRST-RED.log`；Store
+披露门首 RED 0 通过／6 失败，见
+`/tmp/morphz-command-disclosure-stage.Lkj2Vv/FIRST-RED.log`。
+公共 Application／Local／HTTP、Host 生命周期、实际 Agent／GUI 和原 App
+接线仍在进行；本阶段不改变现有 UI、真实配置、资料或运行中的 App。
+
 ## 2026-10-05 第三方认知应用：响应后的读取披露门
 
 内部 Gateway 的 operation read／exact object read 在作者响应完整校验后、

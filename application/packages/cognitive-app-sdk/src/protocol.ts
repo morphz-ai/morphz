@@ -256,6 +256,19 @@ export function parseWireJson(input: unknown): JsonValue {
   return input;
 }
 
+/** Fixed installation carrier only. HTML and definition retain their own
+ * smaller exact limits; JSON escaping must not silently shrink valid UI bytes.
+ */
+export function parseUiInstallJson(input: unknown): JsonValue {
+  requireJson(input, {
+    bytes: 8 * 1024 * 1024,
+    label: "UI installation",
+    depth: 40,
+    nodes: 32768,
+  });
+  return input;
+}
+
 function sameJson(left: JsonValue, right: JsonValue): boolean {
   const pairs: Array<readonly [JsonValue, JsonValue]> = [[left, right]];
   while (pairs.length) {
