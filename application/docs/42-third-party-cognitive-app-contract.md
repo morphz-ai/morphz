@@ -674,6 +674,14 @@ Document 展示仅借既有应用画布样式，不影响 builtin／旧 sandbox�
 最新输入 context／持久 draftOwner 与 actual layout 引用在 updater重查。
 这段是实施约束，不把新 hook 或 props 当权限租约。
 
+React 展示叶已独立验收：只借原 application-host／pane／frame 样式，
+初始创建等父 layout 发布，固定原 source／owner；普通回调替换不更新
+权限，实际失活／卸载同步 abort，迟到 ready 不复活。真实双 SQL/HPA
+认证资源、Chromium／StrictMode、公开 SDK／native port 七项含父测试
+通过，Root 七文件合验 109/109、required PG、零跳过与类型／格式通过。
+父 owner 仍是受控 React，compose／openObject 未实作；生产 App 自有
+save 与展示刷新并发 RED 另在 shared channel 修复，不算本叶完成证明。
+
 只读位置／view owner 叶已实现：同一位置 DTO 增加 strict view slot，
 原 original 读取对合法 view 保持 idle；restore actual locate→readUi，
 absent／closed／unbound 如实阻断输入，不做 mutation。React layout 生命周期

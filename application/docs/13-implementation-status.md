@@ -1,5 +1,25 @@
 # 桌面能力实施记录
 
+## 2026-10-06 固定 Document 的 React 展示叶
+
+新增 React 生命周期组件，只借原应用画布／pane／frame 样式，未改 CSS、
+图标或动效。初始 consumer 等父真实 layout 发布后创建；固定原 source／
+owner 回调，普通回调替换不能借新授权。外部失活与卸载先 layout 同步 abort，
+再清旧 Document；迟到 ready 不复活。重试／返回仍是显式 Human 操作，不
+持久关闭窗口或开始任务。
+
+Root 冷读三路径，正式七文件 109/109、required PostgreSQL、零失败／
+取消／跳过；其中组件新七项含父测试，使用真实 Chromium／StrictMode、
+实际双 SQL/HPA 认证字节、公开 SDK／native port。父 owner 为受控 React，
+业务 compose／openObject 明确拒绝，不冒称生产 App 或原生 origin。
+日志 `/tmp/morphz-cognitive-opening-and-component-ROOT-THIRD-oct06.log`；
+全工程类型、五叶源文件格式通过。实际原样式测量画布宽高、自身 save2 后
+主题／普通 rerender 保暖及换 owner 重新读取，不以 CSS 断言代替视窗。
+
+初版 fixture 字段／SDK rAF 等待 oracle 的失败保留；改为真实 SDK Document
+事件后核原 Frame，不删除行为断言、加长超时或修改 SDK/consumer。生产 App
+真实 own save 与 presentation 并发另有 RED，正在共享 channel 层修复。
+
 ## 2026-10-06 显式认知窗口打开叶
 
 新增纯边界叶复用实际 Human 的 locate／launch／readUi 三方法；已有同保存方
