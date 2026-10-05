@@ -55,6 +55,7 @@ import { createContentReads } from "./data/content-reads.js";
 import { createReaderReads } from "./data/reader-reads.js";
 import { createReaderInteractions } from "./data/reader-interactions.js";
 import { createBookmarkInteractions } from "./data/bookmark-interactions.js";
+import { createCognitiveAppManagement } from "./data/cognitive-app-management.js";
 import {
   createObjectInteractions,
   annotateObjectOperation,
@@ -785,6 +786,9 @@ export function useWorkspace() {
     navigationCacheKey = useRef(""),
     navigationReadController = useRef<AbortController | null>(null),
     projectionMounted = useRef(false),
+    cognitiveManagementRef = useRef<ReturnType<
+      typeof createCognitiveAppManagement
+    > | null>(null),
     epoch = useRef(0),
     snapshotText = useRef(""),
     refreshing = useRef<Promise<boolean> | null>(null),
@@ -928,6 +932,7 @@ export function useWorkspace() {
     setCognitiveAppCatalog({ versions: [], connections: [] });
     setTaskCounts([]);
     setContentCatalogVersion(0);
+    cognitiveManagement.invalidateAccess();
   }
   function refresh() {
     refreshDrain.current ??= createRefreshDrain(refreshOnce);
@@ -957,6 +962,7 @@ export function useWorkspace() {
           signal,
         );
         if (version !== epoch.current) return false;
+        cognitiveManagement.observeIdentity(source.boot);
         if (
           current.current &&
           (current.current.centerId !== source.boot.centerId ||
@@ -1250,6 +1256,7 @@ export function useWorkspace() {
           clearProtectedProjection();
         }
         if (e instanceof RequestError && e.status === 401) {
+          cognitiveManagement.retireIdentity();
           storageScope("disconnected", "anonymous");
           setAuthenticationRequired(true);
         }
@@ -1321,6 +1328,7 @@ export function useWorkspace() {
     );
   }
   async function login(token: string) {
+    cognitiveManagement.retireIdentity();
     epoch.current++;
     navigationReadController.current?.abort();
     setCognitiveAppCatalog({ versions: [], connections: [] });
@@ -1346,6 +1354,7 @@ export function useWorkspace() {
   }
   async function logout() {
     if (!current.current) return;
+    cognitiveManagement.retireIdentity();
     await applicationCall("logout", undefined, {
       identityGeneration: current.current.csrfToken,
       signal: AbortSignal.timeout(8000),
@@ -1385,6 +1394,7 @@ export function useWorkspace() {
     document.addEventListener("visibilitychange", wake);
     return () => {
       projectionMounted.current = false;
+      cognitiveManagement.retireIdentity();
       epoch.current++;
       navigationReadController.current?.abort();
       window.removeEventListener("focus", wake);
@@ -1562,6 +1572,16 @@ export function useWorkspace() {
     if (!(data instanceof Uint8Array)) throw new Error("语音响应格式无效。");
     return new Blob([new Uint8Array(data)], { type: "audio/wav" });
   }
+  // Inert construction preserves the adjacent, already-governed delivery,
+  // execution and clear owners. Effects run only after this render completes.
+  const cognitiveManagement = (cognitiveManagementRef.current ??=
+    createCognitiveAppManagement({
+      current,
+      platform,
+      protectedReadGeneration,
+      isMounted: () => projectionMounted.current,
+      refreshAfterMutation,
+    }));
   return {
     notifications: async (
       command?:
@@ -1612,6 +1632,7 @@ export function useWorkspace() {
     contentCatalog,
     contentCounts,
     cognitiveAppCatalog,
+    cognitiveManagement: cognitiveManagement.operations,
     taskCounts,
     contentCatalogVersion,
     contentVersionTitle: (contentId: string, revision?: number) =>

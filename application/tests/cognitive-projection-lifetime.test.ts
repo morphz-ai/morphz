@@ -35,6 +35,18 @@ test("projection lifetime rejects omitted or broadened cancellation and catalog 
       "setCognitiveAppCatalog({ versions: [], connections: [] });",
       "setCognitiveAppCatalog({ versions: [], connections: retainedConnections });",
     ),
+    cognitiveProjectionClear.replace(
+      "cognitiveManagement.invalidateAccess();",
+      "",
+    ),
+    cognitiveProjectionClear.replace(
+      "cognitiveManagement.invalidateAccess();",
+      "cognitiveManagement.retireIdentity();",
+    ),
+    cognitiveProjectionClear.replace(
+      "cognitiveManagement.invalidateAccess();",
+      "void Promise.resolve().then(() => cognitiveManagement.invalidateAccess());",
+    ),
   ];
   for (const variant of variants)
     assert.throws(() => verifyClientProjectionLifetime(workspace(variant)));

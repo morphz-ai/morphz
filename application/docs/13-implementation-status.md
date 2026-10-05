@@ -1,5 +1,37 @@
 # 桌面能力实施记录
 
+## 2026-10-05 认知应用管理操作的客户端生命周期
+
+生产 `useWorkspace` 已提供本人定义预览、安装／登记、数据访问权限、
+连接和连接状态五个 typed 管理端口，借用原认证 Client 与刷新 drain。
+不新增目录存储、网络路由、renderer 权限权威、轮询或自动授权；Agent
+仍使用原业务 adapter，不增加逐任务批准或限制 Agent 创作。
+
+访问范围变化立即取消旧描述读取；中心、Human、认证代次变化、登录、
+退出和 React 卸载退休旧操作。本人写入触发的访问刷新不会丢弃真实
+ACK；目录刷新失败返回已确认结果及 `refreshed:false`，不重发写入。
+显式取消或身份退休不披露迟到结果，也不声称已提交事务被回滚。固定
+单次三十秒预算与四个 pending 租约仅约束本地等待，不改变 Host 权限。
+
+Root 正式四十文件 387/387，required PostgreSQL，零失败、取消或跳过；
+全工程类型、生产构建及七文件专项格式检查通过。日志
+`/tmp/morphz-cognitive-management-ROOT-ACCEPTED-oct05.log` 和
+`/tmp/morphz-cognitive-management-ROOT-ACCEPTED-TYPES-oct05.log`，构建日志
+`/tmp/morphz-cognitive-management-ROOT-ACCEPTED-BUILD-oct05.log`。
+其中新管理 UNIT 十七项，实际 Chromium StrictMode 挂载二十项（含
+父测试），沿生产 owner、五公共方法和受控 logical Desktop transport；
+覆盖本人写入中的权限刷新、401／403、身份与卸载退休、ACK 后刷新
+失败和迟到隔离，验证既存本地草稿原始字节不变、显式写入不重发及
+五点二秒闲置无新请求。原目录十二项挂载仍全部通过。同组旧传输回归
+实际运行隔离双 SQL／HPA，但新挂载证据不是 SQL、native IPC、工作台
+管理卡片或用户原 App 验收。
+
+首轮相邻 owner 检查的三项失败保留于
+`/tmp/morphz-cognitive-management-ROOT-ADJACENT-FIRST-oct05.log`；
+修正管理工厂的构造位置后全部通过，没有放宽原邻接约束。阶段只交付
+管理操作数据层，工作台消费者、Dock／输入目标和作者 GUI 仍待接通，
+未改变用户窗口、资料、凭据、Session 或在途工作。
+
 ## 2026-10-05 本人认知应用目录的客户端接入
 
 十方法 typed facade 已接到原 `PlatformClient` 的认证 logical caller；

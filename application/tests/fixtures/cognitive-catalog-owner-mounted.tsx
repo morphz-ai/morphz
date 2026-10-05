@@ -4,8 +4,12 @@ import type {
   ApplicationInvocation,
   ApplicationReply,
 } from "../../packages/core/src/application-api.js";
-import type { CognitiveAppCatalogDto } from "../../packages/core/src/cognitive-app-api.js";
+import type {
+  CognitiveAppCatalogDto,
+  CognitiveAppRequestMap,
+} from "../../packages/core/src/cognitive-app-api.js";
 import { applicationWindowKey } from "../../packages/core/src/application-names.js";
+import managementDefinition from "../../examples/cognitive-notes/definition.json";
 
 // Actual production useWorkspace and application transport are loaded below.
 // Only finite logical transport replies/events are controlled. This is not a
@@ -121,6 +125,87 @@ const subscribers = new Map<
   }
 >();
 const listeners = new Set<(event: StreamEvent) => void>();
+// Management scripts control only public replies, never production ownership,
+// retirement, refresh or retry. No script means an unexpected command fails.
+type ManagementMethod =
+  "describeRegistered" | "install" | "grant" | "connect" | "connectionState";
+const managementLogical = {
+  describeRegistered: "cognitive-apps.describe",
+  install: "cognitive-apps.install",
+  grant: "cognitive-apps.grant",
+  connect: "cognitive-apps.connect",
+  connectionState: "cognitive-apps.connection-state",
+} as const;
+const managementPlans: Array<{
+  method: ManagementMethod;
+  label: string;
+  hold: boolean;
+}> = [];
+const managementHeld: Array<{
+  request: ApplicationInvocation;
+  label: string;
+  settled: boolean;
+  resolve(value: ApplicationReply): void;
+}> = [];
+const managementRuns: Array<{
+  method: ManagementMethod | "login" | "logout";
+  state: "pending" | "fulfilled" | "rejected";
+  value?: unknown;
+  error?: { message: string; code?: string };
+}> = [];
+function managementReply(request: ApplicationInvocation, label: string) {
+  const p = request.params as Record<string, unknown>;
+  switch (request.method) {
+    case "cognitive-apps.describe":
+      if (p.mode !== "registered-management")
+        throw Error(
+          "Only the exact registered-management describe is scripted",
+        );
+      return ok({
+        mode: "registered-management",
+        definition: {
+          ...managementDefinition,
+          title: "PRIVATE_DEFINITION_" + label,
+        },
+        definitionHash: p.expectedDefinitionHash,
+        registeredAt: now,
+        installationState: "active",
+        grant: null,
+      });
+    case "cognitive-apps.install":
+      if (p.mode !== "register-installed")
+        throw Error("Only explicit register-installed is scripted");
+      return ok({
+        appId: p.appId,
+        version: p.version,
+        definitionHash: p.definitionHash,
+      });
+    case "cognitive-apps.grant":
+      return ok({
+        appId: p.appId,
+        version: p.version,
+        state: p.state,
+        revision: Number(p.expectedRevision) + 1,
+        consentedAt: now,
+        updatedAt: now,
+      });
+    case "cognitive-apps.connect":
+    case "cognitive-apps.connection-state":
+      return ok({
+        appId: p.appId,
+        instanceId: "instance-management",
+        connectionId: p.connectionId,
+        serviceId: p.serviceId ?? "author/management-service",
+        dataAuthorityId: p.dataAuthorityId ?? "author/management-data",
+        state: p.state ?? "active",
+        revision: Number(p.expectedRevision) + 1,
+        createdAt: now,
+        updatedAt: now,
+      });
+    default:
+      throw Error("Unscripted management method " + request.method);
+  }
+}
 let catalogRevision = 1;
 let accessRevision = 1;
 let failContentCounts = false;
@@ -190,6 +275,35 @@ const bridge: Bridge = {
         return ok({ inputs: [], runtime, scriptOutputs: [], nextCursor: null });
       case "tasks.order":
         return ok({ revision: 0 });
+      case "cognitive-apps.describe":
+      case "cognitive-apps.install":
+      case "cognitive-apps.grant":
+      case "cognitive-apps.connect":
+      case "cognitive-apps.connection-state": {
+        const plan = managementPlans.shift();
+        if (!plan || managementLogical[plan.method] !== request.method) {
+          unknown.push("unscripted management " + request.method);
+          return denied("Unexpected management command");
+        }
+        if (!plan.hold) return managementReply(request, plan.label);
+        return new Promise<ApplicationReply>((resolve) =>
+          managementHeld.push({
+            request,
+            label: plan.label,
+            settled: false,
+            resolve,
+          }),
+        );
+      }
+      case "login":
+        if (params.token !== "CONTROLLED_TEST_ONLY") {
+          unknown.push("unscripted login");
+          return denied("Unexpected test login");
+        }
+        boot.csrfToken = "catalog-login-session";
+        return ok({});
+      case "logout":
+        return ok({});
       case "cognitive-apps.list": {
         // Finite response script, not a second pagination/merging algorithm.
         const v = params.versionsAfter;
@@ -351,11 +465,108 @@ function report() {
     unsentBytes,
     storedDraft: localStorage.getItem(draftStorageKey),
     draftStorageKey,
+    managementRuns: structuredClone(managementRuns),
+    managementHeld: managementHeld.map((h, index) => ({
+      index,
+      label: h.label,
+      id: h.request.id,
+      settled: h.settled,
+    })),
   };
+}
+function observeManagement(
+  method: ManagementMethod | "login" | "logout",
+  operation: () => Promise<unknown>,
+) {
+  const run: (typeof managementRuns)[number] = { method, state: "pending" };
+  managementRuns.push(run);
+  // Observe the real public Promise. No private ref or synthetic owner is used.
+  try {
+    void operation().then(
+      (value) => {
+        run.state = "fulfilled";
+        run.value = value;
+      },
+      (error: unknown) => {
+        run.state = "rejected";
+        run.error = {
+          message: error instanceof Error ? error.message : String(error),
+          ...(error && typeof error === "object" && "code" in error
+            ? { code: String(error.code) }
+            : {}),
+        };
+      },
+    );
+  } catch (error) {
+    run.state = "rejected";
+    run.error = {
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 Object.assign(window, {
   cognitiveCatalogOwnerFixture: {
     report,
+    queueManagement(method: ManagementMethod, label: string, hold = true) {
+      managementPlans.push({ method, label, hold });
+    },
+    startManagement(method: ManagementMethod, input: unknown) {
+      const client = latest!;
+      observeManagement(method, () => {
+        switch (method) {
+          case "describeRegistered":
+            return client.cognitiveManagement.describeRegistered(
+              input as Extract<
+                CognitiveAppRequestMap["describe"],
+                { mode: "registered-management" }
+              >,
+            );
+          case "install":
+            return client.cognitiveManagement.install(
+              input as CognitiveAppRequestMap["install"],
+            );
+          case "grant":
+            return client.cognitiveManagement.grant(
+              input as CognitiveAppRequestMap["grant"],
+            );
+          case "connect":
+            return client.cognitiveManagement.connect(
+              input as CognitiveAppRequestMap["connect"],
+            );
+          case "connectionState":
+            return client.cognitiveManagement.connectionState(
+              input as CognitiveAppRequestMap["connectionState"],
+            );
+        }
+      });
+    },
+    settleManagement(index: number) {
+      const pending = managementHeld[index];
+      if (!pending || pending.settled)
+        throw Error("Missing unsettled management request " + index);
+      pending.settled = true;
+      pending.resolve(managementReply(pending.request, pending.label));
+    },
+    denyCatalogWithStatus(index: number, status: 401 | 403) {
+      const pending = held[index];
+      if (!pending || pending.settled)
+        throw Error("Missing unsettled catalog read " + index);
+      pending.settled = true;
+      pending.resolve({
+        ok: false,
+        error: {
+          status,
+          code: status === 401 ? "unauthenticated" : "forbidden",
+          message: "CONTROLLED_ACCESS_" + status,
+        },
+      });
+    },
+    login() {
+      observeManagement("login", () => latest!.login("CONTROLLED_TEST_ONLY"));
+    },
+    logout() {
+      observeManagement("logout", () => latest!.logout());
+    },
     queueHold(label: string) {
       plans.push({ kind: "hold", label });
     },

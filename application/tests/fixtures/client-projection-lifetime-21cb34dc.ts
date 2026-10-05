@@ -41,6 +41,10 @@ export const cognitiveProjectionClear = originalProjectionClear
   .replace(
     "setContentCounts([]);",
     "setContentCounts([]);\n    setCognitiveAppCatalog({ versions: [], connections: [] });",
+  )
+  .replace(
+    "setContentCatalogVersion(0);",
+    "setContentCatalogVersion(0);\n    cognitiveManagement.invalidateAccess();",
   );
 export const originalTaskInteractionRefs = {
   current: "current = useRef<Boot | null>(null)",
