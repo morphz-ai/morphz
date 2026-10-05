@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：Host 有界固定传输
+
+Host-private transport 已实现 canonical HTTPS origin 下四个固定根路径，
+拒绝 URL userinfo／query／fragment、内网及特殊地址、代理、重定向与压缩；
+核所有 DNS 记录并将实际 socket 固定到已检查的 IP／family，同时保留原
+hostname／SNI 和 Node 默认 TLS 证书校验。首 v1 的保守公网范围与根路径
+是工程边界，不声称支持所有全球可达特殊前缀或任意服务 basepath。
+仅 Host 明确配置的 numeric-loopback HTTP 固定端口可作独立本机示例。
+
+全 Host 最多 16／每实际连接 2 个一次性许可，不排队、不重试；网关须先
+取许可再 admission，并用 tenant＋真实 connection 身份作 key。完整期限
+最多 30 秒，header 8 KiB、wire 512 KiB、fatal UTF-8／有限 JSON；同步
+JSON 处理、DNS、发送及响应解释前后均显式核单调 deadline。不能取消的
+晚 DNS 保留名额至结束，迟到答案不再连接。错误不包含私有 alias／URL／
+凭据／响应正文；请求取消或 HTTP 错误不证明业务回滚。
+
+原 13 加两项同步阻塞负例共 15 个专项，合并纯协议两文件由 Root 正式
+重跑 49/49、零失败／跳过／取消；全 typecheck、格式与独立 source 评审
+通过。实际 socket 证据是隔离 loopback HTTP 四路径、坏响应／预算／期限、
+重复 lease 与 env-proxy 独立子进程；公网 TLS／真实外部账号未实际验收，
+不以 DNS helper 或 Node 默认行为冒称已验。Root 原始日志为
+`/tmp/morphz-cognitive-transport-ROOT-SECOND-FINAL-oct05.log`，首次缺模块、
+错误 IPv6 正例和超时边界检查历史均保留，不改生产策略迁就测试。
+
+传输组件尚未装配进共享 Gateway；没有操作原 App、凭据或业务库。本阶段
+不等于第三方应用已接通，后续继续本人 registry、发送 fence 与回执恢复。
+
 ## 2026-10-05 第三方认知应用：UI／领域共用首安装身份
 
 真实安装路径首轮在 SQLite 与 PostgreSQL 都复现 UI-first 后注册领域服务

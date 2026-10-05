@@ -142,6 +142,9 @@ JSON 值、循环、字节与深度，不能仅凭 TypeScript 类型或字符串
 Host 只调用本人接入与 Host egress policy 共同批准的固定连接。
 以下路径相对于该连接的协议基址，不来自 manifest、模型参数或 iframe。
 协议使用 JSON；作者可以用任意语言实现，不必使用 SDK。
+首 v1 的 Host transport 仅支持 canonical HTTPS origin 下这四个根路径，
+不支持任意 basepath 前缀；有此前缀的服务需在操作者配置的 origin 提供对应
+路由。这个有限实施边界不等于所有作者 URL 已得到批准。
 
 | 固定接口 | 请求的关键事实 | 响应与条件 |
 | --- | --- | --- |
@@ -206,6 +209,10 @@ secret locator；这些由 Host 私有配置解析。公开目录、模型、ifr
 非 HTTPS 协议和跨目标重定向。远端拒绝私网、loopback、link-local、metadata
 及等价 IPv4／IPv6 地址；DNS 校验必须约束实际连接，不能先解析再普通 fetch
 留下重绑定窗口。响应、超时、并发和解压预算在 Host 有界。
+当前传输无排队／自动重试：全 Host 16、每个 tenant 内真实 connection 2
+个一次性许可，网关在 admission 前取得许可；完整 deadline 30 秒，headers
+8 KiB、wire 512 KiB，并明确拒绝压缩，不进行解压。同步 JSON 处理跨期限
+也不得再发送或成功返回。晚 DNS 结束前保留名额，避免连续超时堆积工作。
 
 本机独立 sample 可以明确批准 numeric loopback HTTP 固定端口，仅作为
 本机真实链路证据；它不是生产网络认证验收，也不让 manifest 自行开启内网
