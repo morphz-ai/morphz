@@ -302,7 +302,8 @@ read-object、command-status、recover。所有 HTTP 方法沿原 cookie／
 Origin／CSRF，拒绝额外 query；Desktop Local 不新增本地 HTTP 依赖。
 安装 carrier 8 MiB、其他 JSON body 512 KiB，并检查 fatal UTF-8；这些
 传输上限不扩大定义／HTML／正文的原限制。真实 caller 在响应后仍复核。
-renderer bridge、真实 Runtime／GUI 与原窗口接线尚待单独验收。
+renderer bridge 的原 ID／取消／代次传输已经独立验证；真实 Runtime／GUI
+与原窗口接线仍须单独验收。
 
 操作发现继续已有 list／describe／invoke 语义，返回确切 app、version、
 definitionHash、instance、operationId、Schema、效果与真实不可用原因。
@@ -336,6 +337,49 @@ Service adapter。示例通过打包后的公开导出接入，自己的数据�
 可选 browser bridge 已通过实际打包消费与 Chromium opaque 沙箱测试，
 消息有界并固定当前绑定；GUI 宿主接线和完整共享入口仍在进行，不以作者
 独立测试或 Browser 消息测试替代 Host／真实 Agent 的接入验收。
+
+### 可选 GUI 的宿主装配决策（实施中）
+
+后端生命周期和界面消息分层，不扩充作者的权限声明或另造业务目录。
+以下是下一阶段的实施约束，不是 GUI 已经完成的证明。
+
+| 边界 | 最小职责 | 保持的既有行为 |
+| --- | --- | --- |
+| Human 窗口 facade | launch、bind、metadata read、UI read、save、close；同步有限 DTO、原命令 ID、窗口／绑定双 CAS | 复用 Platform 窗口表与真实 UiPackageService；固定 mutation receipt 不假充最新窗口状态 |
+| 独立 CognitiveSandboxHost leaf | 使用既定八方法 Browser SDK；每次从真实窗口绑定确定目标，复用同一领域 Service | 不把新消息前缀塞进旧 UI-only bridge，不把作者 JS 加载到 Host |
+| 原导航／草稿 owner | 接受同一内容目录的精确应用原件 locator；compose 只准备未发送草稿 | 保留内置应用的数字修订、原 scoped 草稿和返回控件，不复制第三方正文 |
+| 同一目录与通知 | 安装、本人许可、连接和 own bound-view 的真实投影；变更仅作失效提示 | 不以旧 installer-only UI 授权代替认知 grant，不轮询或新增 Renderer 权威 store |
+
+窗口 facade 的输入不得包含 actor、byte owner、Store 路径、endpoint、凭据
+或 caller 时间；Host 产生时间并从当前 Human session／HPA 取得身份。
+metadata read 是本人窗口元数据读取，不代表当前 frame 可执行；UI read
+必须走实际当前许可／连接、精确绑定、包版本和完整字节授权门。关窗可在
+许可已停用时关闭自己的窗口，不自动撤销已经接受的领域工作。
+
+iframe 请求不自行选择项目、安装版本、保存方或连接。Host 固定当前
+session generation、导航 epoch、view／binding revision、定义 hash 及
+实际 authority，并在异步返回后再次核验。重绑、关闭、撤权、身份变化或
+文档再次加载退休原 channel 和 pending 集合，迟到正文不披露，新文档不
+自动获得 init；已有副作用事实及原 ID 仍留在领域账本，不重新 invoke。
+
+字节载体优先扩展既有 authenticated resource 的 HTTP／Electron 两个
+adapter，按 bound view 和双修订读取，发送共享完整 CSP／权限策略；这
+不是新增 Desktop HTTP server。若实现改用 typed UI-read＋srcdoc，必须
+单独声明包装并在作者字节前置内容 CSP，iframe sandbox／permissions 仍
+由 Host 固定；CSP 的 header-only sandbox／frame-ancestors 不得冒称可
+由 meta 等价替代。安装原 HTML 与 SHA 不因载体包装改写。
+
+实际浏览器必须验证外部资源、fetch、form、嵌套 frame、作者 meta／base
+和 JS 自导航的边界。共享 CSP 及 channel 退休不证明任何外部自导航请求
+都从未发出；普通 Web iframe 不因此宣称拥有这样的能力。再次 load 禁止
+续授旧桥，导航防护与消息权限分别验收，不以静态字符串过滤冒充 JS 隔离。
+
+第三方 locator 固定实际 app／version／definition hash、instance／service／
+data authority、objectId、opaque versionRef 与原目录 content id。导航与
+草稿再经真实目录／精确读取核验；不得把 versionRef 转成 Number、丢成
+null、猜当前 head，或伪装为 morphz.objects。带对象 compose 的引用须
+一直保留到实际输入／Runtime 来源链，这条槽位尚待实现；只填入文本不能
+代替带对象的闭环验收。安装、开关窗口和 compose 都不自动发送或执行。
 
 ## Platform 生产数据模型
 
