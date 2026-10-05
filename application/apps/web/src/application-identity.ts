@@ -6,20 +6,23 @@ export const applicationIdentities = {
   browser: {
     id: "morphz.browser",
     view: "browser",
-    field: ["#3997e9", "#2854af"],
-    symbol: ["#2769b6", "#86c8ff"],
+    field: ["#268bff", "#1655dd"],
+    foreground: ["#ffffff", "#bfe3ff"],
+    symbol: ["#246eea", "#78bdff"],
   },
   reader: {
     id: "morphz.reader",
     view: "reader",
-    field: ["#f6cf85", "#ed9c56"],
-    symbol: ["#99602e", "#f3c58e"],
+    field: ["#ffab45", "#f9792d"],
+    foreground: ["#ffffff", "#ffe3c5"],
+    symbol: ["#ed842b", "#ffbc70"],
   },
   studio: {
     id: "morphz.script-studio",
     view: "script-studio",
-    field: ["#9581e9", "#6152b9"],
-    symbol: ["#7756b5", "#c4b0ff"],
+    field: ["#a06cff", "#7050e8"],
+    foreground: ["#ffffff", "#e7dcff"],
+    symbol: ["#8659ec", "#c4a5ff"],
   },
 } as const;
 

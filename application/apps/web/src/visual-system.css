@@ -58,6 +58,10 @@
   --sidebar-base: light-dark(#fafafa, #242424);
   --sidebar-fill: var(--sidebar-base);
   --sidebar-edge: var(--hairline);
+  /* Navigation and subject information share the neutral window shell.
+     Keep control/card fills independent from these full-height surfaces. */
+  --inspector-fill: var(--sidebar-base);
+  --inspector-edge: var(--sidebar-edge);
   --nav-hover: light-dark(#f0f2f5, #2e2e2e);
   --nav-selected: color-mix(in srgb, var(--accent) 12%, var(--paper));
   --nav-selected-outline: none;
@@ -682,8 +686,8 @@
   box-shadow: var(--elevation-small);
 }
 .workspace :is(.execution-sidebar, .understanding-panel, .collaboration) {
-  background: var(--soft);
-  border-left-color: var(--line);
+  background: var(--inspector-fill);
+  border-left-color: var(--inspector-edge);
 }
 .workspace :is(.execution-sidebar-header, .understanding-panel > header) {
   background: transparent;

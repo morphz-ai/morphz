@@ -775,6 +775,7 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
           width: bounds.width,
           height: bounds.height,
           radius: appearance.borderRadius,
+          background: appearance.backgroundColor,
           shadow: appearance.boxShadow,
           iconWidth: icon.width,
           iconHeight: icon.height,
@@ -792,9 +793,10 @@ test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Sess
     expect(button.width).toBe(32);
     expect(button.height).toBe(32);
     expect(button.radius).toBe("9px");
-    expect(button.shadow).toContain("inset");
-    expect(button.iconWidth).toBe(14);
-    expect(button.iconHeight).toBe(14);
+    expect(button.background).toBe("rgba(0, 0, 0, 0)");
+    expect(button.shadow).toBe("none");
+    expect(button.iconWidth).toBe(22);
+    expect(button.iconHeight).toBe(22);
   }
   await dock.getByRole("button", { name: "全部应用", exact: true }).click();
   const catalog = page.getByRole("group", { name: "选择应用", exact: true });
@@ -1082,6 +1084,12 @@ test.describe("触控 Launcher 固定操作", () => {
     const launcher = page
       .getByLabel("应用 Dock", { exact: true })
       .getByRole("button", { name: "全部应用", exact: true });
+    await expect(launcher).toHaveCSS("width", "44px");
+    await expect(launcher).toHaveCSS("height", "44px");
+    await expect(launcher).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(launcher).toHaveCSS("box-shadow", "none");
+    await expect(launcher.locator("svg")).toHaveCSS("width", "22px");
+    await expect(launcher.locator("svg")).toHaveCSS("height", "22px");
     await launcher.tap();
     const catalog = page.getByRole("group", {
       name: "选择应用",

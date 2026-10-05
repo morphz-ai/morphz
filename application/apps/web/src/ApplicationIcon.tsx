@@ -1,4 +1,4 @@
-import { useId, type CSSProperties } from "react";
+import { useId } from "react";
 import { BookOpen, Braces, FileText, Film, Globe, Layers2 } from "lucide-react";
 import type { ApplicationCatalogEntry } from "../../../packages/core/src/applications.js";
 import {
@@ -7,86 +7,40 @@ import {
   type ApplicationIdentity,
 } from "./application-identity.js";
 
-/** One collection identity for both launch surfaces, distinct from workspace
- * navigation. Its modules reuse app palettes, not a second color registry. */
+/** One application-drawer image for both launch surfaces, distinct from
+ * workspace navigation. Its blue/violet field borrows the app identity palette. */
 export function ApplicationLauncherIcon() {
+  const id = useId();
+  const field = `${id}-collection`;
   return (
     <svg
       viewBox="0 0 24 24"
       className="application-launcher-symbol"
-      fill="currentColor"
+      fill="none"
       stroke="none"
       aria-hidden="true"
       focusable="false"
     >
-      {(["reader", "studio", "browser"] as const).map((identity, index) => (
-        <rect
-          key={identity}
-          x={index === 2 ? "14" : "3.5"}
-          y={index === 0 ? "3.5" : "14"}
-          width="6.5"
-          height="6.5"
-          rx="1.8"
-          data-launcher-module={identity}
-          fill={`light-dark(${applicationIdentities[identity].symbol[0]}, ${applicationIdentities[identity].symbol[1]})`}
-        />
-      ))}
-      <rect
-        x="14"
-        y="3.5"
-        width="6.5"
-        height="6.5"
-        rx="1.8"
-        transform="rotate(45 17.25 6.75)"
-        fill="var(--accent-strong, currentColor)"
-      />
-    </svg>
-  );
-}
-
-function ApplicationSymbol({ identity }: { identity: ApplicationIdentity }) {
-  const palette = applicationIdentities[identity];
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="application-symbol"
-      data-application-identity={identity}
-      style={
-        {
-          "--application-symbol-light": palette.symbol[0],
-          "--application-symbol-dark": palette.symbol[1],
-        } as CSSProperties
-      }
-      aria-hidden="true"
-      focusable="false"
-    >
-      {identity === "browser" ? (
-        <>
-          <circle cx="12" cy="12" r="9" />
-          <path d="m16.5 7.5-3 6-6 3 3-6 6-3ZM10.5 10.5l3 3" />
-        </>
-      ) : identity === "reader" ? (
-        <>
-          <path d="M12 6.5C9.4 4.5 6.2 4 3 4.8v14c3.2-.8 6.4-.3 9 1.7 2.6-2 5.8-2.5 9-1.7v-14c-3.2-.8-6.4-.3-9 1.7ZM12 6.5v14" />
-        </>
-      ) : (
-        <>
-          <path d="m3 7 17-3 1 5-17 3-1-5ZM4 12v7a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2V9M7 6.3l3 4.5M13.5 5.2l3 4.5M8 15h9M8 18h5" />
-        </>
+      <defs>
+        <linearGradient id={field} x2=".75" y2="1">
+          <stop stopColor={applicationIdentities.browser.field[0]} />
+          <stop offset="1" stopColor={applicationIdentities.studio.field[1]} />
+        </linearGradient>
+      </defs>
+      <rect width="24" height="24" rx="6" fill={`url(#${field})`} />
+      {[7, 12, 17].flatMap((cy) =>
+        [7, 12, 17].map((cx) => (
+          <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="1.3" fill="#ffffff" />
+        )),
       )}
     </svg>
   );
 }
 
 function ApplicationEmblem({ identity }: { identity: ApplicationIdentity }) {
-  // Launcher and workspace instances coexist; paint-server IDs must not collide.
+  // Every surface scales this same artwork; paint-server IDs stay instance-local.
   const id = useId();
-  const field = `${id}-field`,
-    face = `${id}-face`;
+  const field = `${id}-field`;
   const palette = applicationIdentities[identity];
   return (
     <svg
@@ -96,119 +50,85 @@ function ApplicationEmblem({ identity }: { identity: ApplicationIdentity }) {
       aria-hidden="true"
       focusable="false"
       fill="none"
+      stroke="none"
       strokeWidth="0"
     >
       <defs>
         <linearGradient
           id={field}
-          x1="5"
+          x1="0"
           y1="0"
-          x2="57"
+          x2="48"
           y2="64"
           gradientUnits="userSpaceOnUse"
         >
           <stop stopColor={palette.field[0]} />
           <stop offset="1" stopColor={palette.field[1]} />
         </linearGradient>
-        {identity === "browser" && (
-          <linearGradient
-            id={face}
-            x1="18"
-            y1="16"
-            x2="48"
-            y2="49"
-            gradientUnits="userSpaceOnUse"
-          >
-            <stop stopColor="#f1fbff" />
-            <stop offset="1" stopColor="#a2deff" />
-          </linearGradient>
-        )}
       </defs>
       <rect width="64" height="64" rx="16" fill={`url(#${field})`} />
       {identity === "browser" ? (
         <>
-          <circle cx="32" cy="32" r="19" fill={`url(#${face})`} />
+          <circle cx="32" cy="32" r="21" fill={palette.foreground[0]} />
+          <path d="M43.5 20.5 35.5 35.5 28.5 28.5Z" fill={palette.field[1]} />
           <path
-            d="M32 17v2M47 32h-2M32 47v-2M17 32h2"
-            stroke="#79a7cd"
-            strokeWidth="1.4"
-            strokeLinecap="round"
+            d="M20.5 43.5 28.5 28.5 35.5 35.5Z"
+            fill={palette.foreground[1]}
           />
-          <path d="m41 23-6 12-6-6 12-6Z" fill="#286fb5" />
-          <path d="m23 41 6-12 6 6-12 6Z" fill="#73acce" />
-          <circle cx="32" cy="32" r="2" fill="#eaf8ff" />
         </>
       ) : identity === "reader" ? (
         <>
           <path
-            d="M13 19c6-1.9 12.6-.5 19 3.2 6.4-3.7 13-5.1 19-3.2v30c-6-1.9-12.6-.5-19 3.2-6.4-3.7-13-5.1-19-3.2V19Z"
-            fill="#b67336"
-            fillOpacity=".38"
+            d="M12 17.5c6-2.5 12.5-1.1 18.5 2.5v29.5c-6-3.6-12.5-5-18.5-2.5V17.5Z"
+            fill={palette.foreground[0]}
           />
           <path
-            d="M14 16.5c6-1.8 12-.5 18 3.1v29c-6-3.6-12-4.9-18-3.1v-29Z"
-            fill="#fff8e7"
+            d="M52 17.5c-6-2.5-12.5-1.1-18.5 2.5v29.5c6-3.6 12.5-5 18.5-2.5V17.5Z"
+            fill={palette.foreground[1]}
           />
-          <path
-            d="M50 16.5c-6-1.8-12-.5-18 3.1v29c6-3.6 12-4.9 18-3.1v-29Z"
-            fill="#ffedc5"
-          />
-          <path d="M32 20v28" stroke="#b87942" strokeWidth="1.4" />
-          <path
-            d="M19 25c2.4-.1 4.8.4 7.2 1.5M19 31c2.4-.1 4.8.4 7.2 1.5M19 37c2.4-.1 4.8.4 7.2 1.5M38 26.5c2.4-1.1 4.8-1.6 7.2-1.5M38 32.5c2.4-1.1 4.8-1.6 7.2-1.5M38 38.5c2.4-1.1 4.8-1.6 7.2-1.5"
-            stroke="#b77942"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-          />
-          <path d="M42 16.1v12l3-1.8 3 1v-11" fill="#bb7641" />
         </>
       ) : (
         <>
-          <rect x="14" y="28" width="36" height="22" rx="4" fill="#f1edff" />
-          <path d="M14 29h36v5H14z" fill="#d5caf5" />
-          <g transform="rotate(-10 32 24)">
+          <rect
+            x="11"
+            y="29"
+            width="42"
+            height="22"
+            rx="4.5"
+            fill={palette.foreground[0]}
+          />
+          <g transform="rotate(-9 32 22)">
             <rect
-              x="13"
-              y="17"
-              width="38"
-              height="10"
-              rx="2.5"
-              fill="#faf7ff"
+              x="10"
+              y="15"
+              width="42"
+              height="11"
+              rx="3"
+              fill={palette.foreground[1]}
             />
             <path
-              d="m17 17 6 10h7l-6-10h-7Zm15 0 6 10h7l-6-10h-7"
-              fill="#594598"
+              d="M17 15h7l6 11h-7l-6-11Zm17 0h7l6 11h-7l-6-11Z"
+              fill={palette.field[1]}
             />
           </g>
-          <path
-            d="M21 39h22M21 44h14"
-            stroke="#7964b4"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-          />
         </>
       )}
     </svg>
   );
 }
 
-/** A tile is application identity; a compact symbol remains optically readable
- * in tabs/Dock. Installed icons and unknown applications keep the original path. */
+/** All sizes use the same application image, not a separately styled control
+ * symbol. Presentation stays accepted for existing consumers; only their CSS
+ * sets size. Author images and unknown applications keep the original path. */
 export function AppIcon({
   app,
-  presentation = "symbol",
 }: {
   app: ApplicationCatalogEntry;
   presentation?: "symbol" | "tile";
 }) {
   const identity = applicationIdentity(app);
   if (app.iconImage) return <img src={app.iconImage} alt="" />;
-  if (identity)
-    return presentation === "tile" ? (
-      <ApplicationEmblem identity={identity} />
-    ) : (
-      <ApplicationSymbol identity={identity} />
-    );
+  if (identity) return <ApplicationEmblem identity={identity} />;
   const Icon = {
     layers: Layers2,
     document: FileText,

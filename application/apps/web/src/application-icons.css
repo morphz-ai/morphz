@@ -1,8 +1,8 @@
 /* Application artwork owns only its paint, never launcher/Dock geometry.
    Identity colors do not follow the host's four interaction accent palettes. */
-.app .application-symbol {
-  color: light-dark(var(--application-symbol-light), var(--application-symbol-dark));
-  stroke-width: 1.8;
+.app .application-emblem {
+  stroke: none;
+  stroke-width: 0;
 }
 .app
   :is(.application-icon, .application-dock-app-icon):has(
