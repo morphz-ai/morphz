@@ -48,11 +48,32 @@ function guestFixture() {
   let trusted = true,
     loading = true,
     requests = 0,
-    evaluations = 0;
+    evaluations = 0,
+    nativeCalls = 0,
+    destroyed = false,
+    destroyOnRead = "",
+    readError: Error | null = null,
+    mainDestroyed = false,
+    destroyMainOn = "",
+    mainReadError: Error | null = null;
+  const readNative = <T>(name: string, value: T): T => {
+    nativeCalls++;
+    if (destroyOnRead === name) destroyed = true;
+    if (destroyed) throw new TypeError("Object has been destroyed");
+    if (readError) throw readError;
+    return value;
+  };
   const main = Object.assign(new EventEmitter(), {
-    getURL: () => (trusted ? "morphz://app/" : "https://untrusted.example/"),
-    isDestroyed: () => false,
+    getURL: () => {
+      if (destroyMainOn === "url") mainDestroyed = true;
+      if (mainDestroyed) throw new TypeError("Object has been destroyed");
+      if (mainReadError) throw mainReadError;
+      return trusted ? "morphz://app/" : "https://untrusted.example/";
+    },
+    isDestroyed: () => mainDestroyed,
     send: (channel: string, value: any) => {
+      if (destroyMainOn === "send") mainDestroyed = true;
+      if (mainDestroyed) throw new TypeError("Object has been destroyed");
       if (channel === "browser:changed") frames.push(value);
     },
   });
@@ -69,21 +90,34 @@ function guestFixture() {
     handled: new Set(),
     busy: false,
     connected: true,
+    key: "fixture-browser-key",
+    centerId: "fixture-center",
+    principalId: "fixture-human",
+    identityGeneration: "fixture-generation",
     error: "",
   };
   browser.current = c;
   const guest = Object.assign(new EventEmitter(), {
     hostWebContents: main,
     getType: () => "webview",
-    isDestroyed: () => false,
+    isDestroyed: () => destroyed,
     setWindowOpenHandler: (_handler: unknown) => {},
-    navigationHistory: { canGoBack: () => true, canGoForward: () => false },
-    isLoading: () => loading,
+    navigationHistory: {
+      canGoBack: () => readNative("back", true),
+      canGoForward: () => readNative("forward", false),
+    },
+    isLoading: () => readNative("loading", loading),
+    reload: () => readNative("reload", undefined),
+    loadURL: async (_url: string) => readNative("load", undefined),
     executeJavaScriptInIsolatedWorld: async () => {
       evaluations++;
+      readNative("evaluate", undefined);
       return {};
     },
-    close: () => guest.emit("destroyed"),
+    close: () => {
+      destroyed = true;
+      guest.emit("destroyed");
+    },
   });
   browser.post = async () => {
     requests++;
@@ -94,6 +128,7 @@ function guestFixture() {
   return {
     browser,
     c,
+    window,
     guest,
     frames,
     setLoading: (value: boolean) => {
@@ -101,6 +136,31 @@ function guestFixture() {
     },
     setTrusted: (value: boolean) => {
       trusted = value;
+    },
+    destroy: (emit = true) => {
+      destroyed = true;
+      if (emit) guest.emit("destroyed");
+    },
+    destroyOnRead: (name: string) => {
+      destroyOnRead = name;
+    },
+    setReadError: (error: Error | null) => {
+      readError = error;
+    },
+    destroyMainOn: (name: string) => {
+      destroyMainOn = name;
+    },
+    setMainReadError: (error: Error | null) => {
+      mainReadError = error;
+    },
+    close: () => {
+      // Test cleanup must not mask the first assertion with a second destroyed
+      // getter failure. This does not stand in for production close behavior.
+      if (destroyed) (c as any).view = null;
+      browser.stop();
+    },
+    get nativeCalls() {
+      return nativeCalls;
     },
     get requests() {
       return requests;
@@ -138,11 +198,257 @@ test("宿主guest事件推送加载、导航、标题、失败与关闭，健康
     assert.equal(f.requests, requests, "700ms旧周期不得产生查询");
     assert.equal(f.frames.length, frames);
     assert.equal(f.evaluations, 0, "状态通知不得读取网页正文");
-    f.guest.emit("destroyed");
-    assert.equal(f.frames.at(-1)!.value, null);
+    f.destroy();
+    assert.equal(f.browser.current, f.c, "guest 销毁不删除原业务标签");
+    assert.equal(f.frames.at(-1)!.value.pageId, f.c.state.pageId);
     assert.equal(f.frames.at(-1)!.pageId, f.c.state.pageId);
+    f.browser.close(f.c.state.pageId);
+    assert.equal(f.frames.at(-1)!.value, null, "显式关闭仍关闭逻辑页面");
   } finally {
-    f.browser.stop();
+    f.close();
+  }
+});
+test("native 已销毁但 destroyed 尚未派发时 focus 复原安全发布，保留原页面并撤销临时协助", async () => {
+  const f = guestFixture();
+  try {
+    await until(() => f.requests > 0);
+    f.guest.emit("did-navigate", {}, "https://example.com/original?q=1");
+    f.guest.emit("page-title-updated", {}, "原页面");
+    const before = f.browser.state(false);
+    const owner = {
+      key: f.c.key,
+      centerId: f.c.centerId,
+      principalId: f.c.principalId,
+      identityGeneration: f.c.identityGeneration,
+    };
+    f.c.state.granted = true;
+    const pendingId = randomUUID();
+    (f.c as any).pending = {
+      id: pendingId,
+      epoch: f.c.state.epoch,
+      label: "待确认提交",
+      action: { type: "click" },
+    };
+    f.destroy(false);
+    const calls = f.nativeCalls;
+    assert.doesNotThrow(() => f.window.emit("focus"));
+    const after = f.browser.state(false);
+    assert.equal(f.browser.current, f.c);
+    assert.deepEqual(
+      {
+        key: f.c.key,
+        centerId: f.c.centerId,
+        principalId: f.c.principalId,
+        identityGeneration: f.c.identityGeneration,
+      },
+      owner,
+    );
+    assert.equal(after.pageId, before.pageId);
+    assert.equal(after.url, before.url);
+    assert.equal(after.title, before.title);
+    assert.equal(after.projectId, before.projectId);
+    assert.equal(after.artifactId, before.artifactId);
+    assert.deepEqual(after.surface, before.surface);
+    assert.equal(after.visible, before.visible);
+    assert.equal(after.granted, false);
+    assert.notEqual(after.epoch, before.epoch);
+    assert.equal(after.pending, null);
+    assert.equal(after.canGoBack, false);
+    assert.equal(after.canGoForward, false);
+    assert.equal(after.loading, false, "已退出不是一直加载");
+    assert.match(after.error, /视图已退出/);
+    assert.ok(
+      f.c.results.some(
+        (r: any) => r.id === pendingId && r.status === "rejected",
+      ),
+    );
+    assert.equal(f.nativeCalls, calls, "不得读取 destroyed Native getter");
+    f.destroy();
+    assert.equal(f.browser.current, f.c, "晚到 destroyed 不能删除标签");
+    assert.equal(f.c.results.filter((r: any) => r.id === pendingId).length, 1);
+  } finally {
+    f.close();
+  }
+});
+for (const field of ["back", "forward", "loading"])
+  test(`native 在 ${field} 快照读取中销毁时保留页面，不掩盖别的错误`, async () => {
+    const f = guestFixture();
+    try {
+      await until(() => f.requests > 0);
+      const before = f.browser.state(false);
+      f.destroyOnRead(field);
+      assert.doesNotThrow(() => f.browser.publish());
+      const next = f.browser.state(false);
+      assert.equal(next.pageId, before.pageId);
+      assert.deepEqual(next.surface, before.surface);
+      assert.equal(next.url, before.url);
+      assert.match(next.error, /视图已退出/);
+      assert.equal(next.loading, false);
+    } finally {
+      f.close();
+    }
+  });
+test("仍存活 native 的非生命周期异常继续抛出，不靠全局压错恢复", async () => {
+  const f = guestFixture();
+  try {
+    await until(() => f.requests > 0);
+    const original = new Error("unrelated native read failure");
+    f.setReadError(original);
+    assert.throws(
+      () => f.browser.state(false),
+      (error) => error === original,
+    );
+  } finally {
+    f.setReadError(null);
+    f.close();
+  }
+});
+test("已毁 native 不接受 grant、导航或引用动作，也不执行或自动重放网页业务", async () => {
+  const f = guestFixture();
+  try {
+    await until(() => f.requests > 0);
+    const before = f.browser.state(false),
+      calls = f.nativeCalls;
+    f.destroy(false);
+    for (const action of ["grant", "back", "forward", "reload"])
+      await assert.rejects(
+        f.browser.control(before.pageId, action),
+        /页面|网页|视图/,
+      );
+    await assert.rejects(
+      f.browser.navigate(before.pageId, "https://example.com/new"),
+      /页面|网页|视图/,
+    );
+    await assert.rejects(
+      f.browser.reveal(before.pageId, { url: before.url, text: "引用" }),
+      /页面|网页|视图/,
+    );
+    assert.equal(f.browser.state(false).url, before.url);
+    assert.equal(f.c.state.granted, false);
+    assert.equal(f.nativeCalls, calls);
+    assert.equal(f.evaluations, 0);
+  } finally {
+    f.close();
+  }
+});
+test("同一逻辑页重新挂载后旧 guest 的导航、标题、输入、失败和 destroyed 不得覆盖新现场", async () => {
+  const f = guestFixture();
+  try {
+    await until(() => f.requests > 0);
+    const before = f.browser.state(false);
+    f.destroy();
+    const preferences: Record<string, unknown> = {};
+    f.browser.willAttach(
+      {
+        preventDefault: () => assert.fail("same authorized page may reattach"),
+      },
+      preferences,
+      { partition: before.surface.partition, src: before.surface.src },
+    );
+    assert.equal(preferences.partition, before.surface.partition);
+    assert.equal(preferences.nodeIntegration, false);
+    assert.equal(preferences.contextIsolation, true);
+    let closed = 0;
+    const replacement = Object.assign(new EventEmitter(), {
+      hostWebContents: f.window.webContents,
+      getType: () => "webview",
+      isDestroyed: () => closed > 0,
+      setWindowOpenHandler: () => {},
+      navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+      isLoading: () => false,
+      close: () => {
+        closed++;
+        replacement.emit("destroyed");
+      },
+    });
+    f.browser.created(replacement);
+    f.browser.didAttach(replacement);
+    replacement.emit("did-navigate", {}, "https://example.com/new-native");
+    replacement.emit("page-title-updated", {}, "同页新现场");
+    const current = f.browser.state(false),
+      frameCount = f.frames.length;
+    assert.equal(current.error, "", "新 native 已就绪不保留旧句柄退出错误");
+    f.guest.emit("did-start-navigation", { isMainFrame: true });
+    f.guest.emit("did-navigate", {}, "https://untrusted.example/stale");
+    f.guest.emit(
+      "did-navigate-in-page",
+      {},
+      "https://untrusted.example/stale",
+      true,
+    );
+    f.guest.emit("page-title-updated", {}, "晚到旧标题");
+    f.guest.emit("did-stop-loading");
+    f.guest.emit(
+      "before-input-event",
+      { preventDefault() {} },
+      { type: "keyDown", key: "x" },
+    );
+    f.guest.emit("before-mouse-event", {}, { type: "mouseDown" });
+    f.guest.emit("render-process-gone");
+    f.guest.emit("did-fail-load", {}, -105, "failed", before.url, true);
+    f.guest.emit("destroyed");
+    assert.deepEqual(f.browser.state(false), current);
+    assert.equal(f.frames.length, frameCount);
+    assert.equal(f.browser.current.view.webContents, replacement);
+    assert.equal(f.c.state.pageId, before.pageId);
+    assert.equal(f.c.partition, before.surface.partition);
+    assert.equal(f.c.state.granted, false, "新 native 不继承旧控制权");
+    f.browser.close(before.pageId);
+    assert.equal(f.browser.current, null);
+    assert.equal(closed, 1);
+    assert.equal(f.frames.at(-1)!.value, null);
+  } finally {
+    f.close();
+  }
+});
+for (const phase of ["url", "send"])
+  test(`主窗口在 ${phase} 发布阶段销毁不会抛 native 异常或删除业务标签`, async () => {
+    const f = guestFixture();
+    try {
+      await until(() => f.requests > 0);
+      const before = f.browser.state(false),
+        frames = f.frames.length;
+      f.destroyMainOn(phase);
+      f.c.state.title = "新标题";
+      assert.doesNotThrow(() => f.browser.publish());
+      assert.equal(f.browser.current, f.c);
+      assert.equal(f.browser.state(false).pageId, before.pageId);
+      assert.equal(f.frames.length, frames);
+    } finally {
+      f.close();
+    }
+  });
+test("存活主窗口的非生命周期 getter 异常也不被压掉", async () => {
+  const f = guestFixture();
+  try {
+    await until(() => f.requests > 0);
+    const error = new Error("unrelated host getter failure");
+    f.setMainReadError(error);
+    assert.throws(
+      () => f.browser.publish(),
+      (received) => received === error,
+    );
+  } finally {
+    f.setMainReadError(null);
+    f.close();
+  }
+});
+test("grant 发布撤销快照过程中 native 销毁不能再赋予临时协助授权", async () => {
+  const f = guestFixture();
+  try {
+    await until(() => f.requests > 0);
+    const before = f.browser.state(false);
+    f.destroyOnRead("back");
+    await assert.rejects(
+      f.browser.control(before.pageId, "grant"),
+      /网页|视图/,
+    );
+    assert.equal(f.browser.current, f.c);
+    assert.equal(f.c.state.granted, false);
+    assert.equal(f.browser.state(false).pageId, before.pageId);
+    assert.equal(f.evaluations, 0);
+  } finally {
+    f.close();
   }
 });
 test("旧guest事件不能修改新page，未受信任宿主窗口不收到页面push", async () => {

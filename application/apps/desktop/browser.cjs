@@ -36,22 +36,65 @@ class DesktopBrowser {
   publish(c = this.current, pageId = c?.state.pageId ?? null) {
     if (c && this.current !== c) return;
     const contents = this.window.webContents;
-    if (
-      !contents ||
-      contents.isDestroyed?.() ||
-      !trustedMainURL(contents.getURL(), this.centerURL)
-    )
-      return;
+    if (!contents || contents.isDestroyed?.()) return;
+    let trusted;
+    try {
+      trusted = trustedMainURL(contents.getURL(), this.centerURL);
+    } catch (error) {
+      if (contents.isDestroyed?.()) return;
+      throw error;
+    }
+    if (!trusted) return;
     const value = this.state(false);
     const fingerprint = JSON.stringify([this.generation, value]);
     if (fingerprint === this.lastPublished) return;
-    this.lastPublished = fingerprint;
-    contents.send("browser:changed", {
-      generation: this.generation,
-      sequence: ++this.sequence,
-      pageId,
-      value,
-    });
+    try {
+      if (contents.isDestroyed?.()) return;
+      contents.send("browser:changed", {
+        generation: this.generation,
+        sequence: ++this.sequence,
+        pageId,
+        value,
+      });
+      this.lastPublished = fingerprint;
+    } catch (error) {
+      if (!contents.isDestroyed?.()) throw error;
+    }
+  }
+  detachView(c, view) {
+    if (this.current !== c || c.view !== view) return;
+    // Native guest destruction is not an explicit Human close. Keep the page,
+    // partition, URL and identity, but retire this guest's ephemeral authority.
+    c.view = null;
+    c.attaching = false;
+    c.error = "网页视图已退出，请重新打开网站。";
+    this.invalidate(c);
+  }
+  liveView(c) {
+    const view = c.view;
+    if (view?.webContents.isDestroyed?.()) {
+      this.detachView(c, view);
+      return null;
+    }
+    return view;
+  }
+  requireView(c) {
+    const view = this.liveView(c);
+    if (!view) throw new Error("网页视图尚不可用，请重新打开网站。");
+    return view;
+  }
+  native(c, view, read) {
+    if (this.current !== c || this.liveView(c) !== view)
+      throw new Error("网页视图已退出，请重新打开网站。");
+    try {
+      return read(view.webContents);
+    } catch (error) {
+      // Only a witnessed native lifetime loss is recoverable here. A live
+      // handle's unrelated errors must remain observable, not globally hidden.
+      if (!view.webContents.isDestroyed?.()) throw error;
+      this.detachView(c, view);
+      throw new Error("网页视图已退出，请重新打开网站。", { cause: error });
+    }
   }
   changed(c) {
     if (this.current !== c) return;
@@ -324,7 +367,7 @@ class DesktopBrowser {
     // preferences are owned by the host, never by a page or a supplied preload.
     if (
       !c ||
-      c.view ||
+      this.liveView(c) ||
       c.attaching ||
       params.partition !== c.partition ||
       params.src !== c.initialURL ||
@@ -350,24 +393,27 @@ class DesktopBrowser {
     if (
       !c ||
       !c.attaching ||
-      c.view ||
+      this.liveView(c) ||
+      contents.isDestroyed?.() ||
       this.guestOwners.get(contents) !== c ||
       contents.hostWebContents !== this.window.webContents
     ) {
-      contents.close();
+      if (!contents.isDestroyed?.()) contents.close();
       return;
     }
     c.attaching = false;
     const view = (c.view = { webContents: contents });
+    if (c.error === "网页视图已退出，请重新打开网站。") c.error = "";
+    const ownsView = () => this.current === c && this.liveView(c) === view;
     view.webContents.setWindowOpenHandler(({ url }) => {
-      if (this.current !== c) return { action: "deny" };
+      if (!ownsView()) return { action: "deny" };
       c.error =
         "网站请求打开新窗口。请在地址栏打开目标地址；不会绕过网站的登录限制。";
       this.changed(c);
       return { action: "deny" };
     });
     const checkNavigation = (event, url) => {
-      if (this.current !== c) {
+      if (!ownsView()) {
         event.preventDefault();
         return;
       }
@@ -385,21 +431,21 @@ class DesktopBrowser {
       checkNavigation(details, details.url),
     );
     view.webContents.on("did-start-navigation", (details) => {
-      if (details.isMainFrame) this.invalidate(c);
+      if (details.isMainFrame && ownsView()) this.invalidate(c);
     });
     view.webContents.on("did-navigate", (_e, url) => {
-      if (this.current !== c) return;
+      if (!ownsView()) return;
       c.state.url = url;
       this.changed(c);
     });
     view.webContents.on("did-navigate-in-page", (_e, url, main) => {
-      if (main && this.current === c) {
+      if (main && ownsView()) {
         c.state.url = url;
         this.changed(c);
       }
     });
     view.webContents.on("page-title-updated", (_e, title) => {
-      if (this.current !== c) return;
+      if (!ownsView()) return;
       c.state.title = title.slice(0, 500);
       this.changed(c);
     });
@@ -408,9 +454,11 @@ class DesktopBrowser {
       "did-stop-loading",
       "did-finish-load",
     ])
-      view.webContents.on(event, () => this.changed(c));
+      view.webContents.on(event, () => {
+        if (ownsView()) this.changed(c);
+      });
     view.webContents.on("before-input-event", (event, input) => {
-      if (this.current !== c) return;
+      if (!ownsView()) return;
       if (
         input.type === "keyDown" &&
         !input.isAutoRepeat &&
@@ -431,7 +479,7 @@ class DesktopBrowser {
       if (input.type === "keyUp") captureSelection();
     });
     view.webContents.on("before-mouse-event", (_e, mouse) => {
-      if (this.current !== c) return;
+      if (!ownsView()) return;
       if (mouse.type === "mouseDown" || mouse.type === "mouseWheel")
         this.invalidate(c);
       if (mouse.type === "mouseDown" || mouse.type === "mouseWheel")
@@ -441,11 +489,7 @@ class DesktopBrowser {
     const captureSelection = () => {
       clearTimeout(selectionTimer);
       selectionTimer = setTimeout(async () => {
-        if (
-          this.current !== c ||
-          !c.state.visible ||
-          view.webContents.isDestroyed()
-        )
+        if (!ownsView() || !c.state.visible || view.webContents.isDestroyed())
           return;
         const epoch = c.state.epoch,
           url = c.state.url;
@@ -455,7 +499,7 @@ class DesktopBrowser {
               { code: `(${pageSelection.toString()})()` },
             ]);
           if (
-            this.current !== c ||
+            !ownsView() ||
             !c.state.visible ||
             c.state.epoch !== epoch ||
             c.state.url !== url
@@ -478,13 +522,14 @@ class DesktopBrowser {
       }, 40);
     };
     view.webContents.on("input-event", (_event, input) => {
-      if (input.type === "mouseUp") captureSelection();
+      if (input.type === "mouseUp" && ownsView()) captureSelection();
     });
     view.webContents.on("destroyed", () => {
       clearTimeout(selectionTimer);
-      if (this.current === c) this.close(c.state.pageId);
+      this.detachView(c, view);
     });
     view.webContents.on("render-process-gone", () => {
+      if (!ownsView()) return;
       this.invalidate(c);
       c.error = "网页进程已退出，请重新打开。";
       this.changed(c);
@@ -492,7 +537,7 @@ class DesktopBrowser {
     view.webContents.on(
       "did-fail-load",
       (_event, code, _description, _url, main) => {
-        if (main && code !== -3 && this.current === c) {
+        if (main && code !== -3 && ownsView()) {
           this.invalidate(c);
           c.error = "网页未能载入，请检查地址或重新载入。";
           this.changed(c);
@@ -502,22 +547,25 @@ class DesktopBrowser {
     this.changed(c);
   }
   load(c, url) {
-    if (!c.view) throw new Error("网页尚未准备好，请稍后重试。");
+    const view = this.requireView(c);
     const generation = (c.navigation = (c.navigation ?? 0) + 1);
     c.error = "";
     c.state.url = url;
     // Navigation must not freeze the host address bar while a site is slow.
-    void c.view.webContents.loadURL(url).catch((e) => {
-      if (
-        this.current === c &&
-        c.navigation === generation &&
-        e.code !== "ERR_ABORTED"
-      ) {
-        this.invalidate(c);
-        c.error = "网页未能载入，请检查地址或重新载入。";
-        this.changed(c);
-      }
-    });
+    void this.native(c, view, (contents) => contents.loadURL(url)).catch(
+      (e) => {
+        if (
+          this.current === c &&
+          this.liveView(c) === view &&
+          c.navigation === generation &&
+          e.code !== "ERR_ABORTED"
+        ) {
+          this.invalidate(c);
+          c.error = "网页未能载入，请检查地址或重新载入。";
+          this.changed(c);
+        }
+      },
+    );
   }
   require(pageId) {
     const c = this.current;
@@ -548,9 +596,9 @@ class DesktopBrowser {
   }
   async reveal(pageId, request) {
     const c = this.require(pageId);
+    const view = this.requireView(c);
     if (
       !c.state.visible ||
-      !c.view ||
       !request ||
       typeof request.text !== "string" ||
       !request.text.trim() ||
@@ -567,23 +615,40 @@ class DesktopBrowser {
       request.anchor.end > request.anchor.start
     )
       payload.anchor = { start: request.anchor.start, end: request.anchor.end };
-    if (c.state.url !== url) await c.view.webContents.loadURL(url);
-    if (this.current !== c || !c.state.visible) throw new Error("页面已切换。");
-    return c.view.webContents.executeJavaScriptInIsolatedWorld(1002, [
-      { code: `(${pageSelection.toString()})(${JSON.stringify(payload)})` },
-    ]);
+    if (c.state.url !== url)
+      await this.native(c, view, (contents) => contents.loadURL(url));
+    if (this.current !== c || this.liveView(c) !== view || !c.state.visible)
+      throw new Error("页面已切换。");
+    return this.native(c, view, (contents) =>
+      contents.executeJavaScriptInIsolatedWorld(1002, [
+        { code: `(${pageSelection.toString()})(${JSON.stringify(payload)})` },
+      ]),
+    );
   }
   state(recover = true) {
     const c = this.current;
     if (recover && c?.identityGeneration) this.recover();
+    let snapshot = { canGoBack: false, canGoForward: false, loading: false };
+    if (c) {
+      const view = this.liveView(c);
+      if (view) {
+        try {
+          snapshot = {
+            canGoBack: view.webContents.navigationHistory.canGoBack(),
+            canGoForward: view.webContents.navigationHistory.canGoForward(),
+            loading: view.webContents.isLoading(),
+          };
+        } catch (error) {
+          if (!view.webContents.isDestroyed?.()) throw error;
+          this.detachView(c, view);
+        }
+      } else snapshot.loading = !c.error;
+    }
     return c
       ? {
           ...c.state,
           surface: { partition: c.partition, src: c.initialURL },
-          canGoBack: c.view?.webContents.navigationHistory.canGoBack() ?? false,
-          canGoForward:
-            c.view?.webContents.navigationHistory.canGoForward() ?? false,
-          loading: !c.view || c.view.webContents.isLoading(),
+          ...snapshot,
           pending: c.pending
             ? {
                 id: c.pending.id,
@@ -606,24 +671,31 @@ class DesktopBrowser {
     const c = this.require(pageId);
     if (action === "takeover") this.invalidate(c);
     else if (action === "grant") {
-      if (!c.state.visible || !c.view || !c.connected)
+      const view = this.requireView(c);
+      if (!c.state.visible || !c.connected)
         throw new Error("页面或协助连接尚不可用。");
       this.invalidate(c);
+      if (this.current !== c || this.requireView(c) !== view)
+        throw new Error("网页视图已退出，请重新打开网站。");
       c.state.granted = true;
     } else if (action === "back") {
-      if (!c.view) throw new Error("页面尚不可用。");
+      const view = this.requireView(c);
       this.invalidate(c);
-      if (c.view.webContents.navigationHistory.canGoBack())
-        c.view.webContents.navigationHistory.goBack();
+      this.native(c, view, (contents) => {
+        if (contents.navigationHistory.canGoBack())
+          contents.navigationHistory.goBack();
+      });
     } else if (action === "forward") {
-      if (!c.view) throw new Error("页面尚不可用。");
+      const view = this.requireView(c);
       this.invalidate(c);
-      if (c.view.webContents.navigationHistory.canGoForward())
-        c.view.webContents.navigationHistory.goForward();
+      this.native(c, view, (contents) => {
+        if (contents.navigationHistory.canGoForward())
+          contents.navigationHistory.goForward();
+      });
     } else if (action === "reload") {
-      if (!c.view) throw new Error("页面尚不可用。");
+      const view = this.requireView(c);
       this.invalidate(c);
-      c.view.webContents.reload();
+      this.native(c, view, (contents) => contents.reload());
     } else if (["approve", "reject"].includes(action)) {
       const r = c.pending;
       if (!r || r.epoch !== c.state.epoch || !c.state.granted)
@@ -649,11 +721,14 @@ class DesktopBrowser {
     return this.state(false);
   }
   async evaluate(c, action) {
-    return c.view.webContents.executeJavaScriptInIsolatedWorld(1001, [
-      {
-        code: `(${pageAction.toString()})(${JSON.stringify(action)},${JSON.stringify(randomUUID())})`,
-      },
-    ]);
+    const view = this.requireView(c);
+    return this.native(c, view, (contents) =>
+      contents.executeJavaScriptInIsolatedWorld(1001, [
+        {
+          code: `(${pageAction.toString()})(${JSON.stringify(action)},${JSON.stringify(randomUUID())})`,
+        },
+      ]),
+    );
   }
   async perform(c, r) {
     // Center records executing before dispatch; no reply means no retry.
@@ -759,7 +834,14 @@ class DesktopBrowser {
     clearTimeout(c.handshake);
     if (c.subscriptionId) this.application?.unobserve(c.subscriptionId);
     this.publish(null, c.state.pageId);
-    if (c.view && !c.view.webContents.isDestroyed()) c.view.webContents.close();
+    const contents = c.view?.webContents;
+    if (contents && !contents.isDestroyed()) {
+      try {
+        contents.close();
+      } catch (error) {
+        if (!contents.isDestroyed()) throw error;
+      }
+    }
   }
   stop() {
     this.window.removeListener?.("focus", this.onFocus);

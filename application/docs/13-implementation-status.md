@@ -1,5 +1,25 @@
 # 桌面能力实施记录
 
+## 2026-10-06 原生网页句柄销毁后的启动／焦点崩溃
+
+原用户 App 的只读窗口截图与线程采样见证 native 网页销毁后，focus 的
+state→publish→changed→recover 仍调用 destroyed navigation getter，弹出
+`Object has been destroyed`，模态弹窗阻塞主线程，主界面 bootstrap 超时。
+不是数据库消失：原 Platform v10／Workspace v19 一致性检查正常，独立
+Runtime 仍在运行，尚有一项 running 投递。原日志和截图保留。
+
+修复只把确实销毁的 exact guest 句柄退休，保留逻辑页、分区、网址、标题
+和原身份；撤销临时协助／待批动作，不恢复权限或自动重放业务。所有旧
+guest 回调核 exact view，不能覆盖同页新 guest；快照／主窗口发送只在
+实际见证销毁时处理异常，存活句柄的无关错误继续抛出，没有全局压错。
+显式 Human close 仍删除逻辑页面。grant 发布中的销毁末门另有独立 RED。
+
+Root 完整冷审并独立正式 40/40、required PostgreSQL、零跳过；日志
+`/tmp/morphz-desktop-browser-destroyed-ROOT-FINAL-oct06.log`。
+新项目是生产 browser.cjs 的受控 native 句柄／事件测试，非用户原窗口
+恢复或全面异步 Promise 故障证明。原 App 未重开、原 Runtime 未停止；
+实际重开还需完整备份并处理在途工作与嵌入 Host 暂时离线的边界。
+
 ## 2026-10-06 独立作者 GUI 接入生产 Web 原导航／草稿
 
 生产 App 复用原 private incarnation、身份、导航和未发送草稿 owner，
