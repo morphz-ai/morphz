@@ -238,11 +238,7 @@ async fn assert_generation_before_limit<S: ThreadGroupStore>(store: &S) {
     assert_eq!(legacy.len(), 1);
     assert_eq!(legacy[0].id, OLD);
     assert!(
-        legacy
-            .iter()
-            .filter(|group| group.generation == 2)
-            .next()
-            .is_none(),
+        legacy.iter().find(|group| group.generation == 2).is_none(),
         "Post-LIMIT generation filtering would miss the actual current Open Group"
     );
     eprintln!("GENERATION_QUERY_LEGACY_COUNTEREXAMPLE: generation=None LIMIT 1 then filter generation=2 has no current Group");

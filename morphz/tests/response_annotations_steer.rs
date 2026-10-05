@@ -525,33 +525,38 @@ impl Fixture {
                 .id,
             running_job.id
         );
-        let invocations = self.invocations.lock().unwrap();
-        assert_eq!(
-            invocations.len(),
-            2,
-            "accepted steering must not rerun a physical action"
-        );
-        assert_eq!(
-            invocations
+        {
+            let invocations = self.invocations.lock().unwrap();
+            assert_eq!(
+                invocations.len(),
+                2,
+                "accepted steering must not rerun a physical action"
+            );
+            assert_eq!(
+                invocations
+                    .iter()
+                    .filter(|arguments| arguments["part"] == "system")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                invocations
+                    .iter()
+                    .filter(|arguments| arguments["part"] == "architecture")
+                    .count(),
+                1
+            );
+            assert!(invocations
                 .iter()
-                .filter(|arguments| arguments["part"] == "system")
-                .count(),
-            1
-        );
-        assert_eq!(
-            invocations
-                .iter()
-                .filter(|arguments| arguments["part"] == "architecture")
-                .count(),
-            1
-        );
-        assert!(invocations
-            .iter()
-            .all(|arguments| arguments.get("_annotations").is_none()));
-        drop(invocations);
+                .all(|arguments| arguments.get("_annotations").is_none()));
+        }
         let signals = self
             .store
-            .list_context_thread_signals_for_threads(&owner.context_id, &[owner.id.clone()], None)
+            .list_context_thread_signals_for_threads(
+                &owner.context_id,
+                std::slice::from_ref(&owner.id),
+                None,
+            )
             .await
             .unwrap();
         let accepted_signal = signals

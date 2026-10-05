@@ -2883,7 +2883,7 @@ async fn migrate_thread_response_annotations_v2(
                     .ok_or("Thread table shadows every SQLite rowid alias")?)
             };
             let copy_columns = rowid.into_iter().map(quote)
-                .chain(writable.into_iter()).collect::<Vec<_>>().join(", ");
+                .chain(writable).collect::<Vec<_>>().join(", ");
             let comparison_columns = rowid.map(|alias| format!("{}, *", quote(alias)))
                 .unwrap_or_else(|| "*".to_string());
             let body_start = table_sql.find('(').ok_or("Malformed Thread table schema")?;

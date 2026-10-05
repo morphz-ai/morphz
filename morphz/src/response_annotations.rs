@@ -349,6 +349,10 @@ impl Protocol {
             Self::V2 => "v2",
         }
     }
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "Preserve the existing public canonical-token parser alongside its FromStr implementation"
+    )]
     pub fn from_str(value: &str) -> Result<Self, ProtocolError> {
         match value {
             "off" => Ok(Self::Off),
@@ -2066,7 +2070,8 @@ mod tests {
     fn schema_additive_optional_and_collisions_refused() {
         let original = tool();
         let before = serde_json::to_vec(&original).unwrap();
-        let augmented = augment_tools(&[original.clone()], Protocol::V1, false).unwrap();
+        let augmented =
+            augment_tools(std::slice::from_ref(&original), Protocol::V1, false).unwrap();
         assert_eq!(before, serde_json::to_vec(&original).unwrap());
         assert_eq!(augmented[0].parameters["required"], json!(["command"]));
         assert_eq!(
@@ -2280,7 +2285,8 @@ mod tests {
     #[test]
     fn v2_schema_keeps_work_optional_but_terminal_metadata_required() {
         let original = tool();
-        let augmented = augment_tools(&[original.clone()], Protocol::V2, false).unwrap();
+        let augmented =
+            augment_tools(std::slice::from_ref(&original), Protocol::V2, false).unwrap();
         assert_eq!(
             augmented[0].parameters["required"],
             original.parameters["required"]
@@ -2294,8 +2300,10 @@ mod tests {
         assert_eq!(execution["properties"]["title"]["minLength"], 1);
         assert_eq!(execution["properties"]["result"]["minLength"], 1);
         assert_eq!(
-            serde_json::to_value(augment_tools(&[original.clone()], Protocol::V2, true).unwrap())
-                .unwrap(),
+            serde_json::to_value(
+                augment_tools(std::slice::from_ref(&original), Protocol::V2, true).unwrap()
+            )
+            .unwrap(),
             serde_json::to_value(vec![original]).unwrap()
         );
     }

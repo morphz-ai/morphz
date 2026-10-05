@@ -2617,6 +2617,15 @@ struct ThreadYieldState {
     wait_explicitly_requested: bool,
 }
 
+/// Immutable provenance from the same model attempt as the terminal response.
+/// Keep these related inputs together without altering their Event projection.
+struct TerminalResponseEvidence<'a> {
+    model_attempt_id: &'a str,
+    annotation_bundle: Option<&'a PersistedAnnotations>,
+    context_view_manifest: &'a ContextViewManifest,
+    provider_continuation: Option<&'a ProviderContinuation>,
+}
+
 /// A dispatched attached child is no longer a queued Schedule, but its
 /// unsettled Group remains an authoritative wake source for its exact owner.
 /// Never infer this from arbitrary running work in the Session or from a
@@ -15290,13 +15299,15 @@ impl Orchestrator {
                             self.record_terminal_response(
                                 session_id,
                                 &attempt_id,
-                                &terminal_model_attempt_id,
                                 &effective_phase,
                                 &response,
                                 &decision,
-                                terminal_response_annotations.as_ref(),
-                                &terminal_context_view_manifest,
-                                terminal_provider_continuation.as_ref(),
+                                TerminalResponseEvidence {
+                                    model_attempt_id: &terminal_model_attempt_id,
+                                    annotation_bundle: terminal_response_annotations.as_ref(),
+                                    context_view_manifest: &terminal_context_view_manifest,
+                                    provider_continuation: terminal_provider_continuation.as_ref(),
+                                },
                             )
                             .await?;
                         }
@@ -15325,11 +15336,13 @@ impl Orchestrator {
                         wait_secs,
                         wait_explicitly_requested,
                     },
-                    terminal_response_annotations,
                     &response,
-                    &terminal_model_attempt_id,
-                    &terminal_context_view_manifest,
-                    terminal_provider_continuation.as_ref(),
+                    TerminalResponseEvidence {
+                        model_attempt_id: &terminal_model_attempt_id,
+                        annotation_bundle: terminal_response_annotations.as_ref(),
+                        context_view_manifest: &terminal_context_view_manifest,
+                        provider_continuation: terminal_provider_continuation.as_ref(),
+                    },
                 )
                 .await?;
                 if let Some(lease) = dialogue_lease.as_mut() {
@@ -15340,13 +15353,15 @@ impl Orchestrator {
             self.record_terminal_response(
                 session_id,
                 &attempt_id,
-                &terminal_model_attempt_id,
                 &effective_phase,
                 &response,
                 &decision,
-                terminal_response_annotations.as_ref(),
-                &terminal_context_view_manifest,
-                terminal_provider_continuation.as_ref(),
+                TerminalResponseEvidence {
+                    model_attempt_id: &terminal_model_attempt_id,
+                    annotation_bundle: terminal_response_annotations.as_ref(),
+                    context_view_manifest: &terminal_context_view_manifest,
+                    provider_continuation: terminal_provider_continuation.as_ref(),
+                },
             )
             .await?;
             let direct_interactive_execution = thread_kind == "execution"
@@ -15984,14 +15999,17 @@ impl Orchestrator {
         &self,
         session_id: &str,
         attempt_id: &str,
-        model_attempt_id: &str,
         phase: &str,
         response: &crate::llm::Response,
         decision: &TerminalDecision,
-        annotation_bundle: Option<&PersistedAnnotations>,
-        context_view_manifest: &ContextViewManifest,
-        provider_continuation: Option<&ProviderContinuation>,
+        evidence: TerminalResponseEvidence<'_>,
     ) -> Result<(), DynError> {
+        let TerminalResponseEvidence {
+            model_attempt_id,
+            annotation_bundle,
+            context_view_manifest,
+            provider_continuation,
+        } = evidence;
         let context_id = self.context_id_for_session(session_id)?;
         let tool_calls = response
             .tool_calls
@@ -17374,12 +17392,15 @@ impl Orchestrator {
         attempt_id: &str,
         model_disposition: &str,
         state: ThreadYieldState,
-        annotation_bundle: Option<PersistedAnnotations>,
         response: &crate::llm::Response,
-        model_attempt_id: &str,
-        context_view_manifest: &ContextViewManifest,
-        provider_continuation: Option<&ProviderContinuation>,
+        evidence: TerminalResponseEvidence<'_>,
     ) -> Result<(), DynError> {
+        let TerminalResponseEvidence {
+            model_attempt_id,
+            annotation_bundle,
+            context_view_manifest,
+            provider_continuation,
+        } = evidence;
         let route = self
             .activation_route(attempt_id)
             .ok_or_else(|| format!("Evaluation '{}' is missing its Thread route", attempt_id))?;
@@ -17443,7 +17464,7 @@ impl Orchestrator {
         if state.has_pending_thread_group {
             payload.push(("has_pending_thread_group".to_string(), json!(true)));
         }
-        if let Some(bundle) = annotation_bundle.as_ref() {
+        if let Some(bundle) = annotation_bundle {
             append_response_annotation_bundle(&mut payload, bundle, false);
             payload.extend([
                 ("model_attempt_id".to_string(), json!(model_attempt_id)),
@@ -28481,7 +28502,7 @@ mod tests {
             let signals_before = store
                 .list_context_thread_signals_for_threads(
                     &thread.context_id,
-                    &[thread.id.clone()],
+                    std::slice::from_ref(&thread.id),
                     None,
                 )
                 .await
@@ -28558,7 +28579,7 @@ mod tests {
                 store
                     .list_context_thread_signals_for_threads(
                         &thread.context_id,
-                        &[thread.id.clone()],
+                        std::slice::from_ref(&thread.id),
                         None
                     )
                     .await
@@ -28588,7 +28609,7 @@ mod tests {
             let signals_after = store
                 .list_context_thread_signals_for_threads(
                     &thread.context_id,
-                    &[thread.id.clone()],
+                    std::slice::from_ref(&thread.id),
                     None,
                 )
                 .await

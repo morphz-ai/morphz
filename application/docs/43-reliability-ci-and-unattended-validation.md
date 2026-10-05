@@ -104,3 +104,20 @@ gateway 回归。其他管理界面的 operator 读取不在本次来源修复�
 failed/interrupted，目录与原证据保留。这不是产品故障，也不是 8 小时通过；
 不会拼接前后时长。机械 lint 修正及独立复验完成后，正式连续 8 小时另行冻结、
 启动并记录结果。
+
+最终机械收尾已验证：完整严格 Clippy（原命令及新增 `--keep-going` 的同强度
+命令）均 exit 0；`--keep-going` 仅让独立编译目标的错误一次完整呈现，不降低
+`-D warnings`。私有终轮证据参数合组、等价迭代及测试锁的词法作用域修正保留
+原断言、事件投影、最终协议和权限检查。协议/Custom/投影/steer 64 项回归、
+Custom/ingress/steer 13 项、Runtime/Store 28 项、generation 查询 SQLite/PG
+2 项，以及 typed interrupt SQLite/PG 2 项分别通过；重跑组有重叠，不相加
+冒充独立测试总数。专用 PostgreSQL 实际执行并清理，未以缺环境变量提前返回。
+
+严格日志：`/tmp/morphz-clippy-strict-final-oct06.rATR2Q/clippy-original.log`；
+全面诊断日志：`/tmp/morphz-clippy-keep-going-final-oct06.C5YyqB/clippy-original.log`；
+typed 当前源结果：`/tmp/morphz-typed-final-current-oct06.d4DRKx/result.json`。
+格式、英文协议、379 项诊断及工作流语法检查通过。这些是本地证据，不是远程
+CI 成功声明。全量 Rust 将从干净的隔离提交副本运行，保留原始 ignored 清单；
+真实外部登录测试不在无付费/无新凭据范围，不全局启用 `--include-ignored`。
+原生测试还须隔离默认 SSH 配置读取，不能只用新 HOME 推断已隔离 macOS 用户。
+最终版重建、严格桌面复验及正式 8 小时冻结尚待执行。

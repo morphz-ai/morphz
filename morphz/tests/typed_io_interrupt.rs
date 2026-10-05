@@ -139,7 +139,7 @@ async fn running(
         ThreadActivationMutation::Updated(_)
     ));
     store
-        .bind_activation_input_signals(&id, &[event.id.clone()])
+        .bind_activation_input_signals(&id, std::slice::from_ref(&event.id))
         .await?;
     Ok(id)
 }

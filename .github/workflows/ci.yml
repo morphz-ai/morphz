@@ -54,7 +54,7 @@ jobs:
           cmp scripts/install.sh website/public/install.sh
           sh scripts/test_install.sh
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features --keep-going -- -D warnings
 
   test:
     name: Test

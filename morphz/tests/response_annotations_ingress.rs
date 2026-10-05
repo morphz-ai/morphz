@@ -443,22 +443,23 @@ async fn v1_reserved_business_schema_is_rejected_before_acceptance_but_off_execu
         let jobs = fixture.jobs().await;
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].tool_name, schema.name());
-        let actual_tools = fixture.client.captured_tools.lock().unwrap();
-        let actual = actual_tools[0]
-            .iter()
-            .find(|tool| tool.name == schema.name())
-            .unwrap();
-        // Registry's established physical-tool schema also exposes `target`.
-        // Compare the entire production Off definition, not the author's raw
-        // schema and not a weakened comparison with injected fields removed.
-        let baseline = morphz::tool::Registry::new();
-        baseline.register(Arc::new(BusinessTool {
-            schema,
-            arguments: fixture.arguments.clone(),
-        }));
-        let expected = baseline.definitions().pop().unwrap();
-        assert_eq!(actual.parameters, expected.parameters);
-        drop(actual_tools);
+        {
+            let actual_tools = fixture.client.captured_tools.lock().unwrap();
+            let actual = actual_tools[0]
+                .iter()
+                .find(|tool| tool.name == schema.name())
+                .unwrap();
+            // Registry's established physical-tool schema also exposes `target`.
+            // Compare the entire production Off definition, not the author's raw
+            // schema and not a weakened comparison with injected fields removed.
+            let baseline = morphz::tool::Registry::new();
+            baseline.register(Arc::new(BusinessTool {
+                schema,
+                arguments: fixture.arguments.clone(),
+            }));
+            let expected = baseline.definitions().pop().unwrap();
+            assert_eq!(actual.parameters, expected.parameters);
+        }
         assert!(fixture
             .events(&accepted.id, Some("chat/assistant_call"))
             .await

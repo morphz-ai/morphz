@@ -552,7 +552,7 @@ async fn empty_enabled_profile_conformance<S: RuntimeStore + 'static>(
             thread_id: historical_id,
             agent_id: ids.0,
             initiating_principal_id: None,
-            manifest_hash: manifest_hash(&[saved.clone()]),
+            manifest_hash: manifest_hash(std::slice::from_ref(&saved)),
             compiler_hash: compiler_hash(),
             bound_at: chrono::Utc::now(),
             entries: vec![saved],

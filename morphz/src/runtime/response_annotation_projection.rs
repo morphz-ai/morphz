@@ -329,7 +329,7 @@ impl MorphzRuntime {
                         .retain(|record| record.kind != AnnotationKind::Title);
                 }
                 for record in bundle.records {
-                    let jobs = snapshot
+                    let mut jobs = snapshot
                         .activations
                         .iter()
                         .flat_map(|activation| activation.jobs.iter())
@@ -348,7 +348,7 @@ impl MorphzRuntime {
                                         && Some(job.tool_call_id.as_str())
                                             == record.call_id.as_deref()
                                 })
-                                .filter(|job| {
+                                .find(|job| {
                                     source
                                         .payload
                                         .get("tool_calls")
@@ -374,7 +374,6 @@ impl MorphzRuntime {
                                             })
                                         })
                                 })
-                                .next()
                             {
                                 steps
                                     .entry(job.id.clone())
@@ -399,22 +398,19 @@ impl MorphzRuntime {
                                             && Some(sequence) < source.sequence
                                     })
                             }) {
-                                if let Some(job) = jobs
-                                    .filter(|job| {
-                                        job.thread_id == thread.id
-                                            && job.agent_id == thread.agent_id
-                                            && job.context_id == thread.context_id
-                                            && job.session_id == thread.session_id
-                                            && job.status.is_terminal()
-                                            && job.result_event_id.as_deref()
-                                                == Some(receipt.id.as_str())
-                                            && text(receipt, "activation_id")
-                                                == Some(job.activation_id.as_str())
-                                            && text(receipt, "tool_call_id")
-                                                == Some(job.tool_call_id.as_str())
-                                    })
-                                    .next()
-                                {
+                                if let Some(job) = jobs.find(|job| {
+                                    job.thread_id == thread.id
+                                        && job.agent_id == thread.agent_id
+                                        && job.context_id == thread.context_id
+                                        && job.session_id == thread.session_id
+                                        && job.status.is_terminal()
+                                        && job.result_event_id.as_deref()
+                                            == Some(receipt.id.as_str())
+                                        && text(receipt, "activation_id")
+                                            == Some(job.activation_id.as_str())
+                                        && text(receipt, "tool_call_id")
+                                            == Some(job.tool_call_id.as_str())
+                                }) {
                                     steps
                                         .entry(job.id.clone())
                                         .or_insert_with(|| ThreadStepAnnotation {

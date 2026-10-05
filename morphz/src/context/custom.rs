@@ -769,7 +769,7 @@ mod tests {
             thread_id: "old".into(),
             agent_id: "a".into(),
             initiating_principal_id: None,
-            manifest_hash: legacy_manifest_hash(&[empty.clone()]),
+            manifest_hash: legacy_manifest_hash(std::slice::from_ref(&empty)),
             compiler_hash: legacy_compiler_hash(),
             bound_at: Utc::now(),
             entries: vec![empty],

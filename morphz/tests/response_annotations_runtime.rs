@@ -3279,13 +3279,14 @@ async fn v1_accepts_legacy_unannotated_plain_final_text_without_an_extra_request
         "legacy final text stays normal reply content; it must not be inferred into annotation metadata");
     assert!(fixture.jobs().await.is_empty());
     assert!(fixture.arguments.lock().unwrap().is_empty());
-    let captured = fixture.client.captured.lock().unwrap();
-    assert_eq!(captured.len(), 1);
-    assert!(
-        captured[0].tools.iter().any(|tool| tool.name == "reply"),
-        "the V1 carrier is offered but plain text remains a valid opt-in alternative"
-    );
-    drop(captured);
+    {
+        let captured = fixture.client.captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert!(
+            captured[0].tools.iter().any(|tool| tool.name == "reply"),
+            "the V1 carrier is offered but plain text remains a valid opt-in alternative"
+        );
+    }
     assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 1);
     tokio::time::sleep(Duration::from_millis(80)).await;
     assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 1);

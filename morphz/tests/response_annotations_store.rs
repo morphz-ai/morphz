@@ -697,7 +697,7 @@ async fn annotation_source_windows<S: RuntimeStore>(store: &S) -> Result<(), Tes
         second_signal.thread_id.clone(),
     ];
     let exact = store
-        .list_annotation_revision_signals(&route.context, &owners, &[first.id.clone()])
+        .list_annotation_revision_signals(&route.context, &owners, std::slice::from_ref(&first.id))
         .await?;
     assert_eq!(
         exact,
@@ -716,7 +716,11 @@ async fn annotation_source_windows<S: RuntimeStore>(store: &S) -> Result<(), Tes
         .await?;
     assert_ne!(unrelated.id, first_signal.thread_id);
     assert!(store
-        .list_annotation_revision_signals(&route.context, &[unrelated.id], &[first.id.clone()])
+        .list_annotation_revision_signals(
+            &route.context,
+            &[unrelated.id],
+            std::slice::from_ref(&first.id),
+        )
         .await?
         .is_empty());
     assert!(store
