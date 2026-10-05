@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-05 认知连接的本机原请求恢复
+
+独立准备层以实际中心、Human、持久窗口身份和精确目标定位重试记录，
+只保存完整公开原 DTO 与 SHA-256。查找键不含候选连接 ID 和当前许可
+修订，因此许可刷新或重开不会自动生成第二次尝试；完整记录仍校核
+原连接 ID、原 CAS、可选参数是否缺省和全部目标字段。同步捕获先于
+哈希，异步核验后的最后复读拒绝迟到替换。
+
+只读查找不保存缺失记录、不生成 ID、不联网，也不推断原创建结果。
+真实 ACK 可按原固定 scope 清理；明确放弃仅清理仍匹配的本机记录，
+不是业务 ACK 或撤销连接，已取消／窗口身份变化的能力不能再清理。
+严格读、清理和持久窗口身份复用共享端口，不增加 renderer 数据权威。
+
+Root 独立正式三文件 54/54，并已参加相邻五文件 88/88，required
+PostgreSQL 入口，零失败、取消与跳过；全工程类型、生产构建和两文件
+专项格式检查通过。日志 `/tmp/morphz-connection-retry-ROOT-ACCEPTED-oct05.log`、
+`/tmp/morphz-cognitive-strict-cleanup-ROOT-ADJACENT-SECOND-oct05.log`、
+`/tmp/morphz-cognitive-connect-ROOT-TYPES-SECOND-oct05.log`、
+`/tmp/morphz-cognitive-connect-ROOT-BUILD-FIRST-oct05.log` 和
+`/tmp/morphz-connection-retry-ROOT-FORMAT-oct05.log`。
+旧兼容前缀误删反例保留于 `/tmp/morphz-connection-retry-LEGACY-RED-oct05.log`。
+
+新检查运行实际生产浏览器 bundle、独立 VM、真实 WebCrypto 和受控
+存储，覆盖重开、并发、损坏／配额、替换、取消、身份隔离和只读缺失；
+不是 SQL、native IPC 或用户原 App 验收。管理面板在原等待取消后须
+重新只读核验再明确放弃，组合接线仍待挂载验收，本阶段只提交准备层。
+
 ## 2026-10-05 认知应用连接创建的持久回执
 
 公开 connect DTO 不变。Host 同步捕获原请求、实际 Human 握手身份和
