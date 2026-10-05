@@ -33,6 +33,8 @@ import {
   type CognitiveAppTargetSnapshot,
   type CognitiveAppVersion,
   type CognitiveAppConnection,
+  type CognitiveAppViewBinding,
+  type CognitiveAppViewMetadata,
 } from "./cognitive-app-registry.js";
 import {
   createCognitiveAppCommands,
@@ -44,6 +46,10 @@ import {
   type CognitiveAppProjectionResult,
 } from "./cognitive-app-projection.js";
 import { readCognitiveAppUiByteProof } from "./cognitive-app-ui-proof.js";
+import {
+  parseBrowserNavigationState,
+  type BrowserNavigationState,
+} from "../../cognitive-app-sdk/src/browser-wire.js";
 import {
   domainProtocol,
   parseCognitiveAppDefinition,
@@ -315,6 +321,37 @@ export type ResolvedCognitiveAppObjectRead = {
   object: OperationResourceReference;
   maxBytes: number;
 };
+export type CognitiveAppViewReceipt = {
+  viewId: string;
+  viewRevision: number;
+  bindingRevision: number;
+};
+export type CognitiveAppViewMutationResult = {
+  receipt: CognitiveAppViewReceipt;
+  replayed: boolean;
+};
+export type CognitiveAppViewLaunchRequest = CognitiveAppTargetRequest & {
+  commandId: string;
+  projectId: string;
+  expectedViewRevision: number;
+  expectedBindingRevision: number;
+  now?: string;
+};
+export type CognitiveAppViewReadRequest = {
+  viewId: string;
+  expectedViewRevision: number;
+  expectedBindingRevision: number;
+};
+/** Host-only gate snapshot. installedBy is retained private ownership metadata,
+ * not a public caller-supplied byte owner or lasting frame authority. */
+export type PreparedCognitiveAppUiRead = {
+  actor: DomainActor;
+  view: ApplicationInstance;
+  binding: CognitiveAppViewBinding;
+  target: CognitiveAppTargetSnapshot;
+  uiPackage: UiPackageVersion;
+};
+
 export type CognitiveAppCommandRequest =
   CognitiveAppOperationResolutionRequest & { commandId: string };
 export type PreparedCognitiveAppCommand = {
@@ -1339,6 +1376,439 @@ export class PlatformStore {
         request,
         declaration,
       );
+    });
+  }
+
+  /** Immutable schema discovery, not connection, UI or dispatch authority. */
+  async resolveCognitiveAppDescription(
+    access: PlatformActor,
+    input: CognitiveAppConsentRequest & { projectId: string },
+  ) {
+    const {
+      projectId,
+      appId,
+      version,
+      expectedDefinitionHash,
+      expectedGrantRevision,
+    } = input;
+    requireId(projectId, "项目标识");
+    const prepared = await this.prepareCognitiveActor(access);
+    return this.transaction(async (q) => {
+      await this.assertProjectReader(
+        q,
+        prepared.actor,
+        projectId,
+        prepared.executor,
+      );
+      const consent = await this.cognitiveRegistry(
+        q,
+        prepared.actor,
+      ).lockOwnConsent({
+        appId,
+        version,
+        expectedDefinitionHash,
+        expectedGrantRevision,
+      });
+      return {
+        actor: prepared.domainActor,
+        definition: consent.version.definition,
+        definitionHash: consent.version.definitionHash,
+        grantRevision: consent.grant.revision,
+      };
+    });
+  }
+
+  private cognitiveViewRequest(input: CognitiveAppViewLaunchRequest) {
+    const {
+      commandId,
+      projectId,
+      appId,
+      version,
+      connectionId,
+      expectedViewRevision,
+      expectedBindingRevision,
+      expectedDefinitionHash,
+      expectedGrantRevision,
+      expectedConnectionRevision,
+    } = input;
+    const now = input.now ?? new Date().toISOString();
+    requireId(commandId, "操作标识");
+    requireId(projectId, "项目标识");
+    if (
+      ![expectedViewRevision, expectedBindingRevision].every(
+        (r) => Number.isSafeInteger(r) && r >= 0 && r < Number.MAX_SAFE_INTEGER,
+      ) ||
+      typeof now !== "string" ||
+      now.length > 40 ||
+      !Number.isFinite(Date.parse(now))
+    )
+      throw new PlatformStorageError("invalid", "应用窗口修订或时间无效。");
+    return {
+      commandId,
+      projectId,
+      appId,
+      version,
+      connectionId,
+      expectedViewRevision,
+      expectedBindingRevision,
+      expectedDefinitionHash,
+      expectedGrantRevision,
+      expectedConnectionRevision,
+      now,
+    };
+  }
+  private cognitiveViewHash(
+    actor: DomainActor,
+    action: string,
+    request: unknown,
+  ) {
+    // Only known scalar fields and independently parsed bounded state enter.
+    return createHash("sha256")
+      .update(
+        canonicalJsonBytes({
+          actor,
+          action,
+          request: JSON.parse(JSON.stringify(request)),
+        }),
+      )
+      .digest("hex");
+  }
+  private parseCognitiveViewReceipt(value: string): CognitiveAppViewReceipt {
+    try {
+      const r = JSON.parse(value) as CognitiveAppViewReceipt;
+      requireId(r.viewId, "回执窗口标识");
+      if (
+        Object.keys(r).sort().join(",") !==
+          "bindingRevision,viewId,viewRevision" ||
+        ![r.viewRevision, r.bindingRevision].every(
+          (v) => Number.isSafeInteger(v) && v > 0,
+        )
+      )
+        throw new Error("receipt");
+      return r;
+    } catch {
+      throw new PlatformStorageError("conflict", "应用窗口的已提交回执无效。");
+    }
+  }
+  private async cognitiveViewReceipt(
+    q: Query,
+    actor: ResolvedActor,
+    commandId: string,
+    hash: string,
+    action: string,
+    view: ApplicationInstance,
+    binding: CognitiveAppViewBinding,
+    now: string,
+  ): Promise<CognitiveAppViewMutationResult> {
+    const receipt = {
+      viewId: view.id,
+      viewRevision: view.revision,
+      bindingRevision: binding.revision,
+    };
+    // No body/state in durable acknowledgment and no layout/read permission.
+    await this.receipt(
+      q,
+      actor,
+      commandId,
+      hash,
+      action,
+      new TextDecoder().decode(canonicalJsonBytes(receipt)),
+      now,
+      actor.runtimeInputId,
+      false,
+    );
+    return { receipt, replayed: false };
+  }
+  private async assertCognitiveNavigationObject(
+    q: Query,
+    prepared: PreparedCognitiveActor,
+    projectId: string,
+    target: CognitiveAppTargetSnapshot,
+    state: BrowserNavigationState,
+  ) {
+    if (!state.object) return;
+    const row = await this.authorizeApplicationObjectRow(
+      q,
+      prepared.actor,
+      target.instanceId,
+      target.appId,
+      state.object.objectId,
+      "read",
+      undefined,
+      prepared.executor,
+      true,
+    );
+    if (row.project_id !== projectId)
+      throw new PlatformStorageError(
+        "forbidden",
+        "导航原件不属于这个实际项目。",
+      );
+    if (row.availability !== "available")
+      throw new PlatformStorageError("not_found", "导航原件当前不可用。");
+    // Historical versionRef is carried exactly; only the App can prove existence.
+  }
+  async launchCognitiveAppView(
+    access: PlatformActor,
+    input: CognitiveAppViewLaunchRequest,
+  ): Promise<CognitiveAppViewMutationResult> {
+    const request = this.cognitiveViewRequest(input);
+    const prepared = await this.prepareCognitiveActor(access, true);
+    const hash = this.cognitiveViewHash(
+      prepared.domainActor,
+      "launch-cognitive-view",
+      { ...request, now: undefined },
+    );
+    return this.transaction(async (q) => {
+      await this.assertProjectReader(q, prepared.actor, request.projectId);
+      const earlier = await this.replay(
+        q,
+        prepared.actor,
+        request.commandId,
+        hash,
+      );
+      if (earlier !== null)
+        return {
+          receipt: this.parseCognitiveViewReceipt(earlier),
+          replayed: true,
+        };
+      await this.assertMember(q, prepared.actor, request.projectId);
+      const result = await this.cognitiveRegistry(
+        q,
+        prepared.actor,
+      ).launchOwnView({ ...request, viewId: request.commandId });
+      const state = parseBrowserNavigationState(result.view.state);
+      await this.assertCognitiveNavigationObject(
+        q,
+        prepared,
+        request.projectId,
+        result.target,
+        state,
+      );
+      return this.cognitiveViewReceipt(
+        q,
+        prepared.actor,
+        request.commandId,
+        hash,
+        "launch-cognitive-view",
+        result.view,
+        result.binding,
+        request.now,
+      );
+    });
+  }
+  async bindCognitiveAppView(
+    access: PlatformActor,
+    input: CognitiveAppViewLaunchRequest & { viewId: string },
+  ): Promise<CognitiveAppViewMutationResult> {
+    const request = {
+      ...this.cognitiveViewRequest(input),
+      viewId: input.viewId,
+    };
+    requireId(request.viewId, "窗口标识");
+    const prepared = await this.prepareCognitiveActor(access, true);
+    const hash = this.cognitiveViewHash(
+      prepared.domainActor,
+      "bind-cognitive-view",
+      { ...request, now: undefined },
+    );
+    return this.transaction(async (q) => {
+      const registry = this.cognitiveRegistry(q, prepared.actor),
+        before = await registry.readOwnView(request.viewId);
+      if (
+        before.view.workspaceId !== request.projectId ||
+        before.view.applicationId !== request.appId ||
+        before.view.applicationVersion !== request.version
+      )
+        throw new PlatformStorageError(
+          "conflict",
+          "窗口的项目或应用精确版本不一致。",
+        );
+      await this.assertProjectReader(q, prepared.actor, request.projectId);
+      const earlier = await this.replay(
+        q,
+        prepared.actor,
+        request.commandId,
+        hash,
+      );
+      if (earlier !== null)
+        return {
+          receipt: this.parseCognitiveViewReceipt(earlier),
+          replayed: true,
+        };
+      await this.assertMember(q, prepared.actor, request.projectId);
+      const target = await registry.lockCurrentTarget(request);
+      const binding = await registry.bindOwnView(request);
+      const view = (await registry.readOwnView(request.viewId)).view;
+      await this.assertCognitiveNavigationObject(
+        q,
+        prepared,
+        request.projectId,
+        target,
+        parseBrowserNavigationState(view.state),
+      );
+      return this.cognitiveViewReceipt(
+        q,
+        prepared.actor,
+        request.commandId,
+        hash,
+        "bind-cognitive-view",
+        view,
+        binding,
+        request.now,
+      );
+    });
+  }
+  async readCognitiveAppView(
+    access: PlatformActor,
+    input: { viewId: string },
+  ): Promise<CognitiveAppViewMetadata> {
+    const viewId = input.viewId;
+    requireId(viewId, "窗口标识");
+    const prepared = await this.prepareCognitiveActor(access, true);
+    return this.transaction(async (q) => {
+      const metadata = await this.cognitiveRegistry(
+        q,
+        prepared.actor,
+      ).readOwnView(viewId);
+      await this.assertProjectReader(
+        q,
+        prepared.actor,
+        metadata.view.workspaceId,
+      );
+      return metadata;
+    }, "read");
+  }
+  async changeCognitiveAppView(
+    access: PlatformActor,
+    input: CognitiveAppViewReadRequest & {
+      commandId: string;
+      state?: BrowserNavigationState;
+      close?: true;
+      now?: string;
+    },
+  ): Promise<CognitiveAppViewMutationResult> {
+    const {
+      commandId,
+      viewId,
+      expectedViewRevision,
+      expectedBindingRevision,
+      close,
+    } = input;
+    const now = input.now ?? new Date().toISOString();
+    requireId(commandId, "操作标识");
+    requireId(viewId, "窗口标识");
+    if (
+      (close !== undefined && close !== true) ||
+      !!close === (input.state !== undefined) ||
+      ![expectedViewRevision, expectedBindingRevision].every(
+        (r) => Number.isSafeInteger(r) && r > 0 && r < Number.MAX_SAFE_INTEGER,
+      ) ||
+      typeof now !== "string" ||
+      now.length > 40 ||
+      !Number.isFinite(Date.parse(now))
+    )
+      throw new PlatformStorageError("invalid", "领域窗口操作无效。");
+    let state: BrowserNavigationState | undefined;
+    try {
+      state =
+        input.state === undefined
+          ? undefined
+          : parseBrowserNavigationState(input.state);
+    } catch {
+      throw new PlatformStorageError(
+        "invalid",
+        "窗口只能保存有界导航，不得保存正文或草稿。",
+      );
+    }
+    const request = {
+      commandId,
+      viewId,
+      expectedViewRevision,
+      expectedBindingRevision,
+      close,
+      state,
+      now,
+    };
+    const prepared = await this.prepareCognitiveActor(access, true),
+      action = close ? "close-cognitive-view" : "save-cognitive-view";
+    const hash = this.cognitiveViewHash(prepared.domainActor, action, {
+      ...request,
+      now: undefined,
+    });
+    return this.transaction(async (q) => {
+      const registry = this.cognitiveRegistry(q, prepared.actor),
+        before = await registry.readOwnView(viewId);
+      await this.assertProjectReader(
+        q,
+        prepared.actor,
+        before.view.workspaceId,
+      );
+      const earlier = await this.replay(q, prepared.actor, commandId, hash);
+      if (earlier !== null)
+        return {
+          receipt: this.parseCognitiveViewReceipt(earlier),
+          replayed: true,
+        };
+      let target: CognitiveAppTargetSnapshot | undefined;
+      if (state !== undefined) {
+        await this.assertMember(q, prepared.actor, before.view.workspaceId);
+        if (!before.binding)
+          throw new PlatformStorageError("conflict", "领域窗口尚未绑定。");
+        target = await registry.lockCurrentTarget(before.binding);
+      }
+      const result = await registry.changeOwnView(request, target);
+      if (state !== undefined)
+        await this.assertCognitiveNavigationObject(
+          q,
+          prepared,
+          before.view.workspaceId,
+          target!,
+          state,
+        );
+      return this.cognitiveViewReceipt(
+        q,
+        prepared.actor,
+        commandId,
+        hash,
+        action,
+        result.view,
+        result.binding,
+        now,
+      );
+    });
+  }
+  async prepareCognitiveAppUiRead(
+    access: PlatformActor,
+    input: CognitiveAppViewReadRequest,
+  ): Promise<PreparedCognitiveAppUiRead> {
+    const { viewId, expectedViewRevision, expectedBindingRevision } = input;
+    requireId(viewId, "窗口标识");
+    if (
+      ![expectedViewRevision, expectedBindingRevision].every(
+        (r) => Number.isSafeInteger(r) && r > 0 && r < Number.MAX_SAFE_INTEGER,
+      )
+    )
+      throw new PlatformStorageError("invalid", "领域窗口读取修订无效。");
+    const prepared = await this.prepareCognitiveActor(access, true);
+    return this.transaction(async (q) => {
+      const registry = this.cognitiveRegistry(q, prepared.actor),
+        before = await registry.readOwnView(viewId);
+      await this.assertMember(q, prepared.actor, before.view.workspaceId);
+      if (!before.binding)
+        throw new PlatformStorageError("conflict", "领域窗口尚未绑定。");
+      const target = await registry.lockCurrentTarget(before.binding);
+      const frame = await registry.readOwnViewForFrame(
+        { viewId, expectedViewRevision, expectedBindingRevision },
+        target,
+      );
+      await this.assertCognitiveNavigationObject(
+        q,
+        prepared,
+        before.view.workspaceId,
+        target,
+        parseBrowserNavigationState(frame.view.state),
+      );
+      return { actor: prepared.domainActor, target, ...frame };
     });
   }
 
@@ -12059,6 +12529,31 @@ export class PlatformStore {
     }, "read");
   }
 
+  /** Hold the actual view before checking its binding so a concurrent cognitive
+   * bind cannot slip between this check and a legacy state/close mutation. */
+  private async assertLegacyViewMutation(
+    q: Query,
+    actor: ResolvedActor,
+    viewId: string,
+  ) {
+    await q.all(
+      `SELECT view_id FROM app_view_instances WHERE tenant_id=? AND owner_principal_id=? AND view_id=?${this.backend.kind === "postgres" ? " FOR UPDATE" : ""}`,
+      [actor.tenantId, actor.principalId, viewId],
+    );
+    if (
+      (
+        await q.all(
+          "SELECT 1 AS present FROM cognitive_app_view_bindings WHERE tenant_id=? AND view_id=?",
+          [actor.tenantId, viewId],
+        )
+      ).length
+    )
+      throw new PlatformStorageError(
+        "forbidden",
+        "领域窗口必须通过精确绑定修订的认知应用接口修改。",
+      );
+  }
+
   async launchAppView(
     access: PlatformActor,
     request: {
@@ -12094,6 +12589,8 @@ export class PlatformStore {
         request.appId,
         request.packageVersion,
       );
+      const earlier = await this.replay(q, actor, request.commandId, hash);
+      await this.cognitiveRegistry(q, actor).lockOwnViewCapacity();
       if (this.backend.kind === "postgres")
         await q.all(
           "SELECT pg_advisory_xact_lock(hashtextextended(?, 0)) AS locked",
@@ -12101,11 +12598,9 @@ export class PlatformStore {
             `${actor.tenantId}:${actor.principalId}:${request.projectId}:${request.appId}:${request.packageVersion}`,
           ],
         );
-      const earlier = await this.replay(q, actor, request.commandId, hash);
-      if (earlier) return appView(await this.viewRow(q, actor, earlier));
       const existing = (
         await q.all<AppViewRow & Row>(
-          "SELECT view_id,project_id,app_id,package_version,state_json,revision,status,created_at,updated_at FROM app_view_instances WHERE tenant_id=? AND owner_principal_id=? AND project_id=? AND app_id=? AND package_version=?",
+          `SELECT view_id,project_id,app_id,package_version,state_json,revision,status,created_at,updated_at FROM app_view_instances WHERE tenant_id=? AND owner_principal_id=? AND project_id=? AND app_id=? AND package_version=?${this.backend.kind === "postgres" ? " FOR UPDATE" : ""}`,
           [
             actor.tenantId,
             actor.principalId,
@@ -12115,6 +12610,9 @@ export class PlatformStore {
           ],
         )
       )[0];
+      if (existing)
+        await this.assertLegacyViewMutation(q, actor, existing.view_id);
+      if (earlier) return appView(await this.viewRow(q, actor, earlier));
       let viewId: string;
       if (existing) {
         viewId = existing.view_id;
@@ -12214,6 +12712,7 @@ export class PlatformStore {
           ? undefined
           : viewNavigationState(row.app_id, request.state);
       const earlier = await this.replay(q, actor, request.commandId, hash);
+      await this.assertLegacyViewMutation(q, actor, request.viewId);
       if (earlier) return appView(await this.viewRow(q, actor, earlier));
       if (
         row.status !== "open" ||

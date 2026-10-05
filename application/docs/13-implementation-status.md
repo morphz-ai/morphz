@@ -1,5 +1,46 @@
 # 桌面能力实施记录
 
+## 2026-10-05 第三方认知应用：窗口生命周期与精确界面读取
+
+实际 Store 复用既有 view／binding／UI 安装关系，提供独立 launch、bind、
+read、save／close 与精确界面读取门；双 CAS 固定窗口和保存方，切换保存方
+原子清空导航，旧请求不改绑新目标。导航只保存有界原件／opaque 版本与
+视图标识，不保存正文或草稿。原命令重放返回固定三字段原回执，不制造当前
+窗口状态；撤销许可后可关闭自己的窗口，但不能继续读取界面或保存导航。
+旧 UI-only 修改不能越过真实绑定锁。无 GUI 的真实 schema discovery 不
+以界面或连接为前提，仍核本人许可、项目和 Human／Agent 持久来源。
+
+UiPackageService 的新 purpose-specific 读取临时能力固定真实窗口、
+binding、Store 原件和字节修订；实际读取前后再核当前授权，并验证精确
+SHA／元数据／fatal UTF-8。获权 B 能读取 A 安装的精确 cognitive GUI，
+不放宽旧 installedBy-only read、不复制字节、不暴露安装者、地址或凭据。
+私有读取能力成功、失败均回收。
+
+Root 全文审查新增生产链和测试，独立 reviewer 复核字节授权时点；Root
+正式十八文件 396/396，实际 SQLite／PostgreSQL、零失败／跳过／取消。
+日志 `/tmp/morphz-cognitive-ui-view-stage-ROOT-FROZEN-oct05.log`。
+其中 10 项使用真实 Managed Store／持久字节；另外 28 项是实际 Platform
+关系与明确 Runtime authority／UI 字节行 fixture，不称真实 Runtime 验收。
+缺端口首次 RED 0 通过／4 失败；字节 Service 首次 RED 0 通过／8 失败，
+分别见 `/tmp/morphz-platform-ui-view-stage.vlqXNl/FIRST-RED.log` 与
+`/tmp/morphz-cognitive-ui-view-service-ROOT-FIRST-RED-oct05.log`。
+本阶段文件无类型错误；并行共享 Service 测试仍在开发中，未把当时全工程
+typecheck 计为通过。实际 Client channel／渲染、公共入口和原 App 仍未接线。
+
+## 2026-10-05 第三方认知应用：独立 Browser SDK 与有界消息协议
+
+独立 SDK 新增公开 browser 入口及纯消息协议，固定 opaque origin／parent
+source／channel、精确 authority／view binding、16 项 pending 与绝对 30 秒
+期限；导航保留原样 opaque 版本，不传正文／身份／地址／凭据。退休旧 channel
+会拒绝迟到响应并清理监听；重复 ready 的同一完整 schema 不因对象键顺序
+不同而退休。公开请求先做纯 JSON guard 与独立快照，不调用 caller getter。
+
+Root 独立正式四文件 53/53、零跳过，Standalone SDK 构建通过；实际离线
+tarball consumer 与 Chromium opaque 沙箱使用打包后的公开入口。日志
+`/tmp/morphz-cognitive-browser-ROOT-FINAL-oct05.log` 与
+`/tmp/morphz-cognitive-browser-ROOT-BUILD-oct05.log`。未发布 npm；Browser
+消息测试不替代真实 Host 授权或原窗口验收，宿主接线仍在进行。
+
 ## 2026-10-05 第三方认知应用：实际 GUI 字节安装与精确定义
 
 可信 UiPackageService 现安装并读回实际 Managed Store HTML 版本，检查

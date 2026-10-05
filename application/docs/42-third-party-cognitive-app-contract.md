@@ -1,6 +1,6 @@
 # 第三方认知应用接入契约
 
-日期：2026-10-05。状态：纯协议、独立 SDK 包、v11 双后端迁移及内部注册表／命令账本已验证；共享网关尚未接通。
+日期：2026-10-05。状态：独立协议／Browser SDK、v11 双后端关系、内部服务网关、窗口与精确界面字节门已验证；公共宿主接线与真实跨宿主闭环尚未完成。
 这是 Morphz Application 的实验接入版本，不是 Runtime 或 HNS 的新标准。
 文档存在不表示独立 SDK、服务网关或跨宿主闭环已经交付；实际完成项见
 [实施记录](./13-implementation-status.md)。
@@ -275,12 +275,13 @@ Service adapter。示例通过打包后的公开导出接入，自己的数据�
 
 当前纯协议包 `@morphz/cognitive-app-sdk@0.1.0` 已可独立严格构建、prepack
 为 ESM＋声明、本地 tgz 安装；仅 Zod 4.5.4 为运行依赖。仓库外 consumer
-实际安装、导入三个公开入口及严格类型消费已验证，包不含 Host／Node／
+实际安装、导入四个公开入口及严格类型消费已验证，包不含 Host／Node／
 数据库／浏览器私有实现或凭据。标准声明库使用 ES2023＋DOM（Zod 引用
 标准 URL），不宣称缺少全局类型的任意配置通过。包仍 private、防误发布，
 尚未发布 npm；独立 headless 作者 Service 已仅依赖该 tarball 实际测试。
-可选 browser bridge、GUI 和完整共享入口另阶段实现，不以作者独立测试
-替代 Host／真实 Agent 的接入验收。
+可选 browser bridge 已通过实际打包消费与 Chromium opaque 沙箱测试，
+消息有界并固定当前绑定；GUI 宿主接线和完整共享入口仍在进行，不以作者
+独立测试或 Browser 消息测试替代 Host／真实 Agent 的接入验收。
 
 ## Platform 生产数据模型
 
@@ -335,8 +336,14 @@ GUI 安装模型（Host 安装链已验证，客户端未接线）：复用既�
 另一份业务正文；业务读写仍走同一 Domain gateway。旧 UI-only 权限不改。
 安装入口同步捕获整个 bounded canonical 声明，Schema 子树也脱离 caller
 引用；首次异步身份校验期间的外部修改不改变实际安装定义。
-Host 安装链的实际双后端验证见实施记录；它不表示授予他人的精确只读字节能力、
-窗口 binding／channel 生命周期或实际客户端渲染已经验收。
+Host 安装链、独立授予获权用户的精确字节读取门与窗口 binding 已通过
+实际双后端测试。窗口 mutation 必须显式携带 view／binding 双 CAS，原命令
+重放只返回固定的 viewId／viewRevision／bindingRevision 原回执，不混入
+当前导航；切换保存方清空导航，关闭窗口不撤销已接受的 Runtime 工作。
+实际字节读取使用只存在于 Host 的短期固定用途能力，读取前后核本人、
+项目、当前许可／连接与精确版本；公开结果不含安装者或私有 Store 引用。
+既有 installedBy-only UI 读取权限不变。实际 Client channel／渲染及原窗口
+仍需接线验收，不能由 Store 测试推定已经交付。
 
 definition 是一份有界不可变声明，不是全工作空间 JSON。关系不保存作者
 正文、未发送草稿、任意业务数据库快照或凭据。command 不保留原业务参数副本；
@@ -386,8 +393,9 @@ commands（副作用受理、发送 fence、未知结果、回执投影、退休
 Store 实际权限下的 admission／dispatch／原回执恢复和 begin／complete
 项目退役保护已组合验证；开放命令和 committed／pending 目录都阻挡退役。
 入口同步捕获有界参数／资源／目标快照，避免异步期间 caller 改变已核字节。
-实际 Store 目录通知、网络 Gateway 和独立 objects/read 仍须接线，不能把
-内部 markProjected／hasOpenCommands 存在当成客户端链路已经完成。
+实际 Store 目录通知、内部网络 Gateway 和独立 objects/read 已组合通过
+实际双后端与独立作者服务测试；公共共享 Application／HTTP／IPC／Agent
+入口尚未登记，不能把内部组件通过当成客户端链路已经完成。
 
 Host 的 CognitiveAppGateway 负责固定连接、网络安全、实际 wire 校验和
 回执核验，只通过 Platform typed port 调用上述职责；由共享应用 Host 与
@@ -399,7 +407,7 @@ Scheduled task-run 即使带 sourceInputId，也仍是 task-run；来源分类�
 持久 task-run evidence／resolved actor，不能仅按 inputId 是否为空猜测。
 现 PlatformStore 已提供真实身份、本人许可和逐资源操作解析；结果是当前
 策略快照，不可跨事务当成发送许可。Host-only 连接证明尚不注册在公开
-Client、Agent 或 iframe 接口，后续实际网关先认证固定 describe 再构造。
+Client、Agent 或 iframe 接口；内部实际网关先认证固定 describe 再构造。
 本人目录当前只列已同意的版本，尚不是安装管理／安装前发现的全部入口。
 第三方原件核验组合进已有 Host verifier，不替换内置核验，更不能一律放行。
 现有 active-instance 新业务写规则保持，停用后的目录补齐只允许确切持久

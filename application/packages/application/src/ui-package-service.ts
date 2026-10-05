@@ -1,11 +1,15 @@
 import { createHash, randomBytes } from "node:crypto";
+import { z } from "zod";
 import {
   applicationManifestSchema,
   uiPackageHeader,
   type ApplicationManifest,
 } from "../../core/src/applications.js";
 import { DomainError } from "../../core/src/model.js";
-import { ManagedArtifactStore } from "../../managed-artifact-store/src/store.js";
+import {
+  ManagedArtifactStore,
+  type StoreAuthorizationRequest,
+} from "../../managed-artifact-store/src/store.js";
 import type { S3ByteLocation } from "../../managed-artifact-store/src/s3-bytes.js";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { parseCognitiveAppDefinition } from "../../cognitive-app-sdk/src/protocol.js";
@@ -18,6 +22,7 @@ import {
   type PlatformActor,
   type PlatformAuthorityVerifier,
   type PlatformStore,
+  type PreparedCognitiveAppUiRead,
 } from "../../platform/src/store.js";
 
 const maximumBytes = 1_000_000;
@@ -26,8 +31,30 @@ type Scope = {
   actor: PlatformActor;
   artifactId: string;
   operation: "read" | "write";
-  assertAccess?: () => Promise<void>;
-};
+} & (
+  | { purpose: "installer-owned"; assertAccess?: () => Promise<void> }
+  | {
+      purpose: "cognitive-view-read";
+      operation: "read";
+      artifactRevision: number;
+      authorizedByteOwner: (actualViewer: string) => Promise<string>;
+    }
+);
+const viewReadShape = z
+  .object({
+    viewId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/),
+    expectedViewRevision: z
+      .number()
+      .int()
+      .min(1)
+      .max(Number.MAX_SAFE_INTEGER - 1),
+    expectedBindingRevision: z
+      .number()
+      .int()
+      .min(1)
+      .max(Number.MAX_SAFE_INTEGER - 1),
+  })
+  .strict();
 
 /** Executable UI bytes are private Store versions. Platform holds the
  * installation, installer, bounded declaration and immutable Store reference;
@@ -64,11 +91,7 @@ export class UiPackageService {
     const authorizer = {
       authorize: async (
         credential: string,
-        operation: {
-          storeId: string;
-          artifactId: string;
-          operation: "read" | "write" | "delete";
-        },
+        operation: StoreAuthorizationRequest,
       ) => {
         const scope = scopes.get(credential);
         if (
@@ -78,6 +101,15 @@ export class UiPackageService {
           operation.operation !== scope.operation
         )
           throw new DomainError("forbidden", "应用包 Store 调用未获授权。");
+        if (
+          scope.purpose === "cognitive-view-read" &&
+          (operation.operation !== "read" ||
+            operation.revision !== scope.artifactRevision)
+        )
+          throw new DomainError(
+            "forbidden",
+            "认知窗口只允许读取固定界面版本。",
+          );
         const actor = await request.verifier.resolveActor(scope.actor);
         if (
           !actor ||
@@ -85,6 +117,13 @@ export class UiPackageService {
           actor.kind !== "human"
         )
           throw new DomainError("forbidden", "应用包操作身份已失效。");
+        if (scope.purpose === "cognitive-view-read") {
+          // Only a private, one-read scope minted after the actual window gate
+          // may use an installer's retained immutable bytes. This is not a
+          // caller owner parameter or a new grant on the generic Store API.
+          const byteOwner = await scope.authorizedByteOwner(actor.principalId);
+          return { tenantId: request.tenantId, principalId: byteOwner };
+        }
         await scope.assertAccess?.();
         return { tenantId: request.tenantId, principalId: actor.principalId };
       },
@@ -139,7 +178,13 @@ export class UiPackageService {
     assertAccess?: () => Promise<void>,
   ) {
     const credential = randomBytes(32).toString("hex");
-    this.scopes.set(credential, { actor, artifactId, operation, assertAccess });
+    this.scopes.set(credential, {
+      purpose: "installer-owned",
+      actor,
+      artifactId,
+      operation,
+      assertAccess,
+    });
     try {
       return await work(credential);
     } finally {
@@ -330,6 +375,120 @@ export class UiPackageService {
       ...entry.header,
       ui: { ...entry.header.ui, html: Buffer.from(bytes).toString("utf8") },
     });
+  }
+
+  /** Host-only bound-window read. The requester never names a byte owner,
+   * package, service or address. Human ownership/current consent and exact
+   * view/binding CAS are checked by the real Platform before, during and after
+   * the actual immutable Store read. Legacy installer-only read is unchanged. */
+  async readCognitive(actor: PlatformActor, input: unknown) {
+    const access = { credential: actor.credential };
+    let request: z.infer<typeof viewReadShape>;
+    try {
+      request = viewReadShape.parse(
+        JSON.parse(new TextDecoder().decode(canonicalJsonBytes(input))),
+      );
+    } catch {
+      throw new DomainError("invalid", "认知窗口读取请求无效。");
+    }
+    const prepared = await this.platform.prepareCognitiveAppUiRead(
+      access,
+      request,
+    );
+    const { target, uiPackage: entry } = prepared;
+    if (
+      prepared.actor.kind !== "human" ||
+      prepared.actor.tenantId !== this.tenantId ||
+      entry.storeId !== this.store.storeId ||
+      entry.artifactId !==
+        this.artifactId(
+          entry.installedByPrincipalId,
+          target.appId,
+          target.version,
+        )
+    )
+      throw new DomainError("forbidden", "认知窗口的固定界面存储引用不可用。");
+    const original = Buffer.from(canonicalJsonBytes(prepared));
+    const assertAccess = async (): Promise<PreparedCognitiveAppUiRead> => {
+      const current = await this.platform.prepareCognitiveAppUiRead(
+        access,
+        request,
+      );
+      if (!original.equals(Buffer.from(canonicalJsonBytes(current))))
+        throw new DomainError(
+          "conflict",
+          "认知窗口授权、绑定或精确版本已变化。",
+        );
+      return current;
+    };
+    const credential = randomBytes(32).toString("hex");
+    this.scopes.set(credential, {
+      purpose: "cognitive-view-read",
+      actor: access,
+      artifactId: entry.artifactId,
+      operation: "read",
+      artifactRevision: entry.artifactRevision,
+      authorizedByteOwner: async (actualViewer) => {
+        if (actualViewer !== prepared.actor.principalId)
+          throw new DomainError("forbidden", "认知窗口读取者身份已变化。");
+        const current = await assertAccess();
+        return current.uiPackage.installedByPrincipalId;
+      },
+    });
+    try {
+      const { version: stored, bytes } = await this.store.readRange({
+        credential,
+        artifactId: entry.artifactId,
+        revision: entry.artifactRevision,
+      });
+      // Re-use the same complete byte/metadata validator. The proof is private
+      // and discarded; it neither installs anything nor grants UI permissions.
+      verifyCognitiveAppUiBytes({
+        tenantId: this.tenantId,
+        principalId: entry.installedByPrincipalId,
+        definition: target.definition,
+        entry,
+        stored,
+        bytes,
+      });
+      const html = new TextDecoder("utf-8", {
+        fatal: true,
+        ignoreBOM: true,
+      }).decode(bytes);
+      const manifest = applicationManifestSchema.parse({
+        ...entry.header,
+        ui: { ...entry.header.ui, html },
+      });
+      await assertAccess();
+      const {
+        appId,
+        version,
+        definitionHash,
+        instanceId,
+        serviceId,
+        dataAuthorityId,
+      } = target;
+      // Explicit public projection: the actual actor, byte owner/reference and
+      // private gate snapshot never cross the Client/guest boundary.
+      return {
+        manifest,
+        definition: target.definition,
+        authority: {
+          appId,
+          version,
+          definitionHash,
+          instanceId,
+          serviceId,
+          dataAuthorityId,
+        },
+        view: prepared.view,
+        binding: prepared.binding,
+        grantRevision: target.grantRevision,
+        connectionRevision: target.connectionRevision,
+      };
+    } finally {
+      this.scopes.delete(credential);
+    }
   }
 
   async close() {

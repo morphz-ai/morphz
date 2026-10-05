@@ -7,8 +7,20 @@ import {
 import { canonicalJsonBytes } from "../../cognitive-app-sdk/src/domain-wire.js";
 import { safeInteger, type SqlQuery } from "../../storage/src/sql.js";
 import { ensureApplicationInstallation } from "./application-installation.js";
-import { uiPackageHeaderSchema } from "../../core/src/applications.js";
-import { readCognitiveAppUiByteProof } from "./cognitive-app-ui-proof.js";
+import {
+  applicationInstanceSchema,
+  uiPackageHeaderSchema,
+  type ApplicationInstance,
+  type UiPackageHeader,
+} from "../../core/src/applications.js";
+import {
+  readCognitiveAppUiByteProof,
+  parseCognitiveAppUiHeader,
+} from "./cognitive-app-ui-proof.js";
+import {
+  parseBrowserNavigationState,
+  type BrowserNavigationState,
+} from "../../cognitive-app-sdk/src/browser-wire.js";
 
 /** Platform-internal, scoped to the caller's existing transaction. The Store
  * resolves real Human/Runtime identity before opening that transaction and
@@ -141,6 +153,39 @@ export type CognitiveAppViewBindingRequest = {
   expectedViewRevision: number;
   expectedBindingRevision: number;
   now: string;
+};
+export type CognitiveAppViewMetadata = {
+  view: ApplicationInstance;
+  binding: CognitiveAppViewBinding | null;
+};
+/** Host-private exact installed-byte reference, never an author/renderer owner selector. */
+export type CognitiveAppUiPackage = {
+  appId: string;
+  version: string;
+  installedByPrincipalId: string;
+  header: UiPackageHeader;
+  storeId: string;
+  artifactId: string;
+  artifactRevision: number;
+  sha256: string;
+  byteLength: number;
+  installedAt: string;
+};
+export type CognitiveAppViewCas = {
+  viewId: string;
+  expectedViewRevision: number;
+  expectedBindingRevision: number;
+};
+type ViewRow = {
+  view_id: string;
+  project_id: string;
+  app_id: string;
+  package_version: string;
+  state_json: string;
+  revision: number | string;
+  status: "open" | "closed";
+  created_at: string;
+  updated_at: string;
 };
 
 type VersionRow = {
@@ -952,83 +997,30 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
   ): Promise<CognitiveAppViewBinding> {
     id(request.viewId);
     id(request.projectId);
-    revision(request.expectedViewRevision);
-    revision(request.expectedBindingRevision, true);
     time(request.now);
     const target = await lockCurrentTarget(request);
     if (target.definition.ui === null)
-      fail(
+      return fail(
         "invalid",
         "Headless 应用没有经核验的界面，不能凭旧 UI 窗口创建领域绑定。",
       );
-    const view = (
-      await q.all<{
-        view_id: string;
-        project_id: string;
-        app_id: string;
-        package_version: string;
-        revision: number | string;
-        status: string;
-      }>(
-        `SELECT view_id,project_id,app_id,package_version,revision,status FROM app_view_instances WHERE tenant_id=? AND owner_principal_id=? AND view_id=?${exclusive}`,
-        [tenantId, principalId, request.viewId],
-      )
-    )[0];
-    if (!view) return fail("not_found", "应用窗口不存在或不属于本人。");
+    const row = await ownViewRow(request.viewId, exclusive),
+      binding = await ownBinding(row, exclusive);
     if (
-      view.project_id !== request.projectId ||
-      view.app_id !== request.appId ||
-      view.package_version !== request.version
+      row.project_id !== request.projectId ||
+      row.app_id !== request.appId ||
+      row.package_version !== request.version
     )
-      fail("conflict", "窗口不属于这个精确项目与应用版本。");
+      return fail("conflict", "窗口不属于这个精确项目与应用版本。");
+    viewCas(row, binding, request);
+    if (row.status !== "open") return fail("conflict", "应用窗口已关闭。");
+    await uiPackageForTarget(target);
     if (
-      view.status !== "open" ||
-      safeInteger(view.revision, "应用窗口修订") !==
-        request.expectedViewRevision
+      binding?.connectionId === target.connectionId &&
+      binding.instanceId === target.instanceId
     )
-      fail("conflict", "应用窗口已关闭或修订变化。");
-    const current = (
-      await q.all<BindingRow>(
-        `SELECT view_id,owner_principal_id,project_id,app_id,version,instance_id,connection_id,revision,created_at,updated_at FROM cognitive_app_view_bindings WHERE tenant_id=? AND view_id=?${exclusive}`,
-        [tenantId, request.viewId],
-      )
-    )[0];
-    if (
-      (current ? safeInteger(current.revision, "窗口绑定修订") : 0) !==
-      request.expectedBindingRevision
-    )
-      fail("conflict", "窗口保存方绑定已变化。");
-    if (
-      current &&
-      (current.owner_principal_id !== principalId ||
-        current.project_id !== request.projectId ||
-        current.app_id !== request.appId ||
-        current.version !== request.version)
-    )
-      fail("conflict", "窗口绑定的不可变所有权不一致。");
-    const dto = (
-      row: BindingRow,
-      viewRevision: number,
-    ): CognitiveAppViewBinding => ({
-      appId: row.app_id,
-      version: row.version,
-      instanceId: row.instance_id,
-      serviceId: target.serviceId,
-      dataAuthorityId: target.dataAuthorityId,
-      viewId: row.view_id,
-      projectId: row.project_id,
-      connectionId: row.connection_id,
-      revision: safeInteger(row.revision, "窗口绑定修订"),
-      viewRevision,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    });
-    if (
-      current?.connection_id === target.connectionId &&
-      current.instance_id === target.instanceId
-    )
-      return dto(current, request.expectedViewRevision);
-    if (current) {
+      return binding;
+    if (binding) {
       const changed = await q.change(
         "UPDATE cognitive_app_view_bindings SET instance_id=?,connection_id=?,revision=revision+1,updated_at=? WHERE tenant_id=? AND view_id=? AND owner_principal_id=? AND revision=?",
         [
@@ -1041,17 +1033,17 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
           request.expectedBindingRevision,
         ],
       );
-      if (changed !== 1) fail("conflict", "窗口绑定修订冲突。");
+      if (changed !== 1) return fail("conflict", "窗口绑定修订冲突。");
     } else
       await q.change(
         "INSERT INTO cognitive_app_view_bindings VALUES(?,?,?,?,?,?,?,?,1,?,?)",
         [
           tenantId,
-          request.viewId,
+          row.view_id,
           principalId,
-          request.projectId,
-          request.appId,
-          request.version,
+          row.project_id,
+          row.app_id,
+          row.package_version,
           target.instanceId,
           target.connectionId,
           request.now,
@@ -1059,26 +1051,401 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
         ],
       );
     const changed = await q.change(
-      "UPDATE app_view_instances SET state_json='{}',revision=revision+1,updated_at=? WHERE tenant_id=? AND view_id=? AND owner_principal_id=? AND project_id=? AND app_id=? AND package_version=? AND status='open' AND revision=?",
+      "UPDATE app_view_instances SET state_json='{}',revision=revision+1,updated_at=? WHERE tenant_id=? AND view_id=? AND owner_principal_id=? AND revision=? AND status='open'",
       [
         request.now,
         tenantId,
         request.viewId,
         principalId,
-        request.projectId,
-        request.appId,
-        request.version,
         request.expectedViewRevision,
       ],
     );
-    if (changed !== 1) fail("conflict", "窗口导航清空修订冲突。");
+    if (changed !== 1) return fail("conflict", "窗口导航清空修订冲突。");
+    return (await readOwnView(request.viewId)).binding!;
+  }
+
+  const viewColumns =
+    "view_id,project_id,app_id,package_version,state_json,revision,status,created_at,updated_at";
+  const bindingColumns =
+    "view_id,owner_principal_id,project_id,app_id,version,instance_id,connection_id,revision,created_at,updated_at";
+  function viewDto(row: ViewRow): ApplicationInstance {
+    try {
+      return applicationInstanceSchema.parse({
+        id: row.view_id,
+        workspaceId: row.project_id,
+        applicationId: row.app_id,
+        applicationVersion: row.package_version,
+        state: JSON.parse(row.state_json),
+        revision: safeInteger(row.revision, "应用窗口修订"),
+        status: row.status,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      });
+    } catch {
+      return fail("conflict", "应用窗口的已保存元数据无效。");
+    }
+  }
+  async function ownViewRow(viewId: string, lock = ""): Promise<ViewRow> {
+    id(viewId);
     const row = (
-      await q.all<BindingRow>(
-        "SELECT view_id,owner_principal_id,project_id,app_id,version,instance_id,connection_id,revision,created_at,updated_at FROM cognitive_app_view_bindings WHERE tenant_id=? AND view_id=?",
-        [tenantId, request.viewId],
+      await q.all<ViewRow>(
+        `SELECT ${viewColumns} FROM app_view_instances WHERE tenant_id=? AND owner_principal_id=? AND view_id=?${lock}`,
+        [tenantId, principalId, viewId],
       )
-    )[0]!;
-    return dto(row, request.expectedViewRevision + 1);
+    )[0];
+    if (!row) return fail("not_found", "应用窗口不存在或不属于本人。");
+    return row;
+  }
+  async function ownBinding(
+    row: ViewRow,
+    lock = "",
+  ): Promise<CognitiveAppViewBinding | null> {
+    const binding = (
+      await q.all<BindingRow>(
+        `SELECT ${bindingColumns} FROM cognitive_app_view_bindings WHERE tenant_id=? AND view_id=?${lock}`,
+        [tenantId, row.view_id],
+      )
+    )[0];
+    if (!binding) return null;
+    if (
+      binding.owner_principal_id !== principalId ||
+      binding.project_id !== row.project_id ||
+      binding.app_id !== row.app_id ||
+      binding.version !== row.package_version
+    )
+      return fail("conflict", "窗口绑定的不可变所有权不一致。");
+    const authority = (
+      await q.all<{ service_id: string; data_authority_id: string }>(
+        "SELECT service_id,data_authority_id FROM cognitive_app_authorities WHERE tenant_id=? AND app_id=? AND instance_id=?",
+        [tenantId, binding.app_id, binding.instance_id],
+      )
+    )[0];
+    if (!authority) return fail("conflict", "窗口的固定保存方不存在。");
+    return {
+      appId: binding.app_id,
+      version: binding.version,
+      instanceId: binding.instance_id,
+      serviceId: authority.service_id,
+      dataAuthorityId: authority.data_authority_id,
+      viewId: binding.view_id,
+      projectId: binding.project_id,
+      connectionId: binding.connection_id,
+      revision: safeInteger(binding.revision, "窗口绑定修订"),
+      viewRevision: safeInteger(row.revision, "窗口修订"),
+      createdAt: binding.created_at,
+      updatedAt: binding.updated_at,
+    };
+  }
+  /** Own metadata only, including closed/revoked windows; no byte or operation authority. */
+  async function readOwnView(
+    viewId: string,
+  ): Promise<CognitiveAppViewMetadata> {
+    const row = await ownViewRow(viewId);
+    const binding = await ownBinding(row),
+      view = viewDto(row);
+    if (binding) {
+      try {
+        view.state = parseBrowserNavigationState(view.state);
+      } catch {
+        return fail("conflict", "领域窗口不能包含正文或无效导航。");
+      }
+    }
+    return { view, binding };
+  }
+  async function uiPackageForTarget(
+    target: CognitiveAppTargetSnapshot,
+  ): Promise<CognitiveAppUiPackage> {
+    if (target.definition.ui === null)
+      return fail("invalid", "无界面应用不能打开领域窗口。");
+    const row = (
+      await q.all<{
+        app_id: string;
+        package_version: string;
+        installed_by_principal_id: string;
+        manifest_header: string;
+        store_id: string;
+        artifact_id: string;
+        artifact_revision: number | string;
+        sha256: string;
+        byte_length: number | string;
+        installed_at: string;
+      }>(
+        `SELECT app_id,package_version,installed_by_principal_id,manifest_header,store_id,artifact_id,artifact_revision,sha256,byte_length,installed_at FROM app_ui_packages WHERE tenant_id=? AND app_id=? AND package_version=?${shared}`,
+        [tenantId, target.appId, target.version],
+      )
+    )[0];
+    if (!row) return fail("not_found", "领域窗口的精确界面包不存在。");
+    const version = await exactVersion(target.appId, target.version);
+    try {
+      const header = parseCognitiveAppUiHeader(
+        target.definition,
+        JSON.parse(row.manifest_header),
+      );
+      if (
+        row.installed_by_principal_id !== version.installedByPrincipalId ||
+        row.sha256 !== target.definition.ui.sha256 ||
+        row.package_version !== target.definition.ui.packageVersion
+      )
+        return fail("conflict", "领域窗口的精确字节安装引用已变化。");
+      id(row.store_id);
+      id(row.artifact_id);
+      const artifactRevision = safeInteger(
+          row.artifact_revision,
+          "界面原件修订",
+        ),
+        byteLength = safeInteger(row.byte_length, "界面字节数");
+      if (artifactRevision < 1 || byteLength < 1 || byteLength > 1000000)
+        return fail("conflict", "界面字节引用范围无效。");
+      return {
+        appId: row.app_id,
+        version: row.package_version,
+        installedByPrincipalId: row.installed_by_principal_id,
+        header,
+        storeId: row.store_id,
+        artifactId: row.artifact_id,
+        artifactRevision,
+        sha256: row.sha256,
+        byteLength,
+        installedAt: row.installed_at,
+      };
+    } catch {
+      return fail("conflict", "领域界面包的已安装元数据无效。");
+    }
+  }
+  function viewCas(
+    row: ViewRow,
+    binding: CognitiveAppViewBinding | null,
+    request: CognitiveAppViewCas,
+    absentViewPremise = false,
+  ) {
+    revision(request.expectedViewRevision, absentViewPremise);
+    revision(request.expectedBindingRevision, true);
+    if (
+      safeInteger(row.revision, "窗口修订") !== request.expectedViewRevision ||
+      (binding?.revision ?? 0) !== request.expectedBindingRevision
+    )
+      fail("conflict", "应用窗口或保存方绑定已变化。");
+  }
+  function targetMatches(
+    row: ViewRow,
+    binding: CognitiveAppViewBinding | null,
+    target: CognitiveAppTargetSnapshot,
+  ) {
+    if (
+      !binding ||
+      row.app_id !== target.appId ||
+      row.package_version !== target.version ||
+      binding.connectionId !== target.connectionId ||
+      binding.instanceId !== target.instanceId ||
+      binding.serviceId !== target.serviceId ||
+      binding.dataAuthorityId !== target.dataAuthorityId
+    )
+      fail("conflict", "应用窗口已不属于本次精确保存方。");
+  }
+  /** Already-current target is locked first; this rechecks actual rows under
+   * locks and supplies only the exact stored UI reference, never HTML. */
+  async function readOwnViewForFrame(
+    request: CognitiveAppViewCas,
+    target: CognitiveAppTargetSnapshot,
+  ) {
+    const row = await ownViewRow(request.viewId, shared);
+    const binding = await ownBinding(row, shared);
+    viewCas(row, binding, request);
+    targetMatches(row, binding, target);
+    if (row.status !== "open") return fail("conflict", "应用窗口已关闭。");
+    let state: BrowserNavigationState;
+    try {
+      state = parseBrowserNavigationState(JSON.parse(row.state_json));
+    } catch {
+      return fail("conflict", "领域窗口不能读取正文或无效导航状态。");
+    }
+    const uiPackage = await uiPackageForTarget(target);
+    return { view: { ...viewDto(row), state }, binding: binding!, uiPackage };
+  }
+  async function launchOwnView(
+    request: CognitiveAppTargetRequest & {
+      viewId: string;
+      projectId: string;
+      expectedViewRevision: number;
+      expectedBindingRevision: number;
+      now: string;
+    },
+  ) {
+    id(request.viewId);
+    id(request.projectId);
+    revision(request.expectedViewRevision, true);
+    revision(request.expectedBindingRevision, true);
+    time(request.now);
+    const target = await lockCurrentTarget(request);
+    if (target.definition.ui === null)
+      return fail("invalid", "无界面应用不能打开领域窗口。");
+    // One owner has at most 100 open windows, including concurrent distinct tuples.
+    await lockOwnViewCapacity();
+    await advisory("view", [
+      principalId,
+      request.projectId,
+      request.appId,
+      request.version,
+    ]);
+    let row = (
+      await q.all<ViewRow>(
+        `SELECT ${viewColumns} FROM app_view_instances WHERE tenant_id=? AND owner_principal_id=? AND project_id=? AND app_id=? AND package_version=?${exclusive}`,
+        [
+          tenantId,
+          principalId,
+          request.projectId,
+          request.appId,
+          request.version,
+        ],
+      )
+    )[0];
+    let binding = row ? await ownBinding(row, exclusive) : null;
+    if (row) viewCas(row, binding, { ...request, viewId: row.view_id }, true);
+    else if (
+      request.expectedViewRevision !== 0 ||
+      request.expectedBindingRevision !== 0
+    )
+      return fail("conflict", "应用窗口尚不存在，不能复用旧修订。");
+    if (!row || row.status === "closed") {
+      const count = (
+        await q.all<{ count: number | string }>(
+          "SELECT COUNT(*) AS count FROM app_view_instances WHERE tenant_id=? AND owner_principal_id=? AND status='open'",
+          [tenantId, principalId],
+        )
+      )[0];
+      if (safeInteger(count?.count ?? 0, "窗口数量") >= 100)
+        return fail("conflict", "打开的应用窗口已达上限。");
+    }
+    const same =
+      binding?.connectionId === target.connectionId &&
+      binding.instanceId === target.instanceId;
+    if (!row) {
+      await q.change(
+        "INSERT INTO app_view_instances(tenant_id,view_id,owner_principal_id,project_id,app_id,package_version,state_json,revision,status,created_at,updated_at) VALUES(?,?,?,?,?,?,'{}',1,'open',?,?)",
+        [
+          tenantId,
+          request.viewId,
+          principalId,
+          request.projectId,
+          request.appId,
+          request.version,
+          request.now,
+          request.now,
+        ],
+      );
+      row = await ownViewRow(request.viewId);
+    } else if (!same || row.status === "closed") {
+      let state = "{}";
+      if (same) {
+        try {
+          state = JSON.stringify(
+            parseBrowserNavigationState(JSON.parse(row.state_json)),
+          );
+        } catch {
+          return fail("conflict", "领域窗口的保留导航无效。");
+        }
+      }
+      const changed = await q.change(
+        "UPDATE app_view_instances SET state_json=?,status='open',revision=revision+1,updated_at=? WHERE tenant_id=? AND owner_principal_id=? AND view_id=? AND revision=?",
+        [
+          state,
+          request.now,
+          tenantId,
+          principalId,
+          row.view_id,
+          request.expectedViewRevision,
+        ],
+      );
+      if (changed !== 1) return fail("conflict", "应用窗口修订冲突。");
+      row = await ownViewRow(row.view_id);
+    }
+    if (!same) {
+      if (binding) {
+        const changed = await q.change(
+          "UPDATE cognitive_app_view_bindings SET instance_id=?,connection_id=?,revision=revision+1,updated_at=? WHERE tenant_id=? AND owner_principal_id=? AND view_id=? AND revision=?",
+          [
+            target.instanceId,
+            target.connectionId,
+            request.now,
+            tenantId,
+            principalId,
+            row.view_id,
+            request.expectedBindingRevision,
+          ],
+        );
+        if (changed !== 1) return fail("conflict", "窗口绑定修订冲突。");
+      } else
+        await q.change(
+          "INSERT INTO cognitive_app_view_bindings VALUES(?,?,?,?,?,?,?,?,1,?,?)",
+          [
+            tenantId,
+            row.view_id,
+            principalId,
+            row.project_id,
+            row.app_id,
+            row.package_version,
+            target.instanceId,
+            target.connectionId,
+            request.now,
+            request.now,
+          ],
+        );
+    }
+    await uiPackageForTarget(target);
+    const metadata = await readOwnView(row.view_id);
+    return { view: metadata.view, binding: metadata.binding!, target };
+  }
+  async function changeOwnView(
+    request: CognitiveAppViewCas & {
+      state?: BrowserNavigationState;
+      close?: true;
+      now: string;
+    },
+    target?: CognitiveAppTargetSnapshot,
+  ) {
+    time(request.now);
+    if (!!request.close === (request.state !== undefined))
+      return fail("invalid", "领域窗口操作无效。");
+    let state: BrowserNavigationState | undefined;
+    try {
+      state =
+        request.state === undefined
+          ? undefined
+          : parseBrowserNavigationState(request.state);
+    } catch {
+      return fail("invalid", "领域窗口只能保存有界导航。");
+    }
+    const row = await ownViewRow(request.viewId, exclusive),
+      binding = await ownBinding(row, exclusive);
+    viewCas(row, binding, request);
+    if (!binding || row.status !== "open")
+      return fail("conflict", "领域窗口未绑定或已关闭。");
+    if (state !== undefined) {
+      if (!target) return fail("invalid", "保存导航缺少当前精确保存方。");
+      targetMatches(row, binding, target);
+      await uiPackageForTarget(target);
+    }
+    const changed = await q.change(
+      "UPDATE app_view_instances SET state_json=?,status=?,revision=revision+1,updated_at=? WHERE tenant_id=? AND owner_principal_id=? AND view_id=? AND revision=? AND status='open'",
+      [
+        state === undefined ? row.state_json : JSON.stringify(state),
+        request.close ? "closed" : "open",
+        request.now,
+        tenantId,
+        principalId,
+        row.view_id,
+        request.expectedViewRevision,
+      ],
+    );
+    if (changed !== 1) return fail("conflict", "领域窗口修订冲突。");
+    return {
+      view: viewDto(await ownViewRow(row.view_id)),
+      binding: { ...binding, viewRevision: request.expectedViewRevision + 1 },
+    };
+  }
+  /** Shared with legacy launch solely to serialize the same owner capacity. */
+  async function lockOwnViewCapacity() {
+    await advisory("view-owner", [principalId]);
   }
 
   /** Host-only Human management metadata. Disabling an owned connection must
@@ -1110,5 +1477,11 @@ export function createCognitiveAppRegistry(ctx: CognitiveAppRegistryContext) {
     readHostConnection,
     readOwnConnectionForManagement,
     bindOwnView,
+    readOwnView,
+    readOwnViewForFrame,
+    launchOwnView,
+    changeOwnView,
+    uiPackageForTarget,
+    lockOwnViewCapacity,
   };
 }
