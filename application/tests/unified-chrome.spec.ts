@@ -61,7 +61,7 @@ test("页面标题与操作共用顶栏，内容无第二层标题区；窄窗�
     await bar.getByRole("button", { name: "新建事项", exact: true }).click();
     await expect(page.getByRole("dialog")).toHaveCount(0);
     await expect(page.getByLabel("AI 输入内容")).toBeFocused();
-    await expect(page.locator(".composer-intent")).toContainText("安排事项");
+    await expect(page.locator(".composer-intent")).toContainText("新建事项");
     await page.keyboard.press("Escape");
     await expect(
       bar.getByRole("button", { name: "新建事项", exact: true }),

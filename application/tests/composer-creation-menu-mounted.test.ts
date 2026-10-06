@@ -73,6 +73,42 @@ test(
       page.getByRole("button", { name: "新建或添加", exact: true });
     const menu = () =>
       page.getByRole("group", { name: "新建与添加", exact: true });
+    const scope = () => page.locator(".composer-scope-trigger:visible");
+    const scopeMenu = () =>
+      page.getByRole("group", { name: "本次输入关联", exact: true });
+    async function assertIntentScope(label: string, evidenceName: string) {
+      assert(await scope().isVisible(), `${label} has an actionable scope`);
+      assert.equal(
+        (await scope().innerText()).trim(),
+        label,
+        "the visible scope matches the creation shortcut",
+      );
+      assert.equal(
+        await page
+          .getByText("无项目", { exact: true })
+          .evaluateAll(
+            (nodes) =>
+              nodes.filter(
+                (node) =>
+                  node.checkVisibility() &&
+                  !node.closest(".composer-scope-menu"),
+              ).length,
+          ),
+        0,
+        "an implicit personal owner never replaces the visible creation intent",
+      );
+      await page.screenshot({
+        path: resolve(evidenceDir, `${evidenceName}-scope.png`),
+        animations: "disabled",
+      });
+      await scope().click();
+      assert(await scopeMenu().isVisible());
+      assert.equal(
+        await scopeMenu().locator(".composer-intent > span").innerText(),
+        label,
+        "the expanded intent uses the same label as its trigger",
+      );
+    }
     const report = () =>
       page.evaluate(() =>
         Reflect.get(window, "cognitiveChoiceAppFixture").report(),
@@ -143,15 +179,97 @@ test(
         .getByRole("button", { name: "附加文件", exact: true })
         .isVisible(),
     );
-    await menu().getByRole("button", { name: "构思剧本，剧本工作室" }).click();
-    const builtin = await report();
-    assert.equal(builtin.textarea.value, old.textarea.value);
-    assert.deepEqual(builtin.drafts["desk:desk:desk"], {
-      ...old.drafts["desk:desk:desk"],
-      intent: "script",
+    for (const [index, shortcut] of [
+      { intent: "script", label: "构思剧本", application: "剧本工作室" },
+      { intent: "task", label: "新建事项", application: "事项" },
+      { intent: "document", label: "起草文档", application: "内容库" },
+    ].entries()) {
+      if (index > 0) {
+        await load();
+        await plus().click();
+      }
+      await menu()
+        .getByRole("button", {
+          name: `${shortcut.label}，${shortcut.application}`,
+          exact: true,
+        })
+        .click();
+      const builtin = await report();
+      assert.equal(builtin.textarea.value, old.textarea.value);
+      assert.deepEqual(builtin.drafts["desk:desk:desk"], {
+        ...old.drafts["desk:desk:desk"],
+        intent: shortcut.intent,
+      });
+      assert(await input().evaluate((node) => node === document.activeElement));
+      assertNoMutationIo(builtin);
+      await assertIntentScope(shortcut.label, `builtin-${shortcut.intent}`);
+      assert.equal(
+        await scopeMenu().locator(".context-chip").innerText(),
+        "无项目",
+        "the true personal owner is still explained inside the scope popup",
+      );
+      await scopeMenu()
+        .getByRole("button", { name: "移除输入意图", exact: true })
+        .click();
+      const removed = await report();
+      assert.deepEqual(
+        removed.drafts,
+        old.drafts,
+        "removing an intent preserves every existing draft field and other scopes",
+      );
+      assert.equal(removed.textarea.value, old.textarea.value);
+      assert.equal(await page.locator(".composer-scope-trigger").count(), 0);
+      assert.equal(await page.locator(".composer-scope-label").count(), 0);
+      assert.equal(
+        await page
+          .getByText("无项目", { exact: true })
+          .evaluateAll(
+            (nodes) => nodes.filter((node) => node.checkVisibility()).length,
+          ),
+        0,
+        "removing the personal intent leaves no empty scope label or popup",
+      );
+      assert(await input().evaluate((node) => node === document.activeElement));
+      assertNoMutationIo(removed);
+    }
+
+    await load("project");
+    await input().fill("项目 A 原草稿 · 范围回归测试 😀");
+    await page.waitForFunction(
+      () =>
+        Reflect.get(window, "cognitiveChoiceAppFixture").report().drafts[
+          "project-A:quotes"
+        ] !== undefined,
+    );
+    const projectDraft = await report();
+    await plus().click();
+    await menu()
+      .getByRole("button", { name: "构思剧本，剧本工作室", exact: true })
+      .click();
+    const projectIntent = await report();
+    assert.equal(projectIntent.preferences.projectId, "project-A");
+    assert.equal(projectIntent.preferences.view, "projects");
+    assert.deepEqual(projectIntent.drafts, {
+      ...projectDraft.drafts,
+      "project-A:project-A:projects": {
+        ...projectDraft.drafts["project-A:project-A:projects"],
+        intent: "script",
+      },
     });
-    assert(await input().evaluate((node) => node === document.activeElement));
-    assertNoMutationIo(builtin);
+    assert.equal(projectIntent.textarea.value, projectDraft.textarea.value);
+    assert((await scope().getAttribute("title"))?.includes("项目 A"));
+    await assertIntentScope("构思剧本", "project-script");
+    assert.equal(
+      await scopeMenu().locator(".context-chip").innerText(),
+      "项目 A",
+      "intent label precedence does not change the actual project association",
+    );
+    await scopeMenu()
+      .getByRole("button", { name: "移除输入意图", exact: true })
+      .click();
+    assert.deepEqual((await report()).drafts, projectDraft.drafts);
+    assert.equal((await scope().innerText()).trim(), "项目 A");
+    assertNoMutationIo(await report());
 
     await load();
     await more();

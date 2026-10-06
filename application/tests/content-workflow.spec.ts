@@ -79,7 +79,7 @@ host(
     ).toBeVisible();
     await page.getByLabel("让 Morphz 起草", { exact: true }).click();
     await expect(input).toBeFocused();
-    await expect(page.locator(".composer-intent")).toContainText("创作文档");
+    await expect(page.locator(".composer-intent")).toContainText("起草文档");
     await scope.selectOption(second.id);
     await expect(await openInput(page)).toHaveValue("");
     await expect(
@@ -94,7 +94,7 @@ host(
     await expect(
       page.getByLabel("移除附件 draft-a.txt", { exact: true }),
     ).toBeVisible();
-    await expect(page.locator(".composer-intent")).toContainText("创作文档");
+    await expect(page.locator(".composer-intent")).toContainText("起草文档");
     expect((await source.content({ projectId: first.id })).items).toHaveLength(
       0,
     );

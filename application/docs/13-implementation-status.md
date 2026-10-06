@@ -1,5 +1,33 @@
 # 桌面能力实施记录
 
+## 2026-10-06 新建意图不再被空项目标题覆盖
+
+先在未改的生产 App mounted 回归复现 `无项目 !== 构思剧本`：intent
+使关联入口可展开，但入口 label 仍使用项目 fallback，意图只藏在详情。
+现由同一菜单声明提供可见的构思剧本／新建事项／起草文档名称；关联入口
+及弹层同名，真实项目／对象与版本仍在提示及详情。移除意图恢复原项目摘要，
+个人默认恢复无空标签。只改展示，不改底层 intent 值、草稿归属或发送目标；
+既有 website／interactive 及历史消息名称保持可读。
+
+新菜单原回归先红后绿 1／1，覆盖三个入口、项目 A、移除后完整草稿保留，
+原授权／陈旧回调／几何断言不删。项目 fixture 的首次编辑会按既有路径创建
+空 quote bucket，测试先完成真实普通编辑再冻结基准，不把它当新建产生的
+业务写入。模型、认知应用选择及原生 Electron zoom 组合另 35／35，零 skip；
+生产 typecheck、格式及 Vite 构建通过。三个旧 E2E 文件仅同步已改变的
+composer 标签期待，未重跑旧矩阵，不更改历史消息期待。
+
+候选在私有 `/private/tmp/morphz-creation-scope-build.xaa4WR` 构建，不提前
+覆盖原 App 引用的 index。原草稿两个固定 namespace 的只读稳定备份通过，
+17 文件回执为 `live-storage-read-hGS2Se/stable-read-receipt.json`；这是运行中
+顺序观察，不是原子或未落盘数据保证。原 main 13304 正常退出后，仅追加
+四个新 hash assets，九个既有 assets 逐字节 SHA 相同，旧 assets 保留；
+原 index 有私有副本，原 Service 不变。重开同一原 App／profile／center，
+新 main 18408、窗口 281392 实际显示“构思剧本”而非“无项目”，原占位提示、
+对话和“智能体已连接”保持。Runtime 68670 启动时间不变、没有重启。
+原窗前后截图在私有恢复目录的 `creation-scope-before-original.png` 和
+`creation-scope-fixed-original.png`；另外两个入口通过自动回归，不冒称本轮
+在原窗逐个点击。未发送、创建业务对象、改授权或推送。
+
 ## 2026-10-06 输入「＋」新建与添加菜单
 
 沿用现有输入 popover／草稿 owner，分组提供「新建」「添加资料」「更多应用」。

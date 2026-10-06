@@ -6,6 +6,8 @@ import { parseCognitiveAppDefinition } from "../packages/cognitive-app-sdk/src/p
 import { parseCognitiveAppCatalog } from "../packages/core/src/cognitive-app-api.js";
 import { cognitiveAppCatalogMetadata } from "../packages/platform/src/cognitive-app-registry.js";
 import {
+  builtinCreationIntents,
+  creationIntentLabel,
   cognitiveCreationChoices,
   prepareBuiltinCreation,
   prepareCognitiveCreation,
@@ -41,6 +43,17 @@ const compose = {
   prompt: " 请帮我写笔记。\n",
 };
 const now = "2026-10-06T00:00:00.000Z";
+
+test("creation scope labels keep the selected menu name and readable historical intents", () => {
+  for (const entry of builtinCreationIntents)
+    assert.equal(creationIntentLabel(entry.intent), entry.label);
+  assert.equal(creationIntentLabel("script"), "构思剧本");
+  assert.equal(creationIntentLabel("task"), "新建事项");
+  assert.equal(creationIntentLabel("document"), "起草文档");
+  assert.equal(creationIntentLabel("website"), "添加网站");
+  assert.equal(creationIntentLabel("interactive"), "制作表格");
+});
+
 function metadata(declaration: unknown = definition) {
   const parsed = parseCognitiveAppDefinition(declaration);
   return cognitiveAppCatalogMetadata({

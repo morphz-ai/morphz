@@ -78,6 +78,7 @@ import {
 import { CognitiveApplicationPicker } from "./features/applications/CognitiveApplicationChoices.js";
 import { chooseCognitiveApplication } from "./host/cognitive-application-choice.js";
 import {
+  creationIntentLabel,
   cognitiveCreationChoices,
   cognitiveCreationConflicts,
   prepareCognitiveCreation,
@@ -2122,6 +2123,18 @@ function WorkspaceApp({
       ? `${cognitiveInputEntry.metadata.title} · ${cognitiveInputEntry.metadata.version}`
       : "应用目标"
     : undefined;
+  // An explicit creation intent is the visible action, not an implicit desk
+  // project's fallback name. Keep the actual scope in the invoked details.
+  const composerIntentLabel = draft.intent
+    ? creationIntentLabel(draft.intent)
+    : undefined;
+  const composerScopeDescription =
+    (cognitiveInputLabel ??
+      (composerIntentLabel
+        ? composerIntentLabel +
+          (showPlainComposerScope ? ` · ${composerScopeTitle}` : "")
+        : composerScopeTitle)) +
+    (draft.revision ? " · v" + draft.revision : "");
   const cognitiveInputUnavailable =
     cognitiveInputTarget &&
     (!cognitiveInputEntry ||
@@ -3344,12 +3357,11 @@ function WorkspaceApp({
                                 ? "补充原工作"
                                 : draft.taskResult
                                   ? "提交事项结果"
-                                  : (cognitiveInputLabel ?? composerScopeTitle)
+                                  : (cognitiveInputLabel ??
+                                    composerIntentLabel ??
+                                    composerScopeTitle)
                             }
-                            description={
-                              (cognitiveInputLabel ?? composerScopeTitle) +
-                              (draft.revision ? " · v" + draft.revision : "")
-                            }
+                            description={composerScopeDescription}
                             onOpenChange={(open) => {
                               if (!open) scopeMenuOrigin.current = undefined;
                               else if (scopeMenuOrigin.current === undefined)
@@ -3481,12 +3493,12 @@ function WorkspaceApp({
                                       title={
                                         draft.taskResult
                                           ? "提交结果并完成事项"
-                                          : inputIntents[draft.intent!].label
+                                          : composerIntentLabel
                                       }
                                     >
                                       {draft.taskResult
                                         ? `提交结果并完成 · v${draft.taskResult.revision}`
-                                        : inputIntents[draft.intent!].label}
+                                        : composerIntentLabel}
                                     </span>
                                     <button
                                       className="icon-button"

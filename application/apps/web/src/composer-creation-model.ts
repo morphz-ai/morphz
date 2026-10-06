@@ -2,7 +2,10 @@ import {
   sameCognitiveAppApplicationTarget,
   type CognitiveAppApplicationTarget,
 } from "../../../packages/core/src/cognitive-app-application-target.js";
-import type { InputIntent } from "../../../packages/core/src/input-intent.js";
+import {
+  inputIntents,
+  type InputIntent,
+} from "../../../packages/core/src/input-intent.js";
 import {
   cognitiveApplicationTargets,
   type ApplicationPresentationDirectory,
@@ -22,6 +25,15 @@ export const builtinCreationIntents: readonly Readonly<{
   { intent: "task", label: "新建事项", application: "事项" },
   { intent: "document", label: "起草文档", application: "内容库" },
 ]);
+
+/** The selected shortcut keeps its name in the composer. Historical intents
+ * outside the new menu remain readable; no routing or persisted facts change. */
+export function creationIntentLabel(intent: InputIntent): string {
+  return (
+    builtinCreationIntents.find((entry) => entry.intent === intent)?.label ??
+    inputIntents[intent].label
+  );
+}
 export type CognitiveCreationIntent = Readonly<{
   operationId: string;
   label: string;

@@ -83,7 +83,7 @@ test("创建入口共用输入框：保留草稿、无需填表、未提交不�
   ).runtime.deliveries.map((delivery) => delivery.inputId);
   const input = await openInput(page);
   await input.fill("这段草稿不能被入口覆盖");
-  for (const [button, intent] of [["让 Morphz 起草", "创作文档"]] as const) {
+  for (const [button, intent] of [["让 Morphz 起草", "起草文档"]] as const) {
     await page.getByRole("button", { name: button, exact: true }).click();
     await expect(input).toBeFocused();
     await expect(input).toHaveValue("这段草稿不能被入口覆盖");
@@ -114,7 +114,7 @@ test("创建入口共用输入框：保留草稿、无需填表、未提交不�
   await page.reload();
   await openInput(page);
   await expect(input).toHaveValue("这段草稿不能被入口覆盖");
-  await expect(page.locator(".composer-intent")).toContainText("创作文档");
+  await expect(page.locator(".composer-intent")).toContainText("起草文档");
   await page.locator(".composer").screenshot({
     path: "test-results/composer-inline-intent.png",
     animations: "disabled",
@@ -160,7 +160,7 @@ test("事项意图按空间保存；本机保存失败留草稿，未连接不�
   await nav.getByRole("button", { name: /^事项/ }).click();
   await openInput(page);
   await expect(input).toHaveValue(body);
-  await expect(page.locator(".composer-intent")).toContainText("安排事项");
+  await expect(page.locator(".composer-intent")).toContainText("新建事项");
   await page.evaluate(() => {
     const original = Storage.prototype.setItem;
     (
@@ -179,7 +179,7 @@ test("事项意图按空间保存；本机保存失败留草稿，未连接不�
   );
   await expect(page.locator(".statusbar")).toHaveCount(0);
   await expect(input).toHaveValue(body);
-  await expect(page.locator(".composer-intent")).toContainText("安排事项");
+  await expect(page.locator(".composer-intent")).toContainText("新建事项");
   await page.evaluate(() => {
     (
       window as typeof window & { restoreSavedInput?: () => void }
