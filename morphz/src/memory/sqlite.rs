@@ -10093,6 +10093,15 @@ impl SqliteStore {
 }
 
 impl SqliteStore {
+    async fn begin_context_write_transaction(
+        &self,
+    ) -> Result<sqlx::Transaction<'_, Sqlite>, sqlx::Error> {
+        // ContextDB reads its mutation basis before claiming the revision.
+        // Reserve SQLite's writer first: a deferred read snapshot cannot be
+        // promoted after another Runtime writer commits (SQLITE_BUSY_SNAPSHOT).
+        self.pool.begin_with("BEGIN IMMEDIATE").await
+    }
+
     // Mirrors the ContextStore transactional contract one-for-one so no
     // mutation, session projection, or Recall input can be dropped in an
     // adapter-specific wrapper.
@@ -10120,7 +10129,7 @@ impl SqliteStore {
         if let Some(context_db) = &self.context_db {
             let now_instant = Utc::now();
             let now = now_instant.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-            let mut tx = self.pool.begin().await?;
+            let mut tx = self.begin_context_write_transaction().await?;
             let committed_head = match context_db
                 .apply_mutation_plan_in_transaction(
                     &mut tx,
@@ -10258,7 +10267,7 @@ impl SqliteStore {
         let state_json = serde_json::to_string(&next_projection.state)?;
         let now_instant = Utc::now();
         let now = now_instant.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.begin_context_write_transaction().await?;
 
         #[cfg(feature = "context-db")]
         if let Some(context_db) = &self.context_db {
@@ -42343,6 +42352,214 @@ mod tests {
                 .unwrap()
                 .len(),
             3
+        );
+    }
+
+    #[cfg(feature = "context-db")]
+    #[tokio::test]
+    async fn context_db_writer_reservation_prevents_busy_snapshot_and_preserves_cas() {
+        use crate::context_store::{
+            context_state_commitment, context_state_hash, ContextMutationPlan, ContextNodeValue,
+            ContextStateMutation,
+        };
+        use crate::orchestrator::context::MindState;
+
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let context_id = "context-db-writer-reservation";
+        let store = SqliteStore::new_with_context_db(path, &SqliteStorageConfig::default())
+            .await
+            .unwrap();
+        store
+            .create_test_context(NewCognitiveContext {
+                id: context_id.to_string(),
+                agent_id: "context-db-writer-agent".to_string(),
+                title: "Context writer reservation".to_string(),
+            })
+            .await
+            .unwrap();
+        let initial = MindState::default();
+        store
+            .initialize_context_state(
+                context_id,
+                &initial,
+                &context_state_commitment(&initial).unwrap(),
+                None,
+                &[],
+            )
+            .await
+            .unwrap();
+        let next = MindState {
+            version: 1,
+            retired: BTreeSet::from(["completed-old-observation".to_string()]),
+            ..initial.clone()
+        };
+        let plan = ContextMutationPlan {
+            context_id: context_id.to_string(),
+            expected_revision: 0,
+            next_revision: 1,
+            expected_state_hash: context_state_hash(&initial).unwrap(),
+            next_state_hash: context_state_hash(&next).unwrap(),
+            mutations: vec![ContextStateMutation::Upsert {
+                value: ContextNodeValue::Retired("completed-old-observation".to_string()),
+                order: None,
+            }],
+        };
+        let next_commitment = context_state_commitment(&next).unwrap();
+        let adapter = store.context_db.as_ref().unwrap();
+        let mut writer = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new()
+                .filename(path)
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(Duration::ZERO),
+        )
+        .await
+        .unwrap();
+
+        // Reproduce the original failure without timing: take a ContextDB
+        // snapshot, commit another Runtime row, then try the actual mutation.
+        let mut deferred = store.pool.begin().await.unwrap();
+        assert_eq!(
+            adapter
+                .load_context_state_in_transaction(&mut deferred, context_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            initial
+        );
+        sqlx::query("UPDATE cognitive_contexts SET title = 'concurrent writer' WHERE id = ?")
+            .bind(context_id)
+            .execute(&mut writer)
+            .await
+            .unwrap();
+        let error = adapter
+            .apply_mutation_plan_in_transaction(
+                &mut deferred,
+                &plan,
+                &next,
+                &next_commitment,
+                "context-db-stale-snapshot",
+                Utc::now(),
+            )
+            .await
+            .unwrap_err();
+        let crate::context_db::ContextDbError::Storage(sqlx::Error::Database(error)) = error else {
+            panic!("expected SQLite BUSY_SNAPSHOT from the stale read transaction");
+        };
+        assert_eq!(error.code().as_deref(), Some("517"));
+        deferred.rollback().await.unwrap();
+
+        // Exercise the same writer reservation used by both Runtime commit
+        // entry points. A competing write cannot invalidate its read snapshot.
+        let mut reserved = store.begin_context_write_transaction().await.unwrap();
+        assert_eq!(
+            adapter
+                .load_context_state_in_transaction(&mut reserved, context_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            initial
+        );
+        let error = sqlx::query("UPDATE cognitive_contexts SET title = 'must wait' WHERE id = ?")
+            .bind(context_id)
+            .execute(&mut writer)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.as_database_error().unwrap().code().as_deref(),
+            Some("5")
+        );
+        reserved.rollback().await.unwrap();
+
+        let event = Event::new(
+            "context-db-writer-committed".to_string(),
+            "Agent-Context".to_string(),
+            crate::event::TYPE_CONTEXT_TRANSACTION.to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": context_id})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert!(matches!(
+            store
+                .commit_context_mutation_transaction(
+                    &event,
+                    &[],
+                    &SessionProjectionMutation::default(),
+                    &plan,
+                    &next,
+                    &next_commitment,
+                    &[],
+                )
+                .await
+                .unwrap(),
+            ContextStateCommit::Committed { .. }
+        ));
+        assert_eq!(
+            store
+                .get_context_state(context_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            next
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE id = ?")
+                .bind(&event.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            1
+        );
+        let receipts = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM experimental_contextdb_receipts WHERE context_id = ?",
+        )
+        .bind(context_id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+
+        let mut stale_event = event.clone();
+        stale_event.id = "context-db-writer-stale-cas".to_string();
+        assert!(matches!(
+            store
+                .commit_context_mutation_transaction(
+                    &stale_event,
+                    &[],
+                    &SessionProjectionMutation::default(),
+                    &plan,
+                    &next,
+                    &next_commitment,
+                    &[],
+                )
+                .await
+                .unwrap(),
+            ContextStateCommit::Conflict {
+                current_revision: Some(1)
+            }
+        ));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE id = ?")
+                .bind(&stale_event.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM experimental_contextdb_receipts WHERE context_id = ?",
+            )
+            .bind(context_id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            receipts,
+            "a stale semantic revision must not become a receipt or retry a changed request"
         );
     }
 
