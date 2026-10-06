@@ -1,5 +1,32 @@
 # 桌面能力实施记录
 
+## 2026-10-06 连接中断后的原 App 再次恢复
+
+用户要求直接恢复原应用。本次先核既有私有备份
+`/private/tmp/morphz-app-connection-recovery.xeHlLs`，确认旧 main 38448 的
+身份，再尝试 SIGTERM；正常退出与 SIGTERM 均未使该 main 结束。
+仅强制结束这个确切 main 后重开原 `Morphz.app`，新 main 为 7350。
+原 profile、center 与启动配置未替换，原 Runtime 68670 未重启。
+CoreGraphics 原窗口 281284 截图实际显示原对话、项目、Dock、输入和
+「智能体已连接」，不以进程存在或 Runtime 健康代替桌面恢复证据。
+截图保存在上述私有目录的 `restored-original-app.png`。
+
+小范围只读对照确认中心身份、15 个 Session、114 个 Session 事件、
+265 个 Thread 绑定、268 个投递，以及身份／成员／授权／连接配置保持。
+1,292 个持久草稿键全部存在，1,291 个值全等；唯一不同是一个空正文
+输入的 `intent: task` 变为字段缺失，其余字段逐值相同。全部九个非空
+正文的逻辑摘要保持，没有正文、附件、引用或任务目标丢失证据。
+该意图提示变化不能归因为用户操作或恢复，也不能将缺失与 task 当等价；
+原备份保留，不自动改写可能已由用户调整的草稿。持久核验不涵盖未落盘编辑。
+对照与差异分类见同目录 `preservation-comparison.json` 和
+`draft-change-classification-refined.json`。
+
+旧进程退出后数据库句柄、Host 工具套接字与 Runtime TCP 都已关闭，
+而 stores 在清理顺序末尾；因此不能据残留 main 直接认定卡在 Host 清理。
+原 stderr 未记录具体失败，Electron/native 的确切挂点尚未证明。
+本次恢复不冒称已永久修复退出根因，也不跳过未完成调用提前关闭数据库。
+已按用户取消的旧长时验证目标保持结束，不重开全量或八小时验收。
+
 ## 2026-10-06 接入目标收尾：重开后落盘草稿逐键保全
 
 Root 完整冷审后，对原已恢复 profile 的两个固定 Local／Session Storage
