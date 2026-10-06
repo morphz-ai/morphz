@@ -6,7 +6,7 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import { MoreHorizontal } from "lucide-react";
+import { Check, MoreHorizontal } from "lucide-react";
 
 export type ComposerOption = {
   label: string;
@@ -42,6 +42,8 @@ export function ComposerOptions({
   persistentContent,
   triggerRef,
   initialFocus = "control",
+  singleChoice = false,
+  triggerDisabled = false,
   onOpenChange,
 }: {
   model?: string;
@@ -70,6 +72,9 @@ export function ComposerOptions({
   triggerRef?: RefObject<HTMLButtonElement | null>;
   /** A settings group can receive initial focus without selecting a value. */
   initialFocus?: "control" | "panel";
+  /** An icon-bearing single selection, with truthful checked menu items. */
+  singleChoice?: boolean;
+  triggerDisabled?: boolean;
   /** Persistent input controls may read only while their popover is open. */
   onOpenChange?(open: boolean): void;
 }) {
@@ -78,6 +83,10 @@ export function ComposerOptions({
   const panel = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [keyboardNavigation, setKeyboardNavigation] = useState(false);
+
+  useLayoutEffect(() => {
+    if (triggerDisabled) setOpen(false);
+  }, [triggerDisabled]);
 
   useLayoutEffect(() => {
     onOpenChange?.(open);
@@ -152,14 +161,19 @@ export function ComposerOptions({
     )
       resize.observe(anchor);
     if (initialFocus === "panel") element.focus({ preventScroll: true });
-    else
-      Array.from(
+    else {
+      const controls = Array.from(
         element.querySelectorAll<HTMLElement>(
           "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary",
         ),
-      )
-        .find((control) => control.getClientRects().length > 0)
-        ?.focus();
+      ).filter((control) => control.getClientRects().length > 0);
+      const selected = singleChoice
+        ? controls.find(
+            (control) => control.getAttribute("aria-checked") === "true",
+          )
+        : undefined;
+      (selected ?? controls[0])?.focus({ preventScroll: true });
+    }
     const outside = (event: Event) => {
       if (
         !element.contains(event.target as Node) &&
@@ -187,6 +201,7 @@ export function ComposerOptions({
     placement,
     matchTriggerWidth,
     initialFocus,
+    singleChoice,
   ]);
 
   function closeToTrigger() {
@@ -208,7 +223,17 @@ export function ComposerOptions({
         title={description ? `${label} · ${description}` : label}
         aria-controls={id}
         aria-expanded={open}
+        aria-haspopup={singleChoice ? "menu" : undefined}
         aria-describedby={unread ? `${id}-unread` : undefined}
+        disabled={triggerDisabled}
+        onKeyDown={(event) => {
+          if (singleChoice && ["ArrowDown", "ArrowUp"].includes(event.key)) {
+            event.preventDefault();
+            event.stopPropagation();
+            setKeyboardNavigation(true);
+            setOpen(true);
+          }
+        }}
         onClick={(event) => {
           setKeyboardNavigation(event.detail === 0);
           setOpen(!open);
@@ -227,7 +252,7 @@ export function ComposerOptions({
         popover="manual"
         inert={!open}
         className={`composer-options ${menuClassName}`}
-        role="group"
+        role={singleChoice ? "menu" : "group"}
         aria-label={menuLabel}
         tabIndex={initialFocus === "panel" ? -1 : undefined}
         data-keyboard-navigation={keyboardNavigation || undefined}
@@ -249,6 +274,9 @@ export function ComposerOptions({
             )
           ) {
             event.preventDefault();
+            // Nested menus own their navigation; a parent must not move focus
+            // a second time or accidentally act on the neighbouring control.
+            event.stopPropagation();
             const buttons = Array.from(
               panel.current!.querySelectorAll<HTMLButtonElement>(
                 "button:not(:disabled)",
@@ -276,9 +304,11 @@ export function ComposerOptions({
         {options.map((option) => (
           <button
             key={option.label}
+            role={singleChoice ? "menuitemradio" : undefined}
             aria-label={option.label}
             title={option.title}
-            aria-pressed={option.pressed}
+            aria-pressed={singleChoice ? undefined : option.pressed}
+            aria-checked={singleChoice ? !!option.pressed : undefined}
             aria-keyshortcuts={option.keyShortcut}
             disabled={option.disabled}
             onClick={() => {
@@ -289,6 +319,9 @@ export function ComposerOptions({
             {option.icon}
             <span>{option.text ?? option.label}</span>
             {option.shortcut && <kbd>{option.shortcut}</kbd>}
+            {singleChoice && option.pressed && (
+              <Check className="composer-option-check" aria-hidden="true" />
+            )}
           </button>
         ))}
         {open && modelControl}

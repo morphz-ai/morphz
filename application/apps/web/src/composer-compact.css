@@ -309,17 +309,21 @@
   text-align: right;
   text-overflow: ellipsis;
 }
-.app .composer-settings-menu :is(select, summary):focus {
+.app
+  .composer-settings-menu
+  :is(select, summary, .composer-approval-select):focus {
   outline: none;
   box-shadow: none;
 }
 .app .composer-settings-menu:focus,
-.app .composer-settings-menu :is(select, summary):focus-visible {
+.app
+  .composer-settings-menu
+  :is(select, summary, .composer-approval-select):focus-visible {
   outline: none;
 }
 .app
   .composer-settings-menu[data-keyboard-navigation]
-  :is(select, summary):focus-visible {
+  :is(select, summary, .composer-approval-select):focus-visible {
   /* Native selects may match focus-visible after pointer focus too. Only
      explicit keyboard navigation should reveal their compact focus cue. */
   outline: 1px solid var(--muted);
@@ -493,12 +497,56 @@
   border-radius: 8px;
   background: var(--soft);
 }
-.app .composer-settings-menu .composer-approval-choice select {
+.app .composer-settings-menu .composer-approval-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
   min-height: 26px;
   padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
   font-size: 12px;
+  font-weight: 400;
   text-align: left;
+}
+.composer-approval-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .composer-approval-select > svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+.app .composer-options.composer-approval-menu {
+  width: 180px;
+}
+.app .composer-approval-menu svg.composer-approval-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+.app .composer-approval-menu .composer-option-check {
+  width: 14px;
+  height: 14px;
+  margin-left: auto;
+}
+.app .composer-approval-menu [aria-checked="true"] {
+  background: var(--soft);
+}
+.app
+  .composer-approval-menu:not([data-keyboard-navigation])
+  > button:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 .app .composer-approval-choice {
   grid-column: 1;

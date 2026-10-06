@@ -12,7 +12,9 @@ test("approval presets use a hand, terminal shield and warning shield on one sha
   const drawings = modes.map((mode) =>
     renderToStaticMarkup(createElement(ComposerApprovalIcon, { mode })),
   );
-  assert.match(drawings[0]!, /lucide-hand/);
+  assert.match(drawings[0]!, /lucide-approval-hand/);
+  assert.match(drawings[0]!, /M7\.5 13V6\.5/);
+  assert.doesNotMatch(drawings[0]!, /lucide-hand(?:\s|\")/);
   assert.match(drawings[1]!, /d="m8 10 3 3-3 3m5 0h3"/);
   assert.match(drawings[2]!, /lucide-shield-alert/);
   for (const [index, drawing] of drawings.entries()) {

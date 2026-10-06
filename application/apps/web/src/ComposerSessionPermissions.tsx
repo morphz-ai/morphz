@@ -7,7 +7,8 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { ChevronDown, FolderKey } from "lucide-react";
-import { ComposerApprovalIcon } from "./ComposerApprovalIcon.js";
+import { approvalLabel, ComposerApprovalIcon } from "./ComposerApprovalIcon.js";
+import { ComposerOptions } from "./ComposerOptions.js";
 import {
   sessionPermissionsSnapshotSchema,
   type SessionPermissionsSnapshot,
@@ -89,7 +90,7 @@ export function ComposerSessionPermissions({
   });
   const [refresh, setRefresh] = useState(0);
   const [confirmFull, setConfirmFull] = useState(false);
-  const select = useRef<HTMLSelectElement>(null);
+  const approvalTrigger = useRef<HTMLButtonElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
   const mutation = useRef(false);
   const readSequence = useRef(0);
@@ -178,6 +179,7 @@ export function ComposerSessionPermissions({
 
   async function update(permissionMode: PermissionMode, confirmation = false) {
     if (
+      currentKey.current !== key ||
       !scope ||
       !identityGeneration ||
       continuation ||
@@ -194,10 +196,10 @@ export function ComposerSessionPermissions({
     const confirmationGroup = cancel.current?.closest(
       ".composer-permission-confirm",
     );
-    // A native control loses focus when saving disables it. Capture the
+    // A control loses focus when saving disables it. Capture the
     // originating focus before that render, rather than after the response.
     const ownedFocus =
-      document.activeElement === select.current ||
+      document.activeElement === approvalTrigger.current ||
       confirmationGroup?.contains(document.activeElement);
     const request: SessionPermissionsUpdate = {
       ...scope,
@@ -236,15 +238,16 @@ export function ComposerSessionPermissions({
           const restore =
             ownedFocus &&
             (document.activeElement === document.body ||
-              document.activeElement === select.current ||
+              document.activeElement === approvalTrigger.current ||
               confirmationGroup?.contains(document.activeElement));
           // Closing the confirmation removes its focused button. Return to
           // this still-open control, not body; never steal newer navigation.
           flushSync(() => setConfirmFull(false));
-          const panel = select.current?.closest<HTMLElement>("[popover]");
+          const panel =
+            approvalTrigger.current?.closest<HTMLElement>("[popover]");
           if (restore && panel?.matches(":popover-open")) {
-            if (select.current && !select.current.disabled)
-              select.current.focus({ preventScroll: true });
+            if (approvalTrigger.current && !approvalTrigger.current.disabled)
+              approvalTrigger.current.focus({ preventScroll: true });
             else panel.focus({ preventScroll: true });
           }
         }
@@ -293,7 +296,7 @@ export function ComposerSessionPermissions({
 
   function cancelFullAccess() {
     setConfirmFull(false);
-    select.current?.focus({ preventScroll: true });
+    approvalTrigger.current?.focus({ preventScroll: true });
   }
 
   return (
@@ -302,16 +305,23 @@ export function ComposerSessionPermissions({
       hidden={continuation}
       aria-busy={current?.loading || current?.saving || undefined}
     >
-      <label className="composer-setting-row composer-approval-choice">
+      <div
+        className="composer-setting-row composer-approval-choice"
+        data-approval-mode={snapshot?.permissionMode ?? "unread"}
+      >
         <ComposerApprovalIcon mode={snapshot?.permissionMode} />
         <span className="visually-hidden">审批</span>
-        <select
-          ref={select}
-          aria-label="当前会话审批方式"
-          value={snapshot?.permissionMode ?? ""}
-          disabled={unavailable}
-          title={note || scopeNote}
-          aria-description={[
+        <ComposerOptions
+          triggerRef={approvalTrigger}
+          label="当前会话审批方式"
+          menuLabel="会话审批方式选项"
+          triggerClassName="composer-approval-select"
+          menuClassName="composer-approval-menu"
+          triggerDisabled={!!unavailable || !open}
+          singleChoice
+          align="start"
+          description={[
+            note,
             scopeNote,
             snapshot?.permissionMode === "auto_review"
               ? "自动安全评审，可能拒绝或交由你批准"
@@ -319,35 +329,43 @@ export function ComposerSessionPermissions({
           ]
             .filter(Boolean)
             .join(" ")}
-          onChange={(event) => {
-            const mode = event.target.value as PermissionMode;
-            if (mode === "full_access") setConfirmFull(true);
-            else void update(mode);
-          }}
-        >
-          {!snapshot?.permissionMode && (
-            <option value="" disabled>
-              {current?.loading ? "读取中…" : "审批方式待核对"}
-            </option>
-          )}
-          {snapshot?.permissionMode === "custom" && (
-            <option value="custom" disabled>
-              自定义策略
-            </option>
-          )}
-          {Object.entries(labels).map(([value, label]) => (
-            <option value={value} key={value}>
-              {label}
-            </option>
-          ))}
-        </select>
+          triggerIcon={
+            <>
+              <span className="composer-approval-value">
+                {snapshot?.permissionMode
+                  ? approvalLabel(snapshot.permissionMode)
+                  : current?.loading
+                    ? "读取中…"
+                    : "审批方式待核对"}
+              </span>
+              <ChevronDown aria-hidden="true" />
+            </>
+          }
+          options={(Object.keys(labels) as PermissionMode[]).map((mode) => ({
+            label: labels[mode],
+            icon: <ComposerApprovalIcon mode={mode} />,
+            pressed: snapshot?.permissionMode === mode,
+            disabled: !!unavailable,
+            onSelect: () => {
+              if (
+                currentKey.current !== key ||
+                !open ||
+                unavailable ||
+                mode === snapshot?.permissionMode
+              )
+                return;
+              if (mode === "full_access") setConfirmFull(true);
+              else void update(mode);
+            },
+          }))}
+        />
         {/* Read/save feedback must not add a grid row and move the anchored
             popover. The disabled control and its title retain visible context;
             announce the operation without changing the canvas geometry. */}
         <small className="visually-hidden" role="status">
           {note}
         </small>
-      </label>
+      </div>
       {current?.error && (
         <div className="composer-permission-error" role="alert">
           <span>{current.error}</span>

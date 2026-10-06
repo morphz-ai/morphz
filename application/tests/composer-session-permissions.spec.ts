@@ -23,6 +23,7 @@ import {
 } from "./project-conversation-fixture.js";
 import { platformMessageFixture } from "./platform-message-fixture.js";
 import { chooseReasoning } from "./reasoning-helpers.js";
+import { chooseApproval, expectApprovalMode } from "./approval-helpers.js";
 import { supplementExchangeWork } from "./exchange-action-helpers.js";
 import {
   openInput,
@@ -303,7 +304,7 @@ async function fixture(
     : await openComposerSettings(page);
   const approval = settings.getByLabel("当前会话审批方式", { exact: true });
   if (!previewMode) {
-    await expect(approval).toHaveValue("request_approval");
+    await expectApprovalMode(approval, "request_approval");
     await expect(settings).not.toContainText("正在读取审批方式");
   }
   return {
@@ -399,7 +400,7 @@ for (const zoom of [1, 2]) {
     const before = await geometry();
     state.hold();
     try {
-      await approval.selectOption("auto_review");
+      await chooseApproval(approval, "auto_review");
       await expect.poll(() => state.updating).toBe(true);
       const pending = await geometry();
       await testInfo.attach("permission-pending-geometry", {
@@ -418,7 +419,7 @@ for (const zoom of [1, 2]) {
       await expect(
         settings.locator(".composer-setting-row > [role=status]"),
       ).toHaveClass("visually-hidden");
-      await expect(approval).toHaveAttribute("title", "正在确认审批方式…");
+      await expect(approval).toHaveAttribute("title", /正在确认审批方式…/);
       const samples = await page.evaluate(async () => {
         const samples: string[] = [];
         for (let frame = 0; frame < 12; frame++) {
@@ -453,7 +454,7 @@ for (const zoom of [1, 2]) {
     } finally {
       state.release();
     }
-    await expect(approval).toHaveValue("auto_review");
+    await expectApprovalMode(approval, "auto_review");
     await expect(approval).toBeEnabled();
     expect(await geometry()).toEqual(before);
   });
@@ -496,23 +497,12 @@ async function expectApprovalPresentation(page: Page, mode: Mode) {
       {
         tag: "path",
         attributes: {
-          d: "M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2",
+          d: "M7.5 13V6.5a1.5 1.5 0 0 1 3 0v-2a1.5 1.5 0 0 1 3 0v1a1.5 1.5 0 0 1 3 0v2a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-1a6 6 0 0 1-5.4-3.4l-2.1-4.1a1.5 1.5 0 0 1 2.6-1.5L8 14",
         },
       },
-      {
-        tag: "path",
-        attributes: { d: "M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2" },
-      },
-      {
-        tag: "path",
-        attributes: { d: "M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8" },
-      },
-      {
-        tag: "path",
-        attributes: {
-          d: "M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15",
-        },
-      },
+      { tag: "path", attributes: { d: "M10.5 6.5V11" } },
+      { tag: "path", attributes: { d: "M13.5 5.5V11" } },
+      { tag: "path", attributes: { d: "M16.5 7.5V12" } },
     ],
     auto_review: [
       {
@@ -719,8 +709,8 @@ test("默认工作目录取执行节点路径且不等于额外授权；全局�
     projectId: scopes.a.id,
     conversationId: f.state.globalConversationId,
   });
-  await f.approval.selectOption("auto_review");
-  await expect(f.approval).toHaveValue("auto_review");
+  await chooseApproval(f.approval, "auto_review");
+  await expectApprovalMode(f.approval, "auto_review");
   await expect(f.settings).not.toContainText("可能拒绝或交由你批准");
   await expect(f.approval).toHaveAccessibleDescription(
     /当前全局会话持续生效，跨项目.*自动安全评审，可能拒绝或交由你批准/,
@@ -738,7 +728,7 @@ test("默认工作目录取执行节点路径且不等于额外授权；全局�
   await scopes.parent(scopes.b).click();
   await openInput(page);
   await openComposerSettings(page);
-  await expect(f.approval).toHaveValue("auto_review");
+  await expectApprovalMode(f.approval, "auto_review");
   await expectApprovalPresentation(page, "auto_review");
   expect(f.reads().at(-1)!.params).toEqual({
     projectId: scopes.b.id,
@@ -754,7 +744,7 @@ test("默认工作目录取执行节点路径且不等于额外授权；全局�
     .click();
   await openInput(page);
   await openComposerSettings(page);
-  await expect(f.approval).toHaveValue("request_approval");
+  await expectApprovalMode(f.approval, "request_approval");
   await expect(page.locator(".composer-scope-label")).toContainText(
     scopes.b.title,
   );
@@ -781,11 +771,41 @@ test("三种已读回审批模式有不同图形与颜色，触发器和审批�
   const presentations = [
     await expectApprovalPresentation(page, "request_approval"),
   ];
-  expect(await f.approval.locator("option").allTextContents()).toEqual([
+  await f.approval.click();
+  const choices = page.getByRole("menu", {
+    name: "会话审批方式选项",
+    exact: true,
+  });
+  expect(await choices.getByRole("menuitemradio").allTextContents()).toEqual([
     "询问批准",
     "自动审批",
     "完全访问",
   ]);
+  for (const [mode, label] of [
+    ["request_approval", "询问批准"],
+    ["auto_review", "自动审批"],
+    ["full_access", "完全访问"],
+  ] as const) {
+    const item = choices.getByRole("menuitemradio", {
+      name: label,
+      exact: true,
+    });
+    await expect(item).toHaveAttribute(
+      "aria-checked",
+      String(mode === "request_approval"),
+    );
+    const icon = item.locator(".composer-approval-icon");
+    await expect(icon).toHaveAttribute("data-approval-mode", mode);
+    await expect(icon).toHaveAttribute("aria-hidden", "true");
+    await expect(icon).toHaveCSS("width", "16px");
+    await expect(icon).toHaveCSS("height", "16px");
+    await expect(icon).toHaveCSS("fill", "none");
+  }
+  await expect(choices.locator(".composer-option-check")).toHaveCount(1);
+  await choices.screenshot({
+    path: info.outputPath("approval-choices-request.png"),
+  });
+  await page.keyboard.press("Escape");
   await f.settings.screenshot({
     path: info.outputPath("approval-request.png"),
   });
@@ -793,14 +813,28 @@ test("三种已读回审批模式有不同图形与颜色，触发器和审批�
     path: info.outputPath("approval-request-16px.png"),
   });
   for (const mode of ["auto_review", "full_access"] as const) {
-    await f.approval.selectOption(mode);
+    await chooseApproval(f.approval, mode);
     if (mode === "full_access")
       await f.settings
         .getByRole("group", { name: "确认完全访问", exact: true })
         .getByRole("button", { name: "确认完全访问", exact: true })
         .click();
-    await expect(f.approval).toHaveValue(mode);
+    await expectApprovalMode(f.approval, mode);
     presentations.push(await expectApprovalPresentation(page, mode));
+    await f.approval.click();
+    const selected = choices.getByRole("menuitemradio", {
+      name: mode === "auto_review" ? "自动审批" : "完全访问",
+      exact: true,
+    });
+    await expect(selected).toHaveAttribute("aria-checked", "true");
+    await expect(selected.locator(".composer-option-check")).toHaveCount(1);
+    expect(
+      await iconDrawing(selected.locator(".composer-approval-icon")),
+    ).toEqual(await iconDrawing(approvalIcons(page).row));
+    await choices.screenshot({
+      path: info.outputPath(`approval-choices-${mode}.png`),
+    });
+    await page.keyboard.press("Escape");
     await f.settings.screenshot({
       path: info.outputPath(`approval-${mode}.png`),
     });
@@ -814,7 +848,7 @@ test("三种已读回审批模式有不同图形与颜色，触发器和审批�
       mode,
     );
     await openComposerSettings(page);
-    await expect(f.approval).toHaveValue(mode);
+    await expectApprovalMode(f.approval, mode);
     expect(await expectApprovalPresentation(page, mode)).toEqual(
       presentations.at(-1),
     );
@@ -822,6 +856,102 @@ test("三种已读回审批模式有不同图形与颜色，触发器和审批�
   expect(new Set(presentations.map((value) => value.paths)).size).toBe(3);
   expect(new Set(presentations.map((value) => value.colour)).size).toBe(3);
   expect(f.updates()).toHaveLength(2);
+  expect(messageHost.deliveries()).toHaveLength(0);
+});
+
+test("图标审批菜单独立处理键盘、焦点与关闭，窄屏和双倍缩放不溢出且不隐式授权", async ({
+  page,
+  messageHost,
+}, info) => {
+  const f = await fixture(page, messageHost);
+  const menu = page.getByRole("menu", {
+    name: "会话审批方式选项",
+    exact: true,
+  });
+  const request = menu.getByRole("menuitemradio", {
+    name: "询问批准",
+    exact: true,
+  });
+  const automatic = menu.getByRole("menuitemradio", {
+    name: "自动审批",
+    exact: true,
+  });
+  const full = menu.getByRole("menuitemradio", {
+    name: "完全访问",
+    exact: true,
+  });
+  const before = await f.settings.boundingBox();
+
+  await f.approval.focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(request).toBeFocused();
+  await expect(request).toHaveAttribute("aria-checked", "true");
+  await expect(f.settings).toBeVisible();
+  await page.keyboard.press("ArrowDown");
+  await expect(automatic).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(full).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(request).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(menu).not.toBeVisible();
+  await expect(f.approval).toBeFocused();
+  expect(await f.settings.boundingBox()).toEqual(before);
+  expect(f.updates()).toHaveLength(0);
+
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  await expect(full).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(menu).not.toBeVisible();
+  await expect(f.settings).toBeVisible();
+  await expect(f.approval).toBeFocused();
+  await expect(
+    f.settings.getByRole("group", { name: "确认完全访问", exact: true }),
+  ).not.toBeVisible();
+
+  await f.approval.click();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Tab");
+  await expect(menu).not.toBeVisible();
+  await expect(f.settings.locator("summary")).toBeFocused();
+  await expect(f.settings).toBeVisible();
+
+  for (const { width, zoom, theme } of [
+    { width: 1440, zoom: 1, theme: "light" },
+    { width: 390, zoom: 1, theme: "light" },
+    { width: 1440, zoom: 2, theme: "dark" },
+  ]) {
+    await page.keyboard.press("Escape");
+    await page.setViewportSize({ width, height: 960 });
+    await page.emulateMedia({ colorScheme: theme as "light" | "dark" });
+    await page.evaluate((zoom) => {
+      document.documentElement.style.zoom = String(zoom);
+    }, zoom);
+    await openInput(page);
+    await openComposerSettings(page);
+    const reads = f.reads().length;
+    await f.approval.click();
+    await expect(menu).toBeInViewport();
+    const box = (await menu.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(7);
+    expect(box.x + box.width).toBeLessThanOrEqual(width - 7);
+    expect(
+      await menu.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth + 1,
+      ),
+    ).toBe(true);
+    await menu.screenshot({
+      path: info.outputPath(`choices-${theme}-${width}-${zoom}.png`),
+    });
+    await f.settings.locator("summary").click();
+    await expect(menu).not.toBeVisible();
+    await expect(f.settings).toBeVisible();
+    expect(f.reads()).toHaveLength(reads);
+    await f.settings.locator("summary").click();
+  }
+  expect(f.updates()).toHaveLength(0);
   expect(messageHost.deliveries()).toHaveLength(0);
 });
 
@@ -845,7 +975,7 @@ test("完全访问先显示准确风险，取消及 Escape 均不提交；明确
     exact: true,
   });
   for (const cancel of ["click", "escape"] as const) {
-    await f.approval.selectOption("full_access");
+    await chooseApproval(f.approval, "full_access");
     await expect(confirm).toBeVisible();
     await expect(confirm).toContainText("执行沙盒切为完全访问");
     await expect(confirm).toContainText("此全局会话跨项目生效");
@@ -853,7 +983,7 @@ test("完全访问先显示准确风险，取消及 Escape 均不提交；明确
     await expect(
       confirm.getByRole("button", { name: "取消", exact: true }),
     ).toBeFocused();
-    await expect(f.approval).toHaveValue("request_approval");
+    await expectApprovalMode(f.approval, "request_approval");
     expect(await expectApprovalPresentation(page, "request_approval")).toEqual(
       originalIcon,
     );
@@ -877,11 +1007,11 @@ test("完全访问先显示准确风险，取消及 Escape 均不提交；明确
     );
     expect(f.updates()).toHaveLength(0);
   }
-  await f.approval.selectOption("full_access");
+  await chooseApproval(f.approval, "full_access");
   await confirm
     .getByRole("button", { name: "确认完全访问", exact: true })
     .click();
-  await expect(f.approval).toHaveValue("full_access");
+  await expectApprovalMode(f.approval, "full_access");
   await expectApprovalPresentation(page, "full_access");
   expect(f.updates()).toHaveLength(1);
   expect(f.updates()[0]!.params).toMatchObject({
@@ -901,11 +1031,11 @@ test("策略冲突和读取失败不会乐观授权或自动重写；主动重�
   const f = await fixture(page, messageHost);
   const originalDrawing = await iconDrawing(approvalIcons(page).row);
   f.state.failUpdate = true;
-  await f.approval.selectOption("auto_review");
+  await chooseApproval(f.approval, "auto_review");
   await expect(f.settings.getByRole("alert")).toContainText(
     "TEST 审批策略已变化",
   );
-  await expect(f.approval).toHaveValue("request_approval");
+  await expectApprovalMode(f.approval, "request_approval");
   await expect(f.approval).toBeDisabled();
   await expect(approvalIcons(page).row).toHaveAttribute(
     "data-approval-mode",
@@ -928,7 +1058,7 @@ test("策略冲突和读取失败不会乐观授权或自动重写；主动重�
     "TEST 审批读取失败",
   );
   await expect(f.approval).toBeDisabled();
-  await expect(f.approval).toHaveValue("request_approval");
+  await expectApprovalMode(f.approval, "request_approval");
   await expect(approvalIcons(page).trigger).toHaveAttribute(
     "data-approval-mode",
     "unread",
@@ -939,12 +1069,12 @@ test("策略冲突和读取失败不会乐观授权或自动重写；主动重�
     .getByRole("button", { name: "重新读取", exact: true })
     .click();
   await expect(f.approval).toBeEnabled();
-  await expect(f.approval).toHaveValue("request_approval");
+  await expectApprovalMode(f.approval, "request_approval");
   await expectApprovalPresentation(page, "request_approval");
   expect(f.updates()).toHaveLength(1);
   // A confirmed request is still not a confirmed Runtime policy. A failed
   // full-access write must not colour either presentation as full access.
-  await f.approval.selectOption("full_access");
+  await chooseApproval(f.approval, "full_access");
   const confirmation = f.settings.getByRole("group", {
     name: "确认完全访问",
     exact: true,
@@ -956,7 +1086,7 @@ test("策略冲突和读取失败不会乐观授权或自动重写；主动重�
     "TEST 审批策略已变化",
   );
   await expect(confirmation).not.toBeVisible();
-  await expect(f.approval).toHaveValue("request_approval");
+  await expectApprovalMode(f.approval, "request_approval");
   await expect(f.approval).toBeDisabled();
   await expect(approvalIcons(page).row).toHaveAttribute(
     "data-approval-mode",
@@ -985,8 +1115,8 @@ test("未知继承策略不冒充询问批准；远端本机限制与目录内�
   f.state.workspaceReason = "selected_target_offline";
   await page.keyboard.press("Escape");
   await openComposerSettings(page);
-  await expect(f.approval).toHaveValue("");
-  await expect(f.approval.locator("option:checked")).toHaveText(
+  await expectApprovalMode(f.approval, "");
+  await expect(f.approval.locator(".composer-approval-value")).toHaveText(
     "审批方式待核对",
   );
   await expect(f.approval).toBeDisabled();
@@ -1034,7 +1164,7 @@ for (const switchTo of ["project", "named"] as const) {
       "request_approval",
     );
     f.state.hold();
-    await f.approval.selectOption("auto_review");
+    await chooseApproval(f.approval, "auto_review");
     await expect.poll(() => f.state.updating).toBe(true);
     await expect(f.approval).toBeDisabled();
     expect(await expectApprovalPresentation(page, "request_approval")).toEqual(
@@ -1078,7 +1208,8 @@ for (const switchTo of ["project", "named"] as const) {
       )
       .toBe(true);
     await expect(f.approval).toBeEnabled();
-    await expect(f.approval).toHaveValue(
+    await expectApprovalMode(
+      f.approval,
       switchTo === "project" ? "auto_review" : "request_approval",
     );
     await expectApprovalPresentation(
@@ -1109,7 +1240,7 @@ test("身份代次变化时迟到写回不覆盖新身份；新读取显式绑�
   const f = await fixture(page, messageHost);
   const original = f.state.originalGeneration;
   f.state.hold();
-  await f.approval.selectOption("auto_review");
+  await chooseApproval(f.approval, "auto_review");
   await expect.poll(() => f.state.updating).toBe(true);
   f.state.rotatedGeneration = "TEST-rotated-session-generation";
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -1133,7 +1264,7 @@ test("身份代次变化时迟到写回不覆盖新身份；新读取显式绑�
     )
     .toBe(true);
   await expect(f.approval).toBeEnabled();
-  await expect(f.approval).toHaveValue("request_approval");
+  await expectApprovalMode(f.approval, "request_approval");
   await expectApprovalPresentation(page, "request_approval");
   expect(f.updates()[0]!.identityGeneration).toBe(original);
   expect(f.updates()).toHaveLength(1);
