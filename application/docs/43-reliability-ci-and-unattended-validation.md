@@ -1,7 +1,13 @@
 # 持续验收与无人值守可靠性
 
-2026-10-06，用户确认的两个活动目标：修复 CI 与失败诊断；取得当前版本
-8–24 小时连续、受控、无人值守整链证据。本文记录范围与检查点，不是完成声明。
+2026-10-06，最初范围是修复 CI 与失败诊断，以及取得当前版本 8–24 小时
+连续、受控、无人值守整链证据。本文保留原始检查点，执行以最新用户范围为准。
+
+**2026-10-06 08:37 用户范围变更：** 取消仅重复验证已有功能的无人值守长跑。
+不再要求或启动新的 8–24 小时运行，也不继续扩大旧功能验收矩阵；自动跟进
+`morphz-8` 已删除。已发现的真实缺陷仍修复，只做与改动相称的定向回归和
+阶段本地提交。以下长跑启动记录是历史证据，不是当前继续执行指令。
+用户随后明确要求：已发现问题修复完成后结束目标，不再增加长跑或旧功能验收。
 
 ## 边界
 
@@ -120,4 +126,120 @@ typed 当前源结果：`/tmp/morphz-typed-final-current-oct06.d4DRKx/result.jso
 CI 成功声明。全量 Rust 将从干净的隔离提交副本运行，保留原始 ignored 清单；
 真实外部登录测试不在无付费/无新凭据范围，不全局启用 `--include-ignored`。
 原生测试还须隔离默认 SSH 配置读取，不能只用新 HOME 推断已隔离 macOS 用户。
-最终版重建、严格桌面复验及正式 8 小时冻结尚待执行。
+机械收尾聚焦提交为 `c12d52f37f220b20a43438ffe247f26dc057741a`，这是本目标
+第九个本地提交，未推送。最终二进制 version 为 `git c12d52f37f22`，SHA256
+`67fca34452456780f7b7ecdb4b54d449ea5938133e6fdfd0151fec163da47441`。
+IPC 与双身份两条正式链实际复验成功，前后源/二进制哈希一致：
+`/tmp/morphz-final-runtime-c12-oct06.0Wl9Xk/verification.json`。
+认知正式六项门再次完成 6/6，零 skip/cancel/todo：
+`application/test-results/cognitive-runtime-ci-vHcTNE/summary.json`。
+真实隔离 Electron 两场景同 Runtime PID、真实 quit exit 0、草稿/原件/回执
+保全及实际 DOM 验证通过：`/private/tmp/morphz-embedded-electron-21x92S/result.json`。
+
+### 最终冻结并行运行（历史记录，未通过）
+
+完整 Rust 原命令 `cargo test --locked --all -- --test-threads=1` 曾实际启动。
+证据目录 `/tmp/morphz-full-rust-final-c12-snapshot-oct06.DqkLDj`，直接运行
+其 `harness/run.mjs`，原工具会话 `30957`、owned Cargo 进程组 `85162`。
+该运行现已失败结束，以下是当时的隔离条件。使用干净的同提交副本
+`/Users/shafreeck/.codex/worktrees/reliability-ci-isolated/Morphz`，只共享绝对 Cargo
+target 缓存，不共享默认资料目录。真实专用 PG、owned HOME/MORPHZ_HOME、净
+凭据环境、2 build jobs、CI 同样的 test debug=0、测试串行、双卷 8 GiB 下限。
+
+SSH wrapper 只准真实 `/usr/bin/ssh -F /dev/null` 的版本/配置展开，不准连接
+或额外/组合配置选项；只准版本单参或固定 localhost 的确切安全 user/port
+参数语法。Fish wrapper 真进程加 `--no-config`，只准单个版本参数或一个
+`-c` 脚本，不准覆盖启动参数。独立正负控 33/33 实际通过，证据
+`/tmp/morphz-native-wrapper-review-oct06.PAwmhn/result.json`；新运行自己的
+预检全部通过后才启动 Cargo。结束还须检查测试期间至少 3 次
+SSH 展开与 2 次 Fish 命令的脱敏调用账本，不能把可选命令缺失后的 early return
+算作实际原生验收。不验证用户 Alias/Match/认证或启动配置，也不冒称 Linux
+原生沙箱已经在 Mac 执行。完整 ignored 清单保留，专门 PG 已执行另列。
+
+此前 `/tmp/morphz-full-rust-final-c12-oct06.uKUe6F` 已防御性中断：独立复核
+发现最初 SSH 黑名单检查漏组合 `-vF`/`-qF`；当时尚在编译、实际测试为 0，
+未见危险调用。只发 SIGTERM 给 owned Cargo `81077`；171.163 秒、PG 清理
+成功、源码哈希不变，原 result/log 保留，`harness-review.json` 更正原元数据中
+过强的配置拒绝声明。这不是产品测试失败或环境缺失。旧辅助文件未在修正前
+保存完整快照，只记录原哈希，不拿新文件冒称旧文件可精确重放。以后每轮先
+保存 runner/SSH/Fish/PG helper 只读快照、实际从副本执行，结束核全部哈希；
+PG helper 与原提交字节相同，只有已安装 `pg` 依赖复用外部 node_modules。
+`mWtyES` 是未启动候选，不当成实际全量。此时没有变更生产源码，未因此重启长跑。
+
+正式连续 8 小时于 `2026-10-05T22:15:55.432Z`（北京时间 10 月 6 日
+06:15:55）启动，原定最早 14:15:55 达到时长；实际已提前失败，未达到时长。
+证据 `/private/tmp/morphz-reliability-soak-L0PYAH`，日志
+`/private/tmp/morphz-reliability-final-c12-oct06.log`，tmux
+`morphz-reliability-final-c12-oct06`，owned harness PID `82804`。
+冻结副本与 manifest 对应上面的确切 c12 提交，8 种真实场景首轮全部执行、
+18 次合成 Provider 请求；这仅证明已开始并完成首轮，不是 8 小时通过。
+
+### 停止状态及后续修复
+
+`L0PYAH` 实际于 `2026-10-05T22:55:03.567Z`（北京时间 06:55:03）失败退出，
+运行 2348114 ms，第 40 轮 Context 事务未提交；原 `result.json`、失败请求、
+数据库和日志全部保留，cleanupFailures 为零。它不是 8 小时通过，40 轮也
+不与新运行拼接。当前核查 owned harness `82804` 和 Runtime `83556` 已退出，
+不是仍在运行或已验收。按用户最新范围不会重新冻结或启动替代长跑。
+
+`DqkLDj` 全量 Rust 实际 exit 101，主 lib 栈溢出中止，没有完整最终报告；
+其余未执行 targets 不计通过。另一个 SSH 配置展开用例被 fixture 围栏误拒绝，
+已精确允许固定 `mini-m4.local` 的 `-G` 展开并定向通过，未允许远程连接或个人配置。
+原失败报告与三套临时 PG 的清理证据保留。
+
+栈溢出已用同一二进制默认栈与诊断 16 MiB 栈对照复现；增大测试栈不是修复。
+修复只在 `SchedulerKernel::execute` 堆固定大型 interpreter Future，仍在
+同一 task 中 await，保留取消、事务 fence 和调用顺序。默认栈 exact 与相关
+67 项回归、严格 Clippy 已有实际成功证据，独立审查后聚焦提交 `a7bca84e`。
+默认栈 exact：`/tmp/morphz-stack-final-default-c12-oct06.TsDQbd/result.json`；
+相关回归：`/tmp/morphz-scheduler-box-regressions-oct06.mL7spE/stage-results.json`。
+
+长跑第 40 轮另观察到真实 Context SQLite `SQLITE_BUSY_SNAPSHOT`（517），
+事务失败后 fixture 仍产生最终回复；“Thread completed”不能替代 Context 提交。
+已用 `77850512` 修复：两条 Runtime Context 写入口在读取 mutation basis 前
+共用 `BEGIN IMMEDIATE`，避免 deferred snapshot 被并发提交失效。不新增语义
+重试、不改 CAS／输入保护／来源归属，状态、Event、Session projection、Recall
+和提交回执仍在同一事务内。原 trace 未记录具体竞争 SQL，不能指认某个并发
+writer；确定性回归用独立连接复现同一机制。
+
+四个 exact 定向回归实际通过，零 ignored，未设置 `RUST_MIN_STACK`：
+
+- `memory::sqlite::tests::context_db_writer_reservation_prevents_busy_snapshot_and_preserves_cas`
+- `memory::sqlite::tests::context_db_is_authoritative_while_trajectory_and_control_commit_atomically`
+- `context_tools::tests::context_tx_tool_rejects_retiring_the_active_root_request`
+- `context_tools::tests::context_tx_tool_persists_direct_model_and_causal_attribution`
+
+第一个回归直接验证生产 writer reservation helper，公共入口的调用由源码
+复核确认，不冒称在每条入口内部注入并发。原始工具输出保存在本轮 Context
+子任务 rollout `01a10ea5-20d0-7623-8a65-942b8b6cd8c5` 的 L383／L403；没有另存
+shell logfile。最终 sqlite.rs SHA256
+`d8d7e30bfcf52e26514be9ea84aea87028527e6902e3efc9de915ed931a521d8`。
+
+### 已完成证据工具的保存与审计修复
+
+`7d420986` 保存本轮此前已完成的隔离维护／故障证据工具及对应测试，不会
+自动启动验证。维护证据 `movkeW`／`cT8mFl` 已只读复核：34 roots、38 次受控
+请求、1 个实际写入 Job；压力下降、原输入与确切来源保留、重试未增加调用。
+此证据是协议证明，不是自主摘要质量或长跑证明。
+
+故障证据 `/private/tmp/morphz-reliability-fault-boundaries-66HMGu/result.json`
+保留原写入 `lost`，仅执行一次；随后两次实际 list/read 完成并公开说明不确定
+状态，不用缓存成功回包冒称原写入恢复。旧 `actualOutageMs` 31527 ms 包括
+恢复验证，实际注入配置为 20000 ms；不可把这两个时长混称。提交前仅增加
+只读结果的结构断言以通过严格类型检查，未声称重新跑过该脚本。
+
+独立审计发现并修复：只要求终态记录一致可能把一致的 `failed` 也判 PASS。
+现在 ledger 与 trace 都明确要求工作 root 为 `completed`；新增一致失败负控，
+focused audit tests 6/6 通过。维护 oracle 原有 20 项通过；五个文件的 focused
+严格类型、格式检查通过。没有扩展或重新运行既有功能矩阵。
+
+### 按最新用户范围收尾
+
+已发现的栈溢出、Context SQLite snapshot 失效及审计假通过缺口均已修复，
+阶段提交保留原失败和定向回归。按用户要求结束原目标，无人值守长跑取消，
+不是验收成功。未重启或部署原 Runtime，未推送 GitHub；本地 CI 门已实现，
+不将本机定向回归表述为全量或远端 CI 全绿。
+
+用户原 Runtime `68670` 仍存活，未发停止/重启信号；UI、资料、权限与 Session
+保持不变。自动跟进已删除。本次用户新反馈的页面“应用连接中断”独立排查，
+当前 App 进程与 Runtime 服务正常不等于页面已恢复，未以服务健康代替 UI 验收。
