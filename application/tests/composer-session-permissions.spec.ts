@@ -496,14 +496,23 @@ async function expectApprovalPresentation(page: Page, mode: Mode) {
       {
         tag: "path",
         attributes: {
-          d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
+          d: "M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2",
         },
       },
       {
         tag: "path",
-        attributes: { d: "M6.376 18.91a6 6 0 0 1 11.249.003" },
+        attributes: { d: "M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2" },
       },
-      { tag: "circle", attributes: { cx: "12", cy: "11", r: "4" } },
+      {
+        tag: "path",
+        attributes: { d: "M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8" },
+      },
+      {
+        tag: "path",
+        attributes: {
+          d: "M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15",
+        },
+      },
     ],
     auto_review: [
       {
@@ -512,29 +521,30 @@ async function expectApprovalPresentation(page: Page, mode: Mode) {
           d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
         },
       },
-      { tag: "path", attributes: { d: "m9 12 2 2 4-4" } },
+      { tag: "path", attributes: { d: "m8 10 3 3-3 3m5 0h3" } },
     ],
     full_access: [
       {
-        tag: "rect",
+        tag: "path",
         attributes: {
-          width: "18",
-          height: "11",
-          x: "3",
-          y: "11",
-          rx: "2",
-          ry: "2",
+          d: "M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z",
         },
       },
-      { tag: "path", attributes: { d: "M7 11V7a5 5 0 0 1 9.9-1" } },
+      { tag: "path", attributes: { d: "M12 8v4" } },
+      { tag: "path", attributes: { d: "M12 16h.01" } },
     ],
   } satisfies Record<Mode, unknown>;
-  // Human approval has a person, not an unknown/question mark. An open lock
-  // must never regress to a forbidden/slashed shield.
+  // The user-selected hand / terminal shield / warning shield stay distinct
+  // without changing approval behavior. Neither shield means a confirmed action.
   expect(drawing.nodes).toEqual(expectedNodes[mode]);
   expect(await iconDrawing(icons.row)).toEqual(drawing);
   await expect(icons.trigger).toHaveCSS("width", "16px");
   await expect(icons.trigger).toHaveCSS("height", "16px");
+  for (const icon of [icons.trigger, icons.row]) {
+    await expect(icon).toHaveCSS("stroke-width", "2px");
+    await expect(icon).toHaveCSS("stroke-linecap", "round");
+    await expect(icon).toHaveCSS("stroke-linejoin", "round");
+  }
   const paths = JSON.stringify(drawing);
   const colour = await icons.trigger.evaluate(
     (svg) => getComputedStyle(svg).color,

@@ -1,4 +1,4 @@
-import { LockOpen, Shield, ShieldCheck, ShieldUser } from "lucide-react";
+import { Hand, Shield, ShieldAlert } from "lucide-react";
 import type { SessionPermissionsSnapshot } from "../../../packages/core/src/session-permissions.js";
 
 export function ComposerApprovalIcon({
@@ -8,12 +8,10 @@ export function ComposerApprovalIcon({
 }) {
   const Icon =
     mode === "request_approval"
-      ? ShieldUser
-      : mode === "auto_review"
-        ? ShieldCheck
-        : mode === "full_access"
-          ? LockOpen
-          : Shield;
+      ? Hand
+      : mode === "full_access"
+        ? ShieldAlert
+        : Shield;
   return (
     <Icon
       className="composer-approval-icon"
@@ -21,7 +19,11 @@ export function ComposerApprovalIcon({
       strokeWidth={2}
       fill="none"
       aria-hidden="true"
-    />
+    >
+      {/* Keep Lucide's shared shield outline; >_ identifies automated tool
+          review, not a checkmark that could imply the action was approved. */}
+      {mode === "auto_review" && <path d="m8 10 3 3-3 3m5 0h3" />}
+    </Icon>
   );
 }
 
