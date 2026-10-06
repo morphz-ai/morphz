@@ -546,6 +546,24 @@ if (mode !== "keep") {
     JSON.stringify({
       "desk:desk:desk": {
         ...initialDraft,
+        ...(mode === "task-result"
+          ? { taskResult: { taskId: "old-task", revision: 2 } }
+          : {}),
+        ...(mode === "script-generation"
+          ? {
+              scriptGeneration: {
+                productionId: "old-production",
+                targetId: "old-script-item",
+                baseRevision: 2,
+                contextRevision: 3,
+                purpose: "draft",
+                references: [],
+                maxCandidates: 1,
+                maxOutputCharacters: 24000,
+                maxReviewPasses: 1,
+              },
+            }
+          : {}),
         ...(mode === "selected" || mode === "special"
           ? { cognitiveApplication: target() }
           : {}),

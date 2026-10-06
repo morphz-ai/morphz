@@ -231,9 +231,57 @@ test(
       );
       assert(await input().evaluate((node) => node === document.activeElement));
       assertNoMutationIo(removed);
+
+      // A removable creation intent must also be directly dismissible without
+      // opening its scope details. Keep the original menu-removal proof above.
+      await plus().click();
+      await menu()
+        .getByRole("button", {
+          name: `${shortcut.label}，${shortcut.application}`,
+          exact: true,
+        })
+        .click();
+      await input().fill(`原文继续编辑 ${shortcut.label} 😀`);
+      const beforeDismiss = await report();
+      const dismiss = page.locator(".composer-scope-remove");
+      assert(
+        await dismiss.isVisible(),
+        "creation intent has a direct close button",
+      );
+      assert.equal(
+        await dismiss.getAttribute("aria-label"),
+        `取消${shortcut.label}`,
+      );
+      assert.equal(await scopeMenu().isVisible(), false);
+      if (index === 0) await dismiss.click();
+      else {
+        await scope().focus();
+        await page.keyboard.press("Tab");
+        assert(
+          await dismiss.evaluate((node) => node === document.activeElement),
+        );
+        await page.keyboard.press(index === 1 ? "Enter" : "Space");
+      }
+      const afterDismiss = await report();
+      const { intent: _intent, ...ordinaryDraft } =
+        beforeDismiss.drafts["desk:desk:desk"];
+      assert.deepEqual(afterDismiss.drafts, {
+        ...beforeDismiss.drafts,
+        "desk:desk:desk": ordinaryDraft,
+      });
+      assert.equal(afterDismiss.textarea.value, beforeDismiss.textarea.value);
+      assert.equal(await scopeMenu().isVisible(), false);
+      assert.equal(await dismiss.count(), 0);
+      assert(await input().evaluate((node) => node === document.activeElement));
+      assertNoMutationIo(afterDismiss);
     }
 
     await load("project");
+    assert.equal(
+      await page.locator(".composer-scope-remove").count(),
+      0,
+      "an actual project scope is not a removable local intent",
+    );
     await input().fill("项目 A 原草稿 · 范围回归测试 😀");
     await page.waitForFunction(
       () =>
@@ -269,6 +317,42 @@ test(
       .click();
     assert.deepEqual((await report()).drafts, projectDraft.drafts);
     assert.equal((await scope().innerText()).trim(), "项目 A");
+    assert.equal(await page.locator(".composer-scope-remove").count(), 0);
+    assertNoMutationIo(await report());
+
+    for (const binding of [
+      { mode: "task-result", field: "taskResult", label: "取消提交事项结果" },
+      {
+        mode: "script-generation",
+        field: "scriptGeneration",
+        label: "取消剧本请求引用",
+      },
+    ]) {
+      await load(binding.mode);
+      await input().fill(`保留专用请求的未发送原稿 ${binding.mode} 😀`);
+      const before = await report();
+      assert(before.drafts["desk:desk:desk"][binding.field]);
+      await page
+        .getByRole("button", { name: binding.label, exact: true })
+        .click();
+      const after = await report();
+      const ordinaryDraft = { ...before.drafts["desk:desk:desk"] };
+      delete ordinaryDraft[binding.field];
+      assert.deepEqual(after.drafts, {
+        ...before.drafts,
+        "desk:desk:desk": ordinaryDraft,
+      });
+      assert.equal(after.textarea.value, before.textarea.value);
+      assert.equal(await page.locator(".composer-scope-remove").count(), 0);
+      assert(await input().evaluate((node) => node === document.activeElement));
+      assertNoMutationIo(after);
+    }
+    await load("special");
+    assert.equal(
+      await page.locator(".composer-scope-remove").count(),
+      0,
+      "a frozen in-flight supplement is not removable via ordinary scope cancellation",
+    );
     assertNoMutationIo(await report());
 
     await load();

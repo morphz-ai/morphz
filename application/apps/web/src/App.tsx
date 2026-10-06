@@ -1201,6 +1201,29 @@ function WorkspaceApp({
       updateComposerDraft(previous, key, emptyDraft, update, initial),
     );
   }
+  function removeComposerReference(kind: "intent" | "scriptGeneration") {
+    if (
+      !origin.isActive() ||
+      currentContext.current !== contextKey ||
+      cognitiveChoiceOwner.current.scopeKey !== cognitiveChoiceScopeKey ||
+      sending ||
+      draft.pendingSupplement
+    )
+      return;
+    updateDraft(contextKey, (current) => {
+      // Remove only the reference the person actually saw. Preserve newer
+      // text, attachments, quotes and choices, never spread a rendered draft.
+      if (current[kind] !== draft[kind]) return current;
+      if (kind === "scriptGeneration") {
+        const { scriptGeneration: _, ...rest } = current;
+        return rest;
+      }
+      if (current.taskResult !== draft.taskResult) return current;
+      const { taskResult: _, intent: __, ...rest } = current;
+      return rest;
+    });
+    input.current?.focus({ preventScroll: true });
+  }
   function requestCognitiveApplicationChoice(
     entry?: CognitiveApplicationEntry,
     expectedScopeKey = cognitiveChoiceScopeKey,
@@ -3362,6 +3385,31 @@ function WorkspaceApp({
                                     composerScopeTitle)
                             }
                             description={composerScopeDescription}
+                            dismissal={
+                              draft.continuation || cognitiveInputTarget
+                                ? undefined
+                                : draft.taskResult || draft.intent
+                                  ? {
+                                      label: draft.taskResult
+                                        ? "取消提交事项结果"
+                                        : `取消${composerIntentLabel}`,
+                                      disabled:
+                                        sending || !!draft.pendingSupplement,
+                                      onRemove: () =>
+                                        removeComposerReference("intent"),
+                                    }
+                                  : draft.scriptGeneration
+                                    ? {
+                                        label: "取消剧本请求引用",
+                                        disabled:
+                                          sending || !!draft.pendingSupplement,
+                                        onRemove: () =>
+                                          removeComposerReference(
+                                            "scriptGeneration",
+                                          ),
+                                      }
+                                    : undefined
+                            }
                             onOpenChange={(open) => {
                               if (!open) scopeMenuOrigin.current = undefined;
                               else if (scopeMenuOrigin.current === undefined)
@@ -3452,11 +3500,11 @@ function WorkspaceApp({
                                     className="icon-button"
                                     aria-label="移除剧本请求引用"
                                     disabled={sending}
-                                    onClick={() => {
-                                      const { scriptGeneration: _, ...rest } =
-                                        draft;
-                                      setDraft(contextKey, rest);
-                                    }}
+                                    onClick={() =>
+                                      removeComposerReference(
+                                        "scriptGeneration",
+                                      )
+                                    }
                                   >
                                     <X />
                                   </button>
@@ -3512,15 +3560,9 @@ function WorkspaceApp({
                                           ? "改为普通输入，不完成事项"
                                           : "移除输入意图"
                                       }
-                                      onClick={() => {
-                                        const {
-                                          taskResult: _,
-                                          intent: __,
-                                          ...rest
-                                        } = draft;
-                                        setDraft(contextKey, rest);
-                                        input.current?.focus();
-                                      }}
+                                      onClick={() =>
+                                        removeComposerReference("intent")
+                                      }
                                     >
                                       <X />
                                     </button>

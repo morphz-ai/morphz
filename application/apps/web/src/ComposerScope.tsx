@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ChevronDown, Link2 } from "lucide-react";
+import { ChevronDown, Link2, X } from "lucide-react";
 import { ComposerOptions } from "./ComposerOptions.js";
 import "./composer-compact.css";
 
@@ -10,6 +10,7 @@ export function ComposerScope({
   children,
   expandable = false,
   showPlainScope = true,
+  dismissal,
   onOpenChange,
 }: {
   label: string;
@@ -18,21 +19,21 @@ export function ComposerScope({
   expandable?: boolean;
   /** An implicit personal desk is routing, not a visible association. */
   showPlainScope?: boolean;
+  /** Only explicit local bindings are dismissible; never the implicit owner. */
+  dismissal?: { label: string; disabled?: boolean; onRemove(): void };
   onOpenChange?(open: boolean): void;
 }) {
   if (!expandable && !showPlainScope) return null;
-  if (!expandable)
-    return (
-      <span
-        className="composer-scope-label"
-        title={description || label}
-        aria-label={`输入关联：${description || label}`}
-      >
-        <Link2 aria-hidden="true" />
-        <span>{label}</span>
-      </span>
-    );
-  return (
+  const summary = !expandable ? (
+    <span
+      className="composer-scope-label"
+      title={description || label}
+      aria-label={`输入关联：${description || label}`}
+    >
+      <Link2 aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  ) : (
     <ComposerOptions
       label="输入关联"
       description={description || label}
@@ -51,5 +52,21 @@ export function ComposerScope({
       persistentContent={children || <p>{description || label}</p>}
       onOpenChange={onOpenChange}
     />
+  );
+  if (!dismissal) return summary;
+  return (
+    <div className="composer-scope-association">
+      {summary}
+      <button
+        type="button"
+        className="icon-button composer-scope-remove"
+        aria-label={dismissal.label}
+        title={dismissal.label}
+        disabled={dismissal.disabled}
+        onClick={dismissal.onRemove}
+      >
+        <X aria-hidden="true" />
+      </button>
+    </div>
   );
 }

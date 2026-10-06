@@ -55,9 +55,15 @@
 }
 .composer-action-leading:has(.composer-status-slot):has(
     > .composer-scope-trigger,
-    > .composer-scope-label
+    > .composer-scope-label,
+    > .composer-scope-association
   ) {
   min-width: calc(var(--composer-control-size) * 3 + 8px);
+}
+.composer-action-leading:has(.composer-status-slot):has(
+    > .composer-scope-association
+  ) {
+  min-width: calc(var(--composer-control-size) * 4 + 12px);
 }
 .composer-action-trailing {
   flex: 0 1 auto;
@@ -67,6 +73,12 @@
   align-items: center;
   flex: 1 1 0;
   min-width: 0;
+}
+.composer-action-leading:has(> .composer-scope-association)
+  > .composer-status-slot {
+  /* Reserve the notice hit target before shrinking the removable label.
+     A zero-basis status slot otherwise lets it paint over execution settings. */
+  min-width: var(--composer-control-size);
 }
 .app .composer-status-slot > .model-status {
   display: flex;
@@ -186,6 +198,27 @@
 .composer-scope-trigger,
 .composer-scope-label {
   max-width: 180px;
+}
+.composer-scope-association {
+  display: inline-flex;
+  align-items: center;
+  min-width: calc(var(--composer-control-size) * 2);
+  max-width: 212px;
+}
+.composer-scope-association > .composer-scope-trigger,
+.composer-scope-association > .composer-scope-label {
+  flex: 0 1 auto;
+  min-width: var(--composer-control-size);
+}
+.app .composer-scope-remove {
+  flex: 0 0 var(--composer-control-size);
+  width: var(--composer-control-size);
+  height: var(--composer-control-size);
+  color: var(--text-secondary);
+}
+.app .composer-scope-remove > svg {
+  width: 13px;
+  height: 13px;
 }
 .composer-scope-trigger > span,
 .composer-scope-label > span,
