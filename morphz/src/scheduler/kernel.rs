@@ -72,7 +72,10 @@ impl SchedulerKernel {
         let mut contention_retries = 0u64;
         let mut delay = std::time::Duration::from_millis(25);
         loop {
-            match self.execute_once(command.clone()).await {
+            // The typed interpreter has many mutually exclusive command arms.
+            // Keep its state off every controller's inline Future while polling
+            // it in this same task, retaining cancellation and all fence rules.
+            match Box::pin(self.execute_once(command.clone())).await {
                 Err(error)
                     if error.is_transient_storage_contention()
                         && contention_retries < MAX_CONTENTION_RETRIES =>
