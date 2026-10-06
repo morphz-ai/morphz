@@ -249,7 +249,7 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
     await openInput(page);
     const tools = composer.locator(".composer-action-bar");
     await expect(
-      tools.getByRole("button", { name: "添加输入内容", exact: true }),
+      tools.getByRole("button", { name: "新建或添加", exact: true }),
     ).toBeVisible();
     await expect(
       tools.getByRole("button", { name: "执行设置", exact: true }),

@@ -37,7 +37,7 @@ test("应用 Dock 与单底栏分工清楚；内部菜单保留草稿，外部�
   expect(
     (await dock.boundingBox())!.y + (await dock.boundingBox())!.height,
   ).toBeLessThanOrEqual((await page.locator(".composer").boundingBox())!.y);
-  for (const name of ["添加输入内容", "执行设置", "语音输入"])
+  for (const name of ["新建或添加", "执行设置", "语音输入"])
     await expect(dock.getByRole("button", { name, exact: true })).toHaveCount(
       0,
     );

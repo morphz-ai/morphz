@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Pool } from "pg";
 import {
   createCognitiveAppRegistry,
+  cognitiveAppCatalogMetadata,
   type CognitiveAppRegistryContext,
 } from "../packages/platform/src/cognitive-app-registry.js";
 import { platformSchemaSql } from "../packages/platform/src/schema.js";
@@ -18,6 +19,10 @@ import {
   type SqlQuery,
 } from "../packages/storage/src/sql.js";
 import { canonicalJsonBytes } from "../packages/cognitive-app-sdk/src/domain-wire.js";
+import { parseCognitiveAppCatalog } from "../packages/core/src/cognitive-app-api.js";
+import { initialWorkspace } from "../packages/core/src/model.js";
+import { projectApplicationPresentation } from "../apps/web/src/application-presentation.js";
+import { cognitiveCreationChoices } from "../apps/web/src/composer-creation-model.js";
 
 const now = "2026-10-05T00:00:00.000Z";
 const later = "2026-10-05T01:00:00.000Z";
@@ -242,6 +247,182 @@ async function view(h: Harness, owner = "alice", viewId = "view-a") {
 }
 
 for (const backend of ["sqlite", "postgres"] as const) {
+  test(`registry creation declarations reach authorized headless quick choices on ${backend}`, async () =>
+    isolated(backend, async (h) => {
+      const old = await installed(h);
+      const originalHash = createHash("sha256")
+        .update(canonicalJsonBytes(definition))
+        .digest("hex");
+      assert.equal(old.definitionHash, originalHash);
+      const creationDefinition = {
+        ...definition,
+        version: "1.1.0",
+        operations: definition.operations.map((operation) => ({
+          ...operation,
+          compose: {
+            kind: "create" as const,
+            label: "新建笔记",
+            prompt: "请帮我构思一份新笔记。",
+          },
+        })),
+      };
+      const installedCreation = await h.tx("alice", (r) =>
+        r.installVersion(creationDefinition, later),
+      );
+      const catalog = (principal = "alice") =>
+        h.tx(principal, async (r) => {
+          const own = await r.readOwnRegistry(
+            { limit: 20 },
+            { mode: "registered" },
+          );
+          return parseCognitiveAppCatalog({
+            ...own,
+            versions: own.versions.map(cognitiveAppCatalogMetadata),
+          });
+        });
+      const workspace = initialWorkspace(now);
+      workspace.projects[0]!.id = "project-a";
+      const choices = async (principal = "alice") =>
+        cognitiveCreationChoices(
+          projectApplicationPresentation({
+            workspace,
+            principalId: principal,
+            workspaceId: "project-a",
+            cognitiveCatalog: await catalog(principal),
+          }),
+        );
+      const beforeConsent = await catalog();
+      assert.deepEqual(
+        beforeConsent.versions.find((entry) => entry.version === "1.1.0")!
+          .creationIntents,
+        [
+          {
+            operationId: "create-note",
+            label: "新建笔记",
+            prompt: "请帮我构思一份新笔记。",
+          },
+        ],
+      );
+      assert.equal(await choices().then((entries) => entries.length), 0);
+      await h.tx("alice", (r) =>
+        r.changeOwnGrant({
+          appId: definition.id,
+          version: "1.1.0",
+          expectedRevision: 0,
+          state: "active",
+          now: later,
+        }),
+      );
+      assert.deepEqual(await choices(), []); // Consent is not a connection.
+      const created = await h.tx("alice", (r) =>
+        r.createOwnConnection({
+          ...connection("conn-create"),
+          version: "1.1.0",
+        }),
+      );
+      const available = await choices();
+      assert.equal(available.length, 1);
+      assert.equal(available[0]!.intent.operationId, "create-note");
+      assert.deepEqual(available[0]!.target, {
+        connectionId: created.connectionId,
+        authority: {
+          appId: definition.id,
+          version: "1.1.0",
+          definitionHash: installedCreation.definitionHash,
+          instanceId: created.instanceId,
+          serviceId: created.serviceId,
+          dataAuthorityId: created.dataAuthorityId,
+        },
+      });
+      const publicVersion = (await catalog()).versions.find(
+        (entry) => entry.version === "1.1.0",
+      )!;
+      assert.equal(publicVersion.ui, null); // No window is needed.
+      assert.equal(Object.hasOwn(publicVersion, "operations"), false);
+      assert.equal(
+        JSON.stringify(await catalog()).includes("private_alias"),
+        false,
+      );
+      assert.deepEqual(await choices("bob"), []);
+      await assert.rejects(
+        () =>
+          h.tx("alice", (r) =>
+            r.installVersion(
+              {
+                ...creationDefinition,
+                operations: creationDefinition.operations.map((operation) => ({
+                  ...operation,
+                  compose: { ...operation.compose, prompt: "另一份意图" },
+                })),
+              },
+              later,
+            ),
+          ),
+        code("conflict"),
+      );
+      const retained = await h.tx("alice", (r) =>
+        r.readExactVersion(definition.id, definition.version),
+      );
+      assert.equal(retained.definitionHash, originalHash);
+      assert.deepEqual(
+        canonicalJsonBytes(retained.definition),
+        canonicalJsonBytes(definition),
+      );
+      assert.equal(
+        Object.hasOwn(
+          cognitiveAppCatalogMetadata(
+            (
+              await h.tx("alice", (r) => r.readOwnRegistry({ limit: 20 }))
+            ).versions.find((entry) => entry.version === "1.0.0")!,
+          ),
+          "creationIntents",
+        ),
+        false,
+      );
+
+      await h.tx("alice", (r) =>
+        r.changeOwnConnection({
+          ...connection(created.connectionId),
+          expectedRevision: 1,
+          state: "disabled",
+        }),
+      );
+      assert.deepEqual(await choices(), []);
+      await h.tx("alice", (r) =>
+        r.changeOwnConnection({
+          ...connection(created.connectionId),
+          expectedRevision: 2,
+          state: "active",
+        }),
+      );
+      assert.equal((await choices()).length, 1);
+      await h.tx("alice", (r) =>
+        r.changeOwnGrant({
+          appId: definition.id,
+          version: "1.1.0",
+          expectedRevision: 1,
+          state: "disabled",
+          now: later,
+        }),
+      );
+      assert.deepEqual(await choices(), []);
+      await h.tx("alice", (r) =>
+        r.changeOwnGrant({
+          appId: definition.id,
+          version: "1.1.0",
+          expectedRevision: 2,
+          state: "active",
+          now: later,
+        }),
+      );
+      await h.tx("alice", async (_, q) => {
+        await q.change(
+          "UPDATE app_installations SET state='disabled' WHERE tenant_id=? AND installation_id=?",
+          ["tenant-a", installedCreation.installationId],
+        );
+      });
+      assert.deepEqual(await choices(), []);
+    }));
   test(`registry exact own connection management remains available after disabling on ${backend}`, async () =>
     isolated(backend, async (h) => {
       await installed(h);

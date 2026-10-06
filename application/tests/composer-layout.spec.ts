@@ -235,7 +235,7 @@ test("输入按钮悬停不移动命中区域；键盘、减少动态和弹窗�
   await input.fill("浮动工具验收草稿");
   // The single action row keeps + and microphone mounted. File/capture actions
   // now belong to the explicit + menu, not the withdrawn input-tool group.
-  const add = page.getByRole("button", { name: "添加输入内容", exact: true });
+  const add = page.getByRole("button", { name: "新建或添加", exact: true });
   const microphone = page.getByRole("button", {
     name: "语音输入",
     exact: true,
@@ -258,14 +258,29 @@ test("输入按钮悬停不移动命中区域；键盘、减少动态和弹窗�
   await expect(add).toBeFocused();
   await add.press("Enter");
   const media = page.getByRole("group", {
-    name: "添加到这条消息",
+    name: "新建与添加",
     exact: true,
   });
   const attach = media.getByRole("button", { name: "附加文件", exact: true });
   const capture = media.getByRole("button", { name: "截图输入", exact: true });
   await expect(attach).toBeVisible();
   await expect(capture).toBeVisible();
-  // Persistent capture content precedes the file option in the real menu.
+  // New-intent rows precede resources; native keyboard navigation retains every
+  // creation item and reaches the original capture/file sequence explicitly.
+  const create = media.getByRole("button", {
+    name: "构思剧本，剧本工作室",
+    exact: true,
+  });
+  await expect(create).toBeFocused();
+  await create.press("ArrowDown");
+  await expect(
+    media.getByRole("button", { name: "新建事项，事项", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(
+    media.getByRole("button", { name: "起草文档，内容库", exact: true }),
+  ).toBeFocused();
+  await page.keyboard.press("ArrowDown");
   await expect(capture).toBeFocused();
   await capture.press("ArrowDown");
   await expect(attach).toBeFocused();
@@ -444,7 +459,7 @@ test.describe("触控输入工具", () => {
       if (name === "工作台") await composerAction(page, "固定输入框");
       const row = page.locator(".composer-action-bar");
       const add = row.getByRole("button", {
-        name: "添加输入内容",
+        name: "新建或添加",
         exact: true,
       });
       const microphone = row.getByRole("button", {

@@ -94,6 +94,19 @@ export function cognitiveAppCatalogMetadata(entry: CognitiveAppCatalogVersion) {
     registeredAt,
     installationState,
   } = entry;
+  const creationIntents = definition.operations.flatMap((operation) =>
+    operation.compose === undefined
+      ? []
+      : [
+          {
+            operationId: operation.id,
+            label: operation.compose.label,
+            ...(operation.compose.prompt === undefined
+              ? {}
+              : { prompt: operation.compose.prompt }),
+          },
+        ],
+  );
   return {
     appId,
     version,
@@ -109,6 +122,7 @@ export function cognitiveAppCatalogMetadata(entry: CognitiveAppCatalogVersion) {
     grant,
     registeredAt,
     installationState,
+    ...(creationIntents.length ? { creationIntents } : {}),
   };
 }
 export type CognitiveAppRegistryCatalogRequest = {

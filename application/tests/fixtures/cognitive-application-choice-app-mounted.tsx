@@ -101,6 +101,13 @@ function version(
       consentedAt: now,
       updatedAt: now,
     },
+    creationIntents: [
+      {
+        operationId: "notes.create",
+        label: "新建作者笔记",
+        prompt: "请帮我构思一篇作者笔记。",
+      },
+    ],
   };
 }
 function connection(
@@ -675,6 +682,21 @@ Object.assign(window, {
     },
     hideCatalog() {
       catalogHidden = true;
+      changed();
+    },
+    changeCreationHint(label: string, prompt: string) {
+      for (const entry of entries)
+        entry.creationIntents = [
+          { operationId: "notes.create", label, prompt },
+        ];
+      changed();
+    },
+    manyCreationHints() {
+      entries[0]!.creationIntents = Array.from({ length: 40 }, (_, index) => ({
+        operationId: `notes.create-${index}`,
+        label: `长名称的新建能力 ${index}`,
+        prompt: `新建提示 ${index}`,
+      }));
       changed();
     },
     refresh() {

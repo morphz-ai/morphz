@@ -155,7 +155,7 @@ test("independently packed optional GUI builds deterministically with only the p
     readFileSync(join(packed.sourcePackage, "package.json"), "utf8"),
   );
   assert.deepEqual(package_.dependencies, {
-    "@morphz/cognitive-app-sdk": "0.2.0",
+    "@morphz/cognitive-app-sdk": "0.3.0",
   });
   assert.deepEqual(package_.devDependencies, { esbuild: "0.28.2" });
   const files = ["notes.html", "definition.gui.json", "install.gui.json"];

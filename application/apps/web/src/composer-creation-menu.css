@@ -1,0 +1,147 @@
+.composer-options.composer-add-menu {
+  width: 292px;
+}
+.composer-creation-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.composer-creation-menu section {
+  min-width: 0;
+}
+.composer-creation-menu section + section,
+.composer-creation-more {
+  border-top: 1px solid var(--line);
+  padding-top: 5px;
+}
+.composer-creation-menu h3 {
+  margin: 4px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.app
+  .composer-creation-menu
+  :is(
+    .composer-creation-action,
+    .composer-creation-attachment,
+    .composer-creation-more
+  ) {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  justify-content: flex-start;
+}
+.composer-creation-menu
+  :is(
+    .composer-creation-action,
+    .composer-creation-attachment,
+    .composer-creation-more
+  )
+  > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+.composer-creation-action > span,
+.composer-creation-more > span {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-creation-action > small {
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app .composer-creation-menu button:enabled:hover {
+  background: var(--soft);
+}
+.app .composer-creation-menu button:focus-visible {
+  outline: 1px solid var(--muted);
+  outline-offset: -1px;
+}
+.composer-creation-search-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+}
+.composer-creation-search-heading svg {
+  width: 16px;
+  height: 16px;
+}
+.composer-creation-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 4px 4px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.composer-creation-search > svg {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.app .composer-creation-search > input {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+}
+.app .composer-creation-search > input:focus {
+  /* One focus boundary around the search group, not a second input ring. */
+  outline: none;
+  box-shadow: none;
+}
+.composer-creation-search:focus-within {
+  border-color: var(--text-secondary);
+  box-shadow: inset 0 0 0 1px var(--text-secondary);
+}
+.composer-creation-results > p {
+  margin: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.composer-creation-results {
+  max-height: min(320px, 38dvh);
+  overflow-y: auto;
+  min-height: 0;
+}
+.app .composer-creation-menu .composer-creation-more {
+  border-top: 1px solid var(--line);
+  margin-top: 3px;
+}
+@media (pointer: coarse) {
+  .app
+    .composer-creation-menu
+    :is(
+      .composer-creation-action,
+      .composer-creation-attachment,
+      .composer-creation-more
+    ) {
+    min-height: 44px;
+  }
+}

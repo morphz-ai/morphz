@@ -2,12 +2,22 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { createPortal, flushSync } from "react-dom";
 import {
   FilePlus,
+  FilePenLine,
+  Film,
+  ListChecks,
+  Layers,
   Paperclip,
   Plus,
   SquareBottomDashedScissors,
   X,
 } from "lucide-react";
 import { ComposerOptions } from "./ComposerOptions.js";
+import { ComposerCreationMenu } from "./ComposerCreationMenu.js";
+import {
+  builtinCreationIntents,
+  type CognitiveCreationChoice,
+} from "./composer-creation-model.js";
+import type { InputIntent } from "../../../packages/core/src/input-intent.js";
 import { AttachmentPreview } from "./AttachmentPreview.js";
 import { restoreInputToolFocus } from "./input-tool-focus.js";
 import type { InputAttachment } from "../../../packages/core/src/model.js";
@@ -27,6 +37,7 @@ export function MessageAttachments({
   inputRef,
   variant = "tool",
   capture,
+  creation,
 }: {
   previewTarget: HTMLElement | null;
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -42,6 +53,15 @@ export function MessageAttachments({
     disabled?: boolean;
     title?: string;
     onSelect(hideWindow: boolean): void;
+  };
+  creation?: {
+    disabled?: boolean;
+    builtinDisabled?: boolean;
+    cognitiveDisabled?(choice: CognitiveCreationChoice): boolean;
+    disabledReason?: string;
+    choices: readonly CognitiveCreationChoice[];
+    onBuiltin(intent: InputIntent): void;
+    onCognitive(choice: CognitiveCreationChoice): void;
   };
 }) {
   const file = useRef<HTMLInputElement>(null);
@@ -239,44 +259,101 @@ export function MessageAttachments({
       {allowAdd && variant === "menu" && (
         <ComposerOptions
           align="start"
-          label="添加输入内容"
-          menuLabel="添加到这条消息"
+          label={creation ? "新建或添加" : "添加输入内容"}
+          menuLabel={creation ? "新建与添加" : "添加到这条消息"}
           triggerIcon={<Plus />}
           triggerClassName="icon-button composer-add"
           triggerRef={trigger}
-          options={[
-            {
-              label: "附加文件",
-              text: selecting
-                ? "正在选择文件…"
-                : busy
-                  ? "正在添加…"
-                  : "图片或文件",
-              title: "支持的文件以实际附件能力为准；不保存为内容库对象",
-              icon: <FilePlus />,
-              disabled: fileDisabled,
-              onSelect: chooseFiles,
-            },
-          ]}
-          persistentContent={
-            capture && (
-              <button
-                type="button"
-                className="composer-capture-action"
-                aria-label="截图输入"
-                title={capture.title}
-                disabled={capture.disabled}
-                onClick={(event) => {
-                  // Move focus to the persistent + before the capture panel opens.
-                  trigger.current?.focus({ preventScroll: true });
-                  capture.onSelect(event.altKey);
-                }}
-              >
-                <SquareBottomDashedScissors />
-                <span>截图</span>
-              </button>
-            )
-          }
+          menuClassName="composer-add-menu"
+          options={[]}
+          content={(close) => (
+            <ComposerCreationMenu
+              onClose={close}
+              primary={
+                creation
+                  ? builtinCreationIntents.map((intent) => ({
+                      key: intent.intent,
+                      label: intent.label,
+                      application: intent.application,
+                      icon:
+                        intent.intent === "script" ? (
+                          <Film />
+                        ) : intent.intent === "task" ? (
+                          <ListChecks />
+                        ) : (
+                          <FilePenLine />
+                        ),
+                      disabled:
+                        disabled ||
+                        creation.disabled ||
+                        creation.builtinDisabled,
+                      title:
+                        creation.disabled || creation.builtinDisabled
+                          ? creation.disabledReason
+                          : undefined,
+                      onSelect: () => creation.onBuiltin(intent.intent),
+                    }))
+                  : []
+              }
+              additional={(creation?.choices ?? []).map((choice) => ({
+                key: choice.key,
+                label: choice.intent.label,
+                application: `${choice.application} · ${choice.connectionLabel}`,
+                icon: <Layers />,
+                disabled:
+                  disabled ||
+                  creation?.disabled ||
+                  creation?.cognitiveDisabled?.(choice),
+                title:
+                  creation?.disabled || creation?.cognitiveDisabled?.(choice)
+                    ? creation.disabledReason
+                    : `${choice.intent.label} · ${choice.application} · 数据连接：${choice.connectionLabel} · ${choice.target.connectionId}`,
+                onSelect: () => creation?.onCognitive(choice),
+              }))}
+              attachments={
+                <>
+                  {capture && (
+                    <button
+                      type="button"
+                      className="composer-capture-action composer-creation-attachment"
+                      aria-label="截图输入"
+                      title={capture.title}
+                      disabled={capture.disabled}
+                      onClick={(event) => {
+                        // Move focus to the persistent + before the capture panel opens.
+                        trigger.current?.focus({ preventScroll: true });
+                        close();
+                        capture.onSelect(event.altKey);
+                      }}
+                    >
+                      <SquareBottomDashedScissors />
+                      <span>截图</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="composer-creation-attachment"
+                    aria-label="附加文件"
+                    title="支持的文件以实际附件能力为准；不保存为内容库对象"
+                    disabled={fileDisabled}
+                    onClick={() => {
+                      close();
+                      chooseFiles();
+                    }}
+                  >
+                    <FilePlus />
+                    <span>
+                      {selecting
+                        ? "正在选择文件…"
+                        : busy
+                          ? "正在添加…"
+                          : "图片或文件"}
+                    </span>
+                  </button>
+                </>
+              }
+            />
+          )}
         />
       )}
       {allowAdd && variant !== "menu" && (

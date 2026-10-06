@@ -77,7 +77,7 @@ test("记录与输入同属交流面板且各有独立边界，空态紧凑，�
       controls.getByRole("button", { name, exact: true }),
     ).toBeVisible();
   await expect(media.locator(".composer-scope-label")).toBeVisible();
-  for (const name of ["添加输入内容", "执行设置", "语音输入"])
+  for (const name of ["新建或添加", "执行设置", "语音输入"])
     await expect(
       media.getByRole("button", { name, exact: true }),
     ).toBeVisible();
@@ -152,7 +152,7 @@ test("工作页面板键盘与外部点击边界正确，窄窗和空记录不�
       "relative",
     );
     for (const name of [
-      "添加输入内容",
+      "新建或添加",
       "执行设置",
       "语音输入",
       "收起 AI 输入框",

@@ -94,7 +94,7 @@ test("从输入框连续 Tab 能到达底栏常用按钮，面板控制有独立
     if (visited.includes("收起 AI 输入框")) break;
   }
   expect(visited).not.toContain("输入关联");
-  for (const name of ["添加输入内容", "执行设置", "语音输入"])
+  for (const name of ["新建或添加", "执行设置", "语音输入"])
     expect(visited, name).toContain(name);
   await openInput(page);
   await composerAction(page, "查看交流记录");
@@ -137,7 +137,7 @@ test("系统附件选择取消后恢复原按钮焦点，保留草稿且不触�
   });
   await page.getByLabel("消息附件文件").dispatchEvent("cancel");
   await expect(
-    page.getByRole("button", { name: "添加输入内容", exact: true }),
+    page.getByRole("button", { name: "新建或添加", exact: true }),
   ).toBeFocused();
   await openComposerMedia(page);
   await expect(attach).toBeEnabled();

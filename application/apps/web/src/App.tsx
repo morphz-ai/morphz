@@ -51,7 +51,10 @@ import {
   draftOwner,
   requirePersistentDraftOwner,
 } from "./local-preferences.js";
-import { inputIntents } from "../../../packages/core/src/input-intent.js";
+import {
+  inputIntents,
+  type InputIntent,
+} from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
 import { WorkspaceNotice } from "./WorkspaceNotice.js";
 import { TextQuoteDrafts, TextQuoteProvider } from "./TextQuotes.js";
@@ -74,6 +77,13 @@ import {
 } from "./application-presentation.js";
 import { CognitiveApplicationPicker } from "./features/applications/CognitiveApplicationChoices.js";
 import { chooseCognitiveApplication } from "./host/cognitive-application-choice.js";
+import {
+  cognitiveCreationChoices,
+  cognitiveCreationConflicts,
+  prepareCognitiveCreation,
+  prepareBuiltinCreation,
+  type CognitiveCreationChoice,
+} from "./composer-creation-model.js";
 import {
   guardCognitiveAppApplicationCommand,
   parseCognitiveAppApplicationTarget,
@@ -708,6 +718,11 @@ function WorkspaceApp({
     artifact,
     cognitiveSurface,
     directory: applicationDirectory,
+    creationBusy:
+      sending ||
+      speechRecording ||
+      !!uploadingDrafts[contextKey] ||
+      !client.online,
   });
   const [cognitiveGuiChoice, setCognitiveGuiChoice] = useState<{
     scopeKey: string;
@@ -724,6 +739,11 @@ function WorkspaceApp({
     artifact,
     cognitiveSurface,
     directory: applicationDirectory,
+    creationBusy:
+      sending ||
+      speechRecording ||
+      !!uploadingDrafts[contextKey] ||
+      !client.online,
   };
   const scopeMenuOrigin = useRef<string | undefined>(undefined);
   useEffect(() => {
@@ -1204,6 +1224,7 @@ function WorkspaceApp({
     target: CognitiveAppApplicationTarget | null,
     expectedScopeKey: string,
     expectedContextKey: string,
+    creation?: CognitiveCreationChoice,
   ) {
     let selected: CognitiveAppApplicationTarget | null;
     try {
@@ -1224,57 +1245,140 @@ function WorkspaceApp({
       setNotice("输入工作范围已有变化，原草稿已保留。");
       return;
     }
-    writeDrafts((previous) => {
-      const live = cognitiveChoiceOwner.current;
-      if (
-        !currentCognitiveChoiceWindow() ||
-        !origin.isActive() ||
-        !host.currentProjection() ||
-        live.scopeKey !== expectedScopeKey ||
-        currentContext.current !== expectedContextKey ||
-        !live.project
-      )
-        return previous;
-      if (
-        selected &&
-        !live.directory.quickEntries.some(
-          (entry) =>
-            entry.kind === "cognitive" &&
-            cognitiveApplicationTargets(entry).some((candidate) =>
-              sameCognitiveAppApplicationTarget(candidate, selected),
-            ),
+    let creationPrepared = false;
+    const write = () =>
+      writeDrafts((previous) => {
+        const live = cognitiveChoiceOwner.current;
+        if (
+          !currentCognitiveChoiceWindow() ||
+          !origin.isActive() ||
+          !host.currentProjection() ||
+          live.scopeKey !== expectedScopeKey ||
+          currentContext.current !== expectedContextKey ||
+          !live.project
         )
-      ) {
-        setNotice("应用或数据连接当前不可用，原草稿已保留。");
-        return previous;
-      }
-      // Prepare the same latest surface/quote carrier as the original composer
-      // helper, but reject before invoking it. Its accepted legacy behavior
-      // creates the quote bucket even when a surface callback is a no-op.
-      const quotesKey = expectedContextKey.split(":")[0] + ":quotes";
-      const latest = {
-        ...(previous[expectedContextKey] ?? emptyDraft),
-        textQuotes: previous[quotesKey]?.textQuotes ?? [],
-      };
-      const result = chooseCognitiveApplication(latest, selected, {
-        projectId: live.project.id,
-        expectedContextKey,
-        currentContextKey: currentContext.current,
-        artifactId: live.artifact?.id ?? null,
-        cognitiveSurface: live.cognitiveSurface ?? null,
+          return previous;
+        const liveCreation = creation
+          ? cognitiveCreationChoices(live.directory).find(
+              (candidate) =>
+                candidate.key === creation.key &&
+                sameCognitiveAppApplicationTarget(
+                  candidate.target,
+                  selected ?? undefined,
+                ) &&
+                candidate.intent.operationId === creation.intent.operationId &&
+                candidate.intent.label === creation.intent.label &&
+                candidate.intent.prompt === creation.intent.prompt,
+            )
+          : undefined;
+        if (creation && (live.creationBusy || !liveCreation)) {
+          setNotice("新建能力或输入工作范围当前不可用，原草稿已保留。");
+          return previous;
+        }
+        if (
+          selected &&
+          !live.directory.quickEntries.some(
+            (entry) =>
+              entry.kind === "cognitive" &&
+              cognitiveApplicationTargets(entry).some((candidate) =>
+                sameCognitiveAppApplicationTarget(candidate, selected),
+              ),
+          )
+        ) {
+          setNotice("应用或数据连接当前不可用，原草稿已保留。");
+          return previous;
+        }
+        // Prepare the same latest surface/quote carrier as the original composer
+        // helper, but reject before invoking it. Its accepted legacy behavior
+        // creates the quote bucket even when a surface callback is a no-op.
+        const quotesKey = expectedContextKey.split(":")[0] + ":quotes";
+        const latest = {
+          ...(previous[expectedContextKey] ?? emptyDraft),
+          textQuotes: previous[quotesKey]?.textQuotes ?? [],
+        };
+        const scope = {
+          projectId: live.project.id,
+          expectedContextKey,
+          currentContextKey: currentContext.current,
+          artifactId: live.artifact?.id ?? null,
+          cognitiveSurface: live.cognitiveSurface ?? null,
+        };
+        const result = liveCreation
+          ? prepareCognitiveCreation(latest, liveCreation, scope)
+          : chooseCognitiveApplication(latest, selected, scope);
+        if (!result.ok) {
+          setNotice(result.error);
+          return previous;
+        }
+        creationPrepared = !!liveCreation;
+        return updateComposerDraft(
+          previous,
+          expectedContextKey,
+          emptyDraft,
+          () => result.draft,
+        );
       });
-      if (!result.ok) {
-        setNotice(result.error);
-        return previous;
-      }
-      return updateComposerDraft(
-        previous,
-        expectedContextKey,
-        emptyDraft,
-        () => result.draft,
-      );
-    });
+    if (creation) flushSync(write);
+    else write();
+    if (
+      creationPrepared &&
+      origin.isActive() &&
+      cognitiveChoiceOwner.current.scopeKey === expectedScopeKey &&
+      currentContext.current === expectedContextKey
+    ) {
+      showInput();
+      input.current?.focus({ preventScroll: true });
+    }
     setCognitiveChoice(null);
+  }
+  function prepareBuiltinInput(
+    intent: InputIntent,
+    expectedScopeKey: string,
+    expectedContextKey: string,
+  ) {
+    let prepared = false;
+    flushSync(() =>
+      writeDrafts((previous) => {
+        const live = cognitiveChoiceOwner.current;
+        if (
+          !currentCognitiveChoiceWindow() ||
+          !origin.isActive() ||
+          !host.currentProjection() ||
+          live.scopeKey !== expectedScopeKey ||
+          currentContext.current !== expectedContextKey ||
+          live.creationBusy ||
+          !live.project ||
+          live.cognitiveSurface
+        ) {
+          setNotice("输入工作范围当前不可用，原草稿已保留。");
+          return previous;
+        }
+        const result = prepareBuiltinCreation(
+          previous[expectedContextKey] ?? emptyDraft,
+          intent,
+        );
+        if (!result.ok) {
+          setNotice(result.error);
+          return previous;
+        }
+        prepared = true;
+        return updateComposerDraft(
+          previous,
+          expectedContextKey,
+          emptyDraft,
+          () => result.draft,
+        );
+      }),
+    );
+    if (
+      prepared &&
+      origin.isActive() &&
+      cognitiveChoiceOwner.current.scopeKey === expectedScopeKey &&
+      currentContext.current === expectedContextKey
+    ) {
+      showInput();
+      input.current?.focus({ preventScroll: true });
+    }
   }
   /** Choosing a new input target uses this same persisted draft owner. Only
    * these new mutations fail closed; existing no-target input behavior stays
@@ -3434,6 +3538,50 @@ function WorkspaceApp({
                           <>
                             <MessageAttachments
                               variant="menu"
+                              creation={{
+                                disabled:
+                                  sending ||
+                                  speechRecording ||
+                                  !client.online ||
+                                  !!draft.pendingSupplement ||
+                                  !!draft.continuation ||
+                                  !!draft.continuationFailure ||
+                                  !!draft.annotation ||
+                                  !!draft.taskResult ||
+                                  !!draft.scriptGeneration ||
+                                  !!draft.reading ||
+                                  !!draft.cognitiveObject ||
+                                  cognitiveSurface?.kind === "original",
+                                builtinDisabled:
+                                  !!draft.cognitiveApplication ||
+                                  !!cognitiveSurface,
+                                cognitiveDisabled: (choice) =>
+                                  cognitiveCreationConflicts(draft, choice, {
+                                    projectId: project!.id,
+                                    expectedContextKey: contextKey,
+                                    currentContextKey: contextKey,
+                                    cognitiveSurface,
+                                  }),
+                                disabledReason:
+                                  "当前输入已关联专用工作或暂不可用，请先处理原草稿。",
+                                choices:
+                                  cognitiveCreationChoices(
+                                    applicationDirectory,
+                                  ),
+                                onBuiltin: (intent) =>
+                                  prepareBuiltinInput(
+                                    intent,
+                                    cognitiveChoiceScopeKey,
+                                    contextKey,
+                                  ),
+                                onCognitive: (choice) =>
+                                  chooseInputApplication(
+                                    choice.target,
+                                    cognitiveChoiceScopeKey,
+                                    contextKey,
+                                    choice,
+                                  ),
+                              }}
                               capture={{
                                 title: `截图输入（按住 ${/Mac/.test(navigator.platform) ? "Option" : "Alt"} 点击隐藏 Morphz）`,
                                 disabled:

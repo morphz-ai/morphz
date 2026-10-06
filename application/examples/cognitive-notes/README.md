@@ -1,7 +1,7 @@
 # 独立认知笔记 Service
 
 独立作者示例，Node >=24.13.0；作者进程和数据库独立，唯一运行依赖为公开
-`@morphz/cognitive-app-sdk@0.2.0`。默认仍是 headless 1.0.0；可显式构建并启用
+`@morphz/cognitive-app-sdk@0.3.0`。默认仍是 headless 1.0.0；可显式构建并启用
 1.1.0 可选界面。没有 Host 内部模块或 Runtime 依赖。
 实际跨 Host/Human/Agent、生产 TLS 和原 App 验收不由此示例测试替代。
 当前实际验证运行时为 Node 25.8.1；声明的最低 Node 版本尚未单独验证。
@@ -14,7 +14,7 @@ SDK 的公开入口与生命周期见[作者 SDK](https://github.com/morphz-ai/m
 Agent 无需界面，经原输入／后台来源使用相同领域接口，不能安装或自报身份。
 
 先在 SDK 包目录 `npm install && npm pack`，将 tarball 带到独立作者目录，
-再安装 `npm install /absolute/path/morphz-cognitive-app-sdk-0.2.0.tgz`。
+再安装 `npm install /absolute/path/morphz-cognitive-app-sdk-0.3.0.tgz`。
 有完整缓存可用 `--offline`；包尚未发布，不能直接假设公网 npm 可安装。
 把此目录复制到独立项目即可，不复制 Morphz Host/UI/Platform 代码。
 
@@ -42,7 +42,7 @@ npm run build:gui
 旧 `definition.json` 1.0.0 原字节不修改。构建完成不会自动注册新定义、安装 GUI、
 绑定项目、设置连接或开放旧应用授权。安装必须由获权 Human 通过宿主现有安装
 接口显式提交，并在请求时提供自己生成的原始 commandId；载体不内置命令 ID。
-需要支持 SDK 0.2.0 固定 Document facade 的宿主；单独双击 HTML 不连接服务。
+需要支持 SDK 0.3.0 固定 Document facade 的宿主；单独双击 HTML 不连接服务。
 
 作者服务默认不支持 1.1.0。只在操作者明确启用时读取固定路径的 GUI 定义：
 

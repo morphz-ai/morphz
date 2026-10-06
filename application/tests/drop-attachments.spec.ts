@@ -20,7 +20,7 @@ async function dragFiles(
     options.target === "outside"
       ? page.locator(".primary-panel > main")
       : options.target === "button"
-        ? page.getByRole("button", { name: "添加输入内容", exact: true })
+        ? page.getByRole("button", { name: "新建或添加", exact: true })
         : page.getByLabel("AI 输入内容");
   return target.evaluate(
     (element, { files, options, png }) => {

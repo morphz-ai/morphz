@@ -12,7 +12,7 @@
     "build:gui": "node build-gui.mjs"
   },
   "dependencies": {
-    "@morphz/cognitive-app-sdk": "0.2.0"
+    "@morphz/cognitive-app-sdk": "0.3.0"
   },
   "devDependencies": {
     "esbuild": "0.28.2"

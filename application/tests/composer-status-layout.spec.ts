@@ -150,7 +150,7 @@ for (const appearance of ["亮色", "暗色"])
       await f.input.focus();
       await page.keyboard.press("Tab");
       await expect(
-        page.getByRole("button", { name: "添加输入内容", exact: true }),
+        page.getByRole("button", { name: "新建或添加", exact: true }),
       ).toBeFocused();
       await page.keyboard.press("Tab");
       await expect(notice).toBeFocused();
@@ -235,7 +235,7 @@ async function sameRow(
   expect(bounds.y).toBeGreaterThanOrEqual(row.y - 1);
   expect(bounds.y + bounds.height).toBeLessThanOrEqual(row.y + row.height + 1);
   const targets = [bounds];
-  for (const name of ["添加输入内容", "执行设置", "语音输入", "发送消息"]) {
+  for (const name of ["新建或添加", "执行设置", "语音输入", "发送消息"]) {
     const control = page.getByRole("button", { name, exact: true });
     await expect(control).toBeVisible();
     const rect = (await control.boundingBox())!;

@@ -274,6 +274,36 @@ const metadataShape = z
       .nullable(),
     ui: z.object({ packageVersion: version, sha256: hash }).strict().nullable(),
     grant: grantShape.nullable(),
+    // Compact author declarations, not operation Schemas or authority. Older
+    // definitions omit this field so their canonical bytes remain unchanged.
+    creationIntents: z
+      .array(
+        z
+          .object({
+            operationId: opaque,
+            label: z
+              .string()
+              .min(1)
+              .max(100)
+              .refine(isPortableText)
+              .refine((value) => value.trim().length > 0),
+            prompt: z
+              .string()
+              .min(1)
+              .max(500)
+              .refine(isPortableText)
+              .refine((value) => value.trim().length > 0)
+              .optional(),
+          })
+          .strict(),
+      )
+      .max(128)
+      .refine(
+        (values) =>
+          new Set(values.map((value) => value.operationId)).size ===
+          values.length,
+      )
+      .optional(),
   })
   .strict();
 const listShape = z

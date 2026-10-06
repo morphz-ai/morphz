@@ -75,13 +75,13 @@ test("菜单入场不移动命中区域，关闭立即失去交互，动效不�
   const input = await openInput(page);
   await input.fill("动画期间保留草稿");
   const trigger = page.getByRole("button", {
-    name: "添加输入内容",
+    name: "新建或添加",
     exact: true,
   });
   // Keep resolving the same node after inert removes it from the accessibility
   // tree, so the closed-state assertion tests the element rather than lookup.
   const menu = page.getByRole("group", {
-    name: "添加到这条消息",
+    name: "新建与添加",
     exact: true,
     includeHidden: true,
   });

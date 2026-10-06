@@ -19,10 +19,11 @@ test("系统附件选择期间失焦不卸载输入，取消和选中后均恢�
     element.dataset.pickerMount = "preserved";
   });
   await openComposerMedia(page);
-  // Selection closes the input menu, not its persistent option or composer.
+  // Selection retires transient menu content, not the persistent +, file input
+  // or composer/draft that owns the pending native picker.
   const choose = page
     .getByRole("group", {
-      name: "添加到这条消息",
+      name: "新建与添加",
       exact: true,
       includeHidden: true,
     })
@@ -46,7 +47,11 @@ test("系统附件选择期间失焦不卸载输入，取消和选中后均恢�
   );
   await expect(input).toHaveValue("附件选择期间的草稿");
   await expect(input).toHaveAttribute("data-picker-mount", "preserved");
-  await expect(choose).toBeDisabled();
+  await expect(choose).toHaveCount(0);
+  await expect(page.getByLabel("消息附件文件", { exact: true })).toHaveCount(1);
+  await expect(
+    page.getByRole("button", { name: "新建或添加", exact: true }),
+  ).toHaveCount(1);
   await chooser.setFiles({
     name: "native-picker.md",
     mimeType: "text/markdown",
@@ -55,13 +60,18 @@ test("系统附件选择期间失焦不卸载输入，取消和选中后均恢�
   await expect(page.getByLabel("消息附件", { exact: true })).toContainText(
     "native-picker.md",
   );
-  await expect(choose).toBeEnabled();
   await openComposerMedia(page);
+  await expect(choose).toBeEnabled();
   const cancelled = page.waitForEvent("filechooser");
   await choose.click();
   await cancelled;
   await page.getByLabel("消息附件文件").dispatchEvent("cancel");
+  await expect(
+    page.getByRole("button", { name: "新建或添加", exact: true }),
+  ).toBeFocused();
+  await openComposerMedia(page);
   await expect(choose).toBeEnabled();
+  await page.keyboard.press("Escape");
   await expect(input).toHaveValue("附件选择期间的草稿");
   await expect(input).toHaveAttribute("data-picker-mount", "preserved");
   await page.evaluate(() => {
@@ -78,15 +88,11 @@ test("切换工作页面和重新展开输入不重复挂载附件按钮", async
       .click();
     await openInput(page);
     await expect(
-      page.getByRole("button", { name: "添加输入内容", exact: true }),
+      page.getByRole("button", { name: "新建或添加", exact: true }),
     ).toHaveCount(1);
-    await expect(
-      page.getByRole("button", {
-        name: "附加文件",
-        exact: true,
-        includeHidden: true,
-      }),
-    ).toHaveCount(1);
+    await expect(page.getByLabel("消息附件文件", { exact: true })).toHaveCount(
+      1,
+    );
     if (name === "对话") {
       await expect(
         page.getByRole("button", { name: "收起 AI 输入框", exact: true }),
@@ -100,15 +106,11 @@ test("切换工作页面和重新展开输入不重复挂载附件按钮", async
     }
     await openInput(page);
     await expect(
-      page.getByRole("button", { name: "添加输入内容", exact: true }),
+      page.getByRole("button", { name: "新建或添加", exact: true }),
     ).toHaveCount(1);
-    await expect(
-      page.getByRole("button", {
-        name: "附加文件",
-        exact: true,
-        includeHidden: true,
-      }),
-    ).toHaveCount(1);
+    await expect(page.getByLabel("消息附件文件", { exact: true })).toHaveCount(
+      1,
+    );
   }
 });
 

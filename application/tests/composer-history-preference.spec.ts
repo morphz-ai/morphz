@@ -75,7 +75,7 @@ test("主动收起记录后，鼠标与键盘聚焦、隐藏重开、刷新及�
   await expect(input).toHaveValue(workDraft);
 
   const media = page.getByRole("button", {
-    name: "添加输入内容",
+    name: "新建或添加",
     exact: true,
   });
   await media.focus();

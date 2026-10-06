@@ -61,6 +61,13 @@ export type JsonSchema = SchemaMetadata &
       }
   );
 export type OperationScope = "project" | "objects";
+/** Optional author discovery hint. Selecting it prepares editable user text,
+ * never permission, system instructions or automatic operation execution. */
+export type OperationCompose = {
+  readonly kind: "create";
+  readonly label: string;
+  readonly prompt?: string;
+};
 export type OperationDefinition = {
   readonly id: string;
   readonly title: string;
@@ -69,6 +76,7 @@ export type OperationDefinition = {
   readonly scope: OperationScope;
   readonly inputSchema: JsonSchema;
   readonly outputSchema: JsonSchema;
+  readonly compose?: OperationCompose;
 };
 export type OperationResourceReference = {
   readonly objectId: string;
@@ -544,6 +552,18 @@ const operationShape = z
     scope: z.enum(["project", "objects"]),
     inputSchema: z.unknown(),
     outputSchema: z.unknown(),
+    compose: z
+      .object({
+        kind: z.literal("create"),
+        label: name,
+        prompt: portableText
+          .min(1)
+          .max(500)
+          .refine((value) => value.trim().length > 0)
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 const definitionShape = z
@@ -585,6 +605,14 @@ export function parseCognitiveAppDefinition(
     new Set(definition.operations.map((operation) => operation.id)).size ===
       definition.operations.length,
     "Operation IDs must be unique.",
+  );
+  requireCondition(
+    definition.operations.every(
+      (operation) =>
+        operation.compose === undefined ||
+        (operation.scope === "project" && operation.effect !== "read"),
+    ),
+    "Creation compose hints require a project-scoped write or execute operation.",
   );
   requireCondition(
     definition.ui === null ||

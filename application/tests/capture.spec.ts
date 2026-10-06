@@ -54,7 +54,7 @@ for (const platform of ["MacIntel", "Win32", "Linux x86_64"]) {
       await page.evaluate(() => Reflect.get(window, "finishCapture")(null));
       await expect(page.locator(".capture-dialog")).toHaveCount(0);
       await expect(
-        page.getByRole("button", { name: "添加输入内容", exact: true }),
+        page.getByRole("button", { name: "新建或添加", exact: true }),
       ).toBeFocused();
       await expect(input).toHaveValue("修饰键截图保留这份草稿");
     }
@@ -163,7 +163,7 @@ test("一次点击进入截图，失败只提示并等待明确重试", async ({
     .toBe(2);
   await expect(page.locator(".capture-dialog")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "添加输入内容", exact: true }),
+    page.getByRole("button", { name: "新建或添加", exact: true }),
   ).toBeFocused();
   await expect(input).toHaveValue("截图失败也保留草稿");
 });
@@ -211,7 +211,7 @@ test("完整对话截图保留消息，只暂时移走输入与确认层", async
   await page.evaluate(() => Reflect.get(window, "finishCapture")(null));
   await expect(dialog).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "添加输入内容", exact: true }),
+    page.getByRole("button", { name: "新建或添加", exact: true }),
   ).toBeFocused();
   await expect(input).toBeVisible();
   await expect(input).toHaveValue("截图后继续编辑，不发送");
@@ -299,7 +299,7 @@ test("系统选区前移走遮罩和输入，取消与失败恢复原预览及�
   await page.evaluate(() => Reflect.get(window, "finishCapture")(null));
   await expect(dialog).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "添加输入内容", exact: true }),
+    page.getByRole("button", { name: "新建或添加", exact: true }),
   ).toBeFocused();
   expect(await canvas.boundingBox()).toEqual(canvasBefore);
   await expect(input).toHaveValue("已有草稿，不发送");

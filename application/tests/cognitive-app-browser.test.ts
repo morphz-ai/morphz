@@ -1275,7 +1275,7 @@ setTimeout(()=>handle('connect',connectMorphz().then(value=>{client=value;return
     assert.deepEqual(errors, []);
     assert.deepEqual(writes, []);
     console.log(
-      `[browser SDK fixture] ${JSON.stringify({ sdkVersion: "0.2.0", packedIntegrity: packed[0]!.integrity, outsideRepository: true, selfContainedHtml: true, opaqueSandbox: true, fixedDocumentFacadeAndNativePort: true, sourceAndChannel: true, windowForgeryPositiveControl: true, sameDocumentReclaimRejected: true, genuineNewDocumentReconnect: true, pending: 16, absoluteDeadlineMs: 30000, clockControlledDeadline: true, retiredChannel: true, noBusinessRequests: true, hostAuthorization: "not implemented by this fixture" })}`,
+      `[browser SDK fixture] ${JSON.stringify({ sdkVersion: "0.3.0", packedIntegrity: packed[0]!.integrity, outsideRepository: true, selfContainedHtml: true, opaqueSandbox: true, fixedDocumentFacadeAndNativePort: true, sourceAndChannel: true, windowForgeryPositiveControl: true, sameDocumentReclaimRejected: true, genuineNewDocumentReconnect: true, pending: 16, absoluteDeadlineMs: 30000, clockControlledDeadline: true, retiredChannel: true, noBusinessRequests: true, hostAuthorization: "not implemented by this fixture" })}`,
     );
   },
 );

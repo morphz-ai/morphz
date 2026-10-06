@@ -53,7 +53,7 @@ export function packCognitiveNotesGui() {
     for (const file of ["build-gui.mjs", "gui"])
       cpSync(join(source, file), join(packed.root, file), { recursive: true });
     // npm's local test installation rewrote its dependency to a file tarball.
-    // The distributed author package retains the real public 0.2.0 contract.
+    // The distributed author package retains the real public 0.3.0 contract.
     writeFileSync(
       join(packed.root, "package.json"),
       readFileSync(join(source, "package.json")),
@@ -84,7 +84,7 @@ export function packCognitiveNotesGui() {
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
-      join(packed.directory, "sdk", "morphz-cognitive-app-sdk-0.2.0.tgz"),
+      join(packed.directory, "sdk", "morphz-cognitive-app-sdk-0.3.0.tgz"),
     ]);
     return {
       ...packed,

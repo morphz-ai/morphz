@@ -1,6 +1,6 @@
 # @morphz/cognitive-app-sdk
 
-`0.2.0` 是实验性作者协议包，尚未发布到 npm。它可以独立构建为 ESM 与
+`0.3.0` 是实验性作者协议包，尚未发布到 npm。它可以独立构建为 ESM 与
 TypeScript 声明，并通过本地 npm tarball 安装。`private: true` 防止误发布，
 不妨碍 `npm pack` 或安装打包产物；未来公开发布需另行确认。
 
@@ -47,7 +47,7 @@ npm pack
 
 构建只读取本包 `src` 下的文件，不依赖 Morphz workspace 的构建或
 类型配置。开发工具为固定版本 `typescript@7.0.2`；`npm pack` 的 `prepack`
-会执行同一构建。产物为 `morphz-cognitive-app-sdk-0.2.0.tgz`，只包含 JS、
+会执行同一构建。产物为 `morphz-cognitive-app-sdk-0.3.0.tgz`，只包含 JS、
 声明、包清单、此说明与 Apache-2.0 许可证，不打包源码、测试或 source maps。
 有完整 npm 缓存时可为安装与打包增加 `--offline`；缺缓存应明确报错，不能
 把未安装依赖的构建称为通过。
@@ -182,6 +182,15 @@ SDK 的十六 pending 与私有原生端口的十六未消费 wire 是两个独�
 无 credit 时当前请求返回安全 `busy`，没有排队或自动重试。原生传输确认
 不是业务提交或许可。关闭一端不保证另一端立即取消所有任务，更不证明
 已受理写入回滚；作者已有的数据引用或响应也不能事后撤回。
+
+`0.3.0` 增加可选的操作声明 `compose: { kind: "create", label, prompt? }`，
+用于 Host 的新建菜单。它仅用于 project-scoped write/execute 操作；label
+最多 100 字符，prompt 最多 500 字符，均为非全空白的 portable text。
+prompt 是可编辑的用户草稿，不是系统指令、权限或调用。仅有 write effect
+不会自动出现在新建菜单，GUI 也不是条件。使用新声明必须发布新应用版本与
+定义 hash；旧安装不被改写，省略该字段的旧定义保持原 canonical 字节。
+菜单选项固定的是准确应用与数据连接，operationId 是发现来源，不是强制
+调用。详情见 docs/42 中的新建意图贡献约定。
 
 `0.2.0` 改变 Browser 的内部生命周期契约，不改变 `morphz-domain/v1` 或
 `morphz-cognitive-ui/v1` 的八方法业务 wire。已安装的 `0.1.0` HTML／SHA

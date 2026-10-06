@@ -2,6 +2,43 @@
 
 日期：2026-10-05（实施证据续至 2026-10-06）。这是 Morphz Application 的实验接入契约，不是 Runtime 或 HNS 的新标准。
 
+## 新建意图贡献约定（2026-10-06）
+
+输入框 `+` 菜单复用当前草稿、应用目录与显式应用选择链：内置快捷准备
+可移除的 `InputIntent`，保留已有普通想法／素材；专用阅读、剧本生成、
+续接、批注、事项回执或明确第三方应用／原件关联冲突时整次拒绝并保留原稿。
+这不是打开应用 GUI、创建空对象／Session 或自动发送。
+
+第三方作者可在不可变定义的 project-scoped write/execute operation 中声明：
+
+```json
+"compose": { "kind": "create", "label": "新建笔记", "prompt": "请帮我准备一篇新笔记。" }
+```
+
+这是 SDK `0.3.0` 的可选声明，不是操作 Schema 或新权限。label 为非全空白
+portable text，最多 100 字符；可选 prompt 为同类文本，最多 500 字符；
+其他键、kind、read／objects-scoped 声明拒绝。输入文字保持原字节，不 trim
+或解释为 HTML、系统指令、工具命令、授权。没有 compose 的 write 能力
+不会被推断为新建。新增声明需要作者提供新应用版本与定义 hash；Host 不
+改写旧安装，同一 app/version 内容冲突仍拒绝。旧定义省略该字段时其
+canonical 字节／hash 不变。
+
+Service 从已验证定义投影紧凑 `creationIntents`，不把 Schema、私有连接
+别名或管理 describe 当可用／已获权证据。菜单仅消费当前已安装、本人已
+授权且有 active connection 的 quick entries，不要求 GUI。多连接逐项
+明确资料来源，不擅选第一个。搜索结果和作者文字均有界，并按纯文本呈现。
+
+选择发生在同一当前身份／中心／窗口／工作范围的 latest draft updater，
+再次核对 exact target 与 operationId／label／prompt 是否仍在当前目录。
+第三方正文非空或已有意图时整次拒绝，不覆盖草稿，也不先半选择应用；
+空正文已选择 same exact 应用或普通应用 view 时可在同一关联中新建；
+不同明确应用目标、历史原件或专用请求不会被静默替换。
+接受后仅准备可见可编辑的用户正文并冻结现有准确应用目标
+（app/version/hash/instance/service/dataAuthority/connection）。operationId
+只标识发现来源，当前 IO 不携带／固定它，不承诺调用该操作。真实发送、
+Agent 选择与领域调用继续沿原链，并在执行时再次校验授权。菜单不写授权、
+领域资料或新业务表，不新增 renderer store。
+
 ## 最新交付与剩余
 
 本轮实验接入目标已完成。这里的完成是下述独立接口、SDK／作者示例和分层

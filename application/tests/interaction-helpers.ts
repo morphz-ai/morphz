@@ -118,13 +118,13 @@ export async function openExchangeReading(page: Page) {
 /** Files and screenshots share the explicit + input menu, not the app Dock. */
 export async function openComposerMedia(page: Page) {
   const trigger = page.getByRole("button", {
-    name: "添加输入内容",
+    name: "新建或添加",
     exact: true,
   });
   await expect(trigger).toBeVisible();
   if ((await trigger.getAttribute("aria-expanded")) !== "true")
     await trigger.click();
-  const menu = page.getByRole("group", { name: "添加到这条消息", exact: true });
+  const menu = page.getByRole("group", { name: "新建与添加", exact: true });
   await expect(menu).toBeVisible();
   return menu;
 }

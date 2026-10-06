@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-06 输入「＋」新建与添加菜单
+
+沿用现有输入 popover／草稿 owner，分组提供「新建」「添加资料」「更多应用」。
+构思剧本／新建事项／起草文档采用既有可移除 InputIntent；截图和文件保留
+原处理入口。第三方只从当前已授权、有效连接的目录读取显式
+`operation.compose` 新建声明，无 GUI 亦可发现。不将全部 write 操作猜为新建。
+SDK 私有包版本为 0.3.0；省略新字段的旧定义 canonical／hash 不变。
+
+选择只准备可编辑输入及准确应用关联，不发送、调用领域操作、创建空对象／
+Session 或写授权。latest updater 重核身份、窗口／工作范围、目录与 exact
+应用目标；普通内置新建保留正文／附件／引用，专用请求或冲突目标整体拒绝。
+第三方在同一 exact 已选应用／view 中可准备新建，不覆盖非空正文或已有意图。
+
+本轮实际验证：模型 4／4、生产 App 受控传输 mounted 1／1、独立离线 SDK
+包 2／2；新增 registry 声明真实 SQLite／PostgreSQL 2／2，均零 skip。
+独立作者 GUI 包兼容性另 9／9 通过；首次误用直接 node 入口缺少 fixture
+要求的 npm_execpath，九项均在 before hook 拒绝，原输出保留。改用正式
+`npm test -- tests/cognitive-notes-gui-package.test.ts` 原样复验通过，未改断言、
+补假能力或将自己的入口错误归为环境缺失。
+隔离自动 Electron 760px 原生 page zoom 1／2 的坐标鼠标命中、菜单和零写入
+另通过；该测试不用原 App、业务库或真实凭据。synthetic CSS zoom 的旧壳
+遮挡失败保留，不将其等同 native page zoom。完整生产构建与 TypeScript
+通过，最终 CSS 再构建；未重跑旧全量 E2E。reference AST 的 7 项失败在
+只读 HEAD 同样存在，原断言／输出保留，不作为菜单测试通过。
+
+备份原草稿后正常退出 7350 成功，重开同一原 App／profile／center，新 main
+13304、原窗口 281314 实际显示「智能体已连接」。Runtime 68670 的启动时间
+保持，不停止后台任务。原窗截图在私有恢复目录的
+`menu-updated-original-app.png`；当前操作权限不能自动点原 App，已请用户
+方便时打开「＋」，原窗菜单交互尚不冒称验收通过。
+
 ## 2026-10-06 连接中断后的原 App 再次恢复
 
 用户要求直接恢复原应用。本次先核既有私有备份

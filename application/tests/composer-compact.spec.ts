@@ -36,9 +36,9 @@ test("底栏仅一行；普通范围不弹空菜单，执行设置与媒体菜�
   await expect(
     page.getByRole("button", { name: "执行设置", exact: true }),
   ).toBeFocused();
-  await page.getByRole("button", { name: "添加输入内容", exact: true }).click();
+  await page.getByRole("button", { name: "新建或添加", exact: true }).click();
   const media = page.getByRole("group", {
-    name: "添加到这条消息",
+    name: "新建与添加",
     exact: true,
   });
   await expect(
@@ -122,10 +122,10 @@ test("媒体菜单从加号向右展开，窄窗与缩放时留在窗口内", as
     await page.locator(".app").evaluate((element, zoom) => {
       (element as HTMLElement).style.zoom = String(zoom);
     }, zoom);
-    const add = page.getByRole("button", { name: "添加输入内容", exact: true });
+    const add = page.getByRole("button", { name: "新建或添加", exact: true });
     await add.click();
     const media = page.getByRole("group", {
-      name: "添加到这条消息",
+      name: "新建与添加",
       exact: true,
     });
     await expect(media).toBeVisible();
