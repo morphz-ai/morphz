@@ -89,28 +89,54 @@ function ApplicationEmblem({ identity }: { identity: ApplicationIdentity }) {
         </>
       ) : (
         <>
+          {/* A screenplay stack: scene heading/action at the left, then the
+              indented character/dialogue pair. No film-production imagery or
+              tiny lettering; the same filled artwork also scales to Dock/tabs. */}
           <rect
-            x="11"
-            y="29"
-            width="42"
-            height="22"
-            rx="4.5"
+            x="13"
+            y="15"
+            width="32"
+            height="39"
+            rx="3.5"
+            fill={palette.foreground[1]}
+          />
+          <path
+            d="M22 10h18l10 10v28a3 3 0 0 1-3 3H22a3 3 0 0 1-3-3V13a3 3 0 0 1 3-3Z"
             fill={palette.foreground[0]}
           />
-          <g transform="rotate(-9 32 22)">
-            <rect
-              x="10"
-              y="15"
-              width="42"
-              height="11"
-              rx="3"
-              fill={palette.foreground[1]}
-            />
-            <path
-              d="M17 15h7l6 11h-7l-6-11Zm17 0h7l6 11h-7l-6-11Z"
-              fill={palette.field[1]}
-            />
-          </g>
+          <path d="M40 10v7a3 3 0 0 0 3 3h7Z" fill={palette.foreground[1]} />
+          <rect
+            x="25"
+            y="24"
+            width="18"
+            height="3"
+            rx="1.5"
+            fill={palette.field[1]}
+          />
+          <rect
+            x="25"
+            y="30"
+            width="18"
+            height="2.5"
+            rx="1.25"
+            fill={palette.field[1]}
+          />
+          <rect
+            x="31"
+            y="38"
+            width="9"
+            height="2.5"
+            rx="1.25"
+            fill={palette.field[1]}
+          />
+          <rect
+            x="28"
+            y="44"
+            width="15"
+            height="2.5"
+            rx="1.25"
+            fill={palette.field[1]}
+          />
         </>
       )}
     </svg>

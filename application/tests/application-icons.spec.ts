@@ -471,60 +471,67 @@ test("原中文名称和Tab／Escape／键盘固定可达；刷新保留图标�
   await unchanged();
 });
 
-test("真实打开阅读后16px应用标签仍是原图缩放；返回工作台保留原稿且不发送", async ({
-  page,
-  messageHost,
-}, info) => {
-  await openWorkbench(page);
-  const source = await conversationClient(page);
-  const conversations = await source.allNavigationConversations();
-  const deliveries = structuredClone(messageHost.deliveries());
-  const writes: string[] = [];
-  page.on("request", (request) => {
-    const path = new URL(request.url()).pathname;
-    if (
-      request.method() === "POST" &&
-      ["/api/platform/messages", "/api/platform/conversations/start"].includes(
-        path,
+for (const { app, identity } of applications.filter(
+  ({ identity }) => identity !== "browser",
+)) {
+  test(`真实打开${app.title}后16px应用标签仍是原图缩放；返回工作台保留原稿且不发送`, async ({
+    page,
+    messageHost,
+  }, info) => {
+    await openWorkbench(page);
+    const source = await conversationClient(page);
+    const conversations = await source.allNavigationConversations();
+    const deliveries = structuredClone(messageHost.deliveries());
+    const writes: string[] = [];
+    page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (
+        request.method() === "POST" &&
+        [
+          "/api/platform/messages",
+          "/api/platform/conversations/start",
+        ].includes(path)
       )
-    )
-      writes.push(path);
+        writes.push(path);
+    });
+    const tile = page.getByRole("button", {
+      name: `${app.title} ${app.version}`,
+      exact: true,
+    });
+    const original = await artwork(
+      tile.locator(
+        `svg.application-emblem[data-application-identity="${identity}"]`,
+      ),
+    );
+    // This case explicitly opens the installed application through its real Host.
+    // The preceding two inspection-only cases retain their zero-launch guards.
+    await tile.click();
+    const tab = page.getByRole("tab", { name: app.title, exact: true });
+    await expect(tab).toHaveAttribute("aria-selected", "true");
+    const mark = tab.locator(
+      `svg.application-emblem[data-application-identity="${identity}"]`,
+    );
+    await expectBox(mark, 16);
+    expect(await artwork(mark)).toEqual(original);
+    await page.screenshot({
+      path: info.outputPath(`application-${identity}-tab-16px.png`),
+      fullPage: true,
+    });
+    await page
+      .getByRole("navigation", { name: "主导航", exact: true })
+      .getByRole("button", { name: "工作台", exact: true })
+      .click();
+    // The navigation item retains the active app; return to the exact original
+    // launcher surface before reading that surface's independently scoped draft.
+    const home = page.getByRole("button", { name: "应用启动台", exact: true });
+    await home.click();
+    await expect(home).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      page.getByRole("list", { name: "应用列表", exact: true }),
+    ).toBeVisible();
+    await expect(await openInput(page)).toHaveValue(draft);
+    expect(writes).toEqual([]);
+    expect(messageHost.deliveries()).toEqual(deliveries);
+    expect(await source.allNavigationConversations()).toEqual(conversations);
   });
-  const tile = page.getByRole("button", {
-    name: `${readerApplication.title} ${readerApplication.version}`,
-    exact: true,
-  });
-  const original = await artwork(
-    tile.locator('svg.application-emblem[data-application-identity="reader"]'),
-  );
-  // This case explicitly opens the installed application through its real Host.
-  // The preceding two inspection-only cases retain their zero-launch guards.
-  await tile.click();
-  const tab = page.getByRole("tab", { name: "阅读", exact: true });
-  await expect(tab).toHaveAttribute("aria-selected", "true");
-  const mark = tab.locator(
-    'svg.application-emblem[data-application-identity="reader"]',
-  );
-  await expectBox(mark, 16);
-  expect(await artwork(mark)).toEqual(original);
-  await page.screenshot({
-    path: info.outputPath("application-reader-tab-16px.png"),
-    fullPage: true,
-  });
-  await page
-    .getByRole("navigation", { name: "主导航", exact: true })
-    .getByRole("button", { name: "工作台", exact: true })
-    .click();
-  // The navigation item retains the active app; return to the exact original
-  // launcher surface before reading that surface's independently scoped draft.
-  const home = page.getByRole("button", { name: "应用启动台", exact: true });
-  await home.click();
-  await expect(home).toHaveAttribute("aria-pressed", "true");
-  await expect(
-    page.getByRole("list", { name: "应用列表", exact: true }),
-  ).toBeVisible();
-  await expect(await openInput(page)).toHaveValue(draft);
-  expect(writes).toEqual([]);
-  expect(messageHost.deliveries()).toEqual(deliveries);
-  expect(await source.allNavigationConversations()).toEqual(conversations);
-});
+}

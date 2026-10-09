@@ -120,6 +120,29 @@ test("all presentations scale the exact same colored image, geometry and paint",
   }
 });
 
+test("Script Studio uses a screenplay manuscript, not a video clapperboard", () => {
+  const markup = renderToStaticMarkup(
+    createElement(AppIcon, { app: scriptStudioApplication }),
+  );
+  assert.match(markup, /data-application-identity="studio"/);
+  // The page silhouette and four coarse typesetting marks remain readable when
+  // the very same image is scaled down. These are artwork regression guards,
+  // not a substitute for reviewing its actual 16px/22px rendering.
+  assert.match(markup, /<rect x="13" y="15" width="32" height="39" rx="3.5"/);
+  assert.match(
+    markup,
+    /<path d="M22 10h18l10 10v28a3 3 0 0 1-3 3H22a3 3 0 0 1-3-3V13a3 3 0 0 1 3-3Z"/,
+  );
+  for (const line of [
+    'x="25" y="24" width="18" height="3"',
+    'x="25" y="30" width="18" height="2.5"',
+    'x="31" y="38" width="9" height="2.5"',
+    'x="28" y="44" width="15" height="2.5"',
+  ])
+    assert.ok(markup.includes(line));
+  assert.doesNotMatch(markup, /transform=|lucide-film|<text|<image/);
+});
+
 test("simultaneous repeated emblems have unique paint servers and valid references", () => {
   const markup = renderToStaticMarkup(
     createElement(
