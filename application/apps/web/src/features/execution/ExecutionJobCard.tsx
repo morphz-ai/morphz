@@ -13,6 +13,7 @@ export function ExecutionJobCard({
   branchNumber,
   busy,
   stopDisabled,
+  resultAvailable,
   onReadResult,
   onStop,
   children,
@@ -22,12 +23,16 @@ export function ExecutionJobCard({
   branchNumber?: number;
   busy: boolean;
   stopDisabled: boolean;
+  resultAvailable: boolean;
   onReadResult: () => void;
   onStop: () => void;
   children?: ReactNode;
 }) {
   const [technical, setTechnical] = useState(false);
+  const [resultExpanded, setResultExpanded] = useState(false);
   const technicalId = useId();
+  const resultId = useId();
+  const resultVisible = resultExpanded && Boolean(children);
   const stoppable = ["queued", "waiting_approval", "running"].includes(
     job.status,
   );
@@ -91,8 +96,18 @@ export function ExecutionJobCard({
               <button
                 type="button"
                 aria-label="查看结果"
+                aria-expanded={resultVisible}
+                aria-controls={resultId}
                 disabled={busy}
-                onClick={onReadResult}
+                onClick={() => {
+                  if (resultVisible) setResultExpanded(false);
+                  else {
+                    setResultExpanded(true);
+                    // A final receipt already belongs to this exact job/scope.
+                    // Collapse is local; an unfinished receipt must be reread.
+                    if (!resultAvailable) onReadResult();
+                  }
+                }}
               >
                 <Eye size={16} aria-hidden="true" />
               </button>
@@ -124,7 +139,16 @@ export function ExecutionJobCard({
           {job.exit_code != null && <small>退出码 {job.exit_code}</small>}
         </div>
       )}
-      {children}
+      {resultVisible && (
+        <div
+          className="execution-result"
+          id={resultId}
+          role="region"
+          aria-label="返回结果"
+        >
+          {children}
+        </div>
+      )}
     </section>
   );
 }

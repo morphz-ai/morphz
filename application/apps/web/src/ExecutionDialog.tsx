@@ -257,6 +257,9 @@ export function ExecutionDialog({
                       stopDisabled={
                         !!busy || !!error || !!job.cancel_requested_at
                       }
+                      resultAvailable={
+                        result?.id === job.id && result.available
+                      }
                       onReadResult={() => void readResult(job.id)}
                       onStop={() =>
                         void control(
@@ -270,7 +273,7 @@ export function ExecutionDialog({
                       }
                     >
                       {result?.id === job.id && (
-                        <div className="execution-result">
+                        <>
                           {executionResultSummary(result.text) && (
                             <p>{executionResultSummary(result.text)}</p>
                           )}
@@ -291,18 +294,15 @@ export function ExecutionDialog({
                                 "打开成果"}
                             </button>
                           )}
-                          <details>
-                            <summary>完整返回内容</summary>
-                            <pre>
-                              {result.available
-                                ? result.text || "执行返回了空内容。"
-                                : "尚无最终结果。"}
-                            </pre>
-                          </details>
+                          <pre>
+                            {result.available
+                              ? result.text || "执行返回了空内容。"
+                              : "尚无最终结果。"}
+                          </pre>
                           {result.truncated && (
                             <small>结果较长，当前显示前 64,000 个字符。</small>
                           )}
-                        </div>
+                        </>
                       )}
                     </ExecutionJobCard>
                   );

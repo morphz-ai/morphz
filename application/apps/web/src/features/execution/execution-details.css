@@ -58,7 +58,7 @@
   font-size: 11px;
 }
 .execution-job .job-status.succeeded {
-  color: var(--text-secondary);
+  color: light-dark(#187d3d, #83d99b);
 }
 .execution-job .job-status.running {
   color: var(--accent-strong);

@@ -252,11 +252,12 @@ test("步骤显示对应Job的意图与回执解读，旧步骤回退且原返�
   await legacy.getByRole("button", { name: "技术详情", exact: true }).click();
   await expect(legacy.locator("pre")).toContainText("SECRET=hidden command");
   await first.getByRole("button", { name: "查看结果", exact: true }).click();
-  await expect(first.locator(".execution-result pre")).not.toBeVisible();
-  await first.getByText("完整返回内容", { exact: true }).click();
+  await expect(first.locator(".execution-result pre")).toBeVisible();
   await expect(first.locator(".execution-result pre")).toContainText(
     '"exactReceipt":"TEST-receipt-one"',
   );
+  await first.getByRole("button", { name: "查看结果", exact: true }).click();
+  await expect(first.locator(".execution-result")).toHaveCount(0);
 });
 
 test("长注解在明暗窄窗与CSS缩放保持简洁，普通文本不执行HTML", async ({

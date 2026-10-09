@@ -113,10 +113,11 @@ test("剧本操作记录直接显示查询、新建剧本和具体分集，返�
   }
   await rows.nth(0).getByRole("button", { name: "查看结果" }).click();
   await expect(rows.nth(0)).toContainText("找到 2 部剧本。");
-  await rows.nth(0).getByText("完整返回内容", { exact: true }).click();
   await expect(rows.nth(0).locator(".execution-result pre")).toContainText(
     '"total":2',
   );
+  await rows.nth(0).getByRole("button", { name: "查看结果" }).click();
+  await expect(rows.nth(0).locator(".execution-result")).toHaveCount(0);
 });
 test("执行面板显示真实协议状态，批准只限单次，停止不会显示成已撤销", async ({
   page,

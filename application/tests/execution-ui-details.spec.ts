@@ -15,6 +15,14 @@ import {
 // controlled. No provider, original business input, or cancellation is run.
 async function prepare(page: Page) {
   const inputs: PlatformHistory["inputs"] = [];
+  const resultReply = {
+    available: true,
+    truncated: false,
+    text: '{"ok":true,"fixture":"TEST receipt"}',
+  };
+  const resultReads: string[] = [];
+  const resultHttp = { status: 200 };
+  const jobs = { secondStatus: "succeeded" };
   const activity = {
     connected: true,
     available: true,
@@ -84,7 +92,7 @@ async function prepare(page: Page) {
           thread_id: "TEST-ui-thread",
           tool_name: "host_morphz",
           target_id: "local",
-          status: "succeeded",
+          status: index === 0 ? "succeeded" : jobs.secondStatus,
           request: { action: "script", script: { action: "read-workflow" } },
           result_event_id: `TEST-ui-result-${index}`,
           created_at: `2026-10-09T12:00:0${index}Z`,
@@ -95,15 +103,16 @@ async function prepare(page: Page) {
       },
     }),
   );
-  await page.route("**/api/executions/result?*", (route) =>
-    route.fulfill({
-      json: {
-        available: true,
-        truncated: false,
-        text: '{"ok":true,"fixture":"TEST receipt"}',
-      },
-    }),
-  );
+  await page.route("**/api/executions/result?*", (route) => {
+    resultReads.push(new URL(route.request().url()).searchParams.get("jobId")!);
+    return route.fulfill({
+      status: resultHttp.status,
+      json:
+        resultHttp.status === 200
+          ? resultReply
+          : { message: "TEST 无法读取结果" },
+    });
+  });
   const writes: string[] = [];
   await page.goto("/");
   await page
@@ -122,8 +131,182 @@ async function prepare(page: Page) {
     name: "Morphz 信息",
     exact: true,
   });
-  return { card, input, panel, writes, fixture, activity };
+  return {
+    card,
+    input,
+    panel,
+    writes,
+    fixture,
+    activity,
+    resultReply,
+    resultReads,
+    resultHttp,
+    jobs,
+  };
 }
+
+test("查看结果一次展开内容，再次收起，缓存复开及换步骤保持准确且没有写入", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const first = f.panel.locator(".execution-job").first();
+  const button = first.getByRole("button", { name: "查看结果", exact: true });
+  await button.click();
+  await expect(first.locator(".execution-result pre")).toBeVisible();
+  await expect(first.locator(".execution-result pre")).toContainText(
+    "TEST receipt",
+  );
+  await expect(button).toHaveAttribute("aria-expanded", "true");
+  await expect(first.getByText("完整返回内容", { exact: true })).toHaveCount(0);
+  const region = first.getByRole("region", { name: "返回结果", exact: true });
+  await expect(region).toHaveAttribute(
+    "id",
+    (await button.getAttribute("aria-controls"))!,
+  );
+  expect(f.resultReads).toEqual(["TEST-ui-job-0"]);
+  await page.mouse.move(20, 200);
+  await button.hover();
+  await expect(page.getByRole("tooltip")).toHaveText("查看结果");
+  await page.keyboard.press("Escape");
+  await expect(first.locator(".execution-result pre")).toBeVisible();
+  await button.click();
+  await expect(first.locator(".execution-result")).toHaveCount(0);
+  await expect(button).toHaveAttribute("aria-expanded", "false");
+  expect(f.resultReads).toEqual(["TEST-ui-job-0"]);
+  await button.press("Enter");
+  await expect(first.locator(".execution-result pre")).toBeVisible();
+  expect(f.resultReads).toEqual(["TEST-ui-job-0"]);
+  for (const appearance of ["dark", "light"]) {
+    await page.evaluate((appearance) => {
+      document
+        .querySelector(".app")!
+        .setAttribute("data-appearance", appearance);
+      document.documentElement.setAttribute("data-appearance", appearance);
+    }, appearance);
+    await settleTransitions(page);
+    await f.panel.screenshot({
+      path: info.outputPath(`result-open-${appearance}.png`),
+    });
+  }
+  f.resultReply.text = "TEST 第二个步骤的精确结果";
+  const second = f.panel.locator(".execution-job").nth(1);
+  await second.getByRole("button", { name: "查看结果", exact: true }).click();
+  await expect(second.locator(".execution-result pre")).toHaveText(
+    f.resultReply.text,
+  );
+  await expect(first.locator(".execution-result")).toHaveCount(0);
+  await expect(button).toHaveAttribute("aria-expanded", "false");
+  expect(f.resultReads).toEqual(["TEST-ui-job-0", "TEST-ui-job-1"]);
+  await second.getByRole("button", { name: "查看结果", exact: true }).click();
+  await expect(f.panel.locator(".execution-result")).toHaveCount(0);
+  await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+  expect(f.writes).toEqual([]);
+});
+
+test("成功对勾使用可辨绿色，不加圆圈，失败取消不冒充成功", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const first = f.panel.locator(".execution-job").first();
+  const second = f.panel.locator(".execution-job").nth(1);
+  const check = first.getByRole("img", { name: "已完成", exact: true });
+  for (const [appearance, color] of [
+    ["dark", "rgb(131, 217, 155)"],
+    ["light", "rgb(24, 125, 61)"],
+  ] as const) {
+    await page.evaluate((appearance) => {
+      document
+        .querySelector(".app")!
+        .setAttribute("data-appearance", appearance);
+      document.documentElement.setAttribute("data-appearance", appearance);
+    }, appearance);
+    await settleTransitions(page);
+    await expect(check).toHaveCSS("color", color);
+    await expect(check.locator("svg")).toHaveCSS("width", "16px");
+    await expect(check.locator("circle")).toHaveCount(0);
+    await f.panel.screenshot({
+      path: info.outputPath(`success-check-${appearance}.png`),
+    });
+  }
+  for (const [status, label] of [
+    ["failed", "失败"],
+    ["cancelled", "已取消"],
+  ]) {
+    f.jobs.secondStatus = status!;
+    await f.fixture.refresh();
+    await expect(second.locator(".job-status")).toHaveText(label!);
+    await expect(
+      second.getByRole("img", { name: "已完成", exact: true }),
+    ).toHaveCount(0);
+    expect(
+      await second
+        .locator(".job-status")
+        .evaluate((el) => getComputedStyle(el).color),
+    ).not.toBe("rgb(24, 125, 61)");
+  }
+  expect(f.writes).toEqual([]);
+});
+
+test("未完成结果重新打开会重读，空结果和截断直接显示，普通输出不执行HTML", async ({
+  page,
+}) => {
+  const f = await prepare(page);
+  f.resultReply.available = false;
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const first = f.panel.locator(".execution-job").first();
+  const button = first.getByRole("button", { name: "查看结果", exact: true });
+  await button.click();
+  await expect(first.locator(".execution-result pre")).toHaveText(
+    "尚无最终结果。",
+  );
+  await button.click();
+  await expect(first.locator(".execution-result")).toHaveCount(0);
+  f.resultReply.available = true;
+  f.resultReply.text = "";
+  await button.click();
+  await expect(first.locator(".execution-result pre")).toHaveText(
+    "执行返回了空内容。",
+  );
+  expect(f.resultReads).toEqual(["TEST-ui-job-0", "TEST-ui-job-0"]);
+  const second = f.panel.locator(".execution-job").nth(1);
+  f.resultReply.text = '<img src="TEST" onerror="alert(1)">TEST 原样输出';
+  f.resultReply.truncated = true;
+  await second.getByRole("button", { name: "查看结果", exact: true }).click();
+  await expect(second.locator(".execution-result pre")).toHaveText(
+    f.resultReply.text,
+  );
+  await expect(second.locator(".execution-result img")).toHaveCount(0);
+  await expect(second.locator(".execution-result")).toContainText("64,000");
+  expect(f.writes).toEqual([]);
+});
+
+test("结果读取失败后原按钮可重试，收起不读取或停止任务", async ({ page }) => {
+  const f = await prepare(page);
+  f.resultHttp.status = 503;
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const first = f.panel.locator(".execution-job").first();
+  const button = first.getByRole("button", { name: "查看结果", exact: true });
+  await button.click();
+  await expect(f.panel.locator(".execution-notice")).toContainText(
+    "TEST 无法读取结果",
+  );
+  await expect(button).toBeEnabled();
+  await expect(first.locator(".execution-result")).toHaveCount(0);
+  f.resultHttp.status = 200;
+  await button.click();
+  await expect(first.locator(".execution-result pre")).toBeVisible();
+  await button.click();
+  await expect(first.locator(".execution-result")).toHaveCount(0);
+  expect(f.resultReads).toEqual(["TEST-ui-job-0", "TEST-ui-job-0"]);
+  await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+  expect(f.writes).toEqual([]);
+});
 
 test("纯图标按钮悬停与键盘显示简短名称，Escape只关闭提示、没有写入", async ({
   page,
@@ -232,7 +415,6 @@ test("活动详情运行标识会动，已完成为图标，时间与工具按�
   await technical.click();
   await expect(first.locator(".execution-technical")).toHaveCount(0);
   await first.getByRole("button", { name: "查看结果", exact: true }).click();
-  await first.getByText("完整返回内容", { exact: true }).click();
   await expect(first.locator(".execution-result pre")).toContainText(
     "TEST receipt",
   );
