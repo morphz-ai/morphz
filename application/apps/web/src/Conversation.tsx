@@ -655,8 +655,7 @@ export function Conversation({
                     data-background-execution={activeBranch || undefined}
                     data-execution-inspectable={inspectable || undefined}
                     data-execution-record={
-                      (!activeBranch && inspectable && recordStatus?.kind) ||
-                      undefined
+                      (inspectable && recordStatus?.kind) || undefined
                     }
                     data-supplement-target={targets.length > 0 || undefined}
                     onClick={
@@ -840,7 +839,7 @@ export function Conversation({
                         )}
                       </div>
                     )}
-                    {item && !activeBranch && inspectable && recordStatus && (
+                    {item && inspectable && recordStatus && (
                       <button
                         type="button"
                         className="message-activity-record"

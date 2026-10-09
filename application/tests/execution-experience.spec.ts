@@ -219,7 +219,7 @@ test("all-work overview includes authorized work whose source message is not loa
   await expect(page.locator(".human-message")).toHaveCount(1);
 });
 
-test("live execution retains its animated perimeter and separate footer; status navigation stays separate from the fixed sidebar toggle", async ({
+test("live execution has a contained signal and separate footer without a perimeter; status navigation stays separate from the fixed sidebar toggle", async ({
   page,
 }) => {
   let kind: string | undefined = "dialogue_turn";
@@ -314,30 +314,27 @@ test("live execution retains its animated perimeter and separate footer; status 
   await expect(status).toHaveAttribute("data-status", "running");
   await expect(status).toBeVisible();
   const bubbleBefore = (await message.boundingBox())!;
-  const halo = await message.evaluate((el) => {
-    const style = getComputedStyle(el, "::before");
+  const frame = await message.evaluate((el) => {
+    const style = getComputedStyle(el);
     return {
-      content: style.content,
-      animation: style.animationName,
-      duration: style.animationDuration,
-      pointerEvents: style.pointerEvents,
-      angle: style.getPropertyValue("--execution-glow-angle"),
+      shadow: style.boxShadow,
+      border: style.borderTopWidth,
+      content: getComputedStyle(el, "::before").content,
     };
   });
-  expect(halo.content).toBe('""');
-  expect(halo.animation).toBe("execution-halo-orbit");
-  expect(halo.duration).toBe("3.6s");
-  expect(halo.pointerEvents).toBe("none");
+  expect(frame).toEqual({ shadow: "none", border: "0px", content: "none" });
+  const marker = message.locator(".message-activity-record");
+  await expect(marker).toHaveAttribute("data-status", "running");
+  const signal = marker.locator(".execution-signal-flow");
+  await expect(signal).toHaveCSS("animation-name", "execution-signal-travel");
+  await expect(signal).toHaveCSS("animation-duration", "2.4s");
+  const offset = await signal.evaluate(
+    (el) => getComputedStyle(el).strokeDashoffset,
+  );
   // Verify real progression across frames, not just an animation-name string.
   await expect
-    .poll(() =>
-      message.evaluate((el) =>
-        getComputedStyle(el, "::before").getPropertyValue(
-          "--execution-glow-angle",
-        ),
-      ),
-    )
-    .not.toBe(halo.angle);
+    .poll(() => signal.evaluate((el) => getComputedStyle(el).strokeDashoffset))
+    .not.toBe(offset);
   expect((await message.boundingBox())!.height).toBe(bubbleBefore.height);
   const statusBounds = (await status.boundingBox())!;
   const bubbleBounds = (await message.boundingBox())!;
@@ -379,9 +376,7 @@ test("live execution retains its animated perimeter and separate footer; status 
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   await expect
-    .poll(() =>
-      message.evaluate((el) => getComputedStyle(el, "::before").animationName),
-    )
+    .poll(() => signal.evaluate((el) => getComputedStyle(el).animationName))
     .toBe("none");
   await expect(message).toHaveAttribute("data-background-execution", "true");
   // Both system and explicit in-app reduced motion retain the status, but no
@@ -394,22 +389,19 @@ test("live execution retains its animated perimeter and separate footer; status 
     () => (document.documentElement.dataset.appMotion = "reduce"),
   );
   await expect
-    .poll(() =>
-      message.evaluate((el) => getComputedStyle(el, "::before").animationName),
-    )
+    .poll(() => signal.evaluate((el) => getComputedStyle(el).animationName))
     .toBe("none");
   await page.evaluate(() => delete document.documentElement.dataset.appMotion);
   await expect
-    .poll(() =>
-      message.evaluate((el) => getComputedStyle(el, "::before").animationName),
-    )
-    .toBe("execution-halo-orbit");
+    .poll(() => signal.evaluate((el) => getComputedStyle(el).animationName))
+    .toBe("execution-signal-travel");
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   await page.screenshot({
     path: "test-results/execution-running-status-dark-reduced-motion.png",
   });
   available = false;
   await fixture.refresh();
+  await expect(signal).toHaveCount(0);
   await expect(message).not.toHaveAttribute(
     "data-background-execution",
     "true",
@@ -417,6 +409,7 @@ test("live execution retains its animated perimeter and separate footer; status 
   available = true;
   connected = false;
   await fixture.refresh();
+  await expect(signal).toHaveCount(0);
   await expect(message).not.toHaveAttribute(
     "data-background-execution",
     "true",
@@ -424,6 +417,8 @@ test("live execution retains its animated perimeter and separate footer; status 
   connected = true;
   lifecycle = "completed";
   await fixture.refresh();
+  await expect(marker).toHaveAttribute("data-status", "ended");
+  await expect(signal).toHaveCount(0);
   await expect(message).not.toHaveAttribute(
     "data-background-execution",
     "true",
@@ -440,6 +435,7 @@ test("live execution retains its animated perimeter and separate footer; status 
   lifecycle = "open";
   kind = undefined;
   await fixture.refresh();
+  await expect(marker).toHaveCount(0);
   await expect(message).not.toHaveAttribute(
     "data-background-execution",
     "true",

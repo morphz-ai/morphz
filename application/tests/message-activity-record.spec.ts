@@ -150,7 +150,10 @@ test("执行结束后仍有可见状态和卡片关联，刷新、键盘及断�
   await expect(f.card).toHaveAttribute("data-background-execution", "true");
   const runningHeight = (await f.card.boundingBox())!.height;
   await f.input.fill("TEST 未发送的新草稿");
-  await expect(f.card.locator(".message-activity-record")).toHaveCount(0);
+  await expect(f.card.locator(".message-activity-record")).toHaveAttribute(
+    "data-status",
+    "running",
+  );
   f.threads[0]!.lifecycle = "completed";
   f.threads[0]!.revision++;
   await f.fixture.refresh();
@@ -328,7 +331,7 @@ test("历史标记在四强调色亮暗下融入卡片，不增加状态行或�
         animation: getComputedStyle(card, "::before").animationName,
       }));
       expect(style.height).toBeCloseTo(style.bodyHeight + style.padding, 1);
-      expect(style.stroke).not.toBe("none");
+      expect(style.stroke).toBe("none");
       expect(style.animation).toBe("none");
       await page.mouse.move(0, 0);
       await f.card.screenshot({
@@ -365,4 +368,73 @@ test.describe("触控历史入口", () => {
       "TEST 核对文件",
     );
   });
+});
+
+test("运行信号仅在小图标内：无外框，终态断线撤下，减少动态保留状态", async ({
+  page,
+}, info) => {
+  const f = await prepare(page, "open");
+  await f.input.fill("TEST 保留的新草稿");
+  const marker = f.card.locator(".message-activity-record");
+  const signal = marker.locator(".execution-signal-flow");
+  await expect(marker).toHaveAttribute("data-status", "running");
+  await expect(marker).toHaveText("");
+  await expect(signal).toBeVisible();
+  await expect(signal).toHaveCSS("animation-name", "execution-signal-travel");
+  const beforeOffset = await signal.evaluate(
+    (node) => getComputedStyle(node).strokeDashoffset,
+  );
+  await expect
+    .poll(() =>
+      signal.evaluate((node) => getComputedStyle(node).strokeDashoffset),
+    )
+    .not.toBe(beforeOffset);
+  const frame = await f.card.evaluate((card) => ({
+    shadow: getComputedStyle(card).boxShadow,
+    border: getComputedStyle(card).borderTopWidth,
+    before: getComputedStyle(card, "::before").content,
+    after: getComputedStyle(card, "::after").content,
+  }));
+  expect(frame).toEqual({
+    shadow: "none",
+    border: "0px",
+    before: "none",
+    after: "none",
+  });
+  const markBox = (await marker.boundingBox())!;
+  const signalBox = (await marker.locator("svg").boundingBox())!;
+  expect(signalBox.width).toBe(18);
+  expect(signalBox.height).toBe(18);
+  expect(signalBox.x).toBeGreaterThanOrEqual(markBox.x);
+  expect(signalBox.x + signalBox.width).toBeLessThanOrEqual(
+    markBox.x + markBox.width,
+  );
+  await f.card.screenshot({ path: info.outputPath("running-clean.png") });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(signal).toHaveCSS("animation-name", "none");
+  await expect(signal).toHaveCSS("opacity", "0");
+  await expect(marker.locator(".execution-signal-base")).toHaveCSS(
+    "opacity",
+    "1",
+  );
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.evaluate(
+    () => (document.documentElement.dataset.appMotion = "reduce"),
+  );
+  await expect(signal).toHaveCSS("animation-name", "none");
+  await page.evaluate(() => delete document.documentElement.dataset.appMotion);
+  await expect(signal).toHaveCSS("animation-name", "execution-signal-travel");
+  f.setConnected(false);
+  await f.fixture.refresh();
+  await expect(marker).toHaveAttribute("data-status", "unknown");
+  await expect(signal).toHaveCount(0);
+  f.setConnected(true);
+  f.threads[0]!.lifecycle = "completed";
+  f.threads[0]!.revision++;
+  await f.fixture.refresh();
+  await expect(marker).toHaveAttribute("data-status", "ended");
+  await expect(signal).toHaveCount(0);
+  await expect(f.card).toHaveCSS("box-shadow", "none");
+  await expect(f.input).toHaveValue("TEST 保留的新草稿");
+  await f.card.screenshot({ path: info.outputPath("ended-clean.png") });
 });
