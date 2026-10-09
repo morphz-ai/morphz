@@ -150,10 +150,7 @@ test("执行结束后仍有可见状态和卡片关联，刷新、键盘及断�
   await expect(f.card).toHaveAttribute("data-background-execution", "true");
   const runningHeight = (await f.card.boundingBox())!.height;
   await f.input.fill("TEST 未发送的新草稿");
-  await expect(f.card.locator(".message-activity-record")).toHaveAttribute(
-    "data-status",
-    "running",
-  );
+  await expect(f.card.locator(".message-activity-record")).toHaveCount(0);
   f.threads[0]!.lifecycle = "completed";
   f.threads[0]!.revision++;
   await f.fixture.refresh();
@@ -370,71 +367,71 @@ test.describe("触控历史入口", () => {
   });
 });
 
-test("运行信号仅在小图标内：无外框，终态断线撤下，减少动态保留状态", async ({
+test("运行态保留原光圈：终态及断线无边线，减少动态保留原状态", async ({
   page,
 }, info) => {
   const f = await prepare(page, "open");
   await f.input.fill("TEST 保留的新草稿");
   const marker = f.card.locator(".message-activity-record");
-  const signal = marker.locator(".execution-signal-flow");
-  await expect(marker).toHaveAttribute("data-status", "running");
-  await expect(marker).toHaveText("");
-  await expect(signal).toBeVisible();
-  await expect(signal).toHaveCSS("animation-name", "execution-signal-travel");
-  const beforeOffset = await signal.evaluate(
-    (node) => getComputedStyle(node).strokeDashoffset,
-  );
+  await expect(marker).toHaveCount(0);
+  await expect(f.card).toHaveAttribute("data-background-execution", "true");
+  const halo = await f.card.evaluate((card) => {
+    const style = getComputedStyle(card, "::before");
+    return {
+      content: style.content,
+      animation: style.animationName,
+      duration: style.animationDuration,
+      pointerEvents: style.pointerEvents,
+      angle: style.getPropertyValue("--execution-glow-angle"),
+    };
+  });
+  expect(halo.content).toBe('\"\"');
+  expect(halo.animation).toBe("execution-halo-orbit");
+  expect(halo.duration).toBe("3.6s");
+  expect(halo.pointerEvents).toBe("none");
   await expect
     .poll(() =>
-      signal.evaluate((node) => getComputedStyle(node).strokeDashoffset),
+      f.card.evaluate((card) =>
+        getComputedStyle(card, "::before").getPropertyValue(
+          "--execution-glow-angle",
+        ),
+      ),
     )
-    .not.toBe(beforeOffset);
-  const frame = await f.card.evaluate((card) => ({
-    shadow: getComputedStyle(card).boxShadow,
-    border: getComputedStyle(card).borderTopWidth,
-    before: getComputedStyle(card, "::before").content,
-    after: getComputedStyle(card, "::after").content,
-  }));
-  expect(frame).toEqual({
-    shadow: "none",
-    border: "0px",
-    before: "none",
-    after: "none",
-  });
-  const markBox = (await marker.boundingBox())!;
-  const signalBox = (await marker.locator("svg").boundingBox())!;
-  expect(signalBox.width).toBe(18);
-  expect(signalBox.height).toBe(18);
-  expect(signalBox.x).toBeGreaterThanOrEqual(markBox.x);
-  expect(signalBox.x + signalBox.width).toBeLessThanOrEqual(
-    markBox.x + markBox.width,
-  );
-  await f.card.screenshot({ path: info.outputPath("running-clean.png") });
+    .not.toBe(halo.angle);
+  await page.screenshot({ path: info.outputPath("running-restored.png") });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect(signal).toHaveCSS("animation-name", "none");
-  await expect(signal).toHaveCSS("opacity", "0");
-  await expect(marker.locator(".execution-signal-base")).toHaveCSS(
-    "opacity",
-    "1",
-  );
+  const animation = () =>
+    f.card.evaluate((card) => getComputedStyle(card, "::before").animationName);
+  await expect.poll(animation).toBe("none");
+  expect(
+    await f.card.evaluate((card) => getComputedStyle(card, "::before").content),
+  ).toBe('\"\"');
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.evaluate(
     () => (document.documentElement.dataset.appMotion = "reduce"),
   );
-  await expect(signal).toHaveCSS("animation-name", "none");
+  await expect.poll(animation).toBe("none");
   await page.evaluate(() => delete document.documentElement.dataset.appMotion);
-  await expect(signal).toHaveCSS("animation-name", "execution-signal-travel");
+  await expect.poll(animation).toBe("execution-halo-orbit");
   f.setConnected(false);
   await f.fixture.refresh();
   await expect(marker).toHaveAttribute("data-status", "unknown");
-  await expect(signal).toHaveCount(0);
+  await expect(f.card).toHaveCSS("box-shadow", "none");
+  expect(
+    await f.card.evaluate((card) => getComputedStyle(card, "::before").content),
+  ).toBe("none");
   f.setConnected(true);
   f.threads[0]!.lifecycle = "completed";
   f.threads[0]!.revision++;
   await f.fixture.refresh();
   await expect(marker).toHaveAttribute("data-status", "ended");
-  await expect(signal).toHaveCount(0);
+  await expect(marker).toHaveText("");
   await expect(f.card).toHaveCSS("box-shadow", "none");
+  await expect(f.card).toHaveCSS("border-top-width", "0px");
+  expect(
+    await f.card.evaluate((card) => getComputedStyle(card, "::before").content),
+  ).toBe("none");
+  await expect(marker.locator(".execution-signal-flow")).toHaveCount(0);
   await expect(f.input).toHaveValue("TEST 保留的新草稿");
   await f.card.screenshot({ path: info.outputPath("ended-clean.png") });
 });

@@ -990,8 +990,8 @@ body:has(dialog[open]) .cognitive-application-frame {
 .conversation .human-message[data-execution-inspectable] {
   cursor: pointer;
 }
-/* Content keeps the same flat surface in every state. A trailing activity
-   glyph, not a perimeter effect or a second text row, carries the state. */
+/* Ended/history cards keep a flat surface and a small trailing status glyph.
+   The confirmed live execution halo is independent of this history marker. */
 .conversation .human-message[data-execution-record] {
   padding-inline-end: 44px;
 }
@@ -1019,10 +1019,6 @@ body:has(dialog[open]) .cognitive-application-frame {
 .app .conversation .message-activity-record:focus-visible {
   outline: 1px solid var(--ink);
   outline-offset: 1px;
-}
-.message-activity-record > .execution-running-signal {
-  width: 18px;
-  height: 18px;
 }
 .app .conversation .message-activity-record[data-status="failed"] {
   color: var(--danger, light-dark(#a72a32, #f8a9ad));

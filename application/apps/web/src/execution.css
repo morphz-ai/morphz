@@ -249,6 +249,41 @@
   margin: 8px 0;
   font-size: 12px;
 }
+@property --execution-glow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+.conversation .human-message[data-background-execution]::before {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  inset: -2px;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--execution-glow-angle),
+    transparent 8%,
+    color-mix(in srgb, var(--accent-strong) 15%, transparent) 28%,
+    var(--accent-strong) 44%,
+    transparent 62%,
+    color-mix(in srgb, var(--accent-strong) 45%, transparent) 84%,
+    transparent
+  );
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  animation: execution-halo-orbit 3.6s linear infinite;
+}
+.conversation .human-message[data-background-execution] {
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong) 17%, transparent);
+}
+@keyframes execution-halo-orbit {
+  to {
+    --execution-glow-angle: 360deg;
+  }
+}
 .message-meta .message-execution-link {
   border: 0;
   padding: 0;
@@ -344,7 +379,8 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .execution-running-signal .execution-signal-flow,
-  .execution-work-mark[data-active] {
+  .execution-work-mark[data-active],
+  .conversation .human-message[data-background-execution]::before {
     animation: none;
   }
   .execution-running-signal .execution-signal-flow {
