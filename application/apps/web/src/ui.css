@@ -990,15 +990,15 @@ body:has(dialog[open]) .cognitive-application-frame {
 .conversation .human-message[data-execution-inspectable] {
   cursor: pointer;
 }
-/* A history link lives in the lower-right corner, not on the text baseline.
-   It preserves the bubble's original fill and the independent live halo. */
+/* The history link sits with the last line of text, inset from the edge.
+   Neither body hover nor button hover changes its quiet navigation ink. */
 .conversation .human-message[data-execution-record] {
-  padding-inline-end: 34px;
+  padding-inline-end: 44px;
 }
 .app .conversation .message-activity-record {
   position: absolute;
-  right: 0;
-  bottom: 0;
+  right: 8px;
+  bottom: 8px;
   display: grid;
   place-items: center;
   width: 28px;
@@ -1009,19 +1009,16 @@ body:has(dialog[open]) .cognitive-application-frame {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: light-dark(var(--text-secondary), var(--ink));
+  color: var(--muted);
   box-shadow: none;
 }
-.app .conversation .message-activity-record:is(:hover, :focus-visible) {
-  color: var(--ink);
-}
-.conversation .human-message:hover .message-activity-record {
-  color: var(--ink);
+.app
+  .conversation
+  .message-activity-record:is(:hover, :focus-visible, :active) {
+  color: var(--muted);
+  background: transparent;
 }
 .conversation .message-activity-glyph {
-  position: absolute;
-  right: 3px;
-  bottom: 3px;
   display: grid;
   place-items: center;
   width: 18px;
@@ -1036,8 +1033,8 @@ body:has(dialog[open]) .cognitive-application-frame {
 .conversation
   .message-activity-record[data-status="ended"]
   .message-activity-glyph {
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
 }
 .app .conversation .message-activity-record:focus-visible {
   outline: 1px solid var(--ink);
@@ -1074,7 +1071,7 @@ body:has(dialog[open]) .cognitive-application-frame {
   .app .conversation .message-activity-record {
     width: 44px;
     height: 44px;
-    right: 0;
+    right: 4px;
     bottom: 0;
   }
 }

@@ -1,4 +1,4 @@
-import { ArrowUpRight } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import type { ActivityStatus } from "./execution-activity.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 
@@ -27,7 +27,7 @@ export function MessageActivityLink({
       ) : (
         <span className="message-activity-glyph">
           {status.kind === "ended" ? (
-            <ArrowUpRight size={14} aria-hidden="true" />
+            <ChevronRight size={16} aria-hidden="true" />
           ) : (
             <ExecutionStatusIcon kind={status.kind} size={18} />
           )}

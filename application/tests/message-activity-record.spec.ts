@@ -10,7 +10,7 @@ import {
   type ExecutionActivity,
 } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
-import { openInput } from "./interaction-helpers.js";
+import { openInput, settleTransitions } from "./interaction-helpers.js";
 import { openSettings } from "./settings-helpers.js";
 
 // Isolated real HTTP Host and identity, controlled Runtime snapshots. No model
@@ -143,7 +143,7 @@ async function prepare(page: Page, lifecycle = "completed") {
 
 test.afterEach(async ({ page }) => page.unrouteAll({ behavior: "wait" }));
 
-test("正常结束用右下角关联箭头，不改变气泡颜色或增加完成按钮底面", async ({
+test("正常结束用正文尾部的向右箭头，悬停不变黑、不改变气泡或增加底面", async ({
   page,
 }) => {
   const f = await prepare(page);
@@ -151,7 +151,8 @@ test("正常结束用右下角关联箭头，不改变气泡颜色或增加完�
     name: "查看执行活动：已结束",
     exact: true,
   });
-  await expect(marker.locator(".lucide-arrow-up-right")).toBeVisible();
+  await expect(marker.locator(".lucide-chevron-right")).toBeVisible();
+  await expect(marker.locator(".lucide-arrow-up-right")).toHaveCount(0);
   await expect(marker.locator(".lucide-circle-check")).toHaveCount(0);
   const geometry = await marker.evaluate((button) => {
     const card = button.closest(".human-message")!;
@@ -159,25 +160,38 @@ test("正常结束用右下角关联箭头，不改变气泡颜色或增加完�
     const box = card.getBoundingClientRect();
     return {
       right: box.right - glyph.right,
-      bottom: box.bottom - glyph.bottom,
+      textCenter: (() => {
+        const body = card.querySelector("p")!;
+        const rect = body.getBoundingClientRect();
+        return rect.bottom - parseFloat(getComputedStyle(body).lineHeight) / 2;
+      })(),
+      center: (glyph.top + glyph.bottom) / 2,
       width: glyph.width,
       height: glyph.height,
       padding: parseFloat(getComputedStyle(card).paddingRight),
       background: getComputedStyle(button).backgroundColor,
     };
   });
-  expect(geometry.right).toBeGreaterThanOrEqual(2);
-  expect(geometry.right).toBeLessThanOrEqual(4);
-  expect(geometry.bottom).toBeGreaterThanOrEqual(2);
-  expect(geometry.bottom).toBeLessThanOrEqual(4);
-  expect([geometry.width, geometry.height]).toEqual([14, 14]);
-  expect(geometry.padding).toBe(34);
+  expect(geometry.right).toBeGreaterThanOrEqual(13);
+  expect(geometry.right).toBeLessThanOrEqual(15);
+  expect(Math.abs(geometry.center - geometry.textCenter)).toBeLessThanOrEqual(
+    2,
+  );
+  expect([geometry.width, geometry.height]).toEqual([16, 16]);
+  expect(geometry.padding).toBe(44);
   expect(geometry.background).toBe("rgba(0, 0, 0, 0)");
   const normal = await f.ordinary.evaluate(
     (card) => getComputedStyle(card).backgroundColor,
   );
   await expect(f.card).toHaveCSS("background-color", normal);
+  await page.mouse.move(0, 0);
+  const color = await marker.evaluate(
+    (button) => getComputedStyle(button).color,
+  );
+  await f.card.locator("p").hover();
+  await expect(marker).toHaveCSS("color", color);
   await marker.hover();
+  await expect(marker).toHaveCSS("color", color);
   await expect(marker).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
 });
 
@@ -402,10 +416,24 @@ test("历史标记在四强调色亮暗下融入卡片，不增加状态行或�
       expect(style.stroke).toBe("none");
       expect(style.animation).toBe("none");
       await page.mouse.move(0, 0);
+      await settleTransitions(page);
+      const color = await badge.evaluate(
+        (node) => getComputedStyle(node).color,
+      );
       await f.card.screenshot({
         path: info.outputPath(`compact-${mode}-${accent}.png`),
       });
+      await f.card.locator("p").hover();
+      await expect(badge).toHaveCSS("color", color);
+      await badge.hover();
+      await expect(badge).toHaveCSS("color", color);
+      await expect(badge).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+      await f.card.screenshot({
+        path: info.outputPath(`hover-${mode}-${accent}.png`),
+      });
       await badge.focus();
+      await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Tab");
       await expect(badge).toBeFocused();
       await expect(badge).toHaveCSS("outline-style", "solid");
     }
