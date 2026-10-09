@@ -1,5 +1,5 @@
 import { useId, useState, type ReactNode } from "react";
-import { Check, Code2, Eye, Square } from "lucide-react";
+import { CircleCheck, Code2, Eye, Square } from "lucide-react";
 import type { ExecutionSnapshot } from "../../../../../packages/core/src/execution.js";
 import type { executionSnapshotJobPresentation } from "../../execution-presentation.js";
 import { RunningActivityIcon } from "../../RunningActivityIcon.js";
@@ -47,7 +47,7 @@ export function ExecutionJobCard({
               role="img"
               aria-label={presentation.statusLabel}
             >
-              <Check size={16} aria-hidden="true" />
+              <CircleCheck size={16} aria-hidden="true" />
             </span>
           </Tooltip>
         ) : (

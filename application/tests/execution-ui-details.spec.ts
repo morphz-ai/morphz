@@ -205,9 +205,7 @@ test("查看结果一次展开内容，再次收起，缓存复开及换步骤�
   expect(f.writes).toEqual([]);
 });
 
-test("成功对勾使用可辨绿色，不加圆圈，失败取消不冒充成功", async ({
-  page,
-}, info) => {
+test("成功圆圈对勾使用可辨绿色，失败取消不冒充成功", async ({ page }, info) => {
   const f = await prepare(page);
   await openExecutionPanel(page);
   await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
@@ -227,7 +225,8 @@ test("成功对勾使用可辨绿色，不加圆圈，失败取消不冒充成�
     await settleTransitions(page);
     await expect(check).toHaveCSS("color", color);
     await expect(check.locator("svg")).toHaveCSS("width", "16px");
-    await expect(check.locator("circle")).toHaveCount(0);
+    await expect(check.locator("svg.lucide-circle-check")).toHaveCount(1);
+    await expect(check.locator("circle")).toHaveCount(1);
     await f.panel.screenshot({
       path: info.outputPath(`success-check-${appearance}.png`),
     });
