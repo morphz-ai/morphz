@@ -29,10 +29,13 @@ export const test = base.extend<{ platformConversationRoutes: void }>({
 export async function mockPlatformConversation(
   page: Page,
   snapshot: () => Presentation,
+  existingClient?: PlatformClient,
 ) {
-  const client = await PlatformClient.connect(
-    new HttpApplicationClient("http://127.0.0.1:65421"),
-  );
+  const client =
+    existingClient ??
+    (await PlatformClient.connect(
+      new HttpApplicationClient("http://127.0.0.1:65421"),
+    ));
   const spaces = await client.ensurePersonalSpaces();
   const scope = {
     projectId: spaces.dialogueId,

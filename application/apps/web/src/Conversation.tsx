@@ -54,6 +54,8 @@ import {
 import { ApprovalCard } from "./ApprovalCard.js";
 import { liveToolPresentation } from "./execution-presentation.js";
 import { inputExecutionActivityPresentation } from "./execution-activity.js";
+import { inputExecutionRecordStatus } from "./message-execution-record.js";
+import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 import type { CognitiveAppObjectLocator } from "../../../packages/core/src/cognitive-app-object-locator.js";
 import { cognitiveWorkSurfaceKey } from "./host/work-surface.js";
@@ -574,6 +576,10 @@ export function Conversation({
                   item,
                   item && client.online,
                 );
+              const recordStatus = item
+                ? inputExecutionRecordStatus(runtime, item, client.online)
+                : undefined;
+              const inspectable = !!recordStatus && !!onInspect;
               const WorkStatusIcon =
                 workStatus?.kind === "running"
                   ? Activity
@@ -647,12 +653,14 @@ export function Conversation({
                     data-message-id={id}
                     data-starts-turn={startsTurn || undefined}
                     data-background-execution={activeBranch || undefined}
-                    data-execution-inspectable={
-                      (activeBranch && !!onInspect) || undefined
+                    data-execution-inspectable={inspectable || undefined}
+                    data-execution-record={
+                      (!activeBranch && inspectable && recordStatus?.kind) ||
+                      undefined
                     }
                     data-supplement-target={targets.length > 0 || undefined}
                     onClick={
-                      activeBranch && item && onInspect
+                      inspectable && item && onInspect
                         ? (event) => {
                             // The card is a shortcut, not a wrapper button:
                             // nested references/actions and selecting original
@@ -670,7 +678,11 @@ export function Conversation({
                         : undefined
                     }
                     aria-description={
-                      activeBranch ? "这条消息的后台执行仍在进行" : undefined
+                      activeBranch
+                        ? "这条消息的后台执行仍在进行"
+                        : recordStatus
+                          ? `这条消息有关联执行活动：${recordStatus.label}`
+                          : undefined
                     }
                     data-streaming={reply?.streaming || undefined}
                     data-stream-active={
@@ -827,6 +839,21 @@ export function Conversation({
                           </>
                         )}
                       </div>
+                    )}
+                    {item && !activeBranch && inspectable && recordStatus && (
+                      <button
+                        type="button"
+                        className="message-activity-record"
+                        data-status={recordStatus.kind}
+                        aria-label={`查看执行活动：${recordStatus.label}`}
+                        title={`${recordStatus.label} · 查看这条消息的执行记录`}
+                        onClick={() => onInspect?.(item.id)}
+                      >
+                        <ExecutionStatusIcon
+                          kind={recordStatus.kind}
+                          size={18}
+                        />
+                      </button>
                     )}
                     {reply?.kind !== "tool" && (
                       <div
