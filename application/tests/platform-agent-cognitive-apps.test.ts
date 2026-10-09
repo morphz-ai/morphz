@@ -154,7 +154,13 @@ async function prepareAuthor() {
     );
     assert.ok(Array.isArray(packed) && packed.length === 1);
     const filename: unknown = Reflect.get(packed[0] as object, "filename");
-    assert.equal(filename, "morphz-cognitive-app-sdk-0.2.0.tgz");
+    const declared = JSON.parse(
+      readFileSync(join(sdk, "package.json"), "utf8"),
+    );
+    assert.equal(declared.name, "@morphz/cognitive-app-sdk");
+    assert.equal(Reflect.get(packed[0] as object, "name"), declared.name);
+    assert.equal(Reflect.get(packed[0] as object, "version"), declared.version);
+    assert.equal(filename, `morphz-cognitive-app-sdk-${declared.version}.tgz`);
     npm(author, [
       "install",
       "--offline",
