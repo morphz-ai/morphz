@@ -125,12 +125,14 @@ async function prepare(page: Page, { withQuote = false } = {}) {
     exact: true,
   });
   const status = message.locator(".message-work-status");
+  const activity = message.locator(".message-activity-access");
   await expect(supplement).toBeVisible();
   return {
     fixture,
     message,
     supplement,
     status,
+    activity,
     composer,
     sent,
     async update(update: {
@@ -237,35 +239,44 @@ async function expectNoWorkSelection(
 
 test.afterEach(async ({ page }) => page.unrouteAll({ behavior: "wait" }));
 
-test("仅可查看、没有补充目标的运行线程仍使用气泡外 footer", async ({
+test("没有补充目标的运行线程用卡片和键盘查看，停止／复制留在原 footer", async ({
   page,
 }) => {
   const f = await prepare(page);
   await f.update({ continuation: false });
   await expect(f.supplement).toHaveCount(0);
-  await expect(f.status).toBeVisible();
-  await expect(f.message.locator(".message-meta")).toHaveAttribute(
+  await expect(f.status).toHaveCount(0);
+  await expect(f.message.locator(".message-meta")).not.toHaveAttribute(
     "data-work-actions",
-    "true",
   );
   const bubble = (await f.message.boundingBox())!;
-  const footer = (await f.message.locator(".message-meta").boundingBox())!;
+  const footer = (await f.message.locator(".message-peek").boundingBox())!;
   expect(footer.y).toBeGreaterThanOrEqual(bubble.y + bubble.height);
   await f.message.hover();
-  await f.status.click();
+  await f.message.locator(":scope > p").click();
   await expect(
     page.getByRole("complementary", { name: "Morphz 信息", exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
+  await f.activity.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(f.activity).toBeFocused();
+  await expect(f.message).toHaveCSS("outline-style", "solid");
+  await page.keyboard.press("Enter");
+  await expect(information(page).locator(".execution-origin")).toHaveText(
+    /核对报告 A。/,
+  );
+  expect(f.sent).toHaveLength(0);
 });
 
 test("工作动作在气泡外同一 footer：简短图标、真实状态、保留执行光效、窄窗与 200% 不遮正文", async ({
   page,
 }, info) => {
   const f = await prepare(page);
-  await expect(f.supplement).toHaveText("补充");
-  await expect(f.status).toHaveText("执行中");
-  await expect(f.status.locator("svg")).toHaveCount(1);
+  await expect(f.supplement).toHaveText("");
+  await expect(f.supplement.locator("svg")).toHaveCount(1);
+  await expect(f.status).toHaveCount(0);
   await expect(f.message).toHaveAttribute("data-background-execution", "true");
   expect(
     await f.message.evaluate((el) => getComputedStyle(el, "::before").content),
@@ -315,7 +326,6 @@ test("工作动作在气泡外同一 footer：简短图标、真实状态、保�
     expect(work.y - bubble.y - bubble.height).toBeLessThanOrEqual(6 * zoom);
     for (const button of [
       f.supplement,
-      f.status,
       f.message.locator(".message-copy"),
       f.message.locator(".stop-response"),
     ]) {
@@ -341,6 +351,9 @@ test("四主题亮暗 hover、按下与键盘保持可读，不再强外框；�
 }, info) => {
   const f = await prepare(page),
     observations = [];
+  // Waiting still needs a truthful status. Removing only the redundant running
+  // action must not hide paused/waiting/unknown work or its keyboard access.
+  await f.update({ phase: "waiting" });
   for (const mode of ["亮色", "暗色"])
     for (const accent of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
       const settings = await openSettings(page, "外观");
@@ -414,7 +427,8 @@ test("四主题亮暗 hover、按下与键盘保持可读，不再强外框；�
       "auto",
     );
     const touchGeometry = await cardGeometry(t.message);
-    await t.status.tap();
+    await expect(t.status).toHaveCount(0);
+    await t.message.locator(":scope > p").tap();
     await expect(
       information(touchPage).locator(".execution-origin"),
     ).toHaveText(/核对报告 A。/);
@@ -436,7 +450,7 @@ test("四主题亮暗 hover、按下与键盘保持可读，不再强外框；�
   }
 });
 
-test("等待/暂停/未知不冒称运行，断线、结束、旧类型撤下入口", async ({
+test("等待/暂停/未知不冒称运行，断线与结束保留记录，旧类型不补造入口", async ({
   page,
 }) => {
   const f = await prepare(page);
@@ -457,26 +471,38 @@ test("等待/暂停/未知不冒称运行，断线、结束、旧类型撤下入
   await expect(f.status).toHaveAttribute("data-status", "paused");
   await f.update({ connected: false });
   await expect(f.message.locator(".message-work-actions")).toHaveCount(0);
-  await expect(f.message).not.toHaveAttribute(
-    "data-execution-inspectable",
-    "true",
+  await expect(f.message).toHaveAttribute("data-execution-inspectable", "true");
+  await expect(f.message).not.toHaveAttribute("data-background-execution");
+  await expect(f.message.locator(".message-activity-record")).toHaveAttribute(
+    "data-status",
+    "unknown",
   );
   await f.message.locator(":scope > p").click();
-  await expect(information(page)).toHaveCount(0);
+  await expect(information(page).locator(".execution-origin")).toHaveText(
+    /核对报告 A。/,
+  );
   await expectNoWorkSelection(page, f, draft);
   await f.update({ connected: true, available: false });
   await expect(f.message.locator(".message-work-actions")).toHaveCount(0);
   await f.update({ available: true, lifecycle: "completed" });
   await expect(f.message.locator(".message-work-actions")).toHaveCount(0);
-  await expect(f.message).not.toHaveAttribute(
-    "data-execution-inspectable",
-    "true",
+  await expect(f.message).toHaveAttribute("data-execution-inspectable", "true");
+  await expect(f.message.locator(".message-activity-record")).toHaveAttribute(
+    "data-status",
+    "ended",
   );
   await f.message.locator(":scope > p").click();
-  await expect(information(page)).toHaveCount(0);
+  await expect(information(page).locator(".execution-origin")).toHaveText(
+    /核对报告 A。/,
+  );
   await expectNoWorkSelection(page, f, draft);
   await f.update({ lifecycle: "open", kind: null });
   await expect(f.message.locator(".message-work-actions")).toHaveCount(0);
+  await expect(f.message).not.toHaveAttribute("data-execution-inspectable");
+  await expect(f.message.locator(".message-activity-record")).toHaveCount(0);
+  await page.getByRole("button", { name: "隐藏右侧栏", exact: true }).click();
+  await f.message.locator(":scope > p").click();
+  await expect(information(page)).toHaveCount(0);
   expect(f.sent).toHaveLength(0);
 });
 
@@ -487,7 +513,7 @@ test("查看不选补充，多分支须选择，补充发送精确原线程且�
   const draft = "补充 A 的核对要求，B 保持不变";
   await f.composer.fill(draft);
   await f.message.hover();
-  await f.status.press("Enter");
+  await f.activity.press("Enter");
   await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
   await expect(f.composer).toHaveValue(draft);
   expect(f.sent).toHaveLength(0);
@@ -496,7 +522,7 @@ test("查看不选补充，多分支须选择，补充发送精确原线程且�
     name: "选择补充分支",
     exact: true,
   });
-  await expect(choice).toHaveText("补充");
+  await expect(choice).toHaveText("");
   await choice.press("Space");
   await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
   const panel = page.getByRole("complementary", {
@@ -520,9 +546,13 @@ test("查看不选补充，多分支须选择，补充发送精确原线程且�
   });
   for (const key of ["model", "directories", "applicationInstanceId"])
     expect(f.sent[0]!.operation).not.toHaveProperty(key);
-  await expect(
-    page.locator('[data-input-id="footer-b"] .message-work-status'),
-  ).toHaveText("执行中");
+  const second = page.locator('.human-message[data-input-id="footer-b"]');
+  await expect(second).toHaveAttribute("data-background-execution", "true");
+  await expect(second.locator(".message-work-status")).toHaveCount(0);
+  await expect(second.locator(".message-activity-access")).toHaveAttribute(
+    "aria-label",
+    "查看执行活动：执行中",
+  );
 });
 
 test("默认收起操作但执行光效持续，悬停与键盘焦点只显露而不跳布局", async ({
@@ -592,7 +622,7 @@ test("从正文跨过两像素间隙到 footer 操作始终可点", async ({ pag
   const f = await prepare(page);
   const bubble = (await f.message.boundingBox())!,
     footer = (await f.message.locator(".message-meta").boundingBox())!,
-    target = (await f.status.boundingBox())!;
+    target = (await f.supplement.boundingBox())!;
   const x = Math.min(bubble.x + bubble.width - 4, footer.x + footer.width - 4);
   await page.mouse.move(x, bubble.y + bubble.height - 4);
   await expect(f.message.locator(".message-work-actions")).toHaveCSS(
@@ -627,9 +657,10 @@ test("从正文跨过两像素间隙到 footer 操作始终可点", async ({ pag
     target.x + target.width / 2,
     target.y + target.height / 2,
   );
-  await expect(information(page).locator(".execution-origin")).toHaveText(
-    /核对报告 A。/,
+  await expect(page.getByRole("group", { name: "补充目标" })).toContainText(
+    "报告 A",
   );
+  await expect(information(page)).toHaveCount(0);
   expect(f.sent).toHaveLength(0);
 });
 

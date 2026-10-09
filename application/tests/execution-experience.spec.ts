@@ -219,7 +219,7 @@ test("all-work overview includes authorized work whose source message is not loa
   await expect(page.locator(".human-message")).toHaveCount(1);
 });
 
-test("live execution retains its animated perimeter and separate footer; status navigation stays separate from the fixed sidebar toggle", async ({
+test("live execution retains its animated perimeter and separate footer; card activity navigation stays separate from the fixed sidebar toggle", async ({
   page,
 }) => {
   let kind: string | undefined = "dialogue_turn";
@@ -307,12 +307,18 @@ test("live execution retains its animated perimeter and separate footer; status 
   ).toHaveAttribute("aria-selected", "true");
   await page.getByRole("button", { name: "隐藏右侧栏" }).click();
   await expect(control).toHaveAttribute("data-state", "working");
-  const status = message.getByRole("button", {
-    name: "后台执行中",
+  await expect(
+    message.getByRole("button", {
+      name: "后台执行中",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  const activity = message.getByRole("button", {
+    name: "查看执行活动：执行中",
     exact: true,
   });
-  await expect(status).toHaveAttribute("data-status", "running");
-  await expect(status).toBeVisible();
+  await expect(activity).toHaveAttribute("data-status", "running");
+  await expect(activity).toHaveClass("message-activity-access");
   const bubbleBefore = (await message.boundingBox())!;
   const halo = await message.evaluate((el) => {
     const style = getComputedStyle(el, "::before");
@@ -341,13 +347,24 @@ test("live execution retains its animated perimeter and separate footer; status 
     )
     .not.toBe(halo.angle);
   expect((await message.boundingBox())!.height).toBe(bubbleBefore.height);
-  const statusBounds = (await status.boundingBox())!;
+  const footer = message.locator(".message-peek");
+  const footerBounds = (await footer.boundingBox())!;
   const bubbleBounds = (await message.boundingBox())!;
-  expect(statusBounds.y).toBeGreaterThanOrEqual(
+  expect(footerBounds.y).toBeGreaterThanOrEqual(
     bubbleBounds.y + bubbleBounds.height - 1,
   );
-  expect(statusBounds.height).toBeGreaterThanOrEqual(24);
-  await expect(status.locator("svg")).toBeVisible();
+  expect(footerBounds.height).toBeGreaterThanOrEqual(24);
+  await activity.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(activity).toBeFocused();
+  await expect(message).toHaveCSS("outline-style", "solid");
+  await page.keyboard.press("Enter");
+  await expect(subject.locator(".execution-origin")).toContainText(
+    "后台执行光效验收：整理测试资料",
+  );
+  await expect(composer).toHaveValue("未发送的原草稿");
+  await page.getByRole("button", { name: "隐藏右侧栏" }).click();
   await page.screenshot({
     path: "test-results/execution-running-status-light.png",
   });

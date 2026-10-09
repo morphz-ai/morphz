@@ -143,6 +143,77 @@ async function prepare(page: Page, lifecycle = "completed") {
 
 test.afterEach(async ({ page }) => page.unrouteAll({ behavior: "wait" }));
 
+test("正常结束用右下角关联箭头，不改变气泡颜色或增加完成按钮底面", async ({
+  page,
+}) => {
+  const f = await prepare(page);
+  const marker = f.card.getByRole("button", {
+    name: "查看执行活动：已结束",
+    exact: true,
+  });
+  await expect(marker.locator(".lucide-arrow-up-right")).toBeVisible();
+  await expect(marker.locator(".lucide-circle-check")).toHaveCount(0);
+  const geometry = await marker.evaluate((button) => {
+    const card = button.closest(".human-message")!;
+    const glyph = button.querySelector("svg")!.getBoundingClientRect();
+    const box = card.getBoundingClientRect();
+    return {
+      right: box.right - glyph.right,
+      bottom: box.bottom - glyph.bottom,
+      width: glyph.width,
+      height: glyph.height,
+      padding: parseFloat(getComputedStyle(card).paddingRight),
+      background: getComputedStyle(button).backgroundColor,
+    };
+  });
+  expect(geometry.right).toBeGreaterThanOrEqual(2);
+  expect(geometry.right).toBeLessThanOrEqual(4);
+  expect(geometry.bottom).toBeGreaterThanOrEqual(2);
+  expect(geometry.bottom).toBeLessThanOrEqual(4);
+  expect([geometry.width, geometry.height]).toEqual([14, 14]);
+  expect(geometry.padding).toBe(34);
+  expect(geometry.background).toBe("rgba(0, 0, 0, 0)");
+  const normal = await f.ordinary.evaluate(
+    (card) => getComputedStyle(card).backgroundColor,
+  );
+  await expect(f.card).toHaveCSS("background-color", normal);
+  await marker.hover();
+  await expect(marker).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+});
+
+test("运行状态不再重复按钮，正文与键盘查看仍打开确切活动且不选补充", async ({
+  page,
+}) => {
+  const f = await prepare(page, "open");
+  await expect(
+    f.card.getByRole("button", { name: "后台执行中", exact: true }),
+  ).toHaveCount(0);
+  const entry = f.card.getByRole("button", {
+    name: "查看执行活动：执行中",
+    exact: true,
+  });
+  await expect(entry).toHaveClass("message-activity-access");
+  await expect(entry).toHaveCSS("clip-path", "inset(50%)");
+  await f.input.fill("TEST 查看不能覆盖这份草稿");
+  const writes = f.writes.length;
+  await f.card.locator("p[data-quotable]").click();
+  await expect(f.panel.locator(".execution-origin")).toContainText(
+    "TEST 核对文件",
+  );
+  await entry.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(entry).toBeFocused();
+  await expect(f.card).toHaveCSS("outline-style", "solid");
+  await page.keyboard.press("Space");
+  await expect(f.panel.locator(".execution-origin")).toContainText(
+    "TEST 核对文件",
+  );
+  await expect(f.input).toHaveValue("TEST 查看不能覆盖这份草稿");
+  await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
+  expect(f.writes.length).toBe(writes);
+});
+
 test("执行结束后仍有可见状态和卡片关联，刷新、键盘及断线保留；查看不改草稿或执行", async ({
   page,
 }, info) => {

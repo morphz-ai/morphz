@@ -33,7 +33,6 @@ import {
   Film,
   RotateCcw,
   LoaderCircle,
-  Activity,
   Clock3,
   CircleHelp,
   MessageSquarePlus,
@@ -55,7 +54,7 @@ import { ApprovalCard } from "./ApprovalCard.js";
 import { liveToolPresentation } from "./execution-presentation.js";
 import { inputExecutionActivityPresentation } from "./execution-activity.js";
 import { inputExecutionRecordStatus } from "./message-execution-record.js";
-import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
+import { MessageActivityLink } from "./MessageActivityLink.js";
 import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 import type { CognitiveAppObjectLocator } from "../../../packages/core/src/cognitive-app-object-locator.js";
 import { cognitiveWorkSurfaceKey } from "./host/work-surface.js";
@@ -581,13 +580,16 @@ export function Conversation({
                 : undefined;
               const inspectable = !!recordStatus && !!onInspect;
               const WorkStatusIcon =
-                workStatus?.kind === "running"
-                  ? Activity
-                  : workStatus?.kind === "paused"
-                    ? Pause
-                    : workStatus?.kind === "waiting"
-                      ? Clock3
-                      : CircleHelp;
+                workStatus?.kind === "paused"
+                  ? Pause
+                  : workStatus?.kind === "waiting"
+                    ? Clock3
+                    : CircleHelp;
+              const showWorkStatus =
+                activeBranch &&
+                onInspect &&
+                workStatus &&
+                workStatus.kind !== "running";
               const approvals = item
                 ? (runtime.attention?.approvals.filter(
                     (a) => a.scope.inputId === item.id,
@@ -840,20 +842,12 @@ export function Conversation({
                         )}
                       </div>
                     )}
-                    {item && !activeBranch && inspectable && recordStatus && (
-                      <button
-                        type="button"
-                        className="message-activity-record"
-                        data-status={recordStatus.kind}
-                        aria-label={`查看执行活动：${recordStatus.label}`}
-                        title={`${recordStatus.label} · 查看这条消息的执行记录`}
-                        onClick={() => onInspect?.(item.id)}
-                      >
-                        <ExecutionStatusIcon
-                          kind={recordStatus.kind}
-                          size={18}
-                        />
-                      </button>
+                    {item && inspectable && recordStatus && (
+                      <MessageActivityLink
+                        status={recordStatus}
+                        live={activeBranch}
+                        onOpen={() => onInspect?.(item.id)}
+                      />
                     )}
                     {reply?.kind !== "tool" && (
                       <div
@@ -862,7 +856,7 @@ export function Conversation({
                           Boolean(
                             item &&
                             ((onSupplement && targets.length > 0) ||
-                              (activeBranch && onInspect)),
+                              showWorkStatus),
                           ) || undefined
                         }
                       >
@@ -877,7 +871,7 @@ export function Conversation({
                         />
                         {item &&
                           ((onSupplement && targets.length > 0) ||
-                            (activeBranch && onInspect)) && (
+                            showWorkStatus) && (
                             <span className="message-work-actions">
                               {onSupplement && targets.length > 0 && (
                                 <button
@@ -903,7 +897,6 @@ export function Conversation({
                                     size={14}
                                     aria-hidden="true"
                                   />
-                                  <span>补充</span>
                                   {targets.length > 1 && (
                                     <ChevronRight
                                       size={12}
@@ -912,16 +905,12 @@ export function Conversation({
                                   )}
                                 </button>
                               )}
-                              {activeBranch && onInspect && workStatus && (
+                              {showWorkStatus && onInspect && workStatus && (
                                 <button
                                   type="button"
                                   className="message-execution-link message-work-status"
                                   data-status={workStatus.kind}
-                                  aria-label={
-                                    workStatus.kind === "running"
-                                      ? "后台执行中"
-                                      : "后台工作" + workStatus.label
-                                  }
+                                  aria-label={"后台工作" + workStatus.label}
                                   title={
                                     workStatus.label +
                                     " · 查看这条消息的执行记录"

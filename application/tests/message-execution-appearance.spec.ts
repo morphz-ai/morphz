@@ -73,17 +73,19 @@ async function prepare(page: Page) {
   const message = page.locator(
     '.human-message[data-input-id="execution-appearance-input"]',
   );
-  const status = message.getByRole("button", {
-    name: "后台执行中",
+  const activity = message.getByRole("button", {
+    name: "查看执行活动：执行中",
     exact: true,
   });
   const supplement = message.getByRole("button", {
     name: "补充要求",
     exact: true,
   });
-  await expect(status).toBeVisible();
+  await expect(message.locator(".message-work-status")).toHaveCount(0);
+  await expect(activity).toHaveCSS("clip-path", "inset(50%)");
   await expect(supplement).toBeVisible();
-  return { message, status, supplement };
+  await expect(supplement).toHaveText("");
+  return { message, activity, supplement };
 }
 
 async function colors(button: Locator) {
@@ -185,10 +187,10 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
 
-test("气泡内后台与补充入口：四强调色亮暗悬停、Tab、按下不出现中性白块", async ({
+test("纯图标补充入口：四强调色亮暗悬停、Tab、按下不出现中性白块", async ({
   page,
 }, info) => {
-  const { status, supplement, message } = await prepare(page);
+  const { supplement, message } = await prepare(page);
   const observations = [];
   for (const appearance of ["亮色", "暗色"]) {
     for (const accent of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
@@ -199,7 +201,7 @@ test("气泡内后台与补充入口：四强调色亮暗悬停、Tab、按下�
       await settings.getByRole("button", { name: accent, exact: true }).click();
       await page.keyboard.press("Escape");
       await settleTransitions(page);
-      for (const button of [status, supplement]) {
+      for (const button of [supplement]) {
         await button.evaluate((element) => (element as HTMLElement).blur());
         await page.mouse.move(0, 0);
         const normal = await colors(button);
@@ -212,7 +214,7 @@ test("气泡内后台与补充入口：四强调色亮暗悬停、Tab、按下�
         const hovered = await settled(button, "hover");
         assertState(hovered, normal);
         expect(hovered.hovered).toBe(true);
-        const name = await button.textContent();
+        const name = await button.getAttribute("aria-label");
         await message.screenshot({
           path: info.outputPath(`${appearance}-${accent}-${name}-hover.png`),
         });
@@ -258,7 +260,9 @@ test("气泡内后台与补充入口：四强调色亮暗悬停、Tab、按下�
   });
 });
 
-test("状态入口仍打开对应活动，补充保留草稿并不提交消息", async ({ page }) => {
+test("卡片与键盘仍打开对应活动，纯图标补充保留草稿并不提交消息", async ({
+  page,
+}) => {
   const writes: string[] = [];
   page.on("request", (request) => {
     if (
@@ -267,12 +271,12 @@ test("状态入口仍打开对应活动，补充保留草稿并不提交消息",
     )
       writes.push(request.url());
   });
-  const { message, status, supplement } = await prepare(page);
+  const { message, activity, supplement } = await prepare(page);
   const composer = page.getByLabel("AI 输入内容");
   const draft = "TEST 未发送的补充草稿";
   await composer.fill(draft);
   await message.hover();
-  await status.click();
+  await message.locator(":scope > p").click();
   const panel = page.getByRole("complementary", { name: "Morphz 信息" });
   await expect(
     panel
@@ -281,6 +285,12 @@ test("状态入口仍打开对应活动，补充保留草稿并不提交消息",
   ).toBeVisible();
   await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
   await expect(composer).toHaveValue(draft);
+  await activity.focus();
+  await page.keyboard.press("Space");
+  await expect(panel.getByRole("region", { name: "执行分支" })).toContainText(
+    "核对当前称呼",
+  );
+  await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
   await message.hover();
   await supplement.click();
   await expect(page.getByRole("group", { name: "补充目标" })).toContainText(

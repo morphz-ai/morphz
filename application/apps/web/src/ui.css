@@ -990,15 +990,15 @@ body:has(dialog[open]) .cognitive-application-frame {
 .conversation .human-message[data-execution-inspectable] {
   cursor: pointer;
 }
-/* Ended/history cards keep a flat surface and a small trailing status glyph.
-   The confirmed live execution halo is independent of this history marker. */
+/* A history link lives in the lower-right corner, not on the text baseline.
+   It preserves the bubble's original fill and the independent live halo. */
 .conversation .human-message[data-execution-record] {
-  padding-inline-end: 44px;
+  padding-inline-end: 34px;
 }
 .app .conversation .message-activity-record {
   position: absolute;
-  right: 8px;
-  bottom: 8px;
+  right: 0;
+  bottom: 0;
   display: grid;
   place-items: center;
   width: 28px;
@@ -1013,8 +1013,31 @@ body:has(dialog[open]) .cognitive-application-frame {
   box-shadow: none;
 }
 .app .conversation .message-activity-record:is(:hover, :focus-visible) {
-  background: var(--human-message-hover);
   color: var(--ink);
+}
+.conversation .human-message:hover .message-activity-record {
+  color: var(--ink);
+}
+.conversation .message-activity-glyph {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+}
+.app .conversation .message-activity-glyph > svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.conversation
+  .message-activity-record[data-status="ended"]
+  .message-activity-glyph {
+  width: 14px;
+  height: 14px;
 }
 .app .conversation .message-activity-record:focus-visible {
   outline: 1px solid var(--ink);
@@ -1023,6 +1046,27 @@ body:has(dialog[open]) .cognitive-application-frame {
 .app .conversation .message-activity-record[data-status="failed"] {
   color: var(--danger, light-dark(#a72a32, #f8a9ad));
 }
+/* The card is not a wrapper button: links, quotes, selection and stop retain
+   their own targets. A native, screen-reader/keyboard entry gives active work
+   the same read-only navigation without a redundant hover status button. */
+.app .conversation .message-activity-access {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.conversation .human-message:has(.message-activity-access:focus-visible) {
+  outline: 1px solid var(--ink);
+  outline-offset: 3px;
+}
 @media (any-pointer: coarse) {
   .conversation .human-message[data-execution-record] {
     padding-inline-end: 56px;
@@ -1030,7 +1074,7 @@ body:has(dialog[open]) .cognitive-application-frame {
   .app .conversation .message-activity-record {
     width: 44px;
     height: 44px;
-    right: 4px;
+    right: 0;
     bottom: 0;
   }
 }
@@ -1056,6 +1100,11 @@ body:has(dialog[open]) .cognitive-application-frame {
   line-height: 1.4;
   white-space: nowrap;
 }
+.app .conversation .message-meta .message-supplement {
+  min-width: 32px;
+  padding: 0 7px;
+  gap: 3px;
+}
 .app
   .conversation
   .human-message
@@ -1077,8 +1126,8 @@ body:has(dialog[open]) .cognitive-application-frame {
 .conversation .message-work-actions svg {
   flex: 0 0 auto;
 }
-/* The footer reports factual status; the existing execution.css perimeter
-   remains a separate, confirmed visual cue. Neither replaces the other. */
+/* Waiting/paused/unknown retain their factual footer status; live running work
+   uses the confirmed execution.css halo and the card's activity navigation. */
 @container (max-width: 340px) {
   .conversation .human-message .message-meta[data-work-actions] {
     /* Keep the persistent work controls next to the body when the optional
@@ -1092,6 +1141,9 @@ body:has(dialog[open]) .cognitive-application-frame {
 @media (any-pointer: coarse) {
   .app .conversation .message-meta .message-execution-link {
     min-height: 44px;
+  }
+  .app .conversation .message-meta .message-supplement {
+    min-width: 44px;
   }
   .conversation .human-message:has(.message-meta[data-work-actions]) {
     margin-bottom: 88px;
