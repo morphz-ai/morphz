@@ -210,7 +210,11 @@ test("一项活动包含真实父子层级，各自步骤结果状态独立，�
     "running",
   );
   await row.click();
-  await expect(panel.locator(".execution-origin small")).toHaveText(
+  await expect(panel.locator(".execution-origin-status")).toHaveAttribute(
+    "data-status",
+    "running",
+  );
+  await expect(panel.locator(".execution-origin-status")).toHaveText(
     "子任务执行中",
   );
   const groups = panel.locator(".execution-thread-group");
@@ -233,15 +237,14 @@ test("一项活动包含真实父子层级，各自步骤结果状态独立，�
     );
   }
   const child = panel.locator('[data-execution-thread="TEST-two"]');
-  await expect(child.locator(".execution-signal-flow")).toHaveCSS(
-    "animation-name",
-    "execution-signal-travel",
-  );
+  const flow = child.locator(".execution-signal-flow");
+  // The branch and its running tool each expose their own factual status.
+  await expect(flow).toHaveCount(2);
+  for (const signal of await flow.all())
+    await expect(signal).toHaveCSS("animation-name", "execution-signal-travel");
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await expect(child.locator(".execution-signal-flow")).toHaveCSS(
-    "animation-name",
-    "none",
-  );
+  for (const signal of await flow.all())
+    await expect(signal).toHaveCSS("animation-name", "none");
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await child
     .getByRole("button", { name: "停止此子任务", exact: true })
@@ -267,7 +270,11 @@ test("一项活动包含真实父子层级，各自步骤结果状态独立，�
     "data-status",
     "failed",
   );
-  await expect(panel.locator(".execution-origin small")).toHaveText(
+  await expect(panel.locator(".execution-origin-status")).toHaveAttribute(
+    "data-status",
+    "failed",
+  );
+  await expect(panel.locator(".execution-origin-status")).toHaveText(
     "子任务执行失败",
   );
   await expect(child.locator(".delivery-error")).toHaveText(

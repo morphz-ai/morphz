@@ -249,7 +249,7 @@ test("步骤显示对应Job的意图与回执解读，旧步骤回退且原返�
   );
   await expect(legacy.getByLabel("返回结果解读")).toHaveCount(0);
   await expect(legacy.locator("pre")).not.toBeVisible();
-  await legacy.getByText("技术详情", { exact: true }).click();
+  await legacy.getByRole("button", { name: "技术详情", exact: true }).click();
   await expect(legacy.locator("pre")).toContainText("SECRET=hidden command");
   await first.getByRole("button", { name: "查看结果", exact: true }).click();
   await expect(first.locator(".execution-result pre")).not.toBeVisible();

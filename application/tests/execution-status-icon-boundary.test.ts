@@ -35,7 +35,9 @@ import { executionInspectionOriginal as fixed114 } from "./fixtures/execution-in
 // Dialog lifecycle moved to the actual execution-inspection owner: current
 // Dialog checks only its original Thread-glyph facts/tree. The original Dialog
 // lifecycle digest remains below as an immutable fixed114 historical proof.
-// Sidebar's existing contract is unchanged. CI needs no Git checkout/history;
+// Sidebar's original row contract is unchanged; the approved detail heading
+// now consumes the same glyph, with separately checked live snapshot facts.
+// CI needs no Git checkout/history;
 // SSR and mounted scheduling are separate tests.
 const baseline = {
   Sidebar: {
@@ -183,6 +185,10 @@ const templates = parse({
   Original: originalFragments,
   SidebarCall:
     "const glyph = <ExecutionStatusIcon kind={status.kind} size={19} />;",
+  SidebarDetailCall:
+    "const glyph = <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />;",
+  SidebarDetailFacts:
+    "const threadStatus = thread ? executionActivityGroupStatus(thread, activityThreads, activityAvailable && !!currentThread) : undefined;",
   DialogCall:
     "const glyph = <ExecutionStatusIcon kind={status?.kind} size={18} />;",
 });
@@ -317,8 +323,22 @@ function inspect(sources: Sources) {
       const calls = consumer.nodes
         .filter(isJsxSelfClosingElement)
         .filter((node) => consumer.symbols.get(node.tagName) === symbol);
-      assert.equal(calls.length, 1);
-      const call = calls[0]!;
+      assert.equal(calls.length, owner === "Sidebar" ? 2 : 1);
+      const call = calls.find(
+        (node) =>
+          JSON.stringify(syntax(node.attributes)) ===
+          JSON.stringify(
+            syntax(
+              templates
+                .get(`${owner}Call`)!
+                .nodes.find(isJsxSelfClosingElement)!.attributes,
+            ),
+          ),
+      )!;
+      assert.ok(
+        call,
+        "original list/Thread heading keeps its exact glyph facts",
+      );
       assert.equal(call.tagName.getText(), "ExecutionStatusIcon");
       assert.deepEqual(
         syntax(call.attributes),
@@ -334,7 +354,48 @@ function inspect(sources: Sources) {
           .length,
         1,
       );
+      if (owner === "Sidebar") {
+        const detail = calls.find((node) => node !== call)!;
+        assert.deepEqual(
+          syntax(detail.attributes),
+          syntax(
+            templates
+              .get("SidebarDetailCall")!
+              .nodes.find(isJsxSelfClosingElement)!.attributes,
+          ),
+        );
+        assert.ok(isJsxElement(detail.parent));
+        assert.equal(
+          attribute(
+            detail.parent.openingElement,
+            "className",
+          )?.initializer?.getText(),
+          '"execution-origin-status"',
+        );
+        assert.equal(
+          attribute(
+            detail.parent.openingElement,
+            "data-status",
+          )?.initializer?.getText(),
+          '{threadStatus?.kind ?? "unknown"}',
+        );
+      }
     });
+    if (owner === "Sidebar")
+      rule("Sidebar-detail-authoritative-live-facts", () => {
+        const status = consumer.nodes
+          .filter(isVariableDeclaration)
+          .filter((node) => node.name.getText() === "threadStatus");
+        assert.equal(status.length, 1);
+        assert.deepEqual(
+          syntax(status[0]!),
+          syntax(
+            templates
+              .get("SidebarDetailFacts")!
+              .nodes.find(isVariableDeclaration)!,
+          ),
+        );
+      });
     rule(`${owner}-sole-shared-glyph-consumption`, () => {
       for (const declaration of consumer.nodes.filter(isImportDeclaration)) {
         if (
@@ -356,7 +417,7 @@ function inspect(sources: Sources) {
           .filter(isJsxSelfClosingElement)
           .filter((node) => node.tagName.getText() === "ExecutionStatusIcon")
           .length,
-        1,
+        owner === "Sidebar" ? 2 : 1,
       );
     });
     rule(
@@ -470,7 +531,15 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
     'className="execution-signal-base"',
   ]);
   reject("Sidebar", "Sidebar-sole-shared-glyph-consumption", [
-    "import { ArrowLeft, ChevronRight, Square }",
-    "import { ArrowLeft, ChevronRight, Square, CircleHelp }",
+    "  MessageSquarePlus,",
+    "  MessageSquarePlus, CircleHelp,",
+  ]);
+  reject("Sidebar", "Sidebar-detail-authoritative-live-facts", [
+    "activityAvailable && !!currentThread,\n      )",
+    "true,\n      )",
+  ]);
+  reject("Sidebar", "Sidebar-actual-import-kind-size", [
+    "kind={threadStatus?.kind} size={18}",
+    'kind={"running"} size={18}',
   ]);
 });

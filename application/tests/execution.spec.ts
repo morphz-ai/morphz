@@ -195,11 +195,11 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
   await expect(
     dialog.getByText("执行节点：本机 ·", { exact: true }),
   ).toBeHidden();
-  await dialog.getByText("技术详情", { exact: true }).click();
+  await dialog.getByRole("button", { name: "技术详情", exact: true }).click();
   await expect(
     dialog.getByText("执行节点：本机 ·", { exact: true }),
   ).toBeVisible();
-  await dialog.getByText("技术详情", { exact: true }).click();
+  await dialog.getByRole("button", { name: "技术详情", exact: true }).click();
   expect(calls[0]!.action.type).toBe("allow-once");
   await dialog.getByRole("button", { name: "停止此项执行" }).click();
   await expect(dialog.getByText("正在停止", { exact: true })).toBeVisible();

@@ -50,7 +50,8 @@ const origin=document.getElementById('external-origin');origin.focus();origin.se
 const root=createRoot(document.getElementById('root'));flushSync(()=>root.render(<StrictMode><Frame/></StrictMode>));
 async function macro(){await new Promise(resolve=>{const channel=new MessageChannel();channel.port1.onmessage=()=>{channel.port1.close();channel.port2.close();resolve();};channel.port2.postMessage(null);});}
 async function settle(){await Promise.resolve();await macro();await macro();if(!controlledClock){await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));await Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));}await macro();}
-function snapshot(){const active=document.activeElement,dialog=document.querySelector('dialog');return{facts:last.facts,scope:last.scope,controller:publicView(controller),events:[...events],renderTraces:[...renderTraces],requests:requests.map(r=>({kind:r.kind,index:r.index,args:r.args,client:r.client,settled:r.settled,aborted:r.signal?.aborted??false})),issued:issued.map(({promise,...value})=>value),jobs:[...document.querySelectorAll('.execution-job')].map(node=>({id:nodeId(node),detailsId:nodeId(node.querySelector('details')),open:node.querySelector('details')?.open??false,html:node.outerHTML})),execution:document.querySelector('.execution-details,.execution-dialog')?.outerHTML??null,modal:dialog?.matches(':modal')??false,dialogId:nodeId(dialog),modalStyle:dialog?.getAttribute('style')??null,active:{id:active?.id??'',tag:active?.tagName??'',selection:active instanceof HTMLTextAreaElement?[active.selectionStart,active.selectionEnd]:null},resizeListeners:resizeListeners.size,observers,unmounted};}
+function technicalNode(node){return node.querySelector('button[aria-label="技术详情"]')??node.querySelector('details');}
+function snapshot(){const active=document.activeElement,dialog=document.querySelector('dialog');return{facts:last.facts,scope:last.scope,controller:publicView(controller),events:[...events],renderTraces:[...renderTraces],requests:requests.map(r=>({kind:r.kind,index:r.index,args:r.args,client:r.client,settled:r.settled,aborted:r.signal?.aborted??false})),issued:issued.map(({promise,...value})=>value),jobs:[...document.querySelectorAll('.execution-job')].map(node=>({id:nodeId(node),detailsId:nodeId(technicalNode(node)),open:technicalNode(node)?.getAttribute('aria-expanded')==='true'||technicalNode(node)?.open===true,html:node.outerHTML})),execution:document.querySelector('.execution-details,.execution-dialog')?.outerHTML??null,modal:dialog?.matches(':modal')??false,dialogId:nodeId(dialog),modalStyle:dialog?.getAttribute('style')??null,active:{id:active?.id??'',tag:active?.tagName??'',selection:active instanceof HTMLTextAreaElement?[active.selectionStart,active.selectionEnd]:null},resizeListeners:resizeListeners.size,observers,unmounted};}
 function command(name,value={}){const method=value.captured?captured[name]:controller[name];const index=issued.length,entry={index,name,done:false};issued.push(entry);entry.promise=name==='control'?method(value.action,value.threadId):name==='readResult'?method(value.id):method();entry.promise.then(result=>{entry.done=true;entry.value=result===undefined?'void':result;events.push(['command-resolved',index,entry.value]);},error=>{entry.done=true;entry.error=String(error);});}
 Reflect.set(window,'inspectionFixture',{snapshot,settle,makeSnapshot,async run(action,value){flushSync(()=>{if(action==='set')api.set(value);else if(action==='capture')captured[value]=controller[value];else if(['control','readResult','refresh'].includes(action))command(action,value);else if(action==='resolveSnapshots'){for(const r of requests.filter(r=>r.kind==='snapshot'&&!r.settled)){r.settled=true;r.resolve(value);}}else if(action==='settleRequest'){const r=requests[value.index];r.settled=true;events.push(['settle',r.index]);if(value.error)r.reject(value.nonError?value.error:new Error(value.error));else r.resolve(value.value);}else if(action==='unmount'){root.unmount();unmounted=true;controller=null;}});await settle();return snapshot();}});
 `;
@@ -166,7 +167,12 @@ test(
     ) {
       const pages: Page[] = [],
         contexts: BrowserContext[] = [];
-      for (const lane of migration ? ["fixed", "actual"] : ["actual"]) {
+      // Controller equivalence still compares both complete old/new lifecycles.
+      // The approved icon/disclosure UI intentionally differs from the old
+      // renderer; its native behavior is asserted on the actual renderer below.
+      for (const lane of migration && options.surface !== "renderer"
+        ? ["fixed", "actual"]
+        : ["actual"]) {
         const isolated = await browser.newContext({
           viewport: { width: 1440, height: 900 },
         });
@@ -210,7 +216,7 @@ test(
               ) as Promise<Snapshot>,
           ),
         );
-        if (migration)
+        if (pages.length === 2)
           assert.deepEqual(
             values[1],
             values[0],
@@ -693,7 +699,7 @@ test(
     );
 
     await context.test(
-      "complete actual renderer keeps native ref/modal selection, resize cleanup, same details node and open-before-close order",
+      "complete actual renderer keeps native ref/modal selection, resize cleanup, stable disclosure and open-before-close order",
       async () => {
         phase = "renderer-native";
         const p = await pair({ surface: "renderer", embedded: false });
@@ -701,11 +707,13 @@ test(
         assert.equal(current.modal, true);
         const dialogId = current.dialogId;
         assert.ok(current.modalStyle?.includes("--modal-center"));
-        current = await p.click(".execution-job details summary");
+        current = await p.click('.execution-job button[aria-label="技术详情"]');
         const before = current.jobs[0]!;
         assert.equal(before.open, true);
         for (const page of p.pages)
-          await page.locator(".execution-job details summary").focus();
+          await page
+            .locator('.execution-job button[aria-label="技术详情"]')
+            .focus();
         await p.run("set", { revision: 1 });
         current = await p.jobs([
           {
@@ -715,7 +723,7 @@ test(
         ]);
         assert.equal(current.jobs[0]?.detailsId, before.detailsId);
         assert.equal(current.jobs[0]?.open, true);
-        assert.equal(current.active.tag, "SUMMARY");
+        assert.equal(current.active.tag, "BUTTON");
         assert.equal(current.dialogId, dialogId);
         for (const page of p.pages)
           await page.setViewportSize({ width: 1024, height: 768 });
@@ -725,7 +733,7 @@ test(
           );
         current = await p.read();
         assert.notEqual(current.modalStyle, null);
-        current = await p.click('.execution-job button:has-text("查看结果")');
+        current = await p.click('.execution-job button[aria-label="查看结果"]');
         current = await p.run("settleRequest", {
           index: pending(current, "result").index,
           value: {
@@ -793,7 +801,7 @@ test(
           ],
         });
         let current = await p.click(
-          '.execution-job button:has-text("查看结果")',
+          '.execution-job button[aria-label="查看结果"]',
         );
         current = await p.run("settleRequest", {
           index: pending(current, "result").index,
@@ -820,14 +828,13 @@ test(
             await page.locator('button:has-text("停止此子任务")').isDisabled(),
             true,
           );
-          if (migration)
-            assert.equal(
-              await page
-                .locator('button:has-text("停止此项执行")')
-                .isDisabled(),
-              false,
-              "original Job-stop predicate has no online term",
-            );
+          assert.equal(
+            await page
+              .locator('button[aria-label="停止此项执行"]')
+              .isDisabled(),
+            false,
+            "original Job-stop predicate has no online term",
+          );
         }
         await p.close();
         assert.deepEqual(errors, []);

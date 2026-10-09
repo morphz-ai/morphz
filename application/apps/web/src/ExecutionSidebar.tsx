@@ -1,5 +1,10 @@
 import { useState, type ReactNode } from "react";
-import { ArrowLeft, ChevronRight, Square } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronRight,
+  Square,
+  MessageSquarePlus,
+} from "lucide-react";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
@@ -25,6 +30,7 @@ import {
 } from "./execution-activity.js";
 import { projectDisplayLabel } from "./project-display-label.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
+import { Tooltip } from "./ui/Tooltip.js";
 
 export function ExecutionSidebar({
   client,
@@ -122,6 +128,31 @@ export function ExecutionSidebar({
   const threadSummary = thread
     ? executionActivitySummary(thread, activityAvailable && !!currentThread)
     : "";
+  const threadStatus = thread
+    ? executionActivityGroupStatus(
+        thread,
+        activityThreads,
+        activityAvailable && !!currentThread,
+      )
+    : undefined;
+  const supplementAction = supplementTarget && onSupplement && (
+    <Tooltip label="补充要求">
+      <button
+        className="button execution-supplement"
+        aria-label="补充要求"
+        disabled={
+          !client.online || !runtime.connected || !runtime.activity?.available
+        }
+        onClick={() => onSupplement(supplementTarget)}
+      >
+        {scope.threadId ? (
+          <MessageSquarePlus size={16} aria-hidden="true" />
+        ) : (
+          "补充要求"
+        )}
+      </button>
+    </Tooltip>
+  );
   const activitySummary = executionActivityOverviewSummary(
     runtime,
     activityAvailable,
@@ -312,20 +343,7 @@ export function ExecutionSidebar({
       )}
       {detail ? (
         <>
-          {supplementTarget && onSupplement && (
-            <button
-              className="button execution-supplement"
-              title="给这项后台工作追加要求"
-              disabled={
-                !client.online ||
-                !runtime.connected ||
-                !runtime.activity?.available
-              }
-              onClick={() => onSupplement(supplementTarget)}
-            >
-              补充要求
-            </button>
-          )}
+          {!scope.threadId && supplementAction}
           {scope.threadId && (
             <section className="execution-origin">
               <p className="execution-origin-title" title={thread?.title}>
@@ -337,32 +355,33 @@ export function ExecutionSidebar({
                 </p>
               )}
               <div>
-                <small>
-                  {thread
-                    ? executionActivityGroupStatus(
-                        thread,
-                        activityThreads,
-                        activityAvailable && !!currentThread,
-                      ).label
-                    : "此分支不在当前快照中"}
-                </small>
-                {currentThread?.lifecycle === "open" && (
-                  <button
-                    className="execution-stop-thread"
-                    disabled={
-                      stopping ||
-                      stopRequested ||
-                      !activityAvailable ||
-                      !client.online
-                    }
-                    onClick={stopThread}
-                  >
-                    <Square size={12} />
-                    {stopping || stopRequested
-                      ? "停止请求已发送"
-                      : "停止此分支"}
-                  </button>
-                )}
+                <span
+                  className="execution-origin-status"
+                  data-status={threadStatus?.kind ?? "unknown"}
+                >
+                  <ExecutionStatusIcon kind={threadStatus?.kind} size={18} />
+                  {threadStatus?.label ?? "此分支不在当前快照中"}
+                </span>
+                <div className="execution-origin-actions">
+                  {supplementAction}
+                  {currentThread?.lifecycle === "open" && (
+                    <button
+                      className="execution-stop-thread"
+                      disabled={
+                        stopping ||
+                        stopRequested ||
+                        !activityAvailable ||
+                        !client.online
+                      }
+                      onClick={stopThread}
+                    >
+                      <Square size={12} aria-hidden="true" />
+                      {stopping || stopRequested
+                        ? "停止请求已发送"
+                        : "停止此分支"}
+                    </button>
+                  )}
+                </div>
               </div>
               {error && (
                 <p className="delivery-error" role="alert">

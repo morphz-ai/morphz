@@ -1,4 +1,6 @@
 import { useExecutionInspection } from "./features/execution/useExecutionInspection.js";
+import { ExecutionJobCard } from "./features/execution/ExecutionJobCard.js";
+import { Tooltip } from "./ui/Tooltip.js";
 import {
   executionSnapshotJobPresentation,
   executionJobsInReadingOrder,
@@ -77,8 +79,12 @@ export function ExecutionDialog({
         !!snapshot?.approvals.length ||
         snapshot?.threadsTruncated) && (
         <div className="execution-dialog-toolbar">
-          <span className="muted">
-            {!!snapshot?.approvals.length && "单次授权"}
+          <span className={embedded ? "execution-steps-label" : "muted"}>
+            {snapshot?.approvals.length
+              ? "单次授权"
+              : embedded
+                ? "执行步骤"
+                : ""}
           </span>
           {embedded && atReadLimit && (
             <small className="execution-history-bound">
@@ -90,9 +96,11 @@ export function ExecutionDialog({
               部分子任务记录尚未载入
             </small>
           )}
-          <button aria-label="刷新执行记录" onClick={() => void refresh()}>
-            <RefreshCw />
-          </button>
+          <Tooltip label="刷新执行记录">
+            <button aria-label="刷新执行记录" onClick={() => void refresh()}>
+              <RefreshCw />
+            </button>
+          </Tooltip>
         </div>
       )}
       {!snapshot && !error && <p className="muted">正在读取执行记录…</p>}
@@ -236,85 +244,31 @@ export function ExecutionDialog({
                     client.boot!.workspace,
                   );
                   return (
-                    <section
+                    <ExecutionJobCard
                       key={job.id}
-                      className="execution-job"
-                      data-job-id={job.id}
+                      job={job}
+                      presentation={presentation}
+                      branchNumber={
+                        !grouped && branchIds.length > 1
+                          ? branchIds.indexOf(job.thread_id) + 1
+                          : undefined
+                      }
+                      busy={!!busy}
+                      stopDisabled={
+                        !!busy || !!error || !!job.cancel_requested_at
+                      }
+                      onReadResult={() => void readResult(job.id)}
+                      onStop={() =>
+                        void control(
+                          {
+                            type: "cancel-job",
+                            jobId: job.id,
+                            revision: job.revision,
+                          },
+                          grouped ? job.thread_id : undefined,
+                        )
+                      }
                     >
-                      <header>
-                        <strong title={presentation.title}>
-                          {presentation.title}
-                        </strong>
-                        <span className={`job-status ${job.status}`}>
-                          {presentation.statusLabel}
-                        </span>
-                      </header>
-                      {presentation.detail && (
-                        <p className="execution-object">
-                          {presentation.detail}
-                        </p>
-                      )}
-                      <small className="muted">
-                        {!grouped && branchIds.length > 1 && (
-                          <>分支 {branchIds.indexOf(job.thread_id) + 1} · </>
-                        )}
-                        {new Date(job.created_at).toLocaleString("zh-CN")}
-                      </small>
-                      {job.error && (
-                        <p className="delivery-error">{job.error}</p>
-                      )}
-                      {presentation.result && (
-                        <p
-                          className="execution-step-result"
-                          aria-label="返回结果解读"
-                          title={presentation.result}
-                        >
-                          {presentation.result}
-                        </p>
-                      )}
-                      <details>
-                        <summary>技术详情</summary>
-                        <pre>{JSON.stringify(job.request, null, 2)}</pre>
-                        <small>执行节点：{job.target_id} · </small>
-                        <small>执行 ID：{job.id}</small>
-                      </details>
-                      <div className="execution-actions">
-                        {job.result_event_id && (
-                          <button
-                            disabled={!!busy}
-                            onClick={() => void readResult(job.id)}
-                          >
-                            查看结果
-                          </button>
-                        )}
-                        {["queued", "waiting_approval", "running"].includes(
-                          job.status,
-                        ) && (
-                          <button
-                            disabled={
-                              !!busy || !!error || !!job.cancel_requested_at
-                            }
-                            onClick={() =>
-                              void control(
-                                {
-                                  type: "cancel-job",
-                                  jobId: job.id,
-                                  revision: job.revision,
-                                },
-                                grouped ? job.thread_id : undefined,
-                              )
-                            }
-                          >
-                            <Square />
-                            停止此项执行
-                          </button>
-                        )}
-                        {job.exit_code !== null && (
-                          <small className="muted">
-                            退出码 {job.exit_code}
-                          </small>
-                        )}
-                      </div>
                       {result?.id === job.id && (
                         <div className="execution-result">
                           {executionResultSummary(result.text) && (
@@ -350,7 +304,7 @@ export function ExecutionDialog({
                           )}
                         </div>
                       )}
-                    </section>
+                    </ExecutionJobCard>
                   );
                 })}
               </div>

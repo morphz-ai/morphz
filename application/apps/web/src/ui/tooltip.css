@@ -1,0 +1,19 @@
+.app .ui-tooltip {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--popup-line);
+  border-radius: 6px;
+  background: var(--popup-solid);
+  color: var(--ink);
+  box-shadow: var(--elevation-popover);
+  font: 400 12px / 1.5
+    var(--font-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  overflow-wrap: anywhere;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+}
+.app .ui-tooltip::backdrop {
+  display: none;
+}

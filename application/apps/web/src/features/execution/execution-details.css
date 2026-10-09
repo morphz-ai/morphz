@@ -1,0 +1,132 @@
+/* Activity inspection, not message-card motion. Same status authority and
+   shared palette; completed steps recede, current work stays easy to find. */
+.execution-origin-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.execution-origin-status[data-status="running"] {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent-strong) 10%, var(--paper));
+  color: var(--accent-strong);
+  font-weight: 550;
+}
+.execution-origin-status[data-status="failed"] {
+  color: var(--danger);
+}
+.execution-origin-status > svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.execution-details .execution-dialog-toolbar > .execution-steps-label {
+  display: inline;
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-right: auto;
+}
+.execution-origin-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+.workspace .execution-origin-actions .execution-supplement {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.workspace .execution-origin-actions .execution-supplement:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.execution-job header > .job-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+}
+.execution-job .job-status.succeeded {
+  color: var(--text-secondary);
+}
+.execution-job .job-status.running {
+  color: var(--accent-strong);
+}
+.execution-job .job-status > svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+.execution-step-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+.execution-step-time {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.execution-step-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.workspace .execution-step-actions > button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.workspace .execution-step-actions > button:hover,
+.workspace .execution-step-actions > button[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--ink);
+}
+.workspace .execution-step-actions > .execution-step-stop {
+  color: var(--danger);
+}
+.execution-technical {
+  margin-top: 6px;
+}
+.execution-technical > small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.execution-exit-code {
+  display: block;
+  color: var(--danger);
+  font-size: 11px;
+}
+@media (pointer: coarse) {
+  .workspace .execution-origin-actions .execution-supplement,
+  .workspace .execution-step-actions > button {
+    width: 44px;
+    height: 44px;
+    min-height: 44px;
+  }
+}

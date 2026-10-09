@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
+import { Tooltip } from "./ui/Tooltip.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
 import { discussionId } from "../../../packages/core/src/model.js";
@@ -874,36 +875,41 @@ export function Conversation({
                             showWorkStatus) && (
                             <span className="message-work-actions">
                               {onSupplement && targets.length > 0 && (
-                                <button
-                                  type="button"
-                                  className="message-execution-link message-supplement"
-                                  aria-label={
+                                <Tooltip
+                                  label={
                                     targets.length === 1
                                       ? "补充要求"
                                       : "选择补充分支"
                                   }
-                                  title={
-                                    targets.length === 1
-                                      ? "给这项后台工作追加要求"
-                                      : "选择要补充的执行分支"
-                                  }
-                                  onClick={() =>
-                                    targets.length === 1
-                                      ? onSupplement(targets[0]!.continuation!)
-                                      : onInspect?.(item.id)
-                                  }
                                 >
-                                  <MessageSquarePlus
-                                    size={14}
-                                    aria-hidden="true"
-                                  />
-                                  {targets.length > 1 && (
-                                    <ChevronRight
-                                      size={12}
+                                  <button
+                                    type="button"
+                                    className="message-execution-link message-supplement"
+                                    aria-label={
+                                      targets.length === 1
+                                        ? "补充要求"
+                                        : "选择补充分支"
+                                    }
+                                    onClick={() =>
+                                      targets.length === 1
+                                        ? onSupplement(
+                                            targets[0]!.continuation!,
+                                          )
+                                        : onInspect?.(item.id)
+                                    }
+                                  >
+                                    <MessageSquarePlus
+                                      size={14}
                                       aria-hidden="true"
                                     />
-                                  )}
-                                </button>
+                                    {targets.length > 1 && (
+                                      <ChevronRight
+                                        size={12}
+                                        aria-hidden="true"
+                                      />
+                                    )}
+                                  </button>
+                                </Tooltip>
                               )}
                               {showWorkStatus && onInspect && workStatus && (
                                 <button
@@ -1059,20 +1065,19 @@ export function StopResponse({
       data-response-input-id={delivery.inputId}
       data-stop-pending={pending || undefined}
     >
-      <button
-        className="stop-response"
-        aria-label={label}
-        title={
-          error || (pending ? label : "停止这次处理；已发生的操作不会撤销。")
-        }
-        disabled={pending || !available}
-        onClick={() => {
-          if (!pending) void onStop(delivery.inputId);
-        }}
-      >
-        <Square size={12} fill="currentColor" aria-hidden="true" />
-        {!compact && <span>停止</span>}
-      </button>
+      <Tooltip label="停止">
+        <button
+          className="stop-response"
+          aria-label={label}
+          disabled={pending || !available}
+          onClick={() => {
+            if (!pending) void onStop(delivery.inputId);
+          }}
+        >
+          <Square size={12} fill="currentColor" aria-hidden="true" />
+          {!compact && <span>停止</span>}
+        </button>
+      </Tooltip>
       {error && (
         <span className="delivery-error" role="alert">
           {error}
@@ -1109,28 +1114,29 @@ function MessageActions({
             minute: "2-digit",
           })}
         </time>
-        <button
-          className="message-copy"
-          type="button"
-          aria-label={copied ? "已复制消息" : "复制消息"}
-          title={copied ? "已复制" : "复制消息"}
-          onClick={async () => {
-            setError(false);
-            try {
-              await copyMessage(text);
-              setCopied(true);
-            } catch {
-              setCopied(false);
-              setError(true);
-            }
-          }}
-        >
-          {copied ? (
-            <Check size={13} aria-hidden="true" />
-          ) : (
-            <Copy size={13} aria-hidden="true" />
-          )}
-        </button>
+        <Tooltip label={copied ? "已复制" : "复制消息"}>
+          <button
+            className="message-copy"
+            type="button"
+            aria-label={copied ? "已复制消息" : "复制消息"}
+            onClick={async () => {
+              setError(false);
+              try {
+                await copyMessage(text);
+                setCopied(true);
+              } catch {
+                setCopied(false);
+                setError(true);
+              }
+            }}
+          >
+            {copied ? (
+              <Check size={13} aria-hidden="true" />
+            ) : (
+              <Copy size={13} aria-hidden="true" />
+            )}
+          </button>
+        </Tooltip>
         {control}
       </span>
       {error && (

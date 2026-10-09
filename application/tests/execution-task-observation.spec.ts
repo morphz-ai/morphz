@@ -84,7 +84,11 @@ test("执行详情健康idle无周期请求；状态通知与前台恢复读取�
   state.job.status = "succeeded";
   state.job.revision++;
   await state.fixture.refresh();
-  await expect(status).toHaveText("已完成");
+  await expect(status).toHaveText("");
+  await expect(status).toHaveAttribute("aria-label", "已完成");
+  await expect(
+    state.panel.getByRole("img", { name: "已完成", exact: true }),
+  ).toBeVisible();
   expect(state.reads).toBe(initial + 1);
   state.job.status = "failed";
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -139,8 +143,16 @@ test("执行详情读取中再次收到状态变化，会补读最后状态而�
       Reflect.set(window, "observedJobStatuses", values);
       new MutationObserver(() => {
         for (const node of root.querySelectorAll(".job-status"))
-          values.push(node.textContent ?? "");
-      }).observe(root, { subtree: true, characterData: true, childList: true });
+          values.push(
+            node.getAttribute("aria-label") ?? node.textContent ?? "",
+          );
+      }).observe(root, {
+        subtree: true,
+        characterData: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["aria-label"],
+      });
     });
     state.job.status = "failed"; // this response will become stale before release
     await state.fixture.refresh();
@@ -148,7 +160,10 @@ test("执行详情读取中再次收到状态变化，会补读最后状态而�
     state.job.status = "succeeded";
     await state.fixture.refresh();
     release();
-    await expect(state.panel.locator(".job-status")).toHaveText("已完成");
+    await expect(state.panel.locator(".job-status")).toHaveText("");
+    await expect(
+      state.panel.getByRole("img", { name: "已完成", exact: true }),
+    ).toBeVisible();
     expect(reads).toBe(2);
     expect(
       await page.evaluate(() => Reflect.get(window, "observedJobStatuses")),
