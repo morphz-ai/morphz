@@ -145,6 +145,104 @@ async function prepare(page: Page) {
   };
 }
 
+test("步骤两排共用图标中轴并收紧间距，亮暗窄窗和缩放仍可准确点击", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const first = f.panel.locator(".execution-job").first();
+  const button = first.getByRole("button", { name: "查看结果", exact: true });
+  for (const [width, height, zoom] of [
+    [1440, 960, 1],
+    [760, 540, 1],
+    [760, 540, 2],
+  ]) {
+    await page.setViewportSize({ width: width!, height: height! });
+    await page.evaluate((zoom) => {
+      (document.querySelector(".app") as HTMLElement).style.zoom = String(zoom);
+    }, zoom!);
+    for (const appearance of ["dark", "light"]) {
+      await page.evaluate((appearance) => {
+        document
+          .querySelector(".app")!
+          .setAttribute("data-appearance", appearance);
+        document.documentElement.setAttribute("data-appearance", appearance);
+      }, appearance);
+      await settleTransitions(page);
+      await button.scrollIntoViewIfNeeded();
+      await f.panel.screenshot({
+        path: info.outputPath(`alignment-${width}-${zoom}-${appearance}.png`),
+      });
+      const metrics = await first.evaluate((el) => {
+        const rect = (selector: string) =>
+          el.querySelector(selector)!.getBoundingClientRect();
+        const title = rect("header strong");
+        const check = rect(".job-status svg");
+        const eye = rect('[aria-label="查看结果"] svg');
+        const header = rect("header");
+        const meta = rect(".execution-step-meta");
+        const time = rect(".execution-step-time");
+        return {
+          iconAxis: check.x + check.width / 2 - (eye.x + eye.width / 2),
+          titleAlignment:
+            title.y + title.height / 2 - (check.y + check.height / 2),
+          textAxis: title.x - time.x,
+          rowGap: meta.y - header.bottom,
+        };
+      });
+      expect(Math.abs(metrics.iconAxis)).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(metrics.titleAlignment)).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(metrics.textAxis)).toBeLessThanOrEqual(0.5);
+      expect(metrics.rowGap / zoom!).toBeCloseTo(2, 2);
+      const box = (await button.boundingBox())!;
+      const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      expect(
+        await button.evaluate((el, point) => {
+          const hit = document.elementFromPoint(point.x, point.y);
+          return hit === el || (hit !== null && el.contains(hit));
+        }, point),
+      ).toBe(true);
+      await page.mouse.click(point.x, point.y);
+      await expect(first.locator(".execution-result pre")).toBeVisible();
+      await button.click();
+      await expect(first.locator(".execution-result")).toHaveCount(0);
+    }
+  }
+  expect(f.resultReads).toEqual(["TEST-ui-job-0"]);
+  expect(f.writes).toEqual([]);
+  await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+});
+
+test.describe("触控步骤对齐", () => {
+  test.use({ hasTouch: true });
+  test("圆圈和操作图标仍共用中轴，保留完整触控点击区", async ({ page }) => {
+    const f = await prepare(page);
+    await openExecutionPanel(page);
+    await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+    expect(
+      await page.evaluate(() => matchMedia("(pointer: coarse)").matches),
+    ).toBe(true);
+    const first = f.panel.locator(".execution-job").first();
+    const button = first.getByRole("button", { name: "查看结果", exact: true });
+    await button.scrollIntoViewIfNeeded();
+    const check = (await first.locator(".job-status svg").boundingBox())!;
+    const eye = (await button.locator("svg").boundingBox())!;
+    expect(
+      Math.abs(check.x + check.width / 2 - (eye.x + eye.width / 2)),
+    ).toBeLessThanOrEqual(0.5);
+    const box = (await button.boundingBox())!;
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+    await expect(first.locator(".execution-result pre")).toBeVisible();
+    await button.click();
+    await expect(first.locator(".execution-result")).toHaveCount(0);
+    expect(f.writes).toEqual([]);
+    await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+  });
+});
+
 test("查看结果一次展开内容，再次收起，缓存复开及换步骤保持准确且没有写入", async ({
   page,
 }, info) => {
