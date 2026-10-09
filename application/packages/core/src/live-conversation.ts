@@ -98,7 +98,10 @@ export class LiveConversationProjection {
       ...(e.topic !== "runtime/model_stream" && e.sequence !== undefined
         ? { sequence: e.sequence }
         : {}),
-      ...(typeof e.payload.attempt_id === "string"
+      // A recoverable protocol rejection is diagnostic, not the attempt's
+      // final publication. It must not replace already-public streamed words.
+      ...(e.topic !== "runtime/response_protocol_error" &&
+      typeof e.payload.attempt_id === "string"
         ? { publicationKey: e.payload.attempt_id }
         : {}),
       ...(typeof e.payload.thread_id === "string"
@@ -110,7 +113,11 @@ export class LiveConversationProjection {
   }
   consume(e: StreamEvent) {
     const p = e.payload,
-      attemptId = str(p.attempt_id),
+      // Waiting ends one physical model attempt, not every attempt belonging
+      // to the activation. A protocol retry can have its own stream identity.
+      attemptId =
+        (e.topic === "runtime/thread_waiting" && str(p.model_attempt_id)) ||
+        str(p.attempt_id),
       activation = str(p.activation_id) || attemptId;
     if (e.topic === "runtime/thread_cancelled") {
       const root = str(p.root_turn_id);
@@ -161,6 +168,7 @@ export class LiveConversationProjection {
       "chat/runtime_error",
       "session/io_state",
       "runtime/thread_result",
+      "runtime/thread_waiting",
       "runtime/response_protocol_fused",
       "runtime/response_protocol_error",
       "runtime/tool_calls_selected",
@@ -231,7 +239,10 @@ export class LiveConversationProjection {
         a.message.text += str(s.text);
       }
       const index = typeof s.index === "number" ? s.index : -1;
-      if (kind === "tool_call_started")
+      // no_reply is a response disposition (wait/silent), never a physical
+      // tool with an execution receipt. The Thread snapshot owns wait state;
+      // rejected dispositions remain visible via response_protocol_error.
+      if (kind === "tool_call_started" && str(s.name) !== "no_reply")
         a.tools.set(index, {
           ...this.base(e),
           id: `tool:${str(s.id) || attemptId + ":" + index}`,
@@ -294,7 +305,7 @@ export class LiveConversationProjection {
       const call = obj(raw),
         fn = obj(call.function),
         id = str(call.id);
-      if (!id) continue;
+      if (!id || str(call.name ?? fn.name) === "no_reply") continue;
       const old = this.messages.get(`tool:${id}`),
         args = str(call.arguments ?? fn.arguments);
       const richer =
@@ -358,10 +369,16 @@ export class LiveConversationProjection {
               "chat/runtime_error",
               "session/io_state",
               "runtime/response_protocol_fused",
+              "runtime/response_protocol_error",
             ].includes(e.topic)
           ? "error"
           : null;
-    const text = str(p.text ?? p.error ?? p.message);
+    const text = str(
+      p.text ??
+        p.error ??
+        p.message ??
+        (e.topic === "runtime/response_protocol_error" ? p.reason : undefined),
+    );
     if (kind && text) this.messages.set(e.id, { ...this.base(e), kind, text });
   }
   snapshot(): LiveMessage[] {

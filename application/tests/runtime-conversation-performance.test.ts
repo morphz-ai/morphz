@@ -5,6 +5,7 @@ import { ConversationFeed } from "../packages/application/src/conversation-feed.
 import { WorkspaceStore } from "../packages/application/src/store.js";
 import { localAccess } from "../packages/core/src/model.js";
 import type { ConversationStream } from "../packages/core/src/live-conversation.js";
+import { conversationRuntimeSchema } from "../packages/core/src/conversation.js";
 import { forbidLegacySnapshot } from "./host-transport-invariant.js";
 
 test("Platform 实时订阅从已保存游标开始，不重放整段历史", async (t) => {
@@ -301,7 +302,7 @@ type TimelineFixtureEntry = {
   visible_at_micros: number;
   root_turn_id: string;
   attempt_id: string | null;
-  display_kind: "input" | "reply";
+  display_kind: "input" | "reply" | "progress" | "error";
   final_event: boolean;
   event: TimelineEvent;
   root_event: TimelineEvent | null;
@@ -478,6 +479,57 @@ function timelineBridge(
     metrics: () => ({ fetches, largestResponse }),
   };
 }
+
+test("持久进度恢复真实分支身份，公共契约不剥掉threadId且未知旧记录不猜归属", async () => {
+  const store = new WorkspaceStore(":memory:");
+  const stamp = "2026-10-09T00:00:00.000Z";
+  let hasThreadIdentity = true;
+  const { bridge } = timelineBridge(store, (value, sessionId) => {
+    const entries = timelinePair(
+      value,
+      sessionId,
+      0,
+      stamp,
+      stamp,
+      stamp,
+      "原始进度",
+    );
+    const progress = entries[1]!;
+    progress.entry_id = "TEST-original-progress";
+    progress.attempt_id = null;
+    progress.display_kind = "progress";
+    progress.event.topic = "chat/progress";
+    if (hasThreadIdentity)
+      progress.event.payload.thread_id = "TEST-original-thread";
+    return entries;
+  });
+  try {
+    const history = await bridge.platformConversationHistory(
+      { projectId: "project", conversationId: "conversation" },
+      localAccess,
+    );
+    const runtime = conversationRuntimeSchema.parse(history.runtime);
+    assert.equal(runtime.messages[0]!.threadId, "TEST-original-thread");
+    assert.equal(runtime.messages[0]!.kind, "progress");
+    assert.equal(runtime.messages[0]!.text, "原始进度");
+    assert.equal(runtime.messages[0]!.rootId, "root-0");
+    const { threadId: _threadId, ...legacy } = runtime.messages[0]!;
+    assert.equal(
+      conversationRuntimeSchema.parse({ ...runtime, messages: [legacy] })
+        .messages[0]!.threadId,
+      undefined,
+    );
+    hasThreadIdentity = false;
+    const oldHistory = await bridge.platformConversationHistory(
+      { projectId: "project", conversationId: "conversation" },
+      localAccess,
+    );
+    assert.equal(oldHistory.runtime.messages[0]!.threadId, undefined);
+    assert.equal(oldHistory.runtime.messages[0]!.text, "原始进度");
+  } finally {
+    store.close();
+  }
+});
 
 test("历史分页读取 Runtime 索引，不写 Host 本机消息副本", async (t) => {
   const store = new WorkspaceStore(":memory:");

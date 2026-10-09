@@ -3613,6 +3613,7 @@ export class RuntimeBridge {
     // progress. Preserve the same stream identity and completeness as the
     // existing live projection so the original exchange can render them.
     const publicOutput = item.event.topic === "runtime/model_public_output";
+    const threadId = payloadString(item.event, "thread_id");
     const message: ConversationRuntime["messages"][number] = {
       id:
         !item.final_event && item.attempt_id
@@ -3623,6 +3624,7 @@ export class RuntimeBridge {
       artifactId: null,
       inputId,
       rootId: root.id,
+      ...(threadId ? { threadId } : {}),
       ...(item.attempt_id ? { publicationKey: item.attempt_id } : {}),
       ...(publicOutput
         ? {

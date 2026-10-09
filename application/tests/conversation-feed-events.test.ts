@@ -143,6 +143,96 @@ test("健康连接不再每1.2秒查history，WS变化直接呈现，变更hint�
   }
 });
 
+test("真实WS与持久补读使用同一等待投影，不输出no_reply假工具且保留拒绝原因", async () => {
+  const f = await fixture();
+  let sequence = 0;
+  const send = (topic: string, payload: StreamEvent["payload"]) => {
+    const value: StreamEvent = {
+      id: `wait-event-${++sequence}`,
+      timestamp: "2026-10-09T00:00:00.000Z",
+      topic,
+      payload: {
+        session_id: "owned",
+        root_turn_id: "root",
+        thread_id: "execution",
+        ...payload,
+      },
+    };
+    for (const ws of f.sockets.clients) ws.send(JSON.stringify(value));
+    return value;
+  };
+  try {
+    send("runtime/model_stream", {
+      attempt_id: "wait",
+      stream: { kind: "started" },
+    });
+    send("runtime/model_stream", {
+      attempt_id: "wait",
+      stream: { kind: "text_delta", text: "公开进度" },
+    });
+    send("runtime/model_stream", {
+      attempt_id: "wait",
+      stream: {
+        kind: "tool_call_started",
+        index: 0,
+        id: "wait-call",
+        name: "no_reply",
+      },
+    });
+    send("runtime/model_stream", {
+      attempt_id: "wait",
+      stream: { kind: "tool_call_completed", index: 0 },
+    });
+    await wait(() => f.snapshot().messages.some((m) => m.text === "公开进度"));
+    const outcome = send("runtime/thread_waiting", { attempt_id: "wait" });
+    await wait(() =>
+      f
+        .snapshot()
+        .messages.some((m) => m.text === "公开进度" && m.streaming === false),
+    );
+    assert.equal(
+      f.snapshot().messages.filter((m) => m.kind === "tool").length,
+      0,
+    );
+    f.durable.push({ ...outcome, sequence: 1 });
+    const rejection = {
+      ...reply("wait-rejected", 2),
+      topic: "runtime/response_protocol_error",
+      payload: {
+        session_id: "owned",
+        root_turn_id: "root",
+        thread_id: "execution",
+        attempt_id: "retry",
+        response_state: "invalid_wait",
+        reason: "原始等待拒绝原因",
+      },
+    };
+    f.durable.push(rejection);
+    await f.feed.sync();
+    await wait(() =>
+      f.snapshot().messages.some((m) => m.text === "原始等待拒绝原因"),
+    );
+    assert.equal(
+      f.snapshot().messages.filter((m) => m.kind === "tool").length,
+      0,
+    );
+    assert.equal(
+      f.snapshot().messages.find((m) => m.kind === "error")!.publicationKey,
+      undefined,
+    );
+    assert.equal(
+      f.snapshot().messages.find((m) => m.kind === "error")!.threadId,
+      "execution",
+    );
+    assert.equal(
+      f.snapshot().messages.filter((m) => m.text === "公开进度").length,
+      1,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("最后一次读取完成的微任务边界收到hint仍会再读，不丢尾部变更", async () => {
   const f = await fixture();
   try {

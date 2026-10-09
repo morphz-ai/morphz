@@ -437,9 +437,14 @@ export function ExecutionSidebar({
             <section aria-label="执行分支">{branches.map(row)}</section>
           )}
           {messages
-            .filter((m) => m.kind === "progress")
+            .filter((m) => m.kind === "progress" || m.kind === "error")
             .map((m) => (
-              <p className="execution-progress" key={m.id}>
+              <p
+                className={
+                  m.kind === "error" ? "delivery-error" : "execution-progress"
+                }
+                key={m.id}
+              >
                 {m.text}
               </p>
             ))}

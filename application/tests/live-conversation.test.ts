@@ -354,3 +354,167 @@ test("先收到根取消时，未知尝试的迟到流不能复活", () => {
   delta(p, "a", { kind: "text_delta", text: "不可复活" }, "unseen-activation");
   assert.deepEqual(p.snapshot(), []);
 });
+
+test("静默与等待是响应控制，不生成普通工具卡片；等待回执终结对应流", () => {
+  for (const mode of ["wait", "silent"]) {
+    const p = projection();
+    delta(p, "control", { kind: "started" });
+    delta(p, "control", { kind: "text_delta", text: "已经显示的进度" });
+    delta(p, "control", {
+      kind: "tool_call_started",
+      index: 0,
+      id: "control-call",
+      name: "no_reply",
+    });
+    delta(p, "control", {
+      kind: "tool_arguments_delta",
+      index: 0,
+      delta: JSON.stringify({ mode, wait_secs: 60 }),
+    });
+    delta(p, "control", { kind: "tool_call_completed", index: 0 });
+    assert.equal(p.snapshot().filter((m) => m.kind === "tool").length, 0);
+    assert.equal(p.snapshot()[0]!.streaming, true);
+    p.consume(
+      event(mode === "wait" ? "runtime/thread_waiting" : "chat/no_reply", {
+        attempt_id: "control",
+        activation_id: "control",
+        thread_id: "execution",
+        root_turn_id: "control",
+        tool_calls: [
+          {
+            id: "control-call",
+            function: { name: "no_reply", arguments: JSON.stringify({ mode }) },
+          },
+        ],
+      }),
+    );
+    delta(p, "control", { kind: "started" });
+    delta(p, "control", { kind: "text_delta", text: "迟到" });
+    assert.equal(p.snapshot().length, 1);
+    assert.equal(p.snapshot()[0]!.text, "已经显示的进度");
+    assert.equal(p.snapshot()[0]!.streaming, false);
+  }
+});
+
+test("同一执行连续八次等待不堆积卡片，真正的工具仍按回执更新", () => {
+  const p = projection();
+  delta(p, "read", { kind: "started" });
+  delta(p, "read", {
+    kind: "tool_call_started",
+    index: 0,
+    id: "real-read",
+    name: "read",
+  });
+  delta(p, "read", { kind: "tool_call_completed", index: 0 });
+  for (let index = 0; index < 8; index++) {
+    const id = `wait-${index}`;
+    delta(p, id, { kind: "started" });
+    delta(p, id, {
+      kind: "tool_call_started",
+      index: 0,
+      id: `${id}-call`,
+      name: "no_reply",
+    });
+    delta(p, id, { kind: "tool_call_completed", index: 0 });
+    p.consume(event("runtime/thread_waiting", { attempt_id: id }));
+  }
+  assert.equal(p.snapshot().length, 1);
+  assert.equal(p.snapshot()[0]!.tool!.name, "read");
+  assert.equal(p.snapshot()[0]!.tool!.status, "pending");
+  p.consume(
+    event("chat/tool_output", {
+      tool_call_id: "real-read",
+      tool_name: "read",
+      tool_status: "failed",
+      text: "原始读取失败",
+    }),
+  );
+  assert.equal(p.snapshot().length, 1);
+  assert.equal(p.snapshot()[0]!.tool!.status, "failed");
+  assert.equal(p.snapshot()[0]!.tool!.result, "原始读取失败");
+});
+
+test("等待回执按真实模型尝试绑定，断线及乱序不复活控制或串到并发尝试", () => {
+  const outcome = event("runtime/thread_waiting", {
+    attempt_id: "activation",
+    activation_id: "activation",
+    model_attempt_id: "retry",
+    thread_id: "execution",
+    root_turn_id: "root",
+  });
+  for (const reconnect of [false, true]) {
+    const p = projection();
+    for (const id of ["retry", "other"]) {
+      delta(p, id, { kind: "started" }, "activation");
+      delta(p, id, { kind: "text_delta", text: id }, "activation");
+    }
+    if (reconnect) p.reconnect();
+    p.consume(outcome);
+    delta(p, "retry", { kind: "started" }, "activation");
+    delta(p, "retry", { kind: "text_delta", text: "迟到" }, "activation");
+    assert.equal(
+      p.snapshot().find((m) => m.id === "stream:retry")!.text,
+      "retry",
+    );
+    assert.equal(
+      p.snapshot().find((m) => m.id === "stream:retry")!.streaming,
+      false,
+    );
+    assert.equal(
+      p.snapshot().find((m) => m.id === "stream:other")!.text,
+      "other",
+    );
+    assert.equal(
+      p.snapshot().find((m) => m.id === "stream:other")!.streaming,
+      !reconnect,
+    );
+  }
+  const replay = projection();
+  replay.consume(outcome);
+  delta(replay, "retry", { kind: "started" }, "activation");
+  delta(replay, "retry", { kind: "text_delta", text: "迟到" }, "activation");
+  assert.deepEqual(replay.snapshot(), []);
+});
+
+test("持久调用中的响应控制不伪造工具；拒绝原因可见且不泄露模型快照", () => {
+  const p = projection();
+  for (const topic of ["runtime/tool_calls_selected", "chat/assistant_call"]) {
+    const call = {
+      id: "control-call",
+      name: "no_reply",
+      arguments: '{"mode":"wait"}',
+    };
+    p.consume(
+      event(topic, { attempt_id: "a", calls: [call], tool_calls: [call] }),
+    );
+  }
+  assert.deepEqual(p.snapshot(), []);
+  delta(p, "a", { kind: "started" });
+  // The previous durable handoff already resolved a; use the rejected retry's
+  // own physical identity, just as Runtime does for protocol corrections.
+  delta(p, "retry", { kind: "started" });
+  delta(p, "retry", { kind: "text_delta", text: "公开进度仍应保留" });
+  const rejection = event("runtime/response_protocol_error", {
+    attempt_id: "retry",
+    thread_id: "execution",
+    root_turn_id: "root",
+    response_state: "invalid_wait",
+    reason: "no_reply(mode=wait) was rejected: no pending Runtime event",
+    response_content_preview: "private model response",
+    response_tool_calls: [
+      { id: "control-call", name: "no_reply", arguments: '{"mode":"wait"}' },
+    ],
+  });
+  p.consume(rejection);
+  p.consume(rejection);
+  assert.equal(p.snapshot().length, 2);
+  const error = p.snapshot().find((m) => m.kind === "error")!;
+  assert.equal(error.threadId, "execution");
+  assert.equal(error.text, rejection.payload.reason);
+  assert.equal(error.publicationKey, undefined);
+  assert.equal(
+    p.snapshot().find((m) => m.id === "stream:retry")!.text,
+    "公开进度仍应保留",
+  );
+  assert.ok(!JSON.stringify(p.snapshot()).includes("private model response"));
+});
