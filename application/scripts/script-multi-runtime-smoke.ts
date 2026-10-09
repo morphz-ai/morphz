@@ -615,6 +615,23 @@ try {
       host!.connection.application.options.runtime!.platformStatus().connected,
     "Runtime connection",
   );
+  const capabilityResponse = await fetch(
+    `http://127.0.0.1:${port}/api/session-io/capabilities`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  assert.ok(capabilityResponse.ok);
+  const capabilities = (await capabilityResponse.json()) as {
+    harnesses: { id: string; version: string }[];
+  };
+  assert.ok(
+    capabilities.harnesses.some(
+      (entry) =>
+        entry.id === scriptStudioApplication.harness!.id &&
+        entry.version === scriptStudioApplication.harness!.version,
+    ),
+    "The running Runtime, not just the offline install command, must load the exact current package",
+  );
+  evidence.liveHarnesses = capabilities.harnesses;
   const bound = await fetch(
     `http://127.0.0.1:${port}/api/agents/default-agent/provider-accounts/stub`,
     { method: "PUT", headers: { Authorization: `Bearer ${token}` } },
@@ -644,9 +661,6 @@ try {
     title: initial.title,
     brief: {
       ...initial.brief,
-      modelProcessingAllowed: true,
-      rightsStatement:
-        "助手原创合成验收素材，允许隔离 loopback provider 处理。",
       constraints:
         "只交付两位主角设定和五场戏大纲；每项一个候选，合计6000字符，一轮自审，不自动采纳或批准。",
     },
@@ -679,6 +693,8 @@ try {
     state: {},
   });
   const baseline = await client.readScriptSnapshot(contentId);
+  assert.equal(baseline.brief.modelProcessingAllowed, false);
+  assert.equal(baseline.brief.rightsStatement, "");
   const deliveries = () =>
     (
       host!.connection.application.store.runtimeState() as {
@@ -779,6 +795,16 @@ try {
     confirmation.inputId,
   );
   const final = await client.readScriptSnapshot(contentId);
+  assert.deepEqual(
+    final.brief,
+    baseline.brief,
+    "Agent creation neither needs nor rewrites the retired consent metadata",
+  );
+  evidence.retiredPermission = {
+    modelProcessingAllowed: final.brief.modelProcessingAllowed,
+    rightsStatement: final.brief.rightsStatement,
+    metadataUnchanged: true,
+  };
   evidence.inputs = [proposal, confirmation].map(
     ({ events: _events, ...input }) => input,
   );
@@ -836,10 +862,34 @@ try {
       ),
   );
   assert.equal(prepareEvents.length, 1);
+  assert.match(
+    JSON.parse(prepareEvents[0]!.payload).request.program,
+    /无需额外启用Agent或确认模型处理许可/,
+    "The actual persisted model step must receive the retired-gate rule",
+  );
   const captured = JSON.parse(prepareEvents[0]!.payload).request.captures;
   assert.equal(captured.input.body, confirmationBody);
   assert.equal(captured.intent.$yao.fields.task, task);
   assert.equal(captured.intent.$yao.fields.execute, true);
+  const actualPlans = sql<{
+    harness_id: string;
+    harness_version: string;
+    status: string;
+  }>(
+    join(runtimeDirectory, "runtime.sqlite"),
+    "SELECT p.harness_id,p.harness_version,p.status FROM plan_executions p JOIN threads t ON t.id=p.thread_id WHERE t.root_turn_id=? AND p.harness_id IS NOT NULL",
+    confirmation.rootId,
+  );
+  assert.ok(actualPlans.length > 0);
+  for (const plan of actualPlans) {
+    assert.equal(plan.harness_id, scriptStudioApplication.harness!.id);
+    assert.equal(
+      plan.harness_version,
+      scriptStudioApplication.harness!.version,
+    );
+    assert.equal(plan.status, "succeeded");
+  }
+  evidence.actualPlans = actualPlans;
   const inferenceCaptures = (stage: string) => {
     const events = confirmation.events.filter(
       (event) =>
@@ -856,6 +906,8 @@ try {
     return JSON.parse(events[0]!.payload).request.captures;
   };
   const creative = inferenceCaptures("create").context;
+  assert.equal(creative.brief.modelProcessingAllowed, false);
+  assert.equal(creative.brief.rightsStatement, "");
   assert.equal(creative.outputSchema.type, "array");
   assert.equal(creative.task, task);
   assert.deepEqual(

@@ -80,3 +80,42 @@ Runtime dispatch 停止，不使用 65421、原 App、真实业务数据或模�
 允许的删 gate 后 if / button 排版已局部整理，scoped Prettier 与 diffcheck 均通过，未改其他视觉样式。
 此前截图检查发现旧设置提示残留“资料许可”；经确认仅改为“资料说明”，浏览器测试新增新提示/无旧词断言。最终构建上的上述 1/1 已包含这两项断言；复查同目录新截图，设置提示与资料说明表单均为更新后的文案，准备请求按钮可用且没有模型许可开关。
 本记录不声称真实原 App 已部署新版 Harness、原对话提示已消失、真实模型创作已成功或 PostgreSQL 已验证。
+
+## 2026-10-09 补齐原应用部署与真实工序验收
+
+上文是 10 月 3 日当时的验证范围，保留其 PG 跳过及原应用未部署的
+事实，不把后续结果倒填为当时已通过。10 月 9 日的原窗口拒绝已经
+核对到实际 Plan：使用 `1.4.3`，旧提示要求开启许可，而 Host 返回
+正常。原 Runtime 从 10 月 3 日持续运行，实际目录没有 `1.4.4`。
+
+本次完成两个独立环节：
+
+- 安装并让原 Runtime 实际加载 `1.4.4`，实际 capabilities 核验通过，
+  不是仅构建前端、静态 Harness 检查或离线安装命令成功。
+- 新工作使用 `harness_list` 发现每个族最高的已安装稳定 SemVer，
+  旧版本仍供 exact 历史绑定及管理目录读取。不增加浮动 `latest`，
+  不修改历史 Input／Evaluation／Objective／Plan，不向旧任务补充
+  来偷偷换包；不透明或同 precedence 版本仍明确列出。
+
+正式应用入口的九个聚焦文件 94／94、零 skip，实际使用专用 PG；
+Rust Harness 聚焦回归 44／44、零 ignored；另外旧 Provider 策略的
+新增列／CAS／冷恢复回归 1／1。严格 Clippy、类型及格式检查通过。
+真实隔离 Runtime／Unix Host／SQLite 工序保持 `modelProcessingAllowed`
+为 `false`、`rightsStatement` 为空，三个目标的候选均实际保存，准备
+步骤与实际 Plan 都核对到 `1.4.4`，原 brief 不改、正式稿不采纳。
+12 次模型请求来自受控本地合成 provider，不冒称真实付费模型创作。
+
+原七个数据库在线备份后，只在求值／Plan／Job 空闲时正常重载同一
+Runtime，68670 → 79923。原 App 55061、profile、端点、配置和凭据
+不变，历史包完整保留。前后审计发现的三条新事件分别是包登记、
+原等待 Objective 恢复和启动模型配置；原事件全部一致。Host 游标
+推进、启动时间与既有 Provider 策略两列的兼容新增单独核验，不把
+它们隐藏为“全库零变化”。原权限／显式账户、业务行、旧绑定及
+等待任务保持原值，没有翻转旧开关、伪造权利说明或重放原输入。
+
+原窗口实际确认已连接、输入为空、历史与 UI 不变。旧拒绝回复继续
+保留；新请求可使用新版，旧补充仍遵守原 exact 绑定。仍未代用户
+在原《领证前夜》上运行真实模型或声称它已交付。完整失败与通过
+记录、前后快照及部署证据见
+`/private/tmp/morphz-script-upgrade-ic6np8`；同轮工序证据见
+`/var/folders/ql/kcn3hlyd0_nd3rvyqcqptc980000gn/T/morphz-script-multi-runtime-QStLpB/evidence.json`。

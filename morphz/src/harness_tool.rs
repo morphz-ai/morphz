@@ -39,7 +39,7 @@ impl Tool for HarnessListTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "List installed Runtime Harnesses on demand, including exact versions, titles, and compact capability indexes. Use this when the current work may benefit from a domain Harness but no suitable Harness is mounted in Context. Do not call it for ordinary conversation. The detailed Contract is mounted only in a subsequent Evaluation after selection.".to_string(),
+            description: "Discover installed Runtime Harnesses for new work, including exact versions, titles, and compact capability indexes. For each versioned family this lists the newest installed stable release; historical versions remain installed for exact-bound work and administrative inspection. Use this when the current work may benefit from a domain Harness but no suitable Harness is mounted in Context. Do not call it for ordinary conversation. The detailed Contract is mounted only in a subsequent Evaluation after exact-version selection.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {},
@@ -58,8 +58,8 @@ impl Tool for HarnessListTool {
             return Err("harness_list does not accept arguments".into());
         }
         Ok(serde_json::to_string_pretty(&json!({
-            "harnesses": self.registry.descriptors(),
-            "selection": "Use harness_select with an exact id and version. Each Evaluation may have only one Primary Harness."
+            "harnesses": self.registry.discovery_descriptors(),
+            "selection": "For new work use harness_select with an exact id and version returned here. Historical bindings retain their original version and must not be rebound. Each Evaluation may have only one Primary Harness."
         }))?)
     }
 }
@@ -272,6 +272,21 @@ mod tests {
             .await
             .unwrap();
         assert!(selected.contains("\"status\": \"selected\""));
+
+        // Installing an upgrade changes new-work discovery, never the
+        // historical Evaluation that has already selected its exact package.
+        registry
+            .register_package(
+                HarnessPackage::from_source("coding-2.hns", &PACKAGE.replace("1.0.0", "2.0.0"))
+                    .unwrap(),
+            )
+            .unwrap();
+        let upgraded: serde_json::Value =
+            serde_json::from_str(&list.execute("{}").await.unwrap()).unwrap();
+        assert_eq!(upgraded["harnesses"].as_array().unwrap().len(), 1);
+        assert_eq!(upgraded["harnesses"][0]["version"], "2.0.0");
+        assert!(registry.get("coding", "1.0.0").is_some());
+        assert_eq!(registry.descriptors().len(), 2);
 
         let repeated = CURRENT_CONTEXT_ID
             .scope("context-1".to_string(), async {

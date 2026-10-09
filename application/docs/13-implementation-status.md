@@ -1,5 +1,59 @@
 # 桌面能力实施记录
 
+## 2026-10-09 补齐原 Runtime 的剧本升级，防止新工作发现过时创作工序
+
+原窗口的再次拒绝不是新版 Store 把许可检查加了回来。实际失败输入的
+Plan 仍绑定 `morphz.script-studio@1.4.3`；从 10 月 3 日持续运行的
+Runtime 68670 根本没有安装／加载 `1.4.4`。实际 `script/read-workflow`
+返回正常，旧 Harness 的提示自行要求用户开启许可。此前源码修复与
+隔离验收没有完成原 Runtime 部署，是这次遗留问题的直接原因。
+
+安装新包不会覆盖不可变旧包。本次新增独立发现投影：`harness_list`
+对新的工作推荐每个版本族中最高的已安装稳定 SemVer；全部版本的
+管理目录、exact lookup、历史 Input／Objective／Evaluation／Plan
+绑定保持不变。只有预发布版本时按 SemVer 比较；不透明版本和同等
+precedence 的 build 版本保持显式，不猜 `latest`，不重绑旧任务。
+
+新增断言先在冻结旧实现真实失败。最终 Rust Harness 聚焦回归
+44／44、零 ignored；正式 `npm test` 九个指定边界文件 94／94、
+零 skip，入口实际核验专用 PostgreSQL，不称整个产品全量回归。
+SDK 打包测试硬编码旧版本导致的两项失败已单独修正并提交
+`5c80e032`，继续核对实际包声明、文件名和导出内容，不删断言。
+严格 Clippy、类型和格式检查通过。单独的旧 Provider 策略迁移／
+CAS／冷恢复回归另有 1／1、零 ignored。
+
+真实隔离 Rust／Unix Host／SQLite 联测从旧布尔值 `false`、资料说明
+为空开始，完成三个候选的实际保存，12 次受控 provider 请求；实际
+Plan 为 `1.4.4` 且 succeeded，准备模型步骤收到“无需额外启用 Agent”
+规则，元数据原值不改、正式稿不采纳。provider 是本地合成服务，
+不冒称付费模型或用户原《领证前夜》已经创作交付。
+
+对原七个数据库做只读在线备份，在没有排队／运行中的求值、Plan
+或 Job 时安装 `1.4.4`，仅正常 SIGTERM 原 Runtime；使用同一端点、
+配置、库、工作目录和原凭据恢复为 79923。原 App main 55061 没有
+重启或重置。实际 `/api/session-io/capabilities` 已含 `1.4.4`，原
+十个 Harness 描述仍在。新版 binary SHA 为
+`4b63f93b6dc43a4b9d7b8cd41820e175a59cad610e16fc96ba7e0153e708ab5d`；
+包 artifact hash 为
+`sha256:cabe46f636e6fdb99d2a0e6f7a9acc0354c4ab13554ecec3f14bfa4aed824e6b`。
+
+原始过严审计先失败：活跃 Host 的事件游标确实随恢复控制事件推进，
+不能宣称所有行完全不动。保留首轮失败及实际逐字段差异，再按源码
+逐项严格核验：五个应用数据库全部业务行一致；workspace 只改变原
+Session 的 cursor；所有原 Runtime 事件不变，只追加包登记、原等待
+Objective 恢复及启动模型配置三个控制事件。仅原默认身份／执行节点／
+关联 Session 的启动时间更新，既有 Provider 策略补齐 restricted 与
+空 exclusions 两列，原显式账户、revision 和权限不变。其余历史、
+Plan、等待事项、绑定及业务内容原值保留，不重放输入或改资料说明。
+
+原窗口实际截图／可访问状态复核为“智能体已连接”，空输入、原暗色
+主题和历史消息保留，Web 入口及 `execution.css` SHA 均未改。旧拒绝
+回复仍是历史事实，不删除或伪装成功；用户应另发新请求，而不是向
+绑定旧版的任务发送补充。候选、原失败、前后在线快照及实际部署审计
+在 `/private/tmp/morphz-script-upgrade-ic6np8`，含凭据的重启记录仅私有
+保存，不进入仓库。隔离联测原证据在
+`/var/folders/ql/kcn3hlyd0_nd3rvyqcqptc980000gn/T/morphz-script-multi-runtime-QStLpB`。
+
 ## 2026-10-09 撤回贴角箭头，恢复正文尾部的向右查看标记
 
 用户否定上一轮右下角贴边的裸箭头和悬停变黑，明确允许原 `>` 或

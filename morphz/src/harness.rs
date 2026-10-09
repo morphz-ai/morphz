@@ -171,11 +171,102 @@ impl HarnessRegistry {
         });
         descriptors
     }
+
+    /// New work discovers the newest installed stable release, not every
+    /// historical package. This is a catalog projection only: exact lookup,
+    /// persisted bindings, and the administrative catalog remain unchanged.
+    /// Opaque or equal-precedence versions stay explicit rather than guessing.
+    pub fn discovery_descriptors(&self) -> Vec<HarnessDescriptor> {
+        let mut families = std::collections::BTreeMap::<String, Vec<HarnessDescriptor>>::new();
+        for descriptor in self.descriptors() {
+            families
+                .entry(descriptor.id.clone())
+                .or_default()
+                .push(descriptor);
+        }
+        families
+            .into_values()
+            .flat_map(|family| {
+                let versions = family
+                    .iter()
+                    .map(|descriptor| semver::Version::parse(&descriptor.version))
+                    .collect::<Result<Vec<_>, _>>();
+                let Ok(versions) = versions else {
+                    return family;
+                };
+                let has_stable = versions.iter().any(|version| version.pre.is_empty());
+                let latest = versions
+                    .iter()
+                    .filter(|version| !has_stable || version.pre.is_empty())
+                    .max_by(|left, right| left.cmp_precedence(right));
+                family
+                    .into_iter()
+                    .zip(versions.iter())
+                    .filter(|(_, version)| {
+                        latest.is_some_and(|latest| version.cmp_precedence(latest).is_eq())
+                    })
+                    .map(|(descriptor, _)| descriptor)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct VersionedHarness(&'static str);
+
+    impl DomainHarness for VersionedHarness {
+        fn descriptor(&self) -> HarnessDescriptor {
+            HarnessDescriptor {
+                id: "test-upgrade".to_string(),
+                version: self.0.to_string(),
+                title: "Upgrade test".to_string(),
+                capabilities: Vec::new(),
+            }
+        }
+        fn compact_contract(&self) -> String {
+            "Not mounted by discovery".to_string()
+        }
+    }
+
+    #[test]
+    fn new_work_discovers_latest_stable_without_erasing_exact_history() {
+        let registry = HarnessRegistry::default();
+        for version in ["1.4.10", "1.4.3", "1.4.9", "2.0.0-rc.1"] {
+            registry
+                .register(Arc::new(VersionedHarness(version)))
+                .unwrap();
+        }
+        assert_eq!(registry.descriptors().len(), 4);
+        let discovered = registry.discovery_descriptors();
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].version, "1.4.10");
+        assert!(registry.get("test-upgrade", "1.4.3").is_some());
+        assert!(registry.get("test-upgrade", "latest").is_none());
+    }
+
+    #[test]
+    fn discovery_does_not_guess_opaque_or_equal_precedence_versions() {
+        for versions in [["legacy", "1.0.0"], ["1.0.0+one", "1.0.0+two"]] {
+            let registry = HarnessRegistry::default();
+            for version in versions {
+                registry
+                    .register(Arc::new(VersionedHarness(version)))
+                    .unwrap();
+            }
+            assert_eq!(registry.discovery_descriptors().len(), 2);
+        }
+        let registry = HarnessRegistry::default();
+        for version in ["1.0.0-beta.2", "1.0.0-beta.10"] {
+            registry
+                .register(Arc::new(VersionedHarness(version)))
+                .unwrap();
+        }
+        assert_eq!(registry.discovery_descriptors()[0].version, "1.0.0-beta.10");
+    }
 
     struct CodingHarness;
 

@@ -611,16 +611,16 @@ PlanExecution
 
 Harness 不拥有第二套调度器。Plan Executor 只把 IR 节点物化到已有 Kernel：
 
-| Yao / IR 节点 | Runtime 行为 |
-| --- | --- |
-| `seq` | 在当前 Plan Execution 中顺序推进纯控制节点 |
-| `bind` | 保存值或 Observation 引用 |
-| `if` | 根据已求值得到的值只选择一个分支 |
-| `fallback` | 当前分支产生已分类失败后选择下一分支 |
-| `call` | 创建 Execution Job；多个并行调用可创建 Action Group |
-| `infer` | 创建子 Evaluation / Activation |
-| `wait`（未来） | 注册 Runtime Timer 或精确事件条件 |
-| `reply / deliver`（若进入语言） | 创建 Delivery，不直接写 UI |
+| Yao / IR 节点                   | Runtime 行为                                        |
+| ------------------------------- | --------------------------------------------------- |
+| `seq`                           | 在当前 Plan Execution 中顺序推进纯控制节点          |
+| `bind`                          | 保存值或 Observation 引用                           |
+| `if`                            | 根据已求值得到的值只选择一个分支                    |
+| `fallback`                      | 当前分支产生已分类失败后选择下一分支                |
+| `call`                          | 创建 Execution Job；多个并行调用可创建 Action Group |
+| `infer`                         | 创建子 Evaluation / Activation                      |
+| `wait`（未来）                  | 注册 Runtime Timer 或精确事件条件                   |
+| `reply / deliver`（若进入语言） | 创建 Delivery，不直接写 UI                          |
 
 每次遇到有外部效应或等待的节点：
 
@@ -641,10 +641,10 @@ Harness 不拥有第二套调度器。Plan Executor 只把 IR 节点物化到已
 
 算子语义相同，都是“交给非确定性求值器”，但所处边界不同：
 
-| 位置 | 主控制权 | 预算与结果 |
-| --- | --- | --- |
-| 顶层 `(infer ...)` | LLM | 完整 Objective attempt loop，可调用获准工具，最终产生 Delivery、等待或显式状态变化 |
-| `(eval ...)` 内部的 `infer` | Runtime Plan | 子 Evaluation；输入由程序显式给出，结果必须作为可绑定值或分类错误返回 |
+| 位置                        | 主控制权     | 预算与结果                                                                         |
+| --------------------------- | ------------ | ---------------------------------------------------------------------------------- |
+| 顶层 `(infer ...)`          | LLM          | 完整 Objective attempt loop，可调用获准工具，最终产生 Delivery、等待或显式状态变化 |
+| `(eval ...)` 内部的 `infer` | Runtime Plan | 子 Evaluation；输入由程序显式给出，结果必须作为可绑定值或分类错误返回              |
 
 内部 `infer` 不应只是一次本地 `role=user` completion，也不能复用父 attempt ID。它需要正式的子 Evaluation 身份、因果 route、持久历史、预算和交付事件。
 
@@ -686,6 +686,7 @@ Objective：完成整部小说并通过连续性检查
 为 Scheduler Kernel 已有 Action Group。`par` 只是确定性计划的并发表达，不
 建立新的并发系统；在真实 Harness 证明需要前不加入 v1，也不同时提供
 `par/parallel` 两种别名。
+
 - 父 Plan 等待整个 infer Thread 的终态结果，而不是把某个中间 Activation 的
   reasoning 或 continuation 错当成交付；terminal result 才能解除等待。
 
@@ -772,6 +773,13 @@ morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 可选默认值与新 Objective 原子创建。单文件与目录 `.hns` 使用同一个 Loader 和
 Registry。
 
+新版安装不会覆盖同 `id/version` 的不可变包，也不删除历史执行需要的旧版本。
+模型的 `harness_list` 对新工作只推荐同 ID 最高的已安装稳定 SemVer 版本；
+只有预发布时推荐最高预发布。不能排序的版本或相同优先级的 build 版本保持明确
+列举，不静默猜测。CLI `harness list/show` 与 SDK 管理目录仍可核对全部历史版本。
+选择仍是具体 `ID@VERSION`，既有绑定不随升级变化。CLI 安装写入持久目录，
+独立服务进程的内存目录必须在安全重载后再核验，不能把 CLI 成功当成在线部署成功。
+
 ## 11. 挂载、卸载和学习
 
 - Harness 的权威绑定属于 Evaluation，而不是永久绑定 Agent 或 Session；
@@ -823,14 +831,14 @@ Registry。
   `harness_id/version/artifact_hash` provenance；
 - Binding 中的顶层 `(eval ...)` 会由 Runtime 自动、且每个精确
   Evaluation 只分派一次；它复用正式 `EvalTool → PlanExecution → Scheduler
-  Kernel` 路径，不存在第二套入口执行器；
+Kernel` 路径，不存在第二套入口执行器；
 - Binding 中的顶层 `(infer ...)` 会作为明确的 model-owned 主动入口挂载进当前
   Evaluation；Context Encoding 同时给出精确源码和自然语言求值责任；
 - 自动入口使用由 Evaluation 和 package hash 派生的稳定调用身份，
   终态 Plan 不会在 continuation 或恢复后重复执行；
 - Runtime 集成测试覆盖
   `Objective 默认值 → Evaluation Binding → 自动 eval → read Execution Job → Plan 结果回填
-  → objective_update → 最终交付`。
+→ objective_update → 最终交付`。
 - `ObjectiveStore::create_objective_with_events` 在 SQLite 与 PostgreSQL 中把
   Objective 行和不可变初始化事件放进同一个数据库事务；Harness Binding
   因而先于任何可领取 Evaluation 成为可见事实；
@@ -867,16 +875,16 @@ Registry。
 
 历史原型与当前正式路径的对应关系：
 
-| 历史原型 | 当前正式路径 |
-| --- | --- |
-| `eval` 是 `LogicalInline`，内部直接 `tool.execute()` | `EvalTool` 只负责校验和进入 Plan；`call` 创建 Execution Job |
-| 内部 `infer` 直接发本地 completion | 创建正式、可持久化的 child Activation |
-| 根是 `infer`，其余默认 Runtime | 已改为只接受显式 `(eval ...)` 或 `(infer ...)` |
-| 依靠物理文件位置猜测 artifact 职责 | 已实现单文件/目录 `.hns` 归一化为同一 HarnessPackage |
-| Harness Mind 安装时 seed 共享 Mind | 默认 Frame 按 Evaluation 挂载 |
-| 崩溃后整轮重跑 | 持久化 PlanExecution，从效应边界恢复 |
-| 共享算子只检查表面拼写 | 同一 canonical operator schema 生成 parser、validator、Contract 和测试 |
-| `eval` 由普通工具固定墙钟超时控制 | 持久 Plan 独立等待 Job / Evaluation，不被普通工具超时截断 |
+| 历史原型                                             | 当前正式路径                                                           |
+| ---------------------------------------------------- | ---------------------------------------------------------------------- |
+| `eval` 是 `LogicalInline`，内部直接 `tool.execute()` | `EvalTool` 只负责校验和进入 Plan；`call` 创建 Execution Job            |
+| 内部 `infer` 直接发本地 completion                   | 创建正式、可持久化的 child Activation                                  |
+| 根是 `infer`，其余默认 Runtime                       | 已改为只接受显式 `(eval ...)` 或 `(infer ...)`                         |
+| 依靠物理文件位置猜测 artifact 职责                   | 已实现单文件/目录 `.hns` 归一化为同一 HarnessPackage                   |
+| Harness Mind 安装时 seed 共享 Mind                   | 默认 Frame 按 Evaluation 挂载                                          |
+| 崩溃后整轮重跑                                       | 持久化 PlanExecution，从效应边界恢复                                   |
+| 共享算子只检查表面拼写                               | 同一 canonical operator schema 生成 parser、validator、Contract 和测试 |
+| `eval` 由普通工具固定墙钟超时控制                    | 持久 Plan 独立等待 Job / Evaluation，不被普通工具超时截断              |
 
 当前尚未完成的不是基本调度或入口语义，而是产品化与规模验证：
 
