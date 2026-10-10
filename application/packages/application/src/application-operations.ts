@@ -442,7 +442,8 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
         const name = command.shape.action.value;
         const labels: Record<string, string> = {
           "create-production": "创建空剧本",
-          "create-item": "创建空创作条目",
+          "create-item":
+            "创建空创作条目；分场须 parentId 与 dependencies 绑定所属集当前版本，可含地点、时间及确切角色引用",
           "submit-candidate": "提交已固定范围的候选",
           "add-review": "提交已固定版本的审阅意见",
         };
@@ -470,6 +471,10 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
         "prepare-workflow": "固定目标、版本、依赖和生成预算，交给 Yao 继续",
         "submit-workflow": "校验并保存本次工作流成果，返回消息入口",
         "read-results": "核对本次已保存成果",
+        "list-candidates":
+          "分页列出已有条目的历史候选；不是本次生成结果，也不采纳候选",
+        "read-candidate":
+          "分页读取指定历史候选原文；候选不是正式正文，不扩大固定生成范围",
         "read-result": "读取本次确切成果",
         "read-item": "读取确切版本的剧本文稿",
         "read-source": "读取获准原作",

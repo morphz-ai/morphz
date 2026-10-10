@@ -36,7 +36,7 @@ test("current input contracts use canonical names while legacy formats remain re
   );
   assert.deepEqual(
     current.map((format) => format.version),
-    ["10", "9", "8", "5", "4", "3", "2", "1"],
+    ["12", "11", "10", "9", "8", "5", "4", "3", "2", "1"],
   );
   for (const format of current) {
     assert.equal(format.publisher, "Morphz application");

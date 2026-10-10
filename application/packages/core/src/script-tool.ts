@@ -97,6 +97,25 @@ export const scriptToolSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("read-results"), ...page }).strict(),
   z
     .object({
+      action: z.literal("list-candidates"),
+      ...productionScope,
+      itemId: id,
+      limit: page.limit,
+      after: z.string().max(8192).optional(),
+      expectedActivityRevision: z.number().int().positive().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("read-candidate"),
+      ...productionScope,
+      candidateId: id,
+      offset: page.offset,
+      limit: z.number().int().min(1).max(24_000).default(24_000),
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal("read-result"),
       resultId: id,
       offset: page.offset,

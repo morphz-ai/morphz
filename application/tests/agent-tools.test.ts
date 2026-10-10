@@ -564,6 +564,9 @@ test("Host 工具凭据保持稳定、只在主机文件中，不接受不同中
   assert.deepEqual(
     data.formats.map((f: any) => [f.id, f.version]),
     [
+      ["morphz.application.input", "12"],
+      ["morphz.application.input", "11"],
+      ["morphz.application.input", "10"],
       ["morphz.application.input", "9"],
       ["morphz.application.input", "8"],
       ["morphz.application.input", "5"],

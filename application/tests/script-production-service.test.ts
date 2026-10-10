@@ -782,6 +782,8 @@ async function exercise(
     ...emptyItemDraft("分场一"),
     parentId: "episode-one",
     dependencies: [{ itemId: "episode-one", revision: 1 }],
+    location: "租住屋餐桌",
+    storyTime: "夜",
   };
   await assert.rejects(
     createScriptItem({
@@ -805,6 +807,17 @@ async function exercise(
     draft: sceneDraft,
   });
   assert.equal(scene.original.activityRevision, 3);
+  assert.deepEqual(
+    (
+      await studio.readItemVersion({
+        credential: "alice",
+        productionId: itemCommand.productionId,
+        itemId: "scene-one",
+        revision: 1,
+      })
+    ).draft,
+    sceneDraft,
+  );
   const createdFromInput = await studio.inputDeliveryProductions("tenant-one", [
     "input-one",
   ]);

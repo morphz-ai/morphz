@@ -757,7 +757,12 @@ export class ScriptStudioStore {
           },
           page,
         ),
-      { modelData: page.panel === "reviews" || page.panel === "events" },
+      {
+        modelData:
+          page.panel === "reviews" ||
+          page.panel === "events" ||
+          page.panel === "candidates",
+      },
     );
   }
 
@@ -5164,20 +5169,26 @@ export class ScriptStudioStore {
     if (actor.kind === "agent") {
       const empty = emptyScriptDraft(draft.title, draft.order);
       if (request.kind === "scene" && draft.parentId) {
-        if (
-          draft.dependencies.length !== 1 ||
-          draft.dependencies[0]!.itemId !== draft.parentId
-        )
-          throw new Error("Agent 创建空分场只能绑定所属集的当前版本。");
+        if (!draft.dependencies.some((ref) => ref.itemId === draft.parentId))
+          throw new DomainError(
+            "invalid",
+            "创建分场须在 dependencies 中绑定所属集版本：{itemId: parentId, revision: 所属集当前修订}；请先读取该集。",
+          );
         empty.parentId = draft.parentId;
         empty.dependencies = draft.dependencies;
+        empty.location = draft.location;
+        empty.storyTime = draft.storyTime;
+        empty.characters = draft.characters;
       }
       if (
         (Object.keys(empty) as (keyof ScriptDraft)[]).some(
           (key) => JSON.stringify(draft[key]) !== JSON.stringify(empty[key]),
         )
       )
-        throw new Error("Agent 只能建立空条目；正文须经过候选与人工采纳。");
+        throw new DomainError(
+          "invalid",
+          "Agent 只能建立空条目；正文须经过候选与人工采纳。",
+        );
     }
     const actorIdentity = {
       tenantId: actor.tenantId,
@@ -5276,7 +5287,10 @@ export class ScriptStudioStore {
         safeInteger(production.activity_revision, "剧本活动修订") !==
         request.expectedActivityRevision
       )
-        throw new Error("剧本已变化，请重新读取目录再创建条目。");
+        throw new DomainError(
+          "conflict",
+          "剧本已变化，请重新读取目录再创建条目。",
+        );
       const count = (
         await q.all<{ total: number | string; next_ordinal: number | string }>(
           "SELECT COUNT(*) AS total,COALESCE(MAX(collection_ordinal)+1,0) AS next_ordinal FROM script_items WHERE tenant_id=? AND production_id=?",
@@ -5296,7 +5310,7 @@ export class ScriptStudioStore {
       )
         throw new Error("剧本条目 ID 已存在。");
       if ((request.kind === "scene") !== (draft.parentId !== null))
-        throw new Error("只有分场必须且可以指定所属集。");
+        throw new DomainError("invalid", "只有分场必须且可以指定所属集。");
       if (draft.parentId) {
         const parent = (
           await q.all<{ kind: string; head_revision: number | string }>(
@@ -5305,18 +5319,22 @@ export class ScriptStudioStore {
           )
         )[0];
         if (!parent || parent.kind !== "episode")
-          throw new Error("分场必须属于本剧的一集。");
+          throw new DomainError("invalid", "分场必须属于本剧的一集。");
         if (
           actor.kind === "agent" &&
           safeInteger(parent.head_revision, "所属集修订") !==
-            draft.dependencies[0]!.revision
+            draft.dependencies.find((ref) => ref.itemId === draft.parentId)!
+              .revision
         )
-          throw new Error("Agent 创建空分场必须绑定所属集当前版本。");
+          throw new DomainError(
+            "conflict",
+            "Agent 创建空分场必须绑定所属集当前版本；请重新读取该集。",
+          );
       }
       const dependencyIds = new Set<string>();
       for (const dependency of draft.dependencies) {
         if (dependencyIds.has(dependency.itemId))
-          throw new Error("剧本依赖不能重复。");
+          throw new DomainError("invalid", "剧本依赖不能重复。");
         dependencyIds.add(dependency.itemId);
         if (
           !(
@@ -5331,14 +5349,14 @@ export class ScriptStudioStore {
             )
           ).length
         )
-          throw new Error("剧本依赖必须指向本剧有效版本。");
+          throw new DomainError("invalid", "剧本依赖必须指向本剧有效版本。");
       }
       if (draft.parentId && !dependencyIds.has(draft.parentId))
-        throw new Error("所属集必须同时绑定依赖版本。");
+        throw new DomainError("invalid", "所属集必须同时绑定依赖版本。");
       const characterIds = new Set<string>();
       for (const characterId of draft.characters) {
         if (characterIds.has(characterId))
-          throw new Error("出场角色不能重复。");
+          throw new DomainError("invalid", "出场角色不能重复。");
         characterIds.add(characterId);
         const character = (
           await q.all<{ kind: string }>(
@@ -5347,7 +5365,10 @@ export class ScriptStudioStore {
           )
         )[0];
         if (character?.kind !== "character" || !dependencyIds.has(characterId))
-          throw new Error("出场角色必须引用本剧角色并绑定其版本。");
+          throw new DomainError(
+            "invalid",
+            "出场角色必须引用本剧角色并绑定其版本。",
+          );
       }
       const currentActor = await authorize();
       if (
