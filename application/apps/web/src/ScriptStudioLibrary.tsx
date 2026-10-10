@@ -1,4 +1,4 @@
-import { ArrowUpRight, Clapperboard, Search, X } from "lucide-react";
+import { Clapperboard, Search, X } from "lucide-react";
 import { useLayoutEffect } from "react";
 import type { ScriptLibraryEntry } from "./platform-client.js";
 import { scriptDisplayTime } from "../../../packages/core/src/script-studio-presentation.js";
@@ -160,7 +160,6 @@ function ScriptLibraryCard({
         <span className="script-card-heading">
           <Clapperboard aria-hidden="true" />
           <strong>{p.title}</strong>
-          <ArrowUpRight aria-hidden="true" />
         </span>
         <span className="script-card-meta">
           {global && <span>{ownerTitle} · </span>}

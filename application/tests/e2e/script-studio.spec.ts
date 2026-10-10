@@ -248,6 +248,12 @@ test("剧本入口：列表搜索、键盘打开与返回、草稿恢复及空�
   await button(page, "全部剧本").click();
   await expect(page.getByRole("combobox", { name: "当前剧本" })).toHaveCount(0);
   await expect(openScript(page, p.title)).toBeFocused();
+  await expect(
+    openScript(page, p.title).locator(".lucide-arrow-up-right"),
+  ).toHaveCount(0);
+  await expect(
+    openScript(page, p.title).locator(".script-card-heading svg"),
+  ).toHaveCount(1);
   const inputCount = (await state(page)).inputs.length;
   const otherProject = await (
     await platform(page)
