@@ -56,6 +56,7 @@ export type Preferences = InterfacePreferences & {
     | null;
   cognitiveLocation?: CognitiveNavigationLocation | null;
   interactions?: Record<string, InteractionMode>;
+  exchangeViews?: Record<string, "input" | "recent" | "history">;
   exchangeHeights?: Record<string, number>;
   pinnedInputs?: Record<string, boolean>;
   pinnedHistories?: Record<string, boolean>;

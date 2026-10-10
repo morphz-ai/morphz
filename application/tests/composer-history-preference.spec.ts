@@ -174,3 +174,81 @@ test("专用对话画布仍常驻历史与输入，焦点与快捷键不增加�
   await expect(input).toHaveValue("TEST 专用对话保留完整画布，不发送。");
   await expect(reading).toBeVisible();
 });
+
+test("消息按钮记住选择：选中跟随输入固定和显隐，取消后仅输入，刷新恢复完整记录选择", async ({
+  page,
+}) => {
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/api\/platform\/(?:messages|conversations\/start|projects\/[^/]+\/conversations|app-views\/launch)(?:\?|$)/.test(
+        request.url(),
+      )
+    )
+      writes.push(request.url());
+  });
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "工作台", exact: true })
+    .click();
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+  const input = await openInput(page);
+  const draft = "TEST 消息选择与当前显隐分离，保留草稿，不发送。";
+  await input.fill(draft);
+  const panel = page.locator(".primary-panel");
+  const reading = page.locator(".exchange-panel > .conversation");
+  await expectInputOnly(page);
+  await composerAction(page, "查看交流记录");
+  await expect(reading).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "收起交流记录", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await composerAction(page, "固定输入框");
+  await expect(
+    page.getByRole("button", { name: "固定交流记录", exact: true }),
+  ).toHaveAttribute("aria-pressed", "false");
+  await input.focus();
+  await page.getByRole("heading", { name: "应用", exact: true }).click();
+  await expect(panel).toHaveAttribute("data-interaction", "recent");
+  await expect(input).toHaveValue(draft);
+  await expect(reading).toBeVisible();
+  await composerAction(page, "收起 AI 输入框");
+  await expect(input).toHaveCount(0);
+  await expect(reading).toHaveCount(0);
+  const hidden = await preferences(page);
+  expect(Object.values(hidden.exchangeViews)).toContain("recent");
+  await openInput(page);
+  await expect(panel).toHaveAttribute("data-interaction", "recent");
+  await expect(input).toHaveValue(draft);
+  await composerAction(page, "收起交流记录");
+  await input.focus();
+  await page.getByRole("heading", { name: "应用", exact: true }).click();
+  await expectInputOnly(page);
+  await expect(input).toHaveValue(draft);
+  await composerAction(page, "取消固定输入框");
+  await input.focus();
+  await page.getByRole("heading", { name: "应用", exact: true }).click();
+  await expect(panel).toHaveAttribute("data-interaction", "hidden");
+  await openInput(page);
+  await expectInputOnly(page);
+  await composerAction(page, "展开完整记录");
+  await expect(panel).toHaveAttribute("data-interaction", "history");
+  await input.focus();
+  await page.getByRole("button", { name: "搜索资料", exact: true }).focus();
+  await expect(panel).toHaveAttribute("data-interaction", "hidden");
+  const selection = (await preferences(page)).exchangeViews;
+  expect(Object.values(selection)).toContain("history");
+  await page.reload();
+  await expect(panel).toHaveAttribute("data-interaction", "hidden");
+  expect((await preferences(page)).exchangeViews).toEqual(selection);
+  await openInput(page);
+  await expect(panel).toHaveAttribute("data-interaction", "history");
+  await expect(input).toHaveValue(draft);
+  await expect(reading).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "收起交流记录", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  expect(writes).toEqual([]);
+});

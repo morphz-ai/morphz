@@ -2,10 +2,12 @@ import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import {
   afterSend,
   afterLeave,
+  exchangeView,
   readingMode,
   revealInput,
   withoutInput,
   type InteractionMode,
+  type ExchangeView,
 } from "../interaction.js";
 import { useExchangeFocus } from "../useExchangeFocus.js";
 import type { ExchangeResizeOptions } from "../ExchangeResizeHandle.js";
@@ -22,6 +24,7 @@ type ExchangeSurface = Pick<
 >;
 export type ExchangePreferences = {
   interactions?: Record<string, InteractionMode>;
+  exchangeViews?: Record<string, "input" | "recent" | "history">;
   pinnedInputs?: Record<string, boolean>;
   pinnedHistories?: Record<string, boolean>;
   exchangeHeights?: Record<string, number>;
@@ -35,12 +38,21 @@ export function exchangeVisibility(
   preferences: ExchangePreferences,
   preview: ResizePreview,
 ) {
+  const layout = preferences.interactions?.[surface.exchangeKey] ?? "input";
+  const view = exchangeView(
+    layout,
+    preferences.exchangeViews?.[surface.exchangeKey],
+  );
   const interaction =
     (preview?.scope === surface.exchangeKey ? preview.mode : undefined) ??
-    preferences.interactions?.[surface.exchangeKey] ??
-    "input";
+    (layout === "hidden"
+      ? "hidden"
+      : layout === "recent-only" || layout === "history-only"
+        ? withoutInput(view)
+        : view);
   return {
     interaction,
+    view,
     inputVisible:
       surface.dialogueCanvas ||
       interaction === "input" ||
@@ -89,23 +101,23 @@ export function useExchangeController({
   const visibility = exchangeVisibility(surface, preferences, resizePreview);
   const {
     interaction,
+    view,
     inputVisible,
     conversationVisible,
     inputPinned,
     historyPinned,
   } = visibility;
+  const collapsed = afterLeave(interaction, inputPinned, historyPinned, view);
   const keepExchangeOpen = useExchangeFocus({
     root: exchange,
     scope: exchangeKey,
     visible: inputVisible || conversationVisible,
-    pinned:
-      (!inputVisible || inputPinned) && (!conversationVisible || historyPinned),
+    pinned: collapsed === interaction,
     suspended,
-    onLeave: () =>
-      commitInteraction(afterLeave(interaction, inputPinned, historyPinned)),
+    onLeave: () => commitInteraction(collapsed),
   });
-  const latestInteraction = useRef(interaction);
-  latestInteraction.current = interaction;
+  const latestInteraction = useRef({ interaction, view });
+  latestInteraction.current = { interaction, view };
   const previousFocus = useRef<HTMLElement | null>(null);
   const requestedComposerFocus = useRef<number | null>(null);
   const requestedConversationFocus = useRef<{
@@ -123,25 +135,34 @@ export function useExchangeController({
   function commitInteraction(
     mode: InteractionMode,
     id = navigationProject?.id,
+    selected?: ExchangeView,
   ) {
     clearResizePreview();
     if (id) {
       const scope = id === navigationProject?.id ? exchangeKey : id;
       prefer({
         interactions: { [scope]: mode },
+        exchangeViews: {
+          [scope]:
+            selected ??
+            exchangeView(
+              preferences.interactions?.[scope] ?? "input",
+              preferences.exchangeViews?.[scope],
+            ),
+        },
       });
     }
   }
   function setInteraction(mode: InteractionMode, id = navigationProject?.id) {
     if (id === navigationProject?.id && mode !== "hidden") keepExchangeOpen();
-    commitInteraction(mode, id);
+    commitInteraction(mode, id, exchangeView(mode));
   }
   function showInput() {
     keepExchangeOpen();
     onShowInput();
     previousFocus.current = document.activeElement as HTMLElement;
     requestedComposerFocus.current = navigationGeneration.current;
-    commitInteraction(revealInput(interaction));
+    commitInteraction(revealInput(interaction, view));
   }
   function hideInput() {
     if (surface.dialogueCanvas) {
@@ -150,7 +171,7 @@ export function useExchangeController({
     }
     // Preserve the existing collapse shortcut: an unpinned reading preview
     // follows input collapse. Only explicitly pinned history remains visible.
-    setInteraction(historyPinned ? withoutInput(interaction) : "hidden");
+    commitInteraction(historyPinned ? withoutInput(interaction) : "hidden");
     if (document.activeElement?.closest("#global-composer")) {
       const origin = document.activeElement;
       const restore = previousFocus.current;
@@ -176,14 +197,16 @@ export function useExchangeController({
     requestedConversationFocus.current = { id, generation };
   }
   function requestSentInputFocus(key: string) {
-    if (latestInteraction.current !== "hidden")
+    if (latestInteraction.current.interaction !== "hidden")
       sentInputFocus.current = {
         key,
         generation: navigationGeneration.current,
       };
   }
   function showSentInput(key: string) {
-    commitInteraction(afterSend(latestInteraction.current));
+    const latest = latestInteraction.current;
+    const mode = afterSend(latest.interaction, latest.view);
+    commitInteraction(mode, navigationProject?.id, latest.view);
     requestSentInputFocus(key);
   }
   function toggleInputPin() {
@@ -217,6 +240,7 @@ export function useExchangeController({
         interactions: {
           [exchangeKey]: inputVisible ? mode : withoutInput(mode),
         },
+        exchangeViews: { [exchangeKey]: exchangeView(mode) },
         ...(mode === "recent"
           ? { exchangeHeights: { [exchangeKey]: height } }
           : {}),

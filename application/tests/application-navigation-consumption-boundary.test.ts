@@ -1973,7 +1973,7 @@ function withRule(rule: string, check: () => void) {
   }
 }
 // Approved optional preferences are not an authority whitelist. Historical
-// authority recipes stay frozen; the independent history pin is a UI-only map.
+// authority recipes stay frozen; history pin and reading selection are UI-only maps.
 // Verify its real type binding before projecting it out of the unchanged schema.
 const cognitivePreferenceField = parse({
   Field:
@@ -1984,6 +1984,7 @@ const cognitivePreferenceField = parse({
 function preferencesWithoutCognitiveLocation(stable: Parsed, type: Node) {
   const fields: Node[] = [];
   const pinFields: Node[] = [];
+  const viewFields: Node[] = [];
   walk(type, (node) => {
     if (
       node.kind === SyntaxKind.PropertySignature &&
@@ -1995,6 +1996,11 @@ function preferencesWithoutCognitiveLocation(stable: Parsed, type: Node) {
       node.getText().startsWith("pinnedHistories")
     )
       pinFields.push(node);
+    if (
+      node.kind === SyntaxKind.PropertySignature &&
+      node.getText().startsWith("exchangeViews")
+    )
+      viewFields.push(node);
   });
   assert.equal(pinFields.length, 1, "one independent history pin preference");
   const expectedPin = parse({
@@ -2006,6 +2012,22 @@ function preferencesWithoutCognitiveLocation(stable: Parsed, type: Node) {
     scalarSyntax(pinFields[0]!),
     scalarSyntax(expectedPin),
     "exact optional scoped boolean history pin",
+  );
+  assert.equal(
+    viewFields.length,
+    1,
+    "one remembered reading selection preference",
+  );
+  const expectedView = parse({
+    Field:
+      'type Field = { exchangeViews?: Record<string, "input" | "recent" | "history">; };',
+  })
+    .get("Field")!
+    .nodes.find((node) => node.kind === SyntaxKind.PropertySignature)!;
+  assert.deepEqual(
+    scalarSyntax(viewFields[0]!),
+    scalarSyntax(expectedView),
+    "exact optional scoped input/recent/history selection",
   );
   assert.equal(fields.length, 1, "one exact cognitive navigation field");
   const field = fields[0]!;
@@ -2033,7 +2055,7 @@ function preferencesWithoutCognitiveLocation(stable: Parsed, type: Node) {
   );
   const source = stable.source.getFullText();
   let stripped = source;
-  for (const node of [field, pinFields[0]!].sort(
+  for (const node of [field, pinFields[0]!, viewFields[0]!].sort(
     (a, b) => b.getStart() - a.getStart(),
   ))
     stripped = stripped.slice(0, node.getStart()) + stripped.slice(node.end);
@@ -3801,6 +3823,31 @@ function currentConsumption(sources: CurrentSources = rawSources) {
 nodeTest(
   "current raw App/Host actual navigation, authority and borrowed owners; no historical inverse",
   () => currentConsumption(),
+);
+nodeTest(
+  "remembered reading selection adds only the exact optional local UI preference",
+  () => {
+    const field =
+      'exchangeViews?: Record<string, "input" | "recent" | "history">;';
+    for (const replacement of [
+      "",
+      "exchangeViews?: Record<string, unknown>;",
+      'exchangeViews: Record<string, "input" | "recent" | "history">;',
+      field + field,
+      field + " arbitraryAuthority?: unknown;",
+    ]) {
+      const stableNavigationHost = changed(
+        rawSources.stableNavigationHost,
+        field,
+        replacement,
+      );
+      parse({ Candidate: stableNavigationHost });
+      assert.throws(
+        () => currentConsumption({ ...rawSources, stableNavigationHost }),
+        /navigation-host-owner-seams/,
+      );
+    }
+  },
 );
 nodeTest(
   "submission profiles retain their own complete algorithms and reject cross-profile consumers, guards and mirrors",

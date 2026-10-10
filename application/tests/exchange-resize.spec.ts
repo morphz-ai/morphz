@@ -274,14 +274,20 @@ test("键盘可伸缩，调整高度按工作页面保存，刷新和切换仍�
   await resizeTo(page, 180);
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
   await openInput(page);
-  await expect(handle(page)).toHaveCount(0);
-  await composerAction(page, "查看交流记录");
+  // Reopening restores the selected reading view as well as its saved height.
+  await expect(handle(page)).toHaveCount(1);
   await expect(handle(page)).toHaveAttribute("aria-valuenow", "280");
   await page.reload();
   await openInput(page);
   await expect(handle(page)).toHaveAttribute("aria-valuenow", "280");
   await composerAction(page, "收起 AI 输入框");
   await expect(handle(page)).toHaveCount(0);
+  await openInput(page);
+  await expect(handle(page)).toHaveCount(1);
+  await expect(handle(page)).toHaveAttribute("aria-valuenow", "280");
+  // Deselecting records, unlike temporarily hiding input, retains input-only.
+  await composerAction(page, "收起交流记录");
+  await composerAction(page, "收起 AI 输入框");
   await openInput(page);
   await expect(handle(page)).toHaveCount(0);
   await composerAction(page, "查看交流记录");
@@ -381,8 +387,7 @@ test("拖动期间导航或收起输入会取消手势，不把旧高度写进�
   await expect(page.locator(".composer-reopen")).toBeVisible();
   expect((await preferences(page)).exchangeHeights).toEqual(heights);
   await openInput(page);
-  await expect(handle(page)).toHaveCount(0);
-  await composerAction(page, "查看交流记录");
+  await expect(handle(page)).toHaveCount(1);
   await expect(handle(page)).toHaveAttribute("aria-valuenow", "200");
   await startDrag(page, 120);
   const tasks = page

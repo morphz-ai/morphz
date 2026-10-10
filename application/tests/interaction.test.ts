@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   afterSend,
   afterLeave,
+  exchangeView,
   withoutInput,
   revealInput,
   shouldFollow,
@@ -13,7 +14,7 @@ import {
 } from "../packages/core/src/conversation.js";
 
 test("交流状态只由显式动作展开；迟到的发送回执不重新打开已隐藏的输入", () => {
-  assert.equal(afterSend("input"), "recent");
+  assert.equal(afterSend("input"), "input");
   assert.equal(afterSend("recent"), "recent");
   assert.equal(afterSend("history"), "history");
   assert.equal(afterSend("hidden"), "hidden");
@@ -29,7 +30,7 @@ test("交流状态只由显式动作展开；迟到的发送回执不重新打�
   assert.equal(shouldFollow(120), false);
 });
 
-test("离开交流区域分别保留已固定且可见的部分，不自动打开已收起的部分", () => {
+test("选中的消息跟随输入固定；独立固定记录可保留阅读，不自动打开已收起的部分", () => {
   for (const mode of [
     "hidden",
     "input",
@@ -54,7 +55,8 @@ test("离开交流区域分别保留已固定且可见的部分，不自动打�
         );
         assert.equal(
           ["recent", "history", "recent-only", "history-only"].includes(result),
-          historyWasVisible && historyPinned,
+          historyWasVisible &&
+            (historyPinned || (inputWasVisible && inputPinned)),
         );
         assert.equal(
           revealInput(withoutInput(mode)),
@@ -66,6 +68,22 @@ test("离开交流区域分别保留已固定且可见的部分，不自动打�
         );
       }
   }
+});
+
+test("消息选择与暂时显隐分离，重开恢复选择，回执不改变选择", () => {
+  for (const view of ["input", "recent", "history"] as const) {
+    assert.equal(revealInput("hidden", view), view);
+    assert.equal(afterSend("input", view), view);
+    assert.equal(afterSend("hidden", view), "hidden");
+    assert.equal(afterSend("recent-only", view), "recent-only");
+    assert.equal(afterLeave("input", true, true, view), "input");
+    assert.equal(afterLeave("hidden", true, true, view), "hidden");
+  }
+  assert.equal(exchangeView("history-only"), "history");
+  assert.equal(exchangeView("hidden", "recent"), "recent");
+  assert.equal(exchangeView("history", "input"), "input");
+  assert.equal(exchangeView("recent", "garbage"), "recent");
+  assert.equal(exchangeView("hidden", {}), "input");
 });
 
 test("乱序并发回复按输入标识归组，不用时间猜测旧回复归属", () => {

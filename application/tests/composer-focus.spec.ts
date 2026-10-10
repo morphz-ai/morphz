@@ -99,7 +99,8 @@ test("主动打开记录，离开自动收起；固定按空间保存且不影�
   await page.getByRole("button", { name: /向 Morphz 输入/ }).click();
   await expect(input).toBeFocused();
   await expect(input).toHaveValue("暂不发送的工作台草稿");
-  await expect(page.locator(".conversation")).toHaveCount(0);
+  // Collapse preserves the selected message view, not just the draft.
+  await expect(page.locator(".conversation")).toBeVisible();
   await composerAction(page, "固定输入框");
   await page.getByLabel("收起 AI 输入框").click();
   await expect(input).toHaveCount(0);
@@ -234,7 +235,7 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   await expect(
     page.getByRole("button", { name: "语音输入", exact: true }),
   ).toBeFocused();
-  await composerAction(page, "查看交流记录");
+  // Reopening input restores the already selected records after outside hide.
   await composerAction(page, "收起交流记录");
   await expect(page.locator(".conversation")).toHaveCount(0);
   await input.focus();

@@ -834,6 +834,7 @@ function WorkspaceApp({
   });
   const {
     interaction,
+    view: exchangeView,
     inputVisible,
     conversationVisible,
     historyVisible,
@@ -2955,6 +2956,7 @@ function WorkspaceApp({
                     <ExchangeControls
                       inputVisible={inputVisible}
                       conversationVisible={conversationVisible}
+                      readingSelected={exchangeView !== "input"}
                       historyVisible={historyVisible}
                       pinned={inputPinned}
                       historyPinned={historyPinned}

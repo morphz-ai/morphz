@@ -133,6 +133,11 @@ export function mergeNavigationPreferences<P extends NavigationPreferences>(
     ...(change.interactions
       ? { interactions: { ...previous.interactions, ...change.interactions } }
       : {}),
+    ...(change.exchangeViews
+      ? {
+          exchangeViews: { ...previous.exchangeViews, ...change.exchangeViews },
+        }
+      : {}),
     ...(change.pinnedInputs
       ? { pinnedInputs: { ...previous.pinnedInputs, ...change.pinnedInputs } }
       : {}),

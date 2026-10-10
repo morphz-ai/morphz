@@ -455,10 +455,25 @@ function removeCognitivePreferenceField(
     if (isPropertySignature(node)) pin.push(node);
   });
   if (pinFields.length && !same(pinFields[0], pin[0])) return;
+  const viewFields: Node[] = [];
+  walk(type, (node) => {
+    if (isPropertySignature(node) && node.name.getText() === "exchangeViews")
+      viewFields.push(node);
+  });
+  if (viewFields.length > 1) return;
+  const expectedView = parse({
+    "view.ts":
+      'type View = { exchangeViews?: Record<string, "input" | "recent" | "history">; };',
+  }).get("view.ts")!.source;
+  const view: Node[] = [];
+  walk(expectedView, (node) => {
+    if (isPropertySignature(node)) view.push(node);
+  });
+  if (viewFields.length && !same(viewFields[0], view[0])) return;
   let stripped = text;
   for (const range of [
     { start, end },
-    ...pinFields.map((node) => ({
+    ...[...pinFields, ...viewFields].map((node) => ({
       start: node.getStart() - type.getStart(),
       end: node.end - type.getStart(),
     })),
@@ -1960,6 +1975,28 @@ nodeTest(
       assert.ok(
         currentOwnership(owner, current.app, current.stableHost).includes(
           "exact-cognitive-navigation-place-single-new-key",
+        ),
+      );
+    }
+  },
+);
+
+nodeTest(
+  "remembered reading preference projection rejects broadened, required and duplicate fields",
+  () => {
+    const field =
+      'exchangeViews?: Record<string, "input" | "recent" | "history">;';
+    for (const replacement of [
+      "exchangeViews?: Record<string, string>;",
+      'exchangeViews: Record<string, "input" | "recent" | "history">;',
+      field + field,
+      field + " executionGrants?: unknown;",
+    ]) {
+      const candidate = changed(current.stableHost, field, replacement);
+      parse({ "host.ts": candidate });
+      assert.ok(
+        currentOwnership(current.owner, current.app, candidate).includes(
+          "original-persisted-preference-schema-and-defaults",
         ),
       );
     }

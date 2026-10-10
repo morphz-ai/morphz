@@ -307,6 +307,7 @@ test("six navigation fields invalidate by presence, including explicit undefined
     "readingTarget",
     "projectOpen",
     "interactions",
+    "exchangeViews",
     "pinnedInputs",
     "pinnedHistories",
     "exchangeHeights",
@@ -336,6 +337,7 @@ test("patch keeps the original asymmetric resets and map merging, without mutati
     applications: { A: "instance-A", B: null },
     selectedConversations: { A: "named-A", B: "named-B" },
     interactions: { A: "history", B: "input" },
+    exchangeViews: { A: "history", B: "input" },
     pinnedInputs: { A: true, B: false },
     pinnedHistories: { A: false, B: true },
     exchangeHeights: { A: 250, B: 280 },
@@ -346,6 +348,7 @@ test("patch keeps the original asymmetric resets and map merging, without mutati
     applications: { A: "new-instance" },
     selectedConversations: { A: "new-named" },
     interactions: { A: "recent" },
+    exchangeViews: { A: "recent" },
     pinnedInputs: { A: false },
     pinnedHistories: { A: true },
     exchangeHeights: { A: 300 },
@@ -357,6 +360,7 @@ test("patch keeps the original asymmetric resets and map merging, without mutati
     B: "named-B",
   });
   assert.deepEqual(next.interactions, { A: "recent", B: "input" });
+  assert.deepEqual(next.exchangeViews, { A: "recent", B: "input" });
   assert.deepEqual(next.pinnedInputs, { A: false, B: false });
   assert.deepEqual(next.pinnedHistories, { A: true, B: true });
   assert.deepEqual(next.exchangeHeights, { A: 300, B: 280 });

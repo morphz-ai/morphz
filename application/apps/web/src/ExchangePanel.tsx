@@ -99,6 +99,7 @@ export function ExchangePanel({
 export function ExchangeControls({
   inputVisible = true,
   conversationVisible,
+  readingSelected = conversationVisible,
   historyVisible,
   pinned,
   historyPinned = false,
@@ -110,6 +111,7 @@ export function ExchangeControls({
 }: {
   inputVisible?: boolean;
   conversationVisible: boolean;
+  readingSelected?: boolean;
   historyVisible: boolean;
   pinned: boolean;
   historyPinned?: boolean;
@@ -202,12 +204,12 @@ export function ExchangeControls({
         options={[
           {
             id: "history-visibility",
-            label: conversationVisible ? "收起交流记录" : "查看交流记录",
+            label: readingSelected ? "收起交流记录" : "查看交流记录",
             iconId: "message-square-text",
-            pressed: conversationVisible,
+            pressed: readingSelected,
             onSelect: () =>
               onInteraction(
-                conversationVisible
+                readingSelected
                   ? inputVisible
                     ? "input"
                     : "hidden"

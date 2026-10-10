@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { createServer, transformWithOxc } from "vite";
 import react from "@vitejs/plugin-react";
-import { test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import type { ExchangePreferences } from "../apps/web/src/host/use-exchange-controller.js";
 import type { InteractionMode } from "../apps/web/src/interaction.js";
 
@@ -18,6 +18,7 @@ import { ExchangeControls } from '/src/ExchangePanel.tsx';
 const writes = [], events = [];
 let controller, current, generation, showCount = 0;
 let control;
+let savedReceipt;
 function Fixture() {
   const [model, setModel] = useState({ exchangeKey: 'surface-A', contextKey: 'conversation-A:object-A', conversationId: 'conversation-A', dialogueCanvas: false, sending: false, suspended: false, sequence: 0 });
   const [preferences, setPreferences] = useState({ interactions: { 'surface-A': 'input', 'surface-B': 'input' }, pinnedInputs: { 'surface-A': true, 'surface-B': true }, pinnedHistories: { 'surface-A': false, 'surface-B': false }, exchangeHeights: { 'surface-A': 250, 'surface-B': 180 } });
@@ -25,7 +26,7 @@ function Fixture() {
   generation = navigationGeneration;
   const prefer = change => {
     writes.push(structuredClone(change));
-    setPreferences(previous => ({ ...previous, ...change, ...Object.fromEntries(['interactions','pinnedInputs','pinnedHistories','exchangeHeights'].filter(key => change[key]).map(key => [key, { ...previous[key], ...change[key] }])) }));
+    setPreferences(previous => ({ ...previous, ...change, ...Object.fromEntries(['interactions','exchangeViews','pinnedInputs','pinnedHistories','exchangeHeights'].filter(key => change[key]).map(key => [key, { ...previous[key], ...change[key] }])) }));
   };
   controller = useExchangeController({ surface: { ...model, navigationProject: { id: 'project-A' } }, preferences, input, exchange, toggle, navigationGeneration, sending: model.sending, suspended: model.dialogueCanvas || model.suspended, prefer, onShowInput: () => { showCount++; } });
   // Preserve the real Host's ordering seam: owner restoration precedes focus.
@@ -48,6 +49,9 @@ function Fixture() {
     else if (name === 'lock') update({ sending: true });
     else if (name === 'unlock') update({ sending: false });
     else if (name === 'sent') controller.showSentInput(value || model.contextKey);
+    else if (name === 'capture-receipt') savedReceipt = controller.showSentInput;
+    else if (name === 'late-receipt') savedReceipt(model.contextKey);
+    else if (name === 'legacy-mode') prefer({ interactions: { [model.exchangeKey]: value } });
     else if (name === 'sent-focus') { controller.requestSentInputFocus(value || model.contextKey); update({}); }
     else if (name === 'named-focus') { controller.requestConversationFocus(value, navigationGeneration.current); update({}); }
     else if (name === 'resolve-named') update({ conversationId: value, contextKey: value + ':object', exchangeKey: 'surface-B' });
@@ -66,7 +70,7 @@ function Fixture() {
     <button id="toggle" ref={toggle} onClick={() => controller.showInput()}>Open input</button>
     <div ref={exchange} className="exchange-surface">
       <div className="exchange-panel" data-open={controller.inputVisible || controller.conversationVisible || undefined}>
-        {!model.dialogueCanvas && (controller.inputVisible || controller.conversationVisible) && <ExchangeControls inputVisible={controller.inputVisible} conversationVisible={controller.conversationVisible} historyVisible={controller.historyVisible} pinned={controller.inputPinned} historyPinned={controller.historyPinned} unread={false} onInteraction={controller.setInteraction} onPin={controller.toggleInputPin} onHistoryPin={controller.toggleHistoryPin} onHide={controller.hideInput}/>}
+        {!model.dialogueCanvas && (controller.inputVisible || controller.conversationVisible) && <ExchangeControls inputVisible={controller.inputVisible} conversationVisible={controller.conversationVisible} readingSelected={controller.view !== 'input'} historyVisible={controller.historyVisible} pinned={controller.inputPinned} historyPinned={controller.historyPinned} unread={false} onInteraction={controller.setInteraction} onPin={controller.toggleInputPin} onHistoryPin={controller.toggleHistoryPin} onHide={controller.hideInput}/>}
         {controller.conversationVisible && <div id="reading">Reading</div>}
         {controller.inputVisible && <div id="global-composer"><textarea id="input" ref={input} disabled={model.sending} defaultValue="untouched draft" onFocus={() => events.push('input:focus')}/><button id="inside">Input tool</button></div>}
       </div>
@@ -223,6 +227,7 @@ scenario(
 scenario(
   "send focus waits until React removes disabled, keeping reading intent",
   async (page) => {
+    await run(page, "mode", "recent");
     await page.locator("#input").focus();
     await run(page, "lock");
     await run(page, "sent");
@@ -366,15 +371,18 @@ scenario(
     await run(page, "commit", { mode: "recent", height: 310 });
     assert.deepEqual((await report(page)).writes.at(-1), {
       interactions: { "surface-B": "recent" },
+      exchangeViews: { "surface-B": "recent" },
       exchangeHeights: { "surface-B": 310 },
     });
     await run(page, "commit", { mode: "history", height: 500 });
     assert.deepEqual((await report(page)).writes.at(-1), {
       interactions: { "surface-B": "history" },
+      exchangeViews: { "surface-B": "history" },
     });
     await run(page, "commit", { mode: "input", height: 0 });
     assert.deepEqual((await report(page)).writes.at(-1), {
       interactions: { "surface-B": "input" },
+      exchangeViews: { "surface-B": "input" },
     });
     assert.deepEqual((await report(page)).preferences.exchangeHeights, {
       "surface-A": 250,
@@ -426,10 +434,47 @@ scenario(
     assert.equal(actual.mode, "hidden");
     assert.equal(actual.preferences.pinnedInputs["surface-A"], false);
     assert.deepEqual(actual.writes, [
-      { interactions: { "surface-A": "recent" } },
-      { interactions: { "surface-A": "hidden" } },
+      {
+        interactions: { "surface-A": "recent" },
+        exchangeViews: { "surface-A": "recent" },
+      },
+      {
+        interactions: { "surface-A": "hidden" },
+        exchangeViews: { "surface-A": "recent" },
+      },
     ]);
     await run(page, "show");
+    assert.equal(await page.locator("#input").inputValue(), "untouched draft");
+  },
+);
+
+scenario(
+  "selected records return with input after outside collapse and explicit input hide",
+  async (page) => {
+    await run(page, "pin");
+    await page
+      .getByRole("button", { name: "查看交流记录", exact: true })
+      .click();
+    await page.locator("#input").focus();
+    await page.locator("#blank-outside").click();
+    await frames(page);
+    assert.equal((await report(page)).mode, "hidden");
+    await page.locator("#toggle").click();
+    assert.equal((await report(page)).mode, "recent");
+    assert.equal((await report(page)).readingVisible, true);
+    await expect(
+      page.getByRole("button", { name: "收起交流记录", exact: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await run(page, "hide");
+    await run(page, "show");
+    assert.equal((await report(page)).mode, "recent");
+    await page
+      .getByRole("button", { name: "收起交流记录", exact: true })
+      .click();
+    await run(page, "hide");
+    await run(page, "show");
+    assert.equal((await report(page)).mode, "input");
+    assert.equal((await report(page)).readingVisible, false);
     assert.equal(await page.locator("#input").inputValue(), "untouched draft");
   },
 );
@@ -515,7 +560,7 @@ scenario(
 for (const inputPin of [false, true]) {
   for (const historyPin of [false, true]) {
     scenario(
-      `outside click independently keeps input=${inputPin}, history=${historyPin}`,
+      `selected records follow input=${inputPin}, with separate reading pin=${historyPin}`,
       async (page) => {
         await run(page, "pin");
         await page
@@ -534,10 +579,10 @@ for (const inputPin of [false, true]) {
         await frames(page);
         const actual = await report(page);
         assert.equal(actual.inputVisible, inputPin);
-        assert.equal(actual.readingVisible, historyPin);
+        assert.equal(actual.readingVisible, inputPin || historyPin);
         assert.equal(
           actual.mode,
-          historyPin
+          inputPin || historyPin
             ? inputPin
               ? "recent"
               : "recent-only"
@@ -588,13 +633,108 @@ scenario(
 );
 
 scenario(
-  "automatic post-send reading retains the normal unpinned collapse behavior",
+  "a receipt preserves unselected records and normal unpinned input collapse",
   async (page) => {
     await run(page, "pin");
     await run(page, "sent");
-    assert.equal((await report(page)).mode, "recent");
+    assert.equal((await report(page)).mode, "input");
     await page.locator("#outside").click();
     await frames(page);
     assert.equal((await report(page)).mode, "hidden");
+  },
+);
+
+for (const inputPin of [false, true])
+  scenario(
+    `unselected records stay off with input pin=${inputPin}, even after receipts`,
+    async (page) => {
+      if (!inputPin) await run(page, "pin");
+      await page
+        .getByRole("button", { name: "查看交流记录", exact: true })
+        .click();
+      await run(page, "capture-receipt");
+      await page
+        .getByRole("button", { name: "收起交流记录", exact: true })
+        .click();
+      await run(page, "late-receipt");
+      assert.equal((await report(page)).mode, "input");
+      assert.equal((await report(page)).readingVisible, false);
+      await expect(
+        page.getByRole("button", { name: "查看交流记录", exact: true }),
+      ).toHaveAttribute("aria-pressed", "false");
+      await page.locator("#input").focus();
+      await page.locator("#blank-outside").click();
+      await frames(page);
+      assert.equal((await report(page)).mode, inputPin ? "input" : "hidden");
+      assert.equal((await report(page)).readingVisible, false);
+      await run(page, "show");
+      assert.equal((await report(page)).mode, "input");
+      assert.equal(
+        await page.locator("#input").inputValue(),
+        "untouched draft",
+      );
+    },
+  );
+
+scenario(
+  "full selection survives keyboard outside focus, explicit collapse and scope navigation",
+  async (page) => {
+    await run(page, "pin");
+    await page
+      .getByRole("button", { name: "展开完整记录", exact: true })
+      .click();
+    await page.locator("#input").focus();
+    await page.locator("#outside").focus();
+    await frames(page);
+    assert.equal((await report(page)).mode, "hidden");
+    assert.equal(
+      (await report(page)).preferences.exchangeViews["surface-A"],
+      "history",
+    );
+    await run(page, "show");
+    assert.equal((await report(page)).mode, "history");
+    await run(page, "hide");
+    await run(page, "navigate", {
+      exchangeKey: "surface-B",
+      contextKey: "conversation-B:object-B",
+    });
+    await run(page, "mode", "input");
+    await run(page, "navigate", {
+      exchangeKey: "surface-A",
+      contextKey: "conversation-A:object-A",
+    });
+    assert.equal((await report(page)).mode, "hidden");
+    await run(page, "show");
+    assert.equal((await report(page)).mode, "history");
+    assert.deepEqual((await report(page)).preferences.exchangeViews, {
+      "surface-A": "history",
+      "surface-B": "input",
+    });
+    assert.equal(await page.locator("#input").inputValue(), "untouched draft");
+  },
+);
+
+scenario(
+  "legacy visible selection is retained on first collapse; incidental layout writes cannot undo it",
+  async (page) => {
+    await run(page, "legacy-mode", "recent");
+    assert.equal((await report(page)).mode, "recent");
+    await run(page, "hide");
+    assert.equal(
+      (await report(page)).preferences.exchangeViews["surface-A"],
+      "recent",
+    );
+    await run(page, "show");
+    assert.equal((await report(page)).mode, "recent");
+    await page
+      .getByRole("button", { name: "收起交流记录", exact: true })
+      .click();
+    await run(page, "legacy-mode", "history");
+    assert.equal((await report(page)).mode, "input");
+    assert.equal((await report(page)).readingVisible, false);
+    assert.equal(
+      (await report(page)).preferences.exchangeViews["surface-A"],
+      "input",
+    );
   },
 );
