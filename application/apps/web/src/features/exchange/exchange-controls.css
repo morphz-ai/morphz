@@ -13,12 +13,9 @@
   flex: 0 0 auto;
   flex-wrap: nowrap;
 }
-/* Reading text may scroll beneath these local controls. Only the group gets
-   a material surface; input-only tools keep their clear floating treatment. */
-.app
-  .exchange-panel:has(> .conversation)
-  > .exchange-controls-slot
-  .exchange-view-tools {
+/* Canvas and reading text can both pass beneath these floating controls.
+   Give only the existing group a material surface, never the full tool row. */
+.app .exchange-panel > .exchange-controls-slot .exchange-view-tools {
   background: var(--surface-popover);
   border-radius: 8px;
   -webkit-backdrop-filter: var(--popup-blur);
@@ -53,6 +50,7 @@
   min-width: 28px;
   min-height: 28px;
   padding: 7px;
+  color: var(--ink);
   border-radius: 8px;
   background: transparent;
   box-shadow: none;

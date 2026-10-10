@@ -472,7 +472,29 @@ function selectorLexicalParts(selector: string) {
   return { code, attributes };
 }
 
-const expected = originalExchangeControlsRules.map((rule) => ({
+// 2026-10-10 user-approved visual correction, not a new migration baseline:
+// input-only controls also need the existing material over canvas prose, and
+// local glyphs use the shared primary foreground. Keep the Git archive above
+// immutable; all other geometry, state, ownership and ordering stay exact.
+export const currentExchangeControlsRecipes = originalExchangeControlsRules.map(
+  (rule) => ({
+    ordinal: rule.ordinal,
+    selector:
+      rule.ordinal === 3
+        ? ".app .exchange-panel > .exchange-controls-slot .exchange-view-tools"
+        : rule.selector,
+    context: rule.context,
+    declarations:
+      rule.ordinal === 6
+        ? [
+            ...rule.declarations.slice(0, 6),
+            ["color", "var(--ink)", false] as const,
+            ...rule.declarations.slice(6),
+          ]
+        : rule.declarations,
+  }),
+);
+const expected = currentExchangeControlsRecipes.map((rule) => ({
   selector: key(rule.selector),
   context: rule.context.map(contextKey),
   declarations: rule.declarations.map((declaration) => [...declaration]),

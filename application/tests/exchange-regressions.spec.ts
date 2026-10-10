@@ -99,7 +99,12 @@ test("从输入框连续 Tab 能到达底栏常用按钮，面板控制有独立
   await openInput(page);
   await composerAction(page, "查看交流记录");
   await page.getByRole("button", { name: "收起交流记录", exact: true }).focus();
-  for (const name of ["展开完整记录", "固定输入框", "收起 AI 输入框"]) {
+  for (const name of [
+    "展开完整记录",
+    "固定交流记录",
+    "固定输入框",
+    "收起 AI 输入框",
+  ]) {
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name, exact: true })).toBeFocused();
   }

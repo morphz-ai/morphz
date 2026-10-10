@@ -526,7 +526,7 @@ test("输入卡片零占位，交流控制随阅读置顶并以同一节点返�
   expect(writes).toEqual([]);
 });
 
-test("阅读操作半透明中性底面与实底回退不改变位置、图标和输入", async ({
+test("输入与阅读操作共享中性遮字底面，实底回退不改变位置、图标和输入", async ({
   page,
   context,
 }) => {
@@ -562,7 +562,7 @@ test("阅读操作半透明中性底面与实底回退不改变位置、图标�
       group,
     })),
   });
-  for (const mode of ["recent", "history", "input"]) {
+  for (const mode of ["input", "recent", "history"]) {
     // Browser-host styling has an existing immersive layout of its own. Reset
     // host/media state before taking this ordinary-workspace mode's baseline.
     await cdp.send("Emulation.setEmulatedMedia", { features: [] });
@@ -573,8 +573,9 @@ test("阅读操作半透明中性底面与实底回退不改变位置、图标�
         .querySelector(".app")!
         .classList.remove("application-browser-workspace");
     });
-    if (mode === "history") await exchangeAction(page, "展开完整记录");
     if (mode === "input") await exchangeAction(page, "收起交流记录");
+    if (mode === "recent") await exchangeAction(page, "查看交流记录");
+    if (mode === "history") await exchangeAction(page, "展开完整记录");
     await expect(page.locator(".primary-panel")).toHaveAttribute(
       "data-interaction",
       mode,
@@ -621,21 +622,18 @@ test("阅读操作半透明中性底面与实底回退不改变位置、图标�
               fallback === "native-browser",
             );
         }, fallback);
-        const reading = mode !== "input";
         const solid = fallback !== "none";
-        const fill = !reading
-          ? "rgba(0, 0, 0, 0)"
-          : solid
-            ? appearance === "light"
-              ? "rgb(255, 255, 255)"
-              : "rgb(39, 39, 39)"
-            : appearance === "light"
-              ? "rgba(255, 255, 255, 0.95)"
-              : "rgba(38, 38, 38, 0.95)";
+        const fill = solid
+          ? appearance === "light"
+            ? "rgb(255, 255, 255)"
+            : "rgb(39, 39, 39)"
+          : appearance === "light"
+            ? "rgba(255, 255, 255, 0.95)"
+            : "rgba(38, 38, 38, 0.95)";
         await expect(controls).toHaveCSS("background-color", fill);
         await expect(controls).toHaveCSS(
           "backdrop-filter",
-          reading && !solid ? "blur(20px)" : "none",
+          !solid ? "blur(20px)" : "none",
         );
         if (
           await page.evaluate(() =>
@@ -644,7 +642,7 @@ test("阅读操作半透明中性底面与实底回退不改变位置、图标�
         ) {
           await expect(controls).toHaveCSS(
             "-webkit-backdrop-filter",
-            reading && !solid ? "blur(20px)" : "none",
+            !solid ? "blur(20px)" : "none",
           );
         } else {
           // Newer Chromium can omit the WebKit alias. The supported standard
@@ -655,10 +653,12 @@ test("阅读操作半透明中性底面与实底回退不改变位置、图标�
             ),
           ).toBe(true);
         }
-        await expect(controls).toHaveCSS(
-          "border-radius",
-          reading ? "8px" : "0px",
-        );
+        await expect(controls).toHaveCSS("border-radius", "8px");
+        for (const button of await controls.locator(":scope > button").all())
+          await expect(button).toHaveCSS(
+            "color",
+            appearance === "light" ? "rgb(31, 32, 36)" : "rgb(244, 244, 246)",
+          );
         for (const property of ["padding", "border-width"])
           await expect(controls).toHaveCSS(property, "0px");
         await expect(controls).toHaveCSS("box-shadow", "none");
@@ -666,6 +666,11 @@ test("阅读操作半透明中性底面与实底回退不改变位置、图标�
           "data-material-mount",
           "original",
         );
+        if (mode === "input" && fallback === "none")
+          await test.info().attach(`input-controls-${appearance}`, {
+            body: await page.screenshot(),
+            contentType: "image/png",
+          });
         expect(
           await controls.evaluate((element) =>
             [element, ...element.querySelectorAll("button, svg")].map(

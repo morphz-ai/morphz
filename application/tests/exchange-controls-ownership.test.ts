@@ -10,6 +10,7 @@ import {
   exchangeControlsFile,
   originalExchangeControlFrameTuple,
   originalExchangeControlsRules,
+  currentExchangeControlsRecipes,
   exchangeControlsCssViolations,
   exchangeControlsEntryViolations,
 } from "./fixtures/exchange-controls-51af4c20.js";
@@ -107,7 +108,7 @@ const key = (text: string) =>
     .replace(/\s+/g, " ")
     .replace(/\s*([>,])\s*/g, "$1");
 function role(sources: Sources, ordinal: number, mutate: (rule: Rule) => void) {
-  const fixed = originalExchangeControlsRules.find(
+  const fixed = currentExchangeControlsRecipes.find(
     (recipe) => recipe.ordinal === ordinal,
   )!;
   const root = postcss.parse(sources.css.get(exchangeControlsFile)!);
@@ -176,6 +177,29 @@ test("independent finite exchange-operation archive retains complete sixteen rec
 });
 test("current complete role has one actual bare phased source and no competing operation writer", () => {
   assert.deepEqual(violations(actual), []);
+});
+test("approved canvas material and local contrast cannot revert or broaden their scope", () => {
+  reject(
+    "reading-only material regression",
+    "exchange-controls:ordered-recipes",
+    (sources) =>
+      role(sources, 3, (rule) => {
+        rule.selector = originalExchangeControlsRules[2]!.selector;
+      }),
+  );
+  reject(
+    "unqualified material",
+    "exchange-controls:ordered-recipes",
+    (sources) =>
+      role(sources, 3, (rule) => {
+        rule.selector = ".app .exchange-view-tools";
+      }),
+  );
+  reject("dim local glyph", "exchange-controls:ordered-recipes", (sources) =>
+    role(sources, 6, (rule) =>
+      declaration(rule, "color", "var(--text-secondary)"),
+    ),
+  );
 });
 test("complete role rejects parse-valid value, state, context, specificity and sequence changes", () => {
   const cases: [string, number, (rule: Rule) => void][] = [

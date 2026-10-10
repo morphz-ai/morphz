@@ -11,6 +11,7 @@ import {
 import {
   exchangeControlsFile,
   originalExchangeControlFrameTuple,
+  currentExchangeControlsRecipes,
   exchangeControlsCssViolations,
   exchangeControlsEntryViolations,
   isExchangeControlsSpecifier,
@@ -205,7 +206,48 @@ function frozenSignature(rule: FrozenRule): Signature {
     })),
   };
 }
-const expectedLayout = selectedFrameRules.map(frozenSignature);
+const archivedLayout = selectedFrameRules.map(frozenSignature);
+// The independently fixed archive remains unchanged. The already shipped
+// 91171208 independent-pin correction added one control per reading state and
+// moved compact clearance to the container's consuming children. Keep those
+// four exact approved deltas, not a baseline regenerated from current source.
+const expectedLayout = archivedLayout.flatMap((rule) => {
+  if (
+    rule.selector === ".composer-dock" &&
+    rule.context.at(-1) === "@container exchange (max-width: 620px)" &&
+    rule.declarations.length === 1 &&
+    rule.declarations[0]!.property === "--exchange-controls-width"
+  )
+    return [
+      {
+        ...rule,
+        selector: key(
+          ".exchange-panel[data-open] > :is(.composer-dock, .exchange-panel-header)",
+        ),
+      },
+    ];
+  if (
+    rule.selector === ".exchange-panel[data-open]" &&
+    (rule.context.length === 0 ||
+      JSON.stringify(rule.context) ===
+        JSON.stringify(["@media (pointer: coarse)"]))
+  )
+    return [
+      rule,
+      {
+        selector: key(".exchange-panel:has(> .conversation)[data-open]"),
+        context: rule.context,
+        declarations: [
+          {
+            property: "--exchange-controls-width",
+            value: rule.context.length === 0 ? "164px" : "228px",
+            important: false,
+          },
+        ],
+      },
+    ];
+  return [rule];
+});
 const expectedVisual = partition(false);
 function decodedSelector(selector: string) {
   return selector.replace(
@@ -250,6 +292,7 @@ function governed(
 const frameSelectors = new Set([
   ...expectedLayout.map((rule) => rule.selector),
   ...retainedFrameRules.map((rule) => rule[2]),
+  key(currentExchangeControlsRecipes[2]!.selector),
 ]);
 const frameClasses = [
   "exchange-resizer",
@@ -349,7 +392,8 @@ function violations(sources: Sources) {
   if (!layout || !visual) return [...result, "missing-owner"];
   // This is current physical ownership, not an inverse of source or a new
   // historical tuple. The complete bounded role must pass before this one
-  // immutable retained material tuple can acquire its new physical location.
+  // immutable retained material tuple can acquire its new physical location
+  // and the separately approved canvas-material selector.
   const roleErrors = exchangeControlsCssViolations(parsed);
   result.push(...roleErrors);
   const currentRetained = new Map(expectedRetained);
@@ -378,7 +422,20 @@ function violations(sources: Sources) {
             (rule) => JSON.stringify(rule) !== JSON.stringify(material),
           ),
         );
-        currentRetained.set(exchangeControlsFile, [material]);
+        const current = currentExchangeControlsRecipes[2]!;
+        currentRetained.set(exchangeControlsFile, [
+          {
+            selector: key(current.selector),
+            context: [...current.context],
+            declarations: current.declarations.map(
+              ([property, value, important]) => ({
+                property,
+                value,
+                important,
+              }),
+            ),
+          },
+        ]);
       }
     }
   }
@@ -1117,11 +1174,16 @@ function changeDeclaration(
   sources.css.set(file, root.toString());
 }
 
-test("完整frame owner固定旧56规则144声明，已知例外不冒领，无关后代可演进", () => {
-  assert.equal(expectedLayout.length, 56);
+test("完整frame owner保留旧56规则144声明及精确独立固定修正，不冒领已知例外", () => {
+  assert.equal(archivedLayout.length, 56);
+  assert.equal(
+    archivedLayout.reduce((sum, rule) => sum + rule.declarations.length, 0),
+    144,
+  );
+  assert.equal(expectedLayout.length, 58);
   assert.equal(
     expectedLayout.reduce((sum, rule) => sum + rule.declarations.length, 0),
-    144,
+    146,
   );
   assert.deepEqual(expectedLayout.slice(-4), expectedResizeLayout);
   assert.equal(retainedFrameRules.length, 36);
@@ -1157,6 +1219,38 @@ test("frame有限反例拒绝几何重归属、条件包裹、已知paint与竞�
     (sources: Sources) =>
       changeDeclaration(sources, file, selector, property, value, context);
   const fixtures: [string, (sources: Sources) => void, string][] = [
+    [
+      "reading-control-clearance",
+      declaration(
+        layoutFile,
+        ".exchange-panel:has(>.conversation)[data-open]",
+        "--exchange-controls-width",
+        "124px",
+      ),
+      "layout-exact-geometry",
+    ],
+    [
+      "coarse-reading-control-clearance",
+      declaration(
+        layoutFile,
+        ".exchange-panel:has(>.conversation)[data-open]",
+        "--exchange-controls-width",
+        "176px",
+        ["@media (pointer: coarse)"],
+      ),
+      "layout-exact-geometry",
+    ],
+    [
+      "compact-child-clearance",
+      declaration(
+        layoutFile,
+        ".exchange-panel[data-open]>:is(.composer-dock,.exchange-panel-header)",
+        "--exchange-controls-width",
+        "124px",
+        ["@container exchange (max-width: 620px)"],
+      ),
+      "layout-exact-geometry",
+    ],
     [
       "frame-width",
       declaration(layoutFile, ".conversation", "width", "100%"),
