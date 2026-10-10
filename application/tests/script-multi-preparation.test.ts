@@ -683,7 +683,7 @@ test("SQLite 实际 v6 已准备输入升级保留单目标 ID、原回执哈希
     await f.closeStore();
     const db = new DatabaseSync(f.filename);
     db.exec(
-      "DROP INDEX script_preparations_by_input_target; DROP INDEX script_preparations_by_input_order; ALTER TABLE script_preparations DROP COLUMN task_request;",
+      "DROP INDEX script_preparations_by_input_target; DROP INDEX script_preparations_by_input_order; ALTER TABLE script_preparations DROP COLUMN task_request; ALTER TABLE script_preparations DROP COLUMN submission_mode;",
     );
     db.prepare(
       "UPDATE script_schema_version SET version=6,schema_sha256=?",
@@ -707,7 +707,7 @@ test("SQLite 实际 v6 已准备输入升级保留单目标 ID、原回执哈希
     const check = new DatabaseSync(f.filename, { readOnly: true });
     assert.equal(
       check.prepare("SELECT version FROM script_schema_version").get()?.version,
-      7,
+      8,
     );
     assert.equal(
       check
@@ -779,6 +779,9 @@ test(
         `ALTER TABLE "${f.schema}".script_preparations DROP COLUMN task_request`,
       );
       await admin.query(
+        `ALTER TABLE "${f.schema}".script_preparations DROP COLUMN submission_mode`,
+      );
+      await admin.query(
         `UPDATE "${f.schema}".script_schema_version SET version=6,schema_sha256=$1`,
         ["c8eaf0cd6c5f75c86a49793b94bdba4039e3578f04083cbff2ce65839987dca7"],
       );
@@ -840,7 +843,7 @@ test(
 
       for (let reopen = 0; reopen < 2; reopen++) {
         // Initialize the actual new Store over populated v6, then cold reopen
-        // v7; both paths must return the original receipt and frozen versions.
+        // v8; both paths must return the original receipt and frozen versions.
         await f.reopen();
         assert.deepEqual(await f.store.prepareGeneration(command), before);
         assert.deepEqual(
@@ -868,10 +871,13 @@ test(
         assert.deepEqual(migrated.references, legacyRows.references);
         assert.deepEqual(migrated.receipts, legacyRows.receipts);
         assert.deepEqual(
-          migrated.preparations.map(({ task_request: task, ...row }) => {
-            assert.equal(task, "");
-            return row;
-          }),
+          migrated.preparations.map(
+            ({ task_request: task, submission_mode: mode, ...row }) => {
+              assert.equal(task, "");
+              assert.equal(mode, "candidate");
+              return row;
+            },
+          ),
           legacyRows.preparations,
         );
         assert.equal(
@@ -882,7 +888,7 @@ test(
               )
             ).rows[0]!.version,
           ),
-          7,
+          8,
         );
         assert.equal(
           (

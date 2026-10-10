@@ -13,7 +13,6 @@ import {
 import {
   defaultScriptExportTemplate,
   emptyScriptBrief,
-  emptyScriptDraft,
   scriptCreativeContext,
   scriptIssues,
   scriptImpact,
@@ -67,6 +66,10 @@ type Backend =
   | { kind: "postgres"; pool: Pool; schema: string };
 type Row = Record<string, unknown>;
 
+function resultItemCommandId(receiptId: string, targetId: string) {
+  return `result_${createHash("sha256").update(`${receiptId}\0${targetId}`).digest("hex").slice(0, 48)}`;
+}
+
 // The installed v2 schema differs from the reviewed schema only by these two
 // read indexes. Keep the exact prior fingerprint so an unrelated or damaged
 // database cannot be mistaken for an upgrade candidate.
@@ -91,9 +94,17 @@ const scriptStudioV7Indexes = [
   "CREATE UNIQUE INDEX script_preparations_by_input_target ON script_preparations(tenant_id, input_id, target_item_id);",
   "CREATE INDEX script_preparations_by_input_order ON script_preparations(tenant_id, input_id, collection_ordinal, preparation_id);",
 ] as const;
+const scriptStudioV8ModeColumn =
+  "  submission_mode TEXT NOT NULL DEFAULT 'candidate' CHECK (submission_mode IN ('candidate','current')),\n";
+const scriptStudioV7Sql = scriptStudioSchemaSql.replace(
+  scriptStudioV8ModeColumn,
+  "",
+);
+const scriptStudioV7Hash =
+  "d0ae8d4ba27aaaca746bbf96a3ee18c2e184f95c330579f4cd63b28567951fef";
 const scriptStudioV6Sql = scriptStudioV7Indexes.reduce(
   (sql, statement) => sql.replace(statement + "\n", ""),
-  scriptStudioSchemaSql.replace(scriptStudioV7TaskColumn, ""),
+  scriptStudioV7Sql.replace(scriptStudioV7TaskColumn, ""),
 );
 const scriptStudioV6IndexesSql = scriptStudioV6Sql.slice(
   scriptStudioV6Sql.indexOf("-- Bounded editor reads:"),
@@ -276,6 +287,32 @@ export type ScriptItemRevisionReceipt = {
   eventId: string;
 };
 
+type ScriptItemRevisionRequest = {
+  credential: string;
+  commandId: string;
+  productionId: string;
+  itemId: string;
+  expectedRevision: number;
+  draft: LiveScriptDraft;
+  restoreRevision?: number;
+};
+export type ScriptResultRequest = {
+  credential: string;
+  commandId: string;
+  productionId: string;
+  inputId: string;
+  results: Array<{
+    targetId: string;
+    draft: LiveScriptDraft;
+    workflowReport: ScriptWorkflowReport;
+  }>;
+};
+export type ScriptResultReceipt = {
+  inputId: string;
+  receiptId: string;
+  items: ScriptItemRevisionReceipt[];
+};
+
 export type ScriptPreparationReceipt = {
   preparationId: string;
   inputId: string;
@@ -283,6 +320,7 @@ export type ScriptPreparationReceipt = {
   generations: ScriptGeneration[];
   /** Semantic task interpretation, never an input rewrite or authorization. */
   task: string;
+  submissionMode: "candidate" | "current";
   receiptId: string;
 };
 
@@ -603,14 +641,17 @@ export class ScriptStudioStore {
           version === 5 && installed.schema_sha256 === scriptStudioV5Hash;
         const priorV6 =
           version === 6 && installed.schema_sha256 === scriptStudioV6Hash;
+        const priorV7 =
+          version === 7 && installed.schema_sha256 === scriptStudioV7Hash;
         const currentSchema =
-          version === 7 && installed.schema_sha256 === schemaSha256;
+          version === 8 && installed.schema_sha256 === schemaSha256;
         if (
           !priorV2 &&
           !priorV3 &&
           !priorV4 &&
           !priorV5 &&
           !priorV6 &&
+          !priorV7 &&
           !currentSchema
         )
           throw new Error("剧本工作室数据库结构与当前程序不一致。");
@@ -678,6 +719,20 @@ export class ScriptStudioStore {
           );
           await q.exec(scriptStudioV7Indexes.join("\n"));
         }
+        if (priorV2 || priorV3 || priorV4 || priorV5 || priorV6 || priorV7) {
+          if (schemaHash(scriptStudioV7Sql) !== scriptStudioV7Hash)
+            throw new Error("剧本当前结果升级定义与旧结构不一致。");
+          await verifySchemaObjects(
+            q,
+            this.backend.kind,
+            scriptStudioV7Sql,
+            ["script_schema_version"],
+            ["morphz_app_binding"],
+          );
+          await q.exec(
+            "ALTER TABLE script_preparations ADD COLUMN submission_mode TEXT NOT NULL DEFAULT 'candidate' CHECK (submission_mode IN ('candidate','current'));",
+          );
+        }
         await verifySchemaObjects(
           q,
           this.backend.kind,
@@ -688,9 +743,9 @@ export class ScriptStudioStore {
         await q.all(
           "SELECT task_run_event_id FROM script_command_receipts LIMIT 0",
         );
-        if (priorV2 || priorV3 || priorV4 || priorV5 || priorV6) {
+        if (priorV2 || priorV3 || priorV4 || priorV5 || priorV6 || priorV7) {
           const changed = await q.change(
-            "UPDATE script_schema_version SET version=7,schema_sha256=? WHERE version=? AND schema_sha256=?",
+            "UPDATE script_schema_version SET version=8,schema_sha256=? WHERE version=? AND schema_sha256=?",
             [schemaSha256, version, installed.schema_sha256],
           );
           if (changed !== 1) throw new Error("剧本工作室结构升级回执不一致。");
@@ -701,7 +756,7 @@ export class ScriptStudioStore {
         throw new Error("剧本工作室初始化未完成，拒绝重复建表。");
       await q.exec(scriptStudioSchemaSql);
       await q.change(
-        "INSERT INTO script_schema_version(version,schema_sha256) VALUES(7,?)",
+        "INSERT INTO script_schema_version(version,schema_sha256) VALUES(8,?)",
         [schemaSha256],
       );
     });
@@ -1835,6 +1890,11 @@ export class ScriptStudioStore {
     if (!rows.length) return null;
     if (rows.length > 12 || rows[0]!.preparation_id !== inputId)
       throw new Error("剧本准备集合与根输入不一致。");
+    const submissionMode = z
+      .enum(["candidate", "current"])
+      .parse(rows[0]!.submission_mode);
+    if (rows.some((row) => row.submission_mode !== submissionMode))
+      throw new Error("剧本准备集合的提交模式不一致。");
     const generations: ScriptGeneration[] = [];
     for (const row of rows) {
       const refs = await q.all<Row>(
@@ -1882,6 +1942,7 @@ export class ScriptStudioStore {
       generation: generations[0]!,
       generations,
       task: String(rows[0]!.task_request),
+      submissionMode,
       receiptId: inputId,
     };
   }
@@ -1974,8 +2035,12 @@ export class ScriptStudioStore {
               + (SELECT COUNT(*) FROM script_reviews r JOIN script_items i ON i.tenant_id=r.tenant_id AND i.item_id=r.item_id WHERE r.tenant_id=? AND i.production_id=? AND r.input_id=?)
               + (SELECT COUNT(*) FROM script_check_reports report WHERE report.tenant_id=? AND report.production_id=? AND report.input_id=?
                 AND report.purpose IN ('continuity','impact')
-                AND NOT EXISTS (SELECT 1 FROM script_reviews r WHERE r.tenant_id=report.tenant_id AND r.command_id=report.command_id)) AS total`,
+                AND NOT EXISTS (SELECT 1 FROM script_reviews r WHERE r.tenant_id=report.tenant_id AND r.command_id=report.command_id))
+              + (SELECT COUNT(*) FROM script_command_receipts r JOIN script_outbox o ON o.tenant_id=r.tenant_id AND o.event_id=r.command_id JOIN script_item_versions v ON v.tenant_id=r.tenant_id AND v.item_id=r.result_object_id AND v.revision=CAST(r.result_version_ref AS BIGINT) WHERE r.tenant_id=? AND o.production_id=? AND r.input_id=? AND r.operation='revise-item' AND o.event_kind='script.item-revised') AS total`,
             [
+              actor.tenantId,
+              productionId,
+              inputId,
               actor.tenantId,
               productionId,
               inputId,
@@ -2003,8 +2068,16 @@ export class ScriptStudioStore {
               WHERE report.tenant_id=? AND report.production_id=? AND report.input_id=?
                 AND report.purpose IN ('continuity','impact')
                 AND NOT EXISTS (SELECT 1 FROM script_reviews r WHERE r.tenant_id=report.tenant_id AND r.command_id=report.command_id)
+            UNION ALL
+            SELECT 'item',r.command_id,v.item_id,v.revision,r.committed_at,'saved'
+              FROM script_command_receipts r JOIN script_outbox o ON o.tenant_id=r.tenant_id AND o.event_id=r.command_id
+              JOIN script_item_versions v ON v.tenant_id=r.tenant_id AND v.item_id=r.result_object_id AND v.revision=CAST(r.result_version_ref AS BIGINT)
+              WHERE r.tenant_id=? AND o.production_id=? AND r.input_id=? AND r.operation='revise-item' AND o.event_kind='script.item-revised'
           ) results ORDER BY created_at,id LIMIT ? OFFSET ?`,
           [
+            actor.tenantId,
+            productionId,
+            inputId,
             actor.tenantId,
             productionId,
             inputId,
@@ -2023,7 +2096,7 @@ export class ScriptStudioStore {
           total,
           hasMore: request.offset + rows.length < total,
           results: rows.map((row) => ({
-            kind: String(row.kind) as "candidate" | "review",
+            kind: String(row.kind) as "item" | "candidate" | "review",
             id: String(row.id),
             itemId: String(row.item_id),
             itemRevision: safeInteger(
@@ -2058,6 +2131,7 @@ export class ScriptStudioStore {
          JOIN script_outbox o ON o.tenant_id=r.tenant_id AND o.event_id=r.command_id
          WHERE r.tenant_id=? AND r.input_id IN (${placeholders})
            AND ((r.operation='create-item' AND o.event_kind='script.item-created' AND o.object_id=r.result_object_id)
+             OR (r.operation='revise-item' AND o.event_kind='script.item-revised' AND o.object_id=r.result_object_id)
              OR (r.operation='submit-candidate' AND o.event_kind='script.candidate-submitted' AND o.object_id=o.production_id)
              OR (r.operation IN ('add-review','submit-reviews') AND o.event_kind='script.review-changed' AND o.object_id=r.result_object_id))`,
           [tenantId, ...ids],
@@ -2114,19 +2188,20 @@ export class ScriptStudioStore {
           const rows = await q.all<Row>(
             `SELECT * FROM (
               SELECT 'item' AS kind,r.command_id,r.input_id,r.committed_at,
-                i.item_id,1 AS revision,d.title,
+                i.item_id,v.revision,d.title,
                 NULL AS candidate_id,NULL AS review_id,
                 i.kind AS item_kind,
                 CASE WHEN LENGTH(${trimmed})=0 THEN 1 ELSE 0 END AS is_empty,
                 NULL AS candidate_status
               FROM script_command_receipts r
               JOIN script_outbox o ON o.tenant_id=r.tenant_id AND o.event_id=r.command_id
-                AND o.event_kind='script.item-created' AND o.object_id=r.result_object_id
+                AND o.object_id=r.result_object_id
+                AND ((r.operation='create-item' AND o.event_kind='script.item-created') OR (r.operation='revise-item' AND o.event_kind='script.item-revised'))
               JOIN script_items i ON i.tenant_id=o.tenant_id AND i.production_id=o.production_id
                 AND i.item_id=r.result_object_id
-              JOIN script_item_versions v ON v.tenant_id=i.tenant_id AND v.item_id=i.item_id AND v.revision=1
+              JOIN script_item_versions v ON v.tenant_id=i.tenant_id AND v.item_id=i.item_id AND v.revision=CASE WHEN r.operation='create-item' THEN 1 ELSE CAST(r.result_version_ref AS BIGINT) END
               JOIN script_drafts d ON d.tenant_id=v.tenant_id AND d.draft_id=v.draft_id
-              WHERE r.tenant_id=? AND o.production_id=? AND r.operation='create-item'
+              WHERE r.tenant_id=? AND o.production_id=? AND r.operation IN ('create-item','revise-item')
                 AND r.input_id IN (${placeholders})
               UNION ALL
               SELECT 'candidate',r.command_id,r.input_id,r.committed_at,
@@ -2238,6 +2313,90 @@ export class ScriptStudioStore {
             }),
           };
         };
+        const version = (
+          await q.all<Row>(
+            `SELECT v.revision,d.*,v.author_principal_id,v.author_actant_id,r.committed_at,r.input_id,r.result_object_id
+            FROM script_command_receipts r
+            JOIN script_outbox o ON o.tenant_id=r.tenant_id AND o.event_id=r.command_id AND o.production_id=? AND o.object_id=r.result_object_id
+            JOIN script_item_versions v ON v.tenant_id=r.tenant_id AND v.item_id=r.result_object_id AND v.revision=CAST(r.result_version_ref AS BIGINT)
+            JOIN script_drafts d ON d.tenant_id=v.tenant_id AND d.draft_id=v.draft_id
+            WHERE r.tenant_id=? AND r.command_id=? AND r.input_id=? AND r.operation='revise-item' AND o.event_kind='script.item-revised'`,
+            [productionId, actor.tenantId, resultId, inputId],
+          )
+        )[0];
+        if (version) {
+          const draftId = String(version.draft_id);
+          const sources = await q.all<Row>(
+            "SELECT * FROM script_draft_sources WHERE tenant_id=? AND draft_id=? ORDER BY ordinal",
+            [actor.tenantId, draftId],
+          );
+          const sourceRefs = sources.map((source) => ({
+            appId: String(source.source_app_id),
+            instanceId: String(source.source_instance_id),
+            objectId: String(source.source_object_id),
+            versionRef: String(source.source_version_ref),
+            quote: String(source.quote_text),
+          }));
+          const dependencies = await q.all<Row>(
+            "SELECT depends_on_item_id,depends_on_revision FROM script_draft_dependencies WHERE tenant_id=? AND draft_id=? ORDER BY ordinal",
+            [actor.tenantId, draftId],
+          );
+          const characters = await q.all<Row>(
+            "SELECT character_item_id FROM script_draft_characters WHERE tenant_id=? AND draft_id=? ORDER BY ordinal",
+            [actor.tenantId, draftId],
+          );
+          return {
+            actor,
+            sourceRefs,
+            kind: "item" as const,
+            status: "saved",
+            value: {
+              id: resultId,
+              inputId,
+              itemId: String(version.result_object_id),
+              revision: safeInteger(
+                version.revision as number | string,
+                "结果版本",
+              ),
+              author: {
+                principalId: String(version.author_principal_id),
+                actantId: String(version.author_actant_id),
+              },
+              createdAt: String(version.committed_at),
+              draft: {
+                title: String(version.title),
+                text: String(version.body_text),
+                parentId:
+                  version.parent_item_id === null
+                    ? null
+                    : String(version.parent_item_id),
+                order: safeInteger(
+                  version.order_index as number | string,
+                  "条目顺序",
+                ),
+                basis: String(version.basis),
+                sources: sourceRefs,
+                dependencies: dependencies.map((ref) => ({
+                  itemId: String(ref.depends_on_item_id),
+                  revision: safeInteger(
+                    ref.depends_on_revision as number | string,
+                    "依赖版本",
+                  ),
+                })),
+                characters: characters.map((ref) =>
+                  String(ref.character_item_id),
+                ),
+                location: String(version.location_text),
+                storyTime: String(version.story_time),
+                audienceKnowledge: String(version.audience_knowledge),
+                characterKnowledge: String(version.character_knowledge),
+                setupPayoff: String(version.setup_payoff),
+                productionNotes: String(version.production_notes),
+              },
+              workflowReport: await readReport(resultId),
+            },
+          };
+        }
         const candidate = (
           await q.all<Row>(
             "SELECT c.*,d.* FROM script_candidates c JOIN script_drafts d ON d.tenant_id=c.tenant_id AND d.draft_id=c.draft_id WHERE c.tenant_id=? AND c.production_id=? AND c.input_id=? AND c.candidate_id=?",
@@ -3739,6 +3898,7 @@ export class ScriptStudioStore {
     productionId: string;
     inputId: string;
     generation: z.input<typeof scriptPreparationRequestSchema>;
+    submissionMode?: "candidate" | "current";
   }): Promise<ScriptPreparationReceipt> {
     const { generation, ...scope } = request;
     return this.prepareGenerations({ ...scope, generations: [generation] });
@@ -3753,6 +3913,7 @@ export class ScriptStudioStore {
     inputId: string;
     generations: z.input<typeof scriptPreparationRequestSchema>[];
     task?: string;
+    submissionMode?: "candidate" | "current";
   }): Promise<ScriptPreparationReceipt> {
     if (!this.authority) throw new Error("剧本工作室尚未接入受信对象权限。");
     const commandId = requireDomainId(request.commandId, "命令 ID");
@@ -3767,6 +3928,14 @@ export class ScriptStudioStore {
       .string()
       .max(12000)
       .parse(request.task ?? "");
+    const submissionMode = z
+      .enum(["candidate", "current"])
+      .parse(request.submissionMode ?? "candidate");
+    if (
+      submissionMode === "current" &&
+      submitted.some((entry) => entry.maxCandidates !== 1)
+    )
+      throw new DomainError("invalid", "当前结果模式每个目标只保存一个结果。");
     if (
       submitted.some((generation) => generation.productionId !== productionId)
     )
@@ -3808,6 +3977,7 @@ export class ScriptStudioStore {
           // Preserve existing single-target receipt hashes byte for byte.
           submitted: submitted.length === 1 && !task ? submitted[0] : submitted,
           ...(submitted.length === 1 && !task ? {} : { task }),
+          ...(submissionMode === "candidate" ? {} : { submissionMode }),
         }),
       )
       .digest("hex");
@@ -3909,6 +4079,7 @@ export class ScriptStudioStore {
           production_id: productionId,
           input_id: inputId,
           task_request: index === 0 ? task : "",
+          submission_mode: submissionMode,
           requested_project_id: actor.projectId,
           target_item_id: generation.targetId,
           base_item_revision: generation.baseRevision,
@@ -3947,6 +4118,7 @@ export class ScriptStudioStore {
         generation: generations[0]!,
         generations,
         task,
+        submissionMode,
         receiptId: commandId,
       };
     });
@@ -4083,6 +4255,11 @@ export class ScriptStudioStore {
         inputId,
       );
       if (!preparation) throw new Error("本次输入没有固定的创作候选范围。");
+      if (preparation.submissionMode !== "candidate")
+        throw new DomainError(
+          "forbidden",
+          "本次已固定为直接保存正文，不能改为候选。",
+        );
       if (preparation.generations.length > 1 && targetId === undefined)
         throw new DomainError(
           "invalid",
@@ -5166,30 +5343,6 @@ export class ScriptStudioStore {
       requireDomainId(actor.runtimeInputId, "发起输入 ID");
     if (actor.runtimeTaskRunEventId)
       requireDomainId(actor.runtimeTaskRunEventId, "事项执行 ID");
-    if (actor.kind === "agent") {
-      const empty = emptyScriptDraft(draft.title, draft.order);
-      if (request.kind === "scene" && draft.parentId) {
-        if (!draft.dependencies.some((ref) => ref.itemId === draft.parentId))
-          throw new DomainError(
-            "invalid",
-            "创建分场须在 dependencies 中绑定所属集版本：{itemId: parentId, revision: 所属集当前修订}；请先读取该集。",
-          );
-        empty.parentId = draft.parentId;
-        empty.dependencies = draft.dependencies;
-        empty.location = draft.location;
-        empty.storyTime = draft.storyTime;
-        empty.characters = draft.characters;
-      }
-      if (
-        (Object.keys(empty) as (keyof ScriptDraft)[]).some(
-          (key) => JSON.stringify(draft[key]) !== JSON.stringify(empty[key]),
-        )
-      )
-        throw new DomainError(
-          "invalid",
-          "Agent 只能建立空条目；正文须经过候选与人工采纳。",
-        );
-    }
     const actorIdentity = {
       tenantId: actor.tenantId,
       principalId: actor.principalId,
@@ -5479,15 +5632,440 @@ export class ScriptStudioStore {
    * affected descendants in the same app transaction. The outbox is the only
    * source from which Platform may advance its observed production revision.
    */
-  async reviseItem(request: {
+  /** Commit every prepared result as a current version, never as a candidate.
+   * A single app transaction owns all heads, provenance, reports and outbox.
+   * Platform consumes the outbox afterwards; it is not a second manuscript store.
+   */
+  async submitResults(
+    request: ScriptResultRequest,
+  ): Promise<ScriptResultReceipt> {
+    if (!this.authority) throw new Error("剧本工作室尚未接入受信对象权限。");
+    const commandId = requireDomainId(request.commandId, "命令 ID");
+    const productionId = requireDomainId(request.productionId, "剧本 ID");
+    const inputId = requireDomainId(request.inputId, "输入 ID");
+    const results = z
+      .array(
+        z
+          .object({
+            targetId: z.string().regex(domainId),
+            draft: liveScriptDraftSchema,
+            workflowReport: scriptWorkflowReportSchema,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(12)
+      .parse(request.results)
+      .sort((a, b) => a.targetId.localeCompare(b.targetId));
+    if (
+      new Set(results.map((result) => result.targetId)).size !== results.length
+    )
+      throw new DomainError("invalid", "一次创作不能重复提交同一目标。");
+    const authorize = () =>
+      this.authority!.authorizeObject({
+        credential: request.credential,
+        productionId,
+        operation: "write",
+      });
+    const actor = await authorize();
+    if (
+      !actor ||
+      actor.kind !== "agent" ||
+      actor.objectKind !== "script" ||
+      actor.runtimeInputId !== inputId
+    )
+      throw new DomainError(
+        "forbidden",
+        "创作结果须由本次持久输入授权的 Agent 提交。",
+      );
+    const identity = (value: NonNullable<typeof actor>) =>
+      JSON.stringify({
+        tenantId: value.tenantId,
+        principalId: value.principalId,
+        actantId: value.actantId,
+        kind: value.kind,
+        projectId: value.projectId,
+        runtimeInputId: value.runtimeInputId,
+        runtimeTaskRunEventId: value.runtimeTaskRunEventId ?? null,
+        objectKind: value.objectKind,
+      });
+    const requestHash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          actor: identity(actor),
+          productionId,
+          inputId,
+          results,
+        }),
+      )
+      .digest("hex");
+    return this.transaction(async (q) => {
+      if (this.backend.kind === "postgres")
+        await q.all(
+          "SELECT pg_advisory_xact_lock(hashtextextended(?::text, 0)) AS locked",
+          [`script:${actor.tenantId}:${productionId}`],
+        );
+      let prior = (
+        await q.all<Row>(
+          "SELECT command_id,request_hash,operation,result_object_id,result_version_ref FROM script_command_receipts WHERE tenant_id=? AND command_id=?",
+          [actor.tenantId, commandId],
+        )
+      )[0];
+      if (!prior)
+        prior = (
+          await q.all<Row>(
+            "SELECT command_id,request_hash,operation,result_object_id,result_version_ref FROM script_command_receipts WHERE tenant_id=? AND input_id=? AND operation='submit-results' ORDER BY committed_at,command_id LIMIT 1",
+            [actor.tenantId, inputId],
+          )
+        )[0];
+      if (
+        prior &&
+        (prior.request_hash !== requestHash ||
+          prior.operation !== "submit-results" ||
+          prior.result_object_id !== productionId)
+      )
+        throw new DomainError(
+          "conflict",
+          "本次输入已保存另一份创作结果；请读取原回执，不要重复写入。",
+        );
+      const receiptId = prior ? String(prior.command_id) : commandId;
+      const preparation = await this.preparationForInput(
+        q,
+        actor.tenantId,
+        productionId,
+        inputId,
+      );
+      if (!preparation || preparation.submissionMode !== "current")
+        throw new DomainError(
+          "forbidden",
+          "本次输入未固定直接保存正文的创作范围。",
+        );
+      const generations = new Map(
+        preparation.generations.map((generation) => [
+          generation.targetId,
+          generation,
+        ]),
+      );
+      if (
+        generations.size !== results.length ||
+        results.some((result) => !generations.has(result.targetId))
+      )
+        throw new DomainError(
+          "forbidden",
+          "创作结果必须且只能覆盖本次固定的全部目标。",
+        );
+      const itemCommandId = (targetId: string) =>
+        resultItemCommandId(receiptId, targetId);
+      const pendingEventIds = results.map((result) =>
+        itemCommandId(result.targetId),
+      );
+      if (prior) {
+        for (const id of pendingEventIds) {
+          if (
+            (
+              await q.all(
+                "SELECT 1 AS present FROM script_command_receipts WHERE tenant_id=? AND command_id=? AND input_id=? AND operation='revise-item'",
+                [actor.tenantId, id, inputId],
+              )
+            ).length !== 1
+          )
+            throw new Error("整批创作回执缺少已提交的正文版本。");
+        }
+      } else {
+        if (
+          (
+            await q.all(
+              "SELECT 1 AS present FROM script_outbox WHERE tenant_id=? AND production_id=? AND delivered_at IS NULL",
+              [actor.tenantId, productionId],
+            )
+          ).length
+        )
+          throw new DomainError(
+            "conflict",
+            "上次目录更新尚未完成，请先恢复原回执。",
+          );
+        await this.assertActiveInput(actor);
+        const owner = (
+          await q.all<Row>(
+            "SELECT requested_project_id FROM script_preparations WHERE tenant_id=? AND preparation_id=?",
+            [actor.tenantId, inputId],
+          )
+        )[0];
+        if (owner?.requested_project_id !== actor.projectId)
+          throw new DomainError("conflict", "本次创作所属项目已变化。");
+        const production = await this.productionSnapshot(
+          q,
+          actor.tenantId,
+          productionId,
+          actor.projectId,
+        );
+        if (
+          JSON.stringify(
+            results.map((result) => ({
+              targetId: result.targetId,
+              payload: result.draft,
+              explanation: result.workflowReport.explanation,
+            })),
+          ).length > preparation.generation.maxOutputCharacters
+        )
+          throw new DomainError("invalid", "全部创作结果超过本次总输出上限。");
+        for (const result of results) {
+          const generation = generations.get(result.targetId)!;
+          if (
+            !["draft", "rewrite"].includes(generation.purpose) ||
+            !scriptContextCurrent(production, generation.contextRevision) ||
+            JSON.stringify(prepareScriptGeneration(production, generation)) !==
+              JSON.stringify(generation)
+          )
+            throw new DomainError(
+              "conflict",
+              "固定正文或创作资料已变化，请保留结果并重新核对。",
+            );
+          this.assertWorkflowReport(generation, result.workflowReport);
+          if (!result.draft.text.trim())
+            throw new DomainError(
+              "invalid",
+              "创作交付须包含实际正文，不用空条目冒充结果。",
+            );
+          const allowed = new Map(
+            generation.references.map((ref) => [ref.itemId, ref.revision]),
+          );
+          for (const ref of result.draft.dependencies) {
+            const other = generations.get(ref.itemId);
+            if (
+              allowed.get(ref.itemId) !== ref.revision &&
+              (!other ||
+                other.targetId === result.targetId ||
+                ref.revision !== other.baseRevision + 1)
+            )
+              throw new DomainError(
+                "forbidden",
+                "正文依赖超出固定材料或本批实际结果。",
+              );
+          }
+          const pinned = [
+            { itemId: generation.targetId, revision: generation.baseRevision },
+            ...generation.references,
+          ];
+          const sources: Row[] = [];
+          for (const ref of pinned)
+            sources.push(
+              ...(await q.all<Row>(
+                "SELECT s.* FROM script_item_versions v JOIN script_draft_sources s ON s.tenant_id=v.tenant_id AND s.draft_id=v.draft_id WHERE v.tenant_id=? AND v.item_id=? AND v.revision=?",
+                [actor.tenantId, ref.itemId, ref.revision],
+              )),
+            );
+          for (const source of result.draft.sources)
+            if (
+              !sources.some(
+                (row) =>
+                  row.source_app_id === source.appId &&
+                  row.source_instance_id === source.instanceId &&
+                  row.source_object_id === source.objectId &&
+                  row.source_version_ref === source.versionRef &&
+                  (String(row.quote_text) === "" ||
+                    (source.quote.length > 0 &&
+                      String(row.quote_text).includes(source.quote))),
+              )
+            )
+              throw new DomainError("forbidden", "正文来源超出本次固定资料。");
+        }
+      }
+      // Topological order makes prospective revisions real before a dependent
+      // version references them. Their CAS was checked as one frozen batch.
+      const ordered: typeof results = [];
+      const visiting = new Set<string>();
+      const visited = new Set<string>();
+      const visit = (result: (typeof results)[number]) => {
+        if (visiting.has(result.targetId))
+          throw new DomainError("invalid", "本批正文依赖不能形成循环。");
+        if (visited.has(result.targetId)) return;
+        visiting.add(result.targetId);
+        for (const ref of result.draft.dependencies) {
+          const generation = generations.get(ref.itemId);
+          if (generation && ref.revision === generation.baseRevision + 1)
+            visit(results.find((entry) => entry.targetId === ref.itemId)!);
+        }
+        visiting.delete(result.targetId);
+        visited.add(result.targetId);
+        ordered.push(result);
+      };
+      for (const result of results) visit(result);
+      const preparedSources = !prior
+        ? await this.preparedInputSources(
+            q,
+            actor.tenantId,
+            productionId,
+            inputId,
+          )
+        : [];
+      const recheck = async () => {
+        const current = await authorize();
+        if (!current || identity(current) !== identity(actor))
+          throw new DomainError("forbidden", "剧本权限在提交期间已变化。");
+        for (const source of preparedSources)
+          if (
+            !(await this.authority!.verifySourceVersion?.({
+              credential: request.credential,
+              tenantId: actor.tenantId,
+              principalId: actor.principalId,
+              actantId: actor.actantId,
+              kind: actor.kind,
+              runtimeInputId: inputId,
+              runtimeTaskRunEventId: actor.runtimeTaskRunEventId ?? null,
+              productionProjectId: actor.projectId,
+              alreadyPinned: true,
+              ...source,
+            }))
+          )
+            throw new DomainError(
+              "forbidden",
+              "固定资料的原件已不可读或引文已变化。",
+            );
+        if (!prior) await this.assertActiveInput(actor);
+      };
+      await recheck();
+      const items: ScriptItemRevisionReceipt[] = [];
+      for (const result of ordered)
+        items.push(
+          await this.commitItemRevision(
+            {
+              credential: request.credential,
+              commandId: itemCommandId(result.targetId),
+              productionId,
+              itemId: result.targetId,
+              expectedRevision: generations.get(result.targetId)!.baseRevision,
+              draft: result.draft,
+            },
+            {
+              q,
+              actor,
+              pendingEventIds,
+              purpose: generations.get(result.targetId)!.purpose,
+              report: result.workflowReport,
+            },
+          ),
+        );
+      await recheck();
+      if (
+        prior &&
+        String(prior.result_version_ref) !== items.at(-1)!.versionRef
+      )
+        throw new Error("整批创作回执与最后已保存版本不一致。");
+      if (!prior)
+        await insert(q, "script_command_receipts", {
+          tenant_id: actor.tenantId,
+          command_id: receiptId,
+          request_hash: requestHash,
+          input_id: inputId,
+          task_run_event_id: actor.runtimeTaskRunEventId ?? null,
+          operation: "submit-results",
+          result_object_id: productionId,
+          result_version_ref: items.at(-1)!.versionRef,
+          committed_at: new Date().toISOString(),
+        });
+      return { inputId, receiptId, items };
+    });
+  }
+
+  /** Metadata-only proof for a lost batch response. No new edit or projection,
+   * no manuscript bytes, and no treating an unavailable proof as a rollback. */
+  async readSubmittedResults(request: {
     credential: string;
-    commandId: string;
     productionId: string;
-    itemId: string;
-    expectedRevision: number;
-    draft: LiveScriptDraft;
-    restoreRevision?: number;
-  }): Promise<ScriptItemRevisionReceipt> {
+    inputId: string;
+  }): Promise<ScriptResultReceipt> {
+    const productionId = requireDomainId(request.productionId, "剧本 ID");
+    const inputId = requireDomainId(request.inputId, "输入 ID");
+    return this.authorizedRead(
+      request.credential,
+      productionId,
+      async (q, actor) => {
+        if (actor.kind === "agent" && actor.runtimeInputId !== inputId)
+          throw new DomainError("forbidden", "不能核对另一条输入的创作回执。");
+        const batch = await q.all<Row>(
+          "SELECT command_id,result_version_ref FROM script_command_receipts WHERE tenant_id=? AND input_id=? AND result_object_id=? AND operation='submit-results'",
+          [actor.tenantId, inputId, productionId],
+        );
+        if (!batch.length)
+          throw new DomainError("not_found", "本次输入尚无已提交创作回执。");
+        if (batch.length !== 1)
+          throw new Error("同一输入存在不一致的创作回执。");
+        const receiptId = String(batch[0]!.command_id);
+        const preparation = await this.preparationForInput(
+          q,
+          actor.tenantId,
+          productionId,
+          inputId,
+        );
+        if (!preparation || preparation.submissionMode !== "current")
+          throw new Error("创作回执没有对应的冻结范围。");
+        const items: ScriptItemRevisionReceipt[] = [];
+        for (const generation of preparation.generations) {
+          const commandId = resultItemCommandId(receiptId, generation.targetId);
+          const committed = await q.all<Row>(
+            "SELECT p.title,o.version_ref,v.revision FROM script_command_receipts r JOIN script_outbox o ON o.tenant_id=r.tenant_id AND o.event_id=r.command_id AND o.object_id=r.result_object_id JOIN script_item_versions v ON v.tenant_id=r.tenant_id AND v.item_id=r.result_object_id AND v.revision=CAST(r.result_version_ref AS BIGINT) JOIN script_items i ON i.tenant_id=v.tenant_id AND i.item_id=v.item_id AND i.production_id=o.production_id JOIN script_productions p ON p.tenant_id=o.tenant_id AND p.production_id=o.production_id WHERE r.tenant_id=? AND r.command_id=? AND r.input_id=? AND r.result_object_id=? AND r.operation='revise-item' AND o.production_id=? AND o.event_kind='script.item-revised' AND p.deleted_at IS NULL",
+            [
+              actor.tenantId,
+              commandId,
+              inputId,
+              generation.targetId,
+              productionId,
+            ],
+          );
+          if (
+            committed.length !== 1 ||
+            safeInteger(
+              committed[0]!.revision as number | string,
+              "结果版本",
+            ) !==
+              generation.baseRevision + 1
+          )
+            throw new Error("整批回执与确切正文版本不一致。");
+          const activityRevision = safeInteger(
+            committed[0]!.version_ref as number | string,
+            "剧本活动修订",
+          );
+          items.push({
+            tenantId: actor.tenantId,
+            productionId,
+            itemId: generation.targetId,
+            itemRevision: generation.baseRevision + 1,
+            activityRevision,
+            versionRef: String(activityRevision),
+            title: String(committed[0]!.title),
+            receiptId: commandId,
+            eventId: commandId,
+          });
+        }
+        items.sort((a, b) => a.activityRevision - b.activityRevision);
+        if (String(batch[0]!.result_version_ref) !== items.at(-1)!.versionRef)
+          throw new Error("整批回执与最终目录修订不一致。");
+        return { inputId, receiptId, items };
+      },
+    );
+  }
+
+  async reviseItem(
+    request: ScriptItemRevisionRequest,
+  ): Promise<ScriptItemRevisionReceipt> {
+    return this.commitItemRevision(request);
+  }
+
+  // Shared by Human edits, Agent edits and the atomic prepared-result batch.
+  // Transaction sharing and pending-event exemptions are private, never Host arguments.
+  private async commitItemRevision(
+    request: ScriptItemRevisionRequest,
+    batch?: {
+      q: SqlQuery;
+      actor: NonNullable<
+        Awaited<ReturnType<ScriptStudioAuthority["authorizeObject"]>>
+      >;
+      pendingEventIds: string[];
+      purpose: ScriptGeneration["purpose"];
+      report: ScriptWorkflowReport;
+    },
+  ): Promise<ScriptItemRevisionReceipt> {
     if (!this.authority) throw new Error("剧本工作室尚未接入受信对象权限。");
     const commandId = requireDomainId(request.commandId, "命令 ID");
     const productionId = requireDomainId(request.productionId, "剧本 ID");
@@ -5512,8 +6090,33 @@ export class ScriptStudioStore {
         operation: "write",
       });
     const actor = await authorize();
-    if (!actor || actor.objectKind !== "script" || actor.kind !== "human")
-      throw new DomainError("forbidden", "只有获授权的本人可以修改正式正文。");
+    if (!actor || actor.objectKind !== "script")
+      throw new DomainError("forbidden", "没有修改此剧本文稿的权限。");
+    if (
+      batch &&
+      (actor.tenantId !== batch.actor.tenantId ||
+        actor.principalId !== batch.actor.principalId ||
+        actor.actantId !== batch.actor.actantId ||
+        actor.kind !== batch.actor.kind ||
+        actor.projectId !== batch.actor.projectId ||
+        actor.runtimeInputId !== batch.actor.runtimeInputId ||
+        (actor.runtimeTaskRunEventId ?? null) !==
+          (batch.actor.runtimeTaskRunEventId ?? null))
+    )
+      throw new DomainError("forbidden", "创作提交期间发起身份已变化。");
+    if (
+      actor.kind === "agent" &&
+      !actor.runtimeInputId &&
+      !actor.runtimeTaskRunEventId
+    )
+      throw new DomainError(
+        "forbidden",
+        "Agent 修改剧本缺少已持久化的发起来源。",
+      );
+    if (actor.runtimeInputId)
+      requireDomainId(actor.runtimeInputId, "发起输入 ID");
+    if (actor.runtimeTaskRunEventId)
+      requireDomainId(actor.runtimeTaskRunEventId, "事项执行 ID");
     for (const [label, value] of [
       ["租户 ID", actor.tenantId],
       ["发起者 ID", actor.principalId],
@@ -5540,10 +6143,11 @@ export class ScriptStudioStore {
           expectedRevision: request.expectedRevision,
           draft,
           restoreRevision: request.restoreRevision ?? null,
+          ...(batch ? { workflowReport: batch.report } : {}),
         }),
       )
       .digest("hex");
-    return this.transaction(async (q) => {
+    const commit = async (q: SqlQuery): Promise<ScriptItemRevisionReceipt> => {
       if (this.backend.kind === "postgres")
         await q.all(
           "SELECT pg_advisory_xact_lock(hashtextextended(?::text, 0)) AS locked",
@@ -5600,16 +6204,17 @@ export class ScriptStudioStore {
       }
       if (
         (
-          await q.all(
-            "SELECT 1 AS present FROM script_outbox WHERE tenant_id=? AND production_id=? AND delivered_at IS NULL",
+          await q.all<{ event_id: string }>(
+            "SELECT event_id FROM script_outbox WHERE tenant_id=? AND production_id=? AND delivered_at IS NULL",
             [actor.tenantId, productionId],
           )
-        ).length
+        ).some((event) => !batch?.pendingEventIds.includes(event.event_id))
       )
         throw new DomainError(
           "conflict",
           "上一次剧本目录更新尚未完成，请先按原命令恢复投影。",
         );
+      await this.assertActiveInput(actor);
       const production = (
         await q.all<{
           title: string;
@@ -5760,6 +6365,7 @@ export class ScriptStudioStore {
       for (const check of sourceChecks)
         if (!(await this.authority!.verifySourceVersion?.(check)))
           throw new Error("来源权限或引文在修订期间已变化。");
+      await this.assertActiveInput(actor);
       const itemRevision = request.expectedRevision + 1;
       const activityRevision =
         safeInteger(production.activity_revision, "剧本活动修订") + 1;
@@ -5887,6 +6493,17 @@ export class ScriptStudioStore {
         result_version_ref: String(itemRevision),
         committed_at: now,
       });
+      if (batch)
+        await this.insertWorkflowReport(
+          q,
+          actor,
+          commandId,
+          productionId,
+          actor.runtimeInputId!,
+          batch.purpose,
+          batch.report,
+          now,
+        );
       await insert(q, "script_outbox", {
         tenant_id: actor.tenantId,
         event_id: commandId,
@@ -5909,7 +6526,8 @@ export class ScriptStudioStore {
         receiptId: commandId,
         eventId: commandId,
       };
-    });
+    };
+    return batch ? commit(batch.q) : this.transaction(commit);
   }
 
   /** Decide one pinned candidate in the Script Studio transaction. A

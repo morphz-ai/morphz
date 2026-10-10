@@ -273,6 +273,7 @@ CREATE TABLE script_preparations (
   production_id TEXT NOT NULL,
   input_id TEXT NOT NULL,
   task_request TEXT NOT NULL DEFAULT '' CHECK (length(task_request) <= 12000),
+  submission_mode TEXT NOT NULL DEFAULT 'candidate' CHECK (submission_mode IN ('candidate','current')),
   requested_project_id TEXT NOT NULL,
   target_item_id TEXT NOT NULL,
   base_item_revision BIGINT NOT NULL CHECK (base_item_revision > 0),
