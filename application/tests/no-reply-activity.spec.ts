@@ -192,14 +192,17 @@ test("重复等待不显示假工具，原分支状态、停止、失败详情�
   await expect(panel).not.toContainText("TEST 其他分支错误");
   await expect(panel).not.toContainText("TEST 私有模型快照");
   await expect(panel.locator(".message-tool")).toHaveCount(0);
-  await expect(panel.locator(".execution-origin small")).toContainText("等待");
+  await expect(panel.locator(".execution-origin-status")).toContainText("等待");
   await expect(
     panel.getByRole("button", { name: "停止此分支", exact: true }),
   ).toBeEnabled();
   await expect(panel.locator('[data-job-id="TEST-real-job"]')).toContainText(
     "TEST 原始读取错误",
   );
-  await panel.locator('[data-job-id="TEST-real-job"] details summary').click();
+  await panel
+    .locator('[data-job-id="TEST-real-job"]')
+    .getByRole("button", { name: "技术详情", exact: true })
+    .click();
   await expect(
     panel.locator('[data-job-id="TEST-real-job"] pre'),
   ).toContainText("TEST-original.md");

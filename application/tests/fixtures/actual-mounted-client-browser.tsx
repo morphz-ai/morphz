@@ -116,6 +116,11 @@ const allowed = new Set([
   "resolveCatalogContent",
   "execute",
   "dispatchInput",
+  "executionSnapshot",
+  "executionResult",
+  "cancelInput",
+  "controlExecution",
+  "approvalSubmitted",
 ]);
 const api = {
   construction,
