@@ -84,6 +84,7 @@ async function setup(page: Page) {
   return {
     composer,
     deliveries,
+    replies,
     threads,
     scope: () => scope,
     async update(online = connected) {
@@ -129,6 +130,49 @@ async function setup(page: Page) {
 
 const waiting = (page: Page, id = "waiting-a") =>
   page.locator(`[data-waiting-input-id="${id}"]`);
+
+test("后续输入的回复不冒充前条完成；前条收到取消终态后移除等待并保留消息与草稿", async ({
+  page,
+}) => {
+  const f = await setup(page);
+  f.deliveries.push({
+    inputId: "waiting-b",
+    state: "completed",
+    error: null,
+    retryable: false,
+  });
+  f.replies.push({
+    id: "second-reply",
+    publicationKey: "second-reply",
+    kind: "reply",
+    text: "TEST 第二条输入的独立回复",
+    ...f.scope(),
+    artifactId: null,
+    inputId: "waiting-b",
+    rootId: "second-root",
+    createdAt: "2026-09-22T00:01:00Z",
+  });
+  await f.update();
+  const logo = page.locator(".sidebar .wordmark.agent-presence");
+  const reply = page.locator('[data-message-id="second-reply"]');
+  await expect(reply).toContainText("第二条输入的独立回复");
+  await expect(waiting(page)).toBeVisible();
+  await expect(logo).toHaveAttribute("data-state", "processing");
+  f.deliveries[0]!.state = "cancelled";
+  await f.update();
+  await expect(waiting(page)).toHaveCount(0);
+  await expect(waiting(page, "waiting-b")).toHaveCount(0);
+  await expect(logo).toHaveAttribute("data-state", "idle");
+  await expect(logo.locator(".brand-mark")).toHaveCSS("animation-name", "none");
+  await expect(page.locator('[data-message-id="waiting-a"]')).toContainText(
+    "TEST 首字反馈 1",
+  );
+  await expect(reply).toContainText("第二条输入的独立回复");
+  await expect(f.composer).toHaveValue("TEST 保留未发送草稿");
+  await f.update();
+  await expect(waiting(page)).toHaveCount(0);
+  await expect(reply).toHaveCount(1);
+});
 
 test("首字前的真实输入等待带动Logo，不被长期提醒遮住；首字接替、终态与减少动态正确", async ({
   page,
@@ -431,8 +475,10 @@ test("并发等待各自归属，补充送达不冒充新回复，结束线程�
   await expect(supplement).toHaveCount(0);
   f.threads[0]!.kind = "execution";
   await f.update();
-  await expect(supplement).toHaveAttribute("title", "给这项后台工作追加要求");
+  await expect(supplement).toBeEnabled();
   await page.locator('[data-message-id="waiting-a"]').hover();
+  await supplement.hover();
+  await expect(page.getByRole("tooltip")).toHaveText("补充要求");
   await supplement.click();
   await expect(page.getByRole("group", { name: "补充目标" })).toContainText(
     "TEST 首字反馈 1",

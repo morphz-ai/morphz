@@ -5805,9 +5805,11 @@ export class RuntimeBridge {
   }
 
   /** Repair only an already accepted ordinary input's exact root cancellation.
-   * Runtime's cancellation Event and outcome are atomic: the Event carries
-   * the OLD generation while the cancelled Thread advances by one. A child
-   * terminal barrier can route to a parent, so it is never a settlement fact.
+   * A replaced DialogueTurn ends before Execution; its authoritative root
+   * view is cancelled, while its input Signals move to the next turn without
+   * a chat cancellation/outcome. Execution cancellation still requires the
+   * atomic Event proof: it carries the OLD generation after the Thread advances.
+   * A child terminal barrier can route to a parent, never a settlement fact.
    * Reads do not rewind the Session cursor, replay IO, or create chat replies. */
   private async reconcileRootCancellation(delivery: StoredDelivery) {
     const source = delivery.platformSource;
@@ -5987,6 +5989,8 @@ export class RuntimeBridge {
         root_turn_id: z.literal(rootId),
         revision: z.number().int().positive(),
         lifecycle: z.literal("cancelled"),
+        // Older Runtime views omit kind: retain the canonical Event proof.
+        kind: z.enum(["dialogue_turn", "execution", "delivery"]).optional(),
       });
       const turnPath = `${base}/turns/${encodeURIComponent(rootId)}/thread`;
       const turn = turnSchema.parse(await read(turnPath));
@@ -6026,7 +6030,7 @@ export class RuntimeBridge {
       )
         return;
       let before: number | undefined;
-      let proven = false;
+      let proven = turn.kind === "dialogue_turn";
       for (let page = 0; page < 4 && !proven; page++) {
         const data = z
           .object({
@@ -6492,6 +6496,13 @@ export class RuntimeBridge {
               const root = payloadString(event, "root_turn_id");
               if (root) this.queueRootCancellationChecks(session.id, root);
             }
+            // Ingress atomically transfers still-thinking DialogueTurn inputs
+            // to the new turn. That transition need not emit chat/cancelled,
+            // nor does a cold maintenance handoff have a model future to emit
+            // a cancelled attempt. A new committed input only queues exact,
+            // authorized root reads; it is not itself a cancellation receipt.
+            if (event.topic === "chat/user_message")
+              this.queueRootCancellationChecks(session.id);
             if (
               terminal.has(event.topic) ||
               ["runtime/thread_result", "chat/progress"].includes(event.topic)

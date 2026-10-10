@@ -1,5 +1,68 @@
 # 桌面能力实施记录
 
+## 2026-10-10 修复被后续输入替换的回合遗留“正在处理”
+
+原 App 的持久记录确认：前条输入所属 `dialogue_turn` 已由 Runtime 取消，
+Activation 也已取消；这是尚未进入 Execution 时的正常替换，输入 Signals
+交由后续回合处理，不产生 `chat/cancelled` 或执行取消 outcome。后条输入
+已完成，而 Platform 的前条 delivery 仍为 `running`。因此是 Platform
+桥接漏同步终态，不是 Runtime 仍在执行，也不能用后条回复冒充前条完成。
+
+Runtime 的既有、授权 Session 精确根线程读接口仅补充真实 `kind` 字段；
+不改变调度、权限或取消事务。Platform 在新输入提交以及启动恢复时，按
+原输入完整接受字节、原 Human、Session／Context／根线程／修订确认其
+`dialogue_turn` 已取消，再同步 delivery。前后均重验权限与同一连接和
+ledger 身份。旧 Runtime 未提供 kind、Execution／Delivery 取消仍要求
+既有 canonical Event 证明；子线程、别的回复、模型 attempt 或无权限的
+读都不能结算。只读核对，不回卷 cursor、重发输入、伪造回复或写 Runtime。
+
+正式 `npm test -- …` 三文件 62／62、零 skip／cancel，实际核验专用
+PostgreSQL；其中桥接使用受控 HTTP 与真实 Host／Human 入口和 SQLite
+账本，覆盖新路径的实时／启动修复及权限、身份、连接、修订、完整请求
+和取消边界。真实 Rust 相关验证 6／6：SQLite 与 Runtime 的新输入替换
+和 Context maintenance 交接、最小读 DTO、跨身份权限及原 canonical
+根取消；受控模型，不冒称真实付费 provider 生成验收。
+
+最终编译 Web 浏览器定向 7／7：六项受控消息投影（后条回复不结束前条，
+取消终态撤下等待、原消息／草稿保留、并发、补充、亮暗、断线及减少动态）
+及一项真实隔离 HTTP／SQLite 剧本入口交互。按已确认的短名称提示，更新
+旧测试的 native title 断言为实际 hover tooltip；没有改变生产提示或删
+控制行为。图标移除的测试保留点击、键盘、宽窄窗口和草稿恢复，并已
+截图自检。原始 red 46 项中两项新复现失败；另保留测试文件选择错误、
+grep 未匹配、一次 bootstrap ECONNRESET、旧 title 和新增 idle 属性
+期望错误的记录，未当作产品失败或环境缺失。最终重放未跳过或放宽断言。
+证据在 `/private/tmp/morphz-dialogue-terminal-fix-AAdyVO`。
+
+应用与 Runtime 构建、类型、格式及 diff 检查通过。锁屏曾暂时挡住原
+窗口核验；可访问后确认输入为空、没有 active Activation／Job／Signal，
+仅有一个未获租约且 Thread／Activation 均已取消的旧 Plan 行，保留不改；
+定时事项尚未到期。正常退出原 App，并对精确原 Runtime PID 80471 发
+SIGTERM 后重启为 18867；同一原安装／Profile／Center 的 App 重开为
+18887。未强退、增加测试 App、重发输入或调用模型，也未换凭据与配置。
+新 Runtime 的精确根读返回 DialogueTurn cancelled／revision 2；原 Host
+自然修复前条 delivery，完整请求／来源仍相同，后条 delivery 语义不变。
+原窗口实际确认前条等待撤下、显示既有“已取消”终态，后条回复仍在，
+已截图自检；没有冒称前条已生成独立回复，最后返回原对话。
+
+独立摘要核对：原剧本／候选／正文／历史以及 Platform 业务表字节未改；
+9385 条原 Runtime Event 和 224 条原命令回执逐行摘要保持。Runtime
+新增仅为恢复与模型配置两条控制 Event，原 Thread／Activation／Plan／
+Signal 等表保持；执行节点、Principal、Session 三张注册元信息表因
+重启发生变化，数量保持，不声称其字节完全未改。原窗口验收产生三条
+准确的打开／返回／打开应用视图命令，均是原 Human、无 Runtime input，
+没有新建业务内容。首次核对器误用 JSON 字节顺序／对象 prototype，以及
+把正常注册、控制 Event 和本次视图导航也要求完全无写入，分别保留原始
+失败，再按观察到的精确变化核对原件，不隐去这些变化。最终核对通过。
+
+## 2026-10-10 移除剧本卡片右上的冗余外跳箭头
+
+按用户对 `↗` 语义及视觉的反馈直接移除，不换成另一枚装饰图标。整张
+卡片仍是“打开剧本”的原按钮，保持原打开目标、焦点和键盘交互，不是
+跳往外部链接。最终浏览器入口回归通过，已查看真实渲染截图；更新后的
+原窗口也已截图确认箭头撤掉，并点击同一原卡片打开《领证前夜》与既有
+五场戏大纲 v2，最后返回原对话。没有改卡片配色、正文或业务数据；打开
+与返回的视图状态写入已单独记录。
+
 ## 2026-10-10 清理日常剧本的默认“草稿”标签
 
 按用户“清理一下”仅修正文案投影：普通目录条目不再显示默认 `draft`

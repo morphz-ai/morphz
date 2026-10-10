@@ -20,12 +20,15 @@ async function cancelledRootFixture() {
   let lifecycle = "open";
   let revision = 2;
   let generation = 1;
+  let kind: string | undefined;
+  let finalKindChanged = false;
   let cancellationThread = "root-thread";
   let cancelGeneration = 1;
   let cancelTopic = "runtime/thread_cancelled";
   let parentThread: string | null = null;
   let pages = false;
   let wireCancel = false;
+  let wireInput = false;
   let denied = false;
   let mutateRoot = false;
   let finalRevisionChanged = false;
@@ -177,6 +180,9 @@ async function cancelledRootFixture() {
         revision:
           finalRevisionChanged && turnReads > 1 ? revision + 1 : revision,
         lifecycle,
+        ...(kind === undefined
+          ? {}
+          : { kind: finalKindChanged && turnReads > 1 ? "execution" : kind }),
       });
     }
     if (url.pathname.endsWith("/threads/root-thread/family"))
@@ -201,31 +207,48 @@ async function cancelledRootFixture() {
       });
     if (url.pathname.endsWith("/events")) {
       const events =
-        url.searchParams.has("root_turn_id") ||
-        (wireCancel && Number(url.searchParams.get("after_sequence")) < 101)
+        wireInput && Number(url.searchParams.get("after_sequence")) < 101
           ? [
               {
-                id: `thread_cancelled_${cancellationThread}_g${cancelGeneration}`,
-                sequence: wireCancel ? 101 : 12,
+                id: "replacement-root",
+                sequence: 101,
                 timestamp: new Date().toISOString(),
-                actor: "Runtime",
-                type: "runtime_control",
-                topic: cancelTopic,
+                actor: "Session-Client",
+                type: "session_message",
+                topic: "chat/user_message",
                 payload: {
                   session_id: sid,
                   context_id: session.context_id,
-                  root_turn_id: "accepted-root",
-                  thread_id: cancellationThread,
-                  thread_generation: cancelGeneration,
-                  terminal_kind: "cancelled",
-                  disposition: "no_reply",
-                  runtime_failure_kind: "thread_cancelled",
-                  wake_policy: "none",
-                  text: "not a chat response",
+                  root_turn_id: "replacement-root",
                 },
               },
             ]
-          : [];
+          : url.searchParams.has("root_turn_id") ||
+              (wireCancel &&
+                Number(url.searchParams.get("after_sequence")) < 101)
+            ? [
+                {
+                  id: `thread_cancelled_${cancellationThread}_g${cancelGeneration}`,
+                  sequence: wireCancel ? 101 : 12,
+                  timestamp: new Date().toISOString(),
+                  actor: "Runtime",
+                  type: "runtime_control",
+                  topic: cancelTopic,
+                  payload: {
+                    session_id: sid,
+                    context_id: session.context_id,
+                    root_turn_id: "accepted-root",
+                    thread_id: cancellationThread,
+                    thread_generation: cancelGeneration,
+                    terminal_kind: "cancelled",
+                    disposition: "no_reply",
+                    runtime_failure_kind: "thread_cancelled",
+                    wake_policy: "none",
+                    text: "not a chat response",
+                  },
+                },
+              ]
+            : [];
       return send(200, {
         events:
           pages ||
@@ -300,11 +323,16 @@ async function cancelledRootFixture() {
       alter(value: {
         thread?: string;
         generation?: number;
+        threadGeneration?: number;
+        threadRevision?: number;
+        kind?: string;
+        finalKindChanged?: boolean;
         topic?: string;
         lifecycle?: string;
         parent?: string;
         pages?: boolean;
         wireCancel?: boolean;
+        wireInput?: boolean;
         denied?: boolean;
         mutateRoot?: boolean;
         finalRevisionChanged?: boolean;
@@ -314,11 +342,16 @@ async function cancelledRootFixture() {
       }) {
         cancellationThread = value.thread ?? cancellationThread;
         cancelGeneration = value.generation ?? cancelGeneration;
+        generation = value.threadGeneration ?? generation;
+        revision = value.threadRevision ?? revision;
+        kind = value.kind ?? kind;
+        finalKindChanged = value.finalKindChanged ?? finalKindChanged;
         cancelTopic = value.topic ?? cancelTopic;
         lifecycle = value.lifecycle ?? lifecycle;
         parentThread = value.parent ?? parentThread;
         pages = value.pages ?? pages;
         wireCancel = value.wireCancel ?? wireCancel;
+        wireInput = value.wireInput ?? wireInput;
         denied = value.denied ?? denied;
         mutateRoot = value.mutateRoot ?? mutateRoot;
         finalRevisionChanged =
@@ -518,6 +551,137 @@ test("controlled HTTP root cancellation repairs accepted Host SQLite delivery be
   }
 });
 
+test("controlled HTTP dialogue replacement settles its cancelled root without a chat cancellation or another input's reply", async () => {
+  const f = await cancelledRootFixture();
+  try {
+    f.alter({
+      kind: "dialogue_turn",
+      threadGeneration: 1,
+      threadRevision: 2,
+      pages: true,
+    });
+    f.seedHistoricalProjection();
+    await f.run();
+    const after = f.host.store.runtimeState() as typeof f.baseline;
+    const expected = structuredClone(f.baseline.deliveries);
+    Object.assign(expected[0]!, {
+      state: "cancelled",
+      cancelRequested: false,
+      error: null,
+    });
+    assert.deepEqual(after.deliveries, expected);
+    assert.deepEqual(after.sessions, f.baseline.sessions);
+    assert.deepEqual(
+      f.calls.filter((call) => call.method !== "GET"),
+      [],
+    );
+    assert.equal(
+      f.calls.some((call) => call.path.includes("root_turn_id=")),
+      false,
+      "the authoritative cancelled DialogueTurn needs no invented output Event",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("controlled HTTP dialogue replacement is rechecked on newer committed input without restarting the Host", async () => {
+  const f = await cancelledRootFixture();
+  try {
+    f.alter({
+      kind: "dialogue_turn",
+      threadGeneration: 1,
+      threadRevision: 1,
+      lifecycle: "open",
+      pages: true,
+    });
+    await f.run();
+    assert.equal(
+      (f.host.store.runtimeState() as typeof f.baseline).deliveries[0]!.state,
+      "running",
+    );
+    f.alter({
+      lifecycle: "cancelled",
+      threadRevision: 2,
+      wireInput: true,
+      pages: false,
+    });
+    await f.host.runtime.tick();
+    const after = f.host.store.runtimeState() as typeof f.baseline;
+    assert.equal(after.deliveries[0]!.state, "cancelled");
+    assert.equal(Object.values(after.sessions)[0]!.cursor, 101);
+    assert.deepEqual(
+      Object.values(after.sessions)[0]!.events,
+      [],
+      "the newer input is an invalidation hint, not a synthetic reply",
+    );
+    const reads = f.calls.filter((call) =>
+      call.path.includes("by-client-id"),
+    ).length;
+    await f.host.runtime.tick();
+    assert.equal(
+      f.calls.filter((call) => call.path.includes("by-client-id")).length,
+      reads,
+    );
+    assert.deepEqual(
+      f.calls.filter((call) => call.method !== "GET"),
+      [],
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+for (const [name, patch] of [
+  ["missing kind on an older Runtime", {}],
+  [
+    "execution still needs the canonical cancellation proof",
+    { kind: "execution" },
+  ],
+  ["delivery is not a replaced dialogue", { kind: "delivery" }],
+  ["open dialogue", { kind: "dialogue_turn", lifecycle: "open" }],
+  ["child dialogue", { kind: "dialogue_turn", parent: "other-thread" }],
+  [
+    "root changes kind before final read",
+    { kind: "dialogue_turn", finalKindChanged: true },
+  ],
+  [
+    "root changes revision before final read",
+    { kind: "dialogue_turn", finalRevisionChanged: true },
+  ],
+  ["revoked Runtime read", { kind: "dialogue_turn", denied: true }],
+  ["accepted body changed", { kind: "dialogue_turn", mutation: "body" }],
+  [
+    "accepted metadata changed",
+    { kind: "dialogue_turn", mutation: "metadata" },
+  ],
+  [
+    "accepted activation changed",
+    { kind: "dialogue_turn", mutation: "activation" },
+  ],
+  ["accepted command changed", { kind: "dialogue_turn", mutation: "command" }],
+  [
+    "accepted output contract changed",
+    { kind: "dialogue_turn", mutation: "delivery" },
+  ],
+] as const)
+  test(`controlled HTTP dialogue replacement refuses ${name}`, async () => {
+    const f = await cancelledRootFixture();
+    try {
+      f.alter({ ...patch, pages: true });
+      await f.run();
+      const after = f.host.store.runtimeState() as typeof f.baseline;
+      assert.deepEqual(after.deliveries, f.baseline.deliveries);
+      assert.deepEqual(after.sessions, f.baseline.sessions);
+      assert.deepEqual(
+        f.calls.filter((call) => call.method !== "GET"),
+        [],
+      );
+    } finally {
+      await f.close();
+    }
+  });
+
 test("controlled HTTP cancellation repair preserves pre-existing legacy Host history and frozen submission bytes", async () => {
   const f = await cancelledRootFixture();
   try {
@@ -596,53 +760,59 @@ for (const [name, patch] of [
   });
 }
 
-for (const boundary of [
-  "stop",
-  "connection",
-  "authority",
-  "delivery",
-] as const) {
-  test(`controlled HTTP held cancellation proof cannot cross ${boundary} retirement`, async () => {
-    const f = await cancelledRootFixture();
-    const hold = f.hold("root_turn_id=");
-    try {
-      const operation = f.run();
-      await hold.entered;
-      let stopping: Promise<void> | undefined;
-      if (boundary === "stop") stopping = f.host.runtime.stop();
-      if (boundary === "connection")
-        f.host.runtime.updateConnection({
-          url: (f.baseline as unknown as { endpoint: string }).endpoint,
-          namespace: (f.baseline as unknown as { namespace: string }).namespace,
-          token: "replacement-credential",
-        });
-      if (boundary === "authority")
-        f.host.runtime.bindPlatformReadAuthority(undefined);
-      if (boundary === "delivery") {
-        const state = (
-          f.host.runtime as unknown as { state: typeof f.baseline }
-        ).state;
-        state.deliveries[0]!.error = "newer owner metadata";
+for (const proof of ["canonical", "dialogue"] as const) {
+  for (const boundary of [
+    "stop",
+    "connection",
+    "authority",
+    "delivery",
+  ] as const) {
+    test(`controlled HTTP held ${proof} cancellation proof cannot cross ${boundary} retirement`, async () => {
+      const f = await cancelledRootFixture();
+      if (proof === "dialogue") f.alter({ kind: "dialogue_turn", pages: true });
+      const hold = f.hold(
+        proof === "dialogue" ? "/family?limit=1" : "root_turn_id=",
+      );
+      try {
+        const operation = f.run();
+        await hold.entered;
+        let stopping: Promise<void> | undefined;
+        if (boundary === "stop") stopping = f.host.runtime.stop();
+        if (boundary === "connection")
+          f.host.runtime.updateConnection({
+            url: (f.baseline as unknown as { endpoint: string }).endpoint,
+            namespace: (f.baseline as unknown as { namespace: string })
+              .namespace,
+            token: "replacement-credential",
+          });
+        if (boundary === "authority")
+          f.host.runtime.bindPlatformReadAuthority(undefined);
+        if (boundary === "delivery") {
+          const state = (
+            f.host.runtime as unknown as { state: typeof f.baseline }
+          ).state;
+          state.deliveries[0]!.error = "newer owner metadata";
+        }
+        hold.release();
+        await operation;
+        await stopping;
+        const after = f.host.store.runtimeState() as typeof f.baseline;
+        assert.equal(after.deliveries[0]!.state, "running");
+        assert.equal(
+          after.deliveries[0]!.rootId,
+          f.baseline.deliveries[0]!.rootId,
+        );
+        assert.deepEqual(after.sessions, f.baseline.sessions);
+        assert.deepEqual(
+          f.calls.filter((call) => call.method !== "GET"),
+          [],
+        );
+      } finally {
+        hold.release();
+        await f.close();
       }
-      hold.release();
-      await operation;
-      await stopping;
-      const after = f.host.store.runtimeState() as typeof f.baseline;
-      assert.equal(after.deliveries[0]!.state, "running");
-      assert.equal(
-        after.deliveries[0]!.rootId,
-        f.baseline.deliveries[0]!.rootId,
-      );
-      assert.deepEqual(after.sessions, f.baseline.sessions);
-      assert.deepEqual(
-        f.calls.filter((call) => call.method !== "GET"),
-        [],
-      );
-    } finally {
-      hold.release();
-      await f.close();
-    }
-  });
+    });
+  }
 }
 
 test("controlled HTTP new committed cancellation repairs a running input after startup unknown, duplicate tick does not replay", async () => {
@@ -775,69 +945,75 @@ test("controlled gateway root proof uses actual Human identity headers and does 
   }
 });
 
-test("controlled gateway held canonical proof rejects actual IdentityCenter retirement", async () => {
-  const f = await cancelledRootFixture();
-  const gateway = f.gateway();
-  const hold = f.hold("root_turn_id=");
-  try {
-    const operation = gateway.runtime.tick();
-    await hold.entered;
-    gateway.retireHuman();
-    hold.release();
-    await operation;
-    assert.equal(
-      (f.host.store.runtimeState() as typeof f.baseline).deliveries[0]!.state,
-      "running",
+for (const proof of ["canonical", "dialogue"] as const) {
+  test(`controlled gateway held ${proof} proof rejects actual IdentityCenter retirement`, async () => {
+    const f = await cancelledRootFixture();
+    if (proof === "dialogue") f.alter({ kind: "dialogue_turn", pages: true });
+    const gateway = f.gateway();
+    const hold = f.hold(
+      proof === "dialogue" ? "/family?limit=1" : "root_turn_id=",
     );
-    assert.deepEqual(
-      f.calls.filter((call) => call.method !== "GET"),
-      [],
-    );
-    assert.equal(
-      f.calls.filter((call) => call.path.includes("/turns/")).length,
-      1,
-      "no late final read under a retired Human",
-    );
-  } finally {
-    hold.release();
-    await gateway.runtime.stop();
-    await f.close();
-  }
-});
-
-test("controlled gateway final Platform read recheck refuses a retired grant after complete canonical proof", async () => {
-  const f = await cancelledRootFixture();
-  const gateway = f.gateway();
-  let authorizations = 0;
-  gateway.runtime.bindPlatformReadAuthority(async (scope, access) => {
-    const grant = await gateway.authorizer(scope, access);
-    authorizations++;
-    return authorizations === 1 ? grant : { ...grant, projectIds: [] };
+    try {
+      const operation = gateway.runtime.tick();
+      await hold.entered;
+      gateway.retireHuman();
+      hold.release();
+      await operation;
+      assert.equal(
+        (f.host.store.runtimeState() as typeof f.baseline).deliveries[0]!.state,
+        "running",
+      );
+      assert.deepEqual(
+        f.calls.filter((call) => call.method !== "GET"),
+        [],
+      );
+      assert.equal(
+        f.calls.filter((call) => call.path.includes("/turns/")).length,
+        1,
+        "no late final read under a retired Human",
+      );
+    } finally {
+      hold.release();
+      await gateway.runtime.stop();
+      await f.close();
+    }
   });
-  try {
-    await gateway.runtime.tick();
-    assert.equal(
-      authorizations,
-      2,
-      "actual Platform authority executes before and after all proof reads",
-    );
-    assert.equal(
-      f.calls.filter((call) => call.path.includes("/turns/")).length,
-      2,
-    );
-    assert.equal(
-      (f.host.store.runtimeState() as typeof f.baseline).deliveries[0]!.state,
-      "running",
-    );
-    assert.deepEqual(
-      f.calls.filter((call) => call.method !== "GET"),
-      [],
-    );
-  } finally {
-    await gateway.runtime.stop();
-    await f.close();
-  }
-});
+
+  test(`controlled gateway final Platform read recheck refuses a retired grant after complete ${proof} proof`, async () => {
+    const f = await cancelledRootFixture();
+    if (proof === "dialogue") f.alter({ kind: "dialogue_turn", pages: true });
+    const gateway = f.gateway();
+    let authorizations = 0;
+    gateway.runtime.bindPlatformReadAuthority(async (scope, access) => {
+      const grant = await gateway.authorizer(scope, access);
+      authorizations++;
+      return authorizations === 1 ? grant : { ...grant, projectIds: [] };
+    });
+    try {
+      await gateway.runtime.tick();
+      assert.equal(
+        authorizations,
+        2,
+        "actual Platform authority executes before and after all proof reads",
+      );
+      assert.equal(
+        f.calls.filter((call) => call.path.includes("/turns/")).length,
+        2,
+      );
+      assert.equal(
+        (f.host.store.runtimeState() as typeof f.baseline).deliveries[0]!.state,
+        "running",
+      );
+      assert.deepEqual(
+        f.calls.filter((call) => call.method !== "GET"),
+        [],
+      );
+    } finally {
+      await gateway.runtime.stop();
+      await f.close();
+    }
+  });
+}
 
 test("real observer denied WebSocket retries are not new cancellation evidence or per-wake root proof retries", async () => {
   const f = await cancelledRootFixture();

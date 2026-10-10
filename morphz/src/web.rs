@@ -8865,7 +8865,8 @@ async fn handle_get_session_context_encoding(
 
 fn session_turn_thread_view(thread: &crate::memory::ThreadRecord) -> Value {
     json!({"thread_id": thread.id, "session_id": thread.session_id,
-        "root_turn_id": thread.root_turn_id, "revision": thread.revision, "lifecycle": thread.lifecycle})
+        "root_turn_id": thread.root_turn_id, "revision": thread.revision,
+        "kind": thread.kind, "lifecycle": thread.lifecycle})
 }
 
 async fn handle_create_session_schedule(
@@ -10032,6 +10033,61 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn session_turn_thread_view_distinguishes_dialogue_from_execution_without_exposing_body() {
+        use crate::memory::{
+            DeliveryStatus, ThreadControlState, ThreadKind, ThreadLifecycle, ThreadRecord,
+            ThreadSupervision,
+        };
+        let now = Utc::now();
+        let mut thread = ThreadRecord {
+            response_annotations: Default::default(),
+            model_alias: None,
+            reasoning_effort: None,
+            id: "root-thread".into(),
+            revision: 2,
+            generation: 1,
+            agent_id: "private-agent".into(),
+            context_id: "private-context".into(),
+            session_id: "member-session".into(),
+            initiating_principal_id: Some("private-principal".into()),
+            root_turn_id: "accepted-root".into(),
+            kind: ThreadKind::DialogueTurn,
+            lifecycle: ThreadLifecycle::Cancelled,
+            control_state: ThreadControlState::Active,
+            executor_kind: "agent".into(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::legacy(),
+            result_text: Some("private-result".into()),
+            result_event_id: None,
+            delivery_status: DeliveryStatus::None,
+            delivery_event_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+        for kind in [
+            ThreadKind::DialogueTurn,
+            ThreadKind::Execution,
+            ThreadKind::Delivery,
+        ] {
+            thread.kind = kind;
+            let view = session_turn_thread_view(&thread);
+            assert_eq!(
+                view,
+                json!({
+                    "thread_id": "root-thread", "session_id": "member-session",
+                    "root_turn_id": "accepted-root", "revision": 2,
+                    "kind": kind.as_str(), "lifecycle": "cancelled"
+                })
+            );
+            assert_eq!(
+                thread.generation, 1,
+                "reading never changes the logical generation"
+            );
+        }
+    }
 
     #[test]
     fn dashboard_event_deduplication_is_bounded_and_retryable() {
