@@ -9,6 +9,8 @@ import { ScriptStudioStore } from "../../script-studio/src/store.js";
 import type {
   LiveScriptDraft,
   ScriptStudioAuthority,
+  ScriptResultRequest,
+  ScriptItemRevisionReceipt,
 } from "../../script-studio/src/store.js";
 import { contentIdForAppObject } from "./content-id.js";
 import type { ScriptWorkflowReport } from "../../core/src/script-tool.js";
@@ -292,6 +294,63 @@ export async function submitScriptCandidate(request: {
   return projectCommittedScriptItem(request, original);
 }
 
+/** The app atomically saves all manuscripts first. Directory projection is
+ * ordered, recoverable, and explicitly not a cross-database transaction.
+ * A failed projection never turns already-saved manuscripts into candidates
+ * or causes the model to regenerate them. */
+export async function submitScriptResults(
+  request: Omit<ScriptResultRequest, "credential"> & {
+    platform: PlatformStore;
+    studio: ScriptStudioStore;
+    actor: PlatformActor;
+    instanceId: string;
+  },
+) {
+  const original = await request.studio.submitResults({
+    credential: request.actor.credential,
+    commandId: request.commandId,
+    productionId: request.productionId,
+    inputId: request.inputId,
+    results: request.results,
+  });
+  const results: Array<{
+    original: ScriptItemRevisionReceipt;
+    status: "saved" | "saved-projection-pending";
+    contentId?: string;
+    error?: string;
+  }> = [];
+  let pending: string | null = null;
+  for (const item of [...original.items].sort(
+    (a, b) => a.activityRevision - b.activityRevision,
+  )) {
+    if (pending) {
+      results.push({
+        original: item,
+        status: "saved-projection-pending",
+        error: pending,
+      });
+      continue;
+    }
+    try {
+      const projected = await projectCommittedScriptItem(request, item);
+      results.push({ ...projected, status: "saved" });
+    } catch (error) {
+      pending =
+        error instanceof Error ? error.message : "正文已保存，目录投影待恢复。";
+      results.push({
+        original: item,
+        status: "saved-projection-pending",
+        error: pending,
+      });
+    }
+  }
+  return {
+    original,
+    results,
+    directoryReady: pending === null,
+  };
+}
+
 /** Item creation is an app-domain commit. Platform only observes the next
  * production revision; if projection fails, the same command reuses the
  * original item and its immutable first draft.
@@ -320,7 +379,7 @@ export async function createScriptItem(request: {
   return projectCommittedScriptItem(request, original);
 }
 
-/** Human editing uses the same committed-original then verified-directory
+/** Human and Agent editing use the same committed-original then verified-directory
  * projection as item creation. No cross-database transaction is assumed.
  */
 export async function reviseScriptItem(request: {
@@ -351,7 +410,7 @@ export async function reviseScriptItem(request: {
 
 /** Restore creates a new head from an immutable historical draft. The old
  * version remains readable; reviseItem performs the same CAS and source checks
- * as an ordinary human edit. */
+ * as an ordinary edit. */
 export async function restoreScriptItem(request: {
   platform: PlatformStore;
   studio: ScriptStudioStore;

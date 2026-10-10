@@ -2144,7 +2144,10 @@ export class ApplicationSession {
     const explicitCognitiveTarget = op.cognitiveApplication
       ? await this.document((domain, actor) =>
           authorizeCognitiveAppInputTarget(
-            domain.platform, actor, op.projectId, op.cognitiveApplication!,
+            domain.platform,
+            actor,
+            op.projectId,
+            op.cognitiveApplication!,
           ),
         )
       : undefined;
@@ -2177,51 +2180,51 @@ export class ApplicationSession {
           harness: explicitCognitiveTarget.definition.harness,
         }
       : op.application && cognitiveTarget
-      ? {
-          instanceId: cognitiveTarget.instanceId,
-          id: cognitiveTarget.appId,
-          version: cognitiveTarget.version,
-          harness: cognitiveTarget.definition.harness,
-        }
-      : op.application
-      ? await this.document(async (domain, actor) => {
-          const manifest = [
-            objectsApplication,
-            browserApplication,
-            readerApplication,
-            scriptStudioApplication,
-          ].find(
-            (item) =>
-              item.id === op.application!.id &&
-              item.version === op.application!.version,
-          );
-          if (!manifest)
-            throw new DomainError(
-              "invalid",
-              "当前应用版本不可用，请刷新工作台后重试；草稿已保留。",
-            );
-          const instanceId =
-            manifest.id === objectsApplication.id
-              ? domain.instanceIds.objects
-              : manifest.id === browserApplication.id
-                ? domain.instanceIds.browser
-                : manifest.id === readerApplication.id
-                  ? domain.instanceIds.reader
-                  : domain.instanceIds.scriptStudio;
-          await domain.platform.authorizeApplicationProject(
-            actor,
-            instanceId,
-            manifest.id,
-            op.projectId,
-          );
-          return {
-            instanceId,
-            id: manifest.id,
-            version: manifest.version,
-            harness: manifest.harness,
-          };
-        })
-      : undefined;
+        ? {
+            instanceId: cognitiveTarget.instanceId,
+            id: cognitiveTarget.appId,
+            version: cognitiveTarget.version,
+            harness: cognitiveTarget.definition.harness,
+          }
+        : op.application
+          ? await this.document(async (domain, actor) => {
+              const manifest = [
+                objectsApplication,
+                browserApplication,
+                readerApplication,
+                scriptStudioApplication,
+              ].find(
+                (item) =>
+                  item.id === op.application!.id &&
+                  item.version === op.application!.version,
+              );
+              if (!manifest)
+                throw new DomainError(
+                  "invalid",
+                  "当前应用版本不可用，请刷新工作台后重试；草稿已保留。",
+                );
+              const instanceId =
+                manifest.id === objectsApplication.id
+                  ? domain.instanceIds.objects
+                  : manifest.id === browserApplication.id
+                    ? domain.instanceIds.browser
+                    : manifest.id === readerApplication.id
+                      ? domain.instanceIds.reader
+                      : domain.instanceIds.scriptStudio;
+              await domain.platform.authorizeApplicationProject(
+                actor,
+                instanceId,
+                manifest.id,
+                op.projectId,
+              );
+              return {
+                instanceId,
+                id: manifest.id,
+                version: manifest.version,
+                harness: manifest.harness,
+              };
+            })
+          : undefined;
     // Each source is checked against its owning authority and exact version.
     // The client locator is never itself a read grant or proof of the quote.
     const quotedSources = new Map<
@@ -2478,6 +2481,13 @@ export class ApplicationSession {
           productionId: op.scriptGeneration!.productionId,
           inputId: input.id,
           generation: op.scriptGeneration!,
+          // New built-in inputs pin result-first execution. Old immutable
+          // inputs and legacy Client carriers keep their original semantics.
+          submissionMode:
+            application?.id === scriptStudioApplication.id &&
+            application.harness?.version === "2.0.0"
+              ? "current"
+              : "candidate",
         });
         if (
           JSON.stringify(prepared.generation) !==

@@ -689,7 +689,7 @@ async function exercise(
         },
       },
     } as AgentToolArguments),
-    /只能建立空条目/,
+    /剧本已变化/,
   );
 
   const itemCommand = {
@@ -793,9 +793,9 @@ async function exercise(
       itemId: "scene-invalid",
       expectedActivityRevision: 2,
       kind: "scene",
-      draft: { ...sceneDraft, text: "不能直接写正文" },
+      draft: { ...sceneDraft, text: "缺少所属集版本的正文", dependencies: [] },
     }),
-    /只能建立空条目/,
+    /所属集.*依赖版本/,
   );
   const scene = await createScriptItem({
     ...itemCommand,
@@ -981,9 +981,9 @@ async function exercise(
     reviseScriptItem({
       ...revise,
       actor: { credential: "agent-input" },
-      commandId: "revise-agent",
+      commandId: "revise-agent-stale",
     }),
-    /只有获授权的本人/,
+    /正文已有新版本/,
   );
   await assert.rejects(
     reviseScriptItem({

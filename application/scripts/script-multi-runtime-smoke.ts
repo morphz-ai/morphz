@@ -35,7 +35,6 @@ import type { Receipt } from "../packages/core/src/model.js";
 // This module's guarded live runner is NOT invoked. These are pure validators.
 import {
   assertNoCreativeWrites,
-  assertThreeCandidateDeliveries,
   contextContainsProposal,
 } from "./script-confirmation-quality.js";
 
@@ -72,6 +71,7 @@ type Preparation = {
   target_item_id: string;
   base_item_revision: number;
   task_request: string;
+  submission_mode: string;
 };
 type CommandReceipt = {
   operation: string;
@@ -85,9 +85,9 @@ const harnessFile = fileURLToPath(
 );
 assert.equal(
   /\(version "([^"]+)"\)/.exec(readFileSync(harnessFile, "utf8"))?.[1],
-  "1.4.4",
+  "2.0.0",
 );
-assert.equal(scriptStudioApplication.harness?.version, "1.4.4");
+assert.equal(scriptStudioApplication.harness?.version, "2.0.0");
 const directory = mkdtempSync(join(tmpdir(), "morphz-script-multi-runtime-"));
 const runtimeDirectory = join(directory, "runtime"),
   appDirectory = join(directory, "application");
@@ -96,9 +96,9 @@ for (const path of [runtimeDirectory, appDirectory])
 const token = randomBytes(32).toString("hex"),
   secrets = [token];
 const proposalText =
-  "建议先为《领证前夜》完成两位主角设定和五场戏大纲，分别提交到主角一、主角二、五场戏大纲三个现有空条目。每项一个候选，整体一轮自审，合计不超过6000字符；不写完整对白正文，不自动采纳或批准。你确认后我再执行。";
+  "建议先为《领证前夜》完成两位主角设定和五场戏大纲，直接保存到主角一、主角二、五场戏大纲三个条目的当前正文。每项一个结果，整体一轮自审，合计不超过6000字符；不写完整对白正文，不批准或锁稿。你确认后我再执行。";
 const task =
-  "用户明确确认共享Context中的唯一当前提案：为《领证前夜》分别交付两位主角设定和五场戏大纲，保存到主角一、主角二、五场戏大纲三个现有条目；每项一个候选，整体一轮自审，全部输出不超过6000字符，不写完整对白正文，不自动采纳或批准。";
+  "用户明确确认共享Context中的唯一当前提案：为《领证前夜》分别交付两位主角设定和五场戏大纲，直接保存为主角一、主角二、五场戏大纲三个条目的当前正文；每项一个结果，整体一轮自审，全部输出不超过6000字符，不写完整对白正文，不批准或锁稿。";
 const confirmationBody = "好的，你直接做。";
 const requests: {
   sequence: number;
@@ -322,6 +322,8 @@ const provider = createServer(async (request, response) => {
             ...targets[0],
             contextRevision: result.contextRevision,
             purpose: "draft",
+            submissionMode: "current",
+            maxCandidates: 1,
             targets,
             task,
             maxReviewPasses: 1,
@@ -331,6 +333,7 @@ const provider = createServer(async (request, response) => {
       }
       if (step === 3) {
         assert.equal(result.prepared, true);
+        assert.equal(result.submissionMode, "current");
         assert.equal(result.generations.length, 3);
         assert.equal(result.task, task);
         return call("host_morphz", {
@@ -340,6 +343,7 @@ const provider = createServer(async (request, response) => {
       }
       assert.equal(step, 4, "Freeze all targets in a single preparation call");
       assert.equal(result.generating, true);
+      assert.equal(result.submissionMode, "current");
       assert.equal(result.body, confirmationBody);
       assert.equal(result.task, task);
       assert.equal(result.outputSchema.type, "array");
@@ -398,7 +402,7 @@ const provider = createServer(async (request, response) => {
         blocked: false,
         message: "",
         payload,
-        explanation: "两位主角与五场戏大纲分别交付，候选等待人工采纳。",
+        explanation: "两位主角与五场戏大纲分别交付，直接保存为当前正文。",
       });
     }
     if (stage === "review") {
@@ -416,16 +420,14 @@ const provider = createServer(async (request, response) => {
       });
     }
     if (stage === "delivery") {
-      assert.ok(current.includes("单目标 ok=false"));
+      assert.ok(current.includes("saved=true说明全部正文原件已保存"));
       assert.ok(
-        current.includes(
-          "多目标以逐项 results 为准，不根据批次 ok 推断各项是否保存",
-        ),
+        current.includes("directoryReady=false说明目录待恢复，不重新生成"),
       );
       assert.ok(current.includes("savedCount"));
       for (const target of readTargets) assert.ok(current.includes(target.id));
       return value(
-        "两位主角设定与五场戏大纲已分别保存为三个候选，整体完成一轮自审，均待人工采纳，未批准或锁稿。",
+        "两位主角设定与五场戏大纲已直接保存为当前正文 v2，整体完成一轮自审，可继续指导修改或回退版本，未批准或锁稿。",
       );
     }
     assert.equal(
@@ -440,7 +442,7 @@ const provider = createServer(async (request, response) => {
     const content =
       discussionCount === 1
         ? proposalText
-        : "两位主角设定与五场戏大纲已分别保存为三个候选，整体完成一轮自审，均待人工采纳，未批准或锁稿。";
+        : "两位主角设定与五场戏大纲已直接保存为当前正文 v2，整体完成一轮自审，可继续指导修改或回退版本，未批准或锁稿。";
     return call("reply", {
       content,
       annotations: {
@@ -528,7 +530,7 @@ try {
   );
   assert.equal(installed.status, 0, installed.stderr);
   const archivedInstalls: { version: string; output: string }[] = [];
-  for (const version of ["1.4.0", "1.4.2", "1.4.3"]) {
+  for (const version of ["1.4.0", "1.4.2", "1.4.3", "1.4.4"]) {
     const archived = spawnSync(
       binary,
       [
@@ -571,7 +573,7 @@ try {
     { env, encoding: "utf8", timeout: 25_000 },
   );
   assert.equal(registered.status, 0, registered.stderr);
-  for (const version of ["1.4.0", "1.4.2", "1.4.3", "1.4.4"])
+  for (const version of ["1.4.0", "1.4.2", "1.4.3", "1.4.4", "2.0.0"])
     assert.ok(
       registered.stdout.includes(version),
       `Frozen package ${version} stays registered`,
@@ -662,7 +664,7 @@ try {
     brief: {
       ...initial.brief,
       constraints:
-        "只交付两位主角设定和五场戏大纲；每项一个候选，合计6000字符，一轮自审，不自动采纳或批准。",
+        "只交付两位主角设定和五场戏大纲；每项一个当前结果，合计6000字符，一轮自审，不批准或锁稿。",
     },
     reviewerPrincipalIds: initial.reviewerPrincipalIds,
     template: initial.template,
@@ -776,7 +778,7 @@ try {
     };
   };
   const proposal = await submit(
-    "TEST 合成验收：先只讨论《领证前夜》，建议下一步做两位主角设定和五场戏大纲；三个现有条目是主角一、主角二、五场戏大纲。等我确认才生成并分别保存，每项一个候选，一轮自审，合计6000字符，不写完整正文，不自动采纳或批准。",
+    "TEST 合成验收：先只讨论《领证前夜》，建议下一步做两位主角设定和五场戏大纲；三个现有条目是主角一、主角二、五场戏大纲。等我确认才生成并直接保存为当前正文，每项一个结果，一轮自审，合计6000字符，不写完整对白正文，不批准或锁稿。",
     true,
   );
   assert.equal(proposal.text, proposalText);
@@ -786,7 +788,7 @@ try {
   assert.equal(confirmation.sessionId, proposal.sessionId);
   const preparations = sql<Preparation>(
     join(appDirectory, "script-studio.sqlite"),
-    "SELECT input_id,target_item_id,base_item_revision,task_request FROM script_preparations WHERE input_id=? ORDER BY collection_ordinal",
+    "SELECT input_id,target_item_id,base_item_revision,task_request,submission_mode FROM script_preparations WHERE input_id=? ORDER BY collection_ordinal",
     confirmation.inputId,
   );
   const receipts = sql<CommandReceipt>(
@@ -812,13 +814,47 @@ try {
   evidence.receipts = receipts;
   evidence.candidates = final.candidates;
   evidence.formalTargets = final.items;
-  assertThreeCandidateDeliveries(
-    final,
-    confirmation.inputId,
-    targets,
-    preparations,
-    receipts,
+  assert.equal(
+    final.candidates.length,
+    0,
+    "New generation never creates candidates",
   );
+  assert.equal(preparations.length, 3);
+  assert.deepEqual(
+    preparations.map((row) => row.target_item_id).sort(),
+    [...targets].sort(),
+  );
+  for (const row of preparations) {
+    assert.equal(row.input_id, confirmation.inputId);
+    assert.equal(row.base_item_revision, 1);
+    assert.equal(row.submission_mode, "current");
+  }
+  for (const item of final.items) {
+    assert.equal(item.revision, 2);
+    assert.equal(item.status, "draft");
+    assert.equal(item.approval, null);
+    assert.equal(item.versions.length, 2);
+    assert.equal(item.versions[0]!.draft.text, "");
+    const version = item.versions[1]!;
+    assert.ok(version.draft.text.length >= 80);
+    assert.ok(
+      receipts.some(
+        (receipt) =>
+          receipt.operation === "revise-item" &&
+          receipt.result_object_id === item.id &&
+          receipt.result_version_ref === "2",
+      ),
+    );
+    assert.deepEqual(
+      version.draft,
+      payload.find((part) => part.targetId === item.id)!.payload,
+    );
+  }
+  const outline = final.items.find((item) => item.kind === "outline")!
+    .versions[1]!.draft.text;
+  for (const scene of ["一", "二", "三", "四", "五"])
+    assert.match(outline, new RegExp(`第${scene}场`));
+  assert.doesNotMatch(outline, /第六场|第6场/);
   assert.equal(preparations[0]!.task_request, task);
   assert.equal(
     receipts.filter((receipt) => receipt.operation === "prepare-generation")
@@ -827,9 +863,17 @@ try {
     "One atomic preparation receipt freezes the whole batch",
   );
   assert.equal(
+    receipts.filter((receipt) => receipt.operation === "revise-item").length,
+    3,
+  );
+  assert.equal(
+    receipts.filter((receipt) => receipt.operation === "submit-results").length,
+    1,
+  );
+  assert.equal(
     receipts.filter((receipt) => receipt.operation === "submit-candidate")
       .length,
-    3,
+    0,
   );
   const counts = Object.fromEntries(
     [
@@ -927,30 +971,36 @@ try {
   );
   const actualReceipt = inferenceCaptures("delivery").receipt;
   assert.equal(actualReceipt.ok, true);
-  assert.equal(actualReceipt.kind, "candidates");
+  assert.equal(actualReceipt.kind, "items");
+  assert.equal(actualReceipt.submissionMode, "current");
+  assert.equal(actualReceipt.saved, true);
+  assert.equal(actualReceipt.directoryReady, true);
   assert.equal(actualReceipt.inputId, confirmation.inputId);
   assert.equal(actualReceipt.reviewPasses, 1);
   assert.equal(actualReceipt.savedCount, 3);
   assert.deepEqual(
-    actualReceipt.results.map(
-      (result: { targetId: string }) => result.targetId,
-    ),
-    targets,
+    actualReceipt.results
+      .map((result: { targetId: string }) => result.targetId)
+      .sort(),
+    [...targets].sort(),
   );
   for (const result of actualReceipt.results) {
     assert.equal(result.status, "saved");
     assert.equal(result.saved, true);
-    const candidate = final.candidates.find(
-      (candidate) => candidate.id === result.candidateId,
-    );
+    const item = final.items.find((item) => item.id === result.itemId);
     assert.ok(
-      candidate,
-      "Final relay receives the actual domain candidate, not a generated receipt",
+      item,
+      "Final relay receives the actual saved manuscript, not an invented receipt",
     );
-    assert.equal(candidate.targetId, result.targetId);
-    assert.equal(result.receipt.entityId, candidate.id);
+    assert.equal(item.id, result.targetId);
+    assert.equal(item.revision, result.itemRevision);
+    assert.equal(result.receipt.entityId, item.id);
     assert.ok(
-      receipts.some((receipt) => receipt.result_object_id === candidate.id),
+      receipts.some(
+        (receipt) =>
+          receipt.operation === "revise-item" &&
+          receipt.result_object_id === item.id,
+      ),
     );
   }
   evidence.actualWorkflowReceipt = actualReceipt;
@@ -972,7 +1022,7 @@ try {
       passed: true,
       providerRequests: requests.length,
       logicalStages: counts,
-      candidateCount: 3,
+      currentManuscriptCount: 3,
       evidenceDirectory: directory,
     }),
   );

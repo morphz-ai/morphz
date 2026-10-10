@@ -679,47 +679,56 @@ domainTest(
       const emptyScene = await f.create("scene", scene, route);
       assert.deepEqual(await f.draft(emptyScene), f.empty("空分场", scene));
       const attempts: Partial<LiveScriptDraft>[] = [
-        { text: "不能直接进入正式稿" },
+        { text: "Agent 直接创建当前正文" },
         { basis: "adaptation" },
-        {
-          sources: [
-            {
-              appId: "morphz.objects",
-              instanceId: f.host.domains.content.instanceIds.objects,
-              objectId: "not-a-fixed-source",
-              versionRef: "1",
-              quote: "原文",
-            },
-          ],
-        },
         { dependencies: [{ itemId: character, revision: 1 }] },
         { location: "天台" },
         { storyTime: "天亮前" },
-        { characters: [character] },
+        {
+          characters: [character],
+          dependencies: [{ itemId: character, revision: 1 }],
+        },
         { audienceKnowledge: "观众知道" },
         { characterKnowledge: "角色知道" },
         { setupPayoff: "伏笔" },
         { productionNotes: "制作要求" },
       ];
-      for (const changes of attempts)
-        await f.unchanged(
-          () => f.create("episode", changes, route),
-          /只能建立空条目/,
-        );
+      for (const changes of attempts) {
+        const created = await f.create("episode", changes, route);
+        assert.deepEqual(await f.draft(created), f.empty("episode", changes));
+      }
       await f.unchanged(
         () =>
           f.create(
-            "scene",
+            "episode",
             {
-              ...scene,
-              dependencies: [
-                ...scene.dependencies,
-                { itemId: character, revision: 1 },
+              sources: [
+                {
+                  appId: "morphz.objects",
+                  instanceId: f.host.domains.content.instanceIds.objects,
+                  objectId: "not-a-fixed-source",
+                  versionRef: "1",
+                  quote: "原文",
+                },
               ],
             },
             route,
           ),
-        /空分场|空条目/,
+        /原件|来源|权限|可用/,
+      );
+      const detailedScene = {
+        ...scene,
+        text: "Agent 分场正文",
+        dependencies: [
+          ...scene.dependencies,
+          { itemId: character, revision: 1 },
+        ],
+        characters: [character],
+      };
+      const writtenScene = await f.create("scene", detailedScene, route);
+      assert.deepEqual(
+        await f.draft(writtenScene),
+        f.empty("scene", detailedScene),
       );
       await f.revise(parent, { text: `父集人工新版 ${allowed}` });
       await f.unchanged(

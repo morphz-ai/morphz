@@ -199,12 +199,12 @@ export const scriptStudioApplication: ApplicationManifest = {
   id: "morphz.script-studio",
   version: "1.0.0",
   title: "剧本工作室",
-  description: "从创作要求到分集分场、候选审改与锁稿交付。",
+  description: "构思剧本与人物，直接创作分集分场，指导修改并回退版本。",
   icon: "film",
   permissions: ["input.compose"],
   // New inputs snapshot this execution package; existing inputs/retries keep
   // their immutable Harness reference. The builtin UI protocol stays v1.
-  harness: { id: "morphz.script-studio", version: "1.4.4" },
+  harness: { id: "morphz.script-studio", version: "2.0.0" },
   ui: { type: "builtin", view: "script-studio", presentation: "workspace" },
 };
 

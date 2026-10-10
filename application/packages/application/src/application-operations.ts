@@ -441,9 +441,11 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
       for (const command of scriptCommandSchema.options) {
         const name = command.shape.action.value;
         const labels: Record<string, string> = {
-          "create-production": "创建空剧本",
+          "create-production": "创建剧本",
           "create-item":
-            "创建空创作条目；分场须 parentId 与 dependencies 绑定所属集当前版本，可含地点、时间及确切角色引用",
+            "创建创作条目并保存正文；分场须 parentId 与 dependencies 绑定所属集当前版本，可含地点、时间及确切角色引用",
+          "revise-item": "修改当前正文并保存新版本",
+          "restore-item": "把确切历史版本恢复为新的当前正文",
           "submit-candidate": "提交已固定范围的候选",
           "add-review": "提交已固定版本的审阅意见",
         };
@@ -492,14 +494,24 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
       );
     }
   }
-  const isScriptCreation = (op: Definition) =>
-    op.id === "script.create-production" || op.id === "script.create-item";
+  const isScriptDirectWrite = (op: Definition) =>
+    [
+      "script.create-production",
+      "script.create-item",
+      "script.revise-item",
+      "script.restore-item",
+    ].includes(op.id);
   const summary = (op: Definition) => ({
     id: op.id,
     domain: op.domain,
     title: op.title,
     effect: op.effect,
-    ...(op.domain === "script" && !isScriptCreation(op)
+    ...(op.domain === "script" &&
+    [
+      "script.prepare-workflow",
+      "script.submit-workflow",
+      "script.read-workflow",
+    ].includes(op.id)
       ? { harness: scriptStudioApplication.harness }
       : {}),
   });
@@ -522,9 +534,9 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
           "由 Host 从真实输入推导身份、项目、权限；参数不能选择操作者或伪造用户。调用与按钮共用领域校验。",
         ...(op.domain === "script"
           ? {
-              workflow: isScriptCreation(op)
-                ? "用户明确要求新建时直接调用本操作，无需 Harness、已有剧本或先打开工作室。创建空对象并核对真实回执；生成正文另走编剧 Harness，创建不代表生成、采纳或权利确认。"
-                : "明确要求生成/改写/检查时选择本应用 Harness，由 Yao 完成意图→工具查找/准备→创作→检查/修订→保存。不要求先打开工作室或点击按钮，也不要求额外启用 Agent 或确认模型处理许可。讨论不保存；歧义才追问；真实项目或原作访问权限不足则说明缺口，不伪造资料来源或权利声明。",
+              workflow: isScriptDirectWrite(op)
+                ? "用户明确要求创建、修改或回退时直接调用本操作，无需 Harness 或先打开工作室。使用真实版本与完整正文核对回执；回退追加新版本，不删除历史。保存不等于批准、锁稿或发布。"
+                : "明确要求生成/改写/检查时选择本应用 Harness，由 Yao 完成意图→工具查找/准备→创作→检查/修订→直接保存当前正文，新输入准备明确传 submissionMode=current，每目标一个结果。用户可继续指导修改或回退，不需要采纳；历史在途契约保持不变。不要求先打开工作室或额外启用 Agent。讨论不保存；歧义才追问；真实项目或原作访问权限不足则说明缺口，不伪造资料来源或权利声明。",
             }
           : {}),
       };

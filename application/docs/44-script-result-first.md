@@ -18,9 +18,32 @@
 Electron 验收。回归第一次发现的两处 v6 测试重建保留了新增列，已经记录原
 失败并恢复精确旧物理结构；旧哈希、旧引用、正文、权限及冷重开断言仍保留。
 
-领域证据在 `/private/tmp/morphz-script-result-first-Ut1WST`。原 App 的代码尚未
-更新；后台 Runtime 未操作。接下来仍须完成 Host／新 Harness／Client 的默认当前
-结果闭环、顶部 UI 收敛、正式 IPC／真实 Client 测试和同一原 App 实操。
+领域证据在 `/private/tmp/morphz-script-result-first-Ut1WST`。Host／Harness／Client
+阶段现已通过正式回归；原 App 的代码尚未更新，后台 Runtime 未操作。
+顶部 UI 收敛、编译 Web 交互和同一原 App 新流程实操仍未完成。
+
+Host 默认选择 2.0.0 Harness 和 current 冻结模式；有正文创建、修订、回退
+均通过真实调用权限表及正式 Unix IPC，不仅是能力目录描述。旧 1.4.4 包原字节
+归档，新输入不自动调用旧采纳命令；旧输入的模式和请求哈希保持。应用整批
+提交后按确切子回执投影，投影失败报告 saved=true／directoryReady=false，
+同输入换工具 ID 只补偿原投影，不追加版本。补齐缺少父集依赖时的领域错误，
+不再抛内部空值异常；完整 Agent 分场写入与陈旧父集拒绝均实测。
+
+正式 `npm test` 十二个定向文件最终 82／82、零 skip／cancel，入口实际核验
+专用 PostgreSQL；包括双库领域、服务、正式双身份 IPC、真实 Human HTTP Client、
+丢响应冷恢复、整批回滚、目录补偿和旧在途契约。类型检查及聚焦格式通过。
+首次 IPC fixture 半关闭 socket 导致 PG 异步响应未读完，改为与生产一致的
+完整请求／响应帧读取；并非 PG 不可用。旧 Agent 空条目限制测试已改为实际
+有正文正向断言，来源、CAS、结构、锁稿与权限负向断言保留。HTTP fixture 的
+文档域注入及旧标题期望错误也保留首次失败，修正设施与期望后复验。
+
+`npm run test:script-multi-runtime` 使用真实 Rust Runtime／Plan、Unix IPC、SQLite
+与隔离受控 HTTP 模型完成一轮三目标创作：12 次模型请求，三项正文均 v2，
+旧 v1 保留，候选数为 0，三条修订回执加一条整批回执，精确交付均可读。
+证据 `/var/folders/ql/kcn3hlyd0_nd3rvyqcqptc980000gn/T/morphz-script-multi-runtime-jEA4J8`。
+首次运行因工具说明超过 Runtime 16000 字节上限而拒载，精简说明并新增两种
+实际工具定义的长度断言；没有放宽 Runtime 上限。首次失败证据 e7qRk6 保留。
+这是协议／持久执行验收，不是付费真实模型创作品质或原 App 操作验收。
 
 用户追加“已有候选直接转成正文”后，已在同一原 App 完成一次性迁移：现有
 7 份待定候选（《领证前夜》4 份、既有 TEST 剧本 3 份）都追加为当前 v2。

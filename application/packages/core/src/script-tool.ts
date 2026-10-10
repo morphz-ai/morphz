@@ -85,6 +85,8 @@ export const scriptToolSchema = z.discriminatedUnion("action", [
       .max(12)
       .optional(),
     task: z.string().max(12000).optional(),
+    // No parser default: historical inputs retain their exact candidate contract.
+    submissionMode: z.enum(["candidate", "current"]).optional(),
   }),
   z
     .object({

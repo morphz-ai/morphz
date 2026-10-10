@@ -5473,15 +5473,22 @@ export class ScriptStudioStore {
         )[0];
         if (!parent || parent.kind !== "episode")
           throw new DomainError("invalid", "分场必须属于本剧的一集。");
+        const parentReference = draft.dependencies.find(
+          (ref) => ref.itemId === draft.parentId,
+        );
+        if (!parentReference)
+          throw new DomainError(
+            "invalid",
+            "所属集必须同时绑定依赖版本：dependencies 应包含所属集当前修订。",
+          );
         if (
           actor.kind === "agent" &&
           safeInteger(parent.head_revision, "所属集修订") !==
-            draft.dependencies.find((ref) => ref.itemId === draft.parentId)!
-              .revision
+            parentReference.revision
         )
           throw new DomainError(
             "conflict",
-            "Agent 创建空分场必须绑定所属集当前版本；请重新读取该集。",
+            "Agent 创建分场必须绑定所属集当前版本；请重新读取该集。",
           );
       }
       const dependencyIds = new Set<string>();
@@ -5628,10 +5635,6 @@ export class ScriptStudioStore {
     });
   }
 
-  /** Human editing commits one immutable version and invalidates approvals of
-   * affected descendants in the same app transaction. The outbox is the only
-   * source from which Platform may advance its observed production revision.
-   */
   /** Commit every prepared result as a current version, never as a candidate.
    * A single app transaction owns all heads, provenance, reports and outbox.
    * Platform consumes the outbox afterwards; it is not a second manuscript store.
@@ -7339,8 +7342,8 @@ export class ScriptStudioStore {
     }, true);
   }
 
-  /** A directory revision is proved by the exact Human-authored immutable
-   * item version and its outbox event, not by a caller's claimed activity ID.
+  /** A directory revision is proved by the exact immutable item version
+   * and its outbox event, not by a caller's claimed activity ID.
    */
   async verifyCommittedItemRevision(request: {
     tenantId: string;
@@ -7362,8 +7365,11 @@ export class ScriptStudioStore {
         event_version_ref: string;
         author_principal_id: string;
         author_actant_id: string;
+        result_object_id: string;
+        batch_id: string | null;
+        batch_version_ref: string | null;
       }>(
-        "SELECT p.title,p.activity_revision,r.input_id,r.task_run_event_id,o.version_ref AS event_version_ref,v.author_principal_id,v.author_actant_id FROM script_command_receipts r JOIN script_outbox o ON o.tenant_id=r.tenant_id AND o.event_id=r.command_id AND o.production_id=? AND o.version_ref=? AND o.event_kind='script.item-revised' JOIN script_productions p ON p.tenant_id=o.tenant_id AND p.production_id=o.production_id JOIN script_items i ON i.tenant_id=p.tenant_id AND i.production_id=p.production_id AND i.item_id=r.result_object_id AND o.object_id=i.item_id JOIN script_item_versions v ON v.tenant_id=i.tenant_id AND v.item_id=i.item_id AND v.revision=CAST(r.result_version_ref AS BIGINT) WHERE r.tenant_id=? AND r.command_id=? AND r.operation='revise-item' AND p.deleted_at IS NULL",
+        "SELECT p.title,p.activity_revision,r.input_id,r.task_run_event_id,r.result_object_id,o.version_ref AS event_version_ref,v.author_principal_id,v.author_actant_id,b.command_id AS batch_id,b.result_version_ref AS batch_version_ref FROM script_command_receipts r JOIN script_outbox o ON o.tenant_id=r.tenant_id AND o.event_id=r.command_id AND o.production_id=? AND o.version_ref=? AND o.event_kind='script.item-revised' JOIN script_productions p ON p.tenant_id=o.tenant_id AND p.production_id=o.production_id JOIN script_items i ON i.tenant_id=p.tenant_id AND i.production_id=p.production_id AND i.item_id=r.result_object_id AND o.object_id=i.item_id JOIN script_item_versions v ON v.tenant_id=i.tenant_id AND v.item_id=i.item_id AND v.revision=CAST(r.result_version_ref AS BIGINT) LEFT JOIN script_command_receipts b ON b.tenant_id=r.tenant_id AND b.input_id=r.input_id AND b.operation='submit-results' AND b.result_object_id=p.production_id WHERE r.tenant_id=? AND r.command_id=? AND r.operation='revise-item' AND p.deleted_at IS NULL",
         [
           request.productionId,
           request.versionRef,
@@ -7374,7 +7380,17 @@ export class ScriptStudioStore {
       return (
         rows.length === 1 &&
         rows[0]!.title === request.title &&
-        String(rows[0]!.activity_revision) === request.versionRef &&
+        (String(rows[0]!.activity_revision) === request.versionRef ||
+          (typeof rows[0]!.batch_id === "string" &&
+            typeof rows[0]!.result_object_id === "string" &&
+            resultItemCommandId(
+              rows[0]!.batch_id,
+              rows[0]!.result_object_id,
+            ) === request.receiptId &&
+            String(rows[0]!.batch_version_ref) ===
+              String(rows[0]!.activity_revision) &&
+            Number(rows[0]!.activity_revision) >=
+              Number(request.versionRef))) &&
         rows[0]!.event_version_ref === request.versionRef &&
         rows[0]!.input_id === request.runtimeInputId &&
         rows[0]!.task_run_event_id ===

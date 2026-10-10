@@ -7,6 +7,16 @@ import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 import type { RecordedInput } from "../packages/core/src/model.js";
 import { workInputRequest } from "../packages/application/src/session-io.js";
 import { receivedWorkflowText } from "../scripts/script-studio-quality-evidence.js";
+import { workToolDefinitions } from "../packages/application/src/agent-tools.js";
+
+test("两种 Host 工具说明都符合真实 Runtime 的 16000 字节上限", () => {
+  for (const definition of workToolDefinitions) {
+    assert.ok(Buffer.byteLength(definition.description, "utf8") <= 16000);
+    assert.match(definition.description, /restore old versions as new heads/);
+    assert.match(definition.description, /submissionMode=current/);
+    assert.doesNotMatch(definition.description, /Humans edit\/adopt/);
+  }
+});
 
 test("真实素材读取证据解码 JSON 后比较原文，不把换行转义误判为未读取", () => {
   const text = '原文第一行\n第二行："铜钥匙"，不是模型回显。';
@@ -74,7 +84,7 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
   );
   assert.deepEqual(scriptStudioApplication.harness, {
     id: "morphz.script-studio",
-    version: "1.4.4",
+    version: "2.0.0",
   });
   assert.equal(
     createHash("sha256")
@@ -102,7 +112,7 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
       .digest("hex"),
     "31118476c3dedef7c95a18d2b1545b9c8ed749f7fca113e1258fe8c941246aaa",
   );
-  assert.match(source, /\(version "1\.4\.4"\)/);
+  assert.match(source, /\(version "2\.0\.0"\)/);
   for (const [version, hash] of [
     [
       "1.4.0",
@@ -115,6 +125,10 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
     [
       "1.4.3",
       "b2539bab37bf101894bfba3542d4ebe75d82b58e6a5266d553ff158e43cdb9ff",
+    ],
+    [
+      "1.4.4",
+      "8c6050d77490fa6783ba0ec4c1681d3ef09384e6a54c82768490a3b56b1808ac",
     ],
   ] as const) {
     const archived = readFileSync(
@@ -195,7 +209,7 @@ test("准备阶段允许明确新建空对象，未绑定目标不再被误当�
   assert.doesNotMatch(prepare, /不能调用command或submit-workflow/);
 });
 
-test("交付提示按逐项事实汇报部分保存，不用批次失败推断所有项目未保存", () => {
+test("新正文报告原子写入与投影事实，旧输入保持候选兼容，不从失败响应猜回滚", () => {
   const source = readFileSync(
     new URL("../harnesses/script-studio.hns", import.meta.url),
     "utf8",
@@ -204,20 +218,22 @@ test("交付提示按逐项事实汇报部分保存，不用批次失败推断�
     source.indexOf("STAGE script-delivery。"),
     source.indexOf("(eval"),
   );
-  assert.match(delivery, /单目标 ok=false.*不称已保存/);
-  assert.match(
-    delivery,
-    /多目标以逐项 results 为准，不根据批次 ok 推断各项是否保存/,
-  );
+  assert.match(delivery, /saved=true说明全部正文原件已保存/);
+  assert.match(delivery, /directoryReady=false说明目录待恢复，不重新生成/);
+  assert.match(delivery, /新批次全量保存或全量回滚/);
   assert.match(
     delivery,
     /saved已保存，saved-projection-pending已写应用原件但目录待恢复/,
   );
   assert.match(delivery, /unknown不能称未保存或已保存/);
+  assert.match(delivery, /新正文无需采纳.*回退版本/);
+  assert.match(source, /submissionMode="current",maxCandidates=1/);
+  assert.match(source, /baseRevision\+1.*完整数组中真实交付的其他目标/);
+  assert.doesNotMatch(source, /正式稿、采纳、批准、锁稿和导出仍由Human控制/);
   assert.doesNotMatch(delivery, /已执行自审次数；ok=false/);
 });
 
-test("新输入绑定 1.4.4；历史请求和回执重试保留原 Harness 版本", async () => {
+test("新输入绑定 2.0.0；历史请求和回执重试保留原 Harness 版本", async () => {
   const f = await platformRuntimeHostFixture();
   try {
     const command = {
@@ -276,6 +292,7 @@ test("新输入绑定 1.4.4；历史请求和回执重试保留原 Harness 版�
       "1.4.0",
       "1.4.2",
       "1.4.3",
+      "1.4.4",
     ]) {
       const historical = structuredClone(input);
       historical.application!.harness = { id: "morphz.script-studio", version };
