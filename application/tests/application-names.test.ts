@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { ZodError } from "zod";
 import { createRequire } from "node:module";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,10 +31,8 @@ const {
   compatibleBootstrap,
 } = require("../scripts/desktop-bundle.mjs");
 
-test("current input contracts use canonical names while legacy formats remain registered", () => {
-  const current = workInputFormats.filter(
-    (format) => format.id === "morphz.application.input",
-  );
+test("all registered input contracts use the canonical Host tool without retired formats", () => {
+  const current = workInputFormats;
   assert.deepEqual(
     current.map((format) => format.version),
     ["12", "11", "10", "9", "8", "5", "4", "3", "2", "1"],
@@ -122,25 +121,17 @@ test("legacy HTTP headers retry the same command without duplicates or a CSRF by
   }
 });
 
-test("旧输入注册定义摘要不变；旧单工具清单升级保留 token 和作用范围", () => {
-  const digests = workInputFormats
-    .filter((format) => format.id === "morphzwork.input")
-    .map((value) =>
-      createHash("sha256").update(JSON.stringify(value)).digest("hex"),
-    );
-  assert.deepEqual(digests, [
-    "7119aede3e278014ad0c19ebb31efbd21984412281ccd4968e01bd572837c026",
-    "9fbf6b9715556bfae62dc01373e3d4af884b6a5d02fcbc22573115f3e691635b",
-  ]);
+test("重新生成清单只有唯一当前定义；重复缓存撤下，凭据和作用域保持且冲突被拒绝", () => {
   const directory = mkdtempSync(join(tmpdir(), "morphz-names-manifest-"));
   try {
     const namespace = randomUUID();
     const first = prepareLocalHostTools(directory, namespace);
     const manifest = JSON.parse(readFileSync(first.path, "utf8"));
     manifest.formats = workInputFormats.slice(1);
-    manifest.tools = manifest.tools.filter(
-      (tool: any) => tool.definition.name === "host_morphz_work",
-    );
+    manifest.tools.push({
+      ...manifest.tools[0],
+      definition: { ...manifest.tools[0].definition, name: "host_morphz_work" },
+    });
     writeFileSync(first.path, JSON.stringify(manifest), { mode: 0o600 });
     const next = prepareLocalHostTools(directory, namespace);
     assert.equal(next.token, first.token);
@@ -148,13 +139,14 @@ test("旧输入注册定义摘要不变；旧单工具清单升级保留 token �
     const updated = JSON.parse(readFileSync(next.path, "utf8"));
     assert.deepEqual(
       updated.tools.map((tool: any) => tool.definition.name),
-      ["host_morphz", "host_morphz_work"],
+      ["host_morphz"],
     );
+    assert.deepEqual(updated.formats, workInputFormats);
     assert.deepEqual(
       updated.tools[0].context_ids,
       manifest.tools[0].context_ids,
     );
-    updated.tools[1].token = "f".repeat(64);
+    updated.tools.push({ ...updated.tools[0], token: "f".repeat(64) });
     const conflicting = JSON.stringify(updated);
     writeFileSync(first.path, conflicting);
     assert.throws(() => prepareLocalHostTools(directory, namespace), /不匹配/);
@@ -321,7 +313,7 @@ test("只迁移已认证身份的存储键，保留旧字节与新值，不重�
   assert.deepEqual([...data], entries);
 });
 
-test("同一 Platform 领域回执在新旧 Host 名称下重试，不重复写入", async () => {
+test("退役 Host 名称被拒绝；唯一当前名称的原回执在重开后仍可重试", async () => {
   const fixture = await agentDomainFixture();
   try {
     const request = {
@@ -330,16 +322,36 @@ test("同一 Platform 领域回执在新旧 Host 名称下重试，不重复写�
         title: "Rename retry fixture",
         markdown: "original",
       }),
-      tool: "host_morphz_work",
+      tool: "host_morphz",
     };
+    await assert.rejects(
+      async () => fixture.tools.call({ ...request, tool: "host_morphz_work" }),
+      (error: unknown) =>
+        error instanceof ZodError &&
+        error.issues.some(
+          (issue) =>
+            issue.path.join(".") === "tool" && issue.code === "invalid_value",
+        ),
+    );
+    assert.equal(
+      (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
+        .length,
+      0,
+    );
     const first = await fixture.tools.call(request);
     const after = await fixture.call<{ items: unknown[] }>({ action: "list" });
     assert.equal(after.items.length, 1);
-    assert.deepEqual(
-      await fixture.tools.call({ ...request, tool: "host_morphz" }),
-      first,
-    );
+    assert.deepEqual(await fixture.tools.call(request), first);
     await fixture.reopen();
+    await assert.rejects(
+      async () => fixture.tools.call({ ...request, tool: "host_morphz_work" }),
+      (error: unknown) =>
+        error instanceof ZodError &&
+        error.issues.some(
+          (issue) =>
+            issue.path.join(".") === "tool" && issue.code === "invalid_value",
+        ),
+    );
     assert.deepEqual(await fixture.tools.call(request), first);
     assert.deepEqual(await fixture.call({ action: "list" }), after);
     fixture.assertNoLegacyData();

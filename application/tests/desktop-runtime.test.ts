@@ -23,7 +23,20 @@ test("Runtime launcher accepts the Host manifest budget without loosening privat
     const center = join(root, "center");
     mkdirSync(center, { mode: 0o700 });
     const manifest = prepareLocalHostTools(center, randomUUID()).path;
-    const validManifest = readFileSync(manifest);
+    const generated = readFileSync(manifest);
+    assert.deepEqual(
+      JSON.parse(generated.toString()).tools.map(
+        (tool: any) => tool.definition.name,
+      ),
+      ["host_morphz"],
+    );
+    // Exercise the launcher budget above 128KiB without restoring duplicate
+    // schemas. JSON trailing whitespace changes no tool or authority.
+    const validManifest = Buffer.concat([
+      generated,
+      Buffer.alloc(Math.max(0, 129 * 1024 - generated.length), 0x20),
+    ]);
+    writeFileSync(manifest, validManifest, { mode: 0o600 });
     assert.ok(validManifest.byteLength > 128 * 1024);
     assert.ok(validManifest.byteLength <= 256 * 1024);
     const config = join(center, "runtime.json");

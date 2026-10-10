@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, lstatSync } from "node:fs";
+import { mkdtempSync, readFileSync, lstatSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -30,6 +30,136 @@ const envelope = (args: unknown, job = randomUUID()) => ({
   tool: "host_morphz",
   invocation: { ...route, job_id: job },
   arguments: args,
+});
+
+test("文档局部修订复用原工具：只传替换片段，保留原文、历史、重开回执与冲突", async () => {
+  const fixture = await agentDomainFixture();
+  try {
+    const markdown =
+      "# 测试文章\r\n\r\n前文保持。\n菜贩剥下的老叶落在筐边。\n后文保持。\n" +
+      "其他文字不改。".repeat(2000);
+    const created = await fixture.call<{ contentId: string }>({
+      action: "create-document",
+      title: "TEST 精确局部修订",
+      markdown,
+    });
+    const arguments_ = {
+      action: "revise-document",
+      artifactId: created.contentId,
+      revision: 1,
+      edits: [{ old_text: "剥下", new_text: "摘下" }],
+    };
+    const revise = fixture.envelope(arguments_);
+    assert.ok(JSON.stringify(revise.arguments).length < 300);
+    const revised = await fixture.tools.call(revise);
+    assert.deepEqual(await fixture.tools.call(revise), revised);
+    const current = await fixture.call<{
+      objectId: string;
+      text: string;
+      title: string;
+    }>({ action: "read", artifactId: created.contentId });
+    const expected = markdown.replace("剥下", "摘下");
+    assert.equal(current.text, expected.slice(0, current.text.length));
+    assert.deepEqual(
+      (
+        await fixture.withHuman((actor) =>
+          fixture.domains.content.objects.readObject({
+            credential: actor.credential,
+            objectId: current.objectId,
+          }),
+        )
+      ).content,
+      { kind: "document", markdown: expected },
+    );
+    const original = await fixture.withHuman((actor) =>
+      fixture.domains.content.objects.readObject({
+        credential: actor.credential,
+        objectId: current.objectId,
+        revision: 1,
+      }),
+    );
+    assert.equal(original.title, "TEST 精确局部修订");
+    assert.deepEqual(original.content, { kind: "document", markdown });
+    await assert.rejects(fixture.call(revise.arguments), /版本|修订/);
+    await assert.rejects(
+      fixture.call({ ...arguments_, revision: 2, markdown: "不能混用" }),
+      /不能|互斥|之一|同时/,
+    );
+    await assert.rejects(
+      fixture.call({
+        ...arguments_,
+        revision: 2,
+        edits: [{ old_text: "没有这段", new_text: "不能猜" }],
+      }),
+      /未找到|找不到/,
+    );
+    await assert.rejects(
+      fixture.call({
+        ...arguments_,
+        revision: 2,
+        edits: [{ old_text: "其他文字", new_text: "含糊" }],
+      }),
+      /多处|多次|唯一/,
+    );
+    assert.equal(
+      (
+        await fixture.call<{ text: string }>({
+          action: "read",
+          artifactId: created.contentId,
+        })
+      ).text,
+      current.text,
+    );
+    const described = await fixture.call<{
+      operation: { parameters: { properties: Record<string, unknown> } };
+    }>({
+      action: "operations",
+      operations: {
+        action: "describe",
+        operationId: "content.revise-document",
+      },
+    });
+    // Both direct calls and discovered operations must advertise and execute the same patch.
+    assert.ok(JSON.stringify(described).includes('"edits"'));
+    const viaDiscovery = fixture.envelope({
+      action: "operations",
+      operations: {
+        action: "invoke",
+        operationId: "content.revise-document",
+        parameters: {
+          artifactId: created.contentId,
+          revision: 2,
+          edits: [{ old_text: "前文保持。", new_text: "前文仍保持。" }],
+        },
+      },
+    });
+    await fixture.tools.call(viaDiscovery);
+    await fixture.reopen();
+    assert.deepEqual(await fixture.tools.call(revise), revised);
+    const versions = await fixture.withHuman((actor) =>
+      fixture.domains.content.objects.listObjectVersions({
+        credential: actor.credential,
+        objectId: current.objectId,
+      }),
+    );
+    assert.equal(versions.versions.length, 3);
+    assert.deepEqual(
+      (
+        await fixture.withHuman((actor) =>
+          fixture.domains.content.objects.readObject({
+            credential: actor.credential,
+            objectId: current.objectId,
+          }),
+        )
+      ).content,
+      {
+        kind: "document",
+        markdown: expected.replace("前文保持。", "前文仍保持。"),
+      },
+    );
+  } finally {
+    await fixture.close();
+  }
 });
 
 test("新工具契约只公布已接入领域的操作，不再诱导 Agent 调用旧事项或工作区接口", () => {
@@ -559,8 +689,22 @@ test("Host 工具凭据保持稳定、只在主机文件中，不接受不同中
   }
   assert.deepEqual(
     data.tools.map((t: any) => t.definition.name),
-    ["host_morphz", "host_morphz_work"],
+    ["host_morphz"],
   );
+  const cached = structuredClone(data);
+  cached.tools.push({
+    ...cached.tools[0],
+    definition: { ...cached.tools[0].definition, name: "host_morphz_work" },
+  });
+  writeFileSync(first.path, JSON.stringify(cached), { mode: 0o600 });
+  const refreshed = prepareHostTools(directory, 65420, namespace);
+  assert.equal(refreshed.token, first.token);
+  const current = JSON.parse(readFileSync(refreshed.path, "utf8"));
+  assert.deepEqual(
+    current.tools.map((tool: any) => tool.definition.name),
+    ["host_morphz"],
+  );
+  assert.deepEqual(current.tools[0].context_ids, cached.tools[0].context_ids);
   assert.deepEqual(
     data.formats.map((f: any) => [f.id, f.version]),
     [
@@ -574,8 +718,6 @@ test("Host 工具凭据保持稳定、只在主机文件中，不接受不同中
       ["morphz.application.input", "3"],
       ["morphz.application.input", "2"],
       ["morphz.application.input", "1"],
-      ["morphzwork.input", "2"],
-      ["morphzwork.input", "1"],
     ],
   );
   assert.equal(JSON.stringify(data.formats).includes(first.token), false);
@@ -659,6 +801,32 @@ test("Host HTTP rejects UI credentials, browser origins and missing service cred
     const accepted = await post({ Authorization: "Bearer test-host-token" });
     assert.equal(accepted.status, 200);
     assert.equal(((await accepted.json()) as { ok: boolean }).ok, true);
+    const retired = await fetch(origin + "/api/host-tools/call", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer test-host-token",
+      },
+      body: JSON.stringify({
+        ...fixture.envelope({
+          action: "create-document",
+          title: "TEST 不得写入",
+          markdown: "退役调用",
+        }),
+        tool: "host_morphz_work",
+      }),
+    });
+    assert.equal(retired.status, 200);
+    assert.deepEqual(await retired.json(), {
+      ok: false,
+      code: "invalid",
+      message: "工具参数无效。",
+    });
+    assert.equal(
+      (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
+        .length,
+      0,
+    );
     const invalid = await post(
       { Authorization: "Bearer test-host-token" },
       { action: "create-document" },

@@ -2,6 +2,7 @@ import {
   DomainError,
   contentOrganizationChangesSchema,
 } from "../../core/src/model.js";
+import { documentRevisionBodySchema } from "../../core/src/document-edits.js";
 import type {
   ApplicationProviderRoute,
   PlatformActor,
@@ -2498,16 +2499,16 @@ export class PlatformAgentTools {
       };
     }
     if (args.action === "revise-document") {
-      if (
-        !args.artifactId ||
-        !args.revision ||
-        !args.title ||
-        args.markdown === undefined
-      )
+      if (!args.artifactId || !args.revision)
         throw new DomainError(
           "invalid",
-          "修订需要目录内容、版本、标题和正文。",
+          "修订需要目录内容和确切版本；局部修改请用 edits，无需重传全文。",
         );
+      const body = documentRevisionBodySchema.parse({
+        title: args.title,
+        markdown: args.markdown,
+        edits: args.edits,
+      });
       const entry = await content.platform.content(actor, args.artifactId);
       if (
         entry.project_id !== projectId ||
@@ -2522,8 +2523,7 @@ export class PlatformAgentTools {
         commandId: this.commandId(route),
         objectId: entry.app_object_id,
         expectedRevision: args.revision,
-        title: args.title,
-        markdown: args.markdown,
+        ...body,
       });
       return {
         ok: true,

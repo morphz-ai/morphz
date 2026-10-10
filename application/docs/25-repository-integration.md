@@ -100,14 +100,19 @@ The remaining old names are not new product names or default development entry p
 - Existing data/profile directories, Chromium partitions, cookies, draft keys and configuration
   aliases preserve the original installation and authenticated identity. New installations use
   current names; conflicting old/new data directories fail explicitly instead of guessing.
-- Frozen old input definitions, installed UI protocols and Host tool aliases remain readable and
-  retryable under their original identities. Do not rewrite definitions, HTML, queued requests,
-  command identities or model-provider IDs just to remove a string.
+- During development, retired Host tools are deleted, not retained as execution aliases or
+  duplicate advertised schemas. Only `host_morphz` is registered and accepted; retired names
+  are rejected even on retry. Current input contracts refer only to this tool; retired input
+  contracts are no longer provisioned. Existing Session records and receipts are not rewritten,
+  deleted or replayed. Installed UI protocols and stored model-provider identities are separate
+  boundaries, not a reason to preserve retired tool entry points.
 - The desktop Runtime launcher supplies both credential-variable names because a persisted model
   route can still reference the old one. The cutover verifier compares the actual 2026-09-12 old
   tool receipts; it must not rewrite historical evidence to today's name.
-- Compatibility tests explicitly exercise old storage, protocols and retries. Ordinary fixtures
-  use current headers/tool names; the retained legacy PDF is an existing-content fixture.
+- Existing storage/protocol tests preserve identity and content. Host-tool tests instead prove
+  one current definition, rejection of retired names, and durable retries only under the current
+  name. Generated HTTP/IPC manifests retain verified private credentials and exact scopes while
+  replacing duplicate cached definitions. The retained legacy PDF is an existing-content fixture.
 - Historical checkout paths, backups and dated acceptance records retain what actually happened.
   They are not instructions to keep developing in the former repository.
 

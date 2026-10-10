@@ -19,10 +19,6 @@ import {
   hostIdempotentRequests,
 } from "./agent-tools.js";
 import { workInputFormats } from "./session-io.js";
-import {
-  objectToolName,
-  legacyObjectToolName,
-} from "../../core/src/application-names.js";
 
 const maxRequest = 4 * 1024 * 1024,
   maxResponse = 2 * 1024 * 1024;
@@ -80,6 +76,8 @@ export function prepareLocalHostTools(
   let token = randomBytes(32).toString("hex");
   if (existsSync(path)) {
     privateFile(path);
+    // Definitions are generated cache, not execution authority. Keep the exact
+    // private credential/scope, then replace all cached names with one current tool.
     const previous = z
       .object({
         protocol: z.literal(1),
@@ -91,11 +89,6 @@ export function prepareLocalHostTools(
                 token: z.string().regex(/^[a-f0-9]{64}$/),
                 context_ids: z.array(z.string()),
                 context_id_prefixes: z.array(z.string()).default([]),
-                definition: z
-                  .object({
-                    name: z.enum([objectToolName, legacyObjectToolName]),
-                  })
-                  .passthrough(),
               })
               .passthrough(),
           )
@@ -106,8 +99,6 @@ export function prepareLocalHostTools(
       .parse(JSON.parse(readFileSync(path, "utf8")));
     const tool = previous.tools[0]!;
     if (
-      new Set(previous.tools.map((value) => value.definition.name)).size !==
-        previous.tools.length ||
       previous.tools.some(
         (value) =>
           value.token !== tool.token ||
@@ -124,19 +115,17 @@ export function prepareLocalHostTools(
   const temporary = path + "." + randomBytes(6).toString("hex");
   writeFileSync(
     temporary,
-    JSON.stringify(
-      {
-        protocol: 1,
-        formats: workInputFormats,
-        tools: workToolDefinitions.map((definition) => ({
-          ipc_path: endpoint,
-          token,
-          ...scope,
-          idempotent_requests: hostIdempotentRequests,
-          definition,
-        })),
-      },
-    ),
+    JSON.stringify({
+      protocol: 1,
+      formats: workInputFormats,
+      tools: workToolDefinitions.map((definition) => ({
+        ipc_path: endpoint,
+        token,
+        ...scope,
+        idempotent_requests: hostIdempotentRequests,
+        definition,
+      })),
+    }),
     { flag: "wx", mode: 0o600 },
   );
   renameSync(temporary, path);

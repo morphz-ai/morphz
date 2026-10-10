@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { DocumentRevisionBody } from "../../../packages/core/src/document-edits.js";
 import {
   applicationInstanceSchema,
   uiPackageHeaderSchema,
@@ -1182,13 +1183,13 @@ export class PlatformClient {
     return this.call("documents.import", input);
   }
 
-  reviseDocument(input: {
-    commandId: string;
-    contentId: string;
-    expectedRevision: number;
-    title: string;
-    markdown: string;
-  }) {
+  reviseDocument(
+    input: {
+      commandId: string;
+      contentId: string;
+      expectedRevision: number;
+    } & DocumentRevisionBody,
+  ) {
     return this.call("documents.revise", input);
   }
 

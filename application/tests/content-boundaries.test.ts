@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { ZodError } from "zod";
 import { workToolDefinitions } from "../packages/application/src/agent-tools.js";
 import { agentDomainFixture } from "./agent-domain-fixture.js";
 
@@ -69,8 +70,7 @@ test("网站旧调用不会恢复写路径；浏览器收藏只写个人领域�
   const f = await agentDomainFixture();
   try {
     // Retired development workspace/receipt replay is deliberately not a
-    // supported storage authority. Immutable Runtime tool names may remain,
-    // but neither protocol name grants the removed website capability.
+    // supported storage authority. Retired tools and removed actions are rejected.
     for (const name of ["host_morphz", "host_morphz_work"])
       await assert.rejects(
         async () =>
@@ -83,7 +83,15 @@ test("网站旧调用不会恢复写路径；浏览器收藏只写个人领域�
             }),
             tool: name,
           }),
-        /尚未接入 Platform/,
+        name === "host_morphz"
+          ? /尚未接入 Platform/
+          : (error: unknown) =>
+              error instanceof ZodError &&
+              error.issues.some(
+                (issue) =>
+                  issue.path.join(".") === "tool" &&
+                  issue.code === "invalid_value",
+              ),
       );
     const saved = await f.call<any>({
       action: "bookmarks",

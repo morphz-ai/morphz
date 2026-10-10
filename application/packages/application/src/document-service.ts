@@ -6,6 +6,7 @@ import {
   type DocumentCommit,
 } from "../../objects/src/store.js";
 import type { InteractiveContent } from "../../core/src/interactive.js";
+import type { DocumentRevisionBody } from "../../core/src/document-edits.js";
 import type { InteractiveRowOperation } from "../../core/src/interactive.js";
 import {
   PlatformStore,
@@ -252,17 +253,17 @@ export async function createInteractive(request: {
   return commitCreatedObject({ ...request, kind: "interactive", original });
 }
 
-export async function reviseDocument(request: {
-  platform: PlatformStore;
-  objects: ObjectsStore;
-  actor: PlatformActor;
-  instanceId: string;
-  commandId: string;
-  objectId: string;
-  expectedRevision: number;
-  title: string;
-  markdown: string;
-}) {
+export async function reviseDocument(
+  request: {
+    platform: PlatformStore;
+    objects: ObjectsStore;
+    actor: PlatformActor;
+    instanceId: string;
+    commandId: string;
+    objectId: string;
+    expectedRevision: number;
+  } & DocumentRevisionBody,
+) {
   const original = await request.objects.reviseDocument({
     credential: request.actor.credential,
     commandId: request.commandId,
@@ -270,6 +271,7 @@ export async function reviseDocument(request: {
     expectedRevision: request.expectedRevision,
     title: request.title,
     markdown: request.markdown,
+    edits: request.edits,
   });
   return commitRevisedObject({ ...request, kind: "document", original });
 }

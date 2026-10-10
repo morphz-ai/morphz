@@ -138,6 +138,12 @@ const declarations = [
     capability: "runtime",
     flag: "MORPHZ_COGNITIVE_APPLICATION_RUNTIME_E2E",
   },
+  {
+    file: "host-tool-current-runtime.test.ts",
+    name: "实际 Rust 请求只公布唯一 Host 定义，局部片段经真实 Job 保存且历史原文不变",
+    capability: "runtime",
+    flag: "MORPHZ_PROFILE_RUNTIME_E2E",
+  },
 ] as const;
 const darwin = [
   {
@@ -213,7 +219,7 @@ test("required capability CSV is finite and cannot remove PostgreSQL", () => {
   assert.deepEqual(actual.selected, []);
 });
 
-test("exact fifteen optional integrations are declared opt-outs, not environment-unavailable successes", () => {
+test("explicit optional integrations are declared opt-outs, not environment-unavailable successes", () => {
   const actual = plan({}, { platform: "darwin" });
   for (const item of declarations) {
     assert.deepEqual(classifySkippedTest(data(item), actual), {
@@ -376,6 +382,22 @@ test("required Runtime checks only selected files and all corresponding exact fl
   );
   assert.equal(actual.selected.length, 1);
   assert.throws(
+    () => plan(runtime, { files: ["host-tool-current-runtime.test.ts"] }),
+    /Selected Runtime integration requires MORPHZ_PROFILE_RUNTIME_E2E=1/,
+  );
+  const currentHost = plan(
+    { ...runtime, MORPHZ_PROFILE_RUNTIME_E2E: "1" },
+    { files: ["host-tool-current-runtime.test.ts"] },
+  );
+  assert.equal(currentHost.selected.length, 1);
+  const currentDeclaration = declarations.find(
+    (value) => value.file === "host-tool-current-runtime.test.ts",
+  )!;
+  assert.throws(
+    () => classifySkippedTest(data(currentDeclaration), currentHost),
+    /Required or prepared test was skipped/,
+  );
+  assert.throws(
     () => classifySkippedTest(data(declarations[4]), actual),
     /Required or prepared test was skipped/,
   );
@@ -471,7 +493,9 @@ test("exact-original IO10 Runtime cases cannot borrow other cognitive flags or e
 });
 
 test("explicit IO11/12 integrations require their own opt-in and cannot excuse an enabled skip", () => {
-  const items = declarations.slice(13);
+  const items = declarations.filter(
+    (item) => item.file === "cognitive-app-application-actual-runtime.test.ts",
+  );
   assert.equal(items.length, 2);
   const selection = { files: [items[0]!.file] };
   const runtime = {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { refineDocumentRevision } from "../../core/src/document-edits.js";
 import { DomainError } from "../../core/src/model.js";
 import { scriptStudioApplication } from "../../core/src/applications.js";
 import { scriptCommandSchema } from "../../core/src/script-studio.js";
@@ -198,12 +199,14 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
     "create-document",
     "title markdown",
   );
-  simple(
+  add(
     "content.revise-document",
-    "修改文档，保留版本历史",
+    "精确局部修订文档（优先 edits），保留版本；全文重写才用 markdown 与 title",
     "write",
-    "revise-document",
-    "artifactId revision title markdown",
+    fields("artifactId revision", "title markdown edits").superRefine(
+      refineDocumentRevision,
+    ),
+    (params) => ({ action: "revise-document", ...params }),
   );
   simple(
     "content.organize",

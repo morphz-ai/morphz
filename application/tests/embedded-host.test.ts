@@ -489,6 +489,14 @@ test("真实 Unix 工具回调写入应用域；认证、拆帧、持久幂等�
     };
     const denied = await exchange({ protocol: 1, token: "wrong", request });
     assert.equal(denied.ok, false);
+    const retired = await exchange({
+      protocol: 1,
+      token: manifest.token,
+      request: { ...request, tool: "host_morphz_work" },
+    });
+    assert.equal(retired.ok, true);
+    assert.equal(retired.value.ok, false);
+    assert.equal(retired.value.code, "invalid");
     assert.equal(
       (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
         .length,

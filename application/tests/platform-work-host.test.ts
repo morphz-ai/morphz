@@ -1033,6 +1033,65 @@ test("HTTP 客户端与 Desktop 调用同一 Platform 项目操作", async () =>
       ).versions.map((version) => version.revision),
       [2],
     );
+    const localRevision = {
+      commandId: randomUUID(),
+      contentId: createdDocument.contentId,
+      expectedRevision: 2,
+      edits: [{ old_text: "第二", new_text: "第三" }],
+    };
+    const localResult = (await client.call(
+      "documents.revise",
+      localRevision,
+      options,
+    )) as { versionRef: string };
+    assert.equal(localResult.versionRef, "3");
+    assert.deepEqual(
+      await client.call("documents.revise", localRevision, options),
+      localResult,
+    );
+    const localRead = (await client.call("documents.read", {
+      contentId: createdDocument.contentId,
+    })) as { title: string; markdown: string };
+    assert.equal(localRead.title, "HTTP 文档修订");
+    assert.equal(localRead.markdown, "第三版");
+    assert.equal(
+      (
+        (await client.call("documents.read", {
+          contentId: createdDocument.contentId,
+          revision: 2,
+        })) as { markdown: string }
+      ).markdown,
+      "第二版",
+    );
+    await assert.rejects(
+      client.call(
+        "documents.revise",
+        { ...localRevision, commandId: randomUUID() },
+        options,
+      ),
+      /版本|修订/,
+    );
+    await assert.rejects(
+      client.call(
+        "documents.revise",
+        {
+          ...localRevision,
+          commandId: randomUUID(),
+          expectedRevision: 3,
+          edits: [{ old_text: "不存在", new_text: "不猜" }],
+        },
+        options,
+      ),
+      /未找到/,
+    );
+    assert.equal(
+      (
+        (await client.call("documents.read", {
+          contentId: createdDocument.contentId,
+        })) as { revision: number }
+      ).revision,
+      3,
+    );
     const script = {
       commandId: randomUUID(),
       productionId: `script_${randomUUID().replaceAll("-", "")}`,
@@ -1595,7 +1654,7 @@ test("HTTP 客户端与 Desktop 调用同一 Platform 项目操作", async () =>
         {
           id: createdDocument.contentId,
           title: "HTTP 文档修订",
-          observedVersionRef: "2",
+          observedVersionRef: "3",
         },
       ],
     );
@@ -1721,7 +1780,7 @@ test("HTTP 客户端与 Desktop 调用同一 Platform 项目操作", async () =>
       commandId: randomUUID(),
       contentId: createdDocument.contentId,
       targetProjectId: spaces.deskId,
-      expectedRevision: 2,
+      expectedRevision: 3,
     };
     assert.equal(
       await client.call("content.move", moved, options),
@@ -1749,7 +1808,7 @@ test("HTTP 客户端与 Desktop 调用同一 Platform 项目操作", async () =>
           options,
         )) as { markdown: string }
       ).markdown,
-      "第二版",
+      "第三版",
     );
     await assert.rejects(
       client.call(
@@ -1791,7 +1850,7 @@ test("HTTP 客户端与 Desktop 调用同一 Platform 项目操作", async () =>
       projectId: `project_${randomUUID().replaceAll("-", "")}`,
       title: "从内容建立的项目",
       contentId: createdDocument.contentId,
-      expectedRevision: 3,
+      expectedRevision: 4,
     };
     assert.equal(
       await client.call("content.move-new-project", newProject, options),
@@ -1819,7 +1878,7 @@ test("HTTP 客户端与 Desktop 调用同一 Platform 项目操作", async () =>
           options,
         )) as { markdown: string }
       ).markdown,
-      "第二版",
+      "第三版",
     );
     const original = (await client.call(
       "objects.read",

@@ -9,10 +9,9 @@ export const legacyApplicationWindowKey =
 export const applicationTokenHeader = "X-Morphz-Token";
 export const legacyApplicationTokenHeader = "X-MorphzWork-Token";
 export const objectToolName = "host_morphz";
-export const legacyObjectToolName = "host_morphz_work";
 
 export function isObjectToolName(name: string) {
-  return name === objectToolName || name === legacyObjectToolName;
+  return name === objectToolName;
 }
 
 /** An installed package keeps its original protocol; never rewrite its HTML. */

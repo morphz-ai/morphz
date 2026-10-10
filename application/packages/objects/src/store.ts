@@ -13,6 +13,12 @@ import {
   type Workspace,
 } from "../../core/src/model.js";
 import { contentText, searchTerms } from "../../core/src/retrieval.js";
+import {
+  applyDocumentEdits,
+  documentRevisionBodySchema,
+  type DocumentRevisionBody,
+  type DocumentEdit,
+} from "../../core/src/document-edits.js";
 import type { InteractiveContent } from "../../core/src/interactive.js";
 import { interactiveRowOperationSchema } from "../../core/src/interactive.js";
 import {
@@ -51,7 +57,11 @@ import {
   type SqlQuery,
   type SqlScalar,
 } from "../../storage/src/sql.js";
-import { sqliteChangeSource, postgresChangeSource, type SqlChangeSource } from "../../storage/src/commit-notifications.js";
+import {
+  sqliteChangeSource,
+  postgresChangeSource,
+  type SqlChangeSource,
+} from "../../storage/src/commit-notifications.js";
 import { objectsSchemaSql } from "./schema.js";
 
 const imageDigestIndexSql =
@@ -236,12 +246,15 @@ export class ObjectsStore {
     private readonly backend: Backend,
     private readonly authority?: ObjectsAuthority,
   ) {
-    this.sqlChanges = backend.kind === "sqlite"
-      ? sqliteChangeSource(backend.database)
-      : postgresChangeSource(backend.pool.options, backend.schema);
+    this.sqlChanges =
+      backend.kind === "sqlite"
+        ? sqliteChangeSource(backend.database)
+        : postgresChangeSource(backend.pool.options, backend.schema);
   }
 
-  changeSource(): SqlChangeSource { return this.sqlChanges; }
+  changeSource(): SqlChangeSource {
+    return this.sqlChanges;
+  }
 
   static async sqlite(
     filename: string,
@@ -1213,18 +1226,26 @@ export class ObjectsStore {
   /** The Platform directory supplies current membership and its observed
    * revision. A new app version is not stacked over an unprojected version.
    */
-  async reviseDocument(request: {
-    credential: string;
-    commandId: string;
-    objectId: string;
-    expectedRevision: number;
-    title: string;
-    markdown: string;
-  }): Promise<DocumentCommit> {
+  async reviseDocument(
+    request: {
+      credential: string;
+      commandId: string;
+      objectId: string;
+      expectedRevision: number;
+    } & DocumentRevisionBody,
+  ): Promise<DocumentCommit> {
+    const body = documentRevisionBodySchema.parse({
+      title: request.title,
+      markdown: request.markdown,
+      edits: request.edits,
+    });
     return this.reviseObjectVersion({
       ...request,
+      title: body.title,
       kind: "document",
-      content: { kind: "document", markdown: request.markdown },
+      ...(body.edits
+        ? { edits: body.edits }
+        : { content: { kind: "document" as const, markdown: body.markdown! } }),
     });
   }
 
@@ -1265,12 +1286,13 @@ export class ObjectsStore {
     commandId: string;
     objectId: string;
     expectedRevision: number;
-    title: string;
+    title?: string;
     kind: "document" | "image" | "interactive";
-    content:
+    content?:
       | { kind: "document"; markdown: string }
       | { kind: "image"; assetId: string; alt: string }
       | InteractiveContent;
+    edits?: DocumentEdit[];
     reference?: ObjectsByteReference;
   }): Promise<DocumentCommit> {
     if (!this.authority) throw new Error("Objects 尚未接入受信权限。");
@@ -1281,14 +1303,20 @@ export class ObjectsStore {
       request.expectedRevision < 1
     )
       throw new Error("内容预期版本无效。");
-    const title = request.title.trim();
-    if (!title || title.length > 180) throw new Error("内容标题无效。");
-    const content = contentSchema.parse(request.content);
-    if (content.kind !== request.kind) throw new Error("内容类型无效。");
+    let title = request.title?.trim();
+    const patch = request.kind === "document" && request.edits !== undefined;
+    if (
+      (!title && !patch) ||
+      (title !== undefined && (!title || title.length > 180))
+    )
+      throw new Error("内容标题无效。");
+    let content = patch ? undefined : contentSchema.parse(request.content);
+    if (patch ? request.content !== undefined : content!.kind !== request.kind)
+      throw new Error("内容类型无效。");
     if (request.kind === "image") {
       if (
         !request.reference ||
-        content.kind !== "image" ||
+        content?.kind !== "image" ||
         !["image/png", "image/jpeg", "image/webp"].includes(
           request.reference.mime,
         ) ||
@@ -1320,11 +1348,10 @@ export class ObjectsStore {
         objectId,
         expectedRevision: request.expectedRevision,
         title,
-        content,
+        ...(patch ? { edits: request.edits } : { content }),
         ...(request.reference ? { reference: request.reference } : {}),
       }),
     );
-    const body = JSON.stringify(content);
     return this.transaction(async (q) => {
       if (this.backend.kind === "postgres")
         await q.all(
@@ -1360,10 +1387,43 @@ export class ObjectsStore {
       );
       if (changed !== 1)
         throw new ObjectsConflictError("内容版本已变化，请重新读取后修改。");
+      if (patch) {
+        const previousDocument = (
+          await q.all<{
+            title: string;
+            payload_body: string;
+            payload_sha256: string;
+          }>(
+            "SELECT title,payload_body,payload_sha256 FROM object_versions WHERE tenant_id=? AND object_id=? AND revision=?",
+            [actor.tenantId, objectId, request.expectedRevision],
+          )
+        )[0];
+        if (
+          !previousDocument ||
+          digest(previousDocument.payload_body) !==
+            previousDocument.payload_sha256
+        )
+          throw new Error("文档前一版本摘要不匹配。");
+        const original = contentSchema.parse(
+          JSON.parse(previousDocument.payload_body),
+        );
+        if (original.kind !== "document")
+          throw new Error("文档前一版本类型不匹配。");
+        content = {
+          kind: "document",
+          markdown: applyDocumentEdits(original.markdown, request.edits!),
+        };
+        title ??= previousDocument.title;
+      }
+      // Patch matching and payload verification stay under this same CAS and
+      // transaction. Any failure rolls back head, versions, receipt and outbox.
+      const committedContent = content!;
+      const committedTitle = title!;
+      const body = JSON.stringify(committedContent);
       const nextRevision = request.expectedRevision + 1;
       const now = new Date().toISOString();
       const previous =
-        content.kind === "interactive"
+        committedContent.kind === "interactive"
           ? (
               await q.all<{ payload_body: string; payload_sha256: string }>(
                 "SELECT payload_body,payload_sha256 FROM object_versions WHERE tenant_id=? AND object_id=? AND revision=?",
@@ -1372,18 +1432,18 @@ export class ObjectsStore {
             )[0]
           : null;
       if (
-        content.kind === "interactive" &&
+        committedContent.kind === "interactive" &&
         (!previous || digest(previous.payload_body) !== previous.payload_sha256)
       )
         throw new Error("表格前一版本摘要不匹配。");
       const storedBody =
-        content.kind === "interactive"
+        committedContent.kind === "interactive"
           ? await writeInteractiveContent(
               q,
               actor.tenantId,
               objectId,
               nextRevision,
-              content,
+              committedContent,
               previous!.payload_body,
             )
           : body;
@@ -1391,7 +1451,7 @@ export class ObjectsStore {
         tenant_id: actor.tenantId,
         object_id: objectId,
         revision: nextRevision,
-        title,
+        title: committedTitle,
         kind: request.kind,
         payload_body: storedBody,
         payload_sha256: digest(storedBody),
@@ -1404,8 +1464,8 @@ export class ObjectsStore {
         tenantId: actor.tenantId,
         objectId,
         revision: nextRevision,
-        title,
-        content,
+        title: committedTitle,
+        content: committedContent,
         updatedAt: now,
       });
       await insert(q, "object_command_receipts", {
@@ -1454,7 +1514,7 @@ export class ObjectsStore {
         tenantId: actor.tenantId,
         objectId,
         projectId: actor.projectId,
-        title,
+        title: committedTitle,
         versionRef: String(nextRevision),
         receiptId: commandId,
         eventId: commandId,
@@ -1904,15 +1964,27 @@ export class ObjectsStore {
   }
 
   /** Exact authorized metadata only; annotations need not advance object head. */
-  async workspaceChangeVersion(request: { credential: string; objectId: string }) {
+  async workspaceChangeVersion(request: {
+    credential: string;
+    objectId: string;
+  }) {
     if (!this.authority) throw new Error("Objects 尚未接入受信权限。");
     const objectId = requireDomainId(request.objectId, "对象 ID");
     const actor = await this.authority.authorizeObjectRead(request);
     this.requireActor(actor);
-    const metadata = await this.transaction(async q => ({
-      head: await q.all("SELECT kind,head_revision,deleted_at FROM objects WHERE tenant_id=? AND object_id=? AND kind=?", [actor.tenantId, objectId, actor.objectKind]),
-      annotations: await q.all("SELECT annotation_id,object_revision,collection_ordinal FROM object_annotations WHERE tenant_id=? AND object_id=? ORDER BY collection_ordinal", [actor.tenantId, objectId]),
-    }), true);
+    const metadata = await this.transaction(
+      async (q) => ({
+        head: await q.all(
+          "SELECT kind,head_revision,deleted_at FROM objects WHERE tenant_id=? AND object_id=? AND kind=?",
+          [actor.tenantId, objectId, actor.objectKind],
+        ),
+        annotations: await q.all(
+          "SELECT annotation_id,object_revision,collection_ordinal FROM object_annotations WHERE tenant_id=? AND object_id=? ORDER BY collection_ordinal",
+          [actor.tenantId, objectId],
+        ),
+      }),
+      true,
+    );
     await this.confirmObjectRead(request.credential, objectId, actor);
     return createHash("sha256").update(JSON.stringify(metadata)).digest("hex");
   }

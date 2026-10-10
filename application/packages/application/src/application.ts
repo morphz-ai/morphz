@@ -1,4 +1,8 @@
 import { z, ZodError } from "zod";
+import {
+  documentRevisionShape,
+  refineDocumentRevision,
+} from "../../core/src/document-edits.js";
 import { createHash } from "node:crypto";
 import {
   browserApplication,
@@ -397,10 +401,10 @@ const documentRevise = z
     commandId: z.uuid(),
     contentId: identifier,
     expectedRevision: z.number().int().positive(),
-    title: z.string().trim().min(1).max(180),
-    markdown: z.string().max(500_000),
+    ...documentRevisionShape,
   })
-  .strict();
+  .strict()
+  .superRefine(refineDocumentRevision);
 const imageCreate = z
   .object({
     commandId: z.uuid(),
@@ -1429,6 +1433,7 @@ export class ApplicationSession {
         expectedRevision: request.expectedRevision,
         title: request.title,
         markdown: request.markdown,
+        edits: request.edits,
       });
       return {
         contentId: result.contentId,

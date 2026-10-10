@@ -8,7 +8,7 @@ import {
 
 test("执行摘要显示真实动作和对象，不公开路由元数据或伪造完成结果", () => {
   const state = initialWorkspace();
-  for (const tool of ["host_morphz", "host_morphz_work"]) {
+  for (const tool of ["host_morphz"]) {
     const name = tool;
     assert.deepEqual(
       executionPresentation(

@@ -54,6 +54,12 @@ const optionalTests = [
     "MORPHZ_PROFILE_RUNTIME_E2E",
   ],
   [
+    "host-tool-current-runtime.test.ts",
+    "实际 Rust 请求只公布唯一 Host 定义，局部片段经真实 Job 保存且历史原文不变",
+    "runtime",
+    "MORPHZ_PROFILE_RUNTIME_E2E",
+  ],
+  [
     "cognitive-app-actual-runtime.test.ts",
     "actual Rust Runtime + independent packed author: Agent discovery, write, exact read and receipt recovery retain real provenance",
     "runtime",

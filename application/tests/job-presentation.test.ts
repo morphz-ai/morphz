@@ -165,8 +165,8 @@ test("live complete JSON/catch preserves partial, malformed and valid primitive 
   );
 });
 
-test("original object/script and legacy tools preserve allowlisted detail limits and never summarize secrets or claimed outcomes", () => {
-  for (const name of ["host_morphz", "host_morphz_work"]) {
+test("original object/script tools preserve allowlisted detail limits and never summarize secrets or claimed outcomes", () => {
+  for (const name of ["host_morphz"]) {
     assert.deepEqual(
       live({
         name,

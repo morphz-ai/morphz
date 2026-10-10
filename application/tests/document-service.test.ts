@@ -795,6 +795,135 @@ async function exercise(
     }),
     /无权访问这个项目/,
   );
+
+  // Exercise the identical local-edit transaction on SQLite and PostgreSQL,
+  // including a committed Objects version whose directory projection failed.
+  const localEditDocument = {
+    ...create,
+    commandId: "create-local-edit-document",
+    objectId: "local-edit-document",
+    title: "TEST 精确局部修订",
+    markdown:
+      "# 正文\r\n\r\n前文保留。\n独有原句。\n后文保留。重复。重复。\n" +
+      "末尾不改。".repeat(3000),
+  };
+  await createDocument(localEditDocument);
+  const localEdit = {
+    platform,
+    objects,
+    instanceId: "objects-one",
+    actor: { credential: "agent-input" },
+    commandId: "agent-local-edit",
+    objectId: localEditDocument.objectId,
+    expectedRevision: 1,
+    edits: [{ old_text: "独有原句。", new_text: "独有新句。" }],
+  };
+  setProofReady(false);
+  await assert.rejects(reviseDocument(localEdit), /应用未确认/);
+  assert.equal((await objects.pendingDirectoryEvents("tenant-one")).length, 1);
+  const changed = await objects.readObject({
+    credential: "alice",
+    objectId: localEdit.objectId,
+  });
+  assert.equal(changed.revision, 2);
+  assert.equal(changed.title, localEditDocument.title);
+  assert.deepEqual(changed.content, {
+    kind: "document",
+    markdown: localEditDocument.markdown.replace("独有原句。", "独有新句。"),
+  });
+  setProofReady(true);
+  const receipt = await reviseDocument(localEdit);
+  assert.deepEqual(await reviseDocument(localEdit), receipt);
+  assert.equal((await objects.pendingDirectoryEvents("tenant-one")).length, 0);
+  for (const edits of [
+    [{ old_text: "没有原文", new_text: "不能猜" }],
+    [{ old_text: "重复。", new_text: "不能含糊" }],
+    [
+      { old_text: "独有新句", new_text: "一" },
+      { old_text: "有新句", new_text: "二" },
+    ],
+    [{ old_text: "独有新句。", new_text: "独有新句。" }],
+  ]) {
+    await assert.rejects(
+      reviseDocument({
+        ...localEdit,
+        commandId: randomUUID(),
+        expectedRevision: 2,
+        edits,
+      }),
+      /未找到|多处|重叠|未改变/,
+    );
+    assert.equal(
+      (
+        await objects.readObject({
+          credential: "alice",
+          objectId: localEdit.objectId,
+        })
+      ).revision,
+      2,
+    );
+    assert.equal(
+      (await objects.pendingDirectoryEvents("tenant-one")).length,
+      0,
+    );
+  }
+  await assert.rejects(
+    reviseDocument({
+      ...localEdit,
+      edits: [{ old_text: "独有原句。", new_text: "不是同一请求" }],
+    }),
+    /命令|重试/,
+  );
+  await assert.rejects(
+    reviseDocument({
+      ...localEdit,
+      commandId: "bob-local-edit",
+      actor: { credential: "bob" },
+    }),
+    /无权访问/,
+  );
+  await assert.rejects(
+    reviseDocument({
+      ...localEdit,
+      commandId: "agent-no-input-local-edit",
+      actor: { credential: "agent-without-input" },
+    }),
+    /已持久化的发起来源/,
+  );
+  const concurrent = await Promise.allSettled(
+    ["Human一", "Human二"].map((new_text) =>
+      reviseDocument({
+        ...localEdit,
+        actor: { credential: "alice" },
+        commandId: randomUUID(),
+        expectedRevision: 2,
+        edits: [{ old_text: "独有新句。", new_text }],
+      }),
+    ),
+  );
+  assert.equal(concurrent.filter((r) => r.status === "fulfilled").length, 1);
+  assert.equal(concurrent.filter((r) => r.status === "rejected").length, 1);
+  assert.equal(
+    (
+      await objects.listObjectVersions({
+        credential: "alice",
+        objectId: localEdit.objectId,
+      })
+    ).versions.length,
+    3,
+  );
+  assert.deepEqual(
+    (
+      await objects.readObject({
+        credential: "alice",
+        objectId: localEdit.objectId,
+        revision: 1,
+      })
+    ).content,
+    { kind: "document", markdown: localEditDocument.markdown },
+  );
+  // A successful earlier patch is still a replay, not reapplied to the new head.
+  assert.deepEqual(await reviseDocument(localEdit), receipt);
 }
 
 test("SQLite：文档版本、目录投影失败恢复、回执和 Agent 权限", async () => {
