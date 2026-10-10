@@ -365,7 +365,7 @@ function properties(node: Node | undefined): Map<string, Node> {
     }
   return values;
 }
-// One approved persisted field, not a relaxed schema or a new whole golden.
+// Approved UI-only preference fields, not a relaxed schema or a new whole golden.
 const cognitivePreferenceField = parse({
   "field.ts":
     "type Field = { cognitiveLocation?: CognitiveNavigationLocation | null; };",
@@ -439,10 +439,34 @@ function removeCognitivePreferenceField(
     text = type.getText(),
     start = field.getStart() - type.getStart(),
     end = field.end - type.getStart();
+  const pinFields: Node[] = [];
+  walk(type, (node) => {
+    if (isPropertySignature(node) && node.name.getText() === "pinnedHistories")
+      pinFields.push(node);
+  });
+  // The owner's NavigationPreferences aliases ExchangePreferences; only the
+  // Host's explicit persisted Preferences contains this field directly.
+  if (pinFields.length > 1) return;
+  const expectedPin = parse({
+    "pin.ts": "type Pin = { pinnedHistories?: Record<string, boolean>; };",
+  }).get("pin.ts")!.source;
+  const pin: Node[] = [];
+  walk(expectedPin, (node) => {
+    if (isPropertySignature(node)) pin.push(node);
+  });
+  if (pinFields.length && !same(pinFields[0], pin[0])) return;
+  let stripped = text;
+  for (const range of [
+    { start, end },
+    ...pinFields.map((node) => ({
+      start: node.getStart() - type.getStart(),
+      end: node.end - type.getStart(),
+    })),
+  ].sort((a, b) => b.start - a.start))
+    stripped = stripped.slice(0, range.start) + stripped.slice(range.end);
   return typeAlias(
     parse({
-      "stripped.ts":
-        "type Stripped = " + text.slice(0, start) + text.slice(end) + ";",
+      "stripped.ts": "type Stripped = " + stripped + ";",
     }).get("stripped.ts")!.source,
     "Stripped",
   )[0];

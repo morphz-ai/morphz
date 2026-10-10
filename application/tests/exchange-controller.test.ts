@@ -15,19 +15,33 @@ const surface: Surface = {
   dialogueCanvas: false,
 };
 
-test("exchange visibility reads the existing four modes, scoped pin and preview", () => {
-  for (const interaction of ["hidden", "input", "recent", "history"] as const) {
+test("exchange visibility projects six layouts and two independent scoped pins", () => {
+  for (const interaction of [
+    "hidden",
+    "input",
+    "recent",
+    "history",
+    "recent-only",
+    "history-only",
+  ] as const) {
     const preferences: ExchangePreferences = {
       interactions: { "surface-A": interaction, "surface-B": "history" },
       pinnedInputs: { "surface-A": false, "surface-B": true },
+      pinnedHistories: { "surface-A": true, "surface-B": false },
     };
     assert.deepEqual(exchangeVisibility(surface, preferences, null), {
       interaction,
-      inputVisible: interaction !== "hidden",
-      conversationVisible:
-        interaction === "recent" || interaction === "history",
-      historyVisible: interaction === "history",
+      inputVisible: ["input", "recent", "history"].includes(interaction),
+      conversationVisible: [
+        "recent",
+        "history",
+        "recent-only",
+        "history-only",
+      ].includes(interaction),
+      historyVisible:
+        interaction === "history" || interaction === "history-only",
       inputPinned: false,
+      historyPinned: true,
     });
     assert.equal(
       exchangeVisibility(surface, preferences, {
@@ -63,6 +77,7 @@ test("dialogue remains visible and archived conversations remain readable withou
         conversationVisible: true,
         historyVisible: true,
         inputPinned: false,
+        historyPinned: false,
       },
     );
     const archived = exchangeVisibility(

@@ -32,7 +32,7 @@ export function ExchangePanel({
   useLayoutEffect(() => {
     const root = panel.current;
     const dock = root?.querySelector<HTMLElement>(".composer-dock");
-    if (!root || !dock) return;
+    if (!root) return;
     const workspace = root.closest<HTMLElement>(".primary-panel");
     let floating: HTMLElement | null = null;
     let controls: HTMLElement | null = null;
@@ -65,11 +65,11 @@ export function ExchangePanel({
       );
     };
     const observer = new ResizeObserver(measure);
-    observer.observe(dock);
+    if (dock) observer.observe(dock);
     observer.observe(root);
     // Draft navigation can replace the tool group without remounting the panel.
     const children = new MutationObserver(measure);
-    children.observe(dock, { childList: true, subtree: true });
+    if (dock) children.observe(dock, { childList: true, subtree: true });
     // The stable exchange controls live beside the reading/writing content.
     // Observe only this root's direct mounts, not each streamed message node.
     children.observe(root, { childList: true });
@@ -97,20 +97,26 @@ export function ExchangePanel({
 }
 
 export function ExchangeControls({
+  inputVisible = true,
   conversationVisible,
   historyVisible,
   pinned,
+  historyPinned = false,
   unread,
   onInteraction,
   onPin,
+  onHistoryPin,
   onHide,
 }: {
+  inputVisible?: boolean;
   conversationVisible: boolean;
   historyVisible: boolean;
   pinned: boolean;
+  historyPinned?: boolean;
   unread: boolean;
   onInteraction: (mode: InteractionMode) => void;
   onPin: () => void;
+  onHistoryPin?: () => void;
   onHide: () => void;
 }) {
   const tools = useRef<HTMLDivElement>(null);
@@ -148,15 +154,40 @@ export function ExchangeControls({
       label: historyVisible ? "返回工作内容" : "展开完整记录",
       iconId: historyVisible ? "minimize" : "maximize",
       pressed: historyVisible,
-      onSelect: () => onInteraction(historyVisible ? "recent" : "history"),
+      onSelect: () =>
+        onInteraction(
+          historyVisible
+            ? inputVisible
+              ? "recent"
+              : "recent-only"
+            : inputVisible
+              ? "history"
+              : "history-only",
+        ),
     },
-    {
-      id: "pin",
-      label: pinned ? "取消固定输入框" : "固定输入框",
-      iconId: "pin",
-      pressed: pinned,
-      onSelect: onPin,
-    },
+    ...(conversationVisible && onHistoryPin
+      ? [
+          {
+            id: "history-pin",
+            label: historyPinned ? "取消固定交流记录" : "固定交流记录",
+            iconId: "pin" as const,
+            pressed: historyPinned,
+            onSelect: onHistoryPin,
+          },
+        ]
+      : []),
+    ...(inputVisible
+      ? [
+          {
+            id: "pin",
+            label: pinned ? "取消固定输入框" : "固定输入框",
+            iconId: "pin" as const,
+            pressed: pinned,
+            groupStart: conversationVisible && !!onHistoryPin,
+            onSelect: onPin,
+          },
+        ]
+      : []),
   ];
   return (
     <div
@@ -175,7 +206,13 @@ export function ExchangeControls({
             iconId: "message-square-text",
             pressed: conversationVisible,
             onSelect: () =>
-              onInteraction(conversationVisible ? "input" : "recent"),
+              onInteraction(
+                conversationVisible
+                  ? inputVisible
+                    ? "input"
+                    : "hidden"
+                  : "recent",
+              ),
           },
         ]}
       />
@@ -192,15 +229,17 @@ export function ExchangeControls({
       ) : (
         <ComposerToolButtons options={secondaryOptions} />
       )}
-      <IconButton
-        controlRole="exchange-operation"
-        iconId="chevron-down"
-        ref={hide}
-        className="icon-button"
-        aria-label="收起 AI 输入框"
-        title="收起 AI 输入框"
-        onClick={onHide}
-      />
+      {inputVisible && (
+        <IconButton
+          controlRole="exchange-operation"
+          iconId="chevron-down"
+          ref={hide}
+          className="icon-button"
+          aria-label="收起 AI 输入框"
+          title="收起 AI 输入框"
+          onClick={onHide}
+        />
+      )}
     </div>
   );
 }

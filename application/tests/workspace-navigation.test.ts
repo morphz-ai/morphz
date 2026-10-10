@@ -308,6 +308,7 @@ test("six navigation fields invalidate by presence, including explicit undefined
     "projectOpen",
     "interactions",
     "pinnedInputs",
+    "pinnedHistories",
     "exchangeHeights",
     "collaboration",
   ])
@@ -336,6 +337,7 @@ test("patch keeps the original asymmetric resets and map merging, without mutati
     selectedConversations: { A: "named-A", B: "named-B" },
     interactions: { A: "history", B: "input" },
     pinnedInputs: { A: true, B: false },
+    pinnedHistories: { A: false, B: true },
     exchangeHeights: { A: 250, B: 280 },
   });
   const before = structuredClone(old);
@@ -345,6 +347,7 @@ test("patch keeps the original asymmetric resets and map merging, without mutati
     selectedConversations: { A: "new-named" },
     interactions: { A: "recent" },
     pinnedInputs: { A: false },
+    pinnedHistories: { A: true },
     exchangeHeights: { A: 300 },
     collaboration: true,
   });
@@ -355,6 +358,7 @@ test("patch keeps the original asymmetric resets and map merging, without mutati
   });
   assert.deepEqual(next.interactions, { A: "recent", B: "input" });
   assert.deepEqual(next.pinnedInputs, { A: false, B: false });
+  assert.deepEqual(next.pinnedHistories, { A: true, B: true });
   assert.deepEqual(next.exchangeHeights, { A: 300, B: 280 });
   assert.equal(next.artifactRevision, null);
   assert.equal(next.scriptLocation, null);

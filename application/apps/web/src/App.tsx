@@ -838,6 +838,7 @@ function WorkspaceApp({
     conversationVisible,
     historyVisible,
     inputPinned,
+    historyPinned,
     keepExchangeOpen,
     clearResizePreview,
     setInteraction,
@@ -847,6 +848,7 @@ function WorkspaceApp({
     requestSentInputFocus,
     showSentInput,
     toggleInputPin,
+    toggleHistoryPin,
     resize: exchangeResize,
     sentInputFocusPending,
   } = exchangeController;
@@ -2689,7 +2691,13 @@ function WorkspaceApp({
         >
           <div
             className="primary-panel"
-            data-interaction={historyVisible ? "history" : interaction}
+            data-interaction={
+              historyVisible
+                ? "history"
+                : interaction === "recent-only"
+                  ? "recent"
+                  : interaction
+            }
             data-input-pinned={inputPinned || undefined}
             data-dialogue-canvas={dialogueCanvas || undefined}
           >
@@ -2943,21 +2951,24 @@ function WorkspaceApp({
                 conversationVisible={conversationVisible}
                 scopeRef={setConversationToolbarTarget}
                 controls={
-                  !dialogueCanvas && inputVisible ? (
+                  !dialogueCanvas && (inputVisible || conversationVisible) ? (
                     <ExchangeControls
+                      inputVisible={inputVisible}
                       conversationVisible={conversationVisible}
                       historyVisible={historyVisible}
                       pinned={inputPinned}
+                      historyPinned={historyPinned}
                       unread={!conversationVisible && unseenReply}
                       onInteraction={setInteraction}
                       onPin={toggleInputPin}
+                      onHistoryPin={toggleHistoryPin}
                       onHide={hideInput}
                     />
                   ) : undefined
                 }
                 resize={
                   !dialogueCanvas &&
-                  inputVisible &&
+                  (inputVisible || conversationVisible) &&
                   projectStatus(project) === "active" &&
                   !selectedConversation?.archivedAt
                     ? exchangeResize

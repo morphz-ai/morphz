@@ -110,6 +110,9 @@
 .exchange-panel[data-open] {
   --exchange-controls-width: 124px;
 }
+.exchange-panel:has(> .conversation)[data-open] {
+  --exchange-controls-width: 164px;
+}
 .exchange-panel-header {
   display: flex;
   align-items: center;
@@ -196,13 +199,18 @@
   }
 }
 @container exchange (max-width: 620px) {
-  .composer-dock {
+  /* A query cannot style its own container. Apply the compact clearance to
+     the children which consume it, otherwise coarse Dock pins are clipped. */
+  .exchange-panel[data-open] > :is(.composer-dock, .exchange-panel-header) {
     --exchange-controls-width: 92px;
   }
 }
 @media (pointer: coarse) {
   .exchange-panel[data-open] {
     --exchange-controls-width: 176px;
+  }
+  .exchange-panel:has(> .conversation)[data-open] {
+    --exchange-controls-width: 228px;
   }
   .exchange-panel:not(:has(> .conversation)) > .exchange-controls-slot {
     padding-bottom: 8px;
@@ -215,7 +223,7 @@
     padding-top: 16px;
   }
   @container exchange (max-width: 620px) {
-    .composer-dock {
+    .exchange-panel[data-open] > :is(.composer-dock, .exchange-panel-header) {
       --exchange-controls-width: 132px;
     }
   }

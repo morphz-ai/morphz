@@ -54,9 +54,14 @@ export async function openInput(page: Page) {
 export async function composerAction(page: Page, name: string) {
   const panel = page.locator(".exchange-panel");
   if (
-    ["固定输入框", "取消固定输入框", "展开完整记录", "返回工作内容"].includes(
-      name,
-    )
+    [
+      "固定输入框",
+      "取消固定输入框",
+      "固定交流记录",
+      "取消固定交流记录",
+      "展开完整记录",
+      "返回工作内容",
+    ].includes(name)
   )
     // ResizeObserver can replace More with direct buttons after a viewport
     // change. Wait only for that layout decision before choosing a branch;

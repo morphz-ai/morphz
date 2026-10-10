@@ -58,6 +58,7 @@ export type Preferences = InterfacePreferences & {
   interactions?: Record<string, InteractionMode>;
   exchangeHeights?: Record<string, number>;
   pinnedInputs?: Record<string, boolean>;
+  pinnedHistories?: Record<string, boolean>;
   selectedConversations?: Record<string, string>;
   localFile?: { projectId: string; reference: LocalFileView["reference"] };
 };

@@ -31,7 +31,11 @@ export function useExchangeFocus(options: {
       if (element?.closest("[data-quote-ui]")) return true;
       return !!region && !!latest.current.root.current?.contains(region);
     };
-    function leave(snapshot: typeof options, windowBlur = false) {
+    function leave(
+      snapshot: typeof options,
+      windowBlur = false,
+      outsideClick = false,
+    ) {
       const generation = openGeneration.current;
       const frame = requestAnimationFrame(() => {
         pending.delete(frame);
@@ -55,7 +59,7 @@ export function useExchangeFocus(options: {
           (current.pinned ||
             current.suspended ||
             !current.visible ||
-            (!windowBlur && inside(document.activeElement)))
+            (!windowBlur && !outsideClick && inside(document.activeElement)))
         )
           return;
         if (engaged === snapshot.scope) engaged = null;
@@ -88,7 +92,10 @@ export function useExchangeFocus(options: {
       pointerDown = false;
     }
     function click(event: MouseEvent) {
-      if (outsidePress && !inside(event.target)) leave(outsidePress);
+      // Blank canvas is not focusable: an explicit outside click still leaves
+      // even when the browser keeps the old textarea as activeElement.
+      if (outsidePress && !inside(event.target))
+        leave(outsidePress, false, true);
       outsidePress = null;
     }
     function focus(event: FocusEvent) {

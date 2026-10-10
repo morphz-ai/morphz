@@ -136,6 +136,14 @@ export function mergeNavigationPreferences<P extends NavigationPreferences>(
     ...(change.pinnedInputs
       ? { pinnedInputs: { ...previous.pinnedInputs, ...change.pinnedInputs } }
       : {}),
+    ...(change.pinnedHistories
+      ? {
+          pinnedHistories: {
+            ...previous.pinnedHistories,
+            ...change.pinnedHistories,
+          },
+        }
+      : {}),
     ...(change.exchangeHeights
       ? {
           exchangeHeights: {

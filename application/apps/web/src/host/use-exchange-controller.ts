@@ -1,7 +1,10 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import {
   afterSend,
+  afterLeave,
+  readingMode,
   revealInput,
+  withoutInput,
   type InteractionMode,
 } from "../interaction.js";
 import { useExchangeFocus } from "../useExchangeFocus.js";
@@ -20,9 +23,10 @@ type ExchangeSurface = Pick<
 export type ExchangePreferences = {
   interactions?: Record<string, InteractionMode>;
   pinnedInputs?: Record<string, boolean>;
+  pinnedHistories?: Record<string, boolean>;
   exchangeHeights?: Record<string, number>;
 };
-type ResizePreview = { scope: string; mode: "recent" } | null;
+type ResizePreview = { scope: string; mode: "recent" | "recent-only" } | null;
 
 /** Visibility is a projection of the existing work-surface preferences. The
  * resize preview is transient, not a second persisted interaction model. */
@@ -37,14 +41,20 @@ export function exchangeVisibility(
     "input";
   return {
     interaction,
-    inputVisible: surface.dialogueCanvas || interaction !== "hidden",
+    inputVisible:
+      surface.dialogueCanvas ||
+      interaction === "input" ||
+      interaction === "recent" ||
+      interaction === "history",
     conversationVisible:
       surface.dialogueCanvas ||
       !!surface.selectedConversation?.archivedAt ||
-      interaction === "recent" ||
-      interaction === "history",
-    historyVisible: surface.dialogueCanvas || interaction === "history",
+      readingMode(interaction) === "recent" ||
+      readingMode(interaction) === "history",
+    historyVisible:
+      surface.dialogueCanvas || readingMode(interaction) === "history",
     inputPinned: !!preferences.pinnedInputs?.[surface.exchangeKey],
+    historyPinned: !!preferences.pinnedHistories?.[surface.exchangeKey],
   };
 }
 
@@ -76,20 +86,23 @@ export function useExchangeController({
   const { navigationProject, exchangeKey, contextKey, conversationId } =
     surface;
   const [resizePreview, setResizePreview] = useState<ResizePreview>(null);
-  // Explicit record viewing is a reading intent, not the user's input-pin
-  // preference. Keep it scoped for this mounted Host; automatic post-send
-  // previews must still collapse normally. No draft or Session state is owned
-  // here and no new preference field is persisted.
-  const recordReadingIntents = useRef(new Set<string>());
   const visibility = exchangeVisibility(surface, preferences, resizePreview);
-  const { interaction, inputVisible, inputPinned } = visibility;
+  const {
+    interaction,
+    inputVisible,
+    conversationVisible,
+    inputPinned,
+    historyPinned,
+  } = visibility;
   const keepExchangeOpen = useExchangeFocus({
     root: exchange,
     scope: exchangeKey,
-    visible: inputVisible,
-    pinned: inputPinned || recordReadingIntents.current.has(exchangeKey),
+    visible: inputVisible || conversationVisible,
+    pinned:
+      (!inputVisible || inputPinned) && (!conversationVisible || historyPinned),
     suspended,
-    onLeave: () => commitInteraction("hidden"),
+    onLeave: () =>
+      commitInteraction(afterLeave(interaction, inputPinned, historyPinned)),
   });
   const latestInteraction = useRef(interaction);
   latestInteraction.current = interaction;
@@ -114,19 +127,13 @@ export function useExchangeController({
     clearResizePreview();
     if (id) {
       const scope = id === navigationProject?.id ? exchangeKey : id;
-      if (mode === "hidden" || mode === "input")
-        recordReadingIntents.current.delete(scope);
       prefer({
         interactions: { [scope]: mode },
       });
     }
   }
   function setInteraction(mode: InteractionMode, id = navigationProject?.id) {
-    if (id && (mode === "recent" || mode === "history")) {
-      const scope = id === navigationProject?.id ? exchangeKey : id;
-      recordReadingIntents.current.add(scope);
-      if (scope === exchangeKey) keepExchangeOpen();
-    }
+    if (id === navigationProject?.id && mode !== "hidden") keepExchangeOpen();
     commitInteraction(mode, id);
   }
   function showInput() {
@@ -141,7 +148,9 @@ export function useExchangeController({
       input.current?.blur();
       return;
     }
-    setInteraction("hidden");
+    // Preserve the existing collapse shortcut: an unpinned reading preview
+    // follows input collapse. Only explicitly pinned history remains visible.
+    setInteraction(historyPinned ? withoutInput(interaction) : "hidden");
     if (document.activeElement?.closest("#global-composer")) {
       const origin = document.activeElement;
       const restore = previousFocus.current;
@@ -180,21 +189,23 @@ export function useExchangeController({
   function toggleInputPin() {
     keepExchangeOpen();
     if (inputPinned) {
-      // Explicitly unpinning restores the user's normal auto-collapse choice.
-      recordReadingIntents.current.delete(exchangeKey);
       input.current?.focus();
     }
     prefer({ pinnedInputs: { [exchangeKey]: !inputPinned } });
   }
+  function toggleHistoryPin() {
+    keepExchangeOpen();
+    prefer({ pinnedHistories: { [exchangeKey]: !historyPinned } });
+  }
   const resize: ExchangeResizeOptions = {
     scope: exchangeKey,
-    mode: interaction,
+    mode: readingMode(interaction),
     height: preferences.exchangeHeights?.[exchangeKey],
     onStart: keepExchangeOpen,
     onPreview: (mode) =>
       setResizePreview((previous) =>
         mode
-          ? { scope: exchangeKey, mode }
+          ? { scope: exchangeKey, mode: inputVisible ? mode : "recent-only" }
           : previous?.scope === exchangeKey
             ? null
             : previous,
@@ -202,11 +213,10 @@ export function useExchangeController({
     onCommit: ({ mode, height }) => {
       keepExchangeOpen();
       clearResizePreview();
-      if (mode === "recent" || mode === "history")
-        recordReadingIntents.current.add(exchangeKey);
-      else recordReadingIntents.current.delete(exchangeKey);
       prefer({
-        interactions: { [exchangeKey]: mode },
+        interactions: {
+          [exchangeKey]: inputVisible ? mode : withoutInput(mode),
+        },
         ...(mode === "recent"
           ? { exchangeHeights: { [exchangeKey]: height } }
           : {}),
@@ -272,6 +282,7 @@ export function useExchangeController({
     requestSentInputFocus,
     showSentInput,
     toggleInputPin,
+    toggleHistoryPin,
     resize,
     sentInputFocusPending: !!sentInputFocus.current,
     focus,

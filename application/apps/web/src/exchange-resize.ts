@@ -1,7 +1,7 @@
 import type { InteractionMode } from "./interaction.js";
 
 export type ExchangeSize = {
-  mode: Exclude<InteractionMode, "hidden">;
+  mode: "input" | "recent" | "history";
   height: number;
 };
 

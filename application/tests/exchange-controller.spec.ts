@@ -20,12 +20,12 @@ let controller, current, generation, showCount = 0;
 let control;
 function Fixture() {
   const [model, setModel] = useState({ exchangeKey: 'surface-A', contextKey: 'conversation-A:object-A', conversationId: 'conversation-A', dialogueCanvas: false, sending: false, suspended: false, sequence: 0 });
-  const [preferences, setPreferences] = useState({ interactions: { 'surface-A': 'input', 'surface-B': 'input' }, pinnedInputs: { 'surface-A': true, 'surface-B': true }, exchangeHeights: { 'surface-A': 250, 'surface-B': 180 } });
+  const [preferences, setPreferences] = useState({ interactions: { 'surface-A': 'input', 'surface-B': 'input' }, pinnedInputs: { 'surface-A': true, 'surface-B': true }, pinnedHistories: { 'surface-A': false, 'surface-B': false }, exchangeHeights: { 'surface-A': 250, 'surface-B': 180 } });
   const input = useRef(null), exchange = useRef(null), toggle = useRef(null), navigationGeneration = useRef(1);
   generation = navigationGeneration;
   const prefer = change => {
     writes.push(structuredClone(change));
-    setPreferences(previous => ({ ...previous, ...change, ...Object.fromEntries(['interactions','pinnedInputs','exchangeHeights'].filter(key => change[key]).map(key => [key, { ...previous[key], ...change[key] }])) }));
+    setPreferences(previous => ({ ...previous, ...change, ...Object.fromEntries(['interactions','pinnedInputs','pinnedHistories','exchangeHeights'].filter(key => change[key]).map(key => [key, { ...previous[key], ...change[key] }])) }));
   };
   controller = useExchangeController({ surface: { ...model, navigationProject: { id: 'project-A' } }, preferences, input, exchange, toggle, navigationGeneration, sending: model.sending, suspended: model.dialogueCanvas || model.suspended, prefer, onShowInput: () => { showCount++; } });
   // Preserve the real Host's ordering seam: owner restoration precedes focus.
@@ -41,6 +41,7 @@ function Fixture() {
     else if (name === 'mode') controller.setInteraction(value);
     else if (name === 'other-mode') controller.setInteraction(value, 'surface-B');
     else if (name === 'pin') controller.toggleInputPin();
+    else if (name === 'history-pin') controller.toggleHistoryPin();
     else if (name === 'preview') controller.resize.onPreview(value);
     else if (name === 'commit') controller.resize.onCommit(value);
     else if (name === 'clear-preview') controller.clearResizePreview();
@@ -61,10 +62,11 @@ function Fixture() {
   });
   return <div className="primary-panel">
     <button id="origin">Original focus</button><button id="outside">Outside focus</button>
+    <div id="blank-outside" style={{ width: 300, height: 80 }}>Non-focusable canvas</div>
     <button id="toggle" ref={toggle} onClick={() => controller.showInput()}>Open input</button>
     <div ref={exchange} className="exchange-surface">
       <div className="exchange-panel" data-open={controller.inputVisible || controller.conversationVisible || undefined}>
-        {!model.dialogueCanvas && controller.inputVisible && <ExchangeControls conversationVisible={controller.conversationVisible} historyVisible={controller.historyVisible} pinned={controller.inputPinned} unread={false} onInteraction={controller.setInteraction} onPin={controller.toggleInputPin} onHide={controller.hideInput}/>}
+        {!model.dialogueCanvas && (controller.inputVisible || controller.conversationVisible) && <ExchangeControls inputVisible={controller.inputVisible} conversationVisible={controller.conversationVisible} historyVisible={controller.historyVisible} pinned={controller.inputPinned} historyPinned={controller.historyPinned} unread={false} onInteraction={controller.setInteraction} onPin={controller.toggleInputPin} onHistoryPin={controller.toggleHistoryPin} onHide={controller.hideInput}/>}
         {controller.conversationVisible && <div id="reading">Reading</div>}
         {controller.inputVisible && <div id="global-composer"><textarea id="input" ref={input} disabled={model.sending} defaultValue="untouched draft" onFocus={() => events.push('input:focus')}/><button id="inside">Input tool</button></div>}
       </div>
@@ -406,7 +408,7 @@ scenario(
 );
 
 scenario(
-  "explicit record viewing stays open on outside click and keyboard focus, without changing the pin preference",
+  "explicit record viewing is not a pin: inside actions stay open and a blank canvas click collapses",
   async (page) => {
     await run(page, "pin");
     await run(page, "clear-log");
@@ -414,44 +416,42 @@ scenario(
       .getByRole("button", { name: "查看交流记录", exact: true })
       .click();
     assert.equal((await report(page)).mode, "recent");
-    await page.locator("#outside").click();
+    await page.locator("#reading").click();
     await frames(page);
     assert.equal((await report(page)).mode, "recent");
     await page.locator("#input").focus();
-    await page.locator("#outside").focus();
+    await page.locator("#blank-outside").click();
     await frames(page);
     const actual = await report(page);
-    assert.equal(actual.mode, "recent");
-    assert.equal(actual.active, "outside");
+    assert.equal(actual.mode, "hidden");
     assert.equal(actual.preferences.pinnedInputs["surface-A"], false);
     assert.deepEqual(actual.writes, [
       { interactions: { "surface-A": "recent" } },
+      { interactions: { "surface-A": "hidden" } },
     ]);
+    await run(page, "show");
     assert.equal(await page.locator("#input").inputValue(), "untouched draft");
   },
 );
 
 scenario(
-  "full record viewing and return to recent keep the explicit reading intent until manual collapse",
+  "full record and recent record do not close during their own controls but close on outside focus",
   async (page) => {
     await run(page, "pin");
     await page
       .getByRole("button", { name: "展开完整记录", exact: true })
       .click();
-    await page.locator("#outside").click();
-    await frames(page);
     assert.equal((await report(page)).mode, "history");
     await page
       .getByRole("button", { name: "返回工作内容", exact: true })
       .click();
-    await page.locator("#outside").focus();
-    await frames(page);
     assert.equal((await report(page)).mode, "recent");
     await page
       .getByRole("button", { name: "收起交流记录", exact: true })
       .click();
     assert.equal((await report(page)).mode, "input");
-    await page.locator("#outside").click();
+    await page.locator("#input").focus();
+    await page.locator("#outside").focus();
     await frames(page);
     assert.equal((await report(page)).mode, "hidden");
     await run(page, "show");
@@ -461,16 +461,20 @@ scenario(
 );
 
 scenario(
-  "explicit record intent is scoped and survives send receipts but manual hide clears it",
+  "history pin is explicit, scoped, survives receipts and does not pin the composer",
   async (page) => {
     await run(page, "pin");
     await page
       .getByRole("button", { name: "查看交流记录", exact: true })
       .click();
+    await page
+      .getByRole("button", { name: "固定交流记录", exact: true })
+      .click();
     await run(page, "sent");
     await page.locator("#outside").click();
     await frames(page);
-    assert.equal((await report(page)).mode, "recent");
+    assert.equal((await report(page)).mode, "recent-only");
+    assert.equal((await report(page)).inputVisible, false);
     await run(page, "navigate", {
       exchangeKey: "surface-B",
       contextKey: "conversation-B:object-B",
@@ -486,19 +490,100 @@ scenario(
       contextKey: "conversation-A:object-A",
       conversationId: "conversation-A",
     });
+    assert.equal((await report(page)).mode, "recent-only");
+    await run(page, "show");
     assert.equal((await report(page)).mode, "recent");
-    await page.locator("#input").focus();
     await page.locator("#outside").click();
     await frames(page);
-    assert.equal((await report(page)).mode, "recent");
+    assert.equal((await report(page)).mode, "recent-only");
+    await run(page, "show");
     await page
       .getByRole("button", { name: "收起 AI 输入框", exact: true })
+      .click();
+    assert.equal((await report(page)).mode, "recent-only");
+    await page
+      .getByRole("button", { name: "收起交流记录", exact: true })
       .click();
     assert.equal((await report(page)).mode, "hidden");
     await run(page, "show");
     await page.locator("#outside").click();
     await frames(page);
     assert.equal((await report(page)).mode, "hidden");
+  },
+);
+
+for (const inputPin of [false, true]) {
+  for (const historyPin of [false, true]) {
+    scenario(
+      `outside click independently keeps input=${inputPin}, history=${historyPin}`,
+      async (page) => {
+        await run(page, "pin");
+        await page
+          .getByRole("button", { name: "查看交流记录", exact: true })
+          .click();
+        if (inputPin)
+          await page
+            .getByRole("button", { name: "固定输入框", exact: true })
+            .click();
+        if (historyPin)
+          await page
+            .getByRole("button", { name: "固定交流记录", exact: true })
+            .click();
+        await page.locator("#input").focus();
+        await page.locator("#blank-outside").click();
+        await frames(page);
+        const actual = await report(page);
+        assert.equal(actual.inputVisible, inputPin);
+        assert.equal(actual.readingVisible, historyPin);
+        assert.equal(
+          actual.mode,
+          historyPin
+            ? inputPin
+              ? "recent"
+              : "recent-only"
+            : inputPin
+              ? "input"
+              : "hidden",
+        );
+        assert.equal(actual.preferences.pinnedInputs["surface-A"], inputPin);
+        assert.equal(
+          actual.preferences.pinnedHistories["surface-A"],
+          historyPin,
+        );
+        await run(page, "show");
+        assert.equal(
+          await page.locator("#input").inputValue(),
+          "untouched draft",
+        );
+      },
+    );
+  }
+}
+
+scenario(
+  "unpinning full history restores outside collapse without changing input pin",
+  async (page) => {
+    await run(page, "pin");
+    await page
+      .getByRole("button", { name: "展开完整记录", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "固定交流记录", exact: true })
+      .click();
+    await page.locator("#blank-outside").click();
+    await frames(page);
+    assert.equal((await report(page)).mode, "history-only");
+    await page
+      .getByRole("button", { name: "取消固定交流记录", exact: true })
+      .click();
+    await page.locator("#reading").click();
+    await page.locator("#outside").click();
+    await frames(page);
+    assert.equal((await report(page)).mode, "hidden");
+    assert.equal(
+      (await report(page)).preferences.pinnedInputs["surface-A"],
+      false,
+    );
   },
 );
 

@@ -179,7 +179,7 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   // This disconnected fixture exposes an actionable connection notice.
   await page.keyboard.press("Tab");
   await expect(
-    page.getByRole("button", { name: "添加输入内容", exact: true }),
+    page.getByRole("button", { name: "新建或添加", exact: true }),
   ).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(
@@ -198,7 +198,12 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   await expect(
     page.getByRole("button", { name: "收起交流记录", exact: true }),
   ).toBeFocused();
-  for (const name of ["展开完整记录", "固定输入框", "收起 AI 输入框"]) {
+  for (const name of [
+    "展开完整记录",
+    "固定交流记录",
+    "固定输入框",
+    "收起 AI 输入框",
+  ]) {
     await page.keyboard.press("Tab");
     await expect(page.getByRole("button", { name, exact: true })).toBeFocused();
     await expect(input).toHaveValue("在控件与弹窗之间保留输入");
@@ -210,7 +215,7 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   await page.mouse.click(composerBounds.x - 20, composerBounds.y + 20);
   await expect(input).toHaveCount(0);
   await openInput(page);
-  await page.getByRole("button", { name: "添加输入内容", exact: true }).click();
+  await page.getByRole("button", { name: "新建或添加", exact: true }).click();
   await page.getByRole("button", { name: "截图输入", exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(
@@ -218,7 +223,7 @@ test("按钮和弹窗不误收起；键盘离开会收起，工作区动作一�
   ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(
-    page.getByRole("button", { name: "添加输入内容", exact: true }),
+    page.getByRole("button", { name: "新建或添加", exact: true }),
   ).toBeFocused();
   await expect(input).toHaveValue("在控件与弹窗之间保留输入");
   await page.getByRole("button", { name: "语音输入", exact: true }).click();
@@ -313,7 +318,7 @@ test("单底栏；截图归添加菜单，语音常驻，窄窗口和空记录�
     const outer = (await composer.boundingBox())!;
     expect(textBounds.y - outer.y).toBeLessThanOrEqual(11);
     const media = (await composer
-      .getByRole("button", { name: "添加输入内容", exact: true })
+      .getByRole("button", { name: "新建或添加", exact: true })
       .boundingBox())!;
     const preferences = (await composer
       .getByRole("button", { name: "执行设置", exact: true })
@@ -330,9 +335,11 @@ test("单底栏；截图归添加菜单，语音常驻，窄窗口和空记录�
     ).toHaveCount(0);
     await expect(executions).toBeEnabled();
     await expect(executions).toBeVisible();
+    // The + menu is lazy: its screenshot glyph belongs to the open menu,
+    // not the closed single input row.
     await expect(
       composer.locator(".lucide-square-bottom-dashed-scissors"),
-    ).toHaveCount(1);
+    ).toHaveCount(0);
     await expect(composer.locator(".lucide-camera")).toHaveCount(0);
     await expect(composer.locator(".lucide-scan")).toHaveCount(0);
     await expect(composer.getByLabel("截图输入", { exact: true })).toBeHidden();
@@ -345,11 +352,16 @@ test("单底栏；截图归添加菜单，语音常驻，窄窗口和空记录�
     expect(send.x - mic.x - mic.width).toBeLessThanOrEqual(4);
     expect(mic.y).toBe(send.y);
     await composer
-      .getByRole("button", { name: "添加输入内容", exact: true })
+      .getByRole("button", { name: "新建或添加", exact: true })
       .click();
     await expect(
       composer.getByLabel("截图输入", { exact: true }),
     ).toBeVisible();
+    await expect(
+      composer
+        .getByLabel("截图输入", { exact: true })
+        .locator(".lucide-square-bottom-dashed-scissors"),
+    ).toHaveCount(1);
     await page.keyboard.press("Escape");
     await expect(
       composer.getByLabel("长录音转写", { exact: true }),

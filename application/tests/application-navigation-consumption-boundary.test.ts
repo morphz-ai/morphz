@@ -1972,7 +1972,8 @@ function withRule(rule: string, check: () => void) {
     throw new assert.AssertionError({ message: rule + ": " + error.message });
   }
 }
-// This one approved optional navigation field is not an authority whitelist.
+// Approved optional preferences are not an authority whitelist. Historical
+// authority recipes stay frozen; the independent history pin is a UI-only map.
 // Verify its real type binding before projecting it out of the unchanged schema.
 const cognitivePreferenceField = parse({
   Field:
@@ -1982,13 +1983,30 @@ const cognitivePreferenceField = parse({
   .nodes.find((node) => node.kind === SyntaxKind.PropertySignature)!;
 function preferencesWithoutCognitiveLocation(stable: Parsed, type: Node) {
   const fields: Node[] = [];
+  const pinFields: Node[] = [];
   walk(type, (node) => {
     if (
       node.kind === SyntaxKind.PropertySignature &&
       node.getText().startsWith("cognitiveLocation")
     )
       fields.push(node);
+    if (
+      node.kind === SyntaxKind.PropertySignature &&
+      node.getText().startsWith("pinnedHistories")
+    )
+      pinFields.push(node);
   });
+  assert.equal(pinFields.length, 1, "one independent history pin preference");
+  const expectedPin = parse({
+    Field: "type Field = { pinnedHistories?: Record<string, boolean>; };",
+  })
+    .get("Field")!
+    .nodes.find((node) => node.kind === SyntaxKind.PropertySignature)!;
+  assert.deepEqual(
+    scalarSyntax(pinFields[0]!),
+    scalarSyntax(expectedPin),
+    "exact optional scoped boolean history pin",
+  );
   assert.equal(fields.length, 1, "one exact cognitive navigation field");
   const field = fields[0]!;
   assert.deepEqual(
@@ -2014,8 +2032,13 @@ function preferencesWithoutCognitiveLocation(stable: Parsed, type: Node) {
     "cognitive field uses its real imported type",
   );
   const source = stable.source.getFullText();
+  let stripped = source;
+  for (const node of [field, pinFields[0]!].sort(
+    (a, b) => b.getStart() - a.getStart(),
+  ))
+    stripped = stripped.slice(0, node.getStart()) + stripped.slice(node.end);
   return parse({
-    Preferences: source.slice(0, field.getStart()) + source.slice(field.end),
+    Preferences: stripped,
   }).get("Preferences")!;
 }
 function currentNavigationHost(app: Parsed, stable: Parsed) {

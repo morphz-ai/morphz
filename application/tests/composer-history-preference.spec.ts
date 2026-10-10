@@ -110,6 +110,9 @@ test("主动收起记录后，鼠标与键盘聚焦、隐藏重开、刷新及�
   await input.fill(taskDraft);
   await composerAction(page, "查看交流记录");
   await composerAction(page, "固定输入框");
+  // History and input are now independently pinned; opening history is not
+  // a pin. This scope-isolation phase intentionally preserves both parts.
+  await composerAction(page, "固定交流记录");
   await expect(page.locator(".primary-panel")).toHaveAttribute(
     "data-interaction",
     "recent",
