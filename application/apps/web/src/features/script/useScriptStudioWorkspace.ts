@@ -49,7 +49,10 @@ type ScriptStudioClient = Pick<
   | "resolveCatalogContent"
 >;
 
-export type ScriptRun = (command: ScriptCommand) => Promise<Receipt>;
+export type ScriptRun = (
+  command: ScriptCommand,
+  options?: { deferFocusReturn?: boolean },
+) => Promise<Receipt>;
 
 /** Owns this workspace's location, explicit pane reads, focus leases, commands
  * and export/picker lifecycle. Render Boot and storage reads retain their
@@ -425,7 +428,7 @@ export function useScriptStudioWorkspace({
         anchor: document.activeElement,
       };
   };
-  const run: ScriptRun = async (command) => {
+  const run: ScriptRun = async (command, options) => {
     if (!activeView || !client.online || working.current)
       throw new Error("请在已连接的剧本工作区操作。");
     working.current = true;
@@ -448,10 +451,10 @@ export function useScriptStudioWorkspace({
     } finally {
       working.current = false;
       if (alive.current) setBusy(false);
-      // Export owns a longer native-picker lifecycle. Restoring here while its
-      // trigger is still disabled focuses the editor fallback; the picker then
-      // mistakes that programmatic move for newer user navigation.
-      if (command.action !== "record-export") {
+      // Export and an explicitly deferred caller own a longer lifecycle.
+      // Returning focus at command completion would mistake a programmatic
+      // fallback for newer user navigation during their remaining work.
+      if (command.action !== "record-export" && !options?.deferFocusReturn) {
         restoreDialogFocus();
         restoreFocus();
       }

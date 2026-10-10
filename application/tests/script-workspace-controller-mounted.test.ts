@@ -8,6 +8,7 @@ import test from "node:test";
 import react from "@vitejs/plugin-react";
 import { chromium, expect, type Page } from "@playwright/test";
 import { createServer } from "vite";
+import { selectScriptOption } from "./script-studio-ui-helpers.js";
 import {
   emptyScriptBrief,
   defaultScriptExportTemplate,
@@ -126,7 +127,10 @@ test(
       },
       logLevel: "error",
     });
-    context.after(() => server.close());
+    context.after(async () => {
+      server.httpServer?.closeAllConnections();
+      await server.close();
+    });
     await server.listen();
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
@@ -179,9 +183,18 @@ test(
       await page.goto(
         `http://127.0.0.1:${address.port}/__script_workspace?lane=${lane}`,
       );
-      await page.waitForFunction(
-        () => !!Reflect.get(window, "scriptWorkspaceFixture"),
-      );
+      // Initialization must not depend on the rAF clock we deliberately froze.
+      // Poll from Node without advancing any application timer or weakening
+      // the ready condition or its existing four-second deadline.
+      await expect
+        .poll(
+          () =>
+            page.evaluate(
+              () => !!Reflect.get(window, "scriptWorkspaceFixture"),
+            ),
+          { timeout: 4000 },
+        )
+        .toBe(true);
       pages.push(page);
     }
     async function tick() {
@@ -429,7 +442,7 @@ test(
         await current("library receipt");
         await reset();
         await command("hold", ["execute"]);
-        await each((page) => button(page, "剧本设置").click());
+        await each((page) => selectScriptOption(page, "剧本设置"));
         await tick();
         await each((page) =>
           page.getByLabel("剧名", { exact: true }).fill("TEST 修改规范"),
@@ -491,7 +504,14 @@ test(
         await each((page) => expect(button(page, "导出 Word")).toBeDisabled());
         await command("set", { online: true, active: false });
         await each((page) => expect(title(page)).toBeDisabled());
-        await each((page) => expect(button(page, "剧本设置")).toBeDisabled());
+        await each(async (page) => {
+          if (!(await button(page, "剧本设置").isVisible()))
+            await page
+              .getByRole("button", { name: /^(文稿选项|剧本选项)$/ })
+              .click();
+          await expect(button(page, "剧本设置")).toBeDisabled();
+          await page.keyboard.press("Escape");
+        });
         assert.equal(
           kinds(
             await current("offline/inactive do not write"),
@@ -587,7 +607,7 @@ test(
           [["set-application-state", 7]],
         );
         await reset();
-        await each((page) => button(page, "设置项目").click());
+        await each((page) => selectScriptOption(page, "设置项目"));
         await tick();
         await each((page) =>
           expect(
@@ -729,7 +749,7 @@ test(
         await current("created item body ready focus");
         await each((page) =>
           expect(
-            page.locator(".script-editor [data-script-focus-anchor]"),
+            page.locator(".script-studio [data-script-focus-anchor]").first(),
           ).toBeFocused(),
         );
         await current("create item close/focus");

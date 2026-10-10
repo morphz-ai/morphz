@@ -160,9 +160,10 @@ test("新存储中的剧本条目可从消息交付直达，返回后保留对�
       name: `打开剧本结果：${episodeTitle}`,
     })
     .click();
-  await expect(
-    page.getByRole("tab", { name: "历史", exact: true }),
-  ).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: /^版本/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
   await expect(page.getByRole("combobox", { name: "查看版本" })).toHaveValue(
     "1",
   );

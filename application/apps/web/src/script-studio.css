@@ -23,8 +23,6 @@
   flex-shrink: 0;
 }
 .script-toolbar,
-.script-editor-header,
-.script-edit-actions,
 .script-workflow,
 .script-outline-actions {
   display: flex;
@@ -33,8 +31,24 @@
   flex-wrap: wrap;
 }
 .script-toolbar {
-  padding: 8px 12px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 4px;
+  min-height: 44px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--hairline);
+}
+.script-toolbar[data-library="true"] {
+  flex-wrap: wrap;
+}
+.script-toolbar .script-directory-toggle {
+  width: 32px;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+}
+.script-toolbar .script-library-back {
+  flex: 0 0 32px;
 }
 .script-export-status {
   display: flex;
@@ -62,18 +76,37 @@
 .script-location {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex: 1 1 160px;
+  gap: 6px;
+  flex: 1 1 0;
   min-width: 0;
 }
 .script-location h2 {
   min-width: 0;
   margin: 0;
-  font-size: 15px;
+  font-size: 13px;
   line-height: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.script-item-location {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.script-item-location > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.script-item-location svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  color: var(--muted);
 }
 .script-project {
   display: flex;
@@ -510,63 +543,63 @@
 .script-overview-details p {
   margin: 6px 0;
 }
-.script-editor-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 8px;
-  margin-bottom: 20px;
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  padding: 12px 0 0;
-  background: var(--paper);
-  border-bottom: 1px solid var(--hairline);
-}
-.script-editor-header strong {
-  grid-column: 1;
-  grid-row: 1;
+.script-item-controls,
+.script-local-controls {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
   min-width: 0;
-  font-size: 15px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
-.script-editor-header small {
-  font-size: 11px;
-  color: var(--muted);
+.script-local-controls {
+  margin: 0 0 20px;
 }
-.script-edit-status {
-  grid-column: 2;
-  grid-row: 1;
-  max-width: 100%;
-  overflow-wrap: anywhere;
-}
-.script-editor-header > button {
-  grid-column: 3;
-  grid-row: 1;
+.script-editor {
+  padding-top: 24px;
 }
 .script-tabs {
-  grid-column: 1 / -1;
-  grid-row: 2;
   display: flex;
   flex-wrap: nowrap;
   min-width: 0;
   max-width: 100%;
-  overflow-x: auto;
   gap: 2px;
 }
 .script-tabs button {
   flex-shrink: 0;
   border: 0;
-  border-radius: 4px 4px 0 0;
-  padding: 7px 10px;
+  border-radius: 6px;
+  min-height: 30px;
+  padding: 5px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
   background: transparent;
   color: var(--muted);
 }
-.script-tab-count {
-  margin-left: 4px;
-  font-size: 11px;
+.script-guide {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--text-secondary);
+  font-size: 12px;
+}
+.script-guide:hover:not(:disabled),
+.script-tabs button:hover:not([aria-selected="true"]) {
+  background: var(--hover);
+}
+.script-studio .script-save {
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+}
+.script-studio .script-save:disabled {
+  opacity: 0.45;
 }
 .script-review-context {
   flex: 1 1 100%;
@@ -579,7 +612,6 @@
 .script-tabs button[aria-selected="true"] {
   color: var(--ink);
   background: var(--soft);
-  box-shadow: inset 0 -2px var(--accent, var(--ink));
 }
 .script-review-form,
 .script-history {
@@ -624,11 +656,18 @@
   flex: 1 0 auto;
   min-height: 220px;
   line-height: 1.9;
-  padding: 16px 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   font-size: var(--reading-font-size, 15px);
 }
-.script-edit-fields > input[aria-label="文稿标题"] {
-  font-size: 15px;
+.script-studio .script-edit-fields > input[aria-label="文稿标题"] {
+  padding: 0 0 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 20px;
   font-weight: 600;
 }
 .script-studio .script-history > pre {
@@ -640,7 +679,13 @@
   width: min(100%, 280px);
 }
 .script-studio .script-text:read-only {
-  background: var(--soft);
+  background: transparent;
+}
+.script-studio .script-edit-fields > textarea.script-text {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
 }
 .script-studio details,
 .script-dialog details {
@@ -1002,15 +1047,21 @@
   .script-main {
     padding: 0 16px 24px;
   }
-  .script-toolbar .script-location {
-    order: -1;
-    flex-basis: 100%;
+  .script-toolbar {
+    padding-inline: 8px;
+    gap: 2px;
   }
-  .script-location h2 {
-    flex: 1;
+  .script-guide {
+    width: 30px;
+    padding-inline: 0;
   }
-  .script-editor-header {
-    margin-bottom: 16px;
+  .script-guide > span,
+  .script-item-location,
+  .script-tabs button svg {
+    display: none;
+  }
+  .script-editor {
+    padding-top: 20px;
   }
   .script-diff {
     grid-template-columns: minmax(0, 1fr);

@@ -87,7 +87,20 @@ import {useScriptEditorRead} from "../../useScriptEditorRead.js";`;
 const original =
   imports +
   `function Original({${inputs.join(",")}}){\n` +
-  prelude.join("\n") +
+  // Accepted result-first delta: long save/restore owns its complete focus
+  // lifecycle. Keep the independently captured original bytes below intact.
+  prelude
+    .map((raw) =>
+      raw.startsWith("const run: ScriptRun = async (command) =>")
+        ? raw
+            .replace("async (command) =>", "async (command, options) =>")
+            .replace(
+              'command.action !== "record-export"',
+              'command.action !== "record-export" && !options?.deferFocusReturn',
+            )
+        : raw,
+    )
+    .join("\n") +
   "\n" +
   actions
     .map((name) => `const ${name}=${arrows[actionIndices[name]].raw};`)
@@ -652,9 +665,21 @@ function validate(current: Sources) {
       "actual-dom-attachment:" + name,
     );
   }
+  const options = variable(view.body!, "studioOptions");
+  assert.ok(
+    options.initializer && ts.isArrayLiteralExpression(options.initializer),
+    "actual-studio-options-array",
+  );
   for (const name of actions) {
-    const wanted = [...actionUses.entries()]
+    // Approved result-first UI moves only these toolbar buttons into the
+    // shared options array. Their controller recipes and bodies stay exact.
+    const menuAction =
+      name === "openOrganization" || name === "openSettingsDialog";
+    const wanted: { tag: string; attribute: string }[] = [
+      ...actionUses.entries(),
+    ]
       .filter(([, n]) => n === name)
+      .filter(([index]) => !menuAction || index !== actionIndices[name])
       .sort(([a], [b]) => a - b)
       .map(([index]) => ({
         tag: arrows[index]!.tag,
@@ -667,7 +692,37 @@ function validate(current: Sources) {
           renderer.ids.get(value(n)) === exposed.get(name),
       )
       .map((n) => ({ tag: tag(n, renderer), attribute: n.name.getText() }));
+    if (menuAction) {
+      wanted.unshift({ tag: "studio-options", attribute: "onSelect" });
+      found.unshift(
+        ...nodes(options.initializer!)
+          .filter(ts.isPropertyAssignment)
+          .filter(
+            (node) =>
+              propertyName(node.name) === "onSelect" &&
+              ts.isIdentifier(node.initializer) &&
+              renderer.ids.get(node.initializer) === exposed.get(name),
+          )
+          .map(() => ({ tag: "studio-options", attribute: "onSelect" })),
+      );
+    }
     assert.deepEqual(found, wanted, "direct-action-consumer:" + name);
+  }
+  const optionId = renderer.ids.get(options.name);
+  for (const [child, attribute] of [
+    ["ScriptItemEditor", "studioOptions"],
+    ["ComposerOptions", "options"],
+  ] as const) {
+    const ports = attrs.filter(
+      (node) =>
+        tag(node, renderer) === child && node.name.getText() === attribute,
+    );
+    assert.equal(ports.length, 1, "actual-studio-options-port:" + child);
+    assert.ok(
+      ts.isIdentifier(value(ports[0]!)) &&
+        renderer.ids.get(value(ports[0]!)) === optionId,
+      "actual-studio-options-port:" + child,
+    );
   }
   const selections = nodes(view.body!)
     .filter(ts.isPropertyAssignment)
@@ -819,6 +874,16 @@ test("owned recipe and action drift reject at named rules", () => {
     ["[instance.state.navigationId]", "[]", "original-workspace-recipe:8"],
     ["locationRequest ??", "null ??", "original-workspace-recipe:11"],
     [
+      'command.action !== "record-export" && !options?.deferFocusReturn',
+      'command.action !== "record-export"',
+      `original-workspace-recipe:${prelude.findIndex((raw) => raw.startsWith("const run: ScriptRun ="))}`,
+    ],
+    [
+      'command.action !== "record-export" && !options?.deferFocusReturn',
+      "!options?.deferFocusReturn",
+      `original-workspace-recipe:${prelude.findIndex((raw) => raw.startsWith("const run: ScriptRun ="))}`,
+    ],
+    [
       "const toggleDirectory = () => {",
       "const toggleDirectory = async () => {",
       "complete-named-action:toggleDirectory",
@@ -963,6 +1028,26 @@ test("captured inputs, readonly facts and actual DOM consumers reject wrappers o
       "embedded-production-action-consumer",
     ],
     [
+      "onSelect: openSettingsDialog",
+      "onSelect: () => openSettingsDialog()",
+      "direct-action-consumer:openSettingsDialog",
+    ],
+    [
+      "onSelect: openOrganization",
+      "onSelect: openSettingsDialog",
+      "direct-action-consumer:openOrganization|direct-action-consumer:openSettingsDialog",
+    ],
+    [
+      "studioOptions={studioOptions}",
+      "studioOptions={[...studioOptions]}",
+      "actual-studio-options-port:ScriptItemEditor",
+    ],
+    [
+      "options={studioOptions}",
+      "options={[]}",
+      "actual-studio-options-port:ComposerOptions",
+    ],
+    [
       "query={query}",
       'query={""}',
       "actual-child-port:ScriptStudioLibrary.query",
@@ -1035,8 +1120,8 @@ test("genuine imported/local aliases, static types and independent features rema
       "  const {\n    boot,",
       "  const {\n    futureVisible,\n    toggleFuture,\n    boot,",
     ).replace(
-      '<header className="script-toolbar">',
-      '<header className="script-toolbar">\n        <button onClick={toggleFuture}>Future</button>{futureVisible&&<aside className="independent-feature">Future</aside>}',
+      '<header className="script-toolbar" data-library={library || undefined}>',
+      '<header className="script-toolbar" data-library={library || undefined}>\n        <button onClick={toggleFuture}>Future</button>{futureVisible&&<aside className="independent-feature">Future</aside>}',
     ),
   });
 });

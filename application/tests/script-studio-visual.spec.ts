@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { createServer, transformWithOxc } from "vite";
 import { expect, test, type Page } from "@playwright/test";
+import { selectScriptOption } from "./script-studio-ui-helpers.js";
 
 // The complete production Studio, Navigation and Editor, with controlled read
 // ports only. No App, SQL, model or native-window acceptance is implied here.
@@ -33,7 +34,7 @@ const count = Number(new URL(location.href).searchParams.get('count')||1);
 const candidates = Array.from({length:count},(_,at)=>({id:'candidate-'+(at+1),ordinal:at+1,revision:1,status:'pending',stale:false,baseRevision:1,createdAt:now,textCharacters:text.length}));
 const book = {id:'production',projectId:'first-project',title:'TEST 剧本视觉回归',revision:1,activityRevision:1,creativeEpoch:1,brief:{...emptyScriptBrief},reviewerPrincipalIds:['human'],template:{...defaultScriptExportTemplate},createdBy:author,createdAt:now,updatedAt:now,totals:{items:items.length,candidates:count,pendingCandidates:count,reviews:0,pendingReviews:0,exports:0,metadataVersions:1},contentId:'catalog',catalogRevision:1,providerRevision:1,items};
 const boot = {centerId:'visual-test-center',principalId:'human',csrfToken:'visual-test-identity',actantId:'human-actant',workspace:initialWorkspace(now),scriptLibrary:[{...book,availability:'available'}],runtime:{configured:false,connected:false,harnesses:[]}};
-const operations = [];
+const operations = [], compositions = [];
 function version(id,revision=1) { const item=items.find(i=>i.id===id); return {productionId:book.id,itemId:id,kind:item.kind,status:'draft',headRevision:1,workflowRevision:1,revision,candidateId:null,author,createdAt:now,approvalForRequestedVersion:null,draft:{...draft,title:item.title}}; }
 const client = {boot,online:true,contentCatalog:[],contentCatalogVersion:1,getSnapshot:()=>boot,
  readScriptEditor:async()=>structuredClone(book),
@@ -43,9 +44,9 @@ const client = {boot,online:true,contentCatalog:[],contentCatalogVersion:1,getSn
  listContentPage:async()=>({items:[],nextCursor:null}),
  execute:async(operation)=>{operations.push(structuredClone(operation));if(operation.type!=='set-application-state')throw Error('Visual fixture rejects domain writes');return {saved:true};},
 };
-Reflect.set(window,'studioVisualFixture',{text,report:()=>({operations,originalText:draft.text})});
+Reflect.set(window,'studioVisualFixture',{text,report:()=>({operations,compositions,originalText:draft.text})});
 const instance={id:'visual-instance',workspaceId:'first-project',revision:1,state:{productionId:book.id,itemId:'episode',view:'editor'}};
-createRoot(document.getElementById('root')).render(<StrictMode><div className="app without-collaboration" data-appearance="light" data-accent="cyan" style={{display:'block',height:'100dvh',minHeight:0}}><ScriptStudio client={client} instance={instance} activeView={true} onCompose={()=>({ok:true})} onConceive={()=>{}} onOpenScript={()=>{}} onLibrary={()=>{}} onNotice={()=>{}}/></div></StrictMode>);
+createRoot(document.getElementById('root')).render(<StrictMode><div className="app without-collaboration" data-appearance="light" data-accent="cyan" style={{display:'block',height:'100dvh',minHeight:0}}><ScriptStudio client={client} instance={instance} activeView={true} onCompose={(text,generation)=>{compositions.push(structuredClone({text,generation}));return {ok:true};}} onConceive={()=>{}} onOpenScript={()=>{}} onLibrary={()=>{}} onNotice={()=>{}}/></div></StrictMode>);
 `;
 
 let server: Awaited<ReturnType<typeof createServer>>;
@@ -140,13 +141,135 @@ test.afterEach(async ({ page }) => {
     expect(state.originalText).toContain("## 保留原始标记");
   }
 });
+test("result-first navigation uses one location bar and two primary views", async ({
+  page,
+}) => {
+  await page.goto(fixtureUrl);
+  await expect(page.getByLabel("剧本正文", { exact: true })).toBeVisible();
+  await expect(page.getByRole("tab")).toHaveCount(2);
+  await expect(
+    page.getByRole("tab", { name: "正文", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("tab", { name: /版本.*v1/ })).toBeVisible();
+  await expect(page.locator(".script-toolbar [role=tablist]")).toBeVisible();
+  await expect(page.locator(".script-editor-header")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "生成候选", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "指导修改", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "文稿选项", exact: true }).click();
+  await expect(page.getByRole("button", { name: /旧候选/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /剧本设置/ })).toBeVisible();
+});
 async function openCandidate(page: Page, count = 1) {
   await page.goto(fixtureUrl + "?count=" + count);
   await expect(page.getByLabel("剧本正文", { exact: true })).toBeVisible();
-  await page.getByRole("tab", { name: /^候选稿/ }).click();
+  await selectScriptOption(page, /^旧候选/);
   await expect(page.locator(".script-candidate-body pre")).toContainText(
     "第一场",
   );
+}
+test("guidance prepares one current result without a candidate choice or sending", async ({
+  page,
+}) => {
+  await page.goto(fixtureUrl + "?count=0");
+  await expect(page.getByLabel("剧本正文", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "指导修改", exact: true }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "准备指导修改请求",
+    exact: true,
+  });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("最多候选数")).toHaveCount(0);
+  await dialog
+    .getByLabel("本次要求", { exact: true })
+    .fill("保持原对白，只修改夜晚的动作");
+  await dialog
+    .getByRole("button", { name: "准备到输入框", exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
+  const report = await page.evaluate(() =>
+    Reflect.get(window, "studioVisualFixture").report(),
+  );
+  expect(report.compositions).toHaveLength(1);
+  expect(report.compositions[0].generation).toMatchObject({
+    purpose: "rewrite",
+    maxCandidates: 1,
+    targetId: "episode",
+    baseRevision: 1,
+  });
+  expect(report.compositions[0].text).toContain(
+    "直接生成并保存当前正文的新版本",
+  );
+  expect(report.compositions[0].text).toContain("保持原对白，只修改夜晚的动作");
+  expect(
+    report.operations.every(
+      (operation: { type: string }) =>
+        operation.type === "set-application-state",
+    ),
+  ).toBe(true);
+});
+for (const [width, appearance, zoom] of [
+  [1440, "light", 1],
+  [1440, "dark", 1],
+  [560, "light", 1],
+  [560, "dark", 1],
+  [760, "light", 2],
+] as const) {
+  test(`current manuscript and compact toolbar ${width}/${appearance}/zoom${zoom}`, async ({
+    page,
+  }, info) => {
+    await page.setViewportSize({ width, height: 960 });
+    await page.goto(fixtureUrl + "?count=0");
+    await expect(page.getByLabel("剧本正文", { exact: true })).toBeVisible();
+    await page.evaluate(
+      ({ appearance, zoom }) => {
+        document.documentElement.dataset.appearance = appearance;
+        document.querySelector<HTMLElement>(".app")!.dataset.appearance =
+          appearance;
+        document.documentElement.style.zoom = String(zoom);
+      },
+      { appearance, zoom },
+    );
+    const geometry = await page
+      .locator(".script-toolbar")
+      .evaluate((toolbar) => {
+        const rect = toolbar.getBoundingClientRect();
+        const controls = Array.from(
+          toolbar.querySelectorAll<HTMLElement>("button"),
+        ).filter(
+          (button) =>
+            button.getClientRects().length && !button.closest("[inert]"),
+        );
+        return {
+          overflow: toolbar.scrollWidth - toolbar.clientWidth,
+          oneRow: controls.every((control) => {
+            const box = control.getBoundingClientRect();
+            return box.top >= rect.top && box.bottom <= rect.bottom;
+          }),
+          hit: controls.every((control) => {
+            const box = control.getBoundingClientRect();
+            return control.contains(
+              document.elementFromPoint(
+                box.x + box.width / 2,
+                box.y + box.height / 2,
+              ),
+            );
+          }),
+        };
+      });
+    expect(geometry).toEqual({ overflow: 0, oneRow: true, hit: true });
+    await expect(page.getByLabel("剧本正文", { exact: true })).toHaveValue(
+      await page.evaluate(
+        () => Reflect.get(window, "studioVisualFixture").text,
+      ),
+    );
+    await page.screenshot({
+      path: info.outputPath(`current-${width}-${appearance}-${zoom}.png`),
+    });
+  });
 }
 test("directory and manuscript have a balanced reading layout", async ({
   page,
@@ -283,7 +406,7 @@ test("body and history keep original text and readable type; multiple candidates
     await body.evaluate((e) => parseFloat(getComputedStyle(e).fontSize)),
   ).toBeGreaterThanOrEqual(15);
   await page.screenshot({ path: info.outputPath("body-light.png") });
-  await page.getByRole("tab", { name: "历史", exact: true }).click();
+  await page.getByRole("tab", { name: /^版本/ }).click();
   const history = page.locator(".script-history > pre");
   await expect(history).toHaveText(
     await page.evaluate(() => Reflect.get(window, "studioVisualFixture").text),
@@ -298,11 +421,11 @@ test("reviews, overview and renamed candidate retain meaningful titles and consi
 }, info) => {
   await page.goto(fixtureUrl + "?count=1&renamed=1");
   await expect(page.getByLabel("剧本正文", { exact: true })).toBeVisible();
-  await page.getByRole("tab", { name: /^候选稿/ }).click();
+  await selectScriptOption(page, /^旧候选/);
   await expect(page.locator(".script-candidate-body h4")).toHaveText(
     "修订后的第一集",
   );
-  await page.getByRole("tab", { name: "审阅", exact: true }).click();
+  await selectScriptOption(page, "审阅");
   await expect(
     page.getByRole("region", { name: "人工审阅与锁稿" }),
   ).toBeVisible();

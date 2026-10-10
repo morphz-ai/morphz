@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { ScriptLocation } from "../../../packages/core/src/script-delivery.js";
 import {
   ArrowLeft,
+  ChevronRight,
   Download,
   FilePlus2,
   Folder,
@@ -37,7 +38,7 @@ import {
 } from "./ScriptStudioNavigation.js";
 import "./script-studio.css";
 import { ScriptStudioLibrary } from "./ScriptStudioLibrary.js";
-import { ComposerOptions } from "./ComposerOptions.js";
+import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
 import {
   useScriptStudioWorkspace,
   type ScriptRun,
@@ -158,6 +159,36 @@ export function ScriptStudio({
     onNotice,
     onNativeDialog,
   });
+  const [toolbarTarget, setToolbarTarget] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const studioOptions: ComposerOption[] = [
+    {
+      label: "剧本设置",
+      icon: <Settings2 />,
+      onSelect: openSettingsDialog,
+      disabled: !canWrite,
+    },
+    {
+      label: "设置项目",
+      text: contentOwnershipTitle(space),
+      icon: <Folder />,
+      onSelect: openOrganization,
+      disabled: !canWrite,
+    },
+    {
+      label: "构思新剧",
+      icon: <Sparkles />,
+      onSelect: onConceive,
+      disabled: !canWrite,
+    },
+    {
+      label: "手动新建剧本",
+      icon: <FilePlus2 />,
+      onSelect: openProductionDialog,
+      disabled: !canWrite,
+    },
+  ];
   return (
     <section
       ref={studio}
@@ -165,7 +196,7 @@ export function ScriptStudio({
       aria-label="剧本工作区"
       aria-busy={busy}
     >
-      <header className="script-toolbar">
+      <header className="script-toolbar" data-library={library || undefined}>
         {!library && (
           <button
             ref={directoryTrigger}
@@ -178,29 +209,42 @@ export function ScriptStudio({
             onClick={toggleDirectory}
           >
             <PanelLeft />
-            <span>目录</span>
           </button>
         )}
         {!library && (
           <button
             type="button"
-            className="script-library-back"
+            className="icon-button script-library-back"
+            aria-label="全部剧本"
+            title="全部剧本"
             onClick={showLibrary}
             disabled={!activeView || busy || saving}
           >
             <ArrowLeft />
-            全部剧本
           </button>
         )}
         <div className="script-location">
           <h2
             aria-label={library ? "剧本列表" : "当前剧本"}
-            title={library ? "剧本" : production?.title}
+            title={
+              library
+                ? "剧本"
+                : `${production?.title ?? ""} · 归属项目：${contentOwnershipTitle(space)}`
+            }
             tabIndex={-1}
             data-script-focus-anchor={!item || library || undefined}
           >
             {library ? "剧本" : production?.title}
           </h2>
+          {!library && item && (
+            <span
+              className="script-item-location"
+              title={`${scriptKindLabels[item.kind]} · ${item.title}`}
+            >
+              <ChevronRight aria-hidden="true" />
+              <span>{item.title}</span>
+            </span>
+          )}
           {library ? (
             <span
               className="script-project"
@@ -217,21 +261,7 @@ export function ScriptStudio({
                   : contentOwnershipTitle(space)}
               </span>
             </span>
-          ) : (
-            production && (
-              <button
-                type="button"
-                className="script-project"
-                aria-label="设置项目"
-                title={`归属项目：${contentOwnershipTitle(space)} · 点击设置`}
-                onClick={openOrganization}
-                disabled={!canWrite}
-              >
-                <Folder />
-                <span>{contentOwnershipTitle(space)}</span>
-              </button>
-            )
-          )}
+          ) : null}
         </div>
         {library ? (
           <>
@@ -255,49 +285,28 @@ export function ScriptStudio({
               {library && <span>手动新建剧本</span>}
             </button>
           </>
-        ) : (
+        ) : item ? (
+          <div className="script-item-controls" ref={setToolbarTarget} />
+        ) : production ? (
           <ComposerOptions
             label="剧本选项"
             menuLabel="剧本选项菜单"
             below
-            options={[
-              {
-                label: "构思新剧",
-                icon: <Sparkles />,
-                onSelect: onConceive,
-                disabled: !canWrite,
-              },
-              {
-                label: "手动新建剧本",
-                icon: <FilePlus2 />,
-                onSelect: openProductionDialog,
-                disabled: !canWrite,
-              },
-            ]}
+            options={studioOptions}
           />
-        )}
+        ) : null}
         {!library && production && (
-          <>
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="剧本设置"
-              title="剧本设置"
-              onClick={openSettingsDialog}
-              disabled={!canWrite}
-            >
-              <Settings2 />
-            </button>
-            <button
-              ref={exportTrigger}
-              type="button"
-              disabled={!canWrite}
-              onClick={beginExport}
-            >
-              <Download />
-              导出 Word
-            </button>
-          </>
+          <button
+            ref={exportTrigger}
+            type="button"
+            className="icon-button"
+            aria-label="导出 Word"
+            title="导出 Word"
+            disabled={!canWrite}
+            onClick={beginExport}
+          >
+            <Download />
+          </button>
         )}
       </header>
       {!library &&
@@ -391,6 +400,8 @@ export function ScriptStudio({
                 canWrite={canWrite}
                 onCompose={onCompose}
                 onReady={restoreEditorFocus}
+                toolbarTarget={toolbarTarget}
+                studioOptions={studioOptions}
               />
             ) : (
               <div className="script-overview">

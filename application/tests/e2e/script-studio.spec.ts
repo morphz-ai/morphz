@@ -11,6 +11,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { openInput } from "../interaction-helpers.js";
+import { selectScriptOption } from "../script-studio-ui-helpers.js";
 import {
   assertDialogControlMetrics,
   assertSingleFieldDialog,
@@ -171,9 +172,7 @@ const openScript = (page: Page, title: string) =>
   button(page, `打开剧本：${title}`);
 
 async function clickStudioAction(page: Page, name: string) {
-  if (!(await button(page, name).isVisible()))
-    await button(page, "剧本选项").click();
-  await button(page, name).click();
+  await selectScriptOption(page, name);
 }
 
 async function removeInputIntent(page: Page) {
@@ -365,7 +364,7 @@ test("剧本归属：只整理选中内容，多部剧本可加入一个项目�
   })) as { contentId: string };
   const doc = document.contentId;
   const before = await state(page);
-  await button(page, "设置项目").click();
+  await selectScriptOption(page, "设置项目");
   const dialog = page.getByRole("dialog", { name: "设置项目", exact: true });
   await expect(dialog).toContainText(p.title);
   await dialog.getByLabel("目标项目").selectOption("new");
@@ -373,13 +372,16 @@ test("剧本归属：只整理选中内容，多部剧本可加入一个项目�
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   expect((await state(page)).projects).toEqual(before.projects);
-  await button(page, "设置项目").click();
+  await selectScriptOption(page, "设置项目");
   await dialog.getByLabel("目标项目").selectOption("new");
   const projectTitle = "TEST 多剧本项目 " + randomUUID().slice(0, 6);
   await dialog.getByLabel("新项目名称").fill(projectTitle);
   await dialog.getByRole("button", { name: "保存", exact: true }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.locator(".script-project")).toHaveText(projectTitle);
+  await expect(page.getByLabel("当前剧本", { exact: true })).toHaveAttribute(
+    "title",
+    new RegExp(projectTitle),
+  );
   const after = await state(page);
   const projectId = after.projects.find(
     (value) => value.title === projectTitle,
@@ -398,7 +400,10 @@ test("剧本归属：只整理选中内容，多部剧本可加入一个项目�
     "desk",
   );
   await page.reload();
-  await expect(page.locator(".script-project")).toHaveText(projectTitle);
+  await expect(page.getByLabel("当前剧本", { exact: true })).toHaveAttribute(
+    "title",
+    new RegExp(projectTitle),
+  );
   await page
     .getByRole("navigation", { name: "剧本目录" })
     .getByRole("button", { name: /归属回归第一集/ })
@@ -408,11 +413,14 @@ test("剧本归属：只整理选中内容，多部剧本可加入一个项目�
   await expect(openScript(page, p.title)).toBeVisible();
   await expect(openScript(page, secondTitle)).toBeVisible();
   await openScript(page, secondTitle).click();
-  await button(page, "设置项目").click();
+  await selectScriptOption(page, "设置项目");
   await dialog.getByLabel("目标项目").selectOption(projectId);
   await dialog.getByRole("button", { name: "保存", exact: true }).click();
   await expect(dialog).toBeHidden();
-  await expect(page.locator(".script-project")).toHaveText(projectTitle);
+  await expect(page.getByLabel("当前剧本", { exact: true })).toHaveAttribute(
+    "title",
+    new RegExp(projectTitle),
+  );
   const nav = page.getByRole("navigation", { name: "主导航" });
   await nav.getByRole("button", { name: "内容库", exact: true }).click();
   await page.getByLabel("内容范围", { exact: true }).selectOption("all");
@@ -517,18 +525,35 @@ async function saveText(page: Page, text: string) {
   await button(page, "保存文稿").click();
   await expect(button(page, "保存文稿")).toBeDisabled();
   await expect(editor(page)).toHaveValue(text);
-  await expect(page.locator(".script-edit-status")).toContainText("已保存 v");
+  try {
+    await expect(page.locator(".script-edit-status")).toContainText("已保存 v");
+  } catch (error) {
+    console.log(
+      "script-save-failure",
+      await page.locator(".script-studio").evaluate((studio) => ({
+        status: studio.querySelector(".script-edit-status")?.textContent,
+        errors: Array.from(
+          studio.querySelectorAll(".script-error, .error"),
+        ).map((element) => element.textContent),
+        saveDisabled: studio.querySelector<HTMLButtonElement>(
+          'button[aria-label="保存文稿"]',
+        )?.disabled,
+      })),
+    );
+    await page.screenshot({ path: test.info().outputPath("save-failure.png") });
+    throw error;
+  }
   await expect(page.locator(".workspace-notice")).toHaveCount(0);
   await expect(
-    page.locator(".script-editor [data-script-focus-anchor]"),
+    page.locator(".script-studio [data-script-focus-anchor]").first(),
   ).toBeFocused();
 }
 async function approveAndLock(page: Page) {
-  await page.getByRole("tab", { name: /^审阅/ }).click();
+  await selectScriptOption(page, /^审阅/);
   await button(page, "提交审阅").click();
   await expect(button(page, "批准此版本")).toBeEnabled();
   await expect(
-    page.locator(".script-editor [data-script-focus-anchor]"),
+    page.locator(".script-studio [data-script-focus-anchor]").first(),
   ).toBeFocused();
   await button(page, "批准此版本").click();
   const dialog = page.getByRole("dialog", { name: "批准此版本", exact: true });
@@ -539,7 +564,7 @@ async function approveAndLock(page: Page) {
   await expect(dialog).not.toBeVisible();
   await expect(button(page, "锁稿")).toBeEnabled();
   await expect(
-    page.locator(".script-editor [data-script-focus-anchor]"),
+    page.locator(".script-studio [data-script-focus-anchor]").first(),
   ).toBeFocused();
   await button(page, "锁稿").click();
   await page.getByRole("tab", { name: "正文", exact: true }).click();
@@ -571,13 +596,17 @@ async function syntheticCandidate(
     const target = p.items.find(
       (i) => i.id === input.scriptGeneration!.targetId,
     )!;
+    // Exercise frozen legacy multi-candidate compatibility separately from the
+    // new Client one-result default. No actual Runtime or provider is configured.
+    const legacyGeneration = { ...input.scriptGeneration!, maxCandidates: 2 };
     await host.withHuman((actor) =>
       host.domains.content.studio!.prepareGeneration({
         credential: actor.credential,
         commandId: inputId,
         productionId: p.id,
         inputId,
-        generation: input.scriptGeneration!,
+        generation: legacyGeneration,
+        submissionMode: "candidate",
       }),
     );
     const invocation = host.input(
@@ -587,7 +616,7 @@ async function syntheticCandidate(
       undefined,
       {
         inputId,
-        scriptGeneration: input.scriptGeneration,
+        scriptGeneration: legacyGeneration,
       },
     );
     const result = await host.call<{
@@ -631,7 +660,7 @@ test("资料来源与使用说明独立持久化，不成为Agent创作许可或
   expect(p.brief).toEqual(emptyScriptBrief);
   const before = await state(page);
   const statement = "TEST 合成原创资料，仅用于隔离自动化验证，不是合作方授权。";
-  await button(page, "剧本设置").click();
+  await selectScriptOption(page, "剧本设置");
   const dialog = page.getByRole("dialog", { name: "剧本设置", exact: true });
   await dialog
     .getByRole("textbox", { name: "资料来源与使用说明", exact: true })
@@ -658,7 +687,7 @@ test("资料来源与使用说明独立持久化，不成为Agent创作许可或
   expect(after.inputs).toEqual(before.inputs);
   expect(after.conversations).toEqual(before.conversations);
   await page.reload();
-  await button(page, "剧本设置").click();
+  await selectScriptOption(page, "剧本设置");
   // A restored textarea has initial textContent inside its wrapping label;
   // match its accessible textbox name, not that label's aggregate text.
   await expect(
@@ -684,9 +713,9 @@ test("准备失败保留要求和限制，取消后重开可继续，空的新�
   await clickStudioAction(page, "构思新剧");
   const input = page.getByLabel("AI 输入内容", { exact: true });
   await input.fill("TEST 已有草稿，不可合并或覆盖");
-  await button(page, "生成候选").click();
+  await button(page, "指导修改").click();
   const dialog = page.getByRole("dialog", {
-    name: "准备生成候选请求",
+    name: "准备指导修改请求",
     exact: true,
   });
   await expect(dialog).toContainText("最多执行一轮语义自审");
@@ -710,7 +739,7 @@ test("准备失败保留要求和限制，取消后重开可继续，空的新�
   await openInput(page);
   await expect(input).toHaveValue("TEST 已有草稿，不可合并或覆盖");
   await input.fill("");
-  await button(page, "生成候选").click();
+  await button(page, "指导修改").click();
   await expect(dialog.getByLabel("本次要求", { exact: true })).toHaveValue(
     "保留要求：只写雨中的动作",
   );
@@ -739,7 +768,7 @@ test("准备失败保留要求和限制，取消后重开可继续，空的新�
 test("错误只在发起位置显示，标签方向键及成功操作焦点完整", async ({ page }) => {
   await setup(page);
   await createItem(page, "错误与键盘回归");
-  await page.getByRole("tab", { name: /^审阅/ }).click();
+  await selectScriptOption(page, /^审阅/);
   await button(page, "提交审阅").click();
   await expect(page.getByRole("alert")).toHaveCount(1);
   await expect(page.getByRole("alert")).toContainText("已保存正文");
@@ -748,35 +777,29 @@ test("错误只在发起位置显示，标签方向键及成功操作焦点完�
   const edit = page.getByRole("tab", { name: "正文", exact: true });
   await edit.focus();
   await page.keyboard.press("End");
-  await expect(
-    page.getByRole("tab", { name: "检查与影响", exact: true }),
-  ).toBeFocused();
-  await expect(
-    page.getByRole("tabpanel", { name: "检查与影响", exact: true }),
-  ).toBeVisible();
+  await expect(page.getByRole("tab", { name: /^版本/ })).toBeFocused();
+  await expect(page.getByRole("tabpanel", { name: /^版本/ })).toBeVisible();
   await page.keyboard.press("ArrowRight");
   await expect(edit).toBeFocused();
   await page.keyboard.press("ArrowLeft");
-  await expect(
-    page.getByRole("tab", { name: "检查与影响", exact: true }),
-  ).toBeFocused();
+  await expect(page.getByRole("tab", { name: /^版本/ })).toBeFocused();
   await page.keyboard.press("Home");
   await expect(edit).toBeFocused();
   await expect(page.locator('.script-tabs [tabindex="0"]')).toHaveCount(1);
-  await page.getByRole("tab", { name: /^审阅/ }).click();
+  await selectScriptOption(page, /^审阅/);
   await page
     .getByLabel("审阅意见", { exact: true })
     .fill("TEST 阻断：需要核对动机");
   await page.getByLabel("意见级别", { exact: true }).selectOption("blocking");
   await button(page, "添加意见").click();
   await expect(
-    page.locator(".script-editor [data-script-focus-anchor]"),
+    page.locator(".script-studio [data-script-focus-anchor]").first(),
   ).toBeFocused();
   await expect(page.locator(".script-review > small")).toContainText("我");
   await expect(page.locator(".script-review > small")).not.toContainText(
     "local-human",
   );
-  await page.getByRole("tab", { name: /^审阅/ }).click();
+  await selectScriptOption(page, /^审阅/);
   await button(page, "提交审阅").click();
   await button(page, "批准此版本").click();
   const dialog = page.getByRole("dialog", { name: "批准此版本", exact: true });
@@ -805,7 +828,7 @@ test("检查可定位准确依赖，长内容保存栏与设置操作持续可�
     expectedRevision: parent.revision,
     draft: { ...currentScriptDraft(parent), text: "TEST 更新上游" },
   });
-  await page.getByRole("tab", { name: "检查与影响", exact: true }).click();
+  await selectScriptOption(page, "检查与影响");
   await expect(
     page.getByRole("tabpanel", { name: "检查与影响", exact: true }),
   ).toContainText("上游集");
@@ -816,11 +839,11 @@ test("检查可定位准确依赖，长内容保存栏与设置操作持续可�
   await dependency.selectOption(String(parent.revision + 1));
   await expect(button(page, "保存文稿")).toBeInViewport();
   await button(page, "保存文稿").click();
-  await page.getByRole("tab", { name: "检查与影响", exact: true }).click();
+  await selectScriptOption(page, "检查与影响");
   await expect(
     page.getByRole("tabpanel", { name: "检查与影响", exact: true }),
   ).toContainText("当前未发现结构性问题");
-  await button(page, "剧本设置").click();
+  await selectScriptOption(page, "剧本设置");
   const settings = page.getByRole("dialog", {
     name: "剧本设置",
     exact: true,
@@ -855,7 +878,7 @@ test("导出提示属于原剧本，历史显示确切稿名版本并可直接�
   await approveAndLock(page);
   const exportPosition = (await button(page, "导出 Word").boundingBox())!;
   const waiting = page.waitForEvent("download");
-  await button(page, "导出 Word").click();
+  await selectScriptOption(page, "导出 Word");
   await page
     .getByRole("dialog", { name: "导出 Word", exact: true })
     .getByRole("button", { name: "导出所选", exact: true })
@@ -899,7 +922,7 @@ test("批准弹窗固定打开时的版本，后台重新提交新稿不能被�
   await createItem(page, "第一集");
   await saveText(page, "审阅者已看过的旧稿");
   const viewed = (await production(page, p.id)).items[0]!;
-  await page.getByRole("tab", { name: /^审阅/ }).click();
+  await selectScriptOption(page, /^审阅/);
   await button(page, "提交审阅").click();
   await button(page, "批准此版本").click();
   const dialog = page.getByRole("dialog", { name: "批准此版本", exact: true });
@@ -929,7 +952,7 @@ test("批准弹窗固定打开时的版本，后台重新提交新稿不能被�
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
   await page.getByRole("tab", { name: "正文", exact: true }).click();
   await expect(editor(page)).toHaveValue("弹窗打开后写入的未见新稿");
-  await page.getByRole("tab", { name: /^审阅/ }).click();
+  await selectScriptOption(page, /^审阅/);
   await button(page, "批准此版本").click();
   await expect(dialog).toContainText(`本次决定：v${changed.revision}`);
   await dialog.getByRole("button", { name: "确认", exact: true }).click();
@@ -950,7 +973,7 @@ test("日常创作直接导出已保存正文，不要求审阅、不包含未�
   const before = await production(page, p.id);
   await expect(button(page, "提交审阅")).toHaveCount(0);
   await editor(page).fill("TEST 尚未保存，不能混进导出文件");
-  await button(page, "导出 Word").click();
+  await selectScriptOption(page, "导出 Word");
   const dialog = page.getByRole("dialog", { name: "导出 Word", exact: true });
   await expect(dialog.getByLabel("导出用途")).toHaveValue("working-copy");
   await expect(dialog).toContainText("不含本机未保存的修改");
@@ -959,7 +982,7 @@ test("日常创作直接导出已保存正文，不要求审阅、不包含未�
   await expect(dialog.getByRole("button", { name: "导出所选" })).toBeDisabled();
   await dialog.getByRole("button", { name: "取消" }).click();
   expect((await production(page, p.id)).exports).toEqual(before.exports);
-  await button(page, "导出 Word").click();
+  await selectScriptOption(page, "导出 Word");
   const downloading = page.waitForEvent("download");
   await dialog.getByRole("button", { name: "导出所选" }).click();
   const download = await downloading;
@@ -971,7 +994,7 @@ test("日常创作直接导出已保存正文，不要求审阅、不包含未�
   expect(after.items).toEqual(before.items);
   expect(after.exports.at(-1)?.workingCopy).toBe(true);
   await expect(editor(page)).toHaveValue("TEST 尚未保存，不能混进导出文件");
-  await page.getByRole("tab", { name: "审阅", exact: true }).click();
+  await selectScriptOption(page, /^审阅/);
   await expect(page.locator(".script-review-context")).toContainText(
     "审阅人：你",
   );
@@ -994,7 +1017,7 @@ test("仅导出已完成的集场，未完成分集不阻塞；分场自动关�
   await saveText(page, "已完成的第一场正文");
   await approveAndLock(page);
   await createItem(page, "未完成第二集");
-  await button(page, "导出 Word").click();
+  await selectScriptOption(page, "导出 Word");
   const dialog = page.getByRole("dialog", { name: "导出 Word", exact: true });
   await dialog.getByLabel("导出用途").selectOption("delivery");
   const first = dialog.getByRole("checkbox", { name: /已完成第一集/ });
@@ -1010,7 +1033,7 @@ test("仅导出已完成的集场，未完成分集不阻塞；分场自动关�
   await expect(first).toBeChecked();
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
   expect((await production(page, p.id)).exports).toHaveLength(0);
-  await button(page, "导出 Word").click();
+  await selectScriptOption(page, "导出 Word");
   const downloadPromise = page.waitForEvent("download");
   await dialog.getByLabel("导出用途").selectOption("delivery");
   await dialog.getByRole("button", { name: "导出所选", exact: true }).click();
@@ -1267,7 +1290,7 @@ test("真实空态创建、编辑草稿刷新与后台改版 CAS 不覆盖", asy
   await expect(editor(page)).toHaveValue("本机尚未提交的修改");
   await button(page, "保留旧草稿并载入最新稿").click();
   await expect(editor(page)).toHaveValue("另一位作者已经保存的新稿");
-  await page.getByRole("tab", { name: "历史", exact: true }).click();
+  await page.getByRole("tab", { name: /^版本/ }).click();
   await page
     .getByRole("combobox", { name: "查看版本", exact: true })
     .selectOption(String(item.revision));
@@ -1366,10 +1389,10 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
   await saveText(page, "车站。林舟拿起信封。\n他决定返回故乡。");
   const first = (await production(page, p.id)).items[0]!;
   const before = await state(page);
-  await button(page, "生成候选").click();
-  await page.getByLabel("最多候选数", { exact: true }).fill("2");
+  await button(page, "指导修改").click();
+  await expect(page.getByLabel("最多候选数", { exact: true })).toHaveCount(0);
   await page
-    .getByRole("dialog", { name: "准备生成候选请求", exact: true })
+    .getByRole("dialog", { name: "准备指导修改请求", exact: true })
     .getByRole("button", { name: "准备到输入框", exact: true })
     .click();
   await expect(page.getByTestId("script-input-reference")).toContainText(
@@ -1428,7 +1451,7 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
     .getByRole("navigation", { name: "剧本目录", exact: true })
     .getByRole("button", { name: /第一集 车站/ })
     .click();
-  await page.getByRole("tab", { name: /候选稿.*2 待选/ }).click();
+  await selectScriptOption(page, /旧候选.*2 待选/);
   await expect(page.getByLabel("候选稿", { exact: true })).toContainText(
     "第二个备选稿",
   );
@@ -1521,9 +1544,9 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
   await page.locator("summary", { hasText: "与原版本对比" }).click();
   await expect(page.locator(".script-diff")).toContainText("他认出母亲的笔迹");
   await page.locator("summary", { hasText: "创作说明与自审记录" }).click();
-  await expect(page.getByRole("tabpanel", { name: /^候选/ })).toContainText(
-    "非真实模型生成",
-  );
+  await expect(
+    page.getByRole("tabpanel", { name: "旧候选", exact: true }),
+  ).toContainText("非真实模型生成");
   await button(page, "采纳为新版本").click();
   await expect(page.locator(".script-candidate-heading h3")).toBeFocused();
   await expect(page.locator(".script-candidate-heading")).toContainText(
@@ -1537,7 +1560,7 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
   await button(page, "候选 1 · 已采纳").click();
   await button(page, "查看正文").click();
   await expect(editor(page)).toHaveValue(generatedText);
-  await page.getByRole("tab", { name: "审阅", exact: true }).click();
+  await selectScriptOption(page, /^审阅/);
   await page.getByLabel("审阅引用", { exact: true }).fill("他决定返回故乡");
   await page.getByLabel("审阅意见", { exact: true }).fill("核对返乡的动机");
   await button(page, "添加意见").click();
@@ -1553,13 +1576,13 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
   await resolve.getByRole("button", { name: "确认", exact: true }).click();
   await expect(resolve).not.toBeVisible();
   await expect(
-    page.locator(".script-editor [data-script-focus-anchor]"),
+    page.locator(".script-studio [data-script-focus-anchor]").first(),
   ).toBeFocused();
   await page.getByRole("tab", { name: "正文", exact: true }).click();
   await approveAndLock(page);
-  await expect(button(page, "生成候选")).toBeDisabled();
+  await expect(button(page, "指导修改")).toBeDisabled();
   const downloadPromise = page.waitForEvent("download");
-  await button(page, "导出 Word").click();
+  await selectScriptOption(page, "导出 Word");
   await page
     .getByRole("dialog", { name: "导出 Word", exact: true })
     .getByRole("button", { name: "导出所选", exact: true })
@@ -1579,7 +1602,7 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
   expect(exported.exports.at(-1)?.items).toEqual([
     { itemId: first.id, revision: first.revision + 1 },
   ]);
-  await page.getByRole("tab", { name: /^审阅/ }).click();
+  await selectScriptOption(page, /^审阅/);
   await button(page, "说明原因并解锁").click();
   const unlock = page.getByRole("dialog", {
     name: "说明原因并解锁",
@@ -1594,7 +1617,7 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
   await unlock.getByRole("button", { name: "确认", exact: true }).click();
   await expect(unlock).not.toBeVisible();
   await expect(
-    page.locator(".script-editor [data-script-focus-anchor]"),
+    page.locator(".script-studio [data-script-focus-anchor]").first(),
   ).toBeFocused();
   await page.getByRole("tab", { name: "正文", exact: true }).click();
   await expect(editor(page)).not.toHaveAttribute("readonly", "");
@@ -1618,7 +1641,7 @@ test("分场目录及父集依赖持久化、窄窗模态键盘与焦点", async
   await page.reload();
   await expect(editor(page)).toHaveValue("外景。夜。林舟走出车站。");
   await page.setViewportSize({ width: 780, height: 640 });
-  await button(page, "剧本设置").click();
+  await selectScriptOption(page, "剧本设置");
   const dialog = page.getByRole("dialog", {
     name: "剧本设置",
     exact: true,
@@ -1635,7 +1658,9 @@ test("分场目录及父集依赖持久化、窄窗模态键盘与焦点", async
   ).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
-  await expect(button(page, "剧本设置")).toBeFocused();
+  await expect(
+    page.getByRole("button", { name: /^(文稿选项|剧本选项)$/ }),
+  ).toBeFocused();
   await expect(
     page.getByRole("region", { name: "剧本工作区", exact: true }),
   ).toBeVisible();
@@ -1675,7 +1700,7 @@ test("迟到历史意见不计当前阻断，原有未解决意见仍待处理",
       .historicalOnly,
   ).toBe(true);
   await page.reload();
-  await page.getByRole("tab", { name: "审阅 1 条意见", exact: true }).click();
+  await selectScriptOption(page, /^审阅/);
   const historical = page
     .locator(".script-review")
     .filter({ hasText: "TEST 迟到的历史阻断" });
@@ -1686,7 +1711,7 @@ test("迟到历史意见不计当前阻断，原有未解决意见仍待处理",
     .filter({ hasText: "TEST 已生效的当前阻断" });
   await expect(active).toContainText("当前阻断意见");
   await expect(active).not.toContainText("历史意见，不阻断当前稿");
-  await page.getByRole("tab", { name: "检查与影响", exact: true }).click();
+  await selectScriptOption(page, "检查与影响");
   const checks = page.getByRole("tabpanel", {
     name: "检查与影响",
     exact: true,
@@ -2030,7 +2055,9 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
           return { color: css.color, background: css.backgroundColor };
         });
         expect(colors.color).not.toBe(colors.background);
-        await expect(button(page, "剧本设置")).toBeInViewport();
+        await expect(
+          page.getByRole("button", { name: /^(文稿选项|剧本选项)$/ }),
+        ).toBeInViewport();
         await clickStudioAction(page, "手动新建剧本");
         const compact = page.getByRole("dialog", {
           name: "手动新建剧本",
@@ -2053,7 +2080,9 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
         }
         await page.keyboard.press("Escape");
         await expect(compact).toBeHidden();
-        await expect(button(page, "剧本选项")).toBeFocused();
+        await expect(
+          page.getByRole("button", { name: /^(文稿选项|剧本选项)$/ }),
+        ).toBeFocused();
         await button(page, "全部剧本").click();
         const scriptCard = button(page, "打开剧本：TEST Electron 编剧工作区");
         await expect(scriptCard).toBeVisible();
@@ -2116,8 +2145,10 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     await expect(editor(page)).toHaveValue(savedText);
     await expect(button(page, "保存文稿")).toBeDisabled();
     await expect(page.locator(".workspace-notice")).toHaveCount(0);
-    await expect(button(page, "剧本设置")).toBeInViewport();
-    await button(page, "剧本设置").click();
+    await expect(
+      page.getByRole("button", { name: /^(文稿选项|剧本选项)$/ }),
+    ).toBeInViewport();
+    await selectScriptOption(page, "剧本设置");
     const settings = page.getByRole("dialog", {
       name: "剧本设置",
       exact: true,
@@ -2139,7 +2170,9 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     ).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(settings).toBeHidden();
-    await expect(button(page, "剧本设置")).toBeFocused();
+    await expect(
+      page.getByRole("button", { name: /^(文稿选项|剧本选项)$/ }),
+    ).toBeFocused();
     await clickStudioAction(page, "手动新建剧本");
     const zoomDialog = page.getByRole("dialog", {
       name: "手动新建剧本",
@@ -2165,7 +2198,9 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     );
     await page.keyboard.press("Escape");
     await expect(zoomDialog).toBeHidden();
-    await expect(button(page, "剧本选项")).toBeFocused();
+    await expect(
+      page.getByRole("button", { name: /^(文稿选项|剧本选项)$/ }),
+    ).toBeFocused();
     await button(page, "全部剧本").click();
     const zoomCard = button(page, "打开剧本：TEST Electron 编剧工作区");
     await expect(zoomCard).toBeInViewport();
@@ -2338,7 +2373,7 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     await expect(editor(page)).toHaveValue(dirtyText);
     // Native mouse clicks disable the submit control during a command. A
     // rejected approval must restore focus inside the still-open dialog.
-    await page.getByRole("tab", { name: /^审阅/ }).click();
+    await selectScriptOption(page, /^审阅/);
     await page
       .getByLabel("审阅意见", { exact: true })
       .fill("TEST 原生阻断意见");
@@ -2348,7 +2383,7 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     // The entry's transparent margins must not intercept the native click.
     const collapse = button(page, "收起 AI 输入框");
     if (await collapse.isVisible()) await collapse.click();
-    await page.getByRole("tab", { name: /^审阅/ }).click();
+    await selectScriptOption(page, /^审阅/);
     await button(page, "提交审阅").click();
     await button(page, "批准此版本").click();
     const approval = page.getByRole("dialog", {

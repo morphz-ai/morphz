@@ -1,5 +1,14 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
+import {
+  Archive,
+  History,
+  ListChecks,
+  MessageSquareText,
+  Save,
+  Sparkles,
+} from "lucide-react";
+import { ComposerOptions, type ComposerOption } from "./ComposerOptions.js";
 import type { ScriptLocation } from "../../../packages/core/src/script-delivery.js";
 import { quoteSource } from "./text-quote-dom.js";
 import {
@@ -15,7 +24,6 @@ import {
   scriptIssues,
   scriptStructureIssues,
   scriptImpact,
-  scriptKindLabels,
   type ScriptDraft,
   type ScriptGeneration,
   type ScriptReview,
@@ -39,7 +47,6 @@ type DraftState = { baseRevision: number; draft: ScriptDraft };
 type GenerationDraft = {
   selected: string[];
   characters: number;
-  count: number;
   instruction: string;
 };
 type Props = {
@@ -50,6 +57,8 @@ type Props = {
   canWrite: boolean;
   run: ScriptRun;
   onReady?: () => void;
+  toolbarTarget?: HTMLDivElement | null;
+  studioOptions?: ComposerOption[];
   onCompose: (
     text: string,
     generation?: ScriptGeneration,
@@ -99,6 +108,8 @@ function ScriptItemEditorView({
   run,
   onCompose,
   version,
+  toolbarTarget,
+  studioOptions = [],
 }: Props & { version: ScriptEditorVersion }) {
   const boot = client.boot!;
   const storage = scopedStorage(`${boot.centerId}:${boot.principalId}`);
@@ -138,6 +149,10 @@ function ScriptItemEditorView({
   const dependencies = useRef<HTMLFieldSetElement>(null);
   const [historyRevision, setHistoryRevision] = useState(item.revision);
   const [quote, setQuote] = useState("");
+  const [restoring, setRestoring] = useState(false);
+  const [savePending, setSavePending] = useState(false);
+  const [confirmedBase, setConfirmedBase] = useState<DraftState>();
+  const editEpoch = useRef(0);
   const saving = useRef(false);
   const baseRead = useScriptEditorRead(
     `base:${boot.csrfToken}:${production.id}:${item.id}:${local.baseRevision}`,
@@ -146,7 +161,11 @@ function ScriptItemEditorView({
     local.baseRevision !== version.revision,
   );
   const base =
-    local.baseRevision === version.revision ? current : baseRead.value?.draft;
+    local.baseRevision === version.revision
+      ? current
+      : confirmedBase?.baseRevision === local.baseRevision
+        ? confirmedBase.draft
+        : baseRead.value?.draft;
   const dirty = !base || JSON.stringify(base) !== JSON.stringify(local.draft);
   const stale = item.revision !== local.baseRevision;
   const editable = canWrite && item.status !== "locked";
@@ -291,6 +310,7 @@ function ScriptItemEditorView({
     }
   }
   function update(patch: Partial<ScriptDraft>) {
+    editEpoch.current += 1;
     persist({ ...local, draft: { ...local.draft, ...patch } });
   }
   async function action(work: () => Promise<unknown>) {
@@ -303,23 +323,28 @@ function ScriptItemEditorView({
   }
   async function save() {
     if (!editable || saving.current) return;
+    const pinnedEditEpoch = editEpoch.current;
     const restoreFocus = scriptFocusReturn(
       (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
-        ".script-editor",
+        ".script-studio, .script-editor",
       ) ?? null,
     );
     saving.current = true;
+    setSavePending(true);
     try {
-      await run({
-        action: "revise-item",
-        productionId: production.id,
-        itemId: item.id,
-        expectedRevision: local.baseRevision,
-        draft: local.draft,
-      });
-      const snapshot = client.getSnapshot();
+      await run(
+        {
+          action: "revise-item",
+          productionId: production.id,
+          itemId: item.id,
+          expectedRevision: local.baseRevision,
+          draft: local.draft,
+        },
+        { deferFocusReturn: true },
+      );
       const fresh = await client.readScriptEditor(production.id);
       const saved = await client.readScriptVersion(fresh, item.id);
+      const snapshot = client.getSnapshot();
       if (
         snapshot?.centerId !== boot.centerId ||
         snapshot?.principalId !== boot.principalId ||
@@ -328,15 +353,73 @@ function ScriptItemEditorView({
         throw new Error(
           "保存回执已返回，但未取得同身份的新文稿；原草稿保留，请刷新核对。",
         );
-      persist({
+      const next = {
         baseRevision: saved.revision,
         draft: structuredClone(saved.draft),
-      });
+      };
+      setConfirmedBase(next);
+      if (editEpoch.current !== pinnedEditEpoch) {
+        setNotice(`已保存 v${saved.revision}；本机新改动已保留，请核对版本。`);
+        return;
+      }
+      persist(next);
       setNotice(`已保存 v${saved.revision}`);
     } finally {
       saving.current = false;
-      // The command's earlier return may refocus Save while the rereads are
-      // pending. Finish after the clean draft disables that same button.
+      // This operation includes its exact-version reads, not only the command.
+      // Commit the final disabled/dirty state before returning focus once.
+      flushSync(() => setSavePending(false));
+      restoreFocus();
+    }
+  }
+  async function restoreVersion() {
+    if (!editable || dirty || restoring || historyRevision >= item.revision)
+      return;
+    const pinnedEditEpoch = editEpoch.current;
+    const restoreFocus = scriptFocusReturn(
+      (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
+        ".script-studio, .script-editor",
+      ) ?? null,
+    );
+    setRestoring(true);
+    try {
+      await run(
+        {
+          action: "restore-item",
+          productionId: production.id,
+          itemId: item.id,
+          expectedRevision: item.revision,
+          restoreRevision: historyRevision,
+        },
+        { deferFocusReturn: true },
+      );
+      const fresh = await client.readScriptEditor(production.id);
+      const restored = await client.readScriptVersion(fresh, item.id);
+      const snapshot = client.getSnapshot();
+      if (
+        snapshot?.centerId !== boot.centerId ||
+        snapshot?.principalId !== boot.principalId ||
+        restored.revision <= item.revision
+      )
+        throw new Error(
+          "回退回执已返回，但未取得同身份的新版本；请刷新核对，原草稿已保留。",
+        );
+      if (editEpoch.current !== pinnedEditEpoch) {
+        setNotice(
+          `已回退为 v${restored.revision}；本机新改动已保留，请核对版本。`,
+        );
+        return;
+      }
+      const next = {
+        baseRevision: restored.revision,
+        draft: structuredClone(restored.draft),
+      };
+      setConfirmedBase(next);
+      persist(next);
+      setNotice(`已回退为 v${restored.revision}`);
+      setPane("edit");
+    } finally {
+      flushSync(() => setRestoring(false));
       restoreFocus();
     }
   }
@@ -350,6 +433,137 @@ function ScriptItemEditorView({
     return references;
   };
   const draft = local.draft;
+  const generationBlocked = !canWrite || dirty || stale;
+  const changePane = (next: typeof pane) => {
+    setError("");
+    setPane(next);
+  };
+  const controls = (
+    <>
+      <div className="script-tabs" role="tablist" aria-label="剧本文稿视图">
+        {(
+          [
+            ["edit", "正文"],
+            ["history", `版本 · v${item.revision}`],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            id={`${tabId}-${key}`}
+            aria-controls={`${tabId}-${key}-panel`}
+            aria-selected={pane === key}
+            data-script-focus-anchor={
+              (!toolbarTarget && key === "edit") || undefined
+            }
+            tabIndex={
+              pane === key || (key === "edit" && pane !== "history") ? 0 : -1
+            }
+            title={key === "history" ? "版本与回退" : "当前正文"}
+            onClick={() => changePane(key)}
+            onKeyDown={(event) => {
+              const tabs = Array.from(
+                event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>(
+                  '[role="tab"]',
+                ),
+              );
+              const index = tabs.indexOf(event.currentTarget);
+              const next =
+                event.key === "ArrowRight"
+                  ? (index + 1) % tabs.length
+                  : event.key === "ArrowLeft"
+                    ? (index + tabs.length - 1) % tabs.length
+                    : event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? tabs.length - 1
+                        : -1;
+              if (next < 0) return;
+              event.preventDefault();
+              tabs[next]!.click();
+              tabs[next]!.focus();
+            }}
+          >
+            {key === "history" && <History aria-hidden="true" />}
+            {label}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        className="script-guide"
+        aria-label={item.hasText ? "指导修改" : "生成正文"}
+        title={item.hasText ? "指导修改" : "生成正文"}
+        disabled={generationBlocked || item.status === "locked"}
+        onClick={() => setGeneration(item.hasText ? "rewrite" : "draft")}
+      >
+        <Sparkles />
+        <span>{item.hasText ? "指导修改" : "生成正文"}</span>
+      </button>
+      {pane === "edit" && (
+        <button
+          type="button"
+          className={`icon-button script-save${dirty ? " primary" : ""}`}
+          aria-label="保存文稿"
+          title="保存文稿"
+          disabled={!editable || !dirty || restoring || savePending}
+          aria-busy={savePending}
+          onClick={() => void action(save)}
+        >
+          <Save />
+          <span className="visually-hidden">保存文稿</span>
+        </button>
+      )}
+      <ComposerOptions
+        label="文稿选项"
+        menuLabel="文稿选项菜单"
+        below
+        options={[
+          {
+            label: `审阅${item.currentPendingReviewCount ? ` · ${item.currentPendingReviewCount} 条意见` : ""}`,
+            icon: <MessageSquareText />,
+            pressed: pane === "reviews",
+            onSelect: () => changePane("reviews"),
+          },
+          {
+            label: "检查与影响",
+            icon: <ListChecks />,
+            pressed: pane === "checks",
+            onSelect: () => changePane("checks"),
+          },
+          {
+            label: "连续性检查",
+            icon: <ListChecks />,
+            onSelect: () => setGeneration("continuity"),
+            disabled: generationBlocked,
+          },
+          {
+            label: "影响分析",
+            icon: <ListChecks />,
+            onSelect: () => setGeneration("impact"),
+            disabled: generationBlocked,
+          },
+          ...(production.totals.candidates > 0
+            ? [
+                {
+                  label: `旧候选${item.pendingCandidateCount ? ` · ${item.pendingCandidateCount} 待选` : ""}`,
+                  icon: <Archive />,
+                  pressed: pane === "candidates",
+                  onSelect: () => changePane("candidates"),
+                },
+              ]
+            : []),
+          ...studioOptions,
+        ]}
+      />
+      <small role="status" className="script-edit-status visually-hidden">
+        {scriptStatusLabels[item.status]} · v{item.revision}
+        {dirty ? " · 本机未保存" : ""}
+        {notice ? ` · ${notice}` : ""}
+      </small>
+    </>
+  );
   return (
     <div
       className="script-editor"
@@ -363,92 +577,11 @@ function ScriptItemEditorView({
         revision: local.baseRevision,
       })}
     >
-      <header className="script-editor-header">
-        <strong
-          tabIndex={-1}
-          data-script-focus-anchor
-          title={`${scriptKindLabels[item.kind]} · ${current.title}`}
-        >
-          {scriptKindLabels[item.kind]} · {current.title}
-        </strong>
-        <div className="script-tabs" role="tablist" aria-label="剧本文稿视图">
-          {(
-            [
-              ["edit", "正文"],
-              ["candidates", "候选稿"],
-              ["reviews", "审阅"],
-              ["history", "历史"],
-              ["checks", "检查与影响"],
-            ] as const
-          ).map(([key, label]) => {
-            const count =
-              key === "candidates"
-                ? item.pendingCandidateCount
-                : key === "reviews"
-                  ? item.currentPendingReviewCount
-                  : 0;
-            return (
-              <button
-                key={key}
-                type="button"
-                role="tab"
-                id={`${tabId}-${key}`}
-                aria-controls={`${tabId}-${key}-panel`}
-                tabIndex={pane === key ? 0 : -1}
-                aria-selected={pane === key}
-                onClick={() => {
-                  setError("");
-                  setPane(key);
-                }}
-                onKeyDown={(event) => {
-                  const tabs = Array.from(
-                    event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>(
-                      '[role="tab"]',
-                    ),
-                  );
-                  const index = tabs.indexOf(event.currentTarget);
-                  const next =
-                    event.key === "ArrowRight"
-                      ? (index + 1) % tabs.length
-                      : event.key === "ArrowLeft"
-                        ? (index + tabs.length - 1) % tabs.length
-                        : event.key === "Home"
-                          ? 0
-                          : event.key === "End"
-                            ? tabs.length - 1
-                            : -1;
-                  if (next < 0) return;
-                  event.preventDefault();
-                  tabs[next]!.click();
-                  tabs[next]!.focus();
-                }}
-              >
-                {label}
-                {count > 0 && (
-                  <span className="script-tab-count">
-                    {count} {key === "candidates" ? "待选" : "条意见"}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-        <small role="status" className="script-edit-status">
-          {pane === "candidates" ? "正文 · " : ""}
-          {scriptStatusLabels[item.status]} · v{item.revision}
-          {dirty ? " · 本机未保存" : notice ? ` · ${notice}` : ""}
-        </small>
-        {pane === "edit" && (
-          <button
-            type="button"
-            className="primary"
-            disabled={!editable || !dirty}
-            onClick={() => void action(save)}
-          >
-            保存文稿
-          </button>
-        )}
-      </header>
+      {toolbarTarget ? (
+        createPortal(controls, toolbarTarget)
+      ) : (
+        <div className="script-local-controls">{controls}</div>
+      )}
       {error && (
         <div className="script-error script-editor-error" role="alert">
           <span>{error}</span>
@@ -457,7 +590,7 @@ function ScriptItemEditorView({
             aria-label="关闭错误提示"
             onClick={(event) => {
               event.currentTarget
-                .closest(".script-editor")
+                .closest(".script-studio, .script-editor")
                 ?.querySelector<HTMLElement>("[data-script-focus-anchor]")
                 ?.focus({ preventScroll: true });
               setError("");
@@ -489,6 +622,7 @@ function ScriptItemEditorView({
           <button
             type="button"
             onClick={() => {
+              editEpoch.current += 1;
               persist({
                 baseRevision: item.revision,
                 draft: structuredClone(current),
@@ -514,34 +648,9 @@ function ScriptItemEditorView({
           className="script-edit-fields"
           role="tabpanel"
         >
-          <div className="script-edit-actions">
-            {(
-              [
-                ["draft", "生成候选"],
-                ["rewrite", "局部改写"],
-                ["continuity", "连续性检查"],
-                ["impact", "影响分析"],
-              ] as const
-            ).map(([purpose, label]) => (
-              <button
-                type="button"
-                key={purpose}
-                disabled={
-                  !canWrite ||
-                  dirty ||
-                  stale ||
-                  (item.status === "locked" &&
-                    (purpose === "draft" || purpose === "rewrite"))
-                }
-                onClick={() => setGeneration(purpose)}
-              >
-                {label}
-              </button>
-            ))}
-            {dirty && !stale && <small>保存文稿后可生成或检查。</small>}
-          </div>
           <input
             aria-label="文稿标题"
+            data-script-focus-anchor={!!toolbarTarget || undefined}
             value={draft.title}
             disabled={!editable}
             maxLength={180}
@@ -778,7 +887,9 @@ function ScriptItemEditorView({
       {pane === "candidates" && (
         <div
           id={`${tabId}-candidates-panel`}
-          aria-labelledby={`${tabId}-candidates`}
+          aria-label="旧候选"
+          tabIndex={-1}
+          data-script-focus-anchor={!!toolbarTarget || undefined}
           role="tabpanel"
           className="script-candidates"
         >
@@ -797,8 +908,10 @@ function ScriptItemEditorView({
       {pane === "reviews" && (
         <div
           id={`${tabId}-reviews-panel`}
-          aria-labelledby={`${tabId}-reviews`}
+          aria-label="审阅"
           role="tabpanel"
+          tabIndex={-1}
+          data-script-focus-anchor={!!toolbarTarget || undefined}
         >
           <section className="script-workflow" aria-label="人工审阅与锁稿">
             <div className="script-review-context">
@@ -919,6 +1032,8 @@ function ScriptItemEditorView({
         <div
           id={`${tabId}-history-panel`}
           aria-labelledby={`${tabId}-history`}
+          tabIndex={-1}
+          data-script-focus-anchor={!!toolbarTarget || undefined}
           role="tabpanel"
           className="script-history"
         >
@@ -940,18 +1055,14 @@ function ScriptItemEditorView({
           <button
             type="button"
             className="secondary-action"
-            disabled={!editable || dirty || historyRevision === item.revision}
-            onClick={() =>
-              void action(() =>
-                run({
-                  action: "restore-item",
-                  productionId: production.id,
-                  itemId: item.id,
-                  expectedRevision: item.revision,
-                  restoreRevision: historyRevision,
-                }),
-              )
+            disabled={
+              !editable ||
+              dirty ||
+              restoring ||
+              historyRevision >= item.revision
             }
+            title="保存为新版本，保留全部历史"
+            onClick={() => void action(restoreVersion)}
           >
             将此历史稿恢复为新版本
           </button>
@@ -969,12 +1080,13 @@ function ScriptItemEditorView({
                   <button
                     type="button"
                     className="secondary-action"
-                    disabled={dirty}
+                    disabled={dirty || restoring}
                     onClick={() => {
                       const result = scriptDraftSchema.safeParse(
                         storage.readLocal(`${localKey}:v${v.revision}`, null),
                       );
                       if (result.success) {
+                        editEpoch.current += 1;
                         persist({
                           baseRevision: v.revision,
                           draft: result.data,
@@ -1018,7 +1130,9 @@ function ScriptItemEditorView({
       {pane === "checks" && (
         <div
           id={`${tabId}-checks-panel`}
-          aria-labelledby={`${tabId}-checks`}
+          aria-label="检查与影响"
+          tabIndex={-1}
+          data-script-focus-anchor={!!toolbarTarget || undefined}
           role="tabpanel"
         >
           <p className="script-hint">
@@ -1132,7 +1246,6 @@ function ScriptItemEditorView({
             generationDrafts[generation] ?? {
               selected: [],
               characters: 8000,
-              count: 1,
               instruction: "",
             }
           }
@@ -1427,13 +1540,13 @@ function GenerationDialog({
 }) {
   // Freeze the whole request context at open. A later refresh must not retarget it.
   const [frozen] = useState(() => structuredClone({ production, item }));
-  const { selected, characters, count, instruction } = value;
+  const { selected, characters, instruction } = value;
   const [error, setError] = useState("");
   const p = frozen.production,
     target = frozen.item;
   const names = {
-    draft: "生成候选",
-    rewrite: "局部改写",
+    draft: "生成正文",
+    rewrite: "指导修改",
     continuity: "连续性检查",
     impact: "影响分析",
   };
@@ -1455,7 +1568,7 @@ function GenerationDialog({
                   itemId,
                   revision: p.items.find((i) => i.id === itemId)!.revision,
                 })),
-                maxCandidates: count,
+                maxCandidates: 1,
                 maxOutputCharacters: characters,
                 maxReviewPasses: 1,
               },
@@ -1475,7 +1588,7 @@ function GenerationDialog({
                 throw new Error("材料超过 120000 字符，请缩小范围。");
             }
             const result = onCompose(
-              `请对《${p.title}》的「${target.title}」v${target.revision}进行${names[purpose]}。${instruction ? "\n要求：" + instruction : ""}${quote ? "\n限定选区：\n" + quote : ""}\n使用已固定的剧本请求及资料版本，结果提交为候选或带引用的审阅意见，不覆盖正式稿，不代替人工批准。`,
+              `请对《${p.title}》的「${target.title}」v${target.revision}进行${names[purpose]}。${instruction ? "\n要求：" + instruction : ""}${quote ? "\n限定选区：\n" + quote : ""}\n使用已固定的剧本请求及资料版本，${purpose === "draft" || purpose === "rewrite" ? "直接生成并保存当前正文的新版本，保留历史版本，不需要提出候选或等待采纳。" : "提交带引用的检查意见，不修改正文。"}`,
               generation,
             );
             if (!result.ok) setError(result.error);
@@ -1525,18 +1638,6 @@ function GenerationDialog({
         </details>
         <div className="script-form-grid">
           <label>
-            最多候选数
-            <input
-              type="number"
-              min={1}
-              max={3}
-              value={count}
-              onChange={(e) =>
-                onChange({ ...value, count: Number(e.target.value) })
-              }
-            />
-          </label>
-          <label>
             可提交字符上限
             <input
               type="number"
@@ -1551,7 +1652,7 @@ function GenerationDialog({
         </div>
         <p className="script-hint">
           材料上限 200 项 / 120000
-          字符；候选与提交字数受校验，最多执行一轮语义自审。不自动批准，暂不支持单次费用硬限额。
+          字符；每个目标保存一份结果，最多执行一轮语义自审。可继续指导修改或回退版本；暂不支持单次费用硬限额。
         </p>
         {error && <p role="alert">{error}</p>}
         <footer>

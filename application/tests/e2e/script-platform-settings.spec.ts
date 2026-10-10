@@ -1,5 +1,6 @@
 import { test, expect } from "../project-conversation-fixture.js";
 import { openInput } from "../interaction-helpers.js";
+import { selectScriptOption } from "../script-studio-ui-helpers.js";
 import { randomUUID } from "node:crypto";
 
 test("正式剧本工作室保存资料说明、保留旧字段并从同一原件恢复，false不禁用创作", async ({
@@ -29,7 +30,7 @@ test("正式剧本工作室保存资料说明、保留旧字段并从同一原�
   await create.getByRole("button", { name: "创建", exact: true }).click();
   await expect(page.getByLabel("当前剧本")).toContainText(title);
 
-  await page.getByRole("button", { name: "剧本设置", exact: true }).click();
+  await selectScriptOption(page, "剧本设置");
   const settings = page.getByRole("dialog", { name: "剧本设置" });
   await expect(settings.locator(".script-hint")).toContainText(
     "创作要求、资料说明或审阅人变更需要重新审阅",
@@ -81,7 +82,7 @@ test("正式剧本工作室保存资料说明、保留旧字段并从同一原�
     .click();
   await page.getByRole("button", { name: "全部剧本", exact: true }).click();
   await page.getByRole("button", { name: `打开剧本：${title}` }).click();
-  await page.getByRole("button", { name: "剧本设置", exact: true }).click();
+  await selectScriptOption(page, "剧本设置");
   await expect(
     page.getByRole("dialog", { name: "剧本设置" }).getByRole("checkbox", {
       name: "我确认本剧本所选资料允许交给当前模型服务处理",
@@ -105,10 +106,10 @@ test("正式剧本工作室保存资料说明、保留旧字段并从同一原�
   await itemDialog.getByRole("button", { name: "创建条目" }).click();
   // A legacy false value cannot disable the browser creative entry or local
   // preparation. The isolated Host never dispatches this draft to a model.
-  const generate = page.getByRole("button", { name: "生成候选", exact: true });
+  const generate = page.getByRole("button", { name: "生成正文", exact: true });
   await expect(generate).toBeEnabled();
   await generate.click();
-  const generation = page.getByRole("dialog", { name: "准备生成候选请求" });
+  const generation = page.getByRole("dialog", { name: "准备生成正文请求" });
   await expect(generation).toBeVisible();
   await expect(
     generation.getByRole("button", { name: "准备到输入框", exact: true }),
@@ -125,7 +126,7 @@ test("正式剧本工作室保存资料说明、保留旧字段并从同一原�
   await expect(generation).not.toBeVisible();
   const preparedInput = await openInput(page);
   await expect(preparedInput).toHaveValue(
-    /请对《.*》的「第一集」v1进行生成候选/,
+    /请对《.*》的「第一集」v1进行生成正文/,
   );
   await expect(page.getByTestId("script-input-reference")).toContainText(
     "第一集",
@@ -143,7 +144,7 @@ test("正式剧本工作室保存资料说明、保留旧字段并从同一原�
   await page.getByLabel("剧本正文").fill("初稿。");
   await page.getByRole("button", { name: "保存文稿" }).click();
   await expect(page.locator(".script-edit-status")).toContainText("v2");
-  await page.getByRole("tab", { name: "历史" }).click();
+  await page.getByRole("tab", { name: /^版本/ }).click();
   await page.getByLabel("查看版本").selectOption("1");
   await page.getByRole("button", { name: "将此历史稿恢复为新版本" }).click();
   await expect(page.locator(".script-edit-status")).toContainText("v3");
@@ -152,7 +153,7 @@ test("正式剧本工作室保存资料说明、保留旧字段并从同一原�
   await page.getByLabel("剧本正文").fill("导出稿。");
   await page.getByRole("button", { name: "保存文稿" }).click();
   await expect(page.locator(".script-edit-status")).toContainText("v4");
-  await page.getByRole("tab", { name: "审阅" }).click();
+  await selectScriptOption(page, "审阅");
   await page.getByRole("button", { name: "提交审阅" }).click();
   await expect(
     page.getByRole("region", { name: "人工审阅与锁稿" }),
@@ -184,7 +185,7 @@ test("正式剧本工作室保存资料说明、保留旧字段并从同一原�
   await resolution.getByRole("button", { name: "确认", exact: true }).click();
   await expect(page.locator(".script-review")).toContainText("已解决");
   await page.getByRole("button", { name: "概览", exact: true }).click();
-  await page.getByRole("button", { name: "导出 Word" }).click();
+  await selectScriptOption(page, "导出 Word");
   const exportDialog = page.getByRole("dialog", { name: "导出 Word" });
   await expect(exportDialog.getByLabel("导出用途")).toHaveValue("working-copy");
   const download = page.waitForEvent("download");

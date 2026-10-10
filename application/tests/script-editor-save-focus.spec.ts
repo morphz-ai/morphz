@@ -6,8 +6,8 @@ import { expect, test, type Page } from "@playwright/test";
 
 // Mount the actual editor and focus-return helper. Only the command/read ports
 // are controlled: there is no App, business Host, Runtime or model request.
-// The run port retains the existing early focus return so the deferred version
-// read makes the observed Save -> disabled -> body race deterministic.
+// The run port honours the editor's whole-operation focus ownership. Exact
+// version and background base reads remain separately controlled.
 const fixtureModule = `
 import React, { StrictMode, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -20,7 +20,7 @@ original.text = '原始正文';
 const author = { principalId: 'human', actantId: 'human-actant' };
 const now = '2026-10-04T00:00:00.000Z';
 const boot = { centerId: 'save-focus-center', principalId: 'human', csrfToken: 'save-focus-identity', workspace: { actants: [], artifacts: [] } };
-let revision = 1, submitted, resolveCommand, resolveVersion, rejectVersion, change, phase = 'initial';
+let revision = 1, submitted, resolveCommand, resolveVersion, rejectVersion, change, phase = 'initial', holdExactRead = false;
 const events = [], remembered = new Map();
 function item() { return {
   id: 'scene', kind: 'scene', revision, workflowRevision: 1, status: 'draft',
@@ -47,6 +47,10 @@ const client = {
   getSnapshot: () => boot,
   async readScriptEditor() { events.push('read-editor'); return { ...production(), activityRevision: 2 }; },
   readScriptVersion(_production, _item, exactRevision) {
+    if (exactRevision === 2 && holdExactRead) {
+      events.push('exact-base-held');
+      return new Promise(() => {});
+    }
     if (exactRevision !== undefined) return Promise.resolve(version(exactRevision));
     events.push('read-version-held'); phase = 'version';
     return new Promise((resolve, reject) => { resolveVersion = resolve; rejectVersion = reject; });
@@ -55,7 +59,8 @@ const client = {
 function Fixture() {
   const [busy, setBusy] = useState(false), [head, setHead] = useState(1), [mounted, setMounted] = useState(true);
   change = (name) => flushSync(() => name === 'head' ? setHead(revision) : setMounted(false));
-  const run = async command => {
+  const run = async (command, options) => {
+    if (options?.deferFocusReturn !== true) throw new Error('Editor must own whole-save focus return');
     submitted = structuredClone(command.draft);
     const restore = scriptFocusReturn(document.activeElement?.closest('.script-editor') ?? null);
     flushSync(() => setBusy(true));
@@ -66,7 +71,8 @@ function Fixture() {
       return { saved: true };
     } finally {
       flushSync(() => setBusy(false));
-      restore(); events.push('early-return-scheduled');
+      if (!options?.deferFocusReturn) restore();
+      events.push('focus-return-deferred');
     }
   };
   return <main data-head={head}>
@@ -79,7 +85,7 @@ Object.assign(window, { scriptSaveFocusFixture: {
   finish(mode) {
     if (phase !== 'version') throw new Error('No held version read');
     if (mode === 'reject') rejectVersion(new Error('TEST 精确正文读取失败'));
-    else { revision = 2; change('head'); resolveVersion(version(2)); }
+    else { holdExactRead = mode === 'success-delayed-base'; revision = 2; change('head'); resolveVersion(version(2)); }
     phase = 'settled';
   },
   unmount() { change('unmount'); },
@@ -177,15 +183,16 @@ async function startSave(page: Page) {
       Reflect.get(window, "scriptSaveFocusFixture").report().phase ===
       "version",
   );
-  await expect(save).toBeEnabled();
+  await expect(save).toBeDisabled();
   await frames(page);
-  // Verify the real early-restore state, not just that focus() was invoked.
-  await expect(save).toBeFocused();
+  await expect(
+    page.locator(".script-editor [data-script-focus-anchor]"),
+  ).not.toBeFocused();
   assert.equal((await report(page)).sameSave, true);
   assert.deepEqual((await report(page)).events, [
     "run",
     "command-resolved",
-    "early-return-scheduled",
+    "focus-return-deferred",
     "read-editor",
     "read-version-held",
   ]);
@@ -264,4 +271,29 @@ scenario("原编辑器卸载后，保存晚回执不转去另一个可用元素"
   await frames(page);
   await expect(newer).toBeFocused();
   await expect(page.locator(".script-editor")).toHaveCount(0);
+});
+
+scenario("已确认的保存正文不因后台基准读取迟到重新变成脏稿", async (page) => {
+  const save = await startSave(page);
+  await run(page, "finish", "success-delayed-base");
+  await expect(page.getByRole("status")).toContainText("已保存 v2");
+  await expect(save).toBeDisabled();
+  await expect(page.getByRole("status")).not.toContainText("本机未保存");
+  await expect(
+    page.locator(".script-editor [data-script-focus-anchor]"),
+  ).toBeFocused();
+  await frames(page);
+  await expect(save).toBeDisabled();
+  assert.equal((await report(page)).sameSave, true);
+});
+
+scenario("保存后精确正文迟到不能覆盖用户继续输入的本机草稿", async (page) => {
+  const save = await startSave(page);
+  const body = page.getByLabel("剧本正文", { exact: true });
+  await body.fill("TEST 保存期间继续输入，必须原样保留");
+  await run(page, "finish", "success");
+  await expect(body).toHaveValue("TEST 保存期间继续输入，必须原样保留");
+  await expect(page.getByRole("status")).toContainText("本机新改动已保留");
+  await expect(save).toBeEnabled();
+  await expect(body).toBeFocused();
 });
