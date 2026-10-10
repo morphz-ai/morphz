@@ -152,25 +152,34 @@
   min-width: 0;
   padding: 7px 8px;
   border: 0;
-  border-left: 2px solid var(--accent);
+  border-left: 2px solid
+    color-mix(in srgb, var(--text-secondary) 45%, transparent);
   border-radius: 4px;
-  background: var(--tint);
-  color: var(--ink);
+  background: transparent;
+  --sent-quote-ink: color-mix(in srgb, var(--text-secondary) 50%, var(--ink));
+  color: var(--sent-quote-ink);
   box-shadow: none;
   text-align: left;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.45;
+}
+.app .sent-text-quote .text-quote-number {
+  background: transparent;
+  color: inherit;
+}
+.app .sent-text-quote:is(:hover, :focus-visible, :active) {
+  --sent-quote-ink: var(--ink);
 }
 .sent-text-quote > span:nth-child(2) {
   flex: 1;
   min-width: 0;
 }
-.sent-text-quote small {
+.app .sent-text-quote small {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--muted);
+  color: inherit;
   font-size: 11px;
 }
 .sent-text-quote > span > span {
@@ -179,11 +188,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.text-quote-comment {
+.conversation .human-message .text-quote-comment {
   margin: 5px 8px 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 13px;
+  font-size: 15px;
+  line-height: 1.65;
 }
 .app .sent-text-quote-preview-toggle {
   display: none;

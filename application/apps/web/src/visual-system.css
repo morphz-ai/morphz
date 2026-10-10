@@ -589,12 +589,6 @@
   .message-execution-link:is(:hover, :focus-visible, :active) {
   color: var(--ink);
 }
-.app .human-message .sent-text-quote:active:not(:disabled) small {
-  color: var(--ink);
-}
-.conversation .human-message .sent-text-quote small {
-  color: light-dark(var(--text-secondary), var(--ink));
-}
 .app .primary-panel[data-interaction="recent"] .conversation {
   /* Metadata must stay readable even above a black image or white PDF. */
   --muted: light-dark(#45454b, #bdbdc4);

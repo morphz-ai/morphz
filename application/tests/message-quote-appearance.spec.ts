@@ -117,6 +117,7 @@ async function colors(quote: Locator) {
     const body = rgba(
       getComputedStyle(element.querySelector("span > span")!).color,
     );
+    const settledBody = token("--sent-quote-ink");
     const small = rgba(getComputedStyle(element.querySelector("small")!).color);
     const ancestors: Element[] = [];
     for (
@@ -148,6 +149,9 @@ async function colors(quote: Locator) {
       return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
     };
     const rect = element.getBoundingClientRect();
+    const message = element.closest(".human-message")!;
+    const messageBody = message.querySelector(":scope > p")!;
+    const comment = message.querySelector(".text-quote-comment")!;
     return {
       background,
       hover,
@@ -155,8 +159,14 @@ async function colors(quote: Locator) {
       neutral,
       tint,
       surface,
+      body,
+      settledBody,
       bodyContrast: contrast(body),
       smallContrast: contrast(small),
+      messageContrast: contrast(rgba(getComputedStyle(messageBody).color)),
+      quoteSize: Number.parseFloat(style.fontSize),
+      commentSize: Number.parseFloat(getComputedStyle(comment).fontSize),
+      messageSize: Number.parseFloat(getComputedStyle(messageBody).fontSize),
       width: rect.width,
       height: rect.height,
       weight: style.fontWeight,
@@ -170,11 +180,18 @@ async function colors(quote: Locator) {
   });
 }
 
-async function settled(quote: Locator, token: "tint" | "hover" | "pressed") {
+async function settled(
+  quote: Locator,
+  token: "transparent" | "hover" | "pressed",
+) {
   await expect
     .poll(async () => {
       const state = await colors(quote);
-      return state.background.join(",") === state[token].join(",");
+      return token === "transparent"
+        ? state.background[3] === 0 &&
+            state.body.join(",") === state.settledBody.join(",")
+        : state.background.join(",") === state[token].join(",") &&
+            state.body.join(",") === state.settledBody.join(",");
     })
     .toBe(true);
   return colors(quote);
@@ -206,6 +223,30 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
 
+test("引用是正文的次级内容：亮暗无常驻高亮、字号与对比低于评论和正文", async ({
+  page,
+}, info) => {
+  const { quote } = await prepare(page);
+  for (const theme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: theme });
+    await page.mouse.move(0, 0);
+    const normal = await settled(quote, "transparent");
+    await info.attach(`quote-hierarchy-${theme}-metrics.json`, {
+      contentType: "application/json",
+      body: JSON.stringify(normal, null, 2),
+    });
+    expect(normal.background[3]).toBe(0);
+    expect(normal.quoteSize).toBeLessThan(normal.commentSize);
+    expect(normal.quoteSize).toBeLessThan(normal.messageSize);
+    expect(normal.bodyContrast).toBeLessThan(normal.messageContrast);
+    expect(normal.smallContrast).toBeLessThan(normal.messageContrast);
+    assertState(normal);
+    await page.screenshot({
+      path: info.outputPath(`quote-hierarchy-${theme}.png`),
+    });
+  }
+});
+
 test("本人消息引用：四强调色亮暗正常、悬停、Tab与按下沿主题且文字可读", async ({
   page,
 }, info) => {
@@ -221,7 +262,11 @@ test("本人消息引用：四强调色亮暗正常、悬停、Tab与按下沿�
       await page.keyboard.press("Escape");
       await quote.evaluate((element) => (element as HTMLElement).blur());
       await page.mouse.move(0, 0);
-      const normal = await settled(quote, "tint");
+      const normal = await settled(quote, "transparent");
+      await info.attach(`${appearance}-${accent}-normal-metrics.json`, {
+        contentType: "application/json",
+        body: JSON.stringify(normal, null, 2),
+      });
       assertState(normal);
       await quote.hover();
       const hovered = await settled(quote, "hover");
@@ -251,7 +296,7 @@ test("本人消息引用：四强调色亮暗正常、悬停、Tab与按下沿�
       await page.mouse.move(0, 0);
       await page.mouse.up();
       await quote.evaluate((element) => (element as HTMLElement).blur());
-      await settled(quote, "tint");
+      await settled(quote, "transparent");
       observations.push({
         appearance,
         accent,
@@ -287,7 +332,7 @@ test("引用卡片在390px与CSS200%不横溢，交互不改变几何", async ({
     await quote.scrollIntoViewIfNeeded();
     await quote.evaluate((element) => (element as HTMLElement).blur());
     await page.mouse.move(0, 0);
-    const normal = await settled(quote, "tint");
+    const normal = await settled(quote, "transparent");
     const geometry = await quote.evaluate((element) => {
       const rect = element.getBoundingClientRect();
       return {

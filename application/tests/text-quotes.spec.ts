@@ -1,6 +1,6 @@
 import { expect, type Page, type Locator } from "@playwright/test";
 import { randomUUID } from "node:crypto";
-import { openInput } from "./interaction-helpers.js";
+import { composerAction, openInput } from "./interaction-helpers.js";
 import {
   mockPlatformConversation,
   test,
@@ -181,6 +181,242 @@ async function selectText(locator: Locator, text: string) {
     document.dispatchEvent(new Event("selectionchange"));
   }, text);
 }
+
+async function collapsedDocument(page: Page, failure?: "reject-once") {
+  const source = await fixture(page, failure);
+  const title = "TEST 收起输入框直接发送评论 " + randomUUID();
+  const document = await createDocument(
+    source.client,
+    source.spaces.deskId,
+    title,
+    "# 测试正文\n\n这段文字只用于验证评论发送入口。\n\n其他正文保持不变。",
+  );
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "内容库", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: new RegExp(title) })
+    .first()
+    .click();
+  await openInput(page);
+  await composerAction(page, "收起 AI 输入框");
+  await expect(page.getByLabel("AI 输入内容", { exact: true })).toHaveCount(0);
+  await expect(page.locator(".composer-reopen")).toBeVisible();
+  const text = page.locator(".document-body");
+  await expect(text).toContainText("这段文字只用于验证评论发送入口。");
+  await expect(
+    page.getByRole("button", { name: "围绕选中文本输入", exact: true }),
+  ).toHaveCount(0);
+  return { ...source, document, text };
+}
+
+test("收起时有非空评论才出现发送，直接从评论框提交原文和评论且不展开输入", async ({
+  page,
+}, info) => {
+  const { text, document, records, sentIds } = await collapsedDocument(page);
+  const send = page.locator(".composer-collapsed-send");
+  const input = page.getByLabel("AI 输入内容", { exact: true });
+  await expect(send).toHaveCount(0);
+  const selected = "这段文字只用于验证评论发送入口。";
+  await selectText(text, selected);
+  await page.getByRole("button", { name: "评论选中文字" }).click();
+  const comment = page.getByLabel("引用 1 的评论（可选）");
+  await expect(comment).toBeFocused();
+  await expect(send).toHaveCount(0);
+  await comment.fill(" \n ");
+  await expect(send).toHaveCount(0);
+  await comment.fill("TEST 只改这一处，不需要另外输入消息。");
+  await expect(send).toBeVisible();
+  await expect(send).toBeEnabled();
+  await expect(input).toHaveCount(0);
+  await page.screenshot({
+    path: info.outputPath("collapsed-comment-ready.png"),
+  });
+  const request = page.waitForRequest("**/api/platform/messages");
+  await send.click();
+  const command = commandSchema.parse((await request).postDataJSON());
+  expect(command.operation).toMatchObject({
+    type: "record-input",
+    body: "",
+    dispatchMode: "interrupt",
+    textQuotes: [
+      {
+        text: selected,
+        comment: "TEST 只改这一处，不需要另外输入消息。",
+        source: { kind: "artifact", artifactId: document.id, revision: 1 },
+      },
+    ],
+  });
+  await expect.poll(() => records.size).toBe(1);
+  await expect(send).toHaveCount(0);
+  await expect(input).toHaveCount(0);
+  await expect(page.locator(".composer-reopen")).toBeVisible();
+  expect(sentIds).toEqual([command.commandId]);
+  await page.reload();
+  await expect(send).toHaveCount(0);
+  await expect(input).toHaveCount(0);
+});
+
+test("收起入口保留并发发送语义和消息选择，连续点击只提交一次", async ({
+  page,
+}) => {
+  const { text, records, sentIds } = await collapsedDocument(page);
+  await openInput(page);
+  await page
+    .getByLabel("AI 输入内容", { exact: true })
+    .fill("TEST 已有正文也保留");
+  await composerAction(page, "查看交流记录");
+  await composerAction(page, "收起 AI 输入框");
+  const selectedView = await page.evaluate(() => {
+    const key = Object.keys(localStorage).find((key) =>
+      key.endsWith(":preferences"),
+    )!;
+    return JSON.parse(localStorage.getItem(key)!).exchangeViews;
+  });
+  await selectText(text, "这段文字只用于验证评论发送入口。");
+  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByLabel("引用 1 的评论（可选）").fill("TEST 一次提交");
+  const request = page.waitForRequest("**/api/platform/messages");
+  await page.locator(".composer-collapsed-send").evaluate((button) => {
+    for (let i = 0; i < 2; i++)
+      button.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, altKey: true }),
+      );
+  });
+  const command = commandSchema.parse((await request).postDataJSON());
+  expect(command.operation).toMatchObject({
+    type: "record-input",
+    body: "TEST 已有正文也保留",
+    dispatchMode: "parallel",
+    textQuotes: [{ comment: "TEST 一次提交" }],
+  });
+  await expect.poll(() => records.size).toBe(1);
+  expect(sentIds).toEqual([command.commandId]);
+  await expect(page.getByLabel("AI 输入内容", { exact: true })).toHaveCount(0);
+  expect(
+    await page.evaluate(() => {
+      const key = Object.keys(localStorage).find((key) =>
+        key.endsWith(":preferences"),
+      )!;
+      return JSON.parse(localStorage.getItem(key)!).exchangeViews;
+    }),
+  ).toEqual(selectedView);
+  await openInput(page);
+  await expect(page.locator(".exchange-panel > .conversation")).toBeVisible();
+  await expect(page.getByLabel("AI 输入内容", { exact: true })).toHaveValue("");
+});
+
+test("收起发送的失败保留原冻结评论和重试标识，新评论不被迟到回执清除", async ({
+  page,
+}) => {
+  const { text, sentIds, records } = await collapsedDocument(
+    page,
+    "reject-once",
+  );
+  await selectText(text, "这段文字只用于验证评论发送入口。");
+  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page.getByLabel("引用 1 的评论（可选）").fill("TEST 原评论不能丢失");
+  const request = page.waitForRequest("**/api/platform/messages");
+  await page.locator(".composer-collapsed-send").click();
+  const command = commandSchema.parse((await request).postDataJSON());
+  await expect(page.getByLabel("AI 输入内容", { exact: true })).toHaveCount(0);
+  await openInput(page);
+  await composerAction(page, "查看交流记录");
+  const sent = page.locator(
+    `.human-message[data-input-id="${command.commandId}"]`,
+  );
+  const retry = sent.getByRole("button", { name: "重新发送消息", exact: true });
+  await expect(retry).toBeVisible();
+  await expect(sent.locator(".text-quote-comment")).toHaveText(
+    "TEST 原评论不能丢失",
+  );
+  await selectText(text, "其他正文保持不变。");
+  await page.getByRole("button", { name: "评论选中文字" }).click();
+  await page
+    .getByLabel("引用 1 的评论（可选）")
+    .fill("TEST 后续草稿不能被清除");
+  await page.keyboard.press("Escape");
+  const next = page.getByRole("group", { name: "选文与评论", exact: true });
+  const retryRequest = page.waitForRequest("**/api/platform/messages");
+  await retry.click();
+  expect(commandSchema.parse((await retryRequest).postDataJSON())).toEqual(
+    command,
+  );
+  await expect(retry).toHaveCount(0);
+  await expect(next).toContainText("TEST 后续草稿不能被清除");
+  await composerAction(page, "收起 AI 输入框");
+  await expect(page.locator(".composer-collapsed-send")).toBeEnabled();
+  expect(sentIds).toEqual([command.commandId, command.commandId]);
+  expect(records.size).toBe(1);
+});
+
+test("收起发送短名称提示、主题和窄窗200%命中，评论清空后入口撤下", async ({
+  page,
+}, info) => {
+  const { text, sentIds } = await collapsedDocument(page);
+  await selectText(text, "这段文字只用于验证评论发送入口。");
+  await page.getByRole("button", { name: "评论选中文字" }).click();
+  const comment = page.getByLabel("引用 1 的评论（可选）");
+  await comment.fill("TEST 视觉验证，不发送");
+  const send = page.locator(".composer-collapsed-send");
+  for (const theme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: theme });
+    await send.hover();
+    await expect(
+      page.getByRole("tooltip", { name: "发送", exact: true }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: info.outputPath(`collapsed-send-${theme}.png`),
+    });
+    await page.mouse.move(0, 0);
+  }
+  // CSS zoom halves the canvas, which has the existing 420px minimum height.
+  // Keep the same supported canvas contract as the exchange-frame zoom tests.
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.locator(".app").evaluate((node) => {
+    (node as HTMLElement).style.zoom = "2";
+    (node as HTMLElement).style.height = "calc(100dvh / 2)";
+  });
+  // Resizing a live app also updates its native-titlebar/work-surface bounds.
+  await expect
+    .poll(async () => {
+      const box = (await send.boundingBox())!;
+      return box.y + box.height;
+    })
+    .toBeLessThanOrEqual(900);
+  const box = (await send.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(390);
+  expect(box.y + box.height).toBeLessThanOrEqual(900);
+  expect(
+    await send.evaluate((button) => {
+      const r = button.getBoundingClientRect();
+      return button.contains(
+        document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2),
+      );
+    }),
+  ).toBe(true);
+  await send.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  await expect(send).toBeFocused();
+  await expect(
+    page.getByRole("tooltip", { name: "发送", exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: info.outputPath("collapsed-send-narrow-200.png"),
+  });
+  await page.locator(".app").evaluate((node) => {
+    (node as HTMLElement).style.zoom = "1";
+    (node as HTMLElement).style.height = "";
+  });
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.locator(".text-quote-marker").click();
+  await comment.fill(" \n ");
+  await expect(send).toHaveCount(0);
+  expect(sentIds).toEqual([]);
+});
 
 test("选文引用、逐段评论、去重、移除、发送与来源回跳", async ({
   page,

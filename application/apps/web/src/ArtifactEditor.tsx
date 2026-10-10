@@ -1,20 +1,11 @@
 import { lazy, Suspense, useEffect, useState, useRef } from "react";
 import { SelectionActions } from "./SelectionActions.js";
 import { quoteSource } from "./text-quote-dom.js";
-import { useTextQuotes } from "./TextQuotes.js";
 import { ObjectRelations } from "./ObjectRelations.js";
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { ModelPicker } from "./ModelPicker.js";
-import {
-  Check,
-  Pencil,
-  X,
-  History,
-  MessageSquarePlus,
-  Volume2,
-  Copy,
-} from "lucide-react";
+import { Check, Pencil, X, History, Volume2, Copy } from "lucide-react";
 import {
   contentSchema,
   type Artifact,
@@ -209,10 +200,6 @@ export function ArtifactEditor({
       </button>
     </div>
   );
-  const textQuotes = useTextQuotes();
-  function select() {
-    textQuotes?.comment();
-  }
   const toolbar = (
     <div className="object-toolbar">
       {isPdf && <div className="pdf-toolbar-slot" ref={setPdfToolbarTarget} />}
@@ -517,15 +504,6 @@ export function ArtifactEditor({
                   );
               }}
             />
-            <button
-              className="annotation-action secondary-action"
-              aria-label="围绕选中文本输入"
-              title="评论选区"
-              onClick={select}
-            >
-              <MessageSquarePlus />
-              评论选文
-            </button>
           </>
         ) : null}
         {shown.content.kind === "image" && (

@@ -1,0 +1,22 @@
+/* The entry owns only its two native targets, not the exchange frame or Dock.
+   Transparent space remains click-through to the unchanged work canvas. */
+.composer-collapsed-entry {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+}
+.app .composer-collapsed-send {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  padding: 8px;
+  border-radius: 50%;
+  pointer-events: auto;
+}
+@media (pointer: coarse) {
+  .app .composer-collapsed-send {
+    width: 44px;
+    height: 44px;
+  }
+}

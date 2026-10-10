@@ -57,6 +57,8 @@ import {
 } from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
 import { WorkspaceNotice } from "./WorkspaceNotice.js";
+import { Tooltip } from "./ui/Tooltip.js";
+import "./features/exchange/composer-collapsed-entry.css";
 import { TextQuoteDrafts, TextQuoteProvider } from "./TextQuotes.js";
 import {
   replaceComposerSurface,
@@ -2261,6 +2263,56 @@ function WorkspaceApp({
     client.boot!.workspace.actants.find((actor) => actor.kind === "agent")
       ?.name ??
     "Morphz";
+  // Both expanded and collapsed entries use the same admission and command.
+  // A comment is already input; revealing the textarea is not a prerequisite.
+  const sendLabel = draft.continuation
+    ? draft.pendingSupplement
+      ? "核对补充送达"
+      : "发送补充"
+    : draft.annotation
+      ? "保存批注"
+      : draft.taskResult
+        ? "提交结果并完成事项"
+        : client.boot!.runtime.configured
+          ? "发送消息"
+          : "保存输入";
+  const sendButton = (
+    <Tooltip label={sendLabel === "发送消息" ? "发送" : sendLabel}>
+      <button
+        type="button"
+        className={`send${inputVisible ? "" : " composer-collapsed-send"}`}
+        aria-label={sendLabel}
+        disabled={
+          (!draft.body.trim() &&
+            !draft.attachments?.length &&
+            !draft.textQuotes?.length) ||
+          sending ||
+          cognitiveInputBlocked ||
+          (selectedDraft &&
+            client.boot?.localSavedInputIds.includes(selectedDraft.inputId)) ||
+          !!uploadingDrafts[contextKey] ||
+          (!draft.continuation &&
+            canAuthorizeDirectories &&
+            (directoryState.scope !== directoryScope ||
+              !directoryState.ready)) ||
+          !client.online
+        }
+        onClick={(event) =>
+          !cognitiveInputBlocked &&
+          void send(
+            draft.annotation === true,
+            event.altKey ? "parallel" : "interrupt",
+          )
+        }
+      >
+        {draft.annotation && !draft.continuation ? (
+          <MessageSquarePlus />
+        ) : (
+          <ArrowUp />
+        )}
+      </button>
+    </Tooltip>
+  );
   const presence = subjectLogoState(
     client.boot!.runtime,
     client.online,
@@ -3778,76 +3830,28 @@ function WorkspaceApp({
                             }
                           />
                         }
-                        send={
-                          <button
-                            className="send"
-                            title={
-                              draft.continuation ||
-                              draft.annotation ||
-                              draft.taskResult
-                                ? undefined
-                                : `默认打断当前会话思考中的回复；${/Mac/.test(navigator.platform) ? "Option" : "Alt"}+Enter 或按住该键点击并发发送；工具执行不取消`
-                            }
-                            aria-label={
-                              draft.continuation
-                                ? draft.pendingSupplement
-                                  ? "核对补充送达"
-                                  : "发送补充"
-                                : draft.annotation
-                                  ? "保存批注"
-                                  : draft.taskResult
-                                    ? "提交结果并完成事项"
-                                    : client.boot!.runtime.configured
-                                      ? "发送消息"
-                                      : "保存输入"
-                            }
-                            disabled={
-                              (!draft.body.trim() &&
-                                !draft.attachments?.length &&
-                                !draft.textQuotes?.length) ||
-                              sending ||
-                              cognitiveInputBlocked ||
-                              (selectedDraft &&
-                                client.boot?.localSavedInputIds.includes(
-                                  selectedDraft.inputId,
-                                )) ||
-                              !!uploadingDrafts[contextKey] ||
-                              (!draft.continuation &&
-                                canAuthorizeDirectories &&
-                                (directoryState.scope !== directoryScope ||
-                                  !directoryState.ready)) ||
-                              !client.online
-                            }
-                            onClick={(event) =>
-                              !cognitiveInputBlocked &&
-                              void send(
-                                draft.annotation === true,
-                                event.altKey ? "parallel" : "interrupt",
-                              )
-                            }
-                          >
-                            {draft.annotation && !draft.continuation ? (
-                              <MessageSquarePlus />
-                            ) : (
-                              <ArrowUp />
-                            )}
-                          </button>
-                        }
+                        send={sendButton}
                       />
                     </section>
                   ) : (
-                    <button
-                      ref={toggle}
-                      className="composer-reopen"
-                      aria-controls="global-composer"
-                      aria-expanded={false}
-                      onClick={showInput}
-                    >
-                      <MessageCircle />向 {agentName} 输入<kbd>{shortcut}</kbd>
-                      {unseenReply && (
-                        <span className="unread-label">有新回复</span>
-                      )}
-                    </button>
+                    <div className="composer-collapsed-entry">
+                      <button
+                        ref={toggle}
+                        className="composer-reopen"
+                        aria-controls="global-composer"
+                        aria-expanded={false}
+                        onClick={showInput}
+                      >
+                        <MessageCircle />向 {agentName} 输入
+                        <kbd>{shortcut}</kbd>
+                        {unseenReply && (
+                          <span className="unread-label">有新回复</span>
+                        )}
+                      </button>
+                      {draft.textQuotes?.some((quote) =>
+                        quote.comment.trim(),
+                      ) && sendButton}
+                    </div>
                   )}
                 </div>
               </ExchangePanel>
