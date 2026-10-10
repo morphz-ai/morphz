@@ -444,8 +444,10 @@ export function ScriptStudio({
                           >
                             <span>{value.title}</span>
                             <small>
-                              {scriptKindLabels[value.kind]} ·{" "}
-                              {scriptStatusLabels[value.status]}
+                              {scriptKindLabels[value.kind]} · v{value.revision}
+                              {value.status !== "draft" && (
+                                <> · {scriptStatusLabels[value.status]}</>
+                              )}
                             </small>
                           </button>
                         ))}

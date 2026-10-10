@@ -558,7 +558,8 @@ function ScriptItemEditorView({
         ]}
       />
       <small role="status" className="script-edit-status visually-hidden">
-        {scriptStatusLabels[item.status]} · v{item.revision}
+        {item.status !== "draft" && <>{scriptStatusLabels[item.status]} · </>}v
+        {item.revision}
         {dirty ? " · 本机未保存" : ""}
         {notice ? ` · ${notice}` : ""}
       </small>
@@ -916,8 +917,11 @@ function ScriptItemEditorView({
           <section className="script-workflow" aria-label="人工审阅与锁稿">
             <div className="script-review-context">
               <strong>
-                审阅人：{reviewerNames} · {scriptStatusLabels[item.status]} v
-                {item.revision}
+                审阅人：{reviewerNames} ·{" "}
+                {item.status === "draft"
+                  ? "未送审"
+                  : scriptStatusLabels[item.status]}{" "}
+                v{item.revision}
               </strong>
               <p>
                 {item.status === "draft"

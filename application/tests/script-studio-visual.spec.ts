@@ -24,18 +24,19 @@ const now = '2026-10-10T00:00:00Z', author = {principalId:'human',actantId:'huma
 const paragraph = '第一场　内景·餐桌·夜\\n\\n桌上摆着两份证件。他停下手里的动作，等她把话说完。\\n\\n林乔：我们先说清楚。\\n陈屿：好，你说。';
 const text = paragraph + '\\n\\n' + ('这是按原样保存的创作正文，不猜测分场，不重写对白。'.repeat(12)) + '\\n\\n## 保留原始标记\\n<script>不会执行</script>\\n' + paragraph;
 const draft = {...emptyScriptDraft('第一集'),text};
+const status = new URL(location.href).searchParams.get('status') || 'draft';
 const items = [
  ['outline','outline','五场戏大纲',null,0], ['episode','episode','第一集',null,1],
  ['scene','scene','一场较长的名称，用于检查目录在有限宽度中的信息排列','episode',2],
  ['character-a','character','主角一',null,3], ['character-b','character','主角二',null,4],
  ['source','source','创作参考',null,5],
-].map(([id,kind,title,parentId,order]) => ({id,kind,title,parentId,order,revision:1,workflowRevision:1,status:'draft',basis:'original',dependencies:[],characters:[],approval:null,textCharacters:text.length,sourceCount:0,pendingCandidateCount:id==='episode'?Number(new URL(location.href).searchParams.get('count')||1):0,currentPendingReviewCount:0,blockingReviewCount:0,hasText:true,approvalCurrent:false}));
+].map(([id,kind,title,parentId,order]) => ({id,kind,title,parentId,order,revision:1,workflowRevision:1,status,basis:'original',dependencies:[],characters:[],approval:null,textCharacters:text.length,sourceCount:0,pendingCandidateCount:id==='episode'?Number(new URL(location.href).searchParams.get('count')||1):0,currentPendingReviewCount:0,blockingReviewCount:0,hasText:true,approvalCurrent:false}));
 const count = Number(new URL(location.href).searchParams.get('count')||1);
 const candidates = Array.from({length:count},(_,at)=>({id:'candidate-'+(at+1),ordinal:at+1,revision:1,status:'pending',stale:false,baseRevision:1,createdAt:now,textCharacters:text.length}));
 const book = {id:'production',projectId:'first-project',title:'TEST 剧本视觉回归',revision:1,activityRevision:1,creativeEpoch:1,brief:{...emptyScriptBrief},reviewerPrincipalIds:['human'],template:{...defaultScriptExportTemplate},createdBy:author,createdAt:now,updatedAt:now,totals:{items:items.length,candidates:count,pendingCandidates:count,reviews:0,pendingReviews:0,exports:0,metadataVersions:1},contentId:'catalog',catalogRevision:1,providerRevision:1,items};
 const boot = {centerId:'visual-test-center',principalId:'human',csrfToken:'visual-test-identity',actantId:'human-actant',workspace:initialWorkspace(now),scriptLibrary:[{...book,availability:'available'}],runtime:{configured:false,connected:false,harnesses:[]}};
 const operations = [], compositions = [];
-function version(id,revision=1) { const item=items.find(i=>i.id===id); return {productionId:book.id,itemId:id,kind:item.kind,status:'draft',headRevision:1,workflowRevision:1,revision,candidateId:null,author,createdAt:now,approvalForRequestedVersion:null,draft:{...draft,title:item.title}}; }
+function version(id,revision=1) { const item=items.find(i=>i.id===id); return {productionId:book.id,itemId:id,kind:item.kind,status:item.status,headRevision:1,workflowRevision:1,revision,candidateId:null,author,createdAt:now,approvalForRequestedVersion:null,draft:{...draft,title:item.title}}; }
 const client = {boot,online:true,contentCatalog:[],contentCatalogVersion:1,getSnapshot:()=>boot,
  readScriptEditor:async()=>structuredClone(book),
  readScriptVersion:async(_p,id,revision)=>structuredClone(version(id,revision)),
@@ -44,7 +45,7 @@ const client = {boot,online:true,contentCatalog:[],contentCatalogVersion:1,getSn
  listContentPage:async()=>({items:[],nextCursor:null}),
  execute:async(operation)=>{operations.push(structuredClone(operation));if(operation.type!=='set-application-state')throw Error('Visual fixture rejects domain writes');return {saved:true};},
 };
-Reflect.set(window,'studioVisualFixture',{text,report:()=>({operations,compositions,originalText:draft.text})});
+Reflect.set(window,'studioVisualFixture',{text,report:()=>({operations,compositions,originalText:draft.text,statuses:items.map(item=>item.status)})});
 const instance={id:'visual-instance',workspaceId:'first-project',revision:1,state:{productionId:book.id,itemId:'episode',view:'editor'}};
 createRoot(document.getElementById('root')).render(<StrictMode><div className="app without-collaboration" data-appearance="light" data-accent="cyan" style={{display:'block',height:'100dvh',minHeight:0}}><ScriptStudio client={client} instance={instance} activeView={true} onCompose={(text,generation)=>{compositions.push(structuredClone({text,generation}));return {ok:true};}} onConceive={()=>{}} onOpenScript={()=>{}} onLibrary={()=>{}} onNotice={()=>{}}/></div></StrictMode>);
 `;
@@ -141,6 +142,72 @@ test.afterEach(async ({ page }) => {
     expect(state.originalText).toContain("## 保留原始标记");
   }
 });
+for (const appearance of ["light", "dark"])
+  for (const [status, label] of [
+    ["draft", ""],
+    ["in-review", "待审"],
+    ["approved", "已批准"],
+    ["locked", "已锁稿"],
+  ] as const)
+    test(`current manuscript labels distinguish saved versions from optional review: ${appearance}/${status}`, async ({
+      page,
+    }, info) => {
+      await page.goto(fixtureUrl + `?count=0&status=${status}`);
+      const body = page.getByLabel("剧本正文", { exact: true });
+      await expect(body).toBeVisible();
+      await page.locator(".app").evaluate((app, appearance) => {
+        app.setAttribute("data-appearance", appearance);
+      }, appearance);
+      const nav = page.getByRole("navigation", {
+        name: "剧本目录",
+        exact: true,
+      });
+      for (const name of ["设定与角色", "参考资料"])
+        await nav.getByRole("button", { name, exact: true }).click();
+      const rows = nav.locator(".script-tree-row:not(.script-overview-link)");
+      await expect(rows).toHaveCount(6);
+      for (const row of await rows.all())
+        await expect(row).not.toContainText("草稿");
+      const summary = page.locator(".script-edit-status");
+      await expect(summary).toHaveText(label ? `${label} · v1` : "v1");
+      if (label) {
+        for (const row of await rows.all())
+          await expect(row).toContainText(label);
+      } else {
+        await expect(rows.locator("small")).toHaveText(["角色", "角色"]);
+        await body.fill("TEST 本机未保存改动，不是等待采纳");
+        await expect(summary).toHaveText("v1 · 本机未保存");
+        await expect(
+          page.getByRole("button", { name: "保存文稿", exact: true }),
+        ).toBeEnabled();
+        await page.reload();
+        await expect(body).toHaveValue("TEST 本机未保存改动，不是等待采纳");
+        await expect(summary).toHaveText("v1 · 本机未保存");
+      }
+      await nav.getByRole("button", { name: "概览", exact: true }).click();
+      await expect(page.locator(".script-writing-list small")).toHaveText([
+        `全剧大纲 · v1${label ? ` · ${label}` : ""}`,
+        `分集 · v1${label ? ` · ${label}` : ""}`,
+      ]);
+      if (status === "draft")
+        await page.screenshot({
+          path: info.outputPath(`saved-version-overview-${appearance}.png`),
+        });
+      await nav
+        .locator(
+          '[data-script-episode="episode"] > .script-nav-entry > .script-tree-row',
+        )
+        .click();
+      await selectScriptOption(page, /^审阅/);
+      await expect(page.locator(".script-review-context strong")).toContainText(
+        `${label || "未送审"} v1`,
+      );
+      const report = await page.evaluate(() =>
+        Reflect.get(window, "studioVisualFixture").report(),
+      );
+      expect(report.statuses).toEqual(Array(6).fill(status));
+      expect(report.compositions).toEqual([]);
+    });
 test("result-first navigation uses one location bar and two primary views", async ({
   page,
 }) => {

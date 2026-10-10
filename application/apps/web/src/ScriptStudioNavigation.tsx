@@ -165,10 +165,13 @@ export function ScriptStudioNavigation({
         onClick={() => choose(item.id)}
       >
         <span>{title}</span>
-        <small>
-          {mixed ? `${item.kind === "character" ? "角色" : "设定"} · ` : ""}
-          {statuses[item.status]}
-        </small>
+        {(mixed || item.status !== "draft") && (
+          <small>
+            {mixed ? (item.kind === "character" ? "角色" : "设定") : ""}
+            {mixed && item.status !== "draft" ? " · " : ""}
+            {item.status !== "draft" ? statuses[item.status] : null}
+          </small>
+        )}
       </button>
     );
   };

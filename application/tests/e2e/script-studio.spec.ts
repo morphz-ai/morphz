@@ -964,6 +964,61 @@ test("批准弹窗固定打开时的版本，后台重新提交新稿不能被�
     .toBe(changed.revision);
 });
 
+test("保存正文只显示版本，未保存恢复与可选审阅锁稿仍保持真实状态", async ({
+  page,
+}) => {
+  const p = await setup(page);
+  await createItem(page, "TEST 正文状态");
+  const nav = page.getByRole("navigation", { name: "剧本目录", exact: true });
+  const summary = page.locator(".script-edit-status");
+  await expect(nav).not.toContainText("草稿");
+  await expect(summary).not.toContainText("草稿");
+  await editor(page).fill("TEST 未保存修改，刷新后不能丢失");
+  await expect(summary).toContainText("本机未保存");
+  await page.reload();
+  await expect(editor(page)).toHaveValue("TEST 未保存修改，刷新后不能丢失");
+  await expect(summary).toContainText("v1 · 本机未保存");
+  const text = "TEST 已保存的当前正文，不需要采纳";
+  await saveText(page, text);
+  const saved = await production(page, p.id);
+  const item = saved.items[0]!;
+  expect(item.status).toBe("draft");
+  expect(item.revision).toBe(2);
+  expect(item.versions).toHaveLength(2);
+  expect(saved.candidates).toEqual([]);
+  await nav.getByRole("button", { name: "概览", exact: true }).click();
+  await expect(page.locator(".script-writing-list small")).toHaveText(
+    "分集 · v2",
+  );
+  await nav.getByRole("button", { name: "TEST 正文状态", exact: true }).click();
+  await expect(editor(page)).toHaveValue(text);
+  expect((await production(page, p.id)).items).toEqual(saved.items);
+  await selectScriptOption(page, /^审阅/);
+  await expect(page.locator(".script-review-context strong")).toContainText(
+    "未送审 v2",
+  );
+  await button(page, "提交审阅").click();
+  await expect(nav).toContainText("待审");
+  await button(page, "批准此版本").click();
+  const dialog = page.getByRole("dialog", { name: "批准此版本", exact: true });
+  await dialog
+    .getByLabel("决定说明", { exact: true })
+    .fill("TEST 可选审阅，不是采纳正文。");
+  await dialog.getByRole("button", { name: "确认", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(nav).toContainText("已批准");
+  await button(page, "锁稿").click();
+  await expect(nav).toContainText("已锁稿");
+  await page.getByRole("tab", { name: "正文", exact: true }).click();
+  await expect(editor(page)).toHaveAttribute("readonly", "");
+  await expect(editor(page)).toHaveValue(text);
+  await expect(button(page, "指导修改")).toBeDisabled();
+  const locked = (await production(page, p.id)).items[0]!;
+  expect(locked.status).toBe("locked");
+  expect(locked.revision).toBe(2);
+  expect(locked.versions).toEqual(item.versions);
+});
+
 test("日常创作直接导出已保存正文，不要求审阅、不包含未保存修改", async ({
   page,
 }) => {
@@ -1133,8 +1188,8 @@ test("创作目录按集场组织：上下文新增、折叠、键盘和刷新�
   await createItem(page, "小城时间线", "setting");
   await createItem(page, "TEST 调研笔记", "source");
   await expect(group("people").locator(".script-tree-row")).toHaveText([
-    "林舟角色 · 草稿",
-    "小城时间线设定 · 草稿",
+    "林舟角色",
+    "小城时间线设定",
   ]);
   await expect(group("outlines").locator(".script-tree-row")).toContainText(
     "全剧主线",
