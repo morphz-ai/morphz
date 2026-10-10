@@ -1,4 +1,5 @@
 .script-studio {
+  --script-reading-width: 820px;
   height: 100%;
   min-height: 280px;
   min-width: 0;
@@ -32,7 +33,7 @@
   flex-wrap: wrap;
 }
 .script-toolbar {
-  padding: 6px 10px;
+  padding: 8px 12px;
   border-bottom: 1px solid var(--hairline);
 }
 .script-export-status {
@@ -202,7 +203,7 @@
 .script-layout {
   position: relative;
   display: grid;
-  grid-template-columns: 192px minmax(0, 1fr);
+  grid-template-columns: clamp(232px, 18cqw, 272px) minmax(0, 1fr);
   flex: 1;
   min-height: 0;
   overflow: hidden;
@@ -243,13 +244,14 @@
 }
 .script-outline {
   flex: 1;
-  padding: 8px;
+  padding: 12px 10px;
   overflow: auto;
   min-height: 0;
   border-right: 1px solid var(--hairline);
 }
 .script-outline-actions {
   justify-content: space-between;
+  margin-bottom: 10px;
   font-size: 12px;
   color: var(--muted);
 }
@@ -259,14 +261,14 @@
   min-width: 0;
   text-align: left;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   align-items: center;
-  gap: 6px;
-  padding: 5px 6px;
+  gap: 8px;
+  padding: 7px 8px;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 12px;
-  min-height: 32px;
+  font-size: 13px;
+  min-height: 36px;
 }
 /* Current location changes immediately; do not cross-fade the old selection
    into a second apparent current row while the editor has already changed. */
@@ -295,12 +297,12 @@
 }
 .script-outline :is(.script-tree-row, .script-nav-disclosure) > small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   white-space: nowrap;
   flex-shrink: 0;
 }
 .script-nav-group {
-  margin-top: 4px;
+  margin-top: 16px;
 }
 .script-nav-heading,
 .script-nav-entry {
@@ -330,7 +332,7 @@
 }
 .script-outline .script-nav-disclosure {
   font-weight: 500;
-  gap: 5px;
+  gap: 7px;
 }
 .script-outline .script-nav-disclosure > .script-chevron {
   width: 12px;
@@ -344,10 +346,10 @@
 }
 .script-outline .script-nav-add,
 .script-outline .script-episode-toggle {
-  flex: 0 0 26px;
-  width: 26px;
-  min-height: 32px;
-  height: 32px;
+  flex: 0 0 28px;
+  width: 28px;
+  min-height: 36px;
+  height: 36px;
   padding: 4px;
   background: transparent;
 }
@@ -371,11 +373,12 @@
   }
 }
 .script-nav-children {
-  margin-left: 15px;
+  margin-left: 16px;
+  padding-top: 2px;
 }
 .script-scene-list {
-  margin-left: 20px;
-  padding-left: 5px;
+  margin-left: 14px;
+  padding-left: 8px;
   border-left: 1px solid var(--hairline);
 }
 .script-outline .script-nav-empty {
@@ -394,11 +397,13 @@
   overflow: auto;
   min-width: 0;
   min-height: 0;
-  padding: 0 12px 24px;
-  scroll-padding-top: 76px;
+  padding: 0 clamp(16px, 3cqw, 40px) 24px;
+  scroll-padding-top: 100px;
 }
 .script-editor {
   min-width: 0;
+  max-width: var(--script-reading-width);
+  margin-inline: auto;
 }
 .script-editor[data-pane="edit"] {
   display: flex;
@@ -409,8 +414,8 @@
   flex-shrink: 0;
 }
 .script-overview {
-  max-width: 860px;
-  margin: 0;
+  max-width: var(--script-reading-width);
+  margin: 20px auto 0;
 }
 .script-overview section > header {
   display: flex;
@@ -506,19 +511,22 @@
   margin: 6px 0;
 }
 .script-editor-header {
-  margin-bottom: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  margin-bottom: 20px;
   position: sticky;
   top: 0;
   z-index: 2;
-  padding: 5px 0;
+  padding: 12px 0 0;
   background: var(--paper);
   border-bottom: 1px solid var(--hairline);
 }
 .script-editor-header strong {
-  flex: 1 1 130px;
+  grid-column: 1;
+  grid-row: 1;
   min-width: 0;
-  max-width: 280px;
-  font-size: 14px;
+  font-size: 15px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -528,23 +536,30 @@
   color: var(--muted);
 }
 .script-edit-status {
+  grid-column: 2;
+  grid-row: 1;
   max-width: 100%;
   overflow-wrap: anywhere;
 }
+.script-editor-header > button {
+  grid-column: 3;
+  grid-row: 1;
+}
 .script-tabs {
+  grid-column: 1 / -1;
+  grid-row: 2;
   display: flex;
   flex-wrap: nowrap;
   min-width: 0;
   max-width: 100%;
   overflow-x: auto;
   gap: 2px;
-  margin-right: auto;
 }
 .script-tabs button {
   flex-shrink: 0;
   border: 0;
   border-radius: 4px 4px 0 0;
-  padding: 5px 8px;
+  padding: 7px 10px;
   background: transparent;
   color: var(--muted);
 }
@@ -575,7 +590,7 @@
   display: flex;
   flex-direction: column;
   flex: 1;
-  gap: 10px;
+  gap: 14px;
 }
 .script-edit-fields > * {
   flex-shrink: 0;
@@ -608,9 +623,21 @@
   width: 100%;
   flex: 1 0 auto;
   min-height: 220px;
-  line-height: 1.8;
-  padding: 14px;
+  line-height: 1.9;
+  padding: 16px 18px;
+  font-size: var(--reading-font-size, 15px);
+}
+.script-edit-fields > input[aria-label="文稿标题"] {
   font-size: 15px;
+  font-weight: 600;
+}
+.script-studio .script-history > pre {
+  margin: 8px 0;
+  font-size: var(--reading-font-size, 15px);
+  line-height: 1.9;
+}
+.script-history > label {
+  width: min(100%, 280px);
 }
 .script-studio .script-text:read-only {
   background: var(--soft);
@@ -735,7 +762,7 @@
 .script-candidate-browser {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
+  gap: 16px;
   align-items: start;
 }
 .script-candidate-list {
@@ -790,24 +817,25 @@
 }
 .script-candidate-heading > div:first-child {
   display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 .script-candidate-body {
-  margin: 8px 0;
-  padding: 14px 4px;
+  margin: 16px 0 0;
+  padding: 24px 0;
   border-top: 1px solid var(--hairline);
   background: var(--paper);
 }
 .script-candidate-body h4 {
-  margin: 0 0 12px;
-  font-size: 15px;
+  margin: 0 0 16px;
+  font-size: 17px;
+  overflow-wrap: anywhere;
 }
 .script-studio .script-candidate-body pre {
   margin: 0;
   font-size: var(--reading-font-size, 15px);
-  line-height: 1.8;
+  line-height: 1.9;
 }
 .script-candidate-inspection > details {
   border-top: 1px solid var(--hairline);
@@ -972,7 +1000,7 @@
 }
 @container (max-width: 680px) {
   .script-main {
-    padding: 0 10px 20px;
+    padding: 0 16px 24px;
   }
   .script-toolbar .script-location {
     order: -1;
@@ -981,12 +1009,18 @@
   .script-location h2 {
     flex: 1;
   }
-  .script-editor-header .script-tabs {
-    order: 1;
-    flex-basis: 100%;
+  .script-editor-header {
+    margin-bottom: 16px;
   }
   .script-diff {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (pointer: coarse) {
+  .script-outline :is(.script-tree-row, .script-nav-disclosure),
+  .script-outline :is(.script-nav-add, .script-episode-toggle) {
+    min-height: 44px;
+    height: auto;
   }
 }
 .script-export-items {

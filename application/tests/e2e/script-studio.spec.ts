@@ -1294,7 +1294,7 @@ test("构思新剧只切换意图：重复点击、附件、移除和刷新不�
       "描述新剧的想法、题材或创作要求…",
     );
     await expect(intent).toHaveCount(1);
-    await expect(intent).toContainText("构思新剧");
+    await expect(intent).toContainText("构思剧本");
     await expect(button(page, "保存输入")).toBeDisabled();
   }
   const scope = await page
@@ -1334,7 +1334,7 @@ test("构思新剧只切换意图：重复点击、附件、移除和刷新不�
   await page.reload();
   await openInput(page);
   await expect(input).toHaveValue(body);
-  await expect(intent).toContainText("构思新剧");
+  await expect(intent).toContainText("构思剧本");
   await expect(attachment).toContainText("构思素材.txt");
   expect((await state(page)).inputs).toEqual(before.inputs);
   await button(page, "保存输入").click();
@@ -1474,6 +1474,9 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
       ).toBe(true);
       const canvas = await page.locator(".script-studio").evaluate((studio) => {
         const bounds = studio.getBoundingClientRect();
+        const main = studio
+          .querySelector(".script-main")!
+          .getBoundingClientRect();
         const prose = studio
           .querySelector(".script-candidate-body")!
           .getBoundingClientRect();
@@ -1482,6 +1485,10 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
           proseWidth: prose.width,
           firstContent: prose.top - bounds.top,
           height: bounds.height,
+          readingBalance: Math.abs(
+            prose.left - main.left - (main.right - prose.right),
+          ),
+          availableReading: main.width,
         };
       });
       await testInfo.attach(`candidate-space-${appearance}-${width}`, {
@@ -1489,8 +1496,15 @@ test("生成只准备输入、切换条目不改绑；人工保存固定版本�
         contentType: "application/json",
       });
       if (width === 1440) {
-        expect(canvas.proseWidth / canvas.width).toBeGreaterThan(0.78);
-        expect(canvas.firstContent).toBeLessThan(190);
+        // The user's new direction is a bounded, centered reading column,
+        // not the previous full-width manuscript. Preserve actual hit/overflow
+        // gates above; do not replace them with CSS-source assertions.
+        expect(canvas.proseWidth).toBeLessThanOrEqual(821);
+        expect(canvas.proseWidth).toBeGreaterThanOrEqual(
+          Math.min(560, canvas.availableReading - 80),
+        );
+        expect(canvas.readingBalance).toBeLessThanOrEqual(1);
+        expect(canvas.firstContent).toBeLessThan(260);
       }
       await page.screenshot({
         path: testInfo.outputPath(`candidate-${appearance}-${width}.png`),
@@ -1930,7 +1944,7 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     await expect(input).toHaveValue("");
     await expect(input).toBeFocused();
     await expect(page.locator(".composer-meta .composer-intent")).toContainText(
-      "构思新剧",
+      "构思剧本",
     );
     await clickStudioAction(page, "构思新剧");
     await expect(input).toHaveValue("");
@@ -1944,7 +1958,7 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
     await openInput(page);
     await expect(input).toHaveValue("TEST 原生构思草稿，不自动发送。");
     await expect(page.locator(".composer-meta .composer-intent")).toContainText(
-      "构思新剧",
+      "构思剧本",
     );
     await page.screenshot({
       path: testInfo.outputPath("script-conceive-native.png"),

@@ -174,37 +174,39 @@ export function ScriptCandidates({
   }
   return (
     <div className="script-candidate-browser">
-      <nav
-        ref={candidateList}
-        className="script-candidate-list"
-        aria-label="选择候选稿"
-      >
-        {candidates.map((entry) => {
-          const number = entry.ordinal;
-          return (
-            <button
-              key={entry.id}
-              type="button"
-              disabled={busy}
-              aria-current={entry.id === c.id ? "true" : undefined}
-              aria-label={`候选 ${number} · ${displayStatus(entry)}`}
-              title={`${number === page.value?.total ? "最新生成 · " : ""}${scriptDisplayTime(entry.createdAt)} · ${entry.textCharacters} 字`}
-              onClick={() => {
-                setSelected(entry.id);
-                setError("");
-              }}
-            >
-              <strong>候选 {number}</strong>
-              <span className="script-candidate-state">
-                {displayStatus(entry)}
-              </span>
-              {number === page.value?.total && (
-                <small className="script-candidate-latest">最新</small>
-              )}
-            </button>
-          );
-        })}
-      </nav>
+      {candidates.length > 1 && (
+        <nav
+          ref={candidateList}
+          className="script-candidate-list"
+          aria-label="选择候选稿"
+        >
+          {candidates.map((entry) => {
+            const number = entry.ordinal;
+            return (
+              <button
+                key={entry.id}
+                type="button"
+                disabled={busy}
+                aria-current={entry.id === c.id ? "true" : undefined}
+                aria-label={`候选 ${number} · ${displayStatus(entry)}`}
+                title={`${number === page.value?.total ? "最新生成 · " : ""}${scriptDisplayTime(entry.createdAt)} · ${entry.textCharacters} 字`}
+                onClick={() => {
+                  setSelected(entry.id);
+                  setError("");
+                }}
+              >
+                <strong>候选 {number}</strong>
+                <span className="script-candidate-state">
+                  {displayStatus(entry)}
+                </span>
+                {number === page.value?.total && (
+                  <small className="script-candidate-latest">最新</small>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+      )}
       <article
         className="script-candidate-detail"
         {...quoteSource({
@@ -279,7 +281,7 @@ export function ScriptCandidates({
           <p className="script-candidate-warning">{blocked}</p>
         )}
         <section className="script-candidate-body" aria-label="候选稿">
-          <h4>{c.draft.title}</h4>
+          {c.draft.title !== item.title && <h4>{c.draft.title}</h4>}
           <pre>{c.draft.text || "（此候选没有正文修改）"}</pre>
         </section>
         <div className="script-candidate-inspection">
