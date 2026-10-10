@@ -40,6 +40,7 @@ const suspensionInputs = [
   "settingsSection!==null",
   "!!creating",
   "!!executions",
+  "!!cognitiveChoice",
   "nativeExportDialog",
   "directoryPickerScope===directoryScope",
   "!!uploadingDrafts[contextKey]",
@@ -235,7 +236,7 @@ function ownership(controllerText: string, appText: string): string[] {
     const suspended = values.get("suspended");
     check(
       !!suspended && text(suspended, app) === suspensionInputs.join("||"),
-      "All eleven suspension inputs retain the original expression and order",
+      "All twelve suspension inputs retain the current expression and order",
     );
   } else check(false, "Controller receives explicit Host-owned inputs");
   const focus = commits[0];
@@ -360,6 +361,7 @@ test("controller ownership gate rejects duplicate requests, lost suspension and 
   for (const changed of [
     app + "\nconst requestedComposerFocus = useRef(null);",
     app.replace("!!capture ||", ""),
+    app.replace("!!cognitiveChoice ||", ""),
     app.replace("surface: workSurface,", "surface: { ...workSurface },"),
     app.replace("useExchangeControllerFocus(exchangeController);", ""),
     app.replace(

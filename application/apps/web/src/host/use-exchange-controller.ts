@@ -76,15 +76,20 @@ export function useExchangeController({
   const { navigationProject, exchangeKey, contextKey, conversationId } =
     surface;
   const [resizePreview, setResizePreview] = useState<ResizePreview>(null);
+  // Explicit record viewing is a reading intent, not the user's input-pin
+  // preference. Keep it scoped for this mounted Host; automatic post-send
+  // previews must still collapse normally. No draft or Session state is owned
+  // here and no new preference field is persisted.
+  const recordReadingIntents = useRef(new Set<string>());
   const visibility = exchangeVisibility(surface, preferences, resizePreview);
   const { interaction, inputVisible, inputPinned } = visibility;
   const keepExchangeOpen = useExchangeFocus({
     root: exchange,
     scope: exchangeKey,
     visible: inputVisible,
-    pinned: inputPinned,
+    pinned: inputPinned || recordReadingIntents.current.has(exchangeKey),
     suspended,
-    onLeave: () => setInteraction("hidden"),
+    onLeave: () => commitInteraction("hidden"),
   });
   const latestInteraction = useRef(interaction);
   latestInteraction.current = interaction;
@@ -102,21 +107,34 @@ export function useExchangeController({
   function clearResizePreview() {
     setResizePreview(null);
   }
-  function setInteraction(mode: InteractionMode, id = navigationProject?.id) {
+  function commitInteraction(
+    mode: InteractionMode,
+    id = navigationProject?.id,
+  ) {
     clearResizePreview();
-    if (id)
+    if (id) {
+      const scope = id === navigationProject?.id ? exchangeKey : id;
+      if (mode === "hidden" || mode === "input")
+        recordReadingIntents.current.delete(scope);
       prefer({
-        interactions: {
-          [id === navigationProject?.id ? exchangeKey : id]: mode,
-        },
+        interactions: { [scope]: mode },
       });
+    }
+  }
+  function setInteraction(mode: InteractionMode, id = navigationProject?.id) {
+    if (id && (mode === "recent" || mode === "history")) {
+      const scope = id === navigationProject?.id ? exchangeKey : id;
+      recordReadingIntents.current.add(scope);
+      if (scope === exchangeKey) keepExchangeOpen();
+    }
+    commitInteraction(mode, id);
   }
   function showInput() {
     keepExchangeOpen();
     onShowInput();
     previousFocus.current = document.activeElement as HTMLElement;
     requestedComposerFocus.current = navigationGeneration.current;
-    setInteraction(revealInput(interaction));
+    commitInteraction(revealInput(interaction));
   }
   function hideInput() {
     if (surface.dialogueCanvas) {
@@ -156,12 +174,16 @@ export function useExchangeController({
       };
   }
   function showSentInput(key: string) {
-    setInteraction(afterSend(latestInteraction.current));
+    commitInteraction(afterSend(latestInteraction.current));
     requestSentInputFocus(key);
   }
   function toggleInputPin() {
     keepExchangeOpen();
-    if (inputPinned) input.current?.focus();
+    if (inputPinned) {
+      // Explicitly unpinning restores the user's normal auto-collapse choice.
+      recordReadingIntents.current.delete(exchangeKey);
+      input.current?.focus();
+    }
     prefer({ pinnedInputs: { [exchangeKey]: !inputPinned } });
   }
   const resize: ExchangeResizeOptions = {
@@ -180,6 +202,9 @@ export function useExchangeController({
     onCommit: ({ mode, height }) => {
       keepExchangeOpen();
       clearResizePreview();
+      if (mode === "recent" || mode === "history")
+        recordReadingIntents.current.add(exchangeKey);
+      else recordReadingIntents.current.delete(exchangeKey);
       prefer({
         interactions: { [exchangeKey]: mode },
         ...(mode === "recent"

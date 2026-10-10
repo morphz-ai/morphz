@@ -14,6 +14,7 @@ import React, { StrictMode, useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import { useExchangeController, useExchangeControllerFocus } from '/src/host/use-exchange-controller.ts';
+import { ExchangeControls } from '/src/ExchangePanel.tsx';
 const writes = [], events = [];
 let controller, current, generation, showCount = 0;
 let control;
@@ -63,6 +64,7 @@ function Fixture() {
     <button id="toggle" ref={toggle} onClick={() => controller.showInput()}>Open input</button>
     <div ref={exchange} className="exchange-surface">
       <div className="exchange-panel" data-open={controller.inputVisible || controller.conversationVisible || undefined}>
+        {!model.dialogueCanvas && controller.inputVisible && <ExchangeControls conversationVisible={controller.conversationVisible} historyVisible={controller.historyVisible} pinned={controller.inputPinned} unread={false} onInteraction={controller.setInteraction} onPin={controller.toggleInputPin} onHide={controller.hideInput}/>}
         {controller.conversationVisible && <div id="reading">Reading</div>}
         {controller.inputVisible && <div id="global-composer"><textarea id="input" ref={input} disabled={model.sending} defaultValue="untouched draft" onFocus={() => events.push('input:focus')}/><button id="inside">Input tool</button></div>}
       </div>
@@ -397,6 +399,115 @@ scenario(
     await page.locator("#inside").focus();
     await frames(page);
     assert.equal((await report(page)).inputVisible, true);
+    await page.locator("#outside").click();
+    await frames(page);
+    assert.equal((await report(page)).mode, "hidden");
+  },
+);
+
+scenario(
+  "explicit record viewing stays open on outside click and keyboard focus, without changing the pin preference",
+  async (page) => {
+    await run(page, "pin");
+    await run(page, "clear-log");
+    await page
+      .getByRole("button", { name: "查看交流记录", exact: true })
+      .click();
+    assert.equal((await report(page)).mode, "recent");
+    await page.locator("#outside").click();
+    await frames(page);
+    assert.equal((await report(page)).mode, "recent");
+    await page.locator("#input").focus();
+    await page.locator("#outside").focus();
+    await frames(page);
+    const actual = await report(page);
+    assert.equal(actual.mode, "recent");
+    assert.equal(actual.active, "outside");
+    assert.equal(actual.preferences.pinnedInputs["surface-A"], false);
+    assert.deepEqual(actual.writes, [
+      { interactions: { "surface-A": "recent" } },
+    ]);
+    assert.equal(await page.locator("#input").inputValue(), "untouched draft");
+  },
+);
+
+scenario(
+  "full record viewing and return to recent keep the explicit reading intent until manual collapse",
+  async (page) => {
+    await run(page, "pin");
+    await page
+      .getByRole("button", { name: "展开完整记录", exact: true })
+      .click();
+    await page.locator("#outside").click();
+    await frames(page);
+    assert.equal((await report(page)).mode, "history");
+    await page
+      .getByRole("button", { name: "返回工作内容", exact: true })
+      .click();
+    await page.locator("#outside").focus();
+    await frames(page);
+    assert.equal((await report(page)).mode, "recent");
+    await page
+      .getByRole("button", { name: "收起交流记录", exact: true })
+      .click();
+    assert.equal((await report(page)).mode, "input");
+    await page.locator("#outside").click();
+    await frames(page);
+    assert.equal((await report(page)).mode, "hidden");
+    await run(page, "show");
+    assert.equal((await report(page)).mode, "input");
+    assert.equal(await page.locator("#input").inputValue(), "untouched draft");
+  },
+);
+
+scenario(
+  "explicit record intent is scoped and survives send receipts but manual hide clears it",
+  async (page) => {
+    await run(page, "pin");
+    await page
+      .getByRole("button", { name: "查看交流记录", exact: true })
+      .click();
+    await run(page, "sent");
+    await page.locator("#outside").click();
+    await frames(page);
+    assert.equal((await report(page)).mode, "recent");
+    await run(page, "navigate", {
+      exchangeKey: "surface-B",
+      contextKey: "conversation-B:object-B",
+      conversationId: "conversation-B",
+    });
+    await run(page, "pin");
+    await page.locator("#input").focus();
+    await page.locator("#outside").click();
+    await frames(page);
+    assert.equal((await report(page)).mode, "hidden");
+    await run(page, "navigate", {
+      exchangeKey: "surface-A",
+      contextKey: "conversation-A:object-A",
+      conversationId: "conversation-A",
+    });
+    assert.equal((await report(page)).mode, "recent");
+    await page.locator("#input").focus();
+    await page.locator("#outside").click();
+    await frames(page);
+    assert.equal((await report(page)).mode, "recent");
+    await page
+      .getByRole("button", { name: "收起 AI 输入框", exact: true })
+      .click();
+    assert.equal((await report(page)).mode, "hidden");
+    await run(page, "show");
+    await page.locator("#outside").click();
+    await frames(page);
+    assert.equal((await report(page)).mode, "hidden");
+  },
+);
+
+scenario(
+  "automatic post-send reading retains the normal unpinned collapse behavior",
+  async (page) => {
+    await run(page, "pin");
+    await run(page, "sent");
+    assert.equal((await report(page)).mode, "recent");
     await page.locator("#outside").click();
     await frames(page);
     assert.equal((await report(page)).mode, "hidden");
