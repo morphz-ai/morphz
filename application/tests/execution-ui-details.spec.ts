@@ -145,6 +145,251 @@ async function prepare(page: Page) {
   };
 }
 
+test("结构化结果直接阅读内容与说明，引用可展开，Raw 保留确切原文且切换不重读", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  const body = "TEST 修复后请重试。\n下一行仍是原文，不是 Markdown。";
+  const note = "TEST 先读取所属集当前版本，再创建分场。";
+  f.resultReply.text = JSON.stringify({
+    body,
+    generating: false,
+    inputId: "TEST-source-input",
+    note,
+    ok: true,
+    projectId: "TEST-source-project",
+    selection: "",
+  });
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const first = f.panel.locator(".execution-job").first();
+  await first.getByRole("button", { name: "查看结果", exact: true }).click();
+  const result = first.getByRole("region", { name: "返回结果", exact: true });
+  await expect(result.getByRole("group", { name: "结果视图" })).toBeVisible();
+  await expect(result.getByText(body, { exact: true })).toBeVisible();
+  await expect(result.getByText(note, { exact: true })).toBeVisible();
+  await expect(
+    result.getByText("TEST-source-input", { exact: true }),
+  ).toBeHidden();
+  for (const appearance of ["light", "dark"]) {
+    await page.evaluate((appearance) => {
+      document
+        .querySelector(".app")!
+        .setAttribute("data-appearance", appearance);
+      document.documentElement.setAttribute("data-appearance", appearance);
+    }, appearance);
+    await settleTransitions(page);
+    await f.panel.screenshot({
+      path: info.outputPath(`structured-result-${appearance}.png`),
+    });
+  }
+  await result.getByText("引用与分页", { exact: true }).click();
+  await expect(
+    result.getByText("TEST-source-input", { exact: true }),
+  ).toBeVisible();
+  await result.getByText("引用与分页", { exact: true }).press("Enter");
+  await expect(
+    result.getByText("TEST-source-input", { exact: true }),
+  ).toBeHidden();
+  const raw = result.getByRole("button", { name: "Raw", exact: true });
+  await raw.focus();
+  await raw.press("Enter");
+  await expect(raw).toHaveAttribute("aria-pressed", "true");
+  await expect(result.locator(".execution-data-raw")).toHaveText(
+    f.resultReply.text,
+  );
+  const readable = result.getByRole("button", { name: "结果", exact: true });
+  await readable.focus();
+  await readable.press("Space");
+  await expect(readable).toHaveAttribute("aria-pressed", "true");
+  await expect(result.getByText(body, { exact: true })).toBeVisible();
+  await first.getByRole("button", { name: "查看结果", exact: true }).click();
+  await expect(result).toHaveCount(0);
+  expect(f.resultReads).toEqual(["TEST-ui-job-0"]);
+  expect(f.writes).toEqual([]);
+  await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+});
+
+test("技术详情按参数层级展示，Raw 保留原请求，执行标识按需读取且不改执行", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const first = f.panel.locator(".execution-job").first();
+  await first.getByRole("button", { name: "技术详情", exact: true }).click();
+  const technical = first.locator(".execution-technical");
+  await expect(
+    technical.getByRole("group", { name: "参数视图" }),
+  ).toBeVisible();
+  await expect(
+    technical.getByText("read-workflow", { exact: true }),
+  ).toBeVisible();
+  for (const appearance of ["light", "dark"]) {
+    await page.evaluate((appearance) => {
+      document
+        .querySelector(".app")!
+        .setAttribute("data-appearance", appearance);
+      document.documentElement.setAttribute("data-appearance", appearance);
+    }, appearance);
+    await settleTransitions(page);
+    await f.panel.screenshot({
+      path: info.outputPath(`structured-technical-${appearance}.png`),
+    });
+  }
+  await technical.getByRole("button", { name: "Raw", exact: true }).click();
+  await expect(technical.locator(".execution-data-raw")).toHaveText(
+    JSON.stringify(
+      { action: "script", script: { action: "read-workflow" } },
+      null,
+      2,
+    ),
+  );
+  await technical.getByText("执行信息", { exact: true }).click();
+  await expect(
+    technical.getByText("TEST-ui-job-0", { exact: true }),
+  ).toBeVisible();
+  await expect(technical.getByText("local", { exact: true })).toBeVisible();
+  await technical.getByRole("button", { name: "参数", exact: true }).click();
+  await expect(
+    technical.getByText("read-workflow", { exact: true }),
+  ).toBeVisible();
+  await first.getByRole("button", { name: "技术详情", exact: true }).click();
+  await expect(technical).toHaveCount(0);
+  expect(f.resultReads).toEqual([]);
+  expect(f.writes).toEqual([]);
+  await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+});
+
+test("结构化失败与未知字段保留，大整数不丢精度，HTML 与链接只是数据", async ({
+  page,
+}) => {
+  const f = await prepare(page);
+  f.resultReply.text =
+    '{"ok":false,"message":"TEST 所属集版本过时","code":"conflict","futureField":{"integer":9007199254740993,"html":"<script>window.untrustedResult=true</script>","url":"https://example.invalid/do-not-fetch"}}';
+  const outbound: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("example.invalid")) outbound.push(request.url());
+  });
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const first = f.panel.locator(".execution-job").first();
+  await first.getByRole("button", { name: "查看结果", exact: true }).click();
+  const result = first.getByRole("region", { name: "返回结果", exact: true });
+  await expect(
+    result.getByText("TEST 所属集版本过时", { exact: true }),
+  ).toBeVisible();
+  const message = result.getByText("TEST 所属集版本过时", { exact: true });
+  for (const appearance of ["light", "dark"]) {
+    await page.evaluate((appearance) => {
+      document
+        .querySelector(".app")!
+        .setAttribute("data-appearance", appearance);
+      document.documentElement.setAttribute("data-appearance", appearance);
+    }, appearance);
+    const colors = await message.evaluate((el) => {
+      const expected = document.createElement("span");
+      expected.style.color = "var(--danger)";
+      el.parentElement!.append(expected);
+      const colors = [
+        getComputedStyle(el).color,
+        getComputedStyle(expected).color,
+      ];
+      expected.remove();
+      return colors;
+    });
+    expect(colors[0]).toBe(colors[1]);
+    // A succeeded tool invocation is not proof that the domain write succeeded.
+    await expect(
+      first.getByRole("img", { name: "已完成", exact: true }),
+    ).toBeVisible();
+    await expect(result.locator("[data-returned-false=true]")).toHaveCount(1);
+  }
+  await expect(
+    result.getByText("9007199254740993", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    result.getByText("<script>window.untrustedResult=true</script>", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(result.locator("script,a,img,iframe")).toHaveCount(0);
+  expect(
+    await page.evaluate(() => Reflect.get(window, "untrustedResult")),
+  ).toBeUndefined();
+  expect(outbound).toEqual([]);
+  await result.getByRole("button", { name: "Raw", exact: true }).click();
+  await expect(result.locator(".execution-data-raw")).toHaveText(
+    f.resultReply.text,
+  );
+  expect(f.writes).toEqual([]);
+});
+
+test("长列表与其余字段按需展开，重复字段和列表序号不丢失", async ({ page }) => {
+  const f = await prepare(page);
+  const fields = Array.from(
+    { length: 19 },
+    (_, i) => `"field${i}":"TEST field ${i}"`,
+  );
+  f.resultReply.text = `{${fields.join(",")},"repeat":"TEST first repeated","repeat":"TEST second repeated","items":[${Array.from({ length: 20 }, (_, i) => `"TEST item ${i + 1}"`).join(",")}]}`;
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const first = f.panel.locator(".execution-job").first();
+  await first.getByRole("button", { name: "查看结果", exact: true }).click();
+  const result = first.getByRole("region", { name: "返回结果", exact: true });
+  await expect(
+    result.getByText("TEST field 15", { exact: true }),
+  ).toBeVisible();
+  await expect(result.getByText("TEST field 16", { exact: true })).toHaveCount(
+    0,
+  );
+  await result.locator("summary").filter({ hasText: "其余字段" }).click();
+  await expect(
+    result.getByText("TEST field 18", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    result.getByText("TEST first repeated", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    result.getByText("TEST second repeated", { exact: true }),
+  ).toBeVisible();
+  await result.locator("summary").filter({ hasText: "列表" }).click();
+  await expect(result.getByText("TEST item 16", { exact: true })).toBeVisible();
+  await expect(result.getByText("TEST item 17", { exact: true })).toHaveCount(
+    0,
+  );
+  await result.locator("summary").filter({ hasText: "其余条目" }).click();
+  await expect(result.getByText("TEST item 20", { exact: true })).toBeVisible();
+  await expect(result.locator('ol[start="17"] > li')).toHaveCount(4);
+  await result.getByRole("button", { name: "Raw", exact: true }).click();
+  await expect(result.locator(".execution-data-raw")).toHaveText(
+    f.resultReply.text,
+  );
+  expect(f.resultReads).toEqual(["TEST-ui-job-0"]);
+  expect(f.writes).toEqual([]);
+  await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+});
+
+test("标记截断的合法 JSON 前缀仍显示原文，不伪装完整结构化结果", async ({
+  page,
+}) => {
+  const f = await prepare(page);
+  f.resultReply.text = '{"ok":true,"body":"TEST 完整语法但只是一段前缀"}';
+  f.resultReply.truncated = true;
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const first = f.panel.locator(".execution-job").first();
+  await first.getByRole("button", { name: "查看结果", exact: true }).click();
+  const result = first.getByRole("region", { name: "返回结果", exact: true });
+  await expect(result.getByRole("group", { name: "结果视图" })).toHaveCount(0);
+  await expect(result.getByText("原始文本", { exact: true })).toBeVisible();
+  await expect(result.locator(".execution-data-raw")).toHaveText(
+    f.resultReply.text,
+  );
+  await expect(result).toContainText("64,000");
+  expect(f.writes).toEqual([]);
+});
+
 test("步骤两排共用图标中轴并收紧间距，亮暗窄窗和缩放仍可准确点击", async ({
   page,
 }, info) => {
@@ -236,8 +481,33 @@ test.describe("触控步骤对齐", () => {
     expect(box.height).toBeGreaterThanOrEqual(44);
     await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
     await expect(first.locator(".execution-result pre")).toBeVisible();
+    const result = first.getByRole("region", { name: "返回结果", exact: true });
+    for (const name of ["Raw", "结果"]) {
+      const mode = result.getByRole("button", { name, exact: true });
+      const modeBox = (await mode.boundingBox())!;
+      expect(modeBox.width).toBeGreaterThanOrEqual(44);
+      expect(modeBox.height).toBeGreaterThanOrEqual(44);
+      await page.touchscreen.tap(
+        modeBox.x + modeBox.width / 2,
+        modeBox.y + modeBox.height / 2,
+      );
+      await expect(mode).toHaveAttribute("aria-pressed", "true");
+    }
     await button.click();
     await expect(first.locator(".execution-result")).toHaveCount(0);
+    await first.getByRole("button", { name: "技术详情", exact: true }).click();
+    const identity = first
+      .locator(".execution-technical summary")
+      .filter({ hasText: "执行信息" });
+    const identityBox = (await identity.boundingBox())!;
+    expect(identityBox.height).toBeGreaterThanOrEqual(44);
+    await page.touchscreen.tap(
+      identityBox.x + identityBox.width / 2,
+      identityBox.y + identityBox.height / 2,
+    );
+    await expect(
+      first.getByText("TEST-ui-job-0", { exact: true }),
+    ).toBeVisible();
     expect(f.writes).toEqual([]);
     await expect(f.input).toHaveValue("TEST 未发送的原草稿");
   });
@@ -506,7 +776,12 @@ test("活动详情运行标识会动，已完成为图标，时间与工具按�
     technical = first.getByRole("button", { name: "技术详情", exact: true });
   await technical.click();
   await expect(technical).toHaveAttribute("aria-expanded", "true");
-  await expect(first.locator(".execution-technical pre")).toContainText(
+  const parameters = first.locator(".execution-technical");
+  await expect(
+    parameters.getByText("read-workflow", { exact: true }),
+  ).toBeVisible();
+  await parameters.getByRole("button", { name: "Raw", exact: true }).click();
+  await expect(parameters.locator(".execution-data-raw")).toContainText(
     '"read-workflow"',
   );
   await technical.click();

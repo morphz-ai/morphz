@@ -1,5 +1,6 @@
 import { useExecutionInspection } from "./features/execution/useExecutionInspection.js";
 import { ExecutionJobCard } from "./features/execution/ExecutionJobCard.js";
+import { ExecutionDataView } from "./features/execution/ExecutionDataView.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import {
   executionSnapshotJobPresentation,
@@ -294,11 +295,16 @@ export function ExecutionDialog({
                                 "打开成果"}
                             </button>
                           )}
-                          <pre>
-                            {result.available
-                              ? result.text || "执行返回了空内容。"
-                              : "尚无最终结果。"}
-                          </pre>
+                          <ExecutionDataView
+                            label="结果"
+                            text={result.available ? result.text : ""}
+                            truncated={result.truncated}
+                            emptyText={
+                              result.available
+                                ? "执行返回了空内容。"
+                                : "尚无最终结果。"
+                            }
+                          />
                           {result.truncated && (
                             <small>结果较长，当前显示前 64,000 个字符。</small>
                           )}

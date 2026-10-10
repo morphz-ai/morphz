@@ -4,6 +4,7 @@ import type { ExecutionSnapshot } from "../../../../../packages/core/src/executi
 import type { executionSnapshotJobPresentation } from "../../execution-presentation.js";
 import { RunningActivityIcon } from "../../RunningActivityIcon.js";
 import { Tooltip } from "../../ui/Tooltip.js";
+import { ExecutionRequestDetails } from "./ExecutionDataView.js";
 
 /** Display only. The inspection controller/caller owns scope, authorization,
  * requests and receipts; opening technical details is local view state. */
@@ -133,10 +134,7 @@ export function ExecutionJobCard({
       )}
       {technical && (
         <div className="execution-technical" id={technicalId}>
-          <pre>{JSON.stringify(job.request, null, 2)}</pre>
-          <small>执行节点：{job.target_id} ·</small>
-          <small>执行 ID：{job.id}</small>
-          {job.exit_code != null && <small>退出码 {job.exit_code}</small>}
+          <ExecutionRequestDetails job={job} />
         </div>
       )}
       {resultVisible && (
