@@ -128,7 +128,9 @@ test(
       logLevel: "error",
     });
     context.after(async () => {
-      server.httpServer?.closeAllConnections();
+      const httpServer = server.httpServer;
+      if (httpServer && "closeAllConnections" in httpServer)
+        httpServer.closeAllConnections();
       await server.close();
     });
     await server.listen();
