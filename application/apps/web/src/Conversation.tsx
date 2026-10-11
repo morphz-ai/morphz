@@ -771,72 +771,6 @@ export function Conversation({
                         onOpen={onOpenQuote}
                       />
                     )}
-                    {item?.artifactId && (
-                      <Tooltip
-                        label={`打开${linkedKind ? kindLabel[linkedKind] : "资源"}：${linkedLabel}`}
-                      >
-                        <button
-                          className="message-object-link"
-                          aria-label={`打开关联资源：${linkedLabel}`}
-                          onClick={() =>
-                            onOpen(
-                              item.artifactId!,
-                              item.artifactRevision ?? undefined,
-                              undefined,
-                              item.reading?.location,
-                            )
-                          }
-                        >
-                          <span className="message-resource-icon" aria-hidden>
-                            {linkedKind ? (
-                              <ObjectIcon kind={linkedKind} />
-                            ) : (
-                              <Link2 />
-                            )}
-                          </span>
-                          <span className="message-resource-title">
-                            {linkedTitle}
-                            {item.reading && ` · ${item.reading.chapter}`}
-                          </span>
-                          {linkedVersion && (
-                            <small className="message-resource-version">
-                              {linkedVersion}
-                            </small>
-                          )}
-                        </button>
-                      </Tooltip>
-                    )}
-                    {item?.cognitiveObject && onOpenCognitiveObject && (
-                      <Tooltip
-                        label={`打开原件：${originalTitle} · ${item.cognitiveObject.object.versionRef}`}
-                      >
-                        <button
-                          className="message-object-link"
-                          aria-label={`打开关联原件：${originalTitle} · ${item.cognitiveObject.object.versionRef}`}
-                          onClick={() =>
-                            onOpenCognitiveObject(item.cognitiveObject!)
-                          }
-                        >
-                          <span className="message-resource-icon" aria-hidden>
-                            <Link2 />
-                          </span>
-                          <span className="message-resource-title">
-                            {originalTitle}
-                          </span>
-                          <small className="message-resource-version">
-                            {item.cognitiveObject.object.versionRef}
-                          </small>
-                        </button>
-                      </Tooltip>
-                    )}
-                    {item?.localFile && (
-                      <small
-                        className="message-local-file"
-                        title="本机原文件引用，不是导入副本；读取时校验版本和授权。"
-                      >
-                        原文件：{item.localFile.name}
-                      </small>
-                    )}
                     {item ? (
                       <>
                         {!!item.attachments?.length && (
@@ -865,6 +799,102 @@ export function Conversation({
                           >
                             {item.body}
                           </p>
+                        )}
+                        {(item.artifactId ||
+                          (item.cognitiveObject && onOpenCognitiveObject) ||
+                          item.localFile) && (
+                          <div
+                            className="message-resources"
+                            role="group"
+                            aria-label="关联资源"
+                            data-quote-ignore="true"
+                          >
+                            {item.artifactId && (
+                              <Tooltip
+                                label={`打开${linkedKind ? kindLabel[linkedKind] : "资源"}：${linkedLabel}`}
+                              >
+                                <button
+                                  className="message-object-link"
+                                  aria-label={`打开关联资源：${linkedLabel}`}
+                                  onClick={() =>
+                                    onOpen(
+                                      item.artifactId!,
+                                      item.artifactRevision ?? undefined,
+                                      undefined,
+                                      item.reading?.location,
+                                    )
+                                  }
+                                >
+                                  <span
+                                    className="message-resource-prefix"
+                                    aria-hidden
+                                  >
+                                    关联
+                                  </span>
+                                  <span
+                                    className="message-resource-icon"
+                                    aria-hidden
+                                  >
+                                    {linkedKind ? (
+                                      <ObjectIcon kind={linkedKind} />
+                                    ) : (
+                                      <Link2 />
+                                    )}
+                                  </span>
+                                  <span className="message-resource-title">
+                                    {linkedTitle}
+                                    {item.reading &&
+                                      ` · ${item.reading.chapter}`}
+                                  </span>
+                                  {linkedVersion && (
+                                    <small className="message-resource-version">
+                                      {linkedVersion}
+                                    </small>
+                                  )}
+                                </button>
+                              </Tooltip>
+                            )}
+                            {item.cognitiveObject && onOpenCognitiveObject && (
+                              <Tooltip
+                                label={`打开原件：${originalTitle} · ${item.cognitiveObject.object.versionRef}`}
+                              >
+                                <button
+                                  className="message-object-link"
+                                  aria-label={`打开关联原件：${originalTitle} · ${item.cognitiveObject.object.versionRef}`}
+                                  onClick={() =>
+                                    onOpenCognitiveObject(item.cognitiveObject!)
+                                  }
+                                >
+                                  <span
+                                    className="message-resource-prefix"
+                                    aria-hidden
+                                  >
+                                    关联
+                                  </span>
+                                  <span
+                                    className="message-resource-icon"
+                                    aria-hidden
+                                  >
+                                    <Link2 />
+                                  </span>
+                                  <span className="message-resource-title">
+                                    {originalTitle}
+                                  </span>
+                                  <small className="message-resource-version">
+                                    {item.cognitiveObject.object.versionRef}
+                                  </small>
+                                </button>
+                              </Tooltip>
+                            )}
+                            {item.localFile && (
+                              <small
+                                className="message-local-file"
+                                title="本机原文件引用，不是导入副本；读取时校验版本和授权。"
+                              >
+                                原文件：{item.localFile.name}
+                              </small>
+                            )}
+                          </div>
                         )}
                       </>
                     ) : (

@@ -61,6 +61,18 @@ test("记录与输入同属交流面板且各有独立边界，空态紧凑，�
   );
   const h = (await history.boundingBox())!;
   const c = (await composer.boundingBox())!;
+  const scope = (await panel
+    .getByRole("button", { name: "查看全部交流", exact: true })
+    .boundingBox())!;
+  const tools = (await controls.boundingBox())!;
+  // The reading scope and its actions must share the reading card's interior,
+  // not float over the unchanged document behind it.
+  for (const row of [scope, tools]) {
+    expect(row.y).toBeGreaterThanOrEqual(h.y + 1);
+    expect(row.y + row.height).toBeLessThanOrEqual(h.y + h.height - 1);
+    expect(row.x).toBeGreaterThanOrEqual(h.x + 1);
+    expect(row.x + row.width).toBeLessThanOrEqual(h.x + h.width - 1);
+  }
   expect(c.y - h.y - h.height).toBeCloseTo(8, 0);
   expect(Math.abs(h.x - c.x)).toBeLessThanOrEqual(1);
   expect(Math.abs(h.width - c.width)).toBeLessThanOrEqual(2);
@@ -151,12 +163,7 @@ test("工作页面板键盘与外部点击边界正确，窄窗和空记录不�
       "position",
       "relative",
     );
-    for (const name of [
-      "新建或添加",
-      "执行设置",
-      "语音输入",
-      "收起 AI 输入框",
-    ])
+    for (const name of ["新建或添加", "执行设置", "语音输入", "收起 AI 输入框"])
       await expect(
         page.getByRole("button", { name, exact: true }),
       ).toBeInViewport();

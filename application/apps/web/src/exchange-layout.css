@@ -114,12 +114,29 @@
   --exchange-controls-width: 164px;
 }
 .exchange-panel-header {
+  /* Reading scope belongs inside its card. Do not reserve a separate row over
+     the unchanged work canvas; the reading padding owns this space. */
+  position: absolute;
+  top: 8px;
+  left: 0;
+  right: 0;
+  pointer-events: none;
   display: flex;
   align-items: center;
   flex: 0 0 auto;
   gap: 8px;
   min-width: 0;
-  padding: 8px 12px 0;
+  min-height: 28px;
+  padding: 0 12px;
+}
+.exchange-panel-header::before {
+  position: absolute;
+  z-index: 4;
+  top: -7px;
+  right: 1px;
+  bottom: -8px;
+  left: 1px;
+  pointer-events: auto;
 }
 .exchange-panel-header:not(:has(.conversation-scope)) {
   display: none;
@@ -129,6 +146,9 @@
   min-width: 0;
 }
 .exchange-scope .conversation-scope {
+  position: relative;
+  z-index: 6;
+  pointer-events: auto;
   max-width: 100%;
   margin: 0;
   padding: 4px 8px;
@@ -158,7 +178,7 @@
 }
 .exchange-panel:has(.exchange-panel-header .conversation-scope)
   > .conversation {
-  padding-top: 16px;
+  padding-top: 44px;
 }
 .exchange-panel .conversation-empty {
   padding: 0;
@@ -220,7 +240,7 @@
   }
   .exchange-panel:has(.exchange-panel-header .conversation-scope)
     > .conversation {
-    padding-top: 16px;
+    padding-top: 60px;
   }
   @container exchange (max-width: 620px) {
     .exchange-panel[data-open] > :is(.composer-dock, .exchange-panel-header) {
@@ -312,7 +332,7 @@
   height: 3px;
 }
 .exchange-panel:has(> .exchange-resizer) > .exchange-panel-header {
-  padding-top: 14px;
+  padding-top: 0;
 }
 .exchange-resize-shield {
   position: fixed;

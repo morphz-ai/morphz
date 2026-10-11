@@ -6,12 +6,18 @@ import {
   mockPlatformConversation,
   test,
 } from "./platform-conversation-fixture.js";
-import { openInput, settleTransitions } from "./interaction-helpers.js";
+import {
+  composerAction,
+  openExchangeReading,
+  openInput,
+  settleTransitions,
+} from "./interaction-helpers.js";
 import { openSettings } from "./settings-helpers.js";
 
 async function prepare(
   page: Page,
   title = "TEST 一碗面换一间铺｜原创短篇小说",
+  withQuote = false,
 ) {
   const inputs: PlatformHistory["inputs"] = [];
   const fixture = await mockPlatformConversation(page, () => ({
@@ -55,6 +61,35 @@ async function prepare(
   );
   sent.artifactId = content.id;
   sent.artifactRevision = 3;
+  if (withQuote) {
+    const original = fixture.input(
+      "quoted-message-source",
+      "TEST 这是被引用的消息正文。",
+      "2026-10-11T00:24:00.000Z",
+    );
+    inputs.push(original);
+    sent.textQuotes = [
+      {
+        id: randomUUID(),
+        text: original.body,
+        comment: "TEST 针对选文的评论。",
+        source: {
+          kind: "message",
+          ...fixture.scope,
+          messageId: original.id,
+          inputId: original.id,
+          title: "我",
+          createdAt: original.createdAt,
+        },
+        anchor: {
+          start: 0,
+          end: original.body.length,
+          prefix: "",
+          suffix: "",
+        },
+      },
+    ];
+  }
   inputs.push(sent);
   await page.goto("/");
   await page
@@ -69,6 +104,238 @@ async function prepare(
   await settleTransitions(page);
   return { resource, message, title, fixture, sent };
 }
+
+async function setFixtureViewport(page: Page, width: number, zoom: number) {
+  await page.setViewportSize({ width, height: 960 });
+  await page.locator(".app").evaluate((element, zoom) => {
+    const app = element as HTMLElement;
+    app.style.zoom = String(zoom);
+    app.style.height = zoom === 1 ? "" : `calc(100dvh / ${zoom})`;
+  }, zoom);
+  // CSS zoom leaves window.innerWidth/media queries unscaled, unlike native
+  // browser zoom. Use the real sidebar control for this narrow work surface,
+  // rather than accepting an impossible expanded 200px sidebar in 325px.
+  const sidebarToggle = page.getByRole("button", {
+    name: zoom === 2 ? "隐藏侧边栏" : "显示侧边栏",
+    exact: true,
+  });
+  if (await sidebarToggle.isVisible()) await sidebarToggle.click();
+  await settleTransitions(page);
+}
+
+test("选文在正文上方，关联资源独立放在正文下方；亮暗窄窗和缩放不混用位置", async ({
+  page,
+}, info) => {
+  const { message, resource } = await prepare(page, undefined, true);
+  const quotes = message.locator(":scope > .sent-text-quotes");
+  const body = message.locator(":scope > p");
+  const footer = message.getByRole("group", { name: "关联资源", exact: true });
+  await expect(footer).toHaveCount(1);
+  await expect(footer.locator(".message-object-link")).toHaveCount(1);
+  await expect(resource.locator(".message-resource-prefix")).toHaveText("关联");
+  for (const appearance of ["亮色", "暗色"]) {
+    const settings = await openSettings(page, "外观");
+    await settings
+      .getByRole("button", { name: appearance, exact: true })
+      .click();
+    await page.keyboard.press("Escape");
+    for (const zoom of [1, 2]) {
+      await setFixtureViewport(page, zoom === 1 ? 1440 : 650, zoom);
+      await openInput(page);
+      await message.scrollIntoViewIfNeeded();
+      await settleTransitions(page);
+      const q = (await quotes.boundingBox())!;
+      const b = (await body.boundingBox())!;
+      const f = (await footer.boundingBox())!;
+      const m = (await message.boundingBox())!;
+      await info.attach(`resource-layout-${appearance}-${zoom}.json`, {
+        contentType: "application/json",
+        body: JSON.stringify(
+          await message.evaluate((element) =>
+            [element, ...element.querySelectorAll("*")].map((node) => {
+              const style = getComputedStyle(node);
+              const rect = node.getBoundingClientRect();
+              return {
+                className: node.className,
+                width: rect.width,
+                x: rect.x,
+                y: rect.y,
+                scrollWidth: node.scrollWidth,
+                clientWidth: node.clientWidth,
+                font: style.font,
+                position: style.position,
+                overflow: style.overflow,
+              };
+            }),
+          ),
+          null,
+          2,
+        ),
+      });
+      expect(q.y + q.height).toBeLessThanOrEqual(b.y + 1);
+      expect(f.y).toBeGreaterThanOrEqual(b.y + b.height + 4 * zoom);
+      expect(f.y + f.height).toBeLessThanOrEqual(m.y + m.height - 4 * zoom);
+      expect(f.x).toBeGreaterThanOrEqual(m.x);
+      expect(f.x + f.width).toBeLessThanOrEqual(m.x + m.width);
+      await expect(footer.locator(".sent-text-quote,blockquote")).toHaveCount(
+        0,
+      );
+      await expect(resource).not.toHaveAttribute("data-quotable");
+      expect(
+        await message.evaluate(
+          (element) => element.scrollWidth - element.clientWidth,
+        ),
+      ).toBeLessThanOrEqual(2);
+      await message.screenshot({
+        path: info.outputPath(`quote-body-resource-${appearance}-${zoom}.png`),
+      });
+    }
+    await setFixtureViewport(page, 1440, 1);
+  }
+});
+
+test("对象交流的范围与操作行始终在消息边框内，窄窗200%仍可命中且不动草稿", async ({
+  page,
+}, info) => {
+  const { resource, fixture, sent, message } = await prepare(page);
+  const sends: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /\/api\/platform\/messages(?:\?|$)/.test(request.url())
+    )
+      sends.push(request.url());
+  });
+  sent.body += "\nTEST 消息滚动时不能穿过范围与操作行。".repeat(24);
+  await fixture.refresh();
+  await expect(message).toContainText(sent.body);
+  await resource.click();
+  // Reading is an explicit remembered selection for this work surface. Opening
+  // a resource never selects it implicitly; set it through the real control.
+  await openExchangeReading(page);
+  const input = page.getByLabel("AI 输入内容");
+  await input.fill("TEST 仅核验布局，原草稿不发送。");
+  await composerAction(page, "固定输入框");
+  const panel = page.locator(".exchange-panel");
+  const history = panel.locator(":scope > .conversation");
+  const scope = panel.locator(".conversation-scope");
+  const controls = panel.getByRole("group", {
+    name: "交流面板操作",
+    exact: true,
+  });
+  const layout = [];
+  for (const appearance of ["亮色", "暗色"]) {
+    const settings = await openSettings(page, "外观");
+    await settings
+      .getByRole("button", { name: appearance, exact: true })
+      .click();
+    await page.keyboard.press("Escape");
+    for (const [width, zoom] of [
+      [1440, 1],
+      [760, 1],
+      [650, 2],
+    ] as const) {
+      await setFixtureViewport(page, width, zoom);
+      await expect(scope).toBeVisible();
+      await history.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      const h = (await history.boundingBox())!;
+      const s = (await scope.boundingBox())!;
+      const c = (await controls.boundingBox())!;
+      await info.attach(`header-layout-${appearance}-${width}-${zoom}.json`, {
+        contentType: "application/json",
+        body: JSON.stringify(
+          {
+            h,
+            s,
+            c,
+            details: await panel.evaluate((element) =>
+              [
+                element,
+                ...element.querySelectorAll(
+                  ".exchange-panel-header,.conversation-scope,.exchange-view-tools,.exchange-view-tools > button",
+                ),
+              ].map((node) => {
+                const style = getComputedStyle(node);
+                const rect = node.getBoundingClientRect();
+                return {
+                  className: node.className,
+                  width: rect.width,
+                  x: rect.x,
+                  y: rect.y,
+                  font: style.font,
+                  controlsWidth: style.getPropertyValue(
+                    "--exchange-controls-width",
+                  ),
+                  padding: style.padding,
+                };
+              }),
+            ),
+          },
+          null,
+          2,
+        ),
+      });
+      for (const box of [s, c]) {
+        expect(box.y).toBeGreaterThanOrEqual(h.y + zoom);
+        expect(box.y + box.height).toBeLessThanOrEqual(h.y + h.height - zoom);
+        expect(box.x).toBeGreaterThanOrEqual(h.x + zoom);
+        expect(box.x + box.width).toBeLessThanOrEqual(h.x + h.width - zoom);
+      }
+      expect(s.x + s.width).toBeLessThanOrEqual(c.x);
+      expect(
+        Math.abs(s.y + s.height / 2 - (c.y + c.height / 2)),
+      ).toBeLessThanOrEqual(4 * zoom);
+      const hits = await panel.evaluate((element) =>
+        [
+          ...element.querySelectorAll<HTMLButtonElement>(
+            ".conversation-scope,.exchange-view-tools > button",
+          ),
+        ]
+          .filter((button) => button.getClientRects().length)
+          .map((button) => {
+            const rect = button.getBoundingClientRect();
+            const hit = document.elementFromPoint(
+              rect.x + rect.width / 2,
+              rect.y + 2,
+            );
+            return {
+              label: button.getAttribute("aria-label") ?? button.textContent,
+              hit: !!hit && button.contains(hit),
+            };
+          }),
+      );
+      for (const hit of hits) expect(hit.hit, String(hit.label)).toBe(true);
+      await scope.click();
+      await expect(scope).toHaveText("仅看当前对象的交流");
+      await scope.press("Enter");
+      await expect(scope).toHaveText("查看全部交流");
+      await expect(input).toHaveValue("TEST 仅核验布局，原草稿不发送。");
+      await page.mouse.move(0, 0);
+      await panel.screenshot({
+        path: info.outputPath(
+          `exchange-header-${appearance}-${width}-${zoom}.png`,
+        ),
+      });
+      layout.push({
+        appearance,
+        width,
+        zoom,
+        reading: h,
+        scope: s,
+        controls: c,
+        hits,
+      });
+    }
+    await setFixtureViewport(page, 1440, 1);
+  }
+  expect(sends).toEqual([]);
+  await info.attach("inside-reading-header.json", {
+    contentType: "application/json",
+    body: JSON.stringify(layout, null, 2),
+  });
+});
 
 async function metrics(resource: Locator) {
   return resource.evaluate((element) => {
@@ -170,6 +437,10 @@ test("关联资源不是选文：类型图标、次级标题与版本同行，�
         0,
       );
       const normal = await metrics(resource);
+      const body = (await message.locator(":scope > p").boundingBox())!;
+      expect((await resource.boundingBox())!.y).toBeGreaterThanOrEqual(
+        body.y + body.height,
+      );
       expect(normal.background[3]).toBe(0);
       expect(normal.border).toBe("0px");
       expect(normal.shadow).toBe("none");

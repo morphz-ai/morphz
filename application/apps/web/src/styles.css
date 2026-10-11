@@ -2874,6 +2874,17 @@ kbd {
   font-size: 14px;
   line-height: 1.7;
 }
+.message-resources {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  margin-top: 10px;
+}
+.message-resources:first-child {
+  margin-top: 0;
+}
 .app .conversation .message-object-link {
   display: flex;
   align-items: center;
@@ -2881,7 +2892,8 @@ kbd {
   width: fit-content;
   max-width: 100%;
   min-height: 24px;
-  margin-bottom: 8px;
+  min-width: 0;
+  margin: 0;
   padding: 2px 4px;
   border: 0;
   border-radius: 4px;
@@ -2893,6 +2905,9 @@ kbd {
   font-weight: 400;
   line-height: 1.5;
   text-align: left;
+}
+.message-resource-prefix {
+  flex: 0 0 auto;
 }
 .message-resource-icon {
   display: inline-flex;

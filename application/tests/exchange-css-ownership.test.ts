@@ -194,7 +194,62 @@ function partition(layout: boolean) {
     return declarations.length ? [{ ...rule, declarations }] : [];
   });
 }
-const expectedResizeLayout = partition(true);
+// User-reported correction, not a new archive regenerated from production:
+// the scope row moves inside reading, reserves the existing control clearance,
+// and leaves its transparent hit surface available to the original resize edge.
+function insideReadingHeader(rule: Signature): Signature {
+  const declaration = (property: string, value: string): Declaration => ({
+    property,
+    value,
+    important: false,
+  });
+  if (rule.selector === key(".exchange-panel-header") && !rule.context.length)
+    return {
+      ...rule,
+      declarations: [
+        declaration("position", "absolute"),
+        declaration("top", "8px"),
+        declaration("left", "0"),
+        declaration("right", "0"),
+        declaration("pointer-events", "none"),
+        ...rule.declarations.filter((item) => item.property !== "padding"),
+        declaration("min-height", "28px"),
+        declaration("padding", "0 12px"),
+      ],
+    };
+  if (
+    rule.selector === key(".exchange-scope .conversation-scope") &&
+    !rule.context.length
+  )
+    return {
+      ...rule,
+      declarations: [
+        declaration("position", "relative"),
+        declaration("z-index", "6"),
+        declaration("pointer-events", "auto"),
+        ...rule.declarations,
+      ],
+    };
+  if (
+    rule.selector ===
+    key(
+      ".exchange-panel:has(.exchange-panel-header .conversation-scope) > .conversation",
+    )
+  )
+    return {
+      ...rule,
+      declarations: [
+        declaration("padding-top", rule.context.length ? "60px" : "44px"),
+      ],
+    };
+  if (
+    rule.selector ===
+    key(".exchange-panel:has(> .exchange-resizer) > .exchange-panel-header")
+  )
+    return { ...rule, declarations: [declaration("padding-top", "0")] };
+  return rule;
+}
+const expectedResizeLayout = partition(true).map(insideReadingHeader);
 function frozenSignature(rule: FrozenRule): Signature {
   return {
     selector: rule[2],
@@ -207,47 +262,71 @@ function frozenSignature(rule: FrozenRule): Signature {
   };
 }
 const archivedLayout = selectedFrameRules.map(frozenSignature);
+const readingHeaderSurface: Signature = {
+  selector: key(".exchange-panel-header::before"),
+  context: [],
+  declarations: [
+    ["position", "absolute"],
+    ["z-index", "4"],
+    ["top", "-7px"],
+    ["right", "1px"],
+    ["bottom", "-8px"],
+    ["left", "1px"],
+    ["pointer-events", "auto"],
+  ].map(([property, value]) => ({
+    property: property!,
+    value: value!,
+    important: false,
+  })),
+};
 // The independently fixed archive remains unchanged. The already shipped
 // 91171208 independent-pin correction added one control per reading state and
 // moved compact clearance to the container's consuming children. Keep those
 // four exact approved deltas, not a baseline regenerated from current source.
-const expectedLayout = archivedLayout.flatMap((rule) => {
-  if (
-    rule.selector === ".composer-dock" &&
-    rule.context.at(-1) === "@container exchange (max-width: 620px)" &&
-    rule.declarations.length === 1 &&
-    rule.declarations[0]!.property === "--exchange-controls-width"
-  )
-    return [
-      {
-        ...rule,
-        selector: key(
-          ".exchange-panel[data-open] > :is(.composer-dock, .exchange-panel-header)",
-        ),
-      },
-    ];
-  if (
-    rule.selector === ".exchange-panel[data-open]" &&
-    (rule.context.length === 0 ||
-      JSON.stringify(rule.context) ===
-        JSON.stringify(["@media (pointer: coarse)"]))
-  )
-    return [
-      rule,
-      {
-        selector: key(".exchange-panel:has(> .conversation)[data-open]"),
-        context: rule.context,
-        declarations: [
-          {
-            property: "--exchange-controls-width",
-            value: rule.context.length === 0 ? "164px" : "228px",
-            important: false,
-          },
-        ],
-      },
-    ];
-  return [rule];
-});
+const expectedLayout = archivedLayout
+  .flatMap((rule) => {
+    if (
+      rule.selector === ".composer-dock" &&
+      rule.context.at(-1) === "@container exchange (max-width: 620px)" &&
+      rule.declarations.length === 1 &&
+      rule.declarations[0]!.property === "--exchange-controls-width"
+    )
+      return [
+        {
+          ...rule,
+          selector: key(
+            ".exchange-panel[data-open] > :is(.composer-dock, .exchange-panel-header)",
+          ),
+        },
+      ];
+    if (
+      rule.selector === ".exchange-panel[data-open]" &&
+      (rule.context.length === 0 ||
+        JSON.stringify(rule.context) ===
+          JSON.stringify(["@media (pointer: coarse)"]))
+    )
+      return [
+        rule,
+        {
+          selector: key(".exchange-panel:has(> .conversation)[data-open]"),
+          context: rule.context,
+          declarations: [
+            {
+              property: "--exchange-controls-width",
+              value: rule.context.length === 0 ? "164px" : "228px",
+              important: false,
+            },
+          ],
+        },
+      ];
+    return [rule];
+  })
+  .map(insideReadingHeader)
+  .flatMap((rule) =>
+    rule.selector === key(".exchange-panel-header") && !rule.context.length
+      ? [rule, readingHeaderSurface]
+      : [rule],
+  );
 const expectedVisual = partition(false);
 function decodedSelector(selector: string) {
   return selector.replace(
@@ -339,10 +418,31 @@ for (const tuple of retainedFrameRules) {
   signatures.push(frozenSignature(tuple));
   expectedRetained.set(tuple[0], signatures);
 }
+const readingHeaderPaint: Signature = {
+  selector: key(".exchange-panel-header::before"),
+  context: [],
+  declarations: [
+    { property: "content", value: '""', important: false },
+    { property: "border-radius", value: "15px 15px 0 0", important: false },
+    { property: "background", value: "var(--paper)", important: false },
+  ],
+};
+expectedRetained.set(
+  visualFile,
+  expectedRetained
+    .get(visualFile)!
+    .flatMap((rule) =>
+      rule.selector === key(".exchange-scope .conversation-scope") &&
+      !rule.context.length
+        ? [rule, readingHeaderPaint]
+        : [rule],
+    ),
+);
 
 // Preserve the actual competing rules, including the higher-specificity shared
 // focus rule. Its +2px offset wins over the local -2px; this migration must not
-// accidentally "fix" that existing appearance or move header padding wholesale.
+// accidentally change that focus appearance. The fixed old header values remain
+// below; only the explicitly reviewed inside-reading deltas apply today.
 const legacyCompetitors = `
 .app :is(button, a, summary, [tabindex]):focus-visible { outline-offset: 2px; }
 .exchange-panel-header {
@@ -362,6 +462,10 @@ const legacyCompetitors = `
 }
 `;
 const competitorRules = rules(postcss.parse(legacyCompetitors));
+const currentCompetitorRules = [
+  competitorRules[0]!,
+  ...competitorRules.slice(1).map(insideReadingHeader),
+];
 const competitorSelectors = new Set(
   competitorRules.map((rule) => rule.selector),
 );
@@ -498,7 +602,7 @@ function violations(sources: Sources) {
       [...rules(visual), ...rules(layout)].filter((rule) =>
         competitorSelectors.has(rule.selector),
       ),
-      competitorRules,
+      currentCompetitorRules,
     );
   });
 
@@ -686,7 +790,7 @@ function cloneSources(): Sources {
   };
 }
 
-test("交流伸缩的首个 CSS owner 精确保存原23项几何与9项绘制声明", () => {
+test("交流伸缩保留原23项几何与9项绘制，仅按批准的内部标题修正顶间距", () => {
   assert.deepEqual(violations(production), []);
   assert.deepEqual(
     rules(postcss.parse(production.css.get(layoutFile)!)).filter((rule) =>
@@ -728,7 +832,7 @@ test("交流伸缩的首个 CSS owner 精确保存原23项几何与9项绘制声
       }),
     };
   });
-  assert.deepEqual(recomposed, legacyRules);
+  assert.deepEqual(recomposed, legacyRules.map(insideReadingHeader));
 });
 
 type Weight = [number, number, number];
@@ -782,22 +886,24 @@ function winner(
   });
   return chosen?.value;
 }
-test("拆分前后保持标题longhand及共享焦点的原竞争结果", () => {
+test("内部标题只修正顶间距，保留右侧控制留白及共享焦点的竞争结果", () => {
   const before = [...competitorRules, ...legacyRules];
   const after = [
     ...rules(postcss.parse(production.css.get(visualFile)!)),
     ...rules(postcss.parse(production.css.get(layoutFile)!)),
   ];
-  for (const [target, property, value] of [
-    ["header", "padding-top", "14px"],
-    ["header", "padding-right", "calc(var(--exchange-controls-width) + 24px)"],
-    ["focus", "outline-offset", "2px"],
+  for (const [target, property, oldValue, value] of [
+    ["header", "padding-top", "14px", "0"],
+    [
+      "header",
+      "padding-right",
+      "calc(var(--exchange-controls-width) + 24px)",
+      "calc(var(--exchange-controls-width) + 24px)",
+    ],
+    ["focus", "outline-offset", "2px", "2px"],
   ] as const) {
-    assert.equal(winner(before, target, property), value);
-    assert.equal(
-      winner(after, target, property),
-      winner(before, target, property),
-    );
+    assert.equal(winner(before, target, property), oldValue);
+    assert.equal(winner(after, target, property), value);
   }
 });
 
@@ -862,7 +968,7 @@ test("AST所有权门禁拒绝几何、绘制、上下文与第二owner的真实
       (s) =>
         s.css.set(
           layoutFile,
-          s.css.get(layoutFile)!.replace("padding-top: 14px", "padding: 14px"),
+          s.css.get(layoutFile)!.replace("padding-top: 0", "padding: 0"),
         ),
       "layout-exact-geometry",
     ],
@@ -985,11 +1091,12 @@ test("AST所有权门禁拒绝几何、绘制、上下文与第二owner的真实
     [
       "changed-header-base",
       (s) =>
-        s.css.set(
+        changeDeclaration(
+          s,
           layoutFile,
-          s.css
-            .get(layoutFile)!
-            .replace("padding: 8px 12px 0", "padding: 8px 20px 0"),
+          ".exchange-panel-header",
+          "padding",
+          "0 20px",
         ),
       "original-competitors",
     ],
@@ -1174,16 +1281,16 @@ function changeDeclaration(
   sources.css.set(file, root.toString());
 }
 
-test("完整frame owner保留旧56规则144声明及精确独立固定修正，不冒领已知例外", () => {
+test("完整frame owner保留旧56规则144声明及独立固定、内部标题的精确修正", () => {
   assert.equal(archivedLayout.length, 56);
   assert.equal(
     archivedLayout.reduce((sum, rule) => sum + rule.declarations.length, 0),
     144,
   );
-  assert.equal(expectedLayout.length, 58);
+  assert.equal(expectedLayout.length, 59);
   assert.equal(
     expectedLayout.reduce((sum, rule) => sum + rule.declarations.length, 0),
-    146,
+    162,
   );
   assert.deepEqual(expectedLayout.slice(-4), expectedResizeLayout);
   assert.equal(retainedFrameRules.length, 36);
@@ -1219,6 +1326,31 @@ test("frame有限反例拒绝几何重归属、条件包裹、已知paint与竞�
     (sources: Sources) =>
       changeDeclaration(sources, file, selector, property, value, context);
   const fixtures: [string, (sources: Sources) => void, string][] = [
+    [
+      "scope-row-outside-reading-card",
+      declaration(layoutFile, ".exchange-panel-header", "position", "relative"),
+      "layout-exact-geometry",
+    ],
+    [
+      "scope-row-resize-hit-interception",
+      declaration(
+        layoutFile,
+        ".exchange-panel-header",
+        "pointer-events",
+        "auto",
+      ),
+      "layout-exact-geometry",
+    ],
+    [
+      "scope-row-reading-clearance-regression",
+      declaration(
+        layoutFile,
+        ".exchange-panel:has(.exchange-panel-header .conversation-scope)>.conversation",
+        "padding-top",
+        "16px",
+      ),
+      "layout-exact-geometry",
+    ],
     [
       "reading-control-clearance",
       declaration(

@@ -331,6 +331,13 @@
 .exchange-scope .conversation-scope {
   font-size: 12px;
 }
+.exchange-panel-header::before {
+  /* Cover scrolling messages beneath the fixed reading tools, never the work
+     canvas outside the reading card. The resize handle remains above this row. */
+  content: "";
+  border-radius: 15px 15px 0 0;
+  background: var(--paper);
+}
 .exchange-panel > .conversation {
   border: 1px solid var(--line);
   border-radius: 16px;
