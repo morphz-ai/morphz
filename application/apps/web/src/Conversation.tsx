@@ -19,6 +19,7 @@ import {
 import { actorName } from "./client.js";
 import {
   hasUnreadReplies,
+  focusedInputs,
   projectConversationReadScope,
   replyReceipts,
   type ReadReplies,
@@ -148,6 +149,28 @@ export function Conversation({
   const focused =
     !!(focusedArtifactId || focusedApplicationId || focusedCognitiveObject) &&
     !allHistory;
+  // The choice is useful only when it changes readable history. Keep this
+  // independent of the selected choice: selecting all must not remove its
+  // return path. Ownership remains the same as the existing read projector.
+  const objectInputIds = new Set(
+    focusedInputs(allInputs, client.boot!.outputs, {
+      artifactId: focusedArtifactId,
+      applicationId: focusedApplicationId,
+      cognitiveObject: focusedCognitiveObject,
+    }).map((input) => input.id),
+  );
+  const hasOtherHistory =
+    !!(focusedArtifactId || focusedApplicationId || focusedCognitiveObject) &&
+    (allInputs.some((input) => !objectInputIds.has(input.id)) ||
+      messages.some(
+        (message) =>
+          (!message.inputId || !objectInputIds.has(message.inputId)) &&
+          (!onInspect ||
+            message.kind === "reply" ||
+            message.kind === "error") &&
+          ((message.kind !== "reply" && message.kind !== "error") ||
+            message.text.trim()),
+      ));
   const readScope = projectConversationReadScope({
     inputs: allInputs,
     messages,
@@ -393,21 +416,31 @@ export function Conversation({
           {earlierError}
         </p>
       )}
-      {(focusedArtifactId || focusedApplicationId || focusedCognitiveObject) &&
+      {hasOtherHistory &&
         toolbarTarget &&
         createPortal(
-          <button
+          <div
             className="conversation-scope"
-            onClick={() => setAllHistory(!allHistory)}
+            role="group"
+            aria-label="交流范围"
           >
-            {allHistory
-              ? focusedCognitiveObject
-                ? "仅看当前原件的交流"
-                : focusedArtifactId
-                  ? "仅看当前对象的交流"
-                  : "仅看当前应用的交流"
-              : "查看全部交流"}
-          </button>,
+            <button
+              type="button"
+              aria-pressed={!allHistory}
+              onClick={() => setAllHistory(false)}
+            >
+              {focusedArtifactId || focusedCognitiveObject
+                ? "当前作品"
+                : "当前应用"}
+            </button>
+            <button
+              type="button"
+              aria-pressed={allHistory}
+              onClick={() => setAllHistory(true)}
+            >
+              全部交流
+            </button>
+          </div>,
           toolbarTarget,
         )}
       {timeline.length ? (

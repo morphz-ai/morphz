@@ -320,8 +320,14 @@ test(
     await page
       .locator("dialog")
       .evaluate((element) => (element as HTMLDialogElement).show());
-    await page.locator("#lane-fixed .conversation-scope").click();
-    await page.locator("#lane-production .conversation-scope").click();
+    await page
+      .locator("#lane-fixed .conversation-scope")
+      .getByRole("button", { name: "全部交流", exact: true })
+      .click();
+    await page
+      .locator("#lane-production .conversation-scope")
+      .getByRole("button", { name: "全部交流", exact: true })
+      .click();
     await page.waitForSelector(
       '#lane-production .human-message[data-input-id="input-B"]',
     );

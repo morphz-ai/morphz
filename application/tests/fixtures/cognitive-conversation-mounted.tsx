@@ -84,19 +84,62 @@ const client = {
   },
 } as unknown as WorkspaceClient;
 let select: (key: string) => void;
+let selectKind: (
+  kind: "original" | "artifact" | "application" | "none",
+) => void;
+let history: (onlyCurrent: boolean, extra?: "reply" | "progress") => void;
 function Frame() {
   const [focus, setFocus] = useState(first);
+  const [kind, setKind] = useState<
+    "original" | "artifact" | "application" | "none"
+  >("original");
+  const [onlyCurrent, setOnlyCurrent] = useState(false);
+  const [extra, setExtra] = useState<"reply" | "progress" | undefined>();
   const [toolbar, setToolbar] = useState<HTMLElement | null>(null);
   select = (key) => setFocus(key === "B" ? second : key === "V2" ? v2 : first);
+  selectKind = setKind;
+  history = (only, extra) => {
+    setOnlyCurrent(only);
+    setExtra(extra);
+  };
+  const visibleInputs = (onlyCurrent ? inputs.slice(0, 2) : inputs).map(
+    (input, index) => ({
+      ...input,
+      artifactId:
+        kind === "artifact" ? (index < 2 ? "object-A" : "object-B") : null,
+      application: {
+        instanceId: index < 2 ? "instance-one" : "instance-other",
+        id: "author.notes",
+        version: "1.0.0",
+        harness: null,
+      },
+    }),
+  );
+  const visibleIds = new Set(visibleInputs.map((input) => input.id));
+  const visibleMessages = messages.filter((message) =>
+    visibleIds.has(message.inputId!),
+  );
+  if (extra)
+    visibleMessages.push({
+      ...viewportReply(
+        "unattributed",
+        extra === "reply"
+          ? "Unattributed readable reply"
+          : "Hidden execution progress",
+      ),
+      inputId: null,
+      kind: extra,
+    });
+  state.inputs = visibleInputs;
   return (
     <main>
       <header ref={setToolbar} />
       <input id="composer" defaultValue="Unsent draft" />
       <Conversation
-        inputs={inputs}
+        inputs={visibleInputs}
         state={state}
         runtime={runtime}
-        messages={messages}
+        messages={visibleMessages}
         streamConnected={false}
         seenReplies={{}}
         onRead={(receipts) => events.push(["read", receipts])}
@@ -105,13 +148,16 @@ function Frame() {
           throw Error("Unexpected retry");
         }}
         client={client}
-        onOpen={() => {
-          throw Error("Cognitive object must not use builtin opening");
-        }}
+        onOpen={(...args) => events.push(["builtin-open", ...args])}
         onOpenCognitiveObject={(value) => events.push(["open", value])}
         positions={positions}
         revealInputId={null}
-        focusedCognitiveObject={focus}
+        focusedCognitiveObject={kind === "original" ? focus : undefined}
+        focusedArtifactId={kind === "artifact" ? "object-A" : undefined}
+        focusedApplicationId={
+          kind === "application" ? "instance-one" : undefined
+        }
+        onInspect={(inputId) => events.push(["inspect", inputId])}
         toolbarTarget={toolbar}
         onFocusComposer={() => document.getElementById("composer")?.focus()}
       />
@@ -129,6 +175,12 @@ flushSync(() =>
 Reflect.set(window, "cognitiveConversationFixture", {
   select(key: string) {
     flushSync(() => select(key));
+  },
+  kind(kind: "original" | "artifact" | "application" | "none") {
+    flushSync(() => selectKind(kind));
+  },
+  history(onlyCurrent: boolean, extra?: "reply" | "progress") {
+    flushSync(() => history(onlyCurrent, extra));
   },
   scroll(top: number) {
     const el = document.querySelector<HTMLElement>(".conversation")!;

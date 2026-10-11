@@ -431,7 +431,7 @@ test("分别停止并发回复，等待确认不冒充取消，失败可重试�
   // A persisted workbench application can focus its own object history.
   // Inspect the shared conversation before asserting cross-surface controls.
   const allHistory = page.getByRole("button", {
-    name: "查看全部交流",
+    name: "全部交流",
     exact: true,
   });
   if (await allHistory.isVisible()) await allHistory.click();

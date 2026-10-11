@@ -1,4 +1,9 @@
-import { test, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
+import {
+  test,
+  mockPlatformConversation,
+} from "./platform-conversation-fixture.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import { randomUUID } from "node:crypto";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
@@ -35,6 +40,32 @@ test("选区批注使用同一输入但不发送 Agent；对象交流可以切�
     title,
     markdown: "这段合成正文用于验证选区操作。",
   })) as { contentId: string };
+  // Explicit presentation history, without submitting a test request to a model.
+  const history: import("../apps/web/src/platform-client.js").PlatformHistory["inputs"] =
+    [];
+  const fixture = await mockPlatformConversation(
+    page,
+    () => ({
+      inputs: history,
+      runtime: { ...disconnectedRuntime, configured: true },
+    }),
+    source,
+  );
+  const related = fixture.input(
+    "annotation-object-history",
+    "TEST 当前作品的交流",
+    "2026-10-11T00:20:00.000Z",
+  );
+  related.artifactId = created.contentId;
+  related.artifactRevision = 1;
+  history.push(
+    related,
+    fixture.input(
+      "annotation-other-history",
+      "TEST 其他交流",
+      "2026-10-11T00:19:00.000Z",
+    ),
+  );
   const beforeDeliveries = await deliveryIds(source);
   await page.goto("/");
   await page
@@ -75,12 +106,21 @@ test("选区批注使用同一输入但不发送 Agent；对象交流可以切�
   expect(annotations[0]?.annotation.body).toBe("这是我自己的批注。");
   await openExchangeReading(page);
   await expect(
-    page.getByRole("button", { name: "查看全部交流" }),
+    page.getByRole("button", { name: "全部交流", exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "查看全部交流" }).click();
   await expect(
-    page.getByRole("button", { name: "仅看当前对象的交流" }),
-  ).toBeVisible();
+    page.getByRole("button", { name: "当前作品", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("log", { name: "对话消息" })).not.toContainText(
+    "TEST 其他交流",
+  );
+  await page.getByRole("button", { name: "全部交流", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "全部交流", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("log", { name: "对话消息" })).toContainText(
+    "TEST 其他交流",
+  );
 });
 
 test("截图附加后保存为未发送消息，不创建内容对象", async ({ page }) => {

@@ -114,7 +114,7 @@
   --exchange-controls-width: 164px;
 }
 .exchange-panel-header {
-  /* Local floating scope, not a painted toolbar. Only its button receives
+  /* Local floating scope, not a painted toolbar. Only its choices receive
      input; the unused width remains readable and selectable underneath. */
   position: absolute;
   top: 8px;
@@ -140,12 +140,20 @@
   position: relative;
   z-index: 6;
   pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   max-width: 100%;
   margin: 0;
-  padding: 4px 8px;
+  padding: 2px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+.exchange-scope .conversation-scope > button {
+  min-height: 24px;
+  min-width: 0;
+  margin: 0;
+  padding: 0 8px;
+  flex: 1;
 }
 .exchange-panel > .conversation {
   width: 100%;
@@ -217,6 +225,9 @@
   }
 }
 @media (pointer: coarse) {
+  .exchange-scope .conversation-scope > button {
+    min-height: 44px;
+  }
   .exchange-panel[data-open] {
     --exchange-controls-width: 176px;
   }

@@ -117,24 +117,46 @@ test(
       },
     );
     await context.test(
-      "all-history toggle is available for cognitive originals and returns to the original focus",
+      "direct history choices expose the current scope, are idempotent and keep one Session and draft",
       async () => {
+        const scope = page.getByRole("group", {
+          name: "交流范围",
+          exact: true,
+        });
+        const current = scope.getByRole("button", {
+          name: "当前作品",
+          exact: true,
+        });
+        const all = scope.getByRole("button", {
+          name: "全部交流",
+          exact: true,
+        });
+        assert.equal(await scope.getByRole("button").count(), 2);
+        assert.equal(await current.getAttribute("aria-pressed"), "true");
+        assert.equal(await all.getAttribute("aria-pressed"), "false");
+        await current.click();
+        assert.equal(await current.getAttribute("aria-pressed"), "true");
         await page
-          .getByRole("button", { name: "查看全部交流", exact: true })
+          .getByRole("button", { name: "全部交流", exact: true })
           .click();
-        await page
-          .getByRole("button", { name: "仅看当前原件的交流", exact: true })
-          .waitFor();
+        assert.equal(await all.getAttribute("aria-pressed"), "true");
+        assert.equal(await current.getAttribute("aria-pressed"), "false");
         assert.equal(
           await page.locator('[data-message-id="input-foreign"]').count(),
           1,
         );
-        await page
-          .getByRole("button", { name: "仅看当前原件的交流", exact: true })
-          .click();
+        await all.press("Enter");
+        assert.equal(await all.getAttribute("aria-pressed"), "true");
+        await current.press("Space");
+        assert.equal(await current.getAttribute("aria-pressed"), "true");
         assert.equal(
           await page.locator('[data-message-id="input-foreign"]').count(),
           0,
+        );
+        assert.equal(await page.getByRole("menu").count(), 0);
+        assert.equal(
+          await page.locator("#composer").inputValue(),
+          "Unsent draft",
         );
       },
     );
@@ -197,6 +219,121 @@ test(
         assert.equal(
           await page.locator("#composer").inputValue(),
           "Unsent draft",
+        );
+      },
+    );
+    await context.test(
+      "the filter is absent without other visible exchanges, including hidden progress; readable unowned history is recoverable",
+      async () => {
+        const history = (extra?: "reply" | "progress") =>
+          page.evaluate(
+            (extra) =>
+              Reflect.get(window, "cognitiveConversationFixture").history(
+                true,
+                extra,
+              ),
+            extra,
+          );
+        await history();
+        assert.equal(
+          await page
+            .getByRole("group", { name: "交流范围", exact: true })
+            .count(),
+          0,
+        );
+        assert.equal(
+          await page.locator('[data-message-id="input-V1"]').count(),
+          1,
+        );
+        await history("progress");
+        assert.equal(
+          await page
+            .getByRole("group", { name: "交流范围", exact: true })
+            .count(),
+          0,
+        );
+        await history("reply");
+        await page
+          .getByRole("button", { name: "全部交流", exact: true })
+          .click();
+        assert.equal(
+          await page.locator('[data-message-id="unattributed"]').count(),
+          1,
+        );
+        await page
+          .getByRole("button", { name: "当前作品", exact: true })
+          .click();
+        assert.equal(
+          await page.locator('[data-message-id="unattributed"]').count(),
+          0,
+        );
+        await page.evaluate(() =>
+          Reflect.get(window, "cognitiveConversationFixture").history(false),
+        );
+      },
+    );
+    await context.test(
+      "builtin objects and application focus have truthful direct scopes, reset on navigation and do not create another conversation",
+      async () => {
+        for (const [kind, label] of [
+          ["artifact", "当前作品"],
+          ["application", "当前应用"],
+        ] as const) {
+          await page.evaluate(
+            (kind) =>
+              Reflect.get(window, "cognitiveConversationFixture").kind(kind),
+            kind,
+          );
+          await settle();
+          const current = page.getByRole("button", {
+            name: label,
+            exact: true,
+          });
+          assert.equal(await current.getAttribute("aria-pressed"), "true");
+          assert.equal(
+            await page.locator('[data-message-id="input-B"]').count(),
+            0,
+          );
+          await page
+            .getByRole("button", { name: "全部交流", exact: true })
+            .click();
+          assert.equal(
+            await page.locator('[data-message-id="input-B"]').count(),
+            1,
+          );
+          await current.click();
+          assert.equal(
+            await page.locator('[data-message-id="input-B"]').count(),
+            0,
+          );
+          assert.equal(
+            await page.locator("#composer").inputValue(),
+            "Unsent draft",
+          );
+          assert.equal(
+            await originalNode.evaluate(
+              (node) => node === document.querySelector(".conversation"),
+            ),
+            true,
+          );
+        }
+        await page.evaluate(() =>
+          Reflect.get(window, "cognitiveConversationFixture").kind("none"),
+        );
+        await settle();
+        assert.equal(
+          await page
+            .getByRole("group", { name: "交流范围", exact: true })
+            .count(),
+          0,
+        );
+        assert.equal(
+          await page.locator('[data-message-id="input-B"]').count(),
+          1,
+        );
+        assert.equal(
+          (await report()).events.some((event) => event[0] === "builtin-open"),
+          false,
         );
       },
     );

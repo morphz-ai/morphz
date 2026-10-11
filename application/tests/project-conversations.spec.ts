@@ -459,7 +459,7 @@ test("首位对话与工作台共享历史，场景草稿可恢复且没有全�
   await openExchangeReading(page);
   // A restored object can scope the workbench history; explicitly inspect the shared history.
   const allExchanges = page.getByRole("button", {
-    name: "查看全部交流",
+    name: "全部交流",
     exact: true,
   });
   if (await allExchanges.isVisible()) await allExchanges.click();

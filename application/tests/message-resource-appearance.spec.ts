@@ -197,7 +197,11 @@ test("选文在正文上方，关联资源独立放在正文下方；亮暗窄�
 test("对象交流仅浮动局部按钮、不铺整行底板；范围在边框内且窄窗200%不动草稿", async ({
   page,
 }, info) => {
-  const { resource, fixture, sent, message } = await prepare(page);
+  const { resource, fixture, sent, message } = await prepare(
+    page,
+    undefined,
+    true,
+  );
   const sends: string[] = [];
   page.on("request", (request) => {
     if (
@@ -337,7 +341,7 @@ test("对象交流仅浮动局部按钮、不铺整行底板；范围在边框�
       const hits = await panel.evaluate((element) =>
         [
           ...element.querySelectorAll<HTMLButtonElement>(
-            ".conversation-scope,.exchange-view-tools > button",
+            ".conversation-scope > button,.exchange-view-tools > button",
           ),
         ]
           .filter((button) => button.getClientRects().length)
@@ -354,10 +358,21 @@ test("对象交流仅浮动局部按钮、不铺整行底板；范围在边框�
           }),
       );
       for (const hit of hits) expect(hit.hit, String(hit.label)).toBe(true);
-      await scope.click();
-      await expect(scope).toHaveText("仅看当前对象的交流");
-      await scope.press("Enter");
-      await expect(scope).toHaveText("查看全部交流");
+      const current = scope.getByRole("button", {
+        name: "当前作品",
+        exact: true,
+      });
+      const all = scope.getByRole("button", { name: "全部交流", exact: true });
+      await expect(current).toHaveAttribute("aria-pressed", "true");
+      await all.click();
+      await expect(all).toHaveAttribute("aria-pressed", "true");
+      await expect(current).toHaveAttribute("aria-pressed", "false");
+      await all.press("Enter");
+      await expect(all).toHaveAttribute("aria-pressed", "true");
+      await current.press("Space");
+      await expect(current).toHaveAttribute("aria-pressed", "true");
+      await expect(all).toHaveAttribute("aria-pressed", "false");
+      await expect(scope.getByRole("button")).toHaveCount(2);
       await expect(input).toHaveValue("TEST 仅核验布局，原草稿不发送。");
       await page.mouse.move(0, 0);
       await panel.screenshot({
@@ -381,6 +396,109 @@ test("对象交流仅浮动局部按钮、不铺整行底板；范围在边框�
   await info.attach("inside-reading-header.json", {
     contentType: "application/json",
     body: JSON.stringify(layout, null, 2),
+  });
+});
+
+test.describe("交流范围直接筛选的触控路径", () => {
+  test.use({ hasTouch: true });
+  test("两项均可直接触控，当前范围不被悬停冒充；窄窗200%保持框内且不改输入关联", async ({
+    page,
+  }, info) => {
+    const { resource } = await prepare(page, undefined, true);
+    await resource.click();
+    await openExchangeReading(page);
+    const input = page.getByLabel("AI 输入内容");
+    await input.fill("TEST 触控筛选保留草稿，不发送");
+    await composerAction(page, "固定输入框");
+    const association = await page
+      .locator(".composer-scope-label")
+      .textContent();
+    const scope = page.getByRole("group", { name: "交流范围", exact: true });
+    const current = scope.getByRole("button", {
+      name: "当前作品",
+      exact: true,
+    });
+    const all = scope.getByRole("button", { name: "全部交流", exact: true });
+    expect(
+      await page.evaluate(() => matchMedia("(pointer: coarse)").matches),
+    ).toBe(true);
+    for (const appearance of ["亮色", "暗色"]) {
+      const settings = await openSettings(page, "外观");
+      await settings
+        .getByRole("button", { name: appearance, exact: true })
+        .click();
+      await page.keyboard.press("Escape");
+      for (const [width, zoom] of [
+        [1440, 1],
+        [760, 1],
+        [650, 2],
+      ] as const) {
+        await setFixtureViewport(page, width, zoom);
+        const reading = (await page.locator(".conversation").boundingBox())!;
+        const tools = (await page
+          .getByRole("group", { name: "交流面板操作", exact: true })
+          .boundingBox())!;
+        const box = (await scope.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(reading.x + zoom);
+        expect(box.x + box.width).toBeLessThanOrEqual(tools.x);
+        expect(box.y + box.height).toBeLessThanOrEqual(
+          reading.y + reading.height - zoom,
+        );
+        for (const button of [current, all]) {
+          const hit = (await button.boundingBox())!;
+          expect(hit.height).toBeGreaterThanOrEqual(44 * zoom);
+          expect(hit.width).toBeGreaterThanOrEqual(44 * zoom);
+          expect(
+            await button.evaluate((button) => {
+              const box = button.getBoundingClientRect();
+              return button.contains(
+                document.elementFromPoint(box.x + box.width / 2, box.y + 2),
+              );
+            }),
+          ).toBe(true);
+        }
+        await all.tap();
+        await expect(all).toHaveAttribute("aria-pressed", "true");
+        await expect(page.locator(".conversation")).toContainText(
+          "TEST 这是被引用的消息正文。",
+        );
+        await expect(page.locator(".conversation .human-message")).toHaveCount(
+          2,
+        );
+        await settleTransitions(page);
+        const selectedSurface = await all.evaluate(
+          (button) => getComputedStyle(button).backgroundColor,
+        );
+        await current.hover();
+        await settleTransitions(page);
+        await expect(current).toHaveAttribute("aria-pressed", "false");
+        expect(
+          await all.evaluate(
+            (button) => getComputedStyle(button).backgroundColor,
+          ),
+        ).toBe(selectedSurface);
+        await current.tap();
+        await expect(current).toHaveAttribute("aria-pressed", "true");
+        await expect(page.locator(".conversation .human-message")).toHaveCount(
+          1,
+        );
+        await expect(input).toHaveValue("TEST 触控筛选保留草稿，不发送");
+        await expect(page.locator(".composer-scope-label")).toHaveText(
+          association!,
+        );
+        await expect(page.getByRole("menu")).toHaveCount(0);
+        await page.mouse.move(0, 0);
+        await page.locator(".exchange-panel").screenshot({
+          path: info.outputPath(
+            `scope-touch-${appearance}-${width}-${zoom}.png`,
+          ),
+        });
+      }
+      await setFixtureViewport(page, 1440, 1);
+    }
+    await composerAction(page, "收起交流记录");
+    await expect(scope).toHaveCount(0);
+    await expect(input).toHaveValue("TEST 触控筛选保留草稿，不发送");
   });
 });
 

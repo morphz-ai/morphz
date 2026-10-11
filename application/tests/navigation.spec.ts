@@ -41,9 +41,10 @@ test("工作台与项目拥有独立空间；白净画布、应用恢复、对�
         .getByLabel(`输入关联：${label}文档`, { exact: true }),
     ).toContainText(label + "文档");
     await expect(
-      page
-        .getByRole("log", { name: "对话消息" })
-        .getByRole("button", { name: `${label}文档 · v1`, exact: true }),
+      page.getByRole("log", { name: "对话消息" }).getByRole("button", {
+        name: `打开关联资源：${label}文档 · v1`,
+        exact: true,
+      }),
     ).toBeVisible();
     await expect(page.getByRole("log", { name: "对话消息" })).toContainText(
       label + " 的对象消息",
@@ -103,7 +104,7 @@ test("工作台与项目拥有独立空间；白净画布、应用恢复、对�
   await expect(
     page.locator(".human-message").filter({ hasText: "导航乙 的对象消息" }),
   ).toHaveCount(0);
-  await page.getByRole("button", { name: "查看全部交流", exact: true }).click();
+  await page.getByRole("button", { name: "全部交流", exact: true }).click();
   await expect(
     page.locator(".human-message").filter({ hasText: "导航乙 的对象消息" }),
   ).toHaveCount(1);

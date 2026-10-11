@@ -227,7 +227,16 @@ function insideReadingHeader(rule: Signature): Signature {
         declaration("position", "relative"),
         declaration("z-index", "6"),
         declaration("pointer-events", "auto"),
-        ...rule.declarations,
+        declaration("display", "inline-flex"),
+        declaration("align-items", "center"),
+        declaration("gap", "2px"),
+        ...rule.declarations.flatMap((item) =>
+          item.property === "padding"
+            ? [declaration("padding", "2px")]
+            : ["overflow", "text-overflow"].includes(item.property)
+              ? []
+              : [item],
+        ),
       ],
     };
   if (
@@ -304,7 +313,48 @@ const expectedLayout = archivedLayout
       ];
     return [rule];
   })
-  .map(insideReadingHeader);
+  .map(insideReadingHeader)
+  .flatMap((rule) => {
+    // Reviewed direct-choice internals; not a new production-derived archive.
+    const button = key(".exchange-scope .conversation-scope > button");
+    const declaration = (property: string, value: string): Declaration => ({
+      property,
+      value,
+      important: false,
+    });
+    if (
+      rule.selector === key(".exchange-scope .conversation-scope") &&
+      !rule.context.length
+    )
+      return [
+        rule,
+        {
+          selector: button,
+          context: [],
+          declarations: [
+            declaration("min-height", "24px"),
+            declaration("min-width", "0"),
+            declaration("margin", "0"),
+            declaration("padding", "0 8px"),
+            declaration("flex", "1"),
+          ],
+        },
+      ];
+    if (
+      rule.selector === ".exchange-panel[data-open]" &&
+      JSON.stringify(rule.context) ===
+        JSON.stringify(["@media (pointer: coarse)"])
+    )
+      return [
+        {
+          selector: button,
+          context: rule.context,
+          declarations: [declaration("min-height", "44px")],
+        },
+        rule,
+      ];
+    return [rule];
+  });
 const expectedVisual = partition(false);
 function decodedSelector(selector: string) {
   return selector.replace(
@@ -354,6 +404,8 @@ const frameSelectors = new Set([
   // in the expected owner. The terminal-compound matcher excludes :: pseudos.
   key(".exchange-panel-header::before"),
   key(".exchange-panel-header::after"),
+  key(".app .conversation-scope > button"),
+  key('.app .conversation-scope > button[aria-pressed="true"]'),
 ]);
 const frameClasses = [
   "exchange-resizer",
@@ -405,32 +457,66 @@ for (const tuple of retainedFrameRules) {
 // as input-only. The immutable historical frame tuples remain unchanged.
 expectedRetained.set(
   visualFile,
-  expectedRetained.get(visualFile)!.map((rule) =>
+  expectedRetained.get(visualFile)!.flatMap((rule) =>
     rule.selector === key(".exchange-scope .conversation-scope") &&
     !rule.context.length
-      ? {
-          ...rule,
-          declarations: [
-            ...rule.declarations,
-            {
-              property: "background",
-              value: "var(--surface-popover)",
-              important: false,
-            },
-            { property: "border-radius", value: "8px", important: false },
-            {
-              property: "-webkit-backdrop-filter",
-              value: "var(--popup-blur)",
-              important: false,
-            },
-            {
-              property: "backdrop-filter",
-              value: "var(--popup-blur)",
-              important: false,
-            },
-          ],
-        }
-      : rule,
+      ? [
+          {
+            ...rule,
+            declarations: [
+              ...rule.declarations,
+              {
+                property: "background",
+                value: "var(--surface-popover)",
+                important: false,
+              },
+              { property: "border-radius", value: "8px", important: false },
+              {
+                property: "-webkit-backdrop-filter",
+                value: "var(--popup-blur)",
+                important: false,
+              },
+              {
+                property: "backdrop-filter",
+                value: "var(--popup-blur)",
+                important: false,
+              },
+            ],
+          },
+          ...[
+            [
+              ".app .conversation-scope > button",
+              [
+                ["font", "inherit"],
+                ["font-weight", "500"],
+                ["color", "var(--text-secondary)"],
+                ["background", "transparent"],
+                ["border", "0"],
+                ["border-radius", "6px"],
+                ["box-shadow", "none"],
+              ],
+            ],
+            [
+              '.app .conversation-scope > button[aria-pressed="true"]',
+              [
+                ["color", "var(--ink)"],
+                ["font-weight", "600"],
+                ["background", "var(--selection)"],
+              ],
+            ],
+          ].map(([selector, declarations]) => ({
+            selector: key(selector as string),
+            context: [],
+            declarations: (declarations as string[][]).map(
+              ([property, value]) => ({
+                property: property!,
+                value: value!,
+                important: false,
+              }),
+            ),
+          })),
+        ]
+      : [rule],
   ),
 );
 
@@ -1282,10 +1368,10 @@ test("完整frame owner保留旧56规则144声明及独立固定、内部标题�
     archivedLayout.reduce((sum, rule) => sum + rule.declarations.length, 0),
     144,
   );
-  assert.equal(expectedLayout.length, 58);
+  assert.equal(expectedLayout.length, 60);
   assert.equal(
     expectedLayout.reduce((sum, rule) => sum + rule.declarations.length, 0),
-    155,
+    162,
   );
   assert.deepEqual(expectedLayout.slice(-4), expectedResizeLayout);
   assert.equal(retainedFrameRules.length, 36);
@@ -1321,6 +1407,26 @@ test("frame有限反例拒绝几何重归属、条件包裹、已知paint与竞�
     (sources: Sources) =>
       changeDeclaration(sources, file, selector, property, value, context);
   const fixtures: [string, (sources: Sources) => void, string][] = [
+    [
+      "scope-choice-hit-size",
+      declaration(
+        layoutFile,
+        ".exchange-scope .conversation-scope>button",
+        "min-height",
+        "8px",
+      ),
+      "layout-exact-geometry",
+    ],
+    [
+      "scope-choice-selection-paint",
+      declaration(
+        visualFile,
+        '.app .conversation-scope>button[aria-pressed="true"]',
+        "background",
+        "transparent",
+      ),
+      `frame-retained:${visualFile}`,
+    ],
     [
       "no-full-width-header-mask",
       append(

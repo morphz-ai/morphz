@@ -336,6 +336,20 @@
   -webkit-backdrop-filter: var(--popup-blur);
   backdrop-filter: var(--popup-blur);
 }
+.app .conversation-scope > button {
+  font: inherit;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  box-shadow: none;
+}
+.app .conversation-scope > button[aria-pressed="true"] {
+  color: var(--ink);
+  font-weight: 600;
+  background: var(--selection);
+}
 .exchange-panel > .conversation {
   border: 1px solid var(--line);
   border-radius: 16px;

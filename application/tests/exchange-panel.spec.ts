@@ -1,21 +1,44 @@
-import { test, expect } from "@playwright/test";
+import { expect } from "@playwright/test";
+import { randomUUID } from "node:crypto";
 import {
   openInput,
   composerAction,
   openComposerMedia,
 } from "./interaction-helpers.js";
 import { openLibrary } from "./application-helpers.js";
-import { seedLibraryArtifact } from "./artifact-fixtures.js";
+import {
+  test,
+  mockPlatformConversation,
+} from "./platform-conversation-fixture.js";
+import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 
 test("记录与输入同属交流面板且各有独立边界，空态紧凑，切换不丢草稿", async ({
   page,
 }) => {
-  await page.goto("/");
-  await openLibrary(page);
-  await seedLibraryArtifact(page, `TEST 连续交流 ${Date.now()}`, {
-    kind: "document",
+  const fixture = await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: disconnectedRuntime,
+  }));
+  const title = `TEST 连续交流 ${randomUUID()}`;
+  await fixture.client.createDocument({
+    commandId: randomUUID(),
+    objectId: randomUUID(),
+    projectId: fixture.spaces.deskId,
+    title,
     markdown: "## 保留工作现场\n\n这是未发送输入的布局验收。",
   });
+  await page.goto("/");
+  await openLibrary(page);
+  await page
+    .locator(".artifact-card")
+    .filter({ has: page.getByRole("heading", { name: title, exact: true }) })
+    .click();
+  await expect(page.locator(".object-paper")).toBeVisible();
+  await expect(
+    page
+      .locator(".object-paper")
+      .getByRole("heading", { name: title, exact: true }),
+  ).toBeVisible();
   const input = await openInput(page);
   await input.fill("TEST 面板草稿，不发送");
   await composerAction(page, "查看交流记录");
@@ -38,14 +61,11 @@ test("记录与输入同属交流面板且各有独立边界，空态紧凑，�
   await expect(
     panel.locator(":scope > .composer-dock > .composer"),
   ).toHaveCount(1);
+  // No alternative history exists in this explicit empty-history fixture.
   await expect(
-    panel
-      .locator(".exchange-panel-header")
-      .getByRole("button", { name: "查看全部交流", exact: true }),
-  ).toBeVisible();
-  await expect(
-    history.getByRole("button", { name: "查看全部交流", exact: true }),
+    panel.getByRole("group", { name: "交流范围", exact: true }),
   ).toHaveCount(0);
+  await expect(panel.locator(".exchange-panel-header")).toBeHidden();
   // One empty-state line, upper-right control clearance and the floating Dock;
   // these belong to reading, never an input-only toolbar/header row.
   const readingBorders = await history.evaluate((element) => {
@@ -61,13 +81,10 @@ test("记录与输入同属交流面板且各有独立边界，空态紧凑，�
   );
   const h = (await history.boundingBox())!;
   const c = (await composer.boundingBox())!;
-  const scope = (await panel
-    .getByRole("button", { name: "查看全部交流", exact: true })
-    .boundingBox())!;
   const tools = (await controls.boundingBox())!;
   // The reading scope and its actions must share the reading card's interior,
   // not float over the unchanged document behind it.
-  for (const row of [scope, tools]) {
+  for (const row of [tools]) {
     expect(row.y).toBeGreaterThanOrEqual(h.y + 1);
     expect(row.y + row.height).toBeLessThanOrEqual(h.y + h.height - 1);
     expect(row.x).toBeGreaterThanOrEqual(h.x + 1);
