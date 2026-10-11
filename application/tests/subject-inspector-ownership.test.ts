@@ -253,10 +253,8 @@ function fixture(mode: Mode, scenario: Scenario = {}) {
         selectScope: old.onInspect,
         toggleCollaboration: old.toggleCollaboration,
         selectExecution: setExecutions,
-        setAllActivity,
       }
     : createSubjectInspectorCommands({
-        activity: { allActivity, setAllActivity },
         inspection,
         collaboration,
         rememberedInspector: memory.get("surface-A"),
@@ -316,8 +314,15 @@ function pair(scenario: Scenario = {}) {
   return [fixture("fixed", scenario), fixture("production", scenario)] as const;
 }
 function same(f: ReturnType<typeof pair>) {
-  assert.deepEqual(f[1].events, f[0].events);
-  assert.deepEqual(f[1].current(), f[0].current());
+  // The explicitly approved UI cutover retires only the all-work selector.
+  // Every remaining navigation, focus and exact-scope effect retains parity.
+  assert.deepEqual(
+    f[1].events,
+    f[0].events.filter((event) => event[0] !== "all-work"),
+  );
+  const { allActivity: _oldRange, ...oldFacts } = f[0].current();
+  const { allActivity: _unusedRange, ...currentFacts } = f[1].current();
+  assert.deepEqual(currentFacts, oldFacts);
   for (const item of f) assert.equal(item.preferences.unrelated, "untouched");
 }
 
@@ -337,7 +342,7 @@ test("constructing commands/close is inert, retains exact setter/close reference
     assert.deepEqual(f.events, []);
     assert.equal(f.actions.close, f.close);
     assert.equal(f.actions.selectExecution, f.setExecutions);
-    assert.equal(f.actions.setAllActivity, f.setAllActivity);
+    assert.equal(Object.hasOwn(f.actions, "setAllActivity"), false);
     assert.deepEqual(
       [...f.memory],
       [["surface-A", { view: "execution", scope }]],
@@ -463,12 +468,9 @@ test("Logo activity explicitly replaces detail with all-work while non-activity 
     const f = pair({ executions: scope, allActivity: false });
     for (const item of f) item.actions.openFromLogo(view);
     same(f);
-    assert.equal(f[1].current().allActivity, view === "activity");
+    assert.equal(f[1].current().allActivity, false);
     if (view === "activity") {
-      assert.deepEqual(f[1].events.slice(-2), [
-        ["all-work", true],
-        ["execution", overview],
-      ]);
+      assert.deepEqual(f[1].events.slice(-1), [["execution", overview]]);
       assert.deepEqual(f[1].current().executions, overview);
     } else assert.equal(f[1].events.length, 3);
     assert.equal(

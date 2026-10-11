@@ -22,7 +22,7 @@ import { flushSync } from 'react-dom';
 import { initialWorkspace } from '/@fs/${resolve("packages/core/src/model.ts")}';
 import { createSubjectInspectorCloseCommand, createSubjectInspectorCommands,
   subjectInspectorView, subjectCollaborationVisible, subjectInspectorOpen, subjectInspectorPresentation,
-  useSubjectActivityState, useSubjectInspectionState, useSubjectCollaborationState, useSubjectInspectorMemory, useSubjectInspectorCommit,
+  useSubjectInspectionState, useSubjectCollaborationState, useSubjectInspectorMemory, useSubjectInspectorCommit,
 } from '/src/host/use-subject-inspector.ts';
 import { createFixedSubjectInspector, deriveFixedSubjectInspector,
   useFixedSubjectInspectorState, useFixedSubjectInspectorCommit,
@@ -36,13 +36,13 @@ const scopes = {
 const lanes = new Map(), mounted = new Set(); let mount;
 function Lane({ mode }) {
  const old = mode === 'fixed' ? useFixedSubjectInspectorState() : null;
- const activity = old ?? useSubjectActivityState();
+ const activity = old;
  const inspection = old ?? useSubjectInspectionState();
  const collaboration = old ?? useSubjectCollaborationState();
  const memory = old?.inspectorSelections ?? useSubjectInspectorMemory();
  const [preferences, setPreferences] = useState({subjectOpen:false, collaboration:false});
  const [contextKey, setContextKey] = useState('A'), [artifact, setArtifact] = useState(null), [compact, setCompact] = useState(false), [tick, setTick] = useState(0);
- const original = useRef({memory: memory.current, executionSetter: inspection.setExecutions, allWorkSetter: activity.setAllActivity});
+ const original = useRef({memory: memory.current, executionSetter: inspection.setExecutions});
  const events = useRef([]);
  const prefer = change => {events.current.push(['prefer',change]);setPreferences(p=>({...p,...change}));};
  const keepExchangeOpen = () => events.current.push(['keep-exchange-open']);
@@ -65,7 +65,7 @@ function Lane({ mode }) {
  const commands = oldCommands ? {
   close, selectSubject:oldCommands.selectSubjectView, selectScope:oldCommands.onInspect, show:oldCommands.showInspector,
   openFromLogo:oldCommands.openSubjectFromLogo, inspectExecution:oldCommands.inspectExecution,
- } : createSubjectInspectorCommands({activity,inspection,collaboration,rememberedInspector:memory.current.get(contextKey),
+ } : createSubjectInspectorCommands({inspection,collaboration,rememberedInspector:memory.current.get(contextKey),
   workspace,historyClient,preferences,conversationProjectId:facts.conversationProjectId,conversationId:facts.conversationId,
   compact,prefer,keepExchangeOpen,onNotice:message=>events.current.push(['notice',message]),close,
  });
@@ -88,10 +88,9 @@ function Lane({ mode }) {
    else if(action==='collaboration') {setArtifact({id:'artifact-A'});setCompact(true);collaboration.setMobileCollaboration(true);setPreferences(p=>({...p,subjectOpen:false,collaboration:true}));}
   },
   report() {return {
-   facts:{...presentation,executions:inspection.executions,allActivity:activity.allActivity,understandingOpen:inspection.understandingOpen,mobileCollaboration:collaboration.mobileCollaboration,contextKey},
+   facts:{...presentation,executions:inspection.executions,understandingOpen:inspection.understandingOpen,mobileCollaboration:collaboration.mobileCollaboration,contextKey},
    entries:[...memory.current],events:events.current,
    identity:{memory:memory.current===original.current.memory,executionSetter:inspection.setExecutions===original.current.executionSetter,
-    allWorkSetter:activity.setAllActivity===original.current.allWorkSetter,
     execution:inspection.executions===scopes.A?'A':inspection.executions===scopes.B?'B':null,
     memories:[...memory.current].map(([key,value])=>[key,value.view==='execution'?(value.scope===scopes.A?'A':value.scope===scopes.B?'B':null):null])},
   };},
@@ -111,7 +110,6 @@ createRoot(document.getElementById('root')).render(<StrictMode><Fixture/></Stric
 type LaneReport = {
   facts: {
     executions: ExecutionScope | null;
-    allActivity: boolean;
     understandingOpen: boolean;
     mobileCollaboration: boolean;
     contextKey: string;
@@ -124,7 +122,6 @@ type LaneReport = {
   identity: {
     memory: boolean;
     executionSetter: boolean;
-    allWorkSetter: boolean;
     execution: string | null;
     memories: [string, string | null][];
   };
@@ -201,12 +198,15 @@ test(
         Reflect.get(window, "subjectInspectorFixture").report(),
       ) as Promise<Report>;
     const parity = (value: Report) => {
-      assert.deepEqual(value.production, value.fixed);
+      const fixed = {
+        ...value.fixed,
+        events: value.fixed.events.filter((event) => event[0] !== "all-work"),
+      };
+      assert.deepEqual(value.production, fixed);
       assert.deepEqual(value.production.identity, {
         ...value.production.identity,
         memory: true,
         executionSetter: true,
-        allWorkSetter: true,
       });
     };
     const run = async (action: string, value: unknown = null) => {
@@ -225,7 +225,6 @@ test(
     assert.deepEqual(first.production.entries, []);
     assert.deepEqual(first.production.events, []);
     assert.equal(first.production.facts.executions, null);
-    assert.equal(first.production.facts.allActivity, false);
     assert.equal(first.production.facts.understandingOpen, false);
     assert.equal(first.production.facts.mobileCollaboration, false);
     let current = await run("scope", "A");
@@ -270,7 +269,6 @@ test(
     current = await run("show");
     assert.equal(current.identity.execution, "A");
     current = await run("logo", "activity");
-    assert.equal(current.facts.allActivity, true);
     assert.equal(current.facts.executions?.inputId, undefined);
     current = await run("inspect", "input-A");
     assert.equal(current.facts.executions?.inputId, "input-A");
@@ -292,7 +290,6 @@ test(
     current = (await report()).production;
     assert.deepEqual(current.entries, []);
     assert.deepEqual(current.events, []);
-    assert.equal(current.facts.allActivity, false);
     assert.equal(current.facts.executions, null);
     assert.deepEqual(errors, []);
     assert.deepEqual(queries, []);

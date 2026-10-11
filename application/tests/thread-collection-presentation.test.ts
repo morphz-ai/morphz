@@ -686,10 +686,10 @@ import {Conversation} from '/src/Conversation.tsx';import {ExecutionSidebar} fro
 const state=${JSON.stringify({ ...initialWorkspace(stamp), inputs: [input(), input({ id: "named-input", conversationId: "named-session", artifactId: null, body: "具名原始要求" })] })},events=[],reads=[],positions=new Map(),nodes=new WeakMap();let serial=0,api;
 const initialThreads=${JSON.stringify([thread({ id: "parent", lifecycle: "completed", summary: "父工作成果" }), thread({ id: "child", parentThreadId: "parent", summary: "真实子任务进度" }), thread({ id: "named", conversationId: "named-session", inputId: "named-input" })])};
 window.morphzDesktop={application:{onStream:()=>()=>{},subscribe:async(id,scope)=>{reads.push(['subscribe',scope]);},unsubscribe:()=>{}}};
-function Frame(){const[facts,setFacts]=useState({threads:initialThreads,online:true,connected:true,available:true,truncated:false,allWork:false,scope:${JSON.stringify(scope)}});api=value=>setFacts(old=>({...old,...value}));
+function Frame(){const[facts,setFacts]=useState({threads:initialThreads,online:true,connected:true,available:true,truncated:false,scope:${JSON.stringify(scope)}});api=value=>setFacts(old=>({...old,...value}));
 const runtime={configured:true,connected:facts.connected,model:'',error:'',deliveries:[],messages:[],activity:{available:facts.available,truncated:facts.truncated,threads:facts.threads}};
 const client={online:facts.online,workspaceChangeRevision:0,boot:{centerId:'fixture-center',principalId:'local-owner',csrfToken:'fixture-generation',actantId:'local-human',workspace:state,runtime,outputs:[],scriptOutputs:[],localSavedInputIds:[],localInputSubmissions:{},capabilities:{teamAuthentication:true}},contentCatalog:[],contentVersionTitle:()=> '原对象',executionSnapshot:async(scope)=>{reads.push(['snapshot',scope]);return{jobs:[],approvals:[],limit:100};},executionResult:async()=>null,controlExecution:async operation=>{events.push(['control',operation]);},cancelInput:async id=>events.push(['cancel',id]),approvalSubmitted:()=>false};
-return <main><button id="outside">原画布</button><Conversation inputs={[state.inputs[0]]} state={state} runtime={runtime} messages={[]} streamConnected={false} seenReplies={{}} onRead={()=>{}} conversationId="first-project" onRetry={async()=>{}} client={client} onOpen={()=>{}} positions={positions} revealInputId={null} onInspect={id=>events.push(['inspect',id])}/><ExecutionSidebar client={client} scope={facts.scope} layout={{mode:'docked',width:340,maxWidth:520}} onResize={()=>{}} onClose={()=>events.push(['close'])} onSelect={scope=>{events.push(['select',scope]);api({scope});}} onOpen={()=>{}} onSupplement={value=>events.push(['supplement',value])} allWork={facts.allWork} onAllWorkChange={allWork=>{events.push(['allWork',allWork]);api({allWork});}} onRefresh={async()=>events.push(['refresh'])}/></main>;}
+return <main><button id="outside">原画布</button><Conversation inputs={[state.inputs[0]]} state={state} runtime={runtime} messages={[]} streamConnected={false} seenReplies={{}} onRead={()=>{}} conversationId="first-project" onRetry={async()=>{}} client={client} onOpen={()=>{}} positions={positions} revealInputId={null} onInspect={id=>events.push(['inspect',id])}/><ExecutionSidebar client={client} scope={facts.scope} layout={{mode:'docked',width:340,maxWidth:520}} onResize={()=>{}} onClose={()=>events.push(['close'])} onSelect={scope=>{events.push(['select',scope]);api({scope});}} onOpen={()=>{}} onSupplement={value=>events.push(['supplement',value])} onRefresh={async()=>events.push(['refresh'])}/></main>;}
 const root=createRoot(document.getElementById('root'));flushSync(()=>root.render(<StrictMode><Frame/></StrictMode>));
 const id=node=>{if(!node)return null;if(!nodes.has(node))nodes.set(node,++serial);return nodes.get(node);};
 function snapshot(){return{events:[...events],reads:[...reads],cards:[...document.querySelectorAll('[data-message-id]')].map(n=>({id:n.getAttribute('data-message-id'),node:id(n),background:n.hasAttribute('data-background-execution')})),rows:[...document.querySelectorAll('.execution-activity-row')].map(n=>({id:n.getAttribute('data-thread-id'),root:n.getAttribute('data-root-id'),node:id(n),text:n.textContent,aria:n.getAttribute('aria-label'),status:n.querySelector('[data-status]')?.getAttribute('data-status')})),badge:document.querySelector('.message-work-status')?.textContent??null,badgeStatus:document.querySelector('.message-work-status')?.getAttribute('data-status')??null,count:document.querySelector('.execution-scope-count')?.textContent??null,quiet:document.querySelector('.execution-quiet')?.textContent??null,summary:document.querySelector('.execution-origin .execution-activity-summary')?.textContent??null,stopDisabled:document.querySelector('.execution-stop-thread')?.disabled??null,focus:document.activeElement?.id??'',selectedScope:factsScope()};}
@@ -796,7 +796,7 @@ test(
             html.includes('data-background-execution="true"'),
             online,
           );
-          if (kind) {
+          if (kind && kind !== "running") {
             assert.ok(
               html.includes(
                 `class="message-execution-link message-work-status" data-status="${kind}"`,
@@ -884,7 +884,7 @@ test(
             );
           assert.ok(
             html.includes(
-              `<small class="execution-scope-count">${expected}</small>`,
+              `<small class="sr-only execution-scope-count">${expected}</small>`,
             ),
           );
           if (threads.length) {
@@ -948,25 +948,37 @@ test(
         value,
       );
     const initial = await snapshot();
-    assert.equal(initial.badgeStatus, "running");
-    assert.equal(initial.count, "1 项进行中");
+    assert.equal(
+      initial.badgeStatus,
+      null,
+      "running card already opens activity; no redundant hover button",
+    );
+    assert.equal(initial.count, "2 项进行中");
     assert.deepEqual(
       initial.rows.map((row) => row.id),
-      ["parent"],
+      ["named", "parent"],
     );
-    assert.ok(initial.rows[0]!.aria.includes("子任务执行中"));
-    await page.locator(".message-work-status").click();
+    assert.ok(initial.rows[1]!.aria.includes("子任务执行中"));
+    await page
+      .locator('.human-message[data-background-execution="true"]')
+      .click();
     assert.deepEqual((await snapshot()).events.at(-1), [
       "inspect",
       "input-one",
     ]);
-    await page.getByRole("button", { name: "全部工作", exact: true }).click();
+    assert.equal(
+      await page.getByRole("button", { name: "全部工作", exact: true }).count(),
+      0,
+    );
     assert.deepEqual(
       (await snapshot()).rows.map((row) => row.id),
       ["named", "parent"],
     );
     assert.equal((await snapshot()).count, "2 项进行中");
-    await page.getByRole("button", { name: "当前工作", exact: true }).click();
+    assert.equal(
+      await page.getByRole("button", { name: "当前工作", exact: true }).count(),
+      0,
+    );
     await page.locator("#outside").focus();
     await set({
       threads: [

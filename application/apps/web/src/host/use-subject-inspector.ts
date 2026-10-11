@@ -16,11 +16,6 @@ type InspectorMemory = RefObject<Map<string, InspectorSelection>>;
 
 /** These registrations stay at their original host seams. Grouping the owner
  * must not move a state or layout effect across unrelated host lifecycles. */
-export function useSubjectActivityState() {
-  const [allActivity, setAllActivity] = useState(false);
-  return { allActivity, setAllActivity };
-}
-
 export function useSubjectInspectionState() {
   const [executions, setExecutions] = useState<ExecutionScope | null>(null);
   const [understandingOpen, setUnderstandingOpen] = useState(false);
@@ -170,7 +165,6 @@ export function createSubjectInspectorCloseCommand({
  * Construction performs no reads/writes. No latest-state/epoch policy is added
  * to the original history lookup or its late completion behavior. */
 export function createSubjectInspectorCommands({
-  activity: { setAllActivity },
   inspection: { executions, setExecutions, setUnderstandingOpen },
   collaboration: { mobileCollaboration, setMobileCollaboration },
   rememberedInspector,
@@ -185,7 +179,6 @@ export function createSubjectInspectorCommands({
   onNotice: setNotice,
   close,
 }: {
-  activity: ReturnType<typeof useSubjectActivityState>;
   inspection: InspectionState;
   collaboration: CollaborationState;
   rememberedInspector: InspectorSelection | undefined;
@@ -262,8 +255,7 @@ export function createSubjectInspectorCommands({
     selectSubject(view);
     if (view === "activity") {
       // The mark represents the one subject, not the selected project or an
-      // old message detail. Use the existing authorized all-work projection.
-      setAllActivity(true);
+      // old message detail. The activity overview is always subject-wide.
       setExecutions({
         projectId: conversationProjectId,
         conversationId,
@@ -334,6 +326,5 @@ export function createSubjectInspectorCommands({
     // These child callbacks intentionally remain the original setter identity
     // and do not acquire selectSubject/preference/keep-open semantics.
     selectExecution: setExecutions,
-    setAllActivity,
   };
 }

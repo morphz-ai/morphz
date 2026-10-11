@@ -208,7 +208,6 @@ import {
   subjectInspectorOpen,
   subjectInspectorPresentation,
   subjectInspectorView,
-  useSubjectActivityState,
   useSubjectCollaborationState,
   useSubjectInspectionState,
   useSubjectInspectorCommit,
@@ -421,8 +420,6 @@ function WorkspaceApp({
   const leftSidebar = useSidebarLayout(leftSidebarPreference);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const subjectView = subjectInspectorView(prefs);
-  const subjectActivity = useSubjectActivityState();
-  const { allActivity } = subjectActivity;
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const inputDictation = useExchangeDictationState();
   const { dictationControls, speechRecording, setSpeechRecording } =
@@ -2187,7 +2184,6 @@ function WorkspaceApp({
       : undefined;
   const rememberedInspector = inspectorSelections.current.get(contextKey);
   const subjectInspector = createSubjectInspectorCommands({
-    activity: subjectActivity,
     inspection: subjectInspection,
     collaboration: subjectCollaboration,
     rememberedInspector,
@@ -3906,8 +3902,6 @@ function WorkspaceApp({
                   }
                   client={client}
                   scope={activityScope}
-                  allWork={allActivity}
-                  onAllWorkChange={subjectInspector.setAllActivity}
                   viewOptions={inspectorViewOptions}
                   layout={rightInspector}
                   onResize={resizeInspector}
@@ -3923,14 +3917,13 @@ function WorkspaceApp({
                   onRefresh={async () => {
                     await client.refresh();
                   }}
-                  overviewLeading={(allWork) => (
+                  detailLeading={
                     <SubjectObjectives
                       client={client}
                       scope={activityScope}
-                      allWork={allWork}
                       onSelect={subjectInspector.selectExecution}
                     />
-                  )}
+                  }
                 />
               }
             />

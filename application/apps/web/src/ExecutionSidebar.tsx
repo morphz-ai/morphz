@@ -26,6 +26,7 @@ import {
   executionActivityRoots,
   executionActivityDescendants,
   executionActivityGroupStatus,
+  executionActivityOrigin,
   type ActivityThread,
 } from "./execution-activity.js";
 import { projectDisplayLabel } from "./project-display-label.js";
@@ -44,10 +45,8 @@ export function ExecutionSidebar({
   onOpenScript,
   viewOptions,
   embedded = false,
-  overviewLeading,
+  detailLeading,
   onRefresh,
-  allWork: allWorkOverride,
-  onAllWorkChange,
 }: {
   client: WorkspaceClient;
   scope: ExecutionScope;
@@ -60,10 +59,8 @@ export function ExecutionSidebar({
   onOpenScript?: (output: ScriptOutput) => void;
   viewOptions?: ComposerOption[];
   embedded?: boolean;
-  overviewLeading?: ReactNode | ((allWork: boolean) => ReactNode);
+  detailLeading?: ReactNode;
   onRefresh?: () => void | Promise<void>;
-  allWork?: boolean;
-  onAllWorkChange?: (allWork: boolean) => void;
 }) {
   const state = client.boot!.workspace,
     runtime = client.boot!.runtime;
@@ -72,9 +69,6 @@ export function ExecutionSidebar({
   const [stopping, setStopping] = useState(false),
     [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
-  const [localAllWork, setLocalAllWork] = useState(false);
-  const allWork = allWorkOverride ?? localAllWork;
-  const setAllWork = onAllWorkChange ?? setLocalAllWork;
   const [showOther, setShowOther] = useState(false),
     [stopRequested, setStopRequested] = useState(false);
   const threads = runtime.activity?.threads ?? [];
@@ -121,7 +115,7 @@ export function ExecutionSidebar({
     state,
     threads,
     scope,
-    allWork,
+    true,
     !client.boot!.capabilities.teamAuthentication,
     runtime,
   );
@@ -216,8 +210,13 @@ export function ExecutionSidebar({
     );
     const children = executionActivityDescendants(t, activityThreads);
     const summary = executionActivitySummary(t, activityAvailable);
-    const project = state.projects.find((p) => p.id === t.projectId);
-    const showProject = project && (allWork || t.projectId !== scope.projectId);
+    const origin = executionActivityOrigin(
+      t,
+      state,
+      client.contentCatalog,
+      client.boot!.outputs,
+      client.boot!.scriptOutputs,
+    );
     return (
       <button
         className="execution-activity-row"
@@ -228,6 +227,7 @@ export function ExecutionSidebar({
           t.title || "执行事项",
           status.label,
           summary,
+          origin,
           executionActivityClock(t),
         ]
           .filter(Boolean)
@@ -258,9 +258,9 @@ export function ExecutionSidebar({
             >
               {executionActivityClock(t)}
             </time>
-            {showProject && (
-              <span className="execution-activity-project">
-                {projectDisplayLabel(project)}
+            {origin && (
+              <span className="execution-activity-project" title={origin}>
+                {origin}
               </span>
             )}
             {children.length > 0 && <span>{children.length} 个子任务</span>}
@@ -273,17 +273,9 @@ export function ExecutionSidebar({
   const content = (
     <div className="execution-sidebar-scroll">
       {!detail && (
-        <div className="execution-activity-scope" aria-label="活动范围">
-          <button aria-pressed={!allWork} onClick={() => setAllWork(false)}>
-            当前工作
-          </button>
-          <button aria-pressed={allWork} onClick={() => setAllWork(true)}>
-            全部工作
-          </button>
-          {!embedded && (
-            <small className="execution-scope-count">{activitySummary}</small>
-          )}
-        </div>
+        <small className="sr-only execution-scope-count">
+          {activitySummary}
+        </small>
       )}
       {!runtime.connected && (
         <p className="execution-activity-notice" role="status">
@@ -310,10 +302,6 @@ export function ExecutionSidebar({
           {error}
         </p>
       )}
-      {!detail &&
-        (typeof overviewLeading === "function"
-          ? overviewLeading(allWork)
-          : overviewLeading)}
       {!detail && runtime.attention && (
         <section className="execution-attention" aria-label="需要处理的审批">
           {!runtime.attention.available && (
@@ -420,6 +408,7 @@ export function ExecutionSidebar({
               </div>
             </section>
           )}
+          {detailLeading}
           {input && (
             <div className="execution-outputs" aria-label="工作成果">
               {client
@@ -549,11 +538,11 @@ export function ExecutionSidebar({
       label="执行面板"
       title={scope.threadId ? "执行分支" : scope.inputId ? "执行详情" : "活动"}
       context={
-        allWork && !detail
-          ? "全部工作"
-          : projectDisplayLabel(
+        detail
+          ? projectDisplayLabel(
               state.projects.find((p) => p.id === scope.projectId),
             )
+          : undefined
       }
       resizeLabel="调整活动面板宽度"
       layout={layout}

@@ -1,5 +1,6 @@
 import {
   activeExecutionThreads,
+  type ArtifactOutput,
   type ConversationRuntime,
   type ExecutionActivity,
 } from "../../../packages/core/src/conversation.js";
@@ -9,6 +10,7 @@ import {
   type RecordedInput,
   type Workspace,
 } from "../../../packages/core/src/model.js";
+import type { ScriptOutput } from "../../../packages/core/src/script-delivery.js";
 
 export type ActivityThread = ExecutionActivity["threads"][number];
 export type ActivityStatus = {
@@ -218,6 +220,95 @@ export function executionActivityScope(
   };
 }
 
+/** Labels come from the original input or its exact delivery receipts, never
+ * from the selected page, a nearby Session or prose in an execution title. */
+export function executionActivityOrigin(
+  thread: ActivityThread,
+  state: Workspace,
+  catalog: readonly { id: string; projectId: string; title: string }[],
+  outputs: readonly ArtifactOutput[],
+  scriptOutputs: readonly ScriptOutput[],
+): string {
+  const source = state.inputs.find(
+    (input) =>
+      input.id === thread.inputId &&
+      input.projectId === thread.projectId &&
+      (input.conversationId ?? input.projectId) === thread.conversationId,
+  );
+  const contentTitle = (id: string) =>
+    state.artifacts.find((a) => a.id === id && a.projectId === thread.projectId)
+      ?.title ??
+    catalog.find(
+      (entry) => entry.id === id && entry.projectId === thread.projectId,
+    )?.title;
+  const production =
+    source?.scriptTarget &&
+    state.scriptProductions.find(
+      (p) =>
+        p.id === source.scriptTarget!.productionId &&
+        p.projectId === thread.projectId,
+    );
+  const titles = source?.artifactId
+    ? [contentTitle(source.artifactId)]
+    : source?.cognitiveObject
+      ? [contentTitle(source.cognitiveObject.contentId)]
+      : production
+        ? [production.title]
+        : [
+            ...outputs
+              .filter(
+                (output) =>
+                  output.inputId === thread.inputId &&
+                  output.projectId === thread.projectId,
+              )
+              .map((output) => contentTitle(output.artifactId)),
+            ...scriptOutputs
+              .filter(
+                (output) =>
+                  output.inputId === thread.inputId &&
+                  output.projectId === thread.projectId,
+              )
+              .map((output) => output.productionTitle),
+          ];
+  const project = state.projects.find(
+    (p) => p.id === thread.projectId && (p.kind ?? "project") === "project",
+  );
+  return [
+    ...new Set(
+      [...titles, project?.title].filter((title): title is string => !!title),
+    ),
+  ].join(" · ");
+}
+
+/** Exclude only a fresh, exactly attributed queued/paused schedule. Real
+ * running/runnable work wins over the schedule snapshot, including children. */
+export function executionActivityIsDeferred(
+  thread: ActivityThread,
+  runtime: ConversationRuntime,
+): boolean {
+  if (
+    thread.lifecycle !== "open" ||
+    !["idle", "waiting"].includes(thread.phase) ||
+    !runtime.connected ||
+    !runtime.activity?.available ||
+    !runtime.activity.schedulesAvailable
+  )
+    return false;
+  return (
+    runtime.activity.schedules?.some(
+      (schedule) =>
+        ["queued", "paused"].includes(schedule.status) &&
+        schedule.threadId === thread.id &&
+        schedule.inputId === thread.inputId &&
+        schedule.projectId === thread.projectId &&
+        schedule.conversationId === thread.conversationId &&
+        schedule.sessionId === thread.sessionId &&
+        schedule.rootId === thread.rootId &&
+        schedule.contextId === thread.contextId,
+    ) ?? false
+  );
+}
+
 export function executionActivityDateGroups(
   threads: readonly ActivityThread[],
   now = new Date(),
@@ -313,7 +404,13 @@ export function executionActivityOverview(
     executionActivityDescendants(t, activityThreads).some(
       (child) => child.lifecycle === "open",
     );
-  const active = groupedActivities.filter(hasOpenWork);
+  const active = groupedActivities.filter((t) =>
+    [t, ...executionActivityDescendants(t, activityThreads)].some(
+      (thread) =>
+        thread.lifecycle === "open" &&
+        !executionActivityIsDeferred(thread, runtime),
+    ),
+  );
   const recent = executionActivityDateGroups(
     groupedActivities.filter((t) => !hasOpenWork(t)),
   );

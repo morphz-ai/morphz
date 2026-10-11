@@ -553,10 +553,10 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
   const panel = await openSubject(page);
   await expect(
     panel.getByRole("button", { name: "当前工作", exact: true }),
-  ).toHaveCount(1);
+  ).toHaveCount(0);
   await expect(
     panel.getByRole("button", { name: "全部工作", exact: true }),
-  ).toHaveCount(1);
+  ).toHaveCount(0);
   await expect(panel.locator(".execution-activity-row")).toHaveCount(4);
   await expect(
     page.locator(".workspace-inspector-controls > button"),
@@ -595,6 +595,8 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
     ),
   ).toHaveAttribute("data-status", "cancelled");
   await expect(panel).not.toContainText("普通聊天不冒充执行任务");
+  await expect(panel.locator(".subject-objectives")).toHaveCount(0);
+  await panel.locator('[data-thread-id="subject-open"]').click();
   const goal = panel.locator('[data-objective-id="subject-objective"]');
   await goal.getByRole("button", { name: /验证语音环境/ }).click();
   await expect(goal.getByRole("status")).toHaveText("等待关联工作或条件");
@@ -653,7 +655,7 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
   await expect(panel.locator(".execution-activity-row")).toHaveCount(4);
 });
 
-test("活动全部工作中 desk 显示无项目，真实项目标题保留，查看不改原持久标题", async ({
+test("统一活动不显示空项目占位，保留真实项目来源，查看不改原持久标题", async ({
   page,
 }) => {
   // Only presentation threads are controlled. Project identity/kind/title come
@@ -705,12 +707,14 @@ test("活动全部工作中 desk 显示无项目，真实项目标题保留，�
   await input.fill(draft);
   const panel = await openSubject(page);
   await panel.getByRole("tab", { name: "活动", exact: true }).click();
-  await panel.getByRole("button", { name: "全部工作", exact: true }).click();
+  await expect(
+    panel.getByRole("button", { name: "全部工作", exact: true }),
+  ).toHaveCount(0);
   await expect(
     panel.locator(
       '[data-thread-id="display-desk-work"] .execution-activity-project',
     ),
-  ).toHaveText("无项目");
+  ).toHaveCount(0);
   await expect(
     panel.locator('[data-thread-id="display-desk-work"]'),
   ).not.toContainText("未归项目");
@@ -720,10 +724,198 @@ test("活动全部工作中 desk 显示无项目，真实项目标题保留，�
     ),
   ).toHaveText(title);
   await expect(input).toHaveValue(draft);
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "工作台", exact: true })
+    .click();
+  await expect(panel.locator(".execution-activity-row")).toHaveCount(2);
+  await expect(
+    panel.locator('[data-thread-id="display-project-work"]'),
+  ).toContainText(title);
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  await expect(await openInput(page)).toHaveValue(draft);
   expect(await fixture.client.project(fixture.spaces.deskId)).toEqual(
     deskBefore,
   );
   expect((await fixture.client.project(projectId)).title).toBe(title);
+});
+
+test("未来提醒归入定时任务，启动后才进入活动；详情保留目标、原身份和草稿", async ({
+  page,
+}, testInfo) => {
+  const stamp = "2026-10-11T00:00:00Z";
+  const runtime = {
+    ...disconnectedRuntime,
+    configured: true,
+    connected: true,
+    activity: {
+      available: true,
+      truncated: false,
+      openWorkComplete: true,
+      schedulesAvailable: true,
+      threads: [] as NonNullable<
+        PlatformHistory["runtime"]["activity"]
+      >["threads"],
+      schedules: [] as NonNullable<
+        NonNullable<PlatformHistory["runtime"]["activity"]>["schedules"]
+      >,
+      objectives: [] as NonNullable<
+        NonNullable<PlatformHistory["runtime"]["activity"]>["objectives"]
+      >,
+    },
+    attention: { available: true, approvals: [] },
+  };
+  const inputs: PlatformHistory["inputs"] = [];
+  const fixture = await mockPlatformConversation(page, () => ({
+    inputs,
+    runtime,
+  }));
+  const source = {
+    ...fixture.scope,
+    inputId: "future-input",
+    rootId: "future-root",
+    sessionId: "future-session",
+    contextId: "future-context",
+  };
+  inputs.push(fixture.input(source.inputId, "TEST 10月23日上午提醒我", stamp));
+  runtime.activity.threads.push(
+    {
+      ...source,
+      id: "future-thread",
+      kind: "execution",
+      title: "TEST 按时发送提醒",
+      phase: "waiting",
+      lifecycle: "open",
+      revision: 1,
+      updatedAt: stamp,
+    },
+    {
+      ...source,
+      id: "recent-thread",
+      inputId: null,
+      rootId: "recent-root",
+      sessionId: "recent-session",
+      title: "TEST 修改剧本台词",
+      kind: "execution",
+      phase: "idle",
+      lifecycle: "completed",
+      revision: 1,
+      summary: "台词修改已保存为新版本",
+      updatedAt: stamp,
+    },
+  );
+  runtime.activity.schedules.push({
+    ...source,
+    scheduleId: "future-schedule",
+    threadId: "future-thread",
+    sourceTurnId: "future-turn",
+    sourceRootId: "future-root",
+    status: "queued",
+    revision: 1,
+    notBefore: "2026-10-23T01:00:00Z",
+    intervalSeconds: null,
+    dependencyThreadIds: [],
+    intent: "TEST 杭州程序员节提醒",
+    updatedAt: stamp,
+  });
+  runtime.activity.objectives.push({
+    ...source,
+    id: "future-goal",
+    title: "TEST 确保提醒按时送达",
+    status: "active",
+    readiness: "waiting",
+    statusReason: null,
+    parentId: null,
+    threadIds: ["future-thread"],
+    updatedAt: stamp,
+  });
+  for (const field of ["sessionId", "projectId", "conversationId"] as const)
+    runtime.activity.objectives.push({
+      ...runtime.activity.objectives[0]!,
+      id: `unrelated-goal-${field}`,
+      title: `TEST 无关目标 ${field}`,
+      [field]: "another-identity",
+    });
+  const queries: URLSearchParams[] = [];
+  await page.route("**/api/executions?*", (route) => {
+    queries.push(new URL(route.request().url()).searchParams);
+    return route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } });
+  });
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  const draft = "TEST 查看提醒不发送的草稿";
+  await (await openInput(page)).fill(draft);
+  const panel = await openSubject(page);
+  const tabs = panel.getByRole("tablist", { name: "Morphz 信息分类" });
+  await tabs.getByRole("tab", { name: "活动", exact: true }).click();
+  await expect(panel.locator('[data-thread-id="future-thread"]')).toHaveCount(
+    0,
+  );
+  await expect(
+    panel.getByRole("region", { name: "进行中的活动", exact: true }),
+  ).toHaveCount(0);
+  await expect(panel.locator('[data-thread-id="recent-thread"]')).toHaveCount(
+    1,
+  );
+  await expect(panel.locator(".subject-objectives")).toHaveCount(0);
+  await expect(panel).not.toContainText("无项目");
+  for (const appearance of ["亮色", "暗色"]) {
+    await openSettings(page, "外观");
+    await page.getByRole("button", { name: appearance, exact: true }).click();
+    await page.keyboard.press("Escape");
+    await finishColorTransitions(page);
+    await panel.screenshot({
+      path: testInfo.outputPath(`unified-activity-${appearance}.png`),
+    });
+  }
+  await tabs.getByRole("tab", { name: "定时任务", exact: true }).click();
+  const schedule = panel.locator('[data-schedule-id="future-schedule"]');
+  await expect(schedule).toContainText("TEST 杭州程序员节提醒");
+  await expect(schedule).toContainText("等待触发");
+  await schedule.click();
+  await expect(
+    panel.locator('[data-objective-id="future-goal"]'),
+  ).toContainText("TEST 确保提醒按时送达");
+  await expect(
+    panel.locator('[data-objective-id^="unrelated-goal-"]'),
+  ).toHaveCount(0);
+  await expect
+    .poll(() => queries.at(-1)?.get("threadId"))
+    .toBe("future-thread");
+  expect(queries.at(-1)?.get("inputId")).toBe(source.inputId);
+  expect(queries.at(-1)?.get("conversationId")).toBe(source.conversationId);
+  await expect(await openInput(page)).toHaveValue(draft);
+  await panel
+    .getByRole("button", { name: "返回活动列表", exact: true })
+    .click();
+  runtime.activity.threads[0]!.phase = "running";
+  runtime.activity.threads[0]!.revision++;
+  await fixture.refresh();
+  await expect(panel.locator('[data-thread-id="future-thread"]')).toHaveCount(
+    1,
+  );
+  await expect(
+    panel.locator('[data-thread-id="future-thread"] .execution-activity-icon'),
+  ).toHaveAttribute("data-status", "running");
+  await page.setViewportSize({ width: 820, height: 800 });
+  const geometry = await panel.evaluate((element) => ({
+    overflow: element.scrollWidth > element.clientWidth + 1,
+    right: element.getBoundingClientRect().right,
+    viewport: innerWidth,
+  }));
+  expect(geometry.overflow).toBe(false);
+  expect(geometry.right).toBeLessThanOrEqual(geometry.viewport);
+  await panel.screenshot({
+    path: testInfo.outputPath("unified-activity-narrow-running.png"),
+  });
+  await expect(await openInput(page)).toHaveValue(draft);
+  expect(runtime.activity.schedules[0]!.status).toBe("queued");
 });
 
 test("应用 Dock 固定可刷新恢复，真实启动不发消息或新建 Session，各工作现场草稿独立可恢复", async ({

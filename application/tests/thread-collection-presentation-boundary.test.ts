@@ -417,6 +417,13 @@ const expected = parse({
       .map((name) => fixed.recipes[name].raw)
       .join("\n")
       .replace(
+        fixed.recipes.active.raw,
+        `const active = groupedActivities.filter((t) =>
+        [t, ...executionActivityDescendants(t, activityThreads)].some((thread) =>
+          thread.lifecycle === "open" && !executionActivityIsDeferred(thread, runtime)),
+      );`,
+      )
+      .replace(
         "!client.boot!.capabilities.teamAuthentication",
         "sharedDefault",
       )}
@@ -716,19 +723,33 @@ function validate(contents: Sources) {
     conversationFn,
     "message-execution-link message-work-status",
   );
+  const shown = variable(conversationFn, "showWorkStatus");
+  same(
+    shown.initializer!,
+    expression(
+      'activeBranch && onInspect && workStatus && workStatus.kind !== "running"',
+    ),
+    "input-nonredundant-status-guard",
+  );
+  references(
+    conversation,
+    shown.initializer!,
+    inputBindings,
+    "input-nonredundant-status-guard",
+  );
   assert.ok(
     isBinaryExpression(card.parent!.parent!),
     "input-original-work-guard",
   );
   same(
     card.parent!.parent!.left,
-    expression("activeBranch && onInspect && workStatus"),
+    expression("showWorkStatus && onInspect && workStatus"),
     "input-original-work-guard",
   );
   references(
     conversation,
     card.parent!.parent!.left,
-    inputBindings,
+    { ...inputBindings, showWorkStatus: boundName(shown) },
     "input-original-work-guard",
   );
   for (const [attr, raw] of [
@@ -769,7 +790,7 @@ function validate(contents: Sources) {
       "activityAvailable",
       "activityComplete",
     ],
-    "state,threads,scope,allWork,!client.boot!.capabilities.teamAuthentication,runtime",
+    "state,threads,scope,true,!client.boot!.capabilities.teamAuthentication,runtime",
     "overview-direct-consumer",
   );
   const state = variable(sidebarFn, "state"),
@@ -798,7 +819,6 @@ function validate(contents: Sources) {
       threads: boundName(threads),
       scope: param(sidebarFn, "scope"),
       client: param(sidebarFn, "client"),
-      allWork: boundName(variable(sidebarFn, "allWork")),
     },
     "overview-captured-render-facts",
   );
@@ -844,12 +864,12 @@ function validate(contents: Sources) {
       statement(prose).parent === statement(summary).parent,
     "original-collect-prose-summary-order",
   );
-  const count = classElement(sidebarFn, "execution-scope-count");
+  const count = classElement(sidebarFn, "sr-only execution-scope-count");
   same(
     count,
     parse({
       Count:
-        '<small className="execution-scope-count">{activitySummary}</small>;',
+        '<small className="sr-only execution-scope-count">{activitySummary}</small>;',
     })
       .get("Count")!
       .nodes.find(isJsxElement)!,
@@ -1143,7 +1163,7 @@ test("original background marker, status/provenance click, collection rows and e
       "input-background-marker",
     ],
     [
-      "activeBranch && onInspect && workStatus",
+      "showWorkStatus && onInspect && workStatus",
       "onInspect && workStatus",
       "input-original-work-guard",
     ],
@@ -1160,7 +1180,7 @@ test("original background marker, status/provenance click, collection rows and e
   ] as const)
     rejected(changed("Conversation", before, after), rule);
   rejected(
-    changed("Sidebar", "{activitySummary}</small>", '{"0 项进行中"}</small>'),
+    changed("Sidebar", "{activitySummary}", '{"0 项进行中"}'),
     "overview-count-DOM",
   );
   rejected(

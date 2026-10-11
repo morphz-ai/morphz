@@ -369,7 +369,12 @@ function normalizeCurrentSymbols(parsed: Parsed) {
   }
 }
 function ownership(contents = sources, historical = false) {
-  const parsed = parse({ ...contents, Expected: expectedText });
+  const parsed = parse({
+    ...contents,
+    Expected: historical
+      ? expectedText
+      : expectedText.replace("activity: subjectActivity, ", ""),
+  });
   const app = parsed.get("App")!,
     owner = parsed.get("Owner")!,
     expected = parsed.get("Expected")!;
@@ -412,7 +417,7 @@ function ownership(contents = sources, historical = false) {
         "no module-global mutable store or initialization",
       );
     const ownedFunctions = [
-      "useSubjectActivityState",
+      ...(historical ? ["useSubjectActivityState"] : []),
       "useSubjectInspectionState",
       "useSubjectCollaborationState",
       "useSubjectInspectorMemory",
@@ -536,13 +541,13 @@ function ownership(contents = sources, historical = false) {
             (value) => node.pos >= value.pos && node.end <= value.end,
           ),
       );
-    assert.equal(registered("useState").length, 4);
+    assert.equal(registered("useState").length, historical ? 4 : 3);
     assert.equal(registered("useRef").length, 1);
     assert.equal(registered("useLayoutEffect").length, 1);
   });
   rule("single-state-and-memory-registration", () => {
     for (const [actual, old] of Object.entries({
-      useSubjectActivityState: "activity",
+      ...(historical ? { useSubjectActivityState: "activity" } : {}),
       useSubjectInspectionState: "inspection",
       useSubjectCollaborationState: "collaboration",
       useSubjectInspectorMemory: "memory",
@@ -552,7 +557,7 @@ function ownership(contents = sources, historical = false) {
       assert.equal(oneCall(app, actual).arguments.length, 0);
     }
     const moved = [
-      "allActivity",
+      ...(historical ? ["allActivity"] : []),
       "executions",
       "understandingOpen",
       "mobileCollaboration",
@@ -577,7 +582,9 @@ function ownership(contents = sources, historical = false) {
         );
     }
     for (const [name, group, shape] of [
-      ["allActivity", "subjectActivity", "activityBinding"],
+      ...(historical
+        ? [["allActivity", "subjectActivity", "activityBinding"]]
+        : []),
       ["executions", "subjectInspection", "inspectionBinding"],
       ["mobileCollaboration", "subjectCollaboration", "collaborationBinding"],
     ]) {
@@ -617,12 +624,16 @@ function ownership(contents = sources, historical = false) {
   });
   rule("four-original-hook-seams-and-unique-call-bindings", () => {
     for (const [name, local, before, after] of [
-      [
-        "useSubjectActivityState",
-        "subjectActivity",
-        "notificationsOpen",
-        "unreadNotifications",
-      ],
+      ...(historical
+        ? [
+            [
+              "useSubjectActivityState",
+              "subjectActivity",
+              "notificationsOpen",
+              "unreadNotifications",
+            ],
+          ]
+        : []),
       [
         "useSubjectInspectionState",
         "subjectInspection",
@@ -932,17 +943,18 @@ function ownership(contents = sources, historical = false) {
         "selectScope",
         "toggleCollaboration",
         "selectExecution",
-        "setAllActivity",
+        ...(historical ? ["setAllActivity"] : []),
       ],
     );
     assert.equal(
       property(returns[0]!.expression, "selectExecution").getText(),
       "setExecutions",
     );
-    assert.equal(
-      property(returns[0]!.expression, "setAllActivity").getText(),
-      "setAllActivity",
-    );
+    if (historical)
+      assert.equal(
+        property(returns[0]!.expression, "setAllActivity").getText(),
+        "setAllActivity",
+      );
     assert.equal(property(returns[0]!.expression, "close").getText(), "close");
     const aliases = variable(app, "showInspector", workspace);
     assert.equal(aliases.initializer!.getText(), "subjectInspector");
@@ -980,7 +992,9 @@ function ownership(contents = sources, historical = false) {
       ["WorkspaceTopbar", "onToggleCollaboration", "toggleCollaboration"],
       ["SubjectSidebar", "onBack", "back"],
       ["SubjectSidebar", "onInspect", "selectScope"],
-      ["ExecutionSidebar", "onAllWorkChange", "setAllActivity"],
+      ...(historical
+        ? [["ExecutionSidebar", "onAllWorkChange", "setAllActivity"]]
+        : []),
       ["ExecutionSidebar", "onSelect", "selectExecution"],
       ["SubjectObjectives", "onSelect", "selectExecution"],
     ]) {
@@ -1282,8 +1296,8 @@ test("subject inspector gate permits comments/formatting and unrelated host/feat
           "/* harmless comment */\nconst subjectInspector =",
         ) + "\nfunction unrelatedFeature() { return 42; }",
       Owner: sources.Owner.replace(
-        "return { allActivity, setAllActivity };",
-        "return {\n allActivity,\n setAllActivity\n};",
+        "return { executions, setExecutions };",
+        "return {\n executions,\n setExecutions\n};",
       ),
     }),
     [],
@@ -1304,20 +1318,20 @@ test("subject inspector gate rejects actual binding, mirror and side-effect coun
     [
       "four-original-hook-seams-and-unique-call-bindings",
       "App",
-      "const subjectActivity = useSubjectActivityState();",
-      "const useSubjectActivityState = () => ({ allActivity: false });\nconst subjectActivity = useSubjectActivityState();",
+      "const subjectInspection = useSubjectInspectionState(),",
+      "const useSubjectInspectionState = () => ({ executions: false });\nconst subjectInspection = useSubjectInspectionState(),",
     ],
     [
       "single-state-and-memory-registration",
       "App",
-      "const { allActivity } = subjectActivity;",
-      "const { allActivity } = subjectActivity;\nconst mirror = useState(allActivity);",
+      "    [searchOpen, setSearchOpen] = useState(false),",
+      "    [mirror] = useState(executions),\n    [searchOpen, setSearchOpen] = useState(false),",
     ],
     [
       "single-state-and-memory-registration",
       "App",
-      "const { allActivity } = subjectActivity;",
-      "const { allActivity } = subjectActivity;\nconst mirror = React.useState(executions);",
+      "    [searchOpen, setSearchOpen] = useState(false),",
+      "    [mirror] = React.useState(executions),\n    [searchOpen, setSearchOpen] = useState(false),",
     ],
     [
       "single-state-and-memory-registration",
@@ -1448,8 +1462,8 @@ test("subject inspector gate rejects memory priority/dependency changes and relo
     [
       "four-original-hook-seams-and-unique-call-bindings",
       "App",
-      "const subjectActivity = useSubjectActivityState();",
-      "const subjectActivity = useSubjectActivityState();\nconst extra = useSubjectInspectionState();",
+      "const subjectInspection = useSubjectInspectionState(),",
+      "const extra = useSubjectInspectionState();\nconst subjectInspection = useSubjectInspectionState(),",
     ],
     [
       "pure-projections-and-artifact-narrowing-witness",
@@ -1594,10 +1608,10 @@ test("current subject accepts real import aliases and independently consumed com
     .replace("return useRef", "return memory")
     .replace("  useLayoutEffect", "  remember");
   const aliasedApp = sources.App.replace(
-    "  useSubjectActivityState,",
-    "  useSubjectActivityState as activityState,",
+    "  useSubjectInspectionState,",
+    "  useSubjectInspectionState as activityState,",
   )
-    .replace(" = useSubjectActivityState();", " = readActivity();")
+    .replace(" = useSubjectInspectionState(),", " = readActivity(),")
     .replace(
       "  const state = client.boot?.workspace;",
       "  const readActivity = activityState;\n  const state = client.boot?.workspace;",
@@ -1615,8 +1629,8 @@ test("current subject accepts real import aliases and independently consumed com
     ) +
     "\nexport function IndependentSubjectFeature() { const [value] = useState(0); useEffect(() => {}, []); return null; }";
   const independentApp = sources.App.replace(
-    "  useSubjectActivityState,",
-    "  useSubjectActivityState,\n  IndependentSubjectFeature,",
+    "  useSubjectInspectionState,",
+    "  useSubjectInspectionState,\n  IndependentSubjectFeature,",
   ).replace(
     "<WorkspaceTopbar",
     "<IndependentSubjectFeature /><WorkspaceTopbar",

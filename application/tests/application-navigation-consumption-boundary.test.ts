@@ -575,37 +575,39 @@ function subjectContract(
     attributes = new Map<Node, unknown>(),
     ownerHooks = reactHooks(subject, current),
     registered = new Set<Node>();
-  for (const [name, local, before, after, primitives] of [
+  for (const [name, local, before, after, primitives] of (
     [
-      "useSubjectActivityState",
-      "subjectActivity",
-      "notificationsOpen",
-      "unreadNotifications",
-      ["useState"],
-    ],
-    [
-      "useSubjectInspectionState",
-      "subjectInspection",
-      "capture",
-      "searchOpen",
-      ["useState", "useState"],
-    ],
-    [
-      "useSubjectCollaborationState",
-      "subjectCollaboration",
-      "compact",
-      "personalSpace",
-      ["useState"],
-    ],
-    [
-      "useSubjectInspectorMemory",
-      "inspectorSelections",
-      "inspectorOpen",
-      "resizeInspector",
-      ["useRef"],
-    ],
-    ["useSubjectInspectorCommit", null, null, null, ["useLayoutEffect"]],
-  ] as const) {
+      [
+        "useSubjectActivityState",
+        "subjectActivity",
+        "notificationsOpen",
+        "unreadNotifications",
+        ["useState"],
+      ],
+      [
+        "useSubjectInspectionState",
+        "subjectInspection",
+        "capture",
+        "searchOpen",
+        ["useState", "useState"],
+      ],
+      [
+        "useSubjectCollaborationState",
+        "subjectCollaboration",
+        "compact",
+        "personalSpace",
+        ["useState"],
+      ],
+      [
+        "useSubjectInspectorMemory",
+        "inspectorSelections",
+        "inspectorOpen",
+        "resizeInspector",
+        ["useRef"],
+      ],
+      ["useSubjectInspectorCommit", null, null, null, ["useLayoutEffect"]],
+    ] as const
+  ).filter(([name]) => !current || name !== "useSubjectActivityState")) {
     const symbol = imported(app, subjectPath, name);
     const uses = app.identifiers.filter(
       (node) =>
@@ -732,7 +734,7 @@ function subjectContract(
       "selectExecution",
       "originalExecution",
     ],
-  ]) {
+  ].filter(([, , attr]) => !current || attr !== "onAllWorkChange")) {
     const component = imported(app, path!, tag!);
     const ports = app.nodes.filter(isJsxAttribute).filter((node) => {
       const opening = node.parent.parent;
@@ -4051,6 +4053,44 @@ nodeTest(
   "current handoff executes the 93 authority/consumption/borrowed literal recipes",
   () => {
     currentConsumption();
+    // Keep the immutable ledger intact. The removed activity range has no
+    // current lifecycle/port; test the same shadow/duplicate/relocation and
+    // indirect-port failures against the surviving inspection seam instead.
+    const currentInspectionCases: Record<
+      number,
+      Array<{ from: string; to: string }>
+    > = {
+      70: [
+        {
+          from: "const subjectInspection = useSubjectInspectionState(),",
+          to: "const useSubjectInspectionState = () => ({executions:null});\nconst subjectInspection = useSubjectInspectionState(),",
+        },
+      ],
+      71: [
+        {
+          from: "const subjectInspection = useSubjectInspectionState(),",
+          to: "const duplicate = useSubjectInspectionState();\nconst subjectInspection = useSubjectInspectionState(),",
+        },
+      ],
+      72: [
+        {
+          from: "const subjectInspection = useSubjectInspectionState(),",
+          to: "const subjectInspection = (() => useSubjectInspectionState())(),",
+        },
+      ],
+      77: [
+        {
+          from: "onSelect={subjectInspector.selectExecution}",
+          to: "onSelect={(value) => subjectInspector.selectExecution(value)}",
+        },
+      ],
+      82: [
+        {
+          from: "const [executions, setExecutions] = useState<ExecutionScope | null>(null);",
+          to: "useLayoutEffect(() => {}, []);\nconst [executions, setExecutions] = useState<ExecutionScope | null>(null);",
+        },
+      ],
+    };
     for (const entry of navigationGovernanceArchive.ledger.filter(
       (entry) => entry.currentRule,
     )) {
@@ -4058,7 +4098,7 @@ nodeTest(
       for (const [name, changes] of Object.entries(entry.changes)) {
         const key = name as keyof CurrentSources;
         assert.ok(key in sources, "known governed source " + name);
-        for (const change of changes)
+        for (const change of currentInspectionCases[entry.id] ?? changes)
           sources[key] = change.from
             ? changed(sources[key], change.from, change.to)
             : sources[key] + change.to;

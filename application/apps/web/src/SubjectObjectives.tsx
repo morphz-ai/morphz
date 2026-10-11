@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Target, ChevronDown, ChevronRight } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
-import { inConversation } from "../../../packages/core/src/model.js";
 import {
   objectiveDetailStatus,
   objectiveStatus,
@@ -12,39 +11,62 @@ import { executionActivityScope } from "./execution-activity.js";
 export function SubjectObjectives({
   client,
   scope,
-  allWork,
   onSelect,
 }: {
   client: WorkspaceClient;
   scope: ExecutionScope;
-  allWork: boolean;
   onSelect(scope: ExecutionScope): void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const runtime = client.boot!.runtime,
     state = client.boot!.workspace;
   const goals =
-    runtime.activity?.objectives?.filter(
-      (goal) =>
-        allWork ||
-        inConversation(
-          state,
-          scope.conversationId ?? scope.projectId,
-          goal,
-          !client.boot!.capabilities.teamAuthentication,
-        ),
-    ) ?? [];
+    runtime.activity?.objectives?.filter((goal) => {
+      if (
+        goal.projectId !== scope.projectId ||
+        goal.conversationId !== (scope.conversationId ?? scope.projectId)
+      )
+        return false;
+      if (scope.threadId) {
+        const thread = runtime.activity?.threads.find(
+          (t) => t.id === scope.threadId,
+        );
+        return (
+          !!thread &&
+          thread.sessionId === goal.sessionId &&
+          thread.projectId === goal.projectId &&
+          thread.conversationId === goal.conversationId &&
+          goal.threadIds.includes(thread.id)
+        );
+      }
+      return (
+        !!scope.inputId &&
+        (goal.inputId === scope.inputId ||
+          runtime.activity?.threads.some(
+            (t) =>
+              t.inputId === scope.inputId &&
+              t.sessionId === goal.sessionId &&
+              t.projectId === goal.projectId &&
+              t.conversationId === goal.conversationId &&
+              goal.threadIds.includes(t.id),
+          ))
+      );
+    }) ?? [];
   if (!goals.length) return null;
   const fresh =
     client.online && runtime.connected && runtime.activity?.available;
   return (
-    <section className="subject-objectives" aria-label="目标">
-      <h3>目标</h3>
+    <section className="subject-objectives" aria-label="关联目标">
+      <h3>关联目标</h3>
       {goals.map((goal) => {
         const threads =
           runtime.activity?.threads.filter(
             (thread) =>
-              thread.kind === "execution" && goal.threadIds.includes(thread.id),
+              thread.kind === "execution" &&
+              thread.sessionId === goal.sessionId &&
+              thread.projectId === goal.projectId &&
+              thread.conversationId === goal.conversationId &&
+              goal.threadIds.includes(thread.id),
           ) ?? [];
         const open = expanded === goal.id;
         return (
