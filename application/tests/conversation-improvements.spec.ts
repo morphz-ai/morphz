@@ -305,6 +305,77 @@ test("旧消息来源直接回填历史，使用精确 ID 且不误开活动", a
   expect(f.writes).toEqual([]);
 });
 
+test("右上角查找无关闭叉号：外部单击关闭但不穿透，内部空白及跨边界拖选不关闭，工作页读写选择保留", async ({
+  page,
+}) => {
+  const f = await setup(page);
+  await page.route(searchRoute, (route) =>
+    route.fulfill({ json: { hits: [], nextCursor: null, scanned: 2 } }),
+  );
+  const trigger = page.getByRole("button", { name: "查找对话", exact: true });
+  const dialog = page.getByRole("dialog", { name: "查找当前对话" });
+  await trigger.click();
+  await expect(dialog.getByRole("button", { name: "关闭查找" })).toHaveCount(0);
+  const search = dialog.getByRole("textbox", {
+    name: "查找当前对话",
+    exact: true,
+  });
+  await search.press("Tab");
+  await expect(search).toBeFocused();
+  const box = (await dialog.boundingBox())!;
+  await page.mouse.click(box.x + 4, box.y + 4);
+  await expect(dialog).toBeVisible();
+  await search.fill("TEST 拖选不关闭");
+  const inputBox = (await search.boundingBox())!;
+  await page.mouse.move(inputBox.x + 12, inputBox.y + inputBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x - 12, box.y + box.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect(dialog).toBeVisible();
+  await expect(search).toHaveValue("TEST 拖选不关闭");
+  const nav = page.getByRole("navigation", { name: "主导航" });
+  const workbench = nav.getByRole("button", { name: "工作台", exact: true });
+  const backgroundButton = (await workbench.boundingBox())!;
+  // The native dialog consumes this press. Closing must not activate the
+  // otherwise clickable navigation button underneath the backdrop.
+  await page.mouse.click(backgroundButton.x + 12, backgroundButton.y + 12);
+  await expect(dialog).not.toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "对话", exact: true }),
+  ).toBeVisible();
+  await expect(trigger).toBeFocused();
+  await workbench.click();
+  const draft = await openInput(page);
+  await draft.fill("TEST 工作页未发送草稿");
+  await page.getByRole("button", { name: "查看交流记录", exact: true }).click();
+  const records = page.getByRole("button", {
+    name: "收起交流记录",
+    exact: true,
+  });
+  await expect(records).toHaveAttribute("aria-pressed", "true");
+  await trigger.click();
+  await expect(dialog).toBeVisible();
+  await expect(page.locator(".conversation")).toBeVisible();
+  const outside = (await dialog.boundingBox())!;
+  await page.mouse.click(outside.x + outside.width / 2, outside.y - 12);
+  await expect(dialog).not.toBeVisible();
+  await expect(trigger).toBeFocused();
+  await expect(records).toHaveAttribute("aria-pressed", "true");
+  await expect(draft).toHaveValue("TEST 工作页未发送草稿");
+  await trigger.click();
+  await dialog.getByRole("textbox").press("Escape");
+  await expect(dialog).not.toBeVisible();
+  await expect(records).toHaveAttribute("aria-pressed", "true");
+  await expect(draft).toHaveValue("TEST 工作页未发送草稿");
+  // Protecting the search interaction must not disable ordinary auto-hide.
+  await page.getByRole("heading", { name: "工作台", exact: true }).click();
+  await expect(page.locator(".conversation")).not.toBeVisible();
+  await openInput(page);
+  await expect(records).toHaveAttribute("aria-pressed", "true");
+  await expect(draft).toHaveValue("TEST 工作页未发送草稿");
+  expect(f.writes).toEqual([]);
+});
+
 test("空输入框收紧，长内容自适应；亮暗与窄窗口保留可点击的查找入口和单底栏", async ({
   page,
 }, info) => {
@@ -337,6 +408,23 @@ test("空输入框收紧，长内容自适应；亮暗与窄窗口保留可点�
         exact: true,
       });
       await expect(trigger).toBeInViewport();
+      const toolbarBox = (await page.locator(".topbar").boundingBox())!;
+      const triggerBox = (await trigger.boundingBox())!;
+      expect(
+        toolbarBox.x + toolbarBox.width - triggerBox.x - triggerBox.width,
+      ).toBeLessThanOrEqual(20);
+      expect(triggerBox.y).toBeGreaterThanOrEqual(toolbarBox.y);
+      expect(triggerBox.y + triggerBox.height).toBeLessThanOrEqual(
+        toolbarBox.y + toolbarBox.height,
+      );
+      expect(
+        await trigger.evaluate(
+          (button) => !!button.closest(".topbar .top-actions"),
+        ),
+      ).toBe(true);
+      await expect(
+        page.locator(".exchange-panel-header .conversation-search-trigger"),
+      ).toHaveCount(0);
       const actualHit = await trigger.evaluate((button) => {
         const b = button.getBoundingClientRect();
         return button.contains(
@@ -350,10 +438,14 @@ test("空输入框收紧，长内容自适应；亮暗与窄窗口保留可点�
       await expect(composer.locator(".composer-action-bar")).toHaveCount(1);
       await page.screenshot({
         path: info.outputPath(`dialogue-${appearance}-${width}.png`),
+        animations: "disabled",
       });
       await trigger.click();
       const dialog = page.getByRole("dialog", { name: "查找当前对话" });
       await expect(dialog).toBeInViewport();
+      await expect(
+        dialog.getByRole("button", { name: "关闭查找" }),
+      ).toHaveCount(0);
       const searchInput = dialog.getByRole("textbox", {
         name: "查找当前对话",
         exact: true,
@@ -382,8 +474,10 @@ test("空输入框收紧，长内容自适应；亮暗与窄窗口保留可点�
       });
       await page.screenshot({
         path: info.outputPath(`search-focus-${appearance}-${width}.png`),
+        animations: "disabled",
       });
-      await dialog.getByRole("button", { name: "关闭查找" }).click();
+      await searchInput.press("Escape");
+      await expect(dialog).not.toBeVisible();
     }
   }
   await expect(input).toHaveValue("TEST 视觉验收未发送草稿");

@@ -26,9 +26,10 @@ export type WorkspaceToolbarSlots = Readonly<{
   application: Ref<HTMLDivElement>;
   page: Ref<HTMLDivElement>;
   detail: Ref<HTMLDivElement>;
+  conversation?: Ref<HTMLDivElement>;
 }>;
 
-/** One persistent native header and three persistent portal destinations.
+/** One persistent native header, three domain slots and one dialogue action target.
  * The Host retains the original ref registrations and command implementations. */
 export function WorkspaceTopbar({
   view,
@@ -147,7 +148,7 @@ export function WorkspaceTopbar({
             view.creating !== "document")
         }
       />
-      <div className="top-actions">
+      <div className="top-actions" ref={slots.conversation}>
         {view.artifact && (
           <button
             className="icon-button collaboration-panel-toggle"

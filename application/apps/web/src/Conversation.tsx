@@ -1,4 +1,11 @@
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { Tooltip } from "./ui/Tooltip.js";
@@ -99,6 +106,8 @@ export function Conversation({
   focusedCognitiveObject,
   onOpenCognitiveObject,
   toolbarTarget,
+  searchToolbarTarget,
+  onSearchEngage,
   onFocusComposer,
   onOpenQuote,
   quoteReveal,
@@ -117,6 +126,8 @@ export function Conversation({
   onLoadEarlierHistory?: () => Promise<void>;
   onFocusComposer?: () => void;
   toolbarTarget?: HTMLElement | null;
+  searchToolbarTarget?: HTMLElement | null;
+  onSearchEngage?: () => void;
   focusedArtifactId?: string;
   focusedApplicationId?: string;
   focusedCognitiveObject?: CognitiveAppObjectLocator;
@@ -145,6 +156,14 @@ export function Conversation({
 }) {
   const [allHistory, setAllHistory] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const searchWasOpen = useRef(false);
+  useLayoutEffect(() => {
+    // Native dialog cleanup restores focus during React's commit, when the
+    // trigger's synthetic onFocus cannot run. Closing search is not an intent
+    // to hide the exchange; cancel that stale leave after focus is restored.
+    if (searchWasOpen.current && !searchOpen) onSearchEngage?.();
+    searchWasOpen.current = searchOpen;
+  }, [searchOpen, onSearchEngage]);
   const [messageReveal, setMessageReveal] = useState<{
     messageId: string;
     token: string;
@@ -451,45 +470,52 @@ export function Conversation({
         </p>
       )}
       {toolbarTarget &&
-        (hasOtherHistory || timeline.length > 0 || hasEarlierHistory) &&
+        hasOtherHistory &&
         createPortal(
           <div className="conversation-reading-tools">
-            {hasOtherHistory && (
-              <div
-                className="conversation-scope"
-                role="group"
-                aria-label="交流范围"
-              >
-                <button
-                  type="button"
-                  aria-pressed={!allHistory}
-                  onClick={() => setAllHistory(false)}
-                >
-                  {focusedArtifactId || focusedCognitiveObject
-                    ? "当前作品"
-                    : "当前应用"}
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={allHistory}
-                  onClick={() => setAllHistory(true)}
-                >
-                  全部交流
-                </button>
-              </div>
-            )}
-            <Tooltip label="查找对话">
+            <div
+              className="conversation-scope"
+              role="group"
+              aria-label="交流范围"
+            >
               <button
                 type="button"
-                className="icon-button conversation-search-trigger"
-                aria-label="查找对话"
-                onClick={() => setSearchOpen(true)}
+                aria-pressed={!allHistory}
+                onClick={() => setAllHistory(false)}
               >
-                <Search size={16} />
+                {focusedArtifactId || focusedCognitiveObject
+                  ? "当前作品"
+                  : "当前应用"}
               </button>
-            </Tooltip>
+              <button
+                type="button"
+                aria-pressed={allHistory}
+                onClick={() => setAllHistory(true)}
+              >
+                全部交流
+              </button>
+            </div>
           </div>,
           toolbarTarget,
+        )}
+      {searchToolbarTarget &&
+        (timeline.length > 0 || hasEarlierHistory) &&
+        createPortal(
+          <Tooltip label="查找对话">
+            <button
+              type="button"
+              className="icon-button conversation-search-trigger"
+              aria-label="查找对话"
+              onFocus={onSearchEngage}
+              onClick={() => {
+                onSearchEngage?.();
+                setSearchOpen(true);
+              }}
+            >
+              <Search size={16} />
+            </button>
+          </Tooltip>,
+          searchToolbarTarget,
         )}
       {timeline.length ? (
         <div

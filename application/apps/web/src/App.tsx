@@ -810,6 +810,8 @@ function WorkspaceApp({
   useExchangeQuoteRevealCommit(conversationId, setQuoteReveal);
   const [conversationToolbarTarget, setConversationToolbarTarget] =
     useState<HTMLDivElement | null>(null);
+  const [conversationSearchTarget, setConversationSearchTarget] =
+    useState<HTMLDivElement | null>(null);
   const exchangeController = useExchangeController({
     surface: workSurface,
     preferences: prefs,
@@ -2730,6 +2732,7 @@ function WorkspaceApp({
             application: setToolbarTarget,
             page: setPageToolbarTarget,
             detail: setDetailToolbarTarget,
+            conversation: setConversationSearchTarget,
           }}
           projectControls={
             <ProjectMenu project={project} onAction={manageProject} />
@@ -3071,6 +3074,8 @@ function WorkspaceApp({
                       )
                     }
                     toolbarTarget={conversationToolbarTarget}
+                    searchToolbarTarget={conversationSearchTarget}
+                    onSearchEngage={keepExchangeOpen}
                     onFocusComposer={() =>
                       input.current?.focus({ preventScroll: true })
                     }

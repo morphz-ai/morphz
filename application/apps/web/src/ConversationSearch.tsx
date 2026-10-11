@@ -1,12 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Search, X, MessageSquare, CornerDownRight } from "lucide-react";
+import { Search, MessageSquare, CornerDownRight } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import type {
   ConversationSearchPage,
   ConversationSearchHit,
 } from "../../../packages/core/src/conversation-search.js";
 import { useModal } from "./useModal.js";
-import { Tooltip } from "./ui/Tooltip.js";
 import { searchPreview } from "./document-presentation.js";
 
 /** Disposable, identity-bound read task. Does not write a draft, select a
@@ -26,6 +25,17 @@ export function ConversationSearch({
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
     input = useRef<HTMLInputElement>(null);
+  const backdropPointer = useRef(false);
+  const outsidePanel = (x: number, y: number) => {
+    const bounds = dialog.current?.getBoundingClientRect();
+    return (
+      !!bounds &&
+      (x < bounds.left ||
+        x > bounds.right ||
+        y < bounds.top ||
+        y > bounds.bottom)
+    );
+  };
   useModal(dialog, input);
   const [query, setQuery] = useState(""),
     [result, setResult] = useState<ConversationSearchPage | null>(null);
@@ -125,6 +135,27 @@ export function ConversationSearch({
       ref={dialog}
       className="create-dialog conversation-search-dialog"
       aria-label="查找当前对话"
+      onPointerDown={(e) => {
+        backdropPointer.current =
+          e.button === 0 &&
+          e.target === e.currentTarget &&
+          outsidePanel(e.clientX, e.clientY);
+      }}
+      onPointerCancel={() => {
+        backdropPointer.current = false;
+      }}
+      onClick={(e) => {
+        const dismiss =
+          backdropPointer.current &&
+          e.target === e.currentTarget &&
+          outsidePanel(e.clientX, e.clientY);
+        backdropPointer.current = false;
+        if (dismiss) {
+          e.preventDefault();
+          e.stopPropagation();
+          onClose();
+        }
+      }}
       onCancel={(e) => {
         e.preventDefault();
         onClose();
@@ -172,16 +203,6 @@ export function ConversationSearch({
             }}
           />
         </label>
-        <Tooltip label="关闭">
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="关闭查找"
-            onClick={onClose}
-          >
-            <X />
-          </button>
-        </Tooltip>
       </div>
       <div className="conversation-search-results">
         {!term && (

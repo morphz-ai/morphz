@@ -201,6 +201,7 @@ function shellContract(text: string) {
       "{slots.application}",
       "{slots.page}",
       "{slots.detail}",
+      "{slots.conversation}",
     ]);
     assert.equal(tags.filter((tag) => tag === "header").length, 1);
     assert.deepEqual(forbidden, []);
@@ -220,6 +221,9 @@ test("new chrome owner is a bounded shell renderer with exact direct slot refs",
     shellContract(
       text.replace("ref={slots.page}", "ref={(node) => slots.page(node)}"),
     ),
+  );
+  assert.throws(() =>
+    shellContract(text.replace("ref={slots.conversation}", "ref={slots.page}")),
   );
   assert.throws(() =>
     shellContract(
@@ -383,6 +387,7 @@ function appTopbarContract(text: string) {
       application: ["toolbarTarget", "setToolbarTarget"],
       page: ["pageToolbarTarget", "setPageToolbarTarget"],
       detail: ["detailToolbarTarget", "setDetailToolbarTarget"],
+      conversation: ["conversationSearchTarget", "setConversationSearchTarget"],
     };
     const setterBindings = new Map<string, number>();
     for (const [slot, [valueName, setterName]] of Object.entries(expected)) {
@@ -434,7 +439,7 @@ function appTopbarContract(text: string) {
         isObjectLiteralExpression(slots.initializer.expression),
     );
     const assignments = slots.initializer.expression.properties;
-    assert.equal(assignments.length, 3);
+    assert.equal(assignments.length, 4);
     for (const property of assignments) {
       assert.ok(
         isPropertyAssignment(property) &&

@@ -857,17 +857,6 @@ body:has(dialog[open]) .cognitive-application-frame {
   gap: 6px;
   min-width: 0;
 }
-.conversation-search-trigger {
-  position: relative;
-  z-index: 6;
-  pointer-events: auto;
-  flex-shrink: 0;
-  border-radius: 8px;
-  background: var(--surface-popover);
-  -webkit-backdrop-filter: var(--popup-blur);
-  backdrop-filter: var(--popup-blur);
-  color: var(--muted);
-}
 .conversation-search-dialog {
   width: min(560px, calc(100% - 32px));
   max-height: min(560px, calc(100dvh - 48px));

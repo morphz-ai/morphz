@@ -1549,8 +1549,8 @@ test("viewport permits unrelated JSX/comments/type annotations/domain exports an
   candidate = changed(
     candidate,
     "Conversation",
-    "useState, type ReactNode",
-    "useState as renderState, type ReactNode",
+    "  useState,\n  type ReactNode,",
+    "  useState as renderState,\n  type ReactNode,",
   );
   candidate = {
     ...candidate,
