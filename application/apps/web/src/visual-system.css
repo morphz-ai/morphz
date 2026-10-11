@@ -576,12 +576,19 @@
 /* Feedback inside a colored message belongs to its surface, not neutral chrome. */
 .app
   .human-message
-  :is(.sent-text-quote, .message-execution-link):is(:hover, :focus-visible) {
+  :is(.sent-text-quote, .message-object-link, .message-execution-link):is(
+    :hover,
+    :focus-visible
+  ) {
   background: var(--human-message-hover);
 }
 .app
   .human-message
-  :is(.sent-text-quote, .message-execution-link):active:not(:disabled) {
+  :is(
+    .sent-text-quote,
+    .message-object-link,
+    .message-execution-link
+  ):active:not(:disabled) {
   background: var(--human-message-pressed);
 }
 .app

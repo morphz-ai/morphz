@@ -16,7 +16,7 @@ const quoteText =
 const sourceText = `第一处：${quoteText}\n\n第二处：${quoteText}`;
 const sourceStart = sourceText.lastIndexOf(quoteText);
 
-async function prepare(page: Page) {
+async function prepare(page: Page, linkedDocument = false) {
   const inputs: PlatformHistory["inputs"] = [];
   const fixture = await mockPlatformConversation(page, () => ({
     inputs,
@@ -64,6 +64,29 @@ async function prepare(page: Page) {
       },
     },
   ];
+  if (linkedDocument) {
+    const objectId = randomUUID();
+    await fixture.client.createDocument({
+      commandId: randomUUID(),
+      objectId,
+      projectId: fixture.spaces.deskId,
+      title: "TEST 关联文档引用的悬停底色",
+      markdown: sourceText,
+    });
+    const document = await fixture.client.resolveContent({
+      appId: "morphz.objects",
+      appObjectId: objectId,
+    });
+    sent.artifactId = document.id;
+    sent.artifactRevision = 1;
+    sent.textQuotes[0]!.source = {
+      kind: "artifact",
+      projectId: fixture.spaces.deskId,
+      artifactId: document.id,
+      revision: 1,
+      title: document.title,
+    };
+  }
   inputs.push(original, sent);
   await page.goto("/");
   await page
@@ -311,6 +334,100 @@ test("本人消息引用：四强调色亮暗正常、悬停、Tab与按下沿�
     }
   }
   await info.attach("message-quote-color-and-contrast", {
+    body: JSON.stringify(observations, null, 2),
+    contentType: "application/json",
+  });
+});
+
+test("本人消息的关联文档引用条：悬停、Tab与按下不套用中性白底", async ({
+  page,
+}, info) => {
+  const { quote, message } = await prepare(page, true);
+  const reference = message.locator(".message-object-link");
+  await expect(reference).toContainText("TEST 关联文档引用的悬停底色");
+  const state = () =>
+    reference.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 1;
+      const context = canvas.getContext("2d")!;
+      context.fillStyle = style.backgroundColor;
+      context.fillRect(0, 0, 1, 1);
+      const rect = element.getBoundingClientRect();
+      return {
+        background: [...context.getImageData(0, 0, 1, 1).data],
+        width: rect.width,
+        height: rect.height,
+        hovered: element.matches(":hover"),
+        focused: element.matches(":focus-visible"),
+        active: element.matches(":active"),
+      };
+    });
+  const observations = [];
+  for (const appearance of ["亮色", "暗色"]) {
+    for (const accent of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
+      const settings = await openSettings(page, "外观");
+      await settings
+        .getByRole("button", { name: appearance, exact: true })
+        .click();
+      await settings.getByRole("button", { name: accent, exact: true }).click();
+      await page.keyboard.press("Escape");
+      await reference.evaluate((element) => (element as HTMLElement).blur());
+      await page.mouse.move(0, 0);
+      const normal = await state();
+      const tokens = await colors(quote);
+      expect(normal.background[3]).toBe(0);
+      await reference.hover();
+      // Save the actual pre-assertion appearance too, so a regression retains
+      // its white surface rather than only reporting a token mismatch.
+      await message.screenshot({
+        path: info.outputPath(`document-${appearance}-${accent}-hover.png`),
+      });
+      await expect
+        .poll(async () => (await state()).background)
+        .toEqual(tokens.hover);
+      const hovered = await state();
+      expect(hovered.hovered).toBe(true);
+      expect(hovered.background).not.toEqual(tokens.neutral);
+      // The preceding quote opens a focusable full-text popover. Close it
+      // explicitly, then use the real next Tab stop instead of assuming a
+      // Shift+Tab round trip leaves that popover out of the focus order.
+      await quote.focus();
+      await page.keyboard.press("Escape");
+      await page.keyboard.press("Tab");
+      await expect(reference).toBeFocused();
+      await page.mouse.move(0, 0);
+      await expect
+        .poll(async () => (await state()).background)
+        .toEqual(tokens.hover);
+      const focused = await state();
+      expect(focused.focused).toBe(true);
+      await reference.hover();
+      await page.mouse.down();
+      await expect
+        .poll(async () => (await state()).background)
+        .toEqual(tokens.pressed);
+      const pressed = await state();
+      expect(pressed.active).toBe(true);
+      for (const interactive of [hovered, focused, pressed])
+        expect([interactive.width, interactive.height]).toEqual([
+          normal.width,
+          normal.height,
+        ]);
+      await page.mouse.move(0, 0);
+      await page.mouse.up();
+      await reference.evaluate((element) => (element as HTMLElement).blur());
+      observations.push({
+        appearance,
+        accent,
+        normal,
+        hovered,
+        focused,
+        pressed,
+      });
+    }
+  }
+  await info.attach("document-reference-interaction-colors.json", {
     body: JSON.stringify(observations, null, 2),
     contentType: "application/json",
   });
