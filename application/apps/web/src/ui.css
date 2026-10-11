@@ -38,7 +38,6 @@
 /* Keep the four brand accent tokens; use their strong shade for small text. */
 .app .document-link,
 .app .retry-input,
-.app .message-object-link,
 .app .message.annotation .message-author,
 .app .execution-result > button,
 .app .job-status.running,

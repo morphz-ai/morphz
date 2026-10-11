@@ -427,7 +427,7 @@ test(
       );
     }
     await t.test(
-      "beginOpen from restored ready original does not re-read the abandoned old locator before adopting the next original",
+      "beginOpen reads only next locator and clears input blocking while full history stays selected",
       async () => {
         await load("restore");
         let r = await waitHeld(1);
@@ -473,6 +473,12 @@ test(
         r = await report(page);
         assert.equal(authorReads(r).length, 1);
         assert.equal(r.textarea.disabled, false);
+        assert.equal(r.preferences.exchangeViews["project-A"], "history");
+        assert.equal(
+          r.originalLayout.find((entry: any) => entry.name === "MAIN")?.display,
+          "none",
+          "read completion must not unselect or hide the user's full history",
+        );
         assert.deepEqual(forbidden(r), []);
       },
     );

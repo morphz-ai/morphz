@@ -602,8 +602,10 @@ function WorkspaceApp({
   const cognitiveInputBlocked =
     cognitive.blocked ||
     cognitiveView.blocked ||
-    (!!cognitiveOpen.current &&
-      navigation.isCurrent(cognitiveOpen.current.generation));
+    // The navigation owner publishes read completion. A mutable pending-read
+    // ref cannot unblock a committed render when the destination preserves the
+    // caller's full-history view and no subsequent state update is scheduled.
+    openingObject;
   const [browserPage, setBrowserPage] = useState<BrowserView | null>(null);
   const [attachmentSlot, setAttachmentSlot] = useState<HTMLDivElement | null>(
     null,

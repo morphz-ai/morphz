@@ -38,6 +38,7 @@ import {
   CircleHelp,
   MessageSquarePlus,
   Pause,
+  Link2,
 } from "lucide-react";
 import {
   scriptOutputKey,
@@ -45,7 +46,7 @@ import {
 } from "../../../packages/core/src/script-delivery.js";
 import { scriptKindLabels } from "../../../packages/core/src/script-studio.js";
 import type { WorkspaceClient } from "./client.js";
-import { ObjectIcon } from "./ui/ObjectIcon.js";
+import { ObjectIcon, kindLabel } from "./ui/ObjectIcon.js";
 import { AttachmentPreview } from "./AttachmentPreview.js";
 import {
   conversationDate,
@@ -570,6 +571,38 @@ export function Conversation({
                   : "Morphz",
                 createdAt: (item ?? reply)!.createdAt,
               });
+              const linkedArtifact = item?.artifactId
+                ? state.artifacts.find(
+                    (artifact) => artifact.id === item.artifactId,
+                  )
+                : undefined;
+              const linkedCatalog = item?.artifactId
+                ? client.contentCatalog.find(
+                    (entry) => entry.id === item.artifactId,
+                  )
+                : undefined;
+              const catalogKind = linkedCatalog?.kind;
+              const linkedKind =
+                linkedArtifact?.content.kind ??
+                (catalogKind && Object.hasOwn(kindLabel, catalogKind)
+                  ? (catalogKind as keyof typeof kindLabel)
+                  : undefined);
+              const linkedTitle = item?.artifactId
+                ? (client.contentVersionTitle(
+                    item.artifactId,
+                    item.artifactRevision ?? undefined,
+                  ) ?? "关联资源")
+                : "";
+              const linkedVersion =
+                item?.artifactRevision != null
+                  ? `v${item.artifactRevision}`
+                  : "";
+              const linkedLabel = `${linkedTitle}${item?.reading ? ` · ${item.reading.chapter}` : ""}${linkedVersion ? ` · ${linkedVersion}` : ""}`;
+              const originalTitle = item?.cognitiveObject
+                ? (client.contentCatalog.find(
+                    (entry) => entry.id === item.cognitiveObject!.contentId,
+                  )?.title ?? "关联原件")
+                : "";
               const { activeBranch, workStatus } =
                 inputExecutionActivityPresentation(
                   runtime,
@@ -739,38 +772,62 @@ export function Conversation({
                       />
                     )}
                     {item?.artifactId && (
-                      <button
-                        className="message-object-link"
-                        onClick={() =>
-                          onOpen(
-                            item.artifactId!,
-                            item.artifactRevision ?? undefined,
-                            undefined,
-                            item.reading?.location,
-                          )
-                        }
+                      <Tooltip
+                        label={`打开${linkedKind ? kindLabel[linkedKind] : "资源"}：${linkedLabel}`}
                       >
-                        {client.contentVersionTitle(
-                          item.artifactId,
-                          item.artifactRevision ?? undefined,
-                        ) ?? "关联对象"}
-                        {item.reading &&
-                          ` · ${item.reading.chapter} · 回到原文`}
-                        {!item.reading &&
-                          item.artifactRevision != null &&
-                          ` · v${item.artifactRevision}`}
-                      </button>
+                        <button
+                          className="message-object-link"
+                          aria-label={`打开关联资源：${linkedLabel}`}
+                          onClick={() =>
+                            onOpen(
+                              item.artifactId!,
+                              item.artifactRevision ?? undefined,
+                              undefined,
+                              item.reading?.location,
+                            )
+                          }
+                        >
+                          <span className="message-resource-icon" aria-hidden>
+                            {linkedKind ? (
+                              <ObjectIcon kind={linkedKind} />
+                            ) : (
+                              <Link2 />
+                            )}
+                          </span>
+                          <span className="message-resource-title">
+                            {linkedTitle}
+                            {item.reading && ` · ${item.reading.chapter}`}
+                          </span>
+                          {linkedVersion && (
+                            <small className="message-resource-version">
+                              {linkedVersion}
+                            </small>
+                          )}
+                        </button>
+                      </Tooltip>
                     )}
                     {item?.cognitiveObject && onOpenCognitiveObject && (
-                      <button
-                        className="message-object-link"
-                        title={`原件版本：${item.cognitiveObject.object.versionRef}`}
-                        onClick={() =>
-                          onOpenCognitiveObject(item.cognitiveObject!)
-                        }
+                      <Tooltip
+                        label={`打开原件：${originalTitle} · ${item.cognitiveObject.object.versionRef}`}
                       >
-                        关联原件 · {item.cognitiveObject.object.versionRef}
-                      </button>
+                        <button
+                          className="message-object-link"
+                          aria-label={`打开关联原件：${originalTitle} · ${item.cognitiveObject.object.versionRef}`}
+                          onClick={() =>
+                            onOpenCognitiveObject(item.cognitiveObject!)
+                          }
+                        >
+                          <span className="message-resource-icon" aria-hidden>
+                            <Link2 />
+                          </span>
+                          <span className="message-resource-title">
+                            {originalTitle}
+                          </span>
+                          <small className="message-resource-version">
+                            {item.cognitiveObject.object.versionRef}
+                          </small>
+                        </button>
+                      </Tooltip>
                     )}
                     {item?.localFile && (
                       <small
