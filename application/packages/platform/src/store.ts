@@ -7251,6 +7251,34 @@ export class PlatformStore {
     const actor = await this.authorize(access);
     if (actor.kind !== "human")
       throw new PlatformStorageError("forbidden", "只有用户可以读取这段对话。");
+    return this.conversationReadGrant(actor, request);
+  }
+
+  /** Host-only: the conversation must come from the verified Runtime input,
+   * never a model-selected target. Agent and initiating Human memberships are
+   * both rechecked, including equal-audience cross-space read boundaries. */
+  async authorizeAgentConversationRead(
+    access: PlatformActor,
+    request: { projectId: string; conversationId: string },
+  ): Promise<{ personalDefault: boolean; projectIds: string[] }> {
+    const actor = await this.authorize(access);
+    if (
+      actor.kind !== "agent" ||
+      !actor.runtimeInputId ||
+      actor.runtimeTaskRun ||
+      actor.scopeProjectId !== request.projectId
+    )
+      throw new PlatformStorageError(
+        "forbidden",
+        "查找对话需要本次原始输入的 Agent 身份。",
+      );
+    return this.conversationReadGrant(actor, request);
+  }
+
+  private async conversationReadGrant(
+    actor: ResolvedActor,
+    request: { projectId: string; conversationId: string },
+  ): Promise<{ personalDefault: boolean; projectIds: string[] }> {
     requireId(request.projectId, "项目标识");
     requireId(request.conversationId, "对话标识");
     return this.transaction(async (q) => {
@@ -7273,7 +7301,8 @@ export class PlatformStore {
       if (conversation.project_id !== request.projectId) {
         if (!personalDefault)
           throw new PlatformStorageError("forbidden", "对话不属于这个项目。");
-        await this.assertProjectReader(q, actor, conversation.project_id);
+        if (actor.kind === "human")
+          await this.assertProjectReader(q, actor, conversation.project_id);
       }
       if (!personalDefault)
         return { personalDefault: false, projectIds: [request.projectId] };
@@ -7281,10 +7310,23 @@ export class PlatformStore {
         "SELECT project_id FROM project_members WHERE tenant_id=? AND principal_id=?",
         [actor.tenantId, actor.principalId],
       );
-      return {
-        personalDefault: true,
-        projectIds: memberships.map((row) => row.project_id),
-      };
+      const projectIds: string[] = [];
+      for (const row of memberships) {
+        if (actor.kind === "agent") {
+          try {
+            await this.assertProjectReader(q, actor, row.project_id);
+          } catch (error) {
+            if (
+              error instanceof PlatformStorageError &&
+              error.code === "forbidden"
+            )
+              continue;
+            throw error;
+          }
+        }
+        projectIds.push(row.project_id);
+      }
+      return { personalDefault: true, projectIds };
     }, "read");
   }
 

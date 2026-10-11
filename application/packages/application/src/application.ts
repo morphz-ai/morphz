@@ -26,6 +26,7 @@ import {
 import { maxMessageAttachmentBytes } from "../../core/src/message-attachment-policy.js";
 import type { LocalRuntimeConnection } from "./runtime-connection.js";
 import { disconnectedRuntime } from "../../../packages/core/src/conversation.js";
+import { conversationSearchRequestSchema } from "../../../packages/core/src/conversation-search.js";
 import {
   executionScopeSchema,
   executionControlSchema,
@@ -2528,6 +2529,13 @@ export class ApplicationSession {
     this.active();
     return { commandId: command.commandId, entityId };
   }
+  async searchPlatformConversation(raw: unknown) {
+    const request = conversationSearchRequestSchema.parse(raw);
+    this.active();
+    return this.runtime().searchPlatformConversation(request, this.access, () =>
+      this.active(),
+    );
+  }
   async platformConversationHistory(raw: unknown) {
     const { before, limit, ...scope } = conversationHistoryRequest.parse(raw);
     const history = await this.runtime().platformConversationHistory(
@@ -3824,6 +3832,8 @@ export function invokeApplication(
       return session.updatePlatformConversation(params);
     case "conversations.history":
       return session.platformConversationHistory(params);
+    case "conversations.search":
+      return session.searchPlatformConversation(params);
     case "tasks.list":
       return session.listPlatformTasks(params);
     case "tasks.counts":

@@ -39,6 +39,7 @@ export async function agentDomainFixture(
     }) => string;
     readerOcr?: ReaderOcr;
     prepareTaskSession?: PlatformAgentDomain["prepareTaskSession"];
+    searchConversation?: PlatformAgentDomain["searchConversation"];
     storage?: Parameters<typeof openApplicationDomainsHost>[3];
     // Reuse only the generated HTTP E2E center, never a user's live database.
     existingCenter?: {
@@ -263,6 +264,8 @@ export async function agentDomainFixture(
     return {
       input_id: root.inputId,
       workspace_id: root.projectId,
+      conversation_id: root.projectId,
+      author_actant_id: localAccess.actantId,
       text: root.text,
       selection: root.selection,
       ...(root.reading ? { reading: structuredClone(root.reading) } : {}),
@@ -284,6 +287,9 @@ export async function agentDomainFixture(
         readerOcr: options.readerOcr,
         prepareTaskSession: options.prepareTaskSession,
         inputForInvocation: readAcceptedInput,
+        ...(options.searchConversation
+          ? { searchConversation: options.searchConversation }
+          : {}),
         ...(options.readUnderstanding
           ? { readUnderstanding: options.readUnderstanding }
           : {}),

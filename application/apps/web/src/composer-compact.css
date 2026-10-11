@@ -16,7 +16,12 @@
   min-height: 60px;
 }
 .app .composer:has(.composer-action-bar) .composer-writing > textarea {
-  flex: 1 1 auto;
+  /* Content sets the writing height. Growing the flex item to its old 180px
+     maximum made an empty draft consume the reading area. */
+  flex: 0 1 auto;
+  height: auto;
+  field-sizing: content;
+  max-height: min(180px, 28dvh);
   min-height: 60px;
   overflow: auto;
 }

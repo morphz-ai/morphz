@@ -129,7 +129,7 @@
   min-height: 28px;
   padding: 0 12px;
 }
-.exchange-panel-header:not(:has(.conversation-scope)) {
+.exchange-panel-header:not(:has(.conversation-reading-tools)) {
   display: none;
 }
 .exchange-scope {
@@ -175,7 +175,7 @@
 .exchange-panel:has(> .exchange-controls-slot) > .exchange-panel-header {
   padding-right: calc(var(--exchange-controls-width) + 24px);
 }
-.exchange-panel:has(.exchange-panel-header .conversation-scope)
+.exchange-panel:has(.exchange-panel-header .conversation-reading-tools)
   > .conversation {
   padding-top: 44px;
 }
@@ -240,7 +240,7 @@
   .exchange-panel:has(> .exchange-controls-slot) > .conversation {
     padding-top: 60px;
   }
-  .exchange-panel:has(.exchange-panel-header .conversation-scope)
+  .exchange-panel:has(.exchange-panel-header .conversation-reading-tools)
     > .conversation {
     padding-top: 60px;
   }

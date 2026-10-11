@@ -2,6 +2,8 @@ import { Fragment, useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { Tooltip } from "./ui/Tooltip.js";
+import { ResponseWaiting } from "./ResponseWaiting.js";
+import { ConversationSearch } from "./ConversationSearch.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
 import type { Workspace } from "../../../packages/core/src/model.js";
 import { discussionId } from "../../../packages/core/src/model.js";
@@ -40,6 +42,7 @@ import {
   MessageSquarePlus,
   Pause,
   Link2,
+  Search,
 } from "lucide-react";
 import {
   scriptOutputKey,
@@ -52,6 +55,8 @@ import { AttachmentPreview } from "./AttachmentPreview.js";
 import {
   conversationDate,
   isPendingResponse,
+  messageSourceSummary,
+  responseWaitingLabel,
 } from "./conversation-presentation.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { liveToolPresentation } from "./execution-presentation.js";
@@ -65,6 +70,7 @@ import { cognitiveWorkSurfaceKey } from "./host/work-surface.js";
 import {
   useConversationViewportState,
   useConversationViewportCommit,
+  useConversationMessageReveal,
   type ExchangePosition,
 } from "./features/exchange/useConversationViewport.js";
 
@@ -99,8 +105,10 @@ export function Conversation({
   onQuoteUnavailable,
   hasEarlierHistory,
   onLoadEarlierHistory,
+  searchProjectId,
   notice,
 }: {
+  searchProjectId?: string;
   notice?: ReactNode;
   onOpenQuote?: (quote: TextQuote) => void;
   quoteReveal?: { quote: TextQuote; token: string } | null;
@@ -136,6 +144,14 @@ export function Conversation({
   onSupplement?: (target: InputContinuation) => void;
 }) {
   const [allHistory, setAllHistory] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [messageReveal, setMessageReveal] = useState<{
+    messageId: string;
+    token: string;
+  } | null>(null);
+  const revealMessage = (messageId: string) =>
+    setMessageReveal({ messageId, token: crypto.randomUUID() });
+  useEffect(() => setMessageReveal(null), [quoteReveal?.token]);
   const cognitiveFocusKey = focusedCognitiveObject
     ? cognitiveWorkSurfaceKey({
         kind: "original",
@@ -313,15 +329,12 @@ export function Conversation({
       )
         return [];
       const connected = client.online && runtime.connected;
-      const label = !connected
-        ? "连接中断，等待恢复"
-        : delivery.cancelRequested || stopStates[delivery.inputId]?.pending
-          ? "已请求停止，等待确认"
-          : delivery.state === "sending"
-            ? "正在发送…"
-            : delivery.state === "queued"
-              ? "等待处理…"
-              : "正在处理…";
+      const label = responseWaitingLabel(
+        delivery,
+        group.messages,
+        connected,
+        stopStates[delivery.inputId]?.pending,
+      );
       return [[group.id, { label, connected }] as const];
     }),
   );
@@ -392,6 +405,18 @@ export function Conversation({
       client,
     },
   );
+  useConversationMessageReveal(viewport, {
+    request: messageReveal,
+    quoteToken: quoteReveal?.token,
+    contentVersion,
+    focused,
+    allInputs,
+    messages,
+    hasEarlierHistory,
+    setAllHistory,
+    client,
+    onUnavailable: onQuoteUnavailable,
+  });
   return (
     <section
       className="conversation"
@@ -400,6 +425,15 @@ export function Conversation({
       ref={scroller}
       onScroll={onScroll}
     >
+      {searchOpen && (
+        <ConversationSearch
+          client={client}
+          projectId={searchProjectId ?? client.boot!.workspace.id}
+          conversationId={conversationId}
+          onClose={() => setSearchOpen(false)}
+          onReveal={revealMessage}
+        />
+      )}
       {notice}
       {hasEarlierHistory && onLoadEarlierHistory && (
         <button
@@ -416,30 +450,44 @@ export function Conversation({
           {earlierError}
         </p>
       )}
-      {hasOtherHistory &&
-        toolbarTarget &&
+      {toolbarTarget &&
+        (hasOtherHistory || timeline.length > 0 || hasEarlierHistory) &&
         createPortal(
-          <div
-            className="conversation-scope"
-            role="group"
-            aria-label="交流范围"
-          >
-            <button
-              type="button"
-              aria-pressed={!allHistory}
-              onClick={() => setAllHistory(false)}
-            >
-              {focusedArtifactId || focusedCognitiveObject
-                ? "当前作品"
-                : "当前应用"}
-            </button>
-            <button
-              type="button"
-              aria-pressed={allHistory}
-              onClick={() => setAllHistory(true)}
-            >
-              全部交流
-            </button>
+          <div className="conversation-reading-tools">
+            {hasOtherHistory && (
+              <div
+                className="conversation-scope"
+                role="group"
+                aria-label="交流范围"
+              >
+                <button
+                  type="button"
+                  aria-pressed={!allHistory}
+                  onClick={() => setAllHistory(false)}
+                >
+                  {focusedArtifactId || focusedCognitiveObject
+                    ? "当前作品"
+                    : "当前应用"}
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={allHistory}
+                  onClick={() => setAllHistory(true)}
+                >
+                  全部交流
+                </button>
+              </div>
+            )}
+            <Tooltip label="查找对话">
+              <button
+                type="button"
+                className="icon-button conversation-search-trigger"
+                aria-label="查找对话"
+                onClick={() => setSearchOpen(true)}
+              >
+                <Search size={16} />
+              </button>
+            </Tooltip>
           </div>,
           toolbarTarget,
         )}
@@ -476,11 +524,7 @@ export function Conversation({
                 previous?.output?.inputId ??
                 previous?.scriptOutput?.inputId;
               const replySourceText = reply?.inputId
-                ? inputById
-                    .get(reply.inputId)
-                    ?.body.slice(0, 50)
-                    .replace(/\s+/g, " ")
-                    .trim() || "原消息"
+                ? messageSourceSummary(stateInputById.get(reply.inputId))
                 : "";
               const startsTurn =
                 !!previous &&
@@ -776,7 +820,6 @@ export function Conversation({
                       </button>
                     )}
                     {reply?.inputId &&
-                      onInspect &&
                       (timeline[index - 1]?.input?.id ??
                         timeline[index - 1]?.reply?.inputId ??
                         timeline[index - 1]?.output?.inputId) !==
@@ -785,7 +828,7 @@ export function Conversation({
                           className="message-source response-source"
                           aria-label={"回复：" + replySourceText}
                           title={replySourceText}
-                          onClick={() => onInspect(reply.inputId!)}
+                          onClick={() => revealMessage(reply.inputId!)}
                         >
                           <span>{replySourceText}</span>
                         </button>
@@ -1121,20 +1164,11 @@ export function Conversation({
                     />
                   ))}
                   {item && waiting && (
-                    <div
-                      className="response-placeholder"
-                      data-waiting-input-id={item.id}
-                      data-connected={waiting.connected}
-                    >
-                      <span className="response-waiting" role="status">
-                        <span className="response-dots" aria-hidden="true">
-                          <i />
-                          <i />
-                          <i />
-                        </span>
-                        {waiting.label}
-                      </span>
-                    </div>
+                    <ResponseWaiting
+                      inputId={item.id}
+                      createdAt={item.createdAt}
+                      {...waiting}
+                    />
                   )}
                 </Fragment>
               );

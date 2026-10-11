@@ -127,6 +127,7 @@ export const applicationMethods = [
   "conversations.navigation",
   "conversations.update",
   "conversations.history",
+  "conversations.search",
   "tasks.list",
   "tasks.counts",
   "tasks.get",

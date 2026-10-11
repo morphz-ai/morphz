@@ -140,6 +140,15 @@ const cognitiveSlotGuard = `function expectedGuard() {
     return;
   }
 }`;
+// Approved independent length admission is checked before removing it for the
+// immutable original-command comparison. The old Git witness stays unchanged.
+const lengthAdmission = `function expectedLengthAdmission() {
+  const lengthError = exchangeDraftLengthError(draft, !!(asAnnotation && artifact && draft.selection && draft.revision));
+  if (lengthError) {
+    setInputErrors((old) => ({ ...old, [contextKey]: lengthError }));
+    return;
+  }
+}`;
 
 export function verifySubmissionCommands(
   text = submissionOwnerText,
@@ -176,6 +185,9 @@ export function verifySubmissionCommands(
     ["../composer-drafts.js", "consumeComposerDraft"],
     ["../application-transport.js", "RequestError"],
     ["./submit-exchange-draft.js", "submitExchangeDraft"],
+    ...(profile === "cognitive"
+      ? [["./exchange-draft-validation.js", "exchangeDraftLengthError"]]
+      : []),
     ...(profile === "cognitive"
       ? [
           [
@@ -281,6 +293,15 @@ export function verifySubmissionCommands(
         "exact cognitive own-slot guard",
       );
       const statements = fn.body!.statements;
+      const lengthStatements = statements.slice(2, 4);
+      assert.deepEqual(
+        lengthStatements.map(submissionSyntax),
+        oneFunction(
+          parseSubmission(lengthAdmission),
+          "expectedLengthAdmission",
+        ).body!.statements.map(submissionSyntax),
+        "exact length admission before dictation, Profile or persistence",
+      );
       assert.equal(
         statements.indexOf(guards[0]!),
         1,
@@ -308,6 +329,10 @@ export function verifySubmissionCommands(
         "source carry has original tuple separator",
       );
       const edits = [
+        ...lengthStatements.map((node) => ({
+          start: node.getStart(),
+          end: node.end,
+        })),
         { start: guards[0]!.getStart(), end: guards[0]!.end },
         { start: carries[0]!.getStart(), end: carries[0]!.end + 1 },
       ];

@@ -56,6 +56,7 @@ import {
   type InputIntent,
 } from "../../../packages/core/src/input-intent.js";
 import { Conversation, type ExchangePosition } from "./Conversation.js";
+import { exchangeDraftLengthError } from "./host/exchange-draft-validation.js";
 import { WorkspaceNotice } from "./WorkspaceNotice.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import "./features/exchange/composer-collapsed-entry.css";
@@ -2274,6 +2275,10 @@ function WorkspaceApp({
         : client.boot!.runtime.configured
           ? "发送消息"
           : "保存输入";
+  const draftLengthError = exchangeDraftLengthError(
+    draft,
+    !!(draft.annotation && artifact && draft.selection && draft.revision),
+  );
   const sendButton = (
     <Tooltip label={sendLabel === "发送消息" ? "发送" : sendLabel}>
       <button
@@ -2285,6 +2290,7 @@ function WorkspaceApp({
             !draft.attachments?.length &&
             !draft.textQuotes?.length) ||
           sending ||
+          !!draftLengthError ||
           cognitiveInputBlocked ||
           (selectedDraft &&
             client.boot?.localSavedInputIds.includes(selectedDraft.inputId)) ||
@@ -3029,6 +3035,7 @@ function WorkspaceApp({
               >
                 {conversationVisible && (
                   <Conversation
+                    searchProjectId={project.id}
                     notice={
                       notice ? (
                         <WorkspaceNotice
@@ -3060,8 +3067,7 @@ function WorkspaceApp({
                     }
                     onQuoteUnavailable={(reason) =>
                       setNotice(
-                        reason ??
-                          "原消息暂时不在已加载的记录中，引用内容仍保留。",
+                        reason ?? "原消息暂时无法定位，当前内容与草稿已保留。",
                       )
                     }
                     toolbarTarget={conversationToolbarTarget}
@@ -3329,7 +3335,7 @@ function WorkspaceApp({
                                     : "提出想法，或让工作继续…"
                           }
                           rows={2}
-                          maxLength={30000}
+                          aria-invalid={!!draftLengthError || undefined}
                           value={draft.body}
                           disabled={
                             sending ||
@@ -3344,6 +3350,11 @@ function WorkspaceApp({
                                 ? (draft.revision ?? artifact.revision)
                                 : null,
                             });
+                            if (inputErrors[contextKey])
+                              setInputErrors((old) => ({
+                                ...old,
+                                [contextKey]: "",
+                              }));
                           }}
                           onKeyDown={(event) => {
                             const mode = inputDispatchMode(
@@ -3392,7 +3403,9 @@ function WorkspaceApp({
                       )}
                       <ComposerActionBar
                         status={
-                          <ComposerStatus error={inputErrors[contextKey]}>
+                          <ComposerStatus
+                            error={draftLengthError ?? inputErrors[contextKey]}
+                          >
                             {(!client.online ||
                               (draft.taskResult && !draft.continuation) ||
                               (!draft.annotation &&

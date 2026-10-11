@@ -349,6 +349,18 @@ export class HttpApplicationClient {
             : "");
         break;
       }
+      case "conversations.search": {
+        const p = fields(params ?? {});
+        const before = p.before ? fields(p.before) : undefined;
+        path =
+          `/api/platform/projects/${projectPathId(p.projectId)}/conversations/${projectPathId(p.conversationId)}/search?` +
+          query({
+            query: p.query,
+            beforeCreatedAt: before?.createdAt,
+            beforeId: before?.id,
+          });
+        break;
+      }
       case "platform.message":
         path = "/api/platform/messages";
         post(params);

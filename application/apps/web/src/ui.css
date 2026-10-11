@@ -845,6 +845,113 @@ body:has(dialog[open]) .cognitive-application-frame {
   align-items: center;
   gap: 8px;
 }
+.response-elapsed {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.conversation-reading-tools,
+.conversation-search-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.conversation-search-trigger {
+  position: relative;
+  z-index: 6;
+  pointer-events: auto;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--surface-popover);
+  -webkit-backdrop-filter: var(--popup-blur);
+  backdrop-filter: var(--popup-blur);
+  color: var(--muted);
+}
+.conversation-search-dialog {
+  width: min(560px, calc(100% - 32px));
+  max-height: min(560px, calc(100dvh - 48px));
+  padding: 12px;
+}
+.app .conversation-search-dialog .search-field {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  min-height: 40px;
+  padding: 0 10px;
+  outline: none;
+  box-shadow: none;
+}
+.app .conversation-search-dialog .search-field:focus-within {
+  border-color: var(--accent);
+}
+/* The icon and input are one control: only their shared edge owns focus. */
+.app .conversation-search-dialog .search-field > input,
+.app .conversation-search-dialog .search-field > input:focus {
+  padding: 0;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+}
+@media (forced-colors: active) {
+  .app .conversation-search-dialog .search-field:focus-within {
+    border-color: Highlight;
+  }
+}
+.conversation-search-results {
+  max-height: min(440px, calc(100dvh - 120px));
+  overflow: auto;
+  margin-top: 8px;
+}
+.conversation-search-results ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.conversation-search-results li > button {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 10px;
+  border-radius: 8px;
+  color: var(--ink);
+}
+.conversation-search-results li > button[data-selected="true"] {
+  background: var(--soft);
+}
+.conversation-search-results li > button > svg {
+  color: var(--muted);
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.conversation-search-results small {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.conversation-search-preview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.conversation-search-empty {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 12px 8px;
+}
+.conversation-search-more {
+  margin: 8px;
+  color: var(--accent);
+}
 .response-dots {
   gap: 4px;
 }
@@ -1186,6 +1293,9 @@ body:has(dialog[open]) .cognitive-application-frame {
 }
 .conversation .reply-content > :last-child {
   margin-bottom: 0;
+}
+.conversation .reply-content > p {
+  margin-block: 0 0.9em;
 }
 .conversation .human-message > p {
   margin: 0;

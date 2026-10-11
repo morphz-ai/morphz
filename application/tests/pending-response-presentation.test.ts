@@ -289,9 +289,9 @@ function render(
 
 test("真实消息投影保留等待/发送/断线/停止确认；Logo不把取消当处理", () => {
   for (const [state, label] of [
-    ["queued", "等待处理…"],
+    ["queued", "排队等待…"],
     ["sending", "正在发送…"],
-    ["running", "正在处理…"],
+    ["running", "等待回复…"],
   ] as const) {
     const observation = runtime({ deliveries: [delivery({ state })] });
     const result = render(observation);

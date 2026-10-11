@@ -343,3 +343,109 @@ export function useConversationViewportCommit(
   };
   return { loadEarlier, onScroll, returnLatest };
 }
+
+/** Explicit message navigation has no quote bytes or business command. The
+ * quote-selection effect above retains its distinct exact-range contract. */
+export function useConversationMessageReveal(
+  messageViewport: ConversationViewportState,
+  {
+    request,
+    contentVersion,
+    quoteToken,
+    focused,
+    allInputs,
+    messages,
+    hasEarlierHistory,
+    setAllHistory,
+    client,
+    onUnavailable,
+  }: {
+    request: { messageId: string; token: string } | null;
+    contentVersion: string;
+    quoteToken?: string;
+    focused: boolean;
+    allInputs: Workspace["inputs"];
+    messages: LiveMessage[];
+    hasEarlierHistory?: boolean;
+    setAllHistory: Dispatch<SetStateAction<boolean>>;
+    client: Pick<WorkspaceClient, "loadHistoryUntil">;
+    onUnavailable?: (reason?: string) => void;
+  },
+) {
+  const { scroller } = messageViewport;
+  const { following, positions, positionKey, revealed, setAwayFromLatest } =
+    messageViewport[viewportRegistration];
+  const complete = useRef<string | null>(null),
+    loading = useRef<string | null>(null);
+  const latest = useRef({
+    token: request?.token,
+    key: positionKey,
+    quoteToken,
+  });
+  latest.current = { token: request?.token, key: positionKey, quoteToken };
+  useLayoutEffect(() => {
+    if (!request || complete.current === request.token) return;
+    const el = scroller.current;
+    if (!el) return;
+    const target = el.querySelector<HTMLElement>(
+      `[data-message-id="${CSS.escape(request.messageId)}"]`,
+    );
+    if (!target) {
+      if (
+        focused &&
+        (allInputs.some((i) => i.id === request.messageId) ||
+          messages.some((m) => m.id === request.messageId))
+      ) {
+        setAllHistory(true);
+      } else if (hasEarlierHistory && loading.current !== request.token) {
+        loading.current = request.token;
+        following.current = false;
+        setAwayFromLatest(true);
+        const current = () =>
+          scroller.current === el &&
+          latest.current.token === request.token &&
+          latest.current.key === positionKey &&
+          latest.current.quoteToken === quoteToken;
+        void client.loadHistoryUntil(request.messageId).then(
+          (found) => {
+            if (current() && !found) {
+              complete.current = request.token;
+              onUnavailable?.();
+            }
+          },
+          (cause: unknown) => {
+            if (current()) {
+              complete.current = request.token;
+              onUnavailable?.(
+                cause instanceof Error ? cause.message : undefined,
+              );
+            }
+          },
+        );
+      } else if (loading.current !== request.token) {
+        complete.current = request.token;
+        onUnavailable?.();
+      }
+      return;
+    }
+    complete.current = request.token;
+    following.current = false;
+    el.scrollTop +=
+      target.getBoundingClientRect().top - el.getBoundingClientRect().top - 24;
+    setAwayFromLatest(true);
+    positions.set(positionKey, {
+      top: el.scrollTop,
+      following: false,
+      revealed: revealed.current,
+    });
+    target.setAttribute("data-quote-revealed", "true");
+    const timer = setTimeout(
+      () => target.removeAttribute("data-quote-revealed"),
+      2200,
+    );
+    return () => {
+      clearTimeout(timer);
+      target.removeAttribute("data-quote-revealed");
+    };
+  }, [request, contentVersion, focused, hasEarlierHistory, quoteToken]);
+}

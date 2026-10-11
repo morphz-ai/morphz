@@ -105,13 +105,40 @@ test("HTTP 适配器不缓存跨身份的迟到快照，错误状态保留给稳
     old,
     (error) => error instanceof ApplicationRequestError && error.status === 408,
   );
-  assert.deepEqual(await client.call("platform.bootstrap"), { centerId: "new" });
+  assert.deepEqual(await client.call("platform.bootstrap"), {
+    centerId: "new",
+  });
   await assert.rejects(
     client.call("documents.revise", {}),
     (error) => error instanceof ApplicationRequestError && error.status === 409,
   );
 });
 
+test("typed 对话查找通过原项目／会话 GET 路径，游标和特殊字符完整编码", async () => {
+  const paths: string[] = [];
+  const client = new HttpApplicationClient(
+    "https://fixture.example",
+    async (url, init) => {
+      paths.push(String(url));
+      assert.equal(init?.method, "GET");
+      return Response.json({ hits: [], nextCursor: null, scanned: 0 });
+    },
+  );
+  await client.call("conversations.search", {
+    projectId: "p",
+    conversationId: "c",
+    query: "[.*] & 评论",
+    before: { createdAt: "2026-10-11T00:00:00.000Z", id: "message:1" },
+  });
+  const url = new URL(paths[0]!);
+  assert.equal(url.pathname, "/api/platform/projects/p/conversations/c/search");
+  assert.equal(url.searchParams.get("query"), "[.*] & 评论");
+  assert.equal(url.searchParams.get("beforeId"), "message:1");
+  assert.equal(
+    url.searchParams.get("beforeCreatedAt"),
+    "2026-10-11T00:00:00.000Z",
+  );
+});
 test("Platform 对话历史按项目和对话定位，不从旧 workspace 获取", async () => {
   const paths: string[] = [];
   const client = new HttpApplicationClient(

@@ -173,7 +173,14 @@ test("全宽输入、单底栏与执行设置在明暗和窄窗口中可用", as
       );
       expect(toolBounds.x).toBeGreaterThanOrEqual(0);
       expect(toolBounds.x + toolBounds.width).toBeLessThanOrEqual(width);
-      await expect(tools).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+      // The accepted fc40f907 local material belongs only to the floating
+      // controls, keeping text beneath them readable without a full-width mask.
+      await expect(tools).toHaveCSS(
+        "background-color",
+        theme === "dark"
+          ? "rgba(38, 38, 38, 0.95)"
+          : "rgba(255, 255, 255, 0.95)",
+      );
       await expect(tools).toHaveCSS("box-shadow", "none");
       const menu = await openComposerSettings(page);
       const model = menu.getByLabel("本次输入模型", { exact: true });

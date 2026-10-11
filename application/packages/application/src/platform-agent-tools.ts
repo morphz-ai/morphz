@@ -74,6 +74,11 @@ import {
   CognitiveAppServiceError,
   type CognitiveAppService,
 } from "./cognitive-app-service.js";
+import {
+  conversationSearchToolSchema,
+  type ConversationSearchRequest,
+  type ConversationSearchPage,
+} from "../../core/src/conversation-search.js";
 
 function generationReferences(generations: ScriptGeneration[]) {
   return [
@@ -127,6 +132,14 @@ export type PlatformAgentDomain = {
     effort?: ReasoningEffort,
   ) => Promise<void>;
   inputForInvocation?: (route: HostInvocation) => Promise<unknown>;
+  searchConversation?: (
+    request: ConversationSearchRequest,
+    sourceAuthor: AccessContext,
+    authorize: () => Promise<{
+      personalDefault: boolean;
+      projectIds: string[];
+    }>,
+  ) => Promise<ConversationSearchPage>;
   localFiles?: LocalFiles;
   browser?: BrowserBroker;
   content: {
@@ -149,6 +162,9 @@ export class PlatformAgentTools {
 
   get supportsRunStatus() {
     return !!this.domain.runtimeTaskStatus;
+  }
+  get supportsConversationSearch() {
+    return !!this.domain.searchConversation && !!this.domain.inputForInvocation;
   }
   get supportsProfile() {
     return !!this.domain.profile;
@@ -231,6 +247,44 @@ export class PlatformAgentTools {
     args: AgentToolArguments,
   ): Promise<unknown> {
     const { work, content } = this.domain;
+    if (args.action === "conversation-search") {
+      if (
+        !this.supportsConversationSearch ||
+        platformSource !== "input" ||
+        !inputId
+      )
+        throw new DomainError("forbidden", "查找对话需要实际提交的原始输入。");
+      const input = z
+        .object({
+          input_id: z.string(),
+          workspace_id: z.string(),
+          conversation_id: z.string().min(1),
+          author_actant_id: z.string(),
+        })
+        .parse(await this.domain.inputForInvocation!(route));
+      if (
+        input.input_id !== inputId ||
+        input.workspace_id !== projectId ||
+        input.author_actant_id !== identity.humanActantId
+      )
+        throw new DomainError("forbidden", "查找来源与本次原始输入不一致。");
+      const request = {
+        ...conversationSearchToolSchema.parse(args.conversationSearch),
+        projectId,
+        conversationId: input.conversation_id,
+      };
+      // The credential remains Agent authority. sourceAuthor selects/filters
+      // the initiating Runtime timeline, never a Human Platform credential.
+      return this.domain.searchConversation!(
+        request,
+        { principalId: identity.principalId, actantId: identity.humanActantId },
+        () =>
+          content.platform.authorizeAgentConversationRead(actor, {
+            projectId,
+            conversationId: input.conversation_id,
+          }),
+      );
+    }
     if (args.action === "browser") {
       if (!this.domain.browser)
         throw new DomainError("invalid", "桌面浏览器尚未连接。");

@@ -86,6 +86,13 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
       ...params,
     }));
   const withoutAction = (schema: z.ZodObject) => schema.omit({ action: true });
+  add(
+    "conversations.search",
+    "查找本次原始输入所属对话的已保存消息与回复",
+    "read",
+    (shape.conversationSearch as z.ZodOptional<z.ZodObject>).unwrap(),
+    (params) => ({ action: "conversation-search", conversationSearch: params }),
+  );
   for (const schema of profileToolSchema.options) {
     const action = schema.shape.action.value;
     add(

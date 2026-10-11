@@ -660,6 +660,32 @@ export function createAppServer(
           );
           return;
         }
+        const conversationSearch =
+          /^\/api\/platform\/projects\/([a-zA-Z0-9_-]+)\/conversations\/([a-zA-Z0-9_-]+)\/search$/.exec(
+            url.pathname,
+          );
+        if (conversationSearch) {
+          const query = platformQuery(url, [
+            "query",
+            "beforeCreatedAt",
+            "beforeId",
+          ]);
+          const createdAt = query.value("beforeCreatedAt"),
+            id = query.value("beforeId");
+          if (!!createdAt !== !!id)
+            throw new DomainError("invalid", "对话搜索游标不完整。");
+          json(
+            res,
+            200,
+            await business.searchPlatformConversation({
+              projectId: conversationSearch[1],
+              conversationId: conversationSearch[2],
+              query: query.value("query"),
+              ...(createdAt && id ? { before: { createdAt, id } } : {}),
+            }),
+          );
+          return;
+        }
         const platformConversationHistory =
           /^\/api\/platform\/projects\/([a-zA-Z0-9_-]+)\/conversations\/([a-zA-Z0-9_-]+)\/history$/.exec(
             url.pathname,

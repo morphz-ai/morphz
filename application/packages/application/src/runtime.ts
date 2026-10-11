@@ -5,6 +5,12 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import {
+  conversationSearchRequestSchema,
+  searchConversationPage,
+  type ConversationSearchRequest,
+  type ConversationSearchPage,
+} from "../../core/src/conversation-search.js";
+import {
   sessionPermissionModeSchema,
   sessionPermissionsReadSchema,
   sessionPermissionsUpdateSchema,
@@ -3647,6 +3653,112 @@ export class RuntimeBridge {
     };
   }
 
+  async searchPlatformConversation(
+    raw: ConversationSearchRequest,
+    access: AccessContext,
+    active: () => void = () => {},
+  ): Promise<ConversationSearchPage> {
+    const scope = conversationSearchRequestSchema.parse(raw);
+    if (!this.authorizePlatformRead)
+      throw new DomainError("invalid", "Platform 对话读取尚未接入。");
+    return this.searchConversationHistory(
+      raw,
+      (scope, page) => this.platformConversationHistory(scope, access, page),
+      () => this.authorizePlatformRead!(scope, access),
+      active,
+    );
+  }
+  /** Host-only Agent adapter: the live Agent credential supplies the Platform
+   * grant; the proven initiating author selects/filters the Runtime timeline.
+   * This never mints a Human Platform credential or accepts model identity. */
+  async searchAgentConversation(
+    raw: ConversationSearchRequest,
+    sourceAuthor: AccessContext,
+    authorize: () => Promise<PlatformReadGrant>,
+  ): Promise<ConversationSearchPage> {
+    return this.searchConversationHistory(
+      raw,
+      (scope, page) =>
+        this.authorizedConversationHistory(
+          scope,
+          sourceAuthor,
+          page,
+          authorize,
+        ),
+      authorize,
+      () => {},
+    );
+  }
+  private async searchConversationHistory(
+    raw: ConversationSearchRequest,
+    read: (
+      scope: { projectId: string; conversationId: string },
+      page: {
+        before?: { createdAt: string; id: string };
+        limit: number;
+        requireAvailable: true;
+      },
+    ) => Promise<PlatformConversationHistory>,
+    authorize: () => Promise<PlatformReadGrant>,
+    active: () => void,
+  ): Promise<ConversationSearchPage> {
+    const {
+      query,
+      before: initial,
+      ...scope
+    } = conversationSearchRequestSchema.parse(raw);
+    let before = initial;
+    let nextCursor: ConversationSearchPage["nextCursor"] = null;
+    const hits = new Map<string, ConversationSearchPage["hits"][number]>();
+    let scanned = 0;
+    // Runtime owns the original timeline. No new Host index, message copy or
+    // accepted-history fallback; every window checks the current Platform grant.
+    for (let window = 0; window < 4; window++) {
+      active();
+      const history = await read(scope, {
+        before,
+        limit: 50,
+        requireAvailable: true,
+      });
+      active();
+      if (!history.runtime.connected)
+        throw new DomainError(
+          "invalid",
+          "连接中断，暂时无法查找已保存消息，请重新连接后重试。",
+        );
+      for (const hit of searchConversationPage(
+        history.inputs,
+        history.runtime.messages,
+        query,
+      ))
+        hits.set(hit.messageId, hit);
+      scanned += history.inputs.length + history.runtime.messages.length;
+      nextCursor = history.nextCursor;
+      if (!nextCursor) break;
+      if (
+        before &&
+        (nextCursor.createdAt > before.createdAt ||
+          (nextCursor.createdAt === before.createdAt &&
+            nextCursor.id >= before.id))
+      )
+        throw new DomainError("invalid", "对话搜索游标未前进，请重试。");
+      before = nextCursor;
+    }
+    const grant = await authorize();
+    active();
+    const readable = new Set(grant.projectIds);
+    return {
+      hits: [...hits.values()]
+        .filter((hit) => readable.has(hit.projectId))
+        .sort(
+          (a, b) =>
+            b.createdAt.localeCompare(a.createdAt) ||
+            b.messageId.localeCompare(a.messageId),
+        ),
+      nextCursor,
+      scanned,
+    };
+  }
   /** Runtime owns accepted Session history; the local outbox contributes only
    * unaccepted inputs. Every immutable root is checked against the current
    * Platform grant before either the input or its output reaches a client. */
@@ -3656,12 +3768,27 @@ export class RuntimeBridge {
     page: {
       before?: { createdAt: string; id: string };
       limit?: number;
+      requireAvailable?: boolean;
     } = {},
   ): Promise<PlatformConversationHistory> {
     const authorize = this.authorizePlatformRead;
     if (!authorize)
       throw new DomainError("invalid", "Platform 对话读取尚未接入。");
-    const grant = await authorize(scope, access);
+    return this.authorizedConversationHistory(scope, access, page, () =>
+      authorize(scope, access),
+    );
+  }
+  private async authorizedConversationHistory(
+    scope: { projectId: string; conversationId: string },
+    access: AccessContext,
+    page: {
+      before?: { createdAt: string; id: string };
+      limit?: number;
+      requireAvailable?: boolean;
+    },
+    authorize: () => Promise<PlatformReadGrant>,
+  ): Promise<PlatformConversationHistory> {
+    const grant = await authorize();
     const readableProjects = new Set(grant.projectIds);
     const sessionId = this.objectSessionId(
       scope.projectId,
@@ -3705,6 +3832,7 @@ export class RuntimeBridge {
       } catch (error) {
         if (error instanceof UpstreamError && error.status === 404) break;
         if (this.runtimeReadUnavailable(error)) {
+          if (page.requireAvailable) throw error;
           // Do not present an incomplete scan or cached accepted history as a
           // fresh Runtime read. The local portion below retains only exact
           // not-yet-accepted inputs authorized for this reader.

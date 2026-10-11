@@ -24,6 +24,10 @@ import { continuationSchema } from "../../../packages/core/src/continuation.js";
 import { cognitiveAppObjectLocatorSchema } from "../../../packages/core/src/cognitive-app-object-locator.js";
 import { cognitiveAppApplicationTargetSchema } from "../../../packages/core/src/cognitive-app-application-target.js";
 import { conversationRuntimeSchema } from "../../../packages/core/src/conversation.js";
+import {
+  conversationSearchPageSchema,
+  type ConversationSearchRequest,
+} from "../../../packages/core/src/conversation-search.js";
 import type { ReasoningEffort } from "../../../packages/core/src/inference.js";
 import type { LiveScriptDraft } from "../../../packages/script-studio/src/store.js";
 import { scriptOutputSchema } from "../../../packages/core/src/script-delivery.js";
@@ -629,6 +633,14 @@ export class PlatformClient {
     return this.call("conversations.update", input);
   }
 
+  async searchConversation(
+    request: ConversationSearchRequest,
+    signal?: AbortSignal,
+  ) {
+    return conversationSearchPageSchema.parse(
+      await this.call("conversations.search", request, signal),
+    );
+  }
   async history(
     projectId: string,
     conversationId: string,

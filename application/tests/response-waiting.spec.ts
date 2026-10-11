@@ -83,6 +83,7 @@ async function setup(page: Page) {
   await composer.fill("TEST 保留未发送草稿");
   return {
     composer,
+    inputs,
     deliveries,
     replies,
     threads,
@@ -91,6 +92,37 @@ async function setup(page: Page) {
       connected = online;
       generation++;
       await presentation.refresh();
+    },
+    async streamTool(status: string) {
+      await expect
+        .poll(() => page.evaluate(() => (window as any).__waitingStreams.size))
+        .toBeGreaterThan(0);
+      await page.evaluate(
+        ({ scope, status }) => {
+          for (const source of (window as any).__waitingStreams)
+            source.onmessage?.({
+              data: JSON.stringify({
+                connected: true,
+                reset: true,
+                removed: [],
+                messages: [
+                  {
+                    id: "tool-running",
+                    ...scope,
+                    inputId: "waiting-a",
+                    rootId: "waiting-root",
+                    artifactId: null,
+                    kind: "tool",
+                    text: "",
+                    createdAt: new Date().toISOString(),
+                    tool: { name: "host_morphz", status, arguments: "{}" },
+                  },
+                ],
+              }),
+            });
+        },
+        { scope, status },
+      );
     },
     async stream(text: string, streaming = true, streamConnected = true) {
       await expect
@@ -130,6 +162,27 @@ async function setup(page: Page) {
 
 const waiting = (page: Page, id = "waiting-a") =>
   page.locator(`[data-waiting-input-id="${id}"]`);
+
+test("同一输入的真实工具阶段可见，发送后耗时继续推进，断线不伪造模型阶段", async ({
+  page,
+}) => {
+  const f = await setup(page);
+  f.inputs[0]!.createdAt = new Date(Date.now() - 62000).toISOString();
+  await f.update();
+  await f.streamTool("running");
+  await expect(waiting(page).getByRole("status")).toHaveText("正在执行工具…");
+  const elapsed = waiting(page).locator(".response-elapsed");
+  await expect(elapsed).toHaveText(/1 分 \d{2} 秒/);
+  const before = await elapsed.textContent();
+  await expect(elapsed).not.toHaveText(before!);
+  await f.streamTool("success");
+  await expect(waiting(page).getByRole("status")).toHaveText("等待回复…");
+  await f.update(false);
+  await expect(waiting(page).getByRole("status")).toHaveText(
+    "连接中断，等待恢复",
+  );
+  await expect(f.composer).toHaveValue("TEST 保留未发送草稿");
+});
 
 test("后续输入的回复不冒充前条完成；前条收到取消终态后移除等待并保留消息与草稿", async ({
   page,
@@ -195,7 +248,7 @@ test("首字前的真实输入等待带动Logo，不被长期提醒遮住；首�
   await f.update();
   const logo = page.locator(".sidebar .wordmark.agent-presence");
   const mark = logo.locator(".brand-mark");
-  await expect(waiting(page).getByRole("status")).toHaveText("正在处理…");
+  await expect(waiting(page).getByRole("status")).toHaveText("等待回复…");
   await expect(page.locator(".agent-reply")).toHaveCount(0);
   await expect(logo).toHaveAttribute("data-state", "processing");
   await expect(logo).toHaveAttribute("data-working", "false");
@@ -257,7 +310,7 @@ test("首字前有反馈，不依赖停止权限；首字接替提示，增量�
 }) => {
   const f = await setup(page);
   await expect(waiting(page)).toBeVisible();
-  await expect(waiting(page).getByRole("status")).toHaveText("正在处理…");
+  await expect(waiting(page).getByRole("status")).toHaveText("等待回复…");
   await expect(waiting(page).getByRole("button")).toHaveCount(0);
   await expect(page.locator(".agent-reply")).toHaveCount(0);
   await f.stream("");
@@ -284,9 +337,9 @@ test("等待、发送、断线、停止确认与终态不混淆，亮暗和减�
   const f = await setup(page);
   const delivery = f.deliveries[0]!;
   for (const [state, label] of [
-    ["queued", "等待处理…"],
+    ["queued", "排队等待…"],
     ["sending", "正在发送…"],
-    ["running", "正在处理…"],
+    ["running", "等待回复…"],
   ] as const) {
     delivery.state = state;
     await f.update();

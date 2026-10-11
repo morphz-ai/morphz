@@ -1703,6 +1703,24 @@ export function useWorkspace() {
     selectHistoryScope: conversationHistory.selectScope,
     loadEarlierHistory: conversationHistory.loadEarlier,
     loadHistoryUntil: conversationHistory.loadUntil,
+    conversationSearchGeneration: protectedReadGeneration.current,
+    searchConversation: async (
+      request: import("../../../packages/core/src/conversation-search.js").ConversationSearchRequest,
+      signal?: AbortSignal,
+    ) => {
+      const identity = current.current,
+        source = platform.current;
+      const generation = protectedReadGeneration.current;
+      if (!identity || !source || source.boot.csrfToken !== identity.csrfToken)
+        throw new Error("身份已变化，请重新查找。");
+      const result = await source.searchConversation(request, signal);
+      if (
+        current.current?.csrfToken !== identity.csrfToken ||
+        protectedReadGeneration.current !== generation
+      )
+        throw new Error("身份或访问范围已变化，请重新查找。");
+      return result;
+    },
     olderHistoryCursor: conversationHistory.olderCursor,
     resolveArtifact: contentReads.resolveArtifact,
     resolveScriptLocation: scriptEditorReads.resolveScriptLocation,

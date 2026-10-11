@@ -53,6 +53,7 @@ import {
   parseCognitiveAppToolRequest,
 } from "../../core/src/cognitive-app-tool.js";
 import { parseWireJson } from "../../cognitive-app-sdk/src/protocol.js";
+import { conversationSearchToolSchema } from "../../core/src/conversation-search.js";
 
 const workTaskSchema = z.discriminatedUnion("action", [
   z
@@ -187,6 +188,7 @@ const requestSchema = z
       "connection-status",
       "projects",
       "conversations",
+      "conversation-search",
       "bookmarks",
       "reader",
       "local-file",
@@ -223,6 +225,7 @@ const requestSchema = z
     ]),
     artifactId: id.optional(),
     operations: operationRequestSchema.optional(),
+    conversationSearch: conversationSearchToolSchema.optional(),
     profile: profileToolSchema.optional(),
     workTask: workTaskSchema.optional(),
     management: z
@@ -347,6 +350,7 @@ const platformOperationIds = new Set([
   "projects.create",
   "projects.rename",
   "conversations.list",
+  "conversations.search",
   "content.list",
   "content.search",
   "content.read",
@@ -397,6 +401,7 @@ const platformOperationIds = new Set([
 ]);
 const platformCursor = z.object({ updatedAt: z.iso.datetime(), id }).strict();
 const platformOperationParameters: Record<string, z.ZodObject> = {
+  "conversations.search": conversationSearchToolSchema,
   "projects.list": z
     .object({
       status: z
@@ -875,6 +880,9 @@ export class AgentTools {
         .filter(
           (op) =>
             platformOperationIds.has(op.id) &&
+            (op.id !== "conversations.search" ||
+              (scope.platformSource !== "task-run" &&
+                !!this.options.platformAgent?.supportsConversationSearch)) &&
             (op.domain !== "files" || !!this.options.localFiles) &&
             (op.id !== "input.read" ||
               (!!this.options.platformInput &&
@@ -1016,6 +1024,8 @@ export function runtimeAgentTools(
       validateTaskInference: (access, model, effort) =>
         runtime.as(access, () => runtime.validateInference(model, effort)),
       inputForInvocation: (route) => runtime.platformToolInput(route),
+      searchConversation: (request, access, authorize) =>
+        runtime.searchAgentConversation(request, access, authorize),
       readUnderstanding: (route, scope, revision) =>
         runtime.publicUnderstanding(route, scope, revision),
     }),

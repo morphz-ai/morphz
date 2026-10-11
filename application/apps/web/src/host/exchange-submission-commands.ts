@@ -13,6 +13,7 @@ import type { CognitiveWorkSurface } from "./work-surface.js";
 import { consumeComposerDraft } from "../composer-drafts.js";
 import { RequestError } from "../application-transport.js";
 import { submitExchangeDraft } from "./submit-exchange-draft.js";
+import { exchangeDraftLengthError } from "./exchange-draft-validation.js";
 import { guardCognitiveAppInputCommand } from "../../../../packages/core/src/cognitive-app-object-locator.js";
 import { guardCognitiveAppApplicationCommand } from "../../../../packages/core/src/cognitive-app-application-target.js";
 
@@ -147,6 +148,14 @@ export function createExchangeSubmissionCommands({
         ...old,
         [contextKey]: "原件引用无效，草稿已保留。",
       }));
+      return;
+    }
+    const lengthError = exchangeDraftLengthError(
+      draft,
+      !!(asAnnotation && artifact && draft.selection && draft.revision),
+    );
+    if (lengthError) {
+      setInputErrors((old) => ({ ...old, [contextKey]: lengthError }));
       return;
     }
     dictationControls.current?.interrupt();

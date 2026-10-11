@@ -15,7 +15,7 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
 
-async function fixture(page: Page, sourceBody: string) {
+async function fixture(page: Page, sourceBody: string, comment?: string) {
   const inputs: PlatformHistory["inputs"] = [];
   const messages: ConversationRuntime["messages"] = [];
   const inspected: string[] = [];
@@ -33,6 +33,22 @@ async function fixture(page: Page, sourceBody: string) {
     // Equal bodies must never make the source link resolve by text instead of ID.
     presentation.input("source-b", sourceBody, "2026-10-01T00:00:01Z"),
   );
+  if (comment)
+    inputs[0]!.textQuotes = [
+      {
+        id: "11111111-1111-4111-8111-111111111111",
+        text: "TEST 原句",
+        comment,
+        source: {
+          kind: "message",
+          ...presentation.scope,
+          messageId: "source-b",
+          inputId: "source-b",
+          title: "原消息",
+          createdAt: inputs[1]!.createdAt,
+        },
+      },
+    ];
   messages.push(
     {
       id: "reply-b",
@@ -109,10 +125,40 @@ test("迟到回复以原消息短引文表达来源，同文不同 ID 精确打�
   await reference.focus();
   await expect(reference).toBeFocused();
   await reference.press("Enter");
-  await expect.poll(() => inspected).toContain("source-a");
-  expect(inspected).not.toContain("source-b");
+  await expect(page.locator('[data-message-id="source-a"]')).toHaveAttribute(
+    "data-quote-revealed",
+    "true",
+  );
+  await expect(
+    page.locator('[data-message-id="source-b"]'),
+  ).not.toHaveAttribute("data-quote-revealed", "true");
+  expect(inspected).toEqual([]);
   await expect(input).toHaveValue("TEST 来源引用点击后保留的未发送草稿");
   expect(await page.locator(".human-message").count()).toBe(2);
+});
+
+test("纯批注的迟到回复显示人的评论摘要，直接定位原批注而不是打开活动", async ({
+  page,
+}) => {
+  const { inspected, input } = await fixture(
+    page,
+    "",
+    "TEST 只改这一句，其他正文保留",
+  );
+  const source = page
+    .locator('[data-message-id="reply-a"]')
+    .getByRole("button", {
+      name: "回复：TEST 只改这一句，其他正文保留",
+      exact: true,
+    });
+  await expect(source).toHaveText("TEST 只改这一句，其他正文保留");
+  await source.click();
+  await expect(page.locator('[data-message-id="source-a"]')).toHaveAttribute(
+    "data-quote-revealed",
+    "true",
+  );
+  await expect(input).toHaveValue("TEST 来源引用点击后保留的未发送草稿");
+  expect(inspected).toEqual([]);
 });
 
 test("来源引文单行截断而不撑宽消息，亮暗保留中性引用线及键盘入口", async ({
@@ -121,9 +167,10 @@ test("来源引文单行截断而不撑宽消息，亮暗保留中性引用线�
   const body =
     "这是一条很长的原始消息，用于核验窄窗口下回复引用保持单行。\n".repeat(5);
   await fixture(page, body);
-  // Preview the first 50 source characters, then flatten their whitespace;
-  // normalizing the entire body first would change the source cutoff.
-  const excerpt = body.slice(0, 50).replace(/\s+/g, " ").trim();
+  // Source summaries use a code-point-safe, compact excerpt with an explicit
+  // ellipsis; exact identity is independent of this presentation text.
+  const excerpt =
+    Array.from(body.replace(/\s+/g, " ").trim()).slice(0, 50).join("") + "…";
   const reference = page.getByRole("button", {
     name: "回复：" + excerpt,
     exact: true,

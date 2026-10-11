@@ -7,6 +7,10 @@ import { localAccess } from "../packages/core/src/model.js";
 import type { ConversationStream } from "../packages/core/src/live-conversation.js";
 import { conversationRuntimeSchema } from "../packages/core/src/conversation.js";
 import { forbidLegacySnapshot } from "./host-transport-invariant.js";
+import {
+  conversationSearchPageSchema,
+  type ConversationSearchPage,
+} from "../packages/core/src/conversation-search.js";
 
 test("Platform 实时订阅从已保存游标开始，不重放整段历史", async (t) => {
   let requestedAfter = -1;
@@ -479,6 +483,170 @@ function timelineBridge(
     metrics: () => ({ fetches, largestResponse }),
   };
 }
+
+test("持久对话查找跨过首屏，有界分页可继续，且不写 Host 消息副本", async (t) => {
+  const store = new WorkspaceStore(":memory:", { mode: "transport" });
+  const retired = forbidLegacySnapshot(store);
+  const start = Date.parse("2026-10-10T00:00:00Z");
+  const { bridge, metrics } = timelineBridge(store, (value, sessionId) =>
+    Array.from({ length: 240 }, (_, index) => {
+      const at = new Date(start + index * 1000).toISOString();
+      return timelinePair(
+        value,
+        sessionId,
+        index,
+        at,
+        at,
+        at,
+        index === 0 ? "TEST [.*] 只存在于最旧回复" : "TEST 已保存回复 " + index,
+      );
+    }).flat(),
+  );
+  (bridge as unknown as { state: { connected: boolean } }).state.connected =
+    true;
+  const saves = t.mock.method(store, "saveRuntimeState");
+  try {
+    const request = {
+      projectId: "project",
+      conversationId: "conversation",
+      query: "[.*]",
+    };
+    const first = conversationSearchPageSchema.parse(
+      await bridge.searchPlatformConversation(request, localAccess),
+    );
+    assert.equal(first.scanned, 200);
+    assert.deepEqual(first.hits, []);
+    assert.ok(first.nextCursor, "未查范围必须可继续，不能冒称全历史无匹配");
+    let page = first,
+      total = first.scanned;
+    const hits: ConversationSearchPage["hits"] = [...first.hits];
+    for (let i = 0; page.nextCursor && i < 5; i++) {
+      page = conversationSearchPageSchema.parse(
+        await bridge.searchPlatformConversation(
+          { ...request, before: page.nextCursor },
+          localAccess,
+        ),
+      );
+      total += page.scanned;
+      hits.push(...page.hits);
+    }
+    assert.equal(page.nextCursor, null);
+    assert.equal(total, 480);
+    assert.deepEqual(
+      hits.map((hit) => hit.messageId),
+      ["publication:attempt-0"],
+    );
+    assert.equal(hits[0]!.kind, "reply");
+    assert.equal(hits[0]!.conversationId, "conversation");
+    assert.ok(metrics().largestResponse <= 100);
+    assert.equal(saves.mock.callCount(), 0);
+    assert.equal(retired.calls(), 0);
+    // A common word can fill a complete page without exceeding the typed bound.
+    assert.equal(
+      conversationSearchPageSchema.parse(
+        await bridge.searchPlatformConversation(
+          { ...request, query: "TEST" },
+          localAccess,
+        ),
+      ).hits.length,
+      100,
+    );
+  } finally {
+    retired.restore();
+    store.close();
+  }
+});
+
+test("对话查找每个窗口和返回前检查授权，撤权不泄露已积累匹配", async () => {
+  const store = new WorkspaceStore(":memory:", { mode: "transport" });
+  const at = "2026-10-10T00:00:00.000Z";
+  const { bridge, metrics } = timelineBridge(store, (value, sessionId) =>
+    timelinePair(value, sessionId, 0, at, at, at, "TEST 权限匹配"),
+  );
+  (bridge as unknown as { state: { connected: boolean } }).state.connected =
+    true;
+  const request = {
+    projectId: "project",
+    conversationId: "conversation",
+    query: "TEST",
+  };
+  let checks = 0;
+  bridge.bindPlatformReadAuthority(async () => {
+    checks++;
+    if (checks > 1) throw new Error("authorization revoked");
+    return { personalDefault: false, projectIds: ["project"] };
+  });
+  try {
+    await assert.rejects(
+      bridge.searchPlatformConversation(request, localAccess),
+      /authorization revoked/,
+    );
+    assert.equal(checks, 2);
+    checks = 0;
+    bridge.bindPlatformReadAuthority(async () => ({
+      personalDefault: false,
+      projectIds: ++checks === 1 ? ["project"] : [],
+    }));
+    assert.deepEqual(
+      (await bridge.searchPlatformConversation(request, localAccess)).hits,
+      [],
+    );
+    const reads = metrics().fetches;
+    bridge.bindPlatformReadAuthority(async () => {
+      throw new Error("scope forbidden");
+    });
+    await assert.rejects(
+      bridge.searchPlatformConversation(request, localAccess),
+      /scope forbidden/,
+    );
+    assert.equal(metrics().fetches, reads, "拒绝的 scope 不读取 Runtime");
+  } finally {
+    store.close();
+  }
+});
+
+test("查找取消／身份变化停止后续读取；断线报错而非无结果", async (t) => {
+  const store = new WorkspaceStore(":memory:", { mode: "transport" });
+  const at = "2026-10-10T00:00:00.000Z";
+  const { bridge, metrics } = timelineBridge(store, (value, sessionId) =>
+    timelinePair(value, sessionId, 0, at, at, at, "TEST 回复"),
+  );
+  const state = (bridge as unknown as { state: { connected: boolean } }).state;
+  const request = {
+    projectId: "project",
+    conversationId: "conversation",
+    query: "TEST",
+  };
+  try {
+    await assert.rejects(
+      bridge.searchPlatformConversation(request, localAccess),
+      /连接中断/,
+    );
+    state.connected = true;
+    const reads = metrics().fetches;
+    let activeChecks = 0;
+    await assert.rejects(
+      bridge.searchPlatformConversation(request, localAccess, () => {
+        if (++activeChecks === 2) throw new Error("identity changed");
+      }),
+      /identity changed/,
+    );
+    assert.equal(metrics().fetches, reads + 1);
+    t.mock.method(
+      bridge as unknown as { request: () => Promise<unknown> },
+      "request",
+      async () => {
+        throw new Error("Runtime unavailable");
+      },
+    );
+    await assert.rejects(
+      bridge.searchPlatformConversation(request, localAccess),
+      /Runtime unavailable/,
+    );
+  } finally {
+    store.close();
+  }
+});
 
 test("持久进度恢复真实分支身份，公共契约不剥掉threadId且未知旧记录不猜归属", async () => {
   const store = new WorkspaceStore(":memory:");

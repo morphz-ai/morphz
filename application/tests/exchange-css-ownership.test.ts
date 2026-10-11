@@ -258,6 +258,30 @@ function insideReadingHeader(rule: Signature): Signature {
     return { ...rule, declarations: [declaration("padding-top", "0")] };
   return rule;
 }
+// Approved dialogue-search addition: the same floating header can now contain
+// just the search affordance, not only object-scope choices. Geometry and paint
+// remain byte-for-byte governed; the immutable historical archive is unchanged.
+function searchReadingHeader(rule: Signature): Signature {
+  const oldGuard = key(".exchange-panel-header:not(:has(.conversation-scope))");
+  const oldClearance = key(
+    ".exchange-panel:has(.exchange-panel-header .conversation-scope) > .conversation",
+  );
+  if (rule.selector === oldGuard)
+    return {
+      ...rule,
+      selector: key(
+        ".exchange-panel-header:not(:has(.conversation-reading-tools))",
+      ),
+    };
+  if (rule.selector === oldClearance)
+    return {
+      ...rule,
+      selector: key(
+        ".exchange-panel:has(.exchange-panel-header .conversation-reading-tools) > .conversation",
+      ),
+    };
+  return rule;
+}
 const expectedResizeLayout = partition(true).map(insideReadingHeader);
 function frozenSignature(rule: FrozenRule): Signature {
   return {
@@ -314,6 +338,7 @@ const expectedLayout = archivedLayout
     return [rule];
   })
   .map(insideReadingHeader)
+  .map(searchReadingHeader)
   .flatMap((rule) => {
     // Reviewed direct-choice internals; not a new production-derived archive.
     const button = key(".exchange-scope .conversation-scope > button");
@@ -545,10 +570,10 @@ const legacyCompetitors = `
 const competitorRules = rules(postcss.parse(legacyCompetitors));
 const currentCompetitorRules = [
   competitorRules[0]!,
-  ...competitorRules.slice(1).map(insideReadingHeader),
+  ...competitorRules.slice(1).map(insideReadingHeader).map(searchReadingHeader),
 ];
 const competitorSelectors = new Set(
-  competitorRules.map((rule) => rule.selector),
+  [...competitorRules, ...currentCompetitorRules].map((rule) => rule.selector),
 );
 function isLayoutSpecifier(specifier: string) {
   return specifier.split(/[?#]/, 1)[0]!.endsWith(`/${layoutFile}`);
@@ -1462,7 +1487,7 @@ test("frame有限反例拒绝几何重归属、条件包裹、已知paint与竞�
       "scope-row-reading-clearance-regression",
       declaration(
         layoutFile,
-        ".exchange-panel:has(.exchange-panel-header .conversation-scope)>.conversation",
+        ".exchange-panel:has(.exchange-panel-header .conversation-reading-tools)>.conversation",
         "padding-top",
         "16px",
       ),

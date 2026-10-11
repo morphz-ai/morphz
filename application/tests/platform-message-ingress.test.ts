@@ -18,6 +18,11 @@ import { HttpApplicationClient } from "../packages/core/src/http-application-cli
 import { localAccess } from "../packages/core/src/model.js";
 import { scriptStudioApplication } from "../packages/core/src/applications.js";
 import {
+  runtimeAgentTools,
+  type HostInvocation,
+} from "../packages/application/src/agent-tools.js";
+import type { ConversationSearchPage } from "../packages/core/src/conversation-search.js";
+import {
   emptyScriptBrief,
   defaultScriptExportTemplate,
   emptyScriptDraft,
@@ -252,7 +257,16 @@ test("Platform-only project sends a durable Runtime input without a legacy works
             accepted.sessionId === sessionId && accepted.event.id === eventId,
         )?.event;
       return event
-        ? send(200, { event })
+        ? send(200, {
+            event: {
+              actor: "Session-Client",
+              type:
+                event.topic === "chat/user_message"
+                  ? "session_message"
+                  : "signal",
+              ...event,
+            },
+          })
         : send(404, { error: "event not found" });
     }
     if (request.method === "GET" && path.includes("/messages/by-client-id/")) {
@@ -411,6 +425,8 @@ test("Platform-only project sends a durable Runtime input without a legacy works
                 revision: 1,
                 updated_at: "2026-10-03T00:00:00.000Z",
                 initiating_principal_id: "runtime-local-human",
+                agent_id: "morphz-agent",
+                executor_id: null,
                 generation: 1,
                 control_state: "active",
                 lifecycle: "open",
@@ -453,16 +469,19 @@ test("Platform-only project sends a durable Runtime input without a legacy works
             topic: "chat/user_message",
             payload: {
               session_id: sessionId,
+              context_id: sessions.get(sessionId)?.context_id,
               // A local Runtime records its own default principal, not the
               // gateway-only Morphz principal mapping.
-              principal_id: "principal-default",
+              principal_id: "runtime-local-human",
               client_message_id: body.client_message_id,
               ...(attachments.length ? { attachments } : {}),
               session_io: {
                 request: {
+                  io_version: body.io_version,
                   client_message_id: body.client_message_id,
                   client_metadata: storedData(body.client_metadata),
                   message: {
+                    format: body.message.format,
                     content: {
                       encoding: "json",
                       value: storedData({
@@ -1158,6 +1177,24 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     assert.match(desktopSelectedNavigation.historyVersion, /^[a-f0-9]{64}$/);
     assert.deepEqual(chrome.deliveries, []);
     assert.equal(chrome.connected, true);
+    const desktopSearch = (await desktopConnection.call(
+      "conversations.search",
+      {
+        projectId: "new-platform-project",
+        conversationId: "new-platform-project",
+        query: "从新项目发送",
+      },
+      { identityGeneration: desktopBoot.csrfToken },
+    )) as { hits: Array<{ messageId: string; kind: string }> };
+    assert.ok(
+      desktopSearch.hits.some(
+        (hit) => hit.messageId === command.commandId && hit.kind === "input",
+      ),
+    );
+    assert.equal(
+      desktopSearch.hits.filter((hit) => hit.kind === "reply").length,
+      1,
+    );
     assert.deepEqual(
       await desktopConnection.call("platform.message", command, {
         identityGeneration: desktopBoot.csrfToken,
@@ -1245,6 +1282,32 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       )) as typeof firstHistory;
       assert.deepEqual(remote.inputs, firstHistory.inputs);
       assert.deepEqual(remote.runtime.messages, firstHistory.runtime.messages);
+      const remoteSearch = await client.call(
+        "conversations.search",
+        {
+          projectId: "new-platform-project",
+          conversationId: "new-platform-project",
+          query: "从新项目发送",
+        },
+        { identityGeneration: boot.csrfToken },
+      );
+      assert.deepEqual(
+        remoteSearch,
+        desktopSearch,
+        "正式 HTTP 和原生 invoke 使用同一查找权限与结果",
+      );
+      await assert.rejects(
+        client.call(
+          "conversations.search",
+          {
+            projectId: "missing-project",
+            conversationId: "missing-project",
+            query: "从新项目发送",
+          },
+          { identityGeneration: boot.csrfToken },
+        ),
+        /项目|权限|不存在/,
+      );
       assert.deepEqual(
         await client.call("platform.message", command, {
           identityGeneration: boot.csrfToken,
@@ -1366,6 +1429,93 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       ["项目一共享对话", "项目二共享对话"].sort(),
     );
     assert.deepEqual(sharedBHistory.inputs, sharedAHistory.inputs);
+    const sharedSearch = await session().searchPlatformConversation({
+      projectId: "new-platform-project",
+      conversationId: spaces.dialogueId,
+      query: "共享对话",
+    });
+    assert.deepEqual(
+      sharedSearch.hits
+        .filter((hit) => hit.kind === "input")
+        .map((hit) => hit.messageId)
+        .sort(),
+      [sharedA.commandId, sharedB.commandId].sort(),
+    );
+    assert.equal(
+      sharedSearch.hits.length,
+      4,
+      "默认持续对话查找同时保留已授权跨项目输入及回复",
+    );
+    assert.deepEqual(
+      await session().searchPlatformConversation({
+        projectId: "other-platform-project",
+        conversationId: spaces.dialogueId,
+        query: "共享对话",
+      }),
+      sharedSearch,
+    );
+    assert.deepEqual(
+      (
+        await session().searchPlatformConversation({
+          projectId: "new-platform-project",
+          conversationId: "new-platform-project",
+          query: "共享对话",
+        })
+      ).hits,
+      [],
+      "独立对话不混入默认持续对话",
+    );
+    const searchTools = runtimeAgentTools(runtime, "search-fixture-token", {
+      authority: binding.authority,
+      work: domains.work.service,
+      content: domains.content,
+    });
+    const sourceSession = sentSessions.get(sharedA.commandId)!;
+    const searchRoute: HostInvocation = {
+      job_id: `job-${sharedA.commandId}`,
+      tool_call_id: randomUUID(),
+      session_id: sourceSession,
+      context_id: sessions.get(sourceSession)!.context_id as string,
+      principal_id: "runtime-local-human",
+      agent_id: "morphz-agent",
+      thread_id: `thread-${sharedA.commandId}`,
+      target_id: "test-target",
+    };
+    const agentSearch = (parameters: unknown) =>
+      searchTools.call({
+        protocol: 1,
+        tool: "host_morphz",
+        invocation: searchRoute,
+        arguments: {
+          action: "operations",
+          operations: {
+            action: "invoke",
+            operationId: "conversations.search",
+            parameters,
+          },
+        },
+      }) as Promise<ConversationSearchPage>;
+    const agentSharedSearch = await agentSearch({ query: "共享对话" });
+    assert.deepEqual(
+      agentSharedSearch.hits
+        .filter((hit) => hit.kind === "input")
+        .map((hit) => hit.messageId),
+      [sharedA.commandId],
+      "项目输入的 Agent 只能读取相同输入项目，不能借默认 Session 扩大跨项目权限",
+    );
+    await assert.rejects(
+      async () =>
+        agentSearch({
+          query: "共享对话",
+          conversationId: "other-platform-project",
+        }),
+      /Unrecognized|unrecognized|conversationId/,
+    );
+    await assert.rejects(
+      async () =>
+        agentSearch({ query: "共享对话", projectId: "other-platform-project" }),
+      /Unrecognized|unrecognized|projectId/,
+    );
     assert.deepEqual(
       sharedAHistory.runtime.messages.map((message) => message.text).sort(),
       ["回复 项目一共享对话", "回复 项目二共享对话"].sort(),
@@ -1623,6 +1773,18 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       projectId: "new-platform-project",
       conversationId: spaces.dialogueId,
     });
+    const remainingSearch = await session().searchPlatformConversation({
+      projectId: "new-platform-project",
+      conversationId: spaces.dialogueId,
+      query: "共享对话",
+    });
+    assert.ok(remainingSearch.hits.length > 0);
+    assert.ok(
+      remainingSearch.hits.every(
+        (hit) => hit.projectId !== "other-platform-project",
+      ),
+      "撤权后的查找不返回原匹配项目",
+    );
     const remoteRemainingHistory =
       await secondRuntime!.platformConversationHistory(
         {
