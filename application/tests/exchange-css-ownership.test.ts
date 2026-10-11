@@ -195,7 +195,7 @@ function partition(layout: boolean) {
   });
 }
 // User-reported correction, not a new archive regenerated from production:
-// the scope row moves inside reading, reserves the existing control clearance,
+// the floating scope moves inside reading, reserves the existing control clearance,
 // and leaves its transparent hit surface available to the original resize edge.
 function insideReadingHeader(rule: Signature): Signature {
   const declaration = (property: string, value: string): Declaration => ({
@@ -262,23 +262,6 @@ function frozenSignature(rule: FrozenRule): Signature {
   };
 }
 const archivedLayout = selectedFrameRules.map(frozenSignature);
-const readingHeaderSurface: Signature = {
-  selector: key(".exchange-panel-header::before"),
-  context: [],
-  declarations: [
-    ["position", "absolute"],
-    ["z-index", "4"],
-    ["top", "-7px"],
-    ["right", "1px"],
-    ["bottom", "-8px"],
-    ["left", "1px"],
-    ["pointer-events", "auto"],
-  ].map(([property, value]) => ({
-    property: property!,
-    value: value!,
-    important: false,
-  })),
-};
 // The independently fixed archive remains unchanged. The already shipped
 // 91171208 independent-pin correction added one control per reading state and
 // moved compact clearance to the container's consuming children. Keep those
@@ -321,12 +304,7 @@ const expectedLayout = archivedLayout
       ];
     return [rule];
   })
-  .map(insideReadingHeader)
-  .flatMap((rule) =>
-    rule.selector === key(".exchange-panel-header") && !rule.context.length
-      ? [rule, readingHeaderSurface]
-      : [rule],
-  );
+  .map(insideReadingHeader);
 const expectedVisual = partition(false);
 function decodedSelector(selector: string) {
   return selector.replace(
@@ -372,6 +350,10 @@ const frameSelectors = new Set([
   ...expectedLayout.map((rule) => rule.selector),
   ...retainedFrameRules.map((rule) => rule[2]),
   key(currentExchangeControlsRecipes[2]!.selector),
+  // These withdrawn surfaces remain governed even though they no longer occur
+  // in the expected owner. The terminal-compound matcher excludes :: pseudos.
+  key(".exchange-panel-header::before"),
+  key(".exchange-panel-header::after"),
 ]);
 const frameClasses = [
   "exchange-resizer",
@@ -418,25 +400,38 @@ for (const tuple of retainedFrameRules) {
   signatures.push(frozenSignature(tuple));
   expectedRetained.set(tuple[0], signatures);
 }
-const readingHeaderPaint: Signature = {
-  selector: key(".exchange-panel-header::before"),
-  context: [],
-  declarations: [
-    { property: "content", value: '""', important: false },
-    { property: "border-radius", value: "15px 15px 0 0", important: false },
-    { property: "background", value: "var(--paper)", important: false },
-  ],
-};
+// The user rejected the full-width mask in fc40f907. Withdraw that exact
+// geometry/paint delta, retaining only the same local floating-button material
+// as input-only. The immutable historical frame tuples remain unchanged.
 expectedRetained.set(
   visualFile,
-  expectedRetained
-    .get(visualFile)!
-    .flatMap((rule) =>
-      rule.selector === key(".exchange-scope .conversation-scope") &&
-      !rule.context.length
-        ? [rule, readingHeaderPaint]
-        : [rule],
-    ),
+  expectedRetained.get(visualFile)!.map((rule) =>
+    rule.selector === key(".exchange-scope .conversation-scope") &&
+    !rule.context.length
+      ? {
+          ...rule,
+          declarations: [
+            ...rule.declarations,
+            {
+              property: "background",
+              value: "var(--surface-popover)",
+              important: false,
+            },
+            { property: "border-radius", value: "8px", important: false },
+            {
+              property: "-webkit-backdrop-filter",
+              value: "var(--popup-blur)",
+              important: false,
+            },
+            {
+              property: "backdrop-filter",
+              value: "var(--popup-blur)",
+              important: false,
+            },
+          ],
+        }
+      : rule,
+  ),
 );
 
 // Preserve the actual competing rules, including the higher-specificity shared
@@ -1287,10 +1282,10 @@ test("完整frame owner保留旧56规则144声明及独立固定、内部标题�
     archivedLayout.reduce((sum, rule) => sum + rule.declarations.length, 0),
     144,
   );
-  assert.equal(expectedLayout.length, 59);
+  assert.equal(expectedLayout.length, 58);
   assert.equal(
     expectedLayout.reduce((sum, rule) => sum + rule.declarations.length, 0),
-    162,
+    155,
   );
   assert.deepEqual(expectedLayout.slice(-4), expectedResizeLayout);
   assert.equal(retainedFrameRules.length, 36);
@@ -1326,6 +1321,22 @@ test("frame有限反例拒绝几何重归属、条件包裹、已知paint与竞�
     (sources: Sources) =>
       changeDeclaration(sources, file, selector, property, value, context);
   const fixtures: [string, (sources: Sources) => void, string][] = [
+    [
+      "no-full-width-header-mask",
+      append(
+        visualFile,
+        '.exchange-panel-header::before { content: ""; background: var(--paper); }',
+      ),
+      `frame-retained:${visualFile}`,
+    ],
+    [
+      "no-full-width-header-after-mask",
+      append(
+        visualFile,
+        '.exchange-panel-header::after { content: ""; background: var(--paper); }',
+      ),
+      `frame-retained:${visualFile}`,
+    ],
     [
       "scope-row-outside-reading-card",
       declaration(layoutFile, ".exchange-panel-header", "position", "relative"),

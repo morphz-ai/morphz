@@ -194,7 +194,7 @@ test("选文在正文上方，关联资源独立放在正文下方；亮暗窄�
   }
 });
 
-test("对象交流的范围与操作行始终在消息边框内，窄窗200%仍可命中且不动草稿", async ({
+test("对象交流仅浮动局部按钮、不铺整行底板；范围在边框内且窄窗200%不动草稿", async ({
   page,
 }, info) => {
   const { resource, fixture, sent, message } = await prepare(page);
@@ -243,6 +243,53 @@ test("对象交流的范围与操作行始终在消息边框内，窄窗200%仍�
       const h = (await history.boundingBox())!;
       const s = (await scope.boundingBox())!;
       const c = (await controls.boundingBox())!;
+      const floating = await panel.evaluate((element) => {
+        const header = element.querySelector(".exchange-panel-header")!;
+        const scope = element.querySelector(".conversation-scope")!;
+        const controls = element.querySelector(".exchange-view-tools")!;
+        const reading = element.querySelector(":scope > .conversation")!;
+        const style = getComputedStyle(header);
+        const scopeStyle = getComputedStyle(scope);
+        const controlsStyle = getComputedStyle(controls);
+        const s = scope.getBoundingClientRect();
+        const c = controls.getBoundingClientRect();
+        const gapHit = document.elementFromPoint(
+          (s.right + c.left) / 2,
+          c.y + c.height / 2,
+        );
+        return {
+          position: style.position,
+          headerBackground: style.backgroundColor,
+          headerShadow: style.boxShadow,
+          beforeContent: getComputedStyle(header, "::before").content,
+          afterContent: getComputedStyle(header, "::after").content,
+          gapReadsThrough: !!gapHit && reading.contains(gapHit),
+          scopeBackground: scopeStyle.backgroundColor,
+          controlsBackground: controlsStyle.backgroundColor,
+          scopeBlur: scopeStyle.backdropFilter,
+          controlsBlur: controlsStyle.backdropFilter,
+          scopeRadius: scopeStyle.borderRadius,
+          controlsRadius: controlsStyle.borderRadius,
+        };
+      });
+      await info.attach(`local-floating-${appearance}-${width}-${zoom}.json`, {
+        contentType: "application/json",
+        body: JSON.stringify(floating, null, 2),
+      });
+      await panel.screenshot({
+        path: info.outputPath(
+          `local-floating-${appearance}-${width}-${zoom}.png`,
+        ),
+      });
+      expect(floating.position).toBe("absolute");
+      expect(floating.headerBackground).toBe("rgba(0, 0, 0, 0)");
+      expect(floating.headerShadow).toBe("none");
+      expect(floating.beforeContent).toBe("none");
+      expect(floating.afterContent).toBe("none");
+      expect(floating.gapReadsThrough).toBe(true);
+      expect(floating.scopeBackground).toBe(floating.controlsBackground);
+      expect(floating.scopeBlur).toBe(floating.controlsBlur);
+      expect(floating.scopeRadius).toBe(floating.controlsRadius);
       await info.attach(`header-layout-${appearance}-${width}-${zoom}.json`, {
         contentType: "application/json",
         body: JSON.stringify(

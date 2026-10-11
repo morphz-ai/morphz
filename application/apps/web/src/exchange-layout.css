@@ -114,8 +114,8 @@
   --exchange-controls-width: 164px;
 }
 .exchange-panel-header {
-  /* Reading scope belongs inside its card. Do not reserve a separate row over
-     the unchanged work canvas; the reading padding owns this space. */
+  /* Local floating scope, not a painted toolbar. Only its button receives
+     input; the unused width remains readable and selectable underneath. */
   position: absolute;
   top: 8px;
   left: 0;
@@ -128,15 +128,6 @@
   min-width: 0;
   min-height: 28px;
   padding: 0 12px;
-}
-.exchange-panel-header::before {
-  position: absolute;
-  z-index: 4;
-  top: -7px;
-  right: 1px;
-  bottom: -8px;
-  left: 1px;
-  pointer-events: auto;
 }
 .exchange-panel-header:not(:has(.conversation-scope)) {
   display: none;
