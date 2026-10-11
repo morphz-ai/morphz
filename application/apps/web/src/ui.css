@@ -857,10 +857,32 @@ body:has(dialog[open]) .cognitive-application-frame {
   gap: 6px;
   min-width: 0;
 }
-.conversation-search-dialog {
+.app .conversation-search-dialog {
+  --conversation-search-top: max(
+    calc(var(--modal-region-top, 0px) + 16px),
+    calc(var(--modal-viewport-height, 100dvh) * 0.14)
+  );
+  top: var(--conversation-search-top);
+  bottom: auto;
+  margin-top: 0;
+  margin-bottom: 0;
   width: min(560px, calc(100% - 32px));
-  max-height: min(560px, calc(100dvh - 48px));
+  max-height: min(
+    560px,
+    calc(var(--modal-viewport-height, 100dvh) * 0.65),
+    calc(
+      var(--modal-viewport-height, 100dvh) - var(--conversation-search-top) -
+        16px
+    )
+  );
   padding: 12px;
+}
+.conversation-search-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.conversation-search-heading {
+  flex-shrink: 0;
 }
 .app .conversation-search-dialog .search-field {
   flex: 1;
@@ -889,6 +911,7 @@ body:has(dialog[open]) .cognitive-application-frame {
   }
 }
 .conversation-search-results {
+  min-height: 0;
   max-height: min(440px, calc(100dvh - 120px));
   overflow: auto;
   margin-top: 8px;

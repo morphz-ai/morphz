@@ -31,7 +31,12 @@ export function useModal(
       : [];
     const element = dialog.current;
     if (!element || !open) return;
-    const main = document.querySelector<HTMLElement>(".workspace");
+    // Content-local dialogs belong to their canvas, not the workspace that
+    // also contains the docked Morphz inspector. Observe that actual region so
+    // either sidebar resizing/reflow reanchors the same open dialog.
+    const main =
+      element.closest<HTMLElement>(".primary-panel") ??
+      document.querySelector<HTMLElement>(".workspace");
     const position = () => {
       const bounds = main?.getBoundingClientRect();
       if (!bounds || bounds.width < 1) return;
@@ -66,6 +71,11 @@ export function useModal(
       element.style.setProperty(
         "--modal-max-height",
         `${Math.max(0, window.innerHeight / zoom - 32)}px`,
+      );
+      element.style.setProperty("--modal-region-top", `${bounds.top / zoom}px`);
+      element.style.setProperty(
+        "--modal-viewport-height",
+        `${window.innerHeight / zoom}px`,
       );
     };
     const observer = new ResizeObserver(position);

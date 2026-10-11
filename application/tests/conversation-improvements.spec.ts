@@ -483,3 +483,139 @@ test("空输入框收紧，长内容自适应；亮暗与窄窗口保留可点�
   await expect(input).toHaveValue("TEST 视觉验收未发送草稿");
   expect(f.writes).toEqual([]);
 });
+
+test("查找按中间栏上方居中，两侧栏和缩放不偏移，结果增长不移动上边缘", async ({
+  page,
+}, info) => {
+  const f = await setup(page);
+  await page.route(searchRoute, (route) =>
+    route.fulfill({
+      json: {
+        hits: Array.from({ length: 12 }, (_, i) => ({
+          messageId: `position-reply-${i}`,
+          ...f.scope,
+          kind: "reply",
+          createdAt: f.olderReply.createdAt,
+          preview: "TEST 布局回归：结果增长时保持顶部位置。".repeat(5),
+        })),
+        scanned: 12,
+        nextCursor: null,
+      },
+    }),
+  );
+  const draft = await openInput(page);
+  await draft.fill("TEST 定位回归未发送草稿");
+  await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
+  await expect(page.locator(".workspace-inspector")).toBeVisible();
+  const trigger = page.getByRole("button", { name: "查找对话", exact: true });
+  const dialog = page.getByRole("dialog", { name: "查找当前对话" });
+  const search = dialog.getByRole("textbox", { name: "查找当前对话" });
+  const geometry = () =>
+    dialog.evaluate((el) => ({
+      panel: el.getBoundingClientRect().toJSON(),
+      canvas: document
+        .querySelector(".primary-panel")!
+        .getBoundingClientRect()
+        .toJSON(),
+      viewport: { width: innerWidth, height: innerHeight },
+      zoom: (el as HTMLElement & { currentCSSZoom: number }).currentCSSZoom,
+    }));
+  const checkPosition = async () => {
+    // Measure the stable panel, not the shared finite entrance translation.
+    // Closing/reopening for sidebar cases intentionally keeps that animation.
+    await dialog.evaluate(async (el) => {
+      await Promise.all(
+        el.getAnimations().map((animation) => animation.finished),
+      );
+    });
+    await expect
+      .poll(async () => {
+        const { panel, canvas } = await geometry();
+        return Math.abs(
+          panel.x + panel.width / 2 - canvas.x - canvas.width / 2,
+        );
+      })
+      .toBeLessThanOrEqual(1);
+    const { panel, canvas, viewport, zoom } = await geometry();
+    expect(panel.x).toBeGreaterThanOrEqual(canvas.x + 16 * zoom - 1);
+    expect(panel.x + panel.width).toBeLessThanOrEqual(
+      canvas.x + canvas.width - 16 * zoom + 1,
+    );
+    expect(panel.y).toBeGreaterThanOrEqual(canvas.y + 16 * zoom - 1);
+    expect(panel.y).toBeLessThanOrEqual(
+      Math.max(canvas.y + 16 * zoom, viewport.height * 0.18) + 1,
+    );
+    expect(panel.y + panel.height).toBeLessThanOrEqual(
+      viewport.height - 16 * zoom + 1,
+    );
+    expect(
+      await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth),
+    ).toBe(true);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(viewport.width);
+    await expect(search).toBeFocused();
+    return panel;
+  };
+  await trigger.click();
+  await expect(dialog).toBeVisible();
+  // Capture the three-column case, not just an in-viewport empty popup with
+  // the right inspector absent (the previous acceptance missed this case).
+  await page.screenshot({
+    path: info.outputPath("three-column-empty.png"),
+    animations: "disabled",
+  });
+  const empty = await checkPosition();
+  await search.fill("TEST");
+  await expect(dialog.locator("[data-search-index]")).toHaveCount(12);
+  const full = await checkPosition();
+  expect(full.height).toBeGreaterThan(empty.height);
+  expect(full.y).toBeCloseTo(empty.y, 1);
+  const results = dialog.locator(".conversation-search-results");
+  expect(
+    await results.evaluate((el) => el.scrollHeight > el.clientHeight),
+  ).toBe(true);
+  await search.press("End");
+  for (let i = 0; i < 12; i++) await search.press("ArrowDown");
+  await expect(dialog.locator('[data-search-index="11"]')).toBeInViewport();
+  expect((await geometry()).panel.y).toBeCloseTo(empty.y, 1);
+  await search.press("Escape");
+  await page.getByRole("button", { name: "隐藏右侧栏", exact: true }).click();
+  await trigger.click();
+  await checkPosition();
+  await search.press("Escape");
+  await page.getByRole("button", { name: "隐藏侧边栏", exact: true }).click();
+  await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
+  await trigger.click();
+  await checkPosition();
+  // Resize the already-open native dialog through docked/overlay inspector
+  // modes, short/narrow windows and actual CSS zoom; don't remount to recenter.
+  for (const [width, height, zoom] of [
+    [1100, 740, 1],
+    [760, 540, 1],
+    [390, 540, 1],
+    [320, 440, 1],
+    [1440, 960, 2],
+    [760, 540, 2],
+  ] as const) {
+    await page.setViewportSize({ width, height });
+    await page
+      .locator(".app")
+      .evaluate((el, zoom) => (el.style.zoom = String(zoom)), zoom);
+    const before = await checkPosition();
+    await search.fill("TEST");
+    await expect(dialog.locator("[data-search-index]")).toHaveCount(12);
+    const after = await checkPosition();
+    expect(after.y).toBeCloseTo(before.y, 1);
+    await page.screenshot({
+      path: info.outputPath(
+        `search-position-${width}-${height}-zoom${zoom}.png`,
+      ),
+      animations: "disabled",
+    });
+    await search.fill("");
+  }
+  await search.press("Escape");
+  await expect(draft).toHaveValue("TEST 定位回归未发送草稿");
+  expect(f.writes).toEqual([]);
+});
