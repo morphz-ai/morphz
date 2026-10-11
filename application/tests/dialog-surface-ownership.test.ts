@@ -738,6 +738,17 @@ test("surface and finite root competitors reject legal declaration/context drift
         '.capture-dialog[data-capturing="true"]::backdrop { visibility: hidden; background: transparent; backdrop-filter: none; }',
       ),
   ]);
+  variants.push([
+    "approval selected fill cannot paint untyped descendants",
+    /foreign-surface:composer-compact\.css/,
+    (s) =>
+      replace(
+        s,
+        "composer-compact.css",
+        '.app .composer-approval-menu > button[aria-checked="true"]',
+        '.app .composer-approval-menu [aria-checked="true"]',
+      ),
+  ]);
   for (const [name, rule, mutate] of variants) rejected(name, rule, mutate);
 });
 test("actual composition rejects alternate imports without freezing unrelated feature imports", () => {

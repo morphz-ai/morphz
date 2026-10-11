@@ -29,7 +29,9 @@ import {
   openInput,
   openComposerSettings,
   openComposerMedia,
+  settleTransitions,
 } from "./interaction-helpers.js";
+import { openSettings } from "./settings-helpers.js";
 
 type Host = Awaited<ReturnType<typeof platformMessageFixture>>;
 type Scope = { projectId: string; conversationId: string };
@@ -1455,3 +1457,97 @@ test("真正可操作的事项关联仍可展开，移除意图后隐藏空范�
   expect(f.updates()).toHaveLength(0);
   expect(messageHost.deliveries()).toHaveLength(0);
 });
+
+for (const mode of [
+  "request_approval",
+  "auto_review",
+  "full_access",
+] as const) {
+  test(`${mode} 选中底面只属于原生审批按钮，四主题亮暗保留选中、悬停与键盘状态`, async ({
+    page,
+    messageHost,
+  }, info) => {
+    // Policy snapshots are read-only controlled data in the isolated Host;
+    // viewing full_access here never grants the original App any permission.
+    const f = await fixture(page, messageHost, false, mode);
+    const menu = page.getByRole("menu", {
+      name: "会话审批方式选项",
+      exact: true,
+    });
+    for (const [appearanceLabel, appearance] of [
+      ["亮色", "light"],
+      ["暗色", "dark"],
+    ] as const) {
+      for (const [accentLabel, accent] of [
+        ["电光青", "cyan"],
+        ["鸢尾紫", "iris"],
+        ["暖珊瑚", "coral"],
+        ["纯单色", "mono"],
+      ] as const) {
+        await page.keyboard.press("Escape");
+        const settings = await openSettings(page, "外观");
+        await settings
+          .getByRole("button", { name: appearanceLabel, exact: true })
+          .click();
+        await settings
+          .getByRole("button", { name: accentLabel, exact: true })
+          .click();
+        await page.keyboard.press("Escape");
+        await expect(page.locator(".app")).toHaveAttribute(
+          "data-appearance",
+          appearance,
+        );
+        await expect(page.locator(".app")).toHaveAttribute(
+          "data-accent",
+          accent,
+        );
+        await openInput(page);
+        await openComposerSettings(page);
+        await f.approval.click();
+        await page.mouse.move(0, 0);
+        await settleTransitions(page);
+        const selected = menu.locator(':scope > button[aria-checked="true"]');
+        const other = menu
+          .locator(':scope > button[aria-checked="false"]')
+          .first();
+        await expect(selected).toHaveCount(1);
+        await expect(
+          selected.locator(".composer-approval-icon"),
+        ).toHaveAttribute("data-approval-mode", mode);
+        const neutralFill = await menu.evaluate((el) => {
+          // Resolve the existing light-dark semantic recipe in this actual
+          // popup scope, not raw custom-property text or a canvas token.
+          const probe = document.createElement("span");
+          probe.style.backgroundColor = "var(--soft)";
+          el.append(probe);
+          const colour = getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return colour;
+        });
+        expect(neutralFill).not.toBe("rgba(0, 0, 0, 0)");
+        await expect(selected).toHaveCSS("background-color", neutralFill);
+        await expect(other).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+        await other.hover();
+        await expect(other).toHaveCSS("background-color", neutralFill);
+        await page.mouse.move(0, 0);
+        await page.keyboard.press("Home");
+        if (mode === "request_approval") await page.keyboard.press("ArrowDown");
+        await expect(other).toBeFocused();
+        await settleTransitions(page);
+        await expect(selected).toHaveCSS("background-color", neutralFill);
+        await expect(other).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+        await expect(other).toHaveCSS("outline-style", "solid");
+        await expect(selected).toHaveAttribute("aria-checked", "true");
+        await menu.screenshot({
+          path: info.outputPath(`selected-${accent}-${appearance}.png`),
+          animations: "disabled",
+        });
+        await page.keyboard.press("Escape");
+        await expect(f.approval).toBeFocused();
+        await page.keyboard.press("Escape");
+      }
+    }
+    expect(f.updates()).toHaveLength(0);
+    expect(messageHost.deliveries()).toHaveLength(0);
+  });
+}

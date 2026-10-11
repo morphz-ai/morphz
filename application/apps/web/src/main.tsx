@@ -14,7 +14,6 @@ import "./ui.css";
 import "./shell/window-frame-composition.css";
 import "./shell/workspace-topbar-composition.css";
 import "./ui/popup-surface.css";
-import "./ui/tooltip.css";
 import "./workflow.css";
 import "./ui/dialog-surface.css";
 import "./ui/controls/surfaces.css";
@@ -34,6 +33,7 @@ import "./execution-activity.css";
 import "./execution-thread-groups.css";
 import "./features/execution/execution-details.css";
 import "./application-icons.css";
+import "./ui/tooltip.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />

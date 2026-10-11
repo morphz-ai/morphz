@@ -577,7 +577,7 @@
   height: 14px;
   margin-left: auto;
 }
-.app .composer-approval-menu [aria-checked="true"] {
+.app .composer-approval-menu > button[aria-checked="true"] {
   background: var(--soft);
 }
 .app
