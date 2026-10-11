@@ -286,7 +286,8 @@ export function SubjectSidebar({
                   <span>智能体连接</span>
                   <ChevronRight className="subject-settings-chevron" />
                 </button>
-                {runtime.harnesses?.length ? (
+                {runtime.harnesses?.length ||
+                runtime.retainedHarnesses?.length ? (
                   <PersistentDetails
                     storageScope={
                       client.boot
@@ -294,18 +295,32 @@ export function SubjectSidebar({
                         : undefined
                     }
                     preferenceKey="subject:installed-harnesses"
+                    className="subject-harnesses"
                   >
                     <summary>
                       <Blocks />
                       <span>已安装执行方式</span>
                       <ChevronRight className="subject-settings-chevron" />
                     </summary>
-                    {runtime.harnesses.map((h) => (
+                    {runtime.harnesses?.map((h) => (
                       <p key={`${h.id}:${h.version}`}>
-                        {h.id}
+                        <span title={h.id}>{h.title || h.id}</span>
                         <small>{h.version}</small>
                       </p>
                     ))}
+                    {runtime.retainedHarnesses?.length ? (
+                      <div className="subject-harness-retained">
+                        <span className="subject-harness-retained-label">
+                          未完成工作仍在使用
+                        </span>
+                        {runtime.retainedHarnesses.map((h) => (
+                          <p key={`${h.id}:${h.version}`}>
+                            <span title={h.id}>{h.title || h.id}</span>
+                            <small>{h.version}</small>
+                          </p>
+                        ))}
+                      </div>
+                    ) : null}
                   </PersistentDetails>
                 ) : null}
               </div>

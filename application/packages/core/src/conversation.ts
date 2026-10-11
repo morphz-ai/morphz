@@ -124,7 +124,23 @@ export const conversationRuntimeSchema = z.object({
   configured: z.boolean(),
   connected: z.boolean(),
   harnesses: z
-    .array(z.object({ id: z.string(), version: z.string() }))
+    .array(
+      z.object({
+        id: z.string(),
+        version: z.string(),
+        title: z.string().optional(),
+      }),
+    )
+    .nullable()
+    .optional(),
+  retainedHarnesses: z
+    .array(
+      z.object({
+        id: z.string(),
+        version: z.string(),
+        title: z.string().optional(),
+      }),
+    )
     .nullable()
     .optional(),
   model: z.string(),

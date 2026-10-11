@@ -10842,8 +10842,273 @@ mod tests {
         assert!(after["harnesses"]
             .as_array()
             .unwrap()
-            .contains(&json!({"id":"readiness-test","version":"1.2.3"})));
+            .contains(&json!({"id":"readiness-test","version":"1.2.3","title":"Readiness"})));
+        assert_eq!(after["retained_harnesses"], json!([]));
         assert_eq!(before["formats"], after["formats"]);
+    }
+
+    #[tokio::test]
+    async fn harness_upgrade_exposes_current_and_retained_separately_and_collects_after_completion()
+    {
+        let directory = tempfile::tempdir().unwrap();
+        let (state, runtime) =
+            test_state_at_with_workers(&directory.path().join("store.sqlite"), false).await;
+        runtime
+            .ensure_agent(crate::memory::NewAgent {
+                id: "agent-test".into(),
+                title: "TEST retention".into(),
+                root_context_id: "context-test".into(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(crate::memory::NewCognitiveContext {
+                id: "context-test".into(),
+                agent_id: "agent-test".into(),
+                title: "TEST retention".into(),
+            })
+            .await
+            .unwrap();
+        let session = handle_create_session(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("retention-http-session".into()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("TEST retention".into()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(session.status(), StatusCode::CREATED);
+        let source = r#"
+          (manifest (id retention-http) (version "1.0.0") (title "Retention") (capabilities (tools)))
+          (contract (identity "TEST retention"))
+          (infer (requires (tools)) "No effects")
+        "#;
+        runtime
+            .register_harness_package(
+                crate::harness_package::HarnessPackage::from_source("retention.hns", source)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let create = |id: &str| CreateObjectiveRequest {
+            model_selection: Default::default(),
+            id: Some(id.into()),
+            coordinator_session_id: "retention-http-session".into(),
+            delivery_session_id: None,
+            parent_objective_id: None,
+            stated_objective: "TEST retention".into(),
+            token_budget: None,
+            harness: Some(ExactHarnessRef {
+                id: "retention-http".into(),
+                version: "1.0.0".into(),
+            }),
+        };
+        let created = handle_create_objective(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(create("retention-http-objective")),
+        )
+        .await
+        .into_response();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let objective = runtime
+            .get_objective("retention-http-objective")
+            .await
+            .unwrap()
+            .unwrap();
+        runtime
+            .pause_objective(&objective.id, objective.revision, "TEST pause")
+            .await
+            .unwrap();
+        let binding = runtime
+            .objective_harness_binding(&objective.id)
+            .await
+            .unwrap()
+            .unwrap();
+        runtime
+            .register_harness_package(
+                crate::harness_package::HarnessPackage::from_source(
+                    "retention-2.hns",
+                    &source.replace("1.0.0", "2.0.0"),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            state
+                .sdk
+                .list_harnesses()
+                .iter()
+                .find(|h| h.id == "retention-http")
+                .unwrap()
+                .version,
+            "2.0.0"
+        );
+        assert_eq!(state.sdk.retained_harnesses()[0].version, "1.0.0");
+        let capabilities =
+            session_io_http::capabilities(State(Arc::clone(&state)), HeaderMap::new()).await;
+        let body = axum::body::to_bytes(capabilities.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert!(value["harnesses"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"id":"retention-http","version":"2.0.0","title":"Retention"})));
+        assert_eq!(
+            value["retained_harnesses"],
+            json!([{"id":"retention-http","version":"1.0.0","title":"Retention"}])
+        );
+        assert_eq!(
+            runtime
+                .objective_harness_binding(&objective.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            binding
+        );
+        assert_eq!(
+            runtime
+                .bind_objective_harness(&objective.id, "retention-http", "1.0.0")
+                .await
+                .unwrap(),
+            binding
+        );
+        let rejected = handle_create_objective(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(create("rejected-retired-objective")),
+        )
+        .await
+        .into_response();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        let rejected_body = axum::body::to_bytes(rejected.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(std::str::from_utf8(&rejected_body)
+            .unwrap()
+            .contains("Harness 'retention-http@1.0.0' is not registered"));
+        assert!(runtime
+            .get_objective("rejected-retired-objective")
+            .await
+            .unwrap()
+            .is_none());
+        let history = runtime
+            .query_events(QueryFilter {
+                topic: Some(crate::harness_package::HARNESS_PACKAGE_TOPIC.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let paused = runtime.get_objective(&objective.id).await.unwrap().unwrap();
+        runtime
+            .cancel_objective(&paused.id, paused.revision, "TEST complete")
+            .await
+            .unwrap();
+        // Exercise automatic maintenance, not a manual collection call.
+        tokio::time::timeout(std::time::Duration::from_secs(12), async {
+            loop {
+                if state.sdk.retained_harnesses().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            runtime
+                .objective_harness_binding(&objective.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            binding
+        );
+        let after = runtime
+            .query_events(QueryFilter {
+                topic: Some(crate::harness_package::HARNESS_PACKAGE_TOPIC.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(history).unwrap(),
+            serde_json::to_value(after).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn harness_malformed_unfinished_reference_defers_collection_without_failing_install_or_startup(
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("store.sqlite");
+        let (_, runtime) = test_state_at_with_workers(&path, false).await;
+        let source = r#"
+          (manifest (id retention-invalid) (version "1.0.0") (title "Retention") (capabilities (tools)))
+          (contract (identity "TEST invalid retention"))
+          (infer (requires (tools)) "No effects")
+        "#;
+        runtime
+            .register_harness_package(
+                crate::harness_package::HarnessPackage::from_source("retention.hns", source)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let store = crate::memory::sqlite::SqliteStore::new(path.to_str().unwrap())
+            .await
+            .unwrap();
+        crate::memory::EventStore::append(
+            &store,
+            Event::new(
+                "TEST-invalid-retention-binding".into(),
+                "runtime".into(),
+                "harness_binding".into(),
+                "runtime/evaluation_harness_binding".into(),
+                json!({"evaluation_id":"unknown-owner", "harness_id":"retention-invalid"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+        runtime
+            .register_harness_package(
+                crate::harness_package::HarnessPackage::from_source(
+                    "retention-2.hns",
+                    &source.replace("1.0.0", "2.0.0"),
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(runtime.harnesses()[0].version, "2.0.0");
+        assert_eq!(runtime.retained_harnesses()[0].version, "1.0.0");
+        assert!(runtime.collect_unused_harnesses().await.is_err());
+        let history = runtime.query_events(QueryFilter::default()).await.unwrap();
+        drop(runtime);
+        let (_, restarted) = test_state_at_with_workers(&path, false).await;
+        assert_eq!(restarted.harnesses()[0].version, "2.0.0");
+        assert_eq!(restarted.retained_harnesses()[0].version, "1.0.0");
+        assert!(restarted.collect_unused_harnesses().await.is_err());
+        assert_eq!(
+            restarted
+                .query_events(QueryFilter::default())
+                .await
+                .unwrap(),
+            history
+        );
     }
 
     #[tokio::test]

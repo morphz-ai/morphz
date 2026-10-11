@@ -39,7 +39,7 @@ impl Tool for HarnessListTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Discover installed Runtime Harnesses for new work, including exact versions, titles, and compact capability indexes. For each versioned family this lists the newest installed stable release; historical versions remain installed for exact-bound work and administrative inspection. Use this when the current work may benefit from a domain Harness but no suitable Harness is mounted in Context. Do not call it for ordinary conversation. The detailed Contract is mounted only in a subsequent Evaluation after exact-version selection.".to_string(),
+            description: "Discover current Runtime Harnesses for new work, including exact versions, titles, and compact capability indexes. For each versioned family this lists the newest installed stable release. Older executables are retained only for unfinished exact-bound work; source and execution history are archived independently. Use this when the current work may benefit from a domain Harness but no suitable Harness is mounted in Context. Do not call it for ordinary conversation. The detailed Contract is mounted only in a subsequent Evaluation after exact-version selection.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {},
@@ -181,7 +181,7 @@ impl Tool for HarnessSelectTool {
             }))?);
         }
 
-        let harness = self.registry.get(id, version).ok_or_else(|| {
+        let harness = self.registry.get_for_new_work(id, version).ok_or_else(|| {
             format!("Harness '{id}@{version}' is not installed; call harness_list first")
         })?;
         let binding = persist_evaluation_harness_binding(
@@ -287,6 +287,25 @@ mod tests {
         assert_eq!(upgraded["harnesses"][0]["version"], "2.0.0");
         assert!(registry.get("coding", "1.0.0").is_some());
         assert_eq!(registry.descriptors().len(), 2);
+        let retired_selection = CURRENT_CONTEXT_ID
+            .scope("context-1".to_string(), async {
+                CURRENT_ATTEMPT_ID
+                    .scope("new-unbound-activation".to_string(), async {
+                        select.execute(&arguments).await
+                    })
+                    .await
+            })
+            .await;
+        assert!(retired_selection
+            .unwrap_err()
+            .to_string()
+            .contains("not installed"));
+        assert!(
+            load_evaluation_harness_binding(store.as_ref(), "new-unbound-activation")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         let repeated = CURRENT_CONTEXT_ID
             .scope("context-1".to_string(), async {

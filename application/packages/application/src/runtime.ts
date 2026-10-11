@@ -1060,7 +1060,10 @@ export class RuntimeBridge {
       return after;
     });
   }
-  private loadedHarnesses: { id: string; version: string }[] | null = null;
+  private loadedHarnesses:
+    { id: string; version: string; title?: string }[] | null = null;
+  private retainedHarnesses:
+    { id: string; version: string; title?: string }[] | null = null;
   private feeds = new Set<ConversationFeed>();
   /** Stream the same Platform-authorized history exposed by
    * platformConversationHistory. A revoked project is removed from the next
@@ -3972,6 +3975,7 @@ export class RuntimeBridge {
         configured: true,
         connected: this.state.connected,
         harnesses: this.state.connected ? this.loadedHarnesses : null,
+        retainedHarnesses: this.state.connected ? this.retainedHarnesses : null,
         model: this.state.model,
         error: this.state.error,
         deliveries: local
@@ -4030,6 +4034,7 @@ export class RuntimeBridge {
       configured: true,
       connected: this.state.connected,
       harnesses: this.state.connected ? this.loadedHarnesses : null,
+      retainedHarnesses: this.state.connected ? this.retainedHarnesses : null,
       model: this.state.model,
       error: this.state.error,
       deliveries: [],
@@ -6272,8 +6277,23 @@ export class RuntimeBridge {
             directed_input: z.boolean().default(false),
             client_metadata: z.boolean().default(false),
             harnesses: z
-              .array(z.object({ id: z.string(), version: z.string() }))
+              .array(
+                z.object({
+                  id: z.string(),
+                  version: z.string(),
+                  title: z.string().optional(),
+                }),
+              )
               .optional(),
+            retained_harnesses: z
+              .array(
+                z.object({
+                  id: z.string(),
+                  version: z.string(),
+                  title: z.string().optional(),
+                }),
+              )
+              .default([]),
             formats: z
               .array(
                 z.object({
@@ -6286,6 +6306,7 @@ export class RuntimeBridge {
         clientMetadataCapability =
           io.enabled && io.client_metadata ? "supported" : "unsupported";
         this.loadedHarnesses = io.enabled ? (io.harnesses ?? null) : null;
+        this.retainedHarnesses = io.enabled ? io.retained_harnesses : null;
         this.state.directedInput =
           io.enabled &&
           io.directed_input &&
@@ -6304,6 +6325,7 @@ export class RuntimeBridge {
           clientMetadataCapability = "unsupported";
         this.state.directedInput = false;
         this.loadedHarnesses = null;
+        this.retainedHarnesses = null;
       }
       for (const delivery of this.activeDeliveries().filter(
         (item) => item.state === "queued" && item.platformHeld,

@@ -6,7 +6,9 @@ import { scriptStudioApplication } from "../packages/core/src/applications.js";
 import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 
 test("应用执行包未加载或无法核实时不发送；加载精确版本后只重试原输入", async () => {
-  let harnesses: { id: string; version: string }[] | undefined = [];
+  let harnesses: { id: string; version: string; title?: string }[] | undefined =
+    [];
+  let retained: { id: string; version: string; title?: string }[] = [];
   const sent: string[] = [];
   const sessions = new Map<
     string,
@@ -32,7 +34,12 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
     };
     if (path === "/api/status") return send(200, { model: "synthetic" });
     if (path === "/api/session-io/capabilities")
-      return send(200, { enabled: true, client_metadata: true, harnesses });
+      return send(200, {
+        enabled: true,
+        client_metadata: true,
+        harnesses,
+        retained_harnesses: retained,
+      });
     if (path === "/api/sessions" && request.method === "POST") {
       const session = { id: body.id, context_id: body.mount.context_id };
       sessions.set(session.id, session);
@@ -123,6 +130,9 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
       [{ id: "morphz.script-studio", version: "1.4.3" }],
     ]) {
       harnesses = loaded;
+      retained = [
+        { ...scriptStudioApplication.harness!, title: "供旧工作继续使用" },
+      ];
       if (outboxDelivery().state === "failed")
         await bridge.retryPlatformInput(inputId);
       await bridge.tick();
@@ -130,8 +140,11 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
       assert.equal(delivery.state, "failed");
       assert.match(delivery.error!, /就绪检查|尚未加载/);
       assert.equal(sent.length, 0);
+      assert.deepEqual(bridge.platformStatus().retainedHarnesses, retained);
+      assert.deepEqual(bridge.platformStatus().harnesses, loaded ?? null);
     }
-    harnesses = [scriptStudioApplication.harness!];
+    retained = [];
+    harnesses = [{ ...scriptStudioApplication.harness!, title: "剧本创作" }];
     await bridge.tick();
     assert.equal(
       sent.length,
@@ -147,6 +160,7 @@ test("应用执行包未加载或无法核实时不发送；加载精确版本�
       "Retry must not reinitialize an existing Session policy",
     );
     assert.deepEqual(bridge.platformStatus().harnesses, harnesses);
+    assert.deepEqual(bridge.platformStatus().retainedHarnesses, []);
     await assert.rejects(bridge.retryPlatformInput(inputId), /已发送/);
     await bridge.tick();
     assert.deepEqual(sent, [inputId]);

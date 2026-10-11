@@ -70,6 +70,7 @@ mod delegation;
 mod delivery;
 mod edge;
 mod execution;
+mod harness_retention;
 mod objective_approval_wait;
 mod plan_execution;
 mod schedule;

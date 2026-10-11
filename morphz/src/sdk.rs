@@ -2840,10 +2840,15 @@ impl MorphzSdk {
         self.runtime.harnesses()
     }
 
+    pub fn retained_harnesses(&self) -> Vec<HarnessDescriptor> {
+        self.runtime.retained_harnesses()
+    }
+
     pub fn get_harness(&self, id: &str, version: &str) -> SdkResult<HarnessDescriptor> {
         self.runtime
             .harnesses()
             .into_iter()
+            .chain(self.runtime.retained_harnesses())
             .find(|candidate| candidate.id == id && candidate.version == version)
             .ok_or_else(|| {
                 SdkError::new(

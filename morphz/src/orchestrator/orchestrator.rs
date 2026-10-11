@@ -21,7 +21,7 @@ use crate::execution::{
 use crate::harness::{DomainHarness, HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
 use crate::harness_package::{
     load_evaluation_harness_binding, load_objective_harness_binding,
-    persist_evaluation_harness_binding,
+    persist_evaluation_harness_binding, recover_bound_harness,
 };
 use crate::llm::{
     attachment_message, model_attachments, model_visible_message_text,
@@ -18519,15 +18519,13 @@ impl Orchestrator {
                 None => None,
             });
         let artifact_binding = if let Some(binding) = binding {
-            let harness = self
-                .harness_registry
-                .get(&binding.harness_id, &binding.harness_version)
-                .ok_or_else(|| {
-                    format!(
-                        "Harness '{}@{}' bound to the Plan is not loaded",
-                        binding.harness_id, binding.harness_version
-                    )
-                })?;
+            let harness = recover_bound_harness(
+                self.store.as_ref(),
+                &self.harness_registry,
+                &binding.harness_id,
+                &binding.harness_version,
+            )
+            .await?;
             if harness.artifact_hash().as_deref() != Some(binding.artifact_hash.as_str()) {
                 return Err("Plan Harness binding hash is inconsistent with the Registry".into());
             }
@@ -21822,10 +21820,13 @@ impl Orchestrator {
                     }
                     match (plan.harness_id.as_deref(), plan.harness_version.as_deref()) {
                         (Some(id), Some(version)) => {
-                            let harness = self
-                                .harness_registry
-                                .get(id, version)
-                                .ok_or("infer parent Harness is not loaded")?;
+                            let harness = recover_bound_harness(
+                                self.store.as_ref(),
+                                &self.harness_registry,
+                                id,
+                                version,
+                            )
+                            .await?;
                             if harness.artifact_hash().as_deref()
                                 != Some(plan.source_artifact_hash.as_str())
                             {
@@ -21887,9 +21888,13 @@ impl Orchestrator {
                         .get("requested_harness_artifact_hash")
                         .and_then(|value| value.as_str()),
                 ) {
-                    let harness = self.harness_registry.get(id, version).ok_or_else(|| {
-                        format!("Requested Harness '{id}@{version}' is not loaded")
-                    })?;
+                    let harness = recover_bound_harness(
+                        self.store.as_ref(),
+                        &self.harness_registry,
+                        id,
+                        version,
+                    )
+                    .await?;
                     if harness.artifact_hash().as_deref() != Some(hash) {
                         return Err(format!(
                             "requested Harness '{id}@{version}' artifact hash does not match the Registry"
@@ -21922,15 +21927,13 @@ impl Orchestrator {
                 )
                 .await?
                 {
-                    let harness = self
-                        .harness_registry
-                        .get(&default.harness_id, &default.harness_version)
-                        .ok_or_else(|| {
-                            format!(
-                                "Objective '{}' default Harness '{}@{}' is not loaded",
-                                active.objective_id, default.harness_id, default.harness_version
-                            )
-                        })?;
+                    let harness = recover_bound_harness(
+                        self.store.as_ref(),
+                        &self.harness_registry,
+                        &default.harness_id,
+                        &default.harness_version,
+                    )
+                    .await?;
                     binding = Some(
                         persist_evaluation_harness_binding(
                             self.store.as_ref(),
@@ -21949,15 +21952,13 @@ impl Orchestrator {
         let Some(binding) = binding else {
             return Ok(None);
         };
-        let harness = self
-            .harness_registry
-            .get(&binding.harness_id, &binding.harness_version)
-            .ok_or_else(|| {
-                format!(
-                    "Evaluation '{}' bound Harness '{}@{}' is not loaded",
-                    evaluation_id, binding.harness_id, binding.harness_version
-                )
-            })?;
+        let harness = recover_bound_harness(
+            self.store.as_ref(),
+            &self.harness_registry,
+            &binding.harness_id,
+            &binding.harness_version,
+        )
+        .await?;
         if harness.artifact_hash().as_deref() != Some(binding.artifact_hash.as_str()) {
             return Err(format!(
                 "Evaluation '{}' Harness binding hash does not match the Registry",

@@ -21,7 +21,7 @@ use crate::execution::{
 };
 use crate::harness::{HarnessBinding, HarnessDescriptor, HarnessRegistry as DomainHarnessRegistry};
 use crate::harness_package::{
-    load_evaluation_harness_binding, load_objective_harness_binding,
+    collect_unused_harnesses, load_evaluation_harness_binding, load_objective_harness_binding,
     load_persisted_harness_packages, objective_harness_binding_event, persist_harness_package,
     persist_objective_harness_binding, HarnessPackage,
 };
@@ -1252,6 +1252,11 @@ impl MorphzRuntimeBuilder {
         for package in self.harness_packages {
             persist_harness_package(store.as_ref(), &package).await?;
             harness_registry.register_package(package)?;
+        }
+        if let Err(error) = collect_unused_harnesses(store.as_ref(), &harness_registry).await {
+            tracing::warn!(%error,
+                event_code = "runtime.harness.collection_failed",
+                "Harness collection deferred at startup; installed executables preserved");
         }
         let model_context_capacity = Arc::new(RwLock::new(resolve_model_context_capacity(
             &self.config,
@@ -2931,6 +2936,27 @@ impl MorphzRuntime {
         for job_id in artifact_transfer_jobs {
             self.spawn_artifact_transfer_job(job_id);
         }
+        let harness_runtime = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            // Bounded housekeeping only; no model request, replay or data deletion.
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(10));
+            loop {
+                ticker.tick().await;
+                let Some(runtime) = harness_runtime.upgrade() else {
+                    break;
+                };
+                match collect_unused_harnesses(runtime.store.as_ref(), &runtime.harness_registry).await {
+                    Ok(removed) if !removed.is_empty() => tracing::info!(
+                        count = removed.len(), event_code = "runtime.harness.obsolete_packages_unloaded",
+                        "Unused old Harness executables unloaded; source and execution history preserved"
+                    ),
+                    Ok(_) => {},
+                    Err(error) => tracing::warn!(%error,
+                        event_code = "runtime.harness.collection_failed",
+                        "Harness collection deferred; installed executables preserved"),
+                }
+            }
+        });
         let recall_store = Arc::clone(&self.inner.store);
         let recall_worker_id = format!("recall-projector:{}", self.inner.runtime_instance_id);
         tokio::spawn(async move {
@@ -6652,7 +6678,7 @@ impl MorphzRuntime {
         let harness = self
             .inner
             .harness_registry
-            .get(harness_id, harness_version)
+            .get_for_new_work(harness_id, harness_version)
             .ok_or_else(|| format!("Harness '{harness_id}@{harness_version}' is not registered"))?;
         let (binding, event) = objective_harness_binding_event(
             &objective.context_id,
@@ -6667,7 +6693,15 @@ impl MorphzRuntime {
     }
 
     pub fn harnesses(&self) -> Vec<HarnessDescriptor> {
-        self.inner.harness_registry.descriptors()
+        self.inner.harness_registry.discovery_descriptors()
+    }
+
+    pub fn retained_harnesses(&self) -> Vec<HarnessDescriptor> {
+        self.inner.harness_registry.retained_descriptors()
+    }
+
+    pub async fn collect_unused_harnesses(&self) -> Result<Vec<HarnessDescriptor>, RuntimeError> {
+        collect_unused_harnesses(self.inner.store.as_ref(), &self.inner.harness_registry).await
     }
 
     pub async fn register_harness_package(
@@ -6675,7 +6709,13 @@ impl MorphzRuntime {
         package: HarnessPackage,
     ) -> Result<Arc<HarnessPackage>, RuntimeError> {
         persist_harness_package(self.inner.store.as_ref(), &package).await?;
-        self.inner.harness_registry.register_package(package)
+        let installed = self.inner.harness_registry.register_package(package)?;
+        if let Err(error) = self.collect_unused_harnesses().await {
+            tracing::warn!(%error,
+                event_code = "runtime.harness.collection_failed",
+                "Harness collection deferred after installation; installed executables preserved");
+        }
+        Ok(installed)
     }
 
     /// Binds one exact installed package to an Objective. The v1 binding is
@@ -6690,10 +6730,25 @@ impl MorphzRuntime {
             .get_objective(objective_id)
             .await?
             .ok_or_else(|| format!("Objective '{objective_id}' does not exist"))?;
+        if let Some(existing) = load_objective_harness_binding(
+            self.inner.store.as_ref(),
+            &objective.context_id,
+            objective_id,
+        )
+        .await?
+        {
+            if existing.harness_id == harness_id && existing.harness_version == harness_version {
+                return Ok(existing);
+            }
+            return Err(format!(
+                "Objective '{objective_id}' is already bound and cannot be rebound"
+            )
+            .into());
+        }
         let harness = self
             .inner
             .harness_registry
-            .get(harness_id, harness_version)
+            .get_for_new_work(harness_id, harness_version)
             .ok_or_else(|| format!("Harness '{harness_id}@{harness_version}' is not registered"))?;
         persist_objective_harness_binding(
             self.inner.store.as_ref(),
@@ -10959,6 +11014,8 @@ impl SessionHandle {
             None
         };
         let event_id = runtime_id("msg");
+        // Keep the admission lease through claim_message's durable root/Thread
+        // commit; collection must not observe a gap between selection and ownership.
         let resolved_harness = if let Some(reference) = requested_harness {
             let id = reference.id.trim();
             let version = reference.version.trim();
@@ -10969,12 +11026,12 @@ impl SessionHandle {
                 .runtime
                 .inner
                 .harness_registry
-                .get(id, version)
+                .get_for_new_work(id, version)
                 .ok_or_else(|| format!("Harness '{id}@{version}' is not installed"))?;
             let artifact_hash = harness.artifact_hash().ok_or_else(|| {
                 format!("Harness '{id}@{version}' has no artifact hash and cannot be bound exactly")
             })?;
-            Some((id.to_string(), version.to_string(), artifact_hash))
+            Some((id.to_string(), version.to_string(), artifact_hash, harness))
         } else {
             None
         };
@@ -11131,7 +11188,7 @@ impl SessionHandle {
                 Value::Array(prepared_attachments.metadata().to_vec()),
             );
         }
-        if let Some((id, version, artifact_hash)) = resolved_harness {
+        if let Some((id, version, artifact_hash, _)) = &resolved_harness {
             payload.insert("requested_harness_id".to_string(), json!(id));
             payload.insert("requested_harness_version".to_string(), json!(version));
             payload.insert(

@@ -15,7 +15,7 @@ use crate::harness::{
     DomainHarness, HarnessBinding, HarnessBindingScope, HarnessDescriptor, HarnessError,
     HarnessRegistry,
 };
-use crate::memory::{EventStore, QueryFilter};
+use crate::memory::{EventStore, QueryFilter, RuntimeStore};
 use crate::sexpr::SExpr;
 use crate::sexpr_eval::{inspect_program_source, EvaluationOwner};
 use serde_json::json;
@@ -548,6 +548,67 @@ pub async fn load_persisted_harness_packages(
             .then_with(|| left.manifest.version.cmp(&right.manifest.version))
     });
     Ok(packages)
+}
+
+/// Unload obsolete executables without deleting immutable source/history.
+/// A failed store read or concurrent admission leaves the registry intact.
+pub async fn collect_unused_harnesses(
+    store: &dyn RuntimeStore,
+    registry: &HarnessRegistry,
+) -> Result<Vec<HarnessDescriptor>, HarnessError> {
+    if registry.retained_descriptors().is_empty() {
+        return Ok(Vec::new());
+    }
+    let snapshot = registry.collection_snapshot();
+    let required = store.required_harnesses().await?;
+    if required
+        .iter()
+        .any(|h| h.id.trim().is_empty() || h.version.trim().is_empty())
+    {
+        return Err("Unfinished work has an invalid Harness identity; collection deferred".into());
+    }
+    Ok(registry.collect_unused(snapshot, &required))
+}
+
+/// Recover an already-bound exact package from its immutable archive. This
+/// is not new-work selection and never substitutes a different release.
+pub async fn recover_bound_harness(
+    store: &dyn EventStore,
+    registry: &HarnessRegistry,
+    id: &str,
+    version: &str,
+) -> Result<Arc<dyn DomainHarness>, HarnessError> {
+    if let Some(harness) = registry.get(id, version) {
+        return Ok(harness);
+    }
+    let events = store
+        .query(QueryFilter {
+            event_id: Some(stable_catalog_event_id(
+                "harness_package",
+                &format!("{id}\0{version}"),
+            )),
+            ..Default::default()
+        })
+        .await?;
+    let event = events
+        .first()
+        .ok_or_else(|| format!("Bound Harness '{id}@{version}' has no source archive"))?;
+    let package = HarnessPackage::from_source(
+        "persisted.hns",
+        required_event_string(event, "canonical_source")?,
+    )?;
+    if package.manifest.id != id
+        || package.manifest.version != version
+        || package.artifact_hash != required_event_string(event, "artifact_hash")?
+    {
+        return Err(
+            format!("Bound Harness '{id}@{version}' archive identity is inconsistent").into(),
+        );
+    }
+    registry.register_package(package)?;
+    registry
+        .get(id, version)
+        .ok_or_else(|| format!("Bound Harness '{id}@{version}' could not be recovered").into())
 }
 
 /// Establishes the v1 Primary Harness binding. It is immutable for the

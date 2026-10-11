@@ -316,6 +316,38 @@
 .subject-settings-group details > p small {
   flex: none;
 }
+.subject-settings-group .subject-harnesses p {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0;
+  padding: 8px 12px 8px 36px;
+  color: var(--ink);
+}
+.subject-harnesses p > span {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.subject-harnesses p > small {
+  flex: none;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.subject-harness-retained {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+.subject-harness-retained-label {
+  display: block;
+  padding: 4px 12px 4px 36px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.subject-settings-group .subject-harness-retained p {
+  color: var(--text-secondary);
+}
 @media (hover: none), (pointer: coarse) {
   .app .subject-settings-group > button,
   .subject-settings-group > details > summary {

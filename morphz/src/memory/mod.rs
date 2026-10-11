@@ -8841,6 +8841,17 @@ pub trait CustomStore: Send + Sync {
 
 pub use CustomStore as AgentRomStore;
 
+/// Exact packages required by unfinished durable work, read in one database
+/// snapshot. Historical bindings alone do not keep executables installed.
+#[async_trait::async_trait]
+pub trait HarnessRetentionStore: Send + Sync {
+    async fn required_harnesses(
+        &self,
+    ) -> Result<Vec<crate::harness::ExactHarnessRef>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+mod harness_retention;
+
 pub trait RuntimeStore:
     EventStore
     + SessionTimelineStore
@@ -8865,6 +8876,7 @@ pub trait RuntimeStore:
     + ProviderAccountStateStore
     + ProviderModelCatalogStore
     + StorageMaintenanceStore
+    + HarnessRetentionStore
     + ContextCapabilityBindingStore
     + WorkAssignmentStore
     + ContextRuntimeSnapshotStore

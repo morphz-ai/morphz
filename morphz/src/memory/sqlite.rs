@@ -91,6 +91,7 @@ use tokio::sync::Notify;
 mod activation_approval_wait;
 mod agent_provider;
 mod custom;
+mod harness_retention;
 mod objective_approval_wait;
 mod plan_execution;
 

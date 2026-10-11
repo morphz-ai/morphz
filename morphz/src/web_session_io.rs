@@ -32,7 +32,13 @@ pub(super) async fn capabilities(
         .sdk
         .list_harnesses()
         .into_iter()
-        .map(|h| json!({"id": h.id, "version": h.version}))
+        .map(|h| json!({"id": h.id, "version": h.version, "title": h.title}))
+        .collect::<Vec<_>>());
+    capabilities["retained_harnesses"] = json!(state
+        .sdk
+        .retained_harnesses()
+        .into_iter()
+        .map(|h| json!({"id": h.id, "version": h.version, "title": h.title}))
         .collect::<Vec<_>>());
     Json(capabilities).into_response()
 }
