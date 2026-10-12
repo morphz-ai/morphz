@@ -139,6 +139,20 @@ test("shared Markdown table keeps the original accessible wrapper and cell conte
   );
 });
 
+test("dense GFM tables share the same bounded column floor without rewriting cells", () => {
+  const source = [
+    "| 一 | 二 | 三 | 四 | 五 |",
+    "| --- | --- | --- | --- | --- |",
+    "| 原文 | **强调** | `exact_token` | 中文 | 结果 |",
+  ].join("\n");
+  const reference = sharedDescription(source);
+  assert.match(reference, /--markdown-table-min-width:35em/);
+  assert.match(reference, /<td>原文<\/td>/);
+  assert.match(reference, /<strong>强调<\/strong>/);
+  assert.match(reference, /<code>exact_token<\/code>/);
+  assert.equal(taskDescription(source), serialize(parseFragment(reference)));
+});
+
 test("actual TaskSummary parses GFM task lists without making task state editable", () => {
   const source = "- [x] 已核对\n- [ ] 仍待验证";
   assert.equal(

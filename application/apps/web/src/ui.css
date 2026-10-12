@@ -1178,7 +1178,9 @@ body:has(dialog[open]) .cognitive-application-frame {
   clip-path: inset(50%);
   white-space: nowrap;
 }
-.conversation .human-message:has(.message-activity-access:focus-visible) {
+:root:not([data-ui-focus="pointer"])
+  .conversation
+  .human-message:has(.message-activity-access:focus-visible) {
   outline: 1px solid var(--ink);
   outline-offset: 3px;
 }
@@ -1713,16 +1715,27 @@ body:has(dialog[open]) .cognitive-application-frame {
   border: 1px solid var(--line);
   border-radius: 8px;
 }
+.app :is(.markdown-table-scroll, .conversation)[tabindex]:focus-visible {
+  /* A keyboard cue belongs inside the existing reading edge, not in a second
+     detached frame around the entire message column or table. */
+  outline-offset: -2px;
+}
 .markdown-table-scroll table {
   border-collapse: collapse;
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
+  min-width: var(--markdown-table-min-width, 100%);
+  /* Intrinsic sizing lets one long cell reduce other columns to a single
+     glyph. Distribute the reading width before wrapping each cell instead. */
+  table-layout: fixed;
   font-size: inherit;
 }
 .markdown-table-scroll :is(th, td) {
   padding: 8px 12px;
   border-bottom: 1px solid var(--line);
   text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .markdown-table-scroll th {
   background: var(--soft);
@@ -2909,7 +2922,10 @@ summary:focus-visible {
   color: var(--ink);
   box-shadow: 0 1px 3px var(--shadow);
 }
-.notification-modes input:focus-visible + span {
+:root:not([data-ui-focus="pointer"])
+  .notification-modes
+  input:focus-visible
+  + span {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }

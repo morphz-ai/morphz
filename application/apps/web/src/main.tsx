@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.js";
+import { installFocusModality } from "./ui/focus-modality.js";
 import "./ui/controls/base.css";
 import "./styles.css";
 import "./shell/window-frame-base.css";
@@ -34,6 +35,8 @@ import "./execution-thread-groups.css";
 import "./features/execution/execution-details.css";
 import "./application-icons.css";
 import "./ui/tooltip.css";
+const releaseFocusModality = installFocusModality(document);
+if (import.meta.hot) import.meta.hot.dispose(releaseFocusModality);
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <App />

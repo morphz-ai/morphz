@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { randomUUID } from "node:crypto";
-import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { httpFixtureClient } from "./http-fixture-client.js";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { openSettings } from "./settings-helpers.js";
 test.afterEach(async ({ page }) => {
@@ -41,9 +41,7 @@ test("通知只提供全部与不提示，修改携带版本和稳定操作 ID",
 });
 
 test("已读回执遇到一次断线后保留同一操作 ID 重试", async ({ page }) => {
-  const { boot } = await PlatformClient.connect(
-    new HttpApplicationClient("http://127.0.0.1:65421"),
-  );
+  const { boot } = await PlatformClient.connect(httpFixtureClient());
   const key = `morphz:${boot.centerId}:${boot.principalId}:notification-reads`;
   const current = "b".repeat(64);
   await page.addInitScript(
@@ -102,9 +100,7 @@ test("已读回执遇到一次断线后保留同一操作 ID 重试", async ({ p
 });
 
 test("通知可打开事项，已读与提醒范围刷新后保留", async ({ page }) => {
-  const source = await PlatformClient.connect(
-    new HttpApplicationClient("http://127.0.0.1:65421"),
-  );
+  const source = await PlatformClient.connect(httpFixtureClient());
   const suffix = randomUUID().slice(0, 8);
   const title = `TEST 通知设置验证 ${suffix}`;
   const projectId = randomUUID();

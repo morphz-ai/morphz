@@ -5,7 +5,7 @@ import {
   platformHistorySchema,
   type PlatformHistory,
 } from "../apps/web/src/platform-client.js";
-import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { httpFixtureClient } from "./http-fixture-client.js";
 
 type Presentation = Pick<PlatformHistory, "inputs" | "runtime">;
 const navigation = /\/api\/platform\/runtime-navigation(?:\?.*)?$/;
@@ -32,10 +32,7 @@ export async function mockPlatformConversation(
   existingClient?: PlatformClient,
 ) {
   const client =
-    existingClient ??
-    (await PlatformClient.connect(
-      new HttpApplicationClient("http://127.0.0.1:65421"),
-    ));
+    existingClient ?? (await PlatformClient.connect(httpFixtureClient()));
   const spaces = await client.ensurePersonalSpaces();
   const scope = {
     projectId: spaces.dialogueId,

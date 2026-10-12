@@ -67,7 +67,7 @@ for (const setting of [
   { width: 390, zoom: 1 },
   { width: 390, zoom: 2 },
 ]) {
-  test(`实际组件宽表内滚动 ${setting.width}px / CSS ${setting.zoom * 100}%`, async ({
+  test(`实际组件文字换行，密集多列表格仅必要时内滚动 ${setting.width}px / CSS ${setting.zoom * 100}%`, async ({
     page,
   }) => {
     const externalRequests: string[] = [];
@@ -93,18 +93,42 @@ for (const setting of [
         overflowX: getComputedStyle(element).overflowX,
         right: element.getBoundingClientRect().right,
         parentRight: element.parentElement!.getBoundingClientRect().right,
+        minimum: parseFloat(
+          getComputedStyle(element.querySelector("table")!).minWidth,
+        ),
+        fontSize: parseFloat(
+          getComputedStyle(element.querySelector("table")!).fontSize,
+        ),
+        wrap: getComputedStyle(element.querySelector("td")!).overflowWrap,
       }));
       expect(measured.clientWidth).toBeGreaterThan(0);
-      expect(measured.scrollWidth).toBeGreaterThan(measured.clientWidth);
+      expect(measured.minimum).toBeCloseTo(8 * 7 * measured.fontSize, 1);
+      expect(measured.wrap).toBe("anywhere");
+      // Eight real columns need a readable floor only in narrow surfaces;
+      // on desktop, wrapping removes the old mandatory horizontal scroll.
+      if (setting.width === 1440) {
+        expect(measured.scrollWidth).toBeLessThanOrEqual(
+          measured.clientWidth + 1,
+        );
+      } else {
+        expect(measured.scrollWidth).toBeGreaterThan(measured.clientWidth);
+      }
       expect(measured.overflowX).toBe("auto");
       expect(measured.right).toBeLessThanOrEqual(measured.parentRight + 1);
       measurements.push({ surface, ...measured });
       await table.focus();
       await expect(table).toBeFocused();
       await page.keyboard.press("ArrowRight");
-      await expect
-        .poll(() => table.evaluate((element) => element.scrollLeft))
-        .toBeGreaterThan(0);
+      if (setting.width !== 1440) {
+        await expect
+          .poll(() => table.evaluate((element) => element.scrollLeft))
+          .toBeGreaterThan(0);
+      } else {
+        expect(await table.evaluate((element) => element.scrollLeft)).toBe(0);
+      }
+      await expect(table.locator("td").first()).toHaveText(
+        "1-" + "WideCell".repeat(16),
+      );
     }
     const normal = page
       .getByRole("region", { name: "task-ordinary", exact: true })

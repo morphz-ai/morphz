@@ -39,6 +39,24 @@ button:disabled {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+/* Scroll regions and native disclosures must not fall back to the system's
+   auto focus ring (whose color is unrelated to the application's theme). */
+.app :is(summary, [tabindex]):focus-visible,
+.startup :is(button, a, summary, [tabindex]):focus-visible,
+.connection-screen :is(a, summary, [tabindex]):focus-visible {
+  outline: 1px solid var(--ink);
+  outline-offset: -2px;
+}
+/* Pointer activation/restoration still owns real focus, but not a keyboard
+   outline. Leave text-field focus recipes and all native keyboard paths intact. */
+:root[data-ui-focus="pointer"]
+  :is(.app, .startup, .connection-screen, .selection-actions)
+  :is(button, a, summary, [tabindex]):not(input, textarea, select):focus,
+:root[data-ui-focus="pointer"]
+  :is(.app, .startup, .connection-screen)
+  input:is([type="checkbox"], [type="radio"], [type="range"]):focus {
+  outline: none;
+}
 .app input,
 .app textarea,
 .app select,
