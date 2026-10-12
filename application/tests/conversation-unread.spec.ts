@@ -4,7 +4,7 @@ import {
   PlatformClient,
   type PlatformHistory,
 } from "../apps/web/src/platform-client.js";
-import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { httpFixtureClient } from "./http-fixture-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import {
   openInput,
@@ -444,9 +444,7 @@ test("只打开旧消息阅读位置不清除新回复，返回最新后才清�
 test("当前对象的提示与展开的局部交流一致，不用别处回复制造空提示", async ({
   page,
 }) => {
-  const client = await PlatformClient.connect(
-    new HttpApplicationClient("http://127.0.0.1:65421"),
-  );
+  const client = await PlatformClient.connect(httpFixtureClient());
   const spaces = await client.ensurePersonalSpaces();
   const title = "TEST 未读范围验收文档";
   const created = (await client.createDocument({
@@ -463,6 +461,7 @@ test("当前对象的提示与展开的局部交流一致，不用别处回复�
     .click();
   await page.locator(".artifact-card").filter({ hasText: title }).click();
   await openExchangeReading(page);
+  await page.getByRole("button", { name: "当前作品", exact: true }).click();
   await expect(
     page.getByText("TEST 已读的第二条回复", { exact: true }),
   ).toBeVisible();
@@ -478,6 +477,10 @@ test("当前对象的提示与展开的局部交流一致，不用别处回复�
   ]);
   await expect(badge(page)).toHaveCount(0);
   await openExchangeReading(page);
+  await expect(
+    page.getByRole("button", { name: "全部交流", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "当前作品", exact: true }).click();
   await expect(
     page.getByText("TEST 别的工作的新回复", { exact: true }),
   ).toHaveCount(0);

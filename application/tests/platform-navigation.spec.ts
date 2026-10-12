@@ -1,14 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
-import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { httpFixtureClient } from "./http-fixture-client.js";
 
 test("历史前进后退按 ID 核对目录；内容移动后仍打开同一原件", async ({
   page,
 }) => {
-  const source = await PlatformClient.connect(
-    new HttpApplicationClient("http://127.0.0.1:65421"),
-  );
+  const source = await PlatformClient.connect(httpFixtureClient());
   const suffix = randomUUID().replaceAll("-", "");
   const projectId = `navigation_${suffix}`;
   const otherProjectId = `navigation_other_${suffix}`;

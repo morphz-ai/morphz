@@ -36,6 +36,78 @@
   margin-left: auto;
   flex-shrink: 0;
 }
+.execution-progress {
+  min-width: 0;
+  margin: 16px 6px 12px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+}
+.execution-progress-entry {
+  min-width: 0;
+}
+.execution-progress-entry > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.execution-progress-entry[data-latest] > header > span {
+  font-weight: 550;
+  color: var(--text-secondary);
+}
+.execution-progress[data-running]
+  .execution-progress-entry[data-latest]
+  > header
+  > span {
+  color: var(--accent-strong);
+}
+.execution-progress-entry > p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.execution-progress-entry > small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.execution-progress-history {
+  margin-top: 6px;
+}
+.execution-progress-history > summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 28px;
+  padding: 3px 0;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+}
+.execution-progress-history > summary::-webkit-details-marker {
+  display: none;
+}
+.execution-progress-history > summary:hover {
+  color: var(--ink);
+}
+.execution-progress-history > summary > svg {
+  flex-shrink: 0;
+}
+.execution-progress-history[open] > summary > svg {
+  transform: rotate(90deg);
+}
+.execution-progress-history > .execution-progress-entry {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline);
+}
 .workspace .execution-origin-actions > .secondary-action {
   justify-content: center;
   min-width: 52px;
@@ -270,5 +342,9 @@
   .execution-data-details > summary {
     min-height: 44px;
     padding-block: 10px;
+  }
+  .execution-progress-history > summary {
+    min-height: 44px;
+    min-width: 44px;
   }
 }

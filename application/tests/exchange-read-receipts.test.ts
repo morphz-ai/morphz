@@ -576,7 +576,7 @@ test("actual Conversation keeps its original items/receipt initializers and allH
 
 function verifyCognitiveHistoryReset(text: string) {
   const expected = withSource(
-    "useEffect(() => setAllHistory(false), [focusedArtifactId, focusedApplicationId, cognitiveFocusKey]);",
+    "useEffect(() => setAllHistory(true), [focusedArtifactId, focusedApplicationId, cognitiveFocusKey]);",
     (source) => shape(source.statements[0]!, source),
   );
   withSource(text, (source, symbols) => {
@@ -641,8 +641,9 @@ function verifyCognitiveHistoryReset(text: string) {
       symbols.get(bindings[0]!),
       "exact-cognitive-allHistory-reset",
     );
-    // Only this exact callback/dependency extension is approved. Receipt and
-    // original item initializers above still compare with the immutable 4ce.
+    // The user-approved default is all exchanges, with the exact original
+    // identity dependencies. Receipts and item initializers still compare
+    // with the immutable 4ce; no viewport or read-owner migration is implied.
     assert.deepEqual(
       shape(effect.parent, source),
       expected,
@@ -664,10 +665,13 @@ test("actual cognitive history reset rejects a missing/wrong key, callback inver
       "[focusedArtifactId, focusedApplicationId, cognitiveFocusKey]",
       "[focusedArtifactId, focusedApplicationId, focusedCognitiveObject]",
     ],
-    ["() => setAllHistory(false)", "() => setAllHistory(true)"],
     [
-      "() => setAllHistory(false)",
-      "() => setAllHistory(false), () => setAllHistory(false)",
+      "\n    () => setAllHistory(true),\n",
+      "\n    () => setAllHistory(false),\n",
+    ],
+    [
+      "\n    () => setAllHistory(true),\n",
+      "\n    () => setAllHistory(true), () => setAllHistory(true),\n",
     ],
     ['from "react";', 'from "./fake-react.js";'],
   ]) {

@@ -98,6 +98,7 @@ test("工作台与项目拥有独立空间；白净画布、应用恢复、对�
   await expect(page.locator(".object-paper > h1")).toHaveText("导航甲文档");
   const conversation = () => composerAction(page, "查看交流记录");
   if (await page.getByLabel("查看交流记录").isVisible()) await conversation();
+  await page.getByRole("button", { name: "当前作品", exact: true }).click();
   await expect(
     page.locator(".human-message").filter({ hasText: "导航甲 的对象消息" }),
   ).toHaveCount(1);

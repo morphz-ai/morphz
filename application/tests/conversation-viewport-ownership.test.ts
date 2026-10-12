@@ -497,7 +497,8 @@ const reference = parse({
     fixedViewportSpans.returnLatest +
     ";",
 }).get("Reference")!;
-// The one new key branch and consumed focus, not a re-recorded old archive.
+// The consumed cognitive focus and the user-approved all-exchanges default,
+// not a re-recorded viewport archive. The original viewport contract is intact.
 const cognitiveReference = parse({
   Cognitive: `
 const positionKey = focused && focusedCognitiveKey !== undefined
@@ -505,7 +506,7 @@ const positionKey = focused && focusedCognitiveKey !== undefined
 function cognitiveRenderer() {
   const cognitiveFocusKey = focusedCognitiveObject
     ? cognitiveWorkSurfaceKey({ kind: "original", locator: focusedCognitiveObject }) : undefined;
-  useEffect(() => setAllHistory(false), [focusedArtifactId, focusedApplicationId, cognitiveFocusKey]);
+  useEffect(() => setAllHistory(true), [focusedArtifactId, focusedApplicationId, cognitiveFocusKey]);
   const focused = !!(focusedArtifactId || focusedApplicationId || focusedCognitiveObject) && !allHistory;
   const readScope = projectConversationReadScope({
     inputs: allInputs, messages, outputs: client.boot!.outputs,
@@ -1944,8 +1945,8 @@ test("viewport nominal ports reject foreign value imports, rebound inputs and fa
   );
   rejects(
     "Conversation",
-    "  const [allHistory, setAllHistory] = useState(false);",
-    "  const [allHistory, setAllHistory] = [false, (value: boolean | ((previous: boolean) => boolean)) => void value] as const;",
+    "  const [allHistory, setAllHistory] = useState(true);",
+    "  const [allHistory, setAllHistory] = [true, (value: boolean | ((previous: boolean) => boolean)) => void value] as const;",
     "renderer-real-all-history-setter",
   );
   rejects(

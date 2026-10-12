@@ -87,8 +87,43 @@ test(
         events: unknown[][];
       }>;
     await context.test(
+      "new reading defaults to all authorized exchanges without changing the original work scope",
+      async () => {
+        assert.equal(
+          await page
+            .getByRole("button", { name: "全部交流", exact: true })
+            .getAttribute("aria-pressed"),
+          "true",
+        );
+        assert.equal(
+          await page
+            .getByRole("button", { name: "当前作品", exact: true })
+            .getAttribute("aria-pressed"),
+          "false",
+        );
+        for (const id of [
+          "input-V1",
+          "input-V2",
+          "input-B",
+          "input-foreign",
+          "input-ordinary",
+        ])
+          assert.equal(
+            await page.locator(`[data-message-id="${id}"]`).count(),
+            1,
+          );
+        assert.equal(
+          await page.locator("#composer").inputValue(),
+          "Unsent draft",
+        );
+      },
+    );
+    await context.test(
       "whole identity focus includes old and new versions, not a foreign author or ordinary input",
       async () => {
+        await page
+          .getByRole("button", { name: "当前作品", exact: true })
+          .click();
         for (const id of ["input-V1", "input-V2"])
           assert.equal(
             await page.locator(`[data-message-id="${id}"]`).count(),
@@ -174,6 +209,15 @@ test(
         );
         await settle();
         assert.equal(
+          await page
+            .getByRole("button", { name: "全部交流", exact: true })
+            .getAttribute("aria-pressed"),
+          "true",
+        );
+        await page
+          .getByRole("button", { name: "当前作品", exact: true })
+          .click();
+        assert.equal(
           await page.locator('[data-message-id="input-B"]').count(),
           1,
         );
@@ -188,6 +232,10 @@ test(
         await page.evaluate(() =>
           Reflect.get(window, "cognitiveConversationFixture").select("A"),
         );
+        await settle();
+        await page
+          .getByRole("button", { name: "当前作品", exact: true })
+          .click();
         await settle();
         const after = await report();
         assert.equal(after.top, 70);
@@ -289,10 +337,16 @@ test(
             name: label,
             exact: true,
           });
-          assert.equal(await current.getAttribute("aria-pressed"), "true");
+          assert.equal(await current.getAttribute("aria-pressed"), "false");
+          assert.equal(
+            await page
+              .getByRole("button", { name: "全部交流", exact: true })
+              .getAttribute("aria-pressed"),
+            "true",
+          );
           assert.equal(
             await page.locator('[data-message-id="input-B"]').count(),
-            0,
+            1,
           );
           await page
             .getByRole("button", { name: "全部交流", exact: true })

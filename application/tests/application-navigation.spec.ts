@@ -2,12 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { openInput } from "./interaction-helpers.js";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
-import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { httpFixtureClient } from "./http-fixture-client.js";
 
 async function openProjectDocument(page: Page) {
-  const source = await PlatformClient.connect(
-    new HttpApplicationClient("http://127.0.0.1:65421"),
-  );
+  const source = await PlatformClient.connect(httpFixtureClient());
   const title = `TEST 应用导航 ${randomUUID().slice(0, 8)}`;
   const projectId = `navigation_${randomUUID().replaceAll("-", "")}`;
   await source.createProject(title, randomUUID(), projectId);

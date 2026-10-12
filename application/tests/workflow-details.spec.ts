@@ -6,15 +6,14 @@ import {
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import { randomUUID } from "node:crypto";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
-import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
+import { httpFixtureClient } from "./http-fixture-client.js";
 import {
   openComposerMedia,
   openExchangeReading,
   openInput,
 } from "./interaction-helpers.js";
 
-const platform = () =>
-  PlatformClient.connect(new HttpApplicationClient("http://127.0.0.1:65421"));
+const platform = () => PlatformClient.connect(httpFixtureClient());
 
 const deliveryIds = async (source: PlatformClient) =>
   (await source.navigationRuntime()).runtime.deliveries.map(
@@ -110,11 +109,23 @@ test("选区批注使用同一输入但不发送 Agent；对象交流可以切�
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "当前作品", exact: true }),
+  ).toHaveAttribute("aria-pressed", "false");
+  await expect(
+    page.getByRole("button", { name: "全部交流", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("log", { name: "对话消息" })).toContainText(
+    "TEST 其他交流",
+  );
+  await page.getByRole("button", { name: "当前作品", exact: true }).click();
   await expect(page.getByRole("log", { name: "对话消息" })).not.toContainText(
     "TEST 其他交流",
   );
   await page.getByRole("button", { name: "全部交流", exact: true }).click();
+  await expect(page.getByRole("log", { name: "对话消息" })).toContainText(
+    "TEST 其他交流",
+  );
+  await page.reload();
+  await openExchangeReading(page);
   await expect(
     page.getByRole("button", { name: "全部交流", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");

@@ -154,7 +154,7 @@ export function Conversation({
   onInspect?: (inputId: string) => void;
   onSupplement?: (target: InputContinuation) => void;
 }) {
-  const [allHistory, setAllHistory] = useState(false);
+  const [allHistory, setAllHistory] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
   const searchWasOpen = useRef(false);
   useLayoutEffect(() => {
@@ -178,7 +178,7 @@ export function Conversation({
       })
     : undefined;
   useEffect(
-    () => setAllHistory(false),
+    () => setAllHistory(true),
     [focusedArtifactId, focusedApplicationId, cognitiveFocusKey],
   );
   const focused =

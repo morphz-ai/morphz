@@ -337,6 +337,18 @@ test(
     await page.locator("#focus-production").focus();
     current = await settled();
     await run("focus", "object-B");
+    // Both actual Conversation lanes now default to all exchanges. Select
+    // the local reading scope explicitly, under the same native read gate
+    // used above, so sequential pointer focus cannot create unequal reads.
+    await page
+      .locator("dialog")
+      .evaluate((element) => (element as HTMLDialogElement).show());
+    for (const lane of ["fixed", "production"]) {
+      await page
+        .locator(`#lane-${lane} .conversation-scope`)
+        .getByRole("button", { name: "当前作品", exact: true })
+        .click();
+    }
     await page.waitForSelector(
       '#lane-production .human-message[data-input-id="input-B"]',
     );
@@ -346,6 +358,14 @@ test(
         .count(),
       0,
     );
+    // Complete both scopes' native layout/scroll callbacks while the read
+    // gate is still closed, before giving the shared foreground focus back.
+    await settled();
+    await page
+      .locator("dialog")
+      .evaluate((element) => (element as HTMLDialogElement).close());
+    await page.locator("#focus-production").focus();
+    current = await settled();
     await run("show", false);
     const writesBefore = current.production.events.filter(
       (event) => event[0] === "persist",

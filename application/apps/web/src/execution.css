@@ -227,12 +227,6 @@
   margin: 0;
   padding: 4px 0;
 }
-.execution-progress {
-  font-size: 12px;
-  color: var(--muted);
-  line-height: 1.5;
-  margin: 8px 4px;
-}
 .execution-details .execution-empty {
   padding: 8px 4px;
   margin: 8px 0;

@@ -255,6 +255,10 @@ test(
           value = await run("tick", null);
           assert(value.sameNode && value.sameMessage && value.sameMap);
           value = await run("config", { focus: "object-A" });
+          await page
+            .getByRole("button", { name: "当前作品", exact: true })
+            .click();
+          value = await settle(page);
           assert.equal(value.top, 72);
           assert.equal(
             position(value, "conversation-A:focus:object-A").following,
@@ -494,6 +498,9 @@ test(
             .getByRole("button", { name: "查看更早消息", exact: true })
             .click();
           await run("config", { focus: "object-A" });
+          await page
+            .getByRole("button", { name: "当前作品", exact: true })
+            .click();
           const captured = await settle(page);
           const focusedTop = captured.top;
           value = await call(page, "settle", 0, undefined, null);
@@ -595,6 +602,9 @@ test(
         async () => {
           phase = "quote history";
           await reset({ focus: "object-A" });
+          await page
+            .getByRole("button", { name: "当前作品", exact: true })
+            .click();
           assert.equal(
             await page.locator('[data-message-id="reply-5"]').count(),
             0,

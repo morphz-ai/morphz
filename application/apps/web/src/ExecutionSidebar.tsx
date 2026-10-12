@@ -26,6 +26,7 @@ import {
 } from "./execution-activity.js";
 import { projectDisplayLabel } from "./project-display-label.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
+import { ExecutionProgress } from "./ExecutionProgress.js";
 
 export function ExecutionSidebar({
   client,
@@ -441,15 +442,14 @@ export function ExecutionSidebar({
           {!scope.threadId && branches.length > 0 && (
             <section aria-label="执行分支">{branches.map(row)}</section>
           )}
+          <ExecutionProgress
+            messages={messages}
+            running={threadStatus?.kind === "running"}
+          />
           {messages
-            .filter((m) => m.kind === "progress" || m.kind === "error")
+            .filter((m) => m.kind === "error")
             .map((m) => (
-              <p
-                className={
-                  m.kind === "error" ? "delivery-error" : "execution-progress"
-                }
-                key={m.id}
-              >
+              <p className="delivery-error" key={m.id}>
                 {m.text}
               </p>
             ))}

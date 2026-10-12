@@ -363,6 +363,7 @@ test("对象交流仅浮动局部按钮、不铺整行底板；范围在边框�
         exact: true,
       });
       const all = scope.getByRole("button", { name: "全部交流", exact: true });
+      await current.click();
       await expect(current).toHaveAttribute("aria-pressed", "true");
       await all.click();
       await expect(all).toHaveAttribute("aria-pressed", "true");
