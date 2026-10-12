@@ -9,7 +9,10 @@ import {
 import { openInput, settleTransitions } from "./interaction-helpers.js";
 import { openSettings } from "./settings-helpers.js";
 
-async function prepare(page: Page) {
+async function prepare(
+  page: Page,
+  body = "TEST 请核对当前称呼，不修改任何资料。",
+) {
   const inputs: PlatformHistory["inputs"] = [];
   const fixture = await mockPlatformConversation(page, () => ({
     inputs,
@@ -52,7 +55,7 @@ async function prepare(page: Page) {
   inputs.push(
     fixture.input(
       "execution-appearance-input",
-      "TEST 请核对当前称呼，不修改任何资料。",
+      body,
       "2026-10-02T09:00:00.000Z",
     ),
   );
@@ -305,7 +308,10 @@ test("卡片与键盘仍打开对应活动，纯图标补充保留草稿并不�
 test("执行流光亮暗四主题整圈连续，多帧没有背景色断段且循环接缝平滑", async ({
   page,
 }, info) => {
-  const { message } = await prepare(page);
+  const { message } = await prepare(
+    page,
+    "TEST 较长的执行消息也应有清晰流动的光带，不能看起来只有静态边框。保持整圈底色连续，不能出现白色或黑色缺口。\n\n这是第二个自然段，用实际宽卡片核对亮段、暗段与循环接缝，不能为了显眼增加一圈粗边框。",
+  );
   const input = page.getByLabel("AI 输入内容");
   await input.fill("TEST 流光检查的未发送草稿");
   await page.mouse.move(0, 0);
@@ -384,7 +390,7 @@ test("执行流光亮暗四主题整圈连续，多帧没有背景色断段且�
             color.map((channel, j) => Math.abs(channel - b[i]![j]!)),
           ),
         );
-      expect(difference(frames[0]!.ring, frames[2]!.ring)).toBeGreaterThan(5);
+      expect(difference(frames[0]!.ring, frames[2]!.ring)).toBeGreaterThan(35);
       expect(difference(frames[4]!.ring, frames[5]!.ring)).toBeLessThanOrEqual(
         2,
       );

@@ -326,7 +326,8 @@ test("工作动作在气泡外同一 footer：简短图标、真实状态、保�
     expect(work.y - bubble.y - bubble.height).toBeLessThanOrEqual(6 * zoom);
     for (const button of [
       f.supplement,
-      f.message.locator(".message-copy"),
+      f.message.getByRole("button", { name: "复制消息", exact: true }),
+      f.message.getByRole("button", { name: "分享图片", exact: true }),
       f.message.locator(".stop-response"),
     ]) {
       await expect(button).toBeInViewport();

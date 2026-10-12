@@ -260,6 +260,7 @@ function fixture({
     microphone: { cancel() {}, request() {} },
     capture: { hiddenWindow: false, cancel() {} },
     scriptExports: undefined,
+    messageImages: undefined,
     session: { fromPartition: () => appSession },
     appSession,
     URL,

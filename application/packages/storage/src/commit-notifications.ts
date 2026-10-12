@@ -3,6 +3,10 @@ import { realpathSync, statSync, watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Client, type ClientConfig } from "pg";
+import {
+  watchSqliteDirectory,
+  type SqlitePathWatch,
+} from "./sqlite-directory-watch.js";
 
 /** Host-only, opaque storage identity. Connection details never enter a hint. */
 export type SqlChangeSource = Readonly<{
@@ -93,6 +97,7 @@ export function publishSqliteCommit(source: SqlChangeSource): void {
 export function observeSqlChanges(
   source: SqlChangeSource,
   onHint: (hint: SqlChangeHint) => void | Promise<void>,
+  environment: { watchPath?: SqlitePathWatch } = {},
 ): SqlChangeSubscription {
   const value = details.get(source);
   if (!value) throw new Error("变化通知来源未注册。");
@@ -247,10 +252,14 @@ export function observeSqlChanges(
         }
         let next: FSWatcher;
         try {
-          next = watch(filename, { persistent: false }, () => {
-            if (fileWatchers.get(filename)?.watcher !== next) return;
-            scheduleCheck();
-          });
+          next = (environment.watchPath ?? watch)(
+            filename,
+            { persistent: false },
+            () => {
+              if (fileWatchers.get(filename)?.watcher !== next) return;
+              scheduleCheck();
+            },
+          );
         } catch (error) {
           // A short-lived journal can disappear between stat and watch.
           if (
@@ -272,7 +281,7 @@ export function observeSqlChanges(
       try {
         if (!observer) openObserver();
         const name = basename(value.filename);
-        const next: FSWatcher = watch(
+        const next: FSWatcher = (environment.watchPath ?? watchSqliteDirectory)(
           dirname(value.filename),
           { persistent: false },
           (_event, entry) => {

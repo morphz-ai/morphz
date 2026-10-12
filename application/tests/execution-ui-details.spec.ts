@@ -8,6 +8,7 @@ import {
 import {
   openInput,
   openExecutionPanel,
+  composerAction,
   settleTransitions,
 } from "./interaction-helpers.js";
 
@@ -144,6 +145,68 @@ async function prepare(page: Page) {
     jobs,
   };
 }
+
+test("查看右栏活动不是固定：未固定交流点击画布收起，执行继续且草稿与显示选择保留", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "工作台", exact: true })
+    .click();
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+  const input = await openInput(page);
+  const draft = "TEST 右栏活动不等于固定，收起不丢草稿，不停止工作。";
+  await input.fill(draft);
+  await openExecutionPanel(page);
+  const panel = page.locator(".primary-panel");
+  const reading = page.locator(".exchange-panel > .conversation");
+  const outside = page.getByRole("heading", { name: "应用", exact: true });
+  for (const details of [false, true]) {
+    if (details)
+      await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+    await openInput(page);
+    if (!(await reading.isVisible()))
+      await composerAction(page, "查看交流记录");
+    await expect(
+      page.getByRole("button", { name: "固定输入框", exact: true }),
+    ).toHaveAttribute("aria-pressed", "false");
+    await expect(
+      page.getByRole("button", { name: "固定交流记录", exact: true }),
+    ).toHaveAttribute("aria-pressed", "false");
+    await outside.click();
+    await expect(panel).toHaveAttribute("data-interaction", "hidden");
+    await expect(input).toHaveCount(0);
+    await expect(reading).toHaveCount(0);
+    await expect(f.panel).toBeVisible();
+    await openInput(page);
+    await expect(reading).toBeVisible();
+    await expect(input).toHaveValue(draft);
+    await composerAction(page, "固定输入框");
+    await outside.click();
+    await expect(reading).toBeVisible();
+    await expect(input).toHaveValue(draft);
+    await composerAction(page, "收起交流记录");
+    await outside.click();
+    await expect(input).toHaveValue(draft);
+    await expect(reading).toHaveCount(0);
+    await composerAction(page, "取消固定输入框");
+    await composerAction(page, "查看交流记录");
+    await composerAction(page, "固定交流记录");
+    await outside.click();
+    await expect(input).toHaveCount(0);
+    await expect(reading).toBeVisible();
+    await openInput(page);
+    await composerAction(page, "取消固定交流记录");
+    await outside.click();
+    await expect(panel).toHaveAttribute("data-interaction", "hidden");
+  }
+  await page.screenshot({
+    path: info.outputPath("activity-open-exchange-collapsed.png"),
+  });
+  expect(f.activity.phase).toBe("running");
+  expect(f.writes).toEqual([]);
+});
 
 test("结构化结果直接阅读内容与说明，引用可展开，Raw 保留确切原文且切换不重读", async ({
   page,
@@ -681,6 +744,7 @@ test("纯图标按钮悬停与键盘显示简短名称，Escape只关闭提示�
   const f = await prepare(page);
   await f.card.hover();
   const copy = f.card.getByRole("button", { name: "复制消息", exact: true });
+  const share = f.card.getByRole("button", { name: "分享图片", exact: true });
   const stop = f.card.getByRole("button", {
     name: "停止这次处理",
     exact: true,
@@ -691,6 +755,7 @@ test("纯图标按钮悬停与键盘显示简短名称，Escape只关闭提示�
   });
   for (const [button, name] of [
     [copy, "复制消息"],
+    [share, "分享图片"],
     [stop, "停止"],
     [supplement, "补充要求"],
   ] as const) {
@@ -716,6 +781,9 @@ test("纯图标按钮悬停与键盘显示简短名称，Escape只关闭提示�
     await expect(page.getByRole("tooltip")).toHaveCount(0);
   }
   await copy.focus();
+  await page.keyboard.press("Tab");
+  await expect(share).toBeFocused();
+  await expect(page.getByRole("tooltip")).toHaveText("分享图片");
   await page.keyboard.press("Tab");
   await expect(stop).toBeFocused();
   await expect(page.getByRole("tooltip")).toHaveText("停止");

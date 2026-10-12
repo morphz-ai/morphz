@@ -14,7 +14,7 @@ export function SubjectObjectives({
   onSelect,
 }: {
   client: WorkspaceClient;
-  scope: ExecutionScope;
+  scope?: ExecutionScope;
   onSelect(scope: ExecutionScope): void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -22,6 +22,9 @@ export function SubjectObjectives({
     state = client.boot!.workspace;
   const goals =
     runtime.activity?.objectives?.filter((goal) => {
+      // The overview uses only the Host's already authorized, loaded goals.
+      // Work-surface navigation is not another authority or filtering scope.
+      if (!scope) return true;
       if (
         goal.projectId !== scope.projectId ||
         goal.conversationId !== (scope.conversationId ?? scope.projectId)
@@ -52,12 +55,14 @@ export function SubjectObjectives({
           ))
       );
     }) ?? [];
-  if (!goals.length) return null;
+  if (!goals.length && (scope || !runtime.activity?.objectivesTruncated))
+    return null;
   const fresh =
     client.online && runtime.connected && runtime.activity?.available;
+  const label = scope ? "关联目标" : "目标";
   return (
-    <section className="subject-objectives" aria-label="关联目标">
-      <h3>关联目标</h3>
+    <section className="subject-objectives" aria-label={label}>
+      <h3>{label}</h3>
       {goals.map((goal) => {
         const threads =
           runtime.activity?.threads.filter(

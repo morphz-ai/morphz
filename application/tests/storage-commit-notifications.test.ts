@@ -18,7 +18,7 @@ import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Pool } from "pg";
 import {
-  observeSqlChanges,
+  observeSqlChanges as observeProductionSqlChanges,
   postgresChangeSource,
   postgresCommitChannel,
   sqliteChangeSource,
@@ -35,6 +35,13 @@ import {
   BrowserStore,
   type BrowserBookmarkAuthority,
 } from "../packages/browser/src/store.js";
+import type { SqlitePathWatch } from "../packages/storage/src/sqlite-directory-watch.js";
+
+// Controlled fault/event cases supply their path-watch seam explicitly. All
+// ordinary native and cross-process cases keep the actual production adapter.
+let controlledPathWatch: SqlitePathWatch | undefined;
+const observeSqlChanges: typeof observeProductionSqlChanges = (source, hint) =>
+  observeProductionSqlChanges(source, hint, { watchPath: controlledPathWatch });
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check: () => boolean | Promise<boolean>, timeout = 3000) {
@@ -55,6 +62,7 @@ function interceptChangeWatch(
   ) => FSWatcher,
 ) {
   const original = fs.watch;
+  const previousPathWatch = controlledPathWatch;
   const directory = realpathSync(dirname(filename));
   const canonical = join(directory, basename(filename));
   const targets = new Set([
@@ -77,9 +85,11 @@ function interceptChangeWatch(
     assert.equal(typeof listener, "function");
     return intercept(target, open, listener as WatchListener<string>);
   }) as typeof fs.watch;
+  controlledPathWatch = fs.watch;
   syncBuiltinESMExports();
   return () => {
     fs.watch = original;
+    controlledPathWatch = previousPathWatch;
     syncBuiltinESMExports();
   };
 }
@@ -187,6 +197,64 @@ async function externalInsert(filename: string, id: number) {
     if (child.exitCode === null && child.signalCode === null) child.kill();
   }
 }
+
+test("本机订阅反复开关不阻塞请求，Mac目录不用FSEvents，健康静默不轮询SQL", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "morphz-commit-close-cost-"));
+  const filename = join(directory, "native.sqlite");
+  const db = new DatabaseSync(filename);
+  db.exec(
+    "PRAGMA journal_mode=WAL; CREATE TABLE items(id INTEGER PRIMARY KEY)",
+  );
+  const targets: string[] = [];
+  const restore = interceptChangeWatch(filename, (target, open) => {
+    targets.push(target);
+    return open();
+  });
+  const reads = countVersionReads();
+  const subscriptions: ReturnType<typeof observeProductionSqlChanges>[] = [];
+  try {
+    // Bypass only the test's controlled-factory wrapper: this is the real
+    // production directory adapter plus real database/WAL file observations.
+    for (let index = 0; index < 6; index++)
+      subscriptions.push(
+        observeProductionSqlChanges(sqliteChangeSource(db), () => {}),
+      );
+    await Promise.all(subscriptions.map((subscription) => subscription.ready));
+    if (process.platform === "darwin")
+      assert.ok(
+        !targets.includes(realpathSync(directory)),
+        "no directory FSEvents subscription",
+      );
+    assert.ok(
+      targets.includes(realpathSync(filename)),
+      "native file observation remains",
+    );
+    await pause(350);
+    const baseline = reads.count;
+    await pause(650);
+    assert.equal(
+      reads.count,
+      baseline,
+      "directory stat observation is not healthy SQL polling",
+    );
+    const started = performance.now();
+    await Promise.all(
+      subscriptions.map((subscription) => subscription.close()),
+    );
+    assert.ok(
+      performance.now() - started < 500,
+      "closing subscriptions must not stall the request loop for seconds",
+    );
+  } finally {
+    await Promise.all(
+      subscriptions.map((subscription) => subscription.close()),
+    );
+    reads.restore();
+    restore();
+    db.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("SQLite COMMIT 后异步提示，rollback/零行重放/只读无提示，独立 memory 不串线", async () => {
   const a = new DatabaseSync(":memory:"),

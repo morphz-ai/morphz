@@ -41,6 +41,65 @@ test.afterAll(async () => {
 
 // Real SafeMarkdown component served by an isolated development Vite server.
 // The source is synthetic; no Platform state, paid model or original App is used.
+test("引用没有额外空行或叠加的首尾段距，多段、嵌套、列表和代码保留结构", async ({
+  page,
+}, info) => {
+  await page.goto(origin + "/tests/fixtures/markdown-line-breaks.html");
+  for (const appearance of ["light", "dark"]) {
+    await page.evaluate((appearance) => {
+      document.documentElement.dataset.appearance = appearance;
+      (document.querySelector(".app") as HTMLElement).dataset.appearance =
+        appearance;
+    }, appearance);
+    for (const surface of ["chat", "document"]) {
+      for (const mode of ["flow", "static"]) {
+        const section = page.getByRole("region", {
+          name: `quotes-${surface}-${mode}`,
+          exact: true,
+        });
+        const quote = section.locator("blockquote").first();
+        await expect(quote.locator("p")).toHaveCount(1);
+        await expect(quote.locator("br")).toHaveCount(0);
+        for (const block of await section.locator("blockquote").all()) {
+          const spacing = await block.evaluate((element) => {
+            const rect = element.getBoundingClientRect(),
+              first = element.firstElementChild!,
+              last = element.lastElementChild!,
+              style = getComputedStyle(element);
+            return {
+              firstMargin: getComputedStyle(first).marginTop,
+              lastMargin: getComputedStyle(last).marginBottom,
+              top: first.getBoundingClientRect().top - rect.top,
+              bottom: rect.bottom - last.getBoundingClientRect().bottom,
+              paddingTop: parseFloat(style.paddingTop),
+              paddingBottom: parseFloat(style.paddingBottom),
+            };
+          });
+          expect(spacing.firstMargin).toBe("0px");
+          expect(spacing.lastMargin).toBe("0px");
+          expect(spacing.top).toBeCloseTo(spacing.paddingTop, 1);
+          expect(spacing.bottom).toBeCloseTo(spacing.paddingBottom, 1);
+        }
+        const multi = section.locator("blockquote").nth(1);
+        await expect(multi.locator("p")).toHaveCount(2);
+        expect(
+          await multi
+            .locator("p")
+            .first()
+            .evaluate((el) => parseFloat(getComputedStyle(el).marginBottom)),
+        ).toBeGreaterThan(0);
+        await expect(section.locator("blockquote li")).toHaveCount(2);
+        await expect(section.locator("blockquote pre code")).toHaveText(
+          "TEST 引用中的代码。\n",
+        );
+        await section.screenshot({
+          path: info.outputPath(`${appearance}-${surface}-${mode}-quotes.png`),
+        });
+      }
+    }
+  }
+});
+
 test("SafeMarkdown聊天/文档、流式/非流式保留原换行与结构", async ({
   page,
 }, info) => {

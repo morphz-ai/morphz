@@ -30,6 +30,18 @@ export function responseWaitingLabel(
   if (delivery.cancelRequested || stopPending) return "已请求停止，等待确认";
   if (delivery.state === "sending") return "正在发送…";
   if (delivery.state === "queued") return "排队等待…";
+  const recovery = messages
+    .filter(
+      (m) =>
+        m.inputId === delivery.inputId &&
+        m.kind === "progress" &&
+        m.providerRecovery,
+    )
+    .sort((a, b) =>
+      b.providerRecovery!.startedAt.localeCompare(
+        a.providerRecovery!.startedAt,
+      ),
+    )[0];
   const active = messages
     .filter(
       (m) =>
@@ -38,10 +50,38 @@ export function responseWaitingLabel(
         ["running", "generating", "pending"].includes(m.tool?.status ?? ""),
     )
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  if (
+    recovery &&
+    (!active || active.createdAt <= recovery.providerRecovery!.startedAt)
+  )
+    return "模型服务暂时中断，自动重试中…";
   if (active?.tool?.status === "running") return "正在执行工具…";
   if (active?.tool?.status === "generating") return "正在生成工具调用…";
   if (active?.tool?.status === "pending") return "工具调用等待执行…";
+  if (recovery) return "模型服务暂时中断，自动重试中…";
   return "等待回复…";
+}
+
+/** Recovery belongs to one accepted input, not another concurrent request.
+ * An incomplete pre-failure prefix is readable, but not a finished answer. */
+export function responseAnswered(
+  messages: readonly LiveMessage[],
+  inputId: string,
+) {
+  const owned = messages.filter((m) => m.inputId === inputId);
+  const recoveryAt = owned
+    .filter((m) => m.kind === "progress" && m.providerRecovery)
+    .map((m) => m.providerRecovery!.startedAt)
+    .sort()
+    .at(-1);
+  return owned.some(
+    (m) =>
+      (m.kind === "reply" || m.kind === "error") &&
+      m.text.trim() &&
+      (!recoveryAt ||
+        m.kind === "error" ||
+        (!m.incomplete && m.createdAt > recoveryAt)),
+  );
 }
 
 export function responseElapsed(createdAt: string, now: number): string | null {

@@ -16,6 +16,8 @@ export const liveMessageSchema = z.object({
   publicationKey: z.string().optional(),
   sequence: z.number().int().nonnegative().optional(),
   threadId: z.string().optional(),
+  /** A durable Runtime provider_wait, not a failed physical HTTP stream. */
+  providerRecovery: z.object({ startedAt: z.string() }).optional(),
   tool: z
     .object({
       name: z.string(),
@@ -107,6 +109,10 @@ export class LiveConversationProjection {
       ...(typeof e.payload.thread_id === "string"
         ? { threadId: e.payload.thread_id }
         : {}),
+      ...(["chat/progress", "runtime/provider_wait"].includes(e.topic) &&
+      e.payload.disposition === "provider_wait"
+        ? { providerRecovery: { startedAt: e.timestamp } }
+        : {}),
       text: "",
       kind: "reply",
     };
@@ -163,6 +169,7 @@ export class LiveConversationProjection {
       "chat/reply",
       "chat/outbound_message",
       "chat/progress",
+      "runtime/provider_wait",
       "chat/no_reply",
       "chat/cancelled",
       "chat/runtime_error",
@@ -264,8 +271,10 @@ export class LiveConversationProjection {
         a.message.streaming = false;
       }
       if (kind === "failed") {
-        a.message.kind = "error";
-        a.message.text ||= str(s.message) || "生成中断";
+        // This physical stream may enter durable Provider recovery. Only a
+        // semantic Runtime outcome can fail the user's task. Keep public words
+        // incomplete, but never manufacture a reply from diagnostic JSON.
+        if (a.message.text) a.message.incomplete = true;
         a.message.streaming = false;
       }
       return;
@@ -282,8 +291,7 @@ export class LiveConversationProjection {
           this.attempts.delete(attemptId);
         }
         if (str(p.state) === "failed") {
-          a.message.kind = "error";
-          a.message.text ||= str(p.detail) || "生成失败";
+          if (a.message.text) a.message.incomplete = true;
         }
       }
       return;
@@ -363,7 +371,7 @@ export class LiveConversationProjection {
     }
     const kind = ["chat/reply", "chat/outbound_message"].includes(e.topic)
       ? "reply"
-      : e.topic === "chat/progress"
+      : ["chat/progress", "runtime/provider_wait"].includes(e.topic)
         ? "progress"
         : [
               "chat/runtime_error",
@@ -379,7 +387,8 @@ export class LiveConversationProjection {
         p.message ??
         (e.topic === "runtime/response_protocol_error" ? p.reason : undefined),
     );
-    if (kind && text) this.messages.set(e.id, { ...this.base(e), kind, text });
+    if (kind && (text || p.disposition === "provider_wait"))
+      this.messages.set(e.id, { ...this.base(e), kind, text });
   }
   snapshot(): LiveMessage[] {
     const result = new Map(this.messages);

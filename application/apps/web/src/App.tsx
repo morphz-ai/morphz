@@ -828,7 +828,6 @@ function WorkspaceApp({
       connectionOpen ||
       settingsSection !== null ||
       !!creating ||
-      !!executions ||
       !!cognitiveChoice ||
       nativeExportDialog ||
       directoryPickerScope === directoryScope ||
@@ -3935,10 +3934,14 @@ function WorkspaceApp({
                   onRefresh={async () => {
                     await client.refresh();
                   }}
-                  detailLeading={
+                  leading={
                     <SubjectObjectives
                       client={client}
-                      scope={activityScope}
+                      scope={
+                        activityScope.inputId || activityScope.threadId
+                          ? activityScope
+                          : undefined
+                      }
                       onSelect={subjectInspector.selectExecution}
                     />
                   }

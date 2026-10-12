@@ -3635,6 +3635,10 @@ export class RuntimeBridge {
       rootId: root.id,
       ...(threadId ? { threadId } : {}),
       ...(item.attempt_id ? { publicationKey: item.attempt_id } : {}),
+      ...(item.event.topic === "chat/progress" &&
+      item.event.payload.disposition === "provider_wait"
+        ? { providerRecovery: { startedAt: item.event.timestamp } }
+        : {}),
       ...(publicOutput
         ? {
             incomplete: item.event.payload.complete !== true,

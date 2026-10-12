@@ -78,6 +78,20 @@ declare global {
             }
         >;
       };
+      messageImages?: {
+        copy(request: {
+          centerId: string;
+          principalId: string;
+          createdAt: string;
+          pictures: { mime: "image/png"; data: string }[];
+        }): Promise<{ status: "copied"; count: number }>;
+        save(request: {
+          centerId: string;
+          principalId: string;
+          createdAt: string;
+          pictures: { mime: "image/png"; data: string }[];
+        }): Promise<{ status: "saved" | "cancelled"; count: number }>;
+      };
       appearance?: {
         setMode(
           mode: "system" | "light" | "dark",

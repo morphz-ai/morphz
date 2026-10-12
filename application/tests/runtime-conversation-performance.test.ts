@@ -699,6 +699,51 @@ test("持久进度恢复真实分支身份，公共契约不剥掉threadId且未
   }
 });
 
+test("持久恢复状态来自精确 Runtime 事件，保留真实时间；普通进度文字不伪造重试", async () => {
+  const store = new WorkspaceStore(":memory:", { mode: "transport" });
+  const stamp = "2026-10-13T00:00:00.000Z";
+  const recoveredAt = "2026-10-13T00:00:03.000Z";
+  const { bridge, metrics } = timelineBridge(store, (value, sessionId) => {
+    return [0, 1].flatMap((index) => {
+      const entries = timelinePair(
+        value,
+        sessionId,
+        index,
+        stamp,
+        stamp,
+        recoveredAt,
+        index ? "普通进度里说 provider_wait" : "模型服务正在恢复",
+      );
+      const progress = entries[1]!;
+      progress.display_kind = "progress";
+      progress.event.topic = "chat/progress";
+      progress.event.payload.thread_id = `thread-${index}`;
+      if (!index) progress.event.payload.disposition = "provider_wait";
+      return entries;
+    });
+  });
+  try {
+    const history = await bridge.platformConversationHistory(
+      { projectId: "project", conversationId: "conversation" },
+      localAccess,
+    );
+    const messages = conversationRuntimeSchema.parse(history.runtime).messages;
+    const recovery = messages.find((m) => m.inputId === "input-0")!;
+    assert.equal(recovery.kind, "progress");
+    assert.equal(recovery.createdAt, stamp);
+    assert.deepEqual(recovery.providerRecovery, { startedAt: recoveredAt });
+    assert.equal(recovery.rootId, "root-0");
+    assert.equal(recovery.threadId, "thread-0");
+    assert.equal(
+      messages.find((m) => m.inputId === "input-1")!.providerRecovery,
+      undefined,
+    );
+    assert.equal(metrics().fetches, 1);
+  } finally {
+    store.close();
+  }
+});
+
 test("历史分页读取 Runtime 索引，不写 Host 本机消息副本", async (t) => {
   const store = new WorkspaceStore(":memory:");
   const count = 200;

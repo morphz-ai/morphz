@@ -9,6 +9,10 @@ import {
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { Tooltip } from "./ui/Tooltip.js";
+import {
+  MessageShareDialog,
+  type MessageShareContent,
+} from "./MessageShareDialog.js";
 import { ResponseWaiting } from "./ResponseWaiting.js";
 import { ConversationSearch } from "./ConversationSearch.js";
 import { inputIntents } from "../../../packages/core/src/input-intent.js";
@@ -50,6 +54,7 @@ import {
   Pause,
   Link2,
   Search,
+  Image as ImageIcon,
 } from "lucide-react";
 import {
   scriptOutputKey,
@@ -62,6 +67,7 @@ import { AttachmentPreview } from "./AttachmentPreview.js";
 import {
   conversationDate,
   isPendingResponse,
+  responseAnswered,
   messageSourceSummary,
   responseWaitingLabel,
 } from "./conversation-presentation.js";
@@ -334,10 +340,7 @@ export function Conversation({
           configured: runtime.configured,
           delivery,
           answered:
-            group.messages.some(
-              (m) =>
-                (m.kind === "reply" || m.kind === "error") && m.text.trim(),
-            ) ||
+            responseAnswered(group.messages, group.inputId!) ||
             outputs.some((o) => o.inputId === group.inputId) ||
             scriptOutputs.some((o) => o.inputId === group.inputId),
           approvalPending:
@@ -381,6 +384,57 @@ export function Conversation({
       scriptOutput: o,
     })),
   ]);
+  // Published progress can precede more physical work. The exact execution
+  // snapshot, not prose or a finished stream, owns that continuation cue.
+  const continuingResponses = new Map<
+    string,
+    {
+      inputId: string;
+      createdAt: string;
+      label: string;
+      connected: boolean;
+    }
+  >();
+  for (const group of groups) {
+    const input = inputs.find((input) => input.id === group.inputId);
+    if (!input) continue;
+    const latest = timeline
+      .filter(
+        (entry) =>
+          entry.reply?.inputId === input.id &&
+          (entry.reply.kind === "reply" || entry.reply.kind === "error") &&
+          entry.reply.text.trim(),
+      )
+      .at(-1);
+    if (
+      !latest?.reply ||
+      latest.reply.kind === "error" ||
+      latest.reply.streaming
+    )
+      continue;
+    const waiting = waitingResponses.get(group.id);
+    if (waiting) {
+      waitingResponses.delete(group.id);
+      continuingResponses.set(latest.id, {
+        inputId: input.id,
+        createdAt: input.createdAt,
+        ...waiting,
+      });
+      continue;
+    }
+    const { activeBranch, workStatus } = inputExecutionActivityPresentation(
+      runtime,
+      input,
+      client.online,
+    );
+    if (activeBranch && workStatus?.kind === "running")
+      continuingResponses.set(latest.id, {
+        inputId: input.id,
+        createdAt: input.createdAt,
+        label: "继续处理中…",
+        connected: true,
+      });
+  }
   const receipts = replyReceipts(
     items.flatMap((item) => (item.reply ? [item.reply] : [])),
     outputs,
@@ -404,7 +458,8 @@ export function Conversation({
           ":" +
           item.reply?.streaming,
       )
-      .join("|") + JSON.stringify([...waitingResponses]);
+      .join("|") +
+    JSON.stringify([[...waitingResponses], [...continuingResponses]]);
   const { loadEarlier, onScroll, returnLatest } = useConversationViewportCommit(
     viewport,
     {
@@ -1052,6 +1107,36 @@ export function Conversation({
                       >
                         <MessageActions
                           createdAt={createdAt}
+                          client={client}
+                          share={{
+                            text: item ? item.body : reply!.text,
+                            author: item
+                              ? item.author.actantId === client.boot?.actantId
+                                ? "我"
+                                : actorName(state, item.author.actantId)
+                              : "Morphz",
+                            createdAt,
+                            format:
+                              item || reply?.kind === "progress"
+                                ? "plain"
+                                : "markdown",
+                            partial: !!(
+                              reply?.streaming ||
+                              reply?.incomplete ||
+                              reply?.truncated
+                            ),
+                            quotes:
+                              item?.textQuotes?.map(({ text, comment }) => ({
+                                text,
+                                comment,
+                              })) ?? [],
+                            attachments:
+                              item?.attachments?.map(
+                                (attachment) => attachment.name,
+                              ) ?? [],
+                            state,
+                            catalog: client.contentCatalog,
+                          }}
                           control={item ? stopControl : undefined}
                           text={
                             item
@@ -1196,6 +1281,12 @@ export function Conversation({
                       {...waiting}
                     />
                   )}
+                  {reply && continuingResponses.has(id) && (
+                    <ResponseWaiting
+                      {...continuingResponses.get(id)!}
+                      showElapsed={false}
+                    />
+                  )}
                 </Fragment>
               );
             },
@@ -1271,13 +1362,18 @@ function MessageActions({
   createdAt,
   text,
   control,
+  share,
+  client,
 }: {
   createdAt: string;
   text: string;
   control?: ReactNode;
+  share: MessageShareContent;
+  client: WorkspaceClient;
 }) {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState(false);
+  const [sharing, setSharing] = useState<MessageShareContent | null>(null);
   useEffect(() => {
     if (!copied) return;
     const timer = window.setTimeout(() => setCopied(false), 1600);
@@ -1317,12 +1413,34 @@ function MessageActions({
             )}
           </button>
         </Tooltip>
+        <Tooltip label="分享图片">
+          <button
+            className="message-copy message-share"
+            type="button"
+            aria-label="分享图片"
+            disabled={
+              !share.text.trim() &&
+              !share.quotes.length &&
+              !share.attachments.length
+            }
+            onClick={() => setSharing(share)}
+          >
+            <ImageIcon size={13} aria-hidden="true" />
+          </button>
+        </Tooltip>
         {control}
       </span>
       {error && (
         <span className="delivery-error" role="alert">
           复制失败，请重试或选中文字复制。
         </span>
+      )}
+      {sharing && (
+        <MessageShareDialog
+          content={sharing}
+          client={client}
+          onClose={() => setSharing(null)}
+        />
       )}
     </>
   );

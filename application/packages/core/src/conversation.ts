@@ -156,6 +156,7 @@ export const conversationRuntimeSchema = z.object({
       rootId: z.string().nullable().optional(),
       publicationKey: z.string().optional(),
       threadId: z.string().optional(),
+      providerRecovery: z.object({ startedAt: z.string() }).optional(),
       incomplete: z.boolean().optional(),
       truncated: z.boolean().optional(),
       sequence: z.number().int().nonnegative().optional(),

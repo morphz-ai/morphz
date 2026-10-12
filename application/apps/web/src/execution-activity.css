@@ -31,6 +31,9 @@
   background: color-mix(in srgb, var(--accent) 10%, var(--paper));
   color: var(--accent-strong);
 }
+.execution-activity-icon[data-status="ended"] {
+  color: var(--success-ink);
+}
 .execution-activity-icon[data-status="failed"] {
   color: var(--danger, light-dark(#a72a32, #f8a9ad));
   background: color-mix(
@@ -41,9 +44,13 @@
 }
 .execution-activity-body {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 5px;
   min-width: 0;
   flex: 1;
+}
+.execution-activity-body > * {
+  min-width: 0;
 }
 .execution-activity-body > strong {
   font-size: 13px;

@@ -239,11 +239,33 @@ kbd {
   background: var(--paper);
   line-height: 1.45;
 }
-.product-bridge > span { display: flex; align-items: center; gap: 7px; color: var(--ink); font-size: 12px; font-weight: 700; }
-.product-bridge .brand-mark { width: 18px; height: 18px; }
-.product-bridge > a { display: flex; justify-content: space-between; color: var(--accent); font-size: 12px; font-weight: 620; }
-.product-bridge > a:hover { text-decoration: underline; }
-.product-bridge > small { color: var(--muted); font-size: 10px; line-height: 1.55; }
+.product-bridge > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+.product-bridge .brand-mark {
+  width: 18px;
+  height: 18px;
+}
+.product-bridge > a {
+  display: flex;
+  justify-content: space-between;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 620;
+}
+.product-bridge > a:hover {
+  text-decoration: underline;
+}
+.product-bridge > small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+}
 .sidebar-bottom .avatar {
   width: 30px;
   height: 30px;
@@ -1407,6 +1429,14 @@ kbd {
 }
 .reply-content > :last-child {
   margin-bottom: 0;
+}
+/* A quote owns its outer inset. Nested block margins only separate content
+   inside it, never add a phantom first/last line to the quote's padding. */
+:is(.reply-content, .document-body) blockquote > :first-child {
+  margin-block-start: 0;
+}
+:is(.reply-content, .document-body) blockquote > :last-child {
+  margin-block-end: 0;
 }
 .reply-content h1,
 .reply-content h2,

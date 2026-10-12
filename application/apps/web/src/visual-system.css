@@ -13,6 +13,7 @@
   --ink: light-dark(#1f2024, #f4f4f6);
   --text-secondary: light-dark(#494b54, #c6c7cd);
   --muted: light-dark(#64666f, #a4a5ae);
+  --success-ink: light-dark(#187d3d, #83d99b);
   --selection: light-dark(#edf0f4, #383940);
   --line: light-dark(#e4e7ec, #38383d);
   --hairline: light-dark(#eef0f3, #303034);

@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SafeMarkdown } from "../apps/web/src/SafeMarkdown.js";
-import { conversationDate } from "../apps/web/src/conversation-presentation.js";
+import {
+  conversationDate,
+  responseAnswered,
+  responseWaitingLabel,
+} from "../apps/web/src/conversation-presentation.js";
+import type { LiveMessage } from "../packages/core/src/live-conversation.js";
 import type { Workspace } from "../packages/core/src/model.js";
 
 const render = (children: string) =>
@@ -14,6 +19,83 @@ const render = (children: string) =>
       onOpen: () => {},
     }),
   );
+
+test("只有输入精确关联的持久恢复状态才显示重试；已有前缀不误判完成，终止与正常回复仍清除等待", () => {
+  const base = {
+    projectId: "p",
+    conversationId: "c",
+    artifactId: null,
+    inputId: "input-a",
+    rootId: "root-a",
+    threadId: "thread-a",
+    createdAt: "2026-10-13T00:00:00Z",
+  };
+  const delivery = {
+    inputId: "input-a",
+    state: "running" as const,
+    error: null,
+    retryable: false,
+  };
+  const prefix: LiveMessage = {
+    ...base,
+    id: "stream:a",
+    text: "已显示前缀",
+    kind: "reply",
+    streaming: false,
+    incomplete: true,
+  };
+  const recovery: LiveMessage = {
+    ...base,
+    id: "provider_wait_a",
+    text: "等待模型服务恢复",
+    kind: "progress",
+    providerRecovery: { startedAt: "2026-10-13T00:00:02Z" },
+  };
+  assert.equal(responseAnswered([prefix, recovery], "input-a"), false);
+  assert.equal(
+    responseWaitingLabel(delivery, [prefix, recovery], true),
+    "模型服务暂时中断，自动重试中…",
+  );
+  assert.equal(
+    responseWaitingLabel(
+      { ...delivery, inputId: "input-b" },
+      [prefix, recovery],
+      true,
+    ),
+    "等待回复…",
+  );
+  assert.equal(
+    responseWaitingLabel(delivery, [recovery], false),
+    "连接中断，等待恢复",
+  );
+  assert.equal(
+    responseWaitingLabel(delivery, [recovery], true, true),
+    "已请求停止，等待确认",
+  );
+  const result: LiveMessage = {
+    ...base,
+    id: "publication:b",
+    text: "重试后的正常回复",
+    kind: "reply",
+    createdAt: "2026-10-13T00:00:05Z",
+  };
+  assert.equal(responseAnswered([prefix, recovery, result], "input-a"), true);
+  assert.equal(
+    responseAnswered(
+      [prefix, recovery, { ...result, kind: "error", text: "确实终止" }],
+      "input-a",
+    ),
+    true,
+  );
+  assert.equal(
+    responseAnswered(
+      [prefix, recovery, { ...result, inputId: "input-b" }],
+      "input-a",
+    ),
+    false,
+  );
+  assert.equal(responseAnswered([prefix], "input-a"), true);
+});
 
 test("日期分隔使用本地日历边界，跨年不混淆，无效时间不伪造日期", () => {
   const date = new Date(2026, 8, 11, 0, 5);

@@ -39,7 +39,6 @@ const suspensionInputs = [
   "connectionOpen",
   "settingsSection!==null",
   "!!creating",
-  "!!executions",
   "!!cognitiveChoice",
   "nativeExportDialog",
   "directoryPickerScope===directoryScope",
@@ -236,7 +235,7 @@ function ownership(controllerText: string, appText: string): string[] {
     const suspended = values.get("suspended");
     check(
       !!suspended && text(suspended, app) === suspensionInputs.join("||"),
-      "All twelve suspension inputs retain the current expression and order",
+      "Actual modal/native-input suspension inputs retain their expression and order; inline activity does not pin exchange",
     );
   } else check(false, "Controller receives explicit Host-owned inputs");
   const focus = commits[0];
@@ -362,6 +361,7 @@ test("controller ownership gate rejects duplicate requests, lost suspension and 
     app + "\nconst requestedComposerFocus = useRef(null);",
     app.replace("!!capture ||", ""),
     app.replace("!!cognitiveChoice ||", ""),
+    app.replace("!!cognitiveChoice ||", "!!executions || !!cognitiveChoice ||"),
     app.replace("surface: workSurface,", "surface: { ...workSurface },"),
     app.replace("useExchangeControllerFocus(exchangeController);", ""),
     app.replace(

@@ -7,14 +7,17 @@ export function ResponseWaiting({
   createdAt,
   label,
   connected,
+  showElapsed = true,
 }: {
   inputId: string;
   createdAt: string;
   label: string;
   connected: boolean;
+  showElapsed?: boolean;
 }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
+    if (!showElapsed) return;
     let timer: ReturnType<typeof setInterval> | undefined;
     const sync = () => {
       clearInterval(timer);
@@ -28,8 +31,8 @@ export function ResponseWaiting({
       clearInterval(timer);
       document.removeEventListener("visibilitychange", sync);
     };
-  }, []);
-  const elapsed = responseElapsed(createdAt, now);
+  }, [showElapsed]);
+  const elapsed = showElapsed ? responseElapsed(createdAt, now) : null;
   return (
     <div
       className="response-placeholder"

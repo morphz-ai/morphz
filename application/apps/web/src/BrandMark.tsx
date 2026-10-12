@@ -1,5 +1,8 @@
 import { useId } from "react";
 
+export const MORPHZ_MARK_PATH =
+  "M8 4 48 40 38 40 38 70 8 92Z M88 4 48 40 58 40 58 70 88 92Z";
+
 /** Shared silhouette of the Morphz mark, using the active Dashboard accent. */
 export function BrandMark({ lively = false }: { lively?: boolean } = {}) {
   const id = useId().replace(/:/g, "");
@@ -9,7 +12,7 @@ export function BrandMark({ lively = false }: { lively?: boolean } = {}) {
         id={lively ? `${id}-shape` : undefined}
         fill="currentColor"
         stroke="none"
-        d="M8 4 48 40 38 40 38 70 8 92Z M88 4 48 40 58 40 58 70 88 92Z"
+        d={MORPHZ_MARK_PATH}
       />
       {lively && (
         <>

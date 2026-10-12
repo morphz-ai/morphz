@@ -350,7 +350,8 @@
 }
 @media (hover: none), (pointer: coarse) {
   .app .subject-settings-group > button,
-  .subject-settings-group > details > summary {
+  .subject-settings-group > details > summary,
+  .subject-objective-detail > button {
     min-height: 44px;
   }
 }

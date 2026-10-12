@@ -595,8 +595,9 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
     ),
   ).toHaveAttribute("data-status", "cancelled");
   await expect(panel).not.toContainText("普通聊天不冒充执行任务");
-  await expect(panel.locator(".subject-objectives")).toHaveCount(0);
-  await panel.locator('[data-thread-id="subject-open"]').click();
+  await expect(
+    panel.getByRole("region", { name: "目标", exact: true }),
+  ).toBeVisible();
   const goal = panel.locator('[data-objective-id="subject-objective"]');
   await goal.getByRole("button", { name: /验证语音环境/ }).click();
   await expect(goal.getByRole("status")).toHaveText("等待关联工作或条件");
@@ -618,6 +619,9 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
   await goal.getByRole("button", { name: "检查下载进度", exact: true }).click();
   await expect(
     panel.getByRole("button", { name: "返回活动列表", exact: true }),
+  ).toBeVisible();
+  await expect(
+    panel.getByRole("region", { name: "关联目标", exact: true }),
   ).toBeVisible();
   await expect.poll(() => queries.at(-1)?.get("threadId")).toBe("subject-open");
   expect(queries.at(-1)?.get("inputId")).toBe("subject-input");
@@ -863,7 +867,17 @@ test("未来提醒归入定时任务，启动后才进入活动；详情保留�
   await expect(panel.locator('[data-thread-id="recent-thread"]')).toHaveCount(
     1,
   );
-  await expect(panel.locator(".subject-objectives")).toHaveCount(0);
+  await expect(
+    panel.getByRole("region", { name: "目标", exact: true }),
+  ).toBeVisible();
+  await expect(
+    panel.locator('[data-objective-id="future-goal"]'),
+  ).toBeVisible();
+  // These are loaded goals from other scopes, not another relation to this
+  // timer. The overview shows them; the exact execution detail excludes them.
+  await expect(
+    panel.locator('[data-objective-id^="unrelated-goal-"]'),
+  ).toHaveCount(3);
   await expect(panel).not.toContainText("无项目");
   for (const appearance of ["亮色", "暗色"]) {
     await openSettings(page, "外观");

@@ -16,7 +16,10 @@
   font-weight: 550;
 }
 .execution-origin-status[data-status="failed"] {
-  color: var(--danger);
+  color: var(--danger, light-dark(#a72a32, #f8a9ad));
+}
+.execution-origin-status[data-status="ended"] > svg {
+  color: var(--success-ink);
 }
 .execution-origin-status > svg {
   width: 18px;
@@ -132,7 +135,10 @@
 .execution-job .job-status.succeeded {
   width: var(--execution-step-action-size);
   justify-content: center;
-  color: light-dark(#187d3d, #83d99b);
+  color: var(--success-ink);
+}
+.execution-job .job-status.failed {
+  color: var(--danger, light-dark(#a72a32, #f8a9ad));
 }
 .execution-job .job-status.running {
   color: var(--accent-strong);

@@ -7,12 +7,13 @@ import {
   test,
 } from "./platform-conversation-fixture.js";
 
-async function openAllWork(page: Page) {
+async function openActivity(page: Page) {
   await openExecutionPanel(page);
-  await page
-    .getByRole("complementary", { name: "Morphz 信息", exact: true })
-    .getByRole("button", { name: "全部工作", exact: true })
-    .click();
+  await expect(
+    page
+      .getByRole("complementary", { name: "Morphz 信息", exact: true })
+      .getByRole("button", { name: "全部工作", exact: true }),
+  ).toHaveCount(0);
 }
 
 test("incomplete or disconnected work snapshots never claim an exact count or idle work", async ({
@@ -44,7 +45,7 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "对话", exact: true })
     .click();
-  await openAllWork(page);
+  await openActivity(page);
   const execution = page.getByRole("complementary", {
     name: "Morphz 信息",
     exact: true,
@@ -53,7 +54,13 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
   const quiet = execution.locator(".execution-quiet");
   await expect(activity).toHaveAttribute("title", "活动 · 状态待核对");
   await expect(execution.locator(".subject-presence")).toHaveCount(0);
-  await expect(execution.locator(".execution-scope-count")).toHaveCount(0);
+  await expect(execution.locator(".execution-scope-count")).toHaveCSS(
+    "clip-path",
+    "inset(50%)",
+  );
+  await expect(execution.locator(".execution-scope-count")).not.toContainText(
+    "0 项",
+  );
   await expect(
     execution.locator(".execution-activity-completeness"),
   ).toHaveCount(0);
@@ -68,7 +75,10 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
   ).toHaveCount(0);
   await expect(
     execution.getByRole("heading", { name: "目标", exact: true }),
-  ).toHaveCount(0);
+  ).toHaveCount(1);
+  await expect(
+    execution.getByText("目标概览尚不完整", { exact: true }),
+  ).toBeVisible();
   await expect(quiet).toHaveText("尚不能确认是否有工作进行中");
   threads.push({
     id: "incomplete-background",
@@ -130,6 +140,9 @@ test("incomplete or disconnected work snapshots never claim an exact count or id
     "活动 · 目前没有进行中的执行",
   );
   await expect(quiet).toHaveText("当前没有正在处理的工作");
+  await expect(
+    execution.getByRole("heading", { name: "目标", exact: true }),
+  ).toHaveCount(0);
 });
 
 test("all-work overview includes authorized work whose source message is not loaded, without changing the input scope", async ({
@@ -205,7 +218,10 @@ test("all-work overview includes authorized work whose source message is not loa
   });
   await expect(
     execution.getByRole("button", { name: "全部工作", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
+  ).toHaveCount(0);
+  await expect(
+    execution.getByRole("button", { name: "当前工作", exact: true }),
+  ).toHaveCount(0);
   await expect(
     execution.getByRole("tab", { name: "活动", exact: true }),
   ).toHaveAttribute("title", "活动 · 2 项工作正在推进");

@@ -85,6 +85,77 @@ test("Session IO 终态与快照一致：失败说明可见、清除流式草稿
   assert.equal((messages[0] as { sequence?: number }).sequence, 471);
 });
 
+test("单次模型流失败不是任务最终失败；诊断不生成正文，持久恢复状态仍可见", () => {
+  const p = projection();
+  delta(p, "a", { kind: "started" });
+  delta(p, "a", {
+    kind: "failed",
+    message: '{"error":{"code":"request_timeout"}}',
+  });
+  p.consume(
+    event("runtime/model_attempt_state", {
+      attempt_id: "a",
+      root_turn_id: "a",
+      state: "failed",
+      terminal: true,
+      detail: "底层错误 JSON",
+    }),
+  );
+  assert.deepEqual(p.snapshot(), []);
+  p.consume(
+    event("chat/progress", {
+      attempt_id: "a",
+      root_turn_id: "a",
+      thread_id: "thread-a",
+      disposition: "provider_wait",
+      text: "等待模型服务恢复",
+    }),
+  );
+  assert.equal(p.snapshot()[0]!.kind, "progress");
+  assert.equal(typeof p.snapshot()[0]!.providerRecovery?.startedAt, "string");
+  p.reconnect();
+  assert.equal(p.snapshot()[0]!.text, "等待模型服务恢复");
+  delta(p, "a", { kind: "text_delta", text: "迟到诊断" });
+  assert.equal(p.snapshot().length, 1);
+});
+
+test("中断的已显示正文保留为未完成内容；最后的真实失败仍显示，其他输入不被改写", () => {
+  const p = projection();
+  for (const id of ["a", "b"]) {
+    delta(p, id, { kind: "started" });
+    delta(p, id, { kind: "text_delta", text: `${id} 已显示正文` });
+  }
+  delta(p, "a", { kind: "failed", message: "底层错误 JSON" });
+  const failed = p.snapshot().find((m) => m.publicationKey === "a")!;
+  assert.equal(failed.kind, "reply");
+  assert.equal(failed.text, "a 已显示正文");
+  assert.equal(failed.incomplete, true);
+  assert.equal(failed.streaming, false);
+  assert.equal(
+    p.snapshot().find((m) => m.publicationKey === "b")!.streaming,
+    true,
+  );
+  p.consume(
+    event("chat/runtime_error", {
+      attempt_id: "a",
+      root_turn_id: "a",
+      text: "请求最终终止，请检查模型配置。",
+    }),
+  );
+  assert.equal(
+    p.snapshot().find((m) => m.publicationKey === "a")!.kind,
+    "error",
+  );
+  assert.equal(
+    p.snapshot().find((m) => m.publicationKey === "a")!.text,
+    "请求最终终止，请检查模型配置。",
+  );
+  assert.equal(
+    p.snapshot().find((m) => m.publicationKey === "b")!.text,
+    "b 已显示正文",
+  );
+});
+
 test("工具调用及最终发布间正文始终可见，最终回执只替换同一次流式输出", () => {
   const p = projection();
   delta(p, "a", { kind: "started" });

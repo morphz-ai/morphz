@@ -40,7 +40,7 @@ export function ExecutionSidebar({
   onOpenScript,
   viewOptions,
   embedded = false,
-  detailLeading,
+  leading,
   onRefresh,
 }: {
   client: WorkspaceClient;
@@ -54,7 +54,7 @@ export function ExecutionSidebar({
   onOpenScript?: (output: ScriptOutput) => void;
   viewOptions?: ComposerOption[];
   embedded?: boolean;
-  detailLeading?: ReactNode;
+  leading?: ReactNode;
   onRefresh?: () => void | Promise<void>;
 }) {
   const state = client.boot!.workspace,
@@ -406,7 +406,7 @@ export function ExecutionSidebar({
               </div>
             </section>
           )}
-          {detailLeading}
+          {leading}
           {input && (
             <div className="execution-outputs" aria-label="工作成果">
               {client
@@ -483,6 +483,7 @@ export function ExecutionSidebar({
         </>
       ) : (
         <>
+          {leading}
           {active.length > 0 && (
             <section
               className="execution-activity-section"

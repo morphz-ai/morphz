@@ -17,6 +17,9 @@ const {
   screen,
   shell,
   protocol,
+  nativeImage,
+  clipboard,
+  ClipboardItem,
 } = require("electron");
 const { join, isAbsolute } = require("node:path");
 const { writeFileSync } = require("node:fs");
@@ -36,6 +39,7 @@ const {
 const { rendererURL } = require("./development.cjs");
 const { registerApplicationBridge } = require("./application-bridge.cjs");
 const { createScriptExportSaver } = require("./script-export.cjs");
+const { createMessageImageOutput } = require("./message-images.cjs");
 const {
   restorePath,
   emptyPage,
@@ -81,6 +85,7 @@ else {
   let connection;
   let preferences;
   let scriptExports;
+  let messageImages;
   app.on("web-contents-created", (_event, contents) =>
     browser?.created(contents),
   );
@@ -163,6 +168,7 @@ else {
       microphone.cancel();
       capture.cancel();
       scriptExports?.invalidate();
+      messageImages?.invalidate();
       application.invalidate();
       // Revoke browser access on the fresh connection; invalidating afterward
       // would abort the asynchronous exchange that clears the broker grant.
@@ -178,6 +184,7 @@ else {
       microphone.cancel();
       capture.cancel();
       scriptExports?.invalidate();
+      messageImages?.invalidate();
       application.invalidate();
       createdBrowser.stop();
     });
@@ -373,6 +380,7 @@ else {
         // storage. Disconnecting a stream alone must not discard a form, but
         // an identity transition must never retain another Principal's page.
         browser?.close();
+        messageImages?.invalidate();
         host?.persistAuthentication();
       });
       const { buildScriptDocx } =
@@ -386,6 +394,21 @@ else {
       });
       ipcMain.handle("script-exports:save", (event, request) =>
         scriptExports.save(event, request),
+      );
+      messageImages = createMessageImageOutput({
+        connection: application,
+        requireMain,
+        getWindow: () => window,
+        dialog,
+        nativeImage,
+        clipboard,
+        ClipboardItem,
+      });
+      ipcMain.handle("message-images:copy", (event, request) =>
+        messageImages.copy(event, request),
+      );
+      ipcMain.handle("message-images:save", (event, request) =>
+        messageImages.save(event, request),
       );
       if (process.platform === "darwin") {
         app.setActivationPolicy("regular");

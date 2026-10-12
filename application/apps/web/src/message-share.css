@@ -1,0 +1,304 @@
+.app .message-share-dialog {
+  --ui-dialog-width: clamp(
+    340px,
+    calc(
+      min(
+          640px,
+          var(--message-preview-height) * var(--message-image-ratio, 1)
+        ) +
+        16px
+    ),
+    656px
+  );
+  --message-preview-height: clamp(
+    100px,
+    calc(var(--modal-viewport-height, 100dvh) - 196px),
+    480px
+  );
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px 8px;
+  overflow: hidden;
+}
+.app .message-share-dialog[data-expanded="true"] {
+  --ui-dialog-width: 720px;
+}
+.app .message-share-dialog > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: none;
+  min-height: 32px;
+  margin: 0;
+}
+.message-share-dialog > header h2 {
+  margin: 0;
+  font-size: var(--ui-dialog-heading-size);
+  font-weight: 550;
+}
+.message-share-templates {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  margin-left: auto;
+  border-radius: var(--ui-radius-control);
+  background: var(--selection);
+}
+.app .message-share-templates > button {
+  padding: 4px 8px;
+  min-height: 28px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.app .message-share-templates > button[aria-pressed="true"] {
+  background: var(--surface-raised);
+  color: var(--ink);
+}
+.message-share-toolbar,
+.message-share-preview-controls,
+.message-share-actions,
+.message-share-pages {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.message-share-toolbar {
+  justify-content: space-between;
+  gap: 8px;
+  flex: none;
+}
+.message-share-actions {
+  margin-left: auto;
+}
+.message-share-toolbar svg {
+  width: 16px;
+  height: 16px;
+}
+.app .message-share-copy,
+.app .message-share-zoom {
+  color: var(--text-secondary);
+}
+.app .message-share-copy[data-complete="true"] {
+  color: var(--success-ink);
+}
+.message-share-action-label {
+  display: inline-block;
+  min-width: 4em;
+  text-align: center;
+}
+.app .message-share-zoom {
+  min-height: var(--ui-dialog-control-height);
+  padding: 5px 8px;
+  font-size: var(--ui-dialog-control-font-size);
+  line-height: 20px;
+}
+.message-share-pages > span {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.message-share-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  max-height: var(--message-preview-height);
+  padding: 0;
+  border-radius: 5px;
+  background: transparent;
+  overflow: auto;
+  overscroll-behavior: contain;
+  text-align: center;
+}
+.message-share-preview > img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: var(--message-preview-height);
+  object-fit: contain;
+  border-radius: 5px;
+  margin: 0 auto;
+}
+.message-share-dialog[data-expanded="true"] .message-share-preview {
+  display: block;
+  height: var(--message-preview-height);
+}
+.message-share-dialog[data-expanded="true"] .message-share-preview > img {
+  width: 100%;
+  max-height: none;
+}
+.message-share-generating {
+  padding: 32px 12px;
+  margin: 0;
+  text-align: center;
+}
+.message-share-dialog .message-share-error p {
+  margin: 0;
+  font-size: 13px;
+}
+.message-share-error {
+  color: var(--danger, light-dark(#a72a32, #f8a9ad));
+}
+.message-share-renderer {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  pointer-events: none;
+  opacity: 0;
+}
+.app .message-share-sheet {
+  /* Independent print roles, resolved through the current App color scheme. */
+  --share-frame: light-dark(#eef2f0, #191e1d);
+  --paper: light-dark(#ffffff, #252b29);
+  --ink: light-dark(#27312d, #e9eeeb);
+  --muted: light-dark(#758079, #a0ada5);
+  --text-secondary: light-dark(#68746d, #b4c0b9);
+  --accent-strong: light-dark(#2d7d73, #8dcbbb);
+  --line: light-dark(#e2e8e4, #404943);
+  --hairline: light-dark(#edf1ee, #343d37);
+  --soft: light-dark(#f5f8f6, #2e3731);
+  width: 600px;
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.app .message-share-sheet[data-template="simple"] {
+  --paper: light-dark(#ffffff, #202022);
+  --ink: light-dark(#29292c, #eeeeef);
+  --muted: light-dark(#79797e, #aaaab1);
+  --text-secondary: light-dark(#66666c, #bebec4);
+  --line: light-dark(#e6e6e9, #3b3b40);
+  --soft: light-dark(#f7f7f8, #2b2b2e);
+}
+.app .message-share-sheet[data-template="paper"] {
+  --share-frame: light-dark(#eee7db, #1c1a17);
+  --paper: light-dark(#fbf6ec, #29251f);
+  --ink: light-dark(#3d352c, #eee6d9);
+  --muted: light-dark(#8a7c69, #b1a591);
+  --text-secondary: light-dark(#7b6f5f, #c1b5a1);
+  --accent-strong: light-dark(#96713f, #d2b481);
+  --line: light-dark(#e5dccd, #494137);
+  --soft: light-dark(#f4ede1, #342e25);
+  font-family: Georgia, "Songti SC", "STSong", "Noto Serif SC", serif;
+  line-height: 1.85;
+}
+.message-share-sheet :is(p, ul, ol, blockquote, pre, table) {
+  margin: 0 0 16px;
+}
+.message-share-sheet > :last-child {
+  margin-bottom: 0;
+}
+.message-share-sheet :is(h1, h2, h3, h4, h5, h6) {
+  margin: 24px 0 12px;
+  line-height: 1.4;
+  font-weight: 600;
+}
+.message-share-sheet > :first-child {
+  margin-top: 0;
+}
+.message-share-sheet h1 {
+  font-size: 26px;
+}
+.message-share-sheet h2 {
+  font-size: 22px;
+}
+.message-share-sheet :is(h3, h4, h5, h6) {
+  font-size: 20px;
+}
+.message-share-sheet strong {
+  font-weight: 600;
+}
+.message-share-sheet :is(.message-share-plain, .message-share-quote p) {
+  white-space: pre-wrap;
+}
+.message-share-sheet blockquote {
+  border: 0;
+  border-left: 2px solid var(--line);
+  padding: 10px 14px;
+  background: var(--soft);
+  border-radius: 0 5px 5px 0;
+  color: var(--text-secondary);
+  font-size: 16px;
+  line-height: 1.7;
+}
+.message-share-sheet blockquote > :first-child {
+  margin-block-start: 0;
+}
+.message-share-sheet blockquote > :last-child {
+  margin-block-end: 0;
+}
+.message-share-sheet .message-share-quote p {
+  margin-bottom: 10px;
+}
+.message-share-sheet .message-share-quote > :last-child {
+  margin-bottom: 0;
+}
+.message-share-sheet .message-share-comment {
+  color: var(--ink);
+}
+.message-share-sheet .message-share-attachments {
+  font-size: 15px;
+  color: var(--text-secondary);
+}
+.message-share-sheet .inline-object-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  font: inherit;
+}
+.message-share-sheet .markdown-table-scroll {
+  overflow: visible;
+}
+.message-share-sheet table {
+  table-layout: fixed;
+  width: 100%;
+  max-width: 100%;
+  line-height: 1.6;
+}
+.message-share-sheet :is(th, td) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 15px;
+  padding: 10px 12px;
+  border-color: var(--line);
+}
+.message-share-sheet th {
+  background: var(--soft);
+  font-weight: 600;
+}
+.message-share-sheet pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.6;
+  padding: 14px;
+  background: var(--soft);
+}
+.message-share-sheet img {
+  max-width: 100%;
+  max-height: 1000px;
+  object-fit: contain;
+}
+@media (hover: none), (pointer: coarse) {
+  .message-share-dialog .icon-button,
+  .message-share-dialog .secondary-action,
+  .message-share-dialog .message-share-zoom,
+  .app .message-share-templates > button,
+  .message-share-dialog .dialog-actions > button {
+    min-height: 44px;
+  }
+}

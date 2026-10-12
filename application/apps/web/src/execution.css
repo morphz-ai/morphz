@@ -242,19 +242,15 @@
      tail exposed the white/black canvas and looked like a moving cutout. */
   --execution-halo-base: color-mix(
     in srgb,
-    var(--accent) 38%,
+    var(--accent) 16%,
     var(--human-message-fill)
   );
   --execution-halo-shoulder: color-mix(
     in srgb,
-    var(--accent) 60%,
+    var(--accent) 55%,
     var(--human-message-fill)
   );
-  --execution-halo-peak: color-mix(
-    in srgb,
-    var(--accent) 85%,
-    var(--human-message-fill)
-  );
+  --execution-halo-peak: color-mix(in srgb, var(--accent) 88%, var(--ink));
   content: "";
   position: absolute;
   pointer-events: none;
@@ -263,11 +259,11 @@
   padding: 2px;
   background: conic-gradient(
     from var(--execution-glow-angle),
-    var(--execution-halo-base) 0% 12%,
-    var(--execution-halo-shoulder) 32%,
-    var(--execution-halo-peak) 48%,
-    var(--execution-halo-shoulder) 66%,
-    var(--execution-halo-base) 86% 100%
+    var(--execution-halo-base) 0% 35%,
+    var(--execution-halo-shoulder) 44%,
+    var(--execution-halo-peak) 48% 50%,
+    var(--execution-halo-shoulder) 54%,
+    var(--execution-halo-base) 64% 100%
   );
   mask:
     linear-gradient(#fff 0 0) content-box,
