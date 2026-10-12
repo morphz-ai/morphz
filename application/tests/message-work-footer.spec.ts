@@ -531,7 +531,7 @@ test("查看不选补充，多分支须选择，补充发送精确原线程且�
   });
   const branches = panel.getByRole("region", { name: "执行分支" });
   await branches.getByRole("button", { name: /报告 A复核分支/ }).click();
-  await panel.getByRole("button", { name: "补充要求", exact: true }).click();
+  await panel.getByRole("button", { name: "补充", exact: true }).click();
   await expect(page.getByRole("group", { name: "补充目标" })).toContainText(
     "报告 A复核分支",
   );

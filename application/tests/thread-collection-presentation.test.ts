@@ -1038,7 +1038,7 @@ test(
       "supplement",
       continuation,
     ]);
-    await page.getByRole("button", { name: "停止此分支", exact: true }).click();
+    await page.getByRole("button", { name: "停止", exact: true }).click();
     assert.deepEqual((await snapshot()).events.at(-1), [
       "control",
       {

@@ -32,24 +32,17 @@
 .execution-origin-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   margin-left: auto;
+  flex-shrink: 0;
 }
-.workspace .execution-origin-actions .execution-supplement {
-  display: grid;
-  place-items: center;
-  width: 28px;
+.workspace .execution-origin-actions > .secondary-action {
+  justify-content: center;
+  min-width: 52px;
   height: 28px;
   min-height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-}
-.workspace .execution-origin-actions .execution-supplement:hover {
-  background: var(--hover);
-  color: var(--ink);
+  margin: 0;
+  padding-block: 0;
 }
 .execution-job {
   --execution-step-action-size: 28px;
@@ -266,8 +259,7 @@
   .execution-job {
     --execution-step-action-size: 44px;
   }
-  .workspace .execution-origin-actions .execution-supplement {
-    width: 44px;
+  .workspace .execution-origin-actions > .secondary-action {
     height: 44px;
     min-height: 44px;
   }

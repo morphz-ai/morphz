@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { test } from "./platform-conversation-fixture.js";
 import { openInput } from "./interaction-helpers.js";
 import {
   inspectExchangeWork,
@@ -8,6 +9,10 @@ import {
 const source = { inputId: "continuation-fixture-0", body: "报告 A" };
 
 async function setup(page: Page) {
+  // Repeated full-page reloads must not reuse an idle HTTP/1 fixture socket.
+  // This stays in the isolated test browser; actual Client commands, scopes,
+  // failures, persistence and all post-reload assertions remain unchanged.
+  await page.setExtraHTTPHeaders({ Connection: "close" });
   let principalId = "local-owner";
   let actantId = "local-human";
   const inputFor = (projectId: string, conversationId: string) =>
@@ -154,7 +159,7 @@ test("查看不改目标，显式选择才补充；Dock/普通发送不变，多
   });
   await expect(page.getByRole("group", { name: "补充目标" })).toHaveCount(0);
   await expect(f.composer).toHaveValue("保留这份草稿");
-  await activity.getByRole("button", { name: "补充要求", exact: true }).click();
+  await activity.getByRole("button", { name: "补充", exact: true }).click();
   const target = page.getByRole("group", { name: "补充目标" });
   await expect(target).toContainText("报告 A");
   await expect(f.composer).toBeFocused();

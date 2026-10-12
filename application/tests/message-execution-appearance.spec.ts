@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import sharp from "sharp";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import {
@@ -299,4 +300,100 @@ test("卡片与键盘仍打开对应活动，纯图标补充保留草稿并不�
   await expect(composer).toBeFocused();
   await expect(composer).toHaveValue(draft);
   expect(writes).toHaveLength(0);
+});
+
+test("执行流光亮暗四主题整圈连续，多帧没有背景色断段且循环接缝平滑", async ({
+  page,
+}, info) => {
+  const { message } = await prepare(page);
+  const input = page.getByLabel("AI 输入内容");
+  await input.fill("TEST 流光检查的未发送草稿");
+  await page.mouse.move(0, 0);
+  const observations = [];
+  for (const appearance of ["light", "dark"]) {
+    for (const accent of ["cyan", "iris", "coral", "mono"]) {
+      await page.evaluate(
+        ({ appearance, accent }) => {
+          document.documentElement.dataset.appearance = appearance;
+          const app = document.querySelector(".app") as HTMLElement;
+          app.dataset.appearance = appearance;
+          app.dataset.accent = accent;
+        },
+        { appearance, accent },
+      );
+      await message.scrollIntoViewIfNeeded();
+      await settleTransitions(page);
+      const box = (await message.boundingBox())!;
+      const clip = {
+        x: Math.floor(box.x - 8),
+        y: Math.floor(box.y - 8),
+        width: Math.ceil(box.width + 16),
+        height: Math.ceil(box.height + 16),
+      };
+      const points = [
+        ...[0.15, 0.3, 0.5, 0.7, 0.85].flatMap((position) => [
+          [box.x + box.width * position, box.y - 1],
+          [box.x + box.width * position, box.y + box.height + 1],
+        ]),
+        [box.x - 1, box.y + box.height / 2],
+        [box.x + box.width + 1, box.y + box.height / 2],
+      ];
+      const frames = [];
+      for (const time of [0, 900, 1800, 2700, 3599, 3601]) {
+        await message.evaluate((card, time) => {
+          const animation = card
+            .getAnimations({ subtree: true })
+            .find(
+              (candidate) =>
+                candidate instanceof CSSAnimation &&
+                candidate.animationName === "execution-halo-orbit",
+            );
+          if (!animation) throw new Error("Expected the real running halo");
+          animation.pause();
+          animation.currentTime = time;
+        }, time);
+        const frame = await page.screenshot({
+          clip,
+          path: info.outputPath(`${appearance}-${accent}-${time}-halo.png`),
+        });
+        const { data, info: pixels } = await sharp(frame)
+          .removeAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+        const rgb = (x: number, y: number) => {
+          const offset =
+            (Math.floor(y - clip.y) * pixels.width + Math.floor(x - clip.x)) *
+            pixels.channels;
+          return [...data.subarray(offset, offset + 3)];
+        };
+        const background = rgb(clip.x + 1, clip.y + 1);
+        const ring = points.map(([x, y]) => rgb(x!, y!));
+        const separation = ring.map((color) =>
+          Math.max(
+            ...color.map((channel, i) => Math.abs(channel - background[i]!)),
+          ),
+        );
+        // This checks painted pixels, not only a gradient's CSS string: every
+        // sampled edge remains distinct from its light/dark canvas throughout.
+        expect(Math.min(...separation)).toBeGreaterThan(20);
+        frames.push({ time, ring, separation });
+      }
+      const difference = (a: number[][], b: number[][]) =>
+        Math.max(
+          ...a.flatMap((color, i) =>
+            color.map((channel, j) => Math.abs(channel - b[i]![j]!)),
+          ),
+        );
+      expect(difference(frames[0]!.ring, frames[2]!.ring)).toBeGreaterThan(5);
+      expect(difference(frames[4]!.ring, frames[5]!.ring)).toBeLessThanOrEqual(
+        2,
+      );
+      observations.push({ appearance, accent, frames });
+    }
+  }
+  await info.attach("halo-painted-edge-frames", {
+    body: JSON.stringify(observations),
+    contentType: "application/json",
+  });
+  await expect(input).toHaveValue("TEST 流光检查的未发送草稿");
 });

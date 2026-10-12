@@ -28,21 +28,25 @@ import {
 import { executionInspectionOriginal as fixed114 } from "./fixtures/execution-inspection-114960d1.js";
 
 // Finite first-two Thread-glyph contract, not all presentation/React/visual
-// correctness. 14ae1de6 original row, group heading/status and hook arguments
-// supply the hashes. Whitespace plus only the original Icon map and inner
+// correctness. 14ae1de6 supplies the original Dialog heading/status; the
+// user-approved cross-surface Sidebar in 9fbe5942 supplies its complete row
+// and hook hashes (original/all-work state retired, exact provenance shown).
+// Those 9fbe5942 hashes were checked against Git independently of this action
+// alignment change; do not capture arbitrary current source to pass the gate.
+// Whitespace plus only the original Icon map and inner
 // glyph are normalized; other expressions retain their parentheses.
 // Job controls/body, other components and CSS are deliberately outside scope.
 // Dialog lifecycle moved to the actual execution-inspection owner: current
 // Dialog checks only its original Thread-glyph facts/tree. The original Dialog
 // lifecycle digest remains below as an immutable fixed114 historical proof.
-// Sidebar's original row contract is unchanged; the approved detail heading
-// now consumes the same glyph, with separately checked live snapshot facts.
+// Sidebar's accepted complete row remains protected; the detail heading
+// consumes the same glyph, with separately checked live snapshot facts.
 // CI needs no Git checkout/history;
 // SSR and mounted scheduling are separate tests.
 const baseline = {
   Sidebar: {
-    scope: "a677e6fdecd44d0e500dcbe7a94ef42db84f62e3c66c2431150f7e8d640d9c22",
-    hooks: "be2a8c9a4fc6e53503f17431c19d38365136d32edef00df8956e46f7b6f0ec58",
+    scope: "9d64370e2a6964a6bfc5f2088c958b4831844583d712355fa85d010e4aabe860",
+    hooks: "5dd1b590d9bfeb4f5bc26a8f955646e62866d66ec7915c3a8ac6d6b1dea56443",
   },
   Dialog: {
     scope: "f8fd63c71a4b802477f18ab792c2cfc941dc8c03a52a750923d7bc750c0eff44",
@@ -440,7 +444,7 @@ const source = Object.fromEntries(
   ]),
 ) as Sources;
 
-test("two Thread consumers retain original glyph facts/tree and share the actual glyph owner", () => {
+test("two Thread consumers retain accepted glyph facts/tree and share the actual glyph owner", () => {
   assert.deepEqual(inspect(source), []);
 });
 test("fixed committed original Dialog retains its historical glyph facts and complete lifecycle digest", () => {
@@ -515,6 +519,11 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
     "Sidebar-original-facts-span-tree-and-lifecycle",
     ["data-status={status.kind}", ""],
     ["activityAvailable,\n    );", "true,\n    );"],
+    [
+      "  const [refreshing, setRefreshing] = useState(false);",
+      "  const [refreshing, setRefreshing] = useState(false); const [allWork, setAllWork] = useState(false);",
+    ],
+    ["          origin,\n", ""],
   );
   reject(
     "Dialog",
@@ -531,8 +540,8 @@ test("bounded counterfactuals fail their named contract without claiming arbitra
     'className="execution-signal-base"',
   ]);
   reject("Sidebar", "Sidebar-sole-shared-glyph-consumption", [
-    "  MessageSquarePlus,",
-    "  MessageSquarePlus, CircleHelp,",
+    'import { ArrowLeft, ChevronRight } from "lucide-react";',
+    'import { ArrowLeft, ChevronRight, CircleHelp } from "lucide-react";',
   ]);
   reject("Sidebar", "Sidebar-detail-authoritative-live-facts", [
     "activityAvailable && !!currentThread,\n      )",

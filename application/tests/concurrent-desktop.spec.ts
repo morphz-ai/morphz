@@ -145,7 +145,7 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
     controls.push(route.request().postDataJSON());
     return route.fulfill({ json: { accepted: true, status: "cancelled" } });
   });
-  await panel.getByRole("button", { name: "停止此分支", exact: true }).click();
+  await panel.getByRole("button", { name: "停止", exact: true }).click();
   await expect(
     panel.getByRole("button", { name: "停止请求已发送" }),
   ).toBeDisabled();

@@ -808,6 +808,123 @@ test("活动详情运行标识会动，已完成为图标，时间与工具按�
   await expect(flow).toHaveCSS("animation-name", "none");
 });
 
+test("活动的补充和停止使用短文字，明暗、窄窗与放大始终顶底及文字对齐", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  const actions = f.panel.locator(".execution-origin-actions");
+  const supplement = actions.getByRole("button", { name: "补充", exact: true });
+  const stop = actions.getByRole("button", { name: "停止", exact: true });
+  await expect(supplement).toBeEnabled();
+  await expect(stop).toBeEnabled();
+  await expect(actions.locator("svg")).toHaveCount(0);
+  for (const appearance of ["light", "dark"]) {
+    await page.evaluate((appearance) => {
+      document.documentElement.dataset.appearance = appearance;
+      (document.querySelector(".app") as HTMLElement).dataset.appearance =
+        appearance;
+    }, appearance);
+    for (const [width, zoom] of [
+      [1440, 1],
+      [760, 1],
+      [390, 1],
+      [1440, 2],
+    ] as const) {
+      await page.setViewportSize({ width, height: 960 });
+      await page.locator(".app").evaluate((app, zoom) => {
+        (app as HTMLElement).style.zoom = String(zoom);
+      }, zoom);
+      await settleTransitions(page);
+      const geometry = await actions.evaluate((root) => {
+        const bounds = root
+          .closest(".execution-origin")!
+          .getBoundingClientRect();
+        return [...root.querySelectorAll("button")].map((button) => {
+          const box = button.getBoundingClientRect();
+          const text = document.createRange();
+          text.selectNodeContents(button);
+          const line = text.getBoundingClientRect();
+          const css = getComputedStyle(button);
+          return {
+            top: box.top,
+            bottom: box.bottom,
+            width: box.width,
+            height: box.height,
+            textCenter: (line.top + line.bottom) / 2,
+            font: css.font,
+            margin: css.margin,
+            inside: box.left >= bounds.left && box.right <= bounds.right,
+          };
+        });
+      });
+      expect(geometry).toHaveLength(2);
+      const [a, b] = geometry;
+      for (const key of [
+        "top",
+        "bottom",
+        "width",
+        "height",
+        "textCenter",
+      ] as const)
+        expect(Math.abs(a![key] - b![key])).toBeLessThan(0.5);
+      expect(a!.font).toBe(b!.font);
+      expect(geometry.every((button) => button.margin === "0px")).toBe(true);
+      expect(geometry.every((button) => button.inside)).toBe(true);
+      await expect(supplement).toHaveText("补充");
+      await expect(stop).toHaveText("停止");
+      await info.attach(`${appearance}-${width}-${zoom}-actions`, {
+        body: JSON.stringify(geometry),
+        contentType: "application/json",
+      });
+      await f.panel.screenshot({
+        path: info.outputPath(`${appearance}-${width}-${zoom}-actions.png`),
+      });
+    }
+  }
+  await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+  expect(f.writes).toEqual([]);
+});
+
+test("触控活动操作都有完整点击高度且彼此对齐，不影响草稿", async ({
+  browser,
+}, info) => {
+  const context = await browser.newContext({
+    hasTouch: true,
+    viewport: { width: 760, height: 960 },
+  });
+  const page = await context.newPage();
+  try {
+    const f = await prepare(page);
+    await openExecutionPanel(page);
+    await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+    const actions = f.panel.locator(".execution-origin-actions");
+    const supplement = actions.getByRole("button", {
+      name: "补充",
+      exact: true,
+    });
+    const stop = actions.getByRole("button", { name: "停止", exact: true });
+    const a = (await supplement.boundingBox())!,
+      b = (await stop.boundingBox())!;
+    expect(a.height).toBe(44);
+    expect(b.height).toBe(44);
+    expect(a.width).toBeGreaterThanOrEqual(44);
+    expect(b.width).toBeGreaterThanOrEqual(44);
+    expect(a.y).toBe(b.y);
+    await supplement.tap();
+    await expect(page.getByRole("group", { name: "补充目标" })).toContainText(
+      "TEST 交付人物设定与五场戏大纲",
+    );
+    await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+    expect(f.writes).toEqual([]);
+    await page.screenshot({ path: info.outputPath("touch-actions.png") });
+  } finally {
+    await page.unrouteAll({ behavior: "wait" });
+    await context.close();
+  }
+});
+
 test("窄窗与200%缩放提示不被裁切，移开或滚动撤下提示、按钮位置不变", async ({
   page,
 }) => {
@@ -870,7 +987,7 @@ test("根活动仅实际运行时有动效，等待、失败、结束及断线�
   await expect(status).toHaveText("状态待核对");
   await expect(status.locator(".execution-signal-flow")).toHaveCount(0);
   await expect(
-    f.panel.getByRole("button", { name: "停止此分支", exact: true }),
+    f.panel.getByRole("button", { name: "停止", exact: true }),
   ).toBeDisabled();
   await expect(
     f.panel.getByRole("img", { name: "已完成", exact: true }),

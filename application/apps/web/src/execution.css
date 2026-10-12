@@ -233,17 +233,6 @@
   line-height: 1.5;
   margin: 8px 4px;
 }
-.workspace .execution-stop-thread {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 7px;
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  border-radius: 5px;
-}
 .execution-details .execution-empty {
   padding: 8px 4px;
   margin: 8px 0;
@@ -255,6 +244,23 @@
   inherits: false;
 }
 .conversation .human-message[data-background-execution]::before {
+  /* Opaque, theme-related stops keep the entire perimeter visible. A clear
+     tail exposed the white/black canvas and looked like a moving cutout. */
+  --execution-halo-base: color-mix(
+    in srgb,
+    var(--accent) 38%,
+    var(--human-message-fill)
+  );
+  --execution-halo-shoulder: color-mix(
+    in srgb,
+    var(--accent) 60%,
+    var(--human-message-fill)
+  );
+  --execution-halo-peak: color-mix(
+    in srgb,
+    var(--accent) 85%,
+    var(--human-message-fill)
+  );
   content: "";
   position: absolute;
   pointer-events: none;
@@ -263,12 +269,11 @@
   padding: 2px;
   background: conic-gradient(
     from var(--execution-glow-angle),
-    transparent 8%,
-    color-mix(in srgb, var(--accent-strong) 15%, transparent) 28%,
-    var(--accent-strong) 44%,
-    transparent 62%,
-    color-mix(in srgb, var(--accent-strong) 45%, transparent) 84%,
-    transparent
+    var(--execution-halo-base) 0% 12%,
+    var(--execution-halo-shoulder) 32%,
+    var(--execution-halo-peak) 48%,
+    var(--execution-halo-shoulder) 66%,
+    var(--execution-halo-base) 86% 100%
   );
   mask:
     linear-gradient(#fff 0 0) content-box,
@@ -277,7 +282,7 @@
   animation: execution-halo-orbit 3.6s linear infinite;
 }
 .conversation .human-message[data-background-execution] {
-  box-shadow: 0 0 12px color-mix(in srgb, var(--accent-strong) 17%, transparent);
+  box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 17%, transparent);
 }
 @keyframes execution-halo-orbit {
   to {

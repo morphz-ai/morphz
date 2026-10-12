@@ -1,10 +1,5 @@
 import { useState, type ReactNode } from "react";
-import {
-  ArrowLeft,
-  ChevronRight,
-  Square,
-  MessageSquarePlus,
-} from "lucide-react";
+import { ArrowLeft, ChevronRight } from "lucide-react";
 import type { ExecutionScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
@@ -31,7 +26,6 @@ import {
 } from "./execution-activity.js";
 import { projectDisplayLabel } from "./project-display-label.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
-import { Tooltip } from "./ui/Tooltip.js";
 
 export function ExecutionSidebar({
   client,
@@ -130,22 +124,15 @@ export function ExecutionSidebar({
       )
     : undefined;
   const supplementAction = supplementTarget && onSupplement && (
-    <Tooltip label="补充要求">
-      <button
-        className="button execution-supplement"
-        aria-label="补充要求"
-        disabled={
-          !client.online || !runtime.connected || !runtime.activity?.available
-        }
-        onClick={() => onSupplement(supplementTarget)}
-      >
-        {scope.threadId ? (
-          <MessageSquarePlus size={16} aria-hidden="true" />
-        ) : (
-          "补充要求"
-        )}
-      </button>
-    </Tooltip>
+    <button
+      className="secondary-action execution-supplement"
+      disabled={
+        !client.online || !runtime.connected || !runtime.activity?.available
+      }
+      onClick={() => onSupplement(supplementTarget)}
+    >
+      补充
+    </button>
   );
   const activitySummary = executionActivityOverviewSummary(
     runtime,
@@ -354,7 +341,15 @@ export function ExecutionSidebar({
                   {supplementAction}
                   {currentThread?.lifecycle === "open" && (
                     <button
-                      className="execution-stop-thread"
+                      className="secondary-action execution-stop-thread"
+                      aria-busy={stopping}
+                      title={
+                        stopping
+                          ? "正在请求停止"
+                          : stopRequested
+                            ? "停止请求已发送"
+                            : undefined
+                      }
                       disabled={
                         stopping ||
                         stopRequested ||
@@ -363,11 +358,13 @@ export function ExecutionSidebar({
                       }
                       onClick={stopThread}
                     >
-                      <Square size={12} aria-hidden="true" />
-                      {stopping || stopRequested
-                        ? "停止请求已发送"
-                        : "停止此分支"}
+                      停止
                     </button>
+                  )}
+                  {(stopping || stopRequested) && (
+                    <span className="sr-only" role="status">
+                      {stopping ? "正在请求停止" : "停止请求已发送"}
+                    </span>
                   )}
                 </div>
               </div>
