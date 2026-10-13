@@ -1740,6 +1740,16 @@ impl ActivationStore for PostgresStore {
         rows.iter().map(signal_from_row).collect()
     }
 
+    async fn thread_signal_for_event(
+        &self,
+        context_id: &str,
+        event_id: &str,
+    ) -> Result<Option<ThreadSignalRecord>, StoreError> {
+        sqlx::query("SELECT signals.* FROM thread_signals signals JOIN threads ON threads.id = signals.thread_id WHERE signals.event_id = $1 AND threads.context_id = $2")
+            .bind(event_id).bind(context_id).fetch_optional(&self.pool).await?
+            .as_ref().map(signal_from_row).transpose()
+    }
+
     async fn list_annotation_revision_signals(
         &self,
         context_id: &str,

@@ -81,11 +81,34 @@ async function fixture() {
       return send(200, {
         threads: [...threads.values()]
           .filter((t) => t.lifecycle === "open")
-          .map((thread) => ({ thread, phase: "running" })),
+          .map((thread) => ({
+            thread,
+            source: {
+              event_id: thread.root_turn_id,
+              root_turn_id: thread.root_turn_id,
+              context_id: thread.context_id,
+              session_id: thread.session_id,
+              activation_id: null,
+            },
+            phase: "running",
+          })),
       });
     if (path.includes("/threads/")) {
       const t = threads.get(path.split("/").at(-1)!);
-      return send(t ? 200 : 404, { snapshot: { thread: t } });
+      return send(t ? 200 : 404, {
+        snapshot: {
+          thread: t,
+          source: t
+            ? {
+                event_id: t.root_turn_id,
+                root_turn_id: t.root_turn_id,
+                context_id: t.context_id,
+                session_id: t.session_id,
+                activation_id: null,
+              }
+            : null,
+        },
+      });
     }
     if (path.endsWith("/io/messages")) {
       attempts.push(body);
@@ -462,10 +485,9 @@ test("跨 root、陈旧代次、他人身份、扩大目录或模型权限均拒
       /不属于当前对话或发起者/,
     );
     assert.equal((f.store.runtimeState() as any).deliveries.length, 2);
-    const ownerActivity = f.bridge.platformNavigationSnapshot(
-      localAccess,
-      ["first-project"],
-    ).runtime.activity!;
+    const ownerActivity = f.bridge.platformNavigationSnapshot(localAccess, [
+      "first-project",
+    ]).runtime.activity!;
     assert.ok(ownerActivity.threads.length > 0);
     assert.deepEqual(ownerActivity.threads[0]!.continuation, targets[0]);
     assert.equal(

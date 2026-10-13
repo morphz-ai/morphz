@@ -6,7 +6,11 @@ import {
   objectiveDetailStatus,
   objectiveStatus,
 } from "./subject-sidebar-model.js";
-import { executionActivityScope } from "./execution-activity.js";
+import {
+  executionActivityScope,
+  executionActivityStatus,
+} from "./execution-activity.js";
+import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 
 export function SubjectObjectives({
   client,
@@ -74,6 +78,12 @@ export function SubjectObjectives({
               goal.threadIds.includes(thread.id),
           ) ?? [];
         const open = expanded === goal.id;
+        const running = fresh
+          ? threads.filter(
+              (thread) =>
+                executionActivityStatus(thread, true).kind === "running",
+            ).length
+          : 0;
         return (
           <div
             key={goal.id}
@@ -91,6 +101,7 @@ export function SubjectObjectives({
                 <small>
                   {fresh ? objectiveStatus(goal.status) : "状态待核对"} ·{" "}
                   {threads.length} 个关联执行
+                  {running > 0 && ` · ${running} 条执行中`}
                 </small>
               </span>
               {open ? <ChevronDown /> : <ChevronRight />}
@@ -102,17 +113,33 @@ export function SubjectObjectives({
                     ? objectiveDetailStatus(goal.status, goal.readiness)
                     : "目标状态待核对"}
                 </p>
-                {threads.map((thread) => (
-                  <button
-                    key={thread.id}
-                    onClick={() =>
-                      onSelect(executionActivityScope(thread, state))
-                    }
-                  >
-                    {thread.title}
-                    <ChevronRight />
-                  </button>
-                ))}
+                {threads.map((thread) => {
+                  const status = executionActivityStatus(thread, !!fresh);
+                  return (
+                    <button
+                      key={thread.id}
+                      className="subject-objective-execution"
+                      data-thread-id={thread.id}
+                      aria-label={`${thread.title} · ${status.label}`}
+                      onClick={() =>
+                        onSelect(executionActivityScope(thread, state))
+                      }
+                    >
+                      <span
+                        className="execution-thread-state"
+                        data-status={status.kind}
+                        title={status.label}
+                      >
+                        <ExecutionStatusIcon kind={status.kind} size={18} />
+                      </span>
+                      <span className="subject-objective-execution-copy">
+                        <span>{thread.title}</span>
+                        <small>{status.label}</small>
+                      </span>
+                      <ChevronRight />
+                    </button>
+                  );
+                })}
                 {!threads.length && (
                   <p className="muted">当前概览中没有关联执行</p>
                 )}

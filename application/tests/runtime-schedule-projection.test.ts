@@ -55,6 +55,13 @@ async function fixture() {
   internal.state.connected = true;
   const contextId = `mw-context-${(f.store.runtimeState() as { namespace: string }).namespace}`;
   const thread = (id = "reminder-thread", root = "scheduled-root") => ({
+    source: {
+      event_id: delivery.rootId!,
+      context_id: contextId,
+      session_id: delivery.sessionId,
+      root_turn_id: delivery.rootId!,
+      activation_id: null,
+    },
     intent: "TEST 等待提醒",
     phase: "waiting",
     thread: {
@@ -251,6 +258,13 @@ test("Objective创建事件的synthetic来源由持久parent Thread恢复，未�
         objectives: [
           {
             readiness: { state: "waiting" },
+            source: {
+              event_id: "objective-created-event",
+              context_id: x.contextId,
+              session_id: x.delivery.sessionId,
+              root_turn_id: x.delivery.rootId,
+              activation_id: null,
+            },
             objective: {
               id: "reminder-objective",
               context_id: x.contextId,

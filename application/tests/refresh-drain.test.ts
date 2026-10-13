@@ -49,3 +49,50 @@ test("a failed read releases the drain so the next explicit request can retry", 
   assert.equal(await drain.request(), true);
   assert.equal(reads, 2);
 });
+
+test("a changed snapshot requeues the same drain and all callers await the final read", async () => {
+  let reads = 0;
+  const drain = createRefreshDrain(async () => {
+    if (++reads < 3) {
+      assert.equal(drain.retry(), true);
+      return false;
+    }
+    return true;
+  });
+  assert.equal(
+    drain.retry(),
+    false,
+    "idle retries cannot create background work",
+  );
+  const first = drain.request();
+  assert.equal(drain.request(), first);
+  assert.equal(await first, true);
+  assert.equal(reads, 3);
+  assert.equal(drain.retry(), false);
+});
+
+test("snapshot retries stop after two rereads and reset for a later explicit request", async () => {
+  let reads = 0;
+  const scheduled: boolean[] = [];
+  const drain = createRefreshDrain(async () => {
+    reads++;
+    scheduled.push(drain.retry());
+    return false;
+  });
+  assert.equal(await drain.request(), false);
+  assert.equal(reads, 3);
+  assert.deepEqual(scheduled, [true, true, false]);
+  assert.equal(await drain.request(), false);
+  assert.equal(reads, 6);
+  assert.deepEqual(scheduled, [true, true, false, true, true, false]);
+});
+
+test("ordinary read failure does not automatically retry", async () => {
+  let reads = 0;
+  const drain = createRefreshDrain(async () => {
+    reads++;
+    return false;
+  });
+  assert.equal(await drain.request(), false);
+  assert.equal(reads, 1);
+});

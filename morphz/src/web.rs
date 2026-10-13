@@ -9013,7 +9013,18 @@ async fn handle_session_turn_thread(
         .session_thread(&principal.principal_id, &session_id, &root_turn_id)
         .await
     {
-        Ok(thread) => Json(session_turn_thread_view(&thread)).into_response(),
+        Ok(thread) => match state
+            .sdk
+            .session_input_handoff(&principal.principal_id, &session_id, &root_turn_id)
+            .await
+        {
+            Ok(handoff) => {
+                let mut view = session_turn_thread_view(&thread);
+                view["input_handoff"] = json!(handoff);
+                Json(view).into_response()
+            }
+            Err(error) => sdk_error_response(error),
+        },
         Err(error) => sdk_error_response(error),
     }
 }

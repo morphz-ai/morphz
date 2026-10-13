@@ -163,6 +163,38 @@ async function setup(page: Page) {
 const waiting = (page: Page, id = "waiting-a") =>
   page.locator(`[data-waiting-input-id="${id}"]`);
 
+test("被后续批次承接的消息不是取消，不重复等待也不提供后续批次的停止按钮", async ({
+  page,
+}) => {
+  const f = await setup(page);
+  Object.assign(f.deliveries[0]!, {
+    state: "merged",
+    handoff: {
+      signalId: "original-signal",
+      sourceThreadId: "original-thread",
+      destinationThreadId: "next-thread",
+      destinationRootId: "next-root",
+      destinationGeneration: 1,
+    },
+  });
+  f.deliveries.push({
+    inputId: "waiting-b",
+    state: "cancelled",
+    error: null,
+    retryable: false,
+  });
+  await f.update();
+  const merged = page.locator('article[data-input-id="waiting-a"]');
+  await expect(merged).toContainText("并入后续处理");
+  await expect(merged).not.toContainText("已取消");
+  await expect(merged.getByRole("button", { name: /停止/ })).toHaveCount(0);
+  await expect(waiting(page)).toHaveCount(0);
+  await expect(
+    page.locator('article[data-input-id="waiting-b"]'),
+  ).toContainText("已取消");
+  await expect(f.composer).toHaveValue("TEST 保留未发送草稿");
+});
+
 test("同一输入的真实工具阶段可见，发送后耗时继续推进，断线不伪造模型阶段", async ({
   page,
 }) => {

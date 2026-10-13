@@ -185,6 +185,27 @@
   height: 14px;
   flex: none;
 }
+.subject-objective-detail > .subject-objective-execution {
+  align-items: center;
+  gap: 8px;
+}
+.subject-objective-execution-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 3px;
+}
+.subject-objective-execution-copy > span {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.subject-objective-execution-copy > small {
+  color: var(--muted);
+  font-size: 11px;
+}
 .subject-permissions {
   margin-top: 24px;
 }

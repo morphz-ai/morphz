@@ -72,17 +72,19 @@ export function useContentDirectory(
   withBodyMatches = false,
 ) {
   const searchBody = withBodyMatches && !!options.query?.trim();
-  const key = JSON.stringify([
+  const scopeKey = JSON.stringify([
     client.boot?.centerId,
     client.boot?.principalId,
     client.boot?.csrfToken,
-    client.contentCatalogVersion,
+    client.contentAccessGeneration,
     enabled,
     searchBody,
     options,
   ]);
+  const key = JSON.stringify([scopeKey, client.contentCatalogVersion]);
   type Result = {
     key: string;
+    scopeKey: string;
     items: PlatformContent[];
     count: number | null;
     nextCursor: ContentCursor | null;
@@ -94,6 +96,7 @@ export function useContentDirectory(
   };
   const blank = (): Result => ({
     key,
+    scopeKey,
     items: [],
     count: null,
     nextCursor: null,
@@ -102,6 +105,19 @@ export function useContentDirectory(
     searchError: "",
     matches: [],
   });
+  // An ordinary catalog refresh must not remove a card between pointerdown
+  // and click. Keep that authorized page, but never its stale paging cursor.
+  // Identity, access, query and project changes still discard it immediately.
+  const pending = (previous: Result): Result => ({
+    ...(previous.scopeKey === scopeKey ? previous : blank()),
+    key,
+    scopeKey,
+    busy: enabled,
+    error: "",
+    searchError: "",
+    nextCursor: null,
+    searchPage: undefined,
+  });
   const [result, setResult] = useState<Result>(blank);
   const [retry, setRetry] = useState(0);
   const activeKey = useRef(key);
@@ -109,13 +125,13 @@ export function useContentDirectory(
   const nextRequest = useRef<AbortController | null>(null);
   activeKey.current = key;
   api.current = client;
-  const visible = result.key === key ? result : blank();
+  const visible = result.key === key ? result : pending(result);
 
   useEffect(() => {
     const controller = new AbortController();
     nextRequest.current?.abort();
     nextRequest.current = null;
-    setResult({ ...blank(), busy: enabled });
+    setResult(pending);
     if (!enabled) return;
     const timer = setTimeout(
       () => {
@@ -166,6 +182,7 @@ export function useContentDirectory(
             const count = counts.reduce((sum, row) => sum + row.count, 0);
             setResult({
               key,
+              scopeKey,
               items: page.items,
               count,
               nextCursor: page.nextCursor,
@@ -179,6 +196,7 @@ export function useContentDirectory(
             if (activeKey.current !== key || controller.signal.aborted) return;
             setResult({
               key,
+              scopeKey,
               items: [],
               count: null,
               nextCursor: null,

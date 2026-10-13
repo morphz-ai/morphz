@@ -43,6 +43,9 @@
 .execution-thread-state[data-status="running"] {
   color: var(--accent-strong);
 }
+.execution-thread-state[data-status="ended"] {
+  color: var(--success-ink);
+}
 .execution-thread-state[data-status="failed"] {
   color: var(--danger);
 }

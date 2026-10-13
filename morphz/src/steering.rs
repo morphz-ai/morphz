@@ -278,7 +278,9 @@ impl crate::tool::Tool for SteerTool {
             .find_event(&thread.context_id, &thread.root_turn_id)
             .await?
             .ok_or("Source user message is missing")?;
-        if source.event_type != crate::event::TYPE_USER_MESSAGE
+        if !crate::event::is_input_event(&source)
+            || source.payload.get("session_id").and_then(|v| v.as_str())
+                != Some(thread.session_id.as_str())
             || source.payload.contains_key("input_destination")
             || source.payload.get("principal_id").and_then(|v| v.as_str())
                 != Some(principal.as_str())
@@ -319,7 +321,7 @@ impl crate::tool::Tool for SteerTool {
         }
         event.payload.insert(
             "input_destination".into(),
-            serde_json::to_value(destination)?,
+            serde_json::to_value(&destination)?,
         );
         event
             .payload
@@ -327,6 +329,24 @@ impl crate::tool::Tool for SteerTool {
         event
             .payload
             .insert("client_message_id".into(), json!(client_id));
+        if let Some(value) = event.payload.get_mut("session_io") {
+            let mut accepted: crate::session_io::AcceptedInput =
+                serde_json::from_value(value.clone())?;
+            // This is a new Runtime-derived forwarding request, not a rewrite
+            // of the immutable Human input. Preserve its exact typed content,
+            // formats, resources and presentation metadata. The destination
+            // owns execution options; source-only annotations/model/Target/
+            // Harness choices cannot override that already running work.
+            accepted.request.client_message_id = client_id.clone();
+            accepted.request.activation = crate::session_io::Activation {
+                dispatch_mode: Some(MessageDispatchMode::Parallel),
+                input_destination: Some(destination.clone()),
+                ..Default::default()
+            };
+            accepted.request_fingerprint = accepted.request.fingerprint(&principal);
+            accepted.binding.execution = json!({});
+            *value = serde_json::to_value(accepted)?;
+        }
         match store
             .claim_message(
                 &thread.session_id,
@@ -403,6 +423,13 @@ mod tests {
     }
 
     async fn seed(store: &dyn RuntimeStore) -> (ThreadRecord, Event) {
+        seed_with_annotations(store, crate::response_annotations::Protocol::Off).await
+    }
+
+    async fn seed_with_annotations(
+        store: &dyn RuntimeStore,
+        annotations: crate::response_annotations::Protocol,
+    ) -> (ThreadRecord, Event) {
         store
             .create_agent_bundle(
                 NewAgent {
@@ -439,8 +466,16 @@ mod tests {
             .bind_session_principal("session-steer", "principal-steer")
             .await
             .unwrap();
-        let event = Event::new("message-original".into(), "User".into(), crate::event::TYPE_USER_MESSAGE.into(), "chat/user_message".into(),
+        let mut event = Event::new("message-original".into(), "User".into(), crate::event::TYPE_USER_MESSAGE.into(), "chat/user_message".into(),
             serde_json::from_value(json!({"context_id":"context-steer", "session_id":"session-steer", "principal_id":"principal-steer", "text":"Implement the parser", "client_message_id":"original"})).unwrap());
+        if !annotations.is_off() {
+            event
+                .payload
+                .insert("requested_response_annotations".into(), json!(annotations));
+            event
+                .payload
+                .insert("response_annotations".into(), json!(annotations));
+        }
         assert!(matches!(
             store
                 .claim_message(
@@ -455,6 +490,228 @@ mod tests {
         ));
         let thread = store.get_thread_by_root(&event.id).await.unwrap().unwrap();
         (thread, event)
+    }
+
+    async fn assert_typed_natural_steering<S: RuntimeStore + 'static>(
+        store: std::sync::Arc<S>,
+        mode: MessageDispatchMode,
+        owner_annotations: crate::response_annotations::Protocol,
+    ) {
+        use crate::session_io::{AcceptedInput, Activation, Delivery, Message, Registry, Request};
+        use crate::tool::{Tool, ToolCausalRoute, CURRENT_CAUSAL_ROUTE, CURRENT_PRINCIPAL_ID};
+        use std::sync::Arc;
+        let (target, original) = seed_with_annotations(store.as_ref(), owner_annotations).await;
+        assert_eq!(target.response_annotations, owner_annotations);
+        let request = Request {
+            io_version: "1".into(),
+            client_message_id: "typed-correction".into(),
+            message: Message::chat("Keep the original interface and add a Chinese summary.".into()),
+            client_metadata: Some(crate::session_io::Data::from_value(
+                &json!({"source":"exact-human-input"}),
+            )),
+            activation: Activation {
+                response_annotations: Some(crate::response_annotations::Protocol::V2),
+                model_alias: Some("source-only-model".into()),
+                reasoning_effort: Some("high".into()),
+                target_id: Some("source-only-target".into()),
+                dispatch_mode: Some(mode),
+                ..Default::default()
+            },
+            delivery: Delivery::default(),
+        };
+        let mut accepted = Registry::default()
+            .bind(request.clone(), "principal-steer")
+            .unwrap();
+        accepted.binding.execution =
+            json!({"response_annotations":"v2","target_id":"source-only-target"});
+        let mut source = original.clone();
+        source.id = "typed-correction-root".into();
+        source.event_type = crate::event::TYPE_SESSION_MESSAGE.into();
+        source
+            .payload
+            .insert("client_message_id".into(), json!(request.client_message_id));
+        source.payload.insert(
+            "text".into(),
+            json!("Keep the original interface and add a Chinese summary."),
+        );
+        source.payload.insert("session_io".into(), json!(accepted));
+        source
+            .payload
+            .insert("requested_response_annotations".into(), json!("v2"));
+        store
+            .claim_message("session-steer", &request.client_message_id, &source, mode)
+            .await
+            .unwrap();
+        let source_thread = store.get_thread_by_root(&source.id).await.unwrap().unwrap();
+        let original_snapshot = store
+            .query(QueryFilter {
+                event_id: Some(source.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let tool = SteerTool {
+            context: Arc::new(
+                crate::orchestrator::context::ContextEngine::new(
+                    store.clone() as Arc<dyn EventStore>,
+                    crate::config::AppConfig::default().orchestrator,
+                )
+                .with_session_store(store.clone() as Arc<dyn SessionStore>),
+            ),
+            bus: Arc::new(crate::event::InMemoryEventBus::new()),
+        };
+        let destination = InputDestination::Thread {
+            thread_id: target.id.clone(),
+            generation: target.generation,
+        };
+        let args = json!({"input_destination":destination}).to_string();
+        let route = ToolCausalRoute {
+            thread_id: source_thread.id,
+            activation_id: "typed-routing-activation".into(),
+            model_attempt_id: None,
+            root_turn_id: source.id.clone(),
+            trigger_event_id: source.id.clone(),
+            trigger_sequence: 1,
+        };
+        let result = CURRENT_PRINCIPAL_ID
+            .scope(
+                Some("principal-steer".into()),
+                CURRENT_CAUSAL_ROUTE.scope(Some(route.clone()), tool.execute(&args)),
+            )
+            .await;
+        if mode == MessageDispatchMode::Parallel {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("PARALLEL_INPUT_REQUIRES_INDEPENDENT_EXECUTION"));
+            assert!(store
+                .query(QueryFilter {
+                    topic: Some("chat/steering".into()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .is_empty());
+        } else {
+            let first: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+            let again = CURRENT_PRINCIPAL_ID
+                .scope(
+                    Some("principal-steer".into()),
+                    CURRENT_CAUSAL_ROUTE.scope(Some(route.clone()), tool.execute(&args)),
+                )
+                .await
+                .unwrap();
+            let repeated: serde_json::Value = serde_json::from_str(&again).unwrap();
+            assert_eq!(first["status"], "queued");
+            assert_eq!(first["event_id"], repeated["event_id"]);
+            assert_eq!(repeated["duplicate"], true);
+            let forwarded = store
+                .query(QueryFilter {
+                    topic: Some("chat/steering".into()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(forwarded.len(), 1);
+            let event = &forwarded[0];
+            assert_eq!(event.payload["source_event_id"], source.id);
+            assert_eq!(event.payload["root_turn_id"], target.root_turn_id);
+            let input: AcceptedInput =
+                serde_json::from_value(event.payload["session_io"].clone()).unwrap();
+            assert_eq!(input.request.message, request.message);
+            assert_eq!(input.request.client_metadata, request.client_metadata);
+            assert_eq!(input.request.delivery, request.delivery);
+            assert_eq!(input.binding.input, accepted.binding.input);
+            assert_eq!(input.request.client_message_id, event.id);
+            assert_eq!(
+                input.request_fingerprint,
+                input.request.fingerprint("principal-steer")
+            );
+            assert_eq!(
+                input.request.activation.input_destination,
+                Some(destination)
+            );
+            assert!(
+                input.request.activation.model_alias.is_none()
+                    && input.request.activation.target_id.is_none()
+                    && input.request.activation.reasoning_effort.is_none()
+                    && input.request.activation.response_annotations.is_none()
+            );
+            if owner_annotations.is_off() {
+                assert!(event.payload.get("response_annotations").is_none());
+                assert!(input
+                    .binding
+                    .execution
+                    .get("response_annotations")
+                    .is_none());
+            } else {
+                assert_eq!(
+                    event.payload["response_annotations"],
+                    json!(owner_annotations)
+                );
+                assert_eq!(
+                    input.binding.execution["response_annotations"],
+                    json!(owner_annotations)
+                );
+            }
+            assert!(CURRENT_PRINCIPAL_ID
+                .scope(
+                    Some("foreign-human".into()),
+                    CURRENT_CAUSAL_ROUTE.scope(Some(route), tool.execute(&args))
+                )
+                .await
+                .is_err());
+        }
+        let after = store
+            .query(QueryFilter {
+                event_id: Some(source.id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            after, original_snapshot,
+            "forwarding never rewrites the original accepted input"
+        );
+        let after_owner = store.get_thread(&target.id).await.unwrap().unwrap();
+        assert_eq!(after_owner.generation, target.generation);
+        assert!(!after_owner.lifecycle.is_terminal());
+    }
+
+    #[tokio::test]
+    async fn natural_steering_accepts_current_typed_input_and_inherits_owner_options() {
+        for annotations in [
+            crate::response_annotations::Protocol::Off,
+            crate::response_annotations::Protocol::V1,
+        ] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let store = std::sync::Arc::new(
+                SqliteStore::new(&file.path().to_string_lossy())
+                    .await
+                    .unwrap(),
+            );
+            assert_typed_natural_steering(store, MessageDispatchMode::FollowUp, annotations).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn natural_steering_cannot_transfer_an_explicitly_parallel_typed_input() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = std::sync::Arc::new(
+            SqliteStore::new(&file.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        assert_typed_natural_steering(
+            store,
+            MessageDispatchMode::Parallel,
+            crate::response_annotations::Protocol::V2,
+        )
+        .await;
     }
 
     fn directed(source: &Event, id: &str, destination: InputDestination) -> Event {
@@ -950,6 +1207,58 @@ mod tests {
             .execute(&admin)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires MORPHZ_TEST_POSTGRES_URL; uses fresh isolated schemas"]
+    async fn postgres_typed_natural_steering_preserves_input_protocol_and_parallel_owner() {
+        let url = std::env::var("MORPHZ_TEST_POSTGRES_URL").expect("isolated test database URL");
+        let admin = sqlx::PgPool::connect(&url).await.unwrap();
+        for (index, (mode, annotations)) in [
+            (
+                MessageDispatchMode::FollowUp,
+                crate::response_annotations::Protocol::Off,
+            ),
+            (
+                MessageDispatchMode::FollowUp,
+                crate::response_annotations::Protocol::V1,
+            ),
+            (
+                MessageDispatchMode::Parallel,
+                crate::response_annotations::Protocol::V2,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let schema = format!(
+                "typed_steer_{}_{}_{}",
+                std::process::id(),
+                chrono::Utc::now()
+                    .timestamp_nanos_opt()
+                    .unwrap()
+                    .unsigned_abs(),
+                index
+            );
+            sqlx::query(&format!("CREATE SCHEMA {schema}"))
+                .execute(&admin)
+                .await
+                .unwrap();
+            let separator = if url.contains('?') { '&' } else { '?' };
+            let store = std::sync::Arc::new(
+                crate::memory::postgres::PostgresStore::new(
+                    &format!("{url}{separator}options=-csearch_path%3D{schema}%2Cpublic"),
+                    8,
+                )
+                .await
+                .unwrap(),
+            );
+            assert_typed_natural_steering(store, mode, annotations).await;
+            sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+                .execute(&admin)
+                .await
+                .unwrap();
+        }
     }
 
     async fn assert_question_race(store: &dyn RuntimeStore, source: &Event) {

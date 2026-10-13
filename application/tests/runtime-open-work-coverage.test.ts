@@ -71,6 +71,13 @@ async function fixture() {
     lifecycle = "open",
     rootId = delivery.rootId!,
   ) => ({
+    source: {
+      event_id: rootId,
+      context_id: contextId,
+      session_id: delivery.sessionId,
+      root_turn_id: rootId,
+      activation_id: null,
+    },
     intent: `TEST ${id}`,
     phase: lifecycle === "open" ? "running" : "idle",
     thread: {
@@ -90,6 +97,13 @@ async function fixture() {
     status = "active",
   ) => ({
     readiness: { state: "runnable" },
+    source: {
+      event_id: rootId,
+      context_id: contextId,
+      session_id: delivery.sessionId,
+      root_turn_id: rootId,
+      activation_id: null,
+    },
     objective: {
       id,
       context_id: contextId,
@@ -379,11 +393,18 @@ test("相同线程revision的当前phase优先于历史，当前目标不依赖�
   }
 });
 
-test("scheduled root不是Event时按真实Schedule源关联，保留运行root且不额外授予continuation", async () => {
+test("scheduled root不是Event时使用Runtime确认的原输入，保留运行root且不额外授予continuation", async () => {
   const { f, internal, delivery, thread, read } = await fixture();
   try {
     const child = {
       ...thread("scheduled-child", "open", "non-event-runtime-root"),
+      source: {
+        event_id: delivery.rootId!,
+        context_id: thread("probe").thread.context_id,
+        session_id: delivery.sessionId,
+        root_turn_id: delivery.rootId!,
+        activation_id: null,
+      },
       phase: "waiting",
     };
     const schedule = {
@@ -421,7 +442,7 @@ test("scheduled root不是Event时按真实Schedule源关联，保留运行root�
     assert.equal(activity.threads[0]?.continuation, undefined);
     assert.equal(eventReads, 0);
     assert.equal(schedulerReads, 2);
-    // A schedule referring to another Thread is not a causal link for this one.
+    // Without a Runtime source proof, a mismatched Schedule cannot invent one.
     internal.request = async (path) =>
       path.includes("/events/")
         ? Promise.reject(new Error("404"))
@@ -430,6 +451,7 @@ test("scheduled root不是Event时按真实Schedule源关联，保留运行root�
             threads: [
               {
                 ...child,
+                source: null,
                 schedules: [{ ...schedule, thread_id: "different-thread" }],
               },
             ],
@@ -443,11 +465,107 @@ test("scheduled root不是Event时按真实Schedule源关联，保留运行root�
   }
 });
 
-test("scheduled_created目标沿同Session/Context的持久父线程到用户输入，不把控制事件当用户root", async () => {
+test("目标协调线程及三个并行分段root均不必是Event，授权投影完整并与原发起线程关联", async () => {
+  const { f, internal, delivery, thread, objective, read, contextId } =
+    await fixture();
+  try {
+    const goal = {
+      ...objective("parallel-goal", "creation-control-event"),
+      source: {
+        event_id: "creation-control-event",
+        context_id: contextId,
+        session_id: delivery.sessionId,
+        root_turn_id: delivery.rootId!,
+        activation_id: "original-creation-evaluation",
+      },
+    };
+    const original = thread("original-writing");
+    const values = [
+      original,
+      ...["coordinator", "segment-D", "segment-E", "segment-F"].map((id) => ({
+        ...thread(id, "open", `synthetic-${id}-root`),
+        source: goal.source,
+        phase: id === "coordinator" ? "waiting" : "running",
+        thread: {
+          ...thread(id, "open", `synthetic-${id}-root`).thread,
+          supervision: {
+            supervisor_kind: "objective",
+            supervisor_id: "parallel-goal",
+            parent_thread_id: id === "coordinator" ? null : "coordinator",
+          },
+        },
+      })),
+    ];
+    let eventReads = 0;
+    internal.request = async (path) => {
+      if (path.includes("/events/")) {
+        eventReads++;
+        throw new Error("Synthetic execution roots are not user Events");
+      }
+      return { detail_bounds: bounds, threads: values, objectives: [goal] };
+    };
+    await internal.refreshActivity();
+    const activity = read();
+    assert.equal(activity.available, true);
+    assert.equal(activity.openWorkComplete, true);
+    assert.equal(activity.objectivesTruncated, false);
+    assert.equal(activity.threads.length, 5);
+    assert.equal(
+      activity.threads.filter((t) => t.phase === "running").length,
+      4,
+    );
+    assert.deepEqual(
+      activity.objectives?.[0]?.threadIds,
+      values.map((v) => v.thread.id),
+    );
+    assert.deepEqual(
+      activity.threads.map((t) => t.rootId),
+      values.map((v) => v.thread.root_turn_id),
+    );
+    assert.ok(activity.threads.every((t) => t.inputId === delivery.inputId));
+    assert.equal(eventReads, 0);
+    assert.equal(
+      activity.threads.find((t) => t.id === "segment-D")?.parentThreadId,
+      "coordinator",
+    );
+    assert.equal(
+      activity.threads.find((t) => t.id === "segment-D")?.continuation,
+      undefined,
+    );
+    // Null or foreign proofs cannot fall back to the selected work surface.
+    for (const bad of [
+      null,
+      { ...goal.source, session_id: "foreign-session" },
+      { ...goal.source, context_id: "foreign-context" },
+    ]) {
+      internal.request = async () => ({
+        detail_bounds: bounds,
+        threads: [{ ...values[2], source: bad }],
+        objectives: [],
+      });
+      await internal.refreshActivity();
+      assert.deepEqual(read().threads, []);
+      assert.equal(read().openWorkComplete, false);
+    }
+  } finally {
+    await f.close();
+  }
+});
+
+test("排程创建目标读取Runtime确认的原输入，不把控制事件或UI父线程缓存当目标来源", async () => {
   const { f, internal, delivery, contextId, objective, read } = await fixture();
   try {
     const sourceEventId = "runtime-objective-control-event";
-    const goal = objective("scheduled-goal", sourceEventId);
+    const goal = {
+      ...objective("scheduled-goal", sourceEventId),
+      source: {
+        event_id: sourceEventId,
+        context_id: contextId,
+        session_id: delivery.sessionId,
+        root_turn_id: delivery.rootId,
+        activation_id: "exact-runtime-evaluation",
+      },
+    };
     const parent = {
       id: "exact-parent-thread",
       sessionId: delivery.sessionId,
@@ -486,7 +604,7 @@ test("scheduled_created目标沿同Session/Context的持久父线程到用户输
       activity.objectives?.[0]?.projectId,
       delivery.platformSource.projectId,
     );
-    assert.equal(eventReads, 1);
+    assert.equal(eventReads, 0, "来源已由Runtime确认，不在UI重建创建过程");
     // Neither an absent parent nor a parent in another Session grants scope.
     for (const binding of [
       undefined,
@@ -497,6 +615,17 @@ test("scheduled_created目标沿同Session/Context的持久父线程到用户输
       const nextId = sourceEventId + String(eventReads);
       const nextGoal = {
         ...goal,
+        source: !binding
+          ? null
+          : {
+              ...goal.source,
+              event_id: nextId,
+              session_id: binding.sessionId,
+              root_turn_id:
+                binding.projectId === "outside-context"
+                  ? "unverifiable-parent-root"
+                  : binding.rootId,
+            },
         objective: { ...goal.objective, source_event_id: nextId },
       };
       internal.request = async (path) => {
@@ -515,6 +644,96 @@ test("scheduled_created目标沿同Session/Context的持久父线程到用户输
       assert.equal(read().openWorkComplete, false);
       assert.deepEqual(read().objectives, []);
     }
+  } finally {
+    await f.close();
+  }
+});
+
+test("自主目标使用Runtime创建来源，创建线程不在历史页也照常显示", async () => {
+  const { f, internal, delivery, contextId, objective, read } = await fixture();
+  try {
+    const goal = {
+      ...objective("autonomous-goal", "runtime-autonomous-created"),
+      source: {
+        event_id: "runtime-autonomous-created",
+        context_id: contextId,
+        session_id: delivery.sessionId,
+        root_turn_id: delivery.rootId,
+        activation_id: "creating-evaluation-outside-history-page",
+      },
+    };
+    internal.state.threadBindings = {};
+    const calls: string[] = [];
+    internal.request = async (path) => {
+      calls.push(path);
+      assert.ok(
+        !path.includes("/events/"),
+        "真实输入已在授权投递中，不再错误地把控制事件当输入查询",
+      );
+      return { detail_bounds: bounds, threads: [], objectives: [goal] };
+    };
+    await internal.refreshActivity();
+    const activity = read();
+    assert.equal(activity.openWorkComplete, true);
+    assert.equal(activity.objectivesTruncated, false);
+    assert.equal(activity.objectives?.length, 1);
+    assert.equal(activity.objectives[0]!.inputId, delivery.inputId);
+    assert.equal(
+      activity.objectives[0]!.projectId,
+      delivery.platformSource.projectId,
+    );
+    assert.deepEqual(activity.objectives[0]!.threadIds, []);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(
+      f.runtime.platformNavigationSnapshot(localAccess, []).runtime.activity
+        ?.objectives,
+      [],
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("目标来源必须精确绑定原创建事件和Context/Session，不按当前页面或错误来源授予权限", async () => {
+  const { f, internal, delivery, contextId, objective, read } = await fixture();
+  try {
+    for (const bad of [
+      { event_id: "different-creation" },
+      { context_id: "another-context" },
+      { session_id: "another-session" },
+      { root_turn_id: "unverifiable-input" },
+    ]) {
+      const goal = {
+        ...objective("misrouted-autonomous-goal", "runtime-autonomous-created"),
+        source: {
+          event_id: "runtime-autonomous-created",
+          context_id: contextId,
+          session_id: delivery.sessionId,
+          root_turn_id: delivery.rootId,
+          activation_id: "actual-creating-evaluation",
+          ...bad,
+        },
+      };
+      internal.request = async (path) => {
+        if (path.includes("/events/")) throw new Error("unknown input");
+        return { detail_bounds: bounds, threads: [], objectives: [goal] };
+      };
+      await internal.refreshActivity();
+      assert.equal(read().openWorkComplete, false);
+      assert.deepEqual(read().objectives, []);
+      assert.equal(read().objectivesTruncated, true);
+    }
+    internal.request = async () => ({
+      detail_bounds: bounds,
+      threads: [],
+      objectives: [{ ...objective("no-validated-source"), source: null }],
+    });
+    await internal.refreshActivity();
+    assert.deepEqual(
+      read().objectives,
+      [],
+      "Runtime明确未能验证来源时，不能偷偷换用一个存在的输入root",
+    );
   } finally {
     await f.close();
   }

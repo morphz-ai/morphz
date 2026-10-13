@@ -20,7 +20,10 @@ async function cancelledRootFixture() {
   let lifecycle = "open";
   let revision = 2;
   let generation = 1;
-  let kind: string | undefined;
+  let kind = "execution";
+  let omitKind = false;
+  let handoff: boolean | Record<string, unknown> = false;
+  let finalHandoffChanged = false;
   let finalKindChanged = false;
   let cancellationThread = "root-thread";
   let cancelGeneration = 1;
@@ -180,9 +183,25 @@ async function cancelledRootFixture() {
         revision:
           finalRevisionChanged && turnReads > 1 ? revision + 1 : revision,
         lifecycle,
-        ...(kind === undefined
+        ...(omitKind
           ? {}
           : { kind: finalKindChanged && turnReads > 1 ? "execution" : kind }),
+        input_handoff: handoff
+          ? {
+              input_event_id: "accepted-root",
+              signal_id: "original-input-signal",
+              context_id: session.context_id,
+              session_id: sid,
+              source_thread_id: "root-thread",
+              destination_thread_id: "replacement-thread",
+              destination_root_turn_id: "replacement-root",
+              destination_generation: 1,
+              ...(typeof handoff === "object" ? handoff : {}),
+              ...(finalHandoffChanged && turnReads > 1
+                ? { destination_root_turn_id: "another-root" }
+                : {}),
+            }
+          : null,
       });
     }
     if (url.pathname.endsWith("/threads/root-thread/family"))
@@ -326,6 +345,9 @@ async function cancelledRootFixture() {
         threadGeneration?: number;
         threadRevision?: number;
         kind?: string;
+        omitKind?: boolean;
+        handoff?: boolean | Record<string, unknown>;
+        finalHandoffChanged?: boolean;
         finalKindChanged?: boolean;
         topic?: string;
         lifecycle?: string;
@@ -345,6 +367,10 @@ async function cancelledRootFixture() {
         generation = value.threadGeneration ?? generation;
         revision = value.threadRevision ?? revision;
         kind = value.kind ?? kind;
+        omitKind = value.omitKind ?? omitKind;
+        handoff =
+          value.handoff ?? (value.kind === "dialogue_turn" ? true : handoff);
+        finalHandoffChanged = value.finalHandoffChanged ?? finalHandoffChanged;
         finalKindChanged = value.finalKindChanged ?? finalKindChanged;
         cancelTopic = value.topic ?? cancelTopic;
         lifecycle = value.lifecycle ?? lifecycle;
@@ -386,6 +412,17 @@ async function cancelledRootFixture() {
       async run() {
         await host.enableDispatch();
         await host.runtime.tick();
+      },
+      handoffProjection: {
+        signalId: "original-input-signal",
+        sourceThreadId: "root-thread",
+        destinationThreadId: "replacement-thread",
+        destinationRootId: "replacement-root",
+        destinationGeneration: 1,
+      },
+      seedCancelledProjection() {
+        baseline.deliveries[0]!.state = "cancelled";
+        host.store.saveRuntimeState(baseline);
       },
       seedHistoricalProjection() {
         // A pre-existing controlled legacy Host row, not a newly published
@@ -551,7 +588,7 @@ test("controlled HTTP root cancellation repairs accepted Host SQLite delivery be
   }
 });
 
-test("controlled HTTP dialogue replacement settles its cancelled root without a chat cancellation or another input's reply", async () => {
+test("controlled HTTP dialogue replacement records the exact batch handoff without cancelling the input or inventing a reply", async () => {
   const f = await cancelledRootFixture();
   try {
     f.alter({
@@ -565,7 +602,8 @@ test("controlled HTTP dialogue replacement settles its cancelled root without a 
     const after = f.host.store.runtimeState() as typeof f.baseline;
     const expected = structuredClone(f.baseline.deliveries);
     Object.assign(expected[0]!, {
-      state: "cancelled",
+      state: "merged",
+      handoff: f.handoffProjection,
       cancelRequested: false,
       error: null,
     });
@@ -608,7 +646,8 @@ test("controlled HTTP dialogue replacement is rechecked on newer committed input
     });
     await f.host.runtime.tick();
     const after = f.host.store.runtimeState() as typeof f.baseline;
-    assert.equal(after.deliveries[0]!.state, "cancelled");
+    assert.equal(after.deliveries[0]!.state, "merged");
+    assert.deepEqual(after.deliveries[0]!.handoff, f.handoffProjection);
     assert.equal(Object.values(after.sessions)[0]!.cursor, 101);
     assert.deepEqual(
       Object.values(after.sessions)[0]!.events,
@@ -632,13 +671,94 @@ test("controlled HTTP dialogue replacement is rechecked on newer committed input
   }
 });
 
+test("controlled HTTP corrects a retained cancelled projection by reading its actual batch owner, without replay", async () => {
+  const f = await cancelledRootFixture();
+  try {
+    f.alter({ kind: "dialogue_turn", threadGeneration: 1, pages: true });
+    f.seedCancelledProjection();
+    f.seedHistoricalProjection();
+    await f.run();
+    const after = f.host.store.runtimeState() as typeof f.baseline;
+    assert.equal(after.deliveries[0]!.state, "merged");
+    assert.deepEqual(after.deliveries[0]!.handoff, f.handoffProjection);
+    assert.deepEqual(
+      after.deliveries[0]!.request,
+      f.baseline.deliveries[0]!.request,
+    );
+    assert.deepEqual(after.sessions, f.baseline.sessions);
+    assert.deepEqual(
+      f.calls.filter((call) => call.method !== "GET"),
+      [],
+    );
+    const before = structuredClone(after);
+    await f.host.runtime.tick();
+    assert.deepEqual(f.host.store.runtimeState(), before);
+    await assert.rejects(
+      f.host.runtime.cancelPlatformInput(
+        String(after.deliveries[0]!.inputId),
+        localAccess,
+      ),
+      /没有正在进行的处理/,
+      "the original input cannot acquire control of its successor batch",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 for (const [name, patch] of [
-  ["missing kind on an older Runtime", {}],
+  ["missing kind in the current Runtime contract", { omitKind: true }],
   [
     "execution still needs the canonical cancellation proof",
     { kind: "execution" },
   ],
   ["delivery is not a replaced dialogue", { kind: "delivery" }],
+  [
+    "dialogue has no persisted input handoff",
+    { kind: "dialogue_turn", handoff: false },
+  ],
+  [
+    "another Context handoff",
+    { kind: "dialogue_turn", handoff: { context_id: "foreign" } },
+  ],
+  [
+    "another Session handoff",
+    { kind: "dialogue_turn", handoff: { session_id: "foreign" } },
+  ],
+  [
+    "another input handoff",
+    { kind: "dialogue_turn", handoff: { input_event_id: "foreign" } },
+  ],
+  [
+    "another source Thread handoff",
+    { kind: "dialogue_turn", handoff: { source_thread_id: "foreign" } },
+  ],
+  [
+    "self Thread handoff",
+    {
+      kind: "dialogue_turn",
+      handoff: { destination_thread_id: "root-thread" },
+    },
+  ],
+  [
+    "self input handoff",
+    {
+      kind: "dialogue_turn",
+      handoff: { destination_root_turn_id: "accepted-root" },
+    },
+  ],
+  [
+    "invalid destination generation",
+    { kind: "dialogue_turn", handoff: { destination_generation: 0 } },
+  ],
+  [
+    "missing stable Signal identity",
+    { kind: "dialogue_turn", handoff: { signal_id: "" } },
+  ],
+  [
+    "handoff changes before the final read",
+    { kind: "dialogue_turn", finalHandoffChanged: true },
+  ],
   ["open dialogue", { kind: "dialogue_turn", lifecycle: "open" }],
   ["child dialogue", { kind: "dialogue_turn", parent: "other-thread" }],
   [

@@ -6188,6 +6188,18 @@ impl ContextEngine {
         receipts
     }
 
+    /// Provider tool receipts and Context observations share the same physical
+    /// disclosure bound. Full Events remain recallable; only an explicit,
+    /// already-bounded recall page is exempt. A typed tool result is not an
+    /// excuse to put its complete body back into the Provider envelope.
+    pub(crate) fn tool_result_preview(&self, event: &Event, text: &str) -> (String, bool) {
+        if is_full_recall_chunk(event, text) {
+            (text.to_owned(), false)
+        } else {
+            preview_text(text, self.config.observation_preview_chars)
+        }
+    }
+
     fn to_observation(
         &self,
         event: &Event,
@@ -6196,21 +6208,7 @@ impl ContextEngine {
     ) -> ContextObservation {
         let text = event_text(event);
         let total_chars = text.chars().count();
-        let full_recall_chunk = event
-            .payload
-            .get("tool_name")
-            .and_then(|value| value.as_str())
-            == Some("recall")
-            && serde_json::from_str::<serde_json::Value>(&text)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("context_delivery")
-                        .and_then(|marker| marker.as_str())
-                        .map(ToOwned::to_owned)
-                })
-                .as_deref()
-                == Some("full-event-chunk");
+        let full_recall_chunk = is_full_recall_chunk(event, &text);
         let recalled = full_recall_chunk
             .then(|| serde_json::from_str::<serde_json::Value>(&text).ok())
             .flatten();
@@ -6223,12 +6221,15 @@ impl ContextEngine {
                 .resolve(&message.format, message.content.encoding(), "registered")
                 .ok()
         });
-        let (preview, truncated) =
-            if crate::session_io::event_message(event).is_some() || full_recall_chunk {
-                (text, false)
-            } else {
-                preview_text(&text, self.config.observation_preview_chars)
-            };
+        let (preview, truncated) = if event.event_type != TYPE_TOOL_OUTPUT
+            && crate::session_io::event_message(event).is_some()
+        {
+            // Typed input/delivery content has its own structural projection
+            // and paging contract; never turn its value into sliced JSON.
+            (text.clone(), false)
+        } else {
+            self.tool_result_preview(event, &text)
+        };
         let visible_chars = preview.chars().count();
         let representation = if full_recall_chunk {
             "recalled-chunk"
@@ -6240,7 +6241,7 @@ impl ContextEngine {
         ContextObservation {
             response_annotation_receipt: None,
             io_resources: if self.typed_chat {
-                crate::session_io::resources::event_resources(event)
+                crate::session_io::resources::context_resources(event)
             } else {
                 Vec::new()
             },
@@ -10490,10 +10491,23 @@ pub(crate) fn render_session_io_definitions(observations: &[ContextObservation])
 }
 
 fn render_inbox_observation(observation: &ContextObservation) -> SExpr {
+    let resources = if observation.io_resources.is_empty() {
+        observation
+            .session_io
+            .as_ref()
+            .map(|io| &io.binding.resources)
+            .unwrap_or(&observation.io_resources)
+    } else {
+        &observation.io_resources
+    };
     let content = if let Some(page) = &observation.io_page {
         list("typed-page", vec![page.expression()])
     } else if let Some(io) = &observation.session_io {
-        let definitions = crate::session_io::projection::input_overhead(&io.binding);
+        let definitions = crate::session_io::projection::input_overhead(&io.binding)
+            .saturating_sub(crate::session_io::projection::resource_bytes(
+                &io.binding.resources,
+            ))
+            .saturating_add(crate::session_io::projection::resource_bytes(resources));
         crate::session_io::projection::render(
             &io.request.message,
             &observation.reference,
@@ -10600,11 +10614,6 @@ fn render_inbox_observation(observation: &ContextObservation) -> SExpr {
         ),
         content,
     ]);
-    let resources = observation
-        .session_io
-        .as_ref()
-        .map(|io| &io.binding.resources)
-        .unwrap_or(&observation.io_resources);
     if !resources.is_empty() {
         fields.push(list(
             "resources",
@@ -12944,38 +12953,29 @@ fn event_text(event: &Event) -> String {
         .unwrap_or_else(|| "[event has no text payload]".to_string())
 }
 
-fn preview_text(text: &str, max_chars: usize) -> (String, bool) {
-    let total = text.chars().count();
-    if total <= max_chars {
-        return (text.to_string(), false);
-    }
-    if max_chars == 0 {
-        return (String::new(), true);
-    }
-    let head_chars = max_chars / 2;
-    let tail_chars = max_chars.saturating_sub(head_chars);
-    let head = text.chars().take(head_chars).collect::<String>();
-    let tail = text
-        .chars()
-        .rev()
-        .take(tail_chars)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect::<String>();
-    (
-        format!(
-            "{}\n...[original text has {} characters; use recall with this ref to read it in segments]...\n{}",
-            head, total, tail
-        ),
-        true,
-    )
+fn is_full_recall_chunk(event: &Event, text: &str) -> bool {
+    event
+        .payload
+        .get("tool_name")
+        .and_then(|value| value.as_str())
+        == Some("recall")
+        && serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .is_some_and(|value| {
+                value
+                    .get("context_delivery")
+                    .and_then(|marker| marker.as_str())
+                    == Some("full-event-chunk")
+            })
 }
 
-/// Unlike the ordinary preview helper, this cap includes the truncation
-/// marker itself. Critical recovery uses it as a physical request bound, so a
-/// collection of previews must not exceed its declared budget by accumulating
-/// one marker overhead per observation.
+fn preview_text(text: &str, max_chars: usize) -> (String, bool) {
+    bounded_maintenance_preview(text, max_chars)
+}
+
+/// The complete preview, including its marker, fits the declared bound. Both
+/// ordinary disclosure and critical recovery must not accumulate an extra
+/// marker allowance for each observation.
 fn bounded_maintenance_preview(text: &str, max_chars: usize) -> (String, bool) {
     let total = text.chars().count();
     if total <= max_chars {

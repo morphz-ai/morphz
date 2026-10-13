@@ -311,6 +311,7 @@ function Frame() {
       onEngage={() => event("quote-engage")}
       onOpen={() => event("quote-open")}
       onNotice={(value) => event("notice", value)}
+      onSubmit={(mode) => event("quote-submit", mode)}
     >
       <div
         className={

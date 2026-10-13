@@ -230,6 +230,18 @@ pub fn public_metadata(event_id: &str, metadata: &Value) -> Value {
         "size_bytes":metadata.get("size_bytes"),"sha256":metadata.get("sha256")})
 }
 
+pub(crate) fn workspace_metadata(event_id: &str, metadata: &Value) -> Value {
+    let mut resource = public_metadata(event_id, metadata);
+    if let Some(path) = metadata
+        .get("workspace_path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty() && path.len() <= 4096)
+    {
+        resource["workspace_path"] = Value::String(path.into());
+    }
+    resource
+}
+
 pub fn event_resources(event: &Event) -> Vec<Value> {
     event
         .payload
@@ -249,6 +261,41 @@ pub fn event_resources(event: &Event) -> Vec<Value> {
                 })
                 .unwrap_or_default()
         })
+}
+
+/// Privileged Agent Context metadata, distinct from path-free public download
+/// receipts. This never reads bytes and never exposes Artifact Store paths.
+/// The workspace copy is already owned by the accepted Event; normal `read`
+/// still performs its physical permission checks at execution time.
+pub(crate) fn context_resources(event: &Event) -> Vec<Value> {
+    let mut resources = event_resources(event);
+    let attachments = event.payload.get("attachments").and_then(Value::as_array);
+    for resource in &mut resources {
+        let Some(id) = resource.get("resource_id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Ok((owner, attachment_id)) = decode_id(id) else {
+            continue;
+        };
+        let forwarded = event.topic == "chat/steering"
+            && event.payload.get("source_event_id").and_then(Value::as_str) == Some(owner.as_str());
+        if owner != event.id && !forwarded {
+            continue;
+        }
+        let metadata = attachments.and_then(|items| {
+            items.iter().find(|metadata| {
+                metadata.get("id").and_then(Value::as_str) == Some(attachment_id.as_str())
+            })
+        });
+        let path = metadata
+            .and_then(|metadata| metadata.get("workspace_path"))
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty() && path.len() <= 4096);
+        if let (Some(path), Some(object)) = (path, resource.as_object_mut()) {
+            object.insert("workspace_path".into(), Value::String(path.into()));
+        }
+    }
+    resources
 }
 
 pub async fn read(
@@ -302,4 +349,68 @@ pub async fn read(
             data: loaded.data,
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_read_paths_are_privileged_metadata_not_public_download_paths() {
+        let metadata = json!({"id":"attachment", "name":"book.txt", "size_bytes":1_000_000,
+            "media_type":"text/plain", "sha256":"hash", "workspace_path":"/authorized/book.txt",
+            "storage_path":"/private/artifacts/original", "body":"BODY_MUST_NOT_BE_PROJECTED"});
+        let public = public_metadata("source", &metadata);
+        assert!(public.get("workspace_path").is_none());
+        assert!(public.get("storage_path").is_none());
+        let context = workspace_metadata("source", &metadata);
+        assert_eq!(context["workspace_path"], "/authorized/book.txt");
+        assert!(context.get("storage_path").is_none());
+        assert!(!context.to_string().contains("BODY_MUST_NOT_BE_PROJECTED"));
+        let mut oversized = metadata;
+        oversized["workspace_path"] = json!("x".repeat(4097));
+        assert!(workspace_metadata("source", &oversized)
+            .get("workspace_path")
+            .is_none());
+    }
+
+    #[test]
+    fn context_paths_require_exact_resource_owner_or_the_typed_forwarding_edge() {
+        let metadata = json!({"id":"attachment", "name":"book.txt",
+            "workspace_path":"/authorized/book.txt"});
+        let mut event = Event::new(
+            "source".into(),
+            "Session-Client".into(),
+            "session_message".into(),
+            "chat/user_message".into(),
+            serde_json::Map::new(),
+        );
+        event
+            .payload
+            .insert("attachments".into(), json!([metadata.clone()]));
+        assert_eq!(
+            context_resources(&event)[0]["workspace_path"],
+            "/authorized/book.txt"
+        );
+        event.id = "forwarded".into();
+        event.payload.insert(
+            "io_resources".into(),
+            json!([public_metadata("source", &metadata)]),
+        );
+        assert!(context_resources(&event)[0].get("workspace_path").is_none());
+        event.topic = "chat/steering".into();
+        event
+            .payload
+            .insert("source_event_id".into(), json!("wrong-source"));
+        assert!(context_resources(&event)[0].get("workspace_path").is_none());
+        event
+            .payload
+            .insert("source_event_id".into(), json!("source"));
+        assert_eq!(
+            context_resources(&event)[0]["workspace_path"],
+            "/authorized/book.txt"
+        );
+        event.payload["attachments"][0]["id"] = json!("wrong-attachment");
+        assert!(context_resources(&event)[0].get("workspace_path").is_none());
+    }
 }

@@ -10303,6 +10303,8 @@ impl Orchestrator {
         } else {
             "content"
         };
+        let total_chars = text.chars().count();
+        let (preview, truncated) = self.context_engine.tool_result_preview(output, text);
         let recallable = call.function.name != "context_tx"
             || text.starts_with("Tool execution failed:")
             || text.starts_with("Tool execution rejected:")
@@ -10310,19 +10312,27 @@ impl Orchestrator {
             || text.starts_with("执行失败:")
             || text.starts_with("执行拒绝:");
         let observation_ref = recallable.then(|| self.context_engine.event_reference(output));
-        let guidance = (status == "success" && output_state == "empty").then_some(
-            "The tool completed successfully without text output. Do not repeat it merely because output is empty; for side-effecting tools, use subsequent file_change or state evidence.",
-        );
+        let guidance = if truncated && recallable {
+            Some("This is a bounded tool-result preview, not the full output. Use recall with observation_ref to read the original Event in pages; do not repeat a side-effecting tool just to see more output.")
+        } else if truncated {
+            Some("This is a bounded context-transaction receipt preview. Read the current Context for committed state; this receipt has no recall observation_ref. Do not repeat the transaction merely to see more output.")
+        } else if status == "success" && output_state == "empty" {
+            Some("The tool completed successfully without text output. Do not repeat it merely because output is empty; for side-effecting tools, use subsequent file_change or state evidence.")
+        } else {
+            None
+        };
         let content = serde_json::to_string(&json!({
             "session_id": output.payload.get("session_id").and_then(|value| value.as_str()),
             "status": status,
             "output_state": output_state,
             "observation_ref": observation_ref,
             "tool_name": call.function.name,
-            "result": text,
+            "result": preview,
+            "truncated": truncated,
+            "total_chars": total_chars,
             "guidance": guidance,
         }))
-        .unwrap_or_else(|_| text.to_string());
+        .expect("bounded tool-result receipt is serializable");
         Message {
             role: "tool".to_string(),
             content,
@@ -12258,90 +12268,6 @@ impl Orchestrator {
         Ok(true)
     }
 
-    async fn model_attachment_message(
-        &self,
-        activation: &ThreadActivationRecord,
-    ) -> Result<Option<Message>, DynError> {
-        // An Activation evaluates an ordered Signal batch, not only its latest
-        // root Event. Interrupt mode atomically reroutes the interrupted
-        // message's claimed Signal to the replacement DialogueTurn, so binary
-        // attachments must follow that same authoritative batch just as its
-        // text observations do. Events remain immutable; this is a bounded
-        // read projection over the already claimed mailbox facts.
-        let mut event_ids = Vec::new();
-        let mut seen_event_ids = HashSet::new();
-        if let Some(session_store) = self.context_engine.session_store() {
-            for signal in session_store
-                .list_activation_signals(&activation.id)
-                .await?
-            {
-                if seen_event_ids.insert(signal.event_id.clone()) {
-                    event_ids.push(signal.event_id);
-                }
-            }
-        }
-        // Lightweight test stores may not expose Activation bindings. The
-        // root remains the compatibility fallback and, when necessary, the
-        // final causal item after the ordered Signal batch.
-        if seen_event_ids.insert(activation.root_turn_id.clone()) {
-            event_ids.push(activation.root_turn_id.clone());
-        }
-
-        let events = self
-            .store
-            .query(QueryFilter {
-                event_ids: event_ids.clone(),
-                context_id: Some(activation.context_id.clone()),
-                ..QueryFilter::default()
-            })
-            .await?;
-        let mut events_by_id = events
-            .into_iter()
-            .map(|event| (event.id.clone(), event))
-            .collect::<HashMap<_, _>>();
-        let mut items = Vec::new();
-        for event_id in event_ids {
-            let Some(event) = events_by_id.remove(&event_id) else {
-                continue;
-            };
-            items.extend(
-                event
-                    .payload
-                    .get("attachments")
-                    .and_then(serde_json::Value::as_array)
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-            items.extend(
-                self.resolve_model_visible_attachment_metadata(
-                    &activation.context_id,
-                    &serde_json::Value::Object(event.payload),
-                )
-                .await?,
-            );
-        }
-        let mut seen = HashSet::new();
-        items.retain(|item| {
-            let key = (
-                item.get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                item.get("sha256")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-            );
-            seen.insert(key)
-        });
-        crate::model_input::attachment_message_from_metadata(
-            &self.message_attachment_root,
-            &items,
-            self.model_input_config.request_limits(),
-        )
-        .await
-    }
-
     async fn resolve_model_visible_attachment_metadata(
         &self,
         context_id: &str,
@@ -13098,37 +13024,22 @@ impl Orchestrator {
         // ContextDelta encoder before the ordinary one-shot continuation path
         // excludes the same outputs from the canonical Context message.
         let prompt_cache_context_observations = context.observations.clone();
-        let fresh_trigger_has_attachments = fresh_activation
-            && trigger_event.as_ref().is_some_and(|event| {
-                event
-                    .payload
-                    .get("attachments")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|items| !items.is_empty())
-                    || !model_visible_attachment_references(&serde_json::Value::Object(
-                        event.payload.clone(),
-                    ))
-                    .is_empty()
-            });
-        let (mut continuation, attachment_message) = if fresh_activation {
-            let attachment_message = if fresh_trigger_has_attachments {
-                self.model_attachment_message(activation).await?
-            } else {
-                None
-            };
-            (ToolContinuationEnvelope::default(), attachment_message)
+        // Message ingress discloses resource metadata in the Context, never
+        // file bytes. Only an explicit Agent tool result may supply native
+        // media in the one-shot continuation. In particular, later Evaluations
+        // must not reread the root input's files behind the Agent's back.
+        let mut continuation = if fresh_activation {
+            ToolContinuationEnvelope::default()
         } else {
-            tokio::try_join!(
-                self.tool_continuation_for_trigger(
-                    session_id,
-                    Some(&activation.root_turn_id),
-                    Some(&activation.trigger_event_id),
-                    &context.state.retired,
-                    &prompt_cache_context_observations,
-                    response_annotations,
-                ),
-                self.model_attachment_message(activation),
-            )?
+            self.tool_continuation_for_trigger(
+                session_id,
+                Some(&activation.root_turn_id),
+                Some(&activation.trigger_event_id),
+                &context.state.retired,
+                &prompt_cache_context_observations,
+                response_annotations,
+            )
+            .await?
         };
         let continuation_messages = continuation.messages.clone();
         if !continuation.delivered_output_ids.is_empty() {
@@ -13364,9 +13275,6 @@ impl Orchestrator {
             )?,
         ];
         measurement_messages.extend(continuation.messages.clone());
-        if let Some(message) = attachment_message.clone() {
-            measurement_messages.push(message);
-        }
         // Build the stable tool contract for this Evaluation route. Context
         // capability bindings and Harness/plan scopes are semantic isolation
         // boundaries, but transient Objective state and ordinary work-phase
@@ -13512,9 +13420,6 @@ impl Orchestrator {
             &continuation_messages,
             bounded_critical_projection,
         ));
-        if let Some(message) = attachment_message {
-            messages.push(message);
-        }
 
         // `allowed_tools` is the independent Runtime admission set. During an
         // ordinary work trajectory it can change without changing the

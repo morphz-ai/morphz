@@ -819,6 +819,7 @@ export function Conversation({
                         completed: "",
                         failed: "执行失败",
                         cancelled: "已取消",
+                        merged: "并入后续处理",
                       }[delivery.state];
               const control = responseControls.get(id);
               const waiting = waitingResponses.get(id);

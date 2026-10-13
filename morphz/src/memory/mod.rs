@@ -6773,6 +6773,15 @@ pub trait ActivationStore: Send + Sync {
         context_id: &str,
         status: Option<ThreadSignalStatus>,
     ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Current input ownership through the unique Event index, including a
+    /// Signal moved by interrupt admission. Never scan the Context history.
+    async fn thread_signal_for_event(
+        &self,
+        _context_id: &str,
+        _event_id: &str,
+    ) -> Result<Option<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("Indexed input Signal reads are not supported by this store".into())
+    }
     async fn list_context_thread_signals_bounded(
         &self,
         context_id: &str,

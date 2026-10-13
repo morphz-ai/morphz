@@ -27,6 +27,16 @@ const rawThread = (
   parent: string | null = null,
   extra: Record<string, unknown> = {},
 ) => ({
+  source:
+    root === binding.inputRootId
+      ? {
+          event_id: root,
+          context_id: binding.contextId,
+          session_id: binding.sessionId,
+          root_turn_id: root,
+          activation_id: null as string | null,
+        }
+      : null,
   intent: "TEST " + id,
   phase: "running",
   thread: {
@@ -67,12 +77,10 @@ function familyResponse(
     selected_thread_id: selectedId,
     limit: 64,
     has_more: hasMore || threads.length > 64,
-    threads: threads
-      .slice(0, 64)
-      .map((thread) => ({
-        ...thread,
-        parent_thread_id: thread.supervision.parent_thread_id,
-      })),
+    threads: threads.slice(0, 64).map((thread) => ({
+      ...thread,
+      parent_thread_id: thread.supervision.parent_thread_id,
+    })),
   };
 }
 function peer(values: ReturnType<typeof rawThread>[]) {
@@ -166,6 +174,57 @@ test("不能只放宽child root equality；无父锚点、循环、跨Context父
     ),
     /不属于/,
   );
+});
+
+test("Goal primary synthetic root按Runtime输入证明授权，child保持自身root和family且错误证明拒绝", async () => {
+  const primary = rawThread("TEST-coordinator", "objective-owned-root");
+  const proof = {
+    event_id: "objective-autonomous-created",
+    context_id: binding.contextId,
+    session_id: binding.sessionId,
+    root_turn_id: binding.inputRootId,
+    activation_id: "creating-activation",
+  };
+  primary.source = proof;
+  const child = rawThread(
+    "TEST-child",
+    "scheduled-child-root",
+    "TEST-coordinator",
+  );
+  const values = [primary, child];
+  const scope = { ...binding, threadId: primary.thread.id };
+  const tree = await authorizedExecutionThreadTree(
+    peer(values).request,
+    scope,
+    true,
+  );
+  assert.deepEqual(
+    tree.threads.map((t) => t.id),
+    [primary.thread.id, child.thread.id],
+  );
+  const selected = await authorizedExecutionThreadTree(
+    peer(values).request,
+    { ...scope, threadId: child.thread.id },
+    true,
+  );
+  assert.equal(selected.selected.rootId, "scheduled-child-root");
+  assert.equal(selected.threads.length, 1);
+  for (const bad of [
+    null,
+    { ...proof, context_id: "foreign" },
+    { ...proof, session_id: "foreign" },
+    { ...proof, root_turn_id: "foreign-root" },
+  ]) {
+    const wrong = { ...primary, source: bad };
+    await assert.rejects(
+      authorizedExecutionThreadTree(
+        peer([wrong, child]).request,
+        { ...scope, threadId: child.thread.id },
+        false,
+      ),
+      /来源|不属于/,
+    );
+  }
 });
 
 test("family有界读取独立于Context历史，annotation必须属于每个Thread自己的generation", async () => {
@@ -404,6 +463,13 @@ test("真实Platform read grant＋Host原始Input：child独立root可打开，�
       rawThread("TEST-child", "TEST-child-root", "TEST-main"),
     ].map((value) => ({
       ...value,
+      source: value.source
+        ? {
+            ...value.source,
+            session_id: delivery.sessionId,
+            context_id: contextId,
+          }
+        : null,
       thread: {
         ...value.thread,
         session_id: delivery.sessionId,

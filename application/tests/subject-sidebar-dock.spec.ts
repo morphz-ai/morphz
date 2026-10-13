@@ -608,15 +608,17 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
   await goal.getByText("技术详情", { exact: true }).click();
   await expect(reason).not.toBeVisible();
   await expect(
-    goal.getByRole("button", { name: "检查下载进度", exact: true }),
+    goal.getByRole("button", { name: "检查下载进度 · 执行中", exact: true }),
   ).toBeVisible();
   await expect(
-    goal.getByRole("button", { name: "核对环境版本", exact: true }),
+    goal.getByRole("button", { name: "核对环境版本 · 已结束", exact: true }),
   ).toBeVisible();
   await expect(
     goal.getByRole("button", { name: "安装依赖失败", exact: true }),
   ).toHaveCount(0);
-  await goal.getByRole("button", { name: "检查下载进度", exact: true }).click();
+  await goal
+    .getByRole("button", { name: "检查下载进度 · 执行中", exact: true })
+    .click();
   await expect(
     panel.getByRole("button", { name: "返回活动列表", exact: true }),
   ).toBeVisible();

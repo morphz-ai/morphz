@@ -211,6 +211,141 @@ async function prepare(page: Page) {
   return { ...fixture, runtime, panel, queries, source, draft, writes, origin };
 }
 
+for (const colorScheme of ["light", "dark"] as const)
+  test(`目标下直接看见四条并行执行及等待协调线程，分段详情独立且刷新不改展开 ${colorScheme}`, async ({
+    page,
+  }, info) => {
+    await page.emulateMedia({ colorScheme });
+    const f = await prepare(page);
+    const original = f.runtime.activity.threads[0]!;
+    original.lifecycle = "open";
+    original.phase = "running";
+    original.title = "TEST 原写作线程";
+    const goal = f.runtime.activity.objectives[0]!;
+    const branches = ["coordinator", "D", "E", "F"].map((id) => ({
+      ...original,
+      id: `TEST-parallel-${id}`,
+      rootId: `TEST-synthetic-root-${id}`,
+      parentThreadId: id === "coordinator" ? null : "TEST-parallel-coordinator",
+      objectiveId: goal.id,
+      title: id === "coordinator" ? "TEST 统稿协调线程" : `TEST 分段写作 ${id}`,
+      phase: id === "coordinator" ? "waiting" : "running",
+      summary:
+        id === "coordinator" ? "TEST 等待分段交付" : "TEST 正在写作并保存正文",
+    }));
+    f.runtime.activity.threads.push(...branches, {
+      ...original,
+      id: "TEST-unrelated-running",
+      title: "TEST 同会话无关执行",
+      objectiveId: "different-goal",
+    });
+    goal.threadIds = [original.id, ...branches.map((thread) => thread.id)];
+    await page.route("**/api/executions?*", (route) => {
+      const selectedId = new URL(route.request().url()).searchParams.get(
+        "threadId",
+      );
+      const selected = f.runtime.activity.threads.find(
+        (thread) => thread.id === selectedId,
+      )!;
+      const threads =
+        selectedId === "TEST-parallel-coordinator" ? branches : [selected];
+      return route.fulfill({
+        json: {
+          jobs: [],
+          approvals: [],
+          limit: 100,
+          threadsTruncated: false,
+          threads: threads.map((thread) => ({
+            id: thread.id,
+            sessionId: thread.sessionId,
+            contextId: thread.contextId,
+            rootId: thread.rootId,
+            parentThreadId: thread.parentThreadId ?? null,
+            title: thread.title,
+            phase: thread.phase,
+            lifecycle: thread.lifecycle,
+            revision: thread.revision,
+            updatedAt: thread.updatedAt,
+          })),
+        },
+      });
+    });
+    await f.refresh();
+    await f.panel
+      .locator(`.execution-activity-row[data-thread-id="${original.id}"]`)
+      .click();
+    const related = f.panel.getByRole("region", {
+      name: "关联目标",
+      exact: true,
+    });
+    const heading = related.locator(".subject-objective-heading");
+    await expect(heading).toContainText("5 个关联执行 · 4 条执行中");
+    await heading.click();
+    const rows = related.locator(".subject-objective-execution");
+    await expect(rows).toHaveCount(5);
+    await expect(
+      related.getByRole("button", {
+        name: "TEST 统稿协调线程 · 等待中",
+        exact: true,
+      }),
+    ).toBeVisible();
+    for (const id of ["D", "E", "F"])
+      await expect(
+        related.getByRole("button", {
+          name: `TEST 分段写作 ${id} · 执行中`,
+          exact: true,
+        }),
+      ).toBeVisible();
+    await expect(
+      related.getByText("TEST 同会话无关执行", { exact: true }),
+    ).toHaveCount(0);
+    await f.panel.screenshot({
+      path: info.outputPath(`four-parallel-${colorScheme}.png`),
+    });
+    branches[3]!.lifecycle = "completed";
+    branches[3]!.phase = "idle";
+    await f.refresh();
+    await expect(heading).toHaveAttribute("aria-expanded", "true");
+    await expect(heading).toContainText("5 个关联执行 · 3 条执行中");
+    await expect(
+      related.getByRole("button", {
+        name: "TEST 分段写作 F · 已结束",
+        exact: true,
+      }),
+    ).toBeVisible();
+    const completedGlyph = related
+      .getByRole("button", { name: "TEST 分段写作 F · 已结束", exact: true })
+      .locator('.execution-thread-state[data-status="ended"]');
+    const colours = await completedGlyph.evaluate((element) => {
+      const actual = getComputedStyle(element).color;
+      const token = document.createElement("span");
+      token.style.color = "var(--success-ink)";
+      element.append(token);
+      const expected = getComputedStyle(token).color;
+      token.remove();
+      return { actual, expected };
+    });
+    expect(colours.actual).toBe(colours.expected);
+    await related
+      .getByRole("button", { name: "TEST 分段写作 E · 执行中", exact: true })
+      .click();
+    await expect(f.panel.locator(".execution-origin-title")).toHaveText(
+      "TEST 分段写作 E",
+    );
+    await expect(f.panel.locator(".execution-origin-status")).toHaveAttribute(
+      "data-status",
+      "running",
+    );
+    await expect(
+      f.panel.locator("[data-execution-thread='TEST-parallel-E']"),
+    ).toHaveCount(1);
+    await expect(
+      f.panel.locator("[data-execution-thread='TEST-parallel-D']"),
+    ).toHaveCount(0);
+    await expect(await openInput(page)).toHaveValue(f.draft);
+    expect(f.writes).toEqual([]);
+  });
+
 test("活动首页直接显示真实目标，跨工作面及无执行目标不丢，关联仍核对完整原身份", async ({
   page,
 }) => {
@@ -255,7 +390,7 @@ test("活动首页直接显示真实目标，跨工作面及无执行目标不�
   await heading.click();
   await related
     .getByRole("button", {
-      name: "生成 BailingHub 评估文档并导出 PDF",
+      name: "生成 BailingHub 评估文档并导出 PDF · 已结束",
       exact: true,
     })
     .click();

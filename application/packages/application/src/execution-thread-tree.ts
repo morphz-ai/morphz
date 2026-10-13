@@ -6,9 +6,11 @@ import { activityAnnotationFields } from "./response-annotations.js";
 import {
   runtimeThreadAncestryLimit,
   runtimeThreadSupervisionSchema,
+  runtimeSchedulerSourceSchema,
 } from "./runtime-thread-provenance.js";
 
 const runtimeThreadSnapshot = z.object({
+  source: runtimeSchedulerSourceSchema,
   intent: z.string().nullable().optional(),
   phase: z.string().default("unknown"),
   response_annotations: z.unknown().optional(),
@@ -53,9 +55,9 @@ function project(value: RuntimeThreadSnapshot): ExecutionThread {
   };
 }
 
-/** A selected child is authorized through a freshly read real parent chain,
- * anchored to this reader's persisted original input. Neither shared input IDs,
- * root prefixes, cached bindings nor a scheduler-wide inventory grant access.
+/** A selected child is authorized through fresh Runtime-owned provenance or
+ * its actual parent chain, anchored to this reader's persisted original input.
+ * Shared input IDs, root prefixes and cached bindings never grant access.
  * Cross-Session delegation is deliberately outside this read boundary. */
 export async function authorizedExecutionThreadTree(
   request: RuntimeRequest,
@@ -93,7 +95,13 @@ export async function authorizedExecutionThreadTree(
     )
       throw new DomainError("forbidden", "无法核验执行的原始工作来源。");
     visited.add(ancestor.thread.id);
-    if (ancestor.thread.root_turn_id === binding.inputRootId) break;
+    const source = ancestor.source;
+    if (
+      source?.context_id === binding.contextId &&
+      source.session_id === binding.sessionId &&
+      source.root_turn_id === binding.inputRootId
+    )
+      break;
     const parentId = ancestor.thread.supervision?.parent_thread_id;
     if (!parentId)
       throw new DomainError("forbidden", "执行不属于选中的原始工作。");

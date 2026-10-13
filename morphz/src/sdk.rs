@@ -1147,6 +1147,22 @@ impl MorphzSdk {
             .map_err(SdkError::internal)
     }
 
+    pub async fn session_input_handoff(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        root_turn_id: &str,
+    ) -> SdkResult<Option<serde_json::Value>> {
+        self.get_session(principal_id, session_id).await?;
+        let handoff = self
+            .runtime
+            .session_input_handoff(session_id, root_turn_id)
+            .await
+            .map_err(SdkError::internal)?;
+        self.get_session(principal_id, session_id).await?;
+        Ok(handoff)
+    }
+
     pub async fn thread_detail(
         &self,
         context_id: &str,

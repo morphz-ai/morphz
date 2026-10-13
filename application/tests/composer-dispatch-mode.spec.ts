@@ -139,3 +139,91 @@ test("并发手势也保留输入法、重复键及多修饰键守门，断线�
     await page.context().setOffline(false);
   }
 });
+
+async function openQueuedInputComment(page: import("@playwright/test").Page) {
+  await page.goto("/");
+  await page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "对话", exact: true })
+    .click();
+  const input = await openInput(page);
+  const original = "TEST 前一条仍在排队，评论不得取消它";
+  await input.fill(original);
+  await input.press("Enter");
+  const text = page.locator("[data-message-id] [data-quotable]").filter({
+    hasText: original,
+  });
+  await expect(text).toBeVisible();
+  await text.evaluate((element) => {
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.dispatchEvent(new Event("selectionchange"));
+  });
+  await page.getByRole("button", { name: "评论选中文字" }).click();
+  const comment = page.getByLabel("引用 1 的评论（可选）");
+  await expect(comment).toBeFocused();
+  return { input, comment, original };
+}
+
+test("评论框 Option Enter 通过原 Host 并发发送，前一条输入与投递保持不变", async ({
+  page,
+  messageHost,
+}) => {
+  const { input, comment, original } = await openQueuedInputComment(page);
+  const before = structuredClone(messageHost.deliveries()[0]!);
+  const text = "TEST 评论直接并发发送，不取消前一条";
+  await comment.fill(text);
+  await comment.press("Alt+Enter");
+  await expect.poll(() => messageHost.deliveries().length).toBe(2);
+  const after = messageHost.deliveries();
+  expect(after[0]).toEqual(before);
+  expect(after[1]!.request.activation.dispatch_mode).toBe("parallel");
+  expect(after[1]!.platformSource).toMatchObject({
+    body: "",
+    textQuotes: [{ text: original, comment: text }],
+  });
+  await expect(comment).toHaveCount(0);
+  await input.fill("TEST 下一条普通发送不继承并发");
+  await input.press("Enter");
+  await expect.poll(() => messageHost.deliveries().length).toBe(3);
+  expect(messageHost.deliveries()[2]!.request.activation.dispatch_mode).toBe(
+    "interrupt",
+  );
+});
+
+test("评论 Enter 保留换行，Option Enter 不误发输入法、重复键或混合修饰键", async ({
+  page,
+  messageHost,
+}) => {
+  const { comment } = await openQueuedInputComment(page);
+  await comment.fill("TEST 多行评论");
+  await comment.press("Enter");
+  await comment.press("Shift+Enter");
+  const body = "TEST 多行评论\n\n";
+  await expect(comment).toHaveValue(body);
+  for (const guard of [
+    { isComposing: true },
+    { keyCode: 229 },
+    { repeat: true },
+    { ctrlKey: true },
+    { metaKey: true },
+    { shiftKey: true },
+  ]) {
+    await comment.dispatchEvent("keydown", {
+      key: "Enter",
+      code: "Enter",
+      altKey: true,
+      ...guard,
+    });
+    await expect(comment).toHaveValue(body);
+    expect(messageHost.deliveries()).toHaveLength(1);
+  }
+  await comment.press("Alt+Enter");
+  await expect.poll(() => messageHost.deliveries().length).toBe(2);
+  expect(
+    messageHost.deliveries()[1]!.platformSource.textQuotes?.[0]?.comment,
+  ).toBe(body);
+});

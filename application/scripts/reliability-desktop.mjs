@@ -42,7 +42,13 @@ for (let i = 2; i < process.argv.length; i += 2) {
   const key = process.argv[i],
     value = process.argv[i + 1];
   assert.ok(
-    ["--output-parent", "--timeout-ms", "--require-git-head"].includes(key),
+    [
+      "--output-parent",
+      "--timeout-ms",
+      "--require-git-head",
+      "--rebuild-rounds",
+      "--comment-parallel",
+    ].includes(key),
     `Unknown ${key}`,
   );
   assert.ok(value && !options.has(key), `Missing or duplicate ${key}`);
@@ -53,6 +59,16 @@ const timeoutMs = positiveMilliseconds(
   "timeout",
 );
 assert.ok(timeoutMs <= 900000, "Fixture must finish within fifteen minutes");
+const rebuildRounds = Number(options.get("--rebuild-rounds") ?? "0");
+assert.ok(
+  Number.isInteger(rebuildRounds) && rebuildRounds >= 0 && rebuildRounds <= 5,
+  "Rebuild rounds must be an integer from zero through five",
+);
+const commentParallel = options.get("--comment-parallel") ?? "false";
+assert.ok(
+  ["false", "true"].includes(commentParallel),
+  "Comment parallel must be true or false",
+);
 const outputParent = resolve(options.get("--output-parent") ?? "/private/tmp");
 assert.ok(lstatSync(outputParent).isDirectory());
 const fixture = mkdtempSync(join(outputParent, "morphz-embedded-electron-"));
@@ -111,6 +127,7 @@ const marker = `TEST_NATIVE_${randomUUID().slice(0, 8)}`,
 const replies = {
   document: `${marker}_WINDOW_CLOSED_COMPLETE`,
   reply: `${marker}_MAIN_QUIT_COMPLETE`,
+  parallel: `${marker}_PARALLEL_COMPLETE`,
 };
 const draftText = `${marker}_UNSENT_DRAFT_NOT_AN_INPUT`;
 process.once("SIGTERM", () => {
@@ -828,7 +845,15 @@ try {
     scenarios: [
       "actual-native-inflight-window-close-and-activate",
       "actual-app-quit-main-exit-and-same-profile-relaunch",
+      ...(rebuildRounds
+        ? ["live-main-production-rebuild-and-renderer-reload"]
+        : []),
+      ...(commentParallel === "true"
+        ? ["actual-comment-alt-enter-does-not-cancel-live-root"]
+        : []),
     ],
+    rebuildRounds,
+    commentParallel: commentParallel === "true",
   };
   writeFileSync(
     join(fixture, "manifest.json"),
@@ -970,6 +995,47 @@ try {
     JSON.stringify(originalDraft),
     { mode: 0o600 },
   );
+  for (let round = 1; round <= rebuildRounds; round++) {
+    const started = performance.now();
+    const result = await exec("npm", ["run", "build"], {
+      cwd: process.cwd(),
+      timeout: Math.min(60000, deadline - performance.now()),
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    writeFileSync(
+      join(fixture, `build-${round}.log`),
+      result.stdout + result.stderr,
+      { mode: 0o600 },
+    );
+    await bounded(
+      "same native main stays responsive after rebuild",
+      () => app.evaluate(() => process.pid),
+      5000,
+    ).then((pid) => assert.equal(pid, firstMainPid));
+    assert.equal(
+      (await bridge("platform.bootstrap")).centerId,
+      initialIdentity.centerId,
+    );
+    assert.deepEqual(await draftSnapshot(initialIdentity), originalDraft);
+    assert.equal(terminalEvidence(rootA).threads[0].status, "open");
+    assert.ok(held && !held.response.destroyed);
+    await page.reload();
+    await expect(
+      page.getByRole("navigation", { name: "主导航" }),
+    ).toBeVisible();
+    await expect(page.getByLabel("AI 输入内容", { exact: true })).toHaveValue(
+      draftText,
+    );
+    assert.deepEqual(await draftSnapshot(initialIdentity), originalDraft);
+    assert.equal((await history()).inputs.length, 1);
+    assert.equal(nativeProcess.pid, firstMainPid);
+    trace("same-main-rebuild-reload-verified", {
+      round,
+      elapsedMs: Math.round(performance.now() - started),
+      mainPid: firstMainPid,
+      rootA,
+    });
+  }
   await bounded("actual native window close", () =>
     app.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows().find(
@@ -1196,6 +1262,79 @@ try {
     permissionAfterRelaunch,
   };
   assertDesktopLifecycle(evidence);
+  if (commentParallel === "true") {
+    phase = "parallel";
+    phaseRound = 0;
+    const body = `${marker}_FIRST_PENDING_DO_NOT_CANCEL`,
+      comment = `${marker}_OPTION_ENTER_COMMENT`;
+    const composer = page.getByLabel("AI 输入内容", { exact: true });
+    await composer.fill(body);
+    await composer.press("Enter");
+    let originalInput;
+    await wait("native ordinary input admitted", async () => {
+      originalInput = (await history()).inputs.find(
+        (input) => input.body === body,
+      );
+      return !!originalInput;
+    });
+    const originalRoot = await rootOf(originalInput.id);
+    await wait(
+      "native previous model response held",
+      () => held?.phase === "parallel" && !held.response.destroyed,
+    );
+    const text = page
+      .locator("[data-message-id] [data-quotable]")
+      .filter({ hasText: body });
+    await expect(text).toBeVisible();
+    await text.evaluate((element) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+    await page.getByRole("button", { name: "评论选中文字" }).click();
+    const editor = page.getByLabel("引用 1 的评论（可选）");
+    await editor.fill(comment);
+    await editor.press("Alt+Enter");
+    let parallelInput;
+    await wait("native comment admitted by original send flow", async () => {
+      parallelInput = (await history()).inputs.find((input) =>
+        input.textQuotes?.some((quote) => quote.comment === comment),
+      );
+      return !!parallelInput;
+    });
+    const parallelRoot = await rootOf(parallelInput.id);
+    assert.notEqual(parallelRoot, originalRoot);
+    assert.equal(
+      storedDelivery(parallelInput.id).request.activation.dispatch_mode,
+      "parallel",
+    );
+    await terminal(parallelRoot);
+    const originalBeforeRelease = terminalEvidence(originalRoot);
+    assert.equal(
+      originalBeforeRelease.threads[0].status,
+      "open",
+      "previous task was not cancelled or completed by the new comment",
+    );
+    assert.deepEqual(originalBeforeRelease.outcomes, []);
+    assert.equal(storedDelivery(originalInput.id).cancelRequested, false);
+    assert.ok(held && !held.response.destroyed);
+    await expect(editor).toHaveCount(0);
+    releaseHeld();
+    await terminal(originalRoot);
+    evidence.parallelComment = {
+      originalInputId: originalInput.id,
+      parallelInputId: parallelInput.id,
+      originalRoot,
+      parallelRoot,
+      originalBeforeRelease,
+    };
+    trace("native-comment-parallel-verified", evidence.parallelComment);
+    await composer.fill(draftText);
+    await expect(composer).toHaveValue(draftText);
+  }
   for (const rootId of roots)
     assertTerminalRoot(rootId, terminalEvidence(rootId));
   for (const [table, predicate] of [

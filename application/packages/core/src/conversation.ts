@@ -99,25 +99,40 @@ export const activitySchema = z.object({
   ),
 });
 export type ExecutionActivity = z.infer<typeof activitySchema>;
-export const deliverySchema = z.object({
-  inputId: z.string(),
-  state: z.enum([
-    "queued",
-    "sending",
-    "running",
-    "completed",
-    "failed",
-    "cancelled",
-  ]),
-  error: z.string().nullable(),
-  retryable: z.boolean().default(false),
-  cancellable: z.boolean().optional(),
-  cancelRequested: z.boolean().optional(),
-  supplement: z
-    .enum(["pending", "delivered", "rejected", "unknown"])
-    .optional(),
-  rejection: z.enum(["closed", "changed", "forbidden", "invalid"]).optional(),
-});
+export const deliverySchema = z
+  .object({
+    inputId: z.string(),
+    state: z.enum([
+      "queued",
+      "sending",
+      "running",
+      "completed",
+      "failed",
+      "cancelled",
+      "merged",
+    ]),
+    /** Verified Runtime mailbox handoff, not authority to control the successor. */
+    handoff: z
+      .object({
+        signalId: z.string().min(1),
+        sourceThreadId: z.string().min(1),
+        destinationThreadId: z.string().min(1),
+        destinationRootId: z.string().min(1),
+        destinationGeneration: z.number().int().positive(),
+      })
+      .optional(),
+    error: z.string().nullable(),
+    retryable: z.boolean().default(false),
+    cancellable: z.boolean().optional(),
+    cancelRequested: z.boolean().optional(),
+    supplement: z
+      .enum(["pending", "delivered", "rejected", "unknown"])
+      .optional(),
+    rejection: z.enum(["closed", "changed", "forbidden", "invalid"]).optional(),
+  })
+  .refine((delivery) => delivery.state !== "merged" || !!delivery.handoff, {
+    message: "Merged input requires an exact Runtime handoff proof",
+  });
 export const conversationRuntimeSchema = z.object({
   activity: activitySchema.optional(),
   attention: executionAttentionSchema.optional(),

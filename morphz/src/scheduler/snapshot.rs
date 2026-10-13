@@ -60,6 +60,9 @@ pub struct SchedulerActivationSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerThreadSnapshot {
+    /// Original authenticated input provenance, resolved by the Runtime even
+    /// when this Thread has a synthetic scheduled/Objective root.
+    pub source: Option<SchedulerSource>,
     /// Runtime-validated display metadata; lifecycle/phase/outcome below
     /// remain the only execution facts. Legacy/Off snapshots omit this key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -84,8 +87,22 @@ pub struct SchedulerThreadGroupSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerSource {
+    /// The immutable Objective creation/input Event, never a model-selected
+    /// evidence reference or a root synthesized from an identifier prefix.
+    pub event_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub root_turn_id: String,
+    pub activation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerObjectiveSnapshot {
     pub objective: ObjectiveRecord,
+    /// Runtime-validated creation provenance, independent of whether its
+    /// creating Activation/Thread is in the bounded activity-history page.
+    pub source: Option<SchedulerSource>,
     pub readiness: ObjectiveReadiness,
     pub dependencies: Vec<SchedulerDependencyRecord>,
     pub active_evaluation: Option<ThreadActivationRecord>,

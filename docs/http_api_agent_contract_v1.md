@@ -311,6 +311,15 @@ DELETE /api/sessions/{session_id}/attachment-stages/{stage_id}
 已消费 stage 不可删除。未绑定草稿按 `[model_input].attachment_stage_ttl` 回收，默认 7 天。
 Event 绑定后，Event 自己的不可变附件引用继续保留，不依赖 staging 生命周期。
 
+上传／提交只注册附件及有界元数据，不等于模型已经读取。Runtime 不会在首次或后续
+Evaluation 自动把附件正文／图片填入模型上下文。Agent 需要时通过现有 `read` 读取
+已授权的 `workspace_path`；UTF-8 文本默认最多 8000、上限 12000 个 Unicode 字符，
+行范围／检索也不能绕过该上限。按返回的 `next_offset` 续读，并传前页
+`expected_sha256` 防止混用文件版本。原附件、权限、不可变 Event 和交付回执保留。
+检索遇到超长单行时，返回首个命中附近的有界摘录，显式标注字符列范围、
+原行字符数和 `excerpt=true`，不能把行首截断冒充命中片段。要看原行全文，
+使用该行的 `start_line/end_line` 分页；检索摘录不会替换原文件或其哈希。
+
 使用暂存附件发送：
 
 ```json
@@ -521,6 +530,24 @@ POST /api/sessions/{session_id}/cancel
 ```
 
 取消是协作式的；`was_running: false` 表示当时没有运行中的前台执行。
+
+### 按输入读取执行及批量承接
+
+`GET /api/sessions/{session_id}/turns/{root_turn_id}/thread` 返回原输入的
+Thread 状态，并包含必有的可空 `input_handoff`。旧 DialogueTurn 被打断
+不等于用户输入被取消；只有 Runtime 的持久 Signal 已转交另一 Thread，
+才能返回承接证明：`input_event_id`、`signal_id`、`context_id`、`session_id`、
+`source_thread_id`、`destination_thread_id`、`destination_root_turn_id` 和
+`destination_generation`。没有承接时为 null；无法验证时返回错误，不能
+猜测承接或取消。读取前后均校验 Session 权限，不读取消息正文。
+
+数据模型：Runtime Kernel 是唯一归属权威，沿用 `thread_signals.event_id`
+唯一索引及现有 Thread 关系；SQLite/PostgreSQL 均按原 Event 精确读取，
+不增加实体、表、双写或历史扫描。Host 只将校验过的证明存为原投递行的
+只读 `handoff` 投影及 `merged` 状态；输入身份、原请求、原文件、历史和
+回执不改变。再次打断可继续转交，已保存的证明表示当时的承接事实，
+不是新一轮执行的控制授权。原消息不能借此停止整个后续批次。旧的错误
+取消投影只读复核，禁止重发、回放或用同 Session 推断归属。
 
 ### 读取 Context（诊断用途）
 

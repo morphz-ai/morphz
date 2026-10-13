@@ -33,7 +33,8 @@ pub use snapshot::{
     job_snapshot, thread_phase, SchedulerActivationSnapshot, SchedulerAdmissionSnapshot,
     SchedulerDeliverySnapshot, SchedulerDetailBounds, SchedulerExternalOutboxSnapshot,
     SchedulerJobSnapshot, SchedulerObjectiveSnapshot, SchedulerQuery, SchedulerResultSnapshot,
-    SchedulerSnapshot, SchedulerSummary, SchedulerThreadGroupSnapshot, SchedulerThreadSnapshot,
+    SchedulerSnapshot, SchedulerSource, SchedulerSummary, SchedulerThreadGroupSnapshot,
+    SchedulerThreadSnapshot,
 };
 pub use store::{
     NewSchedulerDependency, SchedulerDependencyMutation, SchedulerDependencyStore,

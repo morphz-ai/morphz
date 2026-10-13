@@ -10,6 +10,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { MessageSquarePlus, X, ArrowUpLeft } from "lucide-react";
+import type { InputDispatchMode } from "../../../packages/core/src/model.js";
+import { inputDispatchMode } from "./interface-preferences.js";
 import {
   sameQuote,
   textQuotesSchema,
@@ -50,6 +52,7 @@ export function TextQuoteProvider({
   onFocusComposer,
   onOpen,
   onNotice,
+  onSubmit,
   children,
 }: {
   reveal?: { quote: TextQuote; token: string } | null;
@@ -61,6 +64,7 @@ export function TextQuoteProvider({
   onFocusComposer: () => void;
   onOpen: (quote: TextQuote) => void;
   onNotice: (text: string) => void;
+  onSubmit: (mode: InputDispatchMode) => void;
   children?: ReactNode;
 }) {
   const latest = useRef({
@@ -71,6 +75,7 @@ export function TextQuoteProvider({
     onFocusComposer,
     onOpen,
     onNotice,
+    onSubmit,
   });
   latest.current = {
     quotes,
@@ -80,6 +85,7 @@ export function TextQuoteProvider({
     onFocusComposer,
     onOpen,
     onNotice,
+    onSubmit,
   };
   const [offer, setOffer] = useState<QuoteSelection | null>(null);
   const [editing, setEditing] = useState<{
@@ -452,10 +458,23 @@ export function TextQuoteProvider({
                   autoFocus
                   rows={2}
                   aria-label={`引用 ${index} 的评论（可选）`}
+                  aria-keyshortcuts="Alt+Enter"
                   placeholder="写下评论…"
                   maxLength={10000}
                   disabled={disabled}
                   value={quote.comment}
+                  onKeyDown={(event) => {
+                    // Comments keep Enter for newlines. Only the explicit
+                    // parallel gesture submits the original exchange draft.
+                    const mode = inputDispatchMode(
+                      event.nativeEvent,
+                      "mod-enter",
+                    );
+                    if (mode !== "parallel") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (!latest.current.disabled) latest.current.onSubmit(mode);
+                  }}
                   onBlur={() =>
                     setEditing((current) =>
                       current?.id === quote.id ? null : current,

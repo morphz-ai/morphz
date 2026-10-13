@@ -2486,6 +2486,10 @@ function WorkspaceApp({
       onFocusComposer: focusCommentComposer,
       onOpen: (quote) => void openTextQuote(quote),
       onNotice: setNotice,
+      onSubmit: (mode) => {
+        if (client.online && !cognitiveInputBlocked)
+          void send(draft.annotation === true, mode);
+      },
     },
     <div
       className={

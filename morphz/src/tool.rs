@@ -6827,6 +6827,9 @@ impl Default for ReadFileTool {
 #[derive(Deserialize)]
 struct ReadFileArgs {
     path: String,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    expected_sha256: Option<String>,
     start_line: Option<usize>,
     end_line: Option<usize>,
     query: Option<String>,
@@ -6834,6 +6837,38 @@ struct ReadFileArgs {
     max_matches: Option<usize>,
     #[serde(default)]
     approval_scope: ApprovalScope,
+}
+
+const READ_TEXT_DEFAULT_CHARS: usize = 8_000;
+const READ_TEXT_MAX_CHARS: usize = 12_000;
+
+fn read_text_page(
+    content: &str,
+    args: &ReadFileArgs,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let offset = args.offset.unwrap_or(0);
+    let limit = args.limit.unwrap_or(READ_TEXT_DEFAULT_CHARS);
+    if limit == 0 || limit > READ_TEXT_MAX_CHARS {
+        return Err(format!("read.limit must be between 1 and {READ_TEXT_MAX_CHARS}").into());
+    }
+    let total = content.chars().count();
+    if offset > total {
+        return Err(
+            format!("read.offset={offset} exceeds the selected text's {total} characters").into(),
+        );
+    }
+    let page = content.chars().skip(offset).take(limit).collect::<String>();
+    let shown = page.chars().count();
+    let end = offset + shown;
+    let next = if end < total {
+        end.to_string()
+    } else {
+        "null".into()
+    };
+    Ok(format!(
+        "[offset={offset}, shown_chars={shown}, total_chars={total}, next_offset={next}, complete={}]\n{page}",
+        end == total,
+    ))
 }
 
 #[async_trait::async_trait]
@@ -6858,6 +6893,22 @@ impl Tool for ReadFileTool {
                     "type": "string",
                     "description": "Path of the file to read, for example test.txt"
                 },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Unicode-character offset into the selected text; default 0. Continue with the returned next_offset and the same line/query selectors."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": READ_TEXT_MAX_CHARS,
+                    "default": READ_TEXT_DEFAULT_CHARS,
+                    "description": "Maximum Unicode characters in a text page, including line/query formatting. Every text read is bounded, even a single long line or a large explicit range."
+                },
+                "expected_sha256": {
+                    "type": "string",
+                    "description": "SHA-256 from a previous page. Supply on continuation to reject a changed file instead of mixing versions."
+                },
                 "start_line": {
                     "type": "integer",
                     "minimum": 1,
@@ -6870,7 +6921,7 @@ impl Tool for ReadFileTool {
                 },
                 "query": {
                     "type": "string",
-                    "description": "Optional case-insensitive literal query that returns line-numbered matching context; prefer it for implementation verification to avoid rereading the whole file or calling grep"
+                    "description": "Optional case-insensitive literal query returning line-numbered matching context. Very long matching lines show an explicitly marked excerpt around the first match with character columns; read that line range separately to page through the complete line."
                 },
                 "context_lines": {
                     "type": "integer",
@@ -6896,7 +6947,7 @@ impl Tool for ReadFileTool {
 
         ToolDefinition {
             name: "read".to_string(),
-            description: "Read a file from the current Execution Target. UTF-8 text returns content plus byte count and SHA-256 for later edit/overwrite. JPEG, PNG, GIF, and WebP return a model-visible image attachment; do not pass line/query options for images. For a short text file pass only path. For a long text file use query for narrow line-numbered evidence or start_line/end_line for exact paging."
+            description: "Explicitly read a file from the current Execution Target. Attaching a file to a message only registers its metadata; use its workspace_path here when its contents are needed. UTF-8 text always returns a bounded page (default 8000, maximum 12000 Unicode characters), byte count, SHA-256, and next_offset. Continue with offset and expected_sha256, or narrow evidence with query/start_line/end_line; selectors never bypass the page bound. JPEG, PNG, GIF, and WebP return a model-visible image only after this explicit read; do not pass text selectors or pagination for images."
                 .to_string(),
             parameters: params_json,
         }
@@ -7000,14 +7051,24 @@ impl Tool for ReadFileTool {
             }
         };
         let sha256 = sha256_hex(&data);
+        if let Some(expected) = args.expected_sha256.as_deref() {
+            if expected != sha256 {
+                return Err(format!(
+                    "read version conflict: expected_sha256={expected}, actual_sha256={sha256}; the file changed, restart from offset 0 after inspecting the current version"
+                )
+                .into());
+            }
+        }
         if let Some(media_type) = supported_image_media_type(&data) {
-            if args.start_line.is_some()
+            if args.offset.is_some()
+                || args.limit.is_some()
+                || args.start_line.is_some()
                 || args.end_line.is_some()
                 || args.query.is_some()
                 || args.context_lines.is_some()
                 || args.max_matches.is_some()
             {
-                return Err("Image reads cannot use start_line, end_line, query, context_lines, or max_matches; pass only path".into());
+                return Err("Image reads cannot use offset, limit, start_line, end_line, query, context_lines, or max_matches; pass only path (and optionally expected_sha256)".into());
             }
             if data.len() > self.max_model_input_attachment_bytes {
                 return Err(format!(
@@ -7056,13 +7117,16 @@ impl Tool for ReadFileTool {
             content.len(),
             sha256
         );
-        if args.query.is_none() && args.start_line.is_none() && args.end_line.is_none() {
-            return Ok(ToolExecutionResult::text(format!("{}{}", header, content)));
-        }
+        let selected =
+            if args.query.is_none() && args.start_line.is_none() && args.end_line.is_none() {
+                content
+            } else {
+                select_file_lines(&content, &args)?
+            };
         Ok(ToolExecutionResult::text(format!(
             "{}{}",
             header,
-            select_file_lines(&content, &args)?
+            read_text_page(&selected, &args)?
         )))
     }
 }
@@ -7131,13 +7195,58 @@ fn select_file_lines(
         format!("[lines={start}..{end}, total-lines={total}]\n")
     };
     for line_number in selected {
+        let line = lines[line_number - 1];
+        let excerpt = args
+            .query
+            .as_deref()
+            .map(|query| query_line_excerpt(line, query));
         output.push_str(&format!(
             "{:>6} | {}\n",
             line_number,
-            lines[line_number - 1]
+            excerpt.as_deref().unwrap_or(line)
         ));
     }
     Ok(output)
+}
+
+/// A single unbroken book line must not hide a late search hit behind its
+/// first page. Query excerpts are explicitly partial; complete line reads
+/// keep the ordinary exact paging contract.
+fn query_line_excerpt(line: &str, query: &str) -> String {
+    const EXCERPT_CHARS: usize = READ_TEXT_DEFAULT_CHARS / 2;
+    let total = line.chars().count();
+    if total <= EXCERPT_CHARS {
+        return line.to_string();
+    }
+    let needle = query.trim().to_lowercase();
+    let folded = line.to_lowercase();
+    let match_character = folded
+        .find(&needle)
+        .map(|byte| {
+            let mut folded_bytes = 0;
+            for (index, character) in line.chars().enumerate() {
+                let next =
+                    folded_bytes + character.to_lowercase().map(char::len_utf8).sum::<usize>();
+                if next > byte {
+                    return index;
+                }
+                folded_bytes = next;
+            }
+            total
+        })
+        .unwrap_or(0);
+    let start = match_character.saturating_sub(EXCERPT_CHARS / 4);
+    let excerpt = line
+        .chars()
+        .skip(start)
+        .take(EXCERPT_CHARS)
+        .collect::<String>();
+    let end = start + excerpt.chars().count();
+    format!(
+        "[columns={}..{}, total_chars={total}, excerpt=true] {excerpt}",
+        start + 1,
+        end
+    )
 }
 
 // ==========================================
@@ -13993,6 +14102,167 @@ Body
             .unwrap();
         assert!(overwrite_res.contains("operation=overwrite"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "updated");
+    }
+
+    #[tokio::test]
+    async fn read_text_pages_are_unicode_bounded_and_reconstruct_the_original() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("novel.txt");
+        let original = "中文🦀e\u{301}\n".repeat(45);
+        std::fs::write(&path, &original).unwrap();
+        let read = ReadFileTool::new(permissive_security());
+        let mut offset = 0;
+        let mut expected_hash = None;
+        let mut reconstructed = String::new();
+        loop {
+            let output = read
+                .execute(
+                    &serde_json::json!({
+                        "path": path, "offset": offset, "limit": 17,
+                        "expected_sha256": expected_hash,
+                    })
+                    .to_string(),
+                )
+                .await
+                .unwrap();
+            let hash = hash_from_read(&output).to_owned();
+            assert_eq!(expected_hash.as_ref().unwrap_or(&hash), &hash);
+            expected_hash = Some(hash);
+            let (_, rest) = output.split_once('\n').unwrap();
+            let (metadata, page) = rest.split_once('\n').unwrap();
+            assert!(page.chars().count() <= 17);
+            assert!(metadata.contains(&format!("offset={offset},")));
+            reconstructed.push_str(page);
+            if metadata.contains("next_offset=null") {
+                assert!(metadata.contains("complete=true"));
+                break;
+            }
+            let next = metadata
+                .split("next_offset=")
+                .nth(1)
+                .unwrap()
+                .split(',')
+                .next()
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            assert!(next > offset);
+            offset = next;
+        }
+        assert_eq!(reconstructed, original);
+    }
+
+    #[tokio::test]
+    async fn every_text_selector_is_bounded_including_a_single_giant_line() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("giant.txt");
+        let original = format!("HEAD{}TAIL", "正文".repeat(30_000));
+        std::fs::write(&path, original).unwrap();
+        let read = ReadFileTool::new(permissive_security());
+        for selectors in [
+            serde_json::json!({}),
+            serde_json::json!({"start_line": 1, "end_line": 1}),
+            serde_json::json!({"query": "HEAD", "context_lines": 20}),
+        ] {
+            let mut args = selectors.as_object().unwrap().clone();
+            args.insert("path".into(), serde_json::json!(path));
+            let query_selected = args.contains_key("query");
+            let output = read
+                .execute(&serde_json::Value::Object(args).to_string())
+                .await
+                .unwrap();
+            assert!(output.contains("HEAD"));
+            assert!(!output.contains("TAIL"));
+            let page = output.splitn(3, '\n').nth(2).unwrap();
+            if query_selected {
+                assert!(page.chars().count() <= READ_TEXT_DEFAULT_CHARS);
+                assert!(page.contains("excerpt=true"));
+                assert!(page.contains("total_chars=60008"));
+            } else {
+                assert_eq!(page.chars().count(), READ_TEXT_DEFAULT_CHARS);
+                assert!(output.contains(&format!(
+                    "next_offset={READ_TEXT_DEFAULT_CHARS}, complete=false"
+                )));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn long_line_query_shows_late_unicode_match_and_preserves_complete_line_paging() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("unbroken-novel.txt");
+        let original = format!("{}late-İ-NEEDLE尾部", "正文🦀İ".repeat(20_000));
+        std::fs::write(&path, &original).unwrap();
+        let read = ReadFileTool::new(permissive_security());
+        let output = read
+            .execute(
+                &serde_json::json!({
+                    "path": path, "query": "late-i\u{307}-needle", "context_lines": 0,
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(output.contains("late-İ-NEEDLE尾部"));
+        assert!(output.contains("excerpt=true"));
+        assert!(!output.contains(&"正文🦀İ".repeat(3000)));
+        assert!(output.splitn(3, '\n').nth(2).unwrap().chars().count() <= READ_TEXT_DEFAULT_CHARS);
+        let hash = hash_from_read(&output);
+        let complete_line = read
+            .execute(
+                &serde_json::json!({
+                    "path": path, "start_line": 1, "end_line": 1, "offset": 79_950,
+                    "expected_sha256": hash,
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(complete_line.contains("late-İ-NEEDLE尾部"));
+        assert!(!complete_line.contains("excerpt=true"));
+        assert_eq!(hash_from_read(&complete_line), hash);
+    }
+
+    #[tokio::test]
+    async fn read_continuation_rejects_changed_file_and_invalid_paging_bounds() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("mutable.txt");
+        std::fs::write(&path, "original text").unwrap();
+        let read = ReadFileTool::new(permissive_security());
+        let first = read
+            .execute(&serde_json::json!({"path": path}).to_string())
+            .await
+            .unwrap();
+        let hash = hash_from_read(&first);
+        std::fs::write(&path, "changed text").unwrap();
+        let error = read
+            .execute(
+                &serde_json::json!({
+                    "path": path, "offset": 5, "expected_sha256": hash,
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("read version conflict"));
+        for bounds in [
+            serde_json::json!({"limit": 0}),
+            serde_json::json!({"limit": READ_TEXT_MAX_CHARS + 1}),
+            serde_json::json!({"offset": 100}),
+        ] {
+            let mut args = bounds.as_object().unwrap().clone();
+            args.insert("path".into(), serde_json::json!(path));
+            assert!(read
+                .execute(&serde_json::Value::Object(args).to_string())
+                .await
+                .is_err());
+        }
+        std::fs::write(&path, "").unwrap();
+        let empty = read
+            .execute(&serde_json::json!({"path": path}).to_string())
+            .await
+            .unwrap();
+        assert!(empty.contains("shown_chars=0, total_chars=0, next_offset=null, complete=true"));
     }
 
     #[tokio::test]

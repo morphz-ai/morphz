@@ -961,6 +961,7 @@ export function useWorkspace() {
     // fresh read after its React owner has unmounted.
     if (!projectionMounted.current) return false;
     const version = epoch.current;
+    const accessGeneration = protectedReadGeneration.current;
     const controller = new AbortController();
     navigationReadController.current = controller;
     return (async () => {
@@ -1277,6 +1278,16 @@ export function useWorkspace() {
         return true;
       } catch (e) {
         if (version !== epoch.current) return false;
+        // A coherent snapshot raced a business update, not a broken transport.
+        // Retry only this read through the same bounded drain; never replay a
+        // mutation, suppress permission failures, or publish a mixed snapshot.
+        if (
+          e instanceof RequestError &&
+          e.code === "navigation_changed" &&
+          protectedReadGeneration.current === accessGeneration &&
+          refreshDrain.current?.retry()
+        )
+          return false;
         if (
           e instanceof RequestError &&
           (e.status === 401 || e.status === 403)
@@ -1680,6 +1691,7 @@ export function useWorkspace() {
     cognitiveManagement: cognitiveManagement.operations,
     taskCounts,
     contentCatalogVersion,
+    contentAccessGeneration: protectedReadGeneration.current,
     contentVersionTitle: (contentId: string, revision?: number) =>
       contentVersionTitle(
         contentId,

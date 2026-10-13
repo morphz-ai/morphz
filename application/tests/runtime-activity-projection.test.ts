@@ -73,6 +73,13 @@ async function fixture() {
     lifecycle = "open",
     rootId = delivery.rootId!,
   ) => ({
+    source: {
+      event_id: rootId,
+      context_id: contextId,
+      session_id: delivery.sessionId,
+      root_turn_id: rootId,
+      activation_id: null,
+    },
     intent: `工作意图 ${id}`,
     phase: lifecycle === "open" ? "running" : "idle",
     thread: {
@@ -113,6 +120,13 @@ async function fixture() {
   };
   const objective = {
     readiness: { state: "runnable" },
+    source: {
+      event_id: delivery.rootId,
+      context_id: contextId,
+      session_id: delivery.sessionId,
+      root_turn_id: delivery.rootId,
+      activation_id: null,
+    },
     objective: {
       id: "objective-1",
       context_id: contextId,
@@ -282,26 +296,73 @@ test("同一个共享Session内的线程和目标各自按持久输入项目授�
   const { f, internal, delivery, thread, bounds, objective } = await fixture();
   try {
     const secondProject = "another-authorized-project";
-    await f.session().createPlatformProject({ commandId: randomUUID(), projectId: secondProject, title: "另一个项目" });
-    await f.session().platformMessage({ commandId: randomUUID(), operation: {
-      type: "record-input", projectId: secondProject, conversationId: delivery.platformSource.conversationId,
-      artifactId: null, artifactRevision: null, selection: "", body: "另一个项目的工作", targetActantId: "morphz-agent",
-    } });
+    await f.session().createPlatformProject({
+      commandId: randomUUID(),
+      projectId: secondProject,
+      title: "另一个项目",
+    });
+    await f.session().platformMessage({
+      commandId: randomUUID(),
+      operation: {
+        type: "record-input",
+        projectId: secondProject,
+        conversationId: delivery.platformSource.conversationId,
+        artifactId: null,
+        artifactRevision: null,
+        selection: "",
+        body: "另一个项目的工作",
+        targetActantId: "morphz-agent",
+      },
+    });
     const second = internal.state.deliveries[1]!;
     assert.equal(second.sessionId, delivery.sessionId);
     second.rootId = "second-root";
-    internal.request = async () => ({ detail_bounds: bounds,
+    internal.request = async () => ({
+      detail_bounds: bounds,
       threads: [thread("first"), thread("second", "completed", second.rootId!)],
-      objectives: [objective, { ...objective, objective: { ...objective.objective, id: "second-objective", source_event_id: second.rootId } }],
+      objectives: [
+        objective,
+        {
+          ...objective,
+          source: {
+            ...objective.source,
+            event_id: second.rootId,
+            root_turn_id: second.rootId,
+          },
+          objective: {
+            ...objective.objective,
+            id: "second-objective",
+            source_event_id: second.rootId,
+          },
+        },
+      ],
     });
     await internal.refreshActivity();
-    const firstOnly = f.runtime.platformNavigationSnapshot(localAccess, [f.projectId]).runtime.activity!;
-    assert.deepEqual(firstOnly.threads.map((t) => t.id), ["first"]);
-    assert.deepEqual(firstOnly.objectives!.map((o) => o.id), ["objective-1"]);
-    const secondOnly = f.runtime.platformNavigationSnapshot(localAccess, [secondProject]).runtime.activity!;
-    assert.deepEqual(secondOnly.threads.map((t) => t.id), ["second"]);
-    assert.deepEqual(secondOnly.objectives!.map((o) => o.id), ["second-objective"]);
-  } finally { await f.close(); }
+    const firstOnly = f.runtime.platformNavigationSnapshot(localAccess, [
+      f.projectId,
+    ]).runtime.activity!;
+    assert.deepEqual(
+      firstOnly.threads.map((t) => t.id),
+      ["first"],
+    );
+    assert.deepEqual(
+      firstOnly.objectives!.map((o) => o.id),
+      ["objective-1"],
+    );
+    const secondOnly = f.runtime.platformNavigationSnapshot(localAccess, [
+      secondProject,
+    ]).runtime.activity!;
+    assert.deepEqual(
+      secondOnly.threads.map((t) => t.id),
+      ["second"],
+    );
+    assert.deepEqual(
+      secondOnly.objectives!.map((o) => o.id),
+      ["second-objective"],
+    );
+  } finally {
+    await f.close();
+  }
 });
 
 test("满历史页保持有界披露，未知roots每次刷新最多16次读取", async () => {
@@ -309,18 +370,38 @@ test("满历史页保持有界披露，未知roots每次刷新最多16次读取"
   try {
     let lookups = 0;
     internal.request = async (path) => {
-      if (path.includes("/events/")) { lookups++; throw new Error("unknown"); }
-      return { detail_bounds: bounds, objectives: [], threads: Array.from({ length: 200 }, (_, index) => thread(`thread-${index}`, "completed")) };
+      if (path.includes("/events/")) {
+        lookups++;
+        throw new Error("unknown");
+      }
+      return {
+        detail_bounds: bounds,
+        objectives: [],
+        threads: Array.from({ length: 200 }, (_, index) =>
+          thread(`thread-${index}`, "completed"),
+        ),
+      };
     };
     await internal.refreshActivity();
     assert.equal(internal.state.activity.truncated, true);
     assert.equal(lookups, 0);
     internal.request = async (path) => {
-      if (path.includes("/events/")) { lookups++; throw new Error("unknown"); }
-      return { detail_bounds: bounds, objectives: [], threads: Array.from({ length: 40 }, (_, index) => thread(`unknown-${index}`, "completed", `unknown-root-${index}`)) };
+      if (path.includes("/events/")) {
+        lookups++;
+        throw new Error("unknown");
+      }
+      return {
+        detail_bounds: bounds,
+        objectives: [],
+        threads: Array.from({ length: 40 }, (_, index) =>
+          thread(`unknown-${index}`, "completed", `unknown-root-${index}`),
+        ),
+      };
     };
     await internal.refreshActivity();
     assert.equal(lookups, 16);
     assert.equal(internal.state.activity.threads.length, 0);
-  } finally { await f.close(); }
+  } finally {
+    await f.close();
+  }
 });

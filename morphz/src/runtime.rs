@@ -99,7 +99,7 @@ pub use crate::scheduler::{
     SchedulerActivationSnapshot, SchedulerAdmissionSnapshot, SchedulerDeliverySnapshot,
     SchedulerDetailBounds, SchedulerExternalOutboxSnapshot, SchedulerJobSnapshot,
     SchedulerObjectiveSnapshot, SchedulerQuery, SchedulerResultSnapshot, SchedulerSnapshot,
-    SchedulerSummary, SchedulerThreadGroupSnapshot, SchedulerThreadSnapshot,
+    SchedulerSource, SchedulerSummary, SchedulerThreadGroupSnapshot, SchedulerThreadSnapshot,
 };
 use crate::secret_store::{
     ManagedSecret, SecretBackendStatus, SecretImportCandidate, SecretScopeKind, SecretStore,
@@ -7783,6 +7783,416 @@ impl MorphzRuntime {
             .await
     }
 
+    async fn scheduler_objective_creation_sources(
+        &self,
+        context_id: &str,
+        objectives: &[ObjectiveRecord],
+    ) -> Result<HashMap<String, SchedulerSource>, RuntimeError> {
+        let ids = objectives
+            .iter()
+            .map(|objective| objective.source_event_id.clone())
+            .collect::<Vec<_>>();
+        let mut events = HashMap::new();
+        for batch in ids.chunks(500) {
+            for event in self
+                .query_events(QueryFilter {
+                    context_id: Some(context_id.to_owned()),
+                    event_ids: batch.to_vec(),
+                    top_k: Some(batch.len()),
+                    ..Default::default()
+                })
+                .await?
+            {
+                events.insert(event.id.clone(), event);
+            }
+        }
+        let mut routes = HashMap::new();
+        let mut source_activations = HashMap::new();
+        for objective in objectives {
+            let Some(event) = events.get(&objective.source_event_id) else {
+                continue;
+            };
+            let field = |name: &str| event.payload.get(name).and_then(serde_json::Value::as_str);
+            if field("context_id") != Some(context_id)
+                || field("session_id") != Some(objective.coordinator_session_id.as_str())
+            {
+                continue;
+            }
+            if crate::event::is_input_event(event) {
+                if objective
+                    .initiating_principal_id
+                    .as_deref()
+                    .is_none_or(|principal| field("principal_id") == Some(principal))
+                {
+                    routes.insert(
+                        objective.id.clone(),
+                        SchedulerSource {
+                            event_id: event.id.clone(),
+                            context_id: context_id.to_owned(),
+                            session_id: objective.coordinator_session_id.clone(),
+                            root_turn_id: event.id.clone(),
+                            activation_id: None,
+                        },
+                    );
+                }
+                continue;
+            }
+            if event.event_type != crate::objective::TYPE_OBJECTIVE_CONTROL
+                || event.actor != "Agent-Morphz"
+            {
+                continue;
+            }
+            // These are the two current creation operations, each with its
+            // own Runtime-injected evaluation identity. source_refs are Agent
+            // evidence and must never determine display ownership.
+            let activation_id = match event.topic.as_str() {
+                "objective/autonomous_requested"
+                    if field("requested_objective_id") == Some(objective.id.as_str()) =>
+                {
+                    field("attempt_id")
+                }
+                "objective/scheduled_created"
+                    if field("objective_id") == Some(objective.id.as_str()) =>
+                {
+                    field("source_evaluation_id")
+                }
+                _ => None,
+            };
+            if let Some(id) = activation_id {
+                source_activations.insert(objective.id.clone(), id.to_owned());
+            }
+        }
+        let activation_ids = source_activations
+            .values()
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let mut activations = HashMap::new();
+        for batch in activation_ids.chunks(500) {
+            for activation in self
+                .inner
+                .store
+                .list_thread_activations_by_ids(context_id, batch)
+                .await?
+            {
+                activations.insert(activation.id.clone(), activation);
+            }
+        }
+        for objective in objectives {
+            let Some(activation) = source_activations
+                .get(&objective.id)
+                .and_then(|id| activations.get(id))
+            else {
+                continue;
+            };
+            if activation.context_id != objective.context_id
+                || activation.session_id != objective.coordinator_session_id
+                || activation.initiating_principal_id != objective.initiating_principal_id
+            {
+                continue;
+            }
+            routes.insert(
+                objective.id.clone(),
+                SchedulerSource {
+                    event_id: objective.source_event_id.clone(),
+                    context_id: context_id.to_owned(),
+                    session_id: activation.session_id.clone(),
+                    root_turn_id: activation.root_turn_id.clone(),
+                    activation_id: Some(activation.id.clone()),
+                },
+            );
+        }
+        Ok(routes)
+    }
+
+    async fn scheduler_objective_sources(
+        &self,
+        context_id: &str,
+        objectives: &[ObjectiveRecord],
+    ) -> Result<HashMap<String, SchedulerSource>, RuntimeError> {
+        let mut sources = self
+            .scheduler_objective_creation_sources(context_id, objectives)
+            .await?;
+        for objective in objectives {
+            let Some(source) = sources.get_mut(&objective.id) else {
+                continue;
+            };
+            let Some(thread) = self
+                .inner
+                .store
+                .get_thread_by_root(&source.root_turn_id)
+                .await?
+            else {
+                continue;
+            };
+            if thread.context_id != context_id
+                || thread.session_id != objective.coordinator_session_id
+                || thread.initiating_principal_id != objective.initiating_principal_id
+            {
+                sources.remove(&objective.id);
+                continue;
+            }
+            if let Some(proof) = self
+                .scheduler_thread_sources(context_id, &[thread])
+                .await?
+                .into_values()
+                .next()
+            {
+                source.root_turn_id = proof.root_turn_id;
+            } else {
+                sources.remove(&objective.id);
+            }
+        }
+        Ok(sources)
+    }
+
+    /// Resolve immutable parent/supervision routes at their owner. A scheduled
+    /// root need not be an Event, and bounded history need not include its
+    /// parent. Consumers must not reconstruct either relation from ID prefixes
+    /// or from a model's claims about parallel work.
+    async fn scheduler_thread_sources(
+        &self,
+        context_id: &str,
+        threads: &[ThreadRecord],
+    ) -> Result<HashMap<String, SchedulerSource>, RuntimeError> {
+        let mut known = threads
+            .iter()
+            .map(|thread| (thread.id.clone(), thread.clone()))
+            .collect::<HashMap<_, _>>();
+        let mut roots = HashMap::new();
+        let ids = threads
+            .iter()
+            .map(|thread| thread.root_turn_id.clone())
+            .collect::<Vec<_>>();
+        for batch in ids.chunks(500) {
+            for event in self
+                .query_events(QueryFilter {
+                    context_id: Some(context_id.to_owned()),
+                    event_ids: batch.to_vec(),
+                    top_k: Some(batch.len()),
+                    ..Default::default()
+                })
+                .await?
+            {
+                roots.insert(event.id.clone(), Some(event));
+            }
+        }
+        let mut goals = HashMap::<String, Option<(ObjectiveRecord, SchedulerSource)>>::new();
+        let mut result = HashMap::new();
+        for original in threads {
+            let mut current = original.clone();
+            let mut visited = HashSet::new();
+            for _ in 0..64 {
+                if current.context_id != context_id
+                    || current.session_id != original.session_id
+                    || current.initiating_principal_id != original.initiating_principal_id
+                    || !visited.insert(current.id.clone())
+                {
+                    break;
+                }
+                if !roots.contains_key(&current.root_turn_id) {
+                    let event = self
+                        .query_events(QueryFilter {
+                            context_id: Some(context_id.to_owned()),
+                            event_id: Some(current.root_turn_id.clone()),
+                            top_k: Some(1),
+                            ..Default::default()
+                        })
+                        .await?
+                        .into_iter()
+                        .next();
+                    roots.insert(current.root_turn_id.clone(), event);
+                }
+                if let Some(event) = roots.get(&current.root_turn_id).and_then(Option::as_ref) {
+                    let field =
+                        |name: &str| event.payload.get(name).and_then(serde_json::Value::as_str);
+                    if crate::event::is_input_event(event)
+                        && field("context_id") == Some(context_id)
+                        && field("session_id") == Some(original.session_id.as_str())
+                        && original
+                            .initiating_principal_id
+                            .as_deref()
+                            .is_none_or(|principal| field("principal_id") == Some(principal))
+                    {
+                        result.insert(
+                            original.id.clone(),
+                            SchedulerSource {
+                                event_id: event.id.clone(),
+                                context_id: context_id.to_owned(),
+                                session_id: original.session_id.clone(),
+                                root_turn_id: event.id.clone(),
+                                activation_id: None,
+                            },
+                        );
+                        break;
+                    }
+                }
+                if let Some(parent_id) = current.supervision.parent_thread_id.as_ref() {
+                    if !known.contains_key(parent_id) {
+                        if let Some(parent) = self.inner.store.get_thread(parent_id).await? {
+                            known.insert(parent.id.clone(), parent);
+                        }
+                    }
+                    let Some(parent) = known.get(parent_id) else {
+                        break;
+                    };
+                    current = parent.clone();
+                    continue;
+                }
+                if current.supervision.supervisor_kind
+                    != crate::memory::ThreadSupervisorKind::Objective
+                    || current.supervision.origin_evaluation_id.is_some()
+                {
+                    let sources = self
+                        .inner
+                        .store
+                        .list_thread_schedules(context_id, &[current.id.clone()])
+                        .await?
+                        .into_iter()
+                        .filter(|schedule| {
+                            schedule.thread_id == current.id
+                                && schedule.source_turn_id != current.root_turn_id
+                        })
+                        .map(|schedule| schedule.source_turn_id)
+                        .collect::<HashSet<_>>();
+                    if sources.len() != 1 {
+                        break;
+                    }
+                    let root = sources.into_iter().next().unwrap();
+                    let event = self
+                        .query_events(QueryFilter {
+                            context_id: Some(context_id.to_owned()),
+                            event_id: Some(root.clone()),
+                            top_k: Some(1),
+                            ..Default::default()
+                        })
+                        .await?
+                        .into_iter()
+                        .next();
+                    if event.as_ref().is_some_and(|event| {
+                        crate::event::is_input_event(event)
+                            && event
+                                .payload
+                                .get("session_id")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(original.session_id.as_str())
+                            && original
+                                .initiating_principal_id
+                                .as_deref()
+                                .is_none_or(|principal| {
+                                    event
+                                        .payload
+                                        .get("principal_id")
+                                        .and_then(serde_json::Value::as_str)
+                                        == Some(principal)
+                                })
+                    }) {
+                        result.insert(
+                            original.id.clone(),
+                            SchedulerSource {
+                                event_id: root.clone(),
+                                context_id: context_id.to_owned(),
+                                session_id: original.session_id.clone(),
+                                root_turn_id: root,
+                                activation_id: None,
+                            },
+                        );
+                        break;
+                    }
+                    if let Some(parent) = self.inner.store.get_thread_by_root(&root).await? {
+                        current = parent;
+                        continue;
+                    }
+                    break;
+                }
+                let Some(goal_id) = current.supervision.supervisor_id.as_ref() else {
+                    break;
+                };
+                // Use the Kernel's exact primary identity, not a parsed prefix.
+                if current.root_turn_id
+                    != crate::memory::objective_primary_execution_root_id(
+                        goal_id,
+                        current.supervision.generation,
+                    )
+                    || current.id != crate::memory::stable_thread_id(&current.root_turn_id)
+                {
+                    break;
+                }
+                if !goals.contains_key(goal_id) {
+                    let goal = self.inner.store.get_objective(goal_id).await?;
+                    let source = if let Some(goal) = goal {
+                        self.scheduler_objective_creation_sources(
+                            context_id,
+                            std::slice::from_ref(&goal),
+                        )
+                        .await?
+                        .remove(goal_id)
+                        .map(|source| (goal, source))
+                    } else {
+                        None
+                    };
+                    goals.insert(goal_id.clone(), source);
+                }
+                let Some((goal, source)) = goals.get(goal_id).and_then(Option::as_ref) else {
+                    break;
+                };
+                if goal.context_id != context_id
+                    || goal.coordinator_session_id != original.session_id
+                    || goal.initiating_principal_id != original.initiating_principal_id
+                    || current.supervision.generation > goal.generation
+                    || source.context_id != context_id
+                    || source.session_id != original.session_id
+                {
+                    break;
+                }
+                // Autonomous creation records the creating Evaluation's root.
+                // That Evaluation may itself belong to a supervised Thread.
+                let event = self
+                    .query_events(QueryFilter {
+                        context_id: Some(context_id.to_owned()),
+                        event_id: Some(source.root_turn_id.clone()),
+                        top_k: Some(1),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .next();
+                if event.as_ref().is_some_and(|event| {
+                    crate::event::is_input_event(event)
+                        && event
+                            .payload
+                            .get("session_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(original.session_id.as_str())
+                        && original
+                            .initiating_principal_id
+                            .as_deref()
+                            .is_none_or(|principal| {
+                                event
+                                    .payload
+                                    .get("principal_id")
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some(principal)
+                            })
+                }) {
+                    result.insert(original.id.clone(), source.clone());
+                    break;
+                }
+                let Some(parent) = self
+                    .inner
+                    .store
+                    .get_thread_by_root(&source.root_turn_id)
+                    .await?
+                else {
+                    break;
+                };
+                current = parent;
+            }
+        }
+        Ok(result)
+    }
+
     pub async fn scheduler_snapshot(
         &self,
         context_id: &str,
@@ -8325,6 +8735,9 @@ impl MorphzRuntime {
             .iter()
             .filter_map(|event| thread_input_intent(event).map(|intent| (event.id.clone(), intent)))
             .collect::<HashMap<_, _>>();
+        let thread_sources = self
+            .scheduler_thread_sources(context_id, &all_threads)
+            .await?;
         let mut threads = Vec::with_capacity(all_threads.len());
         for thread in all_threads {
             let outcome = outcomes_by_thread.remove(&thread.id);
@@ -8344,6 +8757,7 @@ impl MorphzRuntime {
                 &dependencies,
             );
             threads.push(SchedulerThreadSnapshot {
+                source: thread_sources.get(&thread.id).cloned(),
                 response_annotations: None,
                 intent: root_intents
                     .get(&thread.root_turn_id)
@@ -8430,6 +8844,9 @@ impl MorphzRuntime {
         dependencies.sort_by(|left, right| left.id.cmp(&right.id));
         dependencies.dedup_by(|left, right| left.id == right.id);
 
+        let objective_sources = self
+            .scheduler_objective_sources(context_id, &authority_objectives)
+            .await?;
         let now = chrono::Utc::now();
         let objective_snapshots = authority_objectives
             .iter()
@@ -8453,6 +8870,7 @@ impl MorphzRuntime {
                 });
                 SchedulerObjectiveSnapshot {
                     objective: objective.clone(),
+                    source: objective_sources.get(&objective.id).cloned(),
                     readiness: derive_objective_readiness(objective, &objective_dependencies, now),
                     dependencies: objective_dependencies,
                     active_evaluation,
@@ -9438,6 +9856,63 @@ impl MorphzRuntime {
         Ok(thread.filter(|thread| thread.session_id == session_id))
     }
 
+    /// Original Thread cancellation and original input cancellation are not
+    /// equivalent. Only the durable mailbox edge proves that interrupt carried
+    /// this input into a different Thread's next batch.
+    pub async fn session_input_handoff(
+        &self,
+        session_id: &str,
+        root_turn_id: &str,
+    ) -> Result<Option<serde_json::Value>, RuntimeError> {
+        let Some(original) = self
+            .session_thread_by_root(session_id, root_turn_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if original.kind != crate::memory::ThreadKind::DialogueTurn {
+            return Ok(None);
+        }
+        let Some(signal) = self
+            .inner
+            .store
+            .thread_signal_for_event(&original.context_id, root_turn_id)
+            .await?
+        else {
+            return Err("Input Signal ownership is unavailable".into());
+        };
+        if signal.thread_id == original.id {
+            return Ok(None);
+        }
+        let owner = self
+            .inner
+            .store
+            .get_thread(&signal.thread_id)
+            .await?
+            .ok_or("Input destination Thread is unavailable")?;
+        if owner.session_id != session_id
+            || owner.context_id != original.context_id
+            || owner.initiating_principal_id != original.initiating_principal_id
+            || original.initiating_principal_id.is_none()
+            || signal.principal_id != original.initiating_principal_id
+            || owner.generation < signal.thread_generation
+            || signal.event_id != root_turn_id
+            || owner.root_turn_id == root_turn_id
+            || signal.kind != "chat/user_message"
+        {
+            return Err("Input Signal ownership changed; read again".into());
+        }
+        Ok(Some(json!({
+            "input_event_id": root_turn_id, "signal_id": signal.id,
+            "context_id": original.context_id, "session_id": session_id,
+            "source_thread_id": original.id, "destination_thread_id": owner.id,
+            "destination_root_turn_id": owner.root_turn_id,
+            // A later pause/cancel can advance the owner without erasing the
+            // historical input handoff. This is evidence, never control scope.
+            "destination_generation": signal.thread_generation,
+        })))
+    }
+
     /// Exact, Session-scoped provenance read. The HTTP adapter must authorize
     /// the Session before calling this; unlike `thread_detail` it does not
     /// load the Scheduler aggregate or model-attempt history.
@@ -9676,6 +10151,10 @@ impl MorphzRuntime {
             context_id: context_id.to_string(),
             generated_at: chrono::Utc::now(),
             snapshot: SchedulerThreadSnapshot {
+                source: self
+                    .scheduler_thread_sources(context_id, std::slice::from_ref(&thread))
+                    .await?
+                    .remove(&thread.id),
                 response_annotations: None,
                 intent: self
                     .query_events(QueryFilter {
@@ -11210,11 +11689,25 @@ impl SessionHandle {
                     owned
                 })
                 .collect();
+            let context_resources = prepared_attachments
+                .metadata()
+                .iter()
+                .map(|metadata| {
+                    crate::session_io::resources::workspace_metadata(&event_id, metadata)
+                })
+                .collect::<Vec<_>>();
+            let context_overhead = crate::session_io::projection::input_overhead(&input.binding)
+                .saturating_sub(crate::session_io::projection::resource_bytes(
+                    &input.binding.resources,
+                ))
+                .saturating_add(crate::session_io::projection::resource_bytes(
+                    &context_resources,
+                ));
             if let Err(error) = crate::session_io::projection::validate_budget(
                 &input.request.message,
                 &input.binding.input,
                 &input.binding.limits,
-                crate::session_io::projection::input_overhead(&input.binding),
+                context_overhead,
             ) {
                 discard_message_attachments(prepared_attachments, &event_id).await;
                 return Err(error.into());
@@ -11862,7 +12355,6 @@ mod tests {
     use crate::memory::{ActivationStore as _, ScheduleStatus, SessionDirectoryStore as _};
     use crate::permission::PermissionMode;
     use crate::sdk::MessageAttachmentInput;
-    use base64::Engine as _;
     use tempfile::NamedTempFile;
 
     struct ReplyClient;
@@ -13259,7 +13751,7 @@ mod tests {
         maintenance_before_interrupt: bool,
         first_entered: Arc<tokio::sync::Notify>,
         observed_combined_input: Arc<AtomicBool>,
-        observed_interrupted_attachment: Arc<AtomicBool>,
+        observed_unrequested_attachment: Arc<AtomicBool>,
         observed_attachment_workspace_path: Arc<AtomicBool>,
     }
 
@@ -14557,29 +15049,76 @@ mod tests {
 
     #[tokio::test]
     async fn new_message_interrupts_a_thinking_dialogue_and_replays_both_inputs() {
-        assert_dialogue_interrupt_replays_inputs(false).await;
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        assert_dialogue_interrupt_replays_inputs(store, false).await;
     }
 
     #[cfg(feature = "context-db")]
     #[tokio::test]
     async fn new_message_interrupts_context_maintenance_continuation_and_replays_inputs() {
-        assert_dialogue_interrupt_replays_inputs(true).await;
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        assert_dialogue_interrupt_replays_inputs(store, true).await;
     }
 
-    async fn assert_dialogue_interrupt_replays_inputs(maintenance_before_interrupt: bool) {
-        let database = NamedTempFile::new().unwrap();
+    #[tokio::test]
+    #[ignore = "requires MORPHZ_TEST_POSTGRES_URL; uses a fresh isolated schema"]
+    async fn postgres_dialogue_interrupt_retains_exact_input_handoff() {
+        let url = std::env::var("MORPHZ_TEST_POSTGRES_URL").expect("isolated test database URL");
+        let admin = sqlx::PgPool::connect(&url).await.unwrap();
+        let schema = format!(
+            "input_handoff_{}_{}",
+            std::process::id(),
+            chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap()
+                .unsigned_abs()
+        );
+        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+            .execute(&admin)
+            .await
+            .unwrap();
+        let separator = if url.contains('?') { '&' } else { '?' };
+        let store = Arc::new(
+            crate::memory::postgres::PostgresStore::new(
+                &format!("{url}{separator}options=-csearch_path%3D{schema}%2Cpublic"),
+                8,
+            )
+            .await
+            .unwrap(),
+        );
+        assert_dialogue_interrupt_replays_inputs(store, false).await;
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&admin)
+            .await
+            .unwrap();
+    }
+
+    async fn assert_dialogue_interrupt_replays_inputs<S: RuntimeStore + 'static>(
+        store: Arc<S>,
+        maintenance_before_interrupt: bool,
+    ) {
         let artifacts = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let first_entered = Arc::new(tokio::sync::Notify::new());
         let observed_combined_input = Arc::new(AtomicBool::new(false));
-        let observed_interrupted_attachment = Arc::new(AtomicBool::new(false));
+        let observed_unrequested_attachment = Arc::new(AtomicBool::new(false));
         let observed_attachment_workspace_path = Arc::new(AtomicBool::new(false));
         let client = Arc::new(InterruptibleDialogueClient {
             calls: AtomicU64::new(0),
             maintenance_before_interrupt,
             first_entered: first_entered.clone(),
             observed_combined_input: observed_combined_input.clone(),
-            observed_interrupted_attachment: observed_interrupted_attachment.clone(),
+            observed_unrequested_attachment: observed_unrequested_attachment.clone(),
             observed_attachment_workspace_path: observed_attachment_workspace_path.clone(),
         });
         let mut config = AppConfig::default();
@@ -14587,7 +15126,7 @@ mod tests {
         config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
         config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
         let runtime = MorphzRuntime::builder(config, client.clone())
-            .database_path(database.path().to_string_lossy())
+            .store("isolated-input-handoff", store)
             .tool_policy(RuntimeToolPolicy {
                 context_only: true,
                 coding_eval: true,
@@ -14648,7 +15187,10 @@ mod tests {
             .unwrap();
         assert_eq!(reply.payload["text"], "combined-dialogue-reply");
         assert!(observed_combined_input.load(Ordering::SeqCst));
-        assert!(observed_interrupted_attachment.load(Ordering::SeqCst));
+        assert!(
+            !observed_unrequested_attachment.load(Ordering::SeqCst),
+            "interruption may carry resource metadata but cannot implicitly read native media"
+        );
         assert!(observed_attachment_workspace_path.load(Ordering::SeqCst));
         let attachment_event = runtime
             .query_events(QueryFilter {
@@ -14691,6 +15233,60 @@ mod tests {
                 && event.payload["terminal"] == true
                 && event.payload["thread_kind"] == "dialogue_turn"
         }));
+        let sdk = crate::sdk::MorphzSdk::new(runtime.clone());
+        let handoff = sdk
+            .session_input_handoff(
+                &runtime.identity().principal_id,
+                &session.id,
+                &first.event_id,
+            )
+            .await
+            .unwrap()
+            .expect("the interrupted input must retain its durable batch owner");
+        let old_thread = runtime
+            .session_thread_by_root(&session.id, &first.event_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let new_thread = runtime
+            .session_thread_by_root(&session.id, &second.event_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            old_thread.lifecycle,
+            crate::memory::ThreadLifecycle::Cancelled
+        );
+        assert_eq!(handoff["input_event_id"], first.event_id);
+        assert_eq!(handoff["source_thread_id"], old_thread.id);
+        assert_eq!(handoff["destination_thread_id"], new_thread.id);
+        assert_eq!(handoff["destination_root_turn_id"], second.event_id);
+        assert_eq!(handoff["destination_generation"], new_thread.generation);
+        assert!(sdk
+            .session_input_handoff(
+                &runtime.identity().principal_id,
+                &session.id,
+                &second.event_id
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert!(
+            sdk.session_input_handoff("unrelated-human", &session.id, &first.event_id)
+                .await
+                .is_err(),
+            "handoff diagnostics must not bypass Session membership"
+        );
+        assert!(
+            runtime
+                .inner
+                .store
+                .thread_signal_for_event("unrelated-context", &first.event_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "the exact indexed read must retain its Context fence"
+        );
     }
 
     #[tokio::test]
@@ -15595,6 +16191,12 @@ mod tests {
             tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.observed_unrequested_attachment.fetch_or(
+                messages
+                    .iter()
+                    .any(|message| crate::llm::model_attachments(message).is_some()),
+                Ordering::SeqCst,
+            );
             if call == 0 && self.maintenance_before_interrupt {
                 assert!(tools.iter().any(|tool| tool.name == "context_tx"));
                 return Ok(Response {
@@ -15637,20 +16239,6 @@ mod tests {
                 prompt.contains("workspace_path")
                     && prompt.contains(".morphz/attachments")
                     && prompt.contains("interrupted-image.png"),
-                Ordering::SeqCst,
-            );
-            self.observed_interrupted_attachment.store(
-                messages.iter().any(|message| {
-                    crate::llm::model_attachments(message).is_some_and(|attachments| {
-                        attachments.iter().any(|attachment| {
-                            attachment.name == "interrupted-image.png"
-                                && attachment.media_type == "image/png"
-                                && base64::engine::general_purpose::STANDARD
-                                    .decode(&attachment.data_base64)
-                                    .is_ok_and(|data| data == b"interrupted-image-bytes")
-                        })
-                    })
-                }),
                 Ordering::SeqCst,
             );
             Ok(text_response("combined-dialogue-reply"))
@@ -23969,6 +24557,135 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some(objective_id.as_str())
         );
+
+        let snapshot = runtime
+            .scheduler_snapshot(
+                &runtime.identity().context_id,
+                SchedulerQuery {
+                    include_terminal: true,
+                    limit: 200,
+                },
+            )
+            .await
+            .unwrap();
+        let goal = snapshot
+            .objectives
+            .iter()
+            .find(|value| value.objective.id == objective_id)
+            .unwrap();
+        let source = goal
+            .source
+            .as_ref()
+            .expect("autonomous creation must resolve its original authenticated input");
+        assert_eq!(source.event_id, autonomous_requests[0].id);
+        assert_eq!(source.session_id, session.id());
+        assert_eq!(source.context_id, runtime.identity().context_id);
+        assert_eq!(
+            source.activation_id.as_deref(),
+            autonomous_requests[0].payload["attempt_id"].as_str()
+        );
+        let original = runtime
+            .query_events(QueryFilter {
+                session_id: Some(session.id().into()),
+                topic: Some("chat/user_message".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(source.root_turn_id, original[0].id);
+        assert_ne!(source.root_turn_id, source.event_id);
+
+        let primary = snapshot
+            .threads
+            .iter()
+            .find(|value| {
+                value.thread.supervision.supervisor_id.as_deref() == Some(objective_id.as_str())
+                    && value.thread.supervision.origin_evaluation_id.is_none()
+            })
+            .expect("Goal has its actual primary Execution Thread");
+        assert_eq!(
+            primary.source.as_ref().unwrap().root_turn_id,
+            original[0].id
+        );
+        let mut children = Vec::new();
+        for label in ["D", "E", "F"] {
+            let root = format!("scheduled-source-child-{label}");
+            let child = runtime
+                .inner
+                .store
+                .ensure_thread(NewThread {
+                    response_annotations: crate::response_annotations::Protocol::Off,
+                    model_alias: None,
+                    reasoning_effort: None,
+                    id: crate::memory::stable_thread_id(&root),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: session.id().into(),
+                    initiating_principal_id: objective.initiating_principal_id.clone(),
+                    root_turn_id: root,
+                    kind: crate::memory::ThreadKind::Execution,
+                    executor_kind: "self".into(),
+                    executor_id: None,
+                    target_id: None,
+                    supervision: crate::memory::ThreadSupervision::objective(
+                        &objective_id,
+                        "source-child-evaluation",
+                        objective.generation,
+                        Some(primary.thread.id.clone()),
+                    ),
+                })
+                .await
+                .unwrap();
+            let detail = runtime
+                .thread_detail(&child.context_id, &child.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                detail.snapshot.source.as_ref().unwrap().root_turn_id,
+                original[0].id
+            );
+            assert_ne!(detail.snapshot.thread.root_turn_id, original[0].id);
+            children.push(child);
+        }
+        // Provenance does not depend on the Goal or its creating/parent Thread
+        // fitting into the selected activity history page.
+        let bounded = runtime
+            .scheduler_snapshot(
+                &runtime.identity().context_id,
+                SchedulerQuery {
+                    include_terminal: false,
+                    limit: 1,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(bounded.threads.len(), 1);
+        assert_eq!(
+            bounded.threads[0].source.as_ref().unwrap().root_turn_id,
+            original[0].id
+        );
+        for mutation in ["principal", "session", "context", "missing-parent", "cycle"] {
+            let mut child = children[0].clone();
+            match mutation {
+                "principal" => child.initiating_principal_id = Some("foreign".into()),
+                "session" => child.session_id = "foreign-session".into(),
+                "context" => child.context_id = "foreign-context".into(),
+                "missing-parent" => {
+                    child.supervision.parent_thread_id = Some("missing-thread".into())
+                }
+                "cycle" => child.supervision.parent_thread_id = Some(child.id.clone()),
+                _ => unreachable!(),
+            }
+            assert!(
+                runtime
+                    .scheduler_thread_sources(&runtime.identity().context_id, &[child])
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "{mutation} cannot invent input provenance"
+            );
+        }
 
         let continuations = runtime
             .query_events(QueryFilter {

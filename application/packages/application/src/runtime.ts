@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { runtimeSchedulerSourceSchema } from "./runtime-thread-provenance.js";
 import {
   conversationSearchRequestSchema,
   searchConversationPage,
@@ -561,7 +562,7 @@ const storedSchema = z.object({
     }),
   ),
   deliveries: z.array(
-    deliverySchema.extend({
+    deliverySchema.safeExtend({
       sessionId: z.string(),
       rootId: z.string().nullable(),
       acceptedEventId: z.string().optional(),
@@ -2339,7 +2340,11 @@ export class RuntimeBridge {
       // Validate/recover every retained row once, including parsed defaults.
       // Subsequent commits contain only mutations explicitly marked below.
       this.markDeliveryDirty(delivery);
-      if (delivery.state === "running" && delivery.rootId)
+      if (
+        delivery.rootId &&
+        (delivery.state === "running" ||
+          (delivery.state === "cancelled" && !delivery.cancelRequested))
+      )
         this.rootCancellationChecks.add(delivery);
       if (
         delivery.state === "sending" &&
@@ -3056,11 +3061,13 @@ export class RuntimeBridge {
       cancelRequested,
       supplement,
       rejection,
+      handoff,
     } = delivery;
     return {
       inputId,
       state,
       error,
+      ...(handoff ? { handoff } : {}),
       ...(supplement ? { supplement } : {}),
       ...(rejection ? { rejection } : {}),
       retryable: state === "failed" && !rootId && !rejection,
@@ -4491,6 +4498,7 @@ export class RuntimeBridge {
           .array(
             z.object({
               readiness: z.object({ state: z.string() }),
+              source: runtimeSchedulerSourceSchema,
               objective: z.object({
                 id: z.string(),
                 context_id: z.string(),
@@ -4507,6 +4515,7 @@ export class RuntimeBridge {
           .optional(),
         threads: z.array(
           z.object({
+            source: runtimeSchedulerSourceSchema,
             response_annotations: z.unknown().optional(),
             intent: z.string().nullable().optional(),
             phase: z.string(),
@@ -4551,6 +4560,41 @@ export class RuntimeBridge {
         active: z.infer<typeof schema>;
         history: z.infer<typeof schema>;
       }[] = [];
+      type ObjectiveView = NonNullable<
+        z.infer<typeof schema>["objectives"]
+      >[number];
+      const resolveObjectiveRoot = async (
+        value: ObjectiveView,
+        contextId: string,
+      ) => {
+        const { objective, source } = value;
+        if (!source) return null;
+        // Creation is a Runtime fact; source_refs and the current work surface
+        // are not ownership. Its creating Evaluation can be long absent from
+        // the bounded Thread history without hiding an authorized Objective.
+        if (
+          source.event_id !== objective.source_event_id ||
+          source.context_id !== contextId ||
+          source.context_id !== objective.context_id ||
+          source.session_id !== objective.coordinator_session_id
+        )
+          return null;
+        return resolveRoot(source.session_id, source.root_turn_id, contextId);
+      };
+      const resolveThreadRoot = async (
+        value: z.infer<typeof schema>["threads"][number],
+        contextId: string,
+      ) => {
+        const { source, thread } = value;
+        if (
+          !source ||
+          source.context_id !== contextId ||
+          thread.context_id !== contextId ||
+          source.session_id !== thread.session_id
+        )
+          return null;
+        return resolveRoot(source.session_id, source.root_turn_id, contextId);
+      };
       for (const contextId of new Set(
         sessions.map((s) => this.contextId(s.projectId)),
       )) {
@@ -4646,20 +4690,17 @@ export class RuntimeBridge {
           if (
             t.context_id !== contextId ||
             t.lifecycle !== "open" ||
-            !(await resolveRoot(t.session_id, t.root_turn_id, contextId))
+            !(await resolveThreadRoot(value, contextId))
           )
             activity.openWorkComplete = false;
         }
-        for (const { objective } of active.objectives ?? []) {
+        for (const value of active.objectives ?? []) {
+          const { objective } = value;
           if (!sessionsById.has(objective.coordinator_session_id)) continue;
           if (
             objective.context_id !== contextId ||
             !["active", "paused", "blocked"].includes(objective.status) ||
-            !(await resolveRoot(
-              objective.coordinator_session_id,
-              objective.source_event_id,
-              contextId,
-            ))
+            !(await resolveObjectiveRoot(value, contextId))
           )
             activity.openWorkComplete = false;
         }
@@ -4726,11 +4767,7 @@ export class RuntimeBridge {
           const delivery = deliveries.find(
             (d) => d.sessionId === t.session_id && d.rootId === t.root_turn_id,
           );
-          const route = await resolveRoot(
-            t.session_id,
-            t.root_turn_id,
-            contextId,
-          );
+          const route = await resolveThreadRoot(value, contextId);
           const source = route?.source;
           // A shared transport is not authority to guess an unknown work project.
           if (!source) {
@@ -4797,11 +4834,7 @@ export class RuntimeBridge {
             !sessionsById.has(objective.coordinator_session_id)
           )
             continue;
-          const route = await resolveRoot(
-            objective.coordinator_session_id,
-            objective.source_event_id,
-            contextId,
-          );
+          const route = await resolveObjectiveRoot(value, contextId);
           if (!route) {
             activity.objectivesTruncated = true;
             if (["active", "paused", "blocked"].includes(objective.status))
@@ -4822,7 +4855,16 @@ export class RuntimeBridge {
             readiness: value.readiness.state,
             parentId: objective.parent_objective_id,
             threadIds: activity.threads
-              .filter((thread) => thread.objectiveId === objective.id)
+              .filter(
+                (thread) =>
+                  thread.sessionId === objective.coordinator_session_id &&
+                  thread.contextId === contextId &&
+                  thread.projectId === route.source.projectId &&
+                  thread.conversationId === route.source.conversationId &&
+                  (thread.objectiveId === objective.id ||
+                    (thread.rootId === route.rootId &&
+                      thread.inputId === route.inputId)),
+              )
               .map((thread) => thread.id),
             updatedAt: objective.updated_at,
           });
@@ -5857,7 +5899,7 @@ export class RuntimeBridge {
   private requestInputCancellation(delivery: StoredDelivery | undefined) {
     if (
       !delivery ||
-      ["completed", "failed", "cancelled"].includes(delivery.state)
+      ["completed", "failed", "cancelled", "merged"].includes(delivery.state)
     )
       throw new DomainError("conflict", "这条输入没有正在进行的处理。");
     if (delivery.state === "queued") {
@@ -5901,9 +5943,23 @@ export class RuntimeBridge {
       if (!source) continue;
       const access = source.author;
       try {
-        let view = viewSchema.parse(
-          await this.request(path, "GET", undefined, access, undefined),
+        const read = await this.request(
+          path,
+          "GET",
+          undefined,
+          access,
+          undefined,
         );
+        let view = viewSchema.parse(read);
+        if (
+          z.object({ input_handoff: z.unknown() }).parse(read).input_handoff !=
+          null
+        ) {
+          // A stale original-message control cannot cancel the successor batch.
+          // The normal immutable-input proof below must certify the handoff.
+          this.rootCancellationChecks.add(delivery);
+          continue;
+        }
         if (view.lifecycle === "open")
           view = viewSchema.parse(
             await this.request(
@@ -5933,7 +5989,8 @@ export class RuntimeBridge {
   private queueRootCancellationChecks(sessionId: string, rootId?: string) {
     for (const delivery of this.activeDeliveries())
       if (
-        delivery.state === "running" &&
+        (delivery.state === "running" ||
+          (delivery.state === "cancelled" && !delivery.cancelRequested)) &&
         delivery.rootId &&
         delivery.sessionId === sessionId &&
         (!rootId || delivery.rootId === rootId)
@@ -5941,10 +5998,11 @@ export class RuntimeBridge {
         this.rootCancellationChecks.add(delivery);
   }
 
-  /** Repair only an already accepted ordinary input's exact root cancellation.
-   * A replaced DialogueTurn ends before Execution; its authoritative root
-   * view is cancelled, while its input Signals move to the next turn without
-   * a chat cancellation/outcome. Execution cancellation still requires the
+  /** Reconcile an accepted input's exact cancellation or durable handoff.
+   * A replaced DialogueTurn ends before Execution; only its persisted Signal
+   * owner proves that the input was merged into a later batch. Never label
+   * input cancellation from that physical terminal state alone. Actual
+   * cancellation still requires the
    * atomic Event proof: it carries the OLD generation after the Thread advances.
    * A child terminal barrier can route to a parent, never a settlement fact.
    * Reads do not rewind the Session cursor, replay IO, or create chat replies. */
@@ -5956,7 +6014,7 @@ export class RuntimeBridge {
       !source ||
       !authorize ||
       !binding?.platform ||
-      delivery.state !== "running" ||
+      !["running", "cancelled"].includes(delivery.state) ||
       !delivery.rootId ||
       delivery.supplement ||
       source.continuation
@@ -6126,11 +6184,31 @@ export class RuntimeBridge {
         root_turn_id: z.literal(rootId),
         revision: z.number().int().positive(),
         lifecycle: z.literal("cancelled"),
-        // Older Runtime views omit kind: retain the canonical Event proof.
-        kind: z.enum(["dialogue_turn", "execution", "delivery"]).optional(),
+        kind: z.enum(["dialogue_turn", "execution", "delivery"]),
+        input_handoff: z
+          .object({
+            input_event_id: z.literal(rootId),
+            signal_id: z.string().min(1),
+            context_id: z.literal(this.contextId(binding.projectId)),
+            session_id: z.literal(sessionId),
+            source_thread_id: z.string().min(1),
+            destination_thread_id: z.string().min(1),
+            destination_root_turn_id: z.string().min(1),
+            destination_generation: z.number().int().positive(),
+          })
+          .nullable(),
       });
       const turnPath = `${base}/turns/${encodeURIComponent(rootId)}/thread`;
       const turn = turnSchema.parse(await read(turnPath));
+      const handoff = turn.input_handoff;
+      if (
+        handoff &&
+        (turn.kind !== "dialogue_turn" ||
+          handoff.source_thread_id !== turn.thread_id ||
+          handoff.destination_thread_id === turn.thread_id ||
+          handoff.destination_root_turn_id === rootId)
+      )
+        return;
       const family = z
         .object({
           session_id: z.literal(sessionId),
@@ -6167,7 +6245,7 @@ export class RuntimeBridge {
       )
         return;
       let before: number | undefined;
-      let proven = turn.kind === "dialogue_turn";
+      let proven = !!handoff;
       for (let page = 0; page < 4 && !proven; page++) {
         const data = z
           .object({
@@ -6216,7 +6294,15 @@ export class RuntimeBridge {
         !current()
       )
         return;
-      delivery.state = "cancelled";
+      delivery.state = handoff ? "merged" : "cancelled";
+      if (handoff)
+        delivery.handoff = {
+          signalId: handoff.signal_id,
+          sourceThreadId: handoff.source_thread_id,
+          destinationThreadId: handoff.destination_thread_id,
+          destinationRootId: handoff.destination_root_turn_id,
+          destinationGeneration: handoff.destination_generation,
+        };
       delivery.cancelRequested = false;
       delivery.error = null;
       this.markDeliveryDirty(delivery);
