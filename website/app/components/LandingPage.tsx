@@ -228,10 +228,10 @@ export function LandingPage({ locale }: { locale: Locale }) {
           </h1>
           <p className="home-hero__lead">{t.lead}</p>
           <div className="home-actions">
-            <a className="home-button home-button--primary" href="#demo">{t.idea}<span aria-hidden="true">↓</span></a>
+            <a className="home-button home-button--primary" href="#demo">{t.idea}</a>
             {onlineExperiencePublished() && <Link className="home-button" href={sitePath(locale, "/experience")}>{t.experience}<span aria-hidden="true">→</span></Link>}
-            <Link className="home-button" href={download}>{t.start}<span aria-hidden="true">→</span></Link>
-            <a className="home-link" href={SITE_LINKS.source}>{t.source}<span aria-hidden="true">↗</span></a>
+            <Link className="home-button" href={download}>{t.start}</Link>
+            <a className="home-link" href={SITE_LINKS.source}>{t.source}</a>
           </div>
         </div>
         <div className="home-hero__preview">
