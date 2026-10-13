@@ -216,7 +216,9 @@ async function pngFacts(page: Page) {
           )
             continue;
           markerInk++;
-          const actual = ((canvas.height - 152 + y) * canvas.width + x) * 4;
+          const markerTop =
+            canvas.height - (sheet.dataset.template === "paper" ? 120 : 152);
+          const actual = ((markerTop + y) * canvas.width + x) * 4;
           if (
             Math.max(
               Math.abs(data[actual]! - reference[at]!),
@@ -609,7 +611,7 @@ test("图片预览默认完整适应窗口，操作留在低调底栏；放大�
   expect(f.errors).toEqual([]);
 });
 
-test("三种分享模板生成各自配色与字体，默认跟随亮暗；切换仅重排冻结正文、原PNG不泄露或外传", async ({
+test("分享模板默认跟随亮暗；切换仅重排冻结正文、原PNG不泄露或外传", async ({
   page,
 }, info) => {
   const f = await prepare(
@@ -694,6 +696,194 @@ test("三种分享模板生成各自配色与字体，默认跟随亮暗；切�
   await expect(await openInput(page)).toHaveValue(
     "TEST 分享和关闭后仍保留的未发送草稿",
   );
+  expect(f.writes).toEqual([]);
+  expect(f.external).toEqual([]);
+  expect(f.errors).toEqual([]);
+});
+
+async function rasterLayout(page: Page, footer = false) {
+  return page
+    .getByRole("dialog", { name: "分享图片", exact: true })
+    .getByRole("img")
+    .evaluate(async (element, footer) => {
+      const image = element as HTMLImageElement;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth;
+      canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d")!;
+      context.drawImage(image, 0, 0);
+      const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      const sheet = document.querySelector<HTMLElement>(
+        ".message-share-sheet",
+      )!;
+      const swatch = document.createElement("span");
+      swatch.style.color = "var(--accent-strong)";
+      sheet.append(swatch);
+      const accent = getComputedStyle(swatch).color;
+      swatch.remove();
+      const path = document
+        .querySelector(".sidebar .brand-mark path")!
+        .getAttribute("d")!;
+      // Locate the real brand pixels in the exported PNG, not a CSS class or
+      // different background color. The canonical logo supplies only its shape.
+      const brandScore = (y: number, size: number) => {
+        const mask = document.createElement("canvas");
+        mask.width = mask.height = size * 2;
+        const marker = mask.getContext("2d")!;
+        marker.scale((size * 2) / 96, (size * 2) / 96);
+        marker.fillStyle = accent;
+        marker.fill(new Path2D(path));
+        const pixels = marker.getImageData(0, 0, mask.width, mask.height).data;
+        let solid = 0,
+          matched = 0;
+        for (let dy = 0; dy < mask.height; dy++)
+          for (let dx = 0; dx < mask.width; dx++) {
+            const at = (dy * mask.width + dx) * 4;
+            if (pixels[at + 3]! < 250) continue;
+            solid++;
+            const actual =
+              ((Math.round(y * 2) + dy) * canvas.width + 104 + dx) * 4;
+            if (
+              Math.max(
+                ...[0, 1, 2].map((channel) =>
+                  Math.abs(data[actual + channel]! - pixels[at + channel]!),
+                ),
+              ) <= 2
+            )
+              matched++;
+          }
+        return { solid, match: matched / solid };
+      };
+      const outside = context.getImageData(1, 1, 1, 1).data;
+      const inside = context.getImageData(60, 200, 1, 1).data;
+      return {
+        height: canvas.height,
+        headingLogo: brandScore(43, 20),
+        signedLogo: brandScore(canvas.height / 2 - (footer ? 69 : 45), 16),
+        flatPage: [0, 1, 2].every(
+          (channel) => outside[channel] === inside[channel],
+        ),
+      };
+    }, footer);
+}
+
+test("纸笺正文在前、署名在后且没有套卡；即使统一颜色字体，也不是卡片换色", async ({
+  page,
+}, info) => {
+  const f = await prepare(
+    page,
+    "# TEST 同一正文\n\n第一段完整保留。\n\n第二段保留 **重点**，版式不能只有颜色不同。",
+  );
+  const dialog = await openShare(page);
+  const templates = dialog.getByRole("group", { name: "图片模板" });
+  const card = await rasterLayout(page);
+  expect(card.headingLogo.solid).toBeGreaterThan(50);
+  expect(card.headingLogo.match).toBeGreaterThan(0.98);
+  expect(card.signedLogo.match).toBeLessThan(0.2);
+  expect(card.flatPage).toBe(false);
+  await dialog.getByRole("button", { name: "复制图片", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "已复制", exact: true }),
+  ).toBeEnabled();
+  const cardPng = await page.evaluate(
+    () => window.shareImageTest.calls.at(-1)!.request.pictures[0]!.data,
+  );
+  await page.evaluate(() => {
+    const sheet = document.querySelector<HTMLElement>(".message-share-sheet")!;
+    const values = getComputedStyle(sheet);
+    const rule = document.createElement("style");
+    rule.id = "TEST-neutral-paper";
+    const ink = values.color,
+      paper = values.backgroundColor,
+      font = values.fontFamily;
+    rule.textContent = `.app .message-share-sheet[data-template="paper"] { --paper: ${paper}; --ink: ${ink}; color: ${ink}; background: ${paper}; font-family: ${font}; line-height: 1.75; }`;
+    document.head.append(rule);
+  });
+  await templates.getByRole("button", { name: "纸笺", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "复制图片", exact: true }),
+  ).toBeEnabled();
+  const signed = await rasterLayout(page);
+  expect(signed.flatPage).toBe(true);
+  expect(signed.headingLogo.match).toBeLessThan(0.2);
+  expect(signed.signedLogo.solid).toBeGreaterThan(40);
+  expect(signed.signedLogo.match).toBeGreaterThan(0.98);
+  expect(signed.height).toBe(card.height - 72);
+  await page.screenshot({
+    path: info.outputPath("same-palette-paper-layout.png"),
+  });
+  await page.evaluate(() =>
+    document.getElementById("TEST-neutral-paper")!.remove(),
+  );
+  await templates.getByRole("button", { name: "卡片", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "复制图片", exact: true }),
+  ).toBeEnabled();
+  await dialog.getByRole("button", { name: "复制图片", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "已复制", exact: true }),
+  ).toBeEnabled();
+  expect(
+    await page.evaluate(
+      () => window.shareImageTest.calls.at(-1)!.request.pictures[0]!.data,
+    ),
+  ).toBe(cardPng);
+  await page.keyboard.press("Escape");
+  expect(f.writes).toEqual([]);
+  expect(f.external).toEqual([]);
+  expect(f.errors).toEqual([]);
+});
+
+test("纸笺长文分页、末尾和未完成标记保留，页脚署名不挤掉正文或误报完成", async ({
+  page,
+}, info) => {
+  const f = await prepare(
+    page,
+    Array.from(
+      { length: 75 },
+      (_, index) =>
+        `TEST 第 ${index + 1} 段：纸笺保持完整的长文，而不是标题和纸色的换皮。`,
+    ).join("\n\n") + "\n\nTEST 纸笺完整末尾。",
+  );
+  f.runtime.messages[0]!.incomplete = true;
+  await f.refresh();
+  const dialog = await openShare(page);
+  await dialog.getByRole("button", { name: "纸笺", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "复制图片", exact: true }),
+  ).toBeEnabled();
+  const count = Number(
+    (await dialog.getByRole("group", { name: "图片分页" }).textContent())!
+      .split("/")[1]!
+      .trim(),
+  );
+  expect(count).toBeGreaterThan(1);
+  for (let pageNumber = 1; pageNumber <= count; pageNumber++) {
+    const png = await pngFacts(page);
+    expect(png.footerLabelMatch).toBeGreaterThan(0.98);
+    expect(png.height).toBeLessThanOrEqual(3312);
+    expect((await rasterLayout(page, true)).signedLogo.match).toBeGreaterThan(
+      0.98,
+    );
+    if (pageNumber < count)
+      await dialog.getByRole("button", { name: "下一张", exact: true }).click();
+  }
+  await expect(dialog.locator(".message-share-sheet")).toContainText(
+    "TEST 纸笺完整末尾",
+  );
+  await dialog.getByRole("button", { name: "复制图片", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "已复制", exact: true }),
+  ).toBeEnabled();
+  const data = await page.evaluate(
+    () => window.shareImageTest.calls.at(-1)!.request.pictures[0]!.data,
+  );
+  await writeFile(
+    info.outputPath("paper-long-last-page.png"),
+    Buffer.from(data, "base64"),
+  );
+  await page.keyboard.press("Escape");
   expect(f.writes).toEqual([]);
   expect(f.external).toEqual([]);
   expect(f.errors).toEqual([]);

@@ -194,12 +194,15 @@ export async function renderSharePictures(
   const font = style.fontFamily;
   const pictures: SharePicture[] = [];
   let bytes = 0;
+  const stationery = metadata.template === "paper";
   for (const [index, slice] of slices.entries()) {
     check(signal);
     const bodyHeight = slice.end - slice.start;
     const footer = metadata.partial || slices.length > 1;
+    const bodyTop = stationery ? 40 : 104;
     const width = SHARE_WIDTH + 104,
-      height = bodyHeight + (footer ? 176 : 148);
+      height =
+        bodyHeight + (stationery ? (footer ? 136 : 112) : footer ? 176 : 148);
     const canvas = document.createElement("canvas");
     canvas.width = width * 2;
     canvas.height = height * 2;
@@ -208,29 +211,26 @@ export async function renderSharePictures(
     context.scale(2, 2);
     // Independent document typography; the palette still follows the App's
     // effective appearance. Template choices never change that App preference.
-    context.fillStyle = metadata.template === "simple" ? paper : frame;
+    context.fillStyle = metadata.template === "card" ? frame : paper;
     context.fillRect(0, 0, width, height);
-    if (metadata.template !== "simple") {
+    if (metadata.template === "card") {
       context.fillStyle = paper;
       context.beginPath();
-      context.roundRect(
-        20,
-        20,
-        width - 40,
-        height - 40,
-        metadata.template === "card" ? 14 : 2,
-      );
+      context.roundRect(20, 20, width - 40, height - 40, 14);
       context.fill();
     }
+    // Card keeps its existing branded heading. Stationery starts with the
+    // actual message and signs it below the body, not another tinted card.
+    const brandY = stationery ? height - (footer ? 54 : 30) : 59;
     context.save();
-    context.translate(52, 43);
-    context.scale(20 / 96, 20 / 96);
+    context.translate(52, stationery ? brandY - 15 : 43);
+    context.scale((stationery ? 16 : 20) / 96, (stationery ? 16 : 20) / 96);
     context.fillStyle = accent;
     context.fill(new Path2D(MORPHZ_MARK_PATH));
     context.restore();
-    context.fillStyle = ink;
-    context.font = `600 16px ${font}`;
-    context.fillText("Morphz", 82, 59);
+    context.fillStyle = stationery ? muted : ink;
+    context.font = `600 ${stationery ? 12 : 16}px ${font}`;
+    context.fillText("Morphz", stationery ? 76 : 82, brandY);
     if (metadata.author !== "Morphz") {
       context.fillStyle = muted;
       context.font = `13px ${font}`;
@@ -240,18 +240,23 @@ export async function renderSharePictures(
         author.pop();
         name = `${author.join("")}…`;
       }
-      context.fillText(name, 156, 58);
+      context.fillText(name, stationery ? 134 : 156, stationery ? brandY : 58);
     }
     context.fillStyle = muted;
     context.textAlign = "right";
     context.font = `12px ${font}`;
-    context.fillText(shareMessageDate(metadata.createdAt), width - 52, 58);
+    context.fillText(
+      shareMessageDate(metadata.createdAt),
+      width - 52,
+      stationery ? brandY : 58,
+    );
     context.textAlign = "left";
     context.strokeStyle = line;
     context.lineWidth = 1;
     context.beginPath();
-    context.moveTo(52, 81.5);
-    context.lineTo(width - 52, 81.5);
+    const ruleY = stationery ? bodyTop + bodyHeight + 20.5 : 81.5;
+    context.moveTo(52, ruleY);
+    context.lineTo(width - 52, ruleY);
     context.stroke();
     const image = new Image();
     image.src =
@@ -261,17 +266,21 @@ export async function renderSharePictures(
       );
     await pictureReady(image, signal);
     check(signal);
-    context.drawImage(image, 52, 104);
+    context.drawImage(image, 52, bodyTop);
     context.fillStyle = muted;
     context.font = `13px ${font}`;
     if (metadata.partial)
-      context.fillText("当前已显示内容（未完成）", 52, height - 46);
+      context.fillText(
+        "当前已显示内容（未完成）",
+        52,
+        height - (stationery ? 30 : 46),
+      );
     if (slices.length > 1) {
       context.textAlign = "right";
       context.fillText(
         `${index + 1} / ${slices.length}`,
         width - 52,
-        height - 46,
+        height - (stationery ? 30 : 46),
       );
     }
     const blob = await new Promise<Blob>((resolve, reject) =>

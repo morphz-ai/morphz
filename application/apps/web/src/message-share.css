@@ -183,7 +183,6 @@
   --soft: light-dark(#f7f7f8, #2b2b2e);
 }
 .app .message-share-sheet[data-template="paper"] {
-  --share-frame: light-dark(#eee7db, #1c1a17);
   --paper: light-dark(#fbf6ec, #29251f);
   --ink: light-dark(#3d352c, #eee6d9);
   --muted: light-dark(#8a7c69, #b1a591);

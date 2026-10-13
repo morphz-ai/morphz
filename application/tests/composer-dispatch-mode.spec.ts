@@ -13,7 +13,6 @@ test("普通发送默认打断，Option/Alt 手势显式并发且不改变下一
     .click();
   const input = await openInput(page);
   const send = page.getByRole("button", { name: "发送消息", exact: true });
-  await expect(send).toHaveAttribute("title", /默认打断.*思考.*工具执行不取消/);
   const expected: string[] = [];
   for (const [gesture, mode] of [
     ["Enter", "interrupt"],
@@ -24,6 +23,16 @@ test("普通发送默认打断，Option/Alt 手势显式并发且不改变下一
   ] as const) {
     const body = `TEST ${gesture} ${expected.length} 只记录输入不执行外部工作`;
     await input.fill(body);
+    if (!expected.length) {
+      // The shared tooltip replaced native title hints. Keep the actual
+      // dispatch assertions below; adapting the hint must not skip them.
+      await expect(send).not.toHaveAttribute("title", /.+/);
+      await send.hover();
+      await expect(page.getByRole("tooltip")).toHaveText("发送");
+      await input.hover();
+      await input.focus();
+      await expect(page.getByRole("tooltip")).not.toBeVisible();
+    }
     if (gesture === "click") await send.click();
     else if (gesture === "alt-click") await send.click({ modifiers: ["Alt"] });
     else await input.press(gesture);
