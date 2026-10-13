@@ -216,6 +216,19 @@ async function hostFixture(
   };
   const authority = new RuntimePlatformAuthority(
     {
+      async readThreadInputSource() {
+        const { snapshot } = (await this.readThread("session", "thread")) as {
+          snapshot: { thread: unknown };
+        };
+        return {
+          thread: snapshot.thread,
+          source: {
+            kind: "input",
+            root_thread_id: "thread",
+            input_event: await this.readSessionEvent("session", "root"),
+          },
+        };
+      },
       async readThread() {
         return {
           snapshot: {

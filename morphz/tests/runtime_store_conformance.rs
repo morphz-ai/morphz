@@ -12118,7 +12118,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     .await
     .unwrap();
     sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
-        .bind("20260928_02_session_message_timeline")
+        .bind("20261013_03_provider_resume_timeline")
         .execute(&inspection_pool)
         .await
         .unwrap();
@@ -12151,7 +12151,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         .await
         .unwrap();
     sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
-        .bind("20260928_02_session_message_timeline")
+        .bind("20261013_03_provider_resume_timeline")
         .execute(&inspection_pool)
         .await
         .unwrap();
@@ -12675,7 +12675,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     .await
     .unwrap();
     sqlx::query("DELETE FROM schema_migrations WHERE version = $1")
-        .bind("20260928_02_session_message_timeline")
+        .bind("20261013_03_provider_resume_timeline")
         .execute(store.pool())
         .await
         .unwrap();
@@ -12697,7 +12697,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         .await
         .unwrap();
     sqlx::query("DELETE FROM schema_migrations WHERE version = $1")
-        .bind("20260928_02_session_message_timeline")
+        .bind("20261013_03_provider_resume_timeline")
         .execute(store.pool())
         .await
         .unwrap();

@@ -12,6 +12,7 @@ const eventSchema = z.object({
   timestamp: z.string(),
   topic: z.string(),
   type: z.string().optional(),
+  actor: z.string().optional(),
   sequence: z.number().optional(),
   payload: z.record(z.string(), z.unknown()),
 });

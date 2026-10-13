@@ -7,12 +7,14 @@ export function ResponseWaiting({
   createdAt,
   label,
   connected,
+  animated = connected,
   showElapsed = true,
 }: {
   inputId: string;
   createdAt: string;
   label: string;
   connected: boolean;
+  animated?: boolean;
   showElapsed?: boolean;
 }) {
   const [now, setNow] = useState(Date.now);
@@ -38,6 +40,7 @@ export function ResponseWaiting({
       className="response-placeholder"
       data-waiting-input-id={inputId}
       data-connected={connected}
+      data-animated={animated && connected}
     >
       <span className="response-waiting" role="status">
         <span className="response-dots" aria-hidden="true">

@@ -11,8 +11,9 @@ const argument = (name) =>
 const root = argument("root"),
   binary = argument("binary"),
   keyFile = argument("model-key-file"),
-  keyName = argument("model-key-name");
-for (const path of [root, binary, keyFile])
+  keyName = argument("model-key-name"),
+  keyEnvName = argument("model-key-env-name");
+for (const path of [root, binary])
   if (!path || !isAbsolute(path))
     throw new Error("Specify explicit absolute paths");
 const privateText = (path, maxBytes = 128 * 1024) => {
@@ -26,8 +27,18 @@ const privateText = (path, maxBytes = 128 * 1024) => {
     throw new Error("Configuration must be a bounded private regular file");
   return readFileSync(path, "utf8");
 };
-if (!keyName || !/^[A-Z][A-Z0-9_]+$/.test(keyName))
-  throw new Error("Specify the original credential name");
+if (
+  keyEnvName !== undefined &&
+  (keyFile !== undefined || keyName !== undefined)
+)
+  throw new Error(
+    "Specify exactly one credential source; never select a fallback key",
+  );
+const credentialName = keyEnvName ?? keyName;
+if (!credentialName || !/^[A-Z][A-Z0-9_]+$/.test(credentialName))
+  throw new Error("Specify an explicit credential variable name");
+if (keyEnvName === undefined && (!keyFile || !isAbsolute(keyFile)))
+  throw new Error("Specify an explicit absolute private credential file");
 const config = JSON.parse(privateText(join(root, "center/runtime.json")));
 const endpoint = new URL(config.url);
 if (
@@ -39,7 +50,14 @@ if (
   endpoint.pathname !== "/"
 )
   throw new Error("Expected the existing local Runtime endpoint");
-const key = parseEnv(privateText(keyFile))[keyName]?.trim();
+// The caller selects one verified provider binding. An explicit inherited
+// credential avoids copying a key from another provider's unrelated .env.
+// No default search, retired env alias or persistent credential copy exists.
+const key = (
+  keyEnvName === undefined
+    ? parseEnv(privateText(keyFile))[credentialName]
+    : process.env[keyEnvName]
+)?.trim();
 if (!key)
   throw new Error(
     "The existing credential is absent; configuration was not changed",

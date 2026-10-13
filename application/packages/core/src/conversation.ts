@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { providerRecoverySchema } from "./provider-recovery.js";
 import { executionAttentionSchema } from "./execution.js";
 import { continuationSchema } from "./continuation.js";
 export const artifactOutputSchema = z.object({
@@ -172,7 +173,7 @@ export const conversationRuntimeSchema = z.object({
       publicationKey: z.string().optional(),
       modelAttemptId: z.string().optional(),
       threadId: z.string().optional(),
-      providerRecovery: z.object({ startedAt: z.string() }).optional(),
+      providerRecovery: providerRecoverySchema.optional(),
       incomplete: z.boolean().optional(),
       truncated: z.boolean().optional(),
       sequence: z.number().int().nonnegative().optional(),

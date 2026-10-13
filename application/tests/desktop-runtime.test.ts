@@ -56,7 +56,14 @@ test("Runtime launcher accepts the Host manifest budget without loosening privat
     );
     const keyFile = join(root, "test.env");
     writeFileSync(keyFile, "TEST_MODEL_KEY=fixture-only", { mode: 0o600 });
-    const run = () => {
+    const fileArgs = [
+      `--model-key-file=${keyFile}`,
+      "--model-key-name=TEST_MODEL_KEY",
+    ];
+    const run = (
+      credentialArgs = fileArgs,
+      environment: Record<string, string | undefined> = {},
+    ) => {
       const result = spawnSync(
         process.execPath,
         [
@@ -65,10 +72,13 @@ test("Runtime launcher accepts the Host manifest budget without loosening privat
           ),
           `--root=${root}`,
           `--binary=${join(root, "intentionally-absent-runtime")}`,
-          `--model-key-file=${keyFile}`,
-          "--model-key-name=TEST_MODEL_KEY",
+          ...credentialArgs,
         ],
-        { encoding: "utf8", timeout: 10_000 },
+        {
+          encoding: "utf8",
+          timeout: 10_000,
+          env: { ...process.env, ...environment },
+        },
       );
       assert.equal(result.status, 1);
       return result.stderr;
@@ -76,6 +86,23 @@ test("Runtime launcher accepts the Host manifest budget without loosening privat
     // A valid generated manifest reaches the next preflight check. There is no
     // Runtime binary, so this test never launches a process or binds a port.
     assert.match(run(), /Existing Runtime files are missing/);
+    const envArgs = ["--model-key-env-name=MORPHZ_TEST_VERIFIED_MODEL_KEY"];
+    assert.match(
+      run(envArgs, { MORPHZ_TEST_VERIFIED_MODEL_KEY: "verified-fixture-only" }),
+      /Existing Runtime files are missing/,
+    );
+    assert.match(
+      run(envArgs, { MORPHZ_TEST_VERIFIED_MODEL_KEY: undefined }),
+      /existing credential is absent/,
+    );
+    assert.match(
+      run([...fileArgs, ...envArgs]),
+      /exactly one credential source/,
+    );
+    assert.match(
+      run(["--model-key-env-name=invalid-name"]),
+      /explicit credential variable name/,
+    );
     const invalid = /Configuration must be a bounded private regular file/;
     writeFileSync(manifest, " ".repeat(256 * 1024 + 1));
     assert.match(run(), invalid);

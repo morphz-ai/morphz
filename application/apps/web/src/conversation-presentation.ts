@@ -20,17 +20,28 @@ export function messageSourceSummary(input: RecordedInput | undefined): string {
 
 /** Only actual input-bound receipts may name a stage. Silence is not proof
  * of model reasoning, retrieval, tool execution, or percentage progress. */
-export function responseWaitingLabel(
+export function responseWaitingPresentation(
   delivery: ConversationRuntime["deliveries"][number],
   messages: readonly LiveMessage[],
   connected: boolean,
   stopPending = false,
-): string {
-  if (!connected) return "连接中断，等待恢复";
-  if (delivery.cancelRequested || stopPending) return "已请求停止，等待确认";
-  if (delivery.state === "sending") return "正在发送…";
-  if (delivery.state === "queued") return "排队等待…";
-  const recovery = messages
+) {
+  const waiting = (
+    label: string,
+    animated = connected,
+    showElapsed = true,
+  ) => ({
+    label,
+    connected,
+    animated,
+    showElapsed,
+  });
+  if (!connected) return waiting("连接中断，等待恢复", false);
+  if (delivery.cancelRequested || stopPending)
+    return waiting("已请求停止，等待确认");
+  if (delivery.state === "sending") return waiting("正在发送…");
+  if (delivery.state === "queued") return waiting("排队等待…");
+  const latestRecovery = messages
     .filter(
       (m) =>
         m.inputId === delivery.inputId &&
@@ -42,6 +53,10 @@ export function responseWaitingLabel(
         a.providerRecovery!.startedAt,
       ),
     )[0];
+  const recovery =
+    latestRecovery?.providerRecovery?.phase === "waiting"
+      ? latestRecovery
+      : undefined;
   const active = messages
     .filter(
       (m) =>
@@ -50,16 +65,36 @@ export function responseWaitingLabel(
         ["running", "generating", "pending"].includes(m.tool?.status ?? ""),
     )
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const recoveryLabel =
+    recovery?.providerRecovery?.reason === "credentials"
+      ? "模型认证失败，等待修复"
+      : recovery?.providerRecovery?.reason === "configuration"
+        ? "模型配置不可用，等待修复"
+        : recovery?.providerRecovery?.reason === "capacity"
+          ? "模型额度不足，等待处理"
+          : recovery?.providerRecovery?.reason === "service"
+            ? "模型服务暂时中断，自动重试中…"
+            : "模型服务不可用，等待恢复";
+  // A credential/configuration/allowance repair is not active retrying.
+  // Preserve the actual connection state; suppress only the activity clock
+  // and animation, using the Runtime's structured cause rather than prose.
+  const recoveryPresentation = () =>
+    waiting(
+      recoveryLabel,
+      recovery?.providerRecovery?.reason === "service",
+      recovery?.providerRecovery?.reason === "service",
+    );
   if (
     recovery &&
     (!active || active.createdAt <= recovery.providerRecovery!.startedAt)
   )
-    return "模型服务暂时中断，自动重试中…";
-  if (active?.tool?.status === "running") return "正在执行工具…";
-  if (active?.tool?.status === "generating") return "正在生成工具调用…";
-  if (active?.tool?.status === "pending") return "工具调用等待执行…";
-  if (recovery) return "模型服务暂时中断，自动重试中…";
-  return "等待回复…";
+    return recoveryPresentation();
+  if (active?.tool?.status === "running") return waiting("正在执行工具…");
+  if (active?.tool?.status === "generating")
+    return waiting("正在生成工具调用…");
+  if (active?.tool?.status === "pending") return waiting("工具调用等待执行…");
+  if (recovery) return recoveryPresentation();
+  return waiting("等待回复…");
 }
 
 /** Recovery belongs to one accepted input, not another concurrent request.
@@ -70,7 +105,9 @@ export function responseAnswered(
 ) {
   const owned = messages.filter((m) => m.inputId === inputId);
   const recoveryAt = owned
-    .filter((m) => m.kind === "progress" && m.providerRecovery)
+    .filter(
+      (m) => m.kind === "progress" && m.providerRecovery?.phase === "waiting",
+    )
     .map((m) => m.providerRecovery!.startedAt)
     .sort()
     .at(-1);

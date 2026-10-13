@@ -49,7 +49,9 @@ export function ExecutionProgress({
   running: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const progress = messages.filter((message) => message.kind === "progress");
+  const progress = messages.filter(
+    (message) => message.kind === "progress" && message.text.trim(),
+  );
   const latest = progress.at(-1);
   if (!latest) return null;
   const previous = progress.slice(0, -1).reverse();

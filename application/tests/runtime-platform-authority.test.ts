@@ -29,6 +29,20 @@ function evidence(
   claimedHumanActantId = "alice-human",
 ): RuntimeInputEvidenceReader {
   return {
+    async readThreadInputSource() {
+      const { snapshot } = (await this.readThread(
+        "session-one",
+        "thread-one",
+      )) as { snapshot: { thread: unknown } };
+      return {
+        thread: snapshot.thread,
+        source: {
+          kind: "input",
+          root_thread_id: "thread-one",
+          input_event: await this.readSessionEvent("session-one", "event-one"),
+        },
+      };
+    },
     async readThread() {
       return {
         snapshot: {
@@ -297,6 +311,17 @@ test("后台事项在未确认回执时仍用已提交准入证明身份，撤�
   };
   let admittedScheduleId: string | undefined;
   const reader: RuntimeInputEvidenceReader = {
+    async readThreadInputSource() {
+      return {
+        thread: scheduledThread,
+        source: {
+          kind: "schedule",
+          schedule_id: admittedScheduleId,
+          source_turn_id: scheduledThread.root_turn_id,
+          root_thread_id: scheduledThread.id,
+        },
+      };
+    },
     async readThread() {
       return { snapshot: { thread: scheduledThread } };
     },

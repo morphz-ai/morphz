@@ -973,13 +973,13 @@ body:has(dialog[open]) .cognitive-application-frame {
   border-radius: 50%;
   background: currentColor;
 }
-.response-placeholder[data-connected="true"] .response-dots i {
+.response-placeholder[data-animated="true"] .response-dots i {
   animation: response-waiting-pulse 1.4s ease-in-out infinite;
 }
-.response-placeholder[data-connected="true"] .response-dots i:nth-child(2) {
+.response-placeholder[data-animated="true"] .response-dots i:nth-child(2) {
   animation-delay: 160ms;
 }
-.response-placeholder[data-connected="true"] .response-dots i:nth-child(3) {
+.response-placeholder[data-animated="true"] .response-dots i:nth-child(3) {
   animation-delay: 320ms;
 }
 @keyframes response-waiting-pulse {
@@ -993,7 +993,7 @@ body:has(dialog[open]) .cognitive-application-frame {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .response-placeholder[data-connected="true"] .response-dots i {
+  .response-placeholder[data-animated="true"] .response-dots i {
     animation: none;
   }
 }

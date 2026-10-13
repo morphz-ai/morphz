@@ -138,6 +138,68 @@ test("Platform 持续会话：跨项目完整历史、真实执行根、独立 S
         }),
       });
     }
+    if (path.endsWith("/input-source") && path.includes("/threads/")) {
+      const threadId = path.split("/").at(-2)!;
+      const infer = inferThreads.get(threadId);
+      // Controlled Runtime proof endpoint. Host consumes its verdict, not the
+      // infer graph. Actual owner-side graph guards have Rust/SQL coverage.
+      let sourceThreadId: string | null = threadId;
+      const visited = new Set<string>();
+      while (sourceThreadId && inferThreads.has(sourceThreadId)) {
+        if (visited.has(sourceThreadId)) {
+          sourceThreadId = null;
+          break;
+        }
+        visited.add(sourceThreadId);
+        const node = inferThreads.get(sourceThreadId)!;
+        const event = inferEvents.find(
+          (event) => event.id === node.root_turn_id,
+        );
+        const payload = event?.payload as Record<string, unknown> | undefined;
+        if (
+          !event ||
+          event.actor !== "Runtime-Yao" ||
+          event.type !== "infer_request" ||
+          event.topic !== "chat/infer_request" ||
+          !payload ||
+          payload.session_id !== node.session_id ||
+          payload.context_id !== node.context_id ||
+          payload.principal_id !== node.initiating_principal_id ||
+          payload.agent_id !== node.agent_id ||
+          payload.plan_execution_id !== node.executor_id ||
+          payload.root_turn_id !== node.root_turn_id ||
+          typeof payload.parent_thread_id !== "string"
+        ) {
+          sourceThreadId = null;
+          break;
+        }
+        exactEventReads.push(String(event.id));
+        sourceThreadId = payload.parent_thread_id;
+      }
+      const root = sourceThreadId ? threadRoots.get(sourceThreadId) : undefined;
+      const input = [...received.entries()].find(
+        ([, item]) => item.root === root && item.sessionId === sid,
+      );
+      const thread = infer ?? {
+        id: threadId,
+        session_id: sid,
+        context_id: sessions.get(sid)?.context_id,
+        root_turn_id: root,
+        initiating_principal_id: "test-principal",
+        agent_id: "agent",
+      };
+      if (input) exactEventReads.push(root!);
+      return send(200, {
+        thread,
+        source: input
+          ? {
+              kind: "input",
+              input_event: rootEvent(input[0]),
+              root_thread_id: sourceThreadId,
+            }
+          : null,
+      });
+    }
     if (path.includes("/threads/")) {
       const threadId = path.split("/").at(-1)!,
         root = threadRoots.get(threadId);
@@ -358,7 +420,7 @@ test("Platform 持续会话：跨项目完整历史、真实执行根、独立 S
       assert.equal(original.author.actantId, "morphz-agent");
       await assert.rejects(
         async () => bridge.toolScope({ ...route, principal_id: "forged" }),
-        /授权/,
+        /未绑定/,
       );
       const child = {
         id: "infer-child",

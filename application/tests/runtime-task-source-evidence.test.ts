@@ -122,6 +122,20 @@ const event = {
 };
 function reader(observed: unknown = event): RuntimeInputEvidenceReader {
   return {
+    async readThreadInputSource() {
+      const { snapshot } = (await this.readThread(
+        route.session_id,
+        route.thread_id,
+      )) as { snapshot: { thread: unknown } };
+      return {
+        thread: snapshot.thread,
+        source: {
+          kind: "input",
+          root_thread_id: route.thread_id,
+          input_event: observed,
+        },
+      };
+    },
     async readThread() {
       return {
         snapshot: {

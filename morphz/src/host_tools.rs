@@ -199,8 +199,19 @@ impl HostTool {
         }
         let reply: Reply =
             serde_json::from_slice(&result).map_err(|_| "invalid host tool IPC response")?;
-        if reply.protocol != 1 || !reply.ok || reply.code.is_some() {
-            return Err("host tool IPC request rejected".into());
+        if reply.protocol != 1 || (reply.ok && reply.code.is_some()) {
+            return Err("invalid host tool IPC response".into());
+        }
+        if !reply.ok {
+            // Fixed allowlist only: never reflect arbitrary Host error text,
+            // tokens or payloads. A known refusal is not an unknown write result.
+            return Err(match reply.code.as_deref() {
+                Some("forbidden") => "host tool authorization denied (forbidden): current identity or scope is not authorized",
+                Some("source_unverified") => "host tool source unverified (source_unverified): Runtime could not prove the initiating input; do not infer missing Human authorization or IPC unavailability",
+                Some("invalid") => "host tool IPC request invalid (invalid)",
+                Some("unavailable") => "host tool service unavailable (unavailable): result is unknown, reconcile before repeating a write",
+                _ => "host tool IPC request rejected (unknown_code): result is unknown, reconcile before repeating a write",
+            }.into());
         }
         let value = reply.value.ok_or("host tool IPC returned no value")?;
         Ok(serde_json::to_vec(&value)?)
@@ -681,6 +692,85 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("unknown"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_transport_preserves_refusal_codes_without_reflecting_host_secrets() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let directory = tempfile::Builder::new()
+            .prefix("morphz-ipc-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let root = fs::canonicalize(directory.path()).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("host.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let cases = [
+            (
+                json!({"protocol":1,"ok":false,"code":"forbidden"}),
+                "authorization denied",
+            ),
+            (
+                json!({"protocol":1,"ok":false,"code":"source_unverified"}),
+                "source unverified",
+            ),
+            (
+                json!({"protocol":1,"ok":false,"code":"invalid"}),
+                "request invalid",
+            ),
+            (
+                json!({"protocol":1,"ok":false,"code":"unavailable"}),
+                "result is unknown",
+            ),
+            (
+                json!({"protocol":1,"ok":false,"code":"sensitive-host-secret"}),
+                "unknown_code",
+            ),
+            (
+                json!({"protocol":2,"ok":false,"code":"forbidden"}),
+                "invalid host tool IPC response",
+            ),
+            (
+                json!({"protocol":1,"ok":true,"code":"forbidden","value":{}}),
+                "invalid host tool IPC response",
+            ),
+        ];
+        let replies = cases
+            .iter()
+            .map(|(reply, _)| reply.clone())
+            .collect::<Vec<_>>();
+        let server = tokio::spawn(async move {
+            for reply in replies {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let size = socket.read_u32().await.unwrap() as usize;
+                let mut request = vec![0; size];
+                socket.read_exact(&mut request).await.unwrap();
+                let bytes = serde_json::to_vec(&reply).unwrap();
+                socket.write_u32(bytes.len() as u32).await.unwrap();
+                socket.write_all(&bytes).await.unwrap();
+                socket.shutdown().await.unwrap();
+            }
+        });
+        let tool = HostTool {
+            registration: registration(),
+            client: reqwest::Client::new(),
+            owner: Some(fs::metadata(&root).unwrap().uid()),
+        };
+        for (_, expected) in cases {
+            let error = tool
+                .local_request(path.to_str().unwrap(), &json!({}))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(expected),
+                "Expected safe failure classification {expected}, got {error}"
+            );
+            assert!(!error.contains("sensitive-host-secret"));
+        }
+        server.await.unwrap();
     }
 
     #[cfg(unix)]

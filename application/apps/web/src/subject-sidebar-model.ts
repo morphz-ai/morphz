@@ -2,6 +2,9 @@ import type { ConversationRuntime } from "../../../packages/core/src/conversatio
 import type { TaskRuntime } from "../../../packages/core/src/task-runtime.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 import { isPendingResponse } from "./conversation-presentation.js";
+import { objectiveIsTerminal } from "../../../../sdk/typescript/src/runtime-state.js";
+
+export { objectiveIsTerminal };
 
 export type SubjectView = "activity" | "permissions" | "schedules" | "settings";
 
@@ -144,9 +147,7 @@ export function subjectLogoState(
       ? activity.truncated || activity.objectivesTruncated
       : !activity.openWorkComplete) ||
     !runtime.attention?.available ||
-    objectives.some(
-      (goal) => !["completed", "cancelled", "failed"].includes(goal.status),
-    )
+    objectives.some((goal) => !objectiveIsTerminal(goal.status))
   )
     return result("unknown", "工作状态待核对");
   return result("idle", "目前没有进行中的工作");
@@ -168,15 +169,16 @@ export function subjectStatus(runtime: ConversationRuntime, online: boolean) {
       : !runtime.activity.openWorkComplete;
   if (count) {
     const prefix = incomplete ? "至少 " : "";
-    if (threads.every((t) => t.controlState === "paused"))
-      return `${prefix}${count} 项工作已暂停`;
     const running = threads.filter(
       (t) =>
-        t.controlState !== "paused" &&
-        ["running", "runnable"].includes(t.phase),
+        t.phase === "running" ||
+        (t.controlState !== "paused" && t.phase === "runnable"),
     ).length;
-    return running
-      ? `${prefix}${running} 项工作正在推进`
+    const paused = threads.every((t) => t.controlState === "paused");
+    if (running)
+      return `${prefix}${running} 项工作正在推进${paused ? "，后续已暂停" : ""}`;
+    return paused
+      ? `${prefix}${count} 项工作已暂停`
       : `${prefix}${count} 项工作等待后续条件`;
   }
   return incomplete ? "状态待核对" : "目前没有进行中的执行";

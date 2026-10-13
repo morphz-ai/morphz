@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  providerRecoverySchema,
+  providerRecoveryFromEvent,
+} from "./provider-recovery.js";
 
 export const liveMessageSchema = z.object({
   id: z.string(),
@@ -19,7 +23,7 @@ export const liveMessageSchema = z.object({
   sequence: z.number().int().nonnegative().optional(),
   threadId: z.string().optional(),
   /** A durable Runtime provider_wait, not a failed physical HTTP stream. */
-  providerRecovery: z.object({ startedAt: z.string() }).optional(),
+  providerRecovery: providerRecoverySchema.optional(),
   tool: z
     .object({
       name: z.string(),
@@ -45,6 +49,7 @@ export type StreamEvent = {
   timestamp: string;
   topic: string;
   type?: string;
+  actor?: string;
   sequence?: number;
   payload: Record<string, unknown>;
 };
@@ -114,9 +119,8 @@ export class LiveConversationProjection {
       ...(typeof e.payload.model_attempt_id === "string"
         ? { modelAttemptId: e.payload.model_attempt_id }
         : {}),
-      ...(["chat/progress", "runtime/provider_wait"].includes(e.topic) &&
-      e.payload.disposition === "provider_wait"
-        ? { providerRecovery: { startedAt: e.timestamp } }
+      ...(providerRecoveryFromEvent(e)
+        ? { providerRecovery: providerRecoveryFromEvent(e) }
         : {}),
       text: "",
       kind: "reply",
@@ -317,6 +321,11 @@ export class LiveConversationProjection {
     }
     if (this.seen.has(e.id)) return;
     this.seen.add(e.id);
+    if (providerRecoveryFromEvent(e)?.phase === "resumed") {
+      // A Runtime wake is status evidence, not a fabricated reply/tool card.
+      this.messages.set(e.id, { ...this.base(e), kind: "progress", text: "" });
+      return;
+    }
     const calls =
       e.topic === "chat/assistant_call"
         ? [

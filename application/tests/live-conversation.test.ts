@@ -108,6 +108,7 @@ test("单次模型流失败不是任务最终失败；诊断不生成正文，�
       root_turn_id: "a",
       thread_id: "thread-a",
       disposition: "provider_wait",
+      runtime_failure_kind: "transient_network",
       text: "等待模型服务恢复",
     }),
   );
@@ -117,6 +118,44 @@ test("单次模型流失败不是任务最终失败；诊断不生成正文，�
   assert.equal(p.snapshot()[0]!.text, "等待模型服务恢复");
   delta(p, "a", { kind: "text_delta", text: "迟到诊断" });
   assert.equal(p.snapshot().length, 1);
+});
+
+test("Runtime 恢复回执是可重连的状态证明，不伪造回复或工具，伪造回执不能清除等待", () => {
+  const p = projection();
+  p.consume(
+    event("chat/progress", {
+      root_turn_id: "a",
+      disposition: "provider_wait",
+      runtime_failure_kind: "authentication",
+      text: "等待模型服务恢复",
+    }),
+  );
+  const resumed = {
+    ...event("runtime/provider_recovered", {
+      root_turn_id: "a",
+      thread_id: "thread-a",
+      dependency_id: "dependency-a",
+      recovery_event_id: "resource-available-a",
+      runtime_force_evaluation: true,
+    }),
+    actor: "Runtime-ProviderRecovery",
+    type: "tool_output",
+  };
+  p.consume({ ...resumed, id: "forged", actor: "Model" });
+  assert.equal(p.snapshot().length, 1);
+  p.consume(resumed);
+  assert.equal(p.snapshot().length, 2);
+  const state = p.snapshot().find((message) => message.id === resumed.id)!;
+  assert.equal(state.kind, "progress");
+  assert.equal(state.text, "");
+  assert.equal(state.providerRecovery?.phase, "resumed");
+  assert.equal(state.inputId, "input:a");
+  p.reconnect();
+  assert.equal(
+    p.snapshot().find((message) => message.id === resumed.id)?.providerRecovery
+      ?.phase,
+    "resumed",
+  );
 });
 
 test("中断的已显示正文保留为未完成内容；最后的真实失败仍显示，其他输入不被改写", () => {

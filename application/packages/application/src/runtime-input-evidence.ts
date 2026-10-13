@@ -1,21 +1,17 @@
 import { z } from "zod";
 import type { HostInvocation } from "./agent-tools.js";
 import { workInputFormats } from "./session-io.js";
-import {
-  runtimeThreadAncestryLimit,
-  runtimeThreadSupervisionSchema,
-} from "./runtime-thread-provenance.js";
 import type { TaskRunAdmission } from "../../platform/src/task-run-admission.js";
 import {
   matchesTaskSourceRequest,
   type TaskSourceEvent,
   type TaskSourceReceipt,
 } from "../../platform/src/task-run-source.js";
+
 export type TaskSourceEvidenceReader = (
   sessionId: string,
   clientMessageId: string,
 ) => Promise<{ event: TaskSourceEvent; receipt: TaskSourceReceipt | null }>;
-
 const eventSchema = z.object({
   id: z.string().min(1),
   actor: z.string(),
@@ -23,20 +19,30 @@ const eventSchema = z.object({
   topic: z.string(),
   payload: z.record(z.string(), z.unknown()),
 });
-const threadSchema = z.object({
-  snapshot: z.object({
-    thread: z.object({
-      id: z.string(),
-      session_id: z.string(),
-      context_id: z.string(),
-      root_turn_id: z.string(),
-      initiating_principal_id: z.string().nullable(),
-      agent_id: z.string(),
-      executor_kind: z.string(),
-      executor_id: z.string().nullable(),
-      supervision: runtimeThreadSupervisionSchema.optional(),
-    }),
+const sourceViewSchema = z.object({
+  thread: z.object({
+    id: z.string().min(1),
+    session_id: z.string().min(1),
+    context_id: z.string().min(1),
+    root_turn_id: z.string().min(1),
+    initiating_principal_id: z.string().nullable(),
+    agent_id: z.string().min(1),
   }),
+  source: z
+    .discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("input"),
+        input_event: eventSchema,
+        root_thread_id: z.string().min(1).nullable(),
+      }),
+      z.object({
+        kind: z.literal("schedule"),
+        schedule_id: z.string().min(1),
+        source_turn_id: z.string().min(1),
+        root_thread_id: z.string().min(1),
+      }),
+    ])
+    .nullable(),
 });
 const acceptedSchema = z.object({
   request: z.object({
@@ -67,16 +73,16 @@ const acceptedSchema = z.object({
     }),
   }),
 });
-const scheduleSchema = z.object({
-  id: z.string().min(1),
-  thread_id: z.string().min(1),
-  source_turn_id: z.string().min(1),
-});
 
-/** A trusted Runtime client must authorize both reads. Event lookup is exact
- * by (session ID, event ID), never a bounded scan of recent history.
- */
+/** Exact owner-side provenance. Runtime resolves bounded ancestry; Host does
+ * not parse Goal IDs, walk a second graph or scan message history. Provenance
+ * is not current Platform authorization. Reads use a configured trusted client. */
 export type RuntimeInputEvidenceReader = {
+  readThreadInputSource(
+    sessionId: string,
+    threadId: string,
+    runtimePrincipalId?: string,
+  ): Promise<unknown>;
   readThread(
     sessionId: string,
     threadId: string,
@@ -94,172 +100,106 @@ export type RuntimeInputEvidenceReader = {
     runtimePrincipalId?: string,
   ): Promise<unknown>;
 };
+export class RuntimeInputSourceError extends Error {
+  readonly code = "source_unverified";
+  constructor() {
+    super("Runtime 执行未绑定到可验证的原始应用输入。");
+  }
+}
+function invalid(): never {
+  throw new RuntimeInputSourceError();
+}
 
-/** Adapt an authenticated Runtime request function; it must not accept a
- * browser-supplied bearer token or a model-selected Runtime origin.
- */
 export function runtimeHttpInputEvidenceReader(
   request: (path: string, runtimePrincipalId?: string) => Promise<unknown>,
   options: { sessionScoped?: boolean } = {},
 ): RuntimeInputEvidenceReader {
   return {
-    readThread: (sessionId, threadId, contextId, runtimePrincipalId) =>
+    readThreadInputSource: (sessionId, threadId, principal) =>
+      request(
+        `/api/sessions/${encodeURIComponent(sessionId)}/threads/${encodeURIComponent(threadId)}/input-source`,
+        principal,
+      ),
+    readThread: (sessionId, threadId, contextId, principal) =>
       request(
         contextId && !options.sessionScoped
           ? `/api/contexts/${encodeURIComponent(contextId)}/threads/${encodeURIComponent(threadId)}`
           : `/api/sessions/${encodeURIComponent(sessionId)}/threads/${encodeURIComponent(threadId)}`,
-        runtimePrincipalId,
+        principal,
       ),
-    async readSessionEvent(sessionId, eventId, runtimePrincipalId) {
-      const result = z
+    async readSessionEvent(sessionId, eventId, principal) {
+      return z
         .object({ event: z.unknown() })
         .parse(
           await request(
             `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(eventId)}`,
-            runtimePrincipalId,
+            principal,
           ),
-        );
-      return result.event;
+        ).event;
     },
-    readSessionSchedule: (sessionId, scheduleId, runtimePrincipalId) =>
+    readSessionSchedule: (sessionId, scheduleId, principal) =>
       request(
         `/api/sessions/${encodeURIComponent(sessionId)}/schedules/${encodeURIComponent(scheduleId)}`,
-        runtimePrincipalId,
+        principal,
       ),
   };
 }
-
 function field(event: z.infer<typeof eventSchema>, name: string) {
   const route = event.payload.route as Record<string, unknown> | undefined;
   const value = event.payload[name] ?? route?.[name];
   return typeof value === "string" ? value : null;
 }
-
-function invalid(): never {
-  throw new Error("Runtime 执行未绑定到可验证的原始应用输入。");
-}
-
-/** Establish provenance, not authorization. The returned workspace and
- * claimed actant came from Human-submitted input and must still be checked
- * against current Platform membership and the trusted identity mapping.
- */
-async function resolveRuntimeRoot(
+async function invocationSource(
   route: HostInvocation,
   reader: RuntimeInputEvidenceReader,
 ) {
   if (!route.principal_id) invalid();
-  const seen = new Set<string>();
-  let threadId = route.thread_id;
-  let rootId: string | null = null;
-  let rootThreadId: string | null = null;
-  for (let depth = 0; depth < runtimeThreadAncestryLimit; depth++) {
-    if (seen.has(threadId)) invalid();
-    seen.add(threadId);
-    const parsed = threadSchema.safeParse(
-      await reader.readThread(
-        route.session_id,
-        threadId,
-        route.context_id,
-        route.principal_id,
-      ),
-    );
-    if (!parsed.success) invalid();
-    const thread = parsed.data.snapshot.thread;
-    if (
-      thread.id !== threadId ||
-      thread.session_id !== route.session_id ||
-      thread.context_id !== route.context_id ||
-      thread.initiating_principal_id !== route.principal_id ||
-      thread.agent_id !== route.agent_id ||
-      !thread.root_turn_id
-    )
-      invalid();
-    if (thread.executor_kind !== "plan_infer") {
-      // schedule_tx spawn creates a distinct root with no Session input event.
-      // Its real, freshly read supervision chain inherits provenance only
-      // within the exact Session/Context/Agent/initiating principal above.
-      const parent = thread.supervision?.parent_thread_id;
-      if (parent) {
-        threadId = parent;
-        continue;
-      }
-      rootId = thread.root_turn_id;
-      rootThreadId = thread.id;
-      break;
-    }
-    const inferResult = eventSchema.safeParse(
-      await reader.readSessionEvent(
-        route.session_id,
-        thread.root_turn_id,
-        route.principal_id,
-      ),
-    );
-    if (!inferResult.success) invalid();
-    const infer = inferResult.data;
-    if (
-      infer.id !== thread.root_turn_id ||
-      infer.actor !== "Runtime-Yao" ||
-      infer.type !== "infer_request" ||
-      infer.topic !== "chat/infer_request" ||
-      !thread.executor_id ||
-      field(infer, "plan_execution_id") !== thread.executor_id ||
-      field(infer, "root_turn_id") !== thread.root_turn_id ||
-      field(infer, "session_id") !== route.session_id ||
-      field(infer, "context_id") !== route.context_id ||
-      field(infer, "principal_id") !== route.principal_id ||
-      field(infer, "agent_id") !== route.agent_id
-    )
-      invalid();
-    const parent = field(infer, "parent_thread_id");
-    if (
-      !parent ||
-      (thread.supervision?.parent_thread_id &&
-        thread.supervision.parent_thread_id !== parent)
-    )
-      invalid();
-    threadId = parent;
-  }
-  if (!rootId || !rootThreadId) invalid();
-  return {
-    rootId: rootId!,
-    rootThreadId: rootThreadId!,
-    runtimePrincipalId: route.principal_id!,
-  };
-}
-
-async function inputEvidenceFromRoot(
-  route: HostInvocation,
-  reader: RuntimeInputEvidenceReader,
-  rootId: string,
-  runtimePrincipalId: string,
-) {
-  const rootResult = eventSchema.safeParse(
-    await reader.readSessionEvent(
+  const parsed = sourceViewSchema.safeParse(
+    await reader.readThreadInputSource(
       route.session_id,
-      rootId,
-      route.principal_id ?? undefined,
+      route.thread_id,
+      route.principal_id,
     ),
   );
-  if (!rootResult.success) invalid();
-  const root = rootResult.data;
+  if (!parsed.success) invalid();
+  const { thread, source } = parsed.data;
   if (
-    root.id !== rootId ||
-    root.actor !== "Session-Client" ||
-    root.type !== "session_message" ||
-    root.topic !== "chat/user_message" ||
-    field(root, "session_id") !== route.session_id ||
-    field(root, "context_id") !== route.context_id ||
-    field(root, "principal_id") !== route.principal_id
+    !source ||
+    thread.id !== route.thread_id ||
+    thread.session_id !== route.session_id ||
+    thread.context_id !== route.context_id ||
+    thread.agent_id !== route.agent_id ||
+    thread.initiating_principal_id !== route.principal_id
   )
     invalid();
+  if (source.kind === "input") {
+    const event = source.input_event;
+    if (
+      event.actor !== "Session-Client" ||
+      event.type !== "session_message" ||
+      event.topic !== "chat/user_message" ||
+      field(event, "session_id") !== route.session_id ||
+      field(event, "context_id") !== route.context_id ||
+      field(event, "principal_id") !== route.principal_id
+    )
+      invalid();
+  }
+  return { source, runtimePrincipalId: route.principal_id };
+}
+function inputEvidence(
+  route: HostInvocation,
+  root: z.infer<typeof eventSchema>,
+  runtimePrincipalId: string,
+) {
   const accepted = acceptedSchema.safeParse(root.payload.session_io);
   if (!accepted.success) invalid();
   const { request } = accepted.data;
-  const { format, content } = request.message;
-  const supplied = content.value.value;
+  const supplied = request.message.content.value.value;
   if (
     !workInputFormats.some(
-      (known) => known.id === format.id && known.version === format.version,
+      (known) =>
+        known.id === request.message.format.id &&
+        known.version === request.message.format.version,
     ) ||
     field(root, "client_message_id") !== request.client_message_id ||
     supplied.input_id.value !== request.client_message_id
@@ -267,76 +207,57 @@ async function inputEvidenceFromRoot(
     invalid();
   return {
     runtimePrincipalId,
-    runtimeEventId: rootId,
+    runtimeEventId: root.id,
     inputId: request.client_message_id,
     projectId: supplied.workspace_id.value,
     claimedActantId: supplied.author_actant_id.value,
     sessionId: route.session_id,
     contextId: route.context_id,
+    // Host-private evidence. Explicit read-input exposes the request, never
+    // automatically injecting attachment bytes into the model's context.
+    inputEvent: root,
   };
 }
-
 export async function resolveRuntimeInputEvidence(
   route: HostInvocation,
   reader: RuntimeInputEvidenceReader,
 ) {
-  const { rootId, runtimePrincipalId } = await resolveRuntimeRoot(
-    route,
-    reader,
-  );
-  return inputEvidenceFromRoot(route, reader, rootId, runtimePrincipalId);
+  const { source, runtimePrincipalId } = await invocationSource(route, reader);
+  if (source.kind !== "input") invalid();
+  return inputEvidence(route, source.input_event, runtimePrincipalId);
 }
-
-/** A scheduled execution has no Session-Client input event. Its provenance is
- * the exact Runtime Schedule/Thread pair plus the Platform admission committed
- * before the Schedule POST. Neither the model nor the selected UI project may
- * supply this mapping. This proves origin only; current authorization remains
- * a separate check before an Agent credential is issued. */
-async function taskRunEvidenceFromRoot(
+async function taskRunEvidence(
   route: HostInvocation,
-  reader: RuntimeInputEvidenceReader,
+  source: Extract<
+    NonNullable<z.infer<typeof sourceViewSchema>["source"]>,
+    { kind: "schedule" }
+  >,
   admissionForRuntime: (
     sessionId: string,
     scheduleId: string,
   ) => Promise<TaskRunAdmission>,
-  rootId: string,
-  rootThreadId: string,
   runtimePrincipalId: string,
 ) {
-  if (!/^client-schedule-task_[a-f0-9]{40}$/.test(rootId)) invalid();
-  const scheduleId = rootId.slice("client-schedule-".length);
-  if (!reader.readSessionSchedule) invalid();
-  const schedule = scheduleSchema.safeParse(
-    await reader.readSessionSchedule(
-      route.session_id,
-      scheduleId,
-      route.principal_id ?? undefined,
-    ),
+  const admission = await admissionForRuntime(
+    route.session_id,
+    source.schedule_id,
   );
   if (
-    !schedule.success ||
-    schedule.data.id !== scheduleId ||
-    schedule.data.thread_id !== rootThreadId ||
-    schedule.data.source_turn_id !== rootId
-  )
-    invalid();
-  const admission = await admissionForRuntime(route.session_id, scheduleId);
-  if (
     admission.sessionId !== route.session_id ||
-    admission.request.id !== scheduleId ||
-    admission.eventId !== `task_run_${scheduleId.slice(5)}`
+    admission.request.id !== source.schedule_id ||
+    source.source_turn_id !== `client-schedule-${admission.request.id}` ||
+    admission.eventId !== `task_run_${admission.request.id.slice(5)}`
   )
     invalid();
   return {
     runtimePrincipalId,
     sessionId: route.session_id,
     contextId: route.context_id,
-    rootThreadId,
-    scheduleId,
+    rootThreadId: source.root_thread_id,
+    scheduleId: source.schedule_id,
     admission,
   };
 }
-
 export async function resolveRuntimeTaskRunEvidence(
   route: HostInvocation,
   reader: RuntimeInputEvidenceReader,
@@ -345,22 +266,17 @@ export async function resolveRuntimeTaskRunEvidence(
     scheduleId: string,
   ) => Promise<TaskRunAdmission>,
 ) {
-  const { rootId, rootThreadId, runtimePrincipalId } = await resolveRuntimeRoot(
+  const { source, runtimePrincipalId } = await invocationSource(route, reader);
+  if (source.kind !== "schedule") invalid();
+  return taskRunEvidence(
     route,
-    reader,
-  );
-  return taskRunEvidenceFromRoot(
-    route,
-    reader,
+    source,
     admissionForRuntime,
-    rootId,
-    rootThreadId,
     runtimePrincipalId,
   );
 }
-
-/** Classify one verified Runtime root before reading its provenance. A failed
- * normal input cannot silently fall back to a task admission, or vice versa. */
+/** Classification is explicit in Runtime's proof. Ordinary inputs never fall
+ * back to task admission or a Host-local delivery on failure. */
 export async function resolveRuntimeInvocationEvidence(
   route: HostInvocation,
   reader: RuntimeInputEvidenceReader,
@@ -370,76 +286,57 @@ export async function resolveRuntimeInvocationEvidence(
   ) => Promise<TaskRunAdmission>,
   sourceEventForRuntime?: TaskSourceEvidenceReader,
 ) {
-  const root = await resolveRuntimeRoot(route, reader);
-  if (root.rootId.startsWith("client-schedule-")) {
+  const { source, runtimePrincipalId } = await invocationSource(route, reader);
+  if (source.kind === "schedule") {
     if (!admissionForRuntime) invalid();
     return {
       kind: "task-run" as const,
-      ...(await taskRunEvidenceFromRoot(
+      ...(await taskRunEvidence(
         route,
-        reader,
+        source,
         admissionForRuntime,
-        root.rootId,
-        root.rootThreadId,
-        root.runtimePrincipalId,
+        runtimePrincipalId,
       )),
     };
   }
-  const observed = eventSchema.parse(
-    await reader.readSessionEvent(
-      route.session_id,
-      root.rootId,
-      route.principal_id ?? undefined,
-    ),
-  );
+  const observed = source.input_event;
   const clientId = field(observed, "client_message_id");
   if (clientId?.startsWith("task_source_")) {
     if (
       !sourceEventForRuntime ||
-      observed.id !== root.rootId ||
-      observed.actor !== "Session-Client" ||
-      observed.type !== "session_message" ||
-      observed.topic !== "chat/user_message" ||
-      field(observed, "session_id") !== route.session_id ||
-      field(observed, "context_id") !== route.context_id ||
-      field(observed, "principal_id") !== route.principal_id ||
+      source.root_thread_id === null ||
       field(observed, "root_turn_id") !== observed.id
     )
       invalid();
-    const source = await sourceEventForRuntime(route.session_id, clientId);
+    const admitted = await sourceEventForRuntime(route.session_id, clientId);
     const accepted = z
       .object({ request: z.unknown() })
       .safeParse(observed.payload.session_io);
     if (
       !accepted.success ||
-      source.event.eventId !== clientId ||
-      source.event.admission.sessionId !== route.session_id ||
-      source.event.destination.kind !== "follow-up" ||
-      source.event.destination.principalId !== route.principal_id ||
-      !matchesTaskSourceRequest(source.event, accepted.data.request) ||
-      (source.receipt &&
-        (source.receipt.rootId !== observed.id ||
-          (source.receipt.threadId !== null &&
-            source.receipt.threadId !== root.rootThreadId)))
+      admitted.event.eventId !== clientId ||
+      admitted.event.admission.sessionId !== route.session_id ||
+      admitted.event.destination.kind !== "follow-up" ||
+      admitted.event.destination.principalId !== route.principal_id ||
+      !matchesTaskSourceRequest(admitted.event, accepted.data.request) ||
+      (admitted.receipt &&
+        (admitted.receipt.rootId !== observed.id ||
+          (admitted.receipt.threadId !== null &&
+            admitted.receipt.threadId !== source.root_thread_id)))
     )
       invalid();
     return {
       kind: "task-run" as const,
-      runtimePrincipalId: root.runtimePrincipalId,
+      runtimePrincipalId,
       sessionId: route.session_id,
       contextId: route.context_id,
-      rootThreadId: root.rootThreadId,
-      scheduleId: source.event.admission.request.id,
-      admission: source.event.admission,
+      rootThreadId: source.root_thread_id,
+      scheduleId: admitted.event.admission.request.id,
+      admission: admitted.event.admission,
     };
   }
   return {
     kind: "input" as const,
-    ...(await inputEvidenceFromRoot(
-      route,
-      reader,
-      root.rootId,
-      root.runtimePrincipalId,
-    )),
+    ...inputEvidence(route, observed, runtimePrincipalId),
   };
 }

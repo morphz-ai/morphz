@@ -163,6 +163,74 @@ async function setup(page: Page) {
 const waiting = (page: Page, id = "waiting-a") =>
   page.locator(`[data-waiting-input-id="${id}"]`);
 
+test("认证、配置和额度问题不伪装成持续重试；同一输入的真实恢复清除旧状态，刷新不复活", async ({
+  page,
+}) => {
+  const f = await setup(page);
+  const createdAt = new Date(Date.now() - 37 * 60000).toISOString();
+  f.inputs[0]!.createdAt = createdAt;
+  const recovery = {
+    ...f.scope(),
+    id: "provider-wait-a",
+    artifactId: null,
+    inputId: "waiting-a",
+    rootId: "waiting-root",
+    kind: "progress" as const,
+    text: "",
+    createdAt,
+    providerRecovery: {
+      startedAt: createdAt,
+      phase: "waiting" as const,
+      reason: "credentials" as
+        "credentials" | "configuration" | "capacity" | "unknown" | "service",
+    },
+  };
+  f.replies.push(recovery);
+  for (const [reason, label] of [
+    ["credentials", "模型认证失败，等待修复"],
+    ["configuration", "模型配置不可用，等待修复"],
+    ["capacity", "模型额度不足，等待处理"],
+    ["unknown", "模型服务不可用，等待恢复"],
+  ] as const) {
+    recovery.providerRecovery.reason = reason;
+    await f.update();
+    await expect(waiting(page).getByRole("status")).toHaveText(label);
+    await expect(waiting(page)).toHaveAttribute("data-connected", "true");
+    await expect(waiting(page)).toHaveAttribute("data-animated", "false");
+    await expect(waiting(page).locator(".response-elapsed")).toHaveCount(0);
+  }
+  recovery.providerRecovery.reason = "service";
+  await f.update();
+  await expect(waiting(page).getByRole("status")).toHaveText(
+    "模型服务暂时中断，自动重试中…",
+  );
+  await expect(waiting(page)).toHaveAttribute("data-animated", "true");
+  await expect(waiting(page).locator(".response-elapsed")).toBeVisible();
+  const resumed = {
+    ...recovery,
+    id: "provider-resumed-a",
+    createdAt: new Date().toISOString(),
+    providerRecovery: {
+      startedAt: new Date().toISOString(),
+      phase: "resumed" as const,
+      reason: "unknown" as const,
+    },
+  };
+  f.replies.push({
+    ...resumed,
+    id: "provider-resumed-b",
+    inputId: "waiting-b",
+  });
+  await f.update();
+  await expect(waiting(page).getByRole("status")).toContainText("自动重试");
+  f.replies.push(resumed);
+  await f.update();
+  await expect(waiting(page).getByRole("status")).toHaveText("等待回复…");
+  await page.reload();
+  await expect(waiting(page).getByRole("status")).toHaveText("等待回复…");
+  await expect(f.composer).toHaveValue("TEST 保留未发送草稿");
+});
+
 test("被后续批次承接的消息不是取消，不重复等待也不提供后续批次的停止按钮", async ({
   page,
 }) => {

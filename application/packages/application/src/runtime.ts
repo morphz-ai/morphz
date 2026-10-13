@@ -91,6 +91,7 @@ import type { WorkspaceStore } from "./store.js";
 import type { HostInvocation, ToolScope } from "./agent-tools.js";
 import type { IdentityCenter } from "./identity.js";
 import type { MessageAttachmentService } from "./message-attachment-service.js";
+import { providerRecoveryFromEvent } from "../../core/src/provider-recovery.js";
 import { ConversationFeed } from "./conversation-feed.js";
 import { RuntimeChangeObserver } from "./runtime-change-observer.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
@@ -99,6 +100,7 @@ import { RuntimeModelSettings } from "./model-settings.js";
 import { harnessReadinessError } from "../../core/src/applications.js";
 import {
   runtimeHttpInputEvidenceReader,
+  resolveRuntimeInputEvidence,
   resolveRuntimeInvocationEvidence,
   type RuntimeInputEvidenceReader,
   type TaskSourceEvidenceReader,
@@ -434,7 +436,7 @@ function storedDataValue(
 }
 
 function platformSourceFromRuntimeRoot(
-  event: RuntimeEvent,
+  event: Pick<RuntimeEvent, "topic" | "payload">,
   sessionId: string,
   inputId: string,
   // A trusted gateway can map each Human to a Runtime principal. A local
@@ -697,7 +699,10 @@ const terminal = new Set([
   "chat/runtime_error",
   "runtime/response_protocol_fused",
 ]);
-function payloadString(event: RuntimeEvent, key: string): string | undefined {
+function payloadString(
+  event: Pick<RuntimeEvent, "payload">,
+  key: string,
+): string | undefined {
   const route = event.payload.route as Record<string, unknown> | undefined;
   const value = event.payload[key] ?? route?.[key];
   return typeof value === "string" ? value : undefined;
@@ -2657,22 +2662,42 @@ export class RuntimeBridge {
       },
     };
   }
-  toolScope(route: HostInvocation): ToolScope | Promise<ToolScope> {
-    const session = this.state.sessions[route.session_id];
-    if (
-      !session ||
-      !session.platform ||
-      route.context_id !== this.contextId(session.projectId) ||
-      !session.runtimePrincipalId ||
-      (!this.teamIdentity && route.principal_id !== session.runtimePrincipalId)
-    )
-      throw new DomainError(
-        "forbidden",
-        "工具调用未绑定到已授权的 Morphz 会话。",
-      );
+  async toolScope(route: HostInvocation): Promise<ToolScope> {
     if (!this.platformAgentScope)
       throw new DomainError("forbidden", "Platform Agent 来源校验不可用。");
-    return this.platformAgentScope(route);
+    const scope = await this.platformAgentScope(route);
+    if (!scope.platform || route.context_id !== this.contextId(scope.projectId))
+      throw new DomainError(
+        "forbidden",
+        "工具调用未绑定到此中心的已授权工作范围。",
+      );
+    if (!this.teamIdentity) {
+      // Current Runtime identity, not a Host-local outbox entry. This exact
+      // read neither creates a Session nor claims membership on a cold Host.
+      const identity = z
+        .object({
+          session_id: z.literal(route.session_id),
+          context_id: z.literal(route.context_id),
+          principal_id: z.literal(route.principal_id),
+        })
+        .safeParse(
+          await this.request(
+            `/api/sessions/${encodeURIComponent(route.session_id)}/principal`,
+            "GET",
+            undefined,
+            localAccess,
+            undefined,
+            "json",
+            true,
+          ),
+        );
+      if (!identity.success)
+        throw new DomainError(
+          "forbidden",
+          "Runtime 当前身份与执行发起身份不符。",
+        );
+    }
+    return scope;
   }
   /** Read the exact submitted Platform input after resolving the Runtime
    * invocation root. Neither model arguments nor the selected UI page can
@@ -2682,18 +2707,46 @@ export class RuntimeBridge {
     const scope = await this.toolScope(route);
     if (!scope.platform || !scope.inputId)
       throw new DomainError("forbidden", "执行未绑定到 Platform 原始输入。");
-    const delivery = this.state.deliveries.find(
-      (item) =>
-        item.inputId === scope.inputId &&
-        item.sessionId === route.session_id &&
-        item.platformSource?.projectId === scope.projectId,
+    const evidence = await resolveRuntimeInputEvidence(
+      route,
+      this.inputEvidenceReader(),
     );
-    if (!delivery) throw new DomainError("not_found", "原始输入不可用。");
-    return structuredClone({
-      ...platformPlainRequestSchema.parse(delivery.request).message.content
-        .value,
-      conversation_id: delivery.platformSource!.conversationId,
-    });
+    if (
+      evidence.inputId !== scope.inputId ||
+      evidence.projectId !== scope.projectId
+    )
+      throw new DomainError("forbidden", "原始输入与本次执行范围不符。");
+    const source = platformSourceFromRuntimeRoot(
+      evidence.inputEvent,
+      route.session_id,
+      scope.inputId,
+      (id) => (this.teamIdentity ? this.principalId(id) : null),
+    );
+    if (
+      !source ||
+      source.projectId !== scope.projectId ||
+      source.author.actantId !== evidence.claimedActantId
+    )
+      throw new DomainError("forbidden", "原始输入的持久来源记录不可验证。");
+    const request = z
+      .object({
+        request: z.object({
+          message: z.object({ content: z.object({ value: z.unknown() }) }),
+        }),
+      })
+      .parse(evidence.inputEvent.payload.session_io).request;
+    const input = z
+      .object({
+        input_id: z.literal(scope.inputId),
+        workspace_id: z.literal(scope.projectId),
+        author_actant_id: z.literal(source.author.actantId),
+      })
+      .passthrough()
+      .parse(storedDataValue(request.message.content.value, { nodes: 0 }));
+    // Recheck current identity/membership after the read; no local delivery or
+    // view selection substitutes for the immutable, authenticated input.
+    await this.toolScope(route);
+    return { ...input, conversation_id: source.conversationId };
   }
   /** Check this Host's already-owned delivery. Runtime still owns the actual
    * execution; no other Host recovers or takes over this local outbox. Saved
@@ -3619,7 +3672,8 @@ export class RuntimeBridge {
       payloadString(item.event, "text") ??
       payloadString(item.event, "error") ??
       payloadString(item.event, "message");
-    if (!text) return null;
+    const recovery = providerRecoveryFromEvent(item.event);
+    if (!text && !recovery) return null;
     // Runtime persists already-public model words as a non-final progress
     // timeline entry, independently from execution completion. They are a
     // visible reply, including after cancellation/restart, not inspector-only
@@ -3642,10 +3696,7 @@ export class RuntimeBridge {
       ...(payloadString(item.event, "model_attempt_id")
         ? { modelAttemptId: payloadString(item.event, "model_attempt_id")! }
         : {}),
-      ...(item.event.topic === "chat/progress" &&
-      item.event.payload.disposition === "provider_wait"
-        ? { providerRecovery: { startedAt: item.event.timestamp } }
-        : {}),
+      ...(recovery ? { providerRecovery: recovery } : {}),
       ...(publicOutput
         ? {
             incomplete: item.event.payload.complete !== true,
@@ -3655,7 +3706,7 @@ export class RuntimeBridge {
       ...(item.event.sequence === undefined
         ? {}
         : { sequence: item.event.sequence }),
-      text,
+      text: text ?? "",
       createdAt: item.visible_at,
       kind: publicOutput ? "reply" : item.display_kind,
     };

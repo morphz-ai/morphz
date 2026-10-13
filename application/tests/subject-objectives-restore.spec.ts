@@ -422,7 +422,7 @@ test("无目标不造空块，截断与旧状态如实说明，不用新状态�
 }) => {
   const f = await prepare(page);
   const goals = f.panel.getByRole("region", { name: "目标", exact: true });
-  const related = goals.locator('[data-objective-id="TEST-related-goal"]');
+  const related = f.panel.locator('[data-objective-id="TEST-related-goal"]');
   const heading = related.locator(".subject-objective-heading");
   await heading.click();
   f.runtime.connected = false;
@@ -460,6 +460,91 @@ test("无目标不造空块，截断与旧状态如实说明，不用新状态�
   await f.refresh();
   await expect(goals).toContainText("目标概览尚不完整");
   await expect(goals.locator(".subject-objective")).toHaveCount(0);
+  await expect(await openInput(page)).toHaveValue(f.draft);
+  expect(f.writes).toEqual([]);
+});
+
+test("完成、停止、失败目标退出当前区，历史默认折叠且仍可查看原执行；未知目标不隐藏", async ({
+  page,
+}) => {
+  const f = await prepare(page);
+  const original = f.runtime.activity.objectives[0]!;
+  original.status = "completed";
+  for (const status of ["cancelled", "failed", "TEST-unknown"])
+    f.runtime.activity.objectives.push({
+      ...original,
+      id: `TEST-goal-${status}`,
+      title: `TEST 目标状态 ${status}`,
+      status,
+    });
+  await f.refresh();
+  const current = f.panel.getByRole("region", { name: "目标", exact: true });
+  const history = f.panel.locator(".subject-objective-history");
+  const ended = f.panel.getByRole("region", {
+    name: "已结束目标",
+    exact: true,
+  });
+  await expect(current.locator(".subject-objective")).toHaveCount(2);
+  await expect(current).toContainText("TEST 尚无执行的其他工作面目标");
+  await expect(current).toContainText("TEST 目标状态 TEST-unknown");
+  await expect(history).not.toHaveAttribute("open");
+  await expect(history.locator(":scope > summary")).toHaveText("已结束目标3");
+  await expect(ended).not.toBeVisible();
+  await history.locator(":scope > summary").click();
+  await expect(ended.locator(".subject-objective")).toHaveCount(3);
+  for (const label of ["已完成", "已停止", "失败"])
+    await expect(ended).toContainText(label);
+  const goal = ended.locator('[data-objective-id="TEST-related-goal"]');
+  await goal.locator(".subject-objective-heading").click();
+  await goal
+    .getByRole("button", {
+      name: "生成 BailingHub 评估文档并导出 PDF · 已结束",
+      exact: true,
+    })
+    .click();
+  const scoped = f.panel.getByRole("region", { name: "关联目标", exact: true });
+  await expect(scoped).toContainText("TEST 保证报告内容可核对");
+  await expect(scoped).toContainText("已完成");
+  await expect(f.panel.locator(".subject-objective-history")).toHaveCount(0);
+  await f.panel
+    .getByRole("button", { name: "返回活动列表", exact: true })
+    .click();
+  await expect(history).toHaveAttribute("open");
+  await page.reload();
+  await expect(history).toHaveAttribute("open");
+  await history.locator(":scope > summary").focus();
+  await page.keyboard.press("Enter");
+  await expect(history).not.toHaveAttribute("open");
+  original.updatedAt = "2026-10-13T12:00:00Z";
+  await f.refresh();
+  await expect(history).not.toHaveAttribute("open");
+  await page.reload();
+  await expect(history).not.toHaveAttribute("open");
+  await expect(await openInput(page)).toHaveValue(f.draft);
+  expect(f.writes).toEqual([]);
+});
+
+test("正在查看的目标结束时保留展开阅读，手动收起后新状态不再展开历史", async ({
+  page,
+}) => {
+  const f = await prepare(page);
+  const goal = f.panel.locator('[data-objective-id="TEST-related-goal"]');
+  await goal.locator(".subject-objective-heading").click();
+  f.runtime.activity.objectives[0]!.status = "completed";
+  await f.refresh();
+  const history = f.panel.locator(".subject-objective-history");
+  await expect(history).toHaveAttribute("open");
+  await expect(goal.getByRole("status")).toHaveText("已完成");
+  await history.locator(":scope > summary").click();
+  await expect(history).not.toHaveAttribute("open");
+  f.runtime.activity.objectives[0]!.status = "failed";
+  await f.refresh();
+  await expect(history).not.toHaveAttribute("open");
+  await history.locator(":scope > summary").click();
+  await expect(goal.locator(".subject-objective-heading")).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
   await expect(await openInput(page)).toHaveValue(f.draft);
   expect(f.writes).toEqual([]);
 });

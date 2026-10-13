@@ -514,8 +514,15 @@ test("已结束不等于任务成功；失败、取消、暂停及断连不能�
     "cancelled",
   );
   assert.equal(
-    executionActivityStatus(thread({ controlState: "paused" }), true).kind,
+    executionActivityStatus(
+      thread({ controlState: "paused", phase: "waiting" }),
+      true,
+    ).kind,
     "paused",
+  );
+  assert.deepEqual(
+    executionActivityStatus(thread({ controlState: "paused" }), true),
+    { kind: "running", label: "执行中 · 后续已暂停" },
   );
   assert.equal(executionActivityStatus(thread(), false).kind, "unknown");
   assert.equal(

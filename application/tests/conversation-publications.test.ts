@@ -253,7 +253,11 @@ test("a durable progress message replaces only its own streamed words, never a p
   assert.deepEqual(renderMessages(page([partial, progress])), [progress]);
   const waiting = {
     ...progress,
-    providerRecovery: { startedAt: visibleAt },
+    providerRecovery: {
+      startedAt: visibleAt,
+      phase: "waiting" as const,
+      reason: "service" as const,
+    },
   };
   assert.deepEqual(renderMessages(page([partial, waiting])), [
     partial,

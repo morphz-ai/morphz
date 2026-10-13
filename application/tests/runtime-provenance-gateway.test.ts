@@ -265,15 +265,24 @@ async function viewerGatewayFixture(t: TestContext, viewerIsMember = true) {
       response.writeHead(403).end(JSON.stringify({ error: "forbidden" }));
       return;
     }
-    const value = request.url?.endsWith("/threads/thread-one")
-      ? { snapshot: { thread } }
-      : request.url?.endsWith("/events/event-one")
-        ? { event }
-        : {
-            id: "schedule-one",
-            thread_id: thread.id,
-            source_turn_id: event.id,
-          };
+    const value = request.url?.endsWith("/threads/thread-one/input-source")
+      ? {
+          thread,
+          source: {
+            kind: "input",
+            root_thread_id: thread.id,
+            input_event: event,
+          },
+        }
+      : request.url?.endsWith("/threads/thread-one")
+        ? { snapshot: { thread } }
+        : request.url?.endsWith("/events/event-one")
+          ? { event }
+          : {
+              id: "schedule-one",
+              thread_id: thread.id,
+              source_turn_id: event.id,
+            };
     response.end(JSON.stringify(value));
   });
   t.after(async () => {
@@ -349,8 +358,7 @@ test("controlled HTTP: Bob reads Alice provenance as Bob, including after Alice 
       authorization,
     })),
     [
-      "/api/sessions/session-one/threads/thread-one",
-      "/api/sessions/session-one/events/event-one",
+      "/api/sessions/session-one/threads/thread-one/input-source",
       "/api/sessions/session-one/schedules/schedule-one",
     ].map((path) => ({
       method: "GET",

@@ -66,159 +66,193 @@ const parentThread = {
   executor_id: null,
 };
 
+/** Controlled current Runtime proof DTOs; ancestry itself is tested against the
+ * actual Runtime/SQL owner, not reconstructed in this Host fixture. */
 function evidence(
-  threads: Record<string, unknown> = { "thread-1": parentThread },
-  events: Record<string, unknown> = { "event-1": inputEvent },
+  source: unknown = {
+    kind: "input",
+    input_event: inputEvent,
+    root_thread_id: parentThread.id,
+  },
+  thread: unknown = parentThread,
 ): RuntimeInputEvidenceReader {
   return {
-    async readThread(_sessionId, threadId) {
-      return { snapshot: { thread: threads[threadId] } };
+    async readThreadInputSource(sessionId, threadId, principal) {
+      assert.equal(sessionId, route.session_id);
+      assert.equal(threadId, (thread as typeof parentThread).id);
+      assert.equal(principal, route.principal_id);
+      return { thread, source };
     },
-    async readSessionEvent(_sessionId, eventId) {
-      return events[eventId] ?? null;
+    async readThread() {
+      throw new Error("Host must not walk its own ancestry");
+    },
+    async readSessionEvent() {
+      throw new Error("Host must not look up a synthetic root Event");
     },
   };
 }
-
-test("Runtime 原始输入可独立于旧 workspace JSON 绑定实际执行 Thread", async () => {
+test("Host reads one Runtime-owned source proof, including exact authenticated input", async () => {
   assert.deepEqual(await resolveRuntimeInputEvidence(route, evidence()), {
     runtimePrincipalId: "runtime-human-1",
-    runtimeEventId: "event-1",
+    runtimeEventId: inputEvent.id,
     inputId: "input-1",
     projectId: "project-1",
     claimedActantId: "claimed-human-actant",
-    sessionId: "session-1",
-    contextId: "context-1",
+    sessionId: route.session_id,
+    contextId: route.context_id,
+    inputEvent,
   });
 });
-
-test("只接受 Runtime 签发的类型化输入，不把旧扁平 JSON 当成来源证明", async () => {
-  const flat = {
-    ...inputEvent,
-    payload: {
-      ...inputEvent.payload,
-      session_io: {
-        request: {
-          ...inputEvent.payload.session_io.request,
-          message: {
-            ...inputEvent.payload.session_io.request.message,
-            content: {
-              encoding: "json",
-              value: {
-                input_id: "input-1",
-                workspace_id: "project-1",
-                author_actant_id: "claimed-human-actant",
-              },
+test("Goal / spawn / infer roots are execution identities, never guessed Human Event IDs", async () => {
+  for (const root of [
+    "objective-root",
+    "spawn-root",
+    "infer-request-root",
+    "resumed-root",
+  ]) {
+    const thread = { ...parentThread, root_turn_id: root };
+    assert.equal(
+      (await resolveRuntimeInputEvidence(route, evidence(undefined, thread)))
+        .inputId,
+      "input-1",
+    );
+  }
+  await assert.rejects(
+    resolveRuntimeInputEvidence(route, evidence(null)),
+    /未绑定/,
+  );
+});
+test("direct admitted Goal source may have an exact Human Event without an ordinary source Thread", async () => {
+  const source = {
+    kind: "input",
+    input_event: inputEvent,
+    root_thread_id: null,
+  };
+  const thread = { ...parentThread, root_turn_id: "objective-primary-root" };
+  assert.equal(
+    (await resolveRuntimeInputEvidence(route, evidence(source, thread)))
+      .inputId,
+    "input-1",
+  );
+});
+test("unverifiable or cross-scope proofs fail closed without fallback or source rewriting", async () => {
+  for (const key of [
+    "session_id",
+    "context_id",
+    "initiating_principal_id",
+    "agent_id",
+  ]) {
+    const thread = { ...parentThread, [key]: "foreign" };
+    await assert.rejects(
+      resolveRuntimeInputEvidence(route, evidence(undefined, thread)),
+      /未绑定/,
+    );
+  }
+  for (const key of [
+    "session_id",
+    "context_id",
+    "principal_id",
+    "client_message_id",
+  ]) {
+    const wrong = {
+      ...inputEvent,
+      payload: { ...inputEvent.payload, [key]: "foreign" },
+    };
+    await assert.rejects(
+      resolveRuntimeInputEvidence(
+        route,
+        evidence({
+          kind: "input",
+          input_event: wrong,
+          root_thread_id: parentThread.id,
+        }),
+      ),
+      /未绑定/,
+    );
+  }
+  for (const wrong of [
+    { ...inputEvent, actor: "Agent-Morphz" },
+    { ...inputEvent, type: "agent_call" },
+    { ...inputEvent, topic: "chat/reply" },
+    {
+      ...inputEvent,
+      payload: {
+        ...inputEvent.payload,
+        session_io: {
+          request: {
+            ...inputEvent.payload.session_io.request,
+            message: {
+              format: { id: "morphz.chat", version: "1" },
+              content: inputEvent.payload.session_io.request.message.content,
             },
           },
         },
       },
     },
-  };
-  await assert.rejects(
-    resolveRuntimeInputEvidence(
-      route,
-      evidence(undefined, { "event-1": flat }),
-    ),
-    /未绑定/,
-  );
-});
-
-test("受信 Runtime 传输按事件 ID 精确读取，不再扫描最近消息页", async () => {
-  const paths: string[] = [];
-  const reader = runtimeHttpInputEvidenceReader(async (path) => {
-    paths.push(path);
-    return path.includes("/events/")
-      ? { event: inputEvent }
-      : { snapshot: { thread: parentThread } };
-  });
-  await reader.readThread("session/one", "thread?one");
-  await reader.readSessionEvent("session/one", "event?one");
-  await reader.readSessionSchedule?.("session/one", "schedule?one");
-  await reader.readThread("session/one", "thread?one", "context/one");
-  assert.deepEqual(paths, [
-    "/api/sessions/session%2Fone/threads/thread%3Fone",
-    "/api/sessions/session%2Fone/events/event%3Fone",
-    "/api/sessions/session%2Fone/schedules/schedule%3Fone",
-    "/api/contexts/context%2Fone/threads/thread%3Fone",
-  ]);
-});
-
-test("真实 spawn 父链继承原始输入，跨域身份、循环、缺失祖先与超预算均失败关闭", async () => {
-  const child = {
-    ...parentThread,
-    id: "child",
-    root_turn_id: "distinct-child-root",
-    supervision: { parent_thread_id: parentThread.id },
-  };
-  const grand = {
-    ...child,
-    id: "grand",
-    root_turn_id: "distinct-grand-root",
-    supervision: { parent_thread_id: child.id },
-  };
-  const branchRoute = { ...route, thread_id: grand.id };
-  const family = {
-    [parentThread.id]: parentThread,
-    [child.id]: child,
-    [grand.id]: grand,
-  };
-  assert.equal(
-    (await resolveRuntimeInputEvidence(branchRoute, evidence(family)))
-      .runtimeEventId,
-    inputEvent.id,
-  );
-  for (const patch of [
-    { context_id: "private-context" },
-    { session_id: "other-session" },
-    { agent_id: "other-agent" },
-    { initiating_principal_id: "other-human" },
-    { id: "forged-response-id" },
-    { supervision: { parent_thread_id: grand.id } },
-    { supervision: { parent_thread_id: "missing" } },
+    {
+      ...inputEvent,
+      payload: {
+        ...inputEvent.payload,
+        session_io: {
+          request: {
+            ...inputEvent.payload.session_io.request,
+            message: {
+              format: { id: "morphz.application.input", version: "1" },
+              content: { encoding: "json", value: { input_id: "input-1" } },
+            },
+          },
+        },
+      },
+    },
   ])
     await assert.rejects(
       resolveRuntimeInputEvidence(
-        branchRoute,
-        evidence({ ...family, [child.id]: { ...child, ...patch } }),
+        route,
+        evidence({
+          kind: "input",
+          input_event: wrong,
+          root_thread_id: parentThread.id,
+        }),
       ),
       /未绑定/,
     );
-  await assert.rejects(
-    resolveRuntimeInputEvidence(branchRoute, evidence(family, {})),
-    /未绑定/,
-  );
-  const long: Record<string, unknown> = { [parentThread.id]: parentThread };
-  for (let i = 0; i < 64; i++)
-    long[`deep-${i}`] = {
-      ...child,
-      id: `deep-${i}`,
-      supervision: {
-        parent_thread_id: i === 63 ? parentThread.id : `deep-${i + 1}`,
-      },
-    };
-  await assert.rejects(
-    resolveRuntimeInputEvidence(
-      { ...route, thread_id: "deep-0" },
-      evidence(long),
-    ),
-    /未绑定/,
-  );
 });
-
-test("后台事项只凭精确 Runtime Schedule、Thread 与已提交准入回溯来源", async () => {
-  const key = "a".repeat(40);
-  const scheduleId = `task_${key}`;
-  const rootId = `client-schedule-${scheduleId}`;
-  const scheduleThread = {
-    ...parentThread,
-    id: "scheduled-thread",
-    root_turn_id: rootId,
-    executor_kind: "self",
+test("trusted HTTP source read is exact, encoded, carries the initiating principal and uses no Context operator endpoint", async () => {
+  const reads: Array<{ path: string; principal?: string }> = [];
+  const reader = runtimeHttpInputEvidenceReader(async (path, principal) => {
+    reads.push({ path, principal });
+    return { event: inputEvent };
+  });
+  await reader.readThreadInputSource(
+    "session/one",
+    "thread?one",
+    "runtime-alice",
+  );
+  await reader.readThread("session/one", "thread?one", "context/one");
+  await reader.readSessionEvent("session/one", "event?one");
+  await reader.readSessionSchedule!("session/one", "schedule?one");
+  assert.deepEqual(
+    reads.map((r) => r.path),
+    [
+      "/api/sessions/session%2Fone/threads/thread%3Fone/input-source",
+      "/api/contexts/context%2Fone/threads/thread%3Fone",
+      "/api/sessions/session%2Fone/events/event%3Fone",
+      "/api/sessions/session%2Fone/schedules/schedule%3Fone",
+    ],
+  );
+  assert.equal(reads[0]!.principal, "runtime-alice");
+});
+test("scheduled execution requires the exact Runtime Schedule proof and committed Platform admission", async () => {
+  const key = "a".repeat(40),
+    scheduleId = "task_" + key;
+  const source = {
+    kind: "schedule",
+    schedule_id: scheduleId,
+    source_turn_id: "client-schedule-" + scheduleId,
+    root_thread_id: "scheduled-root-thread",
   };
-  const scheduledRoute = { ...route, thread_id: scheduleThread.id };
   const admission = taskRunAdmissionSchema.parse({
-    eventId: `task_run_${key}`,
+    eventId: "task_run_" + key,
     tenantId: "tenant-one",
     taskId: "task-one",
     projectId: "project-one",
@@ -240,231 +274,53 @@ test("后台事项只凭精确 Runtime Schedule、Thread 与已提交准入回�
     sourceSignature: "[]",
     watchSourceIds: [],
   });
-  const schedule = {
-    id: scheduleId,
-    thread_id: scheduleThread.id,
-    source_turn_id: rootId,
-  };
-  let reads = 0;
-  const reader: RuntimeInputEvidenceReader = {
-    async readThread(sessionId, threadId) {
-      assert.equal(sessionId, route.session_id);
-      return {
-        snapshot: {
-          thread: threadId === scheduleThread.id ? scheduleThread : null,
-        },
-      };
-    },
-    async readSessionEvent() {
-      throw new Error("普通输入事件不应成为后台事项的来源");
-    },
-    async readSessionSchedule(sessionId, id) {
-      assert.equal(sessionId, route.session_id);
-      assert.equal(id, scheduleId);
-      reads++;
-      return schedule;
-    },
-  };
   const lookup = async (sessionId: string, id: string) => {
     assert.equal(sessionId, route.session_id);
     assert.equal(id, scheduleId);
     return admission;
   };
   const resolved = await resolveRuntimeTaskRunEvidence(
-    scheduledRoute,
-    reader,
+    route,
+    evidence(source),
     lookup,
   );
   assert.equal(resolved.admission, admission);
-  assert.equal(resolved.rootThreadId, scheduleThread.id);
-  assert.equal(reads, 1);
-  const child = {
-    ...scheduleThread,
-    id: "scheduled-infer",
-    root_turn_id: "scheduled-infer-event",
-    executor_kind: "plan_infer",
-    executor_id: "scheduled-plan",
-  };
-  const infer = {
-    id: child.root_turn_id,
-    actor: "Runtime-Yao",
-    type: "infer_request",
-    topic: "chat/infer_request",
-    payload: {
-      plan_execution_id: child.executor_id,
-      root_turn_id: child.root_turn_id,
-      parent_thread_id: scheduleThread.id,
-      session_id: route.session_id,
-      context_id: route.context_id,
-      principal_id: route.principal_id,
-      agent_id: route.agent_id,
-    },
-  };
-  assert.equal(
-    (
-      await resolveRuntimeTaskRunEvidence(
-        { ...scheduledRoute, thread_id: child.id },
-        {
-          ...reader,
-          readThread: async (_sessionId, threadId) => ({
-            snapshot: {
-              thread: threadId === child.id ? child : scheduleThread,
-            },
-          }),
-          readSessionEvent: async () => infer,
-        },
-        lookup,
-      )
-    ).rootThreadId,
-    scheduleThread.id,
+  assert.equal(resolved.rootThreadId, source.root_thread_id);
+  await assert.rejects(
+    resolveRuntimeInputEvidence(route, evidence(source)),
+    /未绑定/,
   );
   await assert.rejects(
-    resolveRuntimeTaskRunEvidence(
-      { ...scheduledRoute, thread_id: child.id },
-      {
-        ...reader,
-        readThread: async (_sessionId, threadId) => ({
-          snapshot: { thread: threadId === child.id ? child : scheduleThread },
-        }),
-        readSessionEvent: async () => ({
-          ...infer,
-          payload: { ...infer.payload, parent_thread_id: child.id },
-        }),
-      },
-      lookup,
-    ),
+    resolveRuntimeTaskRunEvidence(route, evidence(), lookup),
     /未绑定/,
   );
   for (const wrong of [
-    { ...schedule, thread_id: "other-thread" },
-    { ...schedule, source_turn_id: "other-root" },
-    { ...schedule, id: "other-schedule" },
+    { ...admission, sessionId: "foreign" },
+    { ...admission, eventId: "foreign" },
+    { ...admission, request: { ...admission.request, id: "foreign" } },
   ])
     await assert.rejects(
-      resolveRuntimeTaskRunEvidence(
-        scheduledRoute,
-        { ...reader, readSessionSchedule: async () => wrong },
-        lookup,
-      ),
+      resolveRuntimeTaskRunEvidence(route, evidence(source), async () => wrong),
       /未绑定/,
     );
   await assert.rejects(
-    resolveRuntimeTaskRunEvidence(scheduledRoute, reader, async () => ({
-      ...admission,
-      sessionId: "other-session",
-    })),
-    /未绑定/,
-  );
-  await assert.rejects(
     resolveRuntimeTaskRunEvidence(
-      { ...scheduledRoute, principal_id: "forged-principal" },
-      reader,
-      lookup,
-    ),
-    /未绑定/,
-  );
-  await assert.rejects(
-    resolveRuntimeTaskRunEvidence(
-      scheduledRoute,
-      evidence({
-        [scheduleThread.id]: scheduleThread,
-      }),
+      route,
+      evidence({ ...source, source_turn_id: "foreign" }),
       lookup,
     ),
     /未绑定/,
   );
 });
-
-test("Yao infer 子线程只沿 Runtime 签发的同身份父链继承输入", async () => {
-  const child = {
-    ...parentThread,
-    id: "thread-infer",
-    root_turn_id: "infer-event",
-    executor_kind: "plan_infer",
-    executor_id: "plan-1",
-  };
-  const inferEvent = {
-    id: "infer-event",
-    actor: "Runtime-Yao",
-    type: "infer_request",
-    topic: "chat/infer_request",
-    payload: {
-      plan_execution_id: "plan-1",
-      root_turn_id: "infer-event",
-      parent_thread_id: "thread-1",
-      session_id: "session-1",
-      context_id: "context-1",
-      principal_id: "runtime-human-1",
-      agent_id: "agent-1",
-    },
-  };
-  const childRoute = { ...route, thread_id: "thread-infer" };
-  const reader = evidence(
-    { "thread-1": parentThread, "thread-infer": child },
-    { "event-1": inputEvent, "infer-event": inferEvent },
-  );
-  assert.equal(
-    (await resolveRuntimeInputEvidence(childRoute, reader)).inputId,
-    "input-1",
-  );
+test("Runtime read failure is not evidence of missing Human authorization and cannot fall back", async () => {
+  const failure = new Error("controlled unavailable transport");
   await assert.rejects(
-    resolveRuntimeInputEvidence(
-      childRoute,
-      evidence(
-        { "thread-1": parentThread, "thread-infer": child },
-        {
-          "event-1": inputEvent,
-          "infer-event": {
-            ...inferEvent,
-            payload: {
-              ...inferEvent.payload,
-              parent_thread_id: "thread-infer",
-            },
-          },
-        },
-      ),
-    ),
-    /未绑定/,
+    resolveRuntimeInputEvidence(route, {
+      ...evidence(),
+      async readThreadInputSource() {
+        throw failure;
+      },
+    }),
+    (e) => e === failure,
   );
-});
-
-test("跨身份、跨 Session、伪造输入 ID 与普通聊天都不能获得应用输入来源", async () => {
-  const failures = [
-    { route: { ...route, principal_id: "other-human" }, reader: evidence() },
-    { route: { ...route, session_id: "other-session" }, reader: evidence() },
-    {
-      route,
-      reader: evidence(undefined, {
-        "event-1": {
-          ...inputEvent,
-          payload: { ...inputEvent.payload, client_message_id: "other-input" },
-        },
-      }),
-    },
-    {
-      route,
-      reader: evidence(undefined, {
-        "event-1": {
-          ...inputEvent,
-          payload: {
-            ...inputEvent.payload,
-            session_io: {
-              request: {
-                ...inputEvent.payload.session_io.request,
-                message: {
-                  ...inputEvent.payload.session_io.request.message,
-                  format: { id: "morphz.chat", version: "1" },
-                },
-              },
-            },
-          },
-        },
-      }),
-    },
-  ];
-  for (const value of failures)
-    await assert.rejects(
-      resolveRuntimeInputEvidence(value.route, value.reader),
-      /未绑定/,
-    );
 });

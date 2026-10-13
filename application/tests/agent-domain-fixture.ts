@@ -149,6 +149,20 @@ export async function agentDomainFixture(
       resolveScope = value;
     },
     inputEvidenceReader: () => ({
+      async readThreadInputSource(sessionId: string, threadId: string) {
+        const { snapshot } = await this.readThread(sessionId, threadId);
+        return {
+          thread: snapshot.thread,
+          source: {
+            kind: "input",
+            root_thread_id: threadId,
+            input_event: await this.readSessionEvent(
+              sessionId,
+              snapshot.thread.root_turn_id,
+            ),
+          },
+        };
+      },
       async readThread(sessionId: string, threadId: string) {
         const root = roots.get(threadId);
         if (!root || root.route.session_id !== sessionId)

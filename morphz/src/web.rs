@@ -1518,6 +1518,10 @@ impl Server {
                 get(handle_get_session_thread),
             )
             .route(
+                "/api/sessions/:session_id/threads/:thread_id/input-source",
+                get(handle_get_session_thread_input_source),
+            )
+            .route(
                 "/api/sessions/:session_id/threads/:thread_id/annotations",
                 get(handle_get_session_thread_annotations),
             )
@@ -8638,6 +8642,40 @@ async fn handle_get_session_thread(
         }))
         .into_response(),
         Ok(Some(_)) | Ok(None) => error_response(StatusCode::NOT_FOUND, "Session Thread not found"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_get_session_thread_input_source(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, thread_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let session = match authorize_session_read(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+        &session_id,
+    )
+    .await
+    {
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .runtime
+        .session_thread_input_source(&session_id, &thread_id)
+        .await
+    {
+        Ok(Some(view)) if view.thread.context_id == session.context_id => {
+            Json(view).into_response()
+        }
+        Ok(_) => error_response(StatusCode::NOT_FOUND, "Session Thread not found"),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }

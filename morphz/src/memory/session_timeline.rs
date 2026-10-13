@@ -119,6 +119,24 @@ pub(crate) fn classify(event: &Event, sequence: i64) -> Option<TimelineMutation>
             root?,
             event.timestamp,
         ),
+        "runtime/provider_recovered"
+            if event.actor == "Runtime-ProviderRecovery"
+                && event.event_type == crate::event::TYPE_TOOL_OUTPUT
+                && event.payload.get("runtime_force_evaluation")
+                    == Some(&serde_json::json!(true))
+                && string(event, "dependency_id").is_some()
+                && string(event, "recovery_event_id").is_some() =>
+        {
+            (
+                // Metadata-only status. A resumed wake is not a reply or proof of
+                // completed work; exact input provenance is checked by Runtime.
+                MutationKind::Progress,
+                "progress",
+                event.id.clone(),
+                root?,
+                event.timestamp,
+            )
+        }
         _ => return None,
     };
     Some(TimelineMutation {

@@ -2,6 +2,7 @@ import { memo, startTransition, useCallback, useEffect, useMemo, useReducer, use
 import type { CSSProperties, RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import { BrandMark } from './BrandMark'
+import { objectiveIsTerminal } from '../../sdk/typescript/src/runtime-state'
 import type { TFunction } from 'i18next'
 import ReactMarkdown from 'react-markdown'
 import { SessionIoMessage } from './components/SessionIoMessage'
@@ -2284,7 +2285,6 @@ export function DialogueActivityDock({
   )
 }
 
-const terminalObjectiveStatuses = new Set(['completed', 'cancelled', 'failed'])
 const terminalTaskStatuses = new Set(['completed', 'cancelled', 'failed', 'succeeded', 'killed'])
 
 function summarizeActivation(
@@ -5689,7 +5689,7 @@ export default function App() {
     () => new Map(toolTimeline.map(call => [call.id, call])),
     [toolTimeline],
   )
-  const activeObjectives = objectives.filter(item => !terminalObjectiveStatuses.has(item.status))
+  const activeObjectives = objectives.filter(item => !objectiveIsTerminal(item.status))
   const runningObjectives = activeObjectives.filter(item => item.status === 'active')
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
   const waitingUserObjectives = runningObjectives.filter(item => item.wait_condition?.kind === 'user_input')

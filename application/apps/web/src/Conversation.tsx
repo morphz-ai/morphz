@@ -69,7 +69,7 @@ import {
   isPendingResponse,
   responseAnswered,
   messageSourceSummary,
-  responseWaitingLabel,
+  responseWaitingPresentation,
 } from "./conversation-presentation.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { liveToolPresentation } from "./execution-presentation.js";
@@ -351,13 +351,13 @@ export function Conversation({
       )
         return [];
       const connected = client.online && runtime.connected;
-      const label = responseWaitingLabel(
+      const presentation = responseWaitingPresentation(
         delivery,
         group.messages,
         connected,
         stopStates[delivery.inputId]?.pending,
       );
-      return [[group.id, { label, connected }] as const];
+      return [[group.id, presentation] as const];
     }),
   );
   const deliveryItems = outputs.map((o) => ({

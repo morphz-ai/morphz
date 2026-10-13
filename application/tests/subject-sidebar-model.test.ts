@@ -13,11 +13,18 @@ import {
 import {
   liveArrangement,
   objectiveStatus,
+  objectiveIsTerminal,
   objectiveDetailStatus,
   subjectStatus,
 } from "../apps/web/src/subject-sidebar-model.js";
 
 type Thread = ExecutionActivity["threads"][number];
+test("与 Dashboard 共用目标终态语义；暂停、阻塞和未知不能收进已结束历史", () => {
+  for (const status of ["completed", "cancelled", "failed"])
+    assert.equal(objectiveIsTerminal(status), true);
+  for (const status of ["active", "paused", "blocked", "future-status"])
+    assert.equal(objectiveIsTerminal(status), false);
+});
 test("目标说明来自结构化状态，不解析或伪造 Runtime 原始原因", () => {
   for (const [readiness, label] of [
     ["runnable", "等待推进"],
@@ -142,16 +149,26 @@ test("主体不把暂停、等待、对话或终态执行称为正在推进", ()
       runtime({ activity: { available: true, truncated, threads } }),
       true,
     );
-  assert.equal(status([thread({ controlState: "paused" })]), "1 项工作已暂停");
   assert.equal(
-    status([thread({ controlState: "paused" })], true),
+    status([thread({ controlState: "paused", phase: "waiting" })]),
+    "1 项工作已暂停",
+  );
+  assert.equal(
+    status([thread({ controlState: "paused", phase: "waiting" })], true),
     "至少 1 项工作已暂停",
   );
   assert.equal(status([thread({ phase: "waiting" })]), "1 项工作等待后续条件");
   assert.equal(status([thread({ phase: "idle" })]), "1 项工作等待后续条件");
   assert.equal(status([thread()]), "1 项工作正在推进");
   assert.equal(
-    status([thread(), thread({ id: "paused", controlState: "paused" })]),
+    status([thread({ controlState: "paused" })]),
+    "1 项工作正在推进，后续已暂停",
+  );
+  assert.equal(
+    status([
+      thread(),
+      thread({ id: "paused", controlState: "paused", phase: "waiting" }),
+    ]),
     "1 项工作正在推进",
   );
   assert.equal(

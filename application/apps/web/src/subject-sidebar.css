@@ -150,6 +150,36 @@
 .subject-objectives {
   margin-bottom: 20px;
 }
+.subject-objective-history > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+  list-style: none;
+}
+.subject-objective-history > summary::-webkit-details-marker {
+  display: none;
+}
+.subject-objective-history > summary small {
+  font-size: 11px;
+}
+.subject-objective-history > summary svg {
+  margin-left: auto;
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.subject-objective-history[open] > summary svg {
+  transform: rotate(90deg);
+}
+@media (pointer: coarse) {
+  .subject-objective-history > summary {
+    min-height: 44px;
+  }
+}
 .subject-objective-detail {
   border-left: 1px solid var(--line);
   margin: 0 8px 12px 17px;

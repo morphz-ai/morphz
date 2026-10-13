@@ -1,5 +1,83 @@
 # 桌面能力实施记录
 
+## 2026-10-13 Host 来源、Provider 恢复与 Dashboard 状态对齐
+
+原 Host IPC 的只读 operations 查询已复现拒绝：Goal 主线程的执行根
+不是 Human Event，Host 自行追溯后按执行根读 Event 得到 404，IPC
+笼统返回 unavailable；Runtime 又丢掉拒绝码。原发起输入实际存在。
+
+现在使用 Runtime 的精确 Session／Thread 输入来源接口，UI 来源投影
+与 Host 共用同一个 Owner 解析。复用 Thread、Goal 创建 Event／Activation、
+Schedule 及 infer 父链，64 层、循环与 Context／Session／principal／Agent
+守门；来源分为原输入或确切 Schedule。直接准入 Goal／adopted Schedule
+可有确切原输入而无普通来源 Thread，此时明确返回 null，不造 Thread ID；
+事项需要具体来源 Thread 的准入证明仍拒绝缺失。Host 不再维护第二套
+祖先推断，不依赖本机投递账本；当前 Platform 成员、项目、对象权限、
+事项已提交准入及固定工作流停止守门继续逐调用核验。read-input 从原始
+冻结载荷按需取元数据，不替 Agent 展开附件正文。没有新持久实体、权限
+表、双写或凭据副本；来源不是额外授权。IPC 保留固定的拒绝／来源未证实
+／服务不可用码，不反射 Host 私密文本，未知写结果仍须核对而非盲重试。
+
+16:50 的真实请求实际收到 Provider 401，进入 authentication provider_wait，
+不是持续重试 37 分钟。查明此前人工重启误把旧环境文件的豆包 key 绑定给
+本机代理；代理当前配置的唯一 key 有效，模型仍可用。此次重新绑定已核验
+的原代理凭据，原模型、账号与配置文件不变。launcher 仅接受明确的私密
+文件／键名或进程环境来源，不搜索旧 key、不复制凭据；正常重开 Desktop
+无需再次填写 key。原 App 18:26 的真实 ping 回复与后续用户输入均已出现，
+不是用模拟 Provider 的结果冒称生产模型恢复。
+
+等待投影按 Runtime 结构化失败种类区分认证、配置、额度、暂时服务故障，
+前几类不显示持续重试动效与累积计时，不解析错误字符串猜原因。确切的
+Runtime-ProviderRecovery 回执才能清除原输入的旧等待；乱序、另一输入和
+再次失败均守门。恢复元数据沿原 Session timeline 的 progress 索引重建，
+仅更新既有索引版本并有界回填 immutable Events，不建消息副本、空进展
+卡片或业务重放。这里的 final_event 是固定索引来源，不等于回复完成。
+
+原重写目标已在 14:09 completed。Desktop 的终态标记正确，但错误地仍把
+它放在当前目标区。现在与 Dashboard 共用 SDK 的明确终态判断，将完成、
+停止、失败收进默认折叠的「已结束目标」；暂停、阻塞、未知及没有执行的
+目标继续显示，关联执行详情仍可查看结束目标。刷新不改用户历史折叠，
+正在阅读的目标结束时保留其阅读，明确收起后更新不再自动展开。另核对
+物理 running 与控制 paused：暂停仅限制后续时，当前步骤仍显示执行中，
+不会被称为已经停止。没有增加新 Goal、LLM 请求或第二份客户端状态库。
+
+验证范围：正式 Node 入口相关 21 文件 120／120、无跳过，开启三项实际 Rust 集成，
+包括实际 scheduled/infer Host 来源与 Profile、当前唯一 Host 调用；SQLite
+与独立 PostgreSQL 权限、撤权、重开、幂等反例均覆盖，不调用外部付费模型。
+浏览器相关五文件 39／39，覆盖目标当前／历史、四线程、定时分组、主题、窄栏、
+两倍布局、触控、草稿及恢复状态。SDK 16／16、Dashboard 原有 245／245；
+Runtime 来源矩阵两库各 1／1，完整 Store conformance 两库通过，SQLite
+附加两进程所有权／CAS 组合也通过；Host Unix transport 9／9，固定错误码
+及不反射私密文本均验证。构建及格式／差异检查通过；这些是
+相关范围，不是全仓零缺陷声明。最初磁盘不足、默认 Chrome 不存在和
+文案测试未同步的失败保留；不删原行为断言、不降 PostgreSQL 门禁。
+
+原 Morphz.app 正常退出重开同一 Profile／Center，并刷新最终前端。实窗
+当前目标区只剩两项未结束目标，历史展开可见原小说 completed、14 个关联
+执行，F 分支独立详情及返回均正常；最后收起历史、原空草稿保留。新 API
+对原失败线程读出原 Human 输入，同一只读 Host 查询外层和业务层均成功；
+没有重执行原 Job 或写作。代理认证实际 200；原 4 输入／冻结请求、原稿
+SHA、17 个 Thread 身份／代次、Goal 来源、三份连接配置及两库完整性一致。
+重启前没有 queued／running Activation 或未终态 Job；新阶段接收的九条
+真实输入也逐条保留。没有重发消息、停止业务或要求重新输入凭据。
+
+磁盘按明确范围清理已完成构建的旧 rcgu 对象与过期增量变体，保留近期
+增量、依赖、fingerprint／build／release 和可执行文件，未执行 cargo clean。
+原 target 约 400 GiB，清理及本轮复验后为 194 GiB，其中增量 24 GiB。
+经用户额外确认，删除 10 月 11、12 日两份本机 Time Machine 快照，释放
+其保留旧块；这两个本机还原点不可恢复，外置备份及现有文件未动。真实
+可用空间由约 4 GiB 恢复到 244 GiB，最终构建复验后仍约 240 GiB。三个已核验合并的 Git worktree 已
+移除；两份原脏补丁在主线逐项验证相等，删除前保存可恢复 Git archive refs，
+release 分支／提交保留。截图中的恢复目录和 desktop-capture-backups 是
+备份而不是未合并 checkout，未擅自删除；另一个有未提交工作的网站
+worktree 同样保留。证据仍在 /private/tmp/morphz-comment-concurrency-xnFLNY。
+
+独立诊断边界：16:50 两条问题及随后 ping 已进入同一有界 Signal 批次，
+恢复时模型 Context 事务将当前处理范围限定为 ping，旧反馈仍有记录；
+当时物理请求未保存，不能断言线上正文缺失。本阶段未改批量意图语义，
+也不声称已自动补答历史问题或排除所有可能的 App 卡死根因。后续用户
+新输入的实际回复和原 App 操作已验证正常。本阶段仅本地提交，不推送。
+
 ## 2026-10-13 目标派生消息来源与重试双播收口
 
 用户看到的最后正文停在 13:12，但原 Runtime 已在 14:09 完成重写目标，

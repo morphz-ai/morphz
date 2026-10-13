@@ -4,7 +4,7 @@ import { exchangeDraftLengthError } from "../apps/web/src/host/exchange-draft-va
 import {
   messageSourceSummary,
   responseElapsed,
-  responseWaitingLabel,
+  responseWaitingPresentation,
 } from "../apps/web/src/conversation-presentation.js";
 import {
   searchConversationPage,
@@ -133,13 +133,13 @@ test("等待阶段来自同一输入的真实回执，不从耗时、另一项�
     error: null,
     retryable: false,
   };
-  assert.equal(responseWaitingLabel(d, [], true), "等待回复…");
+  assert.equal(responseWaitingPresentation(d, [], true).label, "等待回复…");
   assert.equal(
-    responseWaitingLabel({ ...d, state: "queued" }, [], true),
+    responseWaitingPresentation({ ...d, state: "queued" }, [], true).label,
     "排队等待…",
   );
   assert.equal(
-    responseWaitingLabel({ ...d, state: "sending" }, [], true),
+    responseWaitingPresentation({ ...d, state: "sending" }, [], true).label,
     "正在发送…",
   );
   const tool = (status: string) =>
@@ -149,30 +149,33 @@ test("等待阶段来自同一输入的真实回执，不从耗时、另一项�
       tool: { name: "host_morphz", status, arguments: "" },
     });
   assert.equal(
-    responseWaitingLabel(d, [tool("running")], true),
+    responseWaitingPresentation(d, [tool("running")], true).label,
     "正在执行工具…",
   );
   assert.equal(
-    responseWaitingLabel(d, [tool("generating")], true),
+    responseWaitingPresentation(d, [tool("generating")], true).label,
     "正在生成工具调用…",
   );
   assert.equal(
-    responseWaitingLabel(d, [tool("pending")], true),
+    responseWaitingPresentation(d, [tool("pending")], true).label,
     "工具调用等待执行…",
   );
   assert.equal(
-    responseWaitingLabel(
+    responseWaitingPresentation(
       d,
       [tool("success"), { ...tool("running"), inputId: "other" }],
       true,
-    ),
+    ).label,
     "等待回复…",
   );
   assert.equal(
-    responseWaitingLabel(d, [tool("running")], false),
+    responseWaitingPresentation(d, [tool("running")], false).label,
     "连接中断，等待恢复",
   );
-  assert.equal(responseWaitingLabel(d, [], true, true), "已请求停止，等待确认");
+  assert.equal(
+    responseWaitingPresentation(d, [], true, true).label,
+    "已请求停止，等待确认",
+  );
 });
 test("耗时是发送后实际经过时间，无效／未来时间不伪造等待或完成", () => {
   const start = "2026-10-11T00:00:00Z",

@@ -49,9 +49,14 @@ export function executionActivityStatus(
     return { kind: "ended", label: "已结束" };
   if (thread.lifecycle !== "open" || !available)
     return { kind: "unknown", label: "状态待核对" };
+  if (thread.phase === "running")
+    return {
+      kind: "running",
+      label:
+        thread.controlState === "paused" ? "执行中 · 后续已暂停" : "执行中",
+    };
   if (thread.controlState === "paused")
     return { kind: "paused", label: "已暂停" };
-  if (thread.phase === "running") return { kind: "running", label: "执行中" };
   if (thread.phase === "runnable") return { kind: "waiting", label: "待执行" };
   if (thread.phase === "waiting") return { kind: "waiting", label: "等待中" };
   if (thread.phase === "idle") return { kind: "waiting", label: "等待唤醒" };

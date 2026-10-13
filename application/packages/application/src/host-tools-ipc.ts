@@ -19,6 +19,8 @@ import {
   hostIdempotentRequests,
 } from "./agent-tools.js";
 import { workInputFormats } from "./session-io.js";
+import { RuntimeInputSourceError } from "./runtime-input-evidence.js";
+import { PlatformStorageError } from "../../platform/src/store.js";
 
 const maxRequest = 4 * 1024 * 1024,
   maxResponse = 2 * 1024 * 1024;
@@ -218,7 +220,13 @@ export async function listenLocalHostTools(
             value: await tools.call(envelope.request),
           });
         } catch (error) {
-          if (error instanceof DomainError && error.code !== "forbidden")
+          if (error instanceof RuntimeInputSourceError)
+            send({ protocol: 1, ok: false, code: error.code });
+          else if (
+            (error instanceof DomainError ||
+              error instanceof PlatformStorageError) &&
+            error.code !== "forbidden"
+          )
             send({
               protocol: 1,
               ok: true,
@@ -234,7 +242,11 @@ export async function listenLocalHostTools(
             send({
               protocol: 1,
               ok: false,
-              code: error instanceof DomainError ? "forbidden" : "unavailable",
+              code:
+                error instanceof DomainError ||
+                error instanceof PlatformStorageError
+                  ? "forbidden"
+                  : "unavailable",
             });
         }
       } catch {

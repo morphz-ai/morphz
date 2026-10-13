@@ -747,6 +747,51 @@ pub struct ThreadDetail {
     pub model_attempt_events: Vec<Event>,
 }
 
+/// Runtime-owned immutable provenance, not a permission grant. A Host must
+/// still recheck the initiating Human's current membership and object access.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ThreadInputSource {
+    Input {
+        input_event: Event,
+        root_thread_id: Option<String>,
+    },
+    Schedule {
+        schedule_id: String,
+        source_turn_id: String,
+        root_thread_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadInputSourceView {
+    pub thread: crate::memory::ThreadRecord,
+    pub source: Option<ThreadInputSource>,
+}
+
+enum ThreadOrigin {
+    Input {
+        source: SchedulerSource,
+        root_thread_id: Option<String>,
+    },
+    Schedule {
+        schedule_id: String,
+        source_turn_id: String,
+        root_thread_id: String,
+    },
+}
+
+fn input_matches_thread_scope(event: &Event, thread: &ThreadRecord) -> bool {
+    let field = |name: &str| event.payload.get(name).and_then(serde_json::Value::as_str);
+    crate::event::is_input_event(event)
+        && field("context_id") == Some(thread.context_id.as_str())
+        && field("session_id") == Some(thread.session_id.as_str())
+        && thread
+            .initiating_principal_id
+            .as_deref()
+            .is_none_or(|principal| field("principal_id") == Some(principal))
+}
+
 /// Minimal immutable lineage facts, not Thread bodies or physical Job data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadFamilyMember {
@@ -8150,6 +8195,24 @@ impl MorphzRuntime {
         context_id: &str,
         threads: &[ThreadRecord],
     ) -> Result<HashMap<String, SchedulerSource>, RuntimeError> {
+        Ok(self
+            .thread_origins(context_id, threads)
+            .await?
+            .into_iter()
+            .filter_map(|(id, origin)| match origin {
+                ThreadOrigin::Input { source, .. } => Some((id, source)),
+                ThreadOrigin::Schedule { .. } => None,
+            })
+            .collect())
+    }
+
+    /// The same bounded owner-side resolver serves UI attribution and Host
+    /// provenance. No client reconstructs Goals, infer or scheduled ancestry.
+    async fn thread_origins(
+        &self,
+        context_id: &str,
+        threads: &[ThreadRecord],
+    ) -> Result<HashMap<String, ThreadOrigin>, RuntimeError> {
         let mut known = threads
             .iter()
             .map(|thread| (thread.id.clone(), thread.clone()))
@@ -8180,6 +8243,7 @@ impl MorphzRuntime {
             for _ in 0..64 {
                 if current.context_id != context_id
                     || current.session_id != original.session_id
+                    || current.agent_id != original.agent_id
                     || current.initiating_principal_id != original.initiating_principal_id
                     || !visited.insert(current.id.clone())
                 {
@@ -8199,30 +8263,58 @@ impl MorphzRuntime {
                     roots.insert(current.root_turn_id.clone(), event);
                 }
                 if let Some(event) = roots.get(&current.root_turn_id).and_then(Option::as_ref) {
-                    let field =
-                        |name: &str| event.payload.get(name).and_then(serde_json::Value::as_str);
-                    if crate::event::is_input_event(event)
-                        && field("context_id") == Some(context_id)
-                        && field("session_id") == Some(original.session_id.as_str())
-                        && original
-                            .initiating_principal_id
-                            .as_deref()
-                            .is_none_or(|principal| field("principal_id") == Some(principal))
+                    if current.executor_kind != "plan_infer"
+                        && input_matches_thread_scope(event, original)
                     {
                         result.insert(
                             original.id.clone(),
-                            SchedulerSource {
-                                event_id: event.id.clone(),
-                                context_id: context_id.to_owned(),
-                                session_id: original.session_id.clone(),
-                                root_turn_id: event.id.clone(),
-                                activation_id: None,
+                            ThreadOrigin::Input {
+                                source: SchedulerSource {
+                                    event_id: event.id.clone(),
+                                    context_id: context_id.to_owned(),
+                                    session_id: original.session_id.clone(),
+                                    root_turn_id: event.id.clone(),
+                                    activation_id: None,
+                                },
+                                root_thread_id: Some(current.id.clone()),
                             },
                         );
                         break;
                     }
                 }
-                if let Some(parent_id) = current.supervision.parent_thread_id.as_ref() {
+                let mut parent_id = current.supervision.parent_thread_id.clone();
+                if current.executor_kind == "plan_infer" {
+                    let Some(infer) = roots.get(&current.root_turn_id).and_then(Option::as_ref)
+                    else {
+                        break;
+                    };
+                    let field =
+                        |name: &str| infer.payload.get(name).and_then(serde_json::Value::as_str);
+                    if infer.actor != "Runtime-Yao"
+                        || infer.event_type != "infer_request"
+                        || infer.topic != "chat/infer_request"
+                        || current.executor_id.is_none()
+                        || field("plan_execution_id") != current.executor_id.as_deref()
+                        || field("root_turn_id") != Some(current.root_turn_id.as_str())
+                        || field("context_id") != Some(context_id)
+                        || field("session_id") != Some(current.session_id.as_str())
+                        || field("principal_id") != current.initiating_principal_id.as_deref()
+                        || field("agent_id") != Some(current.agent_id.as_str())
+                    {
+                        break;
+                    }
+                    let Some(infer_parent) = field("parent_thread_id") else {
+                        break;
+                    };
+                    if parent_id
+                        .as_deref()
+                        .is_some_and(|parent| parent != infer_parent)
+                    {
+                        break;
+                    }
+                    parent_id = Some(infer_parent.to_owned());
+                }
+                if let Some(parent_id) = parent_id.as_ref() {
                     if !known.contains_key(parent_id) {
                         if let Some(parent) = self.inner.store.get_thread(parent_id).await? {
                             known.insert(parent.id.clone(), parent);
@@ -8238,11 +8330,35 @@ impl MorphzRuntime {
                     != crate::memory::ThreadSupervisorKind::Objective
                     || current.supervision.origin_evaluation_id.is_some()
                 {
-                    let sources = self
+                    let schedules = self
                         .inner
                         .store
                         .list_thread_schedules(context_id, &[current.id.clone()])
-                        .await?
+                        .await?;
+                    let direct = schedules
+                        .iter()
+                        .filter(|schedule| {
+                            schedule.thread_id == current.id
+                                && schedule.source_turn_id == current.root_turn_id
+                        })
+                        .collect::<Vec<_>>();
+                    if direct.len() == 1 && schedules.len() == 1 {
+                        result.insert(
+                            original.id.clone(),
+                            ThreadOrigin::Schedule {
+                                schedule_id: direct[0].id.clone(),
+                                source_turn_id: direct[0].source_turn_id.clone(),
+                                root_thread_id: current.id.clone(),
+                            },
+                        );
+                        break;
+                    }
+                    if !direct.is_empty() {
+                        // Mixed direct/adopted sources cannot identify one
+                        // committed admission. Never select the convenient one.
+                        break;
+                    }
+                    let sources = schedules
                         .into_iter()
                         .filter(|schedule| {
                             schedule.thread_id == current.id
@@ -8254,49 +8370,37 @@ impl MorphzRuntime {
                         break;
                     }
                     let root = sources.into_iter().next().unwrap();
+                    if let Some(parent) = self.inner.store.get_thread_by_root(&root).await? {
+                        current = parent;
+                        continue;
+                    }
+                    // A committed adopted Schedule can cite an exact admitted
+                    // input without owning a separate ordinary source Thread.
+                    // Preserve the Event proof, never fabricate a Thread ID.
                     let event = self
                         .query_events(QueryFilter {
                             context_id: Some(context_id.to_owned()),
-                            event_id: Some(root.clone()),
+                            event_id: Some(root),
                             top_k: Some(1),
                             ..Default::default()
                         })
                         .await?
                         .into_iter()
-                        .next();
-                    if event.as_ref().is_some_and(|event| {
-                        crate::event::is_input_event(event)
-                            && event
-                                .payload
-                                .get("session_id")
-                                .and_then(serde_json::Value::as_str)
-                                == Some(original.session_id.as_str())
-                            && original
-                                .initiating_principal_id
-                                .as_deref()
-                                .is_none_or(|principal| {
-                                    event
-                                        .payload
-                                        .get("principal_id")
-                                        .and_then(serde_json::Value::as_str)
-                                        == Some(principal)
-                                })
-                    }) {
+                        .find(|event| input_matches_thread_scope(event, original));
+                    if let Some(event) = event {
                         result.insert(
                             original.id.clone(),
-                            SchedulerSource {
-                                event_id: root.clone(),
-                                context_id: context_id.to_owned(),
-                                session_id: original.session_id.clone(),
-                                root_turn_id: root,
-                                activation_id: None,
+                            ThreadOrigin::Input {
+                                source: SchedulerSource {
+                                    event_id: event.id.clone(),
+                                    context_id: context_id.to_owned(),
+                                    session_id: original.session_id.clone(),
+                                    root_turn_id: event.id,
+                                    activation_id: None,
+                                },
+                                root_thread_id: None,
                             },
                         );
-                        break;
-                    }
-                    if let Some(parent) = self.inner.store.get_thread_by_root(&root).await? {
-                        current = parent;
-                        continue;
                     }
                     break;
                 }
@@ -8332,6 +8436,7 @@ impl MorphzRuntime {
                     break;
                 };
                 if goal.context_id != context_id
+                    || goal.agent_id != original.agent_id
                     || goal.coordinator_session_id != original.session_id
                     || goal.initiating_principal_id != original.initiating_principal_id
                     || current.supervision.generation > goal.generation
@@ -8341,7 +8446,22 @@ impl MorphzRuntime {
                     break;
                 }
                 // Autonomous creation records the creating Evaluation's root.
-                // That Evaluation may itself belong to a supervised Thread.
+                // Resolve its exact Thread, then apply the same scope and input
+                // guards on the next iteration (including supervised ancestry).
+                if let Some(parent) = self
+                    .inner
+                    .store
+                    .get_thread_by_root(&source.root_turn_id)
+                    .await?
+                {
+                    current = parent;
+                    continue;
+                }
+                // A directly admitted Goal can have an authenticated input
+                // Event without a separate ordinary Thread. Keep that exact
+                // proof, but explicitly report no source Thread; never invent
+                // one from a stable-ID formula or a prefix. Task-run receipts
+                // requiring a concrete source Thread still fail closed at Host.
                 let event = self
                     .query_events(QueryFilter {
                         context_id: Some(context_id.to_owned()),
@@ -8352,36 +8472,24 @@ impl MorphzRuntime {
                     .await?
                     .into_iter()
                     .next();
-                if event.as_ref().is_some_and(|event| {
-                    crate::event::is_input_event(event)
-                        && event
-                            .payload
-                            .get("session_id")
-                            .and_then(serde_json::Value::as_str)
-                            == Some(original.session_id.as_str())
-                        && original
-                            .initiating_principal_id
-                            .as_deref()
-                            .is_none_or(|principal| {
-                                event
-                                    .payload
-                                    .get("principal_id")
-                                    .and_then(serde_json::Value::as_str)
-                                    == Some(principal)
-                            })
-                }) {
-                    result.insert(original.id.clone(), source.clone());
-                    break;
+                if let Some(event) =
+                    event.filter(|event| input_matches_thread_scope(event, original))
+                {
+                    result.insert(
+                        original.id.clone(),
+                        ThreadOrigin::Input {
+                            source: SchedulerSource {
+                                event_id: event.id.clone(),
+                                context_id: context_id.to_owned(),
+                                session_id: original.session_id.clone(),
+                                root_turn_id: event.id,
+                                activation_id: None,
+                            },
+                            root_thread_id: None,
+                        },
+                    );
                 }
-                let Some(parent) = self
-                    .inner
-                    .store
-                    .get_thread_by_root(&source.root_turn_id)
-                    .await?
-                else {
-                    break;
-                };
-                current = parent;
+                break;
             }
         }
         Ok(result)
@@ -10117,6 +10225,53 @@ impl MorphzRuntime {
     ) -> Result<Option<crate::memory::ThreadRecord>, RuntimeError> {
         let thread = self.inner.store.get_thread(thread_id).await?;
         Ok(thread.filter(|thread| thread.session_id == session_id))
+    }
+
+    /// Lightweight exact proof for a Session member. No history page, Host
+    /// outbox, selected UI surface, or model-supplied source ID is consulted.
+    pub async fn session_thread_input_source(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<ThreadInputSourceView>, RuntimeError> {
+        let Some(thread) = self.session_thread_by_id(session_id, thread_id).await? else {
+            return Ok(None);
+        };
+        let origin = self
+            .thread_origins(&thread.context_id, std::slice::from_ref(&thread))
+            .await?
+            .remove(&thread.id);
+        let source = match origin {
+            Some(ThreadOrigin::Input {
+                source,
+                root_thread_id,
+            }) => self
+                .query_events(QueryFilter {
+                    context_id: Some(thread.context_id.clone()),
+                    session_id: Some(session_id.to_owned()),
+                    event_id: Some(source.root_turn_id),
+                    top_k: Some(1),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .find(crate::event::is_input_event)
+                .map(|input_event| ThreadInputSource::Input {
+                    input_event,
+                    root_thread_id,
+                }),
+            Some(ThreadOrigin::Schedule {
+                schedule_id,
+                source_turn_id,
+                root_thread_id,
+            }) => Some(ThreadInputSource::Schedule {
+                schedule_id,
+                source_turn_id,
+                root_thread_id,
+            }),
+            None => None,
+        };
+        Ok(Some(ThreadInputSourceView { thread, source }))
     }
 
     /// The ingress/SDK must authorize this Session before and after this read.

@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SafeMarkdown } from "../apps/web/src/SafeMarkdown.js";
+import { ResponseWaiting } from "../apps/web/src/ResponseWaiting.js";
+import { ExecutionProgress } from "../apps/web/src/ExecutionProgress.js";
 import {
   conversationDate,
   responseAnswered,
-  responseWaitingLabel,
+  responseWaitingPresentation,
 } from "../apps/web/src/conversation-presentation.js";
 import type { LiveMessage } from "../packages/core/src/live-conversation.js";
 import type { Workspace } from "../packages/core/src/model.js";
@@ -49,28 +51,88 @@ test("只有输入精确关联的持久恢复状态才显示重试；已有前�
     id: "provider_wait_a",
     text: "等待模型服务恢复",
     kind: "progress",
-    providerRecovery: { startedAt: "2026-10-13T00:00:02Z" },
+    providerRecovery: {
+      startedAt: "2026-10-13T00:00:02Z",
+      phase: "waiting",
+      reason: "service",
+    },
   };
   assert.equal(responseAnswered([prefix, recovery], "input-a"), false);
   assert.equal(
-    responseWaitingLabel(delivery, [prefix, recovery], true),
+    responseWaitingPresentation(delivery, [prefix, recovery], true).label,
     "模型服务暂时中断，自动重试中…",
   );
+  for (const [reason, label] of [
+    ["credentials", "模型认证失败，等待修复"],
+    ["configuration", "模型配置不可用，等待修复"],
+    ["capacity", "模型额度不足，等待处理"],
+    ["unknown", "模型服务不可用，等待恢复"],
+  ] as const)
+    assert.equal(
+      responseWaitingPresentation(
+        delivery,
+        [
+          {
+            ...recovery,
+            providerRecovery: { ...recovery.providerRecovery!, reason },
+          },
+        ],
+        true,
+      ).label,
+      label,
+    );
   assert.equal(
-    responseWaitingLabel(
+    responseWaitingPresentation(
       { ...delivery, inputId: "input-b" },
       [prefix, recovery],
       true,
-    ),
+    ).label,
     "等待回复…",
   );
   assert.equal(
-    responseWaitingLabel(delivery, [recovery], false),
+    responseWaitingPresentation(delivery, [recovery], false).label,
     "连接中断，等待恢复",
   );
   assert.equal(
-    responseWaitingLabel(delivery, [recovery], true, true),
+    responseWaitingPresentation(delivery, [recovery], true, true).label,
     "已请求停止，等待确认",
+  );
+  const repair = responseWaitingPresentation(
+    delivery,
+    [
+      {
+        ...recovery,
+        providerRecovery: {
+          ...recovery.providerRecovery!,
+          reason: "credentials",
+        },
+      },
+    ],
+    true,
+  );
+  assert.deepEqual(repair, {
+    label: "模型认证失败，等待修复",
+    connected: true,
+    animated: false,
+    showElapsed: false,
+  });
+  const markup = renderToStaticMarkup(
+    createElement(ResponseWaiting, {
+      inputId: delivery.inputId,
+      createdAt: base.createdAt,
+      ...repair,
+    }),
+  );
+  assert.match(markup, /data-connected="true"/);
+  assert.match(markup, /data-animated="false"/);
+  assert.doesNotMatch(markup, /response-elapsed/);
+  assert.equal(
+    responseWaitingPresentation(delivery, [recovery], true).animated,
+    true,
+  );
+  assert.equal(
+    responseWaitingPresentation(delivery, [recovery], true).showElapsed,
+    true,
   );
   const result: LiveMessage = {
     ...base,
@@ -95,6 +157,91 @@ test("只有输入精确关联的持久恢复状态才显示重试；已有前�
     false,
   );
   assert.equal(responseAnswered([prefix], "input-a"), true);
+  const resumed: LiveMessage = {
+    ...base,
+    id: "resumed-a",
+    kind: "progress",
+    text: "",
+    createdAt: "2026-10-13T00:00:04Z",
+    providerRecovery: {
+      startedAt: "2026-10-13T00:00:04Z",
+      phase: "resumed",
+      reason: "unknown",
+    },
+  };
+  assert.equal(
+    responseWaitingPresentation(delivery, [recovery, resumed], true).label,
+    "等待回复…",
+  );
+  assert.equal(
+    responseWaitingPresentation(delivery, [resumed, recovery], true).label,
+    "等待回复…",
+  );
+  assert.equal(
+    responseWaitingPresentation(
+      delivery,
+      [recovery, { ...resumed, inputId: "other" }],
+      true,
+    ).label,
+    "模型服务暂时中断，自动重试中…",
+  );
+  assert.equal(
+    responseWaitingPresentation(
+      delivery,
+      [
+        resumed,
+        {
+          ...recovery,
+          providerRecovery: {
+            ...recovery.providerRecovery!,
+            startedAt: "2026-10-13T00:00:05Z",
+            reason: "credentials",
+          },
+        },
+      ],
+      true,
+    ).label,
+    "模型认证失败，等待修复",
+  );
+});
+
+test("恢复状态不生成空白进展卡片，也不覆盖上一条真实进度", () => {
+  const base = {
+    projectId: "p",
+    conversationId: "c",
+    artifactId: null,
+    inputId: "i",
+    rootId: "r",
+    kind: "progress" as const,
+    createdAt: "2026-10-13T00:00:00Z",
+  };
+  const metadata: LiveMessage = {
+    ...base,
+    id: "resumed",
+    text: "",
+    providerRecovery: {
+      startedAt: base.createdAt,
+      phase: "resumed",
+      reason: "unknown",
+    },
+  };
+  assert.equal(
+    renderToStaticMarkup(
+      createElement(ExecutionProgress, { messages: [metadata], running: true }),
+    ),
+    "",
+  );
+  const markup = renderToStaticMarkup(
+    createElement(ExecutionProgress, {
+      messages: [
+        { ...base, id: "actual-progress", text: "已找到实际文件" },
+        metadata,
+      ],
+      running: true,
+    }),
+  );
+  assert.match(markup, /data-progress-id="actual-progress"/);
+  assert.doesNotMatch(markup, /data-progress-id="resumed"/);
 });
 
 test("日期分隔使用本地日历边界，跨年不混淆，无效时间不伪造日期", () => {

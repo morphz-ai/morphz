@@ -79,6 +79,36 @@ export async function localInputFixture(
     string,
     { sessionId: string; body: Record<string, any> }
   >();
+  const inputEvent = (
+    inputId: string,
+    input: { sessionId: string; body: Record<string, any> },
+  ) => ({
+    id: `root-${inputId}`,
+    sequence: 1,
+    timestamp: new Date().toISOString(),
+    actor: "Session-Client",
+    type: "session_message",
+    topic: "chat/user_message",
+    payload: {
+      session_id: input.sessionId,
+      context_id: sessions.get(input.sessionId)!.context_id,
+      principal_id: "fixture-human",
+      client_message_id: inputId,
+      session_io: {
+        request: {
+          ...input.body,
+          client_metadata: storedData(input.body.client_metadata),
+          message: {
+            ...input.body.message,
+            content: {
+              ...input.body.message.content,
+              value: storedData(input.body.message.content.value),
+            },
+          },
+        },
+      },
+    },
+  });
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -111,7 +141,11 @@ export async function localInputFixture(
       });
     }
     if (path.includes("/threads/")) {
-      const inputId = path.split("/").at(-1)!.slice("thread-".length);
+      const proof = path.endsWith("/input-source");
+      const inputId = path
+        .split("/")
+        .at(proof ? -2 : -1)!
+        .slice("thread-".length);
       const input = accepted.get(inputId);
       const threadSession = input && sessions.get(input.sessionId);
       const contextRead = path.startsWith("/api/contexts/");
@@ -125,7 +159,7 @@ export async function localInputFixture(
         response.statusCode = 404;
         return send({});
       }
-      return send({
+      const result = {
         snapshot: {
           thread: {
             id: `thread-${inputId}`,
@@ -142,7 +176,19 @@ export async function localInputFixture(
             updated_at: "2026-10-03T00:00:00Z",
           },
         },
-      });
+      };
+      return send(
+        proof
+          ? {
+              thread: result.snapshot.thread,
+              source: {
+                kind: "input",
+                root_thread_id: result.snapshot.thread.id,
+                input_event: inputEvent(inputId, input),
+              },
+            }
+          : result,
+      );
     }
     if (path.includes("/events/")) {
       const inputId = path.split("/").at(-1)!.slice("root-".length);

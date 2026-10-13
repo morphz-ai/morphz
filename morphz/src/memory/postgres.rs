@@ -609,7 +609,7 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
-                    "20260928_02_session_message_timeline",
+                    "20261013_03_provider_resume_timeline",
                     store.migrate_session_timeline(),
                 )
                 .await?;

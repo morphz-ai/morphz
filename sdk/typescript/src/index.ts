@@ -1,5 +1,7 @@
 /** Stable Morphz HTTP client surface for Session Service v1. */
 
+export { objectiveIsTerminal } from "./runtime-state.ts";
+
 export interface MorphzPrincipal {
   id: string;
   displayName?: string;
