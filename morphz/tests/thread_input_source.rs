@@ -758,6 +758,66 @@ async fn assert_http_boundary(runtime: MorphzRuntime) {
         .unwrap();
     assert_eq!(unproven.status(), 200);
     assert!(unproven.json::<Value>().await.unwrap()["source"].is_null());
+    let records_path = format!("{url}/api/sessions/{SESSION}/execution-records");
+    assert_eq!(
+        client.get(&records_path).send().await.unwrap().status(),
+        401
+    );
+    let goal_thread = stable_thread_id(&objective_primary_execution_root_id("goal", 1));
+    let read = client
+        .get(&records_path)
+        .bearer_auth("source-contract-token")
+        .query(&[
+            ("thread_id", goal_thread.as_str()),
+            ("root_turn_ids", &json!([INPUT]).to_string()),
+            ("include_descendants", "true"),
+            ("limit", "100"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    let status = read.status();
+    if status != 200 {
+        panic!(
+            "Execution records HTTP {status}: {}",
+            read.text().await.unwrap()
+        );
+    }
+    let page: Value = read.json().await.unwrap();
+    assert_eq!(page["source_root_id"], INPUT);
+    assert_eq!(page["threads"].as_array().unwrap().len(), 5);
+    assert!(page["threads"][0].get("activations").is_none());
+    for (parameters, status) in [
+        (
+            vec![
+                ("thread_id", goal_thread.as_str()),
+                ("root_turn_ids", "[\"foreign\"]"),
+            ],
+            403,
+        ),
+        (vec![("thread_id", "missing")], 404),
+        (
+            vec![
+                ("thread_id", goal_thread.as_str()),
+                ("root_turn_ids", "not-a-json-array"),
+            ],
+            400,
+        ),
+        (vec![("limit", "101")], 400),
+        (vec![("principal_id", "other-human")], 403),
+    ] {
+        assert_eq!(
+            client
+                .get(&records_path)
+                .bearer_auth("source-contract-token")
+                .query(&parameters)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            status
+        );
+    }
     handle.abort();
 }
 
@@ -806,6 +866,461 @@ async fn postgres_exact_thread_origins_survive_cold_reopen_and_reject_foreign_or
     assert_recovery_projection(reopened.as_ref()).await;
     assert_sources(&runtime(reopened.clone(), directory.path()).await).await;
     reopened.pool().close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+// The inspector is tested against real Store/Runtime/SDK facts. Controlled
+// application peers cannot prove SQL filtering-before-LIMIT or read purity.
+async fn seed_execution_records(store: &dyn RuntimeStore) -> Vec<String> {
+    use morphz::memory::{ExecutionRetrySafety, NewExecutionJob};
+    let primary = stable_thread_id(&objective_primary_execution_root_id("goal", 1));
+    let mut ids = vec![primary.clone(), "spawned-child".into()];
+    for index in 0..11 {
+        let id = format!("records-child-{index}");
+        store
+            .ensure_thread(thread(
+                &id,
+                &format!("records-root-{index}"),
+                ThreadSupervision::attached(&primary, 1, "source-evaluation"),
+            ))
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    for index in 0..130 {
+        let id = &ids[index % ids.len()];
+        let root = store.get_thread(id).await.unwrap().unwrap().root_turn_id;
+        let activation = format!("records-activation-{index}");
+        store
+            .ensure_thread_activation(NewThreadActivation {
+                id: activation.clone(),
+                agent_id: AGENT.into(),
+                context_id: CONTEXT.into(),
+                session_id: SESSION.into(),
+                initiating_principal_id: Some(HUMAN.into()),
+                trigger_event_id: format!("records-trigger-{index}"),
+                trigger_sequence: index as u64 + 100,
+                trigger_kind: "tool_result".into(),
+                parent_activation_id: None,
+                root_turn_id: root,
+            })
+            .await
+            .unwrap();
+        store
+            .create_execution_job(NewExecutionJob {
+                id: format!("records-job-{index:03}"),
+                activation_id: activation,
+                thread_id: id.clone(),
+                agent_id: AGENT.into(),
+                context_id: CONTEXT.into(),
+                session_id: SESSION.into(),
+                initiating_principal_id: Some(HUMAN.into()),
+                target_id: "target-default".into(),
+                tool_call_id: format!("records-call-{index}"),
+                tool_name: "read".into(),
+                request: json!({"path":"controlled-file","offset":index}),
+                retry_safety: ExecutionRetrySafety::Idempotent,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+    }
+    // Newer Jobs from another Principal would starve the visible page if the
+    // SDK downloaded a bounded unfiltered page and filtered it afterwards.
+    let mut foreign = thread(
+        "foreign-records-thread",
+        "foreign-records-root",
+        ThreadSupervision::runtime("records-test"),
+    );
+    foreign.initiating_principal_id = Some("other-human".into());
+    store.ensure_thread(foreign).await.unwrap();
+    store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "foreign-records-activation".into(),
+            agent_id: AGENT.into(),
+            context_id: CONTEXT.into(),
+            session_id: SESSION.into(),
+            initiating_principal_id: Some("other-human".into()),
+            trigger_event_id: "foreign-records-trigger".into(),
+            trigger_sequence: 500,
+            trigger_kind: "tool_result".into(),
+            parent_activation_id: None,
+            root_turn_id: "foreign-records-root".into(),
+        })
+        .await
+        .unwrap();
+    for index in 0..140 {
+        store
+            .create_execution_job(NewExecutionJob {
+                id: format!("foreign-job-{index:03}"),
+                activation_id: "foreign-records-activation".into(),
+                thread_id: "foreign-records-thread".into(),
+                agent_id: AGENT.into(),
+                context_id: CONTEXT.into(),
+                session_id: SESSION.into(),
+                initiating_principal_id: Some("other-human".into()),
+                target_id: "target-default".into(),
+                tool_call_id: format!("foreign-call-{index}"),
+                tool_name: "read".into(),
+                request: json!({"private":"other-principal"}),
+                retry_safety: ExecutionRetrySafety::Idempotent,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+    }
+    // An old running Job outside the newest display page must still determine
+    // the real phase. Never infer phase from the displayed 100 records only.
+    let claimed = store
+        .claim_execution_job(
+            "records-job-000",
+            1,
+            "controlled-worker",
+            "controlled-token",
+            chrono::Utc::now() + chrono::Duration::hours(1),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        claimed,
+        morphz::memory::ExecutionJobMutation::Updated(_)
+    ));
+    ids
+}
+
+async fn assert_execution_records(
+    runtime: &MorphzRuntime,
+    store: &dyn RuntimeStore,
+    ids: &[String],
+) {
+    use morphz::{
+        memory::ExecutionJobFilter,
+        runtime::ExecutionRecordsQuery,
+        sdk::{ExecutionJobQuery, MorphzSdk, SdkErrorCode},
+    };
+    let sdk = MorphzSdk::new(runtime.clone());
+    let before = store
+        .list_execution_jobs(ExecutionJobFilter {
+            context_id: Some(CONTEXT.into()),
+            include_terminal: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let query = ExecutionRecordsQuery {
+        thread_id: Some(ids[0].clone()),
+        root_turn_ids: vec![INPUT.into()],
+        include_descendants: true,
+        limit: Some(100),
+        ..Default::default()
+    };
+    let page = sdk
+        .session_execution_records(HUMAN, SESSION, query.clone())
+        .await
+        .unwrap();
+    assert_eq!(page.jobs.len(), 100);
+    assert!(page.has_more_jobs);
+    let family = store
+        .read_thread_family_bounded(CONTEXT, SESSION, &ids[0], 64)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(page.threads.len(), family.threads.len());
+    assert!(ids
+        .iter()
+        .all(|id| page.threads.iter().any(|thread| &thread.id == id)));
+    assert_eq!(page.source_root_id.as_deref(), Some(INPUT));
+    assert!(page
+        .jobs
+        .iter()
+        .all(|job| job.id.starts_with("records-job-")));
+    assert_eq!(page.jobs[0].id, "records-job-129");
+    assert_eq!(page.jobs[99].id, "records-job-030");
+    assert!(!page.jobs.iter().any(|job| job.id == "records-job-000"));
+    assert_eq!(page.threads[0].phase, morphz::memory::ThreadPhase::Running);
+    assert_eq!(
+        page.threads[0].intent.as_deref(),
+        Some("Synthetic autonomous source contract")
+    );
+    assert!(page
+        .threads
+        .iter()
+        .all(|t| t.response_annotations.is_none()));
+    let wire = serde_json::to_value(&page).unwrap();
+    let encoded = serde_json::to_string(&wire).unwrap();
+    assert!(!encoded.contains("model_attempt_events"));
+    assert!(!encoded.contains("pending_signals"));
+    assert!(wire["threads"][0].get("activations").is_none());
+    assert!(
+        encoded.len() < 200_000,
+        "compact 100-Job page must not contain full histories"
+    );
+    let metadata = sdk
+        .session_execution_records(
+            HUMAN,
+            SESSION,
+            ExecutionRecordsQuery {
+                metadata_only: true,
+                ..query.clone()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(metadata.jobs.is_empty());
+    assert!(metadata
+        .threads
+        .iter()
+        .all(|t| t.response_annotations.is_none()));
+    let scoped = sdk
+        .session_execution_records(
+            HUMAN,
+            SESSION,
+            ExecutionRecordsQuery {
+                thread_ids: vec![ids[1].clone()],
+                limit: Some(3),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(scoped.jobs.len(), 3);
+    assert!(scoped.jobs.iter().all(|job| job.thread_id == ids[1]));
+    let root = store
+        .get_thread(&ids[1])
+        .await
+        .unwrap()
+        .unwrap()
+        .root_turn_id;
+    let by_root = sdk
+        .session_execution_records(
+            HUMAN,
+            SESSION,
+            ExecutionRecordsQuery {
+                root_turn_ids: vec![root.clone()],
+                limit: Some(3),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        by_root.jobs.len(),
+        3,
+        "root predicate precedes LIMIT despite newer unrelated Jobs"
+    );
+    assert_eq!(
+        by_root.jobs.iter().map(|job| &job.id).collect::<Vec<_>>(),
+        scoped.jobs.iter().map(|job| &job.id).collect::<Vec<_>>()
+    );
+    let physical = sdk
+        .list_execution_jobs(
+            HUMAN,
+            ExecutionJobQuery {
+                context_id: Some(CONTEXT.into()),
+                session_id: Some(SESSION.into()),
+                thread_ids: vec![ids[1].clone()],
+                root_turn_ids: vec![root],
+                include_terminal: true,
+                newest_first: true,
+                limit: Some(3),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(physical.len(), 3);
+    assert!(physical
+        .iter()
+        .all(|job| job.initiating_principal_id.as_deref() == Some(HUMAN)));
+    assert_eq!(
+        sdk.session_execution_records("other-human", SESSION, query.clone())
+            .await
+            .unwrap_err()
+            .code,
+        SdkErrorCode::Forbidden
+    );
+    assert_eq!(
+        sdk.session_execution_records(
+            HUMAN,
+            SESSION,
+            ExecutionRecordsQuery {
+                root_turn_ids: vec!["forged-input".into()],
+                ..query.clone()
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        SdkErrorCode::Forbidden
+    );
+    assert_eq!(
+        sdk.session_execution_records(
+            HUMAN,
+            SESSION,
+            ExecutionRecordsQuery {
+                thread_id: Some("missing".into()),
+                ..query.clone()
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        SdkErrorCode::NotFound
+    );
+    for invalid in [
+        ExecutionRecordsQuery {
+            limit: Some(0),
+            ..Default::default()
+        },
+        ExecutionRecordsQuery {
+            limit: Some(101),
+            ..Default::default()
+        },
+        ExecutionRecordsQuery {
+            thread_ids: vec!["id".into(); 101],
+            ..Default::default()
+        },
+        ExecutionRecordsQuery {
+            root_turn_ids: vec!["id".into(); 1025],
+            ..Default::default()
+        },
+        ExecutionRecordsQuery {
+            thread_id: Some(String::new()),
+            ..Default::default()
+        },
+        ExecutionRecordsQuery {
+            thread_id: Some(ids[0].clone()),
+            thread_ids: vec![ids[1].clone()],
+            ..Default::default()
+        },
+        ExecutionRecordsQuery {
+            include_descendants: true,
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            sdk.session_execution_records(HUMAN, SESSION, invalid)
+                .await
+                .unwrap_err()
+                .code,
+            SdkErrorCode::InvalidArgument
+        );
+    }
+    let after = store
+        .list_execution_jobs(ExecutionJobFilter {
+            context_id: Some(CONTEXT.into()),
+            include_terminal: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(before).unwrap(),
+        serde_json::to_value(after).unwrap(),
+        "reads may not revise, cancel, reclaim or wake any in-flight Job"
+    );
+}
+
+#[tokio::test]
+async fn sqlite_execution_records_are_bounded_filtered_before_limit_and_read_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        SqliteStore::new(directory.path().join("records.sqlite").to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    seed(store.as_ref()).await;
+    let ids = seed_execution_records(store.as_ref()).await;
+    let runtime = runtime(store.clone(), directory.path()).await;
+    assert_execution_records(&runtime, store.as_ref(), &ids).await;
+}
+
+#[tokio::test]
+async fn sqlite_execution_reader_index_is_added_after_legacy_principal_column_on_cold_reopen() {
+    use sqlx::Row;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("legacy-records.sqlite");
+    drop(SqliteStore::new(path.to_str().unwrap()).await.unwrap());
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
+        .await
+        .unwrap();
+    sqlx::query("DROP INDEX idx_execution_jobs_reader_history")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE execution_jobs DROP COLUMN initiating_principal_id")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    drop(SqliteStore::new(path.to_str().unwrap()).await.unwrap());
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
+        .await
+        .unwrap();
+    let index = sqlx::query("PRAGMA index_info(idx_execution_jobs_reader_history)")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        index
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<Vec<_>>(),
+        [
+            "session_id",
+            "context_id",
+            "initiating_principal_id",
+            "created_at",
+            "id"
+        ]
+    );
+    let plan = sqlx::query("EXPLAIN QUERY PLAN SELECT * FROM execution_jobs WHERE thread_id IN ('a','b') ORDER BY created_at DESC, id DESC LIMIT 101")
+        .fetch_all(&pool).await.unwrap();
+    assert!(
+        plan.iter().any(|row| row
+            .get::<String, _>("detail")
+            .contains("idx_execution_jobs_thread_history")),
+        "Thread history must use its bounded indexed lookup, not scan the global Job table"
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+#[ignore = "requires an explicitly prepared dedicated PostgreSQL test database"]
+async fn postgres_execution_records_are_bounded_filtered_before_limit_and_read_only() {
+    let database_url =
+        std::env::var("MORPHZ_TEST_POSTGRES_URL").expect("dedicated PostgreSQL URL required");
+    let schema = format!(
+        "morphz_records_{}_{}",
+        std::process::id(),
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap()
+            .unsigned_abs()
+    );
+    let admin = sqlx::PgPool::connect(&database_url).await.unwrap();
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let separator = if database_url.contains('?') { '&' } else { '?' };
+    let scoped = format!("{database_url}{separator}options=-csearch_path%3D{schema}%2Cpublic");
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(PostgresStore::new(&scoped, 4).await.unwrap());
+    seed(store.as_ref()).await;
+    let ids = seed_execution_records(store.as_ref()).await;
+    assert_execution_records(
+        &runtime(store.clone(), directory.path()).await,
+        store.as_ref(),
+        &ids,
+    )
+    .await;
+    store.pool().close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
         .execute(&admin)
         .await

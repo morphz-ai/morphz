@@ -206,11 +206,8 @@ export function Conversation({
       messages.some(
         (message) =>
           (!message.inputId || !objectInputIds.has(message.inputId)) &&
-          (!onInspect ||
-            message.kind === "reply" ||
-            message.kind === "error") &&
-          ((message.kind !== "reply" && message.kind !== "error") ||
-            message.text.trim()),
+          (!onInspect || message.kind !== "tool") &&
+          (message.kind === "tool" || message.text.trim()),
       ));
   const readScope = projectConversationReadScope({
     inputs: allInputs,
@@ -312,10 +309,8 @@ export function Conversation({
         reply: null,
       })),
       ...group.messages
-        .filter((m) => !onInspect || m.kind === "reply" || m.kind === "error")
-        .filter(
-          (m) => (m.kind !== "reply" && m.kind !== "error") || m.text.trim(),
-        )
+        .filter((m) => !onInspect || m.kind !== "tool")
+        .filter((m) => m.kind === "tool" || m.text.trim())
         .map((reply) => ({
           id: reply.id,
           createdAt: reply.createdAt,
@@ -1067,11 +1062,6 @@ export function Conversation({
                       >
                         {reply?.tool ? (
                           <ToolMessage message={reply} state={state} />
-                        ) : reply?.kind === "progress" ? (
-                          <details className="message-progress">
-                            <summary>执行进度</summary>
-                            <p>{reply.text}</p>
-                          </details>
                         ) : (
                           <>
                             <SafeMarkdown
@@ -1207,7 +1197,6 @@ export function Conversation({
                               )}
                             </span>
                           )}
-                        {reply?.incomplete && <span>未完成的回复</span>}
                         {reply?.truncated && <span>仅保留部分内容</span>}
                         {item &&
                           item.author.actantId !== client.boot?.actantId && (

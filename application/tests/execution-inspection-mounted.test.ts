@@ -163,14 +163,21 @@ test(
       ),
     );
     async function pair(
-      options: { surface?: string; clock?: boolean; embedded?: boolean } = {},
+      options: {
+        surface?: string;
+        clock?: boolean;
+        embedded?: boolean;
+        coalescing?: boolean;
+      } = {},
     ) {
       const pages: Page[] = [],
         contexts: BrowserContext[] = [];
       // Controller equivalence still compares both complete old/new lifecycles.
       // The approved icon/disclosure UI intentionally differs from the old
       // renderer; its native behavior is asserted on the actual renderer below.
-      for (const lane of migration && options.surface !== "renderer"
+      for (const lane of migration &&
+      !options.coalescing &&
+      options.surface !== "renderer"
         ? ["fixed", "actual"]
         : ["actual"]) {
         const isolated = await browser.newContext({
@@ -293,10 +300,10 @@ test(
     };
 
     await context.test(
-      "real StrictMode first read, held invalidation tail and disposable cleanup preserve modal-before-passive-read phase",
+      "real StrictMode coalesced first read remains visible through updates and scope cleanup still aborts immediately",
       async () => {
         phase = "phase-first-tail";
-        const p = await pair({ embedded: false });
+        const p = await pair({ embedded: false, coalescing: true });
         let current = await p.read();
         assert.equal(current.modal, true);
         assert.equal(current.resizeListeners, 1);
@@ -324,11 +331,14 @@ test(
         });
         const initial = pending(current, "snapshot");
         current = await p.run("set", { revision: 1 });
-        assert.equal(current.requests[initial.index]?.aborted, true);
+        assert.equal(current.requests[initial.index]?.aborted, false);
         current = await p.jobs([
-          { id: "STALE-must-not-publish", status: "failed" },
+          { id: "FIRST-authorized-snapshot", status: "running" },
         ]);
-        assert.equal(view(current).snapshot, null);
+        assert.equal(
+          view(current).snapshot?.jobs[0]?.id,
+          "FIRST-authorized-snapshot",
+        );
         assert.ok(
           current.requests.length > initial.index + 1,
           "held invalidation causes one real tail read",
@@ -338,10 +348,10 @@ test(
         assert.equal(
           current.renderTraces.some((trace) =>
             trace.snapshot?.jobs.some(
-              (job) => job.id === "STALE-must-not-publish",
+              (job) => job.id === "FIRST-authorized-snapshot",
             ),
           ),
-          false,
+          true,
         );
         current = await p.run("set", { revision: 2 });
         const tail = pending(current, "snapshot");

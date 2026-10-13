@@ -157,6 +157,20 @@ struct ThreadFamilyHttpQuery {
 }
 
 #[derive(Default, serde::Deserialize)]
+struct ExecutionRecordsHttpQuery {
+    #[serde(flatten)]
+    auth: AuthQuery,
+    thread_id: Option<String>,
+    thread_ids: Option<String>,
+    root_turn_ids: Option<String>,
+    #[serde(default)]
+    include_descendants: bool,
+    #[serde(default)]
+    metadata_only: bool,
+    limit: Option<usize>,
+}
+
+#[derive(Default, serde::Deserialize)]
 struct AttentionAcknowledgementsQuery {
     token: Option<String>,
     after_sequence: Option<u64>,
@@ -1528,6 +1542,10 @@ impl Server {
             .route(
                 "/api/sessions/:session_id/threads/:thread_id/family",
                 get(handle_get_session_thread_family),
+            )
+            .route(
+                "/api/sessions/:session_id/execution-records",
+                get(handle_get_session_execution_records),
             )
             .route(
                 "/api/sessions/:session_id/observation-snapshot",
@@ -5723,6 +5741,8 @@ async fn handle_list_execution_jobs(
                 context_id: query.context_id,
                 session_id: query.session_id,
                 thread_id: query.thread_id,
+                thread_ids: Vec::new(),
+                root_turn_ids: Vec::new(),
                 target_id: query.target_id,
                 status: query.status,
                 include_terminal: query.include_terminal,
@@ -8631,6 +8651,7 @@ async fn handle_get_session_thread(
                     "session_id": thread.session_id,
                     "context_id": thread.context_id,
                     "root_turn_id": thread.root_turn_id,
+                    "revision": thread.revision,
                     "initiating_principal_id": thread.initiating_principal_id,
                     "agent_id": thread.agent_id,
                     "executor_kind": thread.executor_kind,
@@ -8643,6 +8664,60 @@ async fn handle_get_session_thread(
         .into_response(),
         Ok(Some(_)) | Ok(None) => error_response(StatusCode::NOT_FOUND, "Session Thread not found"),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_get_session_execution_records(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<ExecutionRecordsHttpQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.auth.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_read_principal(
+        &state,
+        &headers,
+        query.auth.token.as_deref(),
+        query.auth.principal_id.as_deref(),
+    ) {
+        Ok(value) => value,
+        Err(error) => return sdk_error_response(error),
+    };
+    let parse_ids = |value: Option<String>| -> Result<Vec<String>, serde_json::Error> {
+        value
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map(Option::unwrap_or_default)
+    };
+    let (roots, threads) = match (parse_ids(query.root_turn_ids), parse_ids(query.thread_ids)) {
+        (Ok(roots), Ok(threads)) => (roots, threads),
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "Execution record IDs must be JSON string arrays",
+            )
+        }
+    };
+    match state
+        .sdk
+        .session_execution_records(
+            &principal.principal_id,
+            &session_id,
+            crate::runtime::ExecutionRecordsQuery {
+                thread_id: query.thread_id,
+                thread_ids: threads,
+                root_turn_ids: roots,
+                include_descendants: query.include_descendants,
+                metadata_only: query.metadata_only,
+                limit: query.limit,
+            },
+        )
+        .await
+    {
+        Ok(records) => Json(records).into_response(),
+        Err(error) => sdk_error_response(error),
     }
 }
 

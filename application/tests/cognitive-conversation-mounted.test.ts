@@ -271,7 +271,7 @@ test(
       },
     );
     await context.test(
-      "the filter is absent without other visible exchanges, including hidden progress; readable unowned history is recoverable",
+      "the filter appears for readable public progress and unowned replies, but stays absent without other visible exchanges",
       async () => {
         const history = (extra?: "reply" | "progress") =>
           page.evaluate(
@@ -298,7 +298,23 @@ test(
           await page
             .getByRole("group", { name: "交流范围", exact: true })
             .count(),
+          1,
+        );
+        await page
+          .getByRole("button", { name: "全部交流", exact: true })
+          .click();
+        assert.equal(
+          await page.locator('[data-message-id="unattributed"]').count(),
+          1,
+          "public progress remains readable instead of disappearing after handoff",
+        );
+        await page
+          .getByRole("button", { name: "当前作品", exact: true })
+          .click();
+        assert.equal(
+          await page.locator('[data-message-id="unattributed"]').count(),
           0,
+          "explicit current-work filtering still excludes unowned progress",
         );
         await history("reply");
         await page

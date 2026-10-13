@@ -170,6 +170,10 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            WHERE status IN ('queued', 'waiting_approval', 'running')"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_thread_status
            ON execution_jobs(thread_id, status, created_at, id)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_thread_history
+           ON execution_jobs(thread_id, created_at, id)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_reader_history
+           ON execution_jobs(session_id, context_id, initiating_principal_id, created_at, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_tool_status
            ON execution_jobs(tool_name, status, created_at, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_lease
@@ -648,6 +652,31 @@ impl ExecutionJobStore for PostgresStore {
         }
         if let Some(thread_id) = filter.thread_id {
             query.push(" AND thread_id = ").push_bind(thread_id);
+        }
+        if !filter.thread_ids.is_empty() {
+            query.push(" AND thread_id IN (");
+            let mut values = query.separated(", ");
+            for id in filter.thread_ids {
+                values.push_bind(id);
+            }
+            values.push_unseparated(")");
+        }
+        if !filter.root_turn_ids.is_empty() {
+            query.push(" AND thread_id IN (SELECT id FROM threads WHERE root_turn_id IN (");
+            let mut values = query.separated(", ");
+            for id in filter.root_turn_ids {
+                values.push_bind(id);
+            }
+            values.push_unseparated("))");
+        }
+        if let Some(principal) = filter.visible_principal_id {
+            query
+                .push(" AND (initiating_principal_id = ")
+                .push_bind(principal);
+            if filter.include_legacy_principal {
+                query.push(" OR initiating_principal_id IS NULL");
+            }
+            query.push(")");
         }
         if let Some(activation_id) = filter.activation_id {
             query.push(" AND activation_id = ").push_bind(activation_id);

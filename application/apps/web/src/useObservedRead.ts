@@ -11,6 +11,7 @@ export function useObservedRead<T>(options: {
   read: (signal: AbortSignal) => Promise<T>;
   publish: (value: T) => void;
   failed: (error: unknown) => void;
+  invalidation?: "restart" | "coalesce";
 }) {
   const latest = useRef(options);
   latest.current = options;
@@ -24,6 +25,7 @@ export function useObservedRead<T>(options: {
     const currentScope = () =>
       latest.current.scope === options.scope && latest.current.enabled;
     const current = createObservedRead({
+      invalidation: options.invalidation,
       read: (signal) => {
         if (!currentScope())
           throw new DOMException("读取范围已变化。", "AbortError");

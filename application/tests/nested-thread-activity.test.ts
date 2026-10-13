@@ -1,3 +1,4 @@
+import { executionRecordsPeer } from "./execution-records-peer.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -85,27 +86,30 @@ function familyResponse(
 }
 function peer(values: ReturnType<typeof rawThread>[]) {
   const calls: string[] = [];
+  const facts = async (path: string) => {
+    calls.push(path);
+    if (path.startsWith("/api/execution-jobs?")) return { jobs: [] };
+    if (path.includes("/family?"))
+      return familyResponse(
+        values,
+        decodeURIComponent(
+          new URL(path, "http://test.invalid").pathname.split("/").at(-2)!,
+        ),
+      );
+    if (path.includes("/scheduler?"))
+      return {
+        threads: values,
+        detail_bounds: { limit: 200, has_more_threads: false },
+      };
+    const id = decodeURIComponent(path.split("/").at(-1)!);
+    const snapshot = values.find((value) => value.thread.id === id);
+    assert.ok(snapshot, "Unexpected missing controlled Thread " + id);
+    return { snapshot };
+  };
   return {
     calls,
-    request: async (path: string) => {
-      calls.push(path);
-      if (path.includes("/family?"))
-        return familyResponse(
-          values,
-          decodeURIComponent(
-            new URL(path, "http://test.invalid").pathname.split("/").at(-2)!,
-          ),
-        );
-      if (path.includes("/scheduler?"))
-        return {
-          threads: values,
-          detail_bounds: { limit: 200, has_more_threads: false },
-        };
-      const id = decodeURIComponent(path.split("/").at(-1)!);
-      const snapshot = values.find((value) => value.thread.id === id);
-      assert.ok(snapshot, "Unexpected missing controlled Thread " + id);
-      return { snapshot };
-    },
+    facts,
+    request: executionRecordsPeer(facts, binding.contextId),
   };
 }
 test("子Thread按真实父链追溯原input root，聚合多个child及孙Thread，不纳入同input兄弟/异Session/异Context", async () => {
@@ -254,10 +258,13 @@ test("family有界读取独立于Context历史，annotation必须属于每个Thr
   });
   const f = peer([own, child]);
   const tree = await authorizedExecutionThreadTree(
-    async (path) =>
-      path.includes("/family?")
-        ? familyResponse([own, child], binding.threadId, true)
-        : f.request(path),
+    executionRecordsPeer(
+      async (path) =>
+        path.includes("/family?")
+          ? familyResponse([own, child], binding.threadId, true)
+          : f.facts(path),
+      binding.contextId,
+    ),
     binding,
     true,
   );
@@ -291,8 +298,8 @@ test("Context历史超过200也不污染完整family2；exact snapshot的root/pa
   ])
     await assert.rejects(
       authorizedExecutionThreadTree(
-        async (path) => {
-          const value = await f.request(path);
+        executionRecordsPeer(async (path) => {
+          const value = await f.facts(path);
           if (!path.includes("/family?") && path.endsWith("/TEST-child"))
             return {
               snapshot: {
@@ -301,7 +308,7 @@ test("Context历史超过200也不污染完整family2；exact snapshot的root/pa
               },
             };
           return value;
-        },
+        }, binding.contextId),
         binding,
         true,
       ),
@@ -347,7 +354,7 @@ test("聚合read不扩展cancel/approval：明确选child scope才能控制它�
     },
   };
   const controls = new ExecutionControls(
-    async (path, method) => {
+    executionRecordsPeer(async (path, method) => {
       if (method === "POST") {
         writes++;
         if (path.includes("/api/approvals/")) return { accepted: true };
@@ -366,7 +373,7 @@ test("聚合read不扩展cancel/approval：明确选child scope才能控制它�
           ),
         };
       return jobs.find((j) => path.endsWith(j.id));
-    },
+    }, binding.contextId),
     (scope) => ({
       sessionId: binding.sessionId,
       contextId: binding.contextId,
@@ -499,7 +506,7 @@ test("真实Platform read grant＋Host原始Input：child独立root可打开，�
       assert.equal(revoked, false, "TEST read authority revoked");
       return authority(...args);
     });
-    internal.request = async (path, method) => {
+    internal.request = executionRecordsPeer(async (path, method) => {
       if (method === "POST") {
         writes++;
         throw new Error("TEST revoked grant must never write");
@@ -541,7 +548,7 @@ test("真实Platform read grant＋Host原始Input：child独立root可打开，�
         };
       }
       throw new Error("Unexpected " + path);
-    };
+    }, contextId);
     const scope = {
       projectId: source.projectId,
       conversationId: source.conversationId,

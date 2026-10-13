@@ -1,3 +1,4 @@
+import { executionRecordsPeer } from "./execution-records-peer.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -461,6 +462,13 @@ test("actual Host activity refresh consumes trusted projection and same-Thread t
       threads: [
         {
           intent: "既有执行意图",
+          source: {
+            event_id: "root-one",
+            root_turn_id: "root-one",
+            context_id: contextId,
+            session_id: delivery.sessionId,
+            activation_id: null,
+          },
           phase: lifecycle === "open" ? "running" : "idle",
           response_annotations:
             metadata && typeof metadata === "object"
@@ -480,11 +488,11 @@ test("actual Host activity refresh consumes trusted projection and same-Thread t
         },
       ],
     });
-    internal.request = async (path) => {
+    internal.request = executionRecordsPeer(async (path) => {
       assert.ok(path.includes("/scheduler?"));
       reads++;
       return answer();
-    };
+    }, contextId);
     const visible = () =>
       f.runtime.platformNavigationSnapshot(localAccess, [f.projectId]).runtime
         .activity!;
@@ -556,7 +564,7 @@ test("actual inspector enriches only proven roots; optional endpoint failure/Off
   let metadata: unknown = annotations();
   let fail = false;
   const controls = new ExecutionControls(
-    async (path) => {
+    executionRecordsPeer(async (path) => {
       reads.push(path);
       if (path === "/api/approvals") return { approvals: [] };
       if (path.endsWith("/annotations")) {
@@ -580,7 +588,7 @@ test("actual inspector enriches only proven roots; optional endpoint failure/Off
       return {
         jobs: [job, { ...job, id: "foreign-job", thread_id: "foreign" }],
       };
-    },
+    }, job.context_id),
     () => ({
       sessionId: job.session_id,
       contextId: job.context_id,
@@ -623,7 +631,7 @@ test("Platform rechecks read authority after annotation fetch, not just before t
         projectIds: [f.projectId],
       };
     });
-    internal.request = async (path) => {
+    internal.request = executionRecordsPeer(async (path) => {
       if (path === "/api/approvals") return { approvals: [] };
       if (path.endsWith("/annotations")) {
         allowed = false;
@@ -645,7 +653,7 @@ test("Platform rechecks read authority after annotation fetch, not just before t
           { ...job, session_id: delivery.sessionId, context_id: contextId },
         ],
       };
-    };
+    }, contextId);
     const controls = await f.runtime.platformExecutionControls(
       {
         projectId: f.projectId,
@@ -711,7 +719,7 @@ test("new durable task admissions freeze V2; old omitted/off/V1 schedules delive
         JSON.stringify(legacy.request),
       );
       const sent: unknown[] = [];
-      internal.request = async (path, method, body) => {
+      internal.request = executionRecordsPeer(async (path, method, body) => {
         if (method === "POST") {
           sent.push(body);
           return {
@@ -736,7 +744,7 @@ test("new durable task admissions freeze V2; old omitted/off/V1 schedules delive
           context_id: contextId,
           permission_mode: "request_approval",
         };
-      };
+      }, contextId);
       await f.runtime.deliverTaskRun(legacy, localAccess);
       assert.deepEqual(sent, [legacy.request]);
     }

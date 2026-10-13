@@ -1,5 +1,96 @@
 # 桌面能力实施记录
 
+## 2026-10-13 执行记录有界批量读取与公开正文交接
+
+原长篇任务的只读诊断：13 个 family Thread、100 条展示 Job，需要
+45 次业务 GET（另一次原输入来源诊断），约 15.9 MB；其中 29 次完整
+Thread detail 重复携带 Activation、Job 和模型状态历史。普通 workspace
+更新还会取消正在读取的记录并拒绝发布，连续后台更新可使首次结果饥饿。
+
+新增 Runtime Owner 只读 Session execution-records 投影：所选 family
+最多 64 个 Thread，平面精确 Thread 集最多 100 个，所有分支合计最多
+100 条最新 Job，额外一行只用来证明 has_more。Session／Context、精确
+Thread／root 与 reader principal 的谓词在 SQLite／PostgreSQL LIMIT
+之前执行；旧 NULL principal 仅保持 Runtime 当前本机身份原有可见边界。
+返回轻量 Thread 状态与本代可信 annotations，不返回完整 Thread 历史。
+状态来自有界 SQL EXISTS，复用 Scheduler 的 phase 优先级，不能只凭
+展示的最新 100 条推断已停止。公开 JSON 参数数组保留含逗号的不透明 ID。
+
+不新增业务实体、消息副本、权限表或双写。索引为派生性能结构；SQLite
+reader 索引在旧 principal 列迁移之后建立。Runtime 查询前后核对 Session
+参与，换 Context、撤权或 Thread provenance／generation 变化均拒绝返回
+混合数据。Platform 的当前项目／对象／conversation 权限仍前后复核；
+来源不是额外授权，聚合查看也不扩大子分支的停止／审批权限。
+
+Application 使用一个有界 owner 投影，不再维护第二份家族／祖先读取
+算法；来源前后复核使用 metadata-only，不载入 Job／annotations 历史。
+结果、审批、停止继续使用精确实体、真实回执和 revision，不重放或重启
+任务。UI 普通更新只合并一个尾读，已通过独立授权的当前页立即发布；
+范围退休仍立即 abort，健康空闲不轮询，失败才按既有退避恢复。
+
+同时修正公开正文显示交接：chat/progress 持久化会替换同 publication
+的流式前缀，原 renderer 又隐藏它，导致用户看见正文后消失。现在正文
+保留在主交流中，工具仍在执行详情，progress 不冒称 final；移除突兀的
+「未完成的回复」独立文字，保留底层 incomplete 事实和真实执行指示。
+
+验证：最终正式 Node 入口相关 14 文件 108／108，无跳过；实际 React
+三文件 17／17，覆盖 continuous hints、范围退休、失败退避、停止／审批
+独立边界和 Conversation 的交接／重连／刷新／重挂载。SQLite 来源／
+新查询／旧 principal 列迁移 3／3，独立 PostgreSQL 来源／新查询 2／2；
+真实 SDK 读后撤权 1／1。两库 Store conformance 通过，SQLite 另含两进程
+所有权／CAS。类型检查、应用／Runtime 构建及格式检查通过。这是相关
+范围，不是全仓零缺陷声明；受控 React 测试不冒充原 App 验收。
+
+原 Runtime 在真实写作／浏览器任务自然结束、物理 Activation／Job／
+有有效 owner 或 lease 的 Plan 全部空闲后更新。原 Profile／模型／账号／
+Host 配置不变，原 41 条输入及 515 个 Thread 身份／代次保留；没有重发、
+重启或停止业务。对同一 13 Thread／100 Job 原长篇数据，业务读取从
+45 次降为 4 次：一页 records、两次 compact provenance 守门和一次
+approvals；额外一次 input-source 仅用于诊断。数据从约 15.9 MB 降为
+约 0.30 MB；原数据冷读约 0.64 秒，后续读约 0.27 秒，旧读约 2.7／
+1.54 秒。这里是完整授权读取链路的 HTTP 测量，不将 AX 观察耗时称为
+纯服务耗时。原 App 已打开真实长篇记录，主执行和 12 个子任务均可见；
+后台任务运行期间刷新正常，首次结果不被普通变化持续取消。原先消失的
+20:24 公开正文在主对话中可见，未再插入「未完成的回复」独立文字。
+
+保留失败证据：新 SQL 曾错误假设 thread_signals 有 context_id，已修正
+两库并通过实际复验。一次 105 项并行浏览器／Rust 构建运行因页面启动
+10 秒预算失败，原文件独立复验 9／9、最后三文件 17／17；未删行为断言
+或降低权限／数据库门禁。未改动的可选 native-focus 集成两次未完成前后台
+切换，不能算通过；本轮不据此宣称该未改动能力已验收。
+
+## 2026-10-13 macOS Desktop 原生退出兜底
+
+原 App 正常菜单退出后窗口已关闭、Host socket 与 SQL 连接已清理，但主
+进程长期存活。原进程 sample／LLDB 均定位到 exit／atexit 中
+uv__threadpool_cleanup → uv_thread_join，剩余 worker 停在条件变量等待。
+不是 Runtime 等模型，也不是 CUA 观察超时就判定进程结束。没有据此断言
+某个上游 issue 的机制相同，或声称已修复 Electron／macOS 内部实现。
+
+现在退出有一个完整应用屏障：先等 Host 写入／回执及清理，再刷新应用
+storage／cookies；任何阶段失败均取消退出并显示真实错误，不在 finally
+中继续退出，不允许计时器绕过未完成写入。仅 macOS 准备独立的小型退出
+保护；只有 Host／存储屏障成功且主 Node 环境进入不可取消的 exit 生命周期
+后才启用五秒原生退出预算。正常退出仍返回 0；若最终原生析构挂住，保护
+只结束仍为其直接父进程的 Desktop，不控制独立 Runtime、Thread 或 Job。
+这是产品侧的安全退出兜底，不是内嵌 libuv 原生修补。
+
+退出状态通过已匿名化、立即 unlink 的一字节文件描述符同步提交，结束后
+关闭，不保存业务／凭据／状态文件，也不新增实体、权限或双写。保护进程
+不继承 Host 环境或模型 key；只使用安装的 executable、固定预算和原始
+parent 身份，父进程已退出／重归属则自行结束。IPC 断开不是 OS 退出证明。
+实际 Electron 测试发现 Node exit 可以早于 app quit，而且退出时异步 IPC
+通知会丢失，两个失败均保留并据此改正，不以测试清理的 SIGKILL 冒充兜底。
+
+`npm run test:desktop-shutdown` 使用真实生产入口及隔离数据，正常退出
+约 0.24 秒；模拟终端退出死锁时约 5.3 秒由保护结束，随后重开保留同一
+Platform 写入和 localStorage，再次正常退出返回 0。另验证用户已安装
+executable 的 run-as-node 路径：正常 0.33 秒，故障兜底约 5.18 秒；该探针
+没有打开用户 Profile、第二个 App 窗口或 Runtime。生命周期／保护相关
+Node 8／8，覆盖未完成写入、失败、重复退出、未启用／错误消息不启用、
+IPC 断开及孤儿保护退出。原 App 冷重开保留 42 条输入、516 个 Thread
+身份和四份连接配置，Runtime PID 未变；实际用户输入草稿仍在。
+
 ## 2026-10-13 Host 来源、Provider 恢复与 Dashboard 状态对齐
 
 原 Host IPC 的只读 operations 查询已复现拒绝：Goal 主线程的执行根

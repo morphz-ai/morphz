@@ -225,6 +225,48 @@ pub(super) async fn ensure_thread_in_tx(
 
 #[async_trait::async_trait]
 impl ThreadStore for PostgresStore {
+    async fn thread_activity_flags(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+    ) -> Result<Vec<crate::memory::ThreadActivityFlags>, StoreError> {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if thread_ids.len() > 100 {
+            return Err("Thread activity scope exceeds 100".into());
+        }
+        let mut query = QueryBuilder::<Postgres>::new(
+            r#"SELECT t.id,
+            (SELECT substr(s.intent,1,1000) FROM schedules s WHERE s.thread_id=t.id ORDER BY COALESCE(s.not_before,s.created_at),s.id LIMIT 1) AS schedule_intent,
+            (EXISTS(SELECT 1 FROM thread_activations a WHERE a.context_id=t.context_id AND a.root_turn_id=t.root_turn_id AND a.status='running')
+             OR EXISTS(SELECT 1 FROM execution_jobs j WHERE j.thread_id=t.id AND j.status='running')) AS running,
+            (EXISTS(SELECT 1 FROM thread_activations a WHERE a.context_id=t.context_id AND a.root_turn_id=t.root_turn_id AND a.status='queued')
+             OR EXISTS(SELECT 1 FROM execution_jobs j WHERE j.thread_id=t.id AND j.status='queued')
+             OR EXISTS(SELECT 1 FROM thread_signals s WHERE s.thread_id=t.id AND s.status='pending')) AS runnable,
+            (EXISTS(SELECT 1 FROM scheduler_dependencies d WHERE d.owner_kind='thread' AND d.owner_id=t.id AND d.owner_generation=t.generation AND d.required=TRUE AND d.status='pending')
+             OR EXISTS(SELECT 1 FROM execution_jobs j WHERE j.thread_id=t.id AND j.status='waiting_approval')
+             OR EXISTS(SELECT 1 FROM schedules s WHERE s.thread_id=t.id AND s.status IN ('queued','paused'))) AS waiting
+            FROM threads t WHERE t.context_id="#,
+        );
+        query.push_bind(context_id).push(" AND t.id IN (");
+        let mut ids = query.separated(", ");
+        for id in thread_ids {
+            ids.push_bind(id);
+        }
+        ids.push_unseparated(")");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        Ok(rows
+            .iter()
+            .map(|row| crate::memory::ThreadActivityFlags {
+                thread_id: row.get("id"),
+                running: row.get("running"),
+                runnable: row.get("runnable"),
+                waiting: row.get("waiting"),
+                schedule_intent: row.get("schedule_intent"),
+            })
+            .collect())
+    }
     async fn ensure_thread(
         &self,
         thread: crate::memory::NewThread,

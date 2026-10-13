@@ -657,6 +657,10 @@ pub struct ExecutionJobQuery {
     pub context_id: Option<String>,
     pub session_id: Option<String>,
     pub thread_id: Option<String>,
+    #[serde(default)]
+    pub thread_ids: Vec<String>,
+    #[serde(default)]
+    pub root_turn_ids: Vec<String>,
     pub target_id: Option<String>,
     pub status: Option<ExecutionJobStatus>,
     pub include_terminal: bool,
@@ -1178,6 +1182,60 @@ impl MorphzSdk {
                     format!("Thread '{thread_id}' does not exist in Context '{context_id}'"),
                 )
             })
+    }
+
+    /// Bounded inspector projection; authorization is checked on both sides.
+    pub async fn session_execution_records(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        query: crate::runtime::ExecutionRecordsQuery,
+    ) -> SdkResult<crate::runtime::ExecutionRecords> {
+        query
+            .validate()
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))?;
+        self.session_execution_records_read(principal_id, session_id, |context_id| async move {
+            self.runtime
+                .session_execution_records(&context_id, session_id, principal_id, query)
+                .await
+        })
+        .await
+    }
+
+    // Internal only: actual read and final participation fence remain one SDK
+    // contract. This is also exercised with real revocation between the two.
+    async fn session_execution_records_read<F, Fut>(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        read: F,
+    ) -> SdkResult<crate::runtime::ExecutionRecords>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<
+            Output = Result<crate::runtime::ExecutionRecords, crate::runtime::RuntimeError>,
+        >,
+    {
+        let session = self.get_session(principal_id, session_id).await?;
+        let records = read(session.context_id.clone()).await.map_err(|error| {
+            use crate::runtime::ExecutionRecordsError;
+            let code = match error.downcast_ref::<ExecutionRecordsError>() {
+                Some(ExecutionRecordsError::InvalidQuery) => SdkErrorCode::InvalidArgument,
+                Some(ExecutionRecordsError::NotFound) => SdkErrorCode::NotFound,
+                Some(ExecutionRecordsError::Forbidden) => SdkErrorCode::Forbidden,
+                Some(ExecutionRecordsError::Conflict) => SdkErrorCode::Conflict,
+                None => SdkErrorCode::Internal,
+            };
+            SdkError::new(code, error.to_string())
+        })?;
+        let current = self.get_session(principal_id, session_id).await?;
+        if current.context_id != session.context_id {
+            return Err(SdkError::new(
+                SdkErrorCode::Conflict,
+                "Session scope changed during execution read",
+            ));
+        }
+        Ok(records)
     }
 
     /// Read selected Thread and its true same-Session descendants, independent
@@ -4176,20 +4234,28 @@ impl MorphzSdk {
         query: ExecutionJobQuery,
     ) -> SdkResult<Vec<ExecutionJobRecord>> {
         let limit = query.limit.unwrap_or(200).clamp(1, 1_000);
+        if query.thread_ids.len() > 100 || query.root_turn_ids.len() > 1024 {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Execution query scope exceeds its bound",
+            ));
+        }
         let mut jobs = self
             .runtime
             .list_execution_jobs(ExecutionJobFilter {
                 context_id: query.context_id,
                 session_id: query.session_id,
                 thread_id: query.thread_id,
+                thread_ids: query.thread_ids,
+                root_turn_ids: query.root_turn_ids,
+                visible_principal_id: Some(principal_id.to_owned()),
+                include_legacy_principal: self.runtime.identity().principal_id == principal_id,
                 target_id: query.target_id,
                 status: query.status,
                 include_terminal: query.include_terminal,
                 newest_first: query.newest_first,
-                // Principal is not a storage filter yet. Apply the limit only
-                // after the authority filter so another Principal's rows can
-                // never hide or expose the caller's Jobs.
-                limit: None,
+                // Scope and reader identity are both applied before LIMIT.
+                limit: Some(limit),
                 ..Default::default()
             })
             .await
@@ -5147,6 +5213,33 @@ mod tests {
                 .execute(read_pool).await?;
             assert_eq!(revoked.rows_affected(), 1);
             Ok(family)
+        }).await.unwrap_err();
+        assert_eq!(error.code, SdkErrorCode::Forbidden);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn execution_records_sdk_rechecks_real_participation_after_bounded_read() {
+        let (database, sdk) = thread_family_sdk_fixture().await;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(database.path()))
+            .await
+            .unwrap();
+        let read_runtime = &sdk.runtime;
+        let read_pool = &pool;
+        let error = sdk.session_execution_records_read("family-owner-a", "family-sdk-a", |context_id| async move {
+            let page = read_runtime.session_execution_records(&context_id, "family-sdk-a", "family-owner-a",
+                crate::runtime::ExecutionRecordsQuery {
+                    thread_id: Some("family-sdk-parent".into()), include_descendants: true,
+                    metadata_only: true, ..Default::default()
+                }).await?;
+            assert_eq!(page.threads.len(), 2);
+            let revoked = sqlx::query("UPDATE session_principal_bindings SET unbound_at = ? WHERE session_id = ? AND principal_id = ? AND unbound_at IS NULL")
+                .bind(chrono::Utc::now().to_rfc3339()).bind("family-sdk-a").bind("family-owner-a")
+                .execute(read_pool).await?;
+            assert_eq!(revoked.rows_affected(), 1);
+            Ok(page)
         }).await.unwrap_err();
         assert_eq!(error.code, SdkErrorCode::Forbidden);
         pool.close().await;

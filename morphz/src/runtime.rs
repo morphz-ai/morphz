@@ -5,6 +5,7 @@ use crate::approval::{
     CAPABILITY_LEASE_APPROVED_RISK_TAG, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
 };
 
+mod execution_records;
 mod response_annotation_projection;
 mod session_approval;
 use crate::artifact::{
@@ -111,6 +112,9 @@ use crate::tool::{
     KillTaskTool, ListFilesTool, ListSecretsTool, ListSkillsTool, ListTasksTool, PrincipalTool,
     ReadFileTool, Registry, ScheduleTxTool, SearchTool, SendMessageTool, SessionSignalTool,
     TaskStatusTool, ThreadScheduler, Tool, WriteFileTool,
+};
+pub use execution_records::{
+    ExecutionRecordThread, ExecutionRecords, ExecutionRecordsError, ExecutionRecordsQuery,
 };
 pub use response_annotation_projection::{ThreadResponseAnnotations, ThreadStepAnnotation};
 use serde::{Deserialize, Serialize};

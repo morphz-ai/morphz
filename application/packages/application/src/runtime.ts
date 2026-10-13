@@ -2544,6 +2544,7 @@ export class RuntimeBridge {
         ...(scope.threadId ? { threadId: scope.threadId } : {}),
         ...(selectedTree
           ? {
+              records: selectedTree.records,
               threadIds: async () =>
                 selectedTree.threads.map((thread) => thread.id),
               additionalRoot: async (rootId: string, threadId: string) =>

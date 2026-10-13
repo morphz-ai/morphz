@@ -57,6 +57,7 @@ export function useExecutionInspection({
   const snapshot =
     observation?.scope === observationScope ? observation.snapshot : null;
   const refresh = useObservedRead({
+    invalidation: "coalesce",
     scope: observationScope,
     enabled: client.online,
     revision: client.workspaceChangeRevision,

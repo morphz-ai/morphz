@@ -5,6 +5,10 @@ export function createObservedRead<T>(options: {
   read: (signal: AbortSignal) => Promise<T>;
   publish: (value: T) => void;
   failed: (error: unknown) => void;
+  /** For independently authorized read snapshots, an ordinary update queues
+   * one tail read instead of starving the current read. Scope retirement
+   * still aborts immediately; permission revocation must retire that scope. */
+  invalidation?: "restart" | "coalesce";
   schedule?: (
     callback: () => void,
     delay: number,
@@ -28,7 +32,7 @@ export function createObservedRead<T>(options: {
     clearRetry();
     dirty = true;
     // Invalidating a read cancels only that disposable query, never the task.
-    reading?.abort();
+    if (options.invalidation !== "coalesce") reading?.abort();
     if (!pending)
       pending = Promise.resolve().then(async () => {
         let succeeded = false;
@@ -39,9 +43,11 @@ export function createObservedRead<T>(options: {
             try {
               const value = await options.read(reading.signal);
               if (closed) return false;
-              // A newer invalidation already exists. Do not briefly paint the
-              // old result (or terminal status); publish the final tail read.
-              if (!dirty) options.publish(value);
+              // Restart mode publishes only the clean tail. Coalescing mode
+              // publishes the independently authorized page now, then its
+              // newer tail, so continuous hints cannot starve the first page.
+              if (!dirty || options.invalidation === "coalesce")
+                options.publish(value);
               succeeded = true;
               delay = 1000;
             } catch (error) {

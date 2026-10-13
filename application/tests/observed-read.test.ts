@@ -125,6 +125,82 @@ test("a hint in the completion microtask starts a fresh drain rather than joinin
   observer.close();
 });
 
+test("execution coalescing publishes under continuous changes, allows one trailing read and stays idle afterwards", async () => {
+  const clock = timers(),
+    published: number[] = [];
+  const held: { signal: AbortSignal; resolve: (value: number) => void }[] = [];
+  const observer = createObservedRead({
+    ...clock,
+    invalidation: "coalesce",
+    read: (signal) =>
+      new Promise<number>((resolve) => held.push({ signal, resolve })),
+    publish: (value) => published.push(value),
+    failed: (error) => assert.fail(String(error)),
+  });
+  const drain = observer.request();
+  await Promise.resolve();
+  for (let page = 1; page <= 12; page++) {
+    assert.equal(held.length, page, "never more than one in-flight read");
+    for (let hint = 0; hint < 20; hint++)
+      assert.equal(observer.request(), drain);
+    assert.equal(
+      held[page - 1]!.signal.aborted,
+      false,
+      "ordinary updates do not abort authorized reads",
+    );
+    held[page - 1]!.resolve(page);
+    await Promise.resolve();
+    assert.equal(
+      published.at(-1),
+      page,
+      "first and subsequent results remain visible even before updates stop",
+    );
+  }
+  assert.equal(
+    held.length,
+    13,
+    "each burst contributes exactly one trailing read",
+  );
+  held[12]!.resolve(13);
+  await drain;
+  assert.deepEqual(
+    published,
+    Array.from({ length: 13 }, (_, i) => i + 1),
+  );
+  assert.equal(clock.scheduled.size, 0);
+  observer.close();
+});
+
+test("coalescing never delays scope retirement or publishes old private data after revocation", async () => {
+  const values: string[] = [];
+  let settle!: (value: string) => void, signal!: AbortSignal;
+  const observer = createObservedRead({
+    invalidation: "coalesce",
+    read: (current) => {
+      signal = current;
+      return new Promise<string>((resolve) => {
+        settle = resolve;
+      });
+    },
+    publish: (value) => values.push(value),
+    failed: (error) => assert.fail(String(error)),
+  });
+  const pending = observer.request();
+  await Promise.resolve();
+  void observer.request();
+  assert.equal(signal.aborted, false);
+  observer.close();
+  assert.equal(
+    signal.aborted,
+    true,
+    "retirement aborts immediately, even with a pending update",
+  );
+  settle("private old scope");
+  assert.equal(await pending, false);
+  assert.equal(await observer.request(), false);
+  assert.deepEqual(values, []);
+});
+
 test("only failed reads schedule exponential recovery and a successful read removes retry", async () => {
   let failing = true,
     calls = 0;

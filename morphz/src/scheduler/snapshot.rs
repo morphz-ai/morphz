@@ -232,19 +232,14 @@ pub fn thread_phase(
     schedules: &[ScheduleRecord],
     dependencies: &[SchedulerDependencyRecord],
 ) -> ThreadPhase {
-    if thread.lifecycle.is_terminal() {
-        return ThreadPhase::Idle;
-    }
-    if activations.iter().any(|activation| {
+    let running = activations.iter().any(|activation| {
         activation.activation.status == crate::memory::ThreadActivationStatus::Running
             || activation
                 .jobs
                 .iter()
                 .any(|job| job.job.status == ExecutionJobStatus::Running)
-    }) {
-        return ThreadPhase::Running;
-    }
-    if activations.iter().any(|activation| {
+    });
+    let runnable = activations.iter().any(|activation| {
         activation.activation.status == crate::memory::ThreadActivationStatus::Queued
             || activation
                 .jobs
@@ -252,20 +247,14 @@ pub fn thread_phase(
                 .any(|job| job.job.status == ExecutionJobStatus::Queued)
     }) || pending_signals
         .iter()
-        .any(|signal| signal.status == crate::memory::ThreadSignalStatus::Pending)
-    {
-        return ThreadPhase::Runnable;
-    }
-    if dependencies.iter().any(|dependency| {
+        .any(|signal| signal.status == crate::memory::ThreadSignalStatus::Pending);
+    let waiting = dependencies.iter().any(|dependency| {
         dependency.owner_kind == super::SchedulerDependencyOwnerKind::Thread
             && dependency.owner_id == thread.id
             && dependency.owner_generation == thread.generation
             && dependency.required
             && dependency.status == super::SchedulerDependencyStatus::Pending
-    }) {
-        return ThreadPhase::Waiting;
-    }
-    if activations.iter().any(|activation| {
+    }) || activations.iter().any(|activation| {
         activation
             .jobs
             .iter()
@@ -275,8 +264,26 @@ pub fn thread_phase(
             schedule.status,
             crate::memory::ScheduleStatus::Queued | crate::memory::ScheduleStatus::Paused
         )
-    }) {
-        return ThreadPhase::Waiting;
+    });
+    thread_phase_from_activity(thread, running, runnable, waiting)
+}
+
+/// Shared phase precedence for detailed Scheduler and bounded SQL projections.
+pub(crate) fn thread_phase_from_activity(
+    thread: &ThreadRecord,
+    running: bool,
+    runnable: bool,
+    waiting: bool,
+) -> ThreadPhase {
+    if thread.lifecycle.is_terminal() {
+        ThreadPhase::Idle
+    } else if running {
+        ThreadPhase::Running
+    } else if runnable {
+        ThreadPhase::Runnable
+    } else if waiting {
+        ThreadPhase::Waiting
+    } else {
+        ThreadPhase::Idle
     }
-    ThreadPhase::Idle
 }

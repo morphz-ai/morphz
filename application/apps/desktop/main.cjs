@@ -40,6 +40,8 @@ const { rendererURL } = require("./development.cjs");
 const { registerApplicationBridge } = require("./application-bridge.cjs");
 const { createScriptExportSaver } = require("./script-export.cjs");
 const { createMessageImageOutput } = require("./message-images.cjs");
+const { registerDesktopShutdown } = require("./shutdown.cjs");
+const { prepareNativeQuitGuard } = require("./native-quit-guard.cjs");
 const {
   restorePath,
   emptyPage,
@@ -613,20 +615,25 @@ else {
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
   });
-  let closingApplication = false;
-  app.on("before-quit", (event) => {
-    if (application && !closingApplication) {
-      event.preventDefault();
-      closingApplication = true;
-      void (async () => {
-        if (host) await host.close();
-        else application?.close();
-      })().finally(() => {
-        // A fast cleanup can resolve within the native before-quit callback's
-        // microtask checkpoint. Retry on the next event-loop turn, after that
-        // cancelled native quit has unwound, rather than re-entering it.
-        setImmediate(() => app.quit());
-      });
-    }
+  registerDesktopShutdown({
+    app,
+    hasApplication: () => Boolean(application),
+    close: async () => {
+      if (host) await host.close();
+      else await application?.close();
+    },
+    flush: async () => {
+      const appSession = session.fromPartition(appPartition);
+      appSession.flushStorageData();
+      await appSession.cookies.flushStore();
+    },
+    prepareGuard: prepareNativeQuitGuard,
+    reportFailure: (error) => {
+      dialog.showErrorBox(
+        "Morphz 尚未退出",
+        "本机清理或保存未完成，退出已取消。既有数据和后台任务未重置。\n" +
+          errorSummary(error),
+      );
+    },
   });
 }

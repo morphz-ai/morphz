@@ -406,11 +406,21 @@ test("多对话使用不同 Session 与同一授权 Context；旧路由不变，
       return send(201, s);
     }
     if (path === "/api/approvals") return send(200, { approvals: [] });
-    if (path === "/api/execution-jobs") {
-      queried.push(url.searchParams.get("session_id")!);
-      return send(200, { jobs: [] });
-    }
     if (!sessions.has(id)) return send(404, {});
+    if (path.endsWith("/execution-records")) {
+      queried.push(id);
+      return send(200, {
+        session_id: id,
+        context_id: sessions.get(id)!.context_id,
+        selected_thread_id: null,
+        source_root_id: null,
+        limit: 100,
+        jobs: [],
+        threads: [],
+        threads_truncated: false,
+        has_more_jobs: false,
+      });
+    }
     if (req.method === "PATCH") {
       const session = sessions.get(id)!;
       session.permission_mode = body.permission_mode;

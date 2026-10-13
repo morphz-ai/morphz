@@ -3342,6 +3342,13 @@ pub struct ExecutionJobFilter {
     pub context_id: Option<String>,
     pub session_id: Option<String>,
     pub thread_id: Option<String>,
+    /// Exact selected family, applied before the shared LIMIT.
+    pub thread_ids: Vec<String>,
+    /// Platform-authorized input roots, applied through the Thread relation.
+    pub root_turn_ids: Vec<String>,
+    /// Reader identity must be filtered in storage, not after loading history.
+    pub visible_principal_id: Option<String>,
+    pub include_legacy_principal: bool,
     pub activation_id: Option<String>,
     pub target_id: Option<String>,
     /// Exact physical tool identity.  Recovery and operator projections must
@@ -3355,6 +3362,15 @@ pub struct ExecutionJobFilter {
     /// return the oldest records in a long-running Context.
     pub newest_first: bool,
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ThreadActivityFlags {
+    pub thread_id: String,
+    pub running: bool,
+    pub runnable: bool,
+    pub waiting: bool,
+    pub schedule_intent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -7444,6 +7460,15 @@ pub struct ThreadFamilyRead {
 /// Stable Thread lifecycle and completion-delivery projection.
 #[async_trait::async_trait]
 pub trait ThreadStore: Send + Sync {
+    /// Small exact activity facts for a bounded selected Thread set. Never
+    /// materializes Activation, Signal, Schedule or Job history payloads.
+    async fn thread_activity_flags(
+        &self,
+        _context_id: &str,
+        _thread_ids: &[String],
+    ) -> Result<Vec<ThreadActivityFlags>, Box<dyn std::error::Error + Send + Sync>> {
+        Err("Bounded Thread activity reads are not supported by this store".into())
+    }
     async fn ensure_thread(
         &self,
         thread: NewThread,

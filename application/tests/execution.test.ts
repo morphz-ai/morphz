@@ -1,3 +1,4 @@
+import { executionRecordsPeer } from "./execution-records-peer.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ExecutionControls } from "../apps/service/src/execution.js";
@@ -8,7 +9,7 @@ test("单个分支的查看和停止不包含同根的其他分支，停止须�
   const scoped = { ...scope, threadId: "thread-1" };
   const writes: unknown[] = [];
   const controls = new ExecutionControls(
-    async (path, method, body) => {
+    executionRecordsPeer(async (path, method, body) => {
       if (method === "POST") {
         writes.push(body);
         return {
@@ -40,7 +41,7 @@ test("单个分支的查看和停止不包含同根的其他分支，停止须�
           jobs: [job, { ...job, id: "sibling", thread_id: "thread-2" }],
         };
       return { ...job, id: "sibling", thread_id: "thread-2" };
-    },
+    }, binding.contextId),
     () => ({ ...binding, rootId: "root-1", threadId: "thread-1" }),
   );
   const snapshot = await controls.snapshot(scoped);
@@ -85,7 +86,7 @@ test("共享 Session 的执行详情、结果与审批必须限定到原始工�
   ];
   let writes = 0;
   const controls = new ExecutionControls(
-    async (path, method) => {
+    executionRecordsPeer(async (path, method) => {
       if (method === "POST") writes++;
       if (path === "/api/approvals")
         return {
@@ -115,7 +116,7 @@ test("共享 Session 的执行详情、结果与审批必须限定到原始工�
         };
       if (path.includes("?")) return { jobs };
       return jobs.find((j) => path.endsWith(j.id));
-    },
+    }, binding.contextId),
     () => ({ ...binding, rootId: "root-a" }),
   );
   const value = await controls.snapshot(scope);
@@ -166,12 +167,13 @@ test("空间 Session 迁移后仍能读取和控制旧对象执行，不接纳�
   const legacy = {
     ...job,
     id: "legacy-job",
+    thread_id: "legacy-thread",
     session_id: "legacy-session",
     result_event_id: "legacy-result",
   };
   const queries: string[] = [];
   const controls = new ExecutionControls(
-    async (path, method) => {
+    executionRecordsPeer(async (path, method) => {
       queries.push(path);
       if (path === "/api/approvals")
         return {
@@ -199,6 +201,20 @@ test("空间 Session 迁移后仍能读取和控制旧对象执行，不接纳�
             },
           },
         };
+      if (path.includes("/threads/"))
+        return {
+          snapshot: {
+            thread: {
+              id: path.endsWith("legacy-thread") ? "legacy-thread" : "thread-1",
+              session_id: path.endsWith("legacy-thread")
+                ? "legacy-session"
+                : binding.sessionId,
+              context_id: binding.contextId,
+              root_turn_id: "test-root",
+              revision: 1,
+            },
+          },
+        };
       if (path.includes("?"))
         return {
           jobs: path.includes("legacy-session")
@@ -212,7 +228,7 @@ test("空间 Session 迁移后仍能读取和控制旧对象执行，不接纳�
           cancel_requested_at: "2026-09-08T00:00:02Z",
         };
       return legacy;
-    },
+    }, binding.contextId),
     () => ({
       ...binding,
       legacySessionIds: [binding.sessionId, "legacy-session"],
@@ -236,7 +252,7 @@ test("空间 Session 迁移后仍能读取和控制旧对象执行，不接纳�
 test("执行投影限定对话；移除 worker 凭据，空对话不查询全局历史", async () => {
   let queries = 0;
   const controls = new ExecutionControls(
-    async (path) => {
+    executionRecordsPeer(async (path) => {
       queries++;
       if (path === "/api/approvals")
         return {
@@ -248,11 +264,23 @@ test("执行投影限定对话；移除 worker 凭据，空对话不查询全局
             },
           ],
         };
+      if (path.includes("/threads/"))
+        return {
+          snapshot: {
+            thread: {
+              id: job.thread_id,
+              session_id: binding.sessionId,
+              context_id: binding.contextId,
+              root_turn_id: "test-root",
+              revision: 1,
+            },
+          },
+        };
       const params = new URL(path, "http://localhost").searchParams;
       assert.equal(params.get("session_id"), "session-1");
       assert.equal(params.get("context_id"), "context-1");
       return { jobs: [job, { ...job, id: "other-job", session_id: "other" }] };
-    },
+    }, binding.contextId),
     () => binding,
   );
   const snapshot = await controls.snapshot(scope);
@@ -260,9 +288,9 @@ test("执行投影限定对话；移除 worker 凭据，空对话不查询全局
   assert.equal(snapshot.approvals.length, 1);
   assert.ok(!JSON.stringify(snapshot).includes("must-never-reach-renderer"));
   const empty = new ExecutionControls(
-    async () => {
+    executionRecordsPeer(async () => {
       throw Error("must not query");
-    },
+    }, binding.contextId),
     () => null,
   );
   assert.deepEqual(await empty.snapshot(scope), {
@@ -270,13 +298,17 @@ test("执行投影限定对话；移除 worker 凭据，空对话不查询全局
     approvals: [],
     limit: 100,
   });
-  assert.equal(queries, 2);
+  assert.equal(
+    queries,
+    3,
+    "controlled compact page includes exact Thread metadata and Jobs, plus approvals",
+  );
 });
 test("停止执行使用精确版本；不自动重试冲突、不取消无关任务", async () => {
   const mutations: unknown[] = [];
   let current = job;
   const controls = new ExecutionControls(
-    async (path, method, body) => {
+    executionRecordsPeer(async (path, method, body) => {
       if (method === "POST") {
         assert.equal(path, "/api/execution-jobs/job-1/cancel");
         mutations.push(body);
@@ -287,7 +319,7 @@ test("停止执行使用精确版本；不自动重试冲突、不取消无关�
         };
       }
       return current;
-    },
+    }, binding.contextId),
     () => binding,
   );
   await assert.rejects(
@@ -320,13 +352,13 @@ test("审批重新核对原文指纹，只允许单次授权，不能提升到�
   let pending = [approval];
   const decisions: unknown[] = [];
   const controls = new ExecutionControls(
-    async (path, method, body) => {
+    executionRecordsPeer(async (path, method, body) => {
       if (method === "POST") {
         decisions.push(body);
         return { accepted: true };
       }
       return path === "/api/approvals" ? { approvals: pending } : { jobs: [] };
-    },
+    }, binding.contextId),
     () => binding,
   );
   const snapshot = await controls.snapshot(scope),
@@ -371,7 +403,11 @@ test("事项审批计数只读取精确会话、上下文、根和线程，不�
   const taskBinding = { ...binding, rootId: "root-1", threadId: "thread-1" };
   const matching = {
     ...approval,
-    request: { ...approval.request, root_turn_id: "root-1", thread_id: "thread-1" },
+    request: {
+      ...approval.request,
+      root_turn_id: "root-1",
+      thread_id: "thread-1",
+    },
   };
   let pending = [
     matching,
@@ -381,26 +417,41 @@ test("事项审批计数只读取精确会话、上下文、根和线程，不�
       { root_turn_id: "another-root" },
       { thread_id: "another-thread" },
       { root_turn_id: undefined },
-    ].map((change) => ({ ...matching, request: { ...matching.request, ...change } })),
+    ].map((change) => ({
+      ...matching,
+      request: { ...matching.request, ...change },
+    })),
   ];
   const paths: string[] = [];
-  const controls = new ExecutionControls(async (path, method) => {
-    assert.equal(method, undefined);
-    assert.equal(path, "/api/approvals");
-    paths.push(path);
-    return { approvals: pending };
-  }, () => taskBinding);
+  const controls = new ExecutionControls(
+    executionRecordsPeer(async (path, method) => {
+      assert.equal(method, undefined);
+      assert.equal(path, "/api/approvals");
+      paths.push(path);
+      return { approvals: pending };
+    }, binding.contextId),
+    () => taskBinding,
+  );
   assert.equal(await controls.pendingApprovalCount(taskScope), 1);
   pending = [];
   assert.equal(await controls.pendingApprovalCount(taskScope), 0);
   assert.deepEqual(paths, ["/api/approvals", "/api/approvals"]);
-  const unavailable = new ExecutionControls(async () => {
-    throw new Error("Runtime offline");
-  }, () => taskBinding);
-  await assert.rejects(unavailable.pendingApprovalCount(taskScope), /Runtime offline/);
-  const empty = new ExecutionControls(async () => {
-    throw new Error("empty scope must not query Runtime");
-  }, () => null);
+  const unavailable = new ExecutionControls(
+    executionRecordsPeer(async () => {
+      throw new Error("Runtime offline");
+    }, binding.contextId),
+    () => taskBinding,
+  );
+  await assert.rejects(
+    unavailable.pendingApprovalCount(taskScope),
+    /Runtime offline/,
+  );
+  const empty = new ExecutionControls(
+    executionRecordsPeer(async () => {
+      throw new Error("empty scope must not query Runtime");
+    }, binding.contextId),
+    () => null,
+  );
   assert.equal(await empty.pendingApprovalCount(taskScope), 0);
 });
 test("结果校验执行和事件归属；超长输出有明确截断标识", async () => {
@@ -413,10 +464,13 @@ test("结果校验执行和事件归属；超长输出有明确截断标识", as
     },
   };
   const controls = new ExecutionControls(
-    async (path) =>
-      path.endsWith("/result")
-        ? { job_id: "job-1", event }
-        : { ...job, result_event_id: "event-1" },
+    executionRecordsPeer(
+      async (path) =>
+        path.endsWith("/result")
+          ? { job_id: "job-1", event }
+          : { ...job, result_event_id: "event-1" },
+      binding.contextId,
+    ),
     () => binding,
   );
   const result = await controls.result(scope, "job-1");

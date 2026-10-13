@@ -1086,6 +1086,8 @@ impl SqliteStore {
             WHERE status IN ('queued', 'waiting_approval', 'running');
         CREATE INDEX IF NOT EXISTS idx_execution_jobs_thread_status
             ON execution_jobs(thread_id, status, created_at, id);
+        CREATE INDEX IF NOT EXISTS idx_execution_jobs_thread_history
+            ON execution_jobs(thread_id, created_at, id);
         CREATE INDEX IF NOT EXISTS idx_execution_jobs_tool_status
             ON execution_jobs(tool_name, status, created_at, id);
         -- idx_execution_jobs_target_status is intentionally created by
@@ -1720,6 +1722,11 @@ impl SqliteStore {
                     .await?;
             }
         }
+        // Legacy stores may not have initiating_principal_id until the additive
+        // migration above. Creating this in base DDL would prevent their reopen.
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_execution_jobs_reader_history ON execution_jobs(session_id, context_id, initiating_principal_id, created_at, id)")
+            .execute(&pool)
+            .await?;
         for table in ["threads", "thread_activations"] {
             let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
                 .fetch_all(&pool)
@@ -15760,6 +15767,49 @@ impl ThreadGroupStore for SqliteStore {
 
 #[async_trait::async_trait]
 impl ThreadStore for SqliteStore {
+    async fn thread_activity_flags(
+        &self,
+        context_id: &str,
+        thread_ids: &[String],
+    ) -> Result<Vec<crate::memory::ThreadActivityFlags>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        if thread_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if thread_ids.len() > 100 {
+            return Err("Thread activity scope exceeds 100".into());
+        }
+        let mut query = QueryBuilder::<sqlx::Sqlite>::new(
+            r#"SELECT t.id,
+            (SELECT substr(s.intent,1,1000) FROM schedules s WHERE s.thread_id=t.id ORDER BY COALESCE(s.not_before,s.created_at),s.id LIMIT 1) AS schedule_intent,
+            (EXISTS(SELECT 1 FROM thread_activations a WHERE a.context_id=t.context_id AND a.root_turn_id=t.root_turn_id AND a.status='running')
+             OR EXISTS(SELECT 1 FROM execution_jobs j WHERE j.thread_id=t.id AND j.status='running')) AS running,
+            (EXISTS(SELECT 1 FROM thread_activations a WHERE a.context_id=t.context_id AND a.root_turn_id=t.root_turn_id AND a.status='queued')
+             OR EXISTS(SELECT 1 FROM execution_jobs j WHERE j.thread_id=t.id AND j.status='queued')
+             OR EXISTS(SELECT 1 FROM thread_signals s WHERE s.thread_id=t.id AND s.status='pending')) AS runnable,
+            (EXISTS(SELECT 1 FROM scheduler_dependencies d WHERE d.owner_kind='thread' AND d.owner_id=t.id AND d.owner_generation=t.generation AND d.required=TRUE AND d.status='pending')
+             OR EXISTS(SELECT 1 FROM execution_jobs j WHERE j.thread_id=t.id AND j.status='waiting_approval')
+             OR EXISTS(SELECT 1 FROM schedules s WHERE s.thread_id=t.id AND s.status IN ('queued','paused'))) AS waiting
+            FROM threads t WHERE t.context_id="#,
+        );
+        query.push_bind(context_id).push(" AND t.id IN (");
+        let mut ids = query.separated(", ");
+        for id in thread_ids {
+            ids.push_bind(id);
+        }
+        ids.push_unseparated(")");
+        let rows = query.build().fetch_all(&self.pool).await?;
+        Ok(rows
+            .iter()
+            .map(|row| crate::memory::ThreadActivityFlags {
+                thread_id: row.get("id"),
+                running: row.get("running"),
+                runnable: row.get("runnable"),
+                waiting: row.get("waiting"),
+                schedule_intent: row.get("schedule_intent"),
+            })
+            .collect())
+    }
     async fn ensure_thread(
         &self,
         thread: NewThread,
@@ -24274,6 +24324,31 @@ impl ExecutionJobStore for SqliteStore {
         }
         if let Some(thread_id) = filter.thread_id {
             query.push(" AND thread_id = ").push_bind(thread_id);
+        }
+        if !filter.thread_ids.is_empty() {
+            query.push(" AND thread_id IN (");
+            let mut values = query.separated(", ");
+            for id in filter.thread_ids {
+                values.push_bind(id);
+            }
+            values.push_unseparated(")");
+        }
+        if !filter.root_turn_ids.is_empty() {
+            query.push(" AND thread_id IN (SELECT id FROM threads WHERE root_turn_id IN (");
+            let mut values = query.separated(", ");
+            for id in filter.root_turn_ids {
+                values.push_bind(id);
+            }
+            values.push_unseparated("))");
+        }
+        if let Some(principal) = filter.visible_principal_id {
+            query
+                .push(" AND (initiating_principal_id = ")
+                .push_bind(principal);
+            if filter.include_legacy_principal {
+                query.push(" OR initiating_principal_id IS NULL");
+            }
+            query.push(")");
         }
         if let Some(activation_id) = filter.activation_id {
             query.push(" AND activation_id = ").push_bind(activation_id);

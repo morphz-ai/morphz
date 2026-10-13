@@ -111,7 +111,12 @@ const expectedBody = statementNames
           .slice(1)
           .map((node) => node.getText())
           .join(", ")};`
-      : fixed.spans[name].raw,
+      : name === "observation"
+        ? fixed.spans[name].raw.replace(
+            "useObservedRead({",
+            'useObservedRead({ invalidation: "coalesce",',
+          )
+        : fixed.spans[name].raw,
   )
   .join("\n");
 const templates = parse({
