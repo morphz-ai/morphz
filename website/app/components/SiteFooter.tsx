@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { Locale } from "@/lib/docs";
+import { onlineExperiencePublished } from "@/lib/public-experience";
 import { sitePath, SITE_LINKS } from "@/lib/site";
 
 const copy = {
@@ -50,10 +51,10 @@ export function SiteFooter({ locale }: { locale: Locale }) {
       </div>
 
       <div className="site-footer__index">
-        <section>
+        {onlineExperiencePublished() && <section>
           <span>{t.experience}</span>
           <div className="site-footer__links"><Link href={sitePath(locale, "/experience")}>{t.experiences}</Link></div>
-        </section>
+        </section>}
         <section>
           <span>{t.technical}</span>
           <div className="site-footer__links">

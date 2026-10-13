@@ -15,6 +15,8 @@ The main site may link to these surfaces, but it must not present an official pe
 
 ## Content boundaries
 
+Online-service introductions are unpublished by default. `NEXT_PUBLIC_MORPHZ_ONLINE_EXPERIENCE_PUBLISHED=true` is an explicit release approval, independent of destination URLs, and must not be set before both public services have been verified and approved for publication. While closed, both `/experience` and `/product` (including English routes) return 404, and navigation, homepage, footer, and sitemap omit these entrances. A valid service URL or restricted preview URL alone never publishes them.
+
 - `content/docs/zh` and `content/docs/en` contain public, current product documentation.
 - `public/paper` contains the frozen bilingual preprint served by the paper route.
 - Repository-level `docs/` contains architecture, research, evaluations, and historical material and is not published automatically.

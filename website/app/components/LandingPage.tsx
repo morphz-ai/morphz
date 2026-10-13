@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { Locale } from "@/lib/docs";
+import { onlineExperiencePublished } from "@/lib/public-experience";
 import { sitePath, SITE_LINKS } from "@/lib/site";
 import homepageMedia from "@/lib/homepage-media.json";
 import { ContextEvaluationField } from "./ContextEvaluationField";
@@ -228,7 +229,7 @@ export function LandingPage({ locale }: { locale: Locale }) {
           <p className="home-hero__lead">{t.lead}</p>
           <div className="home-actions">
             <a className="home-button home-button--primary" href="#demo">{t.idea}<span aria-hidden="true">↓</span></a>
-            <Link className="home-button" href={sitePath(locale, "/experience")}>{t.experience}<span aria-hidden="true">→</span></Link>
+            {onlineExperiencePublished() && <Link className="home-button" href={sitePath(locale, "/experience")}>{t.experience}<span aria-hidden="true">→</span></Link>}
             <Link className="home-button" href={download}>{t.start}<span aria-hidden="true">→</span></Link>
             <a className="home-link" href={SITE_LINKS.source}>{t.source}<span aria-hidden="true">↗</span></a>
           </div>

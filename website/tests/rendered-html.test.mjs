@@ -550,21 +550,27 @@ test("does not advertise the unpublished online Morphz instance", async () => {
   assert.doesNotMatch(html, /创建我的 Agent|私有 Agent|个人 Agent/);
 });
 
-test("presents two Agent experiences without inventing public deployments", async () => {
-  const [zhResponse, enResponse] = await Promise.all([render("/experience"), render("/en/experience")]);
-  assert.equal(zhResponse.status, 200);
-  assert.equal(enResponse.status, 200);
-  const [zh, en] = await Promise.all([zhResponse.text(), enResponse.text()]);
-  assert.match(zh, /与 Morphz 对话/);
-  assert.match(zh, /我的 Agent/);
-  assert.match(zh, /身份、认知和数据边界彼此独立/);
-  assert.match(zh, /官方人格网站尚未开放入口/);
-  assert.match(zh, /Web 工作台接入中/);
-  assert.doesNotMatch(zh, /href="https:\/\/chat\.morphz\.ai/);
-  assert.doesNotMatch(zh, /href="https:\/\/morphz-cloud-app\.shafreeck\.workers\.dev/);
-  assert.match(en, /Meet the official Morphz/);
-  assert.match(en, /My Agent/);
-  assert.match(en, /identities, cognition, and data boundaries stay separate/);
+test("withdraws unpublished online-service routes in both languages", async () => {
+  for (const path of ["/experience", "/en/experience", "/product", "/en/product"]) {
+    const response = await render(path);
+    assert.equal(response.status, 404, path);
+    const html = await response.text();
+    assert.match(html, /UNRESOLVED REFERENCE/);
+    assert.doesNotMatch(html, /我的 Agent|My Agent|与 Morphz 对话|Meet the official Morphz|Web 工作台|Web workspace/);
+    assert.doesNotMatch(html, /href="\/(?:en\/)?(?:experience|product)"/);
+  }
+});
+
+test("public pages and sitemap omit unpublished online-service entrances", async () => {
+  for (const path of ["/", "/en", "/blog", "/en/blog", "/docs", "/en/docs", "/download", "/en/download"]) {
+    const response = await render(path);
+    assert.equal(response.status, 200, path);
+    const html = await response.text();
+    assert.doesNotMatch(html, /href="\/(?:en\/)?(?:experience|product)"/);
+    assert.doesNotMatch(html, /认识官方 Morphz · 我的 Agent|Meet Morphz · My Agent|Web 工作台接入中|Web workspace integration in progress/);
+  }
+  const sitemap = await (await render("/sitemap.xml")).text();
+  assert.doesNotMatch(sitemap, /<loc>[^<]*\/(?:experience|product)<\/loc>/);
 });
 
 test("returns not found for an unknown documentation slug", async () => {

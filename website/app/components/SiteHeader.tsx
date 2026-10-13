@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { Locale } from "@/lib/docs";
+import { onlineExperiencePublished } from "@/lib/public-experience";
 import { sitePath, SITE_LINKS } from "@/lib/site";
 import { ThemeToggle } from "./ThemeToggle";
 import { BrandMark } from "./BrandMark";
@@ -56,7 +57,7 @@ export function SiteHeader({
   const download = sitePath(locale, "/download");
   const otherLanguage = otherLanguageHref ?? (locale === "zh" ? "/en" : "/");
   const navigation = [
-    [experience, t.experience],
+    ...(onlineExperiencePublished() ? [[experience, t.experience] as const] : []),
     [essay, t.essay],
     [paper, t.paper],
     [standards, t.standards],

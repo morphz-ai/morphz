@@ -1,5 +1,7 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import type { Locale } from "@/lib/docs";
+import { onlineExperiencePublished } from "@/lib/public-experience";
 import { productSurfaces } from "@/lib/product-surfaces";
 import { sitePath } from "@/lib/site";
 import { SiteFooter } from "./SiteFooter";
@@ -59,6 +61,7 @@ const copy = {
 } as const;
 
 export function ExperiencePage({ locale }: { locale: Locale }) {
+  if (!onlineExperiencePublished()) notFound();
   const t = copy[locale];
   const surfaces = productSurfaces();
   return (
