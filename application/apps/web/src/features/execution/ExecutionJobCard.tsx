@@ -5,6 +5,7 @@ import type { executionSnapshotJobPresentation } from "../../execution-presentat
 import { RunningActivityIcon } from "../../RunningActivityIcon.js";
 import { Tooltip } from "../../ui/Tooltip.js";
 import { ExecutionRequestDetails } from "./ExecutionDataView.js";
+import { ExecutionCommandPreview } from "./ExecutionCommandPreview.js";
 
 /** Display only. The inspection controller/caller owns scope, authorization,
  * requests and receipts; opening technical details is local view state. */
@@ -63,6 +64,7 @@ export function ExecutionJobCard({
       {presentation.detail && (
         <p className="execution-object">{presentation.detail}</p>
       )}
+      <ExecutionCommandPreview job={job} />
       {job.error && <p className="delivery-error">{job.error}</p>}
       {presentation.result && (
         <p

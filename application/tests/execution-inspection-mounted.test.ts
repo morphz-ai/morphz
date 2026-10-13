@@ -769,6 +769,76 @@ test(
     );
 
     await context.test(
+      "actual command preview is readable in a narrow sidebar, locally expandable and stable across background refresh",
+      async () => {
+        phase = "command-preview";
+        const p = await pair({ surface: "renderer" });
+        const command =
+          "opencli browser inspect --tab 4\n" +
+          "# original command line\n".repeat(50);
+        const facts = {
+          tool_name: "exec",
+          request: { command },
+          status: "succeeded",
+        };
+        let current = await p.jobs([facts]);
+        const count = current.requests.length;
+        for (const page of p.pages) {
+          await page.setViewportSize({ width: 360, height: 720 });
+          const preview = page.locator(".execution-command pre");
+          assert.ok(
+            (await preview.innerText()).startsWith(
+              "opencli browser inspect --tab 4",
+            ),
+          );
+          for (const appearance of ["light", "dark"]) {
+            await page
+              .locator(".app")
+              .evaluate(
+                (node, appearance) =>
+                  node.setAttribute("data-appearance", appearance),
+                appearance,
+              );
+            const geometry = await preview.evaluate((node) => ({
+              width: node.getBoundingClientRect().width,
+              parent: node.parentElement!.getBoundingClientRect().width,
+              height: node.getBoundingClientRect().height,
+              lineHeight: parseFloat(getComputedStyle(node).lineHeight),
+            }));
+            assert.ok(geometry.width <= geometry.parent + 1);
+            assert.ok(
+              geometry.height <= geometry.lineHeight * 3 + 1,
+              JSON.stringify(geometry),
+            );
+          }
+        }
+        current = await p.click('button:has-text("展开命令")');
+        assert.equal(
+          current.requests.length,
+          count,
+          "disclosure is local, not a command or model request",
+        );
+        for (const page of p.pages)
+          assert.equal(
+            await page.locator(".execution-command pre").innerText(),
+            command.trim(),
+          );
+        await p.run("set", { revision: 1 });
+        current = await p.jobs([facts]);
+        for (const page of p.pages)
+          assert.equal(
+            await page
+              .getByRole("button", { name: "收起命令" })
+              .getAttribute("aria-expanded"),
+            "true",
+          );
+        current = await p.click('button:has-text("收起命令")');
+        assert.ok(current.execution?.includes("opencli browser inspect"));
+        await p.close();
+      },
+    );
+
+    await context.test(
       "same-key offline retains actual rows/result but existing approval and child-stop gates stay distinct from Job-stop",
       async () => {
         phase = "offline-renderer";

@@ -40,6 +40,7 @@ const paths = {
   Owner: "../apps/web/src/execution-presentation.ts",
   Conversation: "../apps/web/src/Conversation.tsx",
   Dialog: "../apps/web/src/ExecutionDialog.tsx",
+  Card: "../apps/web/src/features/execution/ExecutionJobCard.tsx",
   Core: "../packages/core/src/execution.ts",
 } as const;
 type Sources = Record<keyof typeof paths, string>;
@@ -232,13 +233,17 @@ function table(node: Node) {
     return [property.name.getText(), property.initializer.text];
   });
 }
-function runtimeImport(parsed: Parsed, exported: string) {
+function runtimeImport(
+  parsed: Parsed,
+  exported: string,
+  module = "./execution-presentation.js",
+) {
   const matches = parsed.source.statements
     .filter(isImportDeclaration)
     .flatMap((node) => {
       if (
         !isStringLiteral(node.moduleSpecifier) ||
-        node.moduleSpecifier.text !== "./execution-presentation.js"
+        node.moduleSpecifier.text !== module
       )
         return [];
       const clause = node.importClause;
@@ -584,16 +589,42 @@ function validate(contents: Sources) {
       row.parent.expression.getText() === "group.jobs.map",
     "actual-snapshot-row-consumer",
   );
-  const section = jsxClass(row, "execution-job");
-  for (const name of ["key", "data-job-id"]) {
-    const attr = attribute(section, name);
+  const cards = inside(row)
+    .filter(isJsxElement)
+    .filter(
+      (node) => node.openingElement.tagName.getText() === "ExecutionJobCard",
+    );
+  assert.equal(cards.length, 1, "actual-snapshot-card-consumer");
+  const cardImport = runtimeImport(
+    dialog,
+    "ExecutionJobCard",
+    "./features/execution/ExecutionJobCard.js",
+  );
+  assert.equal(
+    dialog.symbols.get(cards[0]!.openingElement.tagName),
+    dialog.symbols.get(cardImport),
+    "actual-snapshot-card-consumer",
+  );
+  for (const [name, expression] of [
+    ["job", "job"],
+    ["presentation", "presentation"],
+    ["key", "job.id"],
+  ]) {
+    const attr = attribute(cards[0]!, name!);
     assert.ok(
       attr.initializer &&
         isJsxExpression(attr.initializer) &&
-        attr.initializer.expression?.getText() === "job.id",
+        attr.initializer.expression?.getText() === expression,
       "snapshot-job-identity",
     );
   }
+  const card = fn(parsed.get("Card")!, "ExecutionJobCard");
+  const section = jsxClass(card, "execution-job");
+  assert.equal(
+    attribute(section, "data-job-id").initializer?.getText(),
+    "{job.id}",
+    "snapshot-job-identity",
+  );
   const statuses = inside(section)
     .filter(isJsxElement)
     .filter(
@@ -602,9 +633,12 @@ function validate(contents: Sources) {
         "{`job-status ${job.status}`}",
     );
   assert.equal(statuses.length, 1, "snapshot-raw-status-class");
-  same(
-    statuses[0]!,
-    templates.get("SnapshotStatus")!.nodes.find(isJsxElement)!,
+  assert.ok(
+    inside(statuses[0]!)
+      .filter(isJsxExpression)
+      .some(
+        (node) => node.expression?.getText() === "presentation.statusLabel",
+      ),
     "snapshot-rendered-status",
   );
   const titles = inside(section)
@@ -622,11 +656,11 @@ function validate(contents: Sources) {
     "snapshot-rendered-title",
   );
   same(
-    jsxClass(row, "execution-object"),
+    jsxClass(card, "execution-object"),
     templates.get("SnapshotDetail")!.nodes.find(isJsxElement)!,
     "snapshot-rendered-detail",
   );
-  const results = jsxClass(row, "execution-step-result");
+  const results = jsxClass(card, "execution-step-result");
   let resultGuard = results.parent;
   while (resultGuard.kind === SyntaxKind.ParenthesizedExpression)
     resultGuard = resultGuard.parent;
@@ -875,7 +909,11 @@ test("real import symbols, unwrapped calls and original render captures are requ
     "actual-live-direct-consumer:captured-arguments",
   );
   reject(
-    changed("Dialog", "{presentation.statusLabel}", "{job.status}"),
+    changed(
+      "Card",
+      "            {presentation.statusLabel}\n          </span>",
+      "            {job.status}\n          </span>",
+    ),
     "snapshot-rendered-status",
   );
   reject(
@@ -922,14 +960,14 @@ test("original visible status, identities and technical/prose bindings stay prec
   );
   reject(
     changed(
-      "Dialog",
+      "Card",
       "className={`job-status ${job.status}`}",
       "className={`job-status ${presentation.statusLabel}`}",
     ),
     "snapshot-raw-status-class",
   );
   reject(
-    changed("Dialog", "data-job-id={job.id}", "data-job-id={job.thread_id}"),
+    changed("Card", "data-job-id={job.id}", "data-job-id={job.thread_id}"),
     "snapshot-job-identity",
   );
 });

@@ -1,5 +1,54 @@
 /* Activity inspection, not message-card motion. Same status authority and
    shared palette; completed steps recede, current work stays easy to find. */
+.execution-command {
+  min-width: 0;
+  margin: 5px 0 7px;
+}
+.app .execution-job .execution-command > pre {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  max-height: 4.5em;
+}
+.execution-command > pre > code {
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.app .execution-job .execution-command[data-expanded] > pre {
+  display: block;
+  max-height: 240px;
+  overflow: auto;
+}
+.execution-command > button {
+  display: block;
+  min-height: 28px;
+  padding: 3px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+.execution-command > button:hover {
+  color: var(--ink);
+}
+.execution-command > small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
 .execution-origin-status {
   display: inline-flex;
   align-items: center;

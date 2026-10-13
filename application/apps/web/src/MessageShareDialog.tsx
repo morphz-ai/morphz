@@ -366,6 +366,7 @@ export function MessageShareDialog({
           ))}
           {content.format === "markdown" ? (
             <SafeMarkdown
+              copyable={false}
               state={content.state}
               catalog={content.catalog}
               onOpen={() => {}}

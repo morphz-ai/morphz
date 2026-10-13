@@ -9,6 +9,7 @@ import {
 } from "react";
 import Markdown from "react-markdown";
 import { MarkdownTable } from "./MarkdownTable.js";
+import { MarkdownTextBlock } from "./MarkdownTextBlock.js";
 import { markdownRemarkPlugins } from "./markdown-parsing.js";
 import { preserveMarkdownLineBreaks } from "./markdown-line-breaks.js";
 import { omitRepeatedDocumentTitle } from "./document-presentation.js";
@@ -24,8 +25,17 @@ const MarkdownScope = createContext<{
   state: Workspace;
   catalog?: readonly PlatformContent[];
   onOpen: (id: string) => void;
+  copyable: boolean;
 } | null>(null);
 const markdownComponents = {
+  pre: function MarkdownPre({ children }: { children?: ReactNode }) {
+    const scope = useContext(MarkdownScope)!;
+    return (
+      <MarkdownTextBlock copyable={scope.copyable}>
+        {children}
+      </MarkdownTextBlock>
+    );
+  },
   span: function StreamText({
     children,
     node,
@@ -235,6 +245,7 @@ export function SafeMarkdown({
   onOpen,
   documentTitle,
   streaming = false,
+  copyable = true,
 }: {
   children: string;
   state: Workspace;
@@ -242,9 +253,10 @@ export function SafeMarkdown({
   onOpen: (id: string) => void;
   documentTitle?: string;
   streaming?: boolean;
+  copyable?: boolean;
 }) {
   return (
-    <MarkdownScope.Provider value={{ state, catalog, onOpen }}>
+    <MarkdownScope.Provider value={{ state, catalog, onOpen, copyable }}>
       <MarkdownBody documentTitle={documentTitle} streaming={streaming}>
         {children}
       </MarkdownBody>

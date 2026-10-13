@@ -8,6 +8,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
+import { copyText as copyMessage } from "./clipboard-text.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import {
   MessageShareDialog,
@@ -1434,42 +1435,6 @@ function MessageActions({
       )}
     </>
   );
-}
-
-async function copyMessage(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return;
-  } catch {
-    // Electron's permission gate can reject the async Clipboard API. Copy only
-    // the requested message via the existing user gesture; never read clipboard.
-    const selection = window.getSelection();
-    const ranges = selection
-      ? Array.from({ length: selection.rangeCount }, (_, i) =>
-          selection.getRangeAt(i).cloneRange(),
-        )
-      : [];
-    const focused =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    const input = document.createElement("textarea");
-    input.value = text;
-    input.readOnly = true;
-    input.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
-    document.body.append(input);
-    try {
-      input.select();
-      if (!document.execCommand("copy")) throw new Error("Copy unavailable");
-    } finally {
-      input.remove();
-      focused?.focus({ preventScroll: true });
-      if (selection) {
-        selection.removeAllRanges();
-        for (const range of ranges) selection.addRange(range);
-      }
-    }
-  }
 }
 
 export function ToolMessage({

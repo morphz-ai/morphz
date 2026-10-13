@@ -1,0 +1,61 @@
+.markdown-code-block {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  margin: 1em 0;
+}
+.app .markdown-code-block > pre {
+  margin: 0;
+  max-width: 100%;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  overflow-x: hidden;
+}
+.app .markdown-code-block[data-copyable] > pre {
+  padding-top: 16px;
+  padding-right: 44px;
+}
+.app .markdown-code-block > pre > code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  white-space: inherit;
+  overflow-wrap: inherit;
+}
+.app .markdown-code-copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+}
+.app .markdown-code-copy:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+.app .markdown-code-copy[data-state="copied"] {
+  color: var(--success-ink);
+}
+.app .markdown-code-copy[data-state="error"] {
+  color: var(--danger);
+}
+@media (pointer: coarse) {
+  .app .markdown-code-copy {
+    width: 44px;
+    height: 44px;
+  }
+  .app .markdown-code-block[data-copyable] > pre {
+    padding-right: 60px;
+  }
+}
