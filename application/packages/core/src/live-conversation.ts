@@ -14,6 +14,8 @@ export const liveMessageSchema = z.object({
   incomplete: z.boolean().optional(),
   truncated: z.boolean().optional(),
   publicationKey: z.string().optional(),
+  /** The physical stream explicitly named by Runtime's semantic outcome. */
+  modelAttemptId: z.string().optional(),
   sequence: z.number().int().nonnegative().optional(),
   threadId: z.string().optional(),
   /** A durable Runtime provider_wait, not a failed physical HTTP stream. */
@@ -109,6 +111,9 @@ export class LiveConversationProjection {
       ...(typeof e.payload.thread_id === "string"
         ? { threadId: e.payload.thread_id }
         : {}),
+      ...(typeof e.payload.model_attempt_id === "string"
+        ? { modelAttemptId: e.payload.model_attempt_id }
+        : {}),
       ...(["chat/progress", "runtime/provider_wait"].includes(e.topic) &&
       e.payload.disposition === "provider_wait"
         ? { providerRecovery: { startedAt: e.timestamp } }
@@ -119,10 +124,19 @@ export class LiveConversationProjection {
   }
   consume(e: StreamEvent) {
     const p = e.payload,
-      // Waiting ends one physical model attempt, not every attempt belonging
-      // to the activation. A protocol retry can have its own stream identity.
+      // Semantic outcomes can name the exact physical request. A protocol
+      // retry is not inferred from an Activation or an identifier suffix.
       attemptId =
-        (e.topic === "runtime/thread_waiting" && str(p.model_attempt_id)) ||
+        ([
+          "runtime/thread_waiting",
+          "chat/reply",
+          "chat/outbound_message",
+          "chat/progress",
+          "chat/runtime_error",
+          "session/io_state",
+          "runtime/response_protocol_fused",
+        ].includes(e.topic) &&
+          str(p.model_attempt_id)) ||
         str(p.attempt_id),
       activation = str(p.activation_id) || attemptId;
     if (e.topic === "runtime/thread_cancelled") {
@@ -184,13 +198,18 @@ export class LiveConversationProjection {
     ].includes(e.topic);
     if (semantic) {
       const replacesText =
-        [
+        ([
           "chat/reply",
           "chat/outbound_message",
           "chat/runtime_error",
           "session/io_state",
           "runtime/response_protocol_fused",
-        ].includes(e.topic) && !!str(p.text ?? p.error ?? p.message);
+        ].includes(e.topic) &&
+          !!str(p.text ?? p.error ?? p.message)) ||
+        (e.topic === "chat/progress" &&
+          p.disposition !== "provider_wait" &&
+          !!str(p.root_turn_id) &&
+          !!str(p.text));
       if (attemptId) this.resolved.add(attemptId);
       if (replacesText && attemptId) this.replaced.add(attemptId);
       if (e.topic === "chat/cancelled" && activation)

@@ -32,13 +32,15 @@ function Fixture(){
  const messages=conversationMessages(workspace,scope.conversationId,history.runtime,live,false);
  const client={online:true,contentCatalog:[],contentVersionTitle:()=>null,approvalSubmitted:()=>false,boot:{workspace,runtime:history.runtime,actantId:'human',outputs:[],scriptOutputs:[],localSavedInputIds:[],localInputSubmissions:{}},cancelInput:()=>{throw Error('no control request');},loadHistoryUntil:()=>{throw Error('no source request');}};
  window.publicationFixture={async run(action){
-  if(action==='finish'||action==='refresh'||action==='error'){
-   const terminal=action==='error'?{...final,sequence:6893,kind:'error',text:'TEST actual terminal error'}:final;
-   const version=action==='finish'?'v2':action==='refresh'?'v3':'v4';
+  if(action==='finish'||action==='refresh'||action==='error'||action==='retry-final'){
+   const prefix=action==='retry-final'?{...partial,id:'stream:TEST-physical-retry',publicationKey:'TEST-physical-retry'}:partial;
+   const terminal=action==='error'?{...final,sequence:6893,kind:'error',text:'TEST actual terminal error'}:action==='retry-final'?{...final,modelAttemptId:'TEST-physical-retry'}:final;
+   const version=action==='finish'?'v2':action==='refresh'?'v3':action==='retry-final'?'v5':'v4';
+   if(action==='retry-final')cache.current={scope,version:'retry-prefix',value:page([older,prefix])};
    const head=readHistoryHead(async()=>page([terminal]),scope,version,cache.current);
    const value=head.kind==='cached'?head.value:await head.pending;
    cache.current={scope,version,value};
-   flushSync(()=>{setHistory(value);setLive([partial,terminal]);});
+   flushSync(()=>{setHistory(value);setLive([prefix,terminal]);});
   }else flushSync(()=>{
    if(action==='disconnect'){setConnected(false);setLive([{...partial,streaming:false}]);}
    else if(action==='reconnect'){setConnected(true);setLive([{...partial,streaming:true}]);}
@@ -167,6 +169,23 @@ test(
       await page.locator('[data-message-id="stream:another-attempt"]').count(),
       1,
     );
+    for (const action of ["retry-final", "remount"]) {
+      const report = await run(action);
+      assert.deepEqual(report.rendered, [
+        "older-independent",
+        "publication:TEST-ping-attempt",
+      ]);
+      assert.equal(
+        await page
+          .locator('[data-message-id="stream:TEST-physical-retry"]')
+          .count(),
+        0,
+      );
+      assert.equal(
+        await page.getByText("pong，我在。", { exact: true }).count(),
+        1,
+      );
+    }
     await run("error");
     assert.equal(await prefix.count(), 0);
     assert.equal(await terminal.count(), 1);

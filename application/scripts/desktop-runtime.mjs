@@ -96,9 +96,6 @@ const child = spawn(
       MORPHZ_EVAL_CALLABLE_TOOLS:
         process.env.MORPHZ_EVAL_CALLABLE_TOOLS ??
         "read,write,edit,list_files,search,exec,transfer,host_morphz",
-      // Persisted model routes may reference the old key name. Supply both
-      // without rewriting the existing configuration or credential reference.
-      MORPHZWORK_DEVELOPMENT_MODEL_KEY: key,
       MORPHZ_APP_DEVELOPMENT_MODEL_KEY: key,
     },
   },

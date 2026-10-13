@@ -194,6 +194,7 @@ async function fixture() {
             final_event: true,
             event: root.event,
             root_event: null,
+            input_event: root.event,
           })),
         next_before: null,
       });

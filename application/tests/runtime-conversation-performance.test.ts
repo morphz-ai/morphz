@@ -81,6 +81,7 @@ async function platformObserverFixture(t: import("node:test").TestContext) {
   let received: ConversationStream = { connected: false, messages: [] };
   let settle: (() => void) | undefined;
   let rootOverride: ((event: TimelineEvent) => Promise<unknown>) | undefined;
+  const sourceRoots = new Map<string, number>();
   bridge.bindPlatformReadAuthority(async () => {
     authorizations++;
     if (!readable) throw new Error("authorization revoked");
@@ -110,11 +111,17 @@ async function platformObserverFixture(t: import("node:test").TestContext) {
       return { entries: [], next_before: null };
     if (url.pathname.endsWith("/events"))
       return { latest_sequence: 438, events: [] };
-    const root = /^root-(\d+)$/.exec(url.pathname.split("/").at(-1)!);
-    assert.ok(root, "Only exact root Event reads are permitted: " + path);
+    const rootId = url.pathname.split("/").at(-2)!;
+    const root = /^root-(\d+)$/.exec(rootId);
+    const sourceIndex =
+      sourceRoots.get(rootId) ?? (root ? Number(root[1]) : undefined);
+    assert.ok(
+      url.pathname.endsWith("/source") && sourceIndex !== undefined,
+      "Only exact execution-source reads are permitted: " + path,
+    );
     rootReads++;
-    const event = makePair(sessionId, Number(root[1]))[0]!.event;
-    return rootOverride ? rootOverride(event) : { event };
+    const event = makePair(sessionId, sourceIndex!)[0]!.event;
+    return rootOverride ? rootOverride(event) : { input_event: event };
   });
   const close = await bridge.observePlatformConversation(
     { projectId: "project", conversationId: "conversation" },
@@ -183,6 +190,8 @@ async function platformObserverFixture(t: import("node:test").TestContext) {
     overrideRoot: (value: typeof rootOverride) => {
       rootOverride = value;
     },
+    mapExecutionSource: (rootId: string, inputIndex: number) =>
+      sourceRoots.set(rootId, inputIndex),
     async close() {
       close();
       await bridge.stop();
@@ -261,6 +270,34 @@ test("实时根来源缓存有界，淘汰后按需重读而不保存消息历�
   }
 });
 
+test("目标实时进度使用精确执行来源，保留 synthetic root 并重新校验授权", async (t) => {
+  const f = await platformObserverFixture(t);
+  try {
+    const root = "non-input-execution-identity";
+    f.mapExecutionSource(root, 7);
+    const message = {
+      ...f.messages(7, 1)[0]!,
+      id: "goal-progress",
+      kind: "progress" as const,
+      rootId: root,
+    };
+    const live = await f.publish([message]);
+    assert.equal(live.messages[0]?.inputId, "input-7");
+    assert.equal(live.messages[0]?.rootId, root);
+    assert.equal(live.messages[0]?.kind, "progress");
+    assert.equal(f.metrics().snapshotReads, 0);
+    f.revoke();
+    await f.publish([message]);
+    assert.equal(
+      f.metrics().failures,
+      1,
+      "a cached exact route is not permission to bypass a revoked grant",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("迟到的根读取缺失不能抹掉 WebSocket 已取得的新来源", async (t) => {
   const f = await platformObserverFixture(t);
   let requested!: () => void, resolveRoot!: (value: unknown) => void;
@@ -278,7 +315,7 @@ test("迟到的根读取缺失不能抹掉 WebSocket 已取得的新来源", asy
     await started;
     const event = f.rootEvent(7);
     f.feed.onEvent?.(f.feed.sessions()[0]!, event);
-    resolveRoot({ event: { ...event, id: "mismatched-root" } });
+    resolveRoot({ input_event: null });
     assert.equal((await pending).messages.length, 0);
     f.overrideRoot(undefined);
     const received = await f.publish(f.messages(7, 1));
@@ -310,6 +347,7 @@ type TimelineFixtureEntry = {
   final_event: boolean;
   event: TimelineEvent;
   root_event: TimelineEvent | null;
+  input_event: TimelineEvent | null;
 };
 function storedData(value: unknown): unknown {
   if (value === null) return { type: "null" };
@@ -407,6 +445,7 @@ function timelinePair(
       final_event: false,
       event: root,
       root_event: null,
+      input_event: root,
     },
     {
       entry_id: "publication:" + attemptId,
@@ -418,6 +457,7 @@ function timelinePair(
       final_event: true,
       event: reply,
       root_event: root,
+      input_event: root,
     },
   ];
 }

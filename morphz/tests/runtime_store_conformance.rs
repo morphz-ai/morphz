@@ -61,6 +61,181 @@ use tempfile::{NamedTempFile, TempDir};
 use tokio::sync::Barrier;
 
 type TestError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Current stored Goal / Thread provenance, executed against both actual
+/// databases. The separate Runtime unit test creates its Goal with the model;
+/// this fixture deliberately starts no model or scheduler work.
+async fn assert_runtime_timeline_source_conformance<S: morphz::memory::RuntimeStore + 'static>(
+    store: Arc<S>,
+) {
+    let client = Arc::new(MultiRuntimeReplyClient::default());
+    let identity = RuntimeIdentity {
+        agent_id: "timeline-provenance-agent".into(),
+        context_id: "timeline-provenance-context".into(),
+        principal_id: "timeline-provenance-human".into(),
+    };
+    store
+        .create_agent_bundle(
+            NewAgent {
+                id: identity.agent_id.clone(),
+                title: "TEST Goal provenance".into(),
+                root_context_id: identity.context_id.clone(),
+            },
+            NewCognitiveContext {
+                id: identity.context_id.clone(),
+                agent_id: identity.agent_id.clone(),
+                title: "TEST Goal provenance".into(),
+            },
+            NewSession {
+                id: "timeline-provenance-bootstrap".into(),
+                agent_id: identity.agent_id.clone(),
+                context_id: identity.context_id.clone(),
+                parent_session_id: None,
+                title: "TEST bootstrap".into(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
+    let runtime = MorphzRuntime::builder(AppConfig::default(), client.clone())
+        .store(
+            "timeline-provenance-test",
+            store.clone() as Arc<dyn morphz::memory::RuntimeStore>,
+        )
+        .identity(identity.clone())
+        .build()
+        .await
+        .unwrap();
+    let session = runtime
+        .ensure_session(NewSession {
+            id: "timeline-provenance-session".into(),
+            agent_id: identity.agent_id.clone(),
+            context_id: identity.context_id.clone(),
+            parent_session_id: None,
+            title: "TEST Goal publication provenance".into(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let input = Event::new("timeline-provenance-input".into(), "Human".into(), "session_message".into(), "chat/user_message".into(),
+        serde_json::from_value(json!({"context_id": identity.context_id, "session_id": session.id(), "principal_id": identity.principal_id,
+            "client_message_id": "timeline-provenance-client", "text": "execute as a Goal"})).unwrap());
+    store.append(input.clone()).await.unwrap();
+    let goal = store
+        .create_objective(NewObjective {
+            id: "timeline-provenance-goal".into(),
+            agent_id: identity.agent_id.clone(),
+            context_id: identity.context_id.clone(),
+            coordinator_session_id: session.id().into(),
+            delivery_session_id: session.id().into(),
+            parent_objective_id: None,
+            source_event_id: input.id.clone(),
+            initiating_principal_id: Some(identity.principal_id.clone()),
+            stated_objective: "TEST Goal final publication".into(),
+            token_budget: None,
+            model_alias: None,
+            reasoning_effort: None,
+        })
+        .await
+        .unwrap();
+    let root = objective_primary_execution_root_id(&goal.id, goal.generation);
+    let thread = store
+        .ensure_thread(NewThread {
+            id: stable_thread_id(&root),
+            root_turn_id: root.clone(),
+            agent_id: identity.agent_id.clone(),
+            context_id: identity.context_id.clone(),
+            session_id: session.id().into(),
+            initiating_principal_id: Some(identity.principal_id.clone()),
+            kind: ThreadKind::Execution,
+            executor_kind: "self".into(),
+            executor_id: None,
+            target_id: None,
+            supervision: ThreadSupervision::objective_primary_execution(&goal.id, goal.generation),
+            response_annotations: morphz::response_annotations::Protocol::Off,
+            model_alias: None,
+            reasoning_effort: None,
+        })
+        .await
+        .unwrap();
+    let make_output = |id: &str, topic: &str| {
+        Event::new(id.into(), "Agent-Morphz".into(), "agent_call".into(), topic.into(),
+        serde_json::from_value(json!({"context_id": identity.context_id, "session_id": session.id(), "principal_id": identity.principal_id,
+            "root_turn_id": root, "thread_id": thread.id, "attempt_id": "timeline-provenance-attempt", "text": id})).unwrap())
+    };
+    let progress = make_output("timeline-provenance-progress", "chat/progress");
+    let reply = make_output("timeline-provenance-final", "chat/reply");
+    for output in [progress, reply.clone()] {
+        store.append(output).await.unwrap();
+    }
+    let entries = runtime
+        .query_session_timeline(session.id(), None, 100)
+        .await
+        .unwrap();
+    let publication = entries
+        .iter()
+        .find(|entry| entry.event.id == reply.id)
+        .unwrap();
+    assert_eq!(publication.root_turn_id, root);
+    assert!(publication.root_event.is_none());
+    assert_eq!(publication.input_event.as_ref().unwrap().id, input.id);
+    assert_eq!(
+        runtime
+            .session_timeline_entry(session.id(), &publication.entry_id)
+            .await
+            .unwrap()
+            .as_ref(),
+        Some(publication)
+    );
+    assert_eq!(
+        runtime
+            .session_root_input(session.id(), &root)
+            .await
+            .unwrap()
+            .as_ref()
+            .map(|event| &event.id),
+        Some(&input.id)
+    );
+    assert!(runtime
+        .session_root_input(session.id(), "unrelated-root")
+        .await
+        .unwrap()
+        .is_none());
+    // Same execution root is not enough when the concrete output lies about
+    // its principal / Context / Session / Thread. Include a valid predecessor
+    // on the same page to exercise the per-page proof cache as well.
+    for key in ["principal_id", "context_id", "session_id", "thread_id"] {
+        let mut foreign = reply.clone();
+        foreign.id = format!("timeline-foreign-{key}");
+        foreign.payload.insert(key.into(), json!("foreign"));
+        foreign.payload.remove("attempt_id");
+        assert!(runtime
+            .session_event_input(session.id(), &foreign)
+            .await
+            .unwrap()
+            .is_none());
+        // Missing Context / Session are invalid ingress fixtures and must not
+        // pollute subsequent Recall / foreign-key conformance. Their source
+        // read rejection above is still mandatory. Valid scoped rows exercise
+        // the per-page principal / Thread proof cache below.
+        if matches!(key, "principal_id" | "thread_id") {
+            store.append(foreign).await.unwrap();
+        }
+    }
+    let checked = runtime
+        .query_session_timeline(session.id(), None, 100)
+        .await
+        .unwrap();
+    assert!(checked
+        .iter()
+        .filter(|entry| entry.event.id.starts_with("timeline-foreign-"))
+        .all(|entry| entry.input_event.is_none()));
+    assert_eq!(
+        client.calls.load(Ordering::SeqCst),
+        0,
+        "source reads never replay work"
+    );
+}
 #[path = "support/dialogue_maintenance_interrupt.rs"]
 mod dialogue_maintenance_interrupt;
 #[path = "support/interrupt_frontier.rs"]
@@ -167,6 +342,24 @@ async fn assert_session_timeline_conformance<S: morphz::memory::RuntimeStore>(st
         ["timeline-client-one", "publication:timeline-attempt-one"]
     );
     assert_eq!(older[1].event.id, "timeline-final-one");
+    assert_eq!(
+        store
+            .session_timeline_entry(session_id, "publication:timeline-attempt-one")
+            .await
+            .unwrap(),
+        Some(older[1].clone()),
+        "exact publication read uses the same stable entry and first-visible time"
+    );
+    assert!(store
+        .session_timeline_entry("timeline-other", "publication:timeline-attempt-one")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .session_timeline_entry(session_id, "publication:missing")
+        .await
+        .unwrap()
+        .is_none());
     assert_eq!(
         older[1].root_event.as_ref().map(|event| event.id.as_str()),
         Some("timeline-root-one")
@@ -11852,6 +12045,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         .await
         .unwrap();
     assert_session_timeline_conformance(store.as_ref()).await;
+    assert_runtime_timeline_source_conformance(store.clone()).await;
     assert_agent_provider_binding_conformance(Arc::clone(&store)).await;
     assert_session_directory_conformance(Arc::clone(&store)).await;
     assert_principal_first_seen_conformance(Arc::clone(&store)).await;
@@ -12473,6 +12667,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         .await
         .unwrap();
     assert_session_timeline_conformance(store.as_ref()).await;
+    assert_runtime_timeline_source_conformance(store.clone()).await;
     sqlx::query(
         "UPDATE session_message_timeline SET entry_id = root_turn_id WHERE display_kind = 'input'",
     )

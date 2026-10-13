@@ -77,6 +77,7 @@ export function runtimeTimeline(root: HttpEvent, replies: HttpEvent[]) {
       final_event: false,
       event: root,
       root_event: null,
+      input_event: root,
     },
     ...replies.map((event) => {
       if (event.payload.root_turn_id !== root.id)
@@ -91,6 +92,7 @@ export function runtimeTimeline(root: HttpEvent, replies: HttpEvent[]) {
         final_event: true,
         event,
         root_event: root,
+        input_event: root,
       };
     }),
   ];

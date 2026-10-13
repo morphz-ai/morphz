@@ -64,6 +64,7 @@ type FixtureTimelineItem = {
   final_event: boolean;
   event: FixtureEvent;
   root_event: FixtureEvent | null;
+  input_event: FixtureEvent | null;
 };
 
 /** Mirror Runtime SQL's integer-microsecond timeline independently of the
@@ -114,6 +115,22 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     string,
     { sessionId: string; event: FixtureEvent }
   >();
+  // Controlled current Runtime input-source proofs, independent from an
+  // execution root. Actual Goal resolution is tested in Runtime itself.
+  const timelineSources = new Map<string, string | null>();
+  const sourceInput = (sessionId: string, rootId: unknown) => {
+    const inputRoot =
+      typeof rootId === "string"
+        ? timelineSources.has(rootId)
+          ? timelineSources.get(rootId)
+          : rootId
+        : null;
+    return (
+      [...acceptedRoots.values()].find(
+        (item) => item.sessionId === sessionId && item.event.id === inputRoot,
+      )?.event ?? null
+    );
+  };
   const approvalDecisions: string[] = [];
   let jobListReads = 0;
   let failNextMessageId: string | null = null;
@@ -266,6 +283,12 @@ test("Platform-only project sends a durable Runtime input without a legacy works
                   : "signal",
               ...event,
             },
+            input_event: sourceInput(
+              sessionId,
+              event.topic === "chat/user_message"
+                ? event.id
+                : event.payload.root_turn_id,
+            ),
           })
         : send(404, { error: "event not found" });
     }
@@ -277,7 +300,10 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         ? send(200, { event: accepted.event })
         : send(404, { error: "message not found" });
     }
-    if (request.method === "GET" && path.endsWith("/timeline")) {
+    if (
+      request.method === "GET" &&
+      (path.endsWith("/timeline") || path.includes("/timeline/entries/"))
+    ) {
       if (!sessions.has(sessionId))
         return send(404, { error: "session not found" });
       const roots = [...acceptedRoots.entries()]
@@ -309,12 +335,13 @@ test("Platform-only project sends a durable Runtime input without a legacy works
           final_event: false,
           event,
           root_event: null,
+          input_event: event,
         }),
       );
       for (const event of scoped) {
         const rootId = event.payload.root_turn_id;
         const root = typeof rootId === "string" ? byRoot.get(rootId) : null;
-        if (!root) continue;
+        if (typeof rootId !== "string") continue;
         const kind = ["chat/reply", "chat/outbound_message"].includes(
           event.topic,
         )
@@ -337,15 +364,23 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         entries.push({
           entry_id: attempt ? "publication:" + attempt : event.id,
           ...sqlTimelineTime(visible),
-          root_turn_id: root.id,
+          root_turn_id: rootId,
           attempt_id: attempt,
           display_kind: kind,
           final_event: true,
           event,
-          root_event: root,
+          root_event: root ?? null,
+          input_event: sourceInput(sessionId, rootId),
         });
       }
       const query = new URL(request.url!, "http://localhost").searchParams;
+      if (path.includes("/timeline/entries/")) {
+        const entryId = decodeURIComponent(path.split("/").at(-1)!);
+        const entry = entries.findLast((item) => item.entry_id === entryId);
+        return entry
+          ? send(200, { entry })
+          : send(404, { error: "publication not found" });
+      }
       const beforeTime = query.get("before_time_micros");
       const beforeId = query.get("before_entry_id");
       const limit = Math.min(100, Number(query.get("limit") ?? 100));
@@ -417,6 +452,13 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       return sourceSessionId
         ? send(200, {
             snapshot: {
+              source: {
+                event_id: `root-${inputId}`,
+                root_turn_id: `root-${inputId}`,
+                session_id: sourceSessionId,
+                context_id: sessions.get(sourceSessionId)!.context_id,
+                activation_id: null,
+              },
               thread: {
                 id: threadId,
                 session_id: sourceSessionId,
@@ -436,6 +478,18 @@ test("Platform-only project sends a durable Runtime input without a legacy works
             },
           })
         : send(404, { error: "thread not found" });
+    }
+    if (
+      request.method === "GET" &&
+      path.endsWith("/source") &&
+      path.includes("/turns/")
+    ) {
+      return send(200, {
+        input_event: sourceInput(
+          sessionId,
+          decodeURIComponent(path.split("/").at(-2)!),
+        ),
+      });
     }
     if (path.endsWith("/io/messages")) {
       if (body.client_message_id === failNextMessageId) {
@@ -563,6 +617,13 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     if (path.endsWith("/scheduler"))
       return send(200, {
         threads: [...sentSessions].map(([inputId, scopedSessionId]) => ({
+          source: {
+            event_id: `root-${inputId}`,
+            root_turn_id: `root-${inputId}`,
+            session_id: scopedSessionId,
+            context_id: sessions.get(scopedSessionId)!.context_id,
+            activation_id: null,
+          },
           intent: null,
           phase: "running",
           thread: {
@@ -1042,6 +1103,104 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       ),
       null,
     );
+    const goalRoot = `non-message-execution-${randomUUID()}`;
+    const goalAttempt = `goal-attempt-${randomUUID()}`;
+    timelineSources.set(goalRoot, `root-${command.commandId}`);
+    const goalTime = new Date(Date.now() + 1_000).toISOString();
+    firstEvents.push(
+      {
+        id: `goal-progress-${goalAttempt}`,
+        sequence: firstEvents.length + 1,
+        timestamp: goalTime,
+        topic: "chat/progress",
+        payload: {
+          session_id: firstSessionId,
+          root_turn_id: goalRoot,
+          text: "目标正在统稿",
+        },
+      },
+      {
+        id: `goal-final-${goalAttempt}`,
+        sequence: firstEvents.length + 2,
+        timestamp: goalTime,
+        topic: "chat/reply",
+        payload: {
+          session_id: firstSessionId,
+          root_turn_id: goalRoot,
+          attempt_id: goalAttempt,
+          model_attempt_id: `${goalAttempt}-physical`,
+          text: "目标最终交付",
+        },
+      },
+    );
+    const goalHistory = await secondRuntime.platformConversationHistory(
+      sourceScope,
+      localAccess,
+    );
+    const goalMessages = goalHistory.runtime.messages.filter(
+      (message) => message.rootId === goalRoot,
+    );
+    assert.deepEqual(
+      goalMessages.map((message) => message.text).sort(),
+      ["目标正在统稿", "目标最终交付"].sort(),
+    );
+    assert.ok(
+      goalMessages.every((message) => message.inputId === command.commandId),
+    );
+    assert.equal(
+      goalMessages.find((message) => message.kind === "reply")?.modelAttemptId,
+      `${goalAttempt}-physical`,
+      "the exact Runtime retry relationship survives the Host read projection",
+    );
+    assert.deepEqual(
+      await secondRuntime.platformMessageSource(
+        sourceScope,
+        localAccess,
+        `publication:${goalAttempt}`,
+        command.commandId,
+      ),
+      {
+        id: `publication:${goalAttempt}`,
+        inputId: command.commandId,
+        ...sourceScope,
+        createdAt: goalTime,
+        text: "目标最终交付",
+      },
+      "another Host can quote the exact Goal publication without guessing from a shared Session",
+    );
+    assert.equal(
+      (
+        await secondRuntime.platformMessageSource(
+          sourceScope,
+          localAccess,
+          `goal-progress-${goalAttempt}`,
+          command.commandId,
+        )
+      )?.text,
+      "目标正在统稿",
+    );
+    timelineSources.set(goalRoot, null);
+    assert.equal(
+      (
+        await secondRuntime.platformConversationHistory(
+          sourceScope,
+          localAccess,
+        )
+      ).runtime.messages.some((message) => message.rootId === goalRoot),
+      false,
+    );
+    assert.equal(
+      await secondRuntime.platformMessageSource(
+        sourceScope,
+        localAccess,
+        `publication:${goalAttempt}`,
+        command.commandId,
+      ),
+      null,
+      "missing proof must not fall back to the selected page or Session",
+    );
+    firstEvents.splice(firstEvents.length - 2, 2);
+    timelineSources.delete(goalRoot);
     const executionScope = {
       projectId: "new-platform-project",
       conversationId: "new-platform-project",

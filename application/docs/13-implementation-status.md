@@ -1,5 +1,61 @@
 # 桌面能力实施记录
 
+## 2026-10-13 目标派生消息来源与重试双播收口
+
+用户看到的最后正文停在 13:12，但原 Runtime 已在 14:09 完成重写目标，
+最终回复 `reply_1791871757988007000` 和进度均已持久保存。执行根
+`objective_thread_objective-auto-1791860822511727000_g1` 是协调线程
+的真实根，不是一条 Human Event。Host 原时间线及实时监听要求该根
+本身可作为输入读取，误滤掉其公开输出；不是任务仍在运行或没有回复。
+
+Runtime 在原有界时间线／精确 Event 读取中提供必有可空 `input_event`，
+使用既有 Thread／Goal／Schedule 的精确来源解析，保留真实执行根和
+所有 Event。增加同一 Session 授权的精确时间线主键读取与执行根来源
+读取；后者覆盖流先于持久输出出现的路径。来源解析缓存包含 root、
+Context、principal 和 Thread，不让同根的错误 Thread 借用有效证明。
+无证明为 null，不按当前页面、共享 Session 或 ID 前缀猜测。Host
+继续逐批检查原输入的当前 Platform 权限；最终引用不扫描整段历史，
+也不建立消息副本或重放业务。协议与测试同步切换，不保留旧读取分支。
+
+两库重开回归另外发现无 attempt 的输出重建时，SQL 的 `NULL = NULL`
+误报身份冲突。SQLite 改用 `IS`、PostgreSQL 改用 `IS NOT DISTINCT FROM`，
+执行根的精确相等门保留，完整 Store conformance 包含重开验证。
+
+实窗恢复后暴露重试流与最终回复双播：原结果的 `model_attempt_id`
+明确指向物理重试，Host DTO 和实时投影保留该证明，历史合并／主消息
+投影据完整输入、执行根与 Thread 范围替换其流式前缀，不截取 ID 后缀
+或比较正文。实际进度替换自身公开前缀；Provider 等待及无来源的进度
+不抹掉原文字。独立请求、不同分支和原工具记录保留，所有原事件、
+publication 身份与时间戳不重写。部署脚本只提供当前模型凭据绑定，
+移除本轮发现的多余旧环境名；现有私人配置与凭据文件路径不改。
+
+验证：正式 Node 入口相关 11 文件 **78／78**，实际 StrictMode
+Conversation 的缓存／重试／刷新／重挂载组合 **1／1**，均通过
+PostgreSQL 门禁、无跳过。最初新增用例 4 条 RED 与一次缺来源进度
+保护回归失败的日志保留；修复后全部原断言通过。实际受控模型 Goal
+创建、最终来源、进度、反例及冷恢复 **1／1**；当前时间线分类、SQLite
+索引、HTTP 和有界观察 **4／4**。SQLite、独立 PostgreSQL schema 的
+完整 Runtime Store conformance 各 **1／1**，含来源和重开反例；不
+声称全仓或外部 Provider 实测。应用类型／生产构建、当前 remote-store
+Runtime CLI 构建、格式和差异检查通过。磁盘不足导致的早期编译失败
+保留，串行复验通过，未放宽门禁或执行 cargo clean。
+
+原 `/Users/shafreeck/Applications/Morphz.app` 正常退出重开加载新构建，
+仍用原 Profile／Center。最终实窗中 14:09 正文仅一条，目标为已完成、
+14 个关联执行；点击原活动可见 13:33 进展卡片、真实执行步骤与子任务，
+再返回原概览，空输入保留。读取原数据确认当前无 queued／running
+Activation 或待执行 Job，不伪造运行光圈；没有发送输入、重启写作、
+补写内容库或调用外部模型。原 4 输入 Event／冻结请求、原附件摘要、
+17 个 Thread 身份与 generation、Goal 来源和三份连接配置一致；
+两库 quick_check／foreign_key_check 通过。前阶段的目录刷新／评论
+并发修复边界仍按下节，不把本次正常退出外推成所有潜在卡死根因已排除。
+
+为完成编译，仅删除本轮已退出的五份临时冻结二进制副本，以及核对归属
+与完整输出后的 34 个调试 sidecar／失败对象，共约 1.6 GB；可由源码
+重新生成。业务、测试日志、完整二进制、依赖、incremental、fingerprint、
+build 与 release 缓存保留。证据及清理清单仍在
+`/private/tmp/morphz-comment-concurrency-xnFLNY`。本轮仅本地提交，不推送。
+
 ## 2026-10-13 渐进披露、输入承接与并行来源修正
 
 附件提交只登记资源与有界元数据，首次及后续模型请求均不再自动读取

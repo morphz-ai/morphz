@@ -5896,6 +5896,12 @@ pub trait EventStore: Send + Sync {
 /// check each returned input root against their own domain permissions.
 #[async_trait::async_trait]
 pub trait SessionTimelineStore: Send + Sync {
+    async fn session_timeline_entry(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+    ) -> Result<Option<SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>>;
+
     async fn query_session_timeline(
         &self,
         session_id: &str,

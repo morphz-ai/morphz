@@ -170,6 +170,7 @@ export const conversationRuntimeSchema = z.object({
       inputId: z.string().nullable().optional(),
       rootId: z.string().nullable().optional(),
       publicationKey: z.string().optional(),
+      modelAttemptId: z.string().optional(),
       threadId: z.string().optional(),
       providerRecovery: z.object({ startedAt: z.string() }).optional(),
       incomplete: z.boolean().optional(),

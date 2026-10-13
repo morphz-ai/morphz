@@ -28,6 +28,10 @@ pub struct SessionTimelineItem {
     /// Joined by exact Event identity for a bounded page; not copied into the
     /// projection. The embedding product checks this input's current grant.
     pub root_event: Option<Event>,
+    /// Authenticated initiating input, resolved by Runtime from exact Thread /
+    /// Goal provenance. It may differ from a synthetic execution root. Store
+    /// queries leave this unset; no current page or Session-wide guess is used.
+    pub input_event: Option<Event>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

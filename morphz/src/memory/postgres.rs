@@ -5049,7 +5049,7 @@ async fn project_session_timeline_in_tx(
                    source_sequence = CASE WHEN NOT session_message_timeline.is_final AND EXCLUDED.source_sequence >= session_message_timeline.source_sequence \
                      THEN EXCLUDED.source_sequence ELSE session_message_timeline.source_sequence END \
                  WHERE session_message_timeline.root_turn_id = EXCLUDED.root_turn_id \
-                   AND session_message_timeline.attempt_id = EXCLUDED.attempt_id",
+                   AND session_message_timeline.attempt_id IS NOT DISTINCT FROM EXCLUDED.attempt_id",
             )
             .bind(&entry.session_id)
             .bind(&entry.entry_id)
@@ -5080,7 +5080,7 @@ async fn project_session_timeline_in_tx(
                      THEN EXCLUDED.display_kind ELSE session_message_timeline.display_kind END, \
                    is_final = TRUE \
                  WHERE session_message_timeline.root_turn_id = EXCLUDED.root_turn_id \
-                   AND session_message_timeline.attempt_id = EXCLUDED.attempt_id",
+                   AND session_message_timeline.attempt_id IS NOT DISTINCT FROM EXCLUDED.attempt_id",
             )
             .bind(&entry.session_id)
             .bind(&entry.entry_id)
@@ -6204,14 +6204,48 @@ async fn finish_pg_recall_claim(
 
 #[async_trait::async_trait]
 impl super::SessionTimelineStore for PostgresStore {
+    async fn session_timeline_entry(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+    ) -> Result<Option<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .session_timeline_page(session_id, None, 1, Some(entry_id))
+            .await?
+            .pop())
+    }
+
     async fn query_session_timeline(
         &self,
         session_id: &str,
         before: Option<&super::SessionTimelineCursor>,
         limit: usize,
     ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
+        self.session_timeline_page(session_id, before, limit, None)
+            .await
+    }
+}
+
+impl PostgresStore {
+    async fn session_timeline_page(
+        &self,
+        session_id: &str,
+        before: Option<&super::SessionTimelineCursor>,
+        limit: usize,
+        entry_id: Option<&str>,
+    ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
         let limit = i64::try_from(limit.clamp(1, 1_000))?;
-        let statement = if before.is_some() {
+        let statement = if entry_id.is_some() {
+            "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
+                    t.display_kind, t.is_final, e.sequence AS event_sequence, e.id, \
+                    e.timestamp, e.actor, e.type, e.topic, e.payload, \
+                    r.sequence AS root_event_sequence, r.id AS root_event_id, \
+                    r.timestamp AS root_timestamp, r.actor AS root_actor, \
+                    r.type AS root_type, r.topic AS root_topic, r.payload AS root_payload \
+             FROM session_message_timeline t JOIN events e ON e.id = t.source_event_id \
+             LEFT JOIN events r ON r.id = t.root_turn_id AND r.session_id = t.session_id AND r.id <> e.id \
+             WHERE t.session_id = $1 AND t.entry_id = $2 LIMIT $3"
+        } else if before.is_some() {
             "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
                     t.display_kind, t.is_final, e.sequence AS event_sequence, e.id, \
                     e.timestamp, e.actor, e.type, e.topic, e.payload, \
@@ -6236,6 +6270,9 @@ impl super::SessionTimelineStore for PostgresStore {
              ORDER BY t.visible_at_micros DESC, t.entry_id DESC LIMIT $2"
         };
         let mut query = sqlx::query(statement).bind(session_id);
+        if let Some(entry_id) = entry_id {
+            query = query.bind(entry_id);
+        }
         if let Some(before) = before {
             query = query.bind(before.visible_at_micros).bind(&before.entry_id);
         }
@@ -6297,6 +6334,7 @@ impl super::SessionTimelineStore for PostgresStore {
                         .ok_or("Event payload must be a JSON object")?,
                 },
                 root_event,
+                input_event: None,
             });
         }
         items.reverse();

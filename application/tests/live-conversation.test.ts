@@ -589,3 +589,61 @@ test("持久调用中的响应控制不伪造工具；拒绝原因可见且不�
   );
   assert.ok(!JSON.stringify(p.snapshot()).includes("private model response"));
 });
+
+test("最终回复按 Runtime 明示的物理尝试替换重试流，乱序及断线不复活，其他尝试保留", () => {
+  const output = event("runtime/model_public_output", {
+    attempt_id: "physical-retry",
+    activation_id: "logical-attempt",
+    root_turn_id: "goal-root",
+    text: "实际最终正文",
+    complete: true,
+    first_visible_at: "2026-10-13T06:08:28.276677Z",
+  });
+  const reply = event("chat/reply", {
+    attempt_id: "logical-attempt",
+    model_attempt_id: "physical-retry",
+    activation_id: "logical-attempt",
+    root_turn_id: "goal-root",
+    text: "实际最终正文",
+  });
+  for (const reverse of [false, true]) {
+    const p = projection();
+    for (const item of reverse ? [reply, output] : [output, reply])
+      p.consume(item);
+    p.reconnect();
+    p.consume(output);
+    assert.equal(p.snapshot().length, 1);
+    assert.equal(p.snapshot()[0]!.id, reply.id);
+    assert.equal(p.snapshot()[0]!.modelAttemptId, "physical-retry");
+    p.consume({
+      ...output,
+      id: "independent-output",
+      payload: { ...output.payload, attempt_id: "independent-attempt" },
+    });
+    assert.equal(p.snapshot().length, 2);
+  }
+});
+
+test("持久进度替换同一尝试已显示的文字，Provider 等待不抹掉原前缀", () => {
+  for (const waiting of [false, true]) {
+    const p = projection();
+    const output = event("runtime/model_public_output", {
+      attempt_id: "one-attempt",
+      root_turn_id: "one-root",
+      text: "公开进度",
+      complete: true,
+      first_visible_at: "2026-10-13T05:33:32.865084Z",
+    });
+    const progress = event("chat/progress", {
+      attempt_id: "one-attempt",
+      root_turn_id: "one-root",
+      text: waiting ? "正在重试" : "公开进度",
+      ...(waiting ? { disposition: "provider_wait" } : {}),
+    });
+    p.consume(output);
+    p.consume(progress);
+    p.consume(output);
+    assert.equal(p.snapshot().length, waiting ? 2 : 1);
+    assert.equal(p.snapshot().filter((m) => m.id === progress.id).length, 1);
+  }
+});

@@ -209,6 +209,7 @@ const sessionTimelineItemSchema = z.object({
   final_event: z.boolean(),
   event: eventSchema,
   root_event: eventSchema.nullable(),
+  input_event: eventSchema.nullable(),
 });
 const sessionTimelinePageSchema = z.object({
   entries: z.array(sessionTimelineItemSchema),
@@ -1140,16 +1141,19 @@ export class RuntimeBridge {
       const lookup = this.request(
         "/api/sessions/" +
           encodeURIComponent(sessionId) +
-          "/events/" +
-          encodeURIComponent(rootId),
+          "/turns/" +
+          encodeURIComponent(rootId) +
+          "/source",
         "GET",
         undefined,
         access,
         undefined,
       )
         .then((raw) => {
-          const event = z.object({ event: eventSchema }).parse(raw).event;
-          return event.id === rootId ? parseRoot(event) : null;
+          const { input_event } = z
+            .object({ input_event: eventSchema.nullable() })
+            .parse(raw);
+          return input_event ? parseRoot(input_event) : null;
         })
         .catch((error: unknown) => {
           if (error instanceof UpstreamError && error.status === 404)
@@ -3144,13 +3148,15 @@ export class RuntimeBridge {
       if (error instanceof UpstreamError && error.status === 404) return null;
       throw error;
     }
-    const { event } = z.object({ event: eventSchema }).parse(response);
+    const { event, input_event } = z
+      .object({ event: eventSchema, input_event: eventSchema.nullable() })
+      .parse(response);
     const createdAt = payloadString(event, "first_visible_at");
     const text = payloadString(event, "text");
     if (
       event.topic !== "runtime/model_public_output" ||
       payloadString(event, "attempt_id") !== attemptId ||
-      payloadString(event, "root_turn_id") !== rootId ||
+      input_event?.id !== rootId ||
       !createdAt ||
       !Number.isFinite(Date.parse(createdAt)) ||
       !text
@@ -3159,9 +3165,8 @@ export class RuntimeBridge {
     return { createdAt, text };
   }
 
-  /** A streamed reply has a stable publication ID, not the random ID of its
-   * final Event. Resolve that ID within its causal input root; the Runtime
-   * query is indexed and each transfer is bounded even for long Sessions. */
+  /** Resolve the stable publication at Runtime's exact timeline key. Its
+   * authenticated input may differ from a Goal's synthetic execution root. */
   private async platformPublicationEvent(
     sessionId: string,
     rootId: string,
@@ -3169,65 +3174,40 @@ export class RuntimeBridge {
     access: AccessContext,
   ): Promise<{ event: RuntimeEvent; createdAt: string } | null> {
     if (!attemptId || attemptId.length > 256) return null;
-    const pageSize = 100;
-    let beforeSequence: number | undefined;
-    for (;;) {
-      const query = new URLSearchParams({
-        root_turn_id: rootId,
-        attempt_id: attemptId,
-        limit: String(pageSize),
-        ...(beforeSequence !== undefined
-          ? { before_sequence: String(beforeSequence) }
-          : {}),
-      });
-      const response = await this.request(
-        `/api/sessions/${encodeURIComponent(sessionId)}/events?${query}`,
+    let response: unknown;
+    try {
+      response = await this.request(
+        `/api/sessions/${encodeURIComponent(sessionId)}/timeline/entries/${encodeURIComponent(`publication:${attemptId}`)}`,
         "GET",
         undefined,
         access,
         undefined,
       );
-      const { events } = z
-        .object({ events: z.array(eventSchema).max(pageSize) })
-        .parse(response);
-      const event = events.findLast(
-        (candidate) =>
-          [
-            "chat/reply",
-            "chat/outbound_message",
-            "chat/runtime_error",
-            "session/io_state",
-            "runtime/response_protocol_fused",
-          ].includes(candidate.topic) &&
-          payloadString(candidate, "attempt_id") === attemptId &&
-          ["root_turn_id", "trigger_event_id", "source_turn_id"].some(
-            (key) => payloadString(candidate, key) === rootId,
-          ) &&
-          !!(
-            payloadString(candidate, "text") ??
-            payloadString(candidate, "error") ??
-            payloadString(candidate, "message")
-          ),
-      );
-      if (event) {
-        const output = await this.platformPublicOutput(
-          sessionId,
-          rootId,
-          attemptId,
-          access,
-        );
-        return { event, createdAt: output?.createdAt ?? event.timestamp };
-      }
-      if (events.length < pageSize) return null;
-      const first = events[0]?.sequence;
-      if (
-        first === undefined ||
-        first <= 0 ||
-        (beforeSequence !== undefined && first >= beforeSequence)
-      )
-        throw new Error("Runtime 消息分页游标未前进。");
-      beforeSequence = first;
+    } catch (error) {
+      if (error instanceof UpstreamError && error.status === 404) return null;
+      throw error;
     }
+    const { entry } = z
+      .object({ entry: sessionTimelineItemSchema })
+      .parse(response);
+    if (
+      entry.entry_id !== `publication:${attemptId}` ||
+      entry.attempt_id !== attemptId ||
+      entry.input_event?.id !== rootId ||
+      !entry.final_event ||
+      !["reply", "error"].includes(entry.display_kind)
+    )
+      return null;
+    const output = await this.platformPublicOutput(
+      sessionId,
+      rootId,
+      attemptId,
+      access,
+    );
+    return {
+      event: entry.event,
+      createdAt: output?.createdAt ?? entry.event.timestamp,
+    };
   }
 
   /** A second Host can cite an accepted input without opening the sending
@@ -3246,7 +3226,7 @@ export class RuntimeBridge {
       scope.conversationId,
       grant.personalDefault,
     );
-    const readEvent = async (path: string) => {
+    const readSourcedEvent = async (path: string) => {
       try {
         const response = await this.request(
           path,
@@ -3255,15 +3235,27 @@ export class RuntimeBridge {
           access,
           undefined,
         );
-        return z.object({ event: eventSchema }).parse(response).event;
+        return z
+          .object({ event: eventSchema, input_event: eventSchema.nullable() })
+          .parse(response);
       } catch (error) {
         if (error instanceof UpstreamError && error.status === 404) return null;
         throw error;
       }
     };
-    const root = await readEvent(
+    const rootResponse = await this.request(
       `/api/sessions/${encodeURIComponent(sessionId)}/messages/by-client-id/${encodeURIComponent(inputId)}`,
-    );
+      "GET",
+      undefined,
+      access,
+      undefined,
+    ).catch((error: unknown) => {
+      if (error instanceof UpstreamError && error.status === 404) return null;
+      throw error;
+    });
+    const root = rootResponse
+      ? z.object({ event: eventSchema }).parse(rootResponse).event
+      : null;
     if (!root) return null;
     const source = platformSourceFromRuntimeRoot(
       root,
@@ -3306,13 +3298,13 @@ export class RuntimeBridge {
               access,
             )
           : null;
-        const event =
-          publication?.event ??
-          (attemptId
-            ? null
-            : await readEvent(
+        const sourced =
+          !attemptId && !publication
+            ? await readSourcedEvent(
                 `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(messageId)}`,
-              ));
+              )
+            : null;
+        const event = publication?.event ?? sourced?.event;
         if (!event) return null;
         const kind = [
           "chat/reply",
@@ -3322,16 +3314,16 @@ export class RuntimeBridge {
           "session/io_state",
           "runtime/response_protocol_fused",
         ].includes(event.topic);
-        const directRoot = [
-          "root_turn_id",
-          "trigger_event_id",
-          "source_turn_id",
-        ].some((key) => payloadString(event, key) === root.id);
         const published =
           payloadString(event, "text") ??
           payloadString(event, "error") ??
           payloadString(event, "message");
-        if (!kind || !directRoot || !published) return null;
+        if (
+          !kind ||
+          (!publication && sourced?.input_event?.id !== root.id) ||
+          !published
+        )
+          return null;
         createdAt = publication?.createdAt ?? event.timestamp;
         text = published;
       }
@@ -3560,8 +3552,13 @@ export class RuntimeBridge {
     access: AccessContext,
     grant: PlatformReadGrant,
   ): HistoryEntry | null {
-    const root = item.display_kind === "input" ? item.event : item.root_event;
-    if (!root || root.id !== item.root_turn_id) return null;
+    const root = item.input_event;
+    if (
+      !root ||
+      (item.display_kind === "input" &&
+        (root.id !== item.event.id || root.id !== item.root_turn_id))
+    )
+      return null;
     const inputId = payloadString(root, "client_message_id");
     if (!inputId) return null;
     const source = platformSourceFromRuntimeRoot(
@@ -3639,9 +3636,12 @@ export class RuntimeBridge {
       conversationId: source.conversationId,
       artifactId: null,
       inputId,
-      rootId: root.id,
+      rootId: item.root_turn_id,
       ...(threadId ? { threadId } : {}),
       ...(item.attempt_id ? { publicationKey: item.attempt_id } : {}),
+      ...(payloadString(item.event, "model_attempt_id")
+        ? { modelAttemptId: payloadString(item.event, "model_attempt_id")! }
+        : {}),
       ...(item.event.topic === "chat/progress" &&
       item.event.payload.disposition === "provider_wait"
         ? { providerRecovery: { startedAt: item.event.timestamp } }

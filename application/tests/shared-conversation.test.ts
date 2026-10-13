@@ -115,6 +115,13 @@ test("Platform 持续会话：跨项目完整历史、真实执行根、独立 S
         threads: [...threadRoots].map(([id, root]) => {
           const item = [...received.values()].find((r) => r.root === root)!;
           return {
+            source: {
+              event_id: root,
+              root_turn_id: root,
+              session_id: item.sessionId,
+              context_id: sessions.get(item.sessionId)!.context_id,
+              activation_id: null,
+            },
             phase: "running",
             intent: "后台分支",
             thread: {
@@ -163,6 +170,13 @@ test("Platform 持续会话：跨项目完整历史、真实执行根、独立 S
         ? send(200, { event: rootEvent(id) })
         : send(404, { error: "not found" });
     }
+    if (path.endsWith("/source") && path.includes("/turns/")) {
+      const rootId = decodeURIComponent(path.split("/").at(-2)!);
+      const input = [...received.entries()].find(
+        ([, item]) => item.sessionId === sid && item.root === rootId,
+      );
+      return send(200, { input_event: input ? rootEvent(input[0]) : null });
+    }
     if (path.endsWith("/messages") && req.method === "POST") {
       received.set(body.client_message_id, {
         sessionId: sid,
@@ -199,6 +213,7 @@ test("Platform 持续会话：跨项目完整历史、真实执行根、独立 S
           final_event: false,
           event: rootEvent(id),
           root_event: null,
+          input_event: rootEvent(id),
         }));
       return send(200, { entries, next_before: null });
     }
@@ -258,7 +273,10 @@ test("Platform 持续会话：跨项目完整历史、真实执行根、独立 S
   const waitForInputs = async (...ids: string[]) => {
     const deadline = Date.now() + 5000;
     while (ids.some((id) => !received.has(id))) {
-      assert.ok(Date.now() < deadline, "Runtime must accept each original input");
+      assert.ok(
+        Date.now() < deadline,
+        "Runtime must accept each original input",
+      );
       await bridge.tick();
     }
   };

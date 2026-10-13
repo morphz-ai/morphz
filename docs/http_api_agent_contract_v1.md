@@ -504,6 +504,36 @@ GET /api/sessions/{session_id}/events?before_sequence=1000&limit=200
 4. 没有终态时继续轮询（建议带退避和整体超时）。
 5. 收到目标回合的 `chat/reply`、`chat/no_reply` 或明确失败事件后停止等待。
 
+### 消息时间线与原始输入归属
+
+`GET /api/sessions/{session_id}/timeline` 按首次可见时间有界分页，
+每页最多 100 条；游标为 `before_time_micros` 与 `before_entry_id`。
+`GET /api/sessions/{session_id}/timeline/entries/{entry_id}` 使用原时间线
+主键精确读取一条（包括稳定的 `publication:{attempt_id}`），不扫描
+整段 Session。两者使用同一 Session 读取授权，后者未知身份返回 404。
+
+条目的 `root_turn_id`／`root_event` 保留实际执行根，目标协调线程的
+根可以不是一条 Human 输入。必有的可空 `input_event` 由 Runtime
+依据原输入、目标创建 Evaluation、持久父关系及 Schedule 证明解析；
+客户端使用该原输入的现行领域授权，不能因同 Session、当前页面或
+模型描述猜测归属。`GET /api/sessions/{session_id}/events/{event_id}`
+也返回 `input_event`，供进度／持久流的精确引用校验。无证明为 null，
+不虚构原始消息或扩大权限。
+
+`GET /api/sessions/{session_id}/turns/{root_turn_id}/source` 在真实输出
+Event 尚未持久保存时，提供同一可空 `input_event` 来源证明。实时流
+不再要求执行根也是 Human 消息；缓存此证明仍须逐批重新检查领域授权。
+
+此读取使用既有 Events、Thread、Goal 和时间线索引，不改写历史，
+不重放任务、不建消息副本。输出仍按首次显示时间排列，迟到的目标
+进度和最终回复不插回旧问题下面；原输出、publication 和执行根身份不变。
+
+语义结果的 `model_attempt_id` 明确指向其实际物理请求，可能不同于
+`attempt_id`。客户端可据此在同一原输入／执行根／Thread 下，用最终
+回复替换该请求的流式前缀；不得截取重试 ID 后缀或按相同正文猜测。
+已持久的实际进度同样替换自身前缀，`provider_wait` 只表示等待／恢复，
+不抹掉原公开文字。全部原 Event 仍可审计，消息和时间戳不重写。
+
 ### WebSocket 实时事件
 
 ```text

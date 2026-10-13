@@ -8374,7 +8374,7 @@ async fn project_session_timeline_in_transaction(
                    source_sequence = CASE WHEN session_message_timeline.is_final = 0 AND excluded.source_sequence >= session_message_timeline.source_sequence \
                      THEN excluded.source_sequence ELSE session_message_timeline.source_sequence END \
                  WHERE session_message_timeline.root_turn_id = excluded.root_turn_id \
-                   AND session_message_timeline.attempt_id = excluded.attempt_id",
+                   AND session_message_timeline.attempt_id IS excluded.attempt_id",
             )
             .bind(&entry.session_id)
             .bind(&entry.entry_id)
@@ -8406,7 +8406,7 @@ async fn project_session_timeline_in_transaction(
                      THEN excluded.display_kind ELSE session_message_timeline.display_kind END, \
                    is_final = 1 \
                  WHERE session_message_timeline.root_turn_id = excluded.root_turn_id \
-                   AND session_message_timeline.attempt_id = excluded.attempt_id",
+                   AND session_message_timeline.attempt_id IS excluded.attempt_id",
             )
             .bind(&entry.session_id)
             .bind(&entry.entry_id)
@@ -27584,14 +27584,48 @@ async fn finish_sqlite_recall_claim(
 
 #[async_trait::async_trait]
 impl super::SessionTimelineStore for SqliteStore {
+    async fn session_timeline_entry(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+    ) -> Result<Option<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(self
+            .session_timeline_page(session_id, None, 1, Some(entry_id))
+            .await?
+            .pop())
+    }
+
     async fn query_session_timeline(
         &self,
         session_id: &str,
         before: Option<&super::SessionTimelineCursor>,
         limit: usize,
     ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
+        self.session_timeline_page(session_id, before, limit, None)
+            .await
+    }
+}
+
+impl SqliteStore {
+    async fn session_timeline_page(
+        &self,
+        session_id: &str,
+        before: Option<&super::SessionTimelineCursor>,
+        limit: usize,
+        entry_id: Option<&str>,
+    ) -> Result<Vec<super::SessionTimelineItem>, Box<dyn std::error::Error + Send + Sync>> {
         let limit = i64::try_from(limit.clamp(1, 1_000))?;
-        let statement = if before.is_some() {
+        let statement = if entry_id.is_some() {
+            "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
+                    t.display_kind, t.is_final, e.rowid AS event_sequence, e.id, \
+                    e.timestamp, e.actor, e.type, e.topic, e.payload, \
+                    r.rowid AS root_event_sequence, r.id AS root_event_id, \
+                    r.timestamp AS root_timestamp, r.actor AS root_actor, \
+                    r.type AS root_type, r.topic AS root_topic, r.payload AS root_payload \
+             FROM session_message_timeline t JOIN events e ON e.id = t.source_event_id \
+             LEFT JOIN events r ON r.id = t.root_turn_id AND r.session_id = t.session_id AND r.id <> e.id \
+             WHERE t.session_id = ? AND t.entry_id = ? LIMIT ?"
+        } else if before.is_some() {
             "SELECT t.entry_id, t.visible_at_micros, t.root_turn_id, t.attempt_id, \
                     t.display_kind, t.is_final, e.rowid AS event_sequence, e.id, \
                     e.timestamp, e.actor, e.type, e.topic, e.payload, \
@@ -27616,6 +27650,9 @@ impl super::SessionTimelineStore for SqliteStore {
              ORDER BY t.visible_at_micros DESC, t.entry_id DESC LIMIT ?"
         };
         let mut query = sqlx::query(statement).bind(session_id);
+        if let Some(entry_id) = entry_id {
+            query = query.bind(entry_id);
+        }
         if let Some(before) = before {
             query = query.bind(before.visible_at_micros).bind(&before.entry_id);
         }
@@ -27670,6 +27707,7 @@ impl super::SessionTimelineStore for SqliteStore {
                     payload: serde_json::from_str(&row.get::<String, _>("payload"))?,
                 },
                 root_event,
+                input_event: None,
             });
         }
         items.reverse();

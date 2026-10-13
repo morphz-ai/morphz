@@ -7060,10 +7060,204 @@ impl MorphzRuntime {
         before: Option<&SessionTimelineCursor>,
         limit: usize,
     ) -> Result<Vec<SessionTimelineItem>, RuntimeError> {
-        self.inner
+        let mut entries = self
+            .inner
             .store
             .query_session_timeline(session_id, before, limit)
+            .await?;
+        self.resolve_timeline_inputs(session_id, &mut entries)
+            .await?;
+        Ok(entries)
+    }
+
+    /// Exact publication identity uses the existing timeline primary key, not
+    /// an unbounded Event / history scan. Reading never starts or replays work.
+    pub async fn session_timeline_entry(
+        &self,
+        session_id: &str,
+        entry_id: &str,
+    ) -> Result<Option<SessionTimelineItem>, RuntimeError> {
+        let Some(mut entry) = self
+            .inner
+            .store
+            .session_timeline_entry(session_id, entry_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        self.resolve_timeline_inputs(session_id, std::slice::from_mut(&mut entry))
+            .await?;
+        Ok(Some(entry))
+    }
+
+    async fn resolve_timeline_inputs(
+        &self,
+        session_id: &str,
+        entries: &mut [SessionTimelineItem],
+    ) -> Result<(), RuntimeError> {
+        let mut resolved = HashMap::new();
+        for entry in entries {
+            let event = &entry.event;
+            if let Some(input) = entry.root_event.as_ref().filter(|input| {
+                crate::event::is_input_event(input)
+                    && input.id == entry.root_turn_id
+                    && input
+                        .payload
+                        .get("session_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(session_id)
+                    && ["context_id", "principal_id"].into_iter().all(|key| {
+                        event
+                            .payload
+                            .get(key)
+                            .and_then(serde_json::Value::as_str)
+                            .is_none_or(|value| {
+                                input.payload.get(key).and_then(serde_json::Value::as_str)
+                                    == Some(value)
+                            })
+                    })
+            }) {
+                entry.input_event = Some(input.clone());
+                continue;
+            }
+            let key = (
+                entry.root_turn_id.clone(),
+                event
+                    .payload
+                    .get("context_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                event
+                    .payload
+                    .get("principal_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+                event
+                    .payload
+                    .get("thread_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            );
+            if !resolved.contains_key(&key) {
+                resolved.insert(
+                    key.clone(),
+                    self.session_event_input(session_id, event).await?,
+                );
+            }
+            entry.input_event = resolved.get(&key).cloned().flatten();
+        }
+        Ok(())
+    }
+
+    /// Resolve public output to its actual authenticated input. Synthetic
+    /// execution roots remain unchanged; Thread / Goal ownership is proved by
+    /// the same bounded Runtime provenance used by scheduler reads.
+    pub async fn session_event_input(
+        &self,
+        session_id: &str,
+        event: &Event,
+    ) -> Result<Option<Event>, RuntimeError> {
+        let field = |name: &str| event.payload.get(name).and_then(serde_json::Value::as_str);
+        if field("session_id") != Some(session_id) {
+            return Ok(None);
+        }
+        if crate::event::is_input_event(event) {
+            return Ok(Some(event.clone()));
+        }
+        let Some(root) = ["root_turn_id", "trigger_event_id", "source_turn_id"]
+            .into_iter()
+            .find_map(|key| crate::memory::causal_payload_string(event, key))
+        else {
+            return Ok(None);
+        };
+        self.execution_root_input(
+            session_id,
+            field("context_id"),
+            root,
+            field("thread_id"),
+            field("principal_id"),
+        )
+        .await
+    }
+
+    /// A live stream can precede its durable public-output Event. Resolve its
+    /// real execution root directly; never require a fictitious Human Event
+    /// with the same ID, or infer an owner from the current Session alone.
+    pub async fn session_root_input(
+        &self,
+        session_id: &str,
+        root: &str,
+    ) -> Result<Option<Event>, RuntimeError> {
+        let Some(session) = self.inner.store.get_session(session_id).await? else {
+            return Ok(None);
+        };
+        self.execution_root_input(session_id, Some(&session.context_id), root, None, None)
             .await
+    }
+
+    async fn execution_root_input(
+        &self,
+        session_id: &str,
+        context_id: Option<&str>,
+        root: &str,
+        thread_id: Option<&str>,
+        principal_id: Option<&str>,
+    ) -> Result<Option<Event>, RuntimeError> {
+        let direct = self
+            .query_events(QueryFilter {
+                context_id: context_id.map(str::to_owned),
+                session_id: Some(session_id.to_owned()),
+                event_id: Some(root.to_owned()),
+                top_k: Some(1),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .next();
+        if let Some(input) = direct.filter(crate::event::is_input_event) {
+            if principal_id.is_none_or(|principal| {
+                input
+                    .payload
+                    .get("principal_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(principal)
+            }) {
+                return Ok(Some(input));
+            }
+            return Ok(None);
+        }
+        let Some(context_id) = context_id else {
+            return Ok(None);
+        };
+        let Some(thread) = self.inner.store.get_thread_by_root(&root).await? else {
+            return Ok(None);
+        };
+        if thread.context_id != context_id
+            || thread.session_id != session_id
+            || thread_id.is_some_and(|id| id != thread.id)
+            || principal_id.is_some_and(|id| thread.initiating_principal_id.as_deref() != Some(id))
+        {
+            return Ok(None);
+        }
+        let Some(source) = self
+            .scheduler_thread_sources(context_id, &[thread])
+            .await?
+            .into_values()
+            .next()
+        else {
+            return Ok(None);
+        };
+        Ok(self
+            .query_events(QueryFilter {
+                context_id: Some(context_id.to_owned()),
+                session_id: Some(session_id.to_owned()),
+                event_id: Some(source.root_turn_id),
+                top_k: Some(1),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .find(crate::event::is_input_event))
     }
 
     /// Resolve an accepted input by the same Session/client ID used at
@@ -24606,6 +24800,94 @@ mod tests {
         assert_eq!(
             primary.source.as_ref().unwrap().root_turn_id,
             original[0].id
+        );
+        let timeline = runtime
+            .query_session_timeline(session.id(), None, 100)
+            .await
+            .unwrap();
+        let final_entry = timeline
+            .iter()
+            .find(|entry| entry.event.id == reply.id)
+            .expect("Goal final reply stays in its Runtime timeline");
+        assert_eq!(final_entry.root_turn_id, primary.thread.root_turn_id);
+        assert!(
+            final_entry.root_event.is_none(),
+            "a synthetic execution root is not a fabricated input Event"
+        );
+        assert_eq!(final_entry.input_event.as_ref().unwrap().id, original[0].id);
+        assert_eq!(
+            runtime
+                .session_root_input(session.id(), &primary.thread.root_turn_id)
+                .await
+                .unwrap()
+                .as_ref()
+                .map(|input| input.id.as_str()),
+            Some(original[0].id.as_str())
+        );
+        assert!(runtime
+            .session_root_input(session.id(), "unknown-root")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            runtime
+                .session_timeline_entry(session.id(), &final_entry.entry_id)
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(final_entry)
+        );
+        for mutation in ["principal_id", "context_id", "session_id", "thread_id"] {
+            let mut foreign = reply.clone();
+            foreign.payload.insert(mutation.into(), json!("foreign"));
+            assert!(
+                runtime
+                    .session_event_input(session.id(), &foreign)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{mutation} cannot attribute Goal output to the Human input"
+            );
+        }
+        let progress = Event::new(
+            "goal-timeline-progress".into(),
+            "Agent-Morphz".into(),
+            "agent_call".into(),
+            "chat/progress".into(),
+            serde_json::from_value(json!({
+                "context_id": runtime.identity().context_id,
+                "session_id": session.id(),
+                "root_turn_id": primary.thread.root_turn_id,
+                "thread_id": primary.thread.id,
+                "text": "actual Goal progress"
+            }))
+            .unwrap(),
+        );
+        runtime.publish(progress.clone()).await.unwrap();
+        let progress_entry = runtime
+            .session_timeline_entry(session.id(), &progress.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            progress_entry.input_event.as_ref().unwrap().id,
+            original[0].id
+        );
+        assert_eq!(progress_entry.display_kind, "progress");
+        // Restore the same durable ownership without starting another model
+        // Evaluation, replaying input, or relying on the current history page.
+        let restored = MorphzRuntime::builder(AppConfig::default(), client.clone())
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(
+            restored
+                .session_timeline_entry(session.id(), &final_entry.entry_id)
+                .await
+                .unwrap()
+                .as_ref(),
+            Some(final_entry)
         );
         let mut children = Vec::new();
         for label in ["D", "E", "F"] {

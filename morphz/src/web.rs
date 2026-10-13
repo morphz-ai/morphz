@@ -1482,6 +1482,10 @@ impl Server {
                 get(handle_session_turn_thread).post(handle_cancel_session_turn_thread),
             )
             .route(
+                "/api/sessions/:session_id/turns/:root_turn_id/source",
+                get(handle_session_turn_source),
+            )
+            .route(
                 "/api/sessions/:session_id/schedules",
                 post(handle_create_session_schedule),
             )
@@ -1496,6 +1500,10 @@ impl Server {
             .route(
                 "/api/sessions/:session_id/timeline",
                 get(handle_get_session_timeline),
+            )
+            .route(
+                "/api/sessions/:session_id/timeline/entries/:entry_id",
+                get(handle_get_session_timeline_entry),
             )
             .route(
                 "/api/sessions/:session_id/events/:event_id",
@@ -8438,6 +8446,73 @@ async fn handle_get_session_timeline(
     }
 }
 
+async fn handle_get_session_timeline_entry(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, entry_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if let Err(error) = authorize_session_read(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+        &session_id,
+    )
+    .await
+    {
+        return sdk_error_response(error);
+    }
+    if entry_id.is_empty() || entry_id.len() > 256 {
+        return error_response(StatusCode::BAD_REQUEST, "Invalid timeline entry identity");
+    }
+    match state
+        .runtime
+        .session_timeline_entry(&session_id, &entry_id)
+        .await
+    {
+        Ok(Some(entry)) => Json(json!({ "entry": entry })).into_response(),
+        Ok(None) => error_response(StatusCode::NOT_FOUND, "Session timeline entry not found"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_session_turn_source(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, root_turn_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    if let Err(error) = authorize_session_read(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+        &session_id,
+    )
+    .await
+    {
+        return sdk_error_response(error);
+    }
+    if root_turn_id.is_empty() || root_turn_id.len() > 256 {
+        return error_response(StatusCode::BAD_REQUEST, "Invalid execution root identity");
+    }
+    match state
+        .runtime
+        .session_root_input(&session_id, &root_turn_id)
+        .await
+    {
+        Ok(input_event) => Json(json!({ "input_event": input_event })).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
 async fn handle_get_session_event(
     State(state): State<Arc<AppState>>,
     Path((session_id, event_id)): Path<(String, String)>,
@@ -8462,13 +8537,18 @@ async fn handle_get_session_event(
         .runtime
         .query_events(crate::memory::QueryFilter {
             event_id: Some(event_id),
-            session_id: Some(session_id),
+            session_id: Some(session_id.clone()),
             ..Default::default()
         })
         .await
     {
         Ok(events) => match events.into_iter().next() {
-            Some(event) => Json(json!({ "event": event })).into_response(),
+            Some(event) => match state.runtime.session_event_input(&session_id, &event).await {
+                Ok(input_event) => {
+                    Json(json!({ "event": event, "input_event": input_event })).into_response()
+                }
+                Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+            },
             None => error_response(StatusCode::NOT_FOUND, "Session event not found"),
         },
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -19214,6 +19294,47 @@ account = "xai-account"
         assert_eq!(latest["entries"].as_array().unwrap().len(), 2);
         assert_eq!(latest["entries"][0]["entry_id"], "client-2");
         assert_eq!(latest["entries"][1]["entry_id"], "client-3");
+        assert_eq!(
+            latest["entries"][1]["input_event"]["id"],
+            "timeline-http-input-3"
+        );
+        let exact = handle_get_session_timeline_entry(
+            State(Arc::clone(&state)),
+            Path(("timeline-http-session".into(), "client-3".into())),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await;
+        assert_eq!(exact.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(exact.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let exact: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(exact["entry"], latest["entries"][1]);
+        let source = handle_session_turn_source(
+            State(Arc::clone(&state)),
+            Path((
+                "timeline-http-session".into(),
+                "timeline-http-input-3".into(),
+            )),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await;
+        assert_eq!(source.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(source.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let source: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(source["input_event"], exact["entry"]["input_event"]);
+        let missing = handle_get_session_timeline_entry(
+            State(Arc::clone(&state)),
+            Path(("timeline-http-session".into(), "missing".into())),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
         let older = handle_get_session_timeline(
             State(Arc::clone(&state)),
             Path("timeline-http-session".to_string()),

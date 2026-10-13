@@ -17,6 +17,15 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareLocalHostTools } from "../packages/application/src/host-tools-ipc.js";
 
+test("Runtime launcher exposes only the canonical development credential binding", () => {
+  const launcher = readFileSync(
+    new URL("../scripts/desktop-runtime.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(launcher, /MORPHZ_APP_DEVELOPMENT_MODEL_KEY: key/);
+  assert.doesNotMatch(launcher, /MORPHZWORK_DEVELOPMENT_MODEL_KEY/);
+});
+
 test("Runtime launcher accepts the Host manifest budget without loosening private configuration checks", () => {
   const root = mkdtempSync(join(tmpdir(), "morphz-runtime-launcher-"));
   try {

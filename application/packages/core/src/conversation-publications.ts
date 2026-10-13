@@ -6,13 +6,18 @@ type PublicationMessage = {
   inputId?: string | null;
   rootId?: string | null;
   publicationKey?: string;
+  modelAttemptId?: string;
   threadId?: string;
   streaming?: boolean;
+  providerRecovery?: { startedAt: string };
 };
 
-function publicationScope(message: PublicationMessage): string | null {
+function publicationScope(
+  message: PublicationMessage,
+  publicationKey = message.publicationKey,
+): string | null {
   if (
-    !message.publicationKey ||
+    !publicationKey ||
     !message.projectId ||
     !message.conversationId ||
     !message.inputId ||
@@ -24,14 +29,16 @@ function publicationScope(message: PublicationMessage): string | null {
     message.conversationId,
     message.inputId,
     message.rootId,
-    message.publicationKey,
+    publicationKey,
   ]);
 }
 
 /** Reconcile two presentations of one Runtime publication, never equal prose.
- * A canonical terminal row replaces only its attributed public stream prefix.
- * Timeline rows do not carry threadId; where both projections supply it, a
- * different branch must remain distinct. Unknown provenance stays readable.
+ * A semantic outcome replaces only its explicitly attributed public prefix.
+ * A retry is related by Runtime's model_attempt_id, never a name suffix or prose.
+ * Actual progress replaces its words; Provider waiting never erases the prefix.
+ * When both projections identify a Thread, they must agree. Unknown
+ * provenance stays readable; a different branch must remain distinct.
  * The surviving objects, first-visible timestamps and IDs are not rewritten. */
 export function reconcileConversationPublications<T extends PublicationMessage>(
   messages: readonly T[],
@@ -41,14 +48,27 @@ export function reconcileConversationPublications<T extends PublicationMessage>(
     const scope = publicationScope(message);
     if (
       !scope ||
-      message.id !== `publication:${message.publicationKey}` ||
       message.streaming !== undefined ||
-      (message.kind !== "reply" && message.kind !== "error")
+      !(
+        ((message.kind === "reply" || message.kind === "error") &&
+          message.id === `publication:${message.publicationKey}`) ||
+        (message.kind === "progress" &&
+          !message.id.startsWith("stream:") &&
+          !message.providerRecovery)
+      )
     )
       continue;
     const previous = finals.get(scope) ?? [];
     previous.push(message);
     finals.set(scope, previous);
+    const modelScope = message.modelAttemptId
+      ? publicationScope(message, message.modelAttemptId)
+      : null;
+    if (modelScope && modelScope !== scope) {
+      const previous = finals.get(modelScope) ?? [];
+      previous.push(message);
+      finals.set(modelScope, previous);
+    }
   }
   return messages.filter((message) => {
     if (

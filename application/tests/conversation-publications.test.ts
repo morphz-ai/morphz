@@ -205,3 +205,67 @@ test("a public prefix survives without a canonical terminal row; tools and actua
     tool,
   ]);
 });
+
+test("an explicit Runtime model attempt replaces its retry prefix without guessing from names or prose", () => {
+  const retried = {
+    ...partial,
+    id: "stream:physical-retry",
+    publicationKey: "physical-retry",
+    threadId: "goal-primary",
+  };
+  const delivered = {
+    ...final,
+    modelAttemptId: "physical-retry",
+    threadId: "goal-primary",
+  };
+  for (const messages of [
+    [retried, delivered],
+    [delivered, retried],
+  ]) {
+    assert.deepEqual(renderMessages(page(messages)), [delivered]);
+    assert.deepEqual(
+      mergePlatformHistories(page([delivered]), page([retried])).runtime
+        .messages,
+      [delivered],
+    );
+  }
+  for (const independent of [
+    { ...retried, publicationKey: "another-retry", id: "stream:another-retry" },
+    { ...retried, rootId: "another-root" },
+    { ...retried, inputId: "another-input" },
+    { ...retried, threadId: "another-branch" },
+  ])
+    assert.equal(renderMessages(page([delivered]), [independent]).length, 2);
+  assert.equal(
+    renderMessages(page([{ ...final, modelAttemptId: undefined }]), [retried])
+      .length,
+    2,
+  );
+});
+
+test("a durable progress message replaces only its own streamed words, never a provider wait or another step", () => {
+  const progress = {
+    ...base,
+    id: "progress-one",
+    kind: "progress" as const,
+    text: "已确认问题，继续实际改稿",
+  };
+  assert.deepEqual(renderMessages(page([partial, progress])), [progress]);
+  const waiting = {
+    ...progress,
+    providerRecovery: { startedAt: visibleAt },
+  };
+  assert.deepEqual(renderMessages(page([partial, waiting])), [
+    partial,
+    waiting,
+  ]);
+  const other = {
+    ...partial,
+    publicationKey: "another-step",
+    id: "stream:another-step",
+  };
+  assert.deepEqual(renderMessages(page([progress]), [other]), [
+    progress,
+    other,
+  ]);
+});
