@@ -28,6 +28,7 @@ async function prepare(page: Page) {
     connected: true,
     available: true,
     phase: "running",
+    waitKinds: undefined as string[] | undefined,
     lifecycle: "open" as "open" | "completed" | "failed" | "cancelled",
   };
   const fixture = await mockPlatformConversation(page, () => ({
@@ -55,6 +56,7 @@ async function prepare(page: Page) {
           kind: "execution" as const,
           title: "TEST 交付人物设定与五场戏大纲",
           phase: activity.phase,
+          waitKinds: activity.waitKinds,
           lifecycle: activity.lifecycle,
           revision: 1,
           updatedAt: input.createdAt,
@@ -1033,7 +1035,7 @@ test("根活动仅实际运行时有动效，等待、失败、结束及断线�
   await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
   const status = f.panel.locator(".execution-origin-status");
   for (const [phase, lifecycle, kind, label] of [
-    ["waiting", "open", "waiting", "等待中"],
+    ["waiting", "open", "waiting", "等待条件（原因待核对）"],
     ["idle", "completed", "ended", "已结束"],
     ["idle", "failed", "failed", "执行失败"],
     ["idle", "cancelled", "cancelled", "已取消"],
@@ -1060,6 +1062,27 @@ test("根活动仅实际运行时有动效，等待、失败、结束及断线�
   await expect(
     f.panel.getByRole("img", { name: "已完成", exact: true }),
   ).toHaveCount(2);
+  await expect(f.input).toHaveValue("TEST 未发送的原草稿");
+  expect(f.writes).toEqual([]);
+});
+
+test("等待本人回复的开放执行仍可补充，点击只准备原目标草稿而不发送", async ({
+  page,
+}) => {
+  const f = await prepare(page);
+  Object.assign(f.activity, { phase: "idle", waitKinds: ["user_input"] });
+  await f.fixture.refresh();
+  await openExecutionPanel(page);
+  await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
+  await expect(f.panel.locator(".execution-origin-status")).toHaveText(
+    "等待你回复",
+  );
+  const action = f.panel.getByRole("button", { name: "补充", exact: true });
+  await expect(action).toBeEnabled();
+  await action.click();
+  await expect(page.getByRole("group", { name: "补充目标" })).toContainText(
+    "TEST 交付人物设定与五场戏大纲",
+  );
   await expect(f.input).toHaveValue("TEST 未发送的原草稿");
   expect(f.writes).toEqual([]);
 });

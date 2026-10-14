@@ -3,6 +3,7 @@ import type { TaskRuntime } from "../../../packages/core/src/task-runtime.js";
 import type { ConversationStream } from "../../../packages/core/src/live-conversation.js";
 import { isPendingResponse } from "./conversation-presentation.js";
 import { objectiveIsTerminal } from "../../../../sdk/typescript/src/runtime-state.js";
+import { executionWaitLabel } from "./execution-wait-label.js";
 
 export { objectiveIsTerminal };
 
@@ -195,12 +196,16 @@ export const objectiveStatus = (status: string) =>
 
 /** Use the scheduler's structured state, never parse its diagnostic prose or
  * rewrite the persisted Agent intent. The original reason remains inspectable. */
-export function objectiveDetailStatus(status: string, readiness: string) {
+export function objectiveDetailStatus(
+  status: string,
+  readiness: string,
+  waitKinds?: readonly string[],
+) {
   if (status !== "active") return objectiveStatus(status);
+  if (readiness === "waiting") return executionWaitLabel(waitKinds);
   return (
     {
       runnable: "等待推进",
-      waiting: "等待关联工作或条件",
       leased: "正在评估进展",
       suspended: "等待恢复推进",
       paused: "已暂停",

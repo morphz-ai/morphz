@@ -1,5 +1,48 @@
 # 桌面能力实施记录
 
+## 2026-10-14 Desktop 连接正文通道与目标等待／补充修正
+
+原 Desktop PID 84254 的 Node fetch 在已返回 headers 后，读取 Runtime
+正文持续 TimeoutError；同一进程、相同 `/api/status` 请求，Node fetch
+4004ms 超时，原生 HTTP 148ms／1339 bytes，Electron net 247ms／1339
+bytes 成功。这是原进程观察，不声称定位了 Electron／libuv 内部原因。
+Runtime PID 54083 一直正常；不归因于 key、磁盘或目标失败。用户明确
+授权的仅本机临时 main-process 调试已关闭，未触碰占用默认端口的网站
+进程。Desktop 改用独立、不持久化、无浏览器凭据的 Chromium 网络 Session，
+共享 Runtime 逻辑按 Host 注入传输；Web 仍沿用 Node 通道。读取、连接设置、
+Profile 和模型管理都接同一传输，适配器不重试写入。正文中断也归为传输
+失败，保留获授权 Platform 历史，不再误报业务保存失败；无效协议仍拒绝。
+增加仅 owner 可读、去消息／参数／凭据、容量与重复频率有界的技术错误日志。
+
+等待展示采用 scheduler readiness.dependency_ids 及当前目标 generation
+的 required／pending edges，区分本人答复、审批、工具／子任务结果、定时、
+外部事件与资源。缺失原因仍待核对，不解析 status_reason，不新增读取模型
+请求、业务表、Host 定时或等待账本；准确主协调线程可显示同一等待原因，
+运行、暂停、终态及失联优先。补充漏掉源于 Host 按 thread synthetic root
+找原投递；现改为已授权 Runtime source 的真实 input／root／Session。
+发送前重新核对原 Human、项目／对话、Thread／Objective 及代次；只有
+准确主目标及 Runtime 原来源证明才允许专用 root，其他跨 root 仍拒绝。
+
+连接专项正式 Node 入口 32／32、无跳过；真实生产入口 Electron 隔离测试
+验证失效 Node 正文通道被绕过、HTTP 正文中断后恢复、没有消息／写操作
+或浏览器 cookies。目标等待／补充正式 Node 入口六文件 37／37、无跳过；
+三文件相关 Chromium 界面 35／35，含等待补充只准备草稿、运行与终态优先、
+亮暗／窄窗／200%／触控与原目标展开保留。原测试 Chrome 路径不存在时
+未安装浏览器或假称通过，改用现有浏览器能力解析器选取隔离 Chromium。
+类型、生产构建、差异及修改文件格式检查通过。
+
+原 App 经正常退出／重开加载，原 Profile、中心、key、草稿／消息与目标
+保持，Runtime 没有重启。原「我不操作了，你继续弄」投递恢复回执并唤醒
+原发布目标，没有重发或创建第二条发布流程。实窗核对智能体连接恢复、
+目标主线程继续执行、正确原输入的「补充」准备与取消。只读记录中工具
+failed 总数始终29，succeeded 从2422自然增长至2516，原书继续进入第46章
+页面核对；这不是第1—80章全部发布完成的声明。
+
+保留验证缺口：完整 `npm test` 中未修改、原先未提交的 C3 Sandbox 实验
+用例出现 connect／文档生命周期失败，后续队列长期未推进，28分钟后
+正常中止本轮测试管理器及其隔离进程／PostgreSQL。未改该实验代码、删断言
+或把完整测试称为通过；上述专项范围与原 App 验收独立记录。
+
 ## 2026-10-14 实际命令预览与 Markdown 文本块复制
 
 用户截图的六条 exec 原始调用均未携带步骤注解，并非有界 records 丢失

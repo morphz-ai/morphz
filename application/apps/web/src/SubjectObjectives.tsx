@@ -105,8 +105,16 @@ export function SubjectObjectives({
           <span>
             <strong>{goal.title}</strong>
             <small>
-              {fresh ? objectiveStatus(goal.status) : "状态待核对"} ·{" "}
-              {threads.length} 个关联执行
+              {fresh
+                ? goal.readiness === "waiting"
+                  ? objectiveDetailStatus(
+                      goal.status,
+                      goal.readiness,
+                      goal.waitKinds,
+                    )
+                  : objectiveStatus(goal.status)
+                : "状态待核对"}{" "}
+              · {threads.length} 个关联执行
               {running > 0 && ` · ${running} 条执行中`}
             </small>
           </span>
@@ -116,7 +124,11 @@ export function SubjectObjectives({
           <div className="subject-objective-detail">
             <p role="status">
               {fresh
-                ? objectiveDetailStatus(goal.status, goal.readiness)
+                ? objectiveDetailStatus(
+                    goal.status,
+                    goal.readiness,
+                    goal.waitKinds,
+                  )
                 : "目标状态待核对"}
             </p>
             {threads.map((thread) => {

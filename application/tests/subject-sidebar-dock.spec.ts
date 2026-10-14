@@ -600,7 +600,7 @@ test("活动列表使用真实线程身份与终态，目标仅展开其关联�
   ).toBeVisible();
   const goal = panel.locator('[data-objective-id="subject-objective"]');
   await goal.getByRole("button", { name: /验证语音环境/ }).click();
-  await expect(goal.getByRole("status")).toHaveText("等待关联工作或条件");
+  await expect(goal.getByRole("status")).toHaveText("等待条件（原因待核对）");
   const reason = goal.getByText(objectives[0]!.statusReason!, { exact: true });
   await expect(reason).not.toBeVisible();
   await goal.getByText("技术详情", { exact: true }).click();

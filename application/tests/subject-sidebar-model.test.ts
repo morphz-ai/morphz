@@ -28,7 +28,7 @@ test("与 Dashboard 共用目标终态语义；暂停、阻塞和未知不能收
 test("目标说明来自结构化状态，不解析或伪造 Runtime 原始原因", () => {
   for (const [readiness, label] of [
     ["runnable", "等待推进"],
-    ["waiting", "等待关联工作或条件"],
+    ["waiting", "等待条件（原因待核对）"],
     ["leased", "正在评估进展"],
     ["suspended", "等待恢复推进"],
   ])

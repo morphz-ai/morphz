@@ -285,7 +285,7 @@ for (const colorScheme of ["light", "dark"] as const)
     await expect(rows).toHaveCount(5);
     await expect(
       related.getByRole("button", {
-        name: "TEST 统稿协调线程 · 等待中",
+        name: "TEST 统稿协调线程 · 等待条件（原因待核对）",
         exact: true,
       }),
     ).toBeVisible();
@@ -358,7 +358,15 @@ test("活动首页直接显示真实目标，跨工作面及无执行目标不�
   await empty.getByRole("button").click();
   await expect(empty).toContainText("当前概览中没有关联执行");
   await related.getByRole("button", { name: /TEST 保证报告/ }).click();
-  await expect(related.getByRole("status")).toHaveText("等待关联工作或条件");
+  await expect(related.getByRole("status")).toHaveText(
+    "等待条件（原因待核对）",
+  );
+  f.runtime.activity.objectives[0]!.waitKinds = ["user_input"];
+  await f.refresh();
+  await expect(related.getByRole("status")).toHaveText("等待你回复");
+  await expect(related.locator(".subject-objective-heading")).toContainText(
+    "等待你回复",
+  );
   await expect(
     related.locator(".subject-objective-detail > button"),
   ).toHaveCount(1);

@@ -198,6 +198,50 @@ test("活动由真实线程投影，保留终态事实、原intent、目标和�
   }
 });
 
+test("idle Objective primary retains supplement via exact original input and exposes current pending Human reason", async () => {
+  const { f, internal, delivery, thread, bounds, objective } = await fixture();
+  try {
+    const primary = thread("primary");
+    primary.thread.root_turn_id = "synthetic-objective-root";
+    primary.phase = "idle";
+    const waiting = {
+      ...objective,
+      objective: { ...objective.objective, generation: 1 },
+      readiness: { state: "waiting", dependency_ids: ["human-edge"] },
+      dependencies: [
+        {
+          id: "human-edge",
+          owner_kind: "objective",
+          owner_id: "objective-1",
+          owner_generation: 1,
+          dependency_kind: "user_input",
+          required: true,
+          status: "pending",
+        },
+      ],
+    };
+    internal.request = async () => ({
+      detail_bounds: bounds,
+      threads: [primary],
+      objectives: [waiting],
+    });
+    await internal.refreshActivity();
+    const activity = f.runtime.platformNavigationSnapshot(localAccess, [
+      f.projectId,
+    ]).runtime.activity!;
+    assert.equal(activity.threads[0]!.rootId, "synthetic-objective-root");
+    assert.equal(activity.threads[0]!.continuation?.inputId, delivery.inputId);
+    assert.deepEqual(activity.threads[0]!.continuation?.objective, {
+      id: "objective-1",
+      generation: 1,
+    });
+    assert.deepEqual(activity.threads[0]!.waitKinds, ["user_input"]);
+    assert.deepEqual(activity.objectives![0]!.waitKinds, ["user_input"]);
+  } finally {
+    await f.close();
+  }
+});
+
 test("另一Host的来源取持久root且不猜共享Session的项目，查源有界并缓存", async () => {
   const { f, internal, delivery, thread, bounds } = await fixture();
   try {

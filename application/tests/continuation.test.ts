@@ -99,13 +99,13 @@ async function fixture() {
         snapshot: {
           thread: t,
           source: t
-            ? {
+            ? (t.sourceProjection ?? {
                 event_id: t.root_turn_id,
                 root_turn_id: t.root_turn_id,
                 context_id: t.context_id,
                 session_id: t.session_id,
                 activation_id: null,
-              }
+              })
             : null,
         },
       });
@@ -553,6 +553,74 @@ test("Objective 主线程用监督代次，custom 分支不假装可直接补充
   )!;
   assert.deepEqual(target.objective, { id: "objective", generation: 3 });
   assert.equal(continuationInputFormat.version, "4");
+});
+
+test("Objective synthetic root accepts only Runtime-confirmed original provenance without loosening Human or generation checks", async () => {
+  const f = await fixture();
+  try {
+    const input = await f.send(f.ordinary("原发布目标"));
+    await f.waitForRoot(input.entityId);
+    const thread = f.threads.get("thread-" + input.entityId);
+    const originalRoot = thread.root_turn_id;
+    thread.sourceProjection = {
+      event_id: originalRoot,
+      root_turn_id: originalRoot,
+      session_id: thread.session_id,
+      context_id: thread.context_id,
+      activation_id: null,
+    };
+    thread.root_turn_id = "synthetic-objective-root";
+    thread.kind = "execution";
+    thread.executor_kind = "custom";
+    thread.supervision = {
+      supervisor_kind: "objective",
+      supervisor_id: "goal-fixture",
+      generation: 2,
+      origin_evaluation_id: null,
+    };
+    const target = continuationTarget(thread, input.entityId, thread.id)!;
+    await f.bridge.validatePlatformContinuation(
+      target,
+      "first-project",
+      "first-project",
+    );
+    for (const patch of [
+      { root_turn_id: "other-root" },
+      { session_id: "other-session" },
+      { context_id: "other-context" },
+    ]) {
+      const saved = thread.sourceProjection;
+      thread.sourceProjection = { ...saved, ...patch };
+      await assert.rejects(
+        f.bridge.validatePlatformContinuation(
+          target,
+          "first-project",
+          "first-project",
+        ),
+        /不属于原请求/,
+      );
+      thread.sourceProjection = saved;
+    }
+    await assert.rejects(
+      f.bridge.validatePlatformContinuation(
+        { ...target, objective: { id: "wrong", generation: 2 } },
+        "first-project",
+        "first-project",
+      ),
+      /不属于原请求/,
+    );
+    thread.initiating_principal_id = "other-human";
+    await assert.rejects(
+      f.bridge.validatePlatformContinuation(
+        target,
+        "first-project",
+        "first-project",
+      ),
+      /不属于原请求/,
+    );
+  } finally {
+    await f.close();
+  }
 });
 
 test("旧 Runtime 不提供假入口，也不把已接受补充重新发送", async () => {

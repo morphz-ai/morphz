@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { HostFailureReporter } from "./host-diagnostics.js";
+import { objectiveWaitKinds } from "./objective-wait-projection.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
@@ -4572,7 +4573,23 @@ export class RuntimeBridge {
         objectives: z
           .array(
             z.object({
-              readiness: z.object({ state: z.string() }),
+              readiness: z.object({
+                state: z.string(),
+                dependency_ids: z.array(z.string()).optional(),
+              }),
+              dependencies: z
+                .array(
+                  z.object({
+                    id: z.string(),
+                    owner_kind: z.string(),
+                    owner_id: z.string(),
+                    owner_generation: z.number(),
+                    dependency_kind: z.string(),
+                    required: z.boolean(),
+                    status: z.string(),
+                  }),
+                )
+                .optional(),
               source: runtimeSchedulerSourceSchema,
               objective: z.object({
                 id: z.string(),
@@ -4581,6 +4598,7 @@ export class RuntimeBridge {
                 source_event_id: z.string(),
                 stated_objective: z.string(),
                 status: z.string(),
+                generation: z.number().int().positive().optional(),
                 status_reason: z.string().nullable(),
                 parent_objective_id: z.string().nullable(),
                 updated_at: z.string(),
@@ -4835,13 +4853,14 @@ export class RuntimeBridge {
           )
             threads.set(value.thread.id, value);
         }
+        const primaryObjectives = new Map<
+          string,
+          { id: string; generation: number }
+        >();
         for (const value of threads.values()) {
           const t = value.thread,
             session = sessionsById.get(t.session_id);
           if (!session || t.context_id !== contextId) continue;
-          const delivery = deliveries.find(
-            (d) => d.sessionId === t.session_id && d.rootId === t.root_turn_id,
-          );
           const route = await resolveThreadRoot(value, contextId);
           const source = route?.source;
           // A shared transport is not authority to guess an unknown work project.
@@ -4851,6 +4870,22 @@ export class RuntimeBridge {
             continue;
           }
           sources.set(route!.inputId, source);
+          const delivery = deliveries.find(
+            (d) =>
+              d.sessionId === t.session_id &&
+              d.inputId === route!.inputId &&
+              d.rootId === route!.rootId &&
+              !d.supplement,
+          );
+          const target = delivery
+            ? continuationTarget(t, delivery.inputId, t.id)
+            : undefined;
+          const primary = continuationTarget(
+            t,
+            route!.inputId,
+            t.id,
+          )?.objective;
+          if (primary) primaryObjectives.set(t.id, primary);
           activity.threads.push({
             id: t.id,
             kind: t.kind,
@@ -4884,7 +4919,7 @@ export class RuntimeBridge {
             revision: t.revision,
             updatedAt: t.updated_at,
             ...(source && delivery && this.state.directedInput
-              ? { continuation: continuationTarget(t, delivery.inputId, t.id) }
+              ? { continuation: target }
               : {}),
           });
         }
@@ -4917,6 +4952,16 @@ export class RuntimeBridge {
             continue;
           }
           sources.set(route.inputId, route.source);
+          const waitKinds = objectiveWaitKinds(value);
+          for (const thread of activity.threads)
+            if (
+              primaryObjectives.get(thread.id)?.id === objective.id &&
+              primaryObjectives.get(thread.id)?.generation ===
+                objective.generation &&
+              thread.sessionId === objective.coordinator_session_id &&
+              thread.contextId === contextId
+            )
+              thread.waitKinds = waitKinds;
           activity.objectives!.push({
             id: objective.id,
             projectId: route.source.projectId,
@@ -4928,6 +4973,7 @@ export class RuntimeBridge {
             status: objective.status,
             statusReason: objective.status_reason,
             readiness: value.readiness.state,
+            ...(waitKinds === undefined ? {} : { waitKinds }),
             parentId: objective.parent_objective_id,
             threadIds: activity.threads
               .filter(
@@ -5261,9 +5307,10 @@ export class RuntimeBridge {
         throw new ContinuationConflict("closed");
       throw e;
     }
-    const thread = z
+    const snapshot = z
       .object({
         snapshot: z.object({
+          source: runtimeSchedulerSourceSchema.optional(),
           thread: z
             .object({
               id: z.string(),
@@ -5275,7 +5322,18 @@ export class RuntimeBridge {
             .passthrough(),
         }),
       })
-      .parse(detail).snapshot.thread;
+      .parse(detail).snapshot;
+    const thread = snapshot.thread;
+    const current = continuationTarget(thread, delivery.inputId, thread.id);
+    const originalRoot = thread.root_turn_id === delivery.rootId;
+    const objectiveRoot =
+      current?.objective &&
+      target.objective &&
+      current.objective.id === target.objective.id &&
+      current.objective.generation === target.objective.generation &&
+      snapshot.source?.root_turn_id === delivery.rootId &&
+      snapshot.source.session_id === delivery.sessionId &&
+      snapshot.source.context_id === this.contextId(projectId);
     const expectedPrincipal = this.teamIdentity
       ? this.principalId(this.actor().principalId)
       : this.state.sessions[delivery.sessionId]?.runtimePrincipalId;
@@ -5283,12 +5341,11 @@ export class RuntimeBridge {
       thread.id !== target.threadId ||
       thread.session_id !== delivery.sessionId ||
       thread.context_id !== this.contextId(projectId) ||
-      thread.root_turn_id !== delivery.rootId ||
+      (!originalRoot && !objectiveRoot) ||
       !expectedPrincipal ||
       thread.initiating_principal_id !== expectedPrincipal
     )
       throw new DomainError("forbidden", "补充目标不属于原请求，未发送。");
-    const current = continuationTarget(thread, delivery.inputId, thread.id);
     if (!current) throw new ContinuationConflict("closed");
     if (
       current.generation !== target.generation ||
