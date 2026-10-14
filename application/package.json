@@ -65,6 +65,7 @@
     "test:e2e": "npm run build && playwright test",
     "test:desktop": "node scripts/desktop-smoke.mjs",
     "test:desktop-shutdown": "node scripts/desktop-shutdown-smoke.mjs",
+    "test:desktop-runtime-network": "node scripts/desktop-runtime-network-smoke.mjs",
     "test:platform-desktop": "node scripts/platform-desktop-smoke.mjs",
     "test:platform-embedded-desktop": "node scripts/platform-desktop-smoke.mjs --embedded",
     "test:desktop-hmr": "node scripts/desktop-hmr-smoke.mjs",

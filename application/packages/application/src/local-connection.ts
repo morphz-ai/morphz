@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import type { HostFailureReporter } from "./host-diagnostics.js";
 import { z } from "zod";
 import { DomainError, localAccess } from "../../core/src/model.js";
 import {
@@ -62,6 +63,7 @@ export class LocalApplicationConnection {
   constructor(
     readonly application: Application,
     cookie?: string,
+    private readonly reportFailure?: HostFailureReporter,
   ) {
     this.cookie = cookie;
   }
@@ -192,8 +194,10 @@ export class LocalApplicationConnection {
   async invoke(raw: unknown): Promise<ApplicationReply> {
     let requestId: string | undefined;
     let commandId: string | undefined;
+    let requestMethod = "unknown";
     try {
       const request = invocationSchema.parse(raw);
+      requestMethod = request.method;
       const cognitive = cognitiveAppApplicationRoute(request.method);
       const view = cognitiveAppViewApplicationRoute(request.method);
       if (cognitive) {
@@ -297,6 +301,13 @@ export class LocalApplicationConnection {
                 message: error.message,
               }
             : applicationFailure(error);
+      if (failure.status >= 500) {
+        try {
+          this.reportFailure?.(`application.${requestMethod}`, error);
+        } catch {
+          // Diagnostics can never replace a request's actual failure.
+        }
+      }
       return {
         ok: false,
         error: {

@@ -53,6 +53,7 @@ export async function inspectRuntimeConnection(
   config: RuntimeConfig,
   signal?: AbortSignal,
   principalId?: string,
+  transport: typeof fetch = (...args) => globalThis.fetch(...args),
 ): Promise<ConnectionDetails> {
   const result: ConnectionDetails = {
     ...unconfiguredConnection,
@@ -61,7 +62,7 @@ export async function inspectRuntimeConnection(
     message: "无法连接智能体。请确认运行服务已启动，再重试连接。",
   };
   const request = async (path: string) =>
-    fetch(config.url + path, {
+    transport(config.url + path, {
       headers: {
         Authorization: `Bearer ${config.token}`,
         ...(principalId ? { "X-Morphz-Principal": principalId } : {}),
@@ -174,6 +175,8 @@ export class LocalRuntimeConnection {
     private prepare: (
       config: RuntimeConfig,
     ) => Promise<{ commit(): void; discard(): Promise<void> }>,
+    private readonly transport: typeof fetch = (...args) =>
+      globalThis.fetch(...args),
   ) {}
   private file() {
     return join(this.directory, "runtime.json");
@@ -247,9 +250,16 @@ export class LocalRuntimeConnection {
         url: endpoint,
         token: request.token,
         namespace: old?.namespace ?? saved?.namespace ?? this.store.identity(),
-        ...(privateOperatorToken ? { operatorToken: privateOperatorToken } : {}),
+        ...(privateOperatorToken
+          ? { operatorToken: privateOperatorToken }
+          : {}),
       };
-      const checked = await inspectRuntimeConnection(config, signal);
+      const checked = await inspectRuntimeConnection(
+        config,
+        signal,
+        undefined,
+        this.transport,
+      );
       if (checked.state !== "connected")
         throw new DomainError("invalid", checked.message);
       signal.throwIfAborted();
@@ -263,9 +273,11 @@ export class LocalRuntimeConnection {
       let originalPrivateToken: string | undefined;
       try {
         originalPrivateToken = old
-          ? (JSON.parse(readFileSync(this.file(), "utf8")) as {
-              operatorToken?: string;
-            }).operatorToken
+          ? (
+              JSON.parse(readFileSync(this.file(), "utf8")) as {
+                operatorToken?: string;
+              }
+            ).operatorToken
           : undefined;
       } catch {
         throw new DomainError("invalid", "连接配置无效，原配置未被覆盖。");

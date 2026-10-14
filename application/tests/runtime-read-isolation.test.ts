@@ -10,7 +10,7 @@ import {
 import { localAccess } from "../packages/core/src/model.js";
 
 test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Host 未接收输入", async () => {
-  type Mode = "healthy" | "network" | "malformed" | 401 | 403 | 503;
+  type Mode = "healthy" | "network" | "body" | "malformed" | 401 | 403 | 503;
   let mode: Mode = "healthy";
   let posts = 0;
   let requests = 0;
@@ -38,6 +38,12 @@ test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Ho
       res.end(JSON.stringify(value));
     };
     if (mode === "network") return res.destroy();
+    if (mode === "body") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.flushHeaders();
+      setTimeout(() => res.destroy(), 25);
+      return;
+    }
     if (typeof mode === "number")
       return send(mode, { error: "Runtime unavailable" });
     if (mode === "malformed")
@@ -124,7 +130,7 @@ test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Ho
     );
     assert.equal(initial.inputs.length, 2);
     assert.ok(initial.inputs.some((input) => input.id === accepted.entityId));
-    for (const failure of ["network", 401, 403, 503] as const) {
+    for (const failure of ["network", "body", 401, 403, 503] as const) {
       mode = failure;
       const navigation = await fixture
         .session()
@@ -165,7 +171,7 @@ test("Runtime 断开或拒绝凭据不阻断已授权 Platform，只展示本 Ho
         details.state,
         failure === "network"
           ? "unreachable"
-          : failure === 503
+          : failure === 503 || failure === "body"
             ? "error"
             : "authentication-required",
       );

@@ -122,7 +122,11 @@ export class RuntimeModelSettings {
   // Login capabilities are owned by this application identity, never arbitrary
   // Runtime login IDs supplied by another window or an Agent.
   private logins = new Set<string>();
-  constructor(private configuration: () => RuntimeConfig) {}
+  constructor(
+    private configuration: () => RuntimeConfig,
+    private readonly transport: typeof fetch = (...args) =>
+      globalThis.fetch(...args),
+  ) {}
   private async request(
     path: string,
     signal: AbortSignal,
@@ -137,7 +141,7 @@ export class RuntimeModelSettings {
       throw new DomainError("forbidden", "此工作空间的模型由管理员管理。");
     let response: Response;
     try {
-      response = await fetch(config.url + path, {
+      response = await this.transport(config.url + path, {
         method,
         redirect: "error",
         signal: AbortSignal.any([signal, AbortSignal.timeout(45000)]),

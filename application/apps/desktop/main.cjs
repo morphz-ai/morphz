@@ -38,6 +38,7 @@ const {
 } = require("./appearance.cjs");
 const { rendererURL } = require("./development.cjs");
 const { registerApplicationBridge } = require("./application-bridge.cjs");
+const { createDesktopRuntimeRequest } = require("./runtime-network.cjs");
 const { createScriptExportSaver } = require("./script-export.cjs");
 const { createMessageImageOutput } = require("./message-images.cjs");
 const { registerDesktopShutdown } = require("./shutdown.cjs");
@@ -334,6 +335,9 @@ else {
             ipcMain,
             resources: ocrResources,
           }),
+          createDesktopRuntimeRequest(
+            session.fromPartition("morphz-runtime-network", { cache: false }),
+          ),
         );
         application = host.connection;
       } else {

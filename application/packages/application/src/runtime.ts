@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { HostFailureReporter } from "./host-diagnostics.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
@@ -2132,10 +2133,13 @@ export class RuntimeBridge {
         : "")
     );
   }
-  readonly modelSettings = new RuntimeModelSettings(() => this.config);
+  readonly modelSettings = new RuntimeModelSettings(
+    () => this.config,
+    (...args) => this.fetchRuntime(...args),
+  );
   readonly profiles = new RuntimeProfileClient(
     () => this.config,
-    undefined,
+    (...args) => this.fetchRuntime(...args),
     () => this.publishWorkspaceChange(),
   );
   private state: z.infer<typeof storedSchema>;
@@ -2314,6 +2318,10 @@ export class RuntimeBridge {
     private config: RuntimeConfig,
     private identity?: IdentityCenter,
     persistOnConstruction = true,
+    private readonly host: {
+      reportFailure?: HostFailureReporter;
+      request?: typeof fetch;
+    } = {},
   ) {
     if (this.teamIdentity && !identity)
       throw new Error("可信网关适配需要应用身份配置。");
@@ -2824,12 +2832,15 @@ export class RuntimeBridge {
       mindVersion: frame.updated_version,
     };
   }
+  private fetchRuntime(...args: Parameters<typeof fetch>) {
+    return (this.host.request ?? globalThis.fetch)(...args);
+  }
   private async runtimeFetch(
     url: string,
     init: RequestInit,
   ): Promise<Response> {
     try {
-      return await fetch(url, init);
+      return await this.fetchRuntime(url, init);
     } catch (error) {
       throw new RuntimeTransportError(error);
     }
@@ -2972,7 +2983,9 @@ export class RuntimeBridge {
       let size = 0;
       try {
         for (;;) {
-          const { done, value } = await reader.read();
+          const { done, value } = await reader.read().catch((error) => {
+            throw new RuntimeTransportError(error);
+          });
           if (done) break;
           size += value.byteLength;
           if (size > limit) throw new Error("Runtime 消息附件超过大小限制。");
@@ -2989,7 +3002,16 @@ export class RuntimeBridge {
         bytes: Buffer.concat(chunks, size),
       };
     }
-    return response.json();
+    try {
+      return await response.json();
+    } catch (error) {
+      // fetch resolves at headers, not when the response body is complete.
+      // An interrupted body is a transport failure too: preserve authorized
+      // Platform state instead of treating a read as a failed save. Never
+      // replay a write here; its existing durable command controls retry.
+      if (error instanceof SyntaxError) throw error;
+      throw new RuntimeTransportError(error);
+    }
   }
   async models(includeSources = true) {
     const raw = z
@@ -3073,6 +3095,7 @@ export class RuntimeBridge {
       this.config,
       signal,
       this.teamIdentity ? this.principalId("morphz-service") : undefined,
+      (...args) => this.fetchRuntime(...args),
     );
   }
   validateConnection(config: RuntimeConfig) {
@@ -6893,6 +6916,11 @@ export class RuntimeBridge {
       await this.refreshActivity();
       await this.refreshAttention();
     } catch (error) {
+      try {
+        this.host.reportFailure?.("runtime.poll", error);
+      } catch {
+        // Preserve the original failure and all delivery/receipt semantics.
+      }
       this.state.connected = false;
       this.state.error =
         error instanceof UpstreamError

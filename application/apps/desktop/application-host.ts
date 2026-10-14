@@ -16,6 +16,7 @@ import {
   applicationFailure,
 } from "../../packages/application/src/application.js";
 import { LocalApplicationConnection } from "../../packages/application/src/local-connection.js";
+import { privateHostFailureReporter } from "../../packages/application/src/host-diagnostics.js";
 import { WorkspaceStore } from "../../packages/application/src/store.js";
 import { openApplicationDomainsHost } from "../../packages/application/src/application-domains-host.js";
 import { cognitiveAppLaunchConfig } from "../../packages/application/src/cognitive-app-launch-config.js";
@@ -106,6 +107,7 @@ export async function openEmbeddedApplication(
   profile: string,
   legacyAuthentication?: (cookieName: string) => Promise<string | undefined>,
   ocrEngine?: ReadingOcrEngine,
+  runtimeRequest?: typeof fetch,
 ) {
   if (!isAbsolute(directory) || !isAbsolute(profile))
     throw new Error("应用目录必须是明确的绝对路径。");
@@ -113,6 +115,7 @@ export async function openEmbeddedApplication(
   const store = new WorkspaceStore(join(directory, "workspace.sqlite"), {
     mode: "transport",
   });
+  const reportFailure = privateHostFailureReporter(profile);
   let runtime: RuntimeBridge | undefined;
   let tools: Awaited<ReturnType<typeof listenLocalHostTools>> | undefined;
   let domains:
@@ -120,7 +123,12 @@ export async function openEmbeddedApplication(
   try {
     const identity = await loadIdentity(store, directory);
     const config = loadRuntimeConfig(directory);
-    runtime = config ? new RuntimeBridge(store, config, identity) : undefined;
+    runtime = config
+      ? new RuntimeBridge(store, config, identity, true, {
+          reportFailure,
+          request: runtimeRequest,
+        })
+      : undefined;
     const readerOcr = new ReaderOcr(
       join(directory, "reader-ocr-models"),
       ocrEngine,
@@ -176,7 +184,11 @@ export async function openEmbeddedApplication(
       cookie = undefined;
       authentication.save(undefined);
     }
-    const connection = new LocalApplicationConnection(application, cookie);
+    const connection = new LocalApplicationConnection(
+      application,
+      cookie,
+      reportFailure,
+    );
     let manifest = config
       ? prepareLocalHostTools(
           directory,
@@ -219,7 +231,10 @@ export async function openEmbeddedApplication(
               discard: async () => {},
             };
           }
-          const candidate = new RuntimeBridge(store, next, undefined, false);
+          const candidate = new RuntimeBridge(store, next, undefined, false, {
+            reportFailure,
+            request: runtimeRequest,
+          });
           const prepared = prepareLocalHostTools(
             directory,
             next.namespace,
@@ -276,6 +291,7 @@ export async function openEmbeddedApplication(
             },
           };
         },
+        runtimeRequest,
       );
     runtime?.start();
     taskDispatcher?.start();
