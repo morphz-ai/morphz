@@ -1192,6 +1192,22 @@ export function createAppServer(
           json(res, 200, await business.executionSnapshot(executionScope(url)));
           return;
         }
+        if (url.pathname === "/api/terminals") {
+          json(res, 200, await business.terminalCatalog(executionScope(url)));
+          return;
+        }
+        if (url.pathname === "/api/terminals/screen") {
+          json(
+            res,
+            200,
+            await business.terminalRead({
+              scope: executionScope(url),
+              terminalId: url.searchParams.get("terminalId"),
+              scrollback: Number(url.searchParams.get("scrollback") ?? 0),
+            }),
+          );
+          return;
+        }
         if (url.pathname === "/api/executions/result") {
           json(
             res,

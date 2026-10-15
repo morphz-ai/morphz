@@ -209,6 +209,8 @@ export const applicationMethods = [
   "reader.command",
   "reader.ocr",
   "execution.snapshot",
+  "terminal.catalog",
+  "terminal.read",
   "execution.result",
   "execution.control",
   "task.snapshot",

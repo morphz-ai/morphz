@@ -107,7 +107,10 @@ function finalCallbacks() {
 }
 function profileOrder() { await ports.profile.flush(); ports.profile.assertCurrentScope(); if (!ports.isCurrentSurface()) throw new Error("工作范围已切换，草稿已保留，请回到原处发送。"); }
 const cognitiveFields = {
-  ...(activeInstance && !cognitive ? { application: { id: activeInstance.applicationId, version: activeInstance.applicationVersion } } : {}),
+  // Reviewed builtin extension: only its selected resource reference, never a screen or authority.
+  ...(activeInstance && !cognitive ? { application: { id: activeInstance.applicationId, version: activeInstance.applicationVersion,
+    ...(activeInstance.applicationId === "morphz.terminal" ? { terminalId: typeof activeInstance.state?.terminalId === "string" ? activeInstance.state.terminalId : null } : {}),
+  } } : {}),
   ...(cognitiveObject ? { cognitiveObject } : {}),
   ...(cognitiveApplication ? { cognitiveApplication } : {}),
   ...(browserPage && !cognitive && activeInstance?.applicationId === "morphz.browser" ? { browser: { pageId: browserPage.pageId, epoch: browserPage.epoch, url: browserPage.url, title: browserPage.title } } : {}),
@@ -1033,6 +1036,11 @@ test("submission gate rejects cognitive source dropping, current-head substituti
     [
       "...(activeInstance && !cognitive",
       "...(activeInstance",
+      "exact-cognitive-payload-no-implicit-harness-or-head",
+    ],
+    [
+      "activeInstance.state.terminalId",
+      "'another-terminal'",
       "exact-cognitive-payload-no-implicit-harness-or-head",
     ],
     [

@@ -1,5 +1,36 @@
 # 桌面能力实施记录
 
+## 2026-10-16 Terminal 认知应用
+
+新增内置 Terminal：Agent 通过 Runtime 的真实 PTY 操作系统 Shell，使用
+原共享交流输入，目录／环境和输出属于同一个持续会话。页面只读真实
+屏幕，新建等快捷入口只准备草稿；打开、切换、关闭页签不执行命令或
+停止进程。`exec` 作为独立能力保留，不把执行日志冒充终端。实现边界、
+使用方式和逐项证据见 [Terminal 记录](./43-terminal-cognitive-application.md)。
+
+Runtime 持有物理资源，SQLite／PostgreSQL 保存同一身份、CAS、状态和
+有界检查点；Platform 只保存导航引用。工具控制走原 ExecutionJob、身份、
+执行节点和有效沙盒边界；撤权结束旧 Shell，不扩大权限或注入秘密。Agent
+显式读取最多一个窗口，不预装输出／文件正文；进程、回滚、输入和读取
+都有上限。回执不确定时禁止排队新输入，保留可读输出、不重放旧命令。
+
+正式 Node 相关 19 文件 193／193、Rust Terminal 11／11（含独立真实
+PostgreSQL 和 SQLite）、求值 58／58，通过且无跳过；类型及生产构建通过。
+实际 React 用例覆盖明暗／窄窗、固定按钮复制反馈、隐藏停止轮询、晚到
+结果与授权边界。不是全仓库全量测试通过的声明；既有构建警告未隐瞒。
+
+原 Morphz.app 的现有 profile／中心和模型完成 TEST Terminal 1016：一次
+接收、五个成功 terminal Job，真实 cwd、ANSI 输出、两次命令之间的环境
+保留与可见屏幕一致，没有 exec。切换阅读返回仍连接同一会话，复制反馈
+不增行。在线备份对比旧事件和目标状态／revision 没变化，原 23 Session
+和五个目标保留。验收前接入问题与纠正记录见 43，不以被拒绝的输入或
+中断的测试轮次冒称成功。
+
+本机 macOS 实机通过；远程／Windows PTY 尚未实现，Linux 原生沙盒启动
+管道仍有明确拒绝边界。首版不是手动 Shell 编辑器。有 live PTY 后的原
+Desktop 退出／重开实窗检查因 Mac 锁屏待补；Runtime 与会话保持，不为
+验收重发消息或重启原任务。
+
 ## 2026-10-14 Desktop 连接正文通道与目标等待／补充修正
 
 原 Desktop PID 84254 的 Node fetch 在已返回 headers 后，读取 Runtime

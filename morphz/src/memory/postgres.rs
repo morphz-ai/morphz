@@ -77,6 +77,7 @@ mod schedule;
 mod scheduler;
 mod session;
 mod target;
+mod terminal;
 mod thread;
 mod thread_group;
 
@@ -633,6 +634,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration("20261002_01_agent_rom", custom::migrate(&store.pool))
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20261016_01_terminal_sessions",
+                    terminal::migrate(&store.pool),
+                )
                 .await?;
             store
                 .run_versioned_migration(

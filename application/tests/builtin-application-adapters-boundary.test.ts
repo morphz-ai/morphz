@@ -325,6 +325,21 @@ function attribute(
 }
 function verify(values: typeof sources) {
   const expected = fixedBuiltinModuleSource()
+    // Terminal is an explicitly added fourth builtin. Keep every original
+    // Browser/Reader/Script/recent recipe byte-derived from the independent
+    // archive; add this reviewed new branch, not a copy of the current owner.
+    .replace(
+      "createFixedBuiltinAdapters({client,",
+      "createFixedBuiltinAdapters({conversationId,client,",
+    )
+    .replace(
+      "return view==='browser'?",
+      "return view==='terminal'?(<Terminal client={client} instance={instance} projectId={workspaceId} conversationId={conversationId} active={activeView} onCompose={onCompose} onNotice={onNotice}/>):view==='browser'?",
+    )
+    .replace(
+      "import {ScriptStudio}",
+      "import {Terminal} from '/src/features/terminal/Terminal.tsx';\nimport {ScriptStudio}",
+    )
     .replaceAll("'/src/", "'../")
     .replaceAll(".tsx'", ".js'")
     .replaceAll(".ts'", ".js'");
@@ -351,6 +366,7 @@ function verify(values: typeof sources) {
   assert.deepEqual(
     called.map((n) => origin(owner, n.tagName)),
     [
+      "../features/terminal/Terminal.js:Terminal",
       "../BrowserHost.js:BrowserHost",
       "../Reader.js:Reader",
       "../ScriptStudio.js:ScriptStudio",

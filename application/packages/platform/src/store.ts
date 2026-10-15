@@ -8,6 +8,7 @@ import {
   applicationInstanceSchema,
   parseApplicationViewState,
   browserApplication,
+  terminalApplication,
   objectsApplication,
   readerApplication,
   scriptStudioApplication,
@@ -478,6 +479,7 @@ type AppViewRow = {
   updated_at: string;
 };
 const builtinViewApps = [
+  terminalApplication,
   objectsApplication,
   browserApplication,
   readerApplication,

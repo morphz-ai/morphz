@@ -1,0 +1,238 @@
+.terminal-app {
+  --terminal-paper: light-dark(#fafbfc, #1c1f24);
+  --terminal-ink: light-dark(#28313d, #dde3ec);
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  background: var(--terminal-paper);
+  color: var(--terminal-ink);
+}
+.terminal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 42px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.terminal-tabs {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  overflow-x: auto;
+  min-width: 0;
+  gap: 2px;
+}
+.terminal-tabs button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  min-height: 41px;
+  padding: 0 12px;
+  max-width: 200px;
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.terminal-tabs button > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.terminal-tabs button[aria-selected="true"] {
+  color: var(--terminal-ink);
+  border-bottom-color: var(--accent);
+  background: var(--tint);
+}
+.terminal-new,
+.terminal-footer button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 3px 7px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.terminal-new:hover,
+.terminal-footer button:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--hover);
+}
+.terminal-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--faint);
+  display: inline-block;
+  flex-shrink: 0;
+}
+.terminal-status-open {
+  background: light-dark(#278253, #78d49f);
+}
+.terminal-status-starting {
+  background: var(--accent);
+}
+.terminal-status-lost {
+  background: light-dark(#b16c26, #e7b475);
+}
+.terminal-location {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 8px 18px;
+  flex-shrink: 0;
+}
+.terminal-location > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.terminal-state {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  white-space: nowrap;
+}
+.terminal-screen {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 4px 18px 20px;
+  font:
+    13px/1.6 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  tab-size: 8;
+}
+.terminal-grid {
+  position: relative;
+  width: calc(var(--terminal-cols) * 1ch);
+  min-height: 100%;
+}
+.terminal-line {
+  height: 1.6em;
+  white-space: pre;
+}
+.terminal-cursor {
+  position: absolute;
+  width: 1ch;
+  height: 1.6em;
+  background: currentColor;
+  opacity: 0.25;
+  pointer-events: none;
+}
+.terminal-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding: 4px 10px;
+  min-height: 36px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.terminal-output-controls {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.terminal-output-controls .terminal-copy {
+  min-width: 90px;
+  width: 90px;
+  flex: none;
+}
+.terminal-boundary {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.terminal-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 6px 18px;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.terminal-notice svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.terminal-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px clamp(20px, 7vw, 80px);
+  min-height: 0;
+}
+.terminal-empty > svg {
+  color: var(--muted);
+}
+.terminal-empty h2 {
+  font-size: 19px;
+  font-weight: 600;
+  margin: 0;
+}
+.terminal-empty p {
+  max-width: 420px;
+  margin: 0;
+  color: var(--muted);
+}
+.terminal-empty small {
+  color: var(--muted);
+  max-width: 420px;
+}
+.terminal-empty button {
+  margin: 4px 0;
+}
+.terminal-loading {
+  flex: 1;
+  padding: 12px 18px;
+  color: var(--muted);
+}
+@container (max-width: 560px) {
+  .terminal-boundary,
+  .terminal-new > span,
+  .terminal-ask > span {
+    display: none;
+  }
+}
+@media (max-width: 560px) {
+  .terminal-boundary,
+  .terminal-new > span,
+  .terminal-ask > span {
+    display: none;
+  }
+  .terminal-location {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .terminal-empty {
+    padding: 20px;
+  }
+}

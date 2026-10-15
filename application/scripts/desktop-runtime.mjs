@@ -113,7 +113,7 @@ const child = spawn(
       // Yao. Each concrete call still passes its normal permission/root checks.
       MORPHZ_EVAL_CALLABLE_TOOLS:
         process.env.MORPHZ_EVAL_CALLABLE_TOOLS ??
-        "read,write,edit,list_files,search,exec,transfer,host_morphz",
+        "read,write,edit,list_files,search,exec,transfer,terminal,host_morphz",
       MORPHZ_APP_DEVELOPMENT_MODEL_KEY: key,
     },
   },

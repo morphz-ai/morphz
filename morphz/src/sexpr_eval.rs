@@ -2990,7 +2990,7 @@ tokio::task_local! {
 /// its statically referenced `call` effects, intersected with this gate. A
 /// model-owned top-level `(infer ...)` Harness likewise narrows the ordinary
 /// Function Calling surface and never executes through `EvalTool`.
-pub const DEFAULT_CALLABLE_TOOLS: [&str; 7] = [
+pub const DEFAULT_CALLABLE_TOOLS: [&str; 8] = [
     "read",
     "write",
     "edit",
@@ -2998,6 +2998,7 @@ pub const DEFAULT_CALLABLE_TOOLS: [&str; 7] = [
     "search",
     "exec",
     "transfer",
+    "terminal",
 ];
 
 /// Resolves one deployment allow-list against the live Registry and the Yao

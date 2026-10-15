@@ -808,6 +808,20 @@ export class HttpApplicationClient {
       case "execution.snapshot":
         path = "/api/executions?" + query(fields(params));
         break;
+      case "terminal.catalog":
+        path = "/api/terminals?" + query(fields(params));
+        break;
+      case "terminal.read": {
+        const p = fields(params);
+        path =
+          "/api/terminals/screen?" +
+          query({
+            ...fields(p.scope),
+            terminalId: p.terminalId,
+            scrollback: p.scrollback,
+          });
+        break;
+      }
       case "execution.result": {
         const p = fields(params);
         path =

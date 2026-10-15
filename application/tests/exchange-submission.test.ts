@@ -430,6 +430,36 @@ test("normal optional fields stay absent; non-Browser application and ungranted 
   assert.equal(f.errors.length, 0);
 });
 
+test("Terminal sends the selected resource reference once through the existing parallel input path", async () => {
+  const f = fixture();
+  await submitExchangeDraft(
+    draft({ textQuotes: [], attachments: [] }),
+    false,
+    "parallel",
+    context({
+      activeInstance: {
+        applicationId: "morphz.terminal",
+        applicationVersion: "1.0.0",
+        state: { terminalId: "terminal-selected" },
+      },
+    }),
+    f.ports,
+  );
+  const operation = onlyCall(f)[0];
+  assert.equal(operation.type, "record-input");
+  if (operation.type !== "record-input")
+    throw new Error("expected one normal input");
+  assert.equal(operation.dispatchMode, "parallel");
+  assert.deepEqual(operation.application, {
+    id: "morphz.terminal",
+    version: "1.0.0",
+    terminalId: "terminal-selected",
+  });
+  assert.equal(operation.projectId, "project-a");
+  assert.equal(operation.conversationId, "conversation-a");
+  assert.equal(f.errors.length, 0);
+});
+
 test("normal artifact revision falls back only when the captured revision is absent", async () => {
   const f = fixture();
   await submitExchangeDraft(

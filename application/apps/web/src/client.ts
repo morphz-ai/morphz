@@ -69,6 +69,7 @@ import {
 } from "./data/operation-delivery.js";
 export { operationMayCommitBeforeError } from "./data/operation-delivery.js";
 import { createExecutionInteractions } from "./data/execution-interactions.js";
+import { createTerminalInteractions } from "./data/terminal-interactions.js";
 import {
   readPlatformWorkspace,
   reusableNavigationCatalog,
@@ -921,6 +922,7 @@ export function useWorkspace() {
     call: applicationCall,
     refreshAfterMutation,
   });
+  const terminalInteractions = createTerminalInteractions(applicationCall);
   function clearProtectedProjection(keepRead?: AbortController) {
     protectedReadGeneration.current++;
     current.current = null;
@@ -1769,6 +1771,8 @@ export function useWorkspace() {
     cancelInput: executionInteractions.cancelInput,
     search,
     executionSnapshot: executionInteractions.executionSnapshot,
+    terminalCatalog: terminalInteractions.terminalCatalog,
+    terminalRead: terminalInteractions.terminalRead,
     executionResult: executionInteractions.executionResult,
     controlExecution: executionInteractions.controlExecution,
     approvalSubmitted: executionInteractions.approvalSubmitted,

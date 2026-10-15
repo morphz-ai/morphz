@@ -155,6 +155,17 @@ impl fmt::Display for SdkError {
 impl std::error::Error for SdkError {}
 
 pub type SdkResult<T> = Result<T, SdkError>;
+fn terminal_sdk_error(error: Box<dyn std::error::Error + Send + Sync>) -> SdkError {
+    match error.downcast_ref::<crate::terminal::TerminalAccessError>() {
+        Some(crate::terminal::TerminalAccessError::NotFound) => {
+            SdkError::new(SdkErrorCode::NotFound, error.to_string())
+        }
+        Some(crate::terminal::TerminalAccessError::Forbidden) => {
+            SdkError::new(SdkErrorCode::Forbidden, error.to_string())
+        }
+        None => SdkError::internal(error),
+    }
+}
 
 fn classify_message_attachment_stage_error(
     error: crate::model_input::MessageAttachmentStageError,
@@ -4325,6 +4336,63 @@ impl MorphzSdk {
             ));
         }
         Ok(job)
+    }
+
+    /// Read-only PTY projection. The initiating Human, Session membership and
+    /// exact Context are checked before and after any physical screen read.
+    pub async fn session_terminals(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        root_ids: Option<Vec<String>>,
+        limit: usize,
+    ) -> SdkResult<Vec<crate::memory::terminal::TerminalSessionRecord>> {
+        let session = self.authorize_session(principal_id, session_id).await?;
+        self.runtime
+            .terminals()
+            .list(&crate::memory::terminal::TerminalSessionFilter {
+                principal_id: principal_id.into(),
+                session_id: session_id.into(),
+                context_id: session.context_id,
+                root_ids,
+                limit,
+            })
+            .await
+            .map_err(terminal_sdk_error)
+    }
+
+    pub async fn session_terminal(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        terminal_id: &str,
+        scrollback: usize,
+    ) -> SdkResult<crate::terminal::TerminalView> {
+        let session = self.authorize_session(principal_id, session_id).await?;
+        self.runtime
+            .terminals()
+            .view(
+                terminal_id,
+                session_id,
+                &session.context_id,
+                principal_id,
+                scrollback.min(500),
+            )
+            .await
+            .map_err(terminal_sdk_error)
+    }
+    pub async fn session_terminal_metadata(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        terminal_id: &str,
+    ) -> SdkResult<crate::memory::terminal::TerminalSessionRecord> {
+        let session = self.authorize_session(principal_id, session_id).await?;
+        self.runtime
+            .terminals()
+            .metadata(terminal_id, session_id, &session.context_id, principal_id)
+            .await
+            .map_err(terminal_sdk_error)
     }
 
     pub async fn inspect_execution_job_result(

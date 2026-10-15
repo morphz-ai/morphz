@@ -7,6 +7,7 @@ import type { WorkspaceClient } from "../client.js";
 import type { BuiltinApplicationSurface } from "../ApplicationHost.js";
 import { ScriptStudio, type ScriptComposeResult } from "../ScriptStudio.js";
 import { BrowserHost } from "../BrowserHost.js";
+import { Terminal } from "../features/terminal/Terminal.js";
 import { Reader, type ReadingCompose } from "../Reader.js";
 import type { ReadingContextChange } from "../ReadingContext.js";
 import type { BrowserView } from "../desktop.js";
@@ -16,6 +17,7 @@ import {
 } from "../catalog-content-entries.js";
 
 export type BuiltinApplicationOptions = {
+  conversationId?: string;
   client: WorkspaceClient;
   scriptLocation?: ScriptLocation & {
     requestId: string;
@@ -53,6 +55,7 @@ export type BuiltinApplicationOptions = {
 /** Trusted, render-captured builtin UI integration; not a sandbox capability.
  * Construction borrows ports only. Child components own their lifecycles. */
 export function createBuiltinApplicationAdapters({
+  conversationId,
   client,
   scriptLocation,
   onScriptNavigate,
@@ -85,7 +88,17 @@ export function createBuiltinApplicationAdapters({
     returnLabel,
     fallback,
   }: BuiltinApplicationSurface): ReactNode {
-    return view === "browser" ? (
+    return view === "terminal" ? (
+      <Terminal
+        client={client}
+        instance={instance}
+        projectId={workspaceId}
+        conversationId={conversationId}
+        active={activeView}
+        onCompose={onCompose}
+        onNotice={onNotice}
+      />
+    ) : view === "browser" ? (
       <BrowserHost
         client={client}
         activeView={activeView}

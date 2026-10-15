@@ -9,6 +9,7 @@ import {
 } from "../../../packages/core/src/model.js";
 import {
   browserApplication,
+  terminalApplication,
   objectsApplication,
   readerApplication,
   scriptStudioApplication,
@@ -498,6 +499,7 @@ export async function readPlatformWorkspace(
     [
       objectsApplication,
       browserApplication,
+      terminalApplication,
       readerApplication,
       scriptStudioApplication,
       ...baseCatalog.uiPackages
@@ -909,12 +911,15 @@ export async function readPlatformWorkspace(
       .map((task) => task.id),
     taskOrderRevision: catalog.taskOrderRevision,
     applications: [
-      ...[browserApplication, readerApplication, scriptStudioApplication].map(
-        (manifest) => ({
-          ...manifest,
-          installedBy: client.boot.principalId,
-        }),
-      ),
+      ...[
+        browserApplication,
+        readerApplication,
+        scriptStudioApplication,
+        terminalApplication,
+      ].map((manifest) => ({
+        ...manifest,
+        installedBy: client.boot.principalId,
+      })),
       ...catalog.uiPackages
         .filter((entry) => !entry.cognitive)
         .map(({ header }) => ({

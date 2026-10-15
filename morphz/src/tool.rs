@@ -184,7 +184,8 @@ pub(crate) struct EdgeBackgroundTaskContext {
     pub task_id: String,
 }
 
-async fn mark_physical_side_effect() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub(crate) async fn mark_physical_side_effect(
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let acknowledgement = match CURRENT_PHYSICAL_SIDE_EFFECT.try_with(|sender| {
         let (acknowledge, acknowledged) = tokio::sync::oneshot::channel();
         sender
@@ -6319,7 +6320,7 @@ fn isolate_injected_secret_output(input: &str, injected_values: &[String]) -> St
         })
 }
 
-fn is_sensitive_environment_name(name: &str) -> bool {
+pub(crate) fn is_sensitive_environment_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     upper.contains("TOKEN")
         || upper.contains("SECRET")

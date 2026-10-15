@@ -11,13 +11,21 @@ const prefix = (value: string, limit: number) => {
  * credential forms are masked only in the display; this is not a shell parser,
  * a complete secret detector, or an execution/authorization transformation. */
 export function executionCommand(job: ExecutionSnapshot["jobs"][number]) {
-  if (!["exec", "exec/background", "exec_command"].includes(job.tool_name))
+  if (
+    !["exec", "exec/background", "exec_command", "terminal"].includes(
+      job.tool_name,
+    )
+  )
     return null;
   const args = job.request;
   if (!args || typeof args !== "object" || Array.isArray(args)) return null;
   const request = args as Record<string, unknown>;
+  if (job.tool_name === "terminal" && request.action !== "write") return null;
   const raw =
-    request.command ?? (job.tool_name === "exec_command" ? request.cmd : null);
+    job.tool_name === "terminal"
+      ? request.text
+      : (request.command ??
+        (job.tool_name === "exec_command" ? request.cmd : null));
   if (typeof raw !== "string" || !raw.trim()) return null;
   const bounded = prefix(raw.trim(), maximum);
   const value = bounded

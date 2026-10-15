@@ -1538,6 +1538,13 @@ impl MorphzRuntimeBuilder {
         };
         let thread_control = Arc::new(crate::thread_control::ThreadControlTool::default());
         registry.register(thread_control.clone());
+        let terminals =
+            crate::terminal::TerminalManager::new(Arc::clone(&store), Arc::clone(&permissions));
+        if !self.tool_policy.context_only {
+            registry.register(Arc::new(crate::terminal::TerminalTool::new(Arc::clone(
+                &terminals,
+            ))));
+        }
         register_default_tools(DefaultToolDependencies {
             registry: &registry,
             context_engine: &context_engine,
@@ -1829,7 +1836,7 @@ impl MorphzRuntimeBuilder {
             message_attachment_root,
         )?;
         thread_control.bind(&orchestrator);
-        Ok(MorphzRuntime {
+        let runtime = MorphzRuntime {
             inner: Arc::new(RuntimeInner {
                 config: self.config,
                 provider_catalog_config: RwLock::new(provider_catalog_config),
@@ -1860,6 +1867,7 @@ impl MorphzRuntimeBuilder {
                 artifact_transfer_stages,
                 message_attachment_stages,
                 background_scheduler,
+                terminals,
                 secret_store,
                 provider_auth_manager,
                 timer_engine,
@@ -1872,7 +1880,40 @@ impl MorphzRuntimeBuilder {
                 started: AtomicBool::new(false),
                 start_lock: tokio::sync::Mutex::new(()),
             }),
-        })
+        };
+        let weak = Arc::downgrade(&runtime.inner);
+        runtime.inner.terminals.bind_source(Arc::new(move |caller| {
+            let weak = weak.clone();
+            Box::pin(async move {
+                let runtime = MorphzRuntime {
+                    inner: weak
+                        .upgrade()
+                        .ok_or("Runtime terminal owner is unavailable")?,
+                };
+                let thread = runtime
+                    .inner
+                    .store
+                    .get_thread(&caller.thread_id)
+                    .await?
+                    .ok_or("terminal source Thread does not exist")?;
+                if thread.session_id != caller.session_id
+                    || thread.context_id != caller.context_id
+                    || thread.initiating_principal_id != caller.initiating_principal_id
+                {
+                    return Err("terminal source Thread identity mismatch".into());
+                }
+                let source = runtime
+                    .thread_origins(&caller.context_id, std::slice::from_ref(&thread))
+                    .await?
+                    .remove(&thread.id)
+                    .ok_or("terminal original input cannot be verified")?;
+                Ok(match source {
+                    ThreadOrigin::Input { source, .. } => source.root_turn_id,
+                    ThreadOrigin::Schedule { source_turn_id, .. } => source_turn_id,
+                })
+            })
+        }));
+        Ok(runtime)
     }
 }
 
@@ -2063,6 +2104,7 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
 }
 
 struct RuntimeInner {
+    terminals: Arc<crate::terminal::TerminalManager>,
     session_io: crate::session_io::Registry,
     config: AppConfig,
     /// Authoritative in-process Provider/Account/Route catalog. Unlike the
@@ -2167,6 +2209,9 @@ pub struct MorphzRuntime {
 }
 
 impl MorphzRuntime {
+    pub(crate) fn terminals(&self) -> &Arc<crate::terminal::TerminalManager> {
+        &self.inner.terminals
+    }
     pub fn session_io_registry(&self) -> &crate::session_io::Registry {
         &self.inner.session_io
     }

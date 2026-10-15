@@ -2,6 +2,94 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { profileActualTransportFixture } from "./profile-actual-transport-fixture.js";
+import { terminalApplication } from "../packages/core/src/applications.js";
+
+test(
+  "actual Runtime installs both exact Terminal descriptors and accepts unselected and selected inputs",
+  { skip: process.env.MORPHZ_PROFILE_RUNTIME_E2E !== "1", timeout: 120_000 },
+  async () => {
+    const f = await profileActualTransportFixture();
+    const projectId = "terminal_protocol_" + randomUUID().replaceAll("-", "");
+    try {
+      await f.client.call(
+        "projects.create",
+        { commandId: randomUUID(), projectId, title: "TEST Terminal 协议" },
+        f.options,
+      );
+      for (const terminalId of [null, "terminal-reference-only"]) {
+        const marker = "TEST_TERMINAL_PROTOCOL_" + randomUUID();
+        const inputId = randomUUID();
+        f.hold(marker);
+        const since = f.requests.length;
+        await f.client.call(
+          "platform.message",
+          {
+            commandId: inputId,
+            operation: {
+              type: "record-input",
+              dispatchMode: "parallel",
+              projectId,
+              artifactId: null,
+              artifactRevision: null,
+              selection: "",
+              body: marker,
+              targetActantId: "morphz-agent",
+              application: {
+                id: terminalApplication.id,
+                version: terminalApplication.version,
+                terminalId,
+              },
+            },
+          },
+          f.options,
+        );
+        const request = await f.waitRequest(marker, since);
+        const tools = (request.tools as { function: { name: string } }[]).map(
+          (tool) => tool.function.name,
+        );
+        assert.ok(tools.includes("terminal"));
+        assert.ok(
+          tools.includes("exec"),
+          "ordinary exec remains a separate capability",
+        );
+        const inputs = f
+          .sql<{ payload: string }>(
+            "SELECT payload FROM events WHERE topic='chat/user_message' ORDER BY rowid DESC LIMIT 5",
+          )
+          .map((row) => JSON.parse(row.payload));
+        const accepted = inputs.find(
+          (input) => input.client_message_id === inputId,
+        )?.session_io.request;
+        assert.ok(
+          accepted,
+          "the real Runtime accepted this exact input, not a text fallback",
+        );
+        assert.equal(
+          accepted.message.format.version,
+          terminalId === null ? "13" : "14",
+        );
+        assert.deepEqual(accepted.message.content.value.value.terminal, {
+          type: "object",
+          value: {
+            id:
+              terminalId === null
+                ? { type: "null" }
+                : { type: "string", value: terminalId },
+          },
+        });
+        f.release(marker);
+      }
+      assert.equal(
+        f.sql("SELECT id FROM terminal_sessions").length,
+        0,
+        "input references do not create or operate a process",
+      );
+      assert.equal(f.realCalls, 0);
+    } finally {
+      await f.close();
+    }
+  },
+);
 
 test(
   "实际 Rust 请求只公布唯一 Host 定义，局部片段经真实 Job 保存且历史原文不变",

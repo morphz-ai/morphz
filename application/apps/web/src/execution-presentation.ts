@@ -70,6 +70,23 @@ export function executionPresentation(
   state: Workspace,
 ) {
   const args = record(request);
+  if (tool === "terminal") {
+    const action = text(args.action);
+    const title =
+      {
+        open: "新建终端会话",
+        list: "查看终端会话",
+        read: "读取终端屏幕",
+        write: "向终端输入命令",
+        interrupt: "中断终端前台进程",
+        resize: "调整终端尺寸",
+        close: "结束终端会话",
+      }[action] ?? "终端操作";
+    return {
+      title,
+      detail: short(text(action === "open" ? args.cwd : args.terminal_id)),
+    };
+  }
   if (!isObjectToolName(tool)) {
     const title =
       {

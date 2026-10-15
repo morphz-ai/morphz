@@ -1,4 +1,5 @@
 import { z, ZodError } from "zod";
+import { terminalReadSchema } from "../../core/src/terminal.js";
 import {
   documentRevisionShape,
   refineDocumentRevision,
@@ -6,6 +7,7 @@ import {
 import { createHash } from "node:crypto";
 import {
   browserApplication,
+  terminalApplication,
   objectsApplication,
   readerApplication,
   scriptStudioApplication,
@@ -219,6 +221,7 @@ export type ApplicationOptions = {
       browser: string;
       reader: string;
       scriptStudio: string;
+      terminal?: string;
     };
   };
   platformScripts?: {
@@ -2197,6 +2200,7 @@ export class ApplicationSession {
               const manifest = [
                 objectsApplication,
                 browserApplication,
+                terminalApplication,
                 readerApplication,
                 scriptStudioApplication,
               ].find(
@@ -2214,9 +2218,16 @@ export class ApplicationSession {
                   ? domain.instanceIds.objects
                   : manifest.id === browserApplication.id
                     ? domain.instanceIds.browser
-                    : manifest.id === readerApplication.id
-                      ? domain.instanceIds.reader
-                      : domain.instanceIds.scriptStudio;
+                    : manifest.id === terminalApplication.id
+                      ? domain.instanceIds.terminal
+                      : manifest.id === readerApplication.id
+                        ? domain.instanceIds.reader
+                        : domain.instanceIds.scriptStudio;
+              if (!instanceId)
+                throw new DomainError(
+                  "invalid",
+                  "Terminal 应用实例尚未就绪，请更新宿主。",
+                );
               await domain.platform.authorizeApplicationProject(
                 actor,
                 instanceId,
@@ -2228,6 +2239,9 @@ export class ApplicationSession {
                 id: manifest.id,
                 version: manifest.version,
                 harness: manifest.harness,
+                ...(manifest.id === terminalApplication.id
+                  ? { terminalId: op.application!.terminalId ?? null }
+                  : {}),
               };
             })
           : undefined;
@@ -2987,6 +3001,32 @@ export class ApplicationSession {
         this.reader((_reader, current) => operation(current)),
       ),
     );
+  }
+  async terminalCatalog(raw: unknown) {
+    this.active();
+    const scope = executionScopeSchema.parse(raw);
+    if (scope.taskRun || !this.options.platformWork)
+      throw new ApplicationUnavailable("终端尚未接入当前工作范围。");
+    const controls = await this.runtime().platformExecutionControls(
+      scope,
+      this.access,
+    );
+    const result = await controls.terminals();
+    this.active();
+    return result;
+  }
+  async terminalRead(raw: unknown) {
+    this.active();
+    const { scope, terminalId, scrollback } = terminalReadSchema.parse(raw);
+    if (scope.taskRun || !this.options.platformWork)
+      throw new ApplicationUnavailable("终端尚未接入当前工作范围。");
+    const controls = await this.runtime().platformExecutionControls(
+      scope,
+      this.access,
+    );
+    const result = await controls.terminal(terminalId, scrollback);
+    this.active();
+    return result;
   }
   async executionSnapshot(raw: unknown) {
     const runtime = this.runtime(),
@@ -3996,6 +4036,10 @@ export function invokeApplication(
       return session.readingOcr(params);
     case "execution.snapshot":
       return session.executionSnapshot(params);
+    case "terminal.catalog":
+      return session.terminalCatalog(params);
+    case "terminal.read":
+      return session.terminalRead(params);
     case "execution.result":
       return session.executionResult(params);
     case "execution.control":

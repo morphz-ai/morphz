@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   browserApplication,
+  terminalApplication,
   readerApplication,
   scriptStudioApplication,
   objectsApplication,
@@ -96,16 +97,19 @@ test("shared presentation preserves actual bundled and legacy entries without ma
     cognitiveCatalog: { versions: [version()], connections: [connection()] },
   });
   assert.deepEqual(
-    result.entries.slice(0, 3).map(presentationKey),
-    [browserApplication, readerApplication, scriptStudioApplication].map(
-      (a) => `${a.id}@${a.version}`,
-    ),
+    result.entries.slice(0, 4).map(presentationKey),
+    [
+      browserApplication,
+      readerApplication,
+      scriptStudioApplication,
+      terminalApplication,
+    ].map((a) => `${a.id}@${a.version}`),
   );
-  const legacy = result.entries[3];
+  const legacy = result.entries[4];
   assert(legacy?.kind === "ui-only");
   assert.equal(legacy.application, uiOnly);
-  assert.equal(result.entries.length, 5);
-  const cognitive = result.entries[4];
+  assert.equal(result.entries.length, 6);
+  const cognitive = result.entries[5];
   assert(cognitive?.kind === "cognitive");
   assert.equal(Object.hasOwn(cognitive, "application"), false);
   assert.equal(cognitive.metadata.ui, null);
@@ -342,7 +346,7 @@ test("exact cognitive declaration suppresses its real UI-package legacy launch, 
   assert.equal(actual.gui, "host-not-accepted");
   assert.equal(
     result.entries.filter((entry) => entry.kind === "builtin").length,
-    3,
+    4,
   );
 });
 

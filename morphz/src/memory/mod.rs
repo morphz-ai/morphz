@@ -1,6 +1,7 @@
 mod activation_approval_wait;
 mod objective_approval_wait;
 mod session_timeline;
+pub mod terminal;
 pub(crate) use activation_approval_wait::plan_approval_frontier;
 pub(crate) use objective_approval_wait::binding_event as approval_checkpoint_objective_binding;
 pub use objective_approval_wait::{
@@ -8894,6 +8895,7 @@ mod harness_retention;
 
 pub trait RuntimeStore:
     EventStore
+    + terminal::TerminalStore
     + SessionTimelineStore
     + TimerStore
     + ExecutionTargetStore

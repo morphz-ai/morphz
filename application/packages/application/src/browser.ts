@@ -39,8 +39,8 @@ type BrowserDomains = {
   work: ApplicationDomains["work"];
   content: Pick<
     ApplicationDomains["content"],
-    "authority" | "platform" | "objects" | "instanceIds"
-  >;
+    "authority" | "platform" | "objects"
+  > & { instanceIds: { objects: string } };
 };
 
 /** Browser pages use the same live Platform membership and Objects original

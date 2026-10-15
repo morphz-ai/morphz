@@ -1,5 +1,6 @@
 import {
   browserApplication,
+  terminalApplication,
   readerApplication,
   objectsApplication,
   scriptStudioApplication,
@@ -51,6 +52,7 @@ function isBundledApplication(
 ) {
   return (
     app === browserApplication ||
+    app === terminalApplication ||
     app === readerApplication ||
     app === scriptStudioApplication ||
     app === objectsApplication

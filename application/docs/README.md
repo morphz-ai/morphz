@@ -42,6 +42,7 @@ MorphzWork 仅保留为旧仓库、兼容路径与历史文档中的称呼。实
 16. [Morphz UI 设计规范与优化方案](./16-ui-design-standard.md)：以 Apple HIG 和 W3C 可访问性规则为依据，定义工作导向的导航、输入与交流联动、页面取舍、搜索与弹窗及视觉基线。公共 UI 首轮已落地，具体完成项和后续目标分别记录，不将目标规范等同于全部已实现。
 17. [认知应用的共享业务能力](./29-agent-operable-cognitive-applications.md)：GUI 与纯聊天使用同一领域操作，能力发现、Harness、目标与版本准备、真实人工决定及逐项验收；这是待实施设计，不代表能力已经补齐。
 18. [存储模型与架构方案](./35-application-storage-model.md)：Morphz Runtime、Morphz Platform、Cognitive Apps 与 Clients 的职责及数据权威，Artifact、关系与对象存储、SQLite／PostgreSQL、Cloud Agent Cell、迁移和验收门槛；本轮存储切换已完成，具体模型见[实施设计](./36-storage-implementation-model.md)，验收与已知边界见[实施记录](./13-implementation-status.md)。
+19. [Terminal 认知应用](./43-terminal-cognitive-application.md)：Runtime 所有的真实 PTY、Agent 共享输入、会话连续性、有界屏幕与权限边界；包含本机 macOS 的实际命令验收和未验证范围。
 
 ## 文档约定
 

@@ -61,6 +61,7 @@ import { searchContent } from "./content-search-service.js";
 import {
   objectsApplication,
   browserApplication,
+  terminalApplication,
   readerApplication,
   scriptStudioApplication,
 } from "../../core/src/applications.js";
@@ -383,6 +384,7 @@ export class PlatformAgentTools {
         const apps = [
           objectsApplication,
           browserApplication,
+          terminalApplication,
           readerApplication,
           scriptStudioApplication,
           ...installed.map((entry) => entry.header),

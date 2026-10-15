@@ -2424,6 +2424,7 @@ function WorkspaceApp({
     showInput,
   });
   const builtinApplications = createBuiltinApplicationAdapters({
+    conversationId,
     client,
     onNativeDialog: setNativeExportDialog,
     onInput: showInput,

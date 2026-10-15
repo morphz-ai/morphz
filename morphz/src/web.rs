@@ -1341,6 +1341,14 @@ impl Server {
             )
             .route("/api/execution-jobs", get(handle_list_execution_jobs))
             .route(
+                "/api/sessions/:session_id/terminals",
+                get(handle_session_terminals),
+            )
+            .route(
+                "/api/sessions/:session_id/terminals/:terminal_id",
+                get(handle_session_terminal),
+            )
+            .route(
                 "/api/execution-jobs/:job_id/result",
                 get(handle_execution_job_result),
             )
@@ -5829,6 +5837,101 @@ async fn handle_artifact_transfer_output(
     {
         Ok(output) => Json(output).into_response(),
         Err(error) => sdk_error_response(error),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct TerminalQuery {
+    token: Option<String>,
+    principal_id: Option<String>,
+    root_ids: Option<String>,
+    limit: Option<usize>,
+    scrollback: Option<usize>,
+    metadata_only: Option<bool>,
+}
+
+async fn handle_session_terminals(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<TerminalQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return sdk_error_response(e),
+    };
+    let roots = match query
+        .root_ids
+        .map(|raw| serde_json::from_str::<Vec<String>>(&raw))
+        .transpose()
+    {
+        Ok(roots)
+            if roots.as_ref().is_none_or(|r| {
+                r.len() <= 1000 && r.iter().all(|v| !v.is_empty() && v.len() <= 500)
+            }) =>
+        {
+            roots
+        }
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "root_ids must be a bounded JSON array of exact IDs",
+            )
+        }
+    };
+    let limit = query.limit.unwrap_or(50).clamp(1, 50);
+    match state
+        .sdk
+        .session_terminals(&principal.principal_id, &session_id, roots, limit + 1)
+        .await
+    {
+        Ok(mut terminals) => {
+            let has_more = terminals.len() > limit;
+            terminals.truncate(limit);
+            Json(json!({"terminals":terminals,"limit":limit,"has_more":has_more})).into_response()
+        }
+        Err(e) => sdk_error_response(e),
+    }
+}
+
+async fn handle_session_terminal(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, terminal_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<TerminalQuery>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return sdk_error_response(e),
+    };
+    if query.metadata_only == Some(true) {
+        return match state
+            .sdk
+            .session_terminal_metadata(&principal.principal_id, &session_id, &terminal_id)
+            .await
+        {
+            Ok(terminal) => Json(json!({"terminal":terminal})).into_response(),
+            Err(e) => sdk_error_response(e),
+        };
+    }
+    match state
+        .sdk
+        .session_terminal(
+            &principal.principal_id,
+            &session_id,
+            &terminal_id,
+            query.scrollback.unwrap_or(0),
+        )
+        .await
+    {
+        Ok(view) => Json(view).into_response(),
+        Err(e) => sdk_error_response(e),
     }
 }
 

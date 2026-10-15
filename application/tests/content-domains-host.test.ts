@@ -712,6 +712,23 @@ test("普通聊天的 Agent 凭 Runtime 原始输入和 Platform 成员资格访
         input_id: "chat-input",
       }),
       inputEvidenceReader: () => ({
+        async readThreadInputSource(
+          sessionId: string,
+          threadId: string,
+          principalId?: string,
+        ) {
+          assert.equal(sessionId, route.session_id);
+          assert.equal(threadId, route.thread_id);
+          assert.equal(principalId, route.principal_id);
+          return {
+            thread: (await this.readThread()).snapshot.thread,
+            source: {
+              kind: "input",
+              root_thread_id: route.thread_id,
+              input_event: await this.readSessionEvent(),
+            },
+          };
+        },
         readThread: async () => ({
           snapshot: {
             thread: {
@@ -779,6 +796,7 @@ test("普通聊天的 Agent 凭 Runtime 原始输入和 Platform 成员资格访
         route,
         async (actor, source) => {
           assert.deepEqual(source, {
+            kind: "input",
             projectId: "platform-only-project",
             inputId: "chat-input",
           });
@@ -1667,6 +1685,24 @@ test("Host 用 Platform 事项准入验证后台 Agent，不从旧 workspace 猜
         platformAgentScope = resolve;
       },
       inputEvidenceReader: () => ({
+        async readThreadInputSource(
+          sessionId: string,
+          threadId: string,
+          principalId?: string,
+        ) {
+          assert.equal(sessionId, route.session_id);
+          assert.equal(threadId, route.thread_id);
+          assert.equal(principalId, route.principal_id);
+          return {
+            thread: (await this.readThread()).snapshot.thread,
+            source: {
+              kind: "schedule",
+              schedule_id: admission.request.id,
+              source_turn_id: rootId,
+              root_thread_id: route.thread_id,
+            },
+          };
+        },
         readThread: async () => ({
           snapshot: {
             thread: {
@@ -1700,6 +1736,7 @@ test("Host 用 Platform 事项准入验证后台 Agent，不从旧 workspace 猜
     });
     await bound.authority.withInvocation(route, async (actor, scope) => {
       assert.deepEqual(scope, {
+        kind: "task-run",
         projectId: "task-agent-project",
         inputId: null,
       });

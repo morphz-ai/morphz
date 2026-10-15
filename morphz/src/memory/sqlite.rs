@@ -94,6 +94,7 @@ mod custom;
 mod harness_retention;
 mod objective_approval_wait;
 mod plan_execution;
+mod terminal;
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -2120,6 +2121,7 @@ impl SqliteStore {
         migrate_principal_context_encounters(&pool).await?;
         migrate_attention_acknowledgements(&pool).await?;
         custom::migrate(&pool).await?;
+        terminal::migrate(&pool).await?;
         backfill_objective_wait_dependencies(&pool).await?;
         sqlx::query(super::activation_approval_wait::TABLE)
             .execute(&pool)

@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import type { HostFailureReporter } from "./host-diagnostics.js";
 import { objectiveWaitKinds } from "./objective-wait-projection.js";
+import {
+  terminalCatalogSchema,
+  terminalViewSchema,
+  terminalRecordSchema,
+} from "../../core/src/terminal.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
@@ -2646,6 +2651,96 @@ export class RuntimeBridge {
     };
     return {
       snapshot,
+      terminals: async () => {
+        const pages = [];
+        for (const entry of controls) {
+          const roots = [...entry.roots];
+          for (let offset = 0; offset < roots.length; offset += 250) {
+            const query = new URLSearchParams({
+              root_ids: JSON.stringify(roots.slice(offset, offset + 250)),
+              limit: "50",
+            });
+            const page = terminalCatalogSchema.parse(
+              await request(
+                `/api/sessions/${encodeURIComponent(entry.sessionId)}/terminals?${query}`,
+              ),
+            );
+            if (
+              page.terminals.some(
+                (t) =>
+                  t.session_id !== entry.sessionId ||
+                  t.context_id !== entry.contextId ||
+                  !entry.roots.has(t.root_turn_id),
+              )
+            )
+              throw new DomainError(
+                "forbidden",
+                "终端来源不属于当前工作对话。",
+              );
+            pages.push(page);
+          }
+        }
+        await recheck();
+        const live = (status: string) =>
+          status === "open" || status === "starting" ? 0 : 1;
+        const terminals = [
+          ...new Map(
+            pages.flatMap((p) => p.terminals).map((t) => [t.id, t]),
+          ).values(),
+        ].sort(
+          (a, b) =>
+            live(a.status) - live(b.status) ||
+            b.created_at.localeCompare(a.created_at) ||
+            b.id.localeCompare(a.id),
+        );
+        return {
+          terminals: terminals.slice(0, 50),
+          limit: 50,
+          has_more: terminals.length > 50 || pages.some((p) => p.has_more),
+        };
+      },
+      terminal: async (terminalId: string, scrollback: number) => {
+        await recheck();
+        for (const entry of controls) {
+          let source;
+          try {
+            source = z
+              .object({ terminal: terminalRecordSchema })
+              .parse(
+                await request(
+                  `/api/sessions/${encodeURIComponent(entry.sessionId)}/terminals/${encodeURIComponent(terminalId)}?metadata_only=true`,
+                ),
+              ).terminal;
+          } catch (error) {
+            if (error instanceof DomainError && error.code === "conflict")
+              continue;
+            throw error;
+          }
+          if (
+            source.session_id !== entry.sessionId ||
+            source.context_id !== entry.contextId ||
+            !entry.roots.has(source.root_turn_id)
+          )
+            continue;
+          const view = terminalViewSchema.parse(
+            await request(
+              `/api/sessions/${encodeURIComponent(entry.sessionId)}/terminals/${encodeURIComponent(terminalId)}?scrollback=${scrollback}`,
+            ),
+          );
+          if (
+            view.terminal.id !== source.id ||
+            view.terminal.source_job_id !== source.source_job_id ||
+            view.terminal.root_turn_id !== source.root_turn_id ||
+            view.terminal.session_id !== source.session_id ||
+            view.terminal.context_id !== source.context_id ||
+            view.terminal.principal_id !== source.principal_id
+          )
+            throw new DomainError("forbidden", "终端来源已变化。");
+          await recheck();
+          return view;
+        }
+        throw new DomainError("not_found", "终端不属于当前获授权的工作。");
+      },
       result: async (jobId: string) => {
         const result = await (await viewerFor({ jobId })).result(scope, jobId);
         await recheck();

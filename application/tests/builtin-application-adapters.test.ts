@@ -576,15 +576,20 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    context.after(async () => {
+      // Close clients before Vite: a failed cold navigation must not leave
+      // sockets alive while the earlier FIFO after-hook waits for the server.
+      await browser?.close();
+      await server.close();
+    });
     await server.listen();
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
     const pages: Page[] = [],
       errors: string[] = [],
       requests: string[] = [],
@@ -594,9 +599,11 @@ test(
       const session = await browser.newContext({
         viewport: { width: 1280, height: 900 },
       });
-      context.after(() => session.close());
       const page = await session.newPage();
       page.setDefaultTimeout(5000);
+      // Cold Vite compilation is fixture setup, not the interaction deadline.
+      // Preserve the 5s behavioral assertions while allowing bounded startup.
+      page.setDefaultNavigationTimeout(30_000);
       page.on("pageerror", (error) => errors.push(lane + ":" + error.message));
       page.on("request", (req) => {
         if (

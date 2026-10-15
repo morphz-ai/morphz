@@ -66,7 +66,7 @@ const domains = [
 export type EmbeddedApplicationInstanceIds = Record<
   (typeof domains)[number]["kind"],
   string
->;
+> & { terminal: string };
 
 function ids(binding: Binding): EmbeddedApplicationInstanceIds {
   const pair = [binding.objects, binding.scriptStudio];
@@ -80,6 +80,10 @@ function ids(binding: Binding): EmbeddedApplicationInstanceIds {
     scriptStudio: binding.scriptStudio,
     reader: derived("reader"),
     browser: derived("browser"),
+    terminal: `terminal_${createHash("sha256")
+      .update(JSON.stringify([...pair, "terminal"]))
+      .digest("hex")
+      .slice(0, 32)}`,
   };
 }
 

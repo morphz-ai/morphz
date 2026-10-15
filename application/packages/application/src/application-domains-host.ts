@@ -130,6 +130,7 @@ export function postgresApplicationInstanceIds(
     scriptStudio: identity("script-studio", "script"),
     reader: identity("reader", "reader"),
     browser: identity("browser", "browser"),
+    terminal: identity("terminal", "terminal"),
   };
 }
 
@@ -831,6 +832,7 @@ export async function openApplicationDomainsHost(
       ? await postgresApplicationBindings(privatePostgres, tenantId)
       : null;
     registeredRoutes = {
+      terminal: `runtime:${instanceIds.terminal}`,
       objects: privateBindings
         ? `postgres:${instanceIds.objects}:${privateBindings.objects}`
         : `embedded:${instanceIds.objects}`,
@@ -875,6 +877,15 @@ export async function openApplicationDomainsHost(
       instanceId: instanceIds.browser,
       routeKind: "service",
       routeRef: registeredRoutes.browser,
+    });
+    // Terminal originals are Runtime resources, not another private content
+    // database. This stable instance supplies only the builtin view route.
+    await platform.registerApplication(tenantId, {
+      appId: "morphz.terminal",
+      installationId: "install_morphz_terminal",
+      instanceId: instanceIds.terminal,
+      routeKind: "service",
+      routeRef: `runtime:${instanceIds.terminal}`,
     });
     await recoverEmbeddedDirectory({
       tenantId,

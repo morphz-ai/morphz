@@ -3,6 +3,13 @@ import type { ApplicationCatalogEntry } from "../../../packages/core/src/applica
 /** Application identity is independent of the host's selected accent palette.
  * An installed author's own image always takes precedence over bundled art. */
 export const applicationIdentities = {
+  terminal: {
+    id: "morphz.terminal",
+    view: "terminal",
+    field: ["#4b596b", "#273342"],
+    foreground: ["#ffffff", "#cbd9e8"],
+    symbol: ["#4b596b", "#a4b8cf"],
+  },
   browser: {
     id: "morphz.browser",
     view: "browser",

@@ -24,6 +24,11 @@ test("Runtime launcher exposes only the canonical development credential binding
   );
   assert.match(launcher, /MORPHZ_APP_DEVELOPMENT_MODEL_KEY: key/);
   assert.doesNotMatch(launcher, /MORPHZWORK_DEVELOPMENT_MODEL_KEY/);
+  assert.match(
+    launcher,
+    /process\.env\.MORPHZ_EVAL_CALLABLE_TOOLS\s*\?\?\s*"read,write,edit,list_files,search,exec,transfer,terminal,host_morphz"/,
+    "the first-party default includes Terminal without overriding an explicit deployment gate",
+  );
 });
 
 test("Runtime launcher accepts the Host manifest budget without loosening private configuration checks", () => {

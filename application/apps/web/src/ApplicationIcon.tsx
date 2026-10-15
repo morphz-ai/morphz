@@ -1,5 +1,13 @@
 import { useId } from "react";
-import { BookOpen, Braces, FileText, Film, Globe, Layers2 } from "lucide-react";
+import {
+  BookOpen,
+  Braces,
+  FileText,
+  Film,
+  Globe,
+  Layers2,
+  SquareTerminal,
+} from "lucide-react";
 import type { ApplicationCatalogEntry } from "../../../packages/core/src/applications.js";
 import {
   applicationIdentities,
@@ -67,7 +75,22 @@ function ApplicationEmblem({ identity }: { identity: ApplicationIdentity }) {
         </linearGradient>
       </defs>
       <rect width="64" height="64" rx="16" fill={`url(#${field})`} />
-      {identity === "browser" ? (
+      {identity === "terminal" ? (
+        <>
+          <path
+            d="m15 21 4-4 15 15-15 15-4-4 11-11Z"
+            fill={palette.foreground[0]}
+          />
+          <rect
+            x="35"
+            y="41"
+            width="14"
+            height="5"
+            rx="2.5"
+            fill={palette.foreground[1]}
+          />
+        </>
+      ) : identity === "browser" ? (
         <>
           <circle cx="32" cy="32" r="21" fill={palette.foreground[0]} />
           <path d="M43.5 20.5 35.5 35.5 28.5 28.5Z" fill={palette.field[1]} />
@@ -173,6 +196,7 @@ export function ApplicationImage({
     code: Braces,
     book: BookOpen,
     film: Film,
+    terminal: SquareTerminal,
   }[app.icon];
   return <Icon aria-hidden />;
 }

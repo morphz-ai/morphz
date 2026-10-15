@@ -1656,7 +1656,12 @@ test("冷启动只读目录；多个已打开原件使用全局并发上限", as
   assert.equal(cold.catalog.contents.length, 24);
   assert.deepEqual(
     cold.workspace.applications.map((application) => application.id).sort(),
-    ["morphz.browser", "morphz.reader", "morphz.script-studio"],
+    [
+      "morphz.browser",
+      "morphz.reader",
+      "morphz.script-studio",
+      "morphz.terminal",
+    ],
     "The content catalog is navigation, not another launchable application",
   );
   assert.deepEqual(

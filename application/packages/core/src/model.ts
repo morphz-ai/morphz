@@ -42,6 +42,7 @@ import {
   applicationStateSchema,
   objectsApplication,
   browserApplication,
+  terminalApplication,
   scriptStudioApplication,
   readerApplication,
 } from "./applications.js";
@@ -198,6 +199,7 @@ export const inputApplicationSchema = z
     id: z.string(),
     version: z.string(),
     harness: z.object({ id: z.string(), version: z.string() }).nullable(),
+    terminalId: id.nullable().optional(),
   })
   .strict();
 const versionSchema = z
@@ -689,6 +691,7 @@ export const operationSchema = z.discriminatedUnion("type", [
         .object({
           id: z.string().regex(/^[a-z][a-z0-9.-]{2,80}$/),
           version: z.string().regex(/^\d+\.\d+\.\d+$/),
+          terminalId: id.nullable().optional(),
         })
         .strict()
         .optional(),
@@ -895,6 +898,11 @@ export function applicationFor(
   version: string,
   principalId?: string,
 ) {
+  if (
+    applicationId === terminalApplication.id &&
+    version === terminalApplication.version
+  )
+    return terminalApplication;
   if (
     applicationId === readerApplication.id &&
     version === readerApplication.version

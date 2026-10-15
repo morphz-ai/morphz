@@ -7,6 +7,7 @@ import {
 } from "../apps/web/src/application-dock-model.js";
 import {
   browserApplication,
+  terminalApplication,
   readerApplication,
   scriptStudioApplication,
   applicationInstanceSchema,
@@ -72,6 +73,7 @@ test("Dock目录保留真实内置应用，安装包只匹配当前身份", () =
       browserApplication,
       readerApplication,
       scriptStudioApplication,
+      terminalApplication,
       installed("test.mine"),
     ].map(applicationKey),
   );

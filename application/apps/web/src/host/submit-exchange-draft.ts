@@ -34,7 +34,12 @@ export type ExchangeSubmissionContext = {
   firstConversation: ConversationDraft | undefined;
   artifact: Pick<Artifact, "id" | "revision"> | undefined;
   activeInstance:
-    { applicationId: string; applicationVersion: string } | undefined;
+    | {
+        applicationId: string;
+        applicationVersion: string;
+        state?: Record<string, unknown>;
+      }
+    | undefined;
   browserPage: RecordInput["browser"] | null;
   readingExpected: boolean;
   currentReading: ReadingSurface | null;
@@ -337,6 +342,14 @@ export async function submitExchangeDraft(
                 application: {
                   id: activeInstance.applicationId,
                   version: activeInstance.applicationVersion,
+                  ...(activeInstance.applicationId === "morphz.terminal"
+                    ? {
+                        terminalId:
+                          typeof activeInstance.state?.terminalId === "string"
+                            ? activeInstance.state.terminalId
+                            : null,
+                      }
+                    : {}),
                 },
               }
             : {}),

@@ -1,5 +1,6 @@
 import {
   browserApplication,
+  terminalApplication,
   readerApplication,
   scriptStudioApplication,
   type ApplicationCatalogEntry,
@@ -19,6 +20,7 @@ export function authorizedApplications(
     browserApplication,
     readerApplication,
     scriptStudioApplication,
+    terminalApplication,
   ];
   const builtinKeys = new Set(builtins.map(applicationKey));
   const instances = state.applicationInstances.filter(

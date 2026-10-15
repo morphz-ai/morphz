@@ -17,7 +17,15 @@ export const applicationManifestSchema = z
     version: z.string().regex(/^\d+\.\d+\.\d+$/),
     title: name,
     description: z.string().max(500),
-    icon: z.enum(["layers", "document", "globe", "code", "book", "film"]),
+    icon: z.enum([
+      "layers",
+      "document",
+      "globe",
+      "code",
+      "book",
+      "film",
+      "terminal",
+    ]),
     iconImage: z
       .string()
       .max(180000)
@@ -31,7 +39,13 @@ export const applicationManifestSchema = z
       z
         .object({
           type: z.literal("builtin"),
-          view: z.enum(["objects", "browser", "script-studio", "reader"]),
+          view: z.enum([
+            "objects",
+            "browser",
+            "script-studio",
+            "reader",
+            "terminal",
+          ]),
           presentation: z.enum(["workspace", "immersive"]).optional(),
         })
         .strict(),
@@ -137,11 +151,13 @@ const externalViewStateSchema = z
 export function parseApplicationViewState(appId: string, value: unknown) {
   const bounded = applicationStateSchema.parse(value);
   const schema =
-    appId === "morphz.script-studio"
-      ? builtinViewStateSchema
-      : appId.startsWith("morphz.")
-        ? nonScriptBuiltinViewStateSchema
-        : externalViewStateSchema;
+    appId === "morphz.terminal"
+      ? z.object({ terminalId: locationId.nullable().optional() }).strict()
+      : appId === "morphz.script-studio"
+        ? builtinViewStateSchema
+        : appId.startsWith("morphz.")
+          ? nonScriptBuiltinViewStateSchema
+          : externalViewStateSchema;
   return schema.parse(bounded);
 }
 export const applicationInstanceSchema = z
@@ -180,6 +196,18 @@ export const browserApplication: ApplicationManifest = {
   permissions: ["input.compose"],
   harness: null,
   ui: { type: "builtin", view: "browser", presentation: "workspace" },
+};
+
+export const terminalApplication: ApplicationManifest = {
+  format: applicationManifestFormat,
+  id: "morphz.terminal",
+  version: "1.0.0",
+  title: "Terminal",
+  description: "让 Morphz 操作内置终端，查看真实命令、输出与会话状态。",
+  icon: "terminal",
+  permissions: ["input.compose"],
+  harness: null,
+  ui: { type: "builtin", view: "terminal", presentation: "workspace" },
 };
 
 export const readerApplication: ApplicationManifest = {

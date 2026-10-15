@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   browserApplication,
+  terminalApplication,
   readerApplication,
   scriptStudioApplication,
   objectsApplication,
@@ -21,6 +22,7 @@ const builtins = [
   browserApplication,
   readerApplication,
   scriptStudioApplication,
+  terminalApplication,
 ];
 
 function artworkWithoutInstanceIds(markup: string) {
@@ -39,7 +41,7 @@ test("bundled applications have separate identities independent of host accents"
   assert.equal(
     new Set(Object.values(applicationIdentities).map((x) => x.field.join()))
       .size,
-    3,
+    4,
   );
 });
 
@@ -161,7 +163,7 @@ test("simultaneous repeated emblems have unique paint servers and valid referenc
   );
   const ids = [...markup.matchAll(/ id="([^"]+)"/g)].map((x) => x[1]);
   const refs = [...markup.matchAll(/url\(#([^)]+)\)/g)].map((x) => x[1]);
-  assert.equal(ids.length, 12);
+  assert.equal(ids.length, builtins.length * 4);
   assert.equal(refs.length, ids.length);
   assert.equal(new Set(ids).size, ids.length);
   for (const ref of refs) assert.ok(ids.includes(ref));
@@ -169,6 +171,7 @@ test("simultaneous repeated emblems have unique paint servers and valid referenc
 
 test("bundled images use fresh independent fields and simple opaque foregrounds", () => {
   const fields = {
+    terminal: ["#4b596b", "#273342"],
     browser: ["#268bff", "#1655dd"],
     reader: ["#ffab45", "#f9792d"],
     studio: ["#a06cff", "#7050e8"],
@@ -193,7 +196,7 @@ test("bundled images use fresh independent fields and simple opaque foregrounds"
         .join(),
     );
   }
-  assert.equal(shapes.size, 3);
+  assert.equal(shapes.size, builtins.length);
 });
 
 test("unknown application keeps its existing semantic symbol", () => {
@@ -249,7 +252,7 @@ test("repeated launchers own their paint IDs without colliding with app images",
     ),
   );
   const ids = [...markup.matchAll(/ id="([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(ids.length, 7);
+  assert.equal(ids.length, 4 + builtins.length);
   assert.equal(new Set(ids).size, ids.length);
   for (const svg of markup.matchAll(/<svg\b[^>]*>[\s\S]*?<\/svg>/g)) {
     const localIds = [...svg[0].matchAll(/ id="([^"]+)"/g)].map(
