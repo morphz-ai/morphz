@@ -59,7 +59,7 @@ jobs:
       - run: npx playwright install --with-deps chrome
       # Native macOS cases explicitly skip here and run in the Desktop job.
       - run: npm run test:e2e
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: application-web-failures
@@ -155,7 +155,7 @@ jobs:
         run: npm run test:reader-ocr -- "$RUNNER_TEMP/reader-ocr-models"
       - name: Reader repeated navigation and OCR resource cleanup
         run: npm run test:reader-stability -- "$RUNNER_TEMP/reader-ocr-models"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: reader-desktop-regression
@@ -166,7 +166,7 @@ jobs:
             application/test-results/morphz-embedded-electron-*/reader-ocr-*.png
           if-no-files-found: ignore
           retention-days: 7
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: application-desktop-failures
@@ -213,7 +213,7 @@ jobs:
       # Only the gate's bounded, redacted text/summary; never fixture databases,
       # private bindings, provider request bodies or the user's profile.
       # Cancellation attempts finalization; runner loss may leave only running.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
           name: cognitive-runtime-contract-evidence
@@ -281,7 +281,7 @@ jobs:
           npm --prefix application run test:script-recovery
       # IPC publishes only synthetic, sanitized causal/terminal diagnostics.
       # Runner loss may prevent this upload; missing evidence is not success.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() && (failure() || cancelled()) }}
         with:
           name: runtime-contract-failure-evidence
