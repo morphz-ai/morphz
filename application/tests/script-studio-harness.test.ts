@@ -84,7 +84,7 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
   );
   assert.deepEqual(scriptStudioApplication.harness, {
     id: "morphz.script-studio",
-    version: "2.1.0",
+    version: "2.2.0",
   });
   assert.equal(
     createHash("sha256")
@@ -112,8 +112,8 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
       .digest("hex"),
     "31118476c3dedef7c95a18d2b1545b9c8ed749f7fca113e1258fe8c941246aaa",
   );
-  assert.match(source, /\(version "2\.1\.0"\)/);
-  assert.match(source, /\(entry-result reply\)/);
+  assert.match(source, /\(version "2\.2\.0"\)/);
+  assert.doesNotMatch(source, /\(entry-result\b/);
   for (const [version, hash] of [
     [
       "1.4.0",
@@ -234,7 +234,7 @@ test("新正文报告原子写入与投影事实，旧输入保持候选兼容�
   assert.doesNotMatch(delivery, /已执行自审次数；ok=false/);
 });
 
-test("新输入绑定 2.1.0；历史请求和回执重试保留原 Harness 版本", async () => {
+test("新输入绑定 2.2.0；历史请求和回执重试保留原 Harness 版本", async () => {
   const f = await platformRuntimeHostFixture();
   try {
     const command = {

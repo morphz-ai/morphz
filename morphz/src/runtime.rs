@@ -14177,19 +14177,30 @@ mod tests {
         observed_plan_result: Arc<AtomicBool>,
     }
 
-    struct HarnessEntryClient {
-        calls: AtomicU64,
-        objective_id: String,
-        observed_entry_result: Arc<AtomicBool>,
-    }
-
-    struct OrdinaryHarnessEntryClient {
-        calls: AtomicU64,
-        observed_entry_result: Arc<AtomicBool>,
-    }
-
     struct SingleHarnessReplyClient {
         calls: AtomicU64,
+    }
+
+    struct TypedHarnessStringClient {
+        calls: AtomicU64,
+    }
+
+    #[async_trait::async_trait]
+    impl Client for TypedHarnessStringClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            assert_eq!(
+                self.calls.fetch_add(1, Ordering::SeqCst),
+                0,
+                "a root result must not be inferred twice"
+            );
+            Ok(text_response(
+                serde_json::to_string("TEST typed root result").unwrap(),
+            ))
+        }
     }
 
     #[async_trait::async_trait]
@@ -16950,79 +16961,6 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Client for HarnessEntryClient {
-        async fn create_completion(
-            &self,
-            messages: Vec<Message>,
-            tools: Vec<ToolDefinition>,
-        ) -> Result<Response, RuntimeError> {
-            match self.calls.fetch_add(1, Ordering::SeqCst) {
-                0 => {
-                    assert!(tools.iter().any(|tool| tool.name == "objective_update"));
-                    assert!(messages
-                        .iter()
-                        .any(|message| message.content.contains("(entry (owner runtime)")));
-                    let observed = messages.iter().any(|message| {
-                        message.role == "tool"
-                            && message.content.contains("automatic-harness-entry-fixture")
-                    });
-                    self.observed_entry_result.store(observed, Ordering::SeqCst);
-                    if !observed {
-                        return Err(
-                            "Harness entry 的 Plan 结果没有回到 Objective Evaluation".into()
-                        );
-                    }
-                    Ok(Response {
-                        content: String::new(),
-                        tool_calls: vec![ToolCallRepr {
-                            id: "complete-harness-objective".to_string(),
-                            r#type: "function".to_string(),
-                            func_name: "objective_update".to_string(),
-                            arguments: json!({
-                                "objective_id": self.objective_id,
-                                "base_revision": objective_revision_from_messages(
-                                    &messages,
-                                    &self.objective_id
-                                ),
-                                "status": "completed",
-                                "reason": "Runtime 已自动执行 Harness entry",
-                                "evidence_refs": []
-                            })
-                            .to_string(),
-                        }],
-                    })
-                }
-                1 => Ok(text_response("automatic-harness-entry-complete")),
-                _ => Err("Harness entry 被重复求值".into()),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Client for OrdinaryHarnessEntryClient {
-        async fn create_completion(
-            &self,
-            messages: Vec<Message>,
-            _tools: Vec<ToolDefinition>,
-        ) -> Result<Response, RuntimeError> {
-            if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
-                return Err("普通 Evaluation 的 Harness entry 被重复求值".into());
-            }
-            assert!(messages
-                .iter()
-                .any(|message| message.content.contains("(entry (owner runtime)")));
-            let observed = messages.iter().any(|message| {
-                message.role == "tool" && message.content.contains("ordinary-harness-entry-fixture")
-            });
-            self.observed_entry_result.store(observed, Ordering::SeqCst);
-            if !observed {
-                return Err("Harness entry 的 Plan 结果没有回到普通 Evaluation".into());
-            }
-            Ok(text_response("ordinary-harness-entry-complete"))
-        }
-    }
-
-    #[async_trait::async_trait]
     impl Client for HarnessDiscoveryClient {
         async fn create_completion(
             &self,
@@ -17081,7 +17019,15 @@ mod tests {
                     if !observed {
                         return Err("自主选择的 Harness 没有挂载到 successor Evaluation".into());
                     }
-                    Ok(text_response("discovered-harness-complete"))
+                    assert!(
+                        messages.iter().any(|message| message
+                            .content
+                            .contains("(root-kind chat/infer_request)")),
+                        "a selected model-owned root uses the same typed invocation boundary"
+                    );
+                    Ok(text_response(
+                        serde_json::to_string("discovered-harness-complete").unwrap(),
+                    ))
                 }
                 _ => Err("Harness 自主发现产生了冗余模型求值".into()),
             }
@@ -20027,7 +19973,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bound_runtime_harness_entry_runs_once_before_objective_model_evaluation() {
+    async fn bound_runtime_harness_returns_without_a_model_rewrite_or_goal_completion() {
         let database = NamedTempFile::new().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let fixture_path = workspace.path().join("automatic-harness-entry.txt");
@@ -20047,7 +19993,9 @@ mod tests {
                     (mind (frame (id automatic/evidence)))
                     (eval
                       (requires (tools read))
-                      (call read (path {quoted_path})))
+                      (seq
+                        (bind evidence (call read (path {quoted_path})))
+                        "automatic-harness-entry-complete"))
                 "#
             ),
         )
@@ -20056,11 +20004,8 @@ mod tests {
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
         config.permissions.reviewer = ReviewerKind::Deny;
-        let observed_entry_result = Arc::new(AtomicBool::new(false));
-        let client = Arc::new(HarnessEntryClient {
+        let client = Arc::new(NoDeliveryModelClient {
             calls: AtomicU64::new(0),
-            objective_id: "objective-harness-entry".to_string(),
-            observed_entry_result: Arc::clone(&observed_entry_result),
         });
         let runtime = MorphzRuntime::builder(config, client.clone())
             .database_path(database.path().to_string_lossy())
@@ -20133,8 +20078,17 @@ mod tests {
             reply.payload.get("text").and_then(Value::as_str),
             Some("automatic-harness-entry-complete")
         );
-        assert!(observed_entry_result.load(Ordering::SeqCst));
-        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            runtime
+                .get_objective("objective-harness-entry")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ObjectiveStatus::Active,
+            "returning a reply settles an Evaluation, never implicitly completes its Objective"
+        );
         let plans = runtime
             .inner
             .store
@@ -20144,6 +20098,7 @@ mod tests {
                 objective_id: Some("objective-harness-entry".to_string()),
                 harness_id: Some("automatic".to_string()),
                 harness_version: Some("1.0.0".to_string()),
+                activation_id: reply.payload["activation_id"].as_str().map(str::to_owned),
                 include_terminal: true,
                 ..Default::default()
             })
@@ -20190,7 +20145,9 @@ mod tests {
                     (contract (identity "ordinary"))
                     (eval
                       (requires (tools read))
-                      (call read (path {quoted_path})))
+                      (seq
+                        (bind evidence (call read (path {quoted_path})))
+                        "ordinary-harness-entry-complete"))
                 "#
             ),
         )
@@ -20199,10 +20156,8 @@ mod tests {
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
         config.permissions.reviewer = ReviewerKind::Deny;
-        let observed_entry_result = Arc::new(AtomicBool::new(false));
-        let client = Arc::new(OrdinaryHarnessEntryClient {
+        let client = Arc::new(NoDeliveryModelClient {
             calls: AtomicU64::new(0),
-            observed_entry_result: Arc::clone(&observed_entry_result),
         });
         let runtime = MorphzRuntime::builder(config, client.clone())
             .database_path(database.path().to_string_lossy())
@@ -20250,8 +20205,7 @@ mod tests {
             reply.payload.get("text").and_then(Value::as_str),
             Some("ordinary-harness-entry-complete")
         );
-        assert!(observed_entry_result.load(Ordering::SeqCst));
-        assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 0);
         let bindings = runtime
             .query_events(QueryFilter {
                 context_id: Some(runtime.identity().context_id.clone()),
@@ -20271,7 +20225,7 @@ mod tests {
     async fn ordinary_harness_reply_publishes_once_without_a_second_model_call() {
         let database = NamedTempFile::new().unwrap();
         let package = HarnessPackage::from_source("single-reply.hns", r#"
-          (manifest (id single-reply) (version "1.0.0") (title "TEST single reply") (entry-result reply) (capabilities (tools)))
+          (manifest (id single-reply) (version "1.0.0") (title "TEST single reply") (capabilities (tools)))
           (contract (identity "TEST internal intent with authored reply"))
           (eval (requires (tools))
             (types (record Decision (execute Bool) (reply String)))
@@ -20318,7 +20272,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(reply.payload["text"], "TEST Harness 一次求值的最终回复");
-        assert!(reply.payload["harness_plan_id"].is_string());
+        assert!(reply.payload["program_execution_id"].is_string());
+        assert_eq!(reply.payload["result_source"]["path"], json!(["reply"]));
         let finished = runtime
             .session_thread_by_root(session.id(), &original.event_id)
             .await
@@ -20342,6 +20297,29 @@ mod tests {
         assert!(
             outputs.is_empty(),
             "internal JSON must not create a public snapshot"
+        );
+        let validations = runtime
+            .query_events(QueryFilter {
+                session_id: Some(session.id().into()),
+                topic: Some("runtime/inference_value".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(validations.len(), 1);
+        assert_eq!(validations[0].payload["validation"], "accepted");
+        assert_eq!(
+            validations[0].payload["inference_source"]["plan_execution_id"],
+            reply.payload["program_execution_id"]
+        );
+        assert_eq!(
+            runtime
+                .session_event_input(session.id(), &validations[0])
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            original.event_id
         );
         let internal = runtime
             .query_events(QueryFilter {
@@ -20367,6 +20345,84 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn both_harness_root_owners_return_one_typed_string_without_a_model_relay() {
+        for source in [
+            r#"(eval (requires (tools)) (infer (returns String) "Return the test string"))"#,
+            r#"(infer (requires (tools)) (returns String) "Return the test string")"#,
+        ] {
+            let database = NamedTempFile::new().unwrap();
+            let package = HarnessPackage::from_source("typed-root.hns", &format!(
+                "(manifest (id typed-root) (version \"1\") (title \"TEST typed root\") (capabilities (tools))) (contract (identity \"TEST\")) {source}"
+            )).unwrap();
+            let client = Arc::new(TypedHarnessStringClient {
+                calls: AtomicU64::new(0),
+            });
+            let runtime = MorphzRuntime::builder(AppConfig::default(), client.clone())
+                .database_path(database.path().to_string_lossy())
+                .harness_package(package)
+                .build()
+                .await
+                .unwrap();
+            runtime.start().await.unwrap();
+            let session = runtime
+                .ensure_session(NewSession {
+                    id: "test-typed-root".into(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    parent_session_id: None,
+                    title: "TEST typed root".into(),
+                    mount_kind: crate::memory::SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+            runtime.bind_default_principal(session.id()).await.unwrap();
+            let mut replies = runtime.subscribe("chat/reply", 8);
+            let receipt = session
+                .send_as_principal_with_harness(
+                    "TEST",
+                    "User-Test",
+                    runtime.identity().principal_id.clone(),
+                    Some("test-typed-root-input".into()),
+                    Some(crate::harness::ExactHarnessRef {
+                        id: "typed-root".into(),
+                        version: "1".into(),
+                    }),
+                )
+                .await
+                .unwrap();
+            let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                reply.payload["text"], "TEST typed root result",
+                "root source: {source}"
+            );
+            assert_eq!(reply.payload["result_source"]["path"], json!([]));
+            assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                runtime
+                    .session_thread_by_root(session.id(), &receipt.event_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .lifecycle,
+                crate::memory::ThreadLifecycle::Completed
+            );
+            let values = runtime
+                .query_events(QueryFilter {
+                    session_id: Some(session.id().into()),
+                    topic: Some("runtime/inference_value".into()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(values.len(), 1);
+            assert_eq!(values[0].payload["validation"], "accepted");
+        }
     }
 
     #[tokio::test]

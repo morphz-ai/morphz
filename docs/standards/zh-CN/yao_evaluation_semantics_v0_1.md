@@ -6,7 +6,7 @@
 >
 > 规范原文：[English](../yao_evaluation_semantics_v0_1.md)
 >
-> 最后更新：2026-09-20
+> 最后更新：2026-10-16
 
 ## 1. 范围
 
@@ -23,6 +23,25 @@ lowering、悬挂、持久化、恢复、失败、并行 join 与 Program Value 
 两者消费和产生相同 Yao Value。所有权只决定谁选择下一语义步骤，不改变 Value、Effect、
 Capability、因果身份和终态 Outcome 的含义。Runtime Control Loop 始终负责准入、能力
 结算、物理执行、持久化、恢复、审批、取消、Budget 和交付。
+
+### 2.1 返回值、尾位置与交付
+
+2026-10-16 返回与交付统一实施约束：每个调用都把带类型终值返回给其真实
+Continuation。`seq` 最后一项与尾位置 `if`/`match` 的选中分支传递同一返回地址；
+函数、`infer` 与 `run` 不因其语法根或结果为 String 而取得对外投递权。
+根 Evaluation 消费其根程序结果，内部计算则恢复原调用方。Harness 根入口是根程序，
+不是一份必须再由外层模型解释的工具草稿。结果结算不读取包级交付开关。
+Model-owned Harness 根同样沿持久调用委派其完整 body，并使用同一类型化结果契约。
+
+可见性独立于尾位置。获授权的 `infer` 输出可以投影为独立“求值结果”消息，
+真实文本增量是尚未校验的展示草稿，不是已经通过类型检查的终值，不解除父级等待，
+不代表 Thread 或 Objective 完成。结构化值必须按类型呈现，不能把传输 JSON、
+隐藏推理或模型请求展示成普通回复。源 Event、精确调用身份和授权仍是权威。
+
+持久化继续使用 Runtime Event 与可重建 Session 时间线，不新建消息业务库；
+展示索引仅存原 Event ID、因果身份和有界分页键。现有 SQLite/PostgreSQL 索引、
+原子追加、取消/generation fence、原始 Plan/Thread/Session 身份和历史数据保持不变。
+新消息类型是投影，不反向写入用户输入，不重新派发工具或模型。
 
 ## 3. 编译流水线
 

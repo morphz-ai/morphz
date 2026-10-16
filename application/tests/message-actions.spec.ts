@@ -75,7 +75,9 @@ test("已完成的人类消息不为隐藏操作留出空行，悬停操作在�
       expect(actions.x + actions.width).toBeLessThanOrEqual(
         column.x + column.width + 1,
       );
-      await message.locator(".message-copy").focus();
+      await message
+        .getByRole("button", { name: "复制消息", exact: true })
+        .focus();
       await page.mouse.move(0, 0);
       await expect(message.locator(".message-peek")).toHaveCSS("opacity", "1");
     }
@@ -134,9 +136,13 @@ test("消息隐藏重复身份，时间与复制按悬停和键盘焦点显示�
   await page.mouse.move(0, 0);
   await page.getByLabel("AI 输入内容").focus();
   await expect(actions).toHaveCSS("opacity", "0");
-  await message.locator(".message-copy").focus();
+  await message
+    .getByRole("button", { name: "已复制消息", exact: true })
+    .focus();
   await expect(actions).toHaveCSS("opacity", "1");
-  await message.locator(".message-copy").press("Enter");
+  await message
+    .getByRole("button", { name: "已复制消息", exact: true })
+    .press("Enter");
   await expect
     .poll(() => page.evaluate(() => (window as any).__copied))
     .toBe(body);
@@ -146,7 +152,9 @@ test("消息隐藏重复身份，时间与复制按悬停和键盘焦点显示�
     };
     document.execCommand = () => false;
   });
-  await message.locator(".message-copy").click();
+  await message
+    .getByRole("button", { name: /^(已复制消息|复制消息)$/ })
+    .click();
   await expect(message.getByRole("alert")).toContainText("复制失败");
   await page.evaluate(() => {
     document.execCommand = () => {
@@ -156,10 +164,12 @@ test("消息隐藏重复身份，时间与复制按悬停和键盘焦点显示�
       return true;
     };
   });
-  await message.locator(".message-copy").click();
+  await message.getByRole("button", { name: "复制消息", exact: true }).click();
   await expect
     .poll(() => page.evaluate(() => (window as any).__fallbackCopied))
     .toBe(body);
   await expect(message.getByRole("alert")).toHaveCount(0);
-  await expect(message.locator(".message-copy")).toBeFocused();
+  await expect(
+    message.getByRole("button", { name: "已复制消息", exact: true }),
+  ).toBeFocused();
 });

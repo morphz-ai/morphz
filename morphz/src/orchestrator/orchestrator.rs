@@ -834,9 +834,9 @@ fn harness_relay_tool_scope(
     model_scope: Option<HashSet<String>>,
 ) -> Option<HashSet<String>> {
     if owner == Some(crate::sexpr_eval::EvaluationOwner::Runtime) && executor_kind != "plan_infer" {
-        // The Runtime dispatches the admitted entry itself. Once it completes,
-        // a model may explain the result, not start an unplanned second loop.
-        // Child inference gets its own statically derived scope below.
+        // Runtime-owned roots settle directly. Historical admission-failure
+        // recovery may still reach a model, but cannot start a second domain
+        // loop. Child inference keeps its statically derived scope below.
         // Objective lifecycle settlement remains necessary even after the
         // entry returns. Existing Objective admission still checks identity,
         // generation and evidence; it does not grant domain work tools.
@@ -1923,6 +1923,8 @@ struct ActivationRoute {
     /// Events that continue an internal Plan infer Thread must not queue
     /// behind the parent handler that is synchronously waiting for that Plan.
     internal_child_handoff: bool,
+    /// Trusted infer call identity copied from its persisted request.
+    inference_source: Option<serde_json::Value>,
     /// Immutable completion batch that caused a Delivery Activation.  A
     /// reply must only acknowledge results present in this trigger snapshot;
     /// results arriving while the model is running belong to a later
@@ -3588,12 +3590,9 @@ async fn persist_model_public_output(
     accumulator: &Arc<Mutex<ModelReasoningSummaryAccumulator>>,
     force_incomplete: bool,
 ) -> Result<(), DynError> {
-    if route
+    let evaluation_output = route
         .iter()
-        .any(|(key, value)| key == "model_output_visibility" && value.as_str() == Some("internal"))
-    {
-        return Ok(());
-    }
+        .any(|(key, value)| key == "model_output_visibility" && value.as_str() == Some("internal"));
     const MAX_BYTES: usize = 256 * 1024;
     let (text, first_visible_at, complete, truncated) = {
         let mut accumulator = accumulator.lock().await;
@@ -3625,11 +3624,16 @@ async fn persist_model_public_output(
         ("truncated".to_string(), json!(truncated)),
     ];
     payload.extend_from_slice(route);
+    let output_kind = if evaluation_output {
+        "model_evaluation_output"
+    } else {
+        "model_public_output"
+    };
     let event = Event::new(
-        format!("model_public_output_{attempt_id}"),
+        format!("{output_kind}_{attempt_id}"),
         "Model-Provider".to_string(),
         "runtime_control".to_string(),
-        "runtime/model_public_output".to_string(),
+        format!("runtime/{output_kind}"),
         payload.into_iter().collect(),
     );
     if let Err(error) = bus.publish(event).await {
@@ -12945,6 +12949,17 @@ impl Orchestrator {
                 context_token_budget: None,
                 thread_kind,
                 internal_child_handoff: thread.executor_kind == "plan_infer",
+                inference_source: if thread.executor_kind == "plan_infer" {
+                    root_event.as_ref().and_then(|root| {
+                        Some(json!({
+                            "plan_execution_id": root.payload.get("plan_execution_id")?.as_str()?,
+                            "effect_sequence": root.payload.get("plan_effect_sequence")?.as_u64()?,
+                            "result_kind": root.payload.get("result_kind"),
+                        }))
+                    })
+                } else {
+                    None
+                },
                 delivery_thread_ids,
             },
         );
@@ -13633,27 +13648,24 @@ impl Orchestrator {
                 return Ok(());
             }
         }
-        // A Runtime-owned Harness entry is the root program for the current
+        // A bound Harness entry is the root program for the current
         // Evaluation. A `plan_infer` Thread is already a child node of that
         // program: re-dispatching the mounted entry here would short-circuit
         // the child model evaluation (the entry call is idempotently already
         // present) and leave the parent Plan without an infer result Event.
         if should_dispatch_runtime_harness_entry(&thread.executor_kind, &effective_phase) {
-            if let (Some((binding, harness, _)), Some((source, program))) =
+            if let (Some((binding, _, _)), Some((_, program))) =
                 (harness_activation.as_ref(), harness_entry_program.as_ref())
             {
-                if program.owner() == crate::sexpr_eval::EvaluationOwner::Runtime
-                    && self
-                        .dispatch_runtime_harness_entry(
-                            session_id,
-                            activation,
-                            binding,
-                            source,
-                            program,
-                            harness.publishes_entry_result(),
-                            harness_function_sources.clone(),
-                        )
-                        .await?
+                if self
+                    .evaluate_harness_root_program(
+                        session_id,
+                        activation,
+                        &thread,
+                        binding,
+                        program,
+                    )
+                    .await?
                 {
                     return Ok(());
                 }
@@ -15276,47 +15288,13 @@ impl Orchestrator {
                 },
             )
             .await?;
-            let direct_interactive_execution = thread_kind == "execution"
-                && self
-                    .execution_result_is_interactive(&thread, activation)
-                    .await?;
-            // The Objective Supervisor's stable primary lane is an Execution
-            // Thread, but its finite Evaluation outcome is still the
-            // Objective's direct delivery boundary.  Only explicitly spawned
-            // Objective work branches (`origin_evaluation_id = Some`) enter
-            // the asynchronous Thread-result/Delivery aggregator.  Treating
-            // every Objective-supervised Execution as a detached work result
-            // would lose the Evaluation route, leave its lease open, and make
-            // the eventual Delivery reply look unrelated to the Objective.
-            let objective_primary_execution = thread_kind == "execution"
-                && thread.supervision.supervisor_kind
-                    == crate::memory::ThreadSupervisorKind::Objective
-                && thread.supervision.origin_evaluation_id.is_none();
             let result = match decision {
                 TerminalDecision::Deliver(content) => {
-                    if thread.executor_kind == "plan_infer"
-                        || (thread_kind == "execution"
-                            && !direct_interactive_execution
-                            && !objective_primary_execution)
-                    {
-                        self.publish_thread_result(
-                            session_id,
-                            &attempt_id,
-                            &terminal_model_attempt_id,
-                            &thread,
-                            content,
-                        )
-                        .await
-                    } else {
-                        self.publish_reply_for_model_attempt(
-                            session_id,
-                            &attempt_id,
-                            Some(&terminal_model_attempt_id),
-                            content,
-                            context.parent_session_id.as_deref(),
-                        )
-                        .await
-                    }
+                    self.publish_evaluation_result(
+                        session_id, activation, &thread,
+                        Some(&terminal_model_attempt_id), content,
+                        context.parent_session_id.as_deref(), Vec::new(),
+                    ).await
                 }
                 TerminalDecision::NoReply(_) => {
                     self.publish_no_reply(
@@ -16288,13 +16266,60 @@ impl Orchestrator {
         Ok(())
     }
 
+    /// Both evaluators return through this boundary. A child returns to its
+    /// caller, a detached Thread enters Delivery, and an interactive/root
+    /// Evaluation answers its bound Session. This does not complete an Objective.
+    #[allow(clippy::too_many_arguments)]
+    async fn publish_evaluation_result(
+        &self,
+        session_id: &str,
+        activation: &ThreadActivationRecord,
+        thread: &ThreadRecord,
+        model_attempt_id: Option<&str>,
+        content: String,
+        parent_session_id: Option<&str>,
+        attributes: Vec<(String, serde_json::Value)>,
+    ) -> Result<(), DynError> {
+        let execution = thread.kind == crate::memory::ThreadKind::Execution;
+        let interactive = execution
+            && self
+                .execution_result_is_interactive(thread, activation)
+                .await?;
+        let objective_primary = execution
+            && thread.supervision.supervisor_kind == crate::memory::ThreadSupervisorKind::Objective
+            && thread.supervision.origin_evaluation_id.is_none();
+        if thread.executor_kind == "plan_infer" || (execution && !interactive && !objective_primary)
+        {
+            self.publish_thread_result(
+                session_id,
+                &activation.id,
+                model_attempt_id,
+                thread,
+                content,
+                attributes,
+            )
+            .await
+        } else {
+            self.publish_reply_with_attributes(
+                session_id,
+                &activation.id,
+                model_attempt_id,
+                content,
+                parent_session_id,
+                attributes,
+            )
+            .await
+        }
+    }
+
     async fn publish_thread_result(
         &self,
         session_id: &str,
         attempt_id: &str,
-        model_attempt_id: &str,
+        model_attempt_id: Option<&str>,
         thread: &ThreadRecord,
         content: String,
+        attributes: Vec<(String, serde_json::Value)>,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let route = self.activation_route(attempt_id).ok_or_else(|| {
@@ -16312,7 +16337,6 @@ impl Orchestrator {
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
-            ("model_attempt_id".to_string(), json!(model_attempt_id)),
             (
                 "disposition".to_string(),
                 json!(if thread.executor_kind == "plan_infer" {
@@ -16323,6 +16347,10 @@ impl Orchestrator {
             ),
             ("text".to_string(), json!(content)),
         ];
+        if let Some(model_attempt_id) = model_attempt_id {
+            payload.push(("model_attempt_id".to_string(), json!(model_attempt_id)));
+        }
+        payload.extend(attributes);
         if thread.executor_kind == "plan_infer" {
             payload.push(("plan_execution_id".to_string(), json!(thread.executor_id)));
         }
@@ -21604,6 +21632,9 @@ impl Orchestrator {
         let Some(route) = self.activation_route(attempt_id) else {
             return;
         };
+        if let Some(source) = &route.inference_source {
+            payload.push(("inference_source".to_string(), source.clone()));
+        }
         payload.extend([
             ("thread_id".to_string(), json!(route.thread_id)),
             (
@@ -21890,34 +21921,25 @@ impl Orchestrator {
         Ok(Some((binding, harness, rendered)))
     }
 
-    /// Starts one Runtime-owned Harness entry through the same durable
-    /// `eval`/PlanExecution boundary used by an explicit model Function Call.
-    ///
-    /// The synthetic call ID is stable for the exact Evaluation and
-    /// package hash. A tool result creates the continuation Activation; that
-    /// continuation finds the terminal Plan without executing the entry again.
-    /// An explicit reply entry publishes its final String for ordinary inputs;
-    /// data entries and Objective control continue through the model.
-    async fn dispatch_runtime_harness_entry(
+    /// Evaluate this Evaluation's root program, not a synthetic model tool
+    /// call. Nested eval/infer/run still return to their actual caller. The
+    /// root returns to the same outcome boundary as a model-owned root.
+    /// Durable Plan identity and child hand-offs remain shared with eval.
+    async fn evaluate_harness_root_program(
         &self,
         session_id: &str,
         activation: &ThreadActivationRecord,
+        thread: &ThreadRecord,
         binding: &HarnessBinding,
-        source: &str,
         program: &crate::sexpr_eval::Program,
-        publishes_entry_result: bool,
-        harness_functions: Option<Arc<Vec<String>>>,
     ) -> Result<bool, DynError> {
-        if program.owner() != crate::sexpr_eval::EvaluationOwner::Runtime {
-            return Ok(false);
-        }
         let active = self
             .objective_evaluations
             .get_for_activation(&activation.id);
         let evaluation_id = binding
             .evaluation_id
             .as_deref()
-            .ok_or("Runtime-owned Harness entry is missing its Evaluation-binding identity")?;
+            .ok_or("Harness root is missing its Evaluation-binding identity")?;
         if let (Some(active), Some(bound_objective_id)) =
             (active.as_ref(), binding.objective_id.as_deref())
         {
@@ -21944,7 +21966,7 @@ impl Orchestrator {
         let store = self
             .plan_store
             .as_ref()
-            .ok_or("Runtime-owned Harness entry requires a PlanExecution Store")?;
+            .ok_or("Harness root requires a PlanExecution Store")?;
         let existing = store
             .list_plan_executions(PlanExecutionFilter {
                 context_id: Some(activation.context_id.clone()),
@@ -21960,92 +21982,67 @@ impl Orchestrator {
                 ..PlanExecutionFilter::default()
             })
             .await?;
-        if let Some(plan) = existing.first() {
-            if plan.status.is_terminal() {
-                // The entry's final String is already the authored reply. It
-                // is not a tool draft that needs another model paraphrase.
-                // Publish through the same generation/cancellation-fenced
-                // outcome commit; never expose intermediate infer values.
-                if publishes_entry_result
-                    && active.is_none()
-                    && plan.status == crate::memory::PlanExecutionStatus::Succeeded
-                    && self
-                        .context_engine
-                        .find_event(&activation.context_id, &activation.root_turn_id)
-                        .await?
-                        .as_ref()
-                        .is_some_and(crate::event::is_input_event)
-                {
-                    if let Some(text) = plan
-                        .result_json
-                        .as_ref()
-                        .and_then(serde_json::Value::as_str)
-                        .filter(|text| !text.trim().is_empty())
-                    {
-                        self.publish_reply_with_attributes(
-                            session_id,
-                            &activation.id,
-                            None,
-                            text.to_string(),
-                            None,
-                            vec![("harness_plan_id".to_string(), json!(plan.id))],
-                        )
-                        .await?;
-                        return Ok(true);
-                    }
-                    return Err("Harness entry-result reply must return a non-empty String".into());
-                }
-                return Ok(false);
+        // Recovery rejoins the already-admitted Plan; never create another
+        // Plan or replay input merely because its Activation was recovered.
+        let route = existing
+            .first()
+            .map(|plan| PlanExecutionRoute {
+                activation_id: plan.activation_id.clone(),
+                thread_id: plan.thread_id.clone(),
+                agent_id: plan.agent_id.clone(),
+                context_id: plan.context_id.clone(),
+                session_id: plan.session_id.clone(),
+                initiating_principal_id: plan.initiating_principal_id.clone(),
+                tool_call_id: plan.tool_call_id.clone(),
+                objective_id: plan.objective_id.clone(),
+                objective_evaluation_id: plan.objective_evaluation_id.clone(),
+            })
+            .unwrap_or_else(|| PlanExecutionRoute {
+                activation_id: activation.id.clone(),
+                thread_id: thread.id.clone(),
+                agent_id: thread.agent_id.clone(),
+                context_id: activation.context_id.clone(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: activation.initiating_principal_id.clone(),
+                tool_call_id,
+                objective_id: active.as_ref().map(|item| item.objective_id.clone()),
+                objective_evaluation_id: active.as_ref().map(|item| item.evaluation_id.clone()),
+            });
+        let plan_id = crate::plan_execution::deterministic_plan_execution_id(
+            &route.activation_id,
+            &route.tool_call_id,
+        )?;
+        let value = match Box::pin(self.execute_durable_plan(route, program.clone())).await {
+            Ok(value) => value,
+            Err(error) if error.downcast_ref::<DeferredPlanApproval>().is_some() => {
+                return Ok(true)
             }
-            tracing::debug!(
-                objective_id = ?active.as_ref().map(|item| item.objective_id.as_str()),
-                evaluation_id,
-                plan_id = %plan.id,
-                status = plan.status.as_str(),
-                event_code = "orchestrator.harness_entry.plan_active",
-                "Harness entry Plan is not terminal; current Activation will not start duplicate model evaluation"
-            );
-            return Ok(true);
-        }
-
-        let response = crate::llm::Response {
-            content: String::new(),
-            tool_calls: vec![crate::llm::ToolCallRepr {
-                id: tool_call_id,
-                r#type: "function".to_string(),
-                func_name: "eval".to_string(),
-                arguments: serde_json::to_string(&json!({
-                    "program": source,
-                }))?,
-            }],
+            Err(error) => return Err(error),
         };
-        tracing::info!(
-            objective_id = ?active.as_ref().map(|item| item.objective_id.as_str()),
-            evaluation_id,
-            harness = %format!("{}@{}", binding.harness_id, binding.harness_version),
-            event_code = "orchestrator.harness_entry.dispatched",
-            "Runtime automatically dispatched the bound Harness eval entry"
-        );
-        self.execute_tool_calls(
+        let text = value.as_str().filter(|text| !text.trim().is_empty())
+            .ok_or("The current text Evaluation requires a non-empty String result; Yao data values are not implicitly converted to replies")?;
+        let mut attributes = vec![("program_execution_id".to_string(), json!(plan_id))];
+        if let Some(plan) = store.get_plan_execution(&plan_id).await? {
+            let machine: crate::sexpr_eval::PlanMachine = serde_json::from_value(plan.state_json)?;
+            if let Some(source) = machine.result_provenance() {
+                attributes.push((
+                    "result_source".to_string(),
+                    json!({
+                        "plan_execution_id": plan_id,
+                        "effect_sequence": source.effect_sequence,
+                        "path": source.path,
+                    }),
+                ));
+            }
+        }
+        self.publish_evaluation_result(
             session_id,
-            &activation.id,
-            response,
-            "harness-entry",
-            ToolExecutionOptions {
-                response_annotation_bundle: None,
-                context_tx_allowed: false,
-                wake_on_output: true,
-                plan_execution_id: None,
-                continuation_tool_calls: None,
-                allowed_tool_names: HashSet::from(["eval".to_string()]),
-                record_assistant_call: true,
-                model_attempt_id: None,
-                provider_continuation: None,
-                prompt_cache_transport_seed: None,
-                context_view_manifest: None,
-                harness_functions,
-                harness_types: None,
-            },
+            activation,
+            thread,
+            None,
+            text.to_string(),
+            None,
+            attributes,
         )
         .await?;
         Ok(true)
@@ -26709,6 +26706,18 @@ mod tests {
                 })
             }),
         );
+        let evaluations = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let evaluation_capture = Arc::clone(&evaluations);
+        bus.subscribe_durable(
+            "runtime/model_evaluation_output".to_string(),
+            Arc::new(move |event| {
+                let capture = Arc::clone(&evaluation_capture);
+                Box::pin(async move {
+                    capture.lock().unwrap().push(event);
+                    Ok(())
+                })
+            }),
+        );
         let first_visible = Utc::now();
         let accumulator = Arc::new(Mutex::new(ModelReasoningSummaryAccumulator {
             text: "reasoning summary is not public output".to_string(),
@@ -26723,22 +26732,41 @@ mod tests {
             ("thread_id".to_string(), json!("thread-1")),
         ];
         let internal_route = vec![("model_output_visibility".to_string(), json!("internal"))];
+        let internal_accumulator = Arc::new(Mutex::new(ModelReasoningSummaryAccumulator {
+            text: "hidden reasoning must not become a result".to_string(),
+            public_text: "typed result candidate".to_string(),
+            public_text_started_at: Some(first_visible),
+            complete: true,
+            ..Default::default()
+        }));
         persist_model_public_output(
             &bus,
             "context-1",
             "session-1",
             "internal-attempt",
             &internal_route,
-            &accumulator,
+            &internal_accumulator,
             false,
         )
         .await
         .unwrap();
         assert!(
             captured.lock().unwrap().is_empty(),
-            "typed infer prose must not be persisted as public output"
+            "infer values are not ordinary assistant replies"
         );
-        assert!(!accumulator.lock().await.public_text_persist_started);
+        assert!(
+            internal_accumulator
+                .lock()
+                .await
+                .public_text_persist_started
+        );
+        {
+            let events = evaluations.lock().unwrap();
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].payload["text"], "typed result candidate");
+            assert_eq!(events[0].id, "model_evaluation_output_internal-attempt");
+            assert!(!crate::event::is_context_observation(&events[0]));
+        }
         for _ in 0..2 {
             persist_model_public_output(
                 &bus,
@@ -28732,6 +28760,7 @@ mod tests {
                     context_token_budget: None,
                     thread_kind: "execution",
                     internal_child_handoff: false,
+                    inference_source: None,
                     delivery_thread_ids: vec![],
                 },
             );

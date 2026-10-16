@@ -2029,6 +2029,46 @@ impl PlanExecutionCoordinator {
             ),
             Err(error) => Err(error),
         };
+        // Display validation is a separate fact from the child's raw output.
+        // It cannot resume a Plan or replace the authoritative typed result.
+        let validation = outcome.as_ref().map(|_| "accepted").unwrap_or("rejected");
+        let mut validation_text = match &outcome {
+            Ok(value) => serde_json::to_string(value)?,
+            Err(error) => serde_json::to_string(&error.to_string())?,
+        };
+        const MAX_DISPLAY_BYTES: usize = 262_144;
+        let truncated = validation_text.len() > MAX_DISPLAY_BYTES;
+        if truncated {
+            let mut end = MAX_DISPLAY_BYTES;
+            while !validation_text.is_char_boundary(end) {
+                end -= 1;
+            }
+            validation_text.truncate(end);
+        }
+        let mut event = Event::new(
+            format!("inference_value_{}_{}", plan.id, sequence),
+            "Runtime-Yao".to_string(),
+            "runtime_control".to_string(),
+            "runtime/inference_value".to_string(),
+            serde_json::from_value(serde_json::json!({
+                "context_id": plan.context_id,
+                "session_id": plan.session_id,
+                "principal_id": plan.initiating_principal_id,
+                "root_turn_id": activation.root_turn_id,
+                "activation_id": activation.id,
+                "inference_source": {"plan_execution_id": plan.id, "effect_sequence": sequence},
+                "model_output_visibility": "evaluation",
+                "validation": validation,
+                "text": validation_text,
+                "truncated": truncated,
+            }))?,
+        );
+        event.timestamp = activation.updated_at;
+        // This immutable validation fact is independent of parent progress.
+        // Persist before refill so a crash cannot advance the Plan while
+        // permanently losing the accepted/rejected display fact. Retry uses
+        // the same identity, type contract and terminal-child timestamp.
+        self.store.append(event).await?;
         machine.resume_effect(sequence, outcome)?;
         let state_json = serde_json::to_value(&machine)?;
         let budget_json = machine.budget_json()?;

@@ -4,6 +4,7 @@ import type {
 } from "../../../packages/core/src/conversation.js";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
 import { reconcileConversationPublications } from "../../../packages/core/src/conversation-publications.js";
+import { evaluationSourceKey } from "../../../packages/core/src/evaluation-result.js";
 import {
   scriptOutputKey,
   type ScriptOutput,
@@ -118,12 +119,18 @@ export function conversationMessages(
     ...live,
   ]))
     if (inConversation(state, conversationId, m, sharedDefault)) {
-      // A child infer result is execution output, not a reply to a user input.
-      // Keep it in the execution inspector; never flash it on the main timeline.
+      // Only the Host-authorized initiating input attributes a live result.
+      // Evaluation results remain distinct from a reply or execution status.
       // Unattributed durable history remains readable. The host can reconcile a
       // newly accepted root's captured identity when its POST receipt arrives.
       if ("streaming" in m && m.streaming !== undefined && !m.inputId) continue;
       const previous = messages.get(m.id);
+      if (
+        previous?.evaluation &&
+        previous.evaluation.validation !== "pending" &&
+        m.evaluation?.validation === "pending"
+      )
+        continue;
       // On reconnect the feed replays older phases of the same publication.
       // The snapshot already contains its terminal event; never roll it back.
       if (
@@ -142,7 +149,24 @@ export function conversationMessages(
         rootId: m.rootId ?? null,
       });
     }
-  return [...messages.values()];
+  const result = [...messages.values()];
+  const consumed = new Set(
+    result.flatMap((message) => {
+      const source = evaluationSourceKey(message.resultSource);
+      return message.kind === "reply" && message.inputId && source
+        ? [JSON.stringify([message.inputId, source])]
+        : [];
+    }),
+  );
+  return result.map((message) => {
+    const source = evaluationSourceKey(message.evaluation?.source);
+    return message.evaluation &&
+      message.inputId &&
+      source &&
+      consumed.has(JSON.stringify([message.inputId, source]))
+      ? { ...message, evaluation: { ...message.evaluation, consumed: true } }
+      : message;
+  });
 }
 
 // A local change fingerprint, not a security hash. Do not copy reply bodies into

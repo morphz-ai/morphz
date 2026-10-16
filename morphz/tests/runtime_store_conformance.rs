@@ -456,6 +456,64 @@ async fn assert_session_timeline_conformance<S: morphz::memory::RuntimeStore>(st
             .len(),
         6
     );
+
+    let evaluation_session = "evaluation-timeline-session";
+    store
+        .ensure_session(NewSession {
+            id: evaluation_session.into(),
+            agent_id: "conformance-agent".into(),
+            context_id: "conformance-context".into(),
+            parent_session_id: None,
+            title: "Evaluation timeline".into(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let evaluation_event = |id: &str, topic: &str, extra: serde_json::Value| {
+        let mut payload = json!({"session_id":evaluation_session,"root_turn_id":"infer-root","activation_id":"infer-activation",
+            "attempt_id":"physical-attempt","model_output_visibility":"internal","text":"raw candidate"});
+        payload
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        make_event(id, topic, "2026-10-16T01:02:00Z", payload)
+    };
+    let validated = evaluation_event(
+        "validated-inference",
+        "runtime/inference_value",
+        json!({"validation":"accepted","text":"typed value"}),
+    );
+    store.append(validated.clone()).await.unwrap();
+    store.append(validated).await.unwrap();
+    // Late snapshot/backfill cannot replace the accepted value, but retains
+    // the first visible stream timestamp. No second reply is manufactured.
+    store
+        .append(evaluation_event(
+            "evaluation-output",
+            "runtime/model_evaluation_output",
+            json!({"first_visible_at":"2026-10-16T01:01:00Z"}),
+        ))
+        .await
+        .unwrap();
+    let evaluation = store
+        .query_session_timeline(evaluation_session, None, 20)
+        .await
+        .unwrap();
+    assert_eq!(evaluation.len(), 1);
+    assert_eq!(evaluation[0].entry_id, "evaluation:infer-activation");
+    assert_eq!(evaluation[0].display_kind, "progress");
+    assert_eq!(evaluation[0].event.id, "validated-inference");
+    assert_eq!(evaluation[0].event.payload["text"], "typed value");
+    assert_eq!(
+        evaluation[0].visible_at.to_rfc3339(),
+        "2026-10-16T01:01:00+00:00"
+    );
+    assert!(evaluation[0].final_event);
+    assert!(store
+        .session_timeline_entry(session_id, "evaluation:infer-activation")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[cfg(feature = "remote-store")]
@@ -12118,7 +12176,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     .await
     .unwrap();
     sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
-        .bind("20261013_03_provider_resume_timeline")
+        .bind("20261016_01_evaluation_results_timeline")
         .execute(&inspection_pool)
         .await
         .unwrap();
@@ -12151,7 +12209,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         .await
         .unwrap();
     sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
-        .bind("20261013_03_provider_resume_timeline")
+        .bind("20261016_01_evaluation_results_timeline")
         .execute(&inspection_pool)
         .await
         .unwrap();
@@ -12675,7 +12733,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     .await
     .unwrap();
     sqlx::query("DELETE FROM schema_migrations WHERE version = $1")
-        .bind("20261013_03_provider_resume_timeline")
+        .bind("20261016_01_evaluation_results_timeline")
         .execute(store.pool())
         .await
         .unwrap();
@@ -12697,7 +12755,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         .await
         .unwrap();
     sqlx::query("DELETE FROM schema_migrations WHERE version = $1")
-        .bind("20261013_03_provider_resume_timeline")
+        .bind("20261016_01_evaluation_results_timeline")
         .execute(store.pool())
         .await
         .unwrap();

@@ -339,6 +339,11 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         }),
       );
       for (const event of scoped) {
+        const evaluation = [
+          "runtime/model_evaluation_output",
+          "runtime/inference_value",
+          "plan/infer_result",
+        ].includes(event.topic);
         if (
           event.topic === "runtime/model_public_output" &&
           scoped.some(
@@ -354,29 +359,34 @@ test("Platform-only project sends a durable Runtime input without a legacy works
             ? (byRoot.get(rootId) ?? scoped.find((item) => item.id === rootId))
             : null;
         if (typeof rootId !== "string") continue;
-        const kind = ["chat/reply", "chat/outbound_message"].includes(
-          event.topic,
-        )
-          ? "reply"
-          : ["chat/progress", "runtime/model_public_output"].includes(
-                event.topic,
-              )
-            ? "progress"
-            : ["chat/runtime_error", "session/io_state"].includes(event.topic)
-              ? "error"
-              : null;
+        const kind = evaluation
+          ? "progress"
+          : ["chat/reply", "chat/outbound_message"].includes(event.topic)
+            ? "reply"
+            : ["chat/progress", "runtime/model_public_output"].includes(
+                  event.topic,
+                )
+              ? "progress"
+              : ["chat/runtime_error", "session/io_state"].includes(event.topic)
+                ? "error"
+                : null;
         if (!kind) continue;
         const text =
           event.payload.text ?? event.payload.error ?? event.payload.message;
         if (typeof text !== "string" || !text) continue;
         const attempt =
-          typeof event.payload.attempt_id === "string"
-            ? event.payload.attempt_id
+          typeof event.payload[evaluation ? "activation_id" : "attempt_id"] ===
+          "string"
+            ? (event.payload[
+                evaluation ? "activation_id" : "attempt_id"
+              ] as string)
             : null;
         const visible =
           (attempt && firstVisible.get(attempt)) || event.timestamp;
         entries.push({
-          entry_id: attempt ? "publication:" + attempt : event.id,
+          entry_id: attempt
+            ? (evaluation ? "evaluation:" : "publication:") + attempt
+            : event.id,
           ...sqlTimelineTime(visible),
           root_turn_id: rootId,
           attempt_id: attempt,
@@ -1825,7 +1835,9 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       "other-platform-project",
       "the continuous history retains each message's originating work project",
     );
-    const streamed: Array<Array<{ text: string; projectId: string }>> = [];
+    const streamed: Array<
+      Array<{ text: string; projectId: string; kind: string }>
+    > = [];
     stopPlatformStream = await session().observePlatformConversation(
       { projectId: "new-platform-project", conversationId: spaces.dialogueId },
       (value) =>
@@ -1833,6 +1845,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
           value.messages.map((message) => ({
             text: message.text,
             projectId: message.projectId,
+            kind: message.kind,
           })),
         ),
       () => {},
@@ -1933,8 +1946,81 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       streamed.every(
         (messages) => !JSON.stringify(messages).includes("INTERNAL_"),
       ),
-      "no live or replayed callback may publish internal infer values",
+      "untyped legacy child output cannot masquerade as an ordinary reply",
     );
+    for (const [kind, text] of [
+      ["started", ""],
+      ["text_delta", '"获授权的求值结果'],
+    ] as const)
+      liveEvents.push({
+        id: `evaluation-${kind}`,
+        topic: "runtime/model_stream",
+        sequence: liveEvents.length + 1,
+        timestamp: new Date().toISOString(),
+        payload: {
+          session_id: sharedSessionId,
+          root_turn_id: inferRoot,
+          activation_id: "actual-infer-activation",
+          attempt_id: "actual-infer-attempt",
+          model_output_visibility: "internal",
+          inference_source: {
+            plan_execution_id: "actual-plan",
+            effect_sequence: 1,
+          },
+          stream: { kind, text },
+        },
+      });
+    const evaluationDeadline = Date.now() + 4000;
+    while (
+      !streamed
+        .at(-1)
+        ?.some(
+          (message) =>
+            message.kind === "evaluation" &&
+            message.text.includes("获授权的求值结果"),
+        ) &&
+      Date.now() < evaluationDeadline
+    )
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.ok(
+      streamed
+        .at(-1)
+        ?.some(
+          (message) =>
+            message.kind === "evaluation" &&
+            message.projectId === "other-platform-project" &&
+            message.text.includes("获授权的求值结果"),
+        ),
+      "a typed infer stream follows its exact input authorization, not the visible project or an ordinary reply channel",
+    );
+    liveEvents.push({
+      id: "accepted-inference",
+      topic: "runtime/inference_value",
+      sequence: liveEvents.length + 1,
+      timestamp: new Date().toISOString(),
+      payload: {
+        session_id: sharedSessionId,
+        root_turn_id: inferRoot,
+        activation_id: "actual-infer-activation",
+        model_output_visibility: "evaluation",
+        validation: "accepted",
+        inference_source: {
+          plan_execution_id: "actual-plan",
+          effect_sequence: 1,
+        },
+        text: '"获授权的求值结果终值"',
+      },
+    });
+    const evaluationHistory = await session().platformConversationHistory({
+      projectId: "new-platform-project",
+      conversationId: spaces.dialogueId,
+    });
+    const evaluated = evaluationHistory.runtime.messages.find(
+      (message) => message.id === "evaluation:actual-infer-activation",
+    );
+    assert.equal(evaluated?.kind, "evaluation");
+    assert.equal(evaluated?.evaluation?.validation, "accepted");
+    assert.equal(evaluated?.projectId, "other-platform-project");
     await assert.rejects(
       session().platformConversationHistory({
         projectId: "other-platform-project",
@@ -2016,6 +2102,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
           value.messages.map((message) => ({
             text: message.text,
             projectId: message.projectId,
+            kind: message.kind,
           })),
         ),
       () => {},

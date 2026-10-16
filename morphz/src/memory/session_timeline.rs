@@ -60,7 +60,11 @@ fn string<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
 }
 
 pub(crate) fn classify(event: &Event, sequence: i64) -> Option<TimelineMutation> {
-    if string(event, "model_output_visibility") == Some("internal") {
+    let evaluation = matches!(
+        event.topic.as_str(),
+        "runtime/model_evaluation_output" | "plan/infer_result" | "runtime/inference_value"
+    );
+    if string(event, "model_output_visibility") == Some("internal") && !evaluation {
         return None;
     }
     let session_id = string(event, "session_id")?;
@@ -70,7 +74,15 @@ pub(crate) fn classify(event: &Event, sequence: i64) -> Option<TimelineMutation>
     let has_text = ["text", "error", "message"]
         .into_iter()
         .any(|key| string(event, key).is_some_and(|value| !value.is_empty()));
-    let attempt_id = string(event, "attempt_id").filter(|value| !value.is_empty());
+    let attempt_id = string(
+        event,
+        if evaluation {
+            "activation_id"
+        } else {
+            "attempt_id"
+        },
+    )
+    .filter(|value| !value.is_empty());
     let (kind, display_kind, entry_id, root_turn_id, visible_at) = match event.topic.as_str() {
         "chat/user_message" | "chat/steering" if string(event, "client_message_id").is_some() => (
             MutationKind::Input,
@@ -93,6 +105,23 @@ pub(crate) fn classify(event: &Event, sequence: i64) -> Option<TimelineMutation>
                 visible_at,
             )
         }
+        "runtime/model_evaluation_output" if has_text => (
+            MutationKind::Stream,
+            "progress",
+            format!("evaluation:{}", attempt_id?),
+            root?,
+            string(event, "first_visible_at")
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|time| time.with_timezone(&Utc))
+                .unwrap_or(event.timestamp),
+        ),
+        "plan/infer_result" | "runtime/inference_value" if has_text => (
+            MutationKind::Final,
+            "progress",
+            format!("evaluation:{}", attempt_id?),
+            root?,
+            event.timestamp,
+        ),
         "chat/reply" | "chat/outbound_message" if has_text => (
             MutationKind::Final,
             "reply",
@@ -159,6 +188,29 @@ pub(crate) fn classify(event: &Event, sequence: i64) -> Option<TimelineMutation>
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn inference_result_has_its_own_stable_entry_and_never_becomes_a_reply() {
+        let event = |topic: &str| {
+            Event::new(
+            format!("{topic}-id"), "Runtime-Yao".into(), "runtime_control".into(), topic.into(),
+            serde_json::from_value(json!({
+                "session_id":"s", "root_turn_id":"infer-root", "activation_id":"infer-activation",
+                "attempt_id":"physical-attempt", "model_output_visibility":"internal",
+                "text":"typed result", "first_visible_at":"2026-10-16T01:00:00Z"
+            })).unwrap())
+        };
+        let stream = classify(&event("runtime/model_evaluation_output"), 1).unwrap();
+        let terminal = classify(&event("plan/infer_result"), 2).unwrap();
+        let validated = classify(&event("runtime/inference_value"), 3).unwrap();
+        assert_eq!(stream.entry_id, "evaluation:infer-activation");
+        assert_eq!(stream.entry_id, terminal.entry_id);
+        assert_eq!(stream.entry_id, validated.entry_id);
+        assert_eq!(validated.display_kind, "progress");
+        assert_eq!(validated.kind, MutationKind::Final);
+        assert!(classify(&event("runtime/model_public_output"), 4).is_none());
+        assert!(classify(&event("runtime/model_reasoning_summary"), 5).is_none());
+    }
 
     #[test]
     fn one_attempt_keeps_the_same_publication_key_across_stream_and_final() {

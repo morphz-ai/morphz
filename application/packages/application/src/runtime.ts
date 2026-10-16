@@ -33,6 +33,7 @@ import {
 import { workInputRequest } from "./session-io.js";
 import { scriptGenerationSchema } from "../../core/src/script-studio.js";
 import { internalModelOutput } from "../../core/src/model-publication.js";
+import { evaluationSourceSchema } from "../../core/src/evaluation-result.js";
 import { readingInputSchema } from "../../core/src/reader.js";
 import {
   cognitiveAppObjectLocatorSchema,
@@ -1128,9 +1129,12 @@ export class RuntimeBridge {
     }
     const baseline = (await this.platformConversationHistory(scope, access))
       .runtime.messages;
-    type RootRoute = { inputId: string; source: PlatformInputSource };
+    type RootRoute = {
+      inputId: string;
+      source: PlatformInputSource;
+      evaluationOnly: boolean;
+    };
     const roots = new Map<string, Promise<RootRoute | null>>();
-    const internalRoots = new Set<string>();
     // Baseline and live feed each retain at most 100 messages. Root provenance
     // is a disposable lookup cache, not another growing Session history.
     const cacheRoot = (rootId: string, route: Promise<RootRoute | null>) => {
@@ -1139,7 +1143,6 @@ export class RuntimeBridge {
       while (roots.size > 200) {
         const oldest = roots.keys().next().value!;
         roots.delete(oldest);
-        internalRoots.delete(oldest);
       }
     };
     const parseRoot = (event: RuntimeEvent): RootRoute | null => {
@@ -1151,7 +1154,7 @@ export class RuntimeBridge {
         inputId,
         (id) => (this.teamIdentity ? this.principalId(id) : null),
       );
-      return source ? { inputId, source } : null;
+      return source ? { inputId, source, evaluationOnly: false } : null;
     };
     const rootRoute = (rootId: string): Promise<RootRoute | null> => {
       const cached = roots.get(rootId);
@@ -1161,11 +1164,6 @@ export class RuntimeBridge {
       }
       const lookup = this.platformOutputRoot(sessionId, rootId, access)
         .then(async (root) => {
-          if (root && internalModelOutput({ topic: "", payload: {} }, root)) {
-            // An evicted in-flight lookup must not leave an unbounded tombstone.
-            if (roots.has(rootId)) internalRoots.add(rootId);
-            return null;
-          }
           // Most roots are the original input. Only synthetic roots need the
           // bounded source resolver; never read a complete Thread or fetch
           // the same source for every model delta.
@@ -1185,7 +1183,10 @@ export class RuntimeBridge {
           const { input_event } = z
             .object({ input_event: eventSchema.nullable() })
             .parse(raw);
-          return input_event ? parseRoot(input_event) : null;
+          const route = input_event ? parseRoot(input_event) : null;
+          return route
+            ? { ...route, evaluationOnly: root?.topic === "chat/infer_request" }
+            : null;
         })
         .catch((error: unknown) => {
           if (error instanceof UpstreamError && error.status === 404)
@@ -1194,12 +1195,7 @@ export class RuntimeBridge {
         })
         .then((route) => {
           // A delayed miss must not erase a newer root Event from the feed.
-          if (
-            !route &&
-            !internalRoots.has(rootId) &&
-            roots.get(rootId) === lookup
-          )
-            roots.delete(rootId);
+          if (!route && roots.get(rootId) === lookup) roots.delete(rootId);
           return route;
         });
       cacheRoot(rootId, lookup);
@@ -1239,6 +1235,7 @@ export class RuntimeBridge {
             const { raw, route } = candidate;
             const source = route.source;
             if (
+              (route.evaluationOnly && raw.kind !== "evaluation") ||
               source.sharedDefault !== grant.personalDefault ||
               !this.platformSourceReadable(source, scope, access, grant)
             )
@@ -1256,7 +1253,7 @@ export class RuntimeBridge {
               publicationKey &&
               !raw.id.startsWith("stream:") &&
               !raw.id.startsWith("tool:") &&
-              raw.kind !== "progress";
+              (raw.kind === "reply" || raw.kind === "error");
             return [
               {
                 ...raw,
@@ -1286,16 +1283,23 @@ export class RuntimeBridge {
               )
               .map((message) => message.publicationKey),
           );
-          const deduplicated = new Map(
-            visible
-              .filter(
-                (message) =>
-                  !message.id.startsWith("stream:") ||
-                  !message.publicationKey ||
-                  !finals.has(message.publicationKey),
-              )
-              .map((message) => [message.id, message] as const),
-          );
+          const deduplicated = new Map<string, (typeof visible)[number]>();
+          for (const message of visible) {
+            if (
+              message.id.startsWith("stream:") &&
+              message.publicationKey &&
+              finals.has(message.publicationKey)
+            )
+              continue;
+            const previous = deduplicated.get(message.id);
+            if (
+              previous?.evaluation &&
+              previous.evaluation.validation !== "pending" &&
+              message.evaluation?.validation === "pending"
+            )
+              continue;
+            deduplicated.set(message.id, message);
+          }
           changed({
             connected: value.connected,
             messages: [...deduplicated.values()].sort(historyOrder),
@@ -1326,14 +1330,6 @@ export class RuntimeBridge {
       request: (path) =>
         this.request(path, "GET", undefined, access, undefined),
       onEvent: (id, raw) => {
-        if (
-          id === sessionId &&
-          ["chat/infer_request", "runtime/infer_request"].includes(raw.topic)
-        ) {
-          internalRoots.add(raw.id);
-          cacheRoot(raw.id, Promise.resolve(null));
-          return;
-        }
         if (
           id !== sessionId ||
           !["chat/user_message", "chat/steering"].includes(raw.topic)
@@ -4042,7 +4038,13 @@ export class RuntimeBridge {
     access: AccessContext,
     grant: PlatformReadGrant,
   ): HistoryEntry | null {
-    if (internalModelOutput(item.event, item.root_event)) return null;
+    const evaluation = [
+      "runtime/model_evaluation_output",
+      "runtime/inference_value",
+      "plan/infer_result",
+    ].includes(item.event.topic);
+    if (internalModelOutput(item.event, item.root_event) && !evaluation)
+      return null;
     const root = item.input_event;
     if (
       !root ||
@@ -4120,8 +4122,9 @@ export class RuntimeBridge {
     const publicOutput = item.event.topic === "runtime/model_public_output";
     const threadId = payloadString(item.event, "thread_id");
     const message: ConversationRuntime["messages"][number] = {
-      id:
-        !item.final_event && item.attempt_id
+      id: evaluation
+        ? item.entry_id
+        : !item.final_event && item.attempt_id
           ? "stream:" + item.attempt_id
           : item.entry_id,
       projectId: source.projectId,
@@ -4134,10 +4137,48 @@ export class RuntimeBridge {
       ...(payloadString(item.event, "model_attempt_id")
         ? { modelAttemptId: payloadString(item.event, "model_attempt_id")! }
         : {}),
+      ...(evaluation
+        ? {
+            evaluation: {
+              activationId: payloadString(item.event, "activation_id") ?? "",
+              validation:
+                item.event.payload.validation === "accepted"
+                  ? ("accepted" as const)
+                  : item.event.payload.validation === "rejected"
+                    ? ("rejected" as const)
+                    : ("pending" as const),
+              ...(evaluationSourceSchema.safeParse(
+                item.event.payload.inference_source,
+              ).success
+                ? {
+                    source: evaluationSourceSchema.parse(
+                      item.event.payload.inference_source,
+                    ),
+                  }
+                : {}),
+            },
+          }
+        : {}),
+      ...(evaluationSourceSchema.safeParse(item.event.payload.result_source)
+        .success
+        ? {
+            resultSource: item.event.payload.result_source as {
+              plan_execution_id: string;
+              effect_sequence: number;
+              path?: string[];
+            },
+          }
+        : {}),
       ...(recovery ? { providerRecovery: recovery } : {}),
       ...(publicOutput
         ? {
             incomplete: item.event.payload.complete !== true,
+            truncated: item.event.payload.truncated === true,
+          }
+        : {}),
+      ...(evaluation
+        ? {
+            incomplete: item.event.payload.complete === false,
             truncated: item.event.payload.truncated === true,
           }
         : {}),
@@ -4146,7 +4187,11 @@ export class RuntimeBridge {
         : { sequence: item.event.sequence }),
       text: text ?? "",
       createdAt: item.visible_at,
-      kind: publicOutput ? "reply" : item.display_kind,
+      kind: evaluation
+        ? "evaluation"
+        : publicOutput
+          ? "reply"
+          : item.display_kind,
     };
     return {
       kind: "message",

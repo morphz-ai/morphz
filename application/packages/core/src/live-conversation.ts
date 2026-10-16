@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { internalModelOutput } from "./model-publication.js";
 import {
+  evaluationResultSchema,
+  evaluationSourceSchema,
+} from "./evaluation-result.js";
+import {
   providerRecoverySchema,
   providerRecoveryFromEvent,
 } from "./provider-recovery.js";
@@ -14,7 +18,11 @@ export const liveMessageSchema = z.object({
   rootId: z.string().nullable(),
   createdAt: z.string(),
   text: z.string(),
-  kind: z.enum(["reply", "progress", "error", "tool"]),
+  kind: z.enum(["reply", "progress", "error", "tool", "evaluation"]),
+  evaluation: evaluationResultSchema.optional(),
+  resultSource: evaluationSourceSchema
+    .extend({ path: z.array(z.string()).optional() })
+    .optional(),
   streaming: z.boolean().optional(),
   incomplete: z.boolean().optional(),
   truncated: z.boolean().optional(),
@@ -78,6 +86,11 @@ export class LiveConversationProjection {
   private replaced = new Set<string>();
   private cancelledRoots = new Set<string>();
   private background = new Map<string, string>();
+  private evaluationAttempts = new Map<
+    string,
+    { id: string; continuation: boolean; closed: boolean }
+  >();
+  private settledEvaluations = new Set<string>();
   constructor(
     private route: (
       e: StreamEvent,
@@ -98,6 +111,16 @@ export class LiveConversationProjection {
     // prefix; only a new complete stream or its durable outcome may replace it.
     for (const attempt of this.attempts.values()) this.retainAttempt(attempt);
     this.attempts.clear();
+    for (const [id, message] of this.messages) {
+      if (message.kind === "evaluation" && message.streaming)
+        this.messages.set(id, {
+          ...message,
+          streaming: false,
+          incomplete: true,
+        });
+    }
+    for (const attempt of this.evaluationAttempts.values())
+      attempt.closed = true;
   }
   private base(e: StreamEvent): LiveMessage {
     return {
@@ -120,6 +143,13 @@ export class LiveConversationProjection {
       ...(typeof e.payload.model_attempt_id === "string"
         ? { modelAttemptId: e.payload.model_attempt_id }
         : {}),
+      ...(evaluationSourceSchema.safeParse(e.payload.result_source).success
+        ? {
+            resultSource: e.payload.result_source as z.infer<
+              typeof evaluationSourceSchema
+            > & { path?: string[] },
+          }
+        : {}),
       ...(providerRecoveryFromEvent(e)
         ? { providerRecovery: providerRecoveryFromEvent(e) }
         : {}),
@@ -128,7 +158,17 @@ export class LiveConversationProjection {
     };
   }
   consume(e: StreamEvent) {
-    if (internalModelOutput(e)) return;
+    if (
+      internalModelOutput(e) ||
+      [
+        "runtime/model_evaluation_output",
+        "runtime/inference_value",
+        "plan/infer_result",
+      ].includes(e.topic)
+    ) {
+      this.consumeEvaluation(e);
+      return;
+    }
     const p = e.payload,
       // Semantic outcomes can name the exact physical request. A protocol
       // retry is not inferred from an Activation or an identifier suffix.
@@ -153,6 +193,15 @@ export class LiveConversationProjection {
           this.cancelled.add(a.activation);
           this.retainAttempt(a);
           this.attempts.delete(id);
+        }
+      for (const message of this.messages.values())
+        if (message.kind === "evaluation" && root && message.rootId === root) {
+          const evaluationId = message.evaluation?.activationId;
+          if (evaluationId) {
+            this.cancelled.add(evaluationId);
+            const attempt = this.evaluationAttempts.get(evaluationId);
+            if (attempt) attempt.closed = true;
+          }
         }
       return;
     }
@@ -419,6 +468,147 @@ export class LiveConversationProjection {
     );
     if (kind && (text || p.disposition === "provider_wait"))
       this.messages.set(e.id, { ...this.base(e), kind, text });
+  }
+  private consumeEvaluation(e: StreamEvent) {
+    const p = e.payload;
+    const activationId = str(p.activation_id);
+    if (!activationId) return;
+    const id = `evaluation:${activationId}`;
+    const previous = this.messages.get(id);
+    const attemptId = str(p.model_attempt_id) || str(p.attempt_id);
+    const attempt = this.evaluationAttempts.get(activationId);
+    const source = evaluationSourceSchema.safeParse(p.inference_source);
+    const base: LiveMessage = {
+      ...this.base(e),
+      ...previous,
+      id,
+      kind: "evaluation",
+      evaluation: {
+        activationId,
+        validation: previous?.evaluation?.validation ?? "pending",
+        ...(source.success
+          ? { source: source.data }
+          : previous?.evaluation?.source
+            ? { source: previous.evaluation.source }
+            : {}),
+      },
+    };
+    if (e.topic === "runtime/model_stream") {
+      if (
+        this.seen.has(e.id) ||
+        this.settledEvaluations.has(activationId) ||
+        this.cancelled.has(activationId) ||
+        this.cancelledRoots.has(str(p.root_turn_id)) ||
+        base.evaluation?.validation !== "pending"
+      )
+        return;
+      this.seen.add(e.id);
+      const stream = obj(p.stream),
+        kind = str(stream.kind);
+      if (kind === "started") {
+        if (!attemptId || attempt?.id === attemptId) return;
+        this.evaluationAttempts.set(activationId, {
+          id: attemptId,
+          continuation: false,
+          closed: false,
+        });
+        this.messages.set(id, {
+          ...base,
+          text: attempt?.continuation ? base.text : "",
+          modelAttemptId: attemptId,
+          streaming: true,
+          incomplete: false,
+        });
+      } else if (!attempt || attempt.closed || attempt.id !== attemptId) return;
+      else if (kind === "text_delta" && previous?.streaming) {
+        this.messages.set(id, {
+          ...base,
+          text: previous.text + str(stream.text),
+          createdAt: previous.text ? previous.createdAt : e.timestamp,
+        });
+      } else if (
+        ["completed", "incomplete", "failed"].includes(kind) &&
+        previous
+      ) {
+        attempt.closed = true;
+        attempt.continuation = kind === "incomplete";
+        this.messages.set(id, {
+          ...base,
+          streaming: false,
+          incomplete: kind !== "completed",
+        });
+      }
+    } else if (
+      [
+        "runtime/model_evaluation_output",
+        "plan/infer_result",
+        "runtime/inference_value",
+        "runtime/model_public_output",
+      ].includes(e.topic)
+    ) {
+      if (
+        previous?.evaluation &&
+        previous.evaluation.validation !== "pending" &&
+        e.topic !== "runtime/inference_value"
+      )
+        return;
+      if (
+        [
+          "runtime/model_evaluation_output",
+          "runtime/model_public_output",
+        ].includes(e.topic) &&
+        attempt &&
+        attemptId !== attempt.id
+      )
+        return;
+      if (
+        previous?.sequence !== undefined &&
+        e.sequence !== undefined &&
+        previous.sequence > e.sequence
+      )
+        return;
+      const text = str(p.text);
+      if (!text) return;
+      if (
+        e.topic === "plan/infer_result" ||
+        e.topic === "runtime/inference_value"
+      )
+        this.settledEvaluations.add(activationId);
+      this.messages.set(id, {
+        ...base,
+        text,
+        streaming: false,
+        createdAt:
+          previous?.createdAt ?? (str(p.first_visible_at) || e.timestamp),
+        ...(e.sequence === undefined ? {} : { sequence: e.sequence }),
+        incomplete: p.complete === false,
+        truncated: p.truncated === true,
+        evaluation: {
+          ...base.evaluation!,
+          validation:
+            p.validation === "accepted"
+              ? "accepted"
+              : p.validation === "rejected"
+                ? "rejected"
+                : "pending",
+        },
+      });
+    } else if (
+      e.topic === "runtime/model_attempt_state" &&
+      p.terminal === true &&
+      previous &&
+      (!attempt || attempt.id === attemptId) &&
+      base.evaluation?.validation === "pending"
+    ) {
+      if (attempt) attempt.closed = true;
+      this.messages.set(id, {
+        ...base,
+        streaming: false,
+        incomplete: ["failed", "cancelled", "interrupted"].includes(
+          str(p.state),
+        ),
+      });
+    }
   }
   snapshot(): LiveMessage[] {
     const result = new Map(this.messages);

@@ -86,12 +86,6 @@ pub trait DomainHarness: Send + Sync {
         None
     }
 
-    /// Explicit contract: the successful entry String is the authored reply,
-    /// rather than data for a subsequent model evaluation.
-    fn publishes_entry_result(&self) -> bool {
-        false
-    }
-
     /// Canonical package-local `(fn ...)` sources. The Runtime admits and
     /// statically links these only through an exact Evaluation binding.
     fn function_sources(&self) -> Vec<String> {

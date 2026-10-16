@@ -47,6 +47,7 @@ const harnessFile = fileURLToPath(
   new URL("../harnesses/script-studio.hns", import.meta.url),
 );
 const harnessRef = scriptStudioApplication.harness!;
+const discussionOnly = process.argv.includes("--discussion-only");
 const requestedFault = process.argv
   .find((arg) => arg.startsWith("--fault="))
   ?.slice(8);
@@ -58,6 +59,10 @@ assert.ok(
 const fault = requestedFault
   ? new ScriptFaultGate(requestedFault as ScriptFaultPoint)
   : undefined;
+assert.ok(
+  !(discussionOnly && fault),
+  "Select ordinary discussion or crash recovery, not both",
+);
 const hostErrors: string[] = [];
 const originalToolCall = AgentTools.prototype.call;
 AgentTools.prototype.call = async function (...args) {
@@ -136,13 +141,15 @@ const candidateDraft = {
   ...sourceDraft,
   text: "【场景】夜，空站台。\n林收起车票，听见检票口传来三声铃响。\n林：最后一班车没有来，谁在检票？\n【集尾】检票灯亮起，照出一张写着明日日期的车票。",
 };
-// Children are tool-free. The root only relays the durable Plan outcome.
+// Child outputs return to Yao. The root returns its authored value directly.
 const stages: string[] = [];
-let scenario = fault
-  ? fault.point === "model-discussion"
-    ? "discussion"
-    : "both-revisions"
-  : "zero-review";
+let scenario = discussionOnly
+  ? "discussion"
+  : fault
+    ? fault.point === "model-discussion"
+      ? "discussion"
+      : "both-revisions"
+    : "zero-review";
 let reviewCount = 0;
 let selectionStep = 0,
   preparationStep = 0;
@@ -159,6 +166,7 @@ const branchEvidence: {
   scenario: string;
   stages: string[];
   candidateCount: number;
+  savedCount: number;
   created?: { productionId: string; contentId: string; itemId: string };
 }[] = [];
 const delay = (ms: number) =>
@@ -191,6 +199,17 @@ const provider = createServer(async (req, res) => {
         ? "select"
         : "relay";
     assert.ok(stage, "A provider request must identify its actual Yao stage");
+    assert.notEqual(
+      stage,
+      "relay",
+      "A completed Harness root must return directly without a model relay",
+    );
+    if (discussionOnly)
+      assert.equal(
+        stage,
+        "discussion",
+        "ordinary discussion must not enter a second model relay",
+      );
     const requestId =
       stage === "select"
         ? `select-${selectionStep}`
@@ -231,7 +250,6 @@ const provider = createServer(async (req, res) => {
         tools.every(
           (name: string) =>
             name === "no_reply" ||
-            (stage === "relay" && name === "reply") ||
             (stage === "prepare" && name === "host_morphz"),
         ),
         `Only preparation may use Host tools; creative steps cannot bypass the Plan (stage=${stage}, tools=${tools.join(",")})`,
@@ -318,7 +336,7 @@ const provider = createServer(async (req, res) => {
       assert.ok(context.includes(harnessRef.version));
       return call("harness_select", {
         ...harnessRef,
-        reason: "明确请求剧本候选，使用官方可执行工序",
+        reason: "明确请求改写并保存正文，使用官方可执行工序",
       });
     }
     if (stage === "prepare") {
@@ -465,6 +483,7 @@ const provider = createServer(async (req, res) => {
             baseRevision: target.revision,
             contextRevision: result.contextRevision,
             purpose: "rewrite",
+            submissionMode: "current",
             maxReviewPasses: 1,
           },
         });
@@ -531,20 +550,8 @@ const provider = createServer(async (req, res) => {
                 ? "先讨论，不保存候选。"
                 : scenario.includes("blocked") || scenario === "malformed"
                   ? "工序已停止，没有提交。"
-                  : "合成测试候选已提交，等待人工决定；未批准或锁稿。";
+                  : "合成测试正文已保存为当前版本；未批准或锁稿。";
     const content = internal ? JSON.stringify(value) : String(value);
-    // The Application's outer reply uses the real v2 terminal carrier. Typed
-    // creative infers still return their declared value, never a Host call.
-    if (stage === "relay" && tools.includes("reply"))
-      return call("reply", {
-        content,
-        annotations: {
-          execution: {
-            title: "验证剧本 Runtime 工序",
-            result: content,
-          },
-        },
-      });
     const message = { role: "assistant", content };
     respond(message);
   } catch (error) {
@@ -672,61 +679,65 @@ try {
     );
     return result.stdout;
   };
-  cli([
-    "harness",
-    "install",
-    fileURLToPath(
-      new URL("../harnesses/legacy/script-studio-1.0.0.hns", import.meta.url),
-    ),
-  ]);
+  if (!discussionOnly) {
+    cli([
+      "harness",
+      "install",
+      fileURLToPath(
+        new URL("../harnesses/legacy/script-studio-1.0.0.hns", import.meta.url),
+      ),
+    ]);
+    cli(["harness", "install", harnessFile]);
+    cli([
+      "harness",
+      "install",
+      fileURLToPath(
+        new URL("../harnesses/legacy/script-studio-1.3.0.hns", import.meta.url),
+      ),
+    ]);
+    cli([
+      "harness",
+      "install",
+      fileURLToPath(
+        new URL("../harnesses/legacy/script-studio-1.2.1.hns", import.meta.url),
+      ),
+    ]);
+    cli([
+      "harness",
+      "install",
+      fileURLToPath(
+        new URL("../harnesses/legacy/script-studio-1.2.0.hns", import.meta.url),
+      ),
+    ]);
+    cli([
+      "harness",
+      "install",
+      fileURLToPath(
+        new URL("../harnesses/legacy/script-studio-1.1.1.hns", import.meta.url),
+      ),
+    ]);
+    cli([
+      "harness",
+      "install",
+      fileURLToPath(
+        new URL("../harnesses/legacy/script-studio-1.1.0.hns", import.meta.url),
+      ),
+    ]);
+  }
   cli(["harness", "install", harnessFile]);
-  cli([
-    "harness",
-    "install",
-    fileURLToPath(
-      new URL("../harnesses/legacy/script-studio-1.3.0.hns", import.meta.url),
-    ),
-  ]);
-  cli([
-    "harness",
-    "install",
-    fileURLToPath(
-      new URL("../harnesses/legacy/script-studio-1.2.1.hns", import.meta.url),
-    ),
-  ]);
-  cli([
-    "harness",
-    "install",
-    fileURLToPath(
-      new URL("../harnesses/legacy/script-studio-1.2.0.hns", import.meta.url),
-    ),
-  ]);
-  cli([
-    "harness",
-    "install",
-    fileURLToPath(
-      new URL("../harnesses/legacy/script-studio-1.1.1.hns", import.meta.url),
-    ),
-  ]);
-  cli([
-    "harness",
-    "install",
-    fileURLToPath(
-      new URL("../harnesses/legacy/script-studio-1.1.0.hns", import.meta.url),
-    ),
-  ]);
   const registered = cli(["harness", "list"]);
   assert.ok(
     registered.includes(harnessRef.id) &&
       registered.includes(harnessRef.version),
     "Package must be listed by a second process reading the persisted registry",
   );
-  assert.ok(
-    ["1.0.0", "1.1.0", "1.1.1", "1.2.0", "1.2.1", "1.3.0"].every((version) =>
-      registered.includes(version),
-    ),
-    "Every legacy package remains available for immutable retries",
-  );
+  if (!discussionOnly)
+    assert.ok(
+      ["1.0.0", "1.1.0", "1.1.1", "1.2.0", "1.2.1", "1.3.0"].every(
+        (version) => !registered.includes(version),
+      ),
+      "Unreferenced historical packages are not advertised for new work",
+    );
   assert.equal(providerCalls, 0, "Installing a Harness must not call a model");
   const startRuntime = () => {
     const child = spawn(
@@ -850,19 +861,75 @@ try {
       artifactId: null,
       artifactRevision: null,
       selection: "",
-      body: "TEST 合成编剧工序：只生成第一集固定版本候选。不得当作真实创作质量验收。",
+      body: discussionOnly
+        ? "TEST 只讨论创意，不写稿、不保存、不创建对象。"
+        : "TEST 合成编剧工序：只改写第一集固定版本并保存为新当前正文。不得当作真实创作质量验收。",
       targetActantId: "morphz-agent",
       applicationInstanceId,
       application: { id: app.id, version: app.version },
       scriptGeneration:
-        fault?.point === "model-discussion" ? undefined : generation,
+        discussionOnly || fault?.point === "model-discussion"
+          ? undefined
+          : generation,
     },
   };
   const receipt = (await host.connection.call("platform.message", command, {
     identityGeneration: client.boot.csrfToken,
   })) as Receipt;
   assertNoLegacyWorkspace();
-  if (fault) {
+  if (discussionOnly) {
+    await waitUntil(() => {
+      const delivery = persistedDeliveries().find(
+        (value) => value.inputId === receipt.entityId,
+      );
+      if (delivery?.state === "failed")
+        throw new Error(delivery.error ?? "discussion failed");
+      return delivery?.state === "completed";
+    }, "Single discussion result");
+    assert.equal(providerCalls, 1);
+    assert.deepEqual(stages, ["discussion"]);
+    assert.equal(logicalModelCalls.size, 1);
+    const history = await client.history("first-project", "first-project");
+    const messages = history.runtime.messages.filter(
+      (message) => message.inputId === receipt.entityId,
+    );
+    const replies = messages.filter((message) => message.kind === "reply");
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0]!.text, "先讨论，不保存候选。");
+    assert.ok(replies[0]!.resultSource);
+    const values = messages.filter((message) => message.kind === "evaluation");
+    assert.equal(values.length, 1);
+    assert.equal(values[0]!.evaluation?.validation, "accepted");
+    assert.equal(
+      values[0]!.evaluation?.source?.plan_execution_id,
+      replies[0]!.resultSource!.plan_execution_id,
+    );
+    assert.equal(
+      values[0]!.evaluation?.source?.effect_sequence,
+      replies[0]!.resultSource!.effect_sequence,
+    );
+    assert.equal((await production()).candidates.length, 0);
+    assert.equal(currentScriptDraft(await item()).text, sourceDraft.text);
+    const evidence = {
+      status: "assertions-passed",
+      harness: harnessRef,
+      provider: "synthetic-fixed-responses",
+      providerCalls,
+      inputId: receipt.entityId,
+      evaluationId: values[0]!.id,
+      replyId: replies[0]!.id,
+      noCreativeWrite: true,
+      originalDraftUnchanged: true,
+      evidenceDirectory: directory,
+    };
+    writeFileSync(
+      join(directory, "result.json"),
+      JSON.stringify(evidence, null, 2),
+      { mode: 0o600 },
+    );
+    console.log(JSON.stringify(evidence, null, 2));
+    passed = true;
+  } else if (fault) {
     await waitUntil(() => Boolean(fault.hit), `Reach ${fault.point}`);
     const checkpointDb = new DatabaseSync(
       join(runtimeDirectory, "runtime.sqlite"),
@@ -906,8 +973,8 @@ try {
     );
     if (fault.point === "host-submit-after")
       assert.equal(
-        (await production()).candidates.length,
-        1,
+        (await item()).revision,
+        2,
         "Lost receipt cut must follow a real commit",
       );
     const killed = runtime;
@@ -955,7 +1022,7 @@ try {
     assert.equal(JSON.stringify(pinnedInput(receipt.entityId)), frozenInput);
     const expected =
       fault.point === "model-discussion"
-        ? ["discussion", "relay"]
+        ? ["discussion"]
         : [
             "intent",
             "create",
@@ -964,7 +1031,6 @@ try {
             "review",
             "revise",
             "delivery",
-            "relay",
           ];
     assert.deepEqual(
       [...logicalModelCalls.values()].map((c) => c.stage),
@@ -1007,16 +1073,17 @@ try {
         );
     }
     const completed = await production();
+    assert.equal(completed.candidates.length, 0);
     assert.equal(
-      completed.candidates.length,
-      fault.point === "model-discussion" ? 0 : 1,
+      (await item()).revision,
+      fault.point === "model-discussion" ? 1 : 2,
+      "Recovery must save one current version, never an extra candidate",
     );
-    assert.equal(currentScriptDraft(await item()).text, sourceDraft.text);
+    assert.deepEqual((await item()).versions[0]!.draft, sourceDraft);
     assert.equal((await item()).status, "draft");
-    if (completed.candidates[0]) {
-      assert.equal(completed.candidates[0].status, "pending");
+    if (fault.point !== "model-discussion") {
       assert.equal(
-        completed.candidates[0].draft.text,
+        currentScriptDraft(await item()).text,
         candidateDraft.text +
           "\n【修订1】保留第一轮修改。\n【修订2】补上第二轮修改。",
       );
@@ -1053,7 +1120,8 @@ try {
       hostCalls: proxy!.calls,
       plans: persisted,
       candidateCount: completed.candidates.length,
-      formalDraftUnchanged: true,
+      savedCount: fault.point === "model-discussion" ? 0 : 1,
+      originalVersionUnchanged: true,
     };
     writeFileSync(
       join(directory, "result.json"),
@@ -1070,38 +1138,47 @@ try {
       if (delivery?.state === "failed")
         throw new Error(delivery.error ?? "Script delivery failed");
       return delivery?.state === "completed";
-    }, "Pinned script candidate delivery");
-    assert.deepEqual(
-      stages.filter((stage) => stage !== "relay"),
-      ["intent", "create", "delivery"],
-    );
+    }, "Pinned current-script delivery");
+    assert.deepEqual(stages, ["intent", "create", "delivery"]);
     const persistedInput = pinnedInput(receipt.entityId);
     assert.deepEqual(persistedInput.application?.harness, harnessRef);
     assert.deepEqual(persistedInput.scriptGeneration, generation);
     p = await production();
     assert.equal(
       p.candidates.length,
-      1,
-      "Exactly one candidate must have been physically persisted",
+      0,
+      "New inputs save current bodies without candidate adoption",
     );
-    const candidate = p.candidates[0]!;
-    assert.equal(candidate.inputId, receipt.entityId);
-    assert.equal(candidate.targetId, targetId);
-    assert.equal(candidate.createdBy.actantId, "morphz-agent");
-    assert.equal(candidate.baseRevision, 1);
-    assert.equal(candidate.status, "pending");
+    const initialHistory = await client.history(
+      "first-project",
+      "first-project",
+    );
+    const initialOutput = initialHistory.scriptOutputs.find(
+      (output) => output.inputId === receipt.entityId && output.kind === "item",
+    );
+    assert.ok(initialOutput, "A saved current body has its real delivery");
+    assert.equal(initialOutput.itemId, targetId);
+    assert.equal(initialOutput.revision, 2);
+    assert.equal(initialOutput.isEmpty, false);
+    assert.equal((await item()).revision, 2);
+    assert.deepEqual((await item()).versions[0]!.draft, sourceDraft);
     assert.equal(
       currentScriptDraft(await item()).text,
-      sourceDraft.text,
-      "Agent must not alter the formal draft",
+      candidateDraft.text,
+      "The requested current version is physically saved",
     );
     assert.equal((await item()).status, "draft");
-    branchEvidence.push({ scenario, stages: [...stages], candidateCount: 1 });
+    branchEvidence.push({
+      scenario,
+      stages: [...stages],
+      candidateCount: 0,
+      savedCount: 1,
+    });
     for (const testCase of [
       {
         name: "discussion",
         passes: null,
-        expected: ["discussion", "relay"],
+        expected: ["discussion"],
         writes: 0,
       },
       {
@@ -1120,7 +1197,6 @@ try {
           "create",
           "review",
           "delivery",
-          "relay",
         ],
         writes: 1,
       },
@@ -1141,15 +1217,14 @@ try {
           "prepare",
           "prepare",
           "prepare",
-          "relay",
         ],
         writes: 0,
       },
-      { name: "defer", passes: 2, expected: ["intent", "relay"], writes: 0 },
+      { name: "defer", passes: 2, expected: ["intent"], writes: 0 },
       {
         name: "one-review",
         passes: 1,
-        expected: ["intent", "create", "review", "delivery", "relay"],
+        expected: ["intent", "create", "review", "delivery"],
         writes: 1,
       },
       {
@@ -1162,52 +1237,43 @@ try {
           "revise",
           "review",
           "delivery",
-          "relay",
         ],
         writes: 1,
       },
       {
         name: "blocked",
         passes: 2,
-        expected: ["intent", "create", "review", "relay"],
+        expected: ["intent", "create", "review"],
         writes: 0,
       },
       {
         name: "malformed",
         passes: 1,
-        expected: ["intent", "create", "relay"],
+        expected: ["intent", "create"],
         writes: 0,
       },
       {
         name: "initial-blocked",
         passes: 2,
-        expected: ["intent", "create", "relay"],
+        expected: ["intent", "create"],
         writes: 0,
       },
       {
         name: "revision-blocked",
         passes: 2,
-        expected: ["intent", "create", "review", "revise", "relay"],
+        expected: ["intent", "create", "review", "revise"],
         writes: 0,
       },
       {
         name: "second-review-blocked",
         passes: 2,
-        expected: ["intent", "create", "review", "review", "relay"],
+        expected: ["intent", "create", "review", "review"],
         writes: 0,
       },
       {
         name: "second-revision-blocked",
         passes: 2,
-        expected: [
-          "intent",
-          "create",
-          "review",
-          "revise",
-          "review",
-          "revise",
-          "relay",
-        ],
+        expected: ["intent", "create", "review", "revise", "review", "revise"],
         writes: 0,
       },
       {
@@ -1221,7 +1287,6 @@ try {
           "review",
           "revise",
           "delivery",
-          "relay",
         ],
         writes: 1,
       },
@@ -1230,7 +1295,7 @@ try {
       reviewCount = 0;
       selectionStep = 0;
       preparationStep = 0;
-      const before = (await production()).candidates.length;
+      const beforeItem = await item();
       const start = stages.length;
       // Branches are independent tests, not one growing creative conversation.
       // Give each its real Session so earlier fixture replies do not force
@@ -1261,6 +1326,7 @@ try {
                 ? undefined
                 : {
                     ...generation,
+                    baseRevision: beforeItem.revision,
                     contextRevision: (await production()).revision,
                     maxReviewPasses: testCase.passes,
                   },
@@ -1272,22 +1338,31 @@ try {
         const d = persistedDeliveries().find(
           (d) => d.inputId === branchReceipt.entityId,
         );
-        if (d?.state === "failed")
+        if (d?.state === "failed" && scenario !== "malformed")
           throw new Error(d.error ?? `${scenario} failed`);
+        if (scenario === "malformed") return d?.state === "failed";
         return d?.state === "completed";
       }, scenario);
       const actual = stages.slice(start);
       assert.deepEqual(actual, testCase.expected, scenario);
+      const afterItem = await item();
+      assert.equal((await production()).candidates.length, 0);
       assert.equal(
-        (await production()).candidates.length - before,
+        afterItem.revision - beforeItem.revision,
         testCase.writes,
         scenario,
       );
-      assert.equal(
-        currentScriptDraft(await item()).text,
-        sourceDraft.text,
+      assert.deepEqual(
+        afterItem.versions.slice(0, beforeItem.versions.length),
+        beforeItem.versions,
         scenario,
       );
+      if (!testCase.writes)
+        assert.deepEqual(
+          currentScriptDraft(afterItem),
+          currentScriptDraft(beforeItem),
+          scenario,
+        );
       if (scenario === "chat") {
         const source = pinnedInput(branchReceipt.entityId);
         assert.equal(source.application, undefined);
@@ -1312,7 +1387,9 @@ try {
         assert.equal(
           history.scriptOutputs.filter(
             (o) =>
-              o.inputId === branchReceipt.entityId && o.kind === "candidate",
+              o.inputId === branchReceipt.entityId &&
+              o.kind === "item" &&
+              !o.isEmpty,
           ).length,
           1,
         );
@@ -1344,15 +1421,16 @@ try {
       }
       if (scenario === "both-revisions")
         assert.equal(
-          (await production()).candidates.at(-1)!.draft.text,
+          currentScriptDraft(afterItem).text,
           candidateDraft.text +
             "\n【修订1】保留第一轮修改。\n【修订2】补上第二轮修改。",
-          "Both revisions must reach the single persisted candidate",
+          "Both revisions must reach the single persisted current version",
         );
       branchEvidence.push({
         scenario,
         stages: actual,
-        candidateCount: (await production()).candidates.length - before,
+        candidateCount: 0,
+        savedCount: afterItem.revision - beforeItem.revision,
         ...(scenario === "chat-create"
           ? {
               created: {
@@ -1395,16 +1473,9 @@ try {
       "Malformed Bool fails before submit",
     );
     const completedCalls = providerCalls;
-    const totalCandidates = (await production()).candidates.length;
-    await client.decideScriptCandidate({
-      commandId: randomUUID(),
-      contentId,
-      candidateId: candidate.id,
-      expectedRevision: candidate.revision,
-      decision: "accept",
-    });
-    assert.equal((await item()).revision, 2);
-    assert.equal(currentScriptDraft(await item()).text, candidateDraft.text);
+    const finalRevision = (await item()).revision;
+    assert.equal((await production()).candidates.length, 0);
+    assert.deepEqual((await item()).versions[0]!.draft, sourceDraft);
     const workflow = async () => {
       const original = await item();
       return {
@@ -1436,7 +1507,7 @@ try {
           commandId: randomUUID(),
           contentId,
           itemId: targetId,
-          expectedRevision: 2,
+          expectedRevision: finalRevision,
           draft: sourceDraft,
         }),
       /锁/,
@@ -1446,7 +1517,7 @@ try {
       commandId: randomUUID(),
       contentId,
       expectedRevision: (await client.readScript(contentId)).metadataRevision,
-      items: [{ itemId: targetId, revision: 2 }],
+      items: [{ itemId: targetId, revision: finalRevision }],
       template: p.template,
     });
     const exportId = (exported as { exportId: string }).exportId;
@@ -1488,9 +1559,10 @@ try {
     assert.equal(
       providerCalls,
       completedCalls,
-      "Reopen/retry must not replay the model or duplicate the candidate",
+      "Reopen/retry must not replay the model or duplicate the saved version",
     );
-    assert.equal((await production()).candidates.length, totalCandidates);
+    assert.equal((await production()).candidates.length, 0);
+    assert.equal((await item()).revision, finalRevision);
     assert.equal((await production()).exports.length, 1);
     const evidence = {
       harness: harnessRef,
@@ -1505,7 +1577,8 @@ try {
       contentId,
       targetId,
       inputId: receipt.entityId,
-      candidateId: candidate.id,
+      initialDeliveryCommandId: initialOutput.commandId,
+      finalRevision,
       exportId,
       docxBytes: docx.byteLength,
       docxSha256: createHash("sha256").update(docx).digest("hex"),
@@ -1518,8 +1591,8 @@ try {
         "blocked/malformed outputs stop before submit without redispatch",
         "pinned Session IO input",
         "real Runtime physical Host operations via Unix IPC",
-        "candidate provenance/no formal overwrite",
-        "Human adoption/review/lock/export",
+        "current-body delivery provenance and immutable original version",
+        "Human review/lock/export without candidate adoption",
         "real OOXML bytes",
         "application reopen and no model replay",
       ],

@@ -1,7 +1,6 @@
 (manifest
   (id morphz.script-studio)
-  (version "2.1.0")
-  (entry-result reply)
+  (version "2.2.0")
   (title "剧本工作室 · 创作与版本迭代")
   (capabilities (tools host_morphz)))
 (contract

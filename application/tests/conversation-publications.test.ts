@@ -65,12 +65,88 @@ function renderMessages(history: PlatformHistory, live: LiveMessage[] = []) {
   );
 }
 
+test("仅按同一输入和精确 Plan/effect 来源标记求值已用于回复，不按正文或字段名推断", () => {
+  const source = { plan_execution_id: "plan-1", effect_sequence: 3 };
+  const evaluation = {
+    ...base,
+    id: "evaluation:a",
+    kind: "evaluation" as const,
+    publicationKey: undefined,
+    evaluation: { activationId: "a", validation: "accepted" as const, source },
+  } satisfies LiveMessage;
+  const reply = { ...final, resultSource: { ...source, path: ["answer"] } };
+  const otherEffect = {
+    ...evaluation,
+    id: "evaluation:b",
+    evaluation: {
+      activationId: "b",
+      validation: "accepted" as const,
+      source: { ...source, effect_sequence: 4 },
+    },
+  } satisfies LiveMessage;
+  const otherInput = {
+    ...evaluation,
+    id: "evaluation:c",
+    inputId: "another-input",
+  } satisfies LiveMessage;
+  const messages = renderMessages(
+    page([evaluation, otherEffect, otherInput, reply]),
+  );
+  assert.equal(
+    messages.find((message) => message.id === evaluation.id)?.evaluation
+      ?.consumed,
+    true,
+  );
+  assert.equal(
+    messages.find((message) => message.id === otherEffect.id)?.evaluation
+      ?.consumed,
+    undefined,
+  );
+  assert.equal(
+    messages.find((message) => message.id === otherInput.id)?.evaluation
+      ?.consumed,
+    undefined,
+  );
+  assert.equal(
+    messages.length,
+    4,
+    "a consumed result remains inspectable, never deleted",
+  );
+});
+
 test("formal publication replaces the cached public-output row instead of rendering two pongs", () => {
   const merged = mergePlatformHistories(page([final]), page([partial]));
   assert.deepEqual(merged.runtime.messages, [final]);
   assert.deepEqual(renderMessages(merged, [final]), [final]);
   assert.equal(merged.runtime.messages[0]?.createdAt, visibleAt);
   assert.equal(merged.runtime.messages[0]?.id, `publication:${attempt}`);
+});
+
+test("持久已校验求值不被重连帧的旧前缀倒退，顺序颠倒也保留终值", () => {
+  const source = { plan_execution_id: "p", effect_sequence: 1 };
+  const accepted = {
+    ...base,
+    id: "evaluation:a",
+    kind: "evaluation" as const,
+    sequence: 20,
+    evaluation: { activationId: "a", validation: "accepted" as const, source },
+  };
+  const pending = {
+    ...accepted,
+    sequence: undefined,
+    streaming: true,
+    text: "old prefix",
+    evaluation: { ...accepted.evaluation, validation: "pending" as const },
+  };
+  for (const messages of [
+    [accepted, pending],
+    [pending, accepted],
+  ]) {
+    const rendered = renderMessages(page([]), messages);
+    assert.equal(rendered.length, 1);
+    assert.equal(rendered[0]?.evaluation?.validation, "accepted");
+    assert.equal(rendered[0]?.text, accepted.text);
+  }
 });
 
 test("actual changed-history-head reuse replaces saved prefixes while retaining loaded older rows and cursor", async () => {

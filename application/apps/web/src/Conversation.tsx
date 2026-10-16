@@ -8,6 +8,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
+import { EvaluationMessage } from "./EvaluationMessage.js";
 import { copyText as copyMessage } from "./clipboard-text.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import {
@@ -332,6 +333,12 @@ export function Conversation({
       if (
         !runtime.configured ||
         !delivery ||
+        group.messages.some(
+          (message) =>
+            message.kind === "evaluation" &&
+            message.streaming &&
+            message.text.trim(),
+        ) ||
         !isPendingResponse({
           configured: runtime.configured,
           delivery,
@@ -398,7 +405,9 @@ export function Conversation({
       .filter(
         (entry) =>
           entry.reply?.inputId === input.id &&
-          (entry.reply.kind === "reply" || entry.reply.kind === "error") &&
+          (entry.reply.kind === "reply" ||
+            entry.reply.kind === "error" ||
+            entry.reply.kind === "evaluation") &&
           entry.reply.text.trim(),
       )
       .at(-1);
@@ -415,6 +424,9 @@ export function Conversation({
         inputId: input.id,
         createdAt: input.createdAt,
         ...waiting,
+        ...(latest.reply.kind === "evaluation" && waiting.label === "等待回复…"
+          ? { label: "继续处理中…" }
+          : {}),
       });
       continue;
     }
@@ -1061,7 +1073,23 @@ export function Conversation({
                             : undefined
                         }
                       >
-                        {reply?.tool ? (
+                        {reply?.kind === "evaluation" ? (
+                          <EvaluationMessage
+                            message={reply}
+                            renderText={(text) => (
+                              <SafeMarkdown
+                                state={state}
+                                catalog={client.contentCatalog}
+                                onOpen={onOpen}
+                                streaming={
+                                  !!(streamConnected && reply.streaming)
+                                }
+                              >
+                                {text}
+                              </SafeMarkdown>
+                            )}
+                          />
+                        ) : reply?.tool ? (
                           <ToolMessage message={reply} state={state} />
                         ) : (
                           <>

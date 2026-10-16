@@ -1503,6 +1503,14 @@ enum MachineTerminal {
     Failed { message: String },
 }
 
+/// Provenance of an unchanged value returned by one infer effect. This is
+/// computed by the evaluator, not by comparing text or trusting model tags.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueProvenance {
+    pub effect_sequence: u64,
+    pub path: Vec<String>,
+}
+
 /// Serializable continuation frames.  No frame contains a Future, tool
 /// implementation, model client or database connection.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1520,6 +1528,8 @@ enum MachineFrame {
     },
     RestoreScope {
         saved_env: HashMap<String, JsonValue>,
+        #[serde(default)]
+        saved_provenance: HashMap<String, ValueProvenance>,
     },
     FallbackPrimary {
         backup: PlanNode,
@@ -1553,6 +1563,8 @@ enum MachineFrame {
     TypedFallbackPrimary {
         backup: crate::yao::HirExpr,
         saved_env: HashMap<String, JsonValue>,
+        #[serde(default)]
+        saved_provenance: HashMap<String, ValueProvenance>,
     },
     TypedMapItem {
         items: Vec<JsonValue>,
@@ -1561,6 +1573,8 @@ enum MachineFrame {
         body: crate::yao::HirExpr,
         results: Vec<JsonValue>,
         saved_env: HashMap<String, JsonValue>,
+        #[serde(default)]
+        saved_provenance: HashMap<String, ValueProvenance>,
     },
 }
 
@@ -1579,6 +1593,10 @@ pub struct PlanMachine {
     frames: Vec<MachineFrame>,
     env: HashMap<String, JsonValue>,
     signal: Option<MachineSignal>,
+    #[serde(default)]
+    value_provenance: Option<ValueProvenance>,
+    #[serde(default)]
+    binding_provenance: HashMap<String, ValueProvenance>,
     pending: Option<PlanEffect>,
     terminal: Option<MachineTerminal>,
     declared_tools: Option<Vec<String>>,
@@ -1616,6 +1634,8 @@ impl PlanMachine {
             frames,
             env: HashMap::new(),
             signal: None,
+            value_provenance: None,
+            binding_provenance: HashMap::new(),
             pending: None,
             terminal: None,
             declared_tools: program.declared.clone(),
@@ -1713,6 +1733,8 @@ impl PlanMachine {
             frames: vec![MachineFrame::TypedEval { expression: body }],
             env: self.env.clone(),
             signal: None,
+            value_provenance: None,
+            binding_provenance: self.binding_provenance.clone(),
             pending: None,
             terminal: None,
             declared_tools: self.declared_tools.clone(),
@@ -1819,6 +1841,7 @@ impl PlanMachine {
                                 };
                                 self.frames.push(MachineFrame::RestoreScope {
                                     saved_env: self.env.clone(),
+                                    saved_provenance: self.binding_provenance.clone(),
                                 });
                                 self.frames.push(MachineFrame::Eval { node: selected });
                             }
@@ -1955,11 +1978,15 @@ impl PlanMachine {
                         }
                     }
                 }
-                MachineFrame::RestoreScope { saved_env } => {
+                MachineFrame::RestoreScope {
+                    saved_env,
+                    saved_provenance,
+                } => {
                     if self.signal.is_none() {
                         return self.fail_internal("local scope ended without a result");
                     }
                     self.env = saved_env;
+                    self.binding_provenance = saved_provenance;
                 }
                 MachineFrame::FallbackPrimary { backup, saved_env } => {
                     let Some(signal) = self.signal.take() else {
@@ -1969,7 +1996,10 @@ impl PlanMachine {
                     match signal {
                         value @ MachineSignal::Value { .. } => self.signal = Some(value),
                         MachineSignal::Failure { .. } => {
-                            self.frames.push(MachineFrame::RestoreScope { saved_env });
+                            self.frames.push(MachineFrame::RestoreScope {
+                                saved_env,
+                                saved_provenance: self.binding_provenance.clone(),
+                            });
                             self.frames.push(MachineFrame::Eval { node: backup });
                         }
                     }
@@ -2044,6 +2074,9 @@ impl PlanMachine {
                                     "typed binding '{name}' attempted to shadow an existing binding"
                                 )));
                             } else {
+                                if let Some(source) = self.value_provenance.take() {
+                                    self.binding_provenance.insert(name, source);
+                                }
                                 self.signal = Some(MachineSignal::Value {
                                     value: JsonValue::Null,
                                 });
@@ -2052,15 +2085,24 @@ impl PlanMachine {
                         failure @ MachineSignal::Failure { .. } => self.signal = Some(failure),
                     }
                 }
-                MachineFrame::TypedFallbackPrimary { backup, saved_env } => {
+                MachineFrame::TypedFallbackPrimary {
+                    backup,
+                    saved_env,
+                    saved_provenance,
+                } => {
                     let Some(signal) = self.signal.take() else {
                         return self.fail_internal("typed fallback primary is missing its result");
                     };
                     self.env = saved_env.clone();
+                    self.binding_provenance = saved_provenance.clone();
                     match signal {
                         value @ MachineSignal::Value { .. } => self.signal = Some(value),
                         MachineSignal::Failure { .. } => {
-                            self.frames.push(MachineFrame::RestoreScope { saved_env });
+                            self.value_provenance = None;
+                            self.frames.push(MachineFrame::RestoreScope {
+                                saved_env,
+                                saved_provenance,
+                            });
                             self.frames
                                 .push(MachineFrame::TypedEval { expression: backup });
                         }
@@ -2073,16 +2115,19 @@ impl PlanMachine {
                     body,
                     mut results,
                     saved_env,
+                    saved_provenance,
                 } => {
                     let Some(signal) = self.signal.take() else {
                         return self.fail_internal("typed map body is missing its result");
                     };
                     self.env = saved_env.clone();
+                    self.binding_provenance = saved_provenance.clone();
                     match signal {
                         MachineSignal::Failure { message } => {
                             self.signal = Some(MachineSignal::Failure { message });
                         }
                         MachineSignal::Value { value } => {
+                            self.value_provenance = None;
                             results.push(value);
                             if next >= items.len() {
                                 self.signal = Some(MachineSignal::Value {
@@ -2090,6 +2135,7 @@ impl PlanMachine {
                                 });
                             } else {
                                 self.env.insert(element.clone(), items[next].clone());
+                                self.binding_provenance.remove(&element);
                                 self.frames.push(MachineFrame::TypedMapItem {
                                     items,
                                     next: next + 1,
@@ -2097,6 +2143,7 @@ impl PlanMachine {
                                     body: body.clone(),
                                     results,
                                     saved_env,
+                                    saved_provenance,
                                 });
                                 self.frames
                                     .push(MachineFrame::TypedEval { expression: body });
@@ -2116,9 +2163,24 @@ impl PlanMachine {
         expression: crate::yao::HirExpr,
         registry: &Registry,
     ) -> Option<PlanAdvance> {
-        if expression.effects.is_empty() {
+        if expression.effects.is_empty()
+            && !matches!(
+                expression.kind,
+                crate::yao::HirKind::Seq { .. }
+                    | crate::yao::HirKind::Bind { .. }
+                    | crate::yao::HirKind::If { .. }
+                    | crate::yao::HirKind::Match { .. }
+                    | crate::yao::HirKind::FunctionApplication { .. }
+                    | crate::yao::HirKind::Fallback { .. }
+                    | crate::yao::HirKind::Map { .. }
+            )
+        {
+            let source = self.provenance_for(&expression);
             match crate::yao::evaluate_pure(&expression, &mut self.env, &self.typed_definitions) {
-                Ok(value) => self.signal = Some(MachineSignal::Value { value }),
+                Ok(value) => {
+                    self.value_provenance = source;
+                    self.signal = Some(MachineSignal::Value { value });
+                }
                 Err(error) => self.raise(EvalError::from(format!("Yao value failure: {error}"))),
             }
             return None;
@@ -2153,6 +2215,7 @@ impl PlanMachine {
                         let selected = if value { *when_true } else { *when_false };
                         self.frames.push(MachineFrame::RestoreScope {
                             saved_env: self.env.clone(),
+                            saved_provenance: self.binding_provenance.clone(),
                         });
                         self.frames.push(MachineFrame::TypedEval {
                             expression: selected,
@@ -2167,6 +2230,7 @@ impl PlanMachine {
                 }
             }
             crate::yao::HirKind::Match { value, cases } => {
+                let matched_source = self.provenance_for(&value);
                 match crate::yao::evaluate_pure(&value, &mut self.env, &self.typed_definitions) {
                     Ok(value) => {
                         let Some((variant, fields)) = crate::yao::variant_view(&value) else {
@@ -2183,6 +2247,7 @@ impl PlanMachine {
                             return None;
                         };
                         let saved_env = self.env.clone();
+                        let saved_provenance = self.binding_provenance.clone();
                         for binding in case.bindings {
                             let Some(value) = fields.get(&binding.field).cloned() else {
                                 self.raise(EvalError::from(format!(
@@ -2191,9 +2256,18 @@ impl PlanMachine {
                                 )));
                                 return None;
                             };
+                            self.binding_provenance.remove(&binding.binding);
+                            if let Some(mut source) = matched_source.clone() {
+                                source.path.push(binding.field.clone());
+                                self.binding_provenance
+                                    .insert(binding.binding.clone(), source);
+                            }
                             self.env.insert(binding.binding, value);
                         }
-                        self.frames.push(MachineFrame::RestoreScope { saved_env });
+                        self.frames.push(MachineFrame::RestoreScope {
+                            saved_env,
+                            saved_provenance,
+                        });
                         self.frames.push(MachineFrame::TypedEval {
                             expression: case.body,
                         });
@@ -2207,6 +2281,7 @@ impl PlanMachine {
                 self.frames.push(MachineFrame::TypedFallbackPrimary {
                     backup: *backup,
                     saved_env: self.env.clone(),
+                    saved_provenance: self.binding_provenance.clone(),
                 });
                 self.frames.push(MachineFrame::TypedEval {
                     expression: *primary,
@@ -2220,12 +2295,15 @@ impl PlanMachine {
                 match crate::yao::evaluate_pure(&collection, &mut self.env, &self.typed_definitions)
                 {
                     Ok(JsonValue::Array(items)) if items.len() <= MAX_MAP_ELEMENTS => {
+                        self.value_provenance = None;
                         if items.is_empty() {
                             self.signal = Some(MachineSignal::Value {
                                 value: JsonValue::Array(Vec::new()),
                             });
                         } else {
                             let saved_env = self.env.clone();
+                            let saved_provenance = self.binding_provenance.clone();
+                            self.binding_provenance.remove(&element);
                             self.env.insert(element.clone(), items[0].clone());
                             self.frames.push(MachineFrame::TypedMapItem {
                                 items,
@@ -2234,6 +2312,7 @@ impl PlanMachine {
                                 body: *body.clone(),
                                 results: Vec::new(),
                                 saved_env,
+                                saved_provenance,
                             });
                             self.frames
                                 .push(MachineFrame::TypedEval { expression: *body });
@@ -2281,35 +2360,51 @@ impl PlanMachine {
                 arguments,
                 parameters,
                 body,
-            } => match build_typed_arguments(&arguments, &mut self.env, &self.typed_definitions) {
-                Ok(mut arguments) => {
-                    let saved_env = self.env.clone();
-                    let mut local = HashMap::new();
-                    if let Some(runtime) = saved_env.get("runtime") {
-                        local.insert("runtime".to_string(), runtime.clone());
-                    }
-                    for parameter in parameters {
-                        let Some(value) = arguments.remove(&parameter) else {
-                            self.raise(EvalError::from(format!(
+            } => {
+                let local_provenance = arguments
+                    .iter()
+                    .filter_map(|argument| {
+                        (argument.values.len() == 1)
+                            .then(|| self.provenance_for(&argument.values[0]))
+                            .flatten()
+                            .map(|source| (argument.name.clone(), source))
+                    })
+                    .collect();
+                match build_typed_arguments(&arguments, &mut self.env, &self.typed_definitions) {
+                    Ok(mut arguments) => {
+                        let saved_env = self.env.clone();
+                        let saved_provenance = self.binding_provenance.clone();
+                        let mut local = HashMap::new();
+                        if let Some(runtime) = saved_env.get("runtime") {
+                            local.insert("runtime".to_string(), runtime.clone());
+                        }
+                        for parameter in parameters {
+                            let Some(value) = arguments.remove(&parameter) else {
+                                self.raise(EvalError::from(format!(
                                 "function '{function}' is missing linked argument '{parameter}'"
                             )));
-                            return None;
-                        };
-                        local.insert(parameter, value);
-                    }
-                    if let Some(unexpected) = arguments.keys().next() {
-                        self.raise(EvalError::from(format!(
+                                return None;
+                            };
+                            local.insert(parameter, value);
+                        }
+                        if let Some(unexpected) = arguments.keys().next() {
+                            self.raise(EvalError::from(format!(
                             "function '{function}' received unexpected linked argument '{unexpected}'"
                         )));
-                        return None;
+                            return None;
+                        }
+                        self.env = local;
+                        self.binding_provenance = local_provenance;
+                        self.frames.push(MachineFrame::RestoreScope {
+                            saved_env,
+                            saved_provenance,
+                        });
+                        self.frames
+                            .push(MachineFrame::TypedEval { expression: *body });
                     }
-                    self.env = local;
-                    self.frames.push(MachineFrame::RestoreScope { saved_env });
-                    self.frames
-                        .push(MachineFrame::TypedEval { expression: *body });
+                    Err(error) => self.raise(error),
                 }
-                Err(error) => self.raise(error),
-            },
+            }
             crate::yao::HirKind::InferBody {
                 body,
                 captures,
@@ -2569,6 +2664,11 @@ impl PlanMachine {
             ));
         }
         let effect = self.pending.take().expect("checked above");
+        self.value_provenance = (outcome.is_ok() && matches!(effect, PlanEffect::Infer { .. }))
+            .then(|| ValueProvenance {
+                effect_sequence: sequence,
+                path: Vec::new(),
+            });
         self.signal = Some(match outcome {
             Ok(value) => MachineSignal::Value { value },
             Err(message) => MachineSignal::Failure {
@@ -2585,9 +2685,30 @@ impl PlanMachine {
     }
 
     fn raise(&mut self, error: EvalError) {
+        self.value_provenance = None;
         self.signal = Some(MachineSignal::Failure {
             message: error.message,
         });
+    }
+
+    pub fn result_provenance(&self) -> Option<&ValueProvenance> {
+        self.value_provenance.as_ref()
+    }
+
+    fn provenance_for(&self, expression: &crate::yao::HirExpr) -> Option<ValueProvenance> {
+        match &expression.kind {
+            crate::yao::HirKind::Reference { root, path } => {
+                let mut source = self.binding_provenance.get(root)?.clone();
+                source.path.extend(path.iter().flatten().cloned());
+                Some(source)
+            }
+            crate::yao::HirKind::Get { value, field } => {
+                let mut source = self.provenance_for(value)?;
+                source.path.push(field.clone());
+                Some(source)
+            }
+            _ => None,
+        }
     }
 
     fn fail_internal(&mut self, message: impl Into<String>) -> PlanAdvance {
@@ -4582,6 +4703,71 @@ mod tests {
             machine.advance(&registry),
             PlanAdvance::Complete(serde_json::json!(42))
         );
+    }
+
+    #[test]
+    fn infer_value_provenance_survives_alias_function_tail_and_restart_not_transformation() {
+        use serde_json::json;
+
+        let registry = fixture(&[]).0;
+        let source = r#"(eval (requires (tools))
+            (types (record Decision (execute Bool) (reply String)))
+            (seq
+                (bind decision (infer (returns Decision) "decide"))
+                (bind alias decision)
+                (if alias.execute "work" (unwrap (decision alias)))))"#;
+        let functions = vec![
+            r#"(fn unwrap (params (decision Decision)) (returns String) (body decision.reply))"#
+                .to_string(),
+        ];
+        let program = validate_with_functions(
+            source,
+            &functions,
+            true,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let mut machine = PlanMachine::new(&program).unwrap();
+        let PlanAdvance::Suspended(PlanEffect::Infer {
+            sequence, result, ..
+        }) = machine.advance(&registry)
+        else {
+            panic!("infer");
+        };
+        let decoded = decode_infer_result(
+            result,
+            JsonValue::String(r#"{"execute":false,"reply":"same words"}"#.into()),
+        )
+        .unwrap();
+        machine.resume_effect(sequence, Ok(decoded)).unwrap();
+        let mut machine: PlanMachine =
+            serde_json::from_value(serde_json::to_value(machine).unwrap()).unwrap();
+        assert_eq!(
+            machine.advance(&registry),
+            PlanAdvance::Complete(json!("same words"))
+        );
+        assert_eq!(
+            machine.result_provenance(),
+            Some(&ValueProvenance {
+                effect_sequence: sequence,
+                path: vec!["reply".into()]
+            })
+        );
+        let program = validate(
+            "(eval (seq (bind score (infer (returns Int) \"score\")) (add score 1)))",
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let mut machine = PlanMachine::new(&program).unwrap();
+        let PlanAdvance::Suspended(PlanEffect::Infer { sequence, .. }) = machine.advance(&registry)
+        else {
+            panic!("infer");
+        };
+        machine.resume_effect(sequence, Ok(json!(41))).unwrap();
+        assert_eq!(machine.advance(&registry), PlanAdvance::Complete(json!(42)));
+        assert_eq!(machine.result_provenance(), None);
     }
 
     #[test]

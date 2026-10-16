@@ -610,7 +610,7 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
-                    "20261013_03_provider_resume_timeline",
+                    "20261016_01_evaluation_results_timeline",
                     store.migrate_session_timeline(),
                 )
                 .await?;

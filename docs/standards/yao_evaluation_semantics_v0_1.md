@@ -6,7 +6,7 @@
 >
 > Canonical language: English
 >
-> Last updated: 2026-09-20
+> Last updated: 2026-10-16
 >
 > Chinese translation: [zh-CN](zh-CN/yao_evaluation_semantics_v0_1.md)
 
@@ -35,6 +35,29 @@ Outcome.
 
 The Runtime Control Loop always owns admission, capability settlement, physical execution,
 persistence, recovery, approval, cancellation, budgets, and delivery.
+
+### 2.1 Values, tail positions, and delivery
+
+Every invocation returns its typed value to its actual continuation. The last expression of
+seq, the selected tail branch of if/match, and a function's tail expression pass the same
+return destination. Infer, eval, and run do not acquire publication authority merely because
+their result is a String. A nested call resumes its caller; a root Evaluation settles its
+root result through its existing delivery route. A Runtime-owned Harness entry is that root
+program, not a synthetic tool result requiring another model to paraphrase it. A model-owned
+Harness root delegates its body through the same durable invocation and typed result contract.
+Package metadata MUST NOT select a separate return/reply policy.
+
+Result visibility is independent of tail position and subsequent computation. Authorized
+model output MAY be streamed as a distinct evaluation-result message. It remains a candidate
+until terminal decoding/admission succeeds. It MUST NOT settle the parent wait, complete an
+Objective, expose hidden reasoning or model-request snapshots, or disguise transport JSON
+as an ordinary assistant reply. A visible structured value is data, never executable source.
+
+Runtime Events remain authoritative. A rebuildable, bounded Session timeline projects display
+identity and first-visible time without introducing a second message database. Exact source
+provenance, not equal prose or a field called "reply", relates a displayed value to a final
+reply. Cancellation, generation fences, immutable packages and existing invocation identities
+remain binding across replay and recovery.
 
 ## 3. Compilation pipeline
 

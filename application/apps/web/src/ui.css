@@ -973,13 +973,22 @@ body:has(dialog[open]) .cognitive-application-frame {
   border-radius: 50%;
   background: currentColor;
 }
-.response-placeholder[data-animated="true"] .response-dots i {
+.response-placeholder[data-animated="true"] .response-dots i,
+.evaluation-message > summary[data-animated="true"] .response-dots i {
   animation: response-waiting-pulse 1.4s ease-in-out infinite;
 }
-.response-placeholder[data-animated="true"] .response-dots i:nth-child(2) {
+.response-placeholder[data-animated="true"] .response-dots i:nth-child(2),
+.evaluation-message
+  > summary[data-animated="true"]
+  .response-dots
+  i:nth-child(2) {
   animation-delay: 160ms;
 }
-.response-placeholder[data-animated="true"] .response-dots i:nth-child(3) {
+.response-placeholder[data-animated="true"] .response-dots i:nth-child(3),
+.evaluation-message
+  > summary[data-animated="true"]
+  .response-dots
+  i:nth-child(3) {
   animation-delay: 320ms;
 }
 @keyframes response-waiting-pulse {
@@ -993,7 +1002,8 @@ body:has(dialog[open]) .cognitive-application-frame {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .response-placeholder[data-animated="true"] .response-dots i {
+  .response-placeholder[data-animated="true"] .response-dots i,
+  .evaluation-message > summary[data-animated="true"] .response-dots i {
     animation: none;
   }
 }
@@ -1323,6 +1333,58 @@ body:has(dialog[open]) .cognitive-application-frame {
 .conversation .agent-reply.tool {
   width: 94%;
   margin-bottom: 8px;
+}
+.evaluation-message {
+  border-inline-start: 2px solid var(--line);
+  padding-inline-start: 12px;
+  min-width: 0;
+}
+.evaluation-message > summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: fit-content;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 24px;
+  cursor: pointer;
+}
+.evaluation-message > summary small {
+  font-size: 11px;
+}
+.evaluation-chevron {
+  flex: 0 0 auto;
+}
+.evaluation-message[open] > summary .evaluation-chevron {
+  transform: rotate(90deg);
+}
+.evaluation-value {
+  padding-block: 4px 0;
+  overflow-wrap: anywhere;
+}
+.evaluation-value dl,
+.evaluation-value dd {
+  margin: 0;
+}
+.evaluation-value dl > div {
+  margin-block: 0 8px;
+  min-width: 0;
+}
+.evaluation-value dt {
+  color: var(--muted);
+  font: 11px/1.5 var(--font-mono, monospace);
+}
+.evaluation-value dd > :first-child {
+  margin-top: 0;
+}
+.evaluation-value dd > :last-child {
+  margin-bottom: 0;
+}
+.evaluation-value pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 18em;
+  overflow: auto;
 }
 .message-tool {
   font-size: 12px;

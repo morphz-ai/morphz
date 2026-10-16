@@ -3642,7 +3642,7 @@ async fn migrate_event_causal_columns(
 async fn migrate_session_timeline(
     pool: &SqlitePool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    const VERSION: &str = "20261013_03_provider_resume_timeline";
+    const VERSION: &str = "20261016_01_evaluation_results_timeline";
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS session_message_timeline (\
            session_id TEXT NOT NULL, entry_id TEXT NOT NULL, \

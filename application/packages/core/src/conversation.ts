@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  evaluationResultSchema,
+  evaluationSourceSchema,
+} from "./evaluation-result.js";
 import { providerRecoverySchema } from "./provider-recovery.js";
 import { executionAttentionSchema } from "./execution.js";
 import { continuationSchema } from "./continuation.js";
@@ -181,7 +185,11 @@ export const conversationRuntimeSchema = z.object({
       sequence: z.number().int().nonnegative().optional(),
       text: z.string(),
       createdAt: z.string(),
-      kind: z.enum(["reply", "progress", "error"]),
+      kind: z.enum(["reply", "progress", "error", "evaluation"]),
+      evaluation: evaluationResultSchema.optional(),
+      resultSource: evaluationSourceSchema
+        .extend({ path: z.array(z.string()).optional() })
+        .optional(),
     }),
   ),
 });
