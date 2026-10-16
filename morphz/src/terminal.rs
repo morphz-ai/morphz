@@ -43,6 +43,26 @@ pub enum TerminalHumanAction {
     Resize { rows: u16, cols: u16 },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalHumanOpen {
+    pub command_id: String,
+    pub scope_ref: String,
+}
+struct TerminalCreator {
+    id: String,
+    session_id: String,
+    context_id: String,
+    principal_id: String,
+    target_id: String,
+    root_turn_id: Option<String>,
+    source_job_id: Option<String>,
+    scope_ref: Option<String>,
+    creation_command_id: Option<String>,
+    creation_request_hash: Option<String>,
+    agent: bool,
+}
+
 struct ControlIdentity<'a> {
     session: &'a str,
     context: &'a str,
@@ -354,6 +374,78 @@ fn screen_snapshot(state: &mut ScreenState, scrollback: usize) -> TerminalScreen
 }
 
 impl TerminalManager {
+    pub async fn human_open(
+        self: &Arc<Self>,
+        principal: &str,
+        session: &str,
+        context: &str,
+        request: TerminalHumanOpen,
+    ) -> Result<TerminalView, Error> {
+        self.authorize(session, context, principal).await?;
+        if request.command_id.is_empty()
+            || request.command_id.len() > 128
+            || !request
+                .command_id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            || request.scope_ref.len() != 64
+            || !request.scope_ref.bytes().all(|c| c.is_ascii_hexdigit())
+        {
+            return Err("invalid terminal creation identity".into());
+        }
+        let session_record = self
+            .store
+            .get_session(session)
+            .await?
+            .ok_or("terminal Session not found")?;
+        let target = session_record
+            .default_target_id
+            .as_deref()
+            .unwrap_or(crate::execution_target::DEFAULT_EXECUTION_TARGET_ID);
+        if target != crate::execution_target::DEFAULT_EXECUTION_TARGET_ID {
+            return Err("remote terminal PTY is not implemented; no local fallback".into());
+        }
+        let id = format!(
+            "terminal-human-{:x}",
+            Sha256::digest(serde_json::to_vec(&(
+                principal,
+                session,
+                &request.command_id
+            ))?)
+        );
+        let hash = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&(
+                principal, session, context, &request
+            ))?)
+        );
+        let cwd = self
+            .permissions
+            .profile_for_session(session)
+            .workspace_root
+            .to_string_lossy()
+            .into_owned();
+        self.open_resource(
+            TerminalCreator {
+                id,
+                session_id: session.into(),
+                context_id: context.into(),
+                principal_id: principal.into(),
+                target_id: target.into(),
+                root_turn_id: None,
+                source_job_id: None,
+                scope_ref: Some(request.scope_ref),
+                creation_command_id: Some(request.command_id),
+                creation_request_hash: Some(hash),
+                agent: false,
+            },
+            "终端".into(),
+            cwd,
+            24,
+            80,
+        )
+        .await
+    }
     /// Authenticated Human control shares the physical lock, revision, policy
     /// and uncertain-input boundary with Agent Jobs; it never impersonates one.
     pub async fn human_control(
@@ -659,7 +751,68 @@ impl TerminalManager {
         rows: u16,
         cols: u16,
     ) -> Result<TerminalView, Error> {
+        let principal = caller
+            .initiating_principal_id
+            .clone()
+            .ok_or("missing Principal")?;
+        let root = self
+            .source
+            .get()
+            .ok_or("terminal input provenance resolver is unavailable")?(
+            caller.clone()
+        )
+        .await?;
+        self.open_resource(
+            TerminalCreator {
+                id: format!("terminal-{}", caller.parent_job_id),
+                session_id: caller.session_id.clone(),
+                context_id: caller.context_id.clone(),
+                principal_id: principal,
+                target_id: caller.target_id.clone(),
+                root_turn_id: Some(root),
+                source_job_id: Some(caller.parent_job_id.clone()),
+                scope_ref: None,
+                creation_command_id: None,
+                creation_request_hash: None,
+                agent: true,
+            },
+            title,
+            cwd,
+            rows,
+            cols,
+        )
+        .await
+    }
+
+    async fn open_resource(
+        self: &Arc<Self>,
+        caller: TerminalCreator,
+        title: String,
+        cwd: String,
+        rows: u16,
+        cols: u16,
+    ) -> Result<TerminalView, Error> {
         let _guard = self.opens.lock().await;
+        self.authorize(&caller.session_id, &caller.context_id, &caller.principal_id)
+            .await?;
+        if let Some(existing) = self.store.terminal(&caller.id).await? {
+            if existing.session_id != caller.session_id
+                || existing.principal_id != caller.principal_id
+                || existing.context_id != caller.context_id
+                || existing.creation_request_hash != caller.creation_request_hash
+            {
+                return Err("terminal creation command identity conflict".into());
+            }
+            return self
+                .view(
+                    &caller.id,
+                    &caller.session_id,
+                    &caller.context_id,
+                    &caller.principal_id,
+                    0,
+                )
+                .await;
+        }
         let pty_size = size(rows, cols)?;
         #[cfg(not(unix))]
         return Err("sandboxed interactive PTY startup is not implemented on this platform".into());
@@ -741,29 +894,30 @@ impl TerminalManager {
             if prepared.startup_stdin.is_some() {
                 return Err("this native sandbox requires a separate trusted startup pipe; PTY startup is not supported, refusing fallback".into());
             }
-            let principal = caller
-                .initiating_principal_id
-                .clone()
-                .ok_or("missing Principal")?;
-            // Objective/child Threads can have synthetic execution roots. Reuse
-            // Runtime's owner-resolved original input, not a UI-selected project
-            // or a guess from that synthetic root.
-            let root = self
-                .source
-                .get()
-                .ok_or("terminal input provenance resolver is unavailable")?(
-                caller.clone()
-            )
-            .await?;
-            let id = format!("terminal-{}", caller.parent_job_id);
+            let principal = caller.principal_id.clone();
+            let id = caller.id.clone();
+            let title = if caller.agent {
+                title
+            } else {
+                format!(
+                    "终端 {}",
+                    self.store
+                        .terminal_count(&caller.session_id, &caller.context_id, &principal)
+                        .await?
+                        + 1
+                )
+            };
             let created_at = now();
             let mut record = TerminalSessionRecord {
                 id: id.clone(),
                 session_id: caller.session_id.clone(),
                 context_id: caller.context_id.clone(),
                 principal_id: principal.clone(),
-                root_turn_id: root,
-                source_job_id: caller.parent_job_id.clone(),
+                root_turn_id: caller.root_turn_id.clone(),
+                source_job_id: caller.source_job_id.clone(),
+                scope_ref: caller.scope_ref.clone(),
+                creation_command_id: caller.creation_command_id.clone(),
+                creation_request_hash: caller.creation_request_hash.clone(),
                 target_id: caller.target_id.clone(),
                 owner_instance_id: self.instance_id.clone(),
                 lease_expires_at: (chrono::Utc::now() + chrono::Duration::seconds(20)).to_rfc3339(),
@@ -794,7 +948,12 @@ impl TerminalManager {
                     .view(&id, &caller.session_id, &caller.context_id, &principal, 0)
                     .await;
             }
-            self.caller().await?;
+            if caller.agent {
+                self.caller().await?;
+            } else {
+                self.authorize(&caller.session_id, &caller.context_id, &principal)
+                    .await?;
+            }
             if policy_hash(&self.permissions.profile_for_session(&caller.session_id))
                 != record.policy_hash
             {
@@ -1317,6 +1476,7 @@ impl Tool for TerminalTool {
                         context_id: caller.context_id.clone(),
                         principal_id: principal.into(),
                         root_ids: None,
+                        scope_ref: None,
                         limit: 51,
                     })
                     .await?;
@@ -1650,6 +1810,125 @@ mod tests {
             .await
             .unwrap()
         }
+    }
+
+    #[tokio::test]
+    async fn terminal_human_create_uses_real_provenance_without_agent_job_or_message() {
+        let f = Fixture::new().await;
+        human_creation_contract(&f).await;
+    }
+
+    async fn human_creation_contract(f: &Fixture) {
+        let principal = f.caller.initiating_principal_id.as_deref().unwrap();
+        let session = &f.caller.session_id;
+        let context = &f.caller.context_id;
+        let request = TerminalHumanOpen {
+            command_id: "human-open-once".into(),
+            scope_ref: "a".repeat(64),
+        };
+        let jobs = || {
+            f.store
+                .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                    session_id: Some(session.clone()),
+                    include_terminal: true,
+                    ..Default::default()
+                })
+        };
+        let before = jobs().await.unwrap().len();
+        let first = f
+            .manager
+            .human_open(principal, session, context, request.clone())
+            .await
+            .unwrap();
+        assert!(first.connected);
+        assert_eq!(first.terminal.root_turn_id, None);
+        assert_eq!(first.terminal.source_job_id, None);
+        assert_eq!(
+            first.terminal.creation_command_id.as_deref(),
+            Some("human-open-once")
+        );
+        assert_eq!(first.terminal.scope_ref, Some("a".repeat(64)));
+        assert_eq!(first.terminal.sandbox_status, "enforced");
+        assert_eq!(
+            std::fs::canonicalize(&first.terminal.cwd).unwrap(),
+            std::fs::canonicalize(f._directory.path()).unwrap()
+        );
+        let again = f
+            .manager
+            .human_open(principal, session, context, request.clone())
+            .await
+            .unwrap();
+        assert_eq!(again.terminal.id, first.terminal.id);
+        assert_eq!(f.manager.live.lock().unwrap().len(), 1);
+        let filter = |scope| TerminalSessionFilter {
+            session_id: session.clone(),
+            context_id: context.clone(),
+            principal_id: principal.into(),
+            root_ids: Some(vec![]),
+            scope_ref: scope,
+            limit: 50,
+        };
+        assert_eq!(
+            f.manager
+                .list(&filter(Some("a".repeat(64))))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(f
+            .manager
+            .list(&filter(Some("b".repeat(64))))
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(f.manager.list(&filter(None)).await.unwrap().is_empty());
+        assert!(f
+            .manager
+            .human_open(
+                principal,
+                session,
+                context,
+                TerminalHumanOpen {
+                    scope_ref: "b".repeat(64),
+                    ..request.clone()
+                }
+            )
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("identity conflict"));
+        assert!(f
+            .manager
+            .human_open("foreign-human", session, context, request.clone())
+            .await
+            .is_err());
+        assert_eq!(
+            jobs().await.unwrap().len(),
+            before,
+            "direct creation does not invent an Agent Job"
+        );
+        // The Agent's existing tool can operate the same physical PTY. It is
+        // not a renderer-owned shell or a second implementation of execution.
+        f.write(
+            &first.terminal.id,
+            "printf '\\n__AGENT_ON_HUMAN_TERMINAL__\\n'",
+        )
+        .await;
+        f.wait_line(&first.terminal.id, "__AGENT_ON_HUMAN_TERMINAL__")
+            .await;
+        let successor = TerminalManager::new(f.store.clone(), f.manager.permissions.clone());
+        let checkpoint = successor
+            .human_open(principal, session, context, request)
+            .await
+            .unwrap();
+        assert!(!checkpoint.connected);
+        assert!(checkpoint.checkpoint);
+        assert_eq!(checkpoint.terminal.id, first.terminal.id);
+        assert!(
+            successor.live.lock().unwrap().is_empty(),
+            "a durable creation identity never respawns on a new Runtime owner"
+        );
     }
 
     #[tokio::test]
@@ -2063,6 +2342,7 @@ mod tests {
                 context_id: record.context_id.clone(),
                 principal_id: record.principal_id.clone(),
                 root_ids: Some(vec!["not-this-root".into()]),
+                scope_ref: None,
                 limit: 1,
             })
             .await
@@ -2171,6 +2451,7 @@ mod tests {
                 .unwrap(),
         );
         let f = Fixture::with_store(directory, store).await;
+        human_creation_contract(&f).await;
         let record = f.open().await;
         let args = json!({"action":"write","terminal_id":record.id,"expected_revision":record.revision,"text":"printf x >> pg-once.txt; printf '\\n__PG_READY__\\n'"});
         let caller = f.job(&args).await;
@@ -2187,7 +2468,8 @@ mod tests {
                 session_id: record.session_id.clone(),
                 context_id: record.context_id.clone(),
                 principal_id: record.principal_id.clone(),
-                root_ids: Some(vec![record.root_turn_id.clone()]),
+                root_ids: Some(vec![record.root_turn_id.clone().unwrap()]),
+                scope_ref: None,
                 limit: 1,
             })
             .await

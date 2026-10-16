@@ -39,6 +39,10 @@ import { ArtifactEditor } from "./ArtifactEditor.js";
 import { ComposerActionBar } from "./ComposerActionBar.js";
 import { ComposerStatus } from "./ComposerStatus.js";
 import { ComposerScope } from "./ComposerScope.js";
+import {
+  composerTerminalContext,
+  type TerminalContext,
+} from "./features/terminal/terminal-context.js";
 import { ComposerExecutionSettings } from "./ComposerExecutionSettings.js";
 import { ConnectionDetails } from "./ConnectionDetails.js";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
@@ -606,6 +610,8 @@ function WorkspaceApp({
     // caller's full-history view and no subsequent state update is scheduled.
     openingObject;
   const [browserPage, setBrowserPage] = useState<BrowserView | null>(null);
+  const [terminalContext, setTerminalContext] =
+    useState<TerminalContext | null>(null);
   const [attachmentSlot, setAttachmentSlot] = useState<HTMLDivElement | null>(
     null,
   );
@@ -2107,6 +2113,15 @@ function WorkspaceApp({
   });
   // A personal desk remains the real input owner, but is not an explicit
   // project association. Named conversations already belong to a project.
+  const associatedTerminal =
+    !artifact && !deliveredScript && !draft.continuation && !cognitiveRequested
+      ? composerTerminalContext(
+          activeInstance ?? undefined,
+          project.id,
+          conversationId,
+          terminalContext,
+        )
+      : null;
   const showPlainComposerScope = !!(
     draft.cognitiveApplication ||
     cognitiveRequested ||
@@ -2114,6 +2129,7 @@ function WorkspaceApp({
     artifact ||
     deliveredScript ||
     activeInstance?.applicationId === browserApplication.id ||
+    associatedTerminal ||
     spaceKind(project) === "project"
   );
   const composerScopeTitle =
@@ -2126,9 +2142,11 @@ function WorkspaceApp({
     deliveredScript?.production.title ??
     (activeInstance?.applicationId === browserApplication.id
       ? browserPage?.title || "浏览器"
-      : spaceKind(project) === "project"
-        ? project.title
-        : "无项目");
+      : associatedTerminal
+        ? associatedTerminal.label
+        : spaceKind(project) === "project"
+          ? project.title
+          : "无项目");
   let cognitiveInputTarget: CognitiveAppApplicationTarget | undefined;
   try {
     guardCognitiveAppApplicationCommand({ operation: draft });
@@ -2164,7 +2182,8 @@ function WorkspaceApp({
         ? composerIntentLabel +
           (showPlainComposerScope ? ` · ${composerScopeTitle}` : "")
         : composerScopeTitle)) +
-    (draft.revision ? " · v" + draft.revision : "");
+    (draft.revision ? " · v" + draft.revision : "") +
+    (associatedTerminal ? ` · ${associatedTerminal.description}` : "");
   const cognitiveInputUnavailable =
     cognitiveInputTarget &&
     (!cognitiveInputEntry ||
@@ -2445,6 +2464,7 @@ function WorkspaceApp({
     onNativeDialog: setNativeExportDialog,
     onInput: showInput,
     onBrowserPage: setBrowserPage,
+    onTerminalContext: setTerminalContext,
     scriptLocation: deliveredScript
       ? (prefs.scriptLocation ?? undefined)
       : undefined,

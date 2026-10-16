@@ -815,6 +815,10 @@ export class HttpApplicationClient {
         path = "/api/terminals/commands";
         post(params);
         break;
+      case "terminal.open":
+        path = "/api/terminals/open";
+        post(params);
+        break;
       case "terminal.read": {
         const p = fields(params);
         path =

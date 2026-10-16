@@ -212,6 +212,7 @@ export const applicationMethods = [
   "terminal.catalog",
   "terminal.read",
   "terminal.command",
+  "terminal.open",
   "execution.result",
   "execution.control",
   "task.snapshot",

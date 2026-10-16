@@ -1,18 +1,18 @@
 .terminal-app {
-  /* Catppuccin Latte / Mocha: https://catppuccin.com/palette/ (MIT).
-     Full terminal palettes, not ad-hoc prompt tinting. */
-  --terminal-paper: light-dark(#eff1f5, #1e1e2e);
-  --terminal-ink: light-dark(#4c4f69, #cdd6f4);
-  --terminal-muted: light-dark(#6c6f85, #a6adc8);
-  --terminal-line: light-dark(#ccd0da, #313244);
-  --terminal-hover: light-dark(#e6e9ef, #313244);
-  --terminal-accent: light-dark(#1e66f5, #89b4fa);
-  --terminal-selection: light-dark(#bcc0cc, #45475a);
+  /* The application owns appearance and accent. ANSI semantic colors retain
+     Catppuccin Latte / Mocha contrast (MIT), not a separate terminal theme. */
+  --terminal-paper: var(--bg);
+  --terminal-ink: var(--ink);
+  --terminal-muted: var(--muted);
+  --terminal-line: var(--line);
+  --terminal-hover: var(--hover);
+  --terminal-accent: var(--accent-strong);
+  --terminal-selection: color-mix(in srgb, var(--accent) 24%, var(--bg));
   --terminal-ansi-0: light-dark(#5c5f77, #45475a);
   --terminal-ansi-1: light-dark(#d20f39, #f38ba8);
   --terminal-ansi-2: light-dark(#40a02b, #a6e3a1);
   --terminal-ansi-3: light-dark(#df8e1d, #f9e2af);
-  --terminal-ansi-4: light-dark(#1e66f5, #89b4fa);
+  --terminal-ansi-4: var(--accent-strong);
   --terminal-ansi-5: light-dark(#ea76cb, #f5c2e7);
   --terminal-ansi-6: light-dark(#179299, #94e2d5);
   --terminal-ansi-7: light-dark(#acb0be, #bac2de);
@@ -20,7 +20,7 @@
   --terminal-ansi-9: light-dark(#d20f39, #f38ba8);
   --terminal-ansi-10: light-dark(#40a02b, #a6e3a1);
   --terminal-ansi-11: light-dark(#df8e1d, #f9e2af);
-  --terminal-ansi-12: light-dark(#1e66f5, #89b4fa);
+  --terminal-ansi-12: var(--accent-strong);
   --terminal-ansi-13: light-dark(#ea76cb, #f5c2e7);
   --terminal-ansi-14: light-dark(#179299, #94e2d5);
   --terminal-ansi-15: light-dark(#bcc0cc, #a6adc8);
@@ -32,12 +32,6 @@
   min-height: 0;
   background: var(--terminal-paper);
   color: var(--terminal-ink);
-}
-.terminal-app[data-terminal-theme="light"] {
-  color-scheme: light;
-}
-.terminal-app[data-terminal-theme="dark"] {
-  color-scheme: dark;
 }
 .terminal-toolbar {
   display: flex;

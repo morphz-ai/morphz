@@ -31,8 +31,14 @@ pub struct TerminalSessionRecord {
     pub session_id: String,
     pub context_id: String,
     pub principal_id: String,
-    pub root_turn_id: String,
-    pub source_job_id: String,
+    pub root_turn_id: Option<String>,
+    pub source_job_id: Option<String>,
+    #[serde(default)]
+    pub scope_ref: Option<String>,
+    #[serde(default)]
+    pub creation_command_id: Option<String>,
+    #[serde(default)]
+    pub creation_request_hash: Option<String>,
     pub target_id: String,
     pub owner_instance_id: String,
     pub lease_expires_at: String,
@@ -62,6 +68,8 @@ pub struct TerminalSessionFilter {
     pub principal_id: String,
     /// None means the authenticated Session, not a cross-Session wildcard.
     pub root_ids: Option<Vec<String>>,
+    /// Host-issued source scope for Human-created resources, not authority.
+    pub scope_ref: Option<String>,
     pub limit: usize,
 }
 
@@ -81,6 +89,12 @@ pub struct TerminalCommandRecord {
 
 #[async_trait::async_trait]
 pub trait TerminalStore: Send + Sync {
+    async fn terminal_count(
+        &self,
+        session: &str,
+        context: &str,
+        principal: &str,
+    ) -> Result<u64, TerminalStoreError>;
     async fn terminal_command(
         &self,
         id: &str,
@@ -154,6 +168,24 @@ CREATE TABLE IF NOT EXISTS terminal_commands (
 CREATE INDEX IF NOT EXISTS terminal_commands_owner ON terminal_commands(terminal_id,principal_id,created_at);
 ";
 
+pub(crate) fn human_session_schema(table: &str) -> String {
+    SCHEMA
+        .split("CREATE INDEX")
+        .next()
+        .unwrap()
+        .replace("terminal_sessions", table)
+        .replace("root_turn_id TEXT NOT NULL", "root_turn_id TEXT")
+        .replace(
+            "source_job_id TEXT NOT NULL UNIQUE",
+            "source_job_id TEXT UNIQUE",
+        )
+        .replace(
+            "target_id TEXT NOT NULL",
+            "scope_ref TEXT,\n target_id TEXT NOT NULL",
+        )
+}
+pub(crate) const SCOPE_INDEX: &str = "CREATE INDEX IF NOT EXISTS terminal_sessions_scope ON terminal_sessions(session_id,context_id,principal_id,scope_ref,created_at DESC,id)";
+
 /// Only these static SQL statements use anonymous bind markers. No values are
 /// interpolated; PostgreSQL gets its numbered markers, SQLite keeps `?`.
 pub(crate) fn sql(statement: &str, postgres: bool) -> String {
@@ -178,6 +210,10 @@ macro_rules! terminal_store {
     ($store:ty, $database:ty, $postgres:expr) => {
         #[async_trait::async_trait]
         impl crate::memory::terminal::TerminalStore for $store {
+            async fn terminal_count(&self, session:&str, context:&str, principal:&str) -> Result<u64,crate::memory::terminal::TerminalStoreError> {
+                let query = crate::memory::terminal::sql("SELECT COUNT(*) FROM terminal_sessions WHERE session_id=? AND context_id=? AND principal_id=?",$postgres);
+                Ok(u64::try_from(sqlx::query_scalar::<$database,i64>(&query).bind(session).bind(context).bind(principal).fetch_one(&self.pool).await?)?)
+            }
             async fn terminal_command(&self, id: &str) -> Result<Option<crate::memory::terminal::TerminalCommandRecord>, crate::memory::terminal::TerminalStoreError> {
                 let q = crate::memory::terminal::sql("SELECT id,terminal_id,principal_id,expected_revision,request_hash,status,revision,created_at FROM terminal_commands WHERE id=?", $postgres);
                 use sqlx::Row;
@@ -195,8 +231,8 @@ macro_rules! terminal_store {
                 Ok(())
             }
             async fn create_terminal(&self, r: &crate::memory::terminal::TerminalSessionRecord) -> Result<bool, crate::memory::terminal::TerminalStoreError> {
-                let statement = crate::memory::terminal::sql("INSERT INTO terminal_sessions(id,session_id,context_id,principal_id,root_turn_id,source_job_id,target_id,owner_instance_id,lease_expires_at,revision,status,created_at,record_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING", $postgres);
-                Ok(sqlx::query(&statement).bind(&r.id).bind(&r.session_id).bind(&r.context_id).bind(&r.principal_id).bind(&r.root_turn_id).bind(&r.source_job_id).bind(&r.target_id).bind(&r.owner_instance_id).bind(&r.lease_expires_at).bind(i64::try_from(r.revision)?).bind(r.status.as_str()).bind(&r.created_at).bind(serde_json::to_string(r)?).execute(&self.pool).await?.rows_affected() == 1)
+                let statement = crate::memory::terminal::sql("INSERT INTO terminal_sessions(id,session_id,context_id,principal_id,root_turn_id,source_job_id,scope_ref,target_id,owner_instance_id,lease_expires_at,revision,status,created_at,record_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING", $postgres);
+                Ok(sqlx::query(&statement).bind(&r.id).bind(&r.session_id).bind(&r.context_id).bind(&r.principal_id).bind(&r.root_turn_id).bind(&r.source_job_id).bind(&r.scope_ref).bind(&r.target_id).bind(&r.owner_instance_id).bind(&r.lease_expires_at).bind(i64::try_from(r.revision)?).bind(r.status.as_str()).bind(&r.created_at).bind(serde_json::to_string(r)?).execute(&self.pool).await?.rows_affected() == 1)
             }
             async fn terminal(&self, id: &str) -> Result<Option<crate::memory::terminal::TerminalSessionRecord>, crate::memory::terminal::TerminalStoreError> {
                 let statement = crate::memory::terminal::sql("SELECT record_json,lease_expires_at FROM terminal_sessions WHERE id=?", $postgres);
@@ -207,12 +243,17 @@ macro_rules! terminal_store {
                 let mut q = sqlx::QueryBuilder::<$database>::new("SELECT record_json,lease_expires_at FROM terminal_sessions WHERE session_id=");
                 q.push_bind(&f.session_id).push(" AND context_id=").push_bind(&f.context_id).push(" AND principal_id=").push_bind(&f.principal_id);
                 if let Some(roots) = &f.root_ids {
-                    if roots.is_empty() { return Ok(Vec::new()); }
+                    if roots.is_empty() && f.scope_ref.is_none() { return Ok(Vec::new()); }
                     if roots.len() > 1000 { return Err("terminal root filter exceeds 1000 entries".into()); }
-                    q.push(" AND root_turn_id IN (");
-                    let mut values = q.separated(",");
-                    for root in roots { values.push_bind(root); }
-                    values.push_unseparated(")");
+                    q.push(" AND (");
+                    if roots.is_empty() { q.push("1=0"); } else {
+                        q.push("root_turn_id IN (");
+                        let mut values = q.separated(",");
+                        for root in roots { values.push_bind(root); }
+                        values.push_unseparated(")");
+                    }
+                    if let Some(scope) = &f.scope_ref { q.push(" OR scope_ref=").push_bind(scope); }
+                    q.push(")");
                 }
                 q.push(" ORDER BY CASE WHEN status IN ('open','starting') AND lease_expires_at>").push_bind(chrono::Utc::now().to_rfc3339()).push(" THEN 0 ELSE 1 END,created_at DESC,id DESC LIMIT ").push_bind(i64::try_from(f.limit.clamp(1, 51))?);
                 let rows = q.build().fetch_all(&self.pool).await?;
@@ -220,8 +261,8 @@ macro_rules! terminal_store {
             }
             async fn compare_terminal(&self, expected: u64, r: &crate::memory::terminal::TerminalSessionRecord) -> Result<bool, crate::memory::terminal::TerminalStoreError> {
                 if !(r.revision == expected || r.revision == expected.saturating_add(1)) { return Err("invalid terminal revision transition".into()); }
-                let statement = crate::memory::terminal::sql("UPDATE terminal_sessions SET revision=?,status=?,record_json=? WHERE id=? AND revision=? AND owner_instance_id=? AND source_job_id=? AND session_id=? AND context_id=? AND principal_id=? AND target_id=? AND root_turn_id=?", $postgres);
-                Ok(sqlx::query(&statement).bind(i64::try_from(r.revision)?).bind(r.status.as_str()).bind(serde_json::to_string(r)?).bind(&r.id).bind(i64::try_from(expected)?).bind(&r.owner_instance_id).bind(&r.source_job_id).bind(&r.session_id).bind(&r.context_id).bind(&r.principal_id).bind(&r.target_id).bind(&r.root_turn_id).execute(&self.pool).await?.rows_affected() == 1)
+                let statement = crate::memory::terminal::sql("UPDATE terminal_sessions SET revision=?,status=?,record_json=? WHERE id=? AND revision=? AND owner_instance_id=? AND COALESCE(source_job_id,'')=COALESCE(?,'') AND session_id=? AND context_id=? AND principal_id=? AND target_id=? AND COALESCE(root_turn_id,'')=COALESCE(?,'') AND COALESCE(scope_ref,'')=COALESCE(?,'')", $postgres);
+                Ok(sqlx::query(&statement).bind(i64::try_from(r.revision)?).bind(r.status.as_str()).bind(serde_json::to_string(r)?).bind(&r.id).bind(i64::try_from(expected)?).bind(&r.owner_instance_id).bind(&r.source_job_id).bind(&r.session_id).bind(&r.context_id).bind(&r.principal_id).bind(&r.target_id).bind(&r.root_turn_id).bind(&r.scope_ref).execute(&self.pool).await?.rows_affected() == 1)
             }
             async fn terminal_checkpoint(&self, id: &str) -> Result<Option<String>, crate::memory::terminal::TerminalStoreError> {
                 let statement = crate::memory::terminal::sql("SELECT screen_json FROM terminal_sessions WHERE id=?", $postgres);

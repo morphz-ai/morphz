@@ -4,6 +4,7 @@ import { objectiveWaitKinds } from "./objective-wait-projection.js";
 import {
   terminalCatalogSchema,
   terminalReceiptSchema,
+  terminalOpenReceiptSchema,
   type TerminalCommand,
   terminalViewSchema,
   terminalRecordSchema,
@@ -2436,6 +2437,199 @@ export class RuntimeBridge {
   /** The execution inspector follows the same Platform read grant as message
    * history. Runtime owns jobs; the persisted input roots determine which of
    * those jobs this reader may see or control. */
+  async platformTerminalResources(
+    scope: ExecutionScope,
+    access: AccessContext,
+    active: () => void = () => {},
+  ) {
+    const authorize = this.authorizePlatformRead;
+    if (
+      !authorize ||
+      scope.taskRun ||
+      scope.inputId ||
+      scope.threadId ||
+      scope.artifactId
+    )
+      throw new DomainError("forbidden", "当前范围不支持终端资源操作。");
+    const conversation = {
+      projectId: scope.projectId,
+      conversationId: scope.conversationId ?? scope.projectId,
+    };
+    const initial = await authorize(conversation, access);
+    const sessionId = this.objectSessionId(
+      conversation.projectId,
+      conversation.conversationId,
+      initial.personalDefault,
+    );
+    const contextId = this.contextId(
+      initial.personalDefault
+        ? conversation.conversationId
+        : conversation.projectId,
+    );
+    const scopeRef = createHash("sha256")
+      .update(
+        JSON.stringify([
+          this.config.namespace,
+          "terminal-scope",
+          conversation.projectId,
+          conversation.conversationId,
+        ]),
+      )
+      .digest("hex");
+    const base = `/api/sessions/${encodeURIComponent(sessionId)}/terminals`;
+    const verify = async () => {
+      active();
+      const current = await authorize(conversation, access);
+      active();
+      if (current.personalDefault !== initial.personalDefault)
+        throw new DomainError("forbidden", "终端的工作范围已变化。");
+    };
+    const request = async (path: string, method = "GET", body?: unknown) => {
+      await verify();
+      const result = await this.request(path, method, body, access);
+      await verify();
+      return result;
+    };
+    const owned = (record: z.infer<typeof terminalRecordSchema>) =>
+      record.session_id === sessionId &&
+      record.context_id === contextId &&
+      record.scope_ref === scopeRef &&
+      record.root_turn_id === null &&
+      record.source_job_id === null &&
+      !!record.creation_command_id;
+    const metadata = async (id: string) => {
+      try {
+        const record = z
+          .object({ terminal: terminalRecordSchema })
+          .parse(
+            await request(
+              `${base}/${encodeURIComponent(id)}?metadata_only=true`,
+            ),
+          ).terminal;
+        return owned(record) ? record : undefined;
+      } catch (error) {
+        if (error instanceof UpstreamError && error.status === 404)
+          return undefined;
+        throw error;
+      }
+    };
+    return {
+      open: async (commandId: string) => {
+        await verify();
+        this.objectSession(
+          conversation.projectId,
+          null,
+          conversation.conversationId,
+          initial.personalDefault,
+        );
+        this.state.sessions[sessionId]!.platform = true;
+        this.save();
+        // Reuse the gateway's canonical Session mount and safe policy setup.
+        // The resource operation below still claims the authorized Human's
+        // membership and runs under that Human's Runtime principal.
+        await this.ensureSession(sessionId);
+        await verify();
+        const receipt = terminalOpenReceiptSchema.parse(
+          await request(base, "POST", {
+            command_id: commandId,
+            scope_ref: scopeRef,
+          }),
+        );
+        if (
+          receipt.command_id !== commandId ||
+          receipt.terminal.creation_command_id !== commandId ||
+          !owned(receipt.terminal)
+        )
+          throw new DomainError(
+            "conflict",
+            "终端创建回执身份不匹配，未重新创建。",
+          );
+        return receipt;
+      },
+      catalog: async () => {
+        const legacy = await (
+          await this.platformExecutionControls(scope, access)
+        ).terminals();
+        let human: z.infer<typeof terminalCatalogSchema> = {
+          terminals: [],
+          limit: 50,
+          has_more: false,
+        };
+        try {
+          human = terminalCatalogSchema.parse(
+            await request(
+              `${base}?${new URLSearchParams({ root_ids: "[]", scope_ref: scopeRef, limit: "50" })}`,
+            ),
+          );
+          if (human.terminals.some((record) => !owned(record)))
+            throw new DomainError("forbidden", "终端来源不属于当前工作范围。");
+        } catch (error) {
+          if (!(error instanceof UpstreamError && error.status === 404))
+            throw error;
+        }
+        await verify();
+        const records = [
+          ...new Map(
+            [...legacy.terminals, ...human.terminals].map((r) => [r.id, r]),
+          ).values(),
+        ].sort(
+          (a, b) =>
+            Number(!["open", "starting"].includes(a.status)) -
+              Number(!["open", "starting"].includes(b.status)) ||
+            b.created_at.localeCompare(a.created_at) ||
+            b.id.localeCompare(a.id),
+        );
+        return {
+          terminals: records.slice(0, 50),
+          limit: 50,
+          has_more: records.length > 50 || legacy.has_more || human.has_more,
+        };
+      },
+      read: async (id: string, scrollback: number) => {
+        const source = await metadata(id);
+        if (!source)
+          return (await this.platformExecutionControls(scope, access)).terminal(
+            id,
+            scrollback,
+          );
+        const view = terminalViewSchema.parse(
+          await request(
+            `${base}/${encodeURIComponent(id)}?scrollback=${scrollback}`,
+          ),
+        );
+        if (
+          !owned(view.terminal) ||
+          view.terminal.id !== id ||
+          view.terminal.creation_command_id !== source.creation_command_id ||
+          view.terminal.principal_id !== source.principal_id ||
+          view.terminal.target_id !== source.target_id
+        )
+          throw new DomainError("forbidden", "终端来源已变化，不能发布屏幕。");
+        return view;
+      },
+      command: async (id: string, command: TerminalCommand) => {
+        const source = await metadata(id);
+        if (!source)
+          return (
+            await this.platformExecutionControls(scope, access)
+          ).terminalCommand(id, command);
+        const receipt = terminalReceiptSchema.parse(
+          await request(
+            `${base}/${encodeURIComponent(id)}/commands`,
+            "POST",
+            command,
+          ),
+        );
+        if (
+          receipt.command_id !== command.command_id ||
+          receipt.terminal_id !== id
+        )
+          throw new DomainError("conflict", "终端输入回执身份不匹配，未重发。");
+        return receipt;
+      },
+    };
+  }
+
   async platformExecutionControls(
     scope: ExecutionScope,
     access: AccessContext,
@@ -2672,6 +2866,7 @@ export class RuntimeBridge {
                 (t) =>
                   t.session_id !== entry.sessionId ||
                   t.context_id !== entry.contextId ||
+                  !t.root_turn_id ||
                   !entry.roots.has(t.root_turn_id),
               )
             )
@@ -2721,6 +2916,7 @@ export class RuntimeBridge {
           if (
             source.session_id !== entry.sessionId ||
             source.context_id !== entry.contextId ||
+            !source.root_turn_id ||
             !entry.roots.has(source.root_turn_id)
           )
             continue;
@@ -2765,6 +2961,7 @@ export class RuntimeBridge {
           if (
             source.session_id !== entry.sessionId ||
             source.context_id !== entry.contextId ||
+            !source.root_turn_id ||
             !entry.roots.has(source.root_turn_id)
           )
             continue;

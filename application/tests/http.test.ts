@@ -284,6 +284,21 @@ test("本机 API 的请求校验、幂等和 HTTP 修订冲突", async () => {
       400,
       "authenticated terminal writes reach strict schema validation, not an unguarded handler",
     );
+    assert.equal(
+      (
+        await post(
+          {},
+          { Origin: "https://evil.example" },
+          "/api/terminals/open",
+        )
+      ).status,
+      403,
+    );
+    assert.equal(
+      (await post({}, { "X-Morphz-Token": "" }, "/api/terminals/open")).status,
+      403,
+    );
+    assert.equal((await post({}, {}, "/api/terminals/open")).status, 400);
     const badHost = await new Promise<number | undefined>((resolve, reject) => {
       const req = httpRequest(
         origin + "/api/platform/bootstrap",

@@ -649,6 +649,12 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20261016_03_terminal_human_origin",
+                    terminal::migrate_human(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20261004_01_agent_provider_policy_modes",
                     agent_provider::migrate_policy_modes(&store.pool),
                 )

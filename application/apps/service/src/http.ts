@@ -1500,6 +1500,14 @@ export function createAppServer(
           );
           return;
         }
+        if (url.pathname === "/api/terminals/open") {
+          json(
+            res,
+            200,
+            await business.terminalOpen(await jsonBody(req, 8192)),
+          );
+          return;
+        }
         if (url.pathname.startsWith("/api/platform/cognitive-apps/")) {
           const route = Object.values(cognitiveAppApplicationRoutes).find(
             (entry) => entry.path === url.pathname,

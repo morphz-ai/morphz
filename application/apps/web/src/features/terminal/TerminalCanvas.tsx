@@ -208,6 +208,7 @@ export function TerminalCanvas({
         attributeFilter: [
           "data-app-motion",
           "data-appearance",
+          "data-accent",
           "class",
           "style",
         ],
@@ -216,19 +217,16 @@ export function TerminalCanvas({
       if (app)
         appearance.observe(app, {
           attributes: true,
-          attributeFilter: ["data-appearance"],
-        });
-      const terminal = element.closest(".terminal-app");
-      if (terminal)
-        appearance.observe(terminal, {
-          attributes: true,
-          attributeFilter: ["data-terminal-theme"],
+          attributeFilter: ["data-appearance", "data-accent"],
         });
       const motion = matchMedia("(prefers-reduced-motion: reduce)");
+      const systemAppearance = matchMedia("(prefers-color-scheme: dark)");
       motion.addEventListener("change", draw);
+      systemAppearance.addEventListener("change", draw);
       cleanup = () => {
         data.dispose();
         motion.removeEventListener("change", draw);
+        systemAppearance.removeEventListener("change", draw);
         container.removeEventListener("focusin", focused);
         container.removeEventListener("focusout", blurred);
       };

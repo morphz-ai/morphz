@@ -5,14 +5,10 @@ import {
   Copy,
   CornerDownLeft,
   MessageCircle,
-  Monitor,
-  Moon,
-  Palette,
   Plus,
   RefreshCw,
   ShieldCheck,
   SquareTerminal,
-  Sun,
   Unplug,
 } from "lucide-react";
 import type { ApplicationInstance } from "../../../../../packages/core/src/applications.js";
@@ -24,16 +20,10 @@ import type { WorkspaceClient } from "../../client.js";
 import { copyText } from "../../clipboard-text.js";
 import { useObservedRead } from "../../useObservedRead.js";
 import { ApplicationRequestError } from "../../../../../packages/core/src/application-api.js";
-import { ComposerOptions } from "../../ComposerOptions.js";
-import {
-  readTerminalTheme,
-  saveTerminalTheme,
-  terminalThemes,
-  type TerminalTheme,
-} from "./terminal-appearance.js";
 import { TerminalCanvas } from "./TerminalCanvas.js";
 export { TerminalCanvas } from "./TerminalCanvas.js";
 import { TerminalInput } from "./terminal-input.js";
+import type { TerminalContext } from "./terminal-context.js";
 
 function readFailure(cause: unknown, fallback: string) {
   if (cause instanceof ApplicationRequestError && cause.status >= 500)
@@ -59,6 +49,7 @@ export function Terminal({
   active,
   onCompose,
   onNotice,
+  onContext,
 }: {
   client: WorkspaceClient;
   instance: ApplicationInstance;
@@ -67,24 +58,8 @@ export function Terminal({
   active: boolean;
   onCompose: (text: string) => { ok: boolean; error?: string };
   onNotice: (message: string) => void;
+  onContext?: (context: TerminalContext) => void;
 }) {
-  const preferenceScope = `${client.boot?.centerId ?? "disconnected"}:${client.boot?.principalId ?? "disconnected"}`;
-  const [appearance, setAppearance] = useState(() => ({
-    scope: preferenceScope,
-    theme: readTerminalTheme(preferenceScope),
-  }));
-  const theme =
-    appearance.scope === preferenceScope
-      ? appearance.theme
-      : readTerminalTheme(preferenceScope);
-  function changeTheme(theme: TerminalTheme) {
-    setAppearance({ scope: preferenceScope, theme });
-    try {
-      saveTerminalTheme(preferenceScope, theme);
-    } catch {
-      onNotice("终端外观已切换，但本机偏好未能保存。");
-    }
-  }
   const [selection, setSelection] = useState<string | null>(
     typeof instance.state.terminalId === "string"
       ? instance.state.terminalId
@@ -108,6 +83,14 @@ export function Terminal({
     "idle",
   );
   const [selecting, setSelecting] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const creating = useRef(false);
+  const pendingCreate = useRef<{
+    identity: string;
+    commandId: string;
+    terminal?: TerminalRecord;
+  } | null>(null);
   const [inputError, setInputError] = useState("");
   const [pendingCopy, setPendingCopy] = useState<"idle" | "copied" | "failed">(
     "idle",
@@ -116,6 +99,8 @@ export function Terminal({
   const keyboard = useRef<TerminalInput | null>(null);
   const api = useRef(client);
   api.current = client;
+  const contextListener = useRef(onContext);
+  contextListener.current = onContext;
   const identity = JSON.stringify([
     client.boot?.centerId,
     client.boot?.principalId,
@@ -139,6 +124,16 @@ export function Terminal({
   const view =
     observation?.scope === observationScope ? observation.view : null;
   const terminal = view?.terminal ?? records.find((t) => t.id === selection);
+  useEffect(() => {
+    if (active && terminal && terminal.id === selection)
+      contextListener.current?.({
+        instanceId: instance.id,
+        projectId,
+        conversationId,
+        terminalId: terminal.id,
+        title: terminal.title,
+      });
+  }, [active, identity, selection, terminal?.id, terminal?.title]);
   const connected = !!view?.connected && client.online && !error;
   const canInput =
     active &&
@@ -204,6 +199,10 @@ export function Terminal({
     setScreenError("");
     setScrollback(0);
     setCopyState("idle");
+    setOpening(false);
+    setCreateError("");
+    pendingCreate.current = null;
+    creating.current = false;
     automaticSelection.current = "";
   }, [identity]);
   useEffect(() => {
@@ -261,10 +260,11 @@ export function Terminal({
   }, [active, selection, records[0]?.id, records.length, selecting, identity]);
 
   async function select(id: string) {
-    if (selecting || selection === id) return;
+    if (selection === id) return true;
+    if (selecting) return false;
     if (keyboard.current?.pending()) {
       onNotice("当前仍有未确认输入，请先核对并复制；切换不会重发这些文字。");
-      return;
+      return false;
     }
     const captured = identity;
     setSelecting(true);
@@ -280,12 +280,68 @@ export function Terminal({
         setScrollback(0);
         setObservation(null);
         setCopyState("idle");
+        return true;
       }
     } catch (cause) {
       if (current.current === captured)
         onNotice(cause instanceof Error ? cause.message : "终端选择未保存。");
     } finally {
       if (current.current === captured) setSelecting(false);
+    }
+    return false;
+  }
+  async function openTerminal() {
+    if (creating.current || selecting || !active || !client.online) return;
+    if (keyboard.current?.pending()) {
+      onNotice("当前仍有未确认输入，请先核对并复制，再新建终端。");
+      return;
+    }
+    const captured = identity;
+    const pending =
+      pendingCreate.current?.identity === identity
+        ? pendingCreate.current
+        : { identity, commandId: crypto.randomUUID() };
+    pendingCreate.current = pending;
+    creating.current = true;
+    setOpening(true);
+    setCreateError("");
+    try {
+      // A lost receipt is reconciled using the same command identity. Neither
+      // a refresh nor a render retries creation or prepares an Agent message.
+      const record =
+        pending.terminal ??
+        (await api.current.terminalOpen(scope, pending.commandId)).terminal;
+      pending.terminal = record;
+      if (current.current !== captured) return;
+      setCatalog((page) => ({
+        scope: identity,
+        terminals: [
+          record,
+          ...(page?.scope === identity ? page.terminals : []).filter(
+            (item) => item.id !== record.id,
+          ),
+        ].slice(0, 50),
+        hasMore: page?.scope === identity ? page.hasMore : false,
+      }));
+      if (!(await select(record.id)))
+        throw Error("终端已创建，选择未保存；点击核对新建，不会重复创建。");
+      if (current.current !== captured) return;
+      pendingCreate.current = null;
+      void refreshCatalog();
+    } catch (cause) {
+      if (current.current === captured)
+        setCreateError(
+          cause instanceof ApplicationRequestError && cause.status >= 500
+            ? "新建回执暂未确认，请点击加号核对。"
+            : cause instanceof Error
+              ? cause.message
+              : "新建回执尚未确认；再次点击仅核对同一次新建。",
+        );
+    } finally {
+      if (current.current === captured) {
+        creating.current = false;
+        setOpening(false);
+      }
     }
   }
   function compose(text: string) {
@@ -308,11 +364,7 @@ export function Terminal({
     }
   }
   return (
-    <section
-      className="terminal-app"
-      data-terminal-theme={theme}
-      aria-label="Terminal 认知应用"
-    >
+    <section className="terminal-app" aria-label="Terminal 认知应用">
       <header className="terminal-toolbar">
         <div className="terminal-tabs" role="tablist" aria-label="终端会话">
           {records.map((record) => (
@@ -322,7 +374,7 @@ export function Terminal({
               aria-selected={selection === record.id}
               title={`${record.title}\n${record.cwd}`}
               key={record.id}
-              disabled={selecting}
+              disabled={selecting || opening}
               onClick={() => void select(record.id)}
             >
               <span
@@ -334,38 +386,23 @@ export function Terminal({
         </div>
         <button
           type="button"
-          className="terminal-new"
-          title="让 Morphz 新建终端（准备输入，不立即执行）"
-          onClick={() =>
-            compose(
-              "请在内置 Terminal 中新建一个终端会话，保留原有会话，不执行其他命令。种类使用系统默认 Shell。",
-            )
+          className="icon-button terminal-new"
+          aria-label={
+            opening ? "正在新建终端" : createError ? "核对新建终端" : "新终端"
           }
+          title={
+            opening
+              ? "正在新建终端…"
+              : createError
+                ? "核对上一次新建，不重复创建"
+                : "新终端"
+          }
+          aria-busy={opening}
+          disabled={opening || selecting || !client.online}
+          onClick={() => void openTerminal()}
         >
           <Plus size={16} />
-          <span>新终端</span>
         </button>
-        <ComposerOptions
-          label="终端配色"
-          menuLabel="终端配色"
-          below
-          singleChoice
-          triggerClassName="icon-button terminal-theme"
-          triggerIcon={<Palette size={15} />}
-          options={terminalThemes.map((option) => ({
-            label: option.label,
-            icon:
-              option.value === "auto" ? (
-                <Monitor size={15} />
-              ) : option.value === "dark" ? (
-                <Moon size={15} />
-              ) : (
-                <Sun size={15} />
-              ),
-            pressed: theme === option.value,
-            onSelect: () => changeTheme(option.value),
-          }))}
-        />
         <button
           type="button"
           className="icon-button terminal-refresh"
@@ -378,6 +415,11 @@ export function Terminal({
           <RefreshCw size={15} />
         </button>
       </header>
+      {createError && (
+        <div className="terminal-notice" role="status">
+          {createError}　未发送 Agent 消息；核对使用原新建编号，不会重放命令。
+        </div>
+      )}
       {error && (
         <div className="terminal-notice" role="status">
           <Unplug size={15} />
@@ -541,13 +583,19 @@ export function Terminal({
           {!records.length && (
             <button
               type="button"
-              onClick={() =>
-                compose(
-                  "请在内置 Terminal 中新建一个终端会话，并显示当前工作目录。不要使用独立的 exec。",
-                )
+              className="icon-button terminal-empty-new"
+              aria-label={
+                opening
+                  ? "正在新建终端"
+                  : createError
+                    ? "核对新建终端"
+                    : "新建终端"
               }
+              title={createError ? "核对上一次新建，不重复创建" : "新建终端"}
+              disabled={opening || !client.online}
+              onClick={() => void openTerminal()}
             >
-              新建终端并查看工作目录
+              <Plus size={20} />
             </button>
           )}
           <small>打开应用不会执行命令。终端输出仅在需要时由 Agent 读取。</small>

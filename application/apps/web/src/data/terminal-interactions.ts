@@ -4,6 +4,8 @@ import {
   terminalViewSchema,
   terminalCommandSchema,
   terminalReceiptSchema,
+  terminalOpenSchema,
+  terminalOpenReceiptSchema,
   type TerminalCommand,
 } from "../../../../packages/core/src/terminal.js";
 import type { applicationCall } from "../application-transport.js";
@@ -17,6 +19,14 @@ export function createTerminalInteractions(call: typeof applicationCall) {
       : AbortSignal.timeout(10000),
   });
   return {
+    terminalOpen: async (scope: ExecutionScope, commandId: string) =>
+      terminalOpenReceiptSchema.parse(
+        await call(
+          "terminal.open",
+          terminalOpenSchema.parse({ scope, commandId }),
+          options(),
+        ),
+      ),
     terminalCommand: async (
       scope: ExecutionScope,
       terminalId: string,

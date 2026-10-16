@@ -1342,7 +1342,7 @@ impl Server {
             .route("/api/execution-jobs", get(handle_list_execution_jobs))
             .route(
                 "/api/sessions/:session_id/terminals",
-                get(handle_session_terminals),
+                get(handle_session_terminals).post(handle_session_terminal_open),
             )
             .route(
                 "/api/sessions/:session_id/terminals/:terminal_id",
@@ -5849,6 +5849,7 @@ struct TerminalQuery {
     token: Option<String>,
     principal_id: Option<String>,
     root_ids: Option<String>,
+    scope_ref: Option<String>,
     limit: Option<usize>,
     scrollback: Option<usize>,
     metadata_only: Option<bool>,
@@ -5887,9 +5888,22 @@ async fn handle_session_terminals(
         }
     };
     let limit = query.limit.unwrap_or(50).clamp(1, 50);
+    if query
+        .scope_ref
+        .as_ref()
+        .is_some_and(|v| v.len() != 64 || !v.bytes().all(|c| c.is_ascii_hexdigit()))
+    {
+        return error_response(StatusCode::BAD_REQUEST, "invalid terminal scope reference");
+    }
     match state
         .sdk
-        .session_terminals(&principal.principal_id, &session_id, roots, limit + 1)
+        .session_terminals(
+            &principal.principal_id,
+            &session_id,
+            roots,
+            query.scope_ref,
+            limit + 1,
+        )
         .await
     {
         Ok(mut terminals) => {
@@ -5961,6 +5975,23 @@ async fn handle_session_terminal_command(
         Ok(receipt) => Json(receipt).into_response(),
         Err(e) => sdk_error_response(e),
     }
+}
+
+async fn handle_session_terminal_open(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(command): Json<crate::terminal::TerminalHumanOpen>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return sdk_error_response(e),
+    };
+    match state.sdk.session_terminal_open(&principal.principal_id,&session_id,command).await { Ok(view)=>Json(json!({"command_id":view.terminal.creation_command_id,"terminal":view.terminal,"connected":view.connected})).into_response(),Err(e)=>sdk_error_response(e) }
 }
 
 async fn handle_inspect_execution_job(

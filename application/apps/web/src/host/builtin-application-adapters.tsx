@@ -8,6 +8,7 @@ import type { BuiltinApplicationSurface } from "../ApplicationHost.js";
 import { ScriptStudio, type ScriptComposeResult } from "../ScriptStudio.js";
 import { BrowserHost } from "../BrowserHost.js";
 import { Terminal } from "../features/terminal/Terminal.js";
+import type { TerminalContext } from "../features/terminal/terminal-context.js";
 import { Reader, type ReadingCompose } from "../Reader.js";
 import type { ReadingContextChange } from "../ReadingContext.js";
 import type { BrowserView } from "../desktop.js";
@@ -32,6 +33,7 @@ export type BuiltinApplicationOptions = {
   onOpenScript: (id: string, itemId?: string) => void;
   onScriptLibrary: () => void;
   onBrowserPage?: (page: BrowserView | null) => void;
+  onTerminalContext?: (context: TerminalContext) => void;
   onInput?: () => void;
   onNativeDialog?: (open: boolean) => void;
   readingTarget?: ReaderTarget | null;
@@ -63,6 +65,7 @@ export function createBuiltinApplicationAdapters({
   onScriptLibrary,
   globalLibrary = false,
   onBrowserPage,
+  onTerminalContext,
   onInput,
   onNativeDialog,
   readingTarget,
@@ -97,6 +100,7 @@ export function createBuiltinApplicationAdapters({
         active={activeView}
         onCompose={onCompose}
         onNotice={onNotice}
+        onContext={selected ? onTerminalContext : undefined}
       />
     ) : view === "browser" ? (
       <BrowserHost

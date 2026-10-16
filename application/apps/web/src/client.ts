@@ -1774,6 +1774,7 @@ export function useWorkspace() {
     terminalCatalog: terminalInteractions.terminalCatalog,
     terminalRead: terminalInteractions.terminalRead,
     terminalCommand: terminalInteractions.terminalCommand,
+    terminalOpen: terminalInteractions.terminalOpen,
     executionResult: executionInteractions.executionResult,
     controlExecution: executionInteractions.controlExecution,
     approvalSubmitted: executionInteractions.approvalSubmitted,

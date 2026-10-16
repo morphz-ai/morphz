@@ -2,6 +2,7 @@ import { z, ZodError } from "zod";
 import {
   terminalReadSchema,
   terminalCommandSchema,
+  terminalOpenSchema,
 } from "../../core/src/terminal.js";
 import {
   documentRevisionShape,
@@ -3010,11 +3011,12 @@ export class ApplicationSession {
     const scope = executionScopeSchema.parse(raw);
     if (scope.taskRun || !this.options.platformWork)
       throw new ApplicationUnavailable("终端尚未接入当前工作范围。");
-    const controls = await this.runtime().platformExecutionControls(
+    const controls = await this.runtime().platformTerminalResources(
       scope,
       this.access,
+      () => this.active(),
     );
-    const result = await controls.terminals();
+    const result = await controls.catalog();
     this.active();
     return result;
   }
@@ -3023,11 +3025,12 @@ export class ApplicationSession {
     const { scope, terminalId, scrollback } = terminalReadSchema.parse(raw);
     if (scope.taskRun || !this.options.platformWork)
       throw new ApplicationUnavailable("终端尚未接入当前工作范围。");
-    const controls = await this.runtime().platformExecutionControls(
+    const controls = await this.runtime().platformTerminalResources(
       scope,
       this.access,
+      () => this.active(),
     );
-    const result = await controls.terminal(terminalId, scrollback);
+    const result = await controls.read(terminalId, scrollback);
     this.active();
     return result;
   }
@@ -3036,13 +3039,25 @@ export class ApplicationSession {
     const { scope, terminalId, command } = terminalCommandSchema.parse(raw);
     if (scope.taskRun || !this.options.platformWork)
       throw new ApplicationUnavailable("终端尚未接入当前工作范围。");
-    const controls = await this.runtime().platformExecutionControls(
+    const controls = await this.runtime().platformTerminalResources(
       scope,
       this.access,
+      () => this.active(),
     );
-    const result = await controls.terminalCommand(terminalId, command);
+    const result = await controls.command(terminalId, command);
     this.active();
     return result;
+  }
+  async terminalOpen(raw: unknown) {
+    this.active();
+    const { scope, commandId } = terminalOpenSchema.parse(raw);
+    if (!this.options.platformWork)
+      throw new ApplicationUnavailable("终端尚未接入当前工作范围。");
+    return (
+      await this.runtime().platformTerminalResources(scope, this.access, () =>
+        this.active(),
+      )
+    ).open(commandId);
   }
   async executionSnapshot(raw: unknown) {
     const runtime = this.runtime(),
@@ -4058,6 +4073,8 @@ export function invokeApplication(
       return session.terminalRead(params);
     case "terminal.command":
       return session.terminalCommand(params);
+    case "terminal.open":
+      return session.terminalOpen(params);
     case "execution.result":
       return session.executionResult(params);
     case "execution.control":

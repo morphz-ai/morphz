@@ -6,8 +6,10 @@ export const terminalRecordSchema = z.object({
   session_id: z.string(),
   context_id: z.string(),
   principal_id: z.string(),
-  root_turn_id: z.string(),
-  source_job_id: z.string(),
+  root_turn_id: z.string().nullable(),
+  source_job_id: z.string().nullable(),
+  scope_ref: z.string().nullable().optional(),
+  creation_command_id: z.string().nullable().optional(),
   target_id: z.string(),
   revision: z.number().int().positive(),
   status: z.enum(["starting", "open", "exited", "closed", "lost"]),
@@ -77,6 +79,14 @@ export const terminalReadSchema = z
     scrollback: z.number().int().min(0).max(500).default(0),
   })
   .strict();
+export const terminalOpenSchema = z
+  .object({ scope: executionScopeSchema, commandId: z.string().uuid() })
+  .strict();
+export const terminalOpenReceiptSchema = z.object({
+  command_id: z.string(),
+  terminal: terminalRecordSchema,
+  connected: z.boolean(),
+});
 export const terminalCommandSchema = z
   .object({
     scope: executionScopeSchema,

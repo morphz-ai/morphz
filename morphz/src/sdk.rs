@@ -4345,6 +4345,7 @@ impl MorphzSdk {
         principal_id: &str,
         session_id: &str,
         root_ids: Option<Vec<String>>,
+        scope_ref: Option<String>,
         limit: usize,
     ) -> SdkResult<Vec<crate::memory::terminal::TerminalSessionRecord>> {
         let session = self.authorize_session(principal_id, session_id).await?;
@@ -4355,6 +4356,7 @@ impl MorphzSdk {
                 session_id: session_id.into(),
                 context_id: session.context_id,
                 root_ids,
+                scope_ref,
                 limit,
             })
             .await
@@ -4412,6 +4414,20 @@ impl MorphzSdk {
                 terminal_id,
                 command,
             )
+            .await
+            .map_err(terminal_sdk_error)
+    }
+
+    pub async fn session_terminal_open(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        request: crate::terminal::TerminalHumanOpen,
+    ) -> SdkResult<crate::terminal::TerminalView> {
+        let session = self.authorize_session(principal_id, session_id).await?;
+        self.runtime
+            .terminals()
+            .human_open(principal_id, session_id, &session.context_id, request)
             .await
             .map_err(terminal_sdk_error)
     }

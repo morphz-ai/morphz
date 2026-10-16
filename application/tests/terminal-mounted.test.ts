@@ -16,16 +16,18 @@ ${currentAppCSSImports()}
 const events=[],query=new URL(location.href).searchParams;let api,copied='';
 Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{copied=text;}}});
 const record={id:'terminal-exact',session_id:'session-exact',context_id:'context-exact',principal_id:'human-exact',root_turn_id:'root-exact',source_job_id:'job-exact',target_id:'target-default',revision:2,status:'open',title:'编译与检查',shell:'/bin/zsh',cwd:'/workspace/terminal-check',rows:24,cols:80,sandbox_status:'enforced',network_enabled:false,exit_code:null,created_at:'2026-10-16T00:00:00Z',updated_at:'2026-10-16T00:00:00Z'};
+const records=new Map(query.has('emptyCatalog')?[]:[[record.id,record]]),opens=new Map();let openAttempts=0;
 const text='实际输出：中文 <script>不是脚本</script>',screen={sequence:3,rows:24,cols:80,lines:Array.from({length:24},(_,i)=>i===1?[{text:'~/workspace',fg:'#3973c6',fg_index:4},{text:' ❯ ',fg:'#298451',fg_index:2},{text:'truecolor',fg:'#298451'}].map(span=>({...span,bold:false,italic:false,underline:false,inverse:false})):[{text:i===0?text:' ',bold:false,italic:false,underline:false,inverse:false}]),text,cursor:[1,13],cursor_visible:true,alternate_screen:false,scrollback:0,previous_available:true};
 function Frame(){
- const [facts,setFacts]=useState({active:true,online:true,appearance:'dark',csrf:'original',screenError:false,serverError:false,instance:{id:'instance-exact',workspaceId:'project-exact',applicationId:'morphz.terminal',applicationVersion:'1.0.0',state:query.has('emptySelection')?{}:{terminalId:'terminal-exact'},revision:1,status:'open',createdAt:record.created_at,updatedAt:record.updated_at}});
+ const [facts,setFacts]=useState({active:true,online:true,appearance:'dark',accent:'cyan',csrf:'original',screenError:false,serverError:false,instance:{id:'instance-exact',workspaceId:'project-exact',applicationId:'morphz.terminal',applicationVersion:'1.0.0',state:query.has('emptySelection')?{}:{terminalId:'terminal-exact'},revision:1,status:'open',createdAt:record.created_at,updatedAt:record.updated_at}});
  api={set:value=>setFacts(old=>({...old,...value}))};
  const client={boot:{centerId:'center-exact',principalId:facts.principal??'human-exact',csrfToken:facts.csrf},online:facts.online,workspaceChangeRevision:0,
- terminalCatalog:async(scope,signal)=>{events.push(['catalog',scope]);return{terminals:[record],limit:50,has_more:false};},
- terminalRead:async(scope,id,offset,signal)=>{events.push(['read',scope,id,offset]);if(facts.screenError)throw new Error('TEST screen unavailable');if(facts.serverError)throw new ApplicationRequestError(503,'保存失败。内容尚未确认写入，请保留草稿后重试。','unavailable');return{input_supported:!!facts.inputSupported,terminal:record,connected:true,checkpoint:false,screen:{...screen,text:offset?'此前输出':text,lines:screen.lines.map((line,i)=>i===0?[{...line[0],text:offset?'此前输出':text}]:line),scrollback:offset,previous_available:offset<48}};},
+ terminalCatalog:async(scope,signal)=>{events.push(['catalog',scope]);return{terminals:[...records.values()],limit:50,has_more:false};},
+ terminalOpen:async(scope,commandId)=>{events.push(['open',scope,commandId]);openAttempts++;if(!opens.has(commandId)){const created={...record,id:'human-'+commandId,title:'终端 '+(opens.size+1),root_turn_id:null,source_job_id:null,creation_command_id:commandId};records.set(created.id,created);opens.set(commandId,created);}await new Promise(r=>setTimeout(r,100));if(query.has('lostOpen')&&openAttempts===1)throw Error('TEST lost creation receipt');return {command_id:commandId,terminal:opens.get(commandId),connected:true};},
+ terminalRead:async(scope,id,offset,signal)=>{events.push(['read',scope,id,offset]);if(facts.screenError)throw new Error('TEST screen unavailable');if(facts.serverError)throw new ApplicationRequestError(503,'保存失败。内容尚未确认写入，请保留草稿后重试。','unavailable');return{input_supported:!!facts.inputSupported,terminal:records.get(id),connected:true,checkpoint:false,screen:{...screen,text:offset?'此前输出':text,lines:screen.lines.map((line,i)=>i===0?[{...line[0],text:offset?'此前输出':text}]:line),scrollback:offset,previous_available:offset<48}};},
  terminalCommand:async(scope,id,command)=>{events.push(['command',command]);if(facts.commandError)throw Error('TEST lost receipt');record.revision++;return {command_id:command.command_id,terminal_id:id,revision:record.revision,input_status:'submitted',command_completion:'not_asserted'};},
  execute:async op=>{events.push(['navigation',op]);if(query.has('failSelect'))throw new Error('TEST selection conflict');setFacts(old=>({...old,instance:{...old.instance,state:op.state,revision:old.instance.revision+1}}));return{};}};
- return <div className="app" data-appearance={facts.appearance} data-accent="cyan" style={{height:'100dvh',display:'block',colorScheme:facts.appearance}}><Terminal client={client} instance={facts.instance} projectId="project-exact" conversationId="conversation-exact" active={facts.active} onCompose={value=>{events.push(['compose',value]);return{ok:true};}} onNotice={value=>events.push(['notice',value])}/></div>;
+ return <div className="app" data-appearance={facts.appearance} data-accent={facts.accent} style={{height:'100dvh',display:'block',colorScheme:facts.appearance==='system'?'light dark':facts.appearance}}><Terminal client={client} instance={facts.instance} projectId="project-exact" conversationId="conversation-exact" active={facts.active} onCompose={value=>{events.push(['compose',value]);return{ok:true};}} onContext={value=>events.push(['context',value])} onNotice={value=>events.push(['notice',value])}/></div>;
 }
 createRoot(document.getElementById('root')).render(<StrictMode><Frame/></StrictMode>);
 Reflect.set(window,'terminalFixture',{set:value=>api.set(value),state:()=>({events:[...events],copied})});
@@ -162,7 +164,7 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
       );
       assert.equal(
         geometry.bg,
-        appearance === "dark" ? "rgb(30, 30, 46)" : "rgb(239, 241, 245)",
+        appearance === "dark" ? "rgb(25, 25, 27)" : "rgb(255, 255, 255)",
       );
       await expect(page.locator(".terminal-emulator")).toHaveAttribute(
         "data-ready",
@@ -221,37 +223,59 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
           .length,
     );
   const beforeTheme = await navigations();
-  await page.getByRole("button", { name: "终端配色", exact: true }).click();
-  await page
-    .getByRole("menuitemradio", { name: "深色 · Mocha", exact: true })
-    .click();
-  await expect(page.locator(".terminal-app")).toHaveAttribute(
-    "data-terminal-theme",
-    "dark",
+  assert.equal(
+    await page.getByRole("button", { name: "终端配色", exact: true }).count(),
+    0,
   );
+  for (const appearance of ["light", "dark", "system"]) {
+    await page.evaluate(
+      (appearance) =>
+        Reflect.get(window, "terminalFixture").set({ appearance }),
+      appearance,
+    );
+    for (const accent of ["cyan", "iris", "coral", "mono"]) {
+      await page.evaluate(
+        (accent) => Reflect.get(window, "terminalFixture").set({ accent }),
+        accent,
+      );
+      await expect
+        .poll(() =>
+          page.locator(".terminal-app").evaluate((el) => {
+            const sample = document.createElement("span");
+            el.append(sample);
+            sample.style.color = "var(--terminal-ansi-4)";
+            const terminal = getComputedStyle(sample).color;
+            sample.style.color = "var(--accent-strong)";
+            const app = getComputedStyle(sample).color;
+            sample.remove();
+            return terminal === app;
+          }),
+        )
+        .toBe(true);
+    }
+  }
   await page.evaluate(() =>
-    Reflect.get(window, "terminalFixture").set({ principal: "another-human" }),
+    Reflect.get(window, "terminalFixture").set({ appearance: "system" }),
   );
-  await expect(page.locator(".terminal-app")).toHaveAttribute(
-    "data-terminal-theme",
-    "auto",
-  );
-  await page.evaluate(() =>
-    Reflect.get(window, "terminalFixture").set({ principal: "human-exact" }),
-  );
-  await expect(page.locator(".terminal-app")).toHaveAttribute(
-    "data-terminal-theme",
-    "dark",
-  );
+  for (const colorScheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme });
+    await expect
+      .poll(() =>
+        page
+          .locator(".terminal-app")
+          .evaluate((el) => getComputedStyle(el).backgroundColor),
+      )
+      .toBe(colorScheme === "dark" ? "rgb(25, 25, 27)" : "rgb(255, 255, 255)");
+  }
   assert.equal(
     await navigations(),
     beforeTheme,
     "changing appearance never sends Agent input or process control",
   );
   await page.reload();
-  await expect(page.locator(".terminal-app")).toHaveAttribute(
-    "data-terminal-theme",
-    "dark",
+  assert.equal(
+    await page.locator(".terminal-app").getAttribute("data-terminal-theme"),
+    null,
   );
   await page.evaluate(() => {
     document.documentElement.dataset.appMotion = "reduce";
@@ -422,5 +446,78 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
     attempts,
     1,
     "a failed selection must not trigger a render/retry loop",
+  );
+  await page.goto(
+    `http://127.0.0.1:${address.port}/__terminal?emptySelection=1&emptyCatalog=1&lostOpen=1`,
+  );
+  const newButton = page.getByRole("button", { name: "新终端", exact: true });
+  await expect(newButton).toBeVisible();
+  assert.equal(
+    await newButton.innerText(),
+    "",
+    "toolbar creation is just a plus icon",
+  );
+  await page.waitForTimeout(250);
+  const openCount = () =>
+    page.evaluate(
+      () =>
+        Reflect.get(window, "terminalFixture")
+          .state()
+          .events.filter((e: any[]) => e[0] === "open").length,
+    );
+  assert.equal(
+    await openCount(),
+    0,
+    "mounting an empty Terminal never creates a process",
+  );
+  await newButton.dblclick();
+  await expect(
+    page.getByRole("button", { name: "核对新建终端", exact: true }).first(),
+  ).toBeVisible();
+  assert.equal(
+    await openCount(),
+    1,
+    "double click cannot create two terminals",
+  );
+  await page
+    .getByRole("button", { name: "核对新建终端", exact: true })
+    .first()
+    .click();
+  await expect(page.getByRole("tab", { name: "终端 1" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  const createdEvents = await page.evaluate(
+    () => Reflect.get(window, "terminalFixture").state().events,
+  );
+  const opens = createdEvents.filter((e: any[]) => e[0] === "open");
+  assert.equal(opens.length, 2);
+  assert.equal(
+    opens[0][2],
+    opens[1][2],
+    "lost receipt uses the same command identity",
+  );
+  assert.equal(
+    createdEvents.filter((e: any[]) => e[0] === "compose").length,
+    0,
+    "direct creation never prepares an Agent message",
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          Reflect.get(window, "terminalFixture")
+            .state()
+            .events.filter((e: any[]) => e[0] === "context")
+            .at(-1)?.[1]?.title,
+      ),
+    )
+    .toBe("终端 1");
+  const beforeReload = await openCount();
+  await page.waitForTimeout(1200);
+  assert.equal(
+    await openCount(),
+    beforeReload,
+    "background refresh never repeats creation",
   );
 });

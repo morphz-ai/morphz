@@ -30,3 +30,15 @@ pub(super) async fn migrate_commands(
     tx.commit().await?;
     Ok(())
 }
+
+pub(super) async fn migrate_human(
+    pool: &sqlx::PgPool,
+) -> Result<(), crate::memory::terminal::TerminalStoreError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("ALTER TABLE terminal_sessions ALTER COLUMN root_turn_id DROP NOT NULL, ALTER COLUMN source_job_id DROP NOT NULL, ADD COLUMN IF NOT EXISTS scope_ref TEXT").execute(&mut *tx).await?;
+    sqlx::query(crate::memory::terminal::SCOPE_INDEX)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
