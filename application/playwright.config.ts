@@ -6,7 +6,10 @@ export default defineConfig({
   workers: 1,
   use: {
     baseURL: "http://127.0.0.1:65421",
-    channel: "chrome",
+    channel: process.env.MORPHZ_TEST_BROWSER_EXECUTABLE ? undefined : "chrome",
+    launchOptions: {
+      executablePath: process.env.MORPHZ_TEST_BROWSER_EXECUTABLE || undefined,
+    },
     viewport: { width: 1440, height: 960 },
     trace: "retain-on-failure",
   },

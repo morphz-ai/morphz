@@ -137,11 +137,27 @@ test("点击关闭内嵌听写不误收起输入，随后点击画布仍正常�
   ).toHaveCount(0);
   await expect(trigger).toBeFocused();
   await expect(input).toHaveValue("关闭听写后继续写，不发送");
-  await page
-    .getByRole("main", { name: "主工作区" })
-    .click({ position: { x: 650, y: 200 } });
+  const canvas = page.getByRole("main", { name: "主工作区" });
+  const source = await canvas.getAttribute("data-text-source");
+  // Do not hit a catalog application card as the built-in catalog grows.
+  const blank = { x: 8, y: 64 };
+  expect(
+    await canvas.evaluate((main, point) => {
+      const rect = main.getBoundingClientRect();
+      const target = document.elementFromPoint(
+        rect.left + point.x,
+        rect.top + point.y,
+      );
+      return (
+        main.contains(target) &&
+        !target?.closest("button,a,input,select,textarea,[role=button]")
+      );
+    }, blank),
+  ).toBe(true);
+  await page.getByRole("main", { name: "主工作区" }).click({ position: blank });
   await expect(input).toHaveCount(0);
   await openInput(page);
+  await expect(canvas).toHaveAttribute("data-text-source", source!);
   await expect(input).toHaveValue("关闭听写后继续写，不发送");
   await trigger.click();
   await page.keyboard.press("Escape");

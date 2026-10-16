@@ -49,6 +49,10 @@ pub struct TerminalSpan {
     pub fg: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bg: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fg_index: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bg_index: Option<u8>,
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
@@ -221,6 +225,13 @@ fn color(value: vt100::Color) -> Option<String> {
     }
 }
 
+fn color_index(value: vt100::Color) -> Option<u8> {
+    match value {
+        vt100::Color::Idx(index) => Some(index),
+        _ => None,
+    }
+}
+
 fn screen_snapshot(state: &mut ScreenState, scrollback: usize) -> TerminalScreen {
     state.parser.screen_mut().set_scrollback(SCROLLBACK);
     let available = state.parser.screen().scrollback();
@@ -249,6 +260,8 @@ fn screen_snapshot(state: &mut ScreenState, scrollback: usize) -> TerminalScreen
                 text,
                 fg: color(cell.fgcolor()),
                 bg: color(cell.bgcolor()),
+                fg_index: color_index(cell.fgcolor()),
+                bg_index: color_index(cell.bgcolor()),
                 bold: cell.bold(),
                 italic: cell.italic(),
                 underline: cell.underline(),
@@ -257,6 +270,8 @@ fn screen_snapshot(state: &mut ScreenState, scrollback: usize) -> TerminalScreen
             if let Some(last) = spans.last_mut().filter(|last| {
                 last.fg == span.fg
                     && last.bg == span.bg
+                    && last.fg_index == span.fg_index
+                    && last.bg_index == span.bg_index
                     && last.bold == span.bold
                     && last.italic == span.italic
                     && last.underline == span.underline
@@ -590,8 +605,8 @@ impl TerminalManager {
             // still the system shell, attached to the same persistent PTY.
             let shell_command = match shell {
                 "/bin/zsh" => "exec /bin/zsh -f -i",
-                "/bin/bash" => "exec /bin/bash --noprofile --norc -i",
-                _ => "exec /bin/sh -i",
+                "/bin/bash" => "PS1='\\[\\033[34m\\]\\w\\[\\033[0m\\] \\[\\033[32m\\]\\$\\[\\033[0m\\] ' exec /bin/bash --noprofile --norc -i",
+                _ => "PS1='$ ' exec /bin/sh -i",
             };
             let sandbox = NativeSandbox::for_current_platform();
             let prepared = if profile.sandbox_mode == SandboxMode::WorkspaceWrite {
@@ -710,16 +725,13 @@ impl TerminalManager {
                     command.env("COLORTERM", "truecolor");
                     command.env("TERM_PROGRAM", "Morphz");
                     command.env("MORPHZ_EMBEDDED_TERMINAL", "1");
-                    // Prompt hints for shells that inherit PS1. The visible
-                    // screen always reflects the actual system shell prompt.
-                    command.env(
-                        "PS1",
-                        match shell {
-                            "/bin/zsh" => "%~ %# ",
-                            "/bin/bash" => "\\w \\$ ",
-                            _ => "$ ",
-                        },
-                    );
+                    // The sandbox wrapper /bin/sh resets PS1. Zsh's PROMPT
+                    // survives that wrapper; bash receives its PS1 at exec above.
+                    // No user startup files, plugins or command substitutions.
+                    command.env("PROMPT", "%F{blue}%2~%f %F{green}%#%f ");
+                    command.env("PROMPT_DIRTRIM", "2");
+                    command.env("CLICOLOR", "1");
+                    command.env("LSCOLORS", "exfxcxdxbxegedabagacad");
                     let mut child = StartingChild(Some(pair.slave.spawn_command(command)?));
                     drop(pair.slave);
                     let process_id = child
@@ -1509,13 +1521,11 @@ mod tests {
         fixture.wait_line(&record.id, "__ENV__:中文状态").await;
         assert!(fixture._directory.path().join("branch").is_dir());
         let view = fixture.wait_line(&record.id, "__RED__").await;
-        assert!(view
-            .screen
-            .unwrap()
-            .lines
-            .iter()
-            .flatten()
-            .any(|span| span.text.contains("__RED__") && span.fg.as_deref() == Some("#c94343")));
+        assert!(view.screen.unwrap().lines.iter().flatten().any(|span| span
+            .text
+            .contains("__RED__")
+            && span.fg.as_deref() == Some("#c94343")
+            && span.fg_index == Some(1)));
         assert!(view.connected);
         let result = fixture
             .invoke(json!({"action":"read","terminal_id":record.id}))
@@ -1525,6 +1535,54 @@ mod tests {
             result["screen"].get("lines").is_none(),
             "Agent reads plain bounded text, not UI cells"
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_default_prompt_survives_sandbox_shell_wrapper() {
+        let fixture = Fixture::new().await;
+        let record = fixture.open().await;
+        fixture.write(&record.id, "printf '\\n__COLOR_ENV__:%s:%s\\n' \"$CLICOLOR\" \"$TERM_PROGRAM\"; printf '__PROMPT__:%s\\n' \"$PS1\"").await;
+        let view = fixture
+            .wait_line(&record.id, "__COLOR_ENV__:1:Morphz")
+            .await;
+        let screen = view.screen.unwrap();
+        assert!(screen.text.contains("__PROMPT__:"));
+        if record.shell == "/bin/zsh" {
+            assert!(screen.text.contains("%F{blue}%2~%f %F{green}%#%f"));
+        } else if record.shell == "/bin/bash" {
+            assert!(screen.text.contains("\\033[34m"));
+        }
+        // This is the actual prompt generated by the PTY shell, not the echoed
+        // source string. It must contain separate colored cwd and prompt spans.
+        let colored = screen
+            .lines
+            .iter()
+            .flatten()
+            .filter_map(|span| span.fg_index)
+            .collect::<Vec<_>>();
+        assert!(colored.contains(&4), "actual prompt path is blue");
+        assert!(colored.contains(&2), "actual prompt symbol is green");
+    }
+
+    #[test]
+    fn terminal_palette_index_is_not_inferred_from_truecolor() {
+        let mut state = ScreenState {
+            parser: vt100::Parser::new(4, 80, SCROLLBACK),
+            sequence: 1,
+            eof: false,
+            error: None,
+        };
+        state
+            .parser
+            .process(b"\x1b[31mA\x1b[38;2;201;67;67mB\x1b[38;5;196mC\x1b[0m");
+        let screen = screen_snapshot(&mut state, 0);
+        let spans = &screen.lines[0];
+        assert_eq!(spans[0].fg.as_deref(), Some("#c94343"));
+        assert_eq!(spans[0].fg_index, Some(1));
+        assert_eq!(spans[1].fg.as_deref(), Some("#c94343"));
+        assert_eq!(spans[1].fg_index, None);
+        assert_eq!(spans[2].fg_index, Some(196));
+        assert_eq!(spans[2].fg.as_deref(), Some("#ff0000"));
     }
 
     #[tokio::test]

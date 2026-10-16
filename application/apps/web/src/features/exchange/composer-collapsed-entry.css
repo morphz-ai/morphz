@@ -5,6 +5,117 @@
   justify-content: center;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.app .composer-reopen {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: min(520px, 100%);
+  min-height: 36px;
+  text-align: left;
+}
+.composer-entry-symbol {
+  display: inline-flex;
+  flex: 0 0 18px;
+  justify-content: center;
+  align-items: center;
+}
+.composer-entry-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.composer-entry-heading,
+.composer-entry-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-entry-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.composer-entry-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-entry-unread {
+  flex: none;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--accent-ink, var(--ink));
+}
+.composer-entry-detail {
+  font-size: 11px;
+  color: var(--muted);
+}
+.composer-reopen kbd {
+  flex: 0 0 auto;
+  margin-left: 2px;
+}
+.composer-reopen:is([data-state="running"], [data-state="processing"])
+  .composer-entry-symbol {
+  color: var(--accent-ink, var(--accent));
+}
+.composer-reopen:is(
+    [data-state="approval"],
+    [data-state="error"],
+    [data-state="offline"]
+  )
+  .composer-entry-symbol {
+  color: var(--danger);
+}
+.composer-entry-pulse {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+}
+.composer-entry-pulse i {
+  display: block;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.7;
+}
+.composer-reopen[data-animated] .composer-entry-pulse i {
+  animation: composer-entry-breathe 1.5s ease-in-out infinite;
+}
+.composer-reopen[data-animated] .composer-entry-pulse i:nth-child(2) {
+  animation-delay: 0.18s;
+}
+.composer-reopen[data-animated] .composer-entry-pulse i:nth-child(3) {
+  animation-delay: 0.36s;
+}
+@keyframes composer-entry-breathe {
+  0%,
+  80%,
+  100% {
+    opacity: 0.35;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-reopen[data-animated] .composer-entry-pulse i {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+@media (pointer: coarse) {
+  .app .composer-reopen {
+    min-height: 44px;
+  }
 }
 .app .composer-collapsed-send {
   flex: 0 0 auto;

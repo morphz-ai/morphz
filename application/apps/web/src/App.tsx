@@ -11,7 +11,6 @@ import {
 import { flushSync } from "react-dom";
 import {
   ArrowUp,
-  MessageCircle,
   MessageSquareText,
   Plus,
   X,
@@ -60,6 +59,8 @@ import { exchangeDraftLengthError } from "./host/exchange-draft-validation.js";
 import { WorkspaceNotice } from "./WorkspaceNotice.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import "./features/exchange/composer-collapsed-entry.css";
+import { CollapsedComposerEntry } from "./features/exchange/CollapsedComposerEntry.js";
+import { collapsedComposerState } from "./features/exchange/collapsed-composer-state.js";
 import { TextQuoteDrafts, TextQuoteProvider } from "./TextQuotes.js";
 import {
   replaceComposerSurface,
@@ -2327,6 +2328,21 @@ function WorkspaceApp({
       ...client.boot!.scriptOutputs.map((output) => output.inputId),
     ],
   );
+  const collapsedState = inputVisible
+    ? undefined
+    : collapsedComposerState({
+        runtime: client.boot!.runtime,
+        online: client.online,
+        inputs,
+        messages: replies,
+        streamConnected: stream.connected,
+        outputInputIds: [
+          ...conversationRead.outputs,
+          ...conversationRead.scriptOutputs,
+        ].map((output) => output.inputId),
+        unseenReply,
+        workspace: state,
+      });
   const inspectorViewOptions: ComposerOption[] = [
     {
       label: "执行记录",
@@ -3855,19 +3871,15 @@ function WorkspaceApp({
                     </section>
                   ) : (
                     <div className="composer-collapsed-entry">
-                      <button
-                        ref={toggle}
-                        className="composer-reopen"
-                        aria-controls="global-composer"
-                        aria-expanded={false}
-                        onClick={showInput}
-                      >
-                        <MessageCircle />向 {agentName} 输入
-                        <kbd>{shortcut}</kbd>
-                        {unseenReply && (
-                          <span className="unread-label">有新回复</span>
-                        )}
-                      </button>
+                      <CollapsedComposerEntry
+                        buttonRef={toggle}
+                        agentName={agentName}
+                        shortcut={shortcut}
+                        state={collapsedState!}
+                        unseenReply={unseenReply}
+                        onOpen={showInput}
+                        allowMotion={prefs.motion !== "reduce"}
+                      />
                       {draft.textQuotes?.some((quote) =>
                         quote.comment.trim(),
                       ) && sendButton}

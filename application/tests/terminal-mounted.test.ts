@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import react from "@vitejs/plugin-react";
@@ -16,11 +16,11 @@ ${currentAppCSSImports()}
 const events=[],query=new URL(location.href).searchParams;let api,copied='';
 Object.defineProperty(navigator,'clipboard',{value:{writeText:async text=>{copied=text;}}});
 const record={id:'terminal-exact',session_id:'session-exact',context_id:'context-exact',principal_id:'human-exact',root_turn_id:'root-exact',source_job_id:'job-exact',target_id:'target-default',revision:2,status:'open',title:'编译与检查',shell:'/bin/zsh',cwd:'/workspace/terminal-check',rows:24,cols:80,sandbox_status:'enforced',network_enabled:false,exit_code:null,created_at:'2026-10-16T00:00:00Z',updated_at:'2026-10-16T00:00:00Z'};
-const text='实际输出：中文 <script>不是脚本</script>',screen={sequence:3,rows:24,cols:80,lines:Array.from({length:24},(_,i)=>[{text:i===0?text:' ',bold:false,italic:false,underline:false,inverse:false}]),text,cursor:[1,0],cursor_visible:true,alternate_screen:false,scrollback:0,previous_available:true};
+const text='实际输出：中文 <script>不是脚本</script>',screen={sequence:3,rows:24,cols:80,lines:Array.from({length:24},(_,i)=>i===1?[{text:'~/workspace',fg:'#3973c6',fg_index:4},{text:' ❯ ',fg:'#298451',fg_index:2},{text:'truecolor',fg:'#298451'}].map(span=>({...span,bold:false,italic:false,underline:false,inverse:false})):[{text:i===0?text:' ',bold:false,italic:false,underline:false,inverse:false}]),text,cursor:[1,13],cursor_visible:true,alternate_screen:false,scrollback:0,previous_available:true};
 function Frame(){
  const [facts,setFacts]=useState({active:true,online:true,appearance:'dark',csrf:'original',screenError:false,serverError:false,instance:{id:'instance-exact',workspaceId:'project-exact',applicationId:'morphz.terminal',applicationVersion:'1.0.0',state:query.has('emptySelection')?{}:{terminalId:'terminal-exact'},revision:1,status:'open',createdAt:record.created_at,updatedAt:record.updated_at}});
  api={set:value=>setFacts(old=>({...old,...value}))};
- const client={boot:{centerId:'center-exact',principalId:'human-exact',csrfToken:facts.csrf},online:facts.online,workspaceChangeRevision:0,
+ const client={boot:{centerId:'center-exact',principalId:facts.principal??'human-exact',csrfToken:facts.csrf},online:facts.online,workspaceChangeRevision:0,
  terminalCatalog:async(scope,signal)=>{events.push(['catalog',scope]);return{terminals:[record],limit:50,has_more:false};},
  terminalRead:async(scope,id,offset,signal)=>{events.push(['read',scope,id,offset]);if(facts.screenError)throw new Error('TEST screen unavailable');if(facts.serverError)throw new ApplicationRequestError(503,'保存失败。内容尚未确认写入，请保留草稿后重试。','unavailable');return{terminal:record,connected:true,checkpoint:false,screen:{...screen,text:offset?'此前输出':text,lines:screen.lines.map((line,i)=>i===0?[{...line[0],text:offset?'此前输出':text}]:line),scrollback:offset,previous_available:offset<48}};},
  execute:async op=>{events.push(['navigation',op]);if(query.has('failSelect'))throw new Error('TEST selection conflict');setFacts(old=>({...old,instance:{...old.instance,state:op.state,revision:old.instance.revision+1}}));return{};}};
@@ -141,18 +141,111 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
         width: innerWidth,
         bg: getComputedStyle(el).backgroundColor,
         footer: el.querySelector("footer")!.getBoundingClientRect().height,
+        toolbar: el.querySelector("header")!.getBoundingClientRect().height,
+        location: el
+          .querySelector(".terminal-location")!
+          .getBoundingClientRect().height,
       }));
       assert.ok(
         geometry.scroll <= geometry.width + 1,
         "horizontal overflow belongs to terminal grid, not the whole page",
       );
       assert.ok(geometry.footer <= 44, "footer stays compact");
+      assert.ok(
+        geometry.toolbar <= 32,
+        `desktop tabs are flat, not a tall card: ${JSON.stringify(geometry)}`,
+      );
+      assert.ok(
+        geometry.location <= 28,
+        "path and connection share a compact line",
+      );
       assert.equal(
         geometry.bg,
-        appearance === "dark" ? "rgb(28, 31, 36)" : "rgb(250, 251, 252)",
+        appearance === "dark" ? "rgb(21, 26, 34)" : "rgb(249, 250, 252)",
       );
+      const colors = await page
+        .locator(".terminal-line")
+        .nth(1)
+        .locator("span")
+        .evaluateAll((spans) =>
+          spans.map((span) => getComputedStyle(span).color),
+        );
+      assert.equal(
+        colors[1],
+        appearance === "dark" ? "rgb(135, 214, 162)" : "rgb(34, 119, 75)",
+      );
+      assert.equal(
+        colors[2],
+        "rgb(41, 132, 81)",
+        "truecolor is not recolored by matching a palette hex",
+      );
+      const directory = resolve("test-results/terminal-appearance");
+      mkdirSync(directory, { recursive: true });
+      await page.screenshot({
+        path: join(directory, `terminal-${appearance}-${width}.png`),
+      });
     }
   }
+  const navigations = () =>
+    page.evaluate(
+      () =>
+        Reflect.get(window, "terminalFixture")
+          .state()
+          .events.filter((e: any[]) => ["compose", "navigation"].includes(e[0]))
+          .length,
+    );
+  const beforeTheme = await navigations();
+  await page.getByRole("button", { name: "终端配色", exact: true }).click();
+  await page
+    .getByRole("menuitemradio", { name: "深色终端", exact: true })
+    .click();
+  await expect(page.locator(".terminal-app")).toHaveAttribute(
+    "data-terminal-theme",
+    "dark",
+  );
+  await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture").set({ principal: "another-human" }),
+  );
+  await expect(page.locator(".terminal-app")).toHaveAttribute(
+    "data-terminal-theme",
+    "auto",
+  );
+  await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture").set({ principal: "human-exact" }),
+  );
+  await expect(page.locator(".terminal-app")).toHaveAttribute(
+    "data-terminal-theme",
+    "dark",
+  );
+  assert.equal(
+    await navigations(),
+    beforeTheme,
+    "changing appearance never sends Agent input or process control",
+  );
+  await page.reload();
+  await expect(page.locator(".terminal-app")).toHaveAttribute(
+    "data-terminal-theme",
+    "dark",
+  );
+  await page.evaluate(() => {
+    document.documentElement.dataset.appMotion = "reduce";
+  });
+  assert.equal(
+    await page
+      .locator(".terminal-cursor")
+      .evaluate((el) => getComputedStyle(el).animationName),
+    "none",
+  );
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.evaluate(() => {
+    delete document.documentElement.dataset.appMotion;
+  });
+  assert.equal(
+    await page
+      .locator(".terminal-cursor")
+      .evaluate((el) => getComputedStyle(el).animationName),
+    "none",
+  );
   await page.evaluate(() =>
     Reflect.get(window, "terminalFixture").set({ serverError: true }),
   );

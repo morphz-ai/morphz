@@ -5,10 +5,14 @@ import {
   Copy,
   CornerDownLeft,
   MessageCircle,
+  Monitor,
+  Moon,
+  Palette,
   Plus,
   RefreshCw,
   ShieldCheck,
   SquareTerminal,
+  Sun,
   Unplug,
 } from "lucide-react";
 import type { ApplicationInstance } from "../../../../../packages/core/src/applications.js";
@@ -21,6 +25,14 @@ import type { WorkspaceClient } from "../../client.js";
 import { copyText } from "../../clipboard-text.js";
 import { useObservedRead } from "../../useObservedRead.js";
 import { ApplicationRequestError } from "../../../../../packages/core/src/application-api.js";
+import { ComposerOptions } from "../../ComposerOptions.js";
+import {
+  readTerminalTheme,
+  saveTerminalTheme,
+  terminalColor,
+  terminalThemes,
+  type TerminalTheme,
+} from "./terminal-appearance.js";
 
 function readFailure(cause: unknown, fallback: string) {
   if (cause instanceof ApplicationRequestError && cause.status >= 500)
@@ -61,11 +73,13 @@ export function TerminalCanvas({
                 key={index}
                 style={{
                   color: span.inverse
-                    ? (span.bg ?? "var(--terminal-paper)")
-                    : span.fg,
+                    ? (terminalColor(span.bg, span.bg_index) ??
+                      "var(--terminal-paper)")
+                    : terminalColor(span.fg, span.fg_index),
                   backgroundColor: span.inverse
-                    ? (span.fg ?? "var(--terminal-ink)")
-                    : span.bg,
+                    ? (terminalColor(span.fg, span.fg_index) ??
+                      "var(--terminal-ink)")
+                    : terminalColor(span.bg, span.bg_index),
                   fontWeight: span.bold ? 700 : undefined,
                   fontStyle: span.italic ? "italic" : undefined,
                   textDecoration: span.underline ? "underline" : undefined,
@@ -82,7 +96,7 @@ export function TerminalCanvas({
             aria-hidden
             style={{
               left: `${screen.cursor[1]}ch`,
-              top: `${screen.cursor[0] * 1.6}em`,
+              top: `${screen.cursor[0] * 1.5}em`,
             }}
           />
         )}
@@ -110,6 +124,23 @@ export function Terminal({
   onCompose: (text: string) => { ok: boolean; error?: string };
   onNotice: (message: string) => void;
 }) {
+  const preferenceScope = `${client.boot?.centerId ?? "disconnected"}:${client.boot?.principalId ?? "disconnected"}`;
+  const [appearance, setAppearance] = useState(() => ({
+    scope: preferenceScope,
+    theme: readTerminalTheme(preferenceScope),
+  }));
+  const theme =
+    appearance.scope === preferenceScope
+      ? appearance.theme
+      : readTerminalTheme(preferenceScope);
+  function changeTheme(theme: TerminalTheme) {
+    setAppearance({ scope: preferenceScope, theme });
+    try {
+      saveTerminalTheme(preferenceScope, theme);
+    } catch {
+      onNotice("终端外观已切换，但本机偏好未能保存。");
+    }
+  }
   const [selection, setSelection] = useState<string | null>(
     typeof instance.state.terminalId === "string"
       ? instance.state.terminalId
@@ -272,7 +303,11 @@ export function Terminal({
     }
   }
   return (
-    <section className="terminal-app" aria-label="Terminal 认知应用">
+    <section
+      className="terminal-app"
+      data-terminal-theme={theme}
+      aria-label="Terminal 认知应用"
+    >
       <header className="terminal-toolbar">
         <div className="terminal-tabs" role="tablist" aria-label="终端会话">
           {records.map((record) => (
@@ -305,9 +340,30 @@ export function Terminal({
           <Plus size={16} />
           <span>新终端</span>
         </button>
+        <ComposerOptions
+          label="终端配色"
+          menuLabel="终端配色"
+          below
+          singleChoice
+          triggerClassName="icon-button terminal-theme"
+          triggerIcon={<Palette size={15} />}
+          options={terminalThemes.map((option) => ({
+            label: option.label,
+            icon:
+              option.value === "auto" ? (
+                <Monitor size={15} />
+              ) : option.value === "dark" ? (
+                <Moon size={15} />
+              ) : (
+                <Sun size={15} />
+              ),
+            pressed: theme === option.value,
+            onSelect: () => changeTheme(option.value),
+          }))}
+        />
         <button
           type="button"
-          className="icon-button"
+          className="icon-button terminal-refresh"
           aria-label="刷新终端"
           onClick={() => {
             void refreshCatalog();

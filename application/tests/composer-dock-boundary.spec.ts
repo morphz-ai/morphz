@@ -68,17 +68,31 @@ test("应用 Dock 与单底栏分工清楚；内部菜单保留草稿，外部�
     page.getByRole("group", { name: "本次输入关联", exact: true }),
   ).toHaveCount(0);
   await expect(input).toHaveValue("TEST Dock 和输入边界，不发送");
-  await page
-    .getByRole("main", { name: "主工作区" })
-    .click({ position: { x: 600, y: 200 } });
+  const canvasSource = await canvas.getAttribute("data-text-source");
+  // The catalog grows as built-in apps are added. The previous (600, 200)
+  // coordinate now hits Terminal, which correctly selects a different draft.
+  const blank = { x: 8, y: 8 };
+  expect(
+    await canvas.evaluate((main, point) => {
+      const rect = main.getBoundingClientRect();
+      const target = document.elementFromPoint(
+        rect.left + point.x,
+        rect.top + point.y,
+      );
+      return (
+        main.contains(target) &&
+        !target?.closest("button,a,input,select,textarea,[role=button]")
+      );
+    }, blank),
+  ).toBe(true);
+  await page.getByRole("main", { name: "主工作区" }).click({ position: blank });
   await expect(input).toHaveCount(0);
   await expect(dock).toBeHidden();
   await openInput(page);
+  await expect(canvas).toHaveAttribute("data-text-source", canvasSource!);
   await expect(input).toHaveValue("TEST Dock 和输入边界，不发送");
   await composerAction(page, "固定输入框");
-  await page
-    .getByRole("main", { name: "主工作区" })
-    .click({ position: { x: 600, y: 200 } });
+  await page.getByRole("main", { name: "主工作区" }).click({ position: blank });
   await expect(input).toBeVisible();
   await expect(dock).toBeVisible();
   expect(await canvas.boundingBox()).toEqual(canvasBounds);

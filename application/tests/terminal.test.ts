@@ -34,6 +34,15 @@ import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 import { readPlatformWorkspace } from "../apps/web/src/platform-workspace-view.js";
 import type { PlatformClient } from "../apps/web/src/platform-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
+import { terminalColor } from "../apps/web/src/features/terminal/terminal-appearance.js";
+
+test("terminal palette preserves truecolor and the 256-color cube", () => {
+  assert.equal(terminalColor("#c94343", 1), "var(--terminal-ansi-1)");
+  assert.equal(terminalColor("#c94343"), "#c94343");
+  assert.equal(terminalColor("#ff0000", 196), "#ff0000");
+  assert.equal(terminalColor(), undefined);
+  assert.equal(terminalColor("#123456", -1), "#123456");
+});
 
 const stamp = "2026-10-16T00:00:00Z";
 const record = () =>

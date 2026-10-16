@@ -1,6 +1,26 @@
 .terminal-app {
-  --terminal-paper: light-dark(#fafbfc, #1c1f24);
-  --terminal-ink: light-dark(#28313d, #dde3ec);
+  --terminal-paper: light-dark(#f9fafc, #151a22);
+  --terminal-ink: light-dark(#293344, #dce4f0);
+  --terminal-muted: light-dark(#637083, #96a4b8);
+  --terminal-line: light-dark(#e4e8ee, #2a3341);
+  --terminal-hover: light-dark(#eaf0f5, #242e3b);
+  --terminal-accent: light-dark(#087e8b, #70d2dc);
+  --terminal-ansi-0: light-dark(#293344, #7d8799);
+  --terminal-ansi-1: light-dark(#bd354b, #f18088);
+  --terminal-ansi-2: light-dark(#22774b, #87d6a2);
+  --terminal-ansi-3: light-dark(#85620d, #e8c67b);
+  --terminal-ansi-4: light-dark(#255fbd, #83b7fa);
+  --terminal-ansi-5: light-dark(#8549af, #c7a1ed);
+  --terminal-ansi-6: light-dark(#137481, #77d1dc);
+  --terminal-ansi-7: light-dark(#59687d, #b9c5d7);
+  --terminal-ansi-8: light-dark(#657286, #9eacc1);
+  --terminal-ansi-9: light-dark(#bd354b, #ff9a9e);
+  --terminal-ansi-10: light-dark(#22774b, #a2e5b8);
+  --terminal-ansi-11: light-dark(#85620d, #f3d898);
+  --terminal-ansi-12: light-dark(#255fbd, #a4caff);
+  --terminal-ansi-13: light-dark(#8549af, #d9b9f5);
+  --terminal-ansi-14: light-dark(#137481, #9be2e8);
+  --terminal-ansi-15: light-dark(#39485d, #f1f5fc);
   container-type: inline-size;
   display: flex;
   flex-direction: column;
@@ -10,13 +30,19 @@
   background: var(--terminal-paper);
   color: var(--terminal-ink);
 }
+.terminal-app[data-terminal-theme="light"] {
+  color-scheme: light;
+}
+.terminal-app[data-terminal-theme="dark"] {
+  color-scheme: dark;
+}
 .terminal-toolbar {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 42px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--line);
+  min-height: 30px;
+  padding: 0 8px 0 4px;
+  border-bottom: 1px solid var(--terminal-line);
   flex-shrink: 0;
 }
 .terminal-tabs {
@@ -27,31 +53,32 @@
   min-width: 0;
   gap: 2px;
 }
-.terminal-tabs button {
+.app .terminal-tabs button {
   display: flex;
   align-items: center;
   gap: 7px;
   border: 0;
   border-radius: 0;
   border-bottom: 2px solid transparent;
-  min-height: 41px;
-  padding: 0 12px;
+  min-height: 29px;
+  padding: 0 10px;
   max-width: 200px;
   background: transparent;
-  color: var(--muted);
+  color: var(--terminal-muted);
+  font-size: 12px;
   white-space: nowrap;
 }
 .terminal-tabs button > span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.terminal-tabs button[aria-selected="true"] {
+.app .terminal-tabs button[aria-selected="true"] {
   color: var(--terminal-ink);
-  border-bottom-color: var(--accent);
-  background: var(--tint);
+  border-bottom-color: var(--terminal-accent);
+  background: color-mix(in srgb, var(--terminal-accent) 8%, transparent);
 }
-.terminal-new,
-.terminal-footer button {
+.app .terminal-new,
+.app .terminal-footer button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -60,13 +87,29 @@
   padding: 3px 7px;
   border: 0;
   background: transparent;
-  color: var(--muted);
+  color: var(--terminal-muted);
   white-space: nowrap;
 }
-.terminal-new:hover,
-.terminal-footer button:hover:not(:disabled) {
-  color: var(--ink);
-  background: var(--hover);
+.app .terminal-new:hover,
+.app .terminal-footer button:hover:not(:disabled) {
+  color: var(--terminal-ink);
+  background: var(--terminal-hover);
+}
+.app .terminal-toolbar .icon-button {
+  width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 4px;
+  color: var(--terminal-muted);
+}
+.app .terminal-toolbar .icon-button:hover {
+  color: var(--terminal-ink);
+  background: var(--terminal-hover);
+}
+.terminal-tabs button:focus-visible,
+.terminal-screen:focus-visible {
+  outline: 2px solid var(--terminal-accent);
+  outline-offset: -2px;
 }
 .terminal-status-dot {
   width: 6px;
@@ -90,9 +133,10 @@
   justify-content: space-between;
   align-items: center;
   gap: 14px;
-  color: var(--muted);
+  color: var(--terminal-muted);
   font-size: 11px;
-  padding: 8px 18px;
+  min-height: 24px;
+  padding: 2px 14px;
   flex-shrink: 0;
 }
 .terminal-location > span:first-child {
@@ -112,9 +156,9 @@
   min-height: 0;
   min-width: 0;
   overflow: auto;
-  padding: 4px 18px 20px;
+  padding: 6px 14px 12px;
   font:
-    13px/1.6 ui-monospace,
+    13px/1.5 ui-monospace,
     SFMono-Regular,
     Menlo,
     Consolas,
@@ -127,24 +171,25 @@
   min-height: 100%;
 }
 .terminal-line {
-  height: 1.6em;
+  height: 1.5em;
   white-space: pre;
 }
 .terminal-cursor {
   position: absolute;
   width: 1ch;
-  height: 1.6em;
-  background: currentColor;
-  opacity: 0.25;
+  height: 1.5em;
+  background: var(--terminal-accent);
+  opacity: 0.65;
+  animation: terminal-caret 1.2s step-end infinite;
   pointer-events: none;
 }
 .terminal-footer {
   display: flex;
   align-items: center;
   gap: 10px;
-  border-top: 1px solid var(--line);
-  padding: 4px 10px;
-  min-height: 36px;
+  border-top: 1px solid var(--terminal-line);
+  padding: 1px 8px;
+  min-height: 30px;
   font-size: 11px;
   flex-shrink: 0;
 }
@@ -165,14 +210,14 @@
   gap: 4px;
   align-items: center;
   white-space: nowrap;
-  color: var(--muted);
+  color: var(--terminal-muted);
 }
 .terminal-notice {
   display: flex;
   align-items: flex-start;
   gap: 7px;
   padding: 6px 18px;
-  color: var(--muted);
+  color: var(--terminal-muted);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
@@ -191,7 +236,7 @@
   min-height: 0;
 }
 .terminal-empty > svg {
-  color: var(--muted);
+  color: var(--terminal-muted);
 }
 .terminal-empty h2 {
   font-size: 19px;
@@ -201,10 +246,10 @@
 .terminal-empty p {
   max-width: 420px;
   margin: 0;
-  color: var(--muted);
+  color: var(--terminal-muted);
 }
 .terminal-empty small {
-  color: var(--muted);
+  color: var(--terminal-muted);
   max-width: 420px;
 }
 .terminal-empty button {
@@ -213,7 +258,32 @@
 .terminal-loading {
   flex: 1;
   padding: 12px 18px;
-  color: var(--muted);
+  color: var(--terminal-muted);
+}
+@keyframes terminal-caret {
+  50% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .terminal-cursor {
+    animation: none;
+  }
+}
+:root[data-app-motion="reduce"] .terminal-cursor {
+  animation: none;
+}
+@media (pointer: coarse) {
+  .terminal-toolbar,
+  .app .terminal-tabs button,
+  .app .terminal-toolbar .icon-button,
+  .app .terminal-new,
+  .app .terminal-footer button {
+    min-height: 44px;
+  }
+  .app .terminal-toolbar .icon-button {
+    width: 44px;
+  }
 }
 @container (max-width: 560px) {
   .terminal-boundary,

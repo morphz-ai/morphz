@@ -36,6 +36,8 @@ export const terminalScreenSchema = z.object({
             text: z.string().max(24000),
             fg: color.optional(),
             bg: color.optional(),
+            fg_index: z.number().int().min(0).max(255).optional(),
+            bg_index: z.number().int().min(0).max(255).optional(),
             bold: z.boolean(),
             italic: z.boolean(),
             underline: z.boolean(),
