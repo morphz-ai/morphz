@@ -1,6 +1,6 @@
 # Terminal 认知应用
 
-状态：2026-10-16 已实现本机 Terminal，原 Morphz.app 真实模型及命令链路验收通过；平台边界和剩余验收见下文。
+状态：2026-10-16 已实现本机 Terminal，原 Morphz.app 真实模型、命令链路及 Desktop 重开验收通过；平台边界见下文。
 
 ## 产品边界
 
@@ -111,6 +111,12 @@ UI 轮询，不停止进程；输出流与检查点没有无界队列。
 - 原 Runtime 在线备份和只读对比证明旧事件字段、原目标 ID／状态／revision
   均未变化。原 23 个 Session、五个目标（其中两个 active）保留；测试没有
   重发原任务或改变凭据。测试终端保留在原 App，便于用户继续核对。
+- 解锁后通过系统菜单正常退出原 Desktop，再打开同一个 Morphz.app。
+  Desktop PID 从 56235 变为 84190；Runtime 56262 与 Shell 56434 未变，
+  终端仍为原 ID、connected=true、checkpoint=false，原环境与屏幕可见。
+  退出前用户另行执行的 `pwd; ls -1` 已完成，重开后输出也保留，终端
+  revision 仍为 4。原验收五个 Job 与用户后续三个 Job 均未增加，原验收
+  输入接收仍为一次；没有重发、重启 Runtime 或要求重新填写模型 key。
 
 集成过程中修正了已启动 Terminal 被 workspace 恢复过滤的问题。首次测试
 输入因旧清单没有新格式而未被 Runtime 接受；nullable 联合 schema 又被
@@ -128,5 +134,5 @@ Runtime 拒绝，现采用既有精确格式模式并增加真实 Rust 回归。
 管道则明确拒绝，尚未完成该链路验证；Windows 与远程 PTY 未实现，不
 静默降级为本机。完整手动交互式编辑器、远程终端和跨设备 PTY 不在首版。
 Runtime 重启丢失物理句柄的检查点语义已有自动测试；有 live PTY 时的原
-Desktop 正常退出／重开实窗检查因 Mac 锁屏尚未完成，不将此前无 PTY 的
-重开观察当作该项验收。Runtime 与测试终端仍在，没有为验收而重启它们。
+Desktop 正常退出／重开已完成实窗检查。Runtime 与终端保持原进程，没有
+用强制结束进程或重放旧命令冒充恢复。
