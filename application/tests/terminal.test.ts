@@ -278,6 +278,18 @@ test("Web terminal transport is read-only and shares the typed operation with De
   assert.equal(url.searchParams.get("terminalId"), "opaque/id");
   assert.equal(url.searchParams.get("conversationId"), "c");
   assert.equal(url.searchParams.get("scrollback"), "24");
+  const command = {
+    command_id: randomUUID(),
+    expected_revision: 2,
+    action: { type: "input", data: "printf 中文\r" },
+  };
+  await client.call("terminal.command", {
+    scope,
+    terminalId: "opaque/id",
+    command,
+  });
+  assert.equal(calls[2]!.method, "POST");
+  assert.match(calls[2]!.url, /\/api\/terminals\/commands$/);
 });
 
 test("terminal rendering escapes process output and never executes on SSR mount", () => {
@@ -343,7 +355,7 @@ test("real Platform input and scoped terminal reads keep original roots and rech
     });
     const internal = f.runtime as unknown as {
       state: any;
-      request: (path: string, method?: string) => Promise<unknown>;
+      request: (path: string, method?: string, body?: any) => Promise<unknown>;
       authorizePlatformRead: (...args: any[]) => Promise<any>;
     };
     const delivery = internal.state.deliveries[0];
@@ -362,19 +374,28 @@ test("real Platform input and scoped terminal reads keep original roots and rech
     let revoked = false,
       foreignRoot = false,
       mismatchedScreen = false,
-      revokeAfterRead = false;
+      revokeAfterRead = false,
+      revokeAfterMetadata = false;
     const authority = internal.authorizePlatformRead.bind(f.runtime);
     f.runtime.bindPlatformReadAuthority(async (...args) => {
       assert.equal(revoked, false, "terminal read authority revoked");
       return authority(...args);
     });
     const calls: string[] = [];
-    internal.request = async (path, method) => {
+    const writes: unknown[] = [];
+    internal.request = async (path, method, body) => {
       calls.push(path);
-      assert.ok(
-        !method || method === "GET",
-        "terminal view never writes Runtime state",
-      );
+      if (method === "POST") {
+        assert.match(path, /\/terminals\/terminal-exact\/commands$/);
+        writes.push(body);
+        return {
+          command_id: body.command_id,
+          terminal_id: "terminal-exact",
+          revision: 3,
+          input_status: "submitted",
+          command_completion: "not_asserted",
+        };
+      }
       const url = new URL(path, "http://runtime.invalid");
       const candidate = {
         ...value,
@@ -386,7 +407,10 @@ test("real Platform input and scoped terminal reads keep original roots and rech
         ]);
         return { terminals: [candidate], limit: 50, has_more: false };
       }
-      if (url.searchParams.has("metadata_only")) return { terminal: candidate };
+      if (url.searchParams.has("metadata_only")) {
+        if (revokeAfterMetadata) revoked = true;
+        return { terminal: candidate };
+      }
       if (revokeAfterRead) revoked = true;
       return {
         terminal: {
@@ -419,12 +443,45 @@ test("real Platform input and scoped terminal reads keep original roots and rech
       ),
       "no complete Thread or Job history is fetched",
     );
+    const command = {
+      command_id: randomUUID(),
+      expected_revision: 2,
+      action: { type: "input" as const, data: "printf 中文\r" },
+    };
+    const result = await f
+      .session()
+      .terminalCommand({ scope, terminalId: "terminal-exact", command });
+    assert.equal(result.command_id, command.command_id);
+    assert.deepEqual(writes, [command]);
+    revokeAfterMetadata = true;
+    await assert.rejects(
+      f.session().terminalCommand({
+        scope,
+        terminalId: "terminal-exact",
+        command: { ...command, command_id: randomUUID() },
+      }),
+      /revoked/,
+    );
+    assert.equal(
+      writes.length,
+      1,
+      "a revoked Human cannot write after reading metadata",
+    );
+    revoked = false;
+    revokeAfterMetadata = false;
     foreignRoot = true;
     await assert.rejects(f.session().terminalCatalog(scope), /来源/);
     await assert.rejects(
       f.session().terminalRead({ scope, terminalId: "terminal-exact" }),
       /获授权/,
     );
+    await assert.rejects(
+      f
+        .session()
+        .terminalCommand({ scope, terminalId: "terminal-exact", command }),
+      /获授权/,
+    );
+    assert.equal(writes.length, 1);
     foreignRoot = false;
     mismatchedScreen = true;
     await assert.rejects(

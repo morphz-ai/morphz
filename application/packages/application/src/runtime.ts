@@ -3,6 +3,8 @@ import type { HostFailureReporter } from "./host-diagnostics.js";
 import { objectiveWaitKinds } from "./objective-wait-projection.js";
 import {
   terminalCatalogSchema,
+  terminalReceiptSchema,
+  type TerminalCommand,
   terminalViewSchema,
   terminalRecordSchema,
 } from "../../core/src/terminal.js";
@@ -2698,6 +2700,50 @@ export class RuntimeBridge {
           limit: 50,
           has_more: terminals.length > 50 || pages.some((p) => p.has_more),
         };
+      },
+      terminalCommand: async (terminalId: string, command: TerminalCommand) => {
+        await recheck();
+        for (const entry of controls) {
+          let source;
+          try {
+            source = z
+              .object({ terminal: terminalRecordSchema })
+              .parse(
+                await request(
+                  `/api/sessions/${encodeURIComponent(entry.sessionId)}/terminals/${encodeURIComponent(terminalId)}?metadata_only=true`,
+                ),
+              ).terminal;
+          } catch (error) {
+            if (error instanceof DomainError && error.code === "conflict")
+              continue;
+            throw error;
+          }
+          if (
+            source.session_id !== entry.sessionId ||
+            source.context_id !== entry.contextId ||
+            !entry.roots.has(source.root_turn_id)
+          )
+            continue;
+          await recheck();
+          const receipt = terminalReceiptSchema.parse(
+            await request(
+              `/api/sessions/${encodeURIComponent(entry.sessionId)}/terminals/${encodeURIComponent(terminalId)}/commands`,
+              "POST",
+              command,
+            ),
+          );
+          if (
+            receipt.terminal_id !== terminalId ||
+            receipt.command_id !== command.command_id
+          )
+            throw new DomainError(
+              "conflict",
+              "终端输入回执身份不匹配，未重发。",
+            );
+          await recheck();
+          return receipt;
+        }
+        throw new DomainError("not_found", "终端不属于当前获授权的工作。");
       },
       terminal: async (terminalId: string, scrollback: number) => {
         await recheck();

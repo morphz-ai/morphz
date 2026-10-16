@@ -1,5 +1,45 @@
 # 桌面能力实施记录
 
+## 2026-10-16 终端直接输入与完整配色修正
+
+旧终端只有手绘输出，没有人工键盘链路；Agent-first 不应等于用户只能看。
+现用 xterm.js 处理键盘、组合输入、粘贴、选择和光标，接入同一 Runtime
+PTY。人工输入直接走共享 `terminal.command`，不调用模型、不增加第二个
+AI 输入框；创建／关闭仍走现有意图入口。人工与 Agent 共用权限、revision
+和物理锁，Runtime 的新增关系表只保存命令摘要和回执，不把键盘正文塞进
+Context。未知回执停止后续发送并保留文字，切换应用不后台补发；同尺寸
+布局通知去重。Web POST 通过 Origin／CSRF 检查，Desktop 仍无应用 HTTP 服务。
+
+完整 Catppuccin Latte／Mocha 色板覆盖背景、正文、ANSI、选择和光标，
+保留真实提示符、真彩色和减少动态偏好。原窗口已实看两套外观，保留约
+30px 标签栏、24px 目录行和 31px 页脚，并修正了网格底部的默认黑色区域。
+当前原 App 的 Terminal 单独选用 Mocha，应用整体外观没有改变。
+
+正式 Node 相关七文件 44／44、相关 Playwright 三文件 9／9、Rust Terminal
+14／14（显式包含专用 PostgreSQL、SQLite 与真实沙盒 PTY）通过，无跳过。
+覆盖中文 composition／粘贴、回车、方向键、退格、Ctrl+C、UTF-8 分批、
+尺寸去重、未知回执不重试、撤权和来源复核；类型、生产构建、许可生成校验
+和差异检查通过。不是全仓库全量验证；既有 OpenCV／大 chunk 与 Rust
+链接器 unwind 警告仍保留。新 xterm 和色板许可已收录，许可生成器同时
+补上既有 sharp-libvips 1.3.4 npm 包缺少的上游 notices／LGPL／GPL 文本。
+
+原 Morphz.app／profile／中心验收：确认无执行中 Job 后，在线备份七个
+数据库并在 Desktop 退出后备份原 profile；正常更新原 Runtime 为 17367，
+直接继承旧进程的明确模型凭据，不读取无关 provider 的 key、不改变配置。
+旧测试 PTY 物理句柄结束，历史屏幕保留并如实显示丢失，没有重放旧命令。
+新建明确命名的 TEST Terminal Keyboard 1016，由真实模型执行 open／write／
+read；一次 read 的等待参数不符合约束被拒绝，普通 read 随后成功，未重复
+写入。人工直接键入 pwd、粘贴中文环境变量、ls -G 和 Ctrl+C 后继续执行均
+实测；另一条 Agent 请求读取同一终端的最新 revision，并输出手动设置的
+“中文粘贴已保留”，三次 terminal Job 成功，没有 exec 或新 Shell。
+
+两条验收输入各有一条 completed 持久投递记录，未取消。只读基线对比：
+原事件行、原目标整行均无改动或移除，23 个 Session 保留，三份原 Runtime／
+模型／连接配置逐字节一致。Desktop 再次正常退出、重开并加载最终构建后，
+Runtime 17367 和 Shell 17456 仍在，原终端、Mocha、输出和环境保留；直接
+输入打印 `reopen-ok:中文粘贴已保留`，返回提示符。没有重发旧任务或要求
+重新填写 key。实现和权限边界见 [Terminal 记录](./43-terminal-cognitive-application.md)。
+
 ## 2026-10-16 收起状态与终端外观
 
 收起的共享输入显示真实处理、工具阶段、并行分支数及最新公开进度；服务

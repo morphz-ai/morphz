@@ -1,7 +1,9 @@
 //! A Runtime-owned terminal resource. Agent input crosses the ordinary durable
 //! Tool/ExecutionJob boundary; UI reads do not create work or grant execution.
 use crate::llm::ToolDefinition;
-use crate::memory::terminal::{TerminalSessionFilter, TerminalSessionRecord, TerminalStatus};
+use crate::memory::terminal::{
+    TerminalCommandRecord, TerminalSessionFilter, TerminalSessionRecord, TerminalStatus,
+};
 use crate::memory::{ExecutionJobStatus, RuntimeStore};
 use crate::permission::{PermissionBroker, PermissionProfile, SandboxMode, ShellEnvironmentPolicy};
 use crate::sandbox::{NativeSandbox, NetworkPolicy, SandboxPolicy, ShellRequest};
@@ -26,6 +28,33 @@ pub(crate) type TerminalSourceResolver = Arc<
 >;
 const MAX_LIVE: usize = 8;
 const SCROLLBACK: usize = 500;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalHumanCommand {
+    pub command_id: String,
+    pub expected_revision: u64,
+    pub action: TerminalHumanAction,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TerminalHumanAction {
+    Input { data: String },
+    Resize { rows: u16, cols: u16 },
+}
+
+struct ControlIdentity<'a> {
+    session: &'a str,
+    context: &'a str,
+    principal: &'a str,
+    target: &'a str,
+    id: &'a str,
+    human_hash: Option<String>,
+}
+
+fn human_receipt(command: &TerminalCommandRecord) -> serde_json::Value {
+    serde_json::json!({"command_id":command.id,"terminal_id":command.terminal_id,"revision":command.revision,"input_status":if command.status=="reserved" {"uncertain"} else {&command.status},"command_completion":"not_asserted"})
+}
 
 #[derive(Debug)]
 pub enum TerminalAccessError {
@@ -68,6 +97,10 @@ pub struct TerminalScreen {
     pub text: String,
     pub cursor: (u16, u16),
     pub cursor_visible: bool,
+    #[serde(default)]
+    pub application_cursor: bool,
+    #[serde(default)]
+    pub bracketed_paste: bool,
     pub alternate_screen: bool,
     pub scrollback: usize,
     pub previous_available: bool,
@@ -77,6 +110,7 @@ pub struct TerminalScreen {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TerminalView {
+    pub input_supported: bool,
     pub terminal: TerminalSessionRecord,
     pub connected: bool,
     pub screen: Option<TerminalScreen>,
@@ -292,6 +326,8 @@ fn screen_snapshot(state: &mut ScreenState, scrollback: usize) -> TerminalScreen
         text: screen.contents(),
         cursor: screen.cursor_position(),
         cursor_visible: !screen.hide_cursor() && scrollback == 0,
+        application_cursor: screen.application_cursor(),
+        bracketed_paste: screen.bracketed_paste(),
         alternate_screen: screen.alternate_screen(),
         scrollback: screen.scrollback(),
         previous_available: screen.scrollback() < available && !screen.alternate_screen(),
@@ -318,6 +354,69 @@ fn screen_snapshot(state: &mut ScreenState, scrollback: usize) -> TerminalScreen
 }
 
 impl TerminalManager {
+    /// Authenticated Human control shares the physical lock, revision, policy
+    /// and uncertain-input boundary with Agent Jobs; it never impersonates one.
+    pub async fn human_control(
+        &self,
+        principal: &str,
+        session: &str,
+        context: &str,
+        id: &str,
+        command: TerminalHumanCommand,
+    ) -> Result<serde_json::Value, Error> {
+        self.authorize(session, context, principal).await?;
+        let record = self.metadata(id, session, context, principal).await?;
+        if command.command_id.is_empty()
+            || command.command_id.len() > 128
+            || !command
+                .command_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            || command.expected_revision == 0
+        {
+            return Err("invalid terminal command identity".into());
+        }
+        let hash = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&(
+                principal, session, context, id, &command
+            ))?)
+        );
+        if let Some(old) = self.store.terminal_command(&command.command_id).await? {
+            if old.request_hash != hash || old.terminal_id != id || old.principal_id != principal {
+                return Err("terminal command identity conflict".into());
+            }
+            return Ok(human_receipt(&old));
+        }
+        let action = match command.action {
+            TerminalHumanAction::Input { data } => TerminalAction::Write {
+                terminal_id: id.into(),
+                expected_revision: command.expected_revision,
+                text: data,
+                enter: false,
+            },
+            TerminalHumanAction::Resize { rows, cols } => TerminalAction::Resize {
+                terminal_id: id.into(),
+                expected_revision: command.expected_revision,
+                rows,
+                cols,
+            },
+        };
+        self.control(
+            &ControlIdentity {
+                session,
+                context,
+                principal,
+                target: &record.target_id,
+                id: &command.command_id,
+                human_hash: Some(hash),
+            },
+            id,
+            command.expected_revision,
+            &action,
+        )
+        .await
+    }
     pub fn new(store: Arc<dyn RuntimeStore>, permissions: Arc<PermissionBroker>) -> Arc<Self> {
         let mut nonce = [0u8; 16];
         getrandom::fill(&mut nonce).expect("Runtime terminal owner requires OS randomness");
@@ -471,6 +570,7 @@ impl TerminalManager {
         };
         self.authorize(session, context, principal).await?;
         Ok(TerminalView {
+            input_supported: true,
             terminal: record,
             connected,
             screen,
@@ -683,6 +783,7 @@ impl TerminalManager {
                 .into(),
                 network_enabled: profile.network,
                 last_input_job_id: None,
+                last_human_command_id: None,
                 last_input_status: None,
                 exit_code: None,
                 created_at: created_at.clone(),
@@ -915,7 +1016,7 @@ impl TerminalManager {
 
     async fn control(
         &self,
-        caller: &ToolExecutionJobContext,
+        caller: &ControlIdentity<'_>,
         id: &str,
         expected: u64,
         action: &TerminalAction,
@@ -929,15 +1030,27 @@ impl TerminalManager {
             .ok_or("terminal is disconnected; never replay old commands to recover it")?;
         let _control = live.control.lock().await;
         let mut record = self.store.terminal(id).await?.ok_or("terminal not found")?;
-        if record.session_id != caller.session_id
-            || record.context_id != caller.context_id
-            || Some(&record.principal_id) != caller.initiating_principal_id.as_ref()
-            || record.target_id != caller.target_id
+        if record.session_id != caller.session
+            || record.context_id != caller.context
+            || record.principal_id != caller.principal
+            || record.target_id != caller.target
             || record.owner_instance_id != self.instance_id
         {
             return Err("terminal authority mismatch".into());
         }
-        if record.last_input_job_id.as_deref() == Some(&caller.parent_job_id) {
+        self.authorize(caller.session, caller.context, caller.principal)
+            .await?;
+        if let Some(hash) = &caller.human_hash {
+            if let Some(old) = self.store.terminal_command(caller.id).await? {
+                if old.request_hash != *hash
+                    || old.terminal_id != id
+                    || old.principal_id != caller.principal
+                {
+                    return Err("terminal command identity conflict".into());
+                }
+                return Ok(human_receipt(&old));
+            }
+        } else if record.last_input_job_id.as_deref() == Some(caller.id) {
             return Ok(
                 serde_json::json!({"terminal_id":id,"revision":record.revision,"input_status":record.last_input_status,"replayed":false}),
             );
@@ -950,8 +1063,7 @@ impl TerminalManager {
         if record.status != TerminalStatus::Open || live.stopped.load(Ordering::SeqCst) {
             return Err("terminal has ended".into());
         }
-        if policy_hash(&self.permissions.profile_for_session(&caller.session_id))
-            != record.policy_hash
+        if policy_hash(&self.permissions.profile_for_session(caller.session)) != record.policy_hash
         {
             live.stop();
             return Err("terminal permission boundary changed; old shell stopped, open a new terminal under the current policy".into());
@@ -982,11 +1094,34 @@ impl TerminalManager {
             TerminalAction::Close { .. } => None,
             _ => return Err("invalid terminal control".into()),
         };
+        let mut receipt = caller
+            .human_hash
+            .as_ref()
+            .map(|hash| TerminalCommandRecord {
+                id: caller.id.into(),
+                terminal_id: id.into(),
+                principal_id: caller.principal.into(),
+                expected_revision: expected,
+                request_hash: hash.clone(),
+                status: "reserved".into(),
+                revision: record.revision + 1,
+                created_at: now(),
+            });
+        if let Some(receipt) = &receipt {
+            if !self.store.reserve_terminal_command(receipt).await? {
+                return Err("terminal command identity already reserved; nothing was sent".into());
+            }
+        }
         record.revision += 1;
-        record.last_input_job_id = Some(caller.parent_job_id.clone());
+        record.last_input_job_id = caller.human_hash.is_none().then(|| caller.id.into());
+        record.last_human_command_id = caller.human_hash.is_some().then(|| caller.id.into());
         record.last_input_status = Some("uncertain".into());
         record.updated_at = now();
         if !self.store.compare_terminal(expected, &record).await? {
+            if let Some(receipt) = &mut receipt {
+                receipt.status = "rejected".into();
+                self.store.finish_terminal_command(receipt).await?;
+            }
             return Err("terminal revision changed before input; nothing was sent".into());
         }
         crate::tool::mark_physical_side_effect().await?;
@@ -1041,6 +1176,11 @@ impl TerminalManager {
                 "terminal input was sent but its receipt is uncertain; read state, do not resend"
                     .into(),
             );
+        }
+        if let Some(receipt) = &mut receipt {
+            receipt.status = "submitted".into();
+            self.store.finish_terminal_command(receipt).await?;
+            return Ok(human_receipt(receipt));
         }
         Ok(
             serde_json::json!({"terminal_id":id,"revision":record.revision,"input_status":"submitted","command_completion":"not_asserted","replayed":false}),
@@ -1224,7 +1364,19 @@ impl Tool for TerminalTool {
                 expected_revision,
             } => {
                 self.manager
-                    .control(&caller, terminal_id, *expected_revision, &action)
+                    .control(
+                        &ControlIdentity {
+                            session: &caller.session_id,
+                            context: &caller.context_id,
+                            principal,
+                            target: &caller.target_id,
+                            id: &caller.parent_job_id,
+                            human_hash: None,
+                        },
+                        terminal_id,
+                        *expected_revision,
+                        &action,
+                    )
                     .await?
             }
         };
@@ -1562,6 +1714,141 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(colored.contains(&4), "actual prompt path is blue");
         assert!(colored.contains(&2), "actual prompt symbol is green");
+    }
+
+    #[tokio::test]
+    async fn terminal_human_input_is_real_and_receipts_never_replay() {
+        let f = Fixture::new().await;
+        let r = f.open().await;
+        let command = TerminalHumanCommand {
+            command_id: "human-input-one".into(),
+            expected_revision: r.revision,
+            action: TerminalHumanAction::Input {
+                data: "printf x >> human-once.txt; printf '\\n__HUMAN__:中文\\n'\r".into(),
+            },
+        };
+        let send = |command| {
+            f.manager.human_control(
+                f.caller.initiating_principal_id.as_deref().unwrap(),
+                &r.session_id,
+                &r.context_id,
+                &r.id,
+                command,
+            )
+        };
+        let receipt = send(command.clone()).await.unwrap();
+        assert_eq!(receipt["input_status"], "submitted");
+        f.wait_line(&r.id, "__HUMAN__:中文").await;
+        assert_eq!(
+            std::fs::read_to_string(f._directory.path().join("human-once.txt")).unwrap(),
+            "x"
+        );
+        f.write(&r.id, "printf '\\n__AGENT_AFTER_HUMAN__\\n'").await;
+        f.wait_line(&r.id, "__AGENT_AFTER_HUMAN__").await;
+        assert_eq!(
+            send(command.clone()).await.unwrap(),
+            receipt,
+            "old identity still returns original receipt after an Agent write"
+        );
+        let mut changed = command.clone();
+        changed.action = TerminalHumanAction::Input {
+            data: "not-the-original-input".into(),
+        };
+        assert!(send(changed)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("identity conflict"));
+        let mut stale = command.clone();
+        stale.command_id = "human-input-stale".into();
+        assert!(send(stale)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("revision conflict"));
+        assert_eq!(
+            std::fs::read_to_string(f._directory.path().join("human-once.txt")).unwrap(),
+            "x"
+        );
+        assert!(f
+            .manager
+            .human_control(
+                "foreign-human",
+                &r.session_id,
+                &r.context_id,
+                &r.id,
+                command.clone()
+            )
+            .await
+            .is_err());
+        let mut uncertain = f
+            .store
+            .terminal_command(&command.command_id)
+            .await
+            .unwrap()
+            .unwrap();
+        uncertain.id = "human-input-uncertain".into();
+        uncertain.status = "reserved".into();
+        let mut unconfirmed_command = command.clone();
+        unconfirmed_command.command_id = uncertain.id.clone();
+        uncertain.request_hash = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&(
+                    f.caller.initiating_principal_id.as_deref().unwrap(),
+                    &r.session_id,
+                    &r.context_id,
+                    &r.id,
+                    &unconfirmed_command
+                ))
+                .unwrap()
+            )
+        );
+        assert!(f.store.reserve_terminal_command(&uncertain).await.unwrap());
+        assert_eq!(
+            send(unconfirmed_command).await.unwrap()["input_status"],
+            "uncertain"
+        );
+        assert_eq!(
+            std::fs::read_to_string(f._directory.path().join("human-once.txt")).unwrap(),
+            "x"
+        );
+        f.manager
+            .human_control(
+                f.caller.initiating_principal_id.as_deref().unwrap(),
+                &r.session_id,
+                &r.context_id,
+                &r.id,
+                TerminalHumanCommand {
+                    command_id: "human-ctrl-c".into(),
+                    expected_revision: f.store.terminal(&r.id).await.unwrap().unwrap().revision,
+                    action: TerminalHumanAction::Input {
+                        data: "sleep 10\r".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let revision = f.store.terminal(&r.id).await.unwrap().unwrap().revision;
+        f.manager
+            .human_control(
+                f.caller.initiating_principal_id.as_deref().unwrap(),
+                &r.session_id,
+                &r.context_id,
+                &r.id,
+                TerminalHumanCommand {
+                    command_id: "human-ctrl-c-stop".into(),
+                    expected_revision: revision,
+                    action: TerminalHumanAction::Input {
+                        data: "\x03".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        f.write(&r.id, "printf '\\n__AFTER_HUMAN_INTERRUPT__\\n'")
+            .await;
+        f.wait_line(&r.id, "__AFTER_HUMAN_INTERRUPT__").await;
     }
 
     #[test]
@@ -1930,6 +2217,57 @@ mod tests {
             .unwrap()
             .unwrap()
             .contains("__PG_READY__"));
+        let command = TerminalHumanCommand {
+            command_id: "human-pg-once".into(),
+            expected_revision: f
+                .store
+                .terminal(&record.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            action: TerminalHumanAction::Input {
+                data: "printf y >> pg-human.txt; printf '\\n__PG_HUMAN__\\n'\r".into(),
+            },
+        };
+        let receipt = f
+            .manager
+            .human_control(
+                &record.principal_id,
+                &record.session_id,
+                &record.context_id,
+                &record.id,
+                command.clone(),
+            )
+            .await
+            .unwrap();
+        f.wait_line(&record.id, "__PG_HUMAN__").await;
+        assert_eq!(
+            f.manager
+                .human_control(
+                    &record.principal_id,
+                    &record.session_id,
+                    &record.context_id,
+                    &record.id,
+                    command
+                )
+                .await
+                .unwrap(),
+            receipt
+        );
+        assert_eq!(
+            std::fs::read_to_string(f._directory.path().join("pg-human.txt")).unwrap(),
+            "y"
+        );
+        assert_eq!(
+            f.store
+                .terminal_command("human-pg-once")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "submitted"
+        );
         let revision = f
             .store
             .terminal(&record.id)

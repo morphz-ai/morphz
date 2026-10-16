@@ -47,6 +47,8 @@ pub struct TerminalSessionRecord {
     pub sandbox_status: String,
     pub network_enabled: bool,
     pub last_input_job_id: Option<String>,
+    #[serde(default)]
+    pub last_human_command_id: Option<String>,
     pub last_input_status: Option<String>,
     pub exit_code: Option<u32>,
     pub created_at: String,
@@ -63,8 +65,34 @@ pub struct TerminalSessionFilter {
     pub limit: usize,
 }
 
+/// Human PTY control receipt. Input bytes are deliberately not stored here or
+/// injected into Agent Context. The hash binds one identity to one request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TerminalCommandRecord {
+    pub id: String,
+    pub terminal_id: String,
+    pub principal_id: String,
+    pub expected_revision: u64,
+    pub request_hash: String,
+    pub status: String,
+    pub revision: u64,
+    pub created_at: String,
+}
+
 #[async_trait::async_trait]
 pub trait TerminalStore: Send + Sync {
+    async fn terminal_command(
+        &self,
+        id: &str,
+    ) -> Result<Option<TerminalCommandRecord>, TerminalStoreError>;
+    async fn reserve_terminal_command(
+        &self,
+        command: &TerminalCommandRecord,
+    ) -> Result<bool, TerminalStoreError>;
+    async fn finish_terminal_command(
+        &self,
+        command: &TerminalCommandRecord,
+    ) -> Result<(), TerminalStoreError>;
     async fn create_terminal(
         &self,
         record: &TerminalSessionRecord,
@@ -112,6 +140,20 @@ CREATE INDEX IF NOT EXISTS terminal_sessions_reader ON terminal_sessions(session
 CREATE INDEX IF NOT EXISTS terminal_sessions_root ON terminal_sessions(session_id,context_id,principal_id,root_turn_id,created_at DESC,id);
 ";
 
+pub(crate) const COMMAND_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS terminal_commands (
+ id TEXT PRIMARY KEY,
+ terminal_id TEXT NOT NULL REFERENCES terminal_sessions(id),
+ principal_id TEXT NOT NULL REFERENCES principals(id),
+ expected_revision BIGINT NOT NULL CHECK(expected_revision > 0),
+ request_hash TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('reserved','submitted','rejected')),
+ revision BIGINT NOT NULL,
+ created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS terminal_commands_owner ON terminal_commands(terminal_id,principal_id,created_at);
+";
+
 /// Only these static SQL statements use anonymous bind markers. No values are
 /// interpolated; PostgreSQL gets its numbered markers, SQLite keeps `?`.
 pub(crate) fn sql(statement: &str, postgres: bool) -> String {
@@ -136,6 +178,22 @@ macro_rules! terminal_store {
     ($store:ty, $database:ty, $postgres:expr) => {
         #[async_trait::async_trait]
         impl crate::memory::terminal::TerminalStore for $store {
+            async fn terminal_command(&self, id: &str) -> Result<Option<crate::memory::terminal::TerminalCommandRecord>, crate::memory::terminal::TerminalStoreError> {
+                let q = crate::memory::terminal::sql("SELECT id,terminal_id,principal_id,expected_revision,request_hash,status,revision,created_at FROM terminal_commands WHERE id=?", $postgres);
+                use sqlx::Row;
+                sqlx::query(&q).bind(id).fetch_optional(&self.pool).await?.map(|r| Ok(crate::memory::terminal::TerminalCommandRecord {
+                    id:r.try_get("id")?,terminal_id:r.try_get("terminal_id")?,principal_id:r.try_get("principal_id")?,expected_revision:u64::try_from(r.try_get::<i64,_>("expected_revision")?)?,request_hash:r.try_get("request_hash")?,status:r.try_get("status")?,revision:u64::try_from(r.try_get::<i64,_>("revision")?)?,created_at:r.try_get("created_at")?
+                })).transpose()
+            }
+            async fn reserve_terminal_command(&self, r: &crate::memory::terminal::TerminalCommandRecord) -> Result<bool, crate::memory::terminal::TerminalStoreError> {
+                let q=crate::memory::terminal::sql("INSERT INTO terminal_commands(id,terminal_id,principal_id,expected_revision,request_hash,status,revision,created_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING", $postgres);
+                Ok(sqlx::query(&q).bind(&r.id).bind(&r.terminal_id).bind(&r.principal_id).bind(i64::try_from(r.expected_revision)?).bind(&r.request_hash).bind(&r.status).bind(i64::try_from(r.revision)?).bind(&r.created_at).execute(&self.pool).await?.rows_affected()==1)
+            }
+            async fn finish_terminal_command(&self, r: &crate::memory::terminal::TerminalCommandRecord) -> Result<(), crate::memory::terminal::TerminalStoreError> {
+                let q=crate::memory::terminal::sql("UPDATE terminal_commands SET status=?,revision=? WHERE id=? AND terminal_id=? AND principal_id=? AND request_hash=? AND status='reserved'", $postgres);
+                if sqlx::query(&q).bind(&r.status).bind(i64::try_from(r.revision)?).bind(&r.id).bind(&r.terminal_id).bind(&r.principal_id).bind(&r.request_hash).execute(&self.pool).await?.rows_affected()!=1 { return Err("terminal command receipt changed".into()); }
+                Ok(())
+            }
             async fn create_terminal(&self, r: &crate::memory::terminal::TerminalSessionRecord) -> Result<bool, crate::memory::terminal::TerminalStoreError> {
                 let statement = crate::memory::terminal::sql("INSERT INTO terminal_sessions(id,session_id,context_id,principal_id,root_turn_id,source_job_id,target_id,owner_instance_id,lease_expires_at,revision,status,created_at,record_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING", $postgres);
                 Ok(sqlx::query(&statement).bind(&r.id).bind(&r.session_id).bind(&r.context_id).bind(&r.principal_id).bind(&r.root_turn_id).bind(&r.source_job_id).bind(&r.target_id).bind(&r.owner_instance_id).bind(&r.lease_expires_at).bind(i64::try_from(r.revision)?).bind(r.status.as_str()).bind(&r.created_at).bind(serde_json::to_string(r)?).execute(&self.pool).await?.rows_affected() == 1)

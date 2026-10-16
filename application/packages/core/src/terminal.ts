@@ -19,6 +19,7 @@ export const terminalRecordSchema = z.object({
   sandbox_status: z.string(),
   network_enabled: z.boolean(),
   last_input_status: z.enum(["uncertain", "submitted"]).nullable().optional(),
+  last_human_command_id: z.string().nullable().optional(),
   exit_code: z.number().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -50,12 +51,15 @@ export const terminalScreenSchema = z.object({
   text: z.string().max(240000),
   cursor: z.tuple([z.number(), z.number()]),
   cursor_visible: z.boolean(),
+  application_cursor: z.boolean().optional(),
+  bracketed_paste: z.boolean().optional(),
   alternate_screen: z.boolean(),
   scrollback: z.number().int().nonnegative().max(500),
   previous_available: z.boolean(),
   styles_simplified: z.boolean().default(false),
 });
 export const terminalViewSchema = z.object({
+  input_supported: z.boolean().optional(),
   terminal: terminalRecordSchema,
   connected: z.boolean(),
   screen: terminalScreenSchema.nullable(),
@@ -73,6 +77,50 @@ export const terminalReadSchema = z
     scrollback: z.number().int().min(0).max(500).default(0),
   })
   .strict();
+export const terminalCommandSchema = z
+  .object({
+    scope: executionScopeSchema,
+    terminalId: z.string().min(1).max(500),
+    command: z
+      .object({
+        command_id: z
+          .string()
+          .min(1)
+          .max(128)
+          .regex(/^[a-zA-Z0-9-]+$/),
+        expected_revision: z.number().int().positive(),
+        action: z.discriminatedUnion("type", [
+          z
+            .object({
+              type: z.literal("input"),
+              data: z
+                .string()
+                .min(1)
+                .max(4096)
+                .refine((value) => !value.includes("\0")),
+            })
+            .strict(),
+          z
+            .object({
+              type: z.literal("resize"),
+              rows: z.number().int().min(4).max(60),
+              cols: z.number().int().min(20).max(160),
+            })
+            .strict(),
+        ]),
+      })
+      .strict(),
+  })
+  .strict();
+export const terminalReceiptSchema = z.object({
+  command_id: z.string(),
+  terminal_id: z.string(),
+  revision: z.number().int().positive(),
+  input_status: z.enum(["submitted", "uncertain", "rejected"]),
+  command_completion: z.literal("not_asserted"),
+});
+export type TerminalCommand = z.infer<typeof terminalCommandSchema>["command"];
+export type TerminalReceipt = z.infer<typeof terminalReceiptSchema>;
 export type TerminalRecord = z.infer<typeof terminalRecordSchema>;
 export type TerminalScreen = z.infer<typeof terminalScreenSchema>;
 export type TerminalView = z.infer<typeof terminalViewSchema>;

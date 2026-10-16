@@ -1349,6 +1349,10 @@ impl Server {
                 get(handle_session_terminal),
             )
             .route(
+                "/api/sessions/:session_id/terminals/:terminal_id/commands",
+                post(handle_session_terminal_command),
+            )
+            .route(
                 "/api/execution-jobs/:job_id/result",
                 get(handle_execution_job_result),
             )
@@ -5931,6 +5935,30 @@ async fn handle_session_terminal(
         .await
     {
         Ok(view) => Json(view).into_response(),
+        Err(e) => sdk_error_response(e),
+    }
+}
+
+async fn handle_session_terminal_command(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, terminal_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(command): Json<crate::terminal::TerminalHumanCommand>,
+) -> Response {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(p) => p,
+        Err(e) => return sdk_error_response(e),
+    };
+    match state
+        .sdk
+        .session_terminal_command(&principal.principal_id, &session_id, &terminal_id, command)
+        .await
+    {
+        Ok(receipt) => Json(receipt).into_response(),
         Err(e) => sdk_error_response(e),
     }
 }

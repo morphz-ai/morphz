@@ -2,11 +2,14 @@ import type { ExecutionScope } from "../../../../packages/core/src/execution.js"
 import {
   terminalCatalogSchema,
   terminalViewSchema,
+  terminalCommandSchema,
+  terminalReceiptSchema,
+  type TerminalCommand,
 } from "../../../../packages/core/src/terminal.js";
 import type { applicationCall } from "../application-transport.js";
 
-/** Read-only, bounded Runtime projections. No local process, terminal output
- * cache, credential store, Thread history, or implicit command submission. */
+/** Bounded reads and explicitly authenticated keyboard control. No local
+ * process, output cache, credential store, Thread history or implicit input. */
 export function createTerminalInteractions(call: typeof applicationCall) {
   const options = (signal?: AbortSignal) => ({
     signal: signal
@@ -14,6 +17,18 @@ export function createTerminalInteractions(call: typeof applicationCall) {
       : AbortSignal.timeout(10000),
   });
   return {
+    terminalCommand: async (
+      scope: ExecutionScope,
+      terminalId: string,
+      command: TerminalCommand,
+    ) =>
+      terminalReceiptSchema.parse(
+        await call(
+          "terminal.command",
+          terminalCommandSchema.parse({ scope, terminalId, command }),
+          options(),
+        ),
+      ),
     terminalCatalog: async (scope: ExecutionScope, signal?: AbortSignal) =>
       terminalCatalogSchema.parse(
         await call("terminal.catalog", scope, options(signal)),

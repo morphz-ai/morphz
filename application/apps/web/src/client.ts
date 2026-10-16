@@ -1773,6 +1773,7 @@ export function useWorkspace() {
     executionSnapshot: executionInteractions.executionSnapshot,
     terminalCatalog: terminalInteractions.terminalCatalog,
     terminalRead: terminalInteractions.terminalRead,
+    terminalCommand: terminalInteractions.terminalCommand,
     executionResult: executionInteractions.executionResult,
     controlExecution: executionInteractions.controlExecution,
     approvalSubmitted: executionInteractions.approvalSubmitted,

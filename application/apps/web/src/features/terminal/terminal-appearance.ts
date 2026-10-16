@@ -3,8 +3,8 @@ import { readLocal, writeLocal } from "../../local-preferences.js";
 export type TerminalTheme = "auto" | "light" | "dark";
 export const terminalThemes: { value: TerminalTheme; label: string }[] = [
   { value: "auto", label: "跟随应用" },
-  { value: "dark", label: "深色终端" },
-  { value: "light", label: "浅色终端" },
+  { value: "dark", label: "深色 · Mocha" },
+  { value: "light", label: "浅色 · Latte" },
 ];
 
 export function readTerminalTheme(scope: string): TerminalTheme {

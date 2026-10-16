@@ -12,6 +12,7 @@
     "@aws-sdk/client-s3": "3.1141.0",
     "@paddleocr/paddleocr-js": "0.4.2",
     "@xmldom/xmldom": "0.9.12",
+    "@xterm/xterm": "6.0.0",
     "hast-util-to-html": "9.0.5",
     "lucide-react": "1.42.0",
     "mammoth": "1.12.3",

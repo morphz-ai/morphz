@@ -22,7 +22,8 @@ function Frame(){
  api={set:value=>setFacts(old=>({...old,...value}))};
  const client={boot:{centerId:'center-exact',principalId:facts.principal??'human-exact',csrfToken:facts.csrf},online:facts.online,workspaceChangeRevision:0,
  terminalCatalog:async(scope,signal)=>{events.push(['catalog',scope]);return{terminals:[record],limit:50,has_more:false};},
- terminalRead:async(scope,id,offset,signal)=>{events.push(['read',scope,id,offset]);if(facts.screenError)throw new Error('TEST screen unavailable');if(facts.serverError)throw new ApplicationRequestError(503,'保存失败。内容尚未确认写入，请保留草稿后重试。','unavailable');return{terminal:record,connected:true,checkpoint:false,screen:{...screen,text:offset?'此前输出':text,lines:screen.lines.map((line,i)=>i===0?[{...line[0],text:offset?'此前输出':text}]:line),scrollback:offset,previous_available:offset<48}};},
+ terminalRead:async(scope,id,offset,signal)=>{events.push(['read',scope,id,offset]);if(facts.screenError)throw new Error('TEST screen unavailable');if(facts.serverError)throw new ApplicationRequestError(503,'保存失败。内容尚未确认写入，请保留草稿后重试。','unavailable');return{input_supported:!!facts.inputSupported,terminal:record,connected:true,checkpoint:false,screen:{...screen,text:offset?'此前输出':text,lines:screen.lines.map((line,i)=>i===0?[{...line[0],text:offset?'此前输出':text}]:line),scrollback:offset,previous_available:offset<48}};},
+ terminalCommand:async(scope,id,command)=>{events.push(['command',command]);if(facts.commandError)throw Error('TEST lost receipt');record.revision++;return {command_id:command.command_id,terminal_id:id,revision:record.revision,input_status:'submitted',command_completion:'not_asserted'};},
  execute:async op=>{events.push(['navigation',op]);if(query.has('failSelect'))throw new Error('TEST selection conflict');setFacts(old=>({...old,instance:{...old.instance,state:op.state,revision:old.instance.revision+1}}));return{};}};
  return <div className="app" data-appearance={facts.appearance} data-accent="cyan" style={{height:'100dvh',display:'block',colorScheme:facts.appearance}}><Terminal client={client} instance={facts.instance} projectId="project-exact" conversationId="conversation-exact" active={facts.active} onCompose={value=>{events.push(['compose',value]);return{ok:true};}} onNotice={value=>events.push(['notice',value])}/></div>;
 }
@@ -116,9 +117,9 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
   assert.equal(compose.length, 1);
   assert.match(compose[0][1], /terminal_id: terminal-exact/);
   assert.equal(
-    await page.locator("textarea,input,[contenteditable=true]").count(),
+    await page.getByLabel("AI 输入内容").count(),
     0,
-    "no second composer or shell input",
+    "terminal keyboard is not another Agent composer",
   );
   await page.getByRole("button", { name: "此前输出" }).click();
   await expect(
@@ -161,23 +162,48 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
       );
       assert.equal(
         geometry.bg,
-        appearance === "dark" ? "rgb(21, 26, 34)" : "rgb(249, 250, 252)",
+        appearance === "dark" ? "rgb(30, 30, 46)" : "rgb(239, 241, 245)",
       );
-      const colors = await page
-        .locator(".terminal-line")
-        .nth(1)
-        .locator("span")
-        .evaluateAll((spans) =>
-          spans.map((span) => getComputedStyle(span).color),
+      await expect(page.locator(".terminal-emulator")).toHaveAttribute(
+        "data-ready",
+        "true",
+      );
+      const blackSurfaces = await page
+        .locator(".terminal-screen")
+        .evaluate((el) =>
+          [...el.querySelectorAll("*")]
+            .filter((node) => {
+              const style = getComputedStyle(node),
+                box = node.getBoundingClientRect();
+              return (
+                style.backgroundColor === "rgb(0, 0, 0)" &&
+                style.opacity !== "0" &&
+                box.width > 100 &&
+                box.height > 20
+              );
+            })
+            .map((node) => ({
+              tag: node.tagName,
+              class: node.className,
+              style: node.getAttribute("style"),
+            })),
         );
-      assert.equal(
-        colors[1],
-        appearance === "dark" ? "rgb(135, 214, 162)" : "rgb(34, 119, 75)",
+      assert.deepEqual(
+        blackSurfaces,
+        [],
+        "terminal background stays coherent beyond the PTY grid",
       );
+      const green = await page.locator(".terminal-app").evaluate((el) => {
+        const p = document.createElement("span");
+        el.append(p);
+        p.style.color = "var(--terminal-ansi-2)";
+        const c = getComputedStyle(p).color;
+        p.remove();
+        return c;
+      });
       assert.equal(
-        colors[2],
-        "rgb(41, 132, 81)",
-        "truecolor is not recolored by matching a palette hex",
+        green,
+        appearance === "dark" ? "rgb(166, 227, 161)" : "rgb(64, 160, 43)",
       );
       const directory = resolve("test-results/terminal-appearance");
       mkdirSync(directory, { recursive: true });
@@ -197,7 +223,7 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
   const beforeTheme = await navigations();
   await page.getByRole("button", { name: "终端配色", exact: true }).click();
   await page
-    .getByRole("menuitemradio", { name: "深色终端", exact: true })
+    .getByRole("menuitemradio", { name: "深色 · Mocha", exact: true })
     .click();
   await expect(page.locator(".terminal-app")).toHaveAttribute(
     "data-terminal-theme",
@@ -230,28 +256,131 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
   await page.evaluate(() => {
     document.documentElement.dataset.appMotion = "reduce";
   });
-  assert.equal(
-    await page
-      .locator(".terminal-cursor")
-      .evaluate((el) => getComputedStyle(el).animationName),
-    "none",
+  await expect(page.locator(".terminal-screen")).toHaveAttribute(
+    "data-cursor-motion",
+    "static",
   );
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.evaluate(() => {
     delete document.documentElement.dataset.appMotion;
   });
+  await expect(page.locator(".terminal-screen")).toHaveAttribute(
+    "data-cursor-motion",
+    "static",
+  );
+  await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture").set({ inputSupported: true }),
+  );
+  await expect(page.locator(".terminal-screen")).toHaveAttribute(
+    "data-input",
+    "enabled",
+  );
+  const keyboard = page.getByLabel("终端输入", { exact: true });
+  await keyboard.focus();
+  await page.keyboard.type("printf ");
+  await page.keyboard.insertText("中文");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Control+c");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Reflect.get(window, "terminalFixture")
+          .state()
+          .events.filter(
+            (e: any[]) => e[0] === "command" && e[1].action.type === "input",
+          )
+          .map((e: any[]) => e[1].action.data)
+          .join(""),
+      ),
+    )
+    .toBe("printf 中文\r\x03");
+  await keyboard.evaluate((node: HTMLTextAreaElement) => {
+    node.value = "";
+    node.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+    node.value = "输入法";
+    node.dispatchEvent(
+      new CompositionEvent("compositionupdate", {
+        data: "输入法",
+        bubbles: true,
+      }),
+    );
+    node.dispatchEvent(
+      new CompositionEvent("compositionend", { data: "输入法", bubbles: true }),
+    );
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Reflect.get(window, "terminalFixture")
+          .state()
+          .events.filter(
+            (e: any[]) => e[0] === "command" && e[1].action.type === "input",
+          )
+          .map((e: any[]) => e[1].action.data)
+          .join(""),
+      ),
+    )
+    .toBe("printf 中文\r\x03输入法");
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Backspace");
+  await keyboard.evaluate((node) => {
+    const data = new DataTransfer();
+    data.setData("text/plain", "粘贴😀");
+    node.dispatchEvent(
+      new ClipboardEvent("paste", { clipboardData: data, bubbles: true }),
+    );
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Reflect.get(window, "terminalFixture")
+          .state()
+          .events.filter(
+            (e: any[]) => e[0] === "command" && e[1].action.type === "input",
+          )
+          .map((e: any[]) => e[1].action.data)
+          .join(""),
+      ),
+    )
+    .toBe("printf 中文\r\x03输入法\x1b[D\x7f粘贴😀");
+  await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture").set({ commandError: true }),
+  );
+  await page.keyboard.insertText("no-replay");
+  await expect(page.locator(".terminal-input-error")).toContainText(
+    "不会自动重发",
+  );
+  const commands = await page.evaluate(
+    () =>
+      Reflect.get(window, "terminalFixture")
+        .state()
+        .events.filter((e: any[]) => e[0] === "command").length,
+  );
+  await page.waitForTimeout(150);
   assert.equal(
-    await page
-      .locator(".terminal-cursor")
-      .evaluate((el) => getComputedStyle(el).animationName),
-    "none",
+    await page.evaluate(
+      () =>
+        Reflect.get(window, "terminalFixture")
+          .state()
+          .events.filter((e: any[]) => e[0] === "command").length,
+    ),
+    commands,
+  );
+  await page.getByRole("button", { name: "复制未确认输入" }).click();
+  assert.equal(
+    await page.evaluate(
+      () => Reflect.get(window, "terminalFixture").state().copied,
+    ),
+    "no-replay",
   );
   await page.evaluate(() =>
     Reflect.get(window, "terminalFixture").set({ serverError: true }),
   );
-  await expect(page.locator(".terminal-notice")).toContainText(
-    "终端暂不可读取",
-  );
+  await expect(
+    page.locator(".terminal-notice:not(.terminal-input-error)"),
+  ).toContainText("终端暂不可读取");
   await expect(page.locator(".terminal-app")).not.toContainText("保存失败");
   await expect(
     page.getByRole("region", { name: "真实终端屏幕" }),
@@ -259,7 +388,9 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
   await page.evaluate(() =>
     Reflect.get(window, "terminalFixture").set({ serverError: false }),
   );
-  await expect(page.locator(".terminal-notice")).toHaveCount(0);
+  await expect(
+    page.locator(".terminal-notice:not(.terminal-input-error)"),
+  ).toHaveCount(0);
   await page.evaluate(() =>
     Reflect.get(window, "terminalFixture").set({ active: false }),
   );

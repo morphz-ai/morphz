@@ -10,6 +10,7 @@ import "./features/pdf/pdf-reading-base.css";
 import "./ui/controls/adaptive.css";
 import "./features/browser/browser-controls.css";
 import "./features/terminal/terminal.css";
+import "./features/terminal/terminal-emulator.css";
 import "./ui/dialog-frame.css";
 import "./ui/controls/metrics.css";
 import "./ui.css";

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Check,
   ChevronUp,
@@ -18,7 +18,6 @@ import {
 import type { ApplicationInstance } from "../../../../../packages/core/src/applications.js";
 import type {
   TerminalRecord,
-  TerminalScreen,
   TerminalView,
 } from "../../../../../packages/core/src/terminal.js";
 import type { WorkspaceClient } from "../../client.js";
@@ -29,10 +28,12 @@ import { ComposerOptions } from "../../ComposerOptions.js";
 import {
   readTerminalTheme,
   saveTerminalTheme,
-  terminalColor,
   terminalThemes,
   type TerminalTheme,
 } from "./terminal-appearance.js";
+import { TerminalCanvas } from "./TerminalCanvas.js";
+export { TerminalCanvas } from "./TerminalCanvas.js";
+import { TerminalInput } from "./terminal-input.js";
 
 function readFailure(cause: unknown, fallback: string) {
   if (cause instanceof ApplicationRequestError && cause.status >= 500)
@@ -47,63 +48,6 @@ const labels: Record<TerminalRecord["status"], string> = {
   closed: "会话已结束",
   lost: "终端连接已丢失",
 };
-
-export function TerminalCanvas({
-  screen,
-  connected,
-}: {
-  screen: TerminalScreen;
-  connected: boolean;
-}) {
-  return (
-    <div
-      className="terminal-screen"
-      tabIndex={0}
-      role="region"
-      aria-label="真实终端屏幕"
-    >
-      <div
-        className="terminal-grid"
-        style={{ "--terminal-cols": screen.cols } as CSSProperties}
-      >
-        {screen.lines.map((line, row) => (
-          <div className="terminal-line" key={row}>
-            {line.map((span, index) => (
-              <span
-                key={index}
-                style={{
-                  color: span.inverse
-                    ? (terminalColor(span.bg, span.bg_index) ??
-                      "var(--terminal-paper)")
-                    : terminalColor(span.fg, span.fg_index),
-                  backgroundColor: span.inverse
-                    ? (terminalColor(span.fg, span.fg_index) ??
-                      "var(--terminal-ink)")
-                    : terminalColor(span.bg, span.bg_index),
-                  fontWeight: span.bold ? 700 : undefined,
-                  fontStyle: span.italic ? "italic" : undefined,
-                  textDecoration: span.underline ? "underline" : undefined,
-                }}
-              >
-                {span.text}
-              </span>
-            ))}
-          </div>
-        ))}
-        {connected && screen.cursor_visible && (
-          <span
-            className="terminal-cursor"
-            aria-hidden
-            style={{
-              left: `${screen.cursor[1]}ch`,
-              top: `${screen.cursor[0] * 1.5}em`,
-            }}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
 
 /** A real Runtime PTY view. The shared composer remains the only Agent input;
  * opening this component never spawns a shell or sends a command. */
@@ -164,6 +108,12 @@ export function Terminal({
     "idle",
   );
   const [selecting, setSelecting] = useState(false);
+  const [inputError, setInputError] = useState("");
+  const [pendingCopy, setPendingCopy] = useState<"idle" | "copied" | "failed">(
+    "idle",
+  );
+  const [manualFocus, setManualFocus] = useState(false);
+  const keyboard = useRef<TerminalInput | null>(null);
   const api = useRef(client);
   api.current = client;
   const identity = JSON.stringify([
@@ -190,6 +140,57 @@ export function Terminal({
     observation?.scope === observationScope ? observation.view : null;
   const terminal = view?.terminal ?? records.find((t) => t.id === selection);
   const connected = !!view?.connected && client.online && !error;
+  const canInput =
+    active &&
+    connected &&
+    !!view?.input_supported &&
+    !inputError &&
+    scrollback === 0 &&
+    terminal?.last_input_status !== "uncertain";
+  const liveInputScope = useRef({ identity, selection });
+  liveInputScope.current = { identity, selection };
+  useEffect(() => {
+    setInputError("");
+    setPendingCopy("idle");
+    setManualFocus(false);
+    if (!selection || !view?.input_supported || !terminal) return;
+    const captured = identity;
+    const controller = new TerminalInput(
+      terminal.revision,
+      (command) => {
+        if (
+          liveInputScope.current.identity !== captured ||
+          liveInputScope.current.selection !== selection ||
+          !api.current.online
+        )
+          throw Error("terminal input scope changed");
+        return api.current.terminalCommand(scope, selection, command);
+      },
+      () => {
+        setScrollback(0);
+        setTick((n) => n + 1);
+      },
+      setInputError,
+    );
+    controller.setEnabled(active);
+    keyboard.current = controller;
+    return () => {
+      controller.dispose();
+      if (keyboard.current === controller) keyboard.current = null;
+    };
+  }, [identity, selection, view?.input_supported]);
+  useEffect(() => {
+    keyboard.current?.setEnabled(active && connected);
+    if (!active) setManualFocus(false);
+  }, [active, connected]);
+  useEffect(() => {
+    if (terminal)
+      keyboard.current?.observe(
+        terminal.revision,
+        terminal.rows,
+        terminal.cols,
+      );
+  }, [terminal?.revision, terminal?.rows, terminal?.cols]);
 
   useEffect(() => {
     setSelection(
@@ -261,6 +262,10 @@ export function Terminal({
 
   async function select(id: string) {
     if (selecting || selection === id) return;
+    if (keyboard.current?.pending()) {
+      onNotice("当前仍有未确认输入，请先核对并复制；切换不会重发这些文字。");
+      return;
+    }
     const captured = identity;
     setSelecting(true);
     try {
@@ -384,6 +389,26 @@ export function Terminal({
           Runtime 未连接；保留最后屏幕，不重放命令。
         </div>
       )}
+      {inputError && (
+        <div className="terminal-notice terminal-input-error" role="status">
+          <span>{inputError}</span>
+          <button
+            type="button"
+            onClick={() => {
+              void copyText(keyboard.current?.pending() ?? "").then(
+                () => setPendingCopy("copied"),
+                () => setPendingCopy("failed"),
+              );
+            }}
+          >
+            {pendingCopy === "copied"
+              ? "已复制"
+              : pendingCopy === "failed"
+                ? "复制失败，重试"
+                : "复制未确认输入"}
+          </button>
+        </div>
+      )}
       {terminal ? (
         <>
           <div className="terminal-location">
@@ -414,7 +439,14 @@ export function Terminal({
             </div>
           )}
           {view?.screen ? (
-            <TerminalCanvas screen={view.screen} connected={connected} />
+            <TerminalCanvas
+              screen={view.screen}
+              connected={connected}
+              canInput={canInput}
+              onData={(data) => keyboard.current?.input(data)}
+              onResize={(rows, cols) => keyboard.current?.resize(rows, cols)}
+              onFocusChange={setManualFocus}
+            />
           ) : (
             <div className="terminal-loading" role="status">
               {error ? "屏幕暂不可用" : "正在读取终端屏幕…"}
@@ -422,6 +454,15 @@ export function Terminal({
           )}
           <footer className="terminal-footer">
             <div className="terminal-output-controls">
+              <span className="terminal-mode">
+                {canInput
+                  ? manualFocus
+                    ? "键盘已连接"
+                    : "点击终端输入"
+                  : view?.input_supported
+                    ? "只读屏幕"
+                    : "Runtime 待更新 · 只读"}
+              </span>
               <button
                 type="button"
                 disabled={!view?.screen?.previous_available}

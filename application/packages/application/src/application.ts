@@ -1,5 +1,8 @@
 import { z, ZodError } from "zod";
-import { terminalReadSchema } from "../../core/src/terminal.js";
+import {
+  terminalReadSchema,
+  terminalCommandSchema,
+} from "../../core/src/terminal.js";
 import {
   documentRevisionShape,
   refineDocumentRevision,
@@ -3028,6 +3031,19 @@ export class ApplicationSession {
     this.active();
     return result;
   }
+  async terminalCommand(raw: unknown) {
+    this.active();
+    const { scope, terminalId, command } = terminalCommandSchema.parse(raw);
+    if (scope.taskRun || !this.options.platformWork)
+      throw new ApplicationUnavailable("终端尚未接入当前工作范围。");
+    const controls = await this.runtime().platformExecutionControls(
+      scope,
+      this.access,
+    );
+    const result = await controls.terminalCommand(terminalId, command);
+    this.active();
+    return result;
+  }
   async executionSnapshot(raw: unknown) {
     const runtime = this.runtime(),
       scope = executionScopeSchema.parse(raw);
@@ -4040,6 +4056,8 @@ export function invokeApplication(
       return session.terminalCatalog(params);
     case "terminal.read":
       return session.terminalRead(params);
+    case "terminal.command":
+      return session.terminalCommand(params);
     case "execution.result":
       return session.executionResult(params);
     case "execution.control":

@@ -211,6 +211,7 @@ export const applicationMethods = [
   "execution.snapshot",
   "terminal.catalog",
   "terminal.read",
+  "terminal.command",
   "execution.result",
   "execution.control",
   "task.snapshot",

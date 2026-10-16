@@ -1,26 +1,29 @@
 .terminal-app {
-  --terminal-paper: light-dark(#f9fafc, #151a22);
-  --terminal-ink: light-dark(#293344, #dce4f0);
-  --terminal-muted: light-dark(#637083, #96a4b8);
-  --terminal-line: light-dark(#e4e8ee, #2a3341);
-  --terminal-hover: light-dark(#eaf0f5, #242e3b);
-  --terminal-accent: light-dark(#087e8b, #70d2dc);
-  --terminal-ansi-0: light-dark(#293344, #7d8799);
-  --terminal-ansi-1: light-dark(#bd354b, #f18088);
-  --terminal-ansi-2: light-dark(#22774b, #87d6a2);
-  --terminal-ansi-3: light-dark(#85620d, #e8c67b);
-  --terminal-ansi-4: light-dark(#255fbd, #83b7fa);
-  --terminal-ansi-5: light-dark(#8549af, #c7a1ed);
-  --terminal-ansi-6: light-dark(#137481, #77d1dc);
-  --terminal-ansi-7: light-dark(#59687d, #b9c5d7);
-  --terminal-ansi-8: light-dark(#657286, #9eacc1);
-  --terminal-ansi-9: light-dark(#bd354b, #ff9a9e);
-  --terminal-ansi-10: light-dark(#22774b, #a2e5b8);
-  --terminal-ansi-11: light-dark(#85620d, #f3d898);
-  --terminal-ansi-12: light-dark(#255fbd, #a4caff);
-  --terminal-ansi-13: light-dark(#8549af, #d9b9f5);
-  --terminal-ansi-14: light-dark(#137481, #9be2e8);
-  --terminal-ansi-15: light-dark(#39485d, #f1f5fc);
+  /* Catppuccin Latte / Mocha: https://catppuccin.com/palette/ (MIT).
+     Full terminal palettes, not ad-hoc prompt tinting. */
+  --terminal-paper: light-dark(#eff1f5, #1e1e2e);
+  --terminal-ink: light-dark(#4c4f69, #cdd6f4);
+  --terminal-muted: light-dark(#6c6f85, #a6adc8);
+  --terminal-line: light-dark(#ccd0da, #313244);
+  --terminal-hover: light-dark(#e6e9ef, #313244);
+  --terminal-accent: light-dark(#1e66f5, #89b4fa);
+  --terminal-selection: light-dark(#bcc0cc, #45475a);
+  --terminal-ansi-0: light-dark(#5c5f77, #45475a);
+  --terminal-ansi-1: light-dark(#d20f39, #f38ba8);
+  --terminal-ansi-2: light-dark(#40a02b, #a6e3a1);
+  --terminal-ansi-3: light-dark(#df8e1d, #f9e2af);
+  --terminal-ansi-4: light-dark(#1e66f5, #89b4fa);
+  --terminal-ansi-5: light-dark(#ea76cb, #f5c2e7);
+  --terminal-ansi-6: light-dark(#179299, #94e2d5);
+  --terminal-ansi-7: light-dark(#acb0be, #bac2de);
+  --terminal-ansi-8: light-dark(#6c6f85, #585b70);
+  --terminal-ansi-9: light-dark(#d20f39, #f38ba8);
+  --terminal-ansi-10: light-dark(#40a02b, #a6e3a1);
+  --terminal-ansi-11: light-dark(#df8e1d, #f9e2af);
+  --terminal-ansi-12: light-dark(#1e66f5, #89b4fa);
+  --terminal-ansi-13: light-dark(#ea76cb, #f5c2e7);
+  --terminal-ansi-14: light-dark(#179299, #94e2d5);
+  --terminal-ansi-15: light-dark(#bcc0cc, #a6adc8);
   container-type: inline-size;
   display: flex;
   flex-direction: column;
@@ -158,7 +161,7 @@
   overflow: auto;
   padding: 6px 14px 12px;
   font:
-    13px/1.5 ui-monospace,
+    14px/1.25 ui-monospace,
     SFMono-Regular,
     Menlo,
     Consolas,

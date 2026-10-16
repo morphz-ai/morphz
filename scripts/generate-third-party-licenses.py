@@ -224,6 +224,15 @@ def npm_packages(directory: str) -> list[tuple[str, str, str, list[Path]]]:
                 ("guid-typescript", "1.0.9"): [notices / "guid-typescript-1.0.9.txt"],
             }
             paths.extend(supplements.get(key, []))
+            if (key[0].startswith("@img/sharp-libvips-") and
+                    key[1] == "1.3.4" and package.get("license") == "LGPL-3.0-or-later"):
+                # The locked optional binaries omit all LICENSE files. Preserve
+                # their release's real notices and LGPL/GPL text, not an MIT
+                # fallback. This remains a source inventory, not a binary audit.
+                paths.extend([
+                    notices / "sharp-libvips-1.3.4" / "THIRD-PARTY-NOTICES.md",
+                    notices / "LGPL-3.0.txt", notices / "GPL-3.0.txt",
+                ])
         if directory == "application" and lock_path == "node_modules/pdfjs-dist":
             # PDF.js ships fonts, character maps and WASM with their own notices.
             for asset_directory in ("cmaps", "standard_fonts", "wasm", "iccs"):
@@ -249,6 +258,11 @@ def npm_packages(directory: str) -> list[tuple[str, str, str, list[Path]]]:
                 paths,
             )
         )
+    if directory == "application":
+        packages.append((
+            "Catppuccin palette", "snapshot-2026-10-16", "MIT",
+            [REPOSITORY_ROOT / "third_party" / "licenses" / "Catppuccin-LICENSE"],
+        ))
     return packages
 
 

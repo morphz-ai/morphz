@@ -1492,6 +1492,14 @@ export function createAppServer(
           });
           return;
         }
+        if (url.pathname === "/api/terminals/commands") {
+          json(
+            res,
+            200,
+            await business.terminalCommand(await jsonBody(req, 32768)),
+          );
+          return;
+        }
         if (url.pathname.startsWith("/api/platform/cognitive-apps/")) {
           const route = Object.values(cognitiveAppApplicationRoutes).find(
             (entry) => entry.path === url.pathname,

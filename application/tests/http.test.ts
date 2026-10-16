@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
-import { request as httpRequest, createServer as createHttpServer } from "node:http";
+import {
+  request as httpRequest,
+  createServer as createHttpServer,
+} from "node:http";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,7 +37,9 @@ async function platformHttp(withRuntime = false) {
       })
     : undefined;
   if (modelServer)
-    await new Promise<void>((resolve) => modelServer.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) =>
+      modelServer.listen(0, "127.0.0.1", resolve),
+    );
   const runtime = withRuntime
     ? new RuntimeBridge(store, {
         url: `http://127.0.0.1:${(modelServer!.address() as { port: number }).port}`,
@@ -92,7 +97,9 @@ async function platformHttp(withRuntime = false) {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await runtime?.stop();
       if (modelServer)
-        await new Promise<void>((resolve) => modelServer.close(() => resolve()));
+        await new Promise<void>((resolve) =>
+          modelServer.close(() => resolve()),
+        );
       if (binding) await domains.unbindRuntime(binding.authority);
       await domains.close();
       store.close();
@@ -257,6 +264,26 @@ test("本机 API 的请求校验、幂等和 HTTP 修订冲突", async () => {
       403,
     );
     assert.equal((await post(request, { "X-Morphz-Token": "" })).status, 403);
+    assert.equal(
+      (
+        await post(
+          {},
+          { Origin: "https://evil.example" },
+          "/api/terminals/commands",
+        )
+      ).status,
+      403,
+    );
+    assert.equal(
+      (await post({}, { "X-Morphz-Token": "" }, "/api/terminals/commands"))
+        .status,
+      403,
+    );
+    assert.equal(
+      (await post({}, {}, "/api/terminals/commands")).status,
+      400,
+      "authenticated terminal writes reach strict schema validation, not an unguarded handler",
+    );
     const badHost = await new Promise<number | undefined>((resolve, reject) => {
       const req = httpRequest(
         origin + "/api/platform/bootstrap",

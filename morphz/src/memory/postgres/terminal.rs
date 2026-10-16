@@ -15,3 +15,18 @@ pub(super) async fn migrate(
     tx.commit().await?;
     Ok(())
 }
+
+pub(super) async fn migrate_commands(
+    pool: &sqlx::PgPool,
+) -> Result<(), crate::memory::terminal::TerminalStoreError> {
+    let mut tx = pool.begin().await?;
+    for statement in crate::memory::terminal::COMMAND_SCHEMA
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        sqlx::query(statement).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}

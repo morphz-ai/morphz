@@ -4395,6 +4395,27 @@ impl MorphzSdk {
             .map_err(terminal_sdk_error)
     }
 
+    pub async fn session_terminal_command(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        terminal_id: &str,
+        command: crate::terminal::TerminalHumanCommand,
+    ) -> SdkResult<serde_json::Value> {
+        let session = self.authorize_session(principal_id, session_id).await?;
+        self.runtime
+            .terminals()
+            .human_control(
+                principal_id,
+                session_id,
+                &session.context_id,
+                terminal_id,
+                command,
+            )
+            .await
+            .map_err(terminal_sdk_error)
+    }
+
     pub async fn inspect_execution_job_result(
         &self,
         principal_id: &str,
