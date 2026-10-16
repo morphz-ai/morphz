@@ -19,15 +19,15 @@ const record={id:'terminal-exact',session_id:'session-exact',context_id:'context
 const records=new Map(query.has('emptyCatalog')?[]:[[record.id,record]]),opens=new Map();let openAttempts=0;
 const text='实际输出：中文 <script>不是脚本</script>',screen={sequence:3,rows:24,cols:80,lines:Array.from({length:24},(_,i)=>i===1?[{text:'~/workspace',fg:'#3973c6',fg_index:4},{text:' ❯ ',fg:'#298451',fg_index:2},{text:'truecolor',fg:'#298451'}].map(span=>({...span,bold:false,italic:false,underline:false,inverse:false})):[{text:i===0?text:' ',bold:false,italic:false,underline:false,inverse:false}]),text,cursor:[1,13],cursor_visible:true,alternate_screen:false,scrollback:0,previous_available:true};
 function Frame(){
- const [facts,setFacts]=useState({active:true,online:true,appearance:'dark',accent:'cyan',csrf:'original',screenError:false,serverError:false,instance:{id:'instance-exact',workspaceId:'project-exact',applicationId:'morphz.terminal',applicationVersion:'1.0.0',state:query.has('emptySelection')?{}:{terminalId:'terminal-exact'},revision:1,status:'open',createdAt:record.created_at,updatedAt:record.updated_at}});
+ const [facts,setFacts]=useState({active:true,online:true,inputSupported:true,appearance:'dark',accent:'cyan',csrf:'original',screenError:false,serverError:false,instance:{id:'instance-exact',workspaceId:'project-exact',applicationId:'morphz.terminal',applicationVersion:'1.0.0',state:query.has('emptySelection')?{}:{terminalId:'terminal-exact'},revision:1,status:'open',createdAt:record.created_at,updatedAt:record.updated_at}});
  api={set:value=>setFacts(old=>({...old,...value}))};
  const client={boot:{centerId:'center-exact',principalId:facts.principal??'human-exact',csrfToken:facts.csrf},online:facts.online,workspaceChangeRevision:0,
  terminalCatalog:async(scope,signal)=>{events.push(['catalog',scope]);return{terminals:[...records.values()],limit:50,has_more:false};},
  terminalOpen:async(scope,commandId)=>{events.push(['open',scope,commandId]);openAttempts++;if(!opens.has(commandId)){const created={...record,id:'human-'+commandId,title:'终端 '+(opens.size+1),root_turn_id:null,source_job_id:null,creation_command_id:commandId};records.set(created.id,created);opens.set(commandId,created);}await new Promise(r=>setTimeout(r,100));if(query.has('lostOpen')&&openAttempts===1)throw Error('TEST lost creation receipt');return {command_id:commandId,terminal:opens.get(commandId),connected:true};},
- terminalRead:async(scope,id,offset,signal)=>{events.push(['read',scope,id,offset]);if(facts.screenError)throw new Error('TEST screen unavailable');if(facts.serverError)throw new ApplicationRequestError(503,'保存失败。内容尚未确认写入，请保留草稿后重试。','unavailable');return{input_supported:!!facts.inputSupported,terminal:records.get(id),connected:true,checkpoint:false,screen:{...screen,text:offset?'此前输出':text,lines:screen.lines.map((line,i)=>i===0?[{...line[0],text:offset?'此前输出':text}]:line),scrollback:offset,previous_available:offset<48}};},
+ terminalRead:async(scope,id,offset,signal)=>{events.push(['read',scope,id,offset]);if(facts.screenError)throw new Error('TEST screen unavailable');if(facts.serverError)throw new ApplicationRequestError(503,'保存失败。内容尚未确认写入，请保留草稿后重试。','unavailable');return{input_supported:!!facts.inputSupported,terminal:{...records.get(id),...(facts.checkpoint?{status:'lost'}:{}),...(facts.unrestricted?{sandbox_status:'disabled'}:{})},connected:!facts.checkpoint,checkpoint:!!facts.checkpoint,screen:{...screen,text:offset?'此前输出':text,lines:screen.lines.map((line,i)=>i===0?[{...line[0],text:offset?'此前输出':text}]:line),scrollback:offset,previous_available:!facts.noHistory&&offset<48}};},
  terminalCommand:async(scope,id,command)=>{events.push(['command',command]);if(facts.commandError)throw Error('TEST lost receipt');record.revision++;return {command_id:command.command_id,terminal_id:id,revision:record.revision,input_status:'submitted',command_completion:'not_asserted'};},
  execute:async op=>{events.push(['navigation',op]);if(query.has('failSelect'))throw new Error('TEST selection conflict');setFacts(old=>({...old,instance:{...old.instance,state:op.state,revision:old.instance.revision+1}}));return{};}};
- return <div className="app" data-appearance={facts.appearance} data-accent={facts.accent} style={{height:'100dvh',display:'block',colorScheme:facts.appearance==='system'?'light dark':facts.appearance}}><Terminal client={client} instance={facts.instance} projectId="project-exact" conversationId="conversation-exact" active={facts.active} onCompose={value=>{events.push(['compose',value]);return{ok:true};}} onContext={value=>events.push(['context',value])} onNotice={value=>events.push(['notice',value])}/></div>;
+ return <div className="app" data-appearance={facts.appearance} data-accent={facts.accent} style={{height:'100dvh',display:'block',colorScheme:facts.appearance==='system'?'light dark':facts.appearance}}><Terminal client={client} instance={facts.instance} projectId="project-exact" conversationId="conversation-exact" active={facts.active} onContext={value=>events.push(['context',value])} onNotice={value=>events.push(['notice',value])}/></div>;
 }
 createRoot(document.getElementById('root')).render(<StrictMode><Frame/></StrictMode>);
 Reflect.set(window,'terminalFixture',{set:value=>api.set(value),state:()=>({events:[...events],copied})});
@@ -92,7 +92,7 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
     page.getByRole("region", { name: "真实终端屏幕" }),
   ).toContainText("实际输出：中文");
   assert.equal(await page.locator(".terminal-app script").count(), 0);
-  const before = await page.locator(".terminal-footer").boundingBox();
+  const before = await page.locator(".terminal-toolbar").boundingBox();
   const copyBefore = await page
     .getByRole("button", { name: "复制当前屏幕文本" })
     .boundingBox();
@@ -100,24 +100,34 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
   await expect(
     page.getByRole("button", { name: "已复制终端文本" }),
   ).toBeVisible();
-  const after = await page.locator(".terminal-footer").boundingBox();
+  const after = await page.locator(".terminal-toolbar").boundingBox();
   const copyAfter = await page
     .getByRole("button", { name: "已复制终端文本" })
     .boundingBox();
-  assert.deepEqual(after, before, "copy must not add a row or move the footer");
+  assert.deepEqual(
+    after,
+    before,
+    "copy must not add a row or move the toolbar",
+  );
   assert.equal(copyAfter!.width, copyBefore!.width);
   const copied = await page.evaluate(
     () => Reflect.get(window, "terminalFixture").state().copied,
   );
   assert.equal(copied, "实际输出：中文 <script>不是脚本</script>");
-  await page.getByRole("button", { name: "让 Morphz 操作" }).click();
-  const compose = await page.evaluate(() =>
-    Reflect.get(window, "terminalFixture")
-      .state()
-      .events.filter((e: any[]) => e[0] === "compose"),
+  assert.equal(
+    await page.getByRole("button", { name: "让 Morphz 操作" }).count(),
+    0,
   );
-  assert.equal(compose.length, 1);
-  assert.match(compose[0][1], /terminal_id: terminal-exact/);
+  await expect(page.locator(".terminal-notice")).toHaveCount(0);
+  assert.equal(
+    await page.getByRole("button", { name: "刷新终端" }).count(),
+    0,
+    "automatic reading does not need a duplicate refresh action when healthy",
+  );
+  await expect(page.getByRole("tab", { name: "编译与检查" })).toHaveAttribute(
+    "title",
+    /起始目录：\/workspace\/terminal-check/,
+  );
   assert.equal(
     await page.getByLabel("AI 输入内容").count(),
     0,
@@ -143,24 +153,30 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
         scroll: document.documentElement.scrollWidth,
         width: innerWidth,
         bg: getComputedStyle(el).backgroundColor,
-        footer: el.querySelector("footer")!.getBoundingClientRect().height,
+        footer: el.querySelector("footer"),
         toolbar: el.querySelector("header")!.getBoundingClientRect().height,
-        location: el
-          .querySelector(".terminal-location")!
-          .getBoundingClientRect().height,
+        screen: el.querySelector(".terminal-screen")!.getBoundingClientRect(),
+        header: el.querySelector("header")!.getBoundingClientRect(),
+        height: el.getBoundingClientRect().height,
+        location: el.querySelector(".terminal-location"),
       }));
       assert.ok(
         geometry.scroll <= geometry.width + 1,
         "horizontal overflow belongs to terminal grid, not the whole page",
       );
-      assert.ok(geometry.footer <= 44, "footer stays compact");
+      assert.equal(geometry.footer, null, "no persistent bottom status bar");
       assert.ok(
         geometry.toolbar <= 32,
         `desktop tabs are flat, not a tall card: ${JSON.stringify(geometry)}`,
       );
+      assert.equal(geometry.location, null, "no permanent cwd/connection row");
       assert.ok(
-        geometry.location <= 28,
-        "path and connection share a compact line",
+        Math.abs(geometry.screen.top - geometry.header.bottom) < 1,
+        "screen begins directly under the tabs",
+      );
+      assert.ok(
+        geometry.screen.height >= geometry.height - geometry.toolbar - 1,
+        "released rows belong to the terminal canvas",
       );
       assert.equal(
         geometry.bg,
@@ -284,6 +300,56 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
     "data-cursor-motion",
     "static",
   );
+  await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture").set({
+      online: false,
+      checkpoint: true,
+    }),
+  );
+  await expect(page.locator(".terminal-notice")).toHaveCount(1);
+  await expect(page.locator(".terminal-notice")).toContainText("应用连接中断");
+  await expect(page.locator(".terminal-status-open")).toHaveCount(0);
+  await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture").set({
+      online: true,
+      checkpoint: true,
+    }),
+  );
+  await expect(page.locator(".terminal-notice")).toHaveCount(1);
+  await expect(page.locator(".terminal-notice")).toContainText(
+    "终端连接已丢失",
+  );
+  await expect(page.locator(".terminal-notice")).toContainText("显示最后屏幕");
+  await expect(page.locator(".terminal-status-open")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "刷新终端" })).toBeVisible();
+  await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture").set({
+      checkpoint: false,
+      inputSupported: false,
+    }),
+  );
+  await expect(page.locator(".terminal-notice")).toHaveCount(1);
+  await expect(page.locator(".terminal-notice")).toContainText("当前终端只读");
+  await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture").set({
+      inputSupported: true,
+      noHistory: true,
+      unrestricted: true,
+    }),
+  );
+  await expect(page.locator(".terminal-notice")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "此前输出" })).toHaveCount(0);
+  await expect(
+    page.getByRole("img", { name: "当前终端为完全访问，无工作区沙盒限制" }),
+  ).toBeVisible();
+  await expect(page.getByRole("tab", { name: "编译与检查" })).toHaveAttribute(
+    "title",
+    /完全访问/,
+  );
+  await page.evaluate(() =>
+    Reflect.get(window, "terminalFixture").set({ unrestricted: false }),
+  );
+  await expect(page.locator(".terminal-access")).toHaveCount(0);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.evaluate(() => {
     delete document.documentElement.dataset.appMotion;

@@ -29,11 +29,6 @@
 .terminal-screen[data-input="enabled"] {
   cursor: text;
 }
-.terminal-mode {
-  font-size: 11px;
-  color: var(--terminal-muted);
-  white-space: nowrap;
-}
 .terminal-input-error button {
   flex: none;
   min-width: 8.5em;

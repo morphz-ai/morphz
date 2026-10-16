@@ -328,13 +328,15 @@ function verify(values: typeof sources) {
     // Terminal is an explicitly added fourth builtin. Keep every original
     // Browser/Reader/Script/recent recipe byte-derived from the independent
     // archive; add this reviewed new branch, not a copy of the current owner.
+    // The selected terminal labels the shared composer; there is no duplicate
+    // Agent compose shortcut inside the terminal itself.
     .replace(
       "createFixedBuiltinAdapters({client,",
-      "createFixedBuiltinAdapters({conversationId,client,",
+      "createFixedBuiltinAdapters({conversationId,onTerminalContext,client,",
     )
     .replace(
       "return view==='browser'?",
-      "return view==='terminal'?(<Terminal client={client} instance={instance} projectId={workspaceId} conversationId={conversationId} active={activeView} onCompose={onCompose} onNotice={onNotice}/>):view==='browser'?",
+      "return view==='terminal'?(<Terminal client={client} instance={instance} projectId={workspaceId} conversationId={conversationId} active={activeView} onNotice={onNotice} onContext={selected ? onTerminalContext : undefined}/>):view==='browser'?",
     )
     .replace(
       "import {ScriptStudio}",

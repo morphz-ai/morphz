@@ -37,6 +37,10 @@ import type { PlatformClient } from "../apps/web/src/platform-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import { terminalColor } from "../apps/web/src/features/terminal/terminal-appearance.js";
 import { composerTerminalContext } from "../apps/web/src/features/terminal/terminal-context.js";
+import {
+  terminalConnectionNotice,
+  terminalSessionDescription,
+} from "../apps/web/src/features/terminal/terminal-presentation.js";
 
 test("terminal palette preserves truecolor and the 256-color cube", () => {
   assert.equal(terminalColor("#c94343", 1), "var(--terminal-ansi-1)");
@@ -93,6 +97,68 @@ const screen = () =>
     scrollback: 0,
     previous_available: false,
   });
+
+test("terminal metadata stays discoverable without permanent normal-status rows, and exceptions are not duplicated", () => {
+  const terminal = record();
+  const view = {
+    terminal,
+    connected: true,
+    checkpoint: false,
+    input_supported: true,
+    screen: screen(),
+  };
+  assert.equal(terminalConnectionNotice(true, "", terminal, view), null);
+  assert.equal(terminalConnectionNotice(true, "", undefined, null), null);
+  const description = terminalSessionDescription(
+    { ...terminal, sandbox_status: "disabled" },
+    true,
+  );
+  for (const information of [
+    "起始目录：/workspace",
+    "/bin/zsh",
+    "执行节点：target-default",
+    "80×24",
+    "完全访问",
+    "网络受限",
+  ])
+    assert.ok(description.includes(information));
+  assert.match(terminalSessionDescription(terminal, false), /连接状态待核对/);
+  const lost = { ...terminal, status: "lost" as const };
+  const checkpoint = {
+    ...view,
+    terminal: lost,
+    connected: false,
+    checkpoint: true,
+  };
+  assert.match(
+    terminalConnectionNotice(false, "读取失败", lost, checkpoint)!,
+    /^应用连接中断/,
+  );
+  assert.match(
+    terminalConnectionNotice(true, "读取失败", lost, checkpoint)!,
+    /^读取失败/,
+  );
+  const notice = terminalConnectionNotice(true, "", lost, checkpoint)!;
+  assert.match(notice, /终端连接已丢失/);
+  assert.match(notice, /显示最后屏幕/);
+  assert.match(notice, /不会自动重发/);
+  assert.match(
+    terminalConnectionNotice(
+      true,
+      "",
+      { ...terminal, status: "exited", exit_code: 7 },
+      view,
+    )!,
+    /进程已退出（退出码 7）/,
+  );
+  assert.match(
+    terminalConnectionNotice(true, "", terminal, {
+      ...view,
+      input_supported: false,
+    })!,
+    /只读/,
+  );
+});
 
 test("Terminal is a builtin app with navigation-only persisted state", () => {
   assert.equal(
@@ -378,7 +444,6 @@ test("terminal rendering escapes process output and never executes on SSR mount"
       },
       projectId: "p",
       active: true,
-      onCompose: () => ({ ok: true }),
       onNotice: () => {},
     }),
   );
@@ -713,17 +778,15 @@ test("direct creation prepares only the canonical execution Session, with no acc
       ).screen?.sequence,
       8,
     );
-    await f
-      .session()
-      .terminalCommand({
-        scope,
-        terminalId: receipt.terminal.id,
-        command: {
-          command_id: randomUUID(),
-          expected_revision: 2,
-          action: { type: "input", data: "printf real\r" },
-        },
-      });
+    await f.session().terminalCommand({
+      scope,
+      terminalId: receipt.terminal.id,
+      command: {
+        command_id: randomUUID(),
+        expected_revision: 2,
+        action: { type: "input", data: "printf real\r" },
+      },
+    });
     const unchanged = opens;
     await f.reopen();
     assert.equal(
@@ -736,12 +799,10 @@ test("direct creation prepares only the canonical execution Session, with no acc
       "Host reopen never repeats process creation",
     );
     await assert.rejects(
-      f
-        .session()
-        .terminalOpen({
-          scope: { ...scope, threadId: "made-up" },
-          commandId: randomUUID(),
-        }),
+      f.session().terminalOpen({
+        scope: { ...scope, threadId: "made-up" },
+        commandId: randomUUID(),
+      }),
       /范围/,
     );
     await assert.rejects(

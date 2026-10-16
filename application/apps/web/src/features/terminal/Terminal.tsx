@@ -4,10 +4,9 @@ import {
   ChevronUp,
   Copy,
   CornerDownLeft,
-  MessageCircle,
   Plus,
   RefreshCw,
-  ShieldCheck,
+  ShieldAlert,
   SquareTerminal,
   Unplug,
 } from "lucide-react";
@@ -24,20 +23,16 @@ import { TerminalCanvas } from "./TerminalCanvas.js";
 export { TerminalCanvas } from "./TerminalCanvas.js";
 import { TerminalInput } from "./terminal-input.js";
 import type { TerminalContext } from "./terminal-context.js";
+import {
+  terminalConnectionNotice,
+  terminalSessionDescription,
+} from "./terminal-presentation.js";
 
 function readFailure(cause: unknown, fallback: string) {
   if (cause instanceof ApplicationRequestError && cause.status >= 500)
     return "终端暂不可读取，请检查 Runtime 连接后重试。";
   return cause instanceof Error ? cause.message : fallback;
 }
-
-const labels: Record<TerminalRecord["status"], string> = {
-  starting: "正在连接",
-  open: "会话已连接",
-  exited: "进程已退出",
-  closed: "会话已结束",
-  lost: "终端连接已丢失",
-};
 
 /** A real Runtime PTY view. The shared composer remains the only Agent input;
  * opening this component never spawns a shell or sends a command. */
@@ -47,7 +42,6 @@ export function Terminal({
   projectId,
   conversationId,
   active,
-  onCompose,
   onNotice,
   onContext,
 }: {
@@ -56,7 +50,6 @@ export function Terminal({
   projectId: string;
   conversationId?: string;
   active: boolean;
-  onCompose: (text: string) => { ok: boolean; error?: string };
   onNotice: (message: string) => void;
   onContext?: (context: TerminalContext) => void;
 }) {
@@ -95,7 +88,6 @@ export function Terminal({
   const [pendingCopy, setPendingCopy] = useState<"idle" | "copied" | "failed">(
     "idle",
   );
-  const [manualFocus, setManualFocus] = useState(false);
   const keyboard = useRef<TerminalInput | null>(null);
   const api = useRef(client);
   api.current = client;
@@ -135,6 +127,17 @@ export function Terminal({
       });
   }, [active, identity, selection, terminal?.id, terminal?.title]);
   const connected = !!view?.connected && client.online && !error;
+  const connectionNotice = terminalConnectionNotice(
+    client.online,
+    error,
+    terminal,
+    view,
+  );
+  const inputFailure =
+    inputError ||
+    (terminal?.last_input_status === "uncertain"
+      ? "上次输入的提交结果待核对，已暂停后续输入；不会自动重发。"
+      : "");
   const canInput =
     active &&
     connected &&
@@ -147,7 +150,6 @@ export function Terminal({
   useEffect(() => {
     setInputError("");
     setPendingCopy("idle");
-    setManualFocus(false);
     if (!selection || !view?.input_supported || !terminal) return;
     const captured = identity;
     const controller = new TerminalInput(
@@ -176,7 +178,6 @@ export function Terminal({
   }, [identity, selection, view?.input_supported]);
   useEffect(() => {
     keyboard.current?.setEnabled(active && connected);
-    if (!active) setManualFocus(false);
   }, [active, connected]);
   useEffect(() => {
     if (terminal)
@@ -344,15 +345,6 @@ export function Terminal({
       }
     }
   }
-  function compose(text: string) {
-    const result = onCompose(text);
-    if (!result.ok) onNotice(result.error ?? "无法准备输入，原草稿已保留。");
-  }
-  function ask(text: string) {
-    compose(
-      `${text}\n\n使用内置 Terminal 的同一会话${selection ? `（terminal_id: ${selection}）` : ""}，不要改用独立的 exec。`,
-    );
-  }
   async function copy() {
     if (!view?.screen) return;
     const captured = observationScope;
@@ -367,23 +359,94 @@ export function Terminal({
     <section className="terminal-app" aria-label="Terminal 认知应用">
       <header className="terminal-toolbar">
         <div className="terminal-tabs" role="tablist" aria-label="终端会话">
-          {records.map((record) => (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={selection === record.id}
-              title={`${record.title}\n${record.cwd}`}
-              key={record.id}
-              disabled={selecting || opening}
-              onClick={() => void select(record.id)}
-            >
-              <span
-                className={`terminal-status-dot terminal-status-${record.status}`}
-              />
-              <span>{record.title}</span>
-            </button>
-          ))}
+          {records.map((stored) => {
+            const record =
+              stored.id === selection && view ? view.terminal : stored;
+            return (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={selection === record.id}
+                title={terminalSessionDescription(
+                  record,
+                  client.online && !error,
+                )}
+                aria-description={terminalSessionDescription(
+                  record,
+                  client.online && !error,
+                )}
+                key={record.id}
+                disabled={selecting || opening}
+                onClick={() => void select(record.id)}
+              >
+                <span
+                  className={`terminal-status-dot terminal-status-${client.online && !error ? record.status : "unknown"}`}
+                />
+                <span>{record.title}</span>
+              </button>
+            );
+          })}
         </div>
+        {terminal?.sandbox_status === "disabled" && (
+          <span
+            className="terminal-access"
+            role="img"
+            tabIndex={0}
+            aria-label="当前终端为完全访问，无工作区沙盒限制"
+            title="当前终端为完全访问，无工作区沙盒限制。权限详情见会话标签。"
+          >
+            <ShieldAlert size={14} aria-hidden="true" />
+          </span>
+        )}
+        {view?.screen?.previous_available && (
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="此前输出"
+            title="此前输出"
+            onClick={() =>
+              setScrollback(
+                Math.min(500, scrollback + (view?.screen?.rows ?? 24)),
+              )
+            }
+          >
+            <ChevronUp size={15} />
+          </button>
+        )}
+        {scrollback > 0 && (
+          <button
+            type="button"
+            className="icon-button terminal-latest"
+            aria-label="最新屏幕"
+            title="返回最新屏幕，恢复键盘输入"
+            onClick={() => setScrollback(0)}
+          >
+            <CornerDownLeft size={15} />
+          </button>
+        )}
+        {view?.screen && (
+          <button
+            type="button"
+            className="icon-button terminal-copy"
+            onClick={() => void copy()}
+            aria-label={
+              copyState === "copied"
+                ? "已复制终端文本"
+                : copyState === "failed"
+                  ? "复制失败，点击重试"
+                  : "复制当前屏幕文本"
+            }
+            title={
+              copyState === "copied"
+                ? "已复制"
+                : copyState === "failed"
+                  ? "复制失败，点击重试"
+                  : "复制当前屏幕文本"
+            }
+          >
+            {copyState === "copied" ? <Check size={15} /> : <Copy size={15} />}
+          </button>
+        )}
         <button
           type="button"
           className="icon-button terminal-new"
@@ -403,83 +466,56 @@ export function Terminal({
         >
           <Plus size={16} />
         </button>
-        <button
-          type="button"
-          className="icon-button terminal-refresh"
-          aria-label="刷新终端"
-          onClick={() => {
-            void refreshCatalog();
-            void refreshView();
-          }}
-        >
-          <RefreshCw size={15} />
-        </button>
+        {(error || !client.online || view?.checkpoint) && (
+          <button
+            type="button"
+            className="icon-button terminal-refresh"
+            aria-label="刷新终端"
+            title="重新核对终端，不执行命令"
+            onClick={() => {
+              void refreshCatalog();
+              void refreshView();
+            }}
+          >
+            <RefreshCw size={15} />
+          </button>
+        )}
       </header>
       {createError && (
         <div className="terminal-notice" role="status">
           {createError}　未发送 Agent 消息；核对使用原新建编号，不会重放命令。
         </div>
       )}
-      {error && (
+      {connectionNotice && (
         <div className="terminal-notice" role="status">
           <Unplug size={15} />
-          <span>{error}　现有会话不会被重新执行。</span>
+          <span>{connectionNotice}</span>
         </div>
       )}
-      {!client.online && (
-        <div className="terminal-notice" role="status">
-          Runtime 未连接；保留最后屏幕，不重放命令。
-        </div>
-      )}
-      {inputError && (
+      {inputFailure && (
         <div className="terminal-notice terminal-input-error" role="status">
-          <span>{inputError}</span>
-          <button
-            type="button"
-            onClick={() => {
-              void copyText(keyboard.current?.pending() ?? "").then(
-                () => setPendingCopy("copied"),
-                () => setPendingCopy("failed"),
-              );
-            }}
-          >
-            {pendingCopy === "copied"
-              ? "已复制"
-              : pendingCopy === "failed"
-                ? "复制失败，重试"
-                : "复制未确认输入"}
-          </button>
+          <span>{inputFailure}</span>
+          {keyboard.current?.pending() && (
+            <button
+              type="button"
+              onClick={() => {
+                void copyText(keyboard.current?.pending() ?? "").then(
+                  () => setPendingCopy("copied"),
+                  () => setPendingCopy("failed"),
+                );
+              }}
+            >
+              {pendingCopy === "copied"
+                ? "已复制"
+                : pendingCopy === "failed"
+                  ? "复制失败，重试"
+                  : "复制未确认输入"}
+            </button>
+          )}
         </div>
       )}
       {terminal ? (
         <>
-          <div className="terminal-location">
-            <span title={`起始目录：${terminal.cwd}`}>
-              起始于 {terminal.cwd}
-            </span>
-            <span className="terminal-state">
-              <span
-                className={`terminal-status-dot terminal-status-${connected ? "open" : terminal.status === "open" ? "starting" : terminal.status}`}
-              />
-              {terminal.status === "open" && !connected
-                ? "正在核对连接"
-                : labels[terminal.status]}
-              {terminal.exit_code !== null
-                ? ` · 退出码 ${terminal.exit_code}`
-                : ""}
-            </span>
-          </div>
-          {view?.checkpoint && (
-            <div className="terminal-notice">
-              这是最后保存的屏幕，不代表进程仍在运行；旧命令不会自动重发。
-            </div>
-          )}
-          {terminal.last_input_status === "uncertain" && (
-            <div className="terminal-notice" role="status">
-              上次输入的提交回执待核对；仍可读取输出，但不会重发或继续排队输入。请让
-              Morphz 核对后关闭此会话，再新建终端。
-            </div>
-          )}
           {view?.screen ? (
             <TerminalCanvas
               screen={view.screen}
@@ -487,118 +523,20 @@ export function Terminal({
               canInput={canInput}
               onData={(data) => keyboard.current?.input(data)}
               onResize={(rows, cols) => keyboard.current?.resize(rows, cols)}
-              onFocusChange={setManualFocus}
             />
           ) : (
-            <div className="terminal-loading" role="status">
-              {error ? "屏幕暂不可用" : "正在读取终端屏幕…"}
+            <div
+              className="terminal-loading"
+              role={connectionNotice ? undefined : "status"}
+            >
+              {connectionNotice ? null : "正在读取终端屏幕…"}
             </div>
           )}
-          <footer className="terminal-footer">
-            <div className="terminal-output-controls">
-              <span className="terminal-mode">
-                {canInput
-                  ? manualFocus
-                    ? "键盘已连接"
-                    : "点击终端输入"
-                  : view?.input_supported
-                    ? "只读屏幕"
-                    : "Runtime 待更新 · 只读"}
-              </span>
-              <button
-                type="button"
-                disabled={!view?.screen?.previous_available}
-                onClick={() =>
-                  setScrollback(
-                    Math.min(500, scrollback + (view?.screen?.rows ?? 24)),
-                  )
-                }
-              >
-                <ChevronUp size={14} />
-                <span>此前输出</span>
-              </button>
-              {scrollback > 0 && (
-                <button type="button" onClick={() => setScrollback(0)}>
-                  <CornerDownLeft size={14} />
-                  <span>最新屏幕</span>
-                </button>
-              )}
-              <button
-                type="button"
-                className="terminal-copy"
-                onClick={() => void copy()}
-                disabled={!view?.screen}
-                aria-label={
-                  copyState === "copied"
-                    ? "已复制终端文本"
-                    : copyState === "failed"
-                      ? "复制失败，点击重试"
-                      : "复制当前屏幕文本"
-                }
-              >
-                {copyState === "copied" ? (
-                  <Check size={14} />
-                ) : (
-                  <Copy size={14} />
-                )}
-                <span>
-                  {copyState === "copied"
-                    ? "已复制"
-                    : copyState === "failed"
-                      ? "重试复制"
-                      : "复制文本"}
-                </span>
-              </button>
-            </div>
-            <span
-              className="terminal-boundary"
-              title={`${terminal.target_id} · 网络${terminal.network_enabled ? "允许" : "受限"}`}
-            >
-              <ShieldCheck size={13} />
-              {terminal.sandbox_status === "enforced"
-                ? "工作区权限"
-                : "完全访问"}
-              <span>
-                {" "}
-                · {terminal.cols}×{terminal.rows}
-              </span>
-            </span>
-            <button
-              type="button"
-              className="terminal-ask"
-              onClick={() => ask("请在当前终端继续操作。具体要求：")}
-            >
-              <MessageCircle size={14} />
-              <span>让 Morphz 操作</span>
-            </button>
-          </footer>
         </>
       ) : (
         <div className="terminal-empty">
           <SquareTerminal size={28} strokeWidth={1.5} />
-          <h2>
-            {records.length ? "选择一个终端会话" : "让 Morphz 在这里执行命令"}
-          </h2>
-          <p>真实输入与输出就在这里。目录和环境会保留在同一终端会话中。</p>
-          {!records.length && (
-            <button
-              type="button"
-              className="icon-button terminal-empty-new"
-              aria-label={
-                opening
-                  ? "正在新建终端"
-                  : createError
-                    ? "核对新建终端"
-                    : "新建终端"
-              }
-              title={createError ? "核对上一次新建，不重复创建" : "新建终端"}
-              disabled={opening || !client.online}
-              onClick={() => void openTerminal()}
-            >
-              <Plus size={20} />
-            </button>
-          )}
-          <small>打开应用不会执行命令。终端输出仅在需要时由 Agent 读取。</small>
+          <p>{records.length ? "选择终端" : "点击右上角 ＋ 新建终端"}</p>
         </div>
       )}
       {catalog?.scope === identity && catalog.hasMore && (

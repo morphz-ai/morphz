@@ -98,7 +98,6 @@ export function createBuiltinApplicationAdapters({
         projectId={workspaceId}
         conversationId={conversationId}
         active={activeView}
-        onCompose={onCompose}
         onNotice={onNotice}
         onContext={selected ? onTerminalContext : undefined}
       />
