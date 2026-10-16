@@ -60,6 +60,9 @@ fn string<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
 }
 
 pub(crate) fn classify(event: &Event, sequence: i64) -> Option<TimelineMutation> {
+    if string(event, "model_output_visibility") == Some("internal") {
+        return None;
+    }
     let session_id = string(event, "session_id")?;
     let root = ["root_turn_id", "trigger_event_id", "source_turn_id"]
         .into_iter()

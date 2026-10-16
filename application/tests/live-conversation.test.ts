@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { internalModelOutput } from "../packages/core/src/model-publication.js";
 import {
   LiveConversationProjection,
   type StreamEvent,
@@ -28,6 +29,52 @@ function projection() {
         : null,
   }));
 }
+test("internal infer JSON and prose stay out of publications; public JSON remains valid user content", () => {
+  const p = projection();
+  for (const text of [
+    '{"execute":false,"reply":"内部值"}',
+    "内部创作草稿",
+    "内部检查结果",
+  ])
+    for (const topic of [
+      "runtime/model_stream",
+      "runtime/model_public_output",
+      "chat/progress",
+    ])
+      p.consume(
+        event(topic, {
+          model_output_visibility: "internal",
+          attempt_id: "opaque-child",
+          root_turn_id: "opaque-root",
+          first_visible_at: "2026-10-16T00:00:00Z",
+          text,
+          stream: { kind: "text_delta", text },
+        }),
+      );
+  assert.deepEqual(p.snapshot(), []);
+  p.consume(
+    event("chat/reply", {
+      attempt_id: "outer",
+      root_turn_id: "real-input",
+      text: '{"requested":"public JSON"}',
+    }),
+  );
+  assert.equal(p.snapshot()[0]!.text, '{"requested":"public JSON"}');
+  assert.equal(
+    internalModelOutput(
+      { topic: "runtime/model_public_output", payload: {} },
+      { topic: "chat/infer_request" },
+    ),
+    true,
+  );
+  assert.equal(
+    internalModelOutput(
+      { topic: "runtime/model_public_output", payload: {} },
+      { topic: "chat/user_message" },
+    ),
+    false,
+  );
+});
 function delta(
   p: LiveConversationProjection,
   id: string,

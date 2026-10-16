@@ -14188,6 +14188,28 @@ mod tests {
         observed_entry_result: Arc<AtomicBool>,
     }
 
+    struct SingleHarnessReplyClient {
+        calls: AtomicU64,
+    }
+
+    #[async_trait::async_trait]
+    impl Client for SingleHarnessReplyClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            assert_eq!(
+                self.calls.fetch_add(1, Ordering::SeqCst),
+                0,
+                "authored Harness reply must not be paraphrased by a second call"
+            );
+            Ok(text_response(
+                r#"{"execute":false,"reply":"TEST Harness 一次求值的最终回复"}"#,
+            ))
+        }
+    }
+
     struct HarnessDiscoveryClient {
         calls: AtomicU64,
         observed_mount: Arc<AtomicBool>,
@@ -20243,6 +20265,108 @@ mod tests {
         assert!(bindings
             .iter()
             .all(|event| event.payload["scope"] == "evaluation"));
+    }
+
+    #[tokio::test]
+    async fn ordinary_harness_reply_publishes_once_without_a_second_model_call() {
+        let database = NamedTempFile::new().unwrap();
+        let package = HarnessPackage::from_source("single-reply.hns", r#"
+          (manifest (id single-reply) (version "1.0.0") (title "TEST single reply") (entry-result reply) (capabilities (tools)))
+          (contract (identity "TEST internal intent with authored reply"))
+          (eval (requires (tools))
+            (types (record Decision (execute Bool) (reply String)))
+            (seq (bind decision (infer (returns Decision) "Discuss only; do not write.")) decision.reply))
+        "#).unwrap();
+        let client = Arc::new(SingleHarnessReplyClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(AppConfig::default(), client.clone())
+            .database_path(database.path().to_string_lossy())
+            .harness_package(package)
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "test-single-harness-reply".into(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "TEST single reply".into(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime.bind_default_principal(session.id()).await.unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        let send = || {
+            session.send_as_principal_with_harness(
+                "Just discuss",
+                "User-Test",
+                runtime.identity().principal_id.clone(),
+                Some("test-single-input".into()),
+                Some(crate::harness::ExactHarnessRef {
+                    id: "single-reply".into(),
+                    version: "1.0.0".into(),
+                }),
+            )
+        };
+        let original = send().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "TEST Harness 一次求值的最终回复");
+        assert!(reply.payload["harness_plan_id"].is_string());
+        let finished = runtime
+            .session_thread_by_root(session.id(), &original.event_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            finished.lifecycle,
+            crate::memory::ThreadLifecycle::Completed,
+            "publishing the authored reply must finish the original thread, not leave it waiting"
+        );
+        assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(send().await.unwrap().event_id, original.event_id);
+        let outputs = runtime
+            .query_events(QueryFilter {
+                session_id: Some(session.id().into()),
+                topic: Some("runtime/model_public_output".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(
+            outputs.is_empty(),
+            "internal JSON must not create a public snapshot"
+        );
+        let internal = runtime
+            .query_events(QueryFilter {
+                session_id: Some(session.id().into()),
+                topic: Some("plan/infer_result".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            internal.len(),
+            1,
+            "internal evaluation evidence remains inspectable"
+        );
+        let timeline = runtime
+            .query_session_timeline(session.id(), None, 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            timeline
+                .iter()
+                .filter(|item| item.display_kind == "reply")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]

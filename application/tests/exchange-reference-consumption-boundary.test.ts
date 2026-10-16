@@ -59,6 +59,16 @@ const fixed = readFileSync(
   "utf8",
 );
 const ownerPath = "./host/exchange-reference-commands.js";
+test("current application chooser modal remains the exact focus-suspension owner", () => {
+  assert.throws(
+    () =>
+      verifyExchangeReferencePreparationConsumption(
+        currentApp.replace("!!cognitiveChoice ||", "!!executions ||"),
+        currentOwner,
+      ),
+    /reference borrowed live binding exchangeController/,
+  );
+});
 function walk(node: Node, visit: (node: Node) => void) {
   visit(node);
   node.forEachChild((child) => {

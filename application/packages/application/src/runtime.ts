@@ -32,6 +32,7 @@ import {
 } from "../../core/src/session-permissions.js";
 import { workInputRequest } from "./session-io.js";
 import { scriptGenerationSchema } from "../../core/src/script-studio.js";
+import { internalModelOutput } from "../../core/src/model-publication.js";
 import { readingInputSchema } from "../../core/src/reader.js";
 import {
   cognitiveAppObjectLocatorSchema,
@@ -1129,12 +1130,17 @@ export class RuntimeBridge {
       .runtime.messages;
     type RootRoute = { inputId: string; source: PlatformInputSource };
     const roots = new Map<string, Promise<RootRoute | null>>();
+    const internalRoots = new Set<string>();
     // Baseline and live feed each retain at most 100 messages. Root provenance
     // is a disposable lookup cache, not another growing Session history.
     const cacheRoot = (rootId: string, route: Promise<RootRoute | null>) => {
       roots.delete(rootId);
       roots.set(rootId, route);
-      while (roots.size > 200) roots.delete(roots.keys().next().value!);
+      while (roots.size > 200) {
+        const oldest = roots.keys().next().value!;
+        roots.delete(oldest);
+        internalRoots.delete(oldest);
+      }
     };
     const parseRoot = (event: RuntimeEvent): RootRoute | null => {
       const inputId = payloadString(event, "client_message_id");
@@ -1153,18 +1159,29 @@ export class RuntimeBridge {
         cacheRoot(rootId, cached);
         return cached;
       }
-      const lookup = this.request(
-        "/api/sessions/" +
-          encodeURIComponent(sessionId) +
-          "/turns/" +
-          encodeURIComponent(rootId) +
-          "/source",
-        "GET",
-        undefined,
-        access,
-        undefined,
-      )
-        .then((raw) => {
+      const lookup = this.platformOutputRoot(sessionId, rootId, access)
+        .then(async (root) => {
+          if (root && internalModelOutput({ topic: "", payload: {} }, root)) {
+            // An evicted in-flight lookup must not leave an unbounded tombstone.
+            if (roots.has(rootId)) internalRoots.add(rootId);
+            return null;
+          }
+          // Most roots are the original input. Only synthetic roots need the
+          // bounded source resolver; never read a complete Thread or fetch
+          // the same source for every model delta.
+          const direct = root && parseRoot(root);
+          if (direct) return direct;
+          const raw = await this.request(
+            "/api/sessions/" +
+              encodeURIComponent(sessionId) +
+              "/turns/" +
+              encodeURIComponent(rootId) +
+              "/source",
+            "GET",
+            undefined,
+            access,
+            undefined,
+          );
           const { input_event } = z
             .object({ input_event: eventSchema.nullable() })
             .parse(raw);
@@ -1177,7 +1194,12 @@ export class RuntimeBridge {
         })
         .then((route) => {
           // A delayed miss must not erase a newer root Event from the feed.
-          if (!route && roots.get(rootId) === lookup) roots.delete(rootId);
+          if (
+            !route &&
+            !internalRoots.has(rootId) &&
+            roots.get(rootId) === lookup
+          )
+            roots.delete(rootId);
           return route;
         });
       cacheRoot(rootId, lookup);
@@ -1304,6 +1326,14 @@ export class RuntimeBridge {
       request: (path) =>
         this.request(path, "GET", undefined, access, undefined),
       onEvent: (id, raw) => {
+        if (
+          id === sessionId &&
+          ["chat/infer_request", "runtime/infer_request"].includes(raw.topic)
+        ) {
+          internalRoots.add(raw.id);
+          cacheRoot(raw.id, Promise.resolve(null));
+          return;
+        }
         if (
           id !== sessionId ||
           !["chat/user_message", "chat/steering"].includes(raw.topic)
@@ -3544,6 +3574,27 @@ export class RuntimeBridge {
 
   /** A durable public-output fact is the only safe source for an incomplete
    * stream quote. Live deltas alone are not persisted and cannot be cited. */
+  private async platformOutputRoot(
+    sessionId: string,
+    rootId: string,
+    access: AccessContext,
+  ): Promise<RuntimeEvent | null> {
+    if (!rootId || rootId.length > 256) return null;
+    try {
+      const raw = await this.request(
+        `/api/sessions/${encodeURIComponent(sessionId)}/events/${encodeURIComponent(rootId)}`,
+        "GET",
+        undefined,
+        access,
+        undefined,
+      );
+      return z.object({ event: eventSchema }).parse(raw).event;
+    } catch (error) {
+      if (error instanceof UpstreamError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
   private async platformPublicOutput(
     sessionId: string,
     rootId: string,
@@ -3569,6 +3620,17 @@ export class RuntimeBridge {
       .parse(response);
     const createdAt = payloadString(event, "first_visible_at");
     const text = payloadString(event, "text");
+    if (
+      internalModelOutput(
+        event,
+        await this.platformOutputRoot(
+          sessionId,
+          payloadString(event, "root_turn_id") ?? "",
+          access,
+        ),
+      )
+    )
+      return null;
     if (
       event.topic !== "runtime/model_public_output" ||
       payloadString(event, "attempt_id") !== attemptId ||
@@ -3606,6 +3668,7 @@ export class RuntimeBridge {
     const { entry } = z
       .object({ entry: sessionTimelineItemSchema })
       .parse(response);
+    if (internalModelOutput(entry.event, entry.root_event)) return null;
     if (
       entry.entry_id !== `publication:${attemptId}` ||
       entry.attempt_id !== attemptId ||
@@ -3722,6 +3785,17 @@ export class RuntimeBridge {
             : null;
         const event = publication?.event ?? sourced?.event;
         if (!event) return null;
+        if (
+          internalModelOutput(
+            event,
+            await this.platformOutputRoot(
+              sessionId,
+              payloadString(event, "root_turn_id") ?? "",
+              access,
+            ),
+          )
+        )
+          return null;
         const kind = [
           "chat/reply",
           "chat/outbound_message",
@@ -3968,6 +4042,7 @@ export class RuntimeBridge {
     access: AccessContext,
     grant: PlatformReadGrant,
   ): HistoryEntry | null {
+    if (internalModelOutput(item.event, item.root_event)) return null;
     const root = item.input_event;
     if (
       !root ||

@@ -1,6 +1,7 @@
 (manifest
   (id morphz.script-studio)
-  (version "2.0.0")
+  (version "2.1.0")
+  (entry-result reply)
   (title "剧本工作室 · 创作与版本迭代")
   (capabilities (tools host_morphz)))
 (contract
@@ -72,7 +73,7 @@ blocking 可能使批准失效，应慎用，且不授予人工批准权。
   (recovery
     "Runtime从已持久化Plan位置恢复，不从包入口重跑、不换输入或提交ID。提交使用稳定job/call/index幂等标识；script/read-results和script/read-result核对本次确切版本。正文已保存但目录待恢复时按原提交恢复目录，不重新创作或追加版本；无法核对的响应不能冒称回滚。版本冲突不覆盖新稿，取消不撤回已提交结果。")
   (completion
-    "外层eval结束后的模型只转述最终结果和真实回执，不重新运行工序或调用Host补交。当前结果已保存则说明可以继续修改或回退，不要求采纳；旧候选不是正文，检查不是独立质量认证，线程完成不是批准。子infer只返回声明类型的Yao JSON值，不加Markdown围栏；这仅限制协议封装，正文使用清楚的中文场标、行动与对白，不强制Markdown或专业排版。")
+    "外层eval的最终字符串就是对用户的完整回复，由Runtime直接发布，不再调用外层模型改写。当前结果已保存则说明可以继续修改或回退，不要求采纳；旧候选不是正文，检查不是独立质量认证，线程完成不是批准。子infer只返回声明类型的Yao JSON值，不加Markdown围栏；这仅限制协议封装，正文使用清楚的中文场标、行动与对白，不强制Markdown或专业排版。")
   (limits
     "不调用 shell、任意文件、网络、未授权项目资料或外部服务；不安装包、不改变模型凭据、不自启子 Agent/长期 Objective/定时任务，不发布或作商务承诺。本工具上界不扩大 Host action 的真实授权。"))
 (mind

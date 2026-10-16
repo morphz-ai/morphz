@@ -39,6 +39,11 @@ import { ArtifactEditor } from "./ArtifactEditor.js";
 import { ComposerActionBar } from "./ComposerActionBar.js";
 import { ComposerStatus } from "./ComposerStatus.js";
 import { ComposerScope } from "./ComposerScope.js";
+import { inputApplicationReference } from "./host/input-application-reference.js";
+import {
+  detachComposerAssociation,
+  inputSurfaceDetached,
+} from "./host/input-surface-association.js";
 import {
   composerTerminalContext,
   type TerminalContext,
@@ -1214,7 +1219,9 @@ function WorkspaceApp({
       updateComposerDraft(previous, key, emptyDraft, update, initial),
     );
   }
-  function removeComposerReference(kind: "intent" | "scriptGeneration") {
+  function removeComposerReference(
+    kind: "intent" | "scriptGeneration" | "association",
+  ) {
     if (
       !origin.isActive() ||
       currentContext.current !== contextKey ||
@@ -1226,6 +1233,17 @@ function WorkspaceApp({
     updateDraft(contextKey, (current) => {
       // Remove only the reference the person actually saw. Preserve newer
       // text, attachments, quotes and choices, never spread a rendered draft.
+      if (kind === "association") {
+        if (
+          current.cognitiveApplication !== draft.cognitiveApplication ||
+          current.cognitiveObject !== draft.cognitiveObject ||
+          current.selection !== draft.selection ||
+          current.revision !== draft.revision ||
+          current.reading !== draft.reading
+        )
+          return current;
+        return detachComposerAssociation(current);
+      }
       if (current[kind] !== draft[kind]) return current;
       if (kind === "scriptGeneration") {
         const { scriptGeneration: _, ...rest } = current;
@@ -1352,7 +1370,10 @@ function WorkspaceApp({
           previous,
           expectedContextKey,
           emptyDraft,
-          () => result.draft,
+          () =>
+            selected
+              ? { ...result.draft, detachedAssociation: false }
+              : result.draft,
         );
       });
     if (creation) flushSync(write);
@@ -2113,8 +2134,34 @@ function WorkspaceApp({
   });
   // A personal desk remains the real input owner, but is not an explicit
   // project association. Named conversations already belong to a project.
+  const detachedAssociation = inputSurfaceDetached(draft);
+  const associatedApplication =
+    !detachedAssociation &&
+    !draft.continuation &&
+    !draft.taskResult &&
+    !draft.annotation
+      ? inputApplicationReference(
+          activeInstance ?? undefined,
+          !!(
+            cognitiveRequested ||
+            draft.cognitiveApplication ||
+            draft.cognitiveObject
+          ),
+        )
+      : undefined;
+  const associatedApplicationTitle = associatedApplication
+    ? (applicationFor(
+        state,
+        associatedApplication.id,
+        associatedApplication.version,
+      )?.title ?? associatedApplication.id)
+    : undefined;
   const associatedTerminal =
-    !artifact && !deliveredScript && !draft.continuation && !cognitiveRequested
+    !detachedAssociation &&
+    !artifact &&
+    !deliveredScript &&
+    !draft.continuation &&
+    !cognitiveRequested
       ? composerTerminalContext(
           activeInstance ?? undefined,
           project.id,
@@ -2122,16 +2169,31 @@ function WorkspaceApp({
           terminalContext,
         )
       : null;
-  const showPlainComposerScope = !!(
-    draft.cognitiveApplication ||
-    cognitiveRequested ||
-    draft.continuation ||
-    artifact ||
-    deliveredScript ||
-    activeInstance?.applicationId === browserApplication.id ||
-    associatedTerminal ||
-    spaceKind(project) === "project"
-  );
+  const showPlainComposerScope =
+    !detachedAssociation &&
+    !!(
+      draft.cognitiveApplication ||
+      cognitiveRequested ||
+      draft.continuation ||
+      artifact ||
+      deliveredScript ||
+      activeInstance?.applicationId === browserApplication.id ||
+      associatedTerminal ||
+      associatedApplication ||
+      spaceKind(project) === "project"
+    );
+  const canDetachComposerScope =
+    !detachedAssociation &&
+    !!(
+      artifact ||
+      deliveredScript ||
+      cognitiveRequested ||
+      draft.cognitiveApplication ||
+      draft.cognitiveObject ||
+      associatedApplication ||
+      associatedTerminal ||
+      draft.reading
+    );
   const composerScopeTitle =
     (cognitive.requested
       ? (cognitive.value?.original.title ?? "原件")
@@ -2144,9 +2206,8 @@ function WorkspaceApp({
       ? browserPage?.title || "浏览器"
       : associatedTerminal
         ? associatedTerminal.label
-        : spaceKind(project) === "project"
-          ? project.title
-          : "无项目");
+        : (associatedApplicationTitle ??
+          (spaceKind(project) === "project" ? project.title : "无项目")));
   let cognitiveInputTarget: CognitiveAppApplicationTarget | undefined;
   try {
     guardCognitiveAppApplicationCommand({ operation: draft });
@@ -2183,6 +2244,9 @@ function WorkspaceApp({
           (showPlainComposerScope ? ` · ${composerScopeTitle}` : "")
         : composerScopeTitle)) +
     (draft.revision ? " · v" + draft.revision : "") +
+    (associatedApplication
+      ? ` · 应用：${associatedApplicationTitle} · ${associatedApplication.id}@${associatedApplication.version}`
+      : "") +
     (associatedTerminal ? ` · ${associatedTerminal.description}` : "");
   const cognitiveInputUnavailable =
     cognitiveInputTarget &&
@@ -3322,6 +3386,7 @@ function WorkspaceApp({
                         !draft.continuation &&
                         !draft.taskResult &&
                         !draft.scriptGeneration &&
+                        !detachedAssociation &&
                         readingExpected &&
                         (draft.skipReading ? (
                           <button
@@ -3490,7 +3555,8 @@ function WorkspaceApp({
                                 (showPlainComposerScope &&
                                   cognitiveApplications.length > 0) ||
                                 draft.scriptGeneration ||
-                                (!draft.continuation &&
+                                (!detachedAssociation &&
+                                  !draft.continuation &&
                                   (draft.taskResult ||
                                     draft.intent ||
                                     (artifact && draft.selection)))
@@ -3507,7 +3573,7 @@ function WorkspaceApp({
                             }
                             description={composerScopeDescription}
                             dismissal={
-                              draft.continuation || cognitiveInputTarget
+                              draft.continuation
                                 ? undefined
                                 : draft.taskResult || draft.intent
                                   ? {
@@ -3529,7 +3595,18 @@ function WorkspaceApp({
                                             "scriptGeneration",
                                           ),
                                       }
-                                    : undefined
+                                    : canDetachComposerScope
+                                      ? {
+                                          label: "移除本次输入关联",
+                                          disabled:
+                                            sending ||
+                                            !!draft.pendingSupplement,
+                                          onRemove: () =>
+                                            removeComposerReference(
+                                              "association",
+                                            ),
+                                        }
+                                      : undefined
                             }
                             onOpenChange={(open) => {
                               if (!open) scopeMenuOrigin.current = undefined;
@@ -3631,7 +3708,7 @@ function WorkspaceApp({
                                   </button>
                                 </span>
                               )}
-                              {!draft.continuation && (
+                              {!detachedAssociation && !draft.continuation && (
                                 <span
                                   className="context-chip"
                                   title={
@@ -3713,6 +3790,33 @@ function WorkspaceApp({
                           <>
                             <MessageAttachments
                               variant="menu"
+                              association={
+                                detachedAssociation
+                                  ? {
+                                      disabled:
+                                        sending ||
+                                        !!draft.pendingSupplement ||
+                                        !!draft.continuation,
+                                      onRestore: () => {
+                                        if (
+                                          !origin.isActive() ||
+                                          currentContext.current !==
+                                            contextKey ||
+                                          sending
+                                        )
+                                          return;
+                                        updateDraft(contextKey, (current) => ({
+                                          ...current,
+                                          detachedAssociation: false,
+                                          skipReading: false,
+                                        }));
+                                        input.current?.focus({
+                                          preventScroll: true,
+                                        });
+                                      },
+                                    }
+                                  : undefined
+                              }
                               creation={{
                                 disabled:
                                   sending ||

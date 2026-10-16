@@ -108,9 +108,7 @@ function finalCallbacks() {
 function profileOrder() { await ports.profile.flush(); ports.profile.assertCurrentScope(); if (!ports.isCurrentSurface()) throw new Error("工作范围已切换，草稿已保留，请回到原处发送。"); }
 const cognitiveFields = {
   // Reviewed builtin extension: only its selected resource reference, never a screen or authority.
-  ...(activeInstance && !cognitive ? { application: { id: activeInstance.applicationId, version: activeInstance.applicationVersion,
-    ...(activeInstance.applicationId === "morphz.terminal" ? { terminalId: typeof activeInstance.state?.terminalId === "string" ? activeInstance.state.terminalId : null } : {}),
-  } } : {}),
+  ...(inputApplicationReference(activeInstance, cognitive) ? { application: inputApplicationReference(activeInstance, cognitive) } : {}),
   ...(cognitiveObject ? { cognitiveObject } : {}),
   ...(cognitiveApplication ? { cognitiveApplication } : {}),
   ...(browserPage && !cognitive && activeInstance?.applicationId === "morphz.browser" ? { browser: { pageId: browserPage.pageId, epoch: browserPage.epoch, url: browserPage.url, title: browserPage.title } } : {}),
@@ -354,6 +352,11 @@ function ownership(
       new Set(["parseDomainAuthority"]),
     ],
     ["./work-surface.js", new Set(["cognitiveWorkSurfaceKey"])],
+    [
+      "./input-application-reference.js",
+      new Set(["inputApplicationReference"]),
+    ],
+    ["./input-surface-association.js", new Set(["inputSurfaceContext"])],
   ]);
   const types = new Set([
     ...runtime.keys(),
@@ -418,6 +421,17 @@ function ownership(
       !!transaction &&
       statements[1] === transaction,
     "snapshot-unpack-then-one-execution-boundary",
+  );
+  const surfaceContext = calls(submit, "inputSurfaceContext");
+  check(
+    surfaceContext.length === 1 &&
+      surfaceContext[0]!.arguments.map((arg) => arg.getText()).join(",") ===
+        "context,captured" &&
+      !!statements &&
+      isVariableStatement(statements[0]!) &&
+      statements[0]!.declarationList.declarations[0]?.initializer ===
+        surfaceContext[0],
+    "surface-unlink-policy-is-captured-once-before-admission",
   );
   if (transaction) {
     check(
@@ -671,6 +685,8 @@ function ownership(
     "parseWireJson",
     "parseDomainAuthority",
     "cognitiveWorkSurfaceKey",
+    "inputApplicationReference",
+    "inputSurfaceContext",
     "JSON.parse",
     "JSON.stringify",
     "currentReading?.capture",
@@ -1034,13 +1050,13 @@ test("submission gate rejects cognitive source dropping, current-head substituti
       "exact-cognitive-payload-no-implicit-harness-or-head",
     ],
     [
-      "...(activeInstance && !cognitive",
-      "...(activeInstance",
+      "...(inputApplicationReference(activeInstance, cognitive)",
+      "...(inputApplicationReference(activeInstance, false)",
       "exact-cognitive-payload-no-implicit-harness-or-head",
     ],
     [
-      "activeInstance.state.terminalId",
-      "'another-terminal'",
+      "application: inputApplicationReference(\n                  activeInstance,\n                  cognitive,\n                )",
+      "application: { id: 'another-application', version: '1.0.0' }",
       "exact-cognitive-payload-no-implicit-harness-or-head",
     ],
     [

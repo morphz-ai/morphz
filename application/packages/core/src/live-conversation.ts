@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { internalModelOutput } from "./model-publication.js";
 import {
   providerRecoverySchema,
   providerRecoveryFromEvent,
@@ -127,6 +128,7 @@ export class LiveConversationProjection {
     };
   }
   consume(e: StreamEvent) {
+    if (internalModelOutput(e)) return;
     const p = e.payload,
       // Semantic outcomes can name the exact physical request. A protocol
       // retry is not inferred from an Activation or an identifier suffix.

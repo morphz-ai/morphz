@@ -19,7 +19,7 @@ export function ComposerScope({
   expandable?: boolean;
   /** An implicit personal desk is routing, not a visible association. */
   showPlainScope?: boolean;
-  /** Only explicit local bindings are dismissible; never the implicit owner. */
+  /** Unlinks the next input, never its project/Session owner or open surface. */
   dismissal?: { label: string; disabled?: boolean; onRemove(): void };
   onOpenChange?(open: boolean): void;
 }) {

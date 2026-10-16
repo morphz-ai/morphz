@@ -10,6 +10,11 @@ import type { DirectoryGrant } from "../../../../packages/core/src/local-files.j
 import { quotedInputText } from "../../../../packages/core/src/text-quotes.js";
 import type { ReadingSurface } from "../reading-context-model.js";
 import type { ConversationDraft, InputDraft } from "./exchange-drafts.js";
+import { inputSurfaceContext } from "./input-surface-association.js";
+import {
+  inputApplicationReference,
+  type InputApplicationInstance,
+} from "./input-application-reference.js";
 import { parseCognitiveAppObjectLocator } from "../../../../packages/core/src/cognitive-app-object-locator.js";
 import {
   guardCognitiveAppApplicationCommand,
@@ -33,13 +38,7 @@ export type ExchangeSubmissionContext = {
   conversationId: string;
   firstConversation: ConversationDraft | undefined;
   artifact: Pick<Artifact, "id" | "revision"> | undefined;
-  activeInstance:
-    | {
-        applicationId: string;
-        applicationVersion: string;
-        state?: Record<string, unknown>;
-      }
-    | undefined;
+  activeInstance: InputApplicationInstance | undefined;
   browserPage: RecordInput["browser"] | null;
   readingExpected: boolean;
   currentReading: ReadingSurface | null;
@@ -103,7 +102,7 @@ export async function submitExchangeDraft(
     directoryScope,
     directoryState,
     capabilities,
-  } = context;
+  } = inputSurfaceContext(context, captured);
   try {
     guardCognitiveAppApplicationCommand({ operation: captured });
     const applicationSlot = Object.getOwnPropertyDescriptor(
@@ -337,20 +336,12 @@ export async function submitExchangeDraft(
           ...(firstConversation
             ? { newConversation: { title: firstConversation.title } }
             : {}),
-          ...(activeInstance && !cognitive
+          ...(inputApplicationReference(activeInstance, cognitive)
             ? {
-                application: {
-                  id: activeInstance.applicationId,
-                  version: activeInstance.applicationVersion,
-                  ...(activeInstance.applicationId === "morphz.terminal"
-                    ? {
-                        terminalId:
-                          typeof activeInstance.state?.terminalId === "string"
-                            ? activeInstance.state.terminalId
-                            : null,
-                      }
-                    : {}),
-                },
+                application: inputApplicationReference(
+                  activeInstance,
+                  cognitive,
+                ),
               }
             : {}),
           artifactId: artifact?.id ?? null,

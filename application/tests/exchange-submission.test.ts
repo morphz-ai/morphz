@@ -18,6 +18,7 @@ import type { DirectoryGrant } from "../packages/core/src/local-files.js";
 import type { ReadingReference } from "../packages/core/src/reader.js";
 import type { ScriptGeneration } from "../packages/core/src/script-studio.js";
 import type { TextQuote } from "../packages/core/src/text-quotes.js";
+import { detachComposerAssociation } from "../apps/web/src/host/input-surface-association.js";
 
 // Independent event/payload expectations are frozen from App.send at 55988f3a.
 // Invoke the actual submission owner; do not execute a copied send algorithm.
@@ -89,6 +90,69 @@ const original: RecordedInput = {
 function draft(fields: Partial<InputDraft> = {}): InputDraft {
   return { body: "补充正文", selection: "", revision: null, ...fields };
 }
+
+test("removed surface association sends ordinary chat without an implicit application, object, browser or reader", async () => {
+  for (const applicationId of [
+    "morphz.script-studio",
+    "morphz.terminal",
+    "morphz.browser",
+    "morphz.reader",
+  ]) {
+    const f = fixture();
+    const captured = detachComposerAssociation(
+      draft({
+        revision: 4,
+        selection: "作品选区",
+        attachments: [attachment],
+        textQuotes: [textQuote],
+      }),
+    );
+    await submitExchangeDraft(
+      captured,
+      false,
+      "parallel",
+      context({
+        artifact: { id: "artifact-a", revision: 4 },
+        activeInstance: {
+          applicationId,
+          applicationVersion: "1.0.0",
+          state: { terminalId: "selected-terminal" },
+        },
+        readingExpected: true,
+        currentReading: {
+          capture() {
+            throw new Error("Must not read a detached page");
+          },
+        } as unknown as ReadingSurface,
+        browserPage: {
+          pageId: "page-a",
+          epoch: "epoch-a",
+          url: "https://example.test",
+          title: "当前网页",
+        },
+      }),
+      f.ports,
+    );
+    assert.deepEqual(f.errors, []);
+    assert.equal(f.calls.length, 1);
+    const operation = f.calls[0]![0];
+    assert.equal(operation.type, "record-input");
+    if (operation.type !== "record-input") throw new Error("not input");
+    assert.equal(operation.projectId, "project-a");
+    assert.equal(operation.conversationId, "conversation-a");
+    assert.equal(operation.application, undefined);
+    assert.equal(operation.artifactId, null);
+    assert.equal(operation.artifactRevision, null);
+    assert.equal(operation.reading, undefined);
+    assert.equal(operation.browser, undefined);
+    assert.equal(operation.cognitiveObject, undefined);
+    assert.equal(operation.scriptGeneration, undefined);
+    assert.equal(operation.selection, "");
+    assert.equal(operation.body, "补充正文");
+    assert.deepEqual(operation.attachments, [attachment]);
+    assert.deepEqual(operation.textQuotes, [textQuote]);
+  }
+});
 function context(
   fields: Partial<ExchangeSubmissionContext> = {},
 ): ExchangeSubmissionContext {

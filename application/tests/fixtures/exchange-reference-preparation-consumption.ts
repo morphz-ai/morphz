@@ -1727,9 +1727,17 @@ export function verifyExchangeReferencePreparationConsumption(
       "\nfunction WorkspaceApp() {\n" +
       Object.entries(history.recipes)
         .filter(([key]) => key !== "imports")
-        .map(([, value]) =>
-          value.startsWith("function ") ? value : "const " + value + ";",
-        )
+        .map(([key, original]) => {
+          // Reviewed cf396c5a modal owner: the application chooser suspends
+          // composer focus; execution inspection moved out of this modal lane.
+          // Keep the historical archive untouched and every other borrowed
+          // field/guard exact. This is not derived from the candidate App.
+          const value =
+            key === "exchangeController"
+              ? original.replace("!!executions ||", "!!cognitiveChoice ||")
+              : original;
+          return value.startsWith("function ") ? value : "const " + value + ";";
+        })
         .join("\n") +
       "\n}",
     Search: fixed.searchElement.replace(

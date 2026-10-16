@@ -6,6 +6,7 @@ import {
   Film,
   ListChecks,
   Layers,
+  Link2,
   Paperclip,
   Plus,
   SquareBottomDashedScissors,
@@ -38,6 +39,7 @@ export function MessageAttachments({
   variant = "tool",
   capture,
   creation,
+  association,
 }: {
   previewTarget: HTMLElement | null;
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -63,6 +65,7 @@ export function MessageAttachments({
     onBuiltin(intent: InputIntent): void;
     onCognitive(choice: CognitiveCreationChoice): void;
   };
+  association?: { disabled?: boolean; onRestore(): void };
 }) {
   const file = useRef<HTMLInputElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -312,6 +315,20 @@ export function MessageAttachments({
               }))}
               attachments={
                 <>
+                  {association && (
+                    <button
+                      type="button"
+                      className="composer-creation-attachment"
+                      disabled={disabled || association.disabled}
+                      onClick={() => {
+                        close();
+                        association.onRestore();
+                      }}
+                    >
+                      <Link2 />
+                      <span>关联当前页面</span>
+                    </button>
+                  )}
                   {capture && (
                     <button
                       type="button"

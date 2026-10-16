@@ -11,6 +11,7 @@ type ComposerExecutionChoice = {
   model?: string;
   reasoningEffort?: ReasoningEffort;
   cognitiveApplication?: CognitiveAppApplicationTarget;
+  detachedAssociation?: boolean;
 };
 type ArtifactComposeDraft = QuotedDraft &
   ComposerExecutionChoice & {
@@ -66,6 +67,7 @@ export function composeArtifactDrafts<T extends ArtifactComposeDraft>(
       [key]: {
         ...current,
         body,
+        ...(current.detachedAssociation ? { detachedAssociation: false } : {}),
         // Keep the exact old source even if the object head has advanced.
         // A legacy unbound selection is not authority to guess a new version.
         revision:
@@ -91,6 +93,7 @@ export function consumeComposerDraft<
     ...empty,
     model: current.model,
     reasoningEffort: current.reasoningEffort,
+    ...(current.detachedAssociation ? { detachedAssociation: true } : {}),
     ...(slot?.value !== undefined
       ? { cognitiveApplication: parseCognitiveAppApplicationTarget(slot.value) }
       : {}),

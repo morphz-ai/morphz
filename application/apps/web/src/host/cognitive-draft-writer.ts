@@ -10,6 +10,7 @@ import type {
   InputDraft,
 } from "./exchange-drafts.js";
 import { pinCognitiveDraftOriginal } from "./cognitive-draft-source.js";
+import { inputSurfaceDetached } from "./input-surface-association.js";
 import {
   cognitiveWorkSurfaceKey,
   type CognitiveWorkSurface,
@@ -111,6 +112,7 @@ export function createCognitiveDraftWriter({
       try {
         guardCognitiveAppInputCommand({ operation: candidate });
         guardCognitiveAppApplicationCommand({ operation: candidate });
+        if (inputSurfaceDetached(candidate)) return next;
         // Cleanup and specialized operations retain their exact old behavior.
         if (special(candidate)) return next;
         if (!candidate.body.trim() && !candidate.attachments?.length) {
@@ -133,6 +135,7 @@ export function createCognitiveDraftWriter({
           !old ||
           candidate.body !== old.body ||
           candidate.attachments !== old.attachments ||
+          candidate.detachedAssociation !== old.detachedAssociation ||
           candidate.cognitiveApplication !== old.cognitiveApplication;
         const oldSlot =
           old && Object.getOwnPropertyDescriptor(old, "cognitiveObject");

@@ -17,6 +17,7 @@ import {
   consumeComposerDraft,
 } from "../apps/web/src/composer-drafts.js";
 import { draftKey } from "../apps/web/src/local-preferences.js";
+import { detachComposerAssociation } from "../apps/web/src/host/input-surface-association.js";
 
 // UNIT controlled scheduling/owner facts + actual public draft command writer.
 // Not mounted App, author HTTP, current Human grants or Runtime acceptance.
@@ -112,6 +113,46 @@ function fixture(
     },
   };
 }
+test("UNIT unlink survives the actual cognitive writer, typing and consumption without repinning the open original", () => {
+  const f = fixture({
+    [key]: { ...empty, body: "保留正文", cognitiveObject: locator() },
+  });
+  f.write((previous) =>
+    updateComposerDraft(previous, key, empty, detachComposerAssociation),
+  );
+  assert.equal(f.drafts()[key]!.cognitiveObject, undefined);
+  assert.equal(f.drafts()[key]!.body, "保留正文");
+  f.write((previous) =>
+    updateComposerDraft(previous, key, empty, (draft) => ({
+      ...draft,
+      body: "继续普通聊天",
+    })),
+  );
+  assert.equal(f.drafts()[key]!.cognitiveObject, undefined);
+  f.write((previous) =>
+    updateComposerDraft(previous, key, empty, (draft) =>
+      consumeComposerDraft(draft, empty),
+    ),
+  );
+  f.write((previous) =>
+    updateComposerDraft(previous, key, empty, (draft) => ({
+      ...draft,
+      body: "下一条仍是普通聊天",
+    })),
+  );
+  assert.equal(f.drafts()[key]!.detachedAssociation, true);
+  assert.equal(f.drafts()[key]!.cognitiveObject, undefined);
+  assert.deepEqual(f.errors, []);
+  assert.deepEqual(f.stored(), f.drafts());
+  f.write((previous) =>
+    updateComposerDraft(previous, key, empty, (draft) => ({
+      ...draft,
+      detachedAssociation: false,
+    })),
+  );
+  assert.deepEqual(f.drafts()[key]!.cognitiveObject, locator());
+});
+
 test("UNIT public latest writer pins the first real text and attachment edit without an ACK", () => {
   for (const value of [
     { ...empty, body: "first text", model: "my-model" },

@@ -58,6 +58,7 @@ pub struct HarnessManifest {
     pub version: String,
     pub title: String,
     pub entry: Option<String>,
+    pub publishes_entry_result: bool,
     pub tools: Vec<String>,
     pub skills: Vec<String>,
 }
@@ -196,6 +197,11 @@ impl HarnessPackage {
             .map_err(|error| HarnessPackageError::new(error.to_string()))?;
         let type_source = program_type_source(&program_source)?;
         validate_model_entry_declaration(header.owner, header.declared_tools.as_deref())?;
+        if manifest.publishes_entry_result && header.owner != EvaluationOwner::Runtime {
+            return Err(HarnessPackageError::new(
+                "entry-result reply requires a Runtime-owned eval entry",
+            ));
+        }
         validate_program_capabilities(&manifest, header.declared_tools.as_deref())?;
         validate_function_module_declaration(functions.len(), header.declared_tools.as_deref())?;
         let program_id = manifest.entry.clone().unwrap_or_else(|| "main".to_string());
@@ -237,6 +243,11 @@ impl HarnessPackage {
             .map_err(|error| HarnessPackageError::new(error.to_string()))?;
         let type_source = program_type_source(&program_source)?;
         validate_model_entry_declaration(header.owner, header.declared_tools.as_deref())?;
+        if manifest.publishes_entry_result && header.owner != EvaluationOwner::Runtime {
+            return Err(HarnessPackageError::new(
+                "entry-result reply requires a Runtime-owned eval entry",
+            ));
+        }
         validate_program_capabilities(&manifest, header.declared_tools.as_deref())?;
 
         let contract = read_one_artifact(&path.join("contract.yao"), "contract")?;
@@ -315,6 +326,9 @@ impl HarnessPackage {
             scalar_form("title", &self.manifest.title),
             scalar_form("entry", &self.entry.id),
         ];
+        if self.manifest.publishes_entry_result {
+            manifest.push(scalar_form("entry-result", "reply"));
+        }
         let mut capabilities = vec![SExpr::Atom("capabilities".to_string())];
         if !self.manifest.tools.is_empty() {
             let mut tools = vec![SExpr::Atom("tools".to_string())];
@@ -418,6 +432,10 @@ impl DomainHarness for LoadedDomainHarness {
 
     fn entry_program(&self) -> Option<String> {
         Some(self.package.entry.source.clone())
+    }
+
+    fn publishes_entry_result(&self) -> bool {
+        self.package.manifest.publishes_entry_result
     }
 
     fn function_sources(&self) -> Vec<String> {
@@ -1109,12 +1127,22 @@ fn parse_manifest(form: &SExpr) -> Result<HarnessManifest, HarnessPackageError> 
     let version = required_scalar(items, "version")?;
     let title = required_scalar(items, "title")?;
     let entry = optional_scalar(items, "entry")?;
+    let publishes_entry_result = match optional_scalar(items, "entry-result")?.as_deref() {
+        None => false,
+        Some("reply") => true,
+        Some(_) => {
+            return Err(HarnessPackageError::new(
+                "entry-result must be reply when declared",
+            ))
+        }
+    };
     let (tools, skills) = parse_capabilities(items)?;
     Ok(HarnessManifest {
         id,
         version,
         title,
         entry,
+        publishes_entry_result,
         tools,
         skills,
     })
@@ -1320,6 +1348,33 @@ mod tests {
         assert_eq!(package.entry.declared_tools, Some(vec!["read".to_string()]));
         assert!(package.mind.is_some());
         assert!(matches!(package.origin, HarnessPackageOrigin::File(_)));
+    }
+
+    #[test]
+    fn reply_entry_contract_is_explicit_hashed_and_runtime_owned() {
+        let base = "(manifest (id test-reply) (version \"1\") (title \"Test\")) (contract (identity \"test\")) (eval (requires (tools)) \"reply\")";
+        let old = HarnessPackage::from_source("test.hns", base).unwrap();
+        assert!(!old.manifest.publishes_entry_result);
+        let source = base.replace("(title \"Test\")", "(title \"Test\") (entry-result reply)");
+        let current = HarnessPackage::from_source("test.hns", &source).unwrap();
+        assert!(current.manifest.publishes_entry_result);
+        assert_ne!(current.artifact_hash, old.artifact_hash);
+        assert_eq!(
+            HarnessPackage::from_source("test.hns", &current.loadable_source())
+                .unwrap()
+                .artifact_hash,
+            current.artifact_hash
+        );
+        assert!(HarnessPackage::from_source(
+            "test.hns",
+            &source.replace("(entry-result reply)", "(entry-result guess)")
+        )
+        .is_err());
+        assert!(HarnessPackage::from_source(
+            "test.hns",
+            &source.replace("(eval (requires (tools))", "(infer (requires (tools))")
+        )
+        .is_err());
     }
 
     #[test]

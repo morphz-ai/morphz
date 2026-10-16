@@ -20,6 +20,8 @@ export type InputDraft = {
   textQuotes?: TextQuote[];
   reading?: ReadingInput;
   skipReading?: boolean;
+  /** Stay in this work surface, but do not attach it to ordinary chat. */
+  detachedAssociation?: boolean;
   scriptGeneration?: ScriptGeneration;
   continuation?: InputContinuation;
   continuationLabel?: string;

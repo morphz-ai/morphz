@@ -339,14 +339,28 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         }),
       );
       for (const event of scoped) {
+        if (
+          event.topic === "runtime/model_public_output" &&
+          scoped.some(
+            (final) =>
+              ["chat/reply", "chat/outbound_message"].includes(final.topic) &&
+              final.payload.attempt_id === event.payload.attempt_id,
+          )
+        )
+          continue;
         const rootId = event.payload.root_turn_id;
-        const root = typeof rootId === "string" ? byRoot.get(rootId) : null;
+        const root =
+          typeof rootId === "string"
+            ? (byRoot.get(rootId) ?? scoped.find((item) => item.id === rootId))
+            : null;
         if (typeof rootId !== "string") continue;
         const kind = ["chat/reply", "chat/outbound_message"].includes(
           event.topic,
         )
           ? "reply"
-          : event.topic === "chat/progress"
+          : ["chat/progress", "runtime/model_public_output"].includes(
+                event.topic,
+              )
             ? "progress"
             : ["chat/runtime_error", "session/io_state"].includes(event.topic)
               ? "error"
@@ -367,7 +381,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
           root_turn_id: rootId,
           attempt_id: attempt,
           display_kind: kind,
-          final_event: true,
+          final_event: event.topic !== "runtime/model_public_output",
           event,
           root_event: root ?? null,
           input_event: sourceInput(sessionId, rootId),
@@ -412,6 +426,34 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     }
     const familyPath =
       /^\/api\/sessions\/([^/]+)\/threads\/([^/]+)\/family$/.exec(path);
+    const sourcePath =
+      /^\/api\/sessions\/([^/]+)\/threads\/([^/]+)\/input-source$/.exec(path);
+    if (request.method === "GET" && sourcePath) {
+      const threadId = decodeURIComponent(sourcePath[2]!);
+      const inputId = threadId.startsWith("thread-") ? threadId.slice(7) : "";
+      const accepted = acceptedRoots.get(inputId);
+      if (!accepted || accepted.sessionId !== sessionId)
+        return send(404, { error: "source not found" });
+      return send(200, {
+        thread: {
+          id: threadId,
+          session_id: sessionId,
+          context_id: sessions.get(sessionId)?.context_id,
+          root_turn_id: accepted.event.id,
+          initiating_principal_id: "runtime-local-human",
+          agent_id: "morphz-agent",
+        },
+        source: {
+          kind: "input",
+          input_event: {
+            actor: "Session-Client",
+            type: "session_message",
+            ...accepted.event,
+          },
+          root_thread_id: threadId,
+        },
+      });
+    }
     if (request.method === "GET" && familyPath) {
       const threadId = decodeURIComponent(familyPath[2]!);
       const inputId = threadId.startsWith("thread-")
@@ -656,6 +698,67 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     if (path.startsWith("/api/approvals/") && request.method === "POST") {
       approvalDecisions.push(decodeURIComponent(path.split("/").at(-1)!));
       return send(200, { accepted: true });
+    }
+    if (path.endsWith("/execution-records") && request.method === "GET") {
+      const query = new URL(request.url!, "http://localhost").searchParams;
+      const threadId = query.get("thread_id");
+      const roots = JSON.parse(query.get("root_turn_ids") ?? "[]") as string[];
+      const threadIds = JSON.parse(query.get("thread_ids") ?? "[]") as string[];
+      const selected = [...sentSessions].filter(
+        ([inputId, sid]) =>
+          sid === sessionId &&
+          (!threadId || threadId === `thread-${inputId}`) &&
+          (!roots.length || roots.includes(`root-${inputId}`)) &&
+          (!threadIds.length || threadIds.includes(`thread-${inputId}`)),
+      );
+      return send(200, {
+        session_id: sessionId,
+        context_id: sessions.get(sessionId)?.context_id,
+        selected_thread_id: threadId,
+        source_root_id: threadId
+          ? selected.length
+            ? `root-${selected[0]![0]}`
+            : null
+          : null,
+        limit: Number(query.get("limit") ?? 100),
+        has_more_jobs: false,
+        threads_truncated: false,
+        threads: selected.map(([inputId, sid]) => ({
+          id: `thread-${inputId}`,
+          session_id: sid,
+          context_id: sessions.get(sid)?.context_id,
+          root_turn_id: `root-${inputId}`,
+          parent_thread_id: null,
+          generation: 1,
+          revision: 1,
+          lifecycle: "open",
+          control_state: "running",
+          phase: "work",
+          created_at: "2030-01-01T00:00:00.000Z",
+          updated_at: "2030-01-01T00:00:00.000Z",
+          intent: null,
+        })),
+        jobs:
+          query.get("metadata_only") === "true"
+            ? []
+            : selected.map(([inputId, sid]) => ({
+                id: `job-${inputId}`,
+                revision: 1,
+                session_id: sid,
+                context_id: sessions.get(sid)?.context_id,
+                tool_name: "test-tool",
+                target_id: "test-target",
+                thread_id: `thread-${inputId}`,
+                status: "succeeded",
+                created_at: "2030-01-01T00:00:00.000Z",
+                updated_at: "2030-01-01T00:00:00.000Z",
+                cancel_requested_at: null,
+                error: null,
+                exit_code: 0,
+                request: {},
+                result_event_id: `result-${inputId}`,
+              })),
+      });
     }
     if (path === "/api/execution-jobs" && request.method === "GET") {
       jobListReads++;
@@ -1754,6 +1857,46 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     );
     const sharedSessionId = sentSessions.get(sharedB.commandId)!;
     const liveEvents = events.get(sharedSessionId)!;
+    const inferRoot = "opaque-evaluation-reference";
+    timelineSources.set(inferRoot, `root-${sharedB.commandId}`);
+    for (const [id, topic, payload] of [
+      [
+        inferRoot,
+        "chat/infer_request",
+        { parent_thread_id: "real-parent", text: "internal evaluation" },
+      ],
+      [
+        "old-internal-snapshot",
+        "runtime/model_public_output",
+        {
+          root_turn_id: inferRoot,
+          attempt_id: "opaque-old-attempt",
+          first_visible_at: new Date().toISOString(),
+          text: '{"reply":"INTERNAL_LEAK"}',
+          complete: true,
+        },
+      ],
+      [
+        "old-internal-progress",
+        "chat/progress",
+        { root_turn_id: inferRoot, text: "INTERNAL_DRAFT" },
+      ],
+    ] as const)
+      liveEvents.push({
+        id,
+        topic,
+        payload: { session_id: sharedSessionId, ...payload },
+        sequence: liveEvents.length + 1,
+        timestamp: new Date().toISOString(),
+      });
+    const filteredHistory = await session().platformConversationHistory({
+      projectId: "new-platform-project",
+      conversationId: "new-platform-project",
+    });
+    assert.ok(
+      !JSON.stringify(filteredHistory.runtime.messages).includes("INTERNAL_"),
+      "legacy internal snapshots are filtered by exact root facts, despite valid Human source provenance",
+    );
     for (const [kind, text] of [
       ["started", ""],
       ["text_delta", "实时增量"],
@@ -1785,6 +1928,12 @@ test("Platform-only project sends a durable Runtime input without a legacy works
             message.projectId === "other-platform-project",
         ),
       "live model text uses the persisted input root, not the visible project",
+    );
+    assert.ok(
+      streamed.every(
+        (messages) => !JSON.stringify(messages).includes("INTERNAL_"),
+      ),
+      "no live or replayed callback may publish internal infer values",
     );
     await assert.rejects(
       session().platformConversationHistory({

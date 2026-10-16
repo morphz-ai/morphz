@@ -3588,6 +3588,12 @@ async fn persist_model_public_output(
     accumulator: &Arc<Mutex<ModelReasoningSummaryAccumulator>>,
     force_incomplete: bool,
 ) -> Result<(), DynError> {
+    if route
+        .iter()
+        .any(|(key, value)| key == "model_output_visibility" && value.as_str() == Some("internal"))
+    {
+        return Ok(());
+    }
     const MAX_BYTES: usize = 256 * 1024;
     let (text, first_visible_at, complete, truncated) = {
         let mut accumulator = accumulator.lock().await;
@@ -13633,7 +13639,7 @@ impl Orchestrator {
         // the child model evaluation (the entry call is idempotently already
         // present) and leave the parent Plan without an infer result Event.
         if should_dispatch_runtime_harness_entry(&thread.executor_kind, &effective_phase) {
-            if let (Some((binding, _, _)), Some((source, program))) =
+            if let (Some((binding, harness, _)), Some((source, program))) =
                 (harness_activation.as_ref(), harness_entry_program.as_ref())
             {
                 if program.owner() == crate::sexpr_eval::EvaluationOwner::Runtime
@@ -13644,6 +13650,7 @@ impl Orchestrator {
                             binding,
                             source,
                             program,
+                            harness.publishes_entry_result(),
                             harness_function_sources.clone(),
                         )
                         .await?
@@ -21599,6 +21606,14 @@ impl Orchestrator {
         };
         payload.extend([
             ("thread_id".to_string(), json!(route.thread_id)),
+            (
+                "model_output_visibility".to_string(),
+                json!(if route.internal_child_handoff {
+                    "internal"
+                } else {
+                    "public"
+                }),
+            ),
             ("activation_id".to_string(), json!(route.activation_id)),
             ("root_turn_id".to_string(), json!(route.root_turn_id)),
             (
@@ -21880,8 +21895,9 @@ impl Orchestrator {
     ///
     /// The synthetic call ID is stable for the exact Evaluation and
     /// package hash. A tool result creates the continuation Activation; that
-    /// continuation finds the existing terminal Plan and proceeds to the model
-    /// instead of executing the entry a second time.
+    /// continuation finds the terminal Plan without executing the entry again.
+    /// An explicit reply entry publishes its final String for ordinary inputs;
+    /// data entries and Objective control continue through the model.
     async fn dispatch_runtime_harness_entry(
         &self,
         session_id: &str,
@@ -21889,6 +21905,7 @@ impl Orchestrator {
         binding: &HarnessBinding,
         source: &str,
         program: &crate::sexpr_eval::Program,
+        publishes_entry_result: bool,
         harness_functions: Option<Arc<Vec<String>>>,
     ) -> Result<bool, DynError> {
         if program.owner() != crate::sexpr_eval::EvaluationOwner::Runtime {
@@ -21945,6 +21962,39 @@ impl Orchestrator {
             .await?;
         if let Some(plan) = existing.first() {
             if plan.status.is_terminal() {
+                // The entry's final String is already the authored reply. It
+                // is not a tool draft that needs another model paraphrase.
+                // Publish through the same generation/cancellation-fenced
+                // outcome commit; never expose intermediate infer values.
+                if publishes_entry_result
+                    && active.is_none()
+                    && plan.status == crate::memory::PlanExecutionStatus::Succeeded
+                    && self
+                        .context_engine
+                        .find_event(&activation.context_id, &activation.root_turn_id)
+                        .await?
+                        .as_ref()
+                        .is_some_and(crate::event::is_input_event)
+                {
+                    if let Some(text) = plan
+                        .result_json
+                        .as_ref()
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|text| !text.trim().is_empty())
+                    {
+                        self.publish_reply_with_attributes(
+                            session_id,
+                            &activation.id,
+                            None,
+                            text.to_string(),
+                            None,
+                            vec![("harness_plan_id".to_string(), json!(plan.id))],
+                        )
+                        .await?;
+                        return Ok(true);
+                    }
+                    return Err("Harness entry-result reply must return a non-empty String".into());
+                }
                 return Ok(false);
             }
             tracing::debug!(
@@ -26672,6 +26722,23 @@ mod tests {
             ("root_turn_id".to_string(), json!("root-1")),
             ("thread_id".to_string(), json!("thread-1")),
         ];
+        let internal_route = vec![("model_output_visibility".to_string(), json!("internal"))];
+        persist_model_public_output(
+            &bus,
+            "context-1",
+            "session-1",
+            "internal-attempt",
+            &internal_route,
+            &accumulator,
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "typed infer prose must not be persisted as public output"
+        );
+        assert!(!accumulator.lock().await.public_text_persist_started);
         for _ in 0..2 {
             persist_model_public_output(
                 &bus,

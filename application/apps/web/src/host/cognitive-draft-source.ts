@@ -5,6 +5,7 @@ import {
 import { parseWireJson } from "../../../../packages/cognitive-app-sdk/src/protocol.js";
 import { parseDomainAuthority } from "../../../../packages/cognitive-app-sdk/src/domain-wire.js";
 import type { InputDraft } from "./exchange-drafts.js";
+import { inputSurfaceDetached } from "./input-surface-association.js";
 import {
   guardCognitiveAppApplicationCommand,
   parseCognitiveAppApplicationTarget,
@@ -30,6 +31,7 @@ export function pinCognitiveDraftOriginal(
     // Never apply a whole-carrier wire budget to old drafts/quotes/attachments.
     guardCognitiveAppInputCommand({ operation: draft });
     guardCognitiveAppApplicationCommand({ operation: draft });
+    if (inputSurfaceDetached(draft)) return { ok: true, draft };
     if (
       !surface ||
       draft.continuation ||
