@@ -579,7 +579,7 @@ Every response must explicitly choose one primary mode from `protocol.response-c
 - no-reply: call no_reply exclusively and choose a mode. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
 - act: call physical tools only when new external results are truly required. You may include one independent context_tx that does not depend on those new results. Any accompanying text is visible progress, and the Runtime will call you again after tools finish.
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily rejects another context_tx even though the stable Function Calling schema remains visible for Prompt Cache continuity. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
-- schedule: call schedule_tx exactly once and exclusively when choosing serial, parallel, dependent, or timed execution. enqueue adds intent to an existing Thread; spawn creates a parallel Thread; not_before/delay_seconds set time and after sets dependencies. One call may batch multiple inspect operations and nothing else. pause/resume/reschedule/cancel are expected_revision CAS controls and must be submitted one at a time; on conflict, inspect again and decide from current facts rather than retrying blindly. To cancel the work itself, use thread_control(action=cancel) with the latest Thread revision: it closes the Thread and settles its Group. schedule_tx cancel stops only a wake source and must never be reported as Thread cancellation. schedule_tx persists scheduling only; it neither performs physical work nor ends the Evaluation. Explain the arrangement to active-session after the receipt.
+- schedule: call schedule_tx exactly once and exclusively when choosing serial, parallel, dependent, or timed execution. enqueue adds intent to an existing Thread; spawn creates a parallel Thread; not_before/delay_seconds set time and after sets dependencies. An attached child keeps its parent request open until the child terminates; do not use attached for a delayed or recurring task when the user expects scheduling to finish the current request. Use a durable Objective at spawn, or atomically promote the same attached child before the final reply; do not create a duplicate Schedule. One call may batch multiple inspect operations and nothing else. pause/resume/reschedule/cancel are expected_revision CAS controls and must be submitted one at a time; on conflict, inspect again and decide from current facts rather than retrying blindly. To cancel the work itself, use thread_control(action=cancel) with the latest Thread revision: it closes the Thread and settles its Group. schedule_tx cancel stops only a wake source and must never be reported as Thread cancellation. schedule_tx persists scheduling only; it neither performs physical work nor ends the Evaluation. Explain the arrangement to active-session after the receipt.
 
 Each model request has exactly one kernel.active-session, and ordinary text routes only there. To write a visible Assistant message to another Session of the same Agent without evaluating it, use send_message. To deliver an internal coordination message and actively evaluate an existing Session, use session_signal; it creates a distinct target DialogueTurn and neither ends nor changes the active-session of the current Evaluation. Neither tool may target the current Session. context_tx never substitutes for Session output. An empty response is not terminal and the Runtime returns a bounded protocol retry.
 
@@ -2672,6 +2672,84 @@ async fn has_pending_owned_thread_group(
                 && group.generation == current.generation
                 && group.status == crate::memory::ThreadGroupStatus::Open
         }))
+}
+
+/// A parent waiting only for attached children with future queued schedules
+/// needs a finite recovery wake, but not a fresh model call every 60 seconds.
+/// The schedule dispatcher will signal the child at its due time; group
+/// settlement will signal the parent. Keep the short fallback if any pending
+/// member has no future schedule, since it may already be doing work.
+async fn owned_group_next_schedule_wait_secs(
+    store: &dyn SessionStore,
+    activation: &ThreadActivationRecord,
+) -> Result<Option<u64>, DynError> {
+    let Some(current) = store.get_thread_by_root(&activation.root_turn_id).await? else {
+        return Ok(None);
+    };
+    if current.lifecycle != ThreadLifecycle::Open
+        || current.kind != ThreadKind::Execution
+        || current.agent_id != activation.agent_id
+        || current.context_id != activation.context_id
+        || current.session_id != activation.session_id
+        || current.initiating_principal_id != activation.initiating_principal_id
+        || current.generation != activation.generation
+    {
+        return Ok(None);
+    }
+    let groups = store
+        .list_thread_groups(ThreadGroupFilter {
+            context_id: Some(current.context_id.clone()),
+            session_id: Some(current.session_id.clone()),
+            supervisor_kind: Some(ThreadSupervisorKind::Thread),
+            supervisor_id: Some(current.id.clone()),
+            generation: Some(current.generation),
+            status: Some(crate::memory::ThreadGroupStatus::Open),
+            ..Default::default()
+        })
+        .await?;
+    if groups.is_empty() {
+        return Ok(None);
+    }
+    let now = Utc::now();
+    let mut earliest_due: Option<DateTime<Utc>> = None;
+    for group in groups {
+        if group.context_id != current.context_id
+            || group.session_id != current.session_id
+            || group.supervisor_kind != ThreadSupervisorKind::Thread
+            || group.supervisor_id != current.id
+            || group.generation != current.generation
+            || group.status != crate::memory::ThreadGroupStatus::Open
+        {
+            return Ok(None);
+        }
+        let members = store.list_thread_group_members(&group.id).await?;
+        let mut pending = false;
+        for member in members {
+            if member.status != crate::memory::ThreadGroupMemberStatus::Pending {
+                continue;
+            }
+            pending = true;
+            let due = store
+                .list_schedules(Some(&member.thread_id), Some(ScheduleStatus::Queued))
+                .await?
+                .into_iter()
+                .filter_map(|schedule| schedule.not_before)
+                .filter(|due| *due > now)
+                .min();
+            let Some(due) = due else {
+                return Ok(None);
+            };
+            earliest_due = Some(earliest_due.map_or(due, |earliest| earliest.min(due)));
+        }
+        if !pending {
+            return Ok(None);
+        }
+    }
+    let Some(due) = earliest_due else {
+        return Ok(None);
+    };
+    let until_due = due.signed_duration_since(now).num_seconds().max(0) as u64;
+    Ok(Some(until_due.saturating_add(60).min(24 * 60 * 60)))
 }
 
 fn new_response_protocol_error_id() -> Result<String, DynError> {
@@ -15166,9 +15244,21 @@ impl Orchestrator {
                 has_pending_owned_thread_group(session_store.as_ref(), activation).await?;
             let pending_routed_inputs = self.pending_routed_inputs(activation).await?;
             let explicit_wait = decision.wait_spec().is_some();
-            let (wait_secs, wait_explicitly_requested) = decision
+            let (mut wait_secs, wait_explicitly_requested) = decision
                 .wait_spec()
                 .unwrap_or((DEFAULT_NO_REPLY_WAIT_SECS, false));
+            if !wait_explicitly_requested
+                && has_pending_thread_group
+                && active_root_tasks == 0
+                && pending_schedules == 0
+                && pending_routed_inputs == 0
+            {
+                if let Some(scheduled_wait) =
+                    owned_group_next_schedule_wait_secs(session_store.as_ref(), activation).await?
+                {
+                    wait_secs = wait_secs.max(scheduled_wait);
+                }
+            }
             if !completion_prepared
                 && (explicit_wait
                     || (thread_kind != "dialogue_turn"
@@ -28371,6 +28461,33 @@ mod tests {
                 .await
                 .unwrap()
         );
+        assert_eq!(
+            super::owned_group_next_schedule_wait_secs(store.as_ref(), &activation)
+                .await
+                .unwrap(),
+            None,
+            "an unscheduled attached child keeps the short recovery fallback"
+        );
+        store
+            .ensure_schedule(crate::memory::NewSchedule {
+                reasoning_effort: None,
+                id: "group-future-schedule".into(),
+                thread_id: "group-member".into(),
+                source_turn_id: thread.root_turn_id.clone(),
+                intent: "run the attached child later".into(),
+                model_alias: None,
+                not_before: Some(Utc::now() + chrono::Duration::hours(5)),
+                interval_seconds: None,
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let scheduled_wait =
+            super::owned_group_next_schedule_wait_secs(store.as_ref(), &activation)
+                .await
+                .unwrap()
+                .expect("future child schedule determines a bounded fallback");
+        assert!((18_000..=18_060).contains(&scheduled_wait));
         for field in [
             "agent",
             "context",
@@ -28424,6 +28541,12 @@ mod tests {
             !super::has_pending_owned_thread_group(store.as_ref(), &activation)
                 .await
                 .unwrap()
+        );
+        assert_eq!(
+            super::owned_group_next_schedule_wait_secs(store.as_ref(), &activation)
+                .await
+                .unwrap(),
+            None
         );
         let current = store.get_thread(&thread.id).await.unwrap().unwrap();
         let supersede = crate::memory::thread_supersede_event(
