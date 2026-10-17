@@ -198,6 +198,59 @@ test("活动由真实线程投影，保留终态事实、原intent、目标和�
   }
 });
 
+test("内部求值的活动标题使用已授权原输入，不泄漏求值提示词或隐藏执行事实", async () => {
+  const { f, internal, delivery, thread, bounds } = await fixture();
+  try {
+    const prompt =
+      "This is an internal model-owned Yao Evaluation, not a user message.";
+    const inference = thread("inference", "completed");
+    Object.assign(inference.thread, { executor_kind: "plan_infer" });
+    inference.intent = prompt;
+    inference.thread.root_turn_id = "synthetic-inference-root";
+    const authored = thread("authored", "completed");
+    Object.assign(authored.thread, { executor_kind: "self" });
+    authored.intent = prompt;
+    internal.request = async () => ({
+      detail_bounds: bounds,
+      threads: [inference, authored],
+      objectives: [],
+    });
+    await internal.refreshActivity();
+    const activity = f.runtime.platformNavigationSnapshot(localAccess, [
+      f.projectId,
+    ]).runtime.activity!;
+    const projected = activity.threads.find((t) => t.id === "inference")!;
+    assert.equal(projected.title, "处理：原始输入，不是短标题");
+    assert.equal(projected.inputId, delivery.inputId);
+    assert.equal(projected.rootId, "synthetic-inference-root");
+    assert.equal(projected.lifecycle, "completed");
+    assert.equal(projected.outcome?.summary, "真实执行结果");
+    assert.equal(activity.threads.length, 2);
+    // The executor fact, not a substring match, selects presentation.
+    assert.equal(
+      activity.threads.find((t) => t.id === "authored")!.title,
+      prompt,
+    );
+    assert.equal(inference.intent, prompt);
+    delivery.platformSource.body = " \n ";
+    await internal.refreshActivity();
+    assert.equal(
+      internal.state.activity.threads.find((t: any) => t.id === "inference")
+        .title,
+      "处理请求",
+    );
+    delivery.platformSource.body = "项目".repeat(70);
+    await internal.refreshActivity();
+    assert.equal(
+      internal.state.activity.threads.find((t: any) => t.id === "inference")
+        .title,
+      `处理：${"项目".repeat(50)}…`,
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("idle Objective primary retains supplement via exact original input and exposes current pending Human reason", async () => {
   const { f, internal, delivery, thread, bounds, objective } = await fixture();
   try {

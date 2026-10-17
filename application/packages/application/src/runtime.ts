@@ -5119,6 +5119,7 @@ export class RuntimeBridge {
                 context_id: z.string(),
                 root_turn_id: z.string(),
                 lifecycle: z.string(),
+                executor_kind: z.string().optional(),
                 generation: z.unknown().optional(),
                 control_state: z.string().optional(),
                 created_at: z.string().optional(),
@@ -5375,6 +5376,16 @@ export class RuntimeBridge {
             t.id,
           )?.objective;
           if (primary) primaryObjectives.set(t.id, primary);
+          // plan_infer.intent is the Runtime's evaluator prompt, not a user
+          // task title. Keep the real execution/status visible, but name it
+          // from its already-authorized initiating input, never prompt text.
+          const inputTitle = (source.body ?? "").trim().replace(/\s+/gu, " ");
+          const threadTitle =
+            t.executor_kind === "plan_infer"
+              ? inputTitle
+                ? `处理：${[...inputTitle].slice(0, 100).join("")}${[...inputTitle].length > 100 ? "…" : ""}`
+                : "处理请求"
+              : value.intent?.trim() || source.body || "后台执行";
           activity.threads.push({
             id: t.id,
             kind: t.kind,
@@ -5384,7 +5395,7 @@ export class RuntimeBridge {
             rootId: t.root_turn_id,
             sessionId: t.session_id,
             contextId: t.context_id,
-            title: value.intent?.trim() || source.body || "后台执行",
+            title: threadTitle,
             ...(activityAnnotationFields(value.response_annotations, t) ?? {}),
             phase: value.phase,
             lifecycle: t.lifecycle,
