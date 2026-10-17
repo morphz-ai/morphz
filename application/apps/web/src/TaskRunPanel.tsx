@@ -176,7 +176,7 @@ export function TaskRunPanel({
           scope={{
             projectId: thread?.projectId ?? artifact.projectId,
             artifactId: artifact.id,
-            conversationId: thread?.conversationId,
+            conversationId: thread?.conversationId ?? undefined,
             threadId,
             taskRun: true,
           }}

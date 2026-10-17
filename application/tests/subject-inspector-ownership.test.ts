@@ -235,40 +235,42 @@ function fixture(mode: Mode, scenario: Scenario = {}) {
   const close =
     old?.closeInspector ??
     createSubjectInspectorCloseCommand({
-      inspection,
+      inspection: inspection as Options["inspection"],
       collaboration,
       prefer,
       onClosedFocus: closedFocus,
     });
-  const actions: Commands = old
-    ? {
-        close,
-        openExecutions: old.openExecutions,
-        openCollaboration: old.openCollaboration,
-        show: old.showInspector,
-        selectSubject: old.selectSubjectView,
-        openFromLogo: old.openSubjectFromLogo,
-        inspectExecution: old.inspectExecution,
-        back: old.onBack,
-        selectScope: old.onInspect,
-        toggleCollaboration: old.toggleCollaboration,
-        selectExecution: setExecutions,
-      }
-    : createSubjectInspectorCommands({
-        inspection,
-        collaboration,
-        rememberedInspector: memory.get("surface-A"),
-        workspace,
-        historyClient: client as Options["historyClient"],
-        preferences,
-        conversationProjectId: facts.conversationProjectId,
-        conversationId: facts.conversationId,
-        compact: facts.compact,
-        prefer,
-        keepExchangeOpen,
-        onNotice: fixedBindings.setNotice,
-        close,
-      });
+  const actions = (
+    old
+      ? {
+          close,
+          openExecutions: old.openExecutions,
+          openCollaboration: old.openCollaboration,
+          show: old.showInspector,
+          selectSubject: old.selectSubjectView,
+          openFromLogo: old.openSubjectFromLogo,
+          inspectExecution: old.inspectExecution,
+          back: old.onBack,
+          selectScope: old.onInspect,
+          toggleCollaboration: old.toggleCollaboration,
+          selectExecution: setExecutions,
+        }
+      : createSubjectInspectorCommands({
+          inspection: inspection as Options["inspection"],
+          collaboration,
+          rememberedInspector: memory.get("surface-A"),
+          workspace,
+          historyClient: client as Options["historyClient"],
+          preferences,
+          conversationProjectId: facts.conversationProjectId,
+          conversationId: facts.conversationId,
+          compact: facts.compact,
+          prefer,
+          keepExchangeOpen,
+          onNotice: fixedBindings.setNotice,
+          close,
+        })
+  ) as Commands;
   return {
     events,
     actions,

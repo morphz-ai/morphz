@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { ArrowLeft, ChevronRight } from "lucide-react";
-import type { ExecutionScope } from "../../../packages/core/src/execution.js";
+import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 import { ExecutionDialog } from "./ExecutionDialog.js";
 import { StopResponse, ToolMessage } from "./Conversation.js";
@@ -44,11 +44,11 @@ export function ExecutionSidebar({
   onRefresh,
 }: {
   client: WorkspaceClient;
-  scope: ExecutionScope;
+  scope: ExecutionReadScope;
   layout: InspectorLayout;
   onResize: (width: number) => void;
   onClose: () => void;
-  onSelect: (scope: ExecutionScope) => void;
+  onSelect: (scope: ExecutionReadScope) => void;
   onSupplement?: (target: InputContinuation) => void;
   onOpen: (id: string, revision?: number) => void;
   onOpenScript?: (output: ScriptOutput) => void;
@@ -84,14 +84,16 @@ export function ExecutionSidebar({
     : supplementThreads.length === 1
       ? supplementThreads[0]?.continuation
       : undefined;
-  const streamConversation = scope.conversationId ?? scope.projectId;
+  const readOnly = "runtime" in scope;
+  const streamConversation = scope.conversationId ?? scope.projectId ?? "";
   const streamProject =
     state.conversations.find((c) => c.id === streamConversation)?.projectId ??
-    scope.projectId;
+    scope.projectId ??
+    "";
   const stream = useConversationStream(
     streamProject,
     streamConversation,
-    detail && runtime.configured,
+    detail && runtime.configured && !readOnly,
   );
   const messages = stream.messages.filter((m) =>
     scope.threadId
@@ -166,6 +168,7 @@ export function ExecutionSidebar({
   }
   async function stopThread() {
     if (
+      readOnly ||
       !currentThread ||
       currentThread.lifecycle !== "open" ||
       !activityAvailable ||
@@ -340,7 +343,7 @@ export function ExecutionSidebar({
                 </span>
                 <div className="execution-origin-actions">
                   {supplementAction}
-                  {currentThread?.lifecycle === "open" && (
+                  {!readOnly && currentThread?.lifecycle === "open" && (
                     <button
                       className="secondary-action execution-stop-thread"
                       aria-busy={stopping}
@@ -510,21 +513,23 @@ export function ExecutionSidebar({
               ))}
             </section>
           )}
-          <details
-            className="execution-other"
-            onToggle={(e) => setShowOther(e.currentTarget.open)}
-          >
-            <summary>工具执行记录</summary>
-            {showOther && (
-              <ExecutionDialog
-                embedded
-                client={client}
-                scope={{ ...scope, inputId: undefined, threadId: undefined }}
-                onClose={onClose}
-                onOpen={onOpen}
-              />
-            )}
-          </details>
+          {!readOnly && (
+            <details
+              className="execution-other"
+              onToggle={(e) => setShowOther(e.currentTarget.open)}
+            >
+              <summary>工具执行记录</summary>
+              {showOther && (
+                <ExecutionDialog
+                  embedded
+                  client={client}
+                  scope={{ ...scope, inputId: undefined, threadId: undefined }}
+                  onClose={onClose}
+                  onOpen={onOpen}
+                />
+              )}
+            </details>
+          )}
         </>
       )}
     </div>
@@ -537,9 +542,11 @@ export function ExecutionSidebar({
       title={scope.threadId ? "执行分支" : scope.inputId ? "执行详情" : "活动"}
       context={
         detail
-          ? projectDisplayLabel(
-              state.projects.find((p) => p.id === scope.projectId),
-            )
+          ? scope.projectId
+            ? projectDisplayLabel(
+                state.projects.find((p) => p.id === scope.projectId),
+              )
+            : undefined
           : undefined
       }
       resizeLabel="调整活动面板宽度"
@@ -554,11 +561,13 @@ export function ExecutionSidebar({
             className="icon-button"
             aria-label="返回活动概览"
             onClick={() =>
-              onSelect({
-                projectId: scope.projectId,
-                conversationId: scope.conversationId,
-                artifactId: null,
-              })
+              readOnly
+                ? onClose()
+                : onSelect({
+                    projectId: scope.projectId,
+                    conversationId: scope.conversationId,
+                    artifactId: null,
+                  })
             }
           >
             <ArrowLeft />

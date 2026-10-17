@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Target, ChevronDown, ChevronRight } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
-import type { ExecutionScope } from "../../../packages/core/src/execution.js";
+import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import {
   objectiveDetailStatus,
   objectiveIsTerminal,
@@ -20,8 +20,8 @@ export function SubjectObjectives({
   onSelect,
 }: {
   client: WorkspaceClient;
-  scope?: ExecutionScope;
-  onSelect(scope: ExecutionScope): void;
+  scope?: ExecutionReadScope;
+  onSelect(scope: ExecutionReadScope): void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const runtime = client.boot!.runtime,

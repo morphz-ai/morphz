@@ -6,6 +6,7 @@ import {
   jobSchema,
   executionControlSchema,
   type ExecutionScope,
+  type ExecutionReadScope,
   type ExecutionSnapshot,
 } from "../../../packages/core/src/execution.js";
 import { jobsWithRuntimeAnnotations } from "./response-annotations.js";
@@ -43,7 +44,7 @@ export const approvalFingerprint = (value: unknown) =>
 export class ExecutionControls {
   constructor(
     private request: RuntimeRequest,
-    private binding: (scope: ExecutionScope) => Binding,
+    private binding: (scope: ExecutionReadScope) => Binding,
   ) {}
   private async approvals(binding: NonNullable<Binding>) {
     const data = z
@@ -149,14 +150,21 @@ export class ExecutionControls {
       )
     );
   }
-  async snapshot(scope: ExecutionScope): Promise<ExecutionSnapshot> {
+  async snapshot(
+    scope: ExecutionReadScope,
+    includeApprovals = true,
+  ): Promise<ExecutionSnapshot> {
     const binding = this.binding(scope);
     if (!binding) return { jobs: [], approvals: [], limit: 100 };
     const requestedIds = binding.threadIds
       ? [...new Set(await binding.threadIds())]
       : undefined;
     if (requestedIds?.length === 0)
-      return { jobs: [], approvals: await this.approvals(binding), limit: 100 };
+      return {
+        jobs: [],
+        approvals: includeApprovals ? await this.approvals(binding) : [],
+        limit: 100,
+      };
     const [pages, approvals] = await Promise.all([
       binding.records
         ? Promise.resolve([binding.records])
@@ -180,7 +188,7 @@ export class ExecutionControls {
               }),
             ),
           ),
-      this.approvals(binding),
+      includeApprovals ? this.approvals(binding) : Promise.resolve([]),
     ]);
     const jobs = pages
       .flatMap((page) => page.jobs)
@@ -236,7 +244,7 @@ export class ExecutionControls {
         : {}),
     };
   }
-  async result(scope: ExecutionScope, jobId: string) {
+  async result(scope: ExecutionReadScope, jobId: string) {
     const binding = this.binding(scope);
     if (!binding) throw new DomainError("not_found", "工作对话不存在。");
     const job = await this.job(binding, jobId);

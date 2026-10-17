@@ -372,7 +372,18 @@ test(
               const created = parseCognitiveAppCommandResult(value.result);
               assert.equal(created.command.state, "committed");
               inferCommandId = created.commandId;
-              return { content: JSON.stringify(inferMarker) };
+              // infer inherits the same enabled annotation contract. Supply
+              // its typed String through the actually offered reply carrier,
+              // without an extra model/repair round or a special tool list.
+              const reply = profileFixtureReplyCarrier(request);
+              assert.ok(
+                reply,
+                "Enabled infer must offer its normal reply carrier",
+              );
+              return choose(reply.name, {
+                ...(reply.arguments as object),
+                content: JSON.stringify(inferMarker),
+              });
             } else if (thread.root_turn_id.startsWith("client-schedule-")) {
               scheduledThreadId = thread.id;
               assert.ok(text.includes(scheduleMarker));

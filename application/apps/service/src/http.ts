@@ -69,6 +69,23 @@ function json(res: ServerResponse, status: number, value: unknown) {
   res.end(JSON.stringify(value));
 }
 function executionScope(url: URL) {
+  if (url.searchParams.has("runtime")) {
+    const unexpected = [...url.searchParams.keys()].some(
+      (key) => !["runtime", "threadId", "artifactId", "jobId"].includes(key),
+    );
+    if (unexpected) throw new DomainError("invalid", "执行读取范围无效。");
+    let runtime: unknown;
+    try {
+      runtime = JSON.parse(url.searchParams.get("runtime")!);
+    } catch {
+      throw new DomainError("invalid", "执行读取范围无效。");
+    }
+    return {
+      runtime,
+      threadId: url.searchParams.get("threadId"),
+      artifactId: url.searchParams.get("artifactId") || null,
+    };
+  }
   return {
     projectId: url.searchParams.get("projectId"),
     artifactId: url.searchParams.get("artifactId") || null,

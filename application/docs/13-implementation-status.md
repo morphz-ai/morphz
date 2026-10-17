@@ -1,5 +1,45 @@
 # 桌面能力实施记录
 
+## 2026-10-17 执行事实、读取权限与来源关联分离
+
+执行记录不再以 `source` 或发起输入是否解析成功作为存在条件。Host 保留
+Runtime 的真实 Thread、状态、时间和注解；无确切关联时项目／会话／输入
+保持 null，不猜测、不放入当前项目。全局活动中，原有明确项目授权继续生效；
+无关联记录须在已登记的同一 Session／Context 中核验实际发起 Principal。
+来源暂时丢失不能清除已经核验的项目权限边界，撤权后列表和详情均受限。
+
+新增仅用于执行查看的严格 Runtime 引用，按真实 Thread 有界读取本人执行
+及其真实后代的命令与结果；读取前后复核身份、Session 和已知项目权限。
+列表翻页或缓存淘汰不撤销实际读取权。该引用不能停止、补充、审批或创建
+终端，也不授予项目内容访问；原项目执行控制契约不变。
+
+来源统一沿用 Runtime 的 owner-side resolver：普通／定向／合并输入、
+子线程／Thread Group、Yao infer、Objective、一次性／采纳的 Schedule
+继续按各自持久证据核验。补齐周期 occurrence 的原子 due Event＋Signal、
+真实 Schedule 及拥有者来源链，首个 Activation 前、结束后和重开后相同。
+Scheduler、精确来源读取与有界执行详情共用此链，不扫描完整历史、不猜 ID
+前缀、不改执行树。系统执行可保留 Schedule 来源而无用户输入；Human 直接
+创建的终端仍走真实终端资源归属，不伪造 Agent Thread。
+
+正式应用 Node 137/137、真实隔离 Runtime 联合 8/8、Rust 聚焦 7/7
+（SQLite 3、实际独立 PostgreSQL 2、真实一次性／周期调度 2）、
+Playwright 9/9 通过，均无跳过。类型检查、生产构建和差异检查通过。
+覆盖 source-null 开放／完成／失败执行、命令及回执、冷启动、分页轮转、
+跨身份／Session／Context 拒绝、撤权与异步读取中的权限变化。固定 Provider
+工序用于执行／授权契约验证，不冒充线上模型质量、缓存率或全仓库验收。
+
+原 App 升级先确认零在途执行，在线备份七个 SQLite、草稿与配置；备份
+保留于本机 Cache 的 `Morphz-execution-provenance-SDoYed`。原 Runtime
+正常升级后，同一 App／资料目录实际显示 13—18 点六轮历史执行；13 点
+详情可打开原 Python／curl 命令及其已保存返回结果，没有重发消息或任务。
+后续 Host 权限检查更新仅正常重开 Desktop，Runtime PID 27257 不变。
+原 24 个 Session、598 个 Thread、3269 个 Activation、3448 个 Job、
+5 个 Objective、44 个 Schedule 和 3161 条模型调用记录保持不变；所有
+Thread 身份／关系／状态、完整 Schedule、业务表摘要和配置摘要均一致。
+仅增加三条正常启动 Event；没有重放、重排、补模型或修改业务内容。
+
+设计边界详见 [执行可见性与来源](./46-execution-read-and-provenance.md)。
+
 ## 2026-10-17 所有 infer 统一注解与开启／关闭设置
 
 响应注解只保留 `off`／`on`，移除版本枚举、旧名解析和专用兼容迁移；没有自动模式。

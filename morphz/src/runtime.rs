@@ -8285,6 +8285,7 @@ impl MorphzRuntime {
             }
         }
         let mut goals = HashMap::<String, Option<(ObjectiveRecord, SchedulerSource)>>::new();
+        let mut schedule_triggers = HashMap::<String, Option<ThreadRecord>>::new();
         let mut result = HashMap::new();
         for original in threads {
             let mut current = original.clone();
@@ -8373,6 +8374,19 @@ impl MorphzRuntime {
                         break;
                     };
                     current = parent.clone();
+                    continue;
+                }
+                // A periodic occurrence is an independent execution, not a
+                // child owned by its template. Follow its committed admission
+                // for provenance without changing the execution/control tree.
+                // Indexed admission/Signal reads also work before the first
+                // Activation; never scan history or parse synthetic prefixes.
+                if !schedule_triggers.contains_key(&current.id) {
+                    let owner = self.scheduled_thread_origin(&current).await?;
+                    schedule_triggers.insert(current.id.clone(), owner);
+                }
+                if let Some(owner) = schedule_triggers.get(&current.id).and_then(Option::as_ref) {
+                    current = owner.clone();
                     continue;
                 }
                 if current.supervision.supervisor_kind
@@ -8542,6 +8556,105 @@ impl MorphzRuntime {
             }
         }
         Ok(result)
+    }
+
+    /// Resolve an actual periodic admission using the atomic Schedule/Event/
+    /// Thread commit, not the selected history page. Direct one-shot/adopted
+    /// schedules continue through the same stored Schedule source below.
+    async fn scheduled_thread_origin(
+        &self,
+        thread: &ThreadRecord,
+    ) -> Result<Option<ThreadRecord>, RuntimeError> {
+        let mut events = self
+            .query_events(QueryFilter {
+                context_id: Some(thread.context_id.clone()),
+                session_id: Some(thread.session_id.clone()),
+                root_turn_id: Some(thread.root_turn_id.clone()),
+                topic: Some("chat/schedule_due".into()),
+                actors: vec!["Runtime-Scheduler".into()],
+                types: vec![crate::event::TYPE_TOOL_OUTPUT.into()],
+                top_k: Some(2),
+                ..Default::default()
+            })
+            .await?;
+        if events.len() != 1 {
+            return Ok(None);
+        }
+        let event = events.remove(0);
+        let field = |name: &str| event.payload.get(name).and_then(serde_json::Value::as_str);
+        if event.actor != "Runtime-Scheduler"
+            || event.event_type != crate::event::TYPE_TOOL_OUTPUT
+            || event.topic != "chat/schedule_due"
+            || field("context_id") != Some(thread.context_id.as_str())
+            || field("session_id") != Some(thread.session_id.as_str())
+            || field("agent_id") != Some(thread.agent_id.as_str())
+            || field("principal_id") != thread.initiating_principal_id.as_deref()
+            || field("root_turn_id") != Some(thread.root_turn_id.as_str())
+        {
+            return Ok(None);
+        }
+        let (Some(schedule_id), Some(owner_id), Some(source_turn_id), Some(revision)) = (
+            field("schedule_id"),
+            field("scheduled_thread_id"),
+            field("source_turn_id"),
+            event
+                .payload
+                .get("occurrence_revision")
+                .and_then(serde_json::Value::as_u64),
+        ) else {
+            return Ok(None);
+        };
+        if event.id != format!("schedule_due_{schedule_id}_r{revision}")
+            || !event
+                .payload
+                .get("interval_seconds")
+                .and_then(serde_json::Value::as_u64)
+                .is_some_and(|n| n > 0)
+        {
+            return Ok(None);
+        }
+        let expected_root = crate::tool::scheduled_occurrence_root(schedule_id, revision);
+        if thread.root_turn_id != expected_root
+            || thread.id != crate::memory::stable_thread_id(&expected_root)
+        {
+            return Ok(None);
+        }
+        let Some(schedule) = self.inner.store.get_schedule(schedule_id).await? else {
+            return Ok(None);
+        };
+        if schedule.thread_id != owner_id
+            || schedule.source_turn_id != source_turn_id
+            || schedule.revision <= revision
+        {
+            return Ok(None);
+        }
+        let Some(signal) = self
+            .inner
+            .store
+            .thread_signal_for_event(&thread.context_id, &event.id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if signal.thread_id != thread.id
+            || signal.principal_id != thread.initiating_principal_id
+            || event.sequence != Some(signal.sequence)
+            || signal.thread_generation > thread.generation
+        {
+            return Ok(None);
+        }
+        Ok(self
+            .inner
+            .store
+            .get_thread(owner_id)
+            .await?
+            .filter(|owner| {
+                owner.id != thread.id
+                    && owner.context_id == thread.context_id
+                    && owner.session_id == thread.session_id
+                    && owner.agent_id == thread.agent_id
+                    && owner.initiating_principal_id == thread.initiating_principal_id
+            }))
     }
 
     pub async fn scheduler_snapshot(

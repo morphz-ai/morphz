@@ -14,6 +14,7 @@ use morphz::{
     runtime::{MorphzRuntime, RuntimeIdentity, ThreadInputSource},
 };
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{path::Path, sync::Arc};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -480,6 +481,179 @@ async fn seed(store: &dyn RuntimeStore) {
         )
         .await
         .unwrap();
+    seed_periodic_origins(store).await;
+}
+
+fn periodic_root(schedule: &str, revision: u64) -> String {
+    let hash = format!(
+        "{:x}",
+        Sha256::digest(format!("{schedule}\0{revision}").as_bytes())
+    );
+    format!("scheduled_occurrence_{}", &hash[..24])
+}
+
+async fn seed_periodic_origins(store: &dyn RuntimeStore) {
+    // The same read resolver must cover an admitted input, an inputless timer,
+    // Objective ownership and nested infer. Commit real due Events/Signals,
+    // including the pre-Activation state; no model or running timer is needed.
+    store
+        .ensure_thread(thread(
+            "periodic-template",
+            "periodic-template-root",
+            ThreadSupervision::runtime("operator-schedule"),
+        ))
+        .await
+        .unwrap();
+    for (label, owner_id, source_id) in [
+        (
+            "input",
+            "adopted-schedule-thread".to_owned(),
+            INPUT_WITHOUT_THREAD,
+        ),
+        (
+            "schedule",
+            "periodic-template".to_owned(),
+            "periodic-template-root",
+        ),
+        (
+            "goal",
+            stable_thread_id(&objective_primary_execution_root_id("goal", 1)),
+            INPUT,
+        ),
+    ] {
+        let schedule_id = format!("periodic-{label}");
+        let schedule = store
+            .ensure_schedule(NewSchedule {
+                id: schedule_id.clone(),
+                thread_id: owner_id.clone(),
+                source_turn_id: source_id.into(),
+                intent: format!("Periodic {label} origin"),
+                model_alias: None,
+                reasoning_effort: None,
+                not_before: None,
+                interval_seconds: Some(3600),
+                dependency_thread_ids: vec![],
+            })
+            .await
+            .unwrap();
+        let root = periodic_root(&schedule_id, schedule.revision);
+        let id = stable_thread_id(&root);
+        let occurrence = thread(
+            &id,
+            &root,
+            ThreadSupervision::runtime("schedule-occurrence-router"),
+        );
+        let due = event(
+            &format!("schedule_due_{schedule_id}_r{}", schedule.revision),
+            "Runtime-Scheduler",
+            "tool_output",
+            "chat/schedule_due",
+            json!({
+                "context_id":CONTEXT, "session_id":SESSION, "principal_id":HUMAN, "agent_id":AGENT,
+                "root_turn_id":root, "schedule_id":schedule_id, "scheduled_thread_id":owner_id,
+                "source_turn_id":source_id, "occurrence_revision":schedule.revision, "interval_seconds":3600,
+            }),
+        );
+        assert!(store
+            .commit_scheduled_dispatch(
+                &schedule.id,
+                schedule.revision,
+                Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                &due,
+                Some(&occurrence)
+            )
+            .await
+            .unwrap()
+            .is_some());
+        let child_id = format!("periodic-{label}-child");
+        store
+            .ensure_thread(thread(
+                &child_id,
+                &format!("periodic-{label}-child-root"),
+                ThreadSupervision::attached(&id, 1, "periodic-parent-evaluation"),
+            ))
+            .await
+            .unwrap();
+        let infer_root = format!("periodic-{label}-infer-root");
+        let plan = format!("periodic-{label}-plan");
+        store.append(event(&infer_root, "Runtime-Yao", "infer_request", "chat/infer_request", json!({
+            "context_id":CONTEXT, "session_id":SESSION, "principal_id":HUMAN, "agent_id":AGENT,
+            "root_turn_id":infer_root, "plan_execution_id":plan, "parent_thread_id":child_id,
+        }))).await.unwrap();
+        let mut infer = thread(
+            &format!("periodic-{label}-infer"),
+            &infer_root,
+            ThreadSupervision::attached(&child_id, 1, "periodic-infer-evaluation"),
+        );
+        infer.executor_kind = "plan_infer".into();
+        infer.executor_id = Some(plan);
+        store.ensure_thread(infer).await.unwrap();
+    }
+    for mutation in ["actor", "source", "principal", "uncommitted"] {
+        let schedule_id = format!("unproven-periodic-{mutation}");
+        let owner_id = format!("unproven-template-{mutation}");
+        let mut owner = thread(
+            &owner_id,
+            &format!("unproven-root-{mutation}"),
+            ThreadSupervision::runtime("operator"),
+        );
+        if mutation == "principal" {
+            owner.initiating_principal_id = Some("other-human".into());
+        }
+        store.ensure_thread(owner).await.unwrap();
+        let schedule = store
+            .ensure_schedule(NewSchedule {
+                id: schedule_id.clone(),
+                thread_id: owner_id.clone(),
+                source_turn_id: INPUT.into(),
+                intent: "Unproven periodic admission".into(),
+                model_alias: None,
+                reasoning_effort: None,
+                not_before: None,
+                interval_seconds: Some(3600),
+                dependency_thread_ids: vec![],
+            })
+            .await
+            .unwrap();
+        let root = periodic_root(&schedule_id, schedule.revision);
+        let occurrence = thread(
+            &stable_thread_id(&root),
+            &root,
+            ThreadSupervision::runtime("schedule-occurrence-router"),
+        );
+        let due = event(
+            &format!("schedule_due_{schedule_id}_r{}", schedule.revision),
+            if mutation == "actor" {
+                "Model"
+            } else {
+                "Runtime-Scheduler"
+            },
+            "tool_output",
+            "chat/schedule_due",
+            json!({
+                "context_id":CONTEXT, "session_id":SESSION, "principal_id":HUMAN, "agent_id":AGENT,
+                "root_turn_id":root, "schedule_id":schedule_id, "scheduled_thread_id":owner_id,
+                "source_turn_id": if mutation == "source" { INPUT_WITHOUT_THREAD } else { INPUT },
+                "occurrence_revision":schedule.revision, "interval_seconds":3600,
+            }),
+        );
+        if mutation == "uncommitted" {
+            store.ensure_thread(occurrence).await.unwrap();
+            store.append(due).await.unwrap();
+        } else {
+            assert!(store
+                .commit_scheduled_dispatch(
+                    &schedule.id,
+                    schedule.revision,
+                    Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                    &due,
+                    Some(&occurrence)
+                )
+                .await
+                .unwrap()
+                .is_some());
+        }
+    }
 }
 
 async fn seed_recovery(store: &dyn RuntimeStore) {
@@ -652,6 +826,90 @@ async fn assert_sources(runtime: &MorphzRuntime) {
             _ => panic!("Timer lineage must retain exact committed Schedule identity"),
         }
     }
+    for (label, source) in [
+        ("input", Some(INPUT_WITHOUT_THREAD)),
+        ("goal", Some(INPUT)),
+        ("schedule", None),
+    ] {
+        let occurrence = stable_thread_id(&periodic_root(&format!("periodic-{label}"), 1));
+        for id in [
+            occurrence,
+            format!("periodic-{label}-child"),
+            format!("periodic-{label}-infer"),
+        ] {
+            let proof = runtime
+                .session_thread_input_source(SESSION, &id)
+                .await
+                .unwrap()
+                .unwrap();
+            match (source, proof.source) {
+                (Some(expected), Some(ThreadInputSource::Input { input_event, .. })) => {
+                    assert_eq!(input_event.id, expected)
+                }
+                (None, Some(ThreadInputSource::Schedule { schedule_id, .. })) => {
+                    assert_eq!(schedule_id, "periodic-schedule")
+                }
+                (_, proof) => panic!("Wrong periodic {label} source for {id}: {proof:?}"),
+            }
+            let detail = runtime.thread_detail(CONTEXT, &id).await.unwrap().unwrap();
+            assert_eq!(
+                detail
+                    .snapshot
+                    .source
+                    .as_ref()
+                    .map(|s| s.root_turn_id.as_str()),
+                source
+            );
+            let records = morphz::sdk::MorphzSdk::new(runtime.clone())
+                .session_execution_records(
+                    HUMAN,
+                    SESSION,
+                    morphz::runtime::ExecutionRecordsQuery {
+                        thread_id: Some(id.clone()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(records.threads[0].id, id);
+            assert_eq!(
+                records.threads[0].initiating_principal_id.as_deref(),
+                Some(HUMAN)
+            );
+            assert_eq!(
+                records.source_root_id.as_deref(),
+                source.or(Some("periodic-template-root"))
+            );
+        }
+    }
+    for mutation in ["actor", "source", "principal", "uncommitted"] {
+        let id = stable_thread_id(&periodic_root(&format!("unproven-periodic-{mutation}"), 1));
+        let view = runtime
+            .session_thread_input_source(SESSION, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            view.source.is_none(),
+            "unproven periodic {mutation} cannot grant input association"
+        );
+        let records = morphz::sdk::MorphzSdk::new(runtime.clone())
+            .session_execution_records(
+                HUMAN,
+                SESSION,
+                morphz::runtime::ExecutionRecordsQuery {
+                    thread_id: Some(id.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            records.threads[0].id, id,
+            "unresolved provenance cannot erase authorized facts"
+        );
+        assert!(records.source_root_id.is_none());
+    }
 }
 
 #[tokio::test]
@@ -670,7 +928,7 @@ async fn sqlite_exact_thread_origins_survive_cold_reopen_and_reject_foreign_or_a
         .await
         .unwrap();
     sqlx::query(
-        "DELETE FROM schema_migrations WHERE version = '20261013_03_provider_resume_timeline'",
+        "DELETE FROM schema_migrations WHERE version = '20261016_01_evaluation_results_timeline'",
     )
     .execute(&inspection)
     .await
@@ -849,7 +1107,7 @@ async fn postgres_exact_thread_origins_survive_cold_reopen_and_reject_foreign_or
         assert_recovery_projection(store.as_ref()).await;
         assert_sources(&runtime(store.clone(), directory.path()).await).await;
         sqlx::query(
-            "DELETE FROM schema_migrations WHERE version = '20261013_03_provider_resume_timeline'",
+            "DELETE FROM schema_migrations WHERE version = '20261016_01_evaluation_results_timeline'",
         )
         .execute(store.pool())
         .await

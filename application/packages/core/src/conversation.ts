@@ -40,7 +40,7 @@ export type RuntimeSchedule = z.infer<typeof runtimeScheduleSchema>;
 export const activitySchema = z.object({
   available: z.boolean(),
   truncated: z.boolean().default(false),
-  /** Current open threads/Objectives were fully read and causally attributed.
+  /** Current open threads/Objectives were fully read in the authorized domain.
    * Independent of the bounded terminal activity history; absent is unknown. */
   openWorkComplete: z.boolean().optional(),
   /** Per Context snapshot bound, not a claim of complete execution history. */
@@ -73,12 +73,14 @@ export const activitySchema = z.object({
     z.object({
       id: z.string(),
       kind: z.string().optional(),
-      projectId: z.string(),
-      conversationId: z.string(),
+      projectId: z.string().nullable(),
+      conversationId: z.string().nullable(),
       inputId: z.string().nullable(),
       rootId: z.string(),
       sessionId: z.string(),
       contextId: z.string().optional(),
+      /** Execution read ownership, independent of optional Platform association. */
+      initiatingPrincipalId: z.string().nullable().optional(),
       title: z.string(),
       /** Display-only Runtime projection, never a separate activity state. */
       summary: z.string().optional(),

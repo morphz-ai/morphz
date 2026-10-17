@@ -13,6 +13,119 @@ import {
 } from "./platform-conversation-fixture.js";
 import { openExecutionPanel } from "./interaction-helpers.js";
 
+test("无输入关联的真实执行保留全局活动与只读命令详情，不附会项目、不出现控制入口", async ({
+  page,
+}, info) => {
+  const thread: ExecutionActivity["threads"][number] = {
+    id: "TEST-unassociated",
+    kind: "execution",
+    projectId: null,
+    conversationId: null,
+    inputId: null,
+    sessionId: "TEST-runtime-session",
+    contextId: "TEST-runtime-context",
+    rootId: "TEST-real-root",
+    initiatingPrincipalId: "TEST-human",
+    title: "TEST 检查工作目录",
+    phase: "running",
+    lifecycle: "open",
+    revision: 1,
+    updatedAt: "2026-10-17T10:00:00Z",
+  };
+  await mockPlatformConversation(page, () => ({
+    inputs: [],
+    runtime: {
+      ...disconnectedRuntime,
+      configured: true,
+      connected: true,
+      activity: {
+        available: true,
+        truncated: false,
+        openWorkComplete: true,
+        threads: [thread],
+      },
+    },
+  }));
+  let reads = 0;
+  await page.route("**/api/executions?*", (route) => {
+    reads++;
+    const query = new URL(route.request().url()).searchParams;
+    expect(JSON.parse(query.get("runtime")!)).toEqual({
+      sessionId: thread.sessionId,
+      contextId: thread.contextId,
+    });
+    expect(query.get("threadId")).toBe(thread.id);
+    expect(query.has("projectId")).toBe(false);
+    expect(query.has("inputId")).toBe(false);
+    return route.fulfill({
+      json: {
+        jobs: [
+          {
+            id: "TEST-command",
+            revision: 1,
+            session_id: thread.sessionId,
+            context_id: thread.contextId,
+            thread_id: thread.id,
+            tool_name: "exec",
+            target_id: "local",
+            status: "running",
+            created_at: thread.updatedAt,
+            updated_at: thread.updatedAt,
+            request: { command: "pwd" },
+            result_event_id: "TEST-receipt",
+          },
+        ],
+        approvals: [],
+        limit: 100,
+      },
+    });
+  });
+  await page.route("**/api/executions/result?*", (route) =>
+    route.fulfill({
+      json: {
+        text: "/actual/workspace",
+        truncated: false,
+        available: true,
+      },
+    }),
+  );
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/executions/control"))
+      writes.push(request.url());
+  });
+  await page.goto("/");
+  await openExecutionPanel(page);
+  const panel = page.getByRole("complementary", {
+    name: "Morphz 信息",
+    exact: true,
+  });
+  await expect(
+    panel.locator('[data-thread-id="TEST-unassociated"]'),
+  ).toBeVisible();
+  await panel.locator('[data-thread-id="TEST-unassociated"]').click();
+  await expect(panel.locator(".execution-job")).toHaveCount(1);
+  await expect(panel.locator(".execution-job")).toContainText("pwd");
+  await expect(
+    panel.getByRole("button", { name: /停止|补充|批准|拒绝/ }),
+  ).toHaveCount(0);
+  await panel.getByRole("button", { name: "查看结果", exact: true }).click();
+  await expect(panel).toContainText("/actual/workspace");
+  expect(reads).toBe(1);
+  await panel.screenshot({
+    path: info.outputPath("unassociated-execution-read-only.png"),
+  });
+  await page.setViewportSize({ width: 760, height: 540 });
+  await expect(panel.locator(".execution-job")).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: /停止|补充|批准|拒绝/ }),
+  ).toHaveCount(0);
+  await panel.screenshot({
+    path: info.outputPath("unassociated-execution-narrow.png"),
+  });
+  expect(writes).toEqual([]);
+});
+
 test("embedded 逻辑 family 无 Jobs/审批时按真实 family 截断显示，不被 Context 历史截断污染", async ({
   page,
 }, info) => {

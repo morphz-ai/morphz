@@ -14,7 +14,7 @@ import { BrandMark } from "./BrandMark.js";
 import { InspectorPanel } from "./InspectorPanel.js";
 import type { InspectorLayout } from "./inspector-layout.js";
 import type { WorkspaceClient } from "./client.js";
-import type { ExecutionScope } from "../../../packages/core/src/execution.js";
+import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { DirectoryState } from "./AgentDirectories.js";
 import { ApprovalCard } from "./ApprovalCard.js";
 import { SubjectSchedules } from "./SubjectSchedules.js";
@@ -68,7 +68,7 @@ export function SubjectSidebar({
   detail: boolean;
   onBack(): void;
   activity: ReactNode;
-  onInspect(scope: ExecutionScope): void;
+  onInspect(scope: ExecutionReadScope): void;
   onOpen(id: string): void;
   onModels?: () => void;
   onConnection(): void;

@@ -36,6 +36,13 @@ const query = (data: Record<string, unknown>) =>
       .filter(([, v]) => v !== undefined && v !== null)
       .map(([k, v]) => [k, String(v)]),
   ).toString();
+const executionReadQuery = (value: unknown) => {
+  const scope = fields(value);
+  return {
+    ...scope,
+    ...(scope.runtime ? { runtime: JSON.stringify(scope.runtime) } : {}),
+  };
+};
 const projectPathId = (value: unknown) => {
   if (typeof value !== "string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(value))
     throw new ApplicationRequestError(400, "项目标识无效。", "invalid");
@@ -806,7 +813,7 @@ export class HttpApplicationClient {
         post(params);
         break;
       case "execution.snapshot":
-        path = "/api/executions?" + query(fields(params));
+        path = "/api/executions?" + query(executionReadQuery(params));
         break;
       case "terminal.catalog":
         path = "/api/terminals?" + query(fields(params));
@@ -834,7 +841,7 @@ export class HttpApplicationClient {
         const p = fields(params);
         path =
           "/api/executions/result?" +
-          query({ ...fields(p.scope), jobId: p.jobId });
+          query({ ...executionReadQuery(p.scope), jobId: p.jobId });
         break;
       }
       case "execution.control":

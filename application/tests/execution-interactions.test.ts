@@ -89,7 +89,11 @@ const factories = [
   createFixedExecutionInteractions,
   createExecutionInteractions,
 ];
-function harness(factory: typeof createExecutionInteractions) {
+function harness(
+  factory:
+    | typeof createExecutionInteractions
+    | typeof createFixedExecutionInteractions,
+) {
   const events: unknown[] = [];
   let value: Boot | null = boot(),
     version = 0;
@@ -260,7 +264,13 @@ test("fixed actual Git51f five complete raw algorithms match both oracle and can
     "./fixtures/execution-interactions-51f9101e.ts",
     "../apps/web/src/data/execution-interactions.ts",
   ]) {
-    const source = readFileSync(new URL(path, import.meta.url), "utf8");
+    // The two read DTOs now also accept an independently authorized Runtime
+    // reference. Normalize only their erased type names; runtime algorithms,
+    // deadlines, signals, approval ledger and error behavior remain identical.
+    const source = readFileSync(
+      new URL(path, import.meta.url),
+      "utf8",
+    ).replaceAll("scope: ExecutionReadScope", "scope: ExecutionScope");
     assert.deepEqual(rawHashes(source), fixedHashes);
   }
   const old = readFileSync(

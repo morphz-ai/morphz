@@ -79,7 +79,11 @@ import {
 import { publicSummary } from "../../../packages/core/src/understanding.js";
 import { RuntimeProfileClient } from "./runtime-profile-client.js";
 import { activityAnnotationFields } from "./response-annotations.js";
-import { authorizedExecutionThreadTree } from "./execution-thread-tree.js";
+import {
+  authorizedExecutionThreadTree,
+  readExecutionRecords,
+  executionRecordThread,
+} from "./execution-thread-tree.js";
 import {
   DomainError,
   browserReferenceSchema,
@@ -96,6 +100,7 @@ import {
   jobSchema,
   type ExecutionControl,
   type ExecutionScope,
+  type ExecutionReadScope,
   type ExecutionSnapshot,
   type ExecutionAttention,
 } from "../../../packages/core/src/execution.js";
@@ -558,7 +563,13 @@ const storedSchema = z.object({
     .default({}),
   activity: activitySchema.optional(),
   threadBindings: z
-    .record(z.string(), activitySchema.shape.threads.element)
+    .record(
+      z.string(),
+      activitySchema.shape.threads.element.extend({
+        projectId: z.string(),
+        conversationId: z.string(),
+      }),
+    )
     .default({}),
   sessions: z.record(
     z.string(),
@@ -2677,6 +2688,171 @@ export class RuntimeBridge {
     };
   }
 
+  /** Read authority for an unassociated execution is its immutable owner and
+   * an existing Session, not a guessed Platform input. Never returns controls. */
+  async platformExecutionRead(
+    scope: Exclude<ExecutionReadScope, ExecutionScope>,
+    access: AccessContext,
+    active: () => void,
+  ) {
+    const owner = this.teamIdentity
+      ? this.principalId(access.principalId)
+      : access.principalId;
+    const verify = () => {
+      active();
+      if (this.teamIdentity && !this.identity!.allows(access))
+        throw new DomainError("forbidden", "执行记录的读取身份已变化。");
+      const session = this.state.sessions[scope.runtime.sessionId];
+      if (
+        !session?.platform ||
+        this.contextId(session.projectId) !== scope.runtime.contextId
+      )
+        throw new DomainError("forbidden", "当前身份无权读取这条执行记录。");
+    };
+    verify();
+    const request = async (path: string, method?: string, body?: unknown) => {
+      verify();
+      if ((method && method !== "GET") || body !== undefined)
+        throw new DomainError("forbidden", "此执行入口仅允许读取记录。");
+      const result = await this.request(
+        path,
+        "GET",
+        undefined,
+        access,
+        undefined,
+        "json",
+        true,
+      );
+      verify();
+      return result;
+    };
+    const records = await readExecutionRecords(request, {
+      ...scope.runtime,
+      threadId: scope.threadId,
+      includeDescendants: true,
+    });
+    if (records.threads.some((t) => t.initiating_principal_id !== owner))
+      throw new DomainError("forbidden", "执行记录的所属身份已变化。");
+    const selected = records.threads[0]!;
+    // An inventory page/cache is not a read grant or an existence boundary.
+    // If association is known, retain its current Platform fence as well;
+    // a read-only reference cannot bypass revocation on known project work.
+    const associations = new Map<
+      string,
+      { projectId: string; conversationId: string }
+    >();
+    const addAssociation = (projectId: string, conversationId: string) =>
+      associations.set(JSON.stringify([projectId, conversationId]), {
+        projectId,
+        conversationId,
+      });
+    for (const thread of records.threads) {
+      const binding = this.state.threadBindings[thread.id];
+      if (binding) {
+        if (
+          binding.sessionId !== scope.runtime.sessionId ||
+          binding.rootId !== thread.root_turn_id ||
+          this.contextId(binding.projectId) !== scope.runtime.contextId
+        )
+          throw new DomainError("forbidden", "执行记录的关联范围已变化。");
+        addAssociation(binding.projectId, binding.conversationId);
+      }
+    }
+    if (records.source_root_id) {
+      const delivery = this.state.deliveries.find(
+        (d) =>
+          d.sessionId === scope.runtime.sessionId &&
+          d.rootId === records.source_root_id &&
+          d.platformSource,
+      );
+      if (delivery?.platformSource)
+        addAssociation(
+          delivery.platformSource.projectId,
+          delivery.platformSource.conversationId,
+        );
+      else if (!associations.size) {
+        const raw = await request(
+          `/api/sessions/${encodeURIComponent(scope.runtime.sessionId)}/events/${encodeURIComponent(records.source_root_id)}`,
+        ).catch((error: unknown) => {
+          if (error instanceof UpstreamError && error.status === 404)
+            return null;
+          throw error;
+        });
+        if (raw) {
+          const event = z.object({ event: eventSchema }).parse(raw).event;
+          if (
+            event.id !== records.source_root_id ||
+            payloadString(event, "session_id") !== scope.runtime.sessionId ||
+            payloadString(event, "context_id") !== scope.runtime.contextId
+          )
+            throw new DomainError(
+              "forbidden",
+              "执行记录的输入来源范围不匹配。",
+            );
+          const inputId = payloadString(event, "client_message_id");
+          const source = inputId
+            ? platformSourceFromRuntimeRoot(
+                event,
+                scope.runtime.sessionId,
+                inputId,
+                (id) => (this.teamIdentity ? this.principalId(id) : null),
+              )
+            : null;
+          if (source) addAssociation(source.projectId, source.conversationId);
+        }
+      }
+    }
+    const recheck = async () => {
+      verify();
+      for (const association of associations.values()) {
+        if (!this.authorizePlatformRead)
+          throw new DomainError("forbidden", "项目读取权限不可用。");
+        const grant = await this.authorizePlatformRead(association, access);
+        if (
+          !grant.projectIds.includes(association.projectId) ||
+          this.contextId(association.projectId) !== scope.runtime.contextId ||
+          this.objectSessionId(
+            association.projectId,
+            association.conversationId,
+            grant.personalDefault,
+          ) !== scope.runtime.sessionId
+        )
+          throw new DomainError("forbidden", "执行记录的项目读取权限已变化。");
+      }
+      verify();
+    };
+    await recheck();
+    verify();
+    const viewer = new ExecutionControls(request, () => ({
+      ...scope.runtime,
+      rootId: selected.root_turn_id,
+      threadId: scope.threadId,
+      records,
+      additionalRoot: async (rootId, threadId) =>
+        records.threads.some(
+          (t) => t.id === threadId && t.root_turn_id === rootId,
+        ),
+    }));
+    return {
+      snapshot: async (): Promise<ExecutionSnapshot> => {
+        // Approval actions belong to exact Platform work, not inventory reads.
+        const value = await viewer.snapshot(scope, false);
+        await recheck();
+        return {
+          ...value,
+          approvals: [],
+          threads: records.threads.map(executionRecordThread),
+        };
+      },
+      result: async (jobId: string) => {
+        await recheck();
+        const value = await viewer.result(scope, jobId);
+        await recheck();
+        return value;
+      },
+    };
+  }
+
   async platformExecutionControls(
     scope: ExecutionScope,
     access: AccessContext,
@@ -4625,6 +4801,7 @@ export class RuntimeBridge {
     projects: ReadonlySet<string>,
     inputs: ReadonlySet<string>,
     access: AccessContext,
+    includeUnassociated = false,
   ) {
     const continuable = new Set(
       this.state.deliveries.flatMap((delivery) => {
@@ -4636,12 +4813,45 @@ export class RuntimeBridge {
       }),
     );
     return (this.state.activity?.threads ?? [])
-      .filter(
-        (thread) =>
-          projects.has(thread.projectId) &&
-          !!thread.inputId &&
-          inputs.has(thread.inputId),
-      )
+      .filter((thread) => {
+        if (thread.projectId !== null)
+          return (
+            projects.has(thread.projectId) &&
+            !!thread.inputId &&
+            inputs.has(thread.inputId)
+          );
+        // Losing a source in this snapshot cannot erase a previously verified
+        // project fence. Facts remain cached, but current grants own visibility.
+        const binding = this.state.threadBindings[thread.id];
+        if (
+          binding &&
+          (binding.sessionId !== thread.sessionId ||
+            binding.rootId !== thread.rootId ||
+            this.contextId(binding.projectId) !== thread.contextId ||
+            !projects.has(binding.projectId))
+        )
+          return false;
+        const delivery = this.state.deliveries.find(
+          (d) => d.sessionId === thread.sessionId && d.rootId === thread.rootId,
+        );
+        if (
+          delivery?.platformSource &&
+          !projects.has(delivery.platformSource.projectId)
+        )
+          return false;
+        const session = this.state.sessions[thread.sessionId];
+        return (
+          includeUnassociated &&
+          thread.conversationId === null &&
+          thread.inputId === null &&
+          !!session?.platform &&
+          thread.contextId === this.contextId(session.projectId) &&
+          thread.initiatingPrincipalId ===
+            (this.teamIdentity
+              ? this.principalId(access.principalId)
+              : access.principalId)
+        );
+      })
       .map((thread) => {
         if (thread.inputId && continuable.has(thread.inputId)) return thread;
         const { continuation: _continuation, ...readOnly } = thread;
@@ -4657,6 +4867,7 @@ export class RuntimeBridge {
       (this.state.activity?.threads ?? [])
         .filter(
           (thread) =>
+            thread.projectId !== null &&
             projects.has(thread.projectId) &&
             !!thread.inputId &&
             inputs.has(thread.inputId),
@@ -4788,6 +4999,7 @@ export class RuntimeBridge {
                   readable,
                   allowedInputIds,
                   access,
+                  true,
                 ),
                 objectives: this.platformActivityObjectives(
                   readable,
@@ -5118,6 +5330,7 @@ export class RuntimeBridge {
                 session_id: z.string(),
                 context_id: z.string(),
                 root_turn_id: z.string(),
+                initiating_principal_id: z.string().nullable().optional(),
                 lifecycle: z.string(),
                 executor_kind: z.string().optional(),
                 generation: z.unknown().optional(),
@@ -5270,12 +5483,11 @@ export class RuntimeBridge {
         for (const value of active.threads) {
           const t = value.thread;
           if (!sessionsById.has(t.session_id)) continue;
-          if (
-            t.context_id !== contextId ||
-            t.lifecycle !== "open" ||
-            !(await resolveThreadRoot(value, contextId))
-          )
+          if (t.context_id !== contextId || t.lifecycle !== "open")
             activity.openWorkComplete = false;
+          // Resolve association opportunistically; current execution coverage
+          // is established by the authoritative inventory, not this link.
+          await resolveThreadRoot(value, contextId);
         }
         for (const value of active.objectives ?? []) {
           const { objective } = value;
@@ -5353,28 +5565,21 @@ export class RuntimeBridge {
           if (!session || t.context_id !== contextId) continue;
           const route = await resolveThreadRoot(value, contextId);
           const source = route?.source;
-          // A shared transport is not authority to guess an unknown work project.
-          if (!source) {
-            activity.truncated = true;
-            if (t.lifecycle === "open") activity.openWorkComplete = false;
-            continue;
-          }
-          sources.set(route!.inputId, source);
+          // Missing provenance is not a missing execution. Retain facts and
+          // exact read ownership without inventing project/input authority.
+          if (route) sources.set(route.inputId, route.source);
           const delivery = deliveries.find(
             (d) =>
               d.sessionId === t.session_id &&
-              d.inputId === route!.inputId &&
-              d.rootId === route!.rootId &&
+              d.inputId === route?.inputId &&
+              d.rootId === route?.rootId &&
               !d.supplement,
           );
           const target = delivery
             ? continuationTarget(t, delivery.inputId, t.id)
             : undefined;
-          const primary = continuationTarget(
-            t,
-            route!.inputId,
-            t.id,
-          )?.objective;
+          const primary =
+            route && continuationTarget(t, route!.inputId, t.id)?.objective;
           if (primary) primaryObjectives.set(t.id, primary);
           // plan_infer.intent is the Runtime's evaluator prompt, not a user
           // task title. Its verified annotations supply display text; absent
@@ -5382,16 +5587,17 @@ export class RuntimeBridge {
           const threadTitle =
             t.executor_kind === "plan_infer"
               ? ""
-              : value.intent?.trim() || source.body || "后台执行";
+              : value.intent?.trim() || source?.body || "后台执行";
           activity.threads.push({
             id: t.id,
             kind: t.kind,
-            projectId: source?.projectId ?? session.projectId,
-            conversationId: source?.conversationId ?? discussionId(session),
-            inputId: route!.inputId,
+            projectId: source?.projectId ?? null,
+            conversationId: source?.conversationId ?? null,
+            inputId: route?.inputId ?? null,
             rootId: t.root_turn_id,
             sessionId: t.session_id,
             contextId: t.context_id,
+            initiatingPrincipalId: t.initiating_principal_id ?? null,
             title: threadTitle,
             ...(activityAnnotationFields(value.response_annotations, t) ?? {}),
             phase: value.phase,
@@ -5586,7 +5792,17 @@ export class RuntimeBridge {
       this.state.activity = activity;
       this.activitySources = sources;
       for (const thread of activity.threads)
-        this.state.threadBindings[thread.id] = thread;
+        if (
+          thread.projectId !== null &&
+          thread.conversationId !== null &&
+          thread.inputId !== null
+        )
+          this.state.threadBindings[thread.id] = {
+            ...thread,
+            projectId: thread.projectId,
+            conversationId: thread.conversationId,
+            inputId: thread.inputId,
+          };
     } catch {
       // Keep the last known records but explicitly mark them stale. A scheduler
       // read failure must not cause message redelivery or fictitious completion.

@@ -49,7 +49,7 @@ test("fixed execution inspection archive preserves independent committed full Di
 });
 
 function render(
-  factory: typeof useExecutionInspection,
+  factory: typeof useExecutionInspection | typeof useFixedExecutionInspection,
   client: FixedInspectionOptions["client"],
   scope: FixedInspectionOptions["scope"],
 ) {

@@ -20,6 +20,7 @@ export const runtimeExecutionRecordsSchema = z.object({
         session_id: z.string().min(1),
         context_id: z.string().min(1),
         root_turn_id: z.string().min(1),
+        initiating_principal_id: z.string().nullable().optional(),
         parent_thread_id: z.string().nullable(),
         generation: z.number().int().nonnegative().safe(),
         revision: z.number().int().positive().safe(),

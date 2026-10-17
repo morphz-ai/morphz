@@ -35,6 +35,7 @@ import { disconnectedRuntime } from "../../../packages/core/src/conversation.js"
 import { conversationSearchRequestSchema } from "../../../packages/core/src/conversation-search.js";
 import {
   executionScopeSchema,
+  executionReadScopeSchema,
   executionControlSchema,
 } from "../../../packages/core/src/execution.js";
 import { pdfImportIssue, maxPdfBytes } from "../../../packages/core/src/pdf.js";
@@ -3063,7 +3064,16 @@ export class ApplicationSession {
   }
   async executionSnapshot(raw: unknown) {
     const runtime = this.runtime(),
-      scope = executionScopeSchema.parse(raw);
+      scope = executionReadScopeSchema.parse(raw);
+    if ("runtime" in scope) {
+      if (!this.options.platformWork)
+        throw new ApplicationUnavailable("执行记录尚未接入 Platform。");
+      return (
+        await runtime.platformExecutionRead(scope, this.access, () =>
+          this.active(),
+        )
+      ).snapshot();
+    }
     if (scope.taskRun) {
       const { controls, recheck } = await this.platformTaskExecution(scope);
       const result = await controls.snapshot(scope);
@@ -3084,9 +3094,18 @@ export class ApplicationSession {
   async executionResult(raw: unknown) {
     const runtime = this.runtime();
     const { scope, jobId } = z
-      .object({ scope: executionScopeSchema, jobId: identifier })
+      .object({ scope: executionReadScopeSchema, jobId: identifier })
       .strict()
       .parse(raw);
+    if ("runtime" in scope) {
+      if (!this.options.platformWork)
+        throw new ApplicationUnavailable("执行记录尚未接入 Platform。");
+      return (
+        await runtime.platformExecutionRead(scope, this.access, () =>
+          this.active(),
+        )
+      ).result(jobId);
+    }
     if (scope.taskRun) {
       const { controls, recheck } = await this.platformTaskExecution(scope);
       const result = await controls.result(scope, jobId);

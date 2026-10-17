@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import type {
   ExecutionControl,
-  ExecutionScope,
+  ExecutionReadScope,
   ExecutionSnapshot,
 } from "../../../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "../../client.js";
@@ -26,7 +26,7 @@ export function useExecutionInspection({
   embedded,
 }: {
   client: InspectionClient;
-  scope: ExecutionScope;
+  scope: ExecutionReadScope;
   dialog: RefObject<HTMLDialogElement | null>;
   embedded: boolean;
 }) {
@@ -86,6 +86,7 @@ export function useExecutionInspection({
     action: ExecutionControl["action"],
     threadId?: string,
   ) {
+    if ("runtime" in scope) return;
     const origin = observationScope;
     const current = () => mounted.current && currentScope.current === origin;
     setBusy(

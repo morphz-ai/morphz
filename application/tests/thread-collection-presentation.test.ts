@@ -251,8 +251,8 @@ test("input complete phases/control and mixed priority stay running then unknown
   const phases = {
     running: ["running", "执行中"],
     runnable: ["waiting", "待执行"],
-    waiting: ["waiting", "等待中"],
-    idle: ["waiting", "等待唤醒"],
+    waiting: ["waiting", "等待条件（原因待核对）"],
+    idle: ["waiting", "等待条件（原因待核对）"],
     future: ["unknown", "状态待核对"],
   } as const;
   for (const [phase, [kind, label]] of Object.entries(phases))
@@ -265,13 +265,15 @@ test("input complete phases/control and mixed priority stay running then unknown
     ])
       assert.deepEqual(
         inputProjection(runtime([thread({ phase, controlState })])).workStatus,
-        controlState === "paused"
+        controlState === "paused" && phase !== "running"
           ? { kind: "paused", label: "已暂停" }
-          : { kind, label },
+          : controlState === "paused"
+            ? { kind: "running", label: "执行中 · 后续已暂停" }
+            : { kind, label },
       );
   const values = [
     thread({ id: "waiting", phase: "waiting" }),
-    thread({ id: "paused", controlState: "paused" }),
+    thread({ id: "paused", phase: "idle", controlState: "paused" }),
     thread({ id: "unknown", phase: "future" }),
     thread({ id: "running" }),
   ];
@@ -309,7 +311,7 @@ test("input complete phases/control and mixed priority stay running then unknown
         thread({ phase: "runnable", id: "second" }),
       ]),
     ).workStatus?.label,
-    "等待中",
+    "等待条件（原因待核对）",
   );
 });
 
@@ -589,7 +591,8 @@ test("overview date quality uses matching terminal time and keeps first group or
 
 test("two original overview phases keep date construction before availability, prose between phases and lazy summary quality reads", () => {
   function lane(
-    collect: typeof executionActivityOverview,
+    collect:
+      typeof executionActivityOverview | typeof fixedExecutionActivityOverview,
     summarize: typeof executionActivityOverviewSummary,
   ) {
     const log: string[] = [],
@@ -765,7 +768,10 @@ test(
         state.inputs.push(input());
         for (const [threads, online, kind, label] of [
           [
-            [thread({ phase: "future" }), thread({ controlState: "paused" })],
+            [
+              thread({ phase: "future" }),
+              thread({ phase: "idle", controlState: "paused" }),
+            ],
             true,
             "unknown",
             "状态待核对",
@@ -986,6 +992,7 @@ test(
         thread({
           id: "child",
           parentThreadId: "parent",
+          phase: "idle",
           controlState: "paused",
         }),
         thread({

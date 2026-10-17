@@ -4,7 +4,7 @@ import {
   type ConversationRuntime,
   type ExecutionActivity,
 } from "../../../packages/core/src/conversation.js";
-import type { ExecutionScope } from "../../../packages/core/src/execution.js";
+import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import {
   inConversation,
   type RecordedInput,
@@ -161,7 +161,7 @@ function timestampRank(value: string): number {
 export function executionActivityThreads(
   state: Workspace,
   threads: readonly ActivityThread[],
-  scope: ExecutionScope,
+  scope: ExecutionReadScope,
   allWork: boolean,
   sharedDefault: boolean,
 ): ActivityThread[] {
@@ -180,10 +180,16 @@ export function executionActivityThreads(
         )
           continue;
       } else if (
+        !scope.projectId ||
+        thread.projectId === null ||
+        thread.conversationId === null ||
         !inConversation(
           state,
           scope.conversationId ?? scope.projectId,
-          thread,
+          {
+            projectId: thread.projectId,
+            conversationId: thread.conversationId,
+          },
           sharedDefault,
         )
       )
@@ -213,7 +219,15 @@ export function executionActivityThreads(
 export function executionActivityScope(
   thread: ActivityThread,
   state: Workspace,
-): ExecutionScope {
+): ExecutionReadScope {
+  if (thread.projectId === null || thread.conversationId === null) {
+    if (!thread.contextId) throw new Error("执行范围缺失，请刷新后查看。");
+    return {
+      runtime: { sessionId: thread.sessionId, contextId: thread.contextId },
+      threadId: thread.id,
+      artifactId: null,
+    };
+  }
   const source = state.inputs.find(
     (input) =>
       input.id === thread.inputId && input.projectId === thread.projectId,
@@ -386,7 +400,7 @@ export function inputExecutionActivityPresentation(
 export function executionActivityOverview(
   state: Workspace,
   threads: readonly ActivityThread[],
-  scope: ExecutionScope,
+  scope: ExecutionReadScope,
   allWork: boolean,
   sharedDefault: boolean,
   runtime: ConversationRuntime,

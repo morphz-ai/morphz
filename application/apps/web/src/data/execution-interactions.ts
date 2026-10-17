@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
   executionSnapshotSchema,
-  type ExecutionScope,
+  type ExecutionReadScope,
   type ExecutionControl,
 } from "../../../../packages/core/src/execution.js";
 import type { Boot } from "../client.js";
@@ -37,7 +37,7 @@ export function createExecutionInteractions({
     await refreshAfterMutation();
   }
   async function executionSnapshot(
-    scope: ExecutionScope,
+    scope: ExecutionReadScope,
     signal?: AbortSignal,
   ) {
     return executionSnapshotSchema.parse(
@@ -48,7 +48,7 @@ export function createExecutionInteractions({
       }),
     );
   }
-  async function executionResult(scope: ExecutionScope, jobId: string) {
+  async function executionResult(scope: ExecutionReadScope, jobId: string) {
     return z
       .object({
         text: z.string(),

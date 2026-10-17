@@ -11,6 +11,24 @@ export const executionScopeSchema = z
   })
   .strict();
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;
+/** An execution reference authorizes no mutation or project access. The Host
+ * verifies ownership against Runtime facts on every read, not this request. */
+export const runtimeExecutionReadScopeSchema = z
+  .object({
+    runtime: z.object({ sessionId: id, contextId: id }).strict(),
+    threadId: id,
+    artifactId: z.null(),
+    projectId: z.undefined().optional(),
+    conversationId: z.undefined().optional(),
+    inputId: z.undefined().optional(),
+    taskRun: z.undefined().optional(),
+  })
+  .strict();
+export const executionReadScopeSchema = z.union([
+  executionScopeSchema,
+  runtimeExecutionReadScopeSchema,
+]);
+export type ExecutionReadScope = z.infer<typeof executionReadScopeSchema>;
 export const jobSchema = z.object({
   id: z.string(),
   revision: z.number().int(),

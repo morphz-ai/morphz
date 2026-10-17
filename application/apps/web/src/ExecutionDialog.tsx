@@ -13,7 +13,7 @@ import { executionThreadGroups } from "./execution-thread-groups.js";
 import { executionActivityStatus } from "./execution-activity.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { ApprovalDetails } from "./ApprovalCard.js";
-import { type ExecutionScope } from "../../../packages/core/src/execution.js";
+import { type ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
 export function ExecutionDialog({
   client,
@@ -24,7 +24,7 @@ export function ExecutionDialog({
   hideEmpty = false,
 }: {
   client: WorkspaceClient;
-  scope: ExecutionScope;
+  scope: ExecutionReadScope;
   onClose: () => void;
   onOpen: (id: string) => void;
   embedded?: boolean;
@@ -42,6 +42,7 @@ export function ExecutionDialog({
     control,
     readResult,
   } = useExecutionInspection({ client, scope, dialog, embedded });
+  const readOnly = "runtime" in scope;
   const jobs = executionJobsInReadingOrder(snapshot?.jobs ?? []);
   const branchIds = [...new Set(jobs.map((job) => job.thread_id))];
   const groups = executionThreadGroups(snapshot);
@@ -112,56 +113,58 @@ export function ExecutionDialog({
             key={approval.request.approval_id}
           >
             <ApprovalDetails approval={approval} />
-            <div className="execution-actions">
-              <button
-                disabled={
-                  !!busy ||
-                  !!error ||
-                  !client.online ||
-                  client.approvalSubmitted(
-                    approval.request.approval_id,
-                    approval.fingerprint,
-                  )
-                }
-                onClick={() =>
-                  void control(
-                    {
-                      type: "deny",
-                      approvalId: approval.request.approval_id,
-                      fingerprint: approval.fingerprint,
-                    },
-                    grouped ? approval.request.thread_id : undefined,
-                  )
-                }
-              >
-                拒绝
-              </button>
-              <button
-                className="primary"
-                disabled={
-                  !!busy ||
-                  !!error ||
-                  !client.online ||
-                  client.approvalSubmitted(
-                    approval.request.approval_id,
-                    approval.fingerprint,
-                  )
-                }
-                onClick={() =>
-                  void control(
-                    {
-                      type: "allow-once",
-                      approvalId: approval.request.approval_id,
-                      fingerprint: approval.fingerprint,
-                    },
-                    grouped ? approval.request.thread_id : undefined,
-                  )
-                }
-              >
-                <Check />
-                仅允许这一次
-              </button>
-            </div>
+            {!readOnly && (
+              <div className="execution-actions">
+                <button
+                  disabled={
+                    !!busy ||
+                    !!error ||
+                    !client.online ||
+                    client.approvalSubmitted(
+                      approval.request.approval_id,
+                      approval.fingerprint,
+                    )
+                  }
+                  onClick={() =>
+                    void control(
+                      {
+                        type: "deny",
+                        approvalId: approval.request.approval_id,
+                        fingerprint: approval.fingerprint,
+                      },
+                      grouped ? approval.request.thread_id : undefined,
+                    )
+                  }
+                >
+                  拒绝
+                </button>
+                <button
+                  className="primary"
+                  disabled={
+                    !!busy ||
+                    !!error ||
+                    !client.online ||
+                    client.approvalSubmitted(
+                      approval.request.approval_id,
+                      approval.fingerprint,
+                    )
+                  }
+                  onClick={() =>
+                    void control(
+                      {
+                        type: "allow-once",
+                        approvalId: approval.request.approval_id,
+                        fingerprint: approval.fingerprint,
+                      },
+                      grouped ? approval.request.thread_id : undefined,
+                    )
+                  }
+                >
+                  <Check />
+                  仅允许这一次
+                </button>
+              </div>
+            )}
           </section>
         ))}
         {snapshot &&
@@ -215,6 +218,7 @@ export function ExecutionDialog({
                 </p>
               )}
               {grouped &&
+                !readOnly &&
                 group.depth > 0 &&
                 group.thread?.lifecycle === "open" && (
                   <div className="execution-actions">
@@ -256,8 +260,12 @@ export function ExecutionDialog({
                       }
                       busy={!!busy}
                       stopDisabled={
-                        !!busy || !!error || !!job.cancel_requested_at
+                        readOnly ||
+                        !!busy ||
+                        !!error ||
+                        !!job.cancel_requested_at
                       }
+                      readOnly={readOnly}
                       resultAvailable={
                         result?.id === job.id && result.available
                       }

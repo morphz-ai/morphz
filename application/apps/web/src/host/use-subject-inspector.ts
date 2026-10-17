@@ -1,11 +1,11 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
-import type { ExecutionScope } from "../../../../packages/core/src/execution.js";
+import type { ExecutionReadScope } from "../../../../packages/core/src/execution.js";
 import type { Workspace } from "../../../../packages/core/src/model.js";
 import type { WorkspaceClient } from "../client.js";
 import type { SubjectView } from "../subject-sidebar-model.js";
 
 type InspectorSelection =
-  | { view: "execution"; scope: ExecutionScope }
+  | { view: "execution"; scope: ExecutionReadScope }
   | { view: "understanding" | "collaboration" };
 type SubjectPreferences = {
   subjectTab?: SubjectView;
@@ -17,7 +17,7 @@ type InspectorMemory = RefObject<Map<string, InspectorSelection>>;
 /** These registrations stay at their original host seams. Grouping the owner
  * must not move a state or layout effect across unrelated host lifecycles. */
 export function useSubjectInspectionState() {
-  const [executions, setExecutions] = useState<ExecutionScope | null>(null);
+  const [executions, setExecutions] = useState<ExecutionReadScope | null>(null);
   const [understandingOpen, setUnderstandingOpen] = useState(false);
   return { executions, setExecutions, understandingOpen, setUnderstandingOpen };
 }
@@ -47,7 +47,7 @@ export function subjectCollaborationVisible({
   mobileCollaboration,
   preferences,
 }: {
-  executions: ExecutionScope | null;
+  executions: ExecutionReadScope | null;
   subjectView: SubjectView | null;
   understandingOpen: boolean;
   artifact: unknown;
@@ -70,7 +70,7 @@ export function subjectInspectorOpen({
   understandingOpen,
   collaborationVisible,
 }: {
-  executions: ExecutionScope | null;
+  executions: ExecutionReadScope | null;
   subjectView: SubjectView | null;
   understandingOpen: boolean;
   collaborationVisible: boolean;
@@ -87,7 +87,7 @@ export function subjectInspectorPresentation({
   conversationProjectId,
   conversationId,
 }: {
-  executions: ExecutionScope | null;
+  executions: ExecutionReadScope | null;
   understandingOpen: boolean;
   collaborationVisible: boolean;
   conversationProjectId: string;
@@ -115,7 +115,7 @@ export function useSubjectInspectorCommit(
     collaborationVisible,
   }: {
     contextKey: string;
-    executions: ExecutionScope | null;
+    executions: ExecutionReadScope | null;
     understandingOpen: boolean;
     collaborationVisible: boolean;
   },
@@ -300,7 +300,7 @@ export function createSubjectInspectorCommands({
       conversationId: executions?.conversationId ?? conversationId,
       artifactId: null,
     });
-  const selectScope = (scope: ExecutionScope) => {
+  const selectScope = (scope: ExecutionReadScope) => {
     selectSubject("activity");
     setExecutions(scope);
   };

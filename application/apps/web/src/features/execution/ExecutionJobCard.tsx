@@ -15,6 +15,7 @@ export function ExecutionJobCard({
   branchNumber,
   busy,
   stopDisabled,
+  readOnly = false,
   resultAvailable,
   onReadResult,
   onStop,
@@ -25,6 +26,7 @@ export function ExecutionJobCard({
   branchNumber?: number;
   busy: boolean;
   stopDisabled: boolean;
+  readOnly?: boolean;
   resultAvailable: boolean;
   onReadResult: () => void;
   onStop: () => void;
@@ -116,7 +118,7 @@ export function ExecutionJobCard({
               </button>
             </Tooltip>
           )}
-          {stoppable && (
+          {stoppable && !readOnly && (
             <Tooltip label="停止此项执行">
               <button
                 type="button"
