@@ -1,0 +1,10 @@
+{
+  "name": "braces",
+  "version": "3.0.4-morphz.1",
+  "description": "braces 3.0.3 with Morphz's bounded-depth security patch",
+  "license": "MIT",
+  "main": "index.js",
+  "files": ["index.js", "lib", "LICENSE", "README.md", "PATCH.md"],
+  "engines": { "node": ">=8" },
+  "dependencies": { "fill-range": "^7.1.1" }
+}

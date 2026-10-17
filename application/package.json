@@ -100,5 +100,10 @@
   "allowScripts": {
     "electron@44.2.0": true,
     "esbuild@0.28.2": true
+  },
+  "overrides": {
+    "mammoth": {
+      "argparse": "2.0.1"
+    }
   }
 }
