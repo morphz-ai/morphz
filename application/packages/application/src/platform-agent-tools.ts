@@ -182,6 +182,32 @@ export class PlatformAgentTools {
     return !!this.domain.reader && !!this.domain.readerOcr;
   }
 
+  /** Current metadata is separate from the immutable submitted input. Resolve
+   * it from the authenticated invocation, never a caller-selected project. */
+  inputProject(route: HostInvocation, scope: ToolScope) {
+    return this.domain.authority.withInvocation(
+      route,
+      async (actor, source) => {
+        if (
+          !scope.platform ||
+          source.projectId !== scope.projectId ||
+          (scope.platformSource !== undefined &&
+            scope.platformSource !== source.kind) ||
+          (source.inputId ?? undefined) !== scope.inputId
+        )
+          throw new DomainError("forbidden", "项目来源与当前输入不一致。");
+        const project = await this.domain.work.getProject(actor, {
+          projectId: source.projectId,
+        });
+        return {
+          id: project.id,
+          title: project.title,
+          revision: project.revision,
+        };
+      },
+    );
+  }
+
   /** read-input must not become a back door to a stopped fixed workflow. */
   async assertInputReadable(route: HostInvocation) {
     const studio = this.domain.content.studio;
@@ -870,6 +896,7 @@ export class PlatformAgentTools {
           generating: false,
           inputId,
           projectId,
+          project: await this.inputProject(route, scope),
           body: input?.text ?? "",
           selection:
             typeof input?.selection === "string" ? input.selection : "",

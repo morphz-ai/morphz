@@ -65,14 +65,19 @@ function renderMessages(history: PlatformHistory, live: LiveMessage[] = []) {
   );
 }
 
-test("仅按同一输入和精确 Plan/effect 来源标记求值已用于回复，不按正文或字段名推断", () => {
+test("仅按同一输入、精确 Plan/effect 与值路径替换预览，不按正文或字段名推断", () => {
   const source = { plan_execution_id: "plan-1", effect_sequence: 3 };
   const evaluation = {
     ...base,
     id: "evaluation:a",
     kind: "evaluation" as const,
     publicationKey: undefined,
-    evaluation: { activationId: "a", validation: "accepted" as const, source },
+    evaluation: {
+      activationId: "a",
+      validation: "accepted" as const,
+      source,
+      textPath: ["answer"],
+    },
   } satisfies LiveMessage;
   const reply = { ...final, resultSource: { ...source, path: ["answer"] } };
   const otherEffect = {
@@ -89,8 +94,13 @@ test("仅按同一输入和精确 Plan/effect 来源标记求值已用于回复�
     id: "evaluation:c",
     inputId: "another-input",
   } satisfies LiveMessage;
+  const otherPath = {
+    ...evaluation,
+    id: "evaluation:d",
+    evaluation: { ...evaluation.evaluation, textPath: ["different"] },
+  } satisfies LiveMessage;
   const messages = renderMessages(
-    page([evaluation, otherEffect, otherInput, reply]),
+    page([evaluation, otherEffect, otherInput, otherPath, reply]),
   );
   assert.equal(
     messages.find((message) => message.id === evaluation.id)?.evaluation
@@ -108,8 +118,13 @@ test("仅按同一输入和精确 Plan/effect 来源标记求值已用于回复�
     undefined,
   );
   assert.equal(
+    messages.find((message) => message.id === otherPath.id)?.evaluation
+      ?.consumed,
+    undefined,
+  );
+  assert.equal(
     messages.length,
-    4,
+    5,
     "a consumed result remains inspectable, never deleted",
   );
 });

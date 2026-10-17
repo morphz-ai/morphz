@@ -9,8 +9,42 @@ export const evaluationResultSchema = z.object({
   validation: z.enum(["pending", "accepted", "rejected"]),
   source: evaluationSourceSchema.optional(),
   consumed: z.boolean().optional(),
+  // Application-authored view metadata, never an instruction from a model.
+  textPath: z.array(z.string().min(1).max(128)).max(8).optional(),
 });
 export type EvaluationResult = z.infer<typeof evaluationResultSchema>;
+
+/** One readable value for rendering, copying and sharing. Unknown structured
+ * results remain data; a field named reply alone never becomes a reply. */
+export function evaluationDisplayValue(message: {
+  text: string;
+  evaluation?: EvaluationResult;
+}): unknown {
+  let value = evaluationPreview(message.text).value;
+  for (const key of message.evaluation?.textPath ?? []) {
+    if (!value || typeof value !== "object") return undefined;
+    const tagged = (value as { $yao?: { fields?: unknown } }).$yao;
+    if (tagged?.fields && typeof tagged.fields === "object")
+      value = tagged.fields;
+    if (!Object.hasOwn(value as object, key)) return undefined;
+    value = (value as Record<string, unknown>)[key];
+  }
+  if (message.evaluation?.textPath && typeof value !== "string")
+    return undefined;
+  return value;
+}
+
+export function evaluationDisplayText(message: {
+  text: string;
+  evaluation?: EvaluationResult;
+}): string {
+  const value = evaluationDisplayValue(message);
+  return typeof value === "string"
+    ? value
+    : value === undefined
+      ? ""
+      : JSON.stringify(value, null, 2);
+}
 
 /** Presentation only. Partial values are NEVER an admitted Yao value. This
  * bounded prefix reader decodes actual JSON string escapes without inventing
@@ -120,4 +154,54 @@ export function evaluationSourceKey(value: unknown): string | null {
         parsed.data.effect_sequence,
       ])
     : null;
+}
+
+/** A logical infer can span several scheduler activations (e.g. tool reads).
+ * They update one value, not one new chat row per physical activation. */
+export function evaluationMessageId(
+  activationId: string,
+  source: unknown,
+  rootId: string | null | undefined,
+): string {
+  const key = evaluationSourceKey(source);
+  return key
+    ? `evaluation:${encodeURIComponent(rootId ?? "")}:${encodeURIComponent(key)}`
+    : `evaluation:${activationId}`;
+}
+
+export function coalesceEvaluationMessages<
+  T extends {
+    id: string;
+    kind: string;
+    createdAt: string;
+    evaluation?: EvaluationResult;
+  },
+>(messages: T[]): T[] {
+  const result: T[] = [];
+  const indexes = new Map<string, number>();
+  for (const message of messages) {
+    const index =
+      message.kind === "evaluation" ? indexes.get(message.id) : undefined;
+    if (index === undefined) {
+      if (message.kind === "evaluation") indexes.set(message.id, result.length);
+      result.push(message);
+      continue;
+    }
+    const previous = result[index]!;
+    const rank = (value: T) =>
+      value.evaluation?.validation === "accepted"
+        ? 2
+        : value.evaluation?.validation === "rejected"
+          ? 1
+          : 0;
+    const selected = rank(previous) > rank(message) ? previous : message;
+    result[index] = {
+      ...selected,
+      createdAt:
+        previous.createdAt < message.createdAt
+          ? previous.createdAt
+          : message.createdAt,
+    };
+  }
+  return result;
 }

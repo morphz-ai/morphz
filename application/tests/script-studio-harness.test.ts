@@ -18,6 +18,24 @@ test("两种 Host 工具说明都符合真实 Runtime 的 16000 字节上限", (
   }
 });
 
+test("Host 模型工具契约保持稳定：项目读取只扩充返回数据，不改工具名称、schema 或说明", () => {
+  assert.deepEqual(
+    workToolDefinitions.map((definition) => ({
+      name: definition.name,
+      sha256: createHash("sha256")
+        .update(JSON.stringify(definition))
+        .digest("hex"),
+    })),
+    [
+      {
+        name: "host_morphz",
+        sha256:
+          "c9d2f16259949f5124d2d45992ce9672b55fcc966036f8eb451ff1e55a8e5fef",
+      },
+    ],
+  );
+});
+
 test("真实素材读取证据解码 JSON 后比较原文，不把换行转义误判为未读取", () => {
   const text = '原文第一行\n第二行："铜钥匙"，不是模型回显。';
   const receipt = {
@@ -84,7 +102,7 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
   );
   assert.deepEqual(scriptStudioApplication.harness, {
     id: "morphz.script-studio",
-    version: "2.2.0",
+    version: "2.3.0",
   });
   assert.equal(
     createHash("sha256")
@@ -112,9 +130,13 @@ test("编剧包按新版本发布，1.0.0 字节不变；方法与业务权限�
       .digest("hex"),
     "31118476c3dedef7c95a18d2b1545b9c8ed749f7fca113e1258fe8c941246aaa",
   );
-  assert.match(source, /\(version "2\.2\.0"\)/);
+  assert.match(source, /\(version "2\.3\.0"\)/);
   assert.doesNotMatch(source, /\(entry-result\b/);
   for (const [version, hash] of [
+    [
+      "2.2.0",
+      "38b9a686c6754658f924aa44599e7d8fe5efcd70d18d268792491c2840fc75ce",
+    ],
     [
       "1.4.0",
       "707a8d5c619bc285a91543cd388f7c5fc596d4aa2a88625319378039664b9828",
@@ -234,7 +256,7 @@ test("新正文报告原子写入与投影事实，旧输入保持候选兼容�
   assert.doesNotMatch(delivery, /已执行自审次数；ok=false/);
 });
 
-test("新输入绑定 2.2.0；历史请求和回执重试保留原 Harness 版本", async () => {
+test("新输入绑定 2.3.0；历史请求和回执重试保留原 Harness 版本", async () => {
   const f = await platformRuntimeHostFixture();
   try {
     const command = {

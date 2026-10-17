@@ -17,6 +17,7 @@ import { WorkspaceStore } from "../packages/application/src/store.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { localAccess } from "../packages/core/src/model.js";
 import { scriptStudioApplication } from "../packages/core/src/applications.js";
+import { evaluationMessageId } from "../packages/core/src/evaluation-result.js";
 import {
   runtimeAgentTools,
   type HostInvocation,
@@ -2016,7 +2017,13 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       conversationId: spaces.dialogueId,
     });
     const evaluated = evaluationHistory.runtime.messages.find(
-      (message) => message.id === "evaluation:actual-infer-activation",
+      (message) =>
+        message.id ===
+        evaluationMessageId(
+          "actual-infer-activation",
+          { plan_execution_id: "actual-plan", effect_sequence: 1 },
+          inferRoot,
+        ),
     );
     assert.equal(evaluated?.kind, "evaluation");
     assert.equal(evaluated?.evaluation?.validation, "accepted");

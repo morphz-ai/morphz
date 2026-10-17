@@ -154,7 +154,13 @@ export function conversationMessages(
     result.flatMap((message) => {
       const source = evaluationSourceKey(message.resultSource);
       return message.kind === "reply" && message.inputId && source
-        ? [JSON.stringify([message.inputId, source])]
+        ? [
+            JSON.stringify([
+              message.inputId,
+              source,
+              message.resultSource?.path ?? [],
+            ]),
+          ]
         : [];
     }),
   );
@@ -163,7 +169,13 @@ export function conversationMessages(
     return message.evaluation &&
       message.inputId &&
       source &&
-      consumed.has(JSON.stringify([message.inputId, source]))
+      consumed.has(
+        JSON.stringify([
+          message.inputId,
+          source,
+          message.evaluation.textPath ?? [],
+        ]),
+      )
       ? { ...message, evaluation: { ...message.evaluation, consumed: true } }
       : message;
   });

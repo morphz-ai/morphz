@@ -2509,7 +2509,9 @@ export class ApplicationSession {
           // inputs and legacy Client carriers keep their original semantics.
           submissionMode:
             application?.id === scriptStudioApplication.id &&
-            ["2.0.0", "2.1.0", "2.2.0"].includes(application.harness?.version ?? "")
+            ["2.0.0", "2.1.0", "2.2.0", "2.3.0"].includes(
+              application.harness?.version ?? "",
+            )
               ? "current"
               : "candidate",
         });

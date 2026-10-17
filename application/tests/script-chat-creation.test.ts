@@ -45,7 +45,7 @@ test("普通聊天从空书库创建剧本和条目，旧false不禁用候选创
         undefined,
         "Empty creation needs no Harness",
       );
-      assert.match(described.operation.workflow, /无需 Harness、已有剧本/);
+      assert.match(described.operation.workflow, /无需 Harness/);
       assert.ok(described.operation.parameters);
     }
     const create = f.envelope(

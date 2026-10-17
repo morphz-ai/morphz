@@ -974,21 +974,15 @@ body:has(dialog[open]) .cognitive-application-frame {
   background: currentColor;
 }
 .response-placeholder[data-animated="true"] .response-dots i,
-.evaluation-message > summary[data-animated="true"] .response-dots i {
+.evaluation-body .response-dots[data-animated="true"] i {
   animation: response-waiting-pulse 1.4s ease-in-out infinite;
 }
 .response-placeholder[data-animated="true"] .response-dots i:nth-child(2),
-.evaluation-message
-  > summary[data-animated="true"]
-  .response-dots
-  i:nth-child(2) {
+.evaluation-body .response-dots[data-animated="true"] i:nth-child(2) {
   animation-delay: 160ms;
 }
 .response-placeholder[data-animated="true"] .response-dots i:nth-child(3),
-.evaluation-message
-  > summary[data-animated="true"]
-  .response-dots
-  i:nth-child(3) {
+.evaluation-body .response-dots[data-animated="true"] i:nth-child(3) {
   animation-delay: 320ms;
 }
 @keyframes response-waiting-pulse {
@@ -1003,7 +997,7 @@ body:has(dialog[open]) .cognitive-application-frame {
 }
 @media (prefers-reduced-motion: reduce) {
   .response-placeholder[data-animated="true"] .response-dots i,
-  .evaluation-message > summary[data-animated="true"] .response-dots i {
+  .evaluation-body .response-dots[data-animated="true"] i {
     animation: none;
   }
 }
@@ -1334,32 +1328,10 @@ body:has(dialog[open]) .cognitive-application-frame {
   width: 94%;
   margin-bottom: 8px;
 }
-.evaluation-message {
-  border-inline-start: 2px solid var(--line);
-  padding-inline-start: 12px;
+.evaluation-body {
   min-width: 0;
 }
-.evaluation-message > summary {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: fit-content;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 24px;
-  cursor: pointer;
-}
-.evaluation-message > summary small {
-  font-size: 11px;
-}
-.evaluation-chevron {
-  flex: 0 0 auto;
-}
-.evaluation-message[open] > summary .evaluation-chevron {
-  transform: rotate(90deg);
-}
 .evaluation-value {
-  padding-block: 4px 0;
   overflow-wrap: anywhere;
 }
 .evaluation-value dl,
@@ -1451,6 +1423,11 @@ body:has(dialog[open]) .cognitive-application-frame {
 .conversation-message[data-stream-active="true"]
   .reply-content
   > pre:last-child
+  > code::after,
+.conversation-message[data-stream-active="true"]
+  .reply-content
+  > .markdown-code-block:last-child
+  > pre
   > code::after,
 .conversation-message[data-stream-active="true"]
   .reply-content

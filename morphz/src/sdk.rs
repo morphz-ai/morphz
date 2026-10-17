@@ -2921,6 +2921,33 @@ impl MorphzSdk {
         Ok(descriptor)
     }
 
+    /// Install into this live Runtime's existing registry. The same immutable
+    /// catalog, validation and retention rules apply as to offline packages;
+    /// this never starts work, restarts workers or rebinds existing work.
+    pub async fn install_harness_source(
+        &self,
+        source: &str,
+        expected_artifact_hash: Option<&str>,
+    ) -> SdkResult<serde_json::Value> {
+        if source.len() > crate::harness_package::MAX_HARNESS_INSTALL_SOURCE_BYTES {
+            return Err(SdkError::new(
+                SdkErrorCode::ResourceExhausted,
+                "Harness source exceeds the installation limit",
+            ));
+        }
+        let package = HarnessPackage::from_source("uploaded.hns", source)
+            .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))?;
+        if expected_artifact_hash.is_some_and(|expected| expected != package.artifact_hash) {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Harness artifact hash does not match the supplied source",
+            ));
+        }
+        let artifact_hash = package.artifact_hash.clone();
+        let descriptor = self.install_harness_package(package).await?;
+        Ok(serde_json::json!({"harness":descriptor,"artifact_hash":artifact_hash}))
+    }
+
     pub fn list_harnesses(&self) -> Vec<HarnessDescriptor> {
         self.runtime.harnesses()
     }

@@ -24,6 +24,9 @@ use sha2::{Digest, Sha256};
 pub const HARNESS_PACKAGE_TOPIC: &str = "runtime/harness_package_registered";
 pub const HARNESS_BINDING_TOPIC: &str = "runtime/harness_binding";
 pub const EVALUATION_HARNESS_BINDING_TOPIC: &str = "runtime/evaluation_harness_binding";
+/// Bounded source transport for operator-driven live installation. No remote
+/// filesystem path or executable admission is implied by installing a package.
+pub const MAX_HARNESS_INSTALL_SOURCE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug)]
 pub struct HarnessPackageError {

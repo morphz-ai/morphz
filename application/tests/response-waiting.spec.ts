@@ -570,7 +570,10 @@ test("输出间歇末尾三点继续运动，结束与断线撤下；减少动�
   for (const [source, selector] of [
     ["- 列表末尾", ".reply-content > ul:last-child > li:last-child"],
     ["> 引用末尾", ".reply-content > blockquote:last-child > p:last-child"],
-    ["```txt\n代码末尾\n```", ".reply-content > pre:last-child > code"],
+    [
+      "```txt\n代码末尾\n```",
+      ".reply-content > .markdown-code-block:last-child > pre > code",
+    ],
     [
       "| 列 |\n| --- |\n| 表格末尾 |",
       ".reply-content > .markdown-table-scroll:last-child",
@@ -578,10 +581,12 @@ test("输出间歇末尾三点继续运动，结束与断线撤下；减少动�
   ]) {
     await f.stream(source!);
     await expect
-      .poll(() =>
-        reply
-          .locator(selector!)
-          .evaluate((el) => getComputedStyle(el, "::after").animationName),
+      .poll(
+        () =>
+          reply
+            .locator(selector!)
+            .evaluate((el) => getComputedStyle(el, "::after").animationName),
+        { message: `真实流式标记：${source}` },
       )
       .toBe("stream-activity");
   }

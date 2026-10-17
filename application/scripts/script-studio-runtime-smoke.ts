@@ -47,7 +47,13 @@ const harnessFile = fileURLToPath(
   new URL("../harnesses/script-studio.hns", import.meta.url),
 );
 const harnessRef = scriptStudioApplication.harness!;
-const discussionOnly = process.argv.includes("--discussion-only");
+const projectDiscussion = process.argv.includes("--project-discussion");
+const discussionOnly =
+  process.argv.includes("--discussion-only") || projectDiscussion;
+const projectProbeText =
+  "本项目面向中学生讲解深海生态。\n" + "后续材料按需分页。".repeat(30);
+let projectReadStep = 0;
+let projectReply = "先讨论，不保存候选。";
 const requestedFault = process.argv
   .find((arg) => arg.startsWith("--fault="))
   ?.slice(8);
@@ -162,6 +168,7 @@ const logicalModelCalls = new Map<
   string,
   { stage: string; round: number; attempts: number }
 >();
+let hostInferenceToolContract: string | undefined;
 const branchEvidence: {
   scenario: string;
   stages: string[];
@@ -210,6 +217,17 @@ const provider = createServer(async (req, res) => {
         "discussion",
         "ordinary discussion must not enter a second model relay",
       );
+    if (["discussion", "prepare"].includes(stage)) {
+      const fingerprint = createHash("sha256")
+        .update(JSON.stringify(input.tools))
+        .digest("hex");
+      hostInferenceToolContract ??= fingerprint;
+      assert.equal(
+        fingerprint,
+        hostInferenceToolContract,
+        "Ordinary discussion, project reads and preparation share an unchanged tool contract",
+      );
+    }
     const requestId =
       stage === "select"
         ? `select-${selectionStep}`
@@ -250,9 +268,10 @@ const provider = createServer(async (req, res) => {
         tools.every(
           (name: string) =>
             name === "no_reply" ||
-            (stage === "prepare" && name === "host_morphz"),
+            (["discussion", "prepare"].includes(stage) &&
+              name === "host_morphz"),
         ),
-        `Only preparation may use Host tools; creative steps cannot bypass the Plan (stage=${stage}, tools=${tools.join(",")})`,
+        `Discussion reads and preparation may use Host tools; creative steps cannot bypass the Plan (stage=${stage}, tools=${tools.join(",")})`,
       );
     }
     if (internal)
@@ -311,6 +330,63 @@ const provider = createServer(async (req, res) => {
         },
         "tool_calls",
       );
+    if (projectDiscussion && stage === "discussion") {
+      assert.ok(
+        tools.includes("host_morphz"),
+        "Discussion has actual bounded Host reads",
+      );
+      const step = projectReadStep++;
+      const last = input.messages
+        .filter((m: { role: string }) => m.role === "tool")
+        .at(-1);
+      const observation = last ? JSON.parse(last.content) : undefined;
+      const result = observation?.result
+        ? typeof observation.result === "string"
+          ? JSON.parse(observation.result)
+          : observation.result
+        : observation;
+      if (step === 0) return call("host_morphz", { action: "read-input" });
+      if (step === 1) {
+        assert.equal(result.project.id, "first-project");
+        assert.equal(result.project.title, "TEST 合成剧本工序");
+        assert.ok(
+          !JSON.stringify(result).includes("后续材料按需分页"),
+          "No prefilled file bodies",
+        );
+        return call("host_morphz", { action: "list", limit: 50 });
+      }
+      if (step === 2) {
+        assert.ok(!JSON.stringify(result).includes("后续材料按需分页"));
+        const document = result.items.find(
+          (entry: { title: string }) =>
+            entry.title === "TEST 项目简介 Human 原件",
+        );
+        assert.ok(
+          document,
+          "The complete authorized catalog includes Human documents",
+        );
+        return call("host_morphz", {
+          action: "read",
+          artifactId: document.id,
+          revision: 1,
+          offset: 0,
+          limit: 24,
+        });
+      }
+      assert.equal(step, 3, "A bounded read, not a full-document replay loop");
+      assert.equal(result.text, projectProbeText.slice(0, 24));
+      assert.equal(result.hasMore, true);
+      projectReply =
+        "当前项目是 TEST 合成剧本工序。已按需读取项目简介：" + result.text;
+      return respond({
+        role: "assistant",
+        content: JSON.stringify({
+          execute: false,
+          reply: projectReply,
+          task: "",
+        }),
+      });
+    }
     if (stage === "select") {
       const step = selectionStep++;
       if (step === 0)
@@ -724,13 +800,14 @@ try {
       ),
     ]);
   }
-  cli(["harness", "install", harnessFile]);
+  if (!projectDiscussion) cli(["harness", "install", harnessFile]);
   const registered = cli(["harness", "list"]);
-  assert.ok(
-    registered.includes(harnessRef.id) &&
-      registered.includes(harnessRef.version),
-    "Package must be listed by a second process reading the persisted registry",
-  );
+  if (!projectDiscussion)
+    assert.ok(
+      registered.includes(harnessRef.id) &&
+        registered.includes(harnessRef.version),
+      "Package must be listed by a second process reading the persisted registry",
+    );
   if (!discussionOnly)
     assert.ok(
       ["1.0.0", "1.1.0", "1.1.1", "1.2.0", "1.2.1", "1.3.0"].every(
@@ -771,6 +848,44 @@ try {
   // No production account, credential, or Runtime configuration is consulted.
   const accountUrl = `http://127.0.0.1:${runtimePort}/api/agents/default-agent/provider-accounts`;
   const operatorHeaders = { Authorization: `Bearer ${runtimeToken}` };
+  if (projectDiscussion) {
+    const pid = runtime.pid;
+    const base = `http://127.0.0.1:${runtimePort}`;
+    const before = await (
+      await fetch(base + "/api/status", { headers: operatorHeaders })
+    ).json();
+    const catalogBefore = await (
+      await fetch(base + "/api/runtime/harnesses", { headers: operatorHeaders })
+    ).json();
+    assert.ok(
+      !catalogBefore.harnesses.some(
+        (entry: { id: string }) => entry.id === harnessRef.id,
+      ),
+    );
+    const first = JSON.parse(
+      cli(["harness", "install", harnessFile, "--server-url=" + base]),
+    );
+    const retry = JSON.parse(
+      cli(["harness", "install", harnessFile, "--server-url=" + base]),
+    );
+    assert.deepEqual(
+      retry,
+      first,
+      "A lost install acknowledgement can retry the exact immutable package",
+    );
+    assert.equal(first.harness.version, harnessRef.version);
+    const after = await (
+      await fetch(base + "/api/status", { headers: operatorHeaders })
+    ).json();
+    assert.equal(
+      after.tool_count,
+      before.tool_count,
+      "Installing a Harness does not change model tools",
+    );
+    assert.equal(runtime.pid, pid);
+    assert.equal(runtime.exitCode, null);
+    assert.equal(providerCalls, 0, "Live installation never starts model work");
+  }
   const bound = await fetch(`${accountUrl}/stub`, {
     method: "PUT",
     headers: operatorHeaders,
@@ -829,6 +944,14 @@ try {
     kind: "episode",
     draft: sourceDraft,
   });
+  if (projectDiscussion)
+    await client.createDocument({
+      commandId: randomUUID(),
+      objectId: randomUUID(),
+      projectId: "first-project",
+      title: "TEST 项目简介 Human 原件",
+      markdown: projectProbeText,
+    });
   // Exercise the real first-party manifest. A fixture fallback would conceal a
   // missing production binding, so refuse it even when the package installed.
   assert.deepEqual(scriptStudioApplication.harness, harnessRef);
@@ -862,7 +985,9 @@ try {
       artifactRevision: null,
       selection: "",
       body: discussionOnly
-        ? "TEST 只讨论创意，不写稿、不保存、不创建对象。"
+        ? projectDiscussion
+          ? "TEST 这个项目做什么？请按需读取简介，不写稿、不保存、不创建对象。"
+          : "TEST 只讨论创意，不写稿、不保存、不创建对象。"
         : "TEST 合成编剧工序：只改写第一集固定版本并保存为新当前正文。不得当作真实创作质量验收。",
       targetActantId: "morphz-agent",
       applicationInstanceId,
@@ -886,8 +1011,11 @@ try {
         throw new Error(delivery.error ?? "discussion failed");
       return delivery?.state === "completed";
     }, "Single discussion result");
-    assert.equal(providerCalls, 1);
-    assert.deepEqual(stages, ["discussion"]);
+    assert.equal(providerCalls, projectDiscussion ? 4 : 1);
+    assert.deepEqual(
+      stages,
+      Array(projectDiscussion ? 4 : 1).fill("discussion"),
+    );
     assert.equal(logicalModelCalls.size, 1);
     const history = await client.history("first-project", "first-project");
     const messages = history.runtime.messages.filter(
@@ -895,11 +1023,16 @@ try {
     );
     const replies = messages.filter((message) => message.kind === "reply");
     assert.equal(replies.length, 1);
-    assert.equal(replies[0]!.text, "先讨论，不保存候选。");
+    assert.equal(replies[0]!.text, projectReply);
     assert.ok(replies[0]!.resultSource);
     const values = messages.filter((message) => message.kind === "evaluation");
     assert.equal(values.length, 1);
     assert.equal(values[0]!.evaluation?.validation, "accepted");
+    assert.deepEqual(
+      values[0]!.evaluation?.textPath,
+      ["reply"],
+      "Host projects the authenticated ScriptIntent contract, not a guessed JSON key",
+    );
     assert.equal(
       values[0]!.evaluation?.source?.plan_execution_id,
       replies[0]!.resultSource!.plan_execution_id,
@@ -915,6 +1048,8 @@ try {
       harness: harnessRef,
       provider: "synthetic-fixed-responses",
       providerCalls,
+      logicalInferenceCalls: logicalModelCalls.size,
+      projectReadVerified: projectDiscussion,
       inputId: receipt.entityId,
       evaluationId: values[0]!.id,
       replyId: replies[0]!.id,

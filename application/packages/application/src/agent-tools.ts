@@ -967,10 +967,14 @@ export class AgentTools {
           envelope.invocation,
         );
         const input = await this.options.platformInput!(envelope.invocation);
+        const project = await this.options.platformAgent?.inputProject(
+          envelope.invocation,
+          scope,
+        );
         await this.options.platformAgent?.assertInputReadable(
           envelope.invocation,
         );
-        return { ok: true, input };
+        return { ok: true, input, ...(project ? { project } : {}) };
       })();
     }
     if (envelope.arguments.action === "connection-status") {

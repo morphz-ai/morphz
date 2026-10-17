@@ -1,18 +1,21 @@
 import type { ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
-import { evaluationPreview } from "../../../packages/core/src/evaluation-result.js";
+import { evaluationDisplayValue } from "../../../packages/core/src/evaluation-result.js";
 
 /** A result is readable evidence of a computation, not a claim that the
  * caller, its task, or an Objective has finished. Never execute returned code. */
 export function EvaluationMessage({
   message,
   renderText,
+  streaming,
 }: {
   message: LiveMessage;
   renderText: (text: string) => ReactNode;
+  streaming?: boolean;
 }) {
-  const preview = evaluationPreview(message.text);
+  const display = evaluationDisplayValue(message);
+  if (message.evaluation?.consumed || display === undefined || display === "")
+    return null;
   function value(node: unknown, depth = 0): ReactNode {
     if (typeof node === "string")
       return node ? renderText(node) : <code>""</code>;
@@ -27,6 +30,7 @@ export function EvaluationMessage({
         ? tagged.fields
         : node;
     const entries = Object.entries(fields as object).slice(0, 64);
+    if (!entries.length) return <code>{JSON.stringify(fields)}</code>;
     const body = (
       <dl>
         {entries.map(([key, child]) => (
@@ -48,50 +52,20 @@ export function EvaluationMessage({
       </details>
     );
   }
-  const status = message.evaluation?.consumed
-    ? "已用于回复"
-    : message.evaluation?.validation === "rejected"
-      ? "校验未通过"
-      : message.incomplete
-        ? "输出中断"
-        : message.streaming
-          ? "生成中"
-          : message.evaluation?.validation === "accepted"
-            ? "已校验"
-            : "已生成";
   return (
-    <details
-      className="evaluation-message"
-      open={!message.evaluation?.consumed}
-      data-validation={message.evaluation?.validation}
-    >
-      <summary
-        data-animated={
-          !!(
-            message.streaming &&
-            !message.incomplete &&
-            !message.evaluation?.consumed
-          )
-        }
-      >
-        <ChevronRight
-          className="evaluation-chevron"
-          size={12}
-          aria-hidden="true"
-        />
-        <span>求值结果</span>
-        <small>{status}</small>
-        {message.streaming &&
-          !message.incomplete &&
-          !message.evaluation?.consumed && (
-            <span className="response-dots" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </span>
-          )}
-      </summary>
-      <div className="evaluation-value">{value(preview.value)}</div>
-    </details>
+    <div className="evaluation-body">
+      <div className="evaluation-value">{value(display)}</div>
+      {(streaming ?? message.streaming) && !message.incomplete && (
+        <span
+          className="response-dots"
+          data-animated="true"
+          aria-label="正在回复"
+        >
+          <i />
+          <i />
+          <i />
+        </span>
+      )}
+    </div>
   );
 }

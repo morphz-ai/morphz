@@ -125,6 +125,11 @@ async fn main() -> Result<(), AppError> {
         }
         return harness_authoring_command(&invocation);
     }
+    if invocation.command_path() == ["harness", "install"]
+        && option_value(&invocation, "server-url").is_some()
+    {
+        return install_harness_remote(&invocation).await;
+    }
     if invocation.command_path() == ["storage", "session-io-fence"] {
         if let Some(cwd) = option_value(&invocation, "cwd") {
             std::env::set_current_dir(cwd)?;
@@ -3798,6 +3803,79 @@ fn harness_authoring_command(invocation: &Invocation) -> Result<(), AppError> {
     }
     if report["valid"] != true {
         return Err("Harness check failed; no package was installed or executed".into());
+    }
+    Ok(())
+}
+
+async fn install_harness_remote(invocation: &Invocation) -> Result<(), AppError> {
+    if let Some(cwd) = option_value(invocation, "cwd") {
+        std::env::set_current_dir(cwd)?;
+    }
+    let path = invocation
+        .prompt_args()
+        .first()
+        .ok_or("A .hns package path is required")?;
+    let package = HarnessPackage::load(path)?;
+    let base = reqwest::Url::parse(option_value(invocation, "server-url").unwrap())?;
+    if !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+        || !(base.scheme() == "https"
+            || (base.scheme() == "http"
+                && matches!(base.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))))
+    {
+        return Err("Harness installation requires HTTPS or a loopback HTTP Runtime URL without embedded credentials".into());
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let mut request = client.post(base.join("/api/runtime/harnesses")?)
+        .json(&serde_json::json!({"source":package.loadable_source(),"artifact_hash":package.artifact_hash}));
+    let token_name = option_value(invocation, "token-env").unwrap_or("MORPHZ_DASHBOARD_TOKEN");
+    if !token_name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || token_name.is_empty()
+    {
+        return Err("Invalid operator credential environment variable name".into());
+    }
+    if let Ok(token) = std::env::var(token_name) {
+        if !token.trim().is_empty() {
+            request = request.bearer_auth(token);
+        }
+    }
+    let mut response = request.send().await?;
+    let status = response.status();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > 65536 {
+            return Err("Runtime installation receipt exceeds the limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if !status.is_success() {
+        return Err(format!(
+            "Live Harness installation failed ({status}): {}",
+            String::from_utf8_lossy(&bytes)
+        )
+        .into());
+    }
+    let receipt: serde_json::Value = serde_json::from_slice(&bytes)?;
+    if receipt["artifact_hash"].as_str() != Some(&package.artifact_hash)
+        || receipt["harness"]["id"].as_str() != Some(&package.manifest.id)
+        || receipt["harness"]["version"].as_str() != Some(&package.manifest.version)
+    {
+        return Err("Runtime installation receipt does not match the exact package".into());
+    }
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&receipt)?);
+    } else {
+        println!(
+            "Installed {}@{} into the running Runtime",
+            package.manifest.id, package.manifest.version
+        );
     }
     Ok(())
 }

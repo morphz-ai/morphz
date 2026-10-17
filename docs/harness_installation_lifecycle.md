@@ -41,6 +41,37 @@ durable references before mounting work.
 
 ## Queries and transport
 
+### Live installation (operator control plane)
+
+Installing a Harness into a running Runtime must not require a restart. The
+operator uses `POST /api/runtime/harnesses` with `{source, artifact_hash?}`;
+`source` is compact, loadable Yao, bounded to 1 MiB after JSON decoding. A
+directory package can be normalized with `HarnessPackage::loadable_source()`;
+the server never reads a client-supplied filesystem path. The optional hash is
+checked against the normalized package before committing anything.
+
+The endpoint delegates to the existing Rust SDK/registry/persistence path. A
+same-version/different-hash install conflicts, and an exact acknowledgement-loss
+retry returns the same receipt. Invalid source, oversized input, wrong hash and
+non-operator credentials cannot install a package. `GET` on the same endpoint
+returns current and retained descriptors. Gateway/Principal credentials do not
+gain installation authority. These endpoints are management operations, not
+model tools, and do not change model tool schemas or start model work.
+
+```sh
+# MORPHZ_DASHBOARD_TOKEN is supplied by the existing operator environment.
+morphz harness install ./script-studio.hns --server-url=http://127.0.0.1:18804
+```
+
+This CLI path talks to the live process *before* constructing any local Runtime.
+`--token-env=NAME` can select an existing operator credential variable; no token
+is accepted in command arguments or URLs, and redirects are not followed. Remote
+transport requires HTTPS (loopback HTTP is allowed). Omitting `--server-url`
+retains offline catalog provisioning; it does not claim to refresh another
+process's in-memory registry. Installing/upgrading a package and upgrading the
+Runtime executable itself are separate operations. An old running executable
+without this endpoint cannot acquire it merely by changing files on disk.
+
 Use indexed Event topics, exact Thread root/Activation/Objectives identities,
 Plan status and Schedule owner identities; return distinct small exact references,
 not full history/source bodies to the UI. Reuse the existing Event-topic,

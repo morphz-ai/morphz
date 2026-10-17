@@ -33,7 +33,12 @@ import {
 import { workInputRequest } from "./session-io.js";
 import { scriptGenerationSchema } from "../../core/src/script-studio.js";
 import { internalModelOutput } from "../../core/src/model-publication.js";
-import { evaluationSourceSchema } from "../../core/src/evaluation-result.js";
+import {
+  evaluationSourceSchema,
+  evaluationMessageId,
+  coalesceEvaluationMessages,
+} from "../../core/src/evaluation-result.js";
+import { harnessOutputTextPath } from "./harness-output-presentation.js";
 import { readingInputSchema } from "../../core/src/reader.js";
 import {
   cognitiveAppObjectLocatorSchema,
@@ -1133,6 +1138,7 @@ export class RuntimeBridge {
       inputId: string;
       source: PlatformInputSource;
       evaluationOnly: boolean;
+      textPath?: string[];
     };
     const roots = new Map<string, Promise<RootRoute | null>>();
     // Baseline and live feed each retain at most 100 messages. Root provenance
@@ -1185,7 +1191,14 @@ export class RuntimeBridge {
             .parse(raw);
           const route = input_event ? parseRoot(input_event) : null;
           return route
-            ? { ...route, evaluationOnly: root?.topic === "chat/infer_request" }
+            ? {
+                ...route,
+                evaluationOnly: root?.topic === "chat/infer_request",
+                textPath: harnessOutputTextPath(
+                  root,
+                  route.source.application?.harness,
+                ),
+              }
             : null;
         })
         .catch((error: unknown) => {
@@ -1257,6 +1270,14 @@ export class RuntimeBridge {
             return [
               {
                 ...raw,
+                ...(raw.evaluation && route.textPath
+                  ? {
+                      evaluation: {
+                        ...raw.evaluation,
+                        textPath: route.textPath,
+                      },
+                    }
+                  : {}),
                 id: finalPublication
                   ? "publication:" + publicationKey
                   : raw.id.startsWith("stream:") && publicationKey
@@ -4123,7 +4144,11 @@ export class RuntimeBridge {
     const threadId = payloadString(item.event, "thread_id");
     const message: ConversationRuntime["messages"][number] = {
       id: evaluation
-        ? item.entry_id
+        ? evaluationMessageId(
+            payloadString(item.event, "activation_id") ?? "",
+            item.event.payload.inference_source,
+            item.root_turn_id,
+          )
         : !item.final_event && item.attempt_id
           ? "stream:" + item.attempt_id
           : item.entry_id,
@@ -4140,6 +4165,10 @@ export class RuntimeBridge {
       ...(evaluation
         ? {
             evaluation: {
+              textPath: harnessOutputTextPath(
+                item.root_event,
+                source.application?.harness,
+              ),
               activationId: payloadString(item.event, "activation_id") ?? "",
               validation:
                 item.event.payload.validation === "accepted"
@@ -4526,8 +4555,10 @@ export class RuntimeBridge {
         deliveries: local
           .filter((delivery) => visibleInputs.has(delivery.inputId))
           .map((delivery) => this.deliveryView(delivery)),
-        messages: pageItems.flatMap((item) =>
-          item.kind === "message" ? [item.value] : [],
+        messages: coalesceEvaluationMessages(
+          pageItems.flatMap((item) =>
+            item.kind === "message" ? [item.value] : [],
+          ),
         ),
       },
     };

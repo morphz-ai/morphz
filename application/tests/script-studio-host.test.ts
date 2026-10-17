@@ -202,7 +202,9 @@ async function messageDomainFixture() {
     if (request.url !== "/api/status") response.writeHead(404);
     response.end(JSON.stringify({ model: "isolated-script-model" }));
   });
-  await new Promise<void>((resolve) => modelServer.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) =>
+    modelServer.listen(0, "127.0.0.1", resolve),
+  );
   const config = {
     url: `http://127.0.0.1:${(modelServer.address() as { port: number }).port}`,
     token: "synthetic-test-only",
@@ -1086,7 +1088,7 @@ test("Yao 影响分析保存零问题报告，范围缺口不泄露原文，重�
   }
 });
 
-test("普通 Agent Host 新建正文旁路被领域拒绝，空条目回执可重开重试", async () => {
+test("普通 Agent Host 按用户请求直接创建正文，回执可重开重试且不要求候选采纳", async () => {
   const f = await domainFixture();
   try {
     const current = await f.overview();
@@ -1102,26 +1104,17 @@ test("普通 Agent Host 新建正文旁路被领域拒绝，空条目回执可�
         },
       });
     const before = await f.production();
-    const denied = request(
-      f.draft("TEST 不能直接写正文", {
-        text: "即使已许可模型处理，也要经过候选采纳。",
+    const allowed = request(
+      f.draft("TEST 直接写正文", {
+        text: "用户明确请求的正文，不要求候选采纳。",
       }),
     );
-    await assert.rejects(
-      async () => f.host.tools.call(denied),
-      /只能建立空条目/,
-    );
-    assert.deepEqual(await f.production(), before);
-    await f.host.reopen();
-    await assert.rejects(
-      async () => f.host.tools.call(denied),
-      /只能建立空条目/,
-    );
-    assert.deepEqual(await f.production(), before);
-    const allowed = request(f.draft("TEST 可恢复空条目"));
     const receipt = (await f.host.tools.call(allowed)) as { itemId: string };
     assert.equal((await f.production()).items.length, before.items.length + 1);
-    assert.equal((await f.item(receipt.itemId)).draft.text, "");
+    assert.equal(
+      (await f.item(receipt.itemId)).draft.text,
+      "用户明确请求的正文，不要求候选采纳。",
+    );
     await f.host.reopen();
     assert.deepEqual(await f.host.tools.call(allowed), receipt);
     assert.equal((await f.production()).items.length, before.items.length + 1);
@@ -1451,7 +1444,10 @@ test("结果恢复不绕过停止、成员撤权或原作迁出；旧模型开�
           resultId: candidate.candidateId,
         });
         assert.equal(recovered.kind, "candidate");
-        assert.equal(JSON.parse(recovered.resultJson).id, candidate.candidateId);
+        assert.equal(
+          JSON.parse(recovered.resultJson).id,
+          candidate.candidateId,
+        );
       } else {
         await assert.rejects(f.call({ action: "read-results" }), denied);
         await assert.rejects(
@@ -1565,7 +1561,7 @@ test("固定生成不能借通用对象工具或领域命令扩大范围、代�
           expectedActivityRevision: current.activityRevision,
         },
       }),
-      /固定生成请求只能提交候选/,
+      /固定生成请求只能按本次契约提交成果/,
     );
     const result = await f.call<{ candidateId: string }>({
       action: "submit-workflow",
@@ -1584,7 +1580,7 @@ test("固定生成不能借通用对象工具或领域命令扩大范围、代�
           decision: "accept",
         },
       }),
-      /固定生成请求只能提交候选/,
+      /固定生成请求只能按本次契约提交成果/,
     );
     const item = await f.item();
     await assert.rejects(
@@ -1598,7 +1594,7 @@ test("固定生成不能借通用对象工具或领域命令扩大范围、代�
           expectedWorkflowRevision: item.workflowRevision,
         },
       }),
-      /固定生成请求只能提交候选/,
+      /固定生成请求只能按本次契约提交成果/,
     );
     assert.equal((await f.item()).status, "draft");
     assert.equal((await f.item()).headRevision, 1);

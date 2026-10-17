@@ -761,6 +761,7 @@ Agent 通过紧凑索引为当前 Evaluation 选择 Harness
 
 ```bash
 morphz harness install ./coding.hns
+morphz harness install ./coding.hns --server-url=http://127.0.0.1:18804
 morphz harness list
 morphz harness show coding@1.0.0
 morphz --harness=coding@1.0.0 "修复当前项目的测试"
@@ -772,6 +773,12 @@ morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 首次模型请求前物化为 Evaluation Binding；`objective create` 则把 Objective
 可选默认值与新 Objective 原子创建。单文件与目录 `.hns` 使用同一个 Loader 和
 Registry。
+
+运行中的服务使用 `--server-url` 热安装，通过 Operator 管理 API 进入同一
+SDK/Registry，不创建第二个本地 Runtime、不重启服务、不改在途工作的版本绑定。
+原管理员凭据来自环境变量，不能作为 URL 或命令参数明文传入；详见
+`docs/harness_installation_lifecycle.md`。不指定服务地址仍用于离线目录预置，
+不能把写入持久目录说成另一进程已经加载。
 
 新版安装不会覆盖同 `id/version` 的不可变包，也不删除历史执行需要的旧版本。
 模型的 `harness_list` 对新工作只推荐同 ID 最高的已安装稳定 SemVer 版本；

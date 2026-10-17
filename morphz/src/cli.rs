@@ -41,6 +41,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "harness",
     "network",
     "server-url",
+    "token-env",
     "pairing-code",
     "node-name",
     "node-id",
@@ -2268,8 +2269,20 @@ fn harness_command(locale: Locale) -> Command {
                     .arg(
                         prompt_arg("PACKAGE", 1, Some(1))
                             .help(locale.text("Path to a .hns package", ".hns 包路径")),
-                    ),
-                "Example:\n  morphz harness install ./coding.hns",
+                    )
+                    .arg(local_value_arg(
+                        "server-url", "server-url", "URL", locale.text(
+                            "Install into the running Runtime without restarting it",
+                            "热安装到正在运行的 Runtime，不重启服务",
+                        ),
+                    ))
+                    .arg(local_value_arg(
+                        "token-env", "token-env", "NAME", locale.text(
+                            "Operator credential environment variable (default MORPHZ_DASHBOARD_TOKEN)",
+                            "管理员凭据环境变量（默认 MORPHZ_DASHBOARD_TOKEN）",
+                        ),
+                    ).requires("server-url")),
+                "Examples:\n  morphz harness install ./coding.hns\n  morphz harness install ./coding.hns --server-url=http://127.0.0.1:8080",
             ),
         ])
         .after_help(locale.text(
@@ -2642,6 +2655,29 @@ mod tests {
             chinese.option("update-version").unwrap().last_value(),
             Some("0.2.0")
         );
+    }
+
+    #[test]
+    fn harness_install_can_target_a_running_runtime_without_changing_model_options() {
+        let invocation = parse(&[
+            "harness",
+            "install",
+            "./test.hns",
+            "--server-url=http://127.0.0.1:8080",
+            "--token-env=TEST_OPERATOR",
+            "--format=json",
+        ]);
+        assert_eq!(invocation.command_path(), ["harness", "install"]);
+        assert_eq!(
+            invocation.option("server-url").unwrap().last_value(),
+            Some("http://127.0.0.1:8080")
+        );
+        assert_eq!(
+            invocation.option("token-env").unwrap().last_value(),
+            Some("TEST_OPERATOR")
+        );
+        assert_eq!(invocation.prompt_args(), ["./test.hns"]);
+        assert!(invocation.option("model").is_none());
     }
 
     #[test]

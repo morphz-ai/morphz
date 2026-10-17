@@ -9,6 +9,7 @@ import {
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
 import { EvaluationMessage } from "./EvaluationMessage.js";
+import { evaluationDisplayText } from "../../../packages/core/src/evaluation-result.js";
 import { copyText as copyMessage } from "./clipboard-text.js";
 import { Tooltip } from "./ui/Tooltip.js";
 import {
@@ -311,6 +312,11 @@ export function Conversation({
         reply: null,
       })),
       ...group.messages
+        .filter(
+          (m) =>
+            m.kind !== "evaluation" ||
+            (!m.evaluation?.consumed && evaluationDisplayText(m).trim()),
+        )
         .filter((m) => !onInspect || m.kind !== "tool")
         .filter((m) => m.kind === "tool" || m.text.trim())
         .map((reply) => ({
@@ -337,7 +343,8 @@ export function Conversation({
           (message) =>
             message.kind === "evaluation" &&
             message.streaming &&
-            message.text.trim(),
+            !message.evaluation?.consumed &&
+            evaluationDisplayText(message).trim(),
         ) ||
         !isPendingResponse({
           configured: runtime.configured,
@@ -1076,6 +1083,7 @@ export function Conversation({
                         {reply?.kind === "evaluation" ? (
                           <EvaluationMessage
                             message={reply}
+                            streaming={!!(streamConnected && reply.streaming)}
                             renderText={(text) => (
                               <SafeMarkdown
                                 state={state}
@@ -1129,7 +1137,11 @@ export function Conversation({
                           createdAt={createdAt}
                           client={client}
                           share={{
-                            text: item ? item.body : reply!.text,
+                            text: item
+                              ? item.body
+                              : reply!.kind === "evaluation"
+                                ? evaluationDisplayText(reply!)
+                                : reply!.text,
                             author: item
                               ? item.author.actantId === client.boot?.actantId
                                 ? "我"
@@ -1161,7 +1173,9 @@ export function Conversation({
                           text={
                             item
                               ? quotedInputText(item.body, item.textQuotes)
-                              : reply!.text
+                              : reply!.kind === "evaluation"
+                                ? evaluationDisplayText(reply!)
+                                : reply!.text
                           }
                         />
                         {item &&

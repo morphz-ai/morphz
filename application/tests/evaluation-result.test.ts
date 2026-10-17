@@ -3,11 +3,137 @@ import assert from "node:assert/strict";
 import {
   evaluationPreview,
   evaluationSourceKey,
+  evaluationDisplayText,
+  evaluationMessageId,
+  coalesceEvaluationMessages,
 } from "../packages/core/src/evaluation-result.js";
+import { harnessOutputTextPath } from "../packages/application/src/harness-output-presentation.js";
 import {
   LiveConversationProjection,
   type StreamEvent,
 } from "../packages/core/src/live-conversation.js";
+
+test("同一逻辑求值的工具续接只更新一条消息，晚到快照不覆盖校验终值，其他求值不合并", () => {
+  const source = { plan_execution_id: "same-plan", effect_sequence: 2 };
+  const id = evaluationMessageId("first", source, "root");
+  assert.equal(id, evaluationMessageId("continuation", source, "root"));
+  assert.notEqual(id, evaluationMessageId("first", source, "different-root"));
+  const projection = new LiveConversationProjection(() => ({
+    projectId: "p",
+    conversationId: "c",
+    artifactId: null,
+    inputId: "i",
+    rootId: "root",
+  }));
+  for (const [index, activation, topic, payload] of [
+    [
+      1,
+      "first",
+      "runtime/inference_value",
+      { text: '"已返回终值"', validation: "accepted" },
+    ],
+    [
+      2,
+      "continuation",
+      "runtime/model_evaluation_output",
+      { text: '"晚到的前缀"', complete: true },
+    ],
+    [3, "continuation", "plan/infer_result", { text: '"另一个未校验快照"' }],
+  ] as const)
+    projection.consume({
+      id: String(index),
+      topic,
+      timestamp: "2026-10-17T01:00:00Z",
+      sequence: index,
+      payload: {
+        activation_id: activation,
+        root_turn_id: "root",
+        inference_source: source,
+        ...payload,
+      },
+    });
+  assert.equal(projection.snapshot().length, 1);
+  assert.equal(projection.snapshot()[0]?.text, '"已返回终值"');
+  const terminal = projection.snapshot()[0]!;
+  const prefix = {
+    ...terminal,
+    createdAt: "2026-10-17T00:00:00Z",
+    text: "old",
+    evaluation: { ...terminal.evaluation!, validation: "pending" as const },
+  };
+  for (const order of [
+    [prefix, terminal],
+    [terminal, prefix],
+  ]) {
+    const merged = coalesceEvaluationMessages(order);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0]?.text, terminal.text);
+    assert.equal(merged[0]?.createdAt, prefix.createdAt);
+  }
+});
+
+test("普通讨论只投影实际 Harness 声明的正文，未知结构仍是数据而非靠 reply 字段猜测", () => {
+  const root = {
+    topic: "chat/infer_request",
+    payload: {
+      request: {
+        program:
+          '(infer (captures input) (returns ScriptIntent) "STAGE script-discussion")',
+      },
+    },
+  };
+  const harness = { id: "morphz.script-studio", version: "2.3.0" };
+  assert.deepEqual(harnessOutputTextPath(root, harness), ["reply"]);
+  assert.equal(
+    harnessOutputTextPath(root, { ...harness, id: "other" }),
+    undefined,
+  );
+  assert.equal(
+    harnessOutputTextPath({ ...root, topic: "chat/message" }, harness),
+    undefined,
+  );
+  assert.equal(
+    harnessOutputTextPath(
+      {
+        ...root,
+        payload: {
+          request: {
+            program:
+              '(infer (returns String) "mentions (returns ScriptIntent)")',
+          },
+        },
+      },
+      harness,
+    ),
+    undefined,
+  );
+  const text = '{"execute":false,"reply":"第一行\\n第二行正在';
+  const evaluation = {
+    activationId: "a",
+    validation: "pending" as const,
+    textPath: ["reply"],
+  };
+  assert.equal(
+    evaluationDisplayText({ text, evaluation }),
+    "第一行\n第二行正在",
+  );
+  assert.equal(
+    evaluationDisplayText({ text: '{"execute":false,', evaluation }),
+    "",
+  );
+  assert.match(evaluationDisplayText({ text }), /"execute": false/);
+  assert.equal(
+    evaluationDisplayText({ text: '"普通文字\\n仍可见' }),
+    "普通文字\n仍可见",
+  );
+  assert.equal(
+    evaluationDisplayText({
+      text: '{"$yao":{"fields":{"reply":"带类型包装"}}}',
+      evaluation,
+    }),
+    "带类型包装",
+  );
+});
 
 test("求值展示只解析数据前缀，解码换行和引号，不伪造终值", () => {
   const partial = evaluationPreview(

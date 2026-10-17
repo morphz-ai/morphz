@@ -1172,6 +1172,14 @@ impl Server {
                 get(handle_get_inference).put(handle_update_inference),
             )
             .route(
+                "/api/runtime/harnesses",
+                get(handle_list_harness_packages)
+                    .post(handle_install_harness_package)
+                    .layer(DefaultBodyLimit::max(
+                        crate::harness_package::MAX_HARNESS_INSTALL_SOURCE_BYTES * 6 + 8192,
+                    )),
+            )
+            .route(
                 "/api/agents",
                 get(handle_list_agents).post(handle_create_agent),
             )
@@ -1908,6 +1916,44 @@ struct DashboardStatusResponse {
     sdk_contract_version: &'static str,
     identity_mode: ServerIdentityMode,
     identity_provider_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallHarnessPackageRequest {
+    source: String,
+    #[serde(default)]
+    artifact_hash: Option<String>,
+}
+
+async fn handle_install_harness_package(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<InstallHarnessPackageRequest>,
+) -> Response {
+    // This is a control-plane operation, NOT an Agent tool. A gateway or an
+    // asserted end-user identity cannot install executable cognitive programs.
+    if !is_operator_authorized(&state, &headers, None) {
+        return unauthorized_response();
+    }
+    match state
+        .sdk
+        .install_harness_source(&request.source, request.artifact_hash.as_deref())
+        .await
+    {
+        Ok(receipt) => Json(receipt).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_list_harness_packages(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !is_operator_authorized(&state, &headers, None) {
+        return unauthorized_response();
+    }
+    Json(json!({"harnesses":state.sdk.list_harnesses(), "retained_harnesses":state.sdk.retained_harnesses()})).into_response()
 }
 
 async fn handle_status(
@@ -11176,6 +11222,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_harness_install_is_authenticated_bounded_and_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut state, runtime) =
+            test_state_at_with_workers(&directory.path().join("hot-install.sqlite"), false).await;
+        let state_mut = Arc::get_mut(&mut state).unwrap();
+        state_mut.auth_token = Some("operator-install".into());
+        state_mut.gateway_token = Some("gateway-install".into());
+        let source = r#"
+          (manifest (id hot-install) (version "1.0.0") (title "Hot install") (capabilities (tools)))
+          (contract (identity "Synthetic HTTP install"))
+          (eval (returns String) "Installed without activation")
+        "#;
+        let package =
+            crate::harness_package::HarnessPackage::from_source("test.hns", source).unwrap();
+        let hash = package.artifact_hash.clone();
+        let request = |source: &str, hash: Option<String>| {
+            Json(InstallHarnessPackageRequest {
+                source: source.into(),
+                artifact_hash: hash,
+            })
+        };
+        for token in [None, Some("gateway-install")] {
+            let mut headers = HeaderMap::new();
+            if let Some(token) = token {
+                headers.insert(
+                    header::AUTHORIZATION,
+                    HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
+                );
+            }
+            assert_eq!(
+                handle_install_harness_package(
+                    State(Arc::clone(&state)),
+                    headers,
+                    request(source, None)
+                )
+                .await
+                .status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert!(runtime.harnesses().iter().all(|h| h.id != "hot-install"));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer operator-install"),
+        );
+        assert_eq!(
+            handle_install_harness_package(
+                State(Arc::clone(&state)),
+                headers.clone(),
+                request(source, Some("sha256:wrong".into()))
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            handle_install_harness_package(
+                State(Arc::clone(&state)),
+                headers.clone(),
+                request("(manifest broken)", None)
+            )
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let oversized = "x".repeat(crate::harness_package::MAX_HARNESS_INSTALL_SOURCE_BYTES + 1);
+        assert_eq!(
+            handle_install_harness_package(
+                State(Arc::clone(&state)),
+                headers.clone(),
+                request(&oversized, None)
+            )
+            .await
+            .status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        for _ in 0..2 {
+            let response = handle_install_harness_package(
+                State(Arc::clone(&state)),
+                headers.clone(),
+                request(source, Some(hash.clone())),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 16384)
+                .await
+                .unwrap();
+            let receipt: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(receipt["harness"]["id"], "hot-install");
+            assert_eq!(receipt["artifact_hash"], hash);
+        }
+        let changed = source.replace("Installed without activation", "Changed same version");
+        assert_eq!(
+            handle_install_harness_package(
+                State(Arc::clone(&state)),
+                headers.clone(),
+                request(&changed, None)
+            )
+            .await
+            .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            state
+                .sdk
+                .get_harness("hot-install", "1.0.0")
+                .unwrap()
+                .version,
+            "1.0.0"
+        );
+        let catalog = runtime
+            .query_events(QueryFilter {
+                topic: Some(crate::harness_package::HARNESS_PACKAGE_TOPIC.into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            catalog
+                .iter()
+                .filter(|event| event.payload.get("harness_id") == Some(&json!("hot-install")))
+                .count(),
+            1
+        );
+        assert!(runtime
+            .query_events(QueryFilter {
+                topic: Some("chat/infer_request".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn session_io_capabilities_reports_live_exact_harnesses() {
         let (state, runtime) = test_state().await;
         let response =
@@ -11289,25 +11471,27 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        runtime
-            .pause_objective(&objective.id, objective.revision, "TEST pause")
-            .await
-            .unwrap();
         let binding = runtime
             .objective_harness_binding(&objective.id)
             .await
             .unwrap()
             .unwrap();
-        runtime
-            .register_harness_package(
-                crate::harness_package::HarnessPackage::from_source(
-                    "retention-2.hns",
-                    &source.replace("1.0.0", "2.0.0"),
-                )
-                .unwrap(),
-            )
-            .await
-            .unwrap();
+        let installed = handle_install_harness_package(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Json(InstallHarnessPackageRequest {
+                source: source.replace("1.0.0", "2.0.0"),
+                artifact_hash: None,
+            }),
+        )
+        .await;
+        assert_eq!(installed.status(), StatusCode::OK);
+        let unchanged = runtime.get_objective(&objective.id).await.unwrap().unwrap();
+        assert_eq!(unchanged.status, objective.status);
+        assert_eq!(
+            unchanged.revision, objective.revision,
+            "Hot installation does not pause, complete or rebind admitted work"
+        );
         assert_eq!(
             state
                 .sdk

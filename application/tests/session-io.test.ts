@@ -151,7 +151,17 @@ test("read-input resolves only the actual invocation scope, never a model-select
     const request = f.envelope({ action: "read-input" }, route);
     const result = (await f.tools.call(request)) as {
       input: { input_id: string; text: string; selection: string };
+      project: { id: string; title: string; revision: number };
     };
+    assert.deepEqual(result.project, {
+      id: f.projectId,
+      title: "Agent 正式领域测试",
+      revision: 1,
+    });
+    assert.deepEqual(
+      result.input,
+      await f.readAcceptedInput(request.invocation),
+    );
     assert.equal(
       result.input.input_id,
       route.thread_id.slice("thread_".length),

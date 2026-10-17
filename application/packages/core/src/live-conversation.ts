@@ -3,6 +3,7 @@ import { internalModelOutput } from "./model-publication.js";
 import {
   evaluationResultSchema,
   evaluationSourceSchema,
+  evaluationMessageId,
 } from "./evaluation-result.js";
 import {
   providerRecoverySchema,
@@ -473,7 +474,11 @@ export class LiveConversationProjection {
     const p = e.payload;
     const activationId = str(p.activation_id);
     if (!activationId) return;
-    const id = `evaluation:${activationId}`;
+    const id = evaluationMessageId(
+      activationId,
+      p.inference_source,
+      str(p.root_turn_id),
+    );
     const previous = this.messages.get(id);
     const attemptId = str(p.model_attempt_id) || str(p.attempt_id);
     const attempt = this.evaluationAttempts.get(activationId);
