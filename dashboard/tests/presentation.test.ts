@@ -13,7 +13,7 @@ import {
   tintIdForLineage,
   toneForSlot,
 } from '../src/app/objectiveLineage.ts'
-import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, delegatedContextIds, formatLocalRfc3339, newestConversationEventsForLane, objectiveDisplayStatus, objectiveWaitRepresentsExecution, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
+import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, delegatedContextIds, formatLocalRfc3339, newestConversationEventsForLane, objectiveDisplayStatus, objectiveWaitRepresentsExecution, selectConversationEvents, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
 
 test('Objective presentation distinguishes supervised execution from external waiting', () => {
   assert.equal(objectiveDisplayStatus({ status: 'active', wait_condition: { kind: 'thread_group' } }), 'running')
@@ -196,6 +196,56 @@ test('dual-track presentation separates execution output without moving Runtime 
   assert.equal(conversationEventLane('chat/progress', {}), 'execution_output')
   assert.equal(conversationEventLane('chat/assistant_call', { terminal_outcome: false }), 'execution_output')
   assert.equal(conversationEventLane('runtime/tool_calls_selected', {}), null)
+})
+
+test('persisted model output remains visible after an execution stream ends', () => {
+  const publication = {
+    id: 'model_public_output_attempt-a',
+    topic: 'runtime/model_public_output',
+    payload: { attempt_id: 'attempt-a', thread_kind: 'execution', text: 'reported result' },
+  }
+  assert.equal(conversationEventKind(publication.topic, publication.payload), 'progress')
+  assert.equal(conversationEventLane(publication.topic, publication.payload), 'execution_output')
+  assert.deepEqual(selectConversationEvents([publication]), [publication])
+  assert.equal(conversationEventLane('runtime/model_public_output', {
+    attempt_id: 'attempt-b', thread_kind: 'dialogue_turn', text: 'draft answer',
+  }), 'dialogue')
+})
+
+test('only a same-attempt durable text outcome replaces persisted model output', () => {
+  const publication = {
+    id: 'publication', topic: 'runtime/model_public_output',
+    payload: { attempt_id: 'physical-a', thread_kind: 'execution', text: 'already shown' },
+  }
+  const unrelated = {
+    id: 'other-reply', topic: 'chat/reply',
+    payload: { model_attempt_id: 'physical-b', text: 'other result' },
+  }
+  const toolOnly = {
+    id: 'tool-only', topic: 'chat/assistant_call',
+    payload: { model_attempt_id: 'physical-a', tool_calls: [{ id: 'call-1' }] },
+  }
+  const final = {
+    id: 'final', topic: 'chat/reply',
+    payload: { model_attempt_id: 'physical-a', text: 'final answer' },
+  }
+  const hiddenCall = {
+    id: 'hidden-call', topic: 'chat/assistant_call',
+    payload: { model_attempt_id: 'physical-a', terminal_outcome: true, text: 'not presented' },
+  }
+  const partialProgress = {
+    id: 'partial-progress', topic: 'chat/progress',
+    payload: { model_attempt_id: 'physical-a', text: 'shorter' },
+  }
+  const completeProgress = {
+    id: 'complete-progress', topic: 'chat/progress',
+    payload: { model_attempt_id: 'physical-a', text: 'already shown' },
+  }
+  assert.deepEqual(selectConversationEvents([publication, unrelated, toolOnly]), [publication, unrelated, toolOnly])
+  assert.deepEqual(selectConversationEvents([publication, hiddenCall]), [publication, hiddenCall])
+  assert.deepEqual(selectConversationEvents([publication, partialProgress]), [publication, partialProgress])
+  assert.deepEqual(selectConversationEvents([publication, completeProgress]), [completeProgress])
+  assert.deepEqual(selectConversationEvents([publication, unrelated, toolOnly, final]), [unrelated, toolOnly, final])
 })
 
 test('split lanes receive independent newest-event windows', () => {

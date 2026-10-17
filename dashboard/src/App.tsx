@@ -192,6 +192,7 @@ import {
   newestConversationEventsForLane,
   objectiveDisplayStatus,
   objectiveWaitRepresentsExecution,
+  selectConversationEvents,
   type ConversationWindowLane,
 } from './app/presentation'
 import {
@@ -5075,10 +5076,14 @@ export default function App() {
             // not an arbitrary browser cap, owns the history boundary.
             return mergeSessionEvents(previous, [event])
           })
-          const causalId = typeof event.payload.activation_id === 'string'
-            ? event.payload.activation_id
-            : typeof event.payload.attempt_id === 'string' ? event.payload.attempt_id : ''
+          const causalId = event.topic === 'runtime/model_public_output'
+            ? (typeof event.payload.attempt_id === 'string' ? event.payload.attempt_id : '')
+            : typeof event.payload.activation_id === 'string'
+              ? event.payload.activation_id
+              : typeof event.payload.attempt_id === 'string' ? event.payload.attempt_id : ''
           const resolvesLiveAttempt = event.topic === 'chat/reply'
+            || (event.topic === 'runtime/model_public_output'
+              && typeof event.payload.text === 'string' && Boolean(event.payload.text.trim()))
             || event.topic === 'session/io_state'
             || event.topic === 'chat/no_reply'
             || event.topic === 'chat/cancelled'
@@ -5448,11 +5453,10 @@ export default function App() {
     [sessionEvents],
   )
   const conversationEvents = useMemo(
-    // runtime/model_stream is the transient draft; chat/progress is the
-    // durable form of model text emitted before tool execution. The websocket
-    // reducer clears the matching draft as soon as progress arrives, so the
-    // durable row must remain visible instead of making the text disappear.
-    () => sessionEvents.filter(event => eventKind(event) !== null),
+    // A public stream snapshot is durable even if the Activation later hands
+    // off to tools or waits without publishing a chat/reply. A same-attempt
+    // semantic text outcome replaces the snapshot, never an unrelated event.
+    () => selectConversationEvents(sessionEvents.filter(event => eventKind(event) !== null)),
     [sessionEvents],
   )
   const messageWindowForSession = messageWindow.sessionId === selectedSessionId

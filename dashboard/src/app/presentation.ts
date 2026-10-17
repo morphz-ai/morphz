@@ -72,6 +72,14 @@ export function conversationEventKind(
   if (topic === 'chat/user_message' || topic === 'chat/steering') return 'user'
   if (topic === 'session/io_output') return 'agent'
   if (topic === 'session/io_state') return 'system'
+  if (topic === 'runtime/model_public_output') {
+    // Stream text is already visible to the user. Its durable snapshot must
+    // survive physical completion even when no semantic reply follows.
+    if (payload.model_output_visibility === 'internal'
+      || typeof payload.text !== 'string' || !payload.text.trim()) return null
+    return payload.thread_kind === 'execution' ? 'progress'
+      : payload.thread_kind === 'delivery' ? 'background' : 'agent'
+  }
   if (topic === 'chat/reply') {
     // `thread_kind` is causal provenance, not presentation semantics. A
     // tool-assisted reply can originate from an Execution Thread while still
@@ -93,6 +101,29 @@ export function conversationEventKind(
   if (topic === 'chat/assistant_call' && payload.terminal_outcome !== true) return 'reasoning'
   if (topic === 'chat/cancelled') return 'system'
   return null
+}
+
+export function selectConversationEvents<T extends ConversationPresentationEvent>(events: ReadonlyArray<T>): T[] {
+  const outcomesByAttempt = new Map<string, T[]>()
+  for (const event of events) {
+    if (!['chat/reply', 'chat/outbound_message', 'chat/progress', 'chat/assistant_call'].includes(event.topic)
+      || (event.topic === 'chat/assistant_call' && event.payload.terminal_outcome === true)
+      || typeof event.payload.text !== 'string' || !event.payload.text.trim()) continue
+    const attemptId = (typeof event.payload.model_attempt_id === 'string'
+      ? event.payload.model_attempt_id : '')
+      || event.payload.attempt_id
+    if (typeof attemptId !== 'string' || !attemptId) continue
+    const outcomes = outcomesByAttempt.get(attemptId) ?? []
+    outcomes.push(event)
+    outcomesByAttempt.set(attemptId, outcomes)
+  }
+  return events.filter(event => {
+    if (event.topic !== 'runtime/model_public_output') return true
+    const attemptId = typeof event.payload.attempt_id === 'string' ? event.payload.attempt_id : ''
+    return !(outcomesByAttempt.get(attemptId) ?? []).some(outcome =>
+      outcome.topic === 'chat/reply' || outcome.topic === 'chat/outbound_message'
+      || outcome.payload.text === event.payload.text)
+  })
 }
 
 export function conversationEventLane(

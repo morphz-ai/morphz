@@ -13,6 +13,7 @@ import {
   visibleLiveModelAttempts,
   type ModelStreamBatchItem,
 } from '../src/modelStream.ts'
+import { conversationEventKind, selectConversationEvents } from '../src/app/presentation.ts'
 
 function stream(
   attemptId: string,
@@ -314,6 +315,33 @@ test('authoritative reconciliation removes a terminal physical attempt once its 
     cutoffMs: 0,
   })
   assert.equal(state.attempts['attempt-a'], undefined)
+})
+
+test('the durable publication takes over when a completed execution stream is reconciled away', () => {
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'stream_batch', sessionId: 'session-a', nowMs: 1,
+    items: [
+      stream('attempt-a', 'work-a', { kind: 'started' }),
+      stream('attempt-a', 'work-a', { kind: 'text_delta', text: 'reported result' }),
+      stream('attempt-a', 'work-a', { kind: 'completed' }),
+    ],
+  })
+  const publication = {
+    id: 'model_public_output_attempt-a', topic: 'runtime/model_public_output',
+    payload: { attempt_id: 'attempt-a', thread_kind: 'execution', text: 'reported result' },
+  }
+  state = modelStreamReducer(state, {
+    type: 'resolve', sessionId: 'session-a', causalId: 'attempt-a', nowMs: 2,
+  })
+  state = modelStreamReducer(state, {
+    type: 'reconcile', sessionId: 'session-a', activeActivationIds: [], cutoffMs: 3,
+  })
+  assert.deepEqual(state.attempts, {})
+  assert.deepEqual(
+    selectConversationEvents([publication].filter(event => conversationEventKind(event.topic, event.payload) !== null)),
+    [publication],
+  )
 })
 
 test('cancelled Activation immediately removes its draft and rejects late stream chunks', () => {

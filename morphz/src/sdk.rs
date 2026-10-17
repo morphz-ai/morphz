@@ -508,6 +508,9 @@ fn conversation_event_topics() -> &'static [&'static str] {
         "chat/session_signal",
         "chat/progress",
         "chat/assistant_call",
+        // Physical stream text is durable presentation evidence even when a
+        // tool handoff, wait or cancelled Activation produces no chat/reply.
+        "runtime/model_public_output",
         // These Events are the durable fallback for the live WebSocket tool
         // lifecycle. Omitting them makes a completed call remain "running"
         // forever whenever the browser misses its live Tool Output.
@@ -5183,6 +5186,22 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Arc;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn conversation_event_page_includes_durable_stream_publications() {
+        let filter = SessionEventsQuery {
+            session_id: "session".into(),
+            after_sequence: None,
+            before_sequence: None,
+            conversation_only: true,
+            limit: 250,
+        }
+        .into_filter()
+        .unwrap();
+        assert!(filter
+            .topics
+            .contains(&"runtime/model_public_output".to_string()));
+    }
 
     struct OfflineClient;
 

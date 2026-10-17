@@ -19941,7 +19941,7 @@ account = "xai-account"
     }
 
     #[tokio::test]
-    async fn conversation_events_include_durable_tool_lifecycle() {
+    async fn conversation_events_include_durable_tool_lifecycle_and_public_output() {
         let (state, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
@@ -19956,6 +19956,19 @@ account = "xai-account"
             .unwrap();
 
         for (id, event_type, topic, payload) in [
+            (
+                "dialogue-stream-publication",
+                "runtime_control",
+                "runtime/model_public_output",
+                json!({
+                    "context_id": "context-test",
+                    "session_id": "dialogue-tool-lifecycle-session",
+                    "attempt_id": "attempt-publication",
+                    "thread_kind": "execution",
+                    "text": "saved stream text",
+                    "first_visible_at": "2026-10-17T00:00:00Z"
+                }),
+            ),
             (
                 "dialogue-tool-selected",
                 "assistant_call",
@@ -20049,6 +20062,7 @@ account = "xai-account"
                 .map(|event| event["id"].as_str().unwrap())
                 .collect::<Vec<_>>(),
             vec![
+                "dialogue-stream-publication",
                 "dialogue-tool-selected",
                 "dialogue-tool-output",
                 "dialogue-transfer-output"
