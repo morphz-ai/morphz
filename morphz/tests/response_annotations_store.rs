@@ -7,16 +7,15 @@ use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     stable_thread_signal_id, thread_supersede_event, ActivationOutcomeCommit,
-    DialogueTurnRetryMutation, DialogueTurnRetryRequest, EventStore, MessageClaim,
-    MessageDispatchMode, NewAgent, NewCognitiveContext, NewPrincipal, NewSession, NewThread,
-    NewThreadActivation, NewThreadSignal, QueryFilter, RuntimeStore, SessionMountKind,
-    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadKind,
-    ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalBatchClaim, ThreadSignalRecord,
-    ThreadStore, ThreadSupervision,
+    DialogueTurnRetryMutation, DialogueTurnRetryRequest, MessageClaim, MessageDispatchMode,
+    NewAgent, NewCognitiveContext, NewPrincipal, NewSession, NewThread, NewThreadActivation,
+    NewThreadSignal, QueryFilter, RuntimeStore, SessionMountKind, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadRecord, ThreadSignalBatchClaim, ThreadSignalRecord, ThreadSupervision,
 };
 use morphz::response_annotations::Protocol;
 use serde_json::json;
-use sqlx::Row;
+use std::sync::Arc;
 
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -27,7 +26,10 @@ struct Route {
     principal: String,
 }
 
-async fn create_route<S: RuntimeStore>(store: &S, label: &str) -> Result<Route, TestError> {
+async fn create_route<S: RuntimeStore + ?Sized>(
+    store: &S,
+    label: &str,
+) -> Result<Route, TestError> {
     let route = Route {
         agent: format!("annotations-{label}-agent"),
         context: format!("annotations-{label}-context"),
@@ -113,7 +115,7 @@ fn input(route: &Route, suffix: &str, protocol: Protocol) -> Event {
     )
 }
 
-async fn persisted<S: RuntimeStore>(store: &S, event: &Event) -> Result<Event, TestError> {
+async fn persisted<S: RuntimeStore + ?Sized>(store: &S, event: &Event) -> Result<Event, TestError> {
     let mut events = store
         .query(QueryFilter {
             event_id: Some(event.id.clone()),
@@ -124,7 +126,7 @@ async fn persisted<S: RuntimeStore>(store: &S, event: &Event) -> Result<Event, T
     Ok(events.remove(0))
 }
 
-async fn ingress<S: RuntimeStore>(
+async fn ingress<S: RuntimeStore + ?Sized>(
     store: &S,
     route: &Route,
     suffix: &str,
@@ -156,7 +158,7 @@ async fn ingress<S: RuntimeStore>(
     }
 }
 
-async fn signal_for<S: RuntimeStore>(
+async fn signal_for<S: RuntimeStore + ?Sized>(
     store: &S,
     event: &Event,
 ) -> Result<ThreadSignalRecord, TestError> {
@@ -171,7 +173,7 @@ async fn signal_for<S: RuntimeStore>(
     Ok(matching[0].clone())
 }
 
-async fn claim<S: RuntimeStore>(
+async fn claim<S: RuntimeStore + ?Sized>(
     store: &S,
     route: &Route,
     thread: &ThreadRecord,
@@ -210,7 +212,7 @@ async fn claim<S: RuntimeStore>(
         .await
 }
 
-async fn claim_ingress<S: RuntimeStore>(
+async fn claim_ingress<S: RuntimeStore + ?Sized>(
     store: &S,
     route: &Route,
     event: &Event,
@@ -221,7 +223,7 @@ async fn claim_ingress<S: RuntimeStore>(
     claim(store, route, &thread, event, suffix).await
 }
 
-async fn assert_batch<S: RuntimeStore>(
+async fn assert_batch<S: RuntimeStore + ?Sized>(
     store: &S,
     activation: &ThreadActivationRecord,
     expected: &[&Event],
@@ -249,7 +251,7 @@ async fn assert_batch<S: RuntimeStore>(
         assert_eq!(signal.thread_generation, activation.generation);
     }
     // Context builders consume the single-statement snapshots, not only the
-    // direct Thread reader. Exercise the existing Off/V1/V2 batch owners so
+    // direct Thread reader. Exercise the existing Off/On batch owners so
     // an omitted enabled protocol cannot silently deserialize as default Off.
     let owner = store
         .get_thread_by_root(&activation.root_turn_id)
@@ -285,9 +287,9 @@ async fn assert_batch<S: RuntimeStore>(
     Ok(())
 }
 
-async fn frozen_protocol<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
+async fn frozen_protocol<S: RuntimeStore + ?Sized>(store: &S) -> Result<(), TestError> {
     let route = create_route(store, "frozen").await?;
-    let request = thread(&route, "root", ThreadKind::Execution, Protocol::V1);
+    let request = thread(&route, "root", ThreadKind::Execution, Protocol::On);
     let original = store.ensure_thread(request.clone()).await?;
     assert_eq!(store.ensure_thread(request.clone()).await?, original);
     let mut conflict = request;
@@ -297,7 +299,7 @@ async fn frozen_protocol<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
     let request = thread(&route, "off-root", ThreadKind::Execution, Protocol::Off);
     let original_off = store.ensure_thread(request.clone()).await?;
     let mut conflict = request;
-    conflict.response_annotations = Protocol::V1;
+    conflict.response_annotations = Protocol::On;
     assert!(store.ensure_thread(conflict).await.is_err());
     assert_eq!(
         store.get_thread(&original_off.id).await?.unwrap(),
@@ -305,7 +307,7 @@ async fn frozen_protocol<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
     );
     // Legacy records may lack a Principal. A rejected frozen-protocol choice
     // must not perform the otherwise valid None -> Some authoring backfill.
-    for protocol in [Protocol::Off, Protocol::V1, Protocol::V2] {
+    for protocol in [Protocol::Off, Protocol::On] {
         let mut request = thread(
             &route,
             &format!("unowned-{}", protocol.as_str()),
@@ -316,8 +318,8 @@ async fn frozen_protocol<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
         let unowned = store.ensure_thread(request.clone()).await?;
         let mut conflict = request.clone();
         conflict.response_annotations = match protocol {
-            Protocol::Off => Protocol::V1,
-            Protocol::V1 | Protocol::V2 => Protocol::Off,
+            Protocol::Off => Protocol::On,
+            Protocol::On => Protocol::Off,
         };
         conflict.initiating_principal_id = Some(route.principal.clone());
         assert!(store.ensure_thread(conflict).await.is_err());
@@ -348,37 +350,37 @@ async fn frozen_protocol<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
     Ok(())
 }
 
-async fn pending_batches<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
+async fn pending_batches<S: RuntimeStore + ?Sized>(store: &S) -> Result<(), TestError> {
     let route = create_route(store, "pending").await?;
     let off1 = ingress(store, &route, "off1", Protocol::Off).await?;
-    let v1a = ingress(store, &route, "v1a", Protocol::V1).await?;
-    let v1b = ingress(store, &route, "v1b", Protocol::V1).await?;
+    let on_a = ingress(store, &route, "on_a", Protocol::On).await?;
+    let on_b = ingress(store, &route, "on_b", Protocol::On).await?;
     let off2 = ingress(store, &route, "off2", Protocol::Off).await?;
-    let v2a = ingress(store, &route, "v2a", Protocol::V2).await?;
-    let v2b = ingress(store, &route, "v2b", Protocol::V2).await?;
+    let on_c = ingress(store, &route, "on_c", Protocol::On).await?;
+    let on_d = ingress(store, &route, "on_d", Protocol::On).await?;
     let off_signal = signal_for(store, &off1).await?;
-    let v1_signal = signal_for(store, &v1a).await?;
-    assert_ne!(off_signal.thread_id, v1_signal.thread_id);
+    let on_signal = signal_for(store, &on_a).await?;
+    assert_ne!(off_signal.thread_id, on_signal.thread_id);
     assert_eq!(
         off_signal.thread_id,
         signal_for(store, &off2).await?.thread_id
     );
     assert_eq!(
-        v1_signal.thread_id,
-        signal_for(store, &v1b).await?.thread_id
-    );
-    assert_ne!(
-        v1_signal.thread_id,
-        signal_for(store, &v2a).await?.thread_id
+        on_signal.thread_id,
+        signal_for(store, &on_b).await?.thread_id
     );
     assert_eq!(
-        signal_for(store, &v2a).await?.thread_id,
-        signal_for(store, &v2b).await?.thread_id
+        on_signal.thread_id,
+        signal_for(store, &on_c).await?.thread_id
+    );
+    assert_eq!(
+        signal_for(store, &on_c).await?.thread_id,
+        signal_for(store, &on_d).await?.thread_id
     );
     let off = claim_ingress(store, &route, &off1, "off").await?;
-    let v1 = claim_ingress(store, &route, &v1a, "v1").await?;
+    let enabled = claim_ingress(store, &route, &on_a, "on").await?;
     assert!(
-        !off.fresh_activation && !v1.fresh_activation,
+        !off.fresh_activation && !enabled.fresh_activation,
         "a two-Signal batch is not fresh"
     );
     assert_batch(
@@ -388,14 +390,17 @@ async fn pending_batches<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
         Protocol::Off,
     )
     .await?;
-    assert_batch(store, &v1.activation.unwrap(), &[&v1a, &v1b], Protocol::V1).await?;
-    let v2 = claim_ingress(store, &route, &v2a, "v2").await?;
-    assert!(!v2.fresh_activation);
-    assert_batch(store, &v2.activation.unwrap(), &[&v2a, &v2b], Protocol::V2).await?;
+    assert_batch(
+        store,
+        &enabled.activation.unwrap(),
+        &[&on_a, &on_b, &on_c, &on_d],
+        Protocol::On,
+    )
+    .await?;
     Ok(())
 }
 
-async fn queued_batches<S: RuntimeStore>(
+async fn queued_batches<S: RuntimeStore + ?Sized>(
     store: &S,
     require_fresh_proof: bool,
 ) -> Result<(), TestError> {
@@ -410,36 +415,41 @@ async fn queued_batches<S: RuntimeStore>(
     }
     let off = first.activation.unwrap();
     assert_eq!(off.status, ThreadActivationStatus::Queued);
-    let v1a = ingress(store, &route, "v1a", Protocol::V1).await?;
-    let v1 = claim_ingress(store, &route, &v1a, "v1")
+    let on_a = ingress(store, &route, "on_a", Protocol::On).await?;
+    let enabled = claim_ingress(store, &route, &on_a, "on")
         .await?
         .activation
         .unwrap();
     assert_ne!(
-        off.id, v1.id,
+        off.id, enabled.id,
         "different protocol must not merge into queued Activation"
     );
-    let v1b = ingress(store, &route, "v1b", Protocol::V1).await?;
+    let on_b = ingress(store, &route, "on_b", Protocol::On).await?;
     let off2 = ingress(store, &route, "off2", Protocol::Off).await?;
     assert_batch(store, &off, &[&off1, &off2], Protocol::Off).await?;
-    assert_batch(store, &v1, &[&v1a, &v1b], Protocol::V1).await?;
-    let v2a = ingress(store, &route, "v2a", Protocol::V2).await?;
-    let v2 = claim_ingress(store, &route, &v2a, "v2")
+    assert_batch(store, &enabled, &[&on_a, &on_b], Protocol::On).await?;
+    let on_c = ingress(store, &route, "on_c", Protocol::On).await?;
+    let same_enabled = claim_ingress(store, &route, &on_c, "on")
         .await?
         .activation
         .unwrap();
-    assert_ne!(v2.id, v1.id);
-    let v2b = ingress(store, &route, "v2b", Protocol::V2).await?;
-    assert_batch(store, &v2, &[&v2a, &v2b], Protocol::V2).await?;
-    assert_batch(store, &v1, &[&v1a, &v1b], Protocol::V1).await?;
-    let replay = claim_ingress(store, &route, &v1b, "unused-replay").await?;
-    assert_eq!(replay.activation.unwrap().id, v1.id);
+    assert_eq!(same_enabled.id, enabled.id);
+    let on_d = ingress(store, &route, "on_d", Protocol::On).await?;
+    assert_batch(
+        store,
+        &same_enabled,
+        &[&on_a, &on_b, &on_c, &on_d],
+        Protocol::On,
+    )
+    .await?;
+    let replay = claim_ingress(store, &route, &on_b, "unused-replay").await?;
+    assert_eq!(replay.activation.unwrap().id, enabled.id);
     assert!(!replay.fresh_activation);
-    assert_batch(store, &v1, &[&v1a, &v1b], Protocol::V1).await?;
+    assert_batch(store, &enabled, &[&on_a, &on_b, &on_c, &on_d], Protocol::On).await?;
     Ok(())
 }
 
-async fn claim_merge_batches<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
+async fn claim_merge_batches<S: RuntimeStore + ?Sized>(store: &S) -> Result<(), TestError> {
     // Deliberately bypass claim_message's pending/queued routing: these are
     // independently materialized candidates merged by the Activation claim.
     let route = create_route(store, "claim").await?;
@@ -447,10 +457,10 @@ async fn claim_merge_batches<S: RuntimeStore>(store: &S) -> Result<(), TestError
     let mut events = Vec::new();
     for (suffix, protocol) in [
         ("off", Protocol::Off),
-        ("v1a", Protocol::V1),
-        ("v1b", Protocol::V1),
-        ("v2a", Protocol::V2),
-        ("v2b", Protocol::V2),
+        ("on_a", Protocol::On),
+        ("on_b", Protocol::On),
+        ("on_c", Protocol::On),
+        ("on_d", Protocol::On),
     ] {
         let event = input(&route, suffix, protocol);
         store.append(event.clone()).await?;
@@ -471,23 +481,23 @@ async fn claim_merge_batches<S: RuntimeStore>(store: &S) -> Result<(), TestError
     assert_batch(
         store,
         &activations[1],
-        &[&events[1], &events[2]],
-        Protocol::V1,
+        &[&events[1], &events[2], &events[3], &events[4]],
+        Protocol::On,
     )
     .await?;
-    assert_ne!(activations[1].id, activations[3].id);
+    assert_eq!(activations[1].id, activations[3].id);
     assert_eq!(activations[3].id, activations[4].id);
     assert_batch(
         store,
         &activations[3],
-        &[&events[3], &events[4]],
-        Protocol::V2,
+        &[&events[1], &events[2], &events[3], &events[4]],
+        Protocol::On,
     )
     .await?;
     Ok(())
 }
 
-async fn retry_and_supersede<S: RuntimeStore>(
+async fn retry_and_supersede<S: RuntimeStore + ?Sized>(
     store: &S,
     protocol: Protocol,
 ) -> Result<(), TestError> {
@@ -609,21 +619,152 @@ async fn retry_and_supersede<S: RuntimeStore>(
     Ok(())
 }
 
-async fn conformance<S: RuntimeStore>(
-    store: &S,
+struct NoPhysicalCalls;
+
+#[async_trait::async_trait]
+impl morphz::plan_execution::PlanCallPlanner for NoPhysicalCalls {
+    async fn plan_call(
+        &self,
+        _: &morphz::memory::PlanExecutionRecord,
+        _: &morphz::sexpr_eval::PlanEffect,
+        _: &str,
+    ) -> morphz::plan_execution::PlanExecutionResult<morphz::memory::NewExecutionJob> {
+        panic!("annotation inheritance must not add a physical call")
+    }
+}
+
+async fn infer_inherits_actual_owner(store: Arc<dyn RuntimeStore>) -> Result<(), TestError> {
+    use morphz::plan_execution::{
+        PlanArtifactBinding, PlanDriveReceipt, PlanExecutionCoordinator, PlanExecutionRoute,
+    };
+    for mode in [Protocol::Off, Protocol::On] {
+        let route = create_route(store.as_ref(), &format!("infer-{}", mode.as_str())).await?;
+        let root = ingress(store.as_ref(), &route, "root", mode).await?;
+        let parent = claim_ingress(store.as_ref(), &route, &root, "parent")
+            .await?
+            .activation
+            .expect("one real parent Activation");
+        let owner = store
+            .get_thread_by_root(&parent.root_turn_id)
+            .await?
+            .unwrap();
+        let registry = Arc::new(morphz::tool::Registry::new());
+        let program = morphz::sexpr_eval::validate(
+            "(eval (infer (returns Bool) \"synthetic branch decision\"))",
+            &registry,
+            &morphz::sexpr_eval::AllowList::new(Vec::<String>::new()),
+        )?;
+        let coordinator = PlanExecutionCoordinator::new(store.clone(), registry);
+        let queued = coordinator
+            .ensure(
+                PlanExecutionRoute {
+                    activation_id: parent.id.clone(),
+                    thread_id: owner.id.clone(),
+                    agent_id: route.agent,
+                    context_id: route.context,
+                    session_id: route.session,
+                    initiating_principal_id: Some(route.principal),
+                    tool_call_id: "owned-infer".into(),
+                    objective_id: None,
+                    objective_evaluation_id: None,
+                },
+                &program,
+                PlanArtifactBinding::default(),
+            )
+            .await?;
+        let PlanDriveReceipt::WaitingForEvaluation {
+            plan,
+            request_event,
+            activation_id,
+            ..
+        } = coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "test-worker",
+                "test-claim",
+                chrono::Utc::now() + chrono::Duration::minutes(1),
+                &NoPhysicalCalls,
+            )
+            .await?
+        else {
+            panic!("the real Plan must suspend behind its actual infer")
+        };
+        let child = store.get_thread_by_root(&request_event.id).await?.unwrap();
+        assert_eq!(child.executor_kind, "plan_infer");
+        assert_eq!(child.response_annotations, mode);
+        assert_eq!(
+            child.supervision.parent_thread_id.as_deref(),
+            Some(owner.id.as_str())
+        );
+        assert_eq!(child.initiating_principal_id, owner.initiating_principal_id);
+        assert_eq!(child.session_id, owner.session_id);
+        let persisted_request = persisted(store.as_ref(), &request_event).await?;
+        assert_eq!(
+            persisted_request
+                .payload
+                .get("response_annotations")
+                .map(|value| serde_json::from_value::<Protocol>(value.clone()))
+                .transpose()?
+                .unwrap_or_default(),
+            mode
+        );
+        let replay = store
+            .create_evaluation_and_suspend_plan(
+                &plan.id,
+                plan.revision,
+                "released-claim",
+                &plan.state_json,
+                &plan.budget_json,
+                &request_event,
+                &activation_id,
+            )
+            .await?;
+        assert!(replay.existing);
+        let mut different_mode = request_event.clone();
+        different_mode.payload.insert(
+            "response_annotations".into(),
+            json!(if mode.is_off() { "on" } else { "off" }),
+        );
+        assert!(store
+            .create_evaluation_and_suspend_plan(
+                &plan.id,
+                plan.revision,
+                "released-claim",
+                &plan.state_json,
+                &plan.budget_json,
+                &different_mode,
+                &activation_id,
+            )
+            .await
+            .is_err());
+        assert_eq!(store.get_thread(&child.id).await?.unwrap(), child);
+        assert_eq!(
+            persisted(store.as_ref(), &request_event).await?,
+            persisted_request
+        );
+        assert_eq!(store.get_plan_execution(&plan.id).await?.unwrap(), plan);
+    }
+    Ok(())
+}
+
+async fn conformance<S: RuntimeStore + 'static>(
+    store: Arc<S>,
     require_fresh_proof: bool,
 ) -> Result<(), TestError> {
+    infer_inherits_actual_owner(store.clone()).await?;
+    let store = store.as_ref();
     frozen_protocol(store).await?;
     pending_batches(store).await?;
     queued_batches(store, require_fresh_proof).await?;
     claim_merge_batches(store).await?;
-    retry_and_supersede(store, Protocol::V1).await?;
-    retry_and_supersede(store, Protocol::V2).await?;
+    retry_and_supersede(store, Protocol::On).await?;
+    retry_and_supersede(store, Protocol::Off).await?;
     annotation_source_windows(store).await?;
     Ok(())
 }
 
-async fn annotation_source_windows<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
+async fn annotation_source_windows<S: RuntimeStore + ?Sized>(store: &S) -> Result<(), TestError> {
     let route = create_route(store, "source-window").await?;
     let ids = [
         format!("{}-long", route.context),
@@ -688,8 +829,8 @@ async fn annotation_source_windows<S: RuntimeStore>(store: &S) -> Result<(), Tes
         .list_thread_annotation_sources(&route.context, &[], 129)
         .await?
         .is_empty());
-    let first = ingress(store, &route, "revision-source-one", Protocol::V1).await?;
-    let second = ingress(store, &route, "revision-source-two", Protocol::V1).await?;
+    let first = ingress(store, &route, "revision-source-one", Protocol::On).await?;
+    let second = ingress(store, &route, "revision-source-two", Protocol::On).await?;
     let first_signal = signal_for(store, &first).await?;
     let second_signal = signal_for(store, &second).await?;
     let owners = [
@@ -711,7 +852,7 @@ async fn annotation_source_windows<S: RuntimeStore>(store: &S) -> Result<(), Tes
             &route,
             "unrelated-revision-owner",
             ThreadKind::Execution,
-            Protocol::V1,
+            Protocol::On,
         ))
         .await?;
     assert_ne!(unrelated.id, first_signal.thread_id);
@@ -739,59 +880,7 @@ async fn sqlite_protocol_lifetime_and_batch_conformance() -> Result<(), TestErro
     let directory = tempfile::TempDir::new()?;
     let path = directory.path().join("annotations.sqlite");
     let store = SqliteStore::new(path.to_str().unwrap()).await?;
-    conformance(&store, false).await
-}
-
-#[tokio::test]
-async fn sqlite_legacy_schema_defaults_off_and_preserves_serialized_records(
-) -> Result<(), TestError> {
-    let directory = tempfile::TempDir::new()?;
-    let path = directory.path().join("legacy.sqlite");
-    let path = path.to_str().unwrap();
-    let store = SqliteStore::new(path).await?;
-    let route = create_route(&store, "legacy").await?;
-    let request = thread(&route, "root", ThreadKind::Execution, Protocol::Off);
-    let original = store.ensure_thread(request).await?;
-    let before_thread = serde_json::to_vec(&original)?;
-    assert!(!String::from_utf8_lossy(&before_thread).contains("response_annotations"));
-    // Legacy tool arguments are business data even if a reserved-looking key
-    // exists. A migration must not rewrite a stored continuation/prefix.
-    let event = Event::new(
-        "annotations-legacy-call".into(),
-        "Legacy-Agent".into(),
-        "agent_call".into(),
-        "chat/assistant_call".into(),
-        json!({"context_id":route.context,"session_id":route.session,"thread_id":original.id,
-            "content":"old plain text 中文","tool_calls":[{"id":"legacy-call", "name":"legacy",
-                "args":{"_annotations":{"business":"must stay"},"value":"old"}}],
-            "prompt_cache_transport_seed":"old-prefix-bytes\\n中文\\u4e2d"})
-        .as_object()
-        .unwrap()
-        .clone(),
-    );
-    store.append(event.clone()).await?;
-    let before_event = serde_json::to_vec(&persisted(&store, &event).await?)?;
-    drop(store);
-    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{path}")).await?;
-    sqlx::query("ALTER TABLE threads DROP COLUMN response_annotations")
-        .execute(&pool)
-        .await?;
-    let columns = sqlx::query("PRAGMA table_info(threads)")
-        .fetch_all(&pool)
-        .await?;
-    assert!(columns
-        .iter()
-        .all(|row| row.get::<String, _>("name") != "response_annotations"));
-    pool.close().await;
-    let reopened = SqliteStore::new(path).await?;
-    let migrated = reopened.get_thread(&original.id).await?.unwrap();
-    assert_eq!(migrated.response_annotations, Protocol::Off);
-    assert_eq!(serde_json::to_vec(&migrated)?, before_thread);
-    assert_eq!(
-        serde_json::to_vec(&persisted(&reopened, &event).await?)?,
-        before_event
-    );
-    Ok(())
+    conformance(Arc::new(store), false).await
 }
 
 #[tokio::test]
@@ -838,7 +927,7 @@ async fn postgres_protocol_lifetime_and_batch_conformance() -> Result<(), TestEr
     let result = tokio::task::LocalSet::new()
         .run_until(async move {
             tokio::task::spawn_local(async move {
-                let store = PostgresStore::new(scoped.as_str(), 4).await?;
+                let store = Arc::new(PostgresStore::new(scoped.as_str(), 4).await?);
                 let current_schema: String = sqlx::query_scalar("SELECT current_schema()")
                     .fetch_one(store.pool())
                     .await?;
@@ -850,8 +939,7 @@ async fn postgres_protocol_lifetime_and_batch_conformance() -> Result<(), TestEr
                     search_path, expected_schema,
                     "no public schema fallback is permitted"
                 );
-                postgres_old_check_upgrade(&store, scoped.as_str()).await?;
-                conformance(&store, true).await?;
+                conformance(store.clone(), true).await?;
                 let result: Result<(), TestError> = Ok(());
                 store.pool().close().await;
                 result
@@ -869,272 +957,4 @@ async fn postgres_protocol_lifetime_and_batch_conformance() -> Result<(), TestEr
         Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
         Err(error) => Err(error.into()),
     }
-}
-
-#[tokio::test]
-async fn sqlite_v1_check_upgrade_preserves_complete_rows_and_dependencies() -> Result<(), TestError>
-{
-    let directory = tempfile::TempDir::new()?;
-    let path = directory.path().join("old-v1-check.sqlite");
-    let store = SqliteStore::new(path.to_str().unwrap()).await?;
-    let route = create_route(&store, "v2-migration").await?;
-    let off = store
-        .ensure_thread(thread(&route, "off", ThreadKind::Execution, Protocol::Off))
-        .await?;
-    let mut request = thread(&route, "v1", ThreadKind::Execution, Protocol::V1);
-    request.model_alias = Some("original-model".into());
-    request.reasoning_effort = Some("high".into());
-    let v1 = store.ensure_thread(request.clone()).await?;
-    let before_off = serde_json::to_vec(&off)?;
-    let before_v1 = serde_json::to_vec(&v1)?;
-    let event = input(&route, "evidence", Protocol::V1);
-    store.append(event.clone()).await?;
-    let before_event = serde_json::to_vec(&persisted(&store, &event).await?)?;
-    drop(store);
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(
-            sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(&path)
-                .foreign_keys(true),
-        )
-        .await?;
-    // Materialize a genuine old CHECK with public DDL, not a schema mock or
-    // writable_schema. Restore the two original immutable selected values.
-    sqlx::query("ALTER TABLE threads DROP COLUMN response_annotations")
-        .execute(&pool)
-        .await?;
-    sqlx::query("ALTER TABLE threads ADD COLUMN response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1'))").execute(&pool).await?;
-    sqlx::query("UPDATE threads SET response_annotations='v1' WHERE id=?")
-        .bind(&v1.id)
-        .execute(&pool)
-        .await?;
-    sqlx::query(
-        "DELETE FROM schema_migrations WHERE version='20261002_02_thread_response_annotations_v2'",
-    )
-    .execute(&pool)
-    .await?;
-    sqlx::query("ALTER TABLE threads ADD COLUMN synthetic_blob BLOB")
-        .execute(&pool)
-        .await?;
-    sqlx::query("ALTER TABLE threads ADD COLUMN synthetic_derived TEXT GENERATED ALWAYS AS (id || '-derived') VIRTUAL").execute(&pool).await?;
-    sqlx::query("UPDATE threads SET rowid=4301, synthetic_blob=X'00FFDEAD' WHERE id=?")
-        .bind(&off.id)
-        .execute(&pool)
-        .await?;
-    sqlx::query("UPDATE threads SET rowid=9017, synthetic_blob=X'BEEF00' WHERE id=?")
-        .bind(&v1.id)
-        .execute(&pool)
-        .await?;
-    sqlx::query("CREATE TABLE annotation_migration_dependents(thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE, payload BLOB NOT NULL)").execute(&pool).await?;
-    sqlx::query("INSERT INTO annotation_migration_dependents VALUES (?, X'00FEED')")
-        .bind(&v1.id)
-        .execute(&pool)
-        .await?;
-    sqlx::query("CREATE TABLE annotation_migration_audit(thread_id TEXT)")
-        .execute(&pool)
-        .await?;
-    sqlx::query("CREATE TRIGGER annotation_migration_thread_audit AFTER UPDATE ON threads BEGIN INSERT INTO annotation_migration_audit(thread_id) VALUES(NEW.id); END").execute(&pool).await?;
-    sqlx::query("CREATE INDEX annotation_migration_expression_idx ON threads(length(id), revision) WHERE response_annotations='v1'").execute(&pool).await?;
-    sqlx::query("CREATE VIEW annotation_migration_view AS SELECT id, response_annotations, model_alias FROM threads").execute(&pool).await?;
-    let schema_before = sqlx::query_as::<_, (String,String)>("SELECT name,sql FROM sqlite_schema WHERE tbl_name='threads' AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY name").fetch_all(&pool).await?;
-    let rows_before = sqlx::query_as::<_, (i64, String, String, String)>(
-        "SELECT rowid,id,hex(synthetic_blob),synthetic_derived FROM threads ORDER BY rowid",
-    )
-    .fetch_all(&pool)
-    .await?;
-    assert!(
-        sqlx::query("UPDATE threads SET response_annotations='v2' WHERE id=?")
-            .bind(&v1.id)
-            .execute(&pool)
-            .await
-            .is_err(),
-        "fixture must really reject v2 before migration"
-    );
-    pool.close().await;
-    let reopened = SqliteStore::new(path.to_str().unwrap()).await?;
-    assert_eq!(
-        serde_json::to_vec(&reopened.get_thread(&off.id).await?.unwrap())?,
-        before_off
-    );
-    assert_eq!(
-        serde_json::to_vec(&reopened.get_thread(&v1.id).await?.unwrap())?,
-        before_v1
-    );
-    assert_eq!(
-        serde_json::to_vec(&persisted(&reopened, &event).await?)?,
-        before_event
-    );
-    let v2 = reopened
-        .ensure_thread(thread(&route, "v2", ThreadKind::Execution, Protocol::V2))
-        .await?;
-    let mut conflict = request;
-    conflict.response_annotations = Protocol::V2;
-    assert!(reopened.ensure_thread(conflict).await.is_err());
-    assert_eq!(
-        serde_json::to_vec(&reopened.get_thread(&v1.id).await?.unwrap())?,
-        before_v1
-    );
-    drop(reopened);
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(
-            sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(&path)
-                .foreign_keys(true),
-        )
-        .await?;
-    let rows_after = sqlx::query_as::<_, (i64,String,String,String)>("SELECT rowid,id,hex(synthetic_blob),synthetic_derived FROM threads WHERE id<>? ORDER BY rowid").bind(&v2.id).fetch_all(&pool).await?;
-    assert_eq!(rows_after, rows_before);
-    assert_eq!(sqlx::query_as::<_, (String,String)>("SELECT name,sql FROM sqlite_schema WHERE tbl_name='threads' AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY name").fetch_all(&pool).await?,schema_before);
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM annotation_migration_dependents")
-            .fetch_one(&pool)
-            .await?,
-        1
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, String>("SELECT hex(payload) FROM annotation_migration_dependents")
-            .fetch_one(&pool)
-            .await?,
-        "00FEED"
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM annotation_migration_audit")
-            .fetch_one(&pool)
-            .await?,
-        0,
-        "copy must never replay user triggers"
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM annotation_migration_view")
-            .fetch_one(&pool)
-            .await?,
-        3
-    );
-    assert!(sqlx::query("PRAGMA foreign_key_check")
-        .fetch_all(&pool)
-        .await?
-        .is_empty());
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
-            .fetch_one(&pool)
-            .await?,
-        1
-    );
-    assert!(
-        sqlx::query("INSERT INTO annotation_migration_dependents VALUES ('missing', X'01')")
-            .execute(&pool)
-            .await
-            .is_err()
-    );
-    pool.close().await;
-    let reopened = SqliteStore::new(path.to_str().unwrap()).await?;
-    assert_eq!(
-        reopened.get_thread(&v2.id).await?.unwrap(),
-        v2,
-        "v2 must survive a second startup"
-    );
-    Ok(())
-}
-
-async fn postgres_old_check_upgrade(store: &PostgresStore, url: &str) -> Result<(), TestError> {
-    let route = create_route(store, "old-pg-check").await?;
-    let mut v1_request = thread(&route, "v1", ThreadKind::Execution, Protocol::V1);
-    v1_request.model_alias = Some("original-pg-model".into());
-    v1_request.reasoning_effort = Some("high".into());
-    let v1 = store.ensure_thread(v1_request.clone()).await?;
-    let off = store
-        .ensure_thread(thread(&route, "off", ThreadKind::Execution, Protocol::Off))
-        .await?;
-    let before_v1 = serde_json::to_vec(&v1)?;
-    let before_off = serde_json::to_vec(&off)?;
-    let event = input(&route, "evidence", Protocol::V1);
-    store.append(event.clone()).await?;
-    let before_event = serde_json::to_vec(&persisted(store, &event).await?)?;
-    sqlx::query("CREATE TABLE annotation_migration_pg_dependents(thread_id TEXT PRIMARY KEY REFERENCES threads(id) ON DELETE CASCADE, payload BYTEA NOT NULL)").execute(store.pool()).await?;
-    sqlx::query(
-        "INSERT INTO annotation_migration_pg_dependents VALUES ($1,decode('00FEED','hex'))",
-    )
-    .bind(&v1.id)
-    .execute(store.pool())
-    .await?;
-    // Run before V2 conformance inserts any V2 rows. This is a real validated
-    // legacy CHECK, not a NOT VALID constraint or a mocked schema.
-    sqlx::query("ALTER TABLE threads DROP CONSTRAINT threads_response_annotations_protocol_v2")
-        .execute(store.pool())
-        .await?;
-    sqlx::query("ALTER TABLE threads ADD CONSTRAINT threads_response_annotations_check CHECK(response_annotations IN ('off','v1'))").execute(store.pool()).await?;
-    sqlx::query(
-        "DELETE FROM schema_migrations WHERE version='20261002_02_thread_response_annotations_v2'",
-    )
-    .execute(store.pool())
-    .await?;
-    assert!(store
-        .ensure_thread(thread(
-            &route,
-            "rejected-v2",
-            ThreadKind::Execution,
-            Protocol::V2
-        ))
-        .await
-        .is_err());
-    let indexes_before = sqlx::query_as::<_,(String,String)>("SELECT indexname,indexdef FROM pg_indexes WHERE schemaname=current_schema() AND tablename='threads' ORDER BY indexname").fetch_all(store.pool()).await?;
-    let rows_before: serde_json::Value =
-        sqlx::query_scalar("SELECT jsonb_agg(to_jsonb(threads) ORDER BY id) FROM threads")
-            .fetch_one(store.pool())
-            .await?;
-    let constraints_before = sqlx::query_as::<_,(String,String)>("SELECT conname,pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='threads'::regclass AND conname<>'threads_response_annotations_check' ORDER BY conname").fetch_all(store.pool()).await?;
-    let reopened = PostgresStore::new(url, 4).await?;
-    assert_eq!(
-        sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT jsonb_agg(to_jsonb(threads) ORDER BY id) FROM threads"
-        )
-        .fetch_one(reopened.pool())
-        .await?,
-        rows_before,
-        "migration must preserve every column of every existing Thread"
-    );
-    assert_eq!(
-        serde_json::to_vec(&reopened.get_thread(&v1.id).await?.unwrap())?,
-        before_v1
-    );
-    assert_eq!(
-        serde_json::to_vec(&reopened.get_thread(&off.id).await?.unwrap())?,
-        before_off
-    );
-    assert_eq!(
-        serde_json::to_vec(&persisted(&reopened, &event).await?)?,
-        before_event
-    );
-    assert_eq!(sqlx::query_as::<_,(String,String)>("SELECT conname,pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='threads'::regclass AND conname<>'threads_response_annotations_protocol_v2' ORDER BY conname").fetch_all(reopened.pool()).await?,constraints_before);
-    assert_eq!(
-        sqlx::query_scalar::<_, String>(
-            "SELECT encode(payload,'hex') FROM annotation_migration_pg_dependents"
-        )
-        .fetch_one(reopened.pool())
-        .await?,
-        "00feed"
-    );
-    assert!(
-        sqlx::query(
-            "INSERT INTO annotation_migration_pg_dependents VALUES ('missing',decode('01','hex'))"
-        )
-        .execute(reopened.pool())
-        .await
-        .is_err(),
-        "dependent foreign keys stay enforced"
-    );
-    let mut conflict = v1_request;
-    conflict.response_annotations = Protocol::V2;
-    assert!(reopened.ensure_thread(conflict).await.is_err());
-    let v2 = reopened
-        .ensure_thread(thread(&route, "v2", ThreadKind::Execution, Protocol::V2))
-        .await?;
-    assert_eq!(sqlx::query_as::<_,(String,String)>("SELECT indexname,indexdef FROM pg_indexes WHERE schemaname=current_schema() AND tablename='threads' ORDER BY indexname").fetch_all(reopened.pool()).await?,indexes_before);
-    reopened.pool().close().await;
-    let reopened = PostgresStore::new(url, 4).await?;
-    assert_eq!(reopened.get_thread(&v2.id).await?.unwrap(), v2);
-    reopened.pool().close().await;
-    Ok(())
 }

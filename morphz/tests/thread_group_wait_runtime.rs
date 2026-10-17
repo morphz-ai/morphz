@@ -175,7 +175,7 @@ async fn assert_later_request_receipts(
             .unwrap()
             .unwrap();
         assert_eq!(thread.session_id, session);
-        assert_eq!(thread.response_annotations, Protocol::V2);
+        assert_eq!(thread.response_annotations, Protocol::On);
         let events = runtime
             .query_events(QueryFilter {
                 context_id: Some(thread.context_id.clone()),
@@ -225,7 +225,7 @@ async fn assert_later_request_receipts(
                 atom_field(receipt, "generation"),
                 thread.generation.to_string()
             );
-            assert_eq!(atom_field(receipt, "protocol"), "v2");
+            assert_eq!(atom_field(receipt, "protocol"), "on");
             assert!(
                 receipt.get_path(&["effective"]).is_none(),
                 "acceptance is not a projection winner or tool success"
@@ -241,7 +241,7 @@ async fn assert_later_request_receipts(
             assert_eq!(source.payload["root_turn_id"], thread.root_turn_id);
             assert_eq!(source.payload["thread_id"], thread.id);
             assert_eq!(source.payload["thread_generation"], thread.generation);
-            assert_eq!(source.payload["response_annotations"], "v2");
+            assert_eq!(source.payload["response_annotations"], "on");
             assert_eq!(
                 source.payload["principal_id"].as_str(),
                 thread.initiating_principal_id.as_deref()
@@ -269,7 +269,7 @@ async fn assert_later_request_receipts(
             let bundle = annotations_from_authorized_event(source, &scope)
                 .unwrap()
                 .unwrap();
-            assert_eq!(bundle.protocol, Protocol::V2);
+            assert_eq!(bundle.protocol, Protocol::On);
             assert!(bundle
                 .records
                 .iter()
@@ -614,7 +614,7 @@ async fn run_group_wait(read_before_spawn: bool) {
     let mut input = Request::parse(json!({"io_version":"1","client_message_id":"group-wait-parent",
         "message":{"format":{"id":"morphz.chat","version":"1"},"content":{"encoding":"json","value":{"text":"GROUP_WAIT_PARENT: create attached A and B; A creates attached A1; await the owned Groups."}}}
     }).to_string().as_bytes(),&Limits::default()).unwrap();
-    input.activation.response_annotations = Some(Protocol::V2);
+    input.activation.response_annotations = Some(Protocol::On);
     session
         .send_io_as_principal(input, &identity.principal_id)
         .await
@@ -803,7 +803,7 @@ async fn run_group_wait(read_before_spawn: bool) {
         );
     }
     for snapshot in &board.threads {
-        assert_eq!(snapshot.thread.response_annotations, Protocol::V2);
+        assert_eq!(snapshot.thread.response_annotations, Protocol::On);
         let custom = store
             .get_thread_custom(&snapshot.thread.id)
             .await

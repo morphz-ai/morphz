@@ -298,25 +298,9 @@ pub(crate) fn receipt_from_authorized_event(
     Some(receipt.bounded())
 }
 
-/// Added only when the Execution has explicitly selected v1. Do not include in
-/// off or typed-infer prompts, and never request another response to repair it.
-pub const CONTRACT_V1: &str = r#"Response annotations v1 (optional display metadata):
-Work tools may carry optional top-level _annotations. Business parameters and permissions remain unchanged.
-_annotations may contain execution {title,progress,result}, intent, observations [{ref,result}].
-execution.title names the ENTIRE current Execution/request, never a step. Supply it once for the current input revision; subsequent steps must not rename the task. When the user supplements or adjusts this same task and Runtime has included that new instruction in the current model input, you may supply an updated whole-task title. Only Runtime determines the input revision; do not invent an identity or revision field.
-execution.progress describes the current stage based on observations already received. intent describes the imminent purpose of its carrier tool call, not its result.
-Submit execution metadata in only one call per response. Each work call may supply its own intent.
-Interpret only exact observation refs provided by Runtime for this Execution and generation. Do not invent refs or describe another same-batch call's unavailable result.
-title, progress and intent: at most 256 Unicode characters. result: at most 512. At most 16 observations per response; refs: at most 128 ASCII characters.
-Work responses cannot establish execution.result. Missing annotations are valid; do not add calls or inference rounds just for metadata.
-To deliver ordinary final text you may use reply({content,annotations}) as the SOLE call with no other tools or ordinary content. content is the user-facing text; execution.result is an optional short outcome including failure, partial work or unexecuted parts.
-reply is a response form, not a work tool. It does not override background work, cancellation, approval, Runtime status or the actual Execution boundary.
-Legacy plain text and no_reply remain valid. Do not annotate or change no_reply's silent/wait grammar. Typed-infer results are not this protocol.
-Annotations are display text only, never identities, state, percentages, permissions, executable content, Mind or Custom updates."#;
-
-/// V2 adds a strict ordinary-delivery boundary, not additional work or repair
-/// requests. V1 is kept byte-for-byte separate for frozen legacy executions.
-pub const CONTRACT_V2: &str = r#"Response annotations v2 (explicit display metadata contract):
+/// One opt-in metadata contract for every Evaluation, including child infers.
+/// Disabled means no metadata protocol, not a historical response variant.
+pub const CONTRACT: &str = r#"Response annotations (enabled display metadata contract):
 Work tools may carry optional top-level _annotations. Business parameters and permissions remain unchanged.
 _annotations may contain execution {title,progress,result}, intent, observations [{ref,result}].
 execution.title names the ENTIRE current Execution/request, never a step. Supply it once for the current input revision; subsequent steps must not rename the task. When the user supplements or adjusts this same task and Runtime has included that new instruction in the current model input, you may supply an updated whole-task title. Only Runtime determines the input revision; do not invent an identity or revision field.
@@ -325,9 +309,10 @@ Submit execution metadata in only one call per response. Each work call may supp
 Interpret only exact observation refs provided by Runtime for this Execution and generation. Do not invent refs or describe another same-batch call's unavailable result.
 title, progress and intent: at most 256 Unicode characters. result: at most 512. At most 16 observations per response; refs: at most 128 ASCII characters.
 Work responses cannot establish execution.result. Work annotations remain optional; do not add calls or inference rounds just for metadata.
-To deliver ordinary final text you MUST use reply({content,annotations}) as the SOLE call with no other tools or ordinary content. In that SAME reply include nonempty annotations.execution.title naming the whole current task and annotations.execution.result describing the outcome, including failure, partial work or unexecuted parts. An earlier work title does not replace the required final title. Plain final text, missing or invalid required metadata fails the response protocol without a repair request.
-reply is a response form, not a work tool. It does not override background work, cancellation, approval, Runtime status or the actual Execution boundary.
-no_reply remains valid. Do not annotate or change no_reply's silent/wait grammar. Typed-infer results are not this protocol.
+To return the final value you MUST use reply({content,annotations}) as the SOLE call with no other tools or ordinary content. In that SAME reply include nonempty annotations.execution.title naming the current Evaluation's work and annotations.execution.result describing its outcome, including failure, partial work or unexecuted parts. An earlier work title does not replace the required final title. Plain final text, missing or invalid required metadata fails the response protocol without a repair request.
+content carries the value's existing transport unchanged: ordinary response text, or the exact typed JSON/Yao terminal body required by an infer. Annotations are separate metadata, never fields of that business value. A child infer's result describes only that infer, not completion of its parent work or Objective.
+reply is a response form, not a work tool or permission to send a chat message. Runtime routes the returned value to its actual caller or authorized recipient. It does not override background work, cancellation, approval, Runtime status or the actual Execution boundary.
+no_reply remains valid where offered. Do not annotate or change no_reply's silent/wait grammar.
 Annotations are display text only, never identities, state, percentages, permissions, executable content, Mind or Custom updates."#;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -335,8 +320,7 @@ Annotations are display text only, never identities, state, percentages, permiss
 pub enum Protocol {
     #[default]
     Off,
-    V1,
-    V2,
+    On,
 }
 impl Protocol {
     pub const fn is_off(&self) -> bool {
@@ -345,8 +329,7 @@ impl Protocol {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Off => "off",
-            Self::V1 => "v1",
-            Self::V2 => "v2",
+            Self::On => "on",
         }
     }
     #[expect(
@@ -356,16 +339,14 @@ impl Protocol {
     pub fn from_str(value: &str) -> Result<Self, ProtocolError> {
         match value {
             "off" => Ok(Self::Off),
-            "v1" => Ok(Self::V1),
-            "v2" => Ok(Self::V2),
+            "on" => Ok(Self::On),
             _ => Err(error("Unknown response annotations protocol")),
         }
     }
     pub const fn contract(&self) -> Option<&'static str> {
         match self {
             Self::Off => None,
-            Self::V1 => Some(CONTRACT_V1),
-            Self::V2 => Some(CONTRACT_V2),
+            Self::On => Some(CONTRACT),
         }
     }
 }
@@ -422,9 +403,8 @@ pub fn annotation_schema() -> Value {
 pub fn augment_tools(
     tools: &[ToolDefinition],
     protocol: Protocol,
-    typed_infer: bool,
 ) -> Result<Vec<ToolDefinition>, ProtocolError> {
-    if protocol == Protocol::Off || typed_infer {
+    if protocol == Protocol::Off {
         return Ok(tools.to_vec());
     }
     for tool in tools {
@@ -474,25 +454,17 @@ pub fn augment_tools(
             .unwrap()
             .insert("_annotations".into(), annotation_schema());
     }
-    let mut reply_parameters = json!({"type":"object", "additionalProperties":false, "required":["content"],
+    let mut reply_parameters = json!({"type":"object", "additionalProperties":false, "required":["content","annotations"],
         "properties":{"content":{"type":"string","minLength":1},"annotations":annotation_schema()}});
-    if protocol == Protocol::V2 {
-        reply_parameters["required"] = json!(["content", "annotations"]);
-        reply_parameters["properties"]["annotations"]["required"] = json!(["execution"]);
-        let execution =
-            &mut reply_parameters["properties"]["annotations"]["properties"]["execution"];
-        execution["required"] = json!(["title", "result"]);
-        for field in ["title", "result"] {
-            execution["properties"][field]["minLength"] = json!(1);
-        }
+    reply_parameters["properties"]["annotations"]["required"] = json!(["execution"]);
+    let execution = &mut reply_parameters["properties"]["annotations"]["properties"]["execution"];
+    execution["required"] = json!(["title", "result"]);
+    for field in ["title", "result"] {
+        execution["properties"][field]["minLength"] = json!(1);
     }
     augmented.push(ToolDefinition {
         name: "reply".into(),
-        description: if protocol == Protocol::V2 {
-            "Deliver the final user-facing response. Use alone with valid execution.title and execution.result in annotations. These display fields do not change execution state; this is not a work tool."
-        } else {
-            "Deliver the final user-facing response. Use alone. Optional annotations do not change execution state; this is not a work tool."
-        }.into(),
+        description: "Return the final value in content using its required text or typed transport. Use alone with valid execution.title and execution.result in annotations. Runtime determines the recipient. Display metadata does not change execution state; this is not a work tool.".into(),
         parameters: reply_parameters,
     });
     Ok(augmented)
@@ -559,9 +531,8 @@ pub struct ExecutionFact {
 }
 #[derive(Clone, Debug, Default)]
 pub struct NormalizationContext {
-    /// Must be the version frozen for this execution, not mutable global config.
+    /// Must be the mode frozen for this execution, not mutable global config.
     pub protocol: Protocol,
-    pub typed_infer: bool,
     pub scope: Option<ExecutionScope>,
     pub producer: Option<Producer>,
     pub title_input_revision: Option<TitleInputRevision>,
@@ -628,7 +599,7 @@ pub struct NormalizedResponse {
     pub raw_response: Response,
     pub execution_response: Response,
     /// Protocol applied to this response, not the authoritative frozen execution
-    /// version (typed infer bypasses v1 without changing the execution binding).
+    /// mode, shared by typed inference and ordinary response normalization.
     pub protocol: Protocol,
     pub records: Vec<AnnotationRecord>,
     pub diagnostics: Vec<Diagnostic>,
@@ -699,7 +670,7 @@ pub fn annotations_from_authorized_event(
     let mut bundle: PersistedAnnotations = serde_json::from_value(value.clone())
         .map_err(|_| error("Malformed persisted annotation bundle"))?;
     if bundle.protocol.is_off()
-        || (bundle.protocol == Protocol::V2 && !event.payload.contains_key("response_annotations"))
+        || !event.payload.contains_key("response_annotations")
         || event
             .payload
             .get("response_annotations")
@@ -1147,7 +1118,7 @@ pub fn normalize_response(
     response: &Response,
     context: &NormalizationContext,
 ) -> Result<NormalizedResponse, ProtocolError> {
-    if context.protocol == Protocol::Off || context.typed_infer {
+    if context.protocol == Protocol::Off {
         return Ok(NormalizedResponse {
             raw_response: response.clone(),
             execution_response: response.clone(),
@@ -1210,8 +1181,7 @@ pub fn normalize_response(
         }
     }
     let terminal_decision = terminal(&execution_response)?;
-    if context.protocol == Protocol::V2
-        && matches!(terminal_decision, Some(TerminalDecision::Deliver(_)))
+    if matches!(terminal_decision, Some(TerminalDecision::Deliver(_)))
         && (reply.is_none()
             || ![AnnotationKind::Title, AnnotationKind::Result]
                 .iter()
@@ -1405,7 +1375,7 @@ mod tests {
             },
         );
         NormalizationContext {
-            protocol: Protocol::V1,
+            protocol: Protocol::On,
             scope: Some(scope),
             producer: Some(Producer {
                 event_id: "response-event".into(),
@@ -1421,7 +1391,7 @@ mod tests {
     }
     fn persisted_event_with_revision(
         sequence: u64,
-        execution: Value,
+        mut execution: Value,
         terminal: bool,
         revision: Option<TitleInputRevision>,
     ) -> Event {
@@ -1442,6 +1412,9 @@ mod tests {
             });
         }
         let (name, args) = if terminal {
+            let fields = execution.as_object_mut().expect("synthetic final metadata");
+            fields.entry("title").or_insert(json!("完成合成核对"));
+            fields.entry("result").or_insert(json!("合成核对已结束"));
             (
                 "reply",
                 json!({"content":"正文","annotations":{"execution":execution}}),
@@ -1458,7 +1431,7 @@ mod tests {
         let mut event = Event::new(
             format!("event-{sequence}"), "Agent-Morphz".into(), TYPE_AGENT_CALL.into(),
             "chat/assistant_call".into(),
-            json!({"thread_id":"execution-1","thread_generation":3,"model_attempt_id":format!("model-{sequence}"),BUNDLE_PAYLOAD_KEY:bundle}).as_object().unwrap().clone(),
+            json!({"response_annotations":"on","thread_id":"execution-1","thread_generation":3,"model_attempt_id":format!("model-{sequence}"),BUNDLE_PAYLOAD_KEY:bundle}).as_object().unwrap().clone(),
         );
         event.sequence = Some(sequence);
         event
@@ -1474,7 +1447,7 @@ mod tests {
         let receipt = receipt_from_authorized_event(
             &event,
             &scope,
-            Protocol::V1,
+            Protocol::On,
             "actual-activation",
             "model-10",
         )
@@ -1509,7 +1482,7 @@ mod tests {
         let unknown = receipt_from_authorized_event(
             &missing,
             &scope,
-            Protocol::V1,
+            Protocol::On,
             "actual-activation",
             "model-10",
         )
@@ -1524,7 +1497,7 @@ mod tests {
             receipt_from_authorized_event(
                 &broken,
                 &scope,
-                Protocol::V1,
+                Protocol::On,
                 "actual-activation",
                 "model-10"
             )
@@ -1549,12 +1522,12 @@ mod tests {
                 .collect(),
         );
         let normalized = normalize_response(&raw, &ctx).unwrap();
-        let mut event = Event::new("response-event".into(), "Agent-Morphz".into(), TYPE_AGENT_CALL.into(), "chat/assistant_call".into(), json!({"thread_id":"execution-1", "thread_generation":3, "model_attempt_id":"attempt", BUNDLE_PAYLOAD_KEY:PersistedAnnotations::from_normalized(ctx.scope.clone().unwrap(), &normalized)}).as_object().unwrap().clone());
+        let mut event = Event::new("response-event".into(), "Agent-Morphz".into(), TYPE_AGENT_CALL.into(), "chat/assistant_call".into(), json!({"response_annotations":"on", "thread_id":"execution-1", "thread_generation":3, "model_attempt_id":"attempt", BUNDLE_PAYLOAD_KEY:PersistedAnnotations::from_normalized(ctx.scope.clone().unwrap(), &normalized)}).as_object().unwrap().clone());
         event.sequence = Some(9);
         let receipt = receipt_from_authorized_event(
             &event,
             ctx.scope.as_ref().unwrap(),
-            Protocol::V1,
+            Protocol::On,
             "actual-activation",
             "attempt",
         )
@@ -1580,7 +1553,7 @@ mod tests {
         let rejected = receipt_from_authorized_event(
             &event,
             ctx.scope.as_ref().unwrap(),
-            Protocol::V1,
+            Protocol::On,
             "actual-activation",
             "attempt",
         )
@@ -1593,7 +1566,7 @@ mod tests {
         let overlong = receipt_from_authorized_event(
             &event,
             ctx.scope.as_ref().unwrap(),
-            Protocol::V1,
+            Protocol::On,
             &"x".repeat(129),
             "attempt",
         )
@@ -1608,7 +1581,7 @@ mod tests {
         let event = persisted_event(10, json!({"result":"REJECT_WORK_RESULT"}), false);
         let scope = context().scope.unwrap();
         let receipt =
-            receipt_from_authorized_event(&event, &scope, Protocol::V1, "activation", "model-10")
+            receipt_from_authorized_event(&event, &scope, Protocol::On, "activation", "model-10")
                 .unwrap();
         assert_eq!(receipt.state, ReceiptState::NoneAccepted);
         assert!(receipt.accepted.is_empty());
@@ -1624,7 +1597,7 @@ mod tests {
         let final_receipt = receipt_from_authorized_event(
             &terminal,
             &scope,
-            Protocol::V1,
+            Protocol::On,
             "activation",
             "model-11",
         )
@@ -1638,7 +1611,7 @@ mod tests {
         assert!(!receipt_from_authorized_event(
             &terminal,
             &scope,
-            Protocol::V1,
+            Protocol::On,
             "activation",
             "model-11"
         )
@@ -1888,11 +1861,11 @@ mod tests {
             .is_none());
     }
     #[test]
-    fn protocol_version_is_explicit_default_off_and_contract_is_opt_in() {
+    fn only_on_off_are_supported_without_version_aliases_or_auto_mode() {
         assert_eq!(Protocol::default(), Protocol::Off);
         assert!(Protocol::Off.is_off());
-        assert!(!Protocol::V1.is_off());
-        for protocol in [Protocol::Off, Protocol::V1, Protocol::V2] {
+        assert!(!Protocol::On.is_off());
+        for protocol in [Protocol::Off, Protocol::On] {
             assert_eq!(Protocol::from_str(protocol.as_str()).unwrap(), protocol);
             assert_eq!(protocol.as_str().parse::<Protocol>().unwrap(), protocol);
             assert_eq!(
@@ -1904,13 +1877,15 @@ mod tests {
                 protocol
             );
         }
-        assert!(Protocol::from_str("v3").is_err());
+        for removed in ["v1", "v2", "auto", "v3"] {
+            assert!(Protocol::from_str(removed).is_err());
+            assert!(serde_json::from_value::<Protocol>(json!(removed)).is_err());
+        }
         assert_eq!(Protocol::Off.contract(), None);
-        assert_eq!(Protocol::V1.contract(), Some(CONTRACT_V1));
-        assert_eq!(Protocol::V2.contract(), Some(CONTRACT_V2));
+        assert_eq!(Protocol::On.contract(), Some(CONTRACT));
         assert!(serde_json::from_value::<Protocol>(json!(true)).is_err());
-        assert!(CONTRACT_V1.contains("ENTIRE current Execution"));
-        assert!(CONTRACT_V1.contains("do not add calls or inference rounds"));
+        assert!(CONTRACT.contains("ENTIRE current Execution"));
+        assert!(CONTRACT.contains("do not add calls or inference rounds"));
         assert_ne!(BUNDLE_PAYLOAD_KEY, "response_annotations");
     }
     #[test]
@@ -2003,7 +1978,10 @@ mod tests {
             terminal_sequence: None,
         };
         let records = records_from_authorized_event(&waiting, &fact.scope).unwrap();
-        assert!(records.iter().all(|r| !r.effective));
+        assert!(records
+            .iter()
+            .filter(|r| r.kind == AnnotationKind::Result)
+            .all(|r| !r.effective));
         let mut events = vec![later, first.clone(), first, result, waiting];
         for _ in 0..2 {
             let running = project_authorized_events(&fact, &events).unwrap();
@@ -2044,7 +2022,7 @@ mod tests {
         }];
         assert_eq!(
             serde_json::to_vec(&tools).unwrap(),
-            serde_json::to_vec(&augment_tools(&tools, Protocol::Off, false).unwrap()).unwrap()
+            serde_json::to_vec(&augment_tools(&tools, Protocol::Off).unwrap()).unwrap()
         );
         let raw = response(vec![call(
             "1",
@@ -2058,20 +2036,12 @@ mod tests {
         );
         assert!(normalized.records.is_empty());
         assert!(normalized.terminal_decision.is_none());
-        let mut typed = context();
-        typed.typed_infer = true;
-        assert_eq!(
-            serde_json::to_vec(&raw).unwrap(),
-            serde_json::to_vec(&normalize_response(&raw, &typed).unwrap().execution_response)
-                .unwrap()
-        );
     }
     #[test]
     fn schema_additive_optional_and_collisions_refused() {
         let original = tool();
         let before = serde_json::to_vec(&original).unwrap();
-        let augmented =
-            augment_tools(std::slice::from_ref(&original), Protocol::V1, false).unwrap();
+        let augmented = augment_tools(std::slice::from_ref(&original), Protocol::On).unwrap();
         assert_eq!(before, serde_json::to_vec(&original).unwrap());
         assert_eq!(augmented[0].parameters["required"], json!(["command"]));
         assert_eq!(
@@ -2084,13 +2054,12 @@ mod tests {
                 name: "reply".into(),
                 ..original.clone()
             }],
-            Protocol::V1,
-            false
+            Protocol::On
         )
         .is_err());
         let mut occupied = original;
         occupied.parameters["properties"]["_annotations"] = json!({});
-        assert!(augment_tools(&[occupied], Protocol::V1, false).is_err());
+        assert!(augment_tools(&[occupied], Protocol::On).is_err());
     }
     #[test]
     fn work_args_raw_and_nested_business_fields_preserved_precise_refs_only() {
@@ -2216,9 +2185,9 @@ mod tests {
         assert!(normalized.records.is_empty());
     }
     #[test]
-    fn v2_requires_valid_same_response_title_and_result_not_prior_metadata() {
+    fn enabled_requires_valid_same_response_title_and_result_not_prior_metadata() {
         let mut ctx = context();
-        ctx.protocol = Protocol::V2;
+        ctx.protocol = Protocol::On;
         for annotations in [
             None,
             Some(Value::Null),
@@ -2237,17 +2206,13 @@ mod tests {
             }
             let raw = response(vec![call("r", "reply", args)]);
             assert!(normalize_response(&raw, &ctx).is_err());
-            assert!(
-                normalize_response(&raw, &context()).is_ok(),
-                "V1 remains optional"
-            );
         }
         let plain = Response {
             content: "正文".into(),
             tool_calls: vec![],
         };
         assert!(normalize_response(&plain, &ctx).is_err());
-        assert!(normalize_response(&plain, &context()).is_ok());
+        assert!(normalize_response(&plain, &NormalizationContext::default()).is_ok());
         let valid = response(vec![call(
             "r",
             "reply",
@@ -2256,11 +2221,11 @@ mod tests {
             "progress":null,"observations":[{"ref":"@other","result":"越界"}]}}),
         )]);
         let normalized = normalize_response(&valid, &ctx).unwrap();
-        assert_eq!(normalized.protocol, Protocol::V2);
+        assert_eq!(normalized.protocol, Protocol::On);
         assert!(normalized
             .records
             .iter()
-            .all(|record| record.protocol == Protocol::V2));
+            .all(|record| record.protocol == Protocol::On));
         assert_eq!(normalized.records.len(), 2);
         assert!(
             !normalized.diagnostics.is_empty(),
@@ -2283,10 +2248,9 @@ mod tests {
     }
 
     #[test]
-    fn v2_schema_keeps_work_optional_but_terminal_metadata_required() {
+    fn enabled_schema_keeps_work_optional_but_terminal_metadata_required() {
         let original = tool();
-        let augmented =
-            augment_tools(std::slice::from_ref(&original), Protocol::V2, false).unwrap();
+        let augmented = augment_tools(std::slice::from_ref(&original), Protocol::On).unwrap();
         assert_eq!(
             augmented[0].parameters["required"],
             original.parameters["required"]
@@ -2301,20 +2265,20 @@ mod tests {
         assert_eq!(execution["properties"]["result"]["minLength"], 1);
         assert_eq!(
             serde_json::to_value(
-                augment_tools(std::slice::from_ref(&original), Protocol::V2, true).unwrap()
+                augment_tools(std::slice::from_ref(&original), Protocol::On).unwrap()
             )
             .unwrap(),
-            serde_json::to_value(vec![original]).unwrap()
+            serde_json::to_value(augmented).unwrap()
         );
     }
 
     #[test]
-    fn v2_optional_work_no_reply_and_typed_infer_keep_existing_boundaries() {
+    fn optional_work_and_no_reply_keep_existing_boundaries() {
         let mut ctx = context();
-        ctx.protocol = Protocol::V2;
+        ctx.protocol = Protocol::On;
         let work = response(vec![call("w", "exec", json!({"command":"unchanged"}))]);
         let normalized = normalize_response(&work, &ctx).unwrap();
-        assert_eq!(normalized.protocol, Protocol::V2);
+        assert_eq!(normalized.protocol, Protocol::On);
         assert_eq!(
             serde_json::to_value(normalized.execution_response).unwrap(),
             serde_json::to_value(work).unwrap()
@@ -2335,42 +2299,45 @@ mod tests {
                 serde_json::to_value(control).unwrap()
             );
         }
-        ctx.typed_infer = true;
-        let raw = Response {
-            content: "{\"business\":true}".into(),
-            tool_calls: vec![],
-        };
+        let value = "{\"business\":true}";
+        let raw = response(vec![call(
+            "r",
+            "reply",
+            json!({
+                "content":value,
+                "annotations":{"execution":{"title":"核对业务值","result":"返回布尔字段"}}
+            }),
+        )]);
         let typed = normalize_response(&raw, &ctx).unwrap();
-        assert_eq!(typed.protocol, Protocol::Off);
-        assert_eq!(
-            serde_json::to_value(typed.execution_response).unwrap(),
-            serde_json::to_value(raw).unwrap()
-        );
+        assert_eq!(typed.protocol, Protocol::On);
+        assert_eq!(typed.execution_response.content, value);
+        assert!(typed.execution_response.tool_calls.is_empty());
+        assert_eq!(typed.records.len(), 2);
     }
 
     #[test]
-    fn v2_persisted_records_keep_actual_protocol_and_reject_source_mismatch() {
+    fn persisted_records_keep_actual_mode_and_reject_source_mismatch() {
         let mut event = persisted_event(12, json!({"title":"完整工作","progress":"阶段"}), false);
         event
             .payload
-            .insert("response_annotations".into(), json!("v2"));
+            .insert("response_annotations".into(), json!("on"));
         let value = event.payload.get_mut(BUNDLE_PAYLOAD_KEY).unwrap();
-        value["protocol"] = json!("v2");
+        value["protocol"] = json!("on");
         for record in value["records"].as_array_mut().unwrap() {
-            record["protocol"] = json!("v2");
+            record["protocol"] = json!("on");
         }
         let scope = context().scope.unwrap();
         let bundle = annotations_from_authorized_event(&event, &scope)
             .unwrap()
             .unwrap();
-        assert_eq!(bundle.protocol, Protocol::V2);
+        assert_eq!(bundle.protocol, Protocol::On);
         assert!(bundle
             .records
             .iter()
-            .all(|record| record.protocol == Protocol::V2));
+            .all(|record| record.protocol == Protocol::On));
         event
             .payload
-            .insert("response_annotations".into(), json!("v1"));
+            .insert("response_annotations".into(), json!("off"));
         assert!(annotations_from_authorized_event(&event, &scope).is_err());
         event.payload.remove("response_annotations");
         assert!(annotations_from_authorized_event(&event, &scope).is_err());
@@ -2381,7 +2348,7 @@ mod tests {
         let raw = response(vec![call(
             "r",
             "reply",
-            json!({"content":"检查完成。","annotations":{"execution":{"result":"已确认"}}}),
+            json!({"content":"检查完成。","annotations":{"execution":{"title":"核对环境","result":"已确认"}}}),
         )]);
         let normalized = normalize_response(&raw, &context()).unwrap();
         assert!(normalized.execution_response.tool_calls.is_empty());
@@ -2389,7 +2356,14 @@ mod tests {
             normalized.terminal_decision,
             Some(TerminalDecision::Deliver("检查完成。".into()))
         );
-        assert!(!normalized.records[0].effective);
+        assert!(
+            !normalized
+                .records
+                .iter()
+                .find(|record| record.kind == AnnotationKind::Result)
+                .unwrap()
+                .effective
+        );
         let mut completed = context();
         completed.execution_fact = Some(ExecutionFact {
             scope: completed.scope.clone().unwrap(),
@@ -2397,8 +2371,16 @@ mod tests {
             terminal: true,
             terminal_sequence: Some(9),
         });
-        assert!(normalize_response(&raw, &completed).unwrap().records[0].effective);
-        let bad_metadata = normalize_response(
+        assert!(
+            normalize_response(&raw, &completed)
+                .unwrap()
+                .records
+                .iter()
+                .find(|record| record.kind == AnnotationKind::Result)
+                .unwrap()
+                .effective
+        );
+        assert!(normalize_response(
             &response(vec![call(
                 "r",
                 "reply",
@@ -2406,9 +2388,7 @@ mod tests {
             )]),
             &context(),
         )
-        .unwrap();
-        assert!(bad_metadata.records.is_empty());
-        assert_eq!(bad_metadata.execution_response.content, "正文");
+        .is_err());
         assert!(normalize_response(
             &response(vec![
                 call("r", "reply", json!({"content":"x"})),
@@ -2477,7 +2457,7 @@ mod tests {
         .is_err());
     }
     #[test]
-    fn reply_duplicate_control_fields_are_rejected_but_null_metadata_downgrades() {
+    fn reply_duplicate_control_fields_and_missing_enabled_metadata_are_rejected() {
         for args in [
             r#"{"content":"one","content":"two"}"#,
             r#"{"content":"正文","annotations":{},"annotations":{}}"#,
@@ -2495,9 +2475,7 @@ mod tests {
             "reply",
             json!({"content":"正文","annotations":null}),
         )]);
-        let normalized = normalize_response(&raw, &context()).unwrap();
-        assert_eq!(normalized.execution_response.content, "正文");
-        assert_eq!(normalized.diagnostics.len(), 1);
+        assert!(normalize_response(&raw, &context()).is_err());
     }
     #[test]
     fn other_execution_fact_cannot_mark_result_effective_or_cancel_current_execution() {
@@ -2514,13 +2492,28 @@ mod tests {
         let raw = response(vec![call(
             "r",
             "reply",
-            json!({"content":"正文","annotations":{"execution":{"result":"结果"}}}),
+            json!({"content":"正文","annotations":{"execution":{"title":"核对执行事实","result":"结果"}}}),
         )]);
         let normalized = normalize_response(&raw, &ctx).unwrap();
         assert!(normalized.dispatch_allowed);
-        assert!(!normalized.records[0].effective);
+        assert!(
+            !normalized
+                .records
+                .iter()
+                .find(|record| record.kind == AnnotationKind::Result)
+                .unwrap()
+                .effective
+        );
         ctx.execution_fact.as_mut().unwrap().status = "completed".into();
-        assert!(!normalize_response(&raw, &ctx).unwrap().records[0].effective);
+        assert!(
+            !normalize_response(&raw, &ctx)
+                .unwrap()
+                .records
+                .iter()
+                .find(|record| record.kind == AnnotationKind::Result)
+                .unwrap()
+                .effective
+        );
     }
     #[test]
     fn replay_idempotent_and_conflicting_rebind_rejected() {
@@ -2585,7 +2578,7 @@ mod tests {
         );
     }
     #[test]
-    fn v1_first_valid_title_survives_reordering_later_steps_terminal_and_replay() {
+    fn first_valid_title_survives_reordering_later_steps_terminal_and_replay() {
         let produce = |sequence, execution: Value, terminal| {
             let mut ctx = context();
             ctx.producer = Some(Producer {

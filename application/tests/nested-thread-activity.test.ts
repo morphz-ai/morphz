@@ -236,7 +236,7 @@ test("family有界读取独立于Context历史，annotation必须属于每个Thr
     child = rawThread("TEST-child", undefined, "TEST-main");
   Object.assign(own, {
     response_annotations: {
-      protocol: "v2",
+      protocol: "on",
       scope: { execution_id: own.thread.id, generation: 0 },
       title: "主工作",
       progress: "父线程进度",
@@ -247,7 +247,7 @@ test("family有界读取独立于Context历史，annotation必须属于每个Thr
   });
   Object.assign(child, {
     response_annotations: {
-      protocol: "v2",
+      protocol: "on",
       scope: { execution_id: own.thread.id, generation: 0 },
       title: "不许套到child",
       progress: "父进度不许复制",

@@ -225,7 +225,7 @@ async fn actual_four_node_scheduled_family_mounts_nonempty_frozen_custom_with_ex
     let mut input = Request::parse(json!({"io_version":"1","client_message_id":"custom-scheduled-parent",
         "message":{"format":{"id":"morphz.chat","version":"1"},"content":{"encoding":"json","value":{"text":"CUSTOM_PARENT: create the attached A and B; A creates attached A1."}}}
     }).to_string().as_bytes(), &Limits::default()).unwrap();
-    input.activation.response_annotations = Some(Protocol::V2);
+    input.activation.response_annotations = Some(Protocol::On);
     let accepted = session
         .send_io_as_principal(input, &identity.principal_id)
         .await
@@ -313,7 +313,7 @@ async fn actual_four_node_scheduled_family_mounts_nonempty_frozen_custom_with_ex
     let mut frozen = vec![];
     for snapshot in &board.threads {
         let thread = &snapshot.thread;
-        assert_eq!(thread.response_annotations, Protocol::V2);
+        assert_eq!(thread.response_annotations, Protocol::On);
         assert_eq!(
             thread.initiating_principal_id.as_deref(),
             Some(identity.principal_id.as_str())
@@ -348,6 +348,39 @@ async fn actual_four_node_scheduled_family_mounts_nonempty_frozen_custom_with_ex
         frozen.push(manifest);
     }
     let captured = client.requests.lock().unwrap().clone();
+    let response_events = runtime
+        .query_events(QueryFilter {
+            context_id: Some(identity.context_id.clone()),
+            topics: vec![
+                "chat/assistant_call".into(),
+                "runtime/thread_waiting".into(),
+            ],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let root_final = response_events
+        .iter()
+        .find(|event| {
+            event.topic == "chat/assistant_call"
+                && event.payload["thread_id"] == root_thread.thread.id
+                && event.payload.get("terminal_outcome") == Some(&json!(true))
+        })
+        .expect("the interactive delivery has one real annotated source");
+    assert!(root_final
+        .payload
+        .get("response_annotation_bundle")
+        .is_some());
+    for waiting in response_events.iter().filter(|event| {
+        event.topic == "runtime/thread_waiting"
+            && event.payload["activation_id"] == root_final.payload["activation_id"]
+    }) {
+        assert_ne!(waiting.id, root_final.id);
+        assert!(
+            waiting.payload.get("response_annotation_bundle").is_none(),
+            "a wait after delivery must not republish its response or rebind its annotations"
+        );
+    }
     assert!((6..=8).contains(&captured.len()), "two selections plus four completions, with at most two genuine Group-settled re-evaluations; no naming-only call");
     let counts = client.calls.lock().unwrap().clone();
     let roles = client.roles.lock().unwrap().clone();

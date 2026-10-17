@@ -20,7 +20,7 @@ fn response_annotation_selection_is_raw_optional_and_fingerprinted() {
     explicit.activation.response_annotations = Some(Protocol::Off);
     assert_ne!(explicit.fingerprint("human"), fingerprint);
     let disabled = explicit.fingerprint("human");
-    explicit.activation.response_annotations = Some(Protocol::V1);
+    explicit.activation.response_annotations = Some(Protocol::On);
     assert_ne!(explicit.fingerprint("human"), disabled);
     assert!(serde_json::from_value::<Activation>(
         serde_json::json!({"response_annotations":"bogus"})

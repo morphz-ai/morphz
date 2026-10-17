@@ -220,6 +220,25 @@ impl PlanExecutionCoordinator {
         &self.store
     }
 
+    async fn infer_annotation_mode(
+        &self,
+        plan: &PlanExecutionRecord,
+    ) -> PlanExecutionResult<crate::response_annotations::Protocol> {
+        let owner = self
+            .store
+            .get_thread(&plan.thread_id)
+            .await?
+            .ok_or("Infer requires its actual owning Thread")?;
+        if owner.agent_id != plan.agent_id
+            || owner.context_id != plan.context_id
+            || owner.session_id != plan.session_id
+            || owner.initiating_principal_id != plan.initiating_principal_id
+        {
+            return Err("Infer annotation mode owner does not match its Plan route".into());
+        }
+        Ok(owner.response_annotations)
+    }
+
     /// Creates the durable Plan identity and initial serializable machine.
     ///
     /// Repeating the same outer Function Call with the same program is
@@ -401,7 +420,11 @@ impl PlanExecutionCoordinator {
                     PlanAdvance::Suspended(effect @ PlanEffect::Infer { sequence, .. }) => {
                         let state_json = serde_json::to_value(&machine)?;
                         let budget_json = machine.budget_json()?;
-                        let request_event = infer_request_event(&running, &effect)?;
+                        let request_event = infer_request_event(
+                            &running,
+                            &effect,
+                            self.infer_annotation_mode(&running).await?,
+                        )?;
                         let activation_id = deterministic_infer_activation_id(&request_event.id)?;
                         let committed: PlanEvaluationCommit = self
                             .store
@@ -2000,7 +2023,8 @@ impl PlanExecutionCoordinator {
                 plan.id
             )
         })?;
-        let request_event = infer_request_event(&plan, &effect)?;
+        let request_event =
+            infer_request_event(&plan, &effect, self.infer_annotation_mode(&plan).await?)?;
         let PlanEffect::Infer {
             sequence, result, ..
         } = effect
@@ -3020,6 +3044,7 @@ fn parallel_group_settled_event(parent: &PlanExecutionRecord, group: &ActionGrou
 fn infer_request_event(
     plan: &PlanExecutionRecord,
     effect: &PlanEffect,
+    response_annotations: crate::response_annotations::Protocol,
 ) -> PlanExecutionResult<Event> {
     let PlanEffect::Infer {
         sequence,
@@ -3055,7 +3080,7 @@ fn infer_request_event(
         .get("program")
         .and_then(JsonValue::as_str)
         .ok_or("infer effect is missing its complete Yao program")?;
-    let evaluation_text = {
+    let mut evaluation_text = {
         let captures = request
             .get("captures")
             .filter(|value| value.as_object().is_some_and(|values| !values.is_empty()))
@@ -3081,6 +3106,9 @@ fn infer_request_event(
             result_instruction, captures, type_definitions, program
         )
     };
+    if !response_annotations.is_off() {
+        evaluation_text.push_str("\n\nReturn that exact terminal body in reply.content, with the current Evaluation's short title and result in reply.annotations.execution. The response carrier is not part of the typed value. Do not add fields to the business value, another model request, or a separate annotation call. This returns to the parent Plan; it does not deliver a separate chat reply or complete the parent work.");
+    }
     let mut payload = serde_json::Map::from_iter([
         (
             "agent_id".to_string(),
@@ -3128,6 +3156,12 @@ fn infer_request_event(
         ),
         ("text".to_string(), JsonValue::String(evaluation_text)),
     ]);
+    if !response_annotations.is_off() {
+        payload.insert(
+            "response_annotations".into(),
+            serde_json::to_value(response_annotations)?,
+        );
+    }
     if let Some(principal_id) = &plan.initiating_principal_id {
         payload.insert(
             "principal_id".to_string(),
@@ -3168,7 +3202,10 @@ fn infer_request_event(
 /// used by the live reconciler to redispatch a durable pending Signal when the
 /// asynchronous router has not yet materialized its deterministic child
 /// Activation.
-pub fn pending_infer_request_event(plan: &PlanExecutionRecord) -> PlanExecutionResult<Event> {
+pub fn pending_infer_request_event(
+    plan: &PlanExecutionRecord,
+    response_annotations: crate::response_annotations::Protocol,
+) -> PlanExecutionResult<Event> {
     if plan.status != PlanExecutionStatus::Waiting
         || plan.pending_kind != Some(PlanExecutionWaitKind::Evaluation)
     {
@@ -3185,7 +3222,7 @@ pub fn pending_infer_request_event(plan: &PlanExecutionRecord) -> PlanExecutionR
             plan.id
         )
     })?;
-    let event = infer_request_event(plan, effect)?;
+    let event = infer_request_event(plan, effect, response_annotations)?;
     let activation_id = deterministic_infer_activation_id(&event.id)?;
     if plan.pending_id.as_deref() != Some(activation_id.as_str()) {
         return Err(format!(
@@ -4882,7 +4919,9 @@ mod tests {
         assert!(text.contains("\"required\":[\"value\"]"));
         assert!(!text.contains("nominal record is encoded as"));
 
-        let reconstructed = pending_infer_request_event(&waiting).unwrap();
+        let reconstructed =
+            pending_infer_request_event(&waiting, crate::response_annotations::Protocol::Off)
+                .unwrap();
         assert_eq!(reconstructed.id, request_event.id);
         assert_eq!(reconstructed.payload, request_event.payload);
     }
@@ -5519,7 +5558,9 @@ mod tests {
             })
             .await
             .unwrap();
-        let request_event = infer_request_event(&parent, &infer).unwrap();
+        let request_event =
+            infer_request_event(&parent, &infer, crate::response_annotations::Protocol::Off)
+                .unwrap();
         assert_eq!(request_event.payload["tools"], serde_json::json!([]));
         let instruction = request_event.payload["text"].as_str().unwrap();
         assert!(instruction.contains("exactly one raw Yao program"));

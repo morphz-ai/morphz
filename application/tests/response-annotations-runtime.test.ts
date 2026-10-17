@@ -158,7 +158,9 @@ test(
         f.options,
       );
       const first = await f.waitRequest(marker);
-      assert.ok(JSON.stringify(first).includes("Response annotations v2"));
+      assert.ok(
+        JSON.stringify(first).includes("Response annotations (enabled"),
+      );
       const toolDefinitions = first.tools as Array<{
         function: {
           name: string;
@@ -232,7 +234,7 @@ test(
       assert.equal(terminal[0]!.id, threadId);
       assert.equal(terminal[0]!.title, "检查资料与输入");
       assert.equal(terminal[0]!.summary, "资料与输入检查完成，未修改任何参数");
-      assert.equal(terminal[0]!.annotationProtocol, "v2");
+      assert.equal(terminal[0]!.annotationProtocol, "on");
       assert.equal(terminal[0]!.annotationsTruncated, false);
 
       const detail = executionSnapshotSchema.parse(
@@ -292,7 +294,7 @@ test(
 );
 
 test(
-  "actual Runtime + Platform HTTP: V2 required final metadata fails once without repair requests or physical Jobs",
+  "actual Runtime + Platform HTTP: enabled required final metadata fails once without repair requests or physical Jobs",
   {
     skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",
     timeout: 120_000,
@@ -353,7 +355,7 @@ test(
           );
           const request = await f.waitRequest(marker);
           assert.ok(
-            JSON.stringify(request).includes("Response annotations v2"),
+            JSON.stringify(request).includes("Response annotations (enabled"),
           );
           assert.equal(f.requests.length, 1);
           const candidate = "TEST INVALID FINAL BODY MUST NOT BECOME SUCCESS";
@@ -407,7 +409,7 @@ test(
           );
           assert.deepEqual(
             { ...thread[0] },
-            { status: "failed", response_annotations: "v2" },
+            { status: "failed", response_annotations: "on" },
           );
           const fused = f.sql<{ payload: string }>(
             "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_fused'",

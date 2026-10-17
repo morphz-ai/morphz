@@ -791,6 +791,11 @@ impl PlanExecutionStore for PostgresStore {
             .fetch_one(&mut *tx)
             .await?;
         let parent_thread = thread_from_row(&parent_row)?;
+        if crate::memory::response_annotations_from_payload(&request_event.payload)?
+            != parent_thread.response_annotations
+        {
+            return Err("Infer response annotation mode differs from its owning Thread".into());
+        }
         let supervision = match (
             current_plan.objective_id.as_ref(),
             current_plan.objective_evaluation_id.as_ref(),
@@ -801,12 +806,15 @@ impl PlanExecutionStore for PostgresStore {
                 parent_thread.supervision.generation,
                 Some(parent_thread.id.clone()),
             ),
-            _ => ThreadSupervision::runtime("event-router"),
+            _ => ThreadSupervision {
+                parent_thread_id: Some(parent_thread.id.clone()),
+                ..ThreadSupervision::runtime("event-router")
+            },
         };
         let child_thread = ensure_thread_in_tx(
             &mut tx,
             &NewThread {
-                response_annotations: crate::response_annotations::Protocol::Off,
+                response_annotations: parent_thread.response_annotations,
                 model_alias: request_event
                     .payload
                     .get("model_alias")

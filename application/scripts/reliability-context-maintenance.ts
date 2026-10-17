@@ -760,7 +760,7 @@ export async function runMaintenanceProof(options: {
       const body = JSON.stringify({
         text,
         client_message_id: clientId,
-        response_annotations: "v2",
+        response_annotations: "on",
       });
       if (!existsSync(join(directory, `input-${clientId}.json`)))
         writeFileSync(join(directory, `input-${clientId}.json`), body, {

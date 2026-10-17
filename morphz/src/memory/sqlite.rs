@@ -83,7 +83,7 @@ use chrono::{DateTime, Utc};
 use libsqlite3_hotbundle as _;
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
-use sqlx::{Acquire, ConnectOptions, Connection, QueryBuilder, Row, Sqlite, SqlitePool};
+use sqlx::{Acquire, ConnectOptions, QueryBuilder, Row, Sqlite, SqlitePool};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -902,7 +902,7 @@ impl SqliteStore {
 
         CREATE TABLE IF NOT EXISTS threads (
             id TEXT PRIMARY KEY,
-            response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1', 'v2')),
+            response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'on')),
             revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
             generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1),
             agent_id TEXT NOT NULL,
@@ -1757,7 +1757,7 @@ impl SqliteStore {
             .await?;
         }
         for (column, definition) in [
-            ("response_annotations", "TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1', 'v2'))"),
+            ("response_annotations", "TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'on'))"),
             (
                 "lifetime",
                 "TEXT NOT NULL DEFAULT 'durable' CHECK(lifetime IN ('attached', 'durable', 'disposable'))",
@@ -2169,9 +2169,6 @@ impl SqliteStore {
         checkpoint_schema.commit().await?;
         sqlx::query("CREATE TRIGGER IF NOT EXISTS objective_approval_wait_invalidated AFTER UPDATE OF status, active_evaluation_id, generation ON objectives BEGIN DELETE FROM objective_approval_waits WHERE objective_id = NEW.id AND (NEW.status <> 'active' OR NEW.active_evaluation_id IS NULL OR evaluation_id <> NEW.active_evaluation_id OR objective_generation <> NEW.generation); END")
             .execute(&pool).await?;
-        // The Store is not published and no Runtime work is admitted until all
-        // migrations finish. This widens the old CHECK without changing rows.
-        migrate_thread_response_annotations_v2(&pool).await?;
         // Let SQLite refresh only statistics it considers stale after schema
         // migrations. `PRAGMA optimize` is deliberately bounded and does not
         // rewrite/free database pages like VACUUM.
@@ -2802,154 +2799,6 @@ const RECALL_WHOLE_DOCUMENT_EVENT_BACKFILL_MIGRATION: &str =
     "20260815_02_recall_whole_document_event_backfill";
 const TOOL_CALL_HISTORY_MIGRATION: &str = "20260820_01_tool_call_history";
 const PRINCIPAL_CONTEXT_ENCOUNTERS_MIGRATION: &str = "20260820_02_principal_context_encounters";
-const THREAD_RESPONSE_ANNOTATIONS_V2_MIGRATION: &str = "20261002_02_thread_response_annotations_v2";
-
-/// SQLite has no ALTER CHECK. Use its documented create/copy/drop/rename
-/// procedure only during Store initialization, before publishing the pool.
-/// The connection is returned only after its pragmas have been restored;
-/// cancellation or a restore failure detaches/closes it instead. Returning a
-/// restored connection also preserves a one-connection in-memory database.
-async fn migrate_thread_response_annotations_v2(
-    pool: &SqlitePool,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    struct StartupConnection {
-        pooled: Option<sqlx::pool::PoolConnection<Sqlite>>,
-        dirty: bool,
-    }
-    impl Drop for StartupConnection {
-        fn drop(&mut self) {
-            if self.dirty {
-                if let Some(pooled) = self.pooled.take() {
-                    drop(pooled.detach());
-                }
-            }
-        }
-    }
-    let mut startup = StartupConnection {
-        pooled: Some(pool.acquire().await?),
-        dirty: false,
-    };
-    let connection = &mut **startup.pooled.as_mut().expect("startup connection");
-    let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
-        .fetch_one(&mut *connection)
-        .await?;
-    let legacy_alter_table: i64 = sqlx::query_scalar("PRAGMA legacy_alter_table")
-        .fetch_one(&mut *connection)
-        .await?;
-    // Never change these pragmas on a pooled connection used by live work.
-    startup.dirty = true;
-    sqlx::query("PRAGMA foreign_keys = OFF")
-        .execute(&mut *connection)
-        .await?;
-    sqlx::query("PRAGMA legacy_alter_table = ON")
-        .execute(&mut *connection)
-        .await?;
-    let migration = async {
-        let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-        let applied: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
-        ).bind(THREAD_RESPONSE_ANNOTATIONS_V2_MIGRATION)
-            .fetch_one(&mut *tx).await?;
-        if applied != 0 {
-            tx.commit().await?;
-            return Ok(());
-        }
-        let table_sql: String = sqlx::query_scalar(
-            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'threads'",
-        ).fetch_one(&mut *tx).await?;
-        const OLD: &str = "CHECK(response_annotations IN ('off', 'v1'))";
-        const NEW: &str = "CHECK(response_annotations IN ('off', 'v1', 'v2'))";
-        if table_sql.matches(OLD).count() == 1 && !table_sql.contains(NEW) {
-            const TEMP: &str = "threads_response_annotations_v2_migration";
-            let collision: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM sqlite_schema WHERE name = ?",
-            ).bind(TEMP).fetch_one(&mut *tx).await?;
-            if collision != 0 {
-                return Err("Response-annotation migration table name is occupied".into());
-            }
-            let violations = sqlx::query("PRAGMA foreign_key_check")
-                .fetch_all(&mut *tx).await?;
-            if !violations.is_empty() {
-                return Err("Pre-existing foreign-key violations prevent Thread migration".into());
-            }
-            // Preserve the exact complete current schema, including future
-            // columns, generated values, indexes, triggers and IO guards.
-            let dependents = sqlx::query_scalar::<_, String>(
-                "SELECT sql FROM sqlite_schema WHERE tbl_name = 'threads' AND type IN ('index', 'trigger') AND sql IS NOT NULL ORDER BY type, name",
-            ).fetch_all(&mut *tx).await?;
-            let columns = sqlx::query("PRAGMA table_xinfo(threads)")
-                .fetch_all(&mut *tx).await?;
-            let quote = |value: &str| format!("\"{}\"", value.replace('"', "\"\""));
-            let writable = columns.iter()
-                .filter(|row| row.get::<i64, _>("hidden") == 0)
-                .map(|row| quote(&row.get::<String, _>("name")))
-                .collect::<Vec<_>>();
-            let rowid = if table_sql.to_ascii_uppercase().contains("WITHOUT ROWID") {
-                None
-            } else {
-                Some(["rowid", "_rowid_", "oid"].into_iter()
-                    .find(|alias| !columns.iter().any(|row|
-                        row.get::<String, _>("name").eq_ignore_ascii_case(alias)))
-                    .ok_or("Thread table shadows every SQLite rowid alias")?)
-            };
-            let copy_columns = rowid.into_iter().map(quote)
-                .chain(writable).collect::<Vec<_>>().join(", ");
-            let comparison_columns = rowid.map(|alias| format!("{}, *", quote(alias)))
-                .unwrap_or_else(|| "*".to_string());
-            let body_start = table_sql.find('(').ok_or("Malformed Thread table schema")?;
-            let replacement = format!("CREATE TABLE {TEMP} {}", &table_sql[body_start..])
-                .replacen(OLD, NEW, 1);
-            sqlx::query(&replacement).execute(&mut *tx).await?;
-            sqlx::query(&format!(
-                "INSERT INTO {TEMP} ({copy_columns}) SELECT {copy_columns} FROM threads",
-            )).execute(&mut *tx).await?;
-            let mismatch: i64 = sqlx::query_scalar(&format!(
-                "SELECT EXISTS(SELECT {comparison_columns} FROM threads EXCEPT SELECT {comparison_columns} FROM {TEMP}) OR EXISTS(SELECT {comparison_columns} FROM {TEMP} EXCEPT SELECT {comparison_columns} FROM threads)",
-            )).fetch_one(&mut *tx).await?;
-            if mismatch != 0 {
-                return Err("Thread annotation migration changed persisted row bytes".into());
-            }
-            // Do not rename the old parent: inbound FK/view/trigger names stay
-            // bound to threads. legacy_alter_table permits unchanged views
-            // during the atomic interval in which the old name is absent.
-            sqlx::query("DROP TABLE threads").execute(&mut *tx).await?;
-            sqlx::query(&format!("ALTER TABLE {TEMP} RENAME TO threads"))
-                .execute(&mut *tx).await?;
-            for statement in dependents {
-                sqlx::query(&statement).execute(&mut *tx).await?;
-            }
-            let violations = sqlx::query("PRAGMA foreign_key_check")
-                .fetch_all(&mut *tx).await?;
-            if !violations.is_empty() {
-                return Err("Thread response-annotation migration broke foreign keys".into());
-            }
-        } else if table_sql.matches(NEW).count() != 1 || table_sql.contains(OLD) {
-            return Err("Unknown Thread response-annotation CHECK; refusing to guess".into());
-        }
-        sqlx::query("INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)")
-            .bind(THREAD_RESPONSE_ANNOTATIONS_V2_MIGRATION)
-            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
-            .execute(&mut *tx).await?;
-        tx.commit().await?;
-        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-    }.await;
-    let restore = async {
-        sqlx::query(&format!("PRAGMA legacy_alter_table = {legacy_alter_table}"))
-            .execute(&mut *connection)
-            .await?;
-        sqlx::query(&format!("PRAGMA foreign_keys = {foreign_keys}"))
-            .execute(&mut *connection)
-            .await?;
-        Ok::<(), sqlx::Error>(())
-    }
-    .await;
-    if restore.is_ok() {
-        startup.dirty = false;
-    }
-    migration?;
-    restore?;
-    Ok(())
-}
 
 async fn sqlite_migration_applied(
     pool: &SqlitePool,
@@ -6322,7 +6171,7 @@ async fn ensure_thread_response_annotations_column(
             .iter()
             .any(|row| row.get::<String, _>("name") == "response_annotations")
     {
-        sqlx::query("ALTER TABLE threads ADD COLUMN response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1', 'v2'))").execute(pool).await?;
+        sqlx::query("ALTER TABLE threads ADD COLUMN response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'on'))").execute(pool).await?;
     }
     Ok(())
 }
@@ -6378,7 +6227,7 @@ async fn migrate_threads_to_canonical_domain(
         sqlx::query(
             r#"CREATE TABLE threads_canonical_migration (
                 id TEXT PRIMARY KEY,
-                response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1', 'v2')),
+                response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'on')),
                 revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
                 agent_id TEXT NOT NULL,
                 context_id TEXT NOT NULL,
@@ -6489,7 +6338,7 @@ async fn migrate_thread_supervisor_kind_domain(
         sqlx::query(
             r#"CREATE TABLE threads_supervisor_migration (
                 id TEXT PRIMARY KEY,
-                response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1', 'v2')),
+                response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'on')),
                 revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
                 generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1),
                 agent_id TEXT NOT NULL,
@@ -28616,121 +28465,6 @@ mod tests {
     use std::time::Duration;
     use tempfile::NamedTempFile;
 
-    #[tokio::test]
-    async fn response_annotations_v2_startup_preserves_single_connection_memory_store() {
-        let store = SqliteStore::new_with_config(
-            ":memory:",
-            &SqliteStorageConfig {
-                max_connections: 1,
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name='threads'",
-            )
-            .fetch_one(&store.pool)
-            .await
-            .unwrap(),
-            1
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
-                .fetch_one(&store.pool)
-                .await
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations WHERE version=?",)
-                .bind(THREAD_RESPONSE_ANNOTATIONS_V2_MIGRATION)
-                .fetch_one(&store.pool)
-                .await
-                .unwrap(),
-            1
-        );
-        // Exercise the same pooled connection again, including the idempotent
-        // startup path: closing/detaching it here would erase the whole DB.
-        migrate_thread_response_annotations_v2(&store.pool)
-            .await
-            .unwrap();
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name='threads'",
-            )
-            .fetch_one(&store.pool)
-            .await
-            .unwrap(),
-            1
-        );
-    }
-
-    #[tokio::test]
-    async fn response_annotations_v2_migration_failure_rolls_back_and_restores_connection() {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                SqliteConnectOptions::new()
-                    .filename(":memory:")
-                    .foreign_keys(true),
-            )
-            .await
-            .unwrap();
-        sqlx::query(
-            "CREATE TABLE schema_migrations(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query("CREATE TABLE threads(id TEXT PRIMARY KEY, response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1')))")
-            .execute(&pool).await.unwrap();
-        sqlx::query("INSERT INTO threads VALUES ('old','v1')")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("CREATE TABLE threads_response_annotations_v2_migration (retained TEXT)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        assert!(migrate_thread_response_annotations_v2(&pool).await.is_err());
-        assert_eq!(
-            sqlx::query_scalar::<_, String>(
-                "SELECT response_annotations FROM threads WHERE id='old'"
-            )
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-            "v1"
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
-                .fetch_one(&pool)
-                .await
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("PRAGMA legacy_alter_table")
-                .fetch_one(&pool)
-                .await
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations")
-                .fetch_one(&pool)
-                .await
-                .unwrap(),
-            0
-        );
-        assert!(sqlx::query("UPDATE threads SET response_annotations='v2'")
-            .execute(&pool)
-            .await
-            .is_err());
-    }
-
     async fn bind_message_test_principal(
         store: &SqliteStore,
         session_id: &str,
@@ -29598,7 +29332,7 @@ mod tests {
             .unwrap(),
             "off"
         );
-        sqlx::query("UPDATE threads SET response_annotations = 'v1' WHERE id = 'legacy-thread'")
+        sqlx::query("UPDATE threads SET response_annotations = 'on' WHERE id = 'legacy-thread'")
             .execute(&pool)
             .await
             .unwrap();
@@ -29610,7 +29344,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap(),
-            "v1"
+            "on"
         );
 
         let table_sql: String = sqlx::query_scalar(
@@ -37699,7 +37433,7 @@ mod tests {
             .await
             .unwrap();
         bind_message_test_principal(&store, "annotations-session", "annotations-principal").await;
-        for (index, protocol) in [(1, Protocol::Off), (2, Protocol::V1), (3, Protocol::V1)] {
+        for (index, protocol) in [(1, Protocol::Off), (2, Protocol::On), (3, Protocol::On)] {
             let mut payload = serde_json::json!({
                 "context_id": "annotations-context", "session_id": "annotations-session", "principal_id": "annotations-principal",
                 "text": format!("message {index}"), "dispatch_mode": "interrupt"
@@ -37743,9 +37477,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(thread.response_annotations, Protocol::V1);
+        assert_eq!(thread.response_annotations, Protocol::On);
         let mut request = NewThread {
-            response_annotations: Protocol::V1,
+            response_annotations: Protocol::On,
             model_alias: thread.model_alias.clone(),
             reasoning_effort: thread.reasoning_effort.clone(),
             id: thread.id.clone(),
@@ -37766,7 +37500,7 @@ mod tests {
                 .await
                 .unwrap()
                 .response_annotations,
-            Protocol::V1
+            Protocol::On
         );
         request.response_annotations = Protocol::Off;
         assert!(
@@ -37791,7 +37525,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .response_annotations,
-            Protocol::V1
+            Protocol::On
         );
     }
 

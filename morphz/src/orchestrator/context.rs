@@ -6069,7 +6069,6 @@ impl ContextEngine {
             return HashMap::new();
         };
         if thread.response_annotations.is_off()
-            || thread.executor_kind == "plan_infer"
             || thread.context_id != context_id
             || thread.session_id != session_id
             || !annotation_receipt_owner_matches(thread, current)
@@ -14800,7 +14799,7 @@ mod tests {
             .unwrap();
         let thread = store
             .ensure_thread(NewThread {
-                response_annotations: Protocol::V2,
+                response_annotations: Protocol::On,
                 id: "true-explicit-thread-not-root-hash".into(),
                 agent_id: agent.into(),
                 context_id: context_id.into(),
@@ -14841,7 +14840,7 @@ mod tests {
             };
             let normalized = response_annotations::normalize_response(&crate::llm::Response {
                 content: String::new(), tool_calls: vec![crate::llm::ToolCallRepr { id: format!("precise-call-{index}"), r#type: "function".into(), func_name: "read".into(), arguments: json!({"path":"safe", "_annotations":{"intent":"read", "execution":{"progress":"inspect"}}}).to_string() }],
-            }, &NormalizationContext { protocol: Protocol::V2, scope: Some(scope.clone()), producer: Some(Producer { event_id: id.clone(), attempt_id: attempt.clone(), sequence: None }), ..Default::default() }).unwrap();
+            }, &NormalizationContext { protocol: Protocol::On, scope: Some(scope.clone()), producer: Some(Producer { event_id: id.clone(), attempt_id: attempt.clone(), sequence: None }), ..Default::default() }).unwrap();
             let clean_calls = normalized
                 .execution_response
                 .tool_calls
@@ -14855,7 +14854,7 @@ mod tests {
                     },
                 })
                 .collect::<Vec<_>>();
-            store.append(Event::new(id, "Agent-Morphz".into(), TYPE_AGENT_CALL.into(), "chat/assistant_call".into(), json!({"context_id":context_id, "session_id":session, "thread_id":thread.id, "root_turn_id":root, "thread_generation":thread.generation, "response_annotations":"v2", "activation_id":prior.id, "attempt_id":prior.id, "trigger_event_id":prior.trigger_event_id, "trigger_sequence":prior.trigger_sequence, "model_attempt_id":attempt, "text":"preview-only ".repeat(8), "tool_calls":clean_calls, response_annotations::BUNDLE_PAYLOAD_KEY:PersistedAnnotations::from_normalized(scope, &normalized)}).as_object().unwrap().clone())).await.unwrap();
+            store.append(Event::new(id, "Agent-Morphz".into(), TYPE_AGENT_CALL.into(), "chat/assistant_call".into(), json!({"context_id":context_id, "session_id":session, "thread_id":thread.id, "root_turn_id":root, "thread_generation":thread.generation, "response_annotations":"on", "activation_id":prior.id, "attempt_id":prior.id, "trigger_event_id":prior.trigger_event_id, "trigger_sequence":prior.trigger_sequence, "model_attempt_id":attempt, "text":"preview-only ".repeat(8), "tool_calls":clean_calls, response_annotations::BUNDLE_PAYLOAD_KEY:PersistedAnnotations::from_normalized(scope, &normalized)}).as_object().unwrap().clone())).await.unwrap();
         }
         let trigger = Event::new("receipt-current-trigger".into(), "Runtime".into(), TYPE_TOOL_OUTPUT.into(), "chat/tool_output".into(), json!({"context_id":context_id,"session_id":session,"root_turn_id":root,"text":"continued"}).as_object().unwrap().clone());
         store.append(trigger).await.unwrap();
@@ -14894,7 +14893,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             causality.thread.as_ref().unwrap().response_annotations,
-            Protocol::V2,
+            Protocol::On,
             "the materialized actual owner must retain its frozen protocol, not serde-default Off"
         );
         let scheduler = store
@@ -14908,7 +14907,7 @@ mod tests {
                 .find(|row| row.id == thread.id)
                 .unwrap()
                 .response_annotations,
-            Protocol::V2,
+            Protocol::On,
             "scheduler and causality snapshots must agree on the actual frozen protocol"
         );
         let engine = ContextEngine::new(
@@ -15050,7 +15049,7 @@ mod tests {
             .is_empty());
         let mut typed = thread.clone();
         typed.executor_kind = "plan_infer".into();
-        assert!(engine
+        assert!(!engine
             .visible_annotation_receipts(
                 context_id,
                 session,
@@ -15101,10 +15100,9 @@ mod tests {
             ContextViewManifest::from_view(&without_receipts, []).resident_event_ids,
             resident_before
         );
-        // No owner Store means prior producers cannot be verified. Disabled
-        // and typed paths still return without attempting owner resolution.
-        // The absence of added reads is also reviewed at the early-return
-        // boundary; this test does not claim to count SQL calls.
+        // No owner Store means prior producers cannot be verified. Infer
+        // follows the same unknown-receipt boundary; only disabled mode omits
+        // the protocol. This test does not claim to count SQL calls.
         let disconnected = ContextEngine::new(store, OrchestratorConfig::default());
         let unreadable = disconnected
             .visible_annotation_receipts(
@@ -15132,7 +15130,7 @@ mod tests {
             )
             .await
             .is_empty());
-        assert!(disconnected
+        let infer_unknown = disconnected
             .visible_annotation_receipts(
                 context_id,
                 session,
@@ -15141,10 +15139,14 @@ mod tests {
                 &events,
                 &state,
                 &HashSet::new(),
-                None
+                None,
             )
-            .await
-            .is_empty());
+            .await;
+        assert_eq!(
+            infer_unknown["receipt-source-32"].state,
+            ReceiptState::Unknown
+        );
+        assert!(infer_unknown["receipt-source-32"].accepted.is_empty());
     }
 
     #[test]

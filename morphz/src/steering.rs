@@ -401,12 +401,12 @@ mod tests {
             "session_io".into(),
             json!({"request": raw_request, "binding": {"execution": {}}}),
         );
-        thread.response_annotations = Protocol::V1;
+        thread.response_annotations = Protocol::On;
         route(&mut event, &destination, &thread, None).unwrap();
-        assert_eq!(event.payload["response_annotations"], json!("v1"));
+        assert_eq!(event.payload["response_annotations"], json!("on"));
         assert_eq!(
             event.payload["session_io"]["binding"]["execution"]["response_annotations"],
-            json!("v1")
+            json!("on")
         );
         assert_eq!(event.payload["session_io"]["request"], raw_request);
         thread.response_annotations = Protocol::Off;
@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(event.payload["session_io"]["request"], raw_request);
         event
             .payload
-            .insert("requested_response_annotations".into(), json!("v1"));
+            .insert("requested_response_annotations".into(), json!("on"));
         assert!(route(&mut event, &destination, &thread, None).is_err());
     }
 
@@ -510,7 +510,7 @@ mod tests {
                 &json!({"source":"exact-human-input"}),
             )),
             activation: Activation {
-                response_annotations: Some(crate::response_annotations::Protocol::V2),
+                response_annotations: Some(crate::response_annotations::Protocol::On),
                 model_alias: Some("source-only-model".into()),
                 reasoning_effort: Some("high".into()),
                 target_id: Some("source-only-target".into()),
@@ -523,7 +523,7 @@ mod tests {
             .bind(request.clone(), "principal-steer")
             .unwrap();
         accepted.binding.execution =
-            json!({"response_annotations":"v2","target_id":"source-only-target"});
+            json!({"response_annotations":"on","target_id":"source-only-target"});
         let mut source = original.clone();
         source.id = "typed-correction-root".into();
         source.event_type = crate::event::TYPE_SESSION_MESSAGE.into();
@@ -537,7 +537,7 @@ mod tests {
         source.payload.insert("session_io".into(), json!(accepted));
         source
             .payload
-            .insert("requested_response_annotations".into(), json!("v2"));
+            .insert("requested_response_annotations".into(), json!("on"));
         store
             .claim_message("session-steer", &request.client_message_id, &source, mode)
             .await
@@ -686,7 +686,7 @@ mod tests {
     async fn natural_steering_accepts_current_typed_input_and_inherits_owner_options() {
         for annotations in [
             crate::response_annotations::Protocol::Off,
-            crate::response_annotations::Protocol::V1,
+            crate::response_annotations::Protocol::On,
         ] {
             let file = tempfile::NamedTempFile::new().unwrap();
             let store = std::sync::Arc::new(
@@ -709,7 +709,7 @@ mod tests {
         assert_typed_natural_steering(
             store,
             MessageDispatchMode::Parallel,
-            crate::response_annotations::Protocol::V2,
+            crate::response_annotations::Protocol::On,
         )
         .await;
     }
@@ -742,10 +742,10 @@ mod tests {
             .insert("text".into(), json!("Keep the original public interface"));
         source
             .payload
-            .insert("requested_response_annotations".into(), json!("v1"));
+            .insert("requested_response_annotations".into(), json!("on"));
         source
             .payload
-            .insert("response_annotations".into(), json!("v1"));
+            .insert("response_annotations".into(), json!("on"));
         store
             .claim_message(
                 "session-steer",
@@ -1221,11 +1221,11 @@ mod tests {
             ),
             (
                 MessageDispatchMode::FollowUp,
-                crate::response_annotations::Protocol::V1,
+                crate::response_annotations::Protocol::On,
             ),
             (
                 MessageDispatchMode::Parallel,
-                crate::response_annotations::Protocol::V2,
+                crate::response_annotations::Protocol::On,
             ),
         ]
         .into_iter()

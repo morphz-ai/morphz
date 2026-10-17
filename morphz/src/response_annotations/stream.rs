@@ -280,9 +280,9 @@ pub struct ModelStreamNormalizer {
     reply_started: bool,
 }
 impl ModelStreamNormalizer {
-    pub fn new(protocol: Protocol, typed_infer: bool) -> Self {
+    pub fn new(protocol: Protocol) -> Self {
         Self {
-            enabled: !protocol.is_off() && !typed_infer,
+            enabled: !protocol.is_off(),
             tools: HashMap::new(),
             ordinary_text_seen: false,
             reply_started: false,
@@ -464,8 +464,8 @@ mod tests {
             ModelStreamEvent::ToolCallCompleted { index: 0 },
             ModelStreamEvent::Completed,
         ];
-        for protocol in [Protocol::Off, Protocol::V1, Protocol::V2] {
-            let mut stream = ModelStreamNormalizer::new(protocol, false);
+        for protocol in [Protocol::Off, Protocol::On] {
+            let mut stream = ModelStreamNormalizer::new(protocol);
             let mut normalized = vec![];
             for event in events.clone() {
                 normalized.extend(stream.push(event).unwrap());
@@ -475,7 +475,7 @@ mod tests {
                 serde_json::to_vec(&normalized).unwrap()
             );
         }
-        let mut off = ModelStreamNormalizer::new(Protocol::Off, false);
+        let mut off = ModelStreamNormalizer::new(Protocol::Off);
         let unknown = ModelStreamEvent::ToolArgumentsDelta {
             index: 9,
             delta: "raw business".into(),
@@ -484,7 +484,7 @@ mod tests {
     }
     #[test]
     fn reply_normalizes_real_event_type_without_work_turn_and_mixed_control_rejected() {
-        let mut stream = ModelStreamNormalizer::new(Protocol::V1, false);
+        let mut stream = ModelStreamNormalizer::new(Protocol::On);
         assert!(stream
             .push(ModelStreamEvent::ToolCallStarted {
                 index: 0,
@@ -527,14 +527,14 @@ mod tests {
                 name: "exec".into()
             })
             .is_err());
-        let mut missing = ModelStreamNormalizer::new(Protocol::V1, false);
+        let mut missing = ModelStreamNormalizer::new(Protocol::On);
         assert!(missing
             .push(ModelStreamEvent::ToolArgumentsDelta {
                 index: 0,
                 delta: "{}".into()
             })
             .is_err());
-        let mut unfinished = ModelStreamNormalizer::new(Protocol::V1, false);
+        let mut unfinished = ModelStreamNormalizer::new(Protocol::On);
         unfinished
             .push(ModelStreamEvent::ToolCallStarted {
                 index: 0,

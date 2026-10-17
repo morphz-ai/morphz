@@ -64,7 +64,7 @@ test("活动按同一Execution更新语义标题与一行摘要，不改真实�
       sessionId: "TEST-session",
       title: "核对运行环境",
       summary: "已读取系统版本，继续核对架构",
-      annotationProtocol: "v1",
+      annotationProtocol: "on",
       phase: "running",
       lifecycle: "open",
       revision: 3,
@@ -248,13 +248,28 @@ test("步骤显示对应Job的意图与回执解读，旧步骤回退且原返�
     "/TEST-workspace",
   );
   await expect(legacy.getByLabel("返回结果解读")).toHaveCount(0);
-  await expect(legacy.locator("pre")).not.toBeVisible();
+  await expect(legacy.getByLabel("执行的命令", { exact: true })).toHaveText(
+    "SECRET=[已隐藏] command",
+  );
   await legacy.getByRole("button", { name: "技术详情", exact: true }).click();
-  await expect(legacy.locator("pre")).toContainText("SECRET=hidden command");
+  await expect(
+    legacy.locator('.execution-technical [data-field="command"] pre'),
+  ).toHaveText("SECRET=hidden command");
   await first.getByRole("button", { name: "查看结果", exact: true }).click();
-  await expect(first.locator(".execution-result pre")).toBeVisible();
-  await expect(first.locator(".execution-result pre")).toContainText(
-    '"exactReceipt":"TEST-receipt-one"',
+  await expect(
+    first.locator('.execution-result [data-field="runtime"] pre'),
+  ).toHaveText("Node 24");
+  await expect(
+    first.locator('.execution-result [data-field="exactReceipt"] pre'),
+  ).toHaveText("TEST-receipt-one");
+  await first
+    .getByRole("group", { name: "结果视图" })
+    .getByRole("button", { name: "Raw", exact: true })
+    .click();
+  await expect(
+    first.locator(".execution-result .execution-data-raw"),
+  ).toHaveText(
+    '{"ok":true,"runtime":"Node 24","exactReceipt":"TEST-receipt-one"}',
   );
   await first.getByRole("button", { name: "查看结果", exact: true }).click();
   await expect(first.locator(".execution-result")).toHaveCount(0);

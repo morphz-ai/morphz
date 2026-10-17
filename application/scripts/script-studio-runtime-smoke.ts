@@ -268,6 +268,7 @@ const provider = createServer(async (req, res) => {
         tools.every(
           (name: string) =>
             name === "no_reply" ||
+            name === "reply" ||
             (["discussion", "prepare"].includes(stage) &&
               name === "host_morphz"),
         ),
@@ -330,6 +331,21 @@ const provider = createServer(async (req, res) => {
         },
         "tool_calls",
       );
+    const returnValue = (content: string) => {
+      assert.ok(
+        tools.includes("reply"),
+        "Every enabled infer uses the same response carrier",
+      );
+      return call("reply", {
+        content,
+        annotations: {
+          execution: {
+            title: `合成工序 ${stage}`,
+            result: `合成工序 ${stage} 已返回`,
+          },
+        },
+      });
+    };
     if (projectDiscussion && stage === "discussion") {
       assert.ok(
         tools.includes("host_morphz"),
@@ -378,14 +394,13 @@ const provider = createServer(async (req, res) => {
       assert.equal(result.hasMore, true);
       projectReply =
         "当前项目是 TEST 合成剧本工序。已按需读取项目简介：" + result.text;
-      return respond({
-        role: "assistant",
-        content: JSON.stringify({
+      return returnValue(
+        JSON.stringify({
           execute: false,
           reply: projectReply,
           task: "",
         }),
-      });
+      );
     }
     if (stage === "select") {
       const step = selectionStep++;
@@ -519,10 +534,9 @@ const provider = createServer(async (req, res) => {
         assert.equal(step, 7);
         assert.equal(result.items.length, 1);
         assert.equal(result.items[0].id, createdChatItemId);
-        return respond({
-          role: "assistant",
-          content: JSON.stringify("TEST 剧本和空的第一集已保存；不生成正文。"),
-        });
+        return returnValue(
+          JSON.stringify("TEST 剧本和空的第一集已保存；不生成正文。"),
+        );
       }
       if (step === 0)
         return call("host_morphz", {
@@ -566,10 +580,7 @@ const provider = createServer(async (req, res) => {
       }
       assert.equal(step, 3);
       assert.equal(result.prepared, true);
-      return respond({
-        role: "assistant",
-        content: JSON.stringify("目标已准备，Yao继续。"),
-      });
+      return returnValue(JSON.stringify("目标已准备，Yao继续。"));
     }
     const value =
       stage === "intent" || stage === "discussion"
@@ -628,8 +639,7 @@ const provider = createServer(async (req, res) => {
                   ? "工序已停止，没有提交。"
                   : "合成测试正文已保存为当前版本；未批准或锁稿。";
     const content = internal ? JSON.stringify(value) : String(value);
-    const message = { role: "assistant", content };
-    respond(message);
+    returnValue(content);
   } catch (error) {
     providerError = error instanceof Error ? error : new Error(String(error));
     res.writeHead(500);

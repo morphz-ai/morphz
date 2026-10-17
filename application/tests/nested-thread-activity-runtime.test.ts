@@ -296,7 +296,7 @@ test(
           titles.get(thread.id) + "：读取资料",
         );
         assert.ok(thread.summary?.includes(titles.get(thread.id)!));
-        assert.equal(thread.annotationProtocol, "v2");
+        assert.equal(thread.annotationProtocol, "on");
         assert.ok(own[0]!.result_event_id);
       }
       const sibling = threads.find(

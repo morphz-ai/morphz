@@ -119,7 +119,10 @@ pub(super) fn validate(
                         activation,
                         None,
                     )?;
-                    let expected = crate::plan_execution::pending_infer_request_event(plan)?;
+                    let expected = crate::plan_execution::pending_infer_request_event(
+                        plan,
+                        thread.response_annotations,
+                    )?;
                     if expected.id != child.request.id || expected.payload != child.request.payload
                     {
                         return Err(

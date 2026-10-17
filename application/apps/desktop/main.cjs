@@ -598,7 +598,7 @@ else {
       else application?.close();
       dialog.showErrorBox(
         "Morphz 启动失败",
-        String(error?.message ?? error) + "\n既有数据和配置未重置。",
+        errorSummary(error) + "\n既有数据和配置未重置。",
       );
       app.quit();
     });

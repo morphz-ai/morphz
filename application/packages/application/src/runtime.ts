@@ -5377,14 +5377,11 @@ export class RuntimeBridge {
           )?.objective;
           if (primary) primaryObjectives.set(t.id, primary);
           // plan_infer.intent is the Runtime's evaluator prompt, not a user
-          // task title. Keep the real execution/status visible, but name it
-          // from its already-authorized initiating input, never prompt text.
-          const inputTitle = (source.body ?? "").trim().replace(/\s+/gu, " ");
+          // task title. Its verified annotations supply display text; absent
+          // metadata must not become a copy of the input or an internal prompt.
           const threadTitle =
             t.executor_kind === "plan_infer"
-              ? inputTitle
-                ? `处理：${[...inputTitle].slice(0, 100).join("")}${[...inputTitle].length > 100 ? "…" : ""}`
-                : "处理请求"
+              ? ""
               : value.intent?.trim() || source.body || "后台执行";
           activity.threads.push({
             id: t.id,

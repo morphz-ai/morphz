@@ -3627,7 +3627,7 @@ impl AppConfig {
         if let Ok(value) = std::env::var("MORPHZ_RESPONSE_ANNOTATIONS") {
             self.orchestrator.response_annotations = value
                 .parse()
-                .map_err(|_| format!("MORPHZ_RESPONSE_ANNOTATIONS must be off or v1: {value}"))?;
+                .map_err(|_| format!("MORPHZ_RESPONSE_ANNOTATIONS must be off or on: {value}"))?;
         }
         if let Ok(value) = std::env::var("MORPHZ_STORAGE_BACKEND") {
             self.storage.backend = parse_storage_backend_env(&value)?;
@@ -3958,11 +3958,11 @@ mod tests {
             .unwrap()
             .get("response_annotations")
             .is_none());
-        let enabled: OrchestratorConfig = toml::from_str("response_annotations = 'v1'").unwrap();
-        assert_eq!(enabled.response_annotations, Protocol::V1);
+        let enabled: OrchestratorConfig = toml::from_str("response_annotations = 'on'").unwrap();
+        assert_eq!(enabled.response_annotations, Protocol::On);
         assert_eq!(
             serde_json::to_value(&enabled).unwrap()["response_annotations"],
-            "v1"
+            "on"
         );
         assert!(toml::from_str::<OrchestratorConfig>("response_annotations = 'true'").is_err());
     }

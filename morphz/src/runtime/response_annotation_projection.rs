@@ -110,7 +110,6 @@ impl MorphzRuntime {
             .filter(|snapshot| {
                 !snapshot.thread.response_annotations.is_off()
                     && snapshot.thread.context_id == context_id
-                    && snapshot.thread.executor_kind != "plan_infer"
             })
             .map(|snapshot| snapshot.thread.id.clone())
             .collect::<Vec<_>>();

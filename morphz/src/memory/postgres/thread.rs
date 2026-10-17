@@ -59,7 +59,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
 }
 
 pub(super) async fn migrate_response_annotations(pool: &PgPool) -> Result<(), StoreError> {
-    sqlx::query("ALTER TABLE threads ADD COLUMN IF NOT EXISTS response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'v1'))")
+    sqlx::query("ALTER TABLE threads ADD COLUMN IF NOT EXISTS response_annotations TEXT NOT NULL DEFAULT 'off' CHECK(response_annotations IN ('off', 'on'))")
         .execute(pool).await?;
     Ok(())
 }

@@ -3745,7 +3745,7 @@ mod supervised_concurrency_contract_tests {
         let base =
             message_request_fingerprint(&payload("principal:a", "hello", "/node-a/blob")).unwrap();
         let mut effective_only = payload("principal:a", "hello", "/node-a/blob");
-        effective_only.insert("response_annotations".into(), serde_json::json!("v1"));
+        effective_only.insert("response_annotations".into(), serde_json::json!("on"));
         assert_eq!(
             base,
             message_request_fingerprint(&effective_only).unwrap(),
@@ -3756,15 +3756,15 @@ mod supervised_concurrency_contract_tests {
             "requested_response_annotations".into(),
             serde_json::json!("off"),
         );
-        let mut explicit_v1 = effective_only.clone();
-        explicit_v1.insert(
+        let mut explicit_on = effective_only.clone();
+        explicit_on.insert(
             "requested_response_annotations".into(),
-            serde_json::json!("v1"),
+            serde_json::json!("on"),
         );
         assert_ne!(base, message_request_fingerprint(&explicit_off).unwrap());
         assert_ne!(
             message_request_fingerprint(&explicit_off).unwrap(),
-            message_request_fingerprint(&explicit_v1).unwrap()
+            message_request_fingerprint(&explicit_on).unwrap()
         );
         assert_eq!(
             base,

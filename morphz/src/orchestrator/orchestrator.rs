@@ -3910,7 +3910,7 @@ impl Orchestrator {
         &self,
         protocol: ResponseAnnotationProtocol,
     ) -> Result<(), DynError> {
-        response_annotations::augment_tools(&self.tool_definitions, protocol, false)?;
+        response_annotations::augment_tools(&self.tool_definitions, protocol)?;
         Ok(())
     }
     pub fn activation_admission_snapshot(
@@ -4724,7 +4724,7 @@ impl Orchestrator {
                     .payload
                     .get("response_annotations")
                     .and_then(serde_json::Value::as_str),
-                Some("v1" | "v2")
+                Some("on")
             ) && timer
                 .payload
                 .get("thread_generation")
@@ -9307,9 +9307,7 @@ impl Orchestrator {
         };
         let ensure_thread_started = Instant::now();
         let new_thread = NewThread {
-            response_annotations: if plan_execution_id.is_some() {
-                ResponseAnnotationProtocol::Off
-            } else if let Some(existing) = existing_thread.as_ref() {
+            response_annotations: if let Some(existing) = existing_thread.as_ref() {
                 existing.response_annotations
             } else {
                 crate::memory::response_annotations_from_payload(&event.payload)?
@@ -10440,7 +10438,7 @@ impl Orchestrator {
         // An already verified host revision survives Context compaction. This
         // is a bounded read of prior immutable response boundaries for this
         // exact Thread/Session, never a scan for today's newest input. Every
-        // normal V1 response carries the revision even if it has no title.
+        // normal annotated response carries the revision even if it has no title.
         if restored_title_revision.is_none() {
             for source in self
                 .store
@@ -10572,7 +10570,6 @@ impl Orchestrator {
         }
         Ok(NormalizationContext {
             protocol: thread.response_annotations,
-            typed_infer: thread.executor_kind == "plan_infer",
             scope: Some(scope.clone()),
             producer: Some(producer),
             observations,
@@ -10929,10 +10926,8 @@ impl Orchestrator {
             .map(|route| route.response_annotations)
             .unwrap_or_default();
         let stream_forwarder = tokio::spawn(async move {
-            let mut normalizer = response_annotations::stream::ModelStreamNormalizer::new(
-                response_annotations,
-                false,
-            );
+            let mut normalizer =
+                response_annotations::stream::ModelStreamNormalizer::new(response_annotations);
             let stream_started_at = tokio::time::Instant::now();
             let mut text_delta_count = 0u64;
             let mut text_chars = 0usize;
@@ -12818,11 +12813,7 @@ impl Orchestrator {
             }
         }
         let thread_kind = thread.kind.as_str();
-        let response_annotations = if thread.executor_kind == "plan_infer" {
-            ResponseAnnotationProtocol::Off
-        } else {
-            thread.response_annotations
-        };
+        let response_annotations = thread.response_annotations;
         let trigger_model_alias = trigger_event
             .as_ref()
             .and_then(|event| {
@@ -12931,11 +12922,7 @@ impl Orchestrator {
             ActivationRoute {
                 thread_id: thread.id.clone(),
                 thread_generation: thread.generation,
-                response_annotations: if thread.executor_kind == "plan_infer" {
-                    ResponseAnnotationProtocol::Off
-                } else {
-                    thread.response_annotations
-                },
+                response_annotations: thread.response_annotations,
                 activation_id: activation.id.clone(),
                 root_turn_id: activation.root_turn_id.clone(),
                 trigger_event_id: activation.trigger_event_id.clone(),
@@ -13314,7 +13301,6 @@ impl Orchestrator {
         let stable_work_tools = response_annotations::augment_tools(
             &stable_work_tools,
             response_annotations,
-            thread.executor_kind == "plan_infer",
         )?;
         // Pressure measurement uses the ordinary work contract. Explicit
         // critical/final phase transitions may later narrow the physical
@@ -14262,7 +14248,7 @@ impl Orchestrator {
                                 Ok(normalized) => normalized,
                                 Err(error) => {
                                     // Bad display fields downgrade inside the normalizer.
-                                    // V2 required metadata and bad control fail without repair.
+                                    // Required enabled metadata and bad control fail without repair.
                                     self.record_model_attempt_terminal_state(
                                         session_id,
                                         &model_attempt_id,
@@ -14535,7 +14521,6 @@ impl Orchestrator {
                     let recovery_allowed_tools = response_annotations::augment_tools(
                         &recovery_allowed_tools,
                         response_annotations,
-                        thread.executor_kind == "plan_infer",
                     )?;
                     allowed_tool_names = recovery_allowed_tools
                         .iter()
@@ -15192,6 +15177,7 @@ impl Orchestrator {
                             || has_pending_thread_group
                             || pending_routed_inputs > 0)))
             {
+                let mut waiting_annotations = terminal_response_annotations.as_ref();
                 if let TerminalDecision::Deliver(content) = &decision {
                     // `reply(deliver)` is the model's own judgement that the
                     // turn is answered, and yielding does not overrule it.
@@ -15213,11 +15199,10 @@ impl Orchestrator {
                         .await?
                         .is_some_and(|root| crate::event::is_input_event(&root));
                     if answers_a_waiting_user {
-                        // The existing interactive delivery path commits a
-                        // terminal Outcome even when a future Schedule remains.
-                        // Persist V1's source response at that same real terminal
-                        // boundary: yield_thread will correctly ignore the now
-                        // completed Thread rather than publish a waiting bundle.
+                        // Persist the response at the interactive delivery
+                        // boundary, independently of any remaining owned work.
+                        // A completed Thread needs no wait; an attached Group
+                        // may still need one without duplicating this source.
                         // Off keeps its original Event and lifecycle behavior.
                         if terminal_response_annotations.is_some() {
                             self.record_terminal_response(
@@ -15234,6 +15219,10 @@ impl Orchestrator {
                                 },
                             )
                             .await?;
+                            // Delivery may leave an attached child Group open.
+                            // Its subsequent wait is a lifecycle fact, not a
+                            // second publication of this same model response.
+                            waiting_annotations = None;
                         }
                         self.publish_reply_for_model_attempt(
                             session_id,
@@ -15263,7 +15252,7 @@ impl Orchestrator {
                     &response,
                     TerminalResponseEvidence {
                         model_attempt_id: &terminal_model_attempt_id,
-                        annotation_bundle: terminal_response_annotations.as_ref(),
+                        annotation_bundle: waiting_annotations,
                         context_view_manifest: &terminal_context_view_manifest,
                         provider_continuation: terminal_provider_continuation.as_ref(),
                     },
@@ -18789,7 +18778,12 @@ impl Orchestrator {
                                     };
                                     continue;
                                 }
-                                let expected = pending_infer_request_event(&plan)?;
+                                let owner = store
+                                    .get_thread(&plan.thread_id)
+                                    .await?
+                                    .ok_or("Pending infer is missing its actual owning Thread")?;
+                                let expected =
+                                    pending_infer_request_event(&plan, owner.response_annotations)?;
                                 let request_event = store
                                     .query(QueryFilter {
                                         event_id: Some(expected.id.clone()),
@@ -21661,7 +21655,7 @@ impl Orchestrator {
                 json!(route.reasoning_effort),
             ),
         ]);
-        // Off leaves the legacy Event bytes unchanged. V1 carries the frozen
+        // Off leaves the legacy Event bytes unchanged. On carries the frozen
         // execution/generation contract through tool outputs and recovery.
         if !route.response_annotations.is_off() {
             payload.extend([
@@ -25574,16 +25568,16 @@ mod tests {
         );
         let enabled = receipt_cache_contract_digest(
             legacy.clone(),
-            ResponseAnnotationProtocol::V2,
+            ResponseAnnotationProtocol::On,
             &scope,
             &owner,
         );
         assert_ne!(enabled, legacy);
-        assert_ne!(
+        assert_eq!(
             enabled,
             receipt_cache_contract_digest(
                 legacy.clone(),
-                ResponseAnnotationProtocol::V1,
+                ResponseAnnotationProtocol::On,
                 &scope,
                 &owner
             )
@@ -25592,7 +25586,7 @@ mod tests {
             enabled,
             receipt_cache_contract_digest(
                 legacy.clone(),
-                ResponseAnnotationProtocol::V2,
+                ResponseAnnotationProtocol::On,
                 &response_annotations::ExecutionScope {
                     generation: 2,
                     ..scope.clone()
@@ -25604,7 +25598,7 @@ mod tests {
             enabled,
             receipt_cache_contract_digest(
                 legacy.clone(),
-                ResponseAnnotationProtocol::V2,
+                ResponseAnnotationProtocol::On,
                 &response_annotations::ExecutionScope {
                     execution_id: "foreign-thread".into(),
                     ..scope.clone()
@@ -25625,7 +25619,7 @@ mod tests {
                 enabled,
                 receipt_cache_contract_digest(
                     legacy.clone(),
-                    ResponseAnnotationProtocol::V2,
+                    ResponseAnnotationProtocol::On,
                     &scope,
                     &changed
                 )
@@ -25704,7 +25698,7 @@ mod tests {
         let output = receipt_delta_test_observation("actual-output", 9);
         let mut source = receipt_delta_test_observation("actual-source", 8);
         let receipt = response_annotations::AnnotationReceipt {
-            protocol: ResponseAnnotationProtocol::V2,
+            protocol: ResponseAnnotationProtocol::On,
             source_event_id: Some(source.id.clone()),
             source_sequence: Some(8),
             scope: Some(response_annotations::ExecutionScope {
@@ -25729,7 +25723,7 @@ mod tests {
             &call,
             &output,
             Some(&source),
-            ResponseAnnotationProtocol::V2,
+            ResponseAnnotationProtocol::On,
         )
         .unwrap();
         assert_eq!(
@@ -25744,7 +25738,7 @@ mod tests {
             &call,
             &output,
             None,
-            ResponseAnnotationProtocol::V2
+            ResponseAnnotationProtocol::On
         )
         .is_none());
         let off = prompt_cache_structured_delta(
@@ -28308,7 +28302,7 @@ mod tests {
             ThreadMutation, ThreadSupervisorKind,
         };
         let (_directory, store, thread, activation) =
-            group_wait_scope_fixture(ResponseAnnotationProtocol::V2).await;
+            group_wait_scope_fixture(ResponseAnnotationProtocol::On).await;
         assert!(
             !super::has_pending_owned_thread_group(store.as_ref(), &activation)
                 .await
@@ -28317,7 +28311,7 @@ mod tests {
         // An unrelated durable open Thread is not an owned Group and cannot
         // authorize waiting; detached work must not be inferred by Session.
         let mut unrelated = NewThread {
-            response_annotations: ResponseAnnotationProtocol::V2,
+            response_annotations: ResponseAnnotationProtocol::On,
             model_alias: None,
             reasoning_effort: None,
             id: "group-unrelated".into(),
@@ -28476,10 +28470,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thread_wait_timer_fences_stale_v1_v2_generations_without_changing_off() {
+    async fn thread_wait_timer_fences_stale_generations_in_both_annotation_modes() {
         for protocol in [
-            ResponseAnnotationProtocol::V2,
-            ResponseAnnotationProtocol::V1,
+            ResponseAnnotationProtocol::On,
             ResponseAnnotationProtocol::Off,
         ] {
             let (_directory, store, thread, _activation) = group_wait_scope_fixture(protocol).await;
@@ -28638,7 +28631,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn parallel_response_protocol_errors_keep_independent_persisted_scope_and_source() {
         let (_directory, store, left, left_activation) =
-            group_wait_scope_fixture(ResponseAnnotationProtocol::V2).await;
+            group_wait_scope_fixture(ResponseAnnotationProtocol::On).await;
         store
             .create_agent_bundle(
                 NewAgent {
@@ -28664,7 +28657,7 @@ mod tests {
             .unwrap();
         let right = store
             .ensure_thread(NewThread {
-                response_annotations: ResponseAnnotationProtocol::V2,
+                response_annotations: ResponseAnnotationProtocol::On,
                 model_alias: None,
                 reasoning_effort: None,
                 id: "error-right-thread".into(),

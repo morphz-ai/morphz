@@ -303,7 +303,7 @@ async fn accepted_receipts_enter_actual_delta_sources_without_extra_business_req
     }).to_string().as_bytes(), &Limits::default()).unwrap();
     input.activation.model_alias = Some(MODEL.into());
     input.activation.reasoning_effort = Some("low".into());
-    input.activation.response_annotations = Some(Protocol::V2);
+    input.activation.response_annotations = Some(Protocol::On);
     session
         .send_io_as_principal(input, &identity.principal_id)
         .await
@@ -454,7 +454,7 @@ async fn accepted_receipts_enter_actual_delta_sources_without_extra_business_req
     };
     let expected_fence = digest(&json!({"base":custom_digest,
         "response_annotation_receipt_encoding":RECEIPT_ENCODING_VERSION,
-        "protocol":Protocol::V2,"scope":scope,
+        "protocol":Protocol::On,"scope":scope,
         "owner":{
             "agent_id":thread.agent_id,
             "context_id":thread.context_id,
@@ -574,7 +574,7 @@ async fn accepted_receipts_enter_actual_delta_sources_without_extra_business_req
             );
             assert_eq!(atom(receipt, "execution"), thread.id);
             assert_eq!(atom(receipt, "generation"), thread.generation.to_string());
-            assert_eq!(atom(receipt, "protocol"), "v2");
+            assert_eq!(atom(receipt, "protocol"), "on");
             assert_eq!(atom(receipt, "state"), "accepted");
             assert_eq!(atom(receipt, "truncated"), "false");
             assert!(receipt.to_string().len() <= 2048);

@@ -103,7 +103,7 @@ const optionalTests = [
   ],
   [
     "response-annotations-runtime.test.ts",
-    "actual Runtime + Platform HTTP: V2 required final metadata fails once without repair requests or physical Jobs",
+    "actual Runtime + Platform HTTP: enabled required final metadata fails once without repair requests or physical Jobs",
     "runtime",
     "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
   ],

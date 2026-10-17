@@ -369,7 +369,8 @@ fn accepted_input(event: &Event) -> AcceptedInput {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn v1_reserved_business_schema_is_rejected_before_acceptance_but_off_executes_unchanged() {
+async fn enabled_reserved_business_schema_is_rejected_before_acceptance_but_off_executes_unchanged()
+{
     for schema in [
         BusinessSchema::ReplyName,
         BusinessSchema::AnnotationsParameter,
@@ -378,7 +379,7 @@ async fn v1_reserved_business_schema_is_rejected_before_acceptance_but_off_execu
         let fixture = Fixture::open(temp.path(), schema, Protocol::Off).await;
         fixture.runtime.start().await.unwrap();
         let error = fixture
-            .send(Fixture::request("same-after-rejection", Some(Protocol::V1)))
+            .send(Fixture::request("same-after-rejection", Some(Protocol::On)))
             .await
             .unwrap_err();
         assert_eq!(error.code, "invalid_response_annotation_contract");
@@ -393,7 +394,7 @@ async fn v1_reserved_business_schema_is_rejected_before_acceptance_but_off_execu
                 PRINCIPAL,
                 Some("legacy-reserved-rejection".into()),
                 SessionMessageOptions {
-                    response_annotations: Some(Protocol::V1),
+                    response_annotations: Some(Protocol::On),
                     ..Default::default()
                 },
             )
@@ -469,8 +470,8 @@ async fn v1_reserved_business_schema_is_rejected_before_acceptance_but_off_execu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn omitted_choice_retry_after_restart_keeps_old_off_binding_despite_v1_default_and_collision()
-{
+async fn omitted_choice_retry_after_restart_keeps_old_off_binding_despite_enabled_default_and_collision(
+) {
     let temp = TempDir::new().unwrap();
     let original = Fixture::open(temp.path(), BusinessSchema::ReplyName, Protocol::Off).await;
     let request = Fixture::request("restart-omitted", None);
@@ -500,7 +501,7 @@ async fn omitted_choice_retry_after_restart_keeps_old_off_binding_despite_v1_def
     // and no first Runtime scheduler to race the genuinely new owner below.
     drop(original);
 
-    let restarted = Fixture::open(temp.path(), BusinessSchema::ReplyName, Protocol::V1).await;
+    let restarted = Fixture::open(temp.path(), BusinessSchema::ReplyName, Protocol::On).await;
     let duplicate = restarted.send(request.clone()).await.unwrap();
     assert_eq!(
         duplicate, accepted,
@@ -528,14 +529,14 @@ async fn omitted_choice_retry_after_restart_keeps_old_off_binding_despite_v1_def
         "an exact retry must not manufacture another execution",
     );
     // Changed defaults cannot turn a duplicate into a reserved-name rejection,
-    // but genuinely fresh omitted input still resolves V1 and fails preflight.
+    // but genuinely fresh omitted input still resolves enabled annotations and fails preflight.
     restarted
-        .send(Fixture::request("fresh-v1-collision", None))
+        .send(Fixture::request("fresh-on-collision", None))
         .await
         .unwrap_err();
     assert!(restarted
         .store
-        .message_event_id(SESSION, "fresh-v1-collision")
+        .message_event_id(SESSION, "fresh-on-collision")
         .await
         .unwrap()
         .is_none());
@@ -593,8 +594,8 @@ async fn omitted_choice_retry_after_restart_keeps_old_off_binding_despite_v1_def
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn explicit_off_v1_and_omitted_choices_have_distinct_durable_api_fingerprints() {
-    let choices = [None, Some(Protocol::Off), Some(Protocol::V1)];
+async fn explicit_off_enabled_and_omitted_choices_have_distinct_durable_api_fingerprints() {
+    let choices = [None, Some(Protocol::Off), Some(Protocol::On)];
     let mut fingerprints = Vec::new();
     for choice in choices {
         let temp = TempDir::new().unwrap();
@@ -614,8 +615,8 @@ async fn explicit_off_v1_and_omitted_choices_have_distinct_durable_api_fingerpri
             .unwrap()
             .unwrap();
         assert_eq!(thread.response_annotations, choice.unwrap_or(Protocol::Off));
-        if choice == Some(Protocol::V1) {
-            assert_eq!(bound.binding.execution["response_annotations"], "v1");
+        if choice == Some(Protocol::On) {
+            assert_eq!(bound.binding.execution["response_annotations"], "on");
         } else {
             assert!(bound
                 .binding

@@ -29,7 +29,7 @@ import { acceptedRuntimeInput } from "./runtime-http-evidence.js";
 
 const now = "2026-10-02T12:00:00.000Z";
 const annotations = (overrides: Record<string, unknown> = {}) => ({
-  protocol: "v1",
+  protocol: "on",
   scope: { execution_id: "thread-one", generation: 1 },
   title: "检查运行环境",
   progress: "已确认平台，继续检查架构",
@@ -69,7 +69,7 @@ const input: RecordedInput = {
   createdAt: now,
 };
 
-function sourceObservation(protocol: "off" | "v1" | "v2" | undefined) {
+function sourceObservation(protocol: "off" | "on" | undefined) {
   const admission = taskRunAdmissionSchema.parse({
     eventId: `task_run_${"a".repeat(40)}`,
     tenantId: "source-tenant",
@@ -121,8 +121,8 @@ function sourceObservation(protocol: "off" | "v1" | "v2" | undefined) {
   };
 }
 
-test("source follow-up inherits frozen V2/V1/off/omission, while a live Thread never overrides its protocol", () => {
-  for (const protocol of [undefined, "off", "v1", "v2"] as const) {
+test("source follow-up inherits frozen on/off/default choice, while a live Thread never overrides its protocol", () => {
+  for (const protocol of [undefined, "off", "on"] as const) {
     const observation = sourceObservation(protocol);
     const original = JSON.stringify(observation.admission);
     const followUp = taskSourceRequest(observation);
@@ -150,22 +150,10 @@ test("source follow-up inherits frozen V2/V1/off/omission, while a live Thread n
   }
 });
 
-test("source delivery lost-response retry reuses frozen request bytes, including pre-upgrade omitted choices", async () => {
-  for (const protocol of [
-    undefined,
-    "off",
-    "v1",
-    "v2",
-    "pre-upgrade",
-  ] as const) {
-    const observation = sourceObservation(
-      protocol === "pre-upgrade" ? "v1" : protocol,
-    );
+test("source delivery lost-response retry reuses the exact admitted request bytes", async () => {
+  for (const protocol of [undefined, "off", "on"] as const) {
+    const observation = sourceObservation(protocol);
     const request = taskSourceRequest(observation);
-    // This event was persisted before follow-up inheritance was added. Its
-    // existing request remains authoritative even if the admission has V1.
-    if (protocol === "pre-upgrade")
-      delete request.activation.response_annotations;
     const event = taskSourceEventSchema.parse({ ...observation, request });
     const frozenBytes = JSON.stringify(event.request);
     const posts: string[] = [];
@@ -232,10 +220,10 @@ test("source delivery lost-response retry reuses frozen request bytes, including
   }
 });
 
-test("new ordinary/follow-up inputs opt into V2; a directed supplement has no protocol override", () => {
+test("new ordinary/follow-up inputs enable annotations; a directed supplement has no protocol override", () => {
   const ordinary = workInputRequest(input, "fixture-model");
   assert.ok("response_annotations" in ordinary.activation);
-  assert.equal(ordinary.activation.response_annotations, "v2");
+  assert.equal(ordinary.activation.response_annotations, "on");
   assert.equal(ordinary.activation.dispatch_mode, "interrupt");
   assert.equal(ordinary.activation.model_alias, "fixture-model");
   const followUp = workInputRequest({
@@ -248,7 +236,7 @@ test("new ordinary/follow-up inputs opt into V2; a directed supplement has no pr
     },
   });
   assert.ok("response_annotations" in followUp.activation);
-  assert.equal(followUp.activation.response_annotations, "v2");
+  assert.equal(followUp.activation.response_annotations, "on");
   const supplement = workInputRequest(
     {
       ...input,
@@ -274,14 +262,14 @@ test("new ordinary/follow-up inputs opt into V2; a directed supplement has no pr
 
 test("display projection follows exact generation and actual terminal facts, never model status", () => {
   assert.equal(
-    activityAnnotationFields(annotations({ protocol: "v2" }), thread)
+    activityAnnotationFields(annotations({ protocol: "on" }), thread)
       ?.annotationProtocol,
-    "v2",
+    "on",
   );
   assert.deepEqual(activityAnnotationFields(annotations(), thread), {
     title: "检查运行环境",
     summary: "已确认平台，继续检查架构",
-    annotationProtocol: "v1",
+    annotationProtocol: "on",
     annotationsTruncated: false,
   });
   assert.equal(
@@ -409,7 +397,7 @@ async function recordedFixture() {
   return { f, internal, delivery, original, contextId };
 }
 
-for (const protocol of [undefined, "off", "v1", "v2"] as const)
+for (const protocol of [undefined, "off", "on"] as const)
   test(`a retained typed admission keeps exact ${protocol ?? "omitted"} annotation choice on re-admission and restart`, async () => {
     const { f, original } = await recordedFixture();
     try {
@@ -669,7 +657,7 @@ test("Platform rechecks read authority after annotation fetch, not just before t
   }
 });
 
-test("new durable task admissions freeze V2; old omitted/off/V1 schedules deliver their original bytes", async () => {
+test("new durable task admissions freeze enabled annotations; explicit off and default schedules deliver their original bytes", async () => {
   const { f, internal, contextId } = await recordedFixture();
   try {
     const tasks = f.domains.taskRuns();
@@ -702,13 +690,13 @@ test("new durable task admissions freeze V2; old omitted/off/V1 schedules delive
         }),
     );
     const admission = await start();
-    assert.equal(admission.request.response_annotations, "v2");
+    assert.equal(admission.request.response_annotations, "on");
     assert.deepEqual(await start(), admission);
     assert.equal(
       prepareTaskAdmission(admission, []).request.response_annotations,
-      "v2",
+      "on",
     );
-    for (const protocol of [undefined, "off", "v1"] as const) {
+    for (const protocol of [undefined, "off", "on"] as const) {
       const legacy = structuredClone(admission);
       if (protocol === undefined) delete legacy.request.response_annotations;
       else legacy.request.response_annotations = protocol;

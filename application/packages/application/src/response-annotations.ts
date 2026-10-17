@@ -14,7 +14,7 @@ const displayText = (maximum: number) =>
 /** This is the Runtime's verified projection, NOT the model's raw bundle.
  * It contains no state mutations, percentages, authorizations or raw output. */
 export const runtimeResponseAnnotationsSchema = z.object({
-  protocol: z.enum(["v1", "v2"]),
+  protocol: z.literal("on"),
   scope: z.object({
     execution_id: z.string().min(1),
     generation: z.number().int().nonnegative().safe(),

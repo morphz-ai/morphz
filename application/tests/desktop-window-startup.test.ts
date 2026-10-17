@@ -599,6 +599,15 @@ test("错误正文与链接转义，URL错误详情不暴露认证、query或fra
     "failed https://example.test/retry and http://127.0.0.1:65420/",
   );
   assert.equal(errorSummary(new Error("x".repeat(2000))).length, 1000);
+  const repeatedValidation = new Error(
+    "恢复活动状态失败：" + "注解设置无效。".repeat(10000),
+  );
+  assert.equal(errorSummary(repeatedValidation).length, 1000);
+  const main = readFileSync(
+    new URL("../apps/desktop/main.cjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(main, /"Morphz 启动失败",\s*errorSummary\(error\)/);
 });
 
 test("显式hot使用真实配置的开发入口，跳过恢复，失败重试链接仍指开发root", async () => {

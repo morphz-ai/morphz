@@ -173,7 +173,7 @@ async fn assertions(store: Arc<dyn RuntimeStore>, workspace: &Path) -> Result<()
         );
         second_request.activation.reasoning_effort = Some("high".into());
         second_request.activation.response_annotations =
-            Some(morphz::response_annotations::Protocol::V2);
+            Some(morphz::response_annotations::Protocol::On);
         let second = session
             .send_io_as_principal(second_request.clone(), PRINCIPAL)
             .await?;
@@ -189,7 +189,7 @@ async fn assertions(store: Arc<dyn RuntimeStore>, workspace: &Path) -> Result<()
         assert_eq!(replacement.reasoning_effort.as_deref(), Some("high"));
         assert_eq!(
             replacement.response_annotations,
-            morphz::response_annotations::Protocol::V2
+            morphz::response_annotations::Protocol::On
         );
         assert_eq!(
             replacement.initiating_principal_id.as_deref(),

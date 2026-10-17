@@ -18,7 +18,7 @@ use morphz::{
     response_annotations::{
         normalize_response, records_from_authorized_event, AnnotationKind, ExecutionScope,
         NormalizationContext, PersistedAnnotations, Producer, Protocol, BUNDLE_PAYLOAD_KEY,
-        CONTRACT_V1, CONTRACT_V2,
+        CONTRACT,
     },
     runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy, SessionHandle},
     session_io::{Limits, Request},
@@ -55,11 +55,34 @@ enum Scenario {
     ReplyOnly,
     InvalidObservation,
     Infer,
+    InferRoot(u8),
     Recovery,
     BadMixedReply,
     BadDuplicateReply,
     StrictWorkReply,
     StrictBadFinal(u8),
+}
+
+fn infer_root_case(case: u8) -> (&'static str, &'static str) {
+    match case {
+        0 | 4 | 5 => (
+            r#"(infer (requires (tools)) (returns Bool) "Evaluate a synthetic boolean")"#,
+            "false",
+        ),
+        1 => (
+            r#"(infer (requires (tools)) (returns String) "Return synthetic Unicode")"#,
+            r#""中文 🧠\n下一行""#,
+        ),
+        2 => (
+            r#"(infer (requires (tools)) (returns Json) "Return ordinary business JSON")"#,
+            r#"{"_annotations":{"business":true},"reply":"ordinary data","annotations":7}"#,
+        ),
+        3 => (
+            r#"(infer (requires (tools)) (types (record Decision (ok Bool) (note String))) (returns Decision) "Return strictly typed business JSON")"#,
+            r#"{"ok":false,"note":"业务字段"}"#,
+        ),
+        _ => panic!("unknown infer root case"),
+    }
 }
 
 #[derive(Clone)]
@@ -235,7 +258,9 @@ impl Client for ScriptClient {
     ) -> Result<Response, DynError> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         assert!(
-            call < if matches!(self.scenario, Scenario::Infer) {
+            call < if matches!(self.scenario, Scenario::InferRoot(_)) {
+                1
+            } else if matches!(self.scenario, Scenario::Infer) {
                 4
             } else if matches!(
                 self.scenario,
@@ -280,6 +305,17 @@ impl Client for ScriptClient {
             .await?;
         }
         let response = match (self.scenario, logical_call) {
+            (Scenario::InferRoot(case), 0) => {
+                let (_, expected) = infer_root_case(case);
+                let value = if case == 5 { "\"not-a-boolean\"" } else { expected };
+                if tools.iter().any(|tool| tool.name == "reply") {
+                    let mut args = json!({"content":value,"annotations":{"execution":{"title":"核对合成返回值","result":"合成求值已返回"}}});
+                    if case == 4 { args.as_object_mut().unwrap().remove("annotations"); }
+                    Self::reply(args)
+                } else {
+                    Response {content:value.into(),tool_calls:vec![]}
+                }
+            }
             (Scenario::NoReplySilent(annotated) | Scenario::NoReplyWait(annotated) | Scenario::CancelModel(annotated), 0) => {
                 Self::work(if annotated { RAW_LIFECYCLE_WORK } else { r#"{"key":"system"}"# })
             }
@@ -315,7 +351,7 @@ impl Client for ScriptClient {
                     "the next ordinary model request must contain its actual control receipt");
                 if annotated {
                     Self::reply(json!({"content":"目标未绑定，因此未执行关闭。",
-                        "annotations":{"execution":{"result":"未绑定目标，关闭请求被拒绝"}}}))
+                        "annotations":{"execution":{"title":"核对目标关闭条件","result":"未绑定目标，关闭请求被拒绝"}}}))
                 } else {
                     Response {content:"目标未绑定，因此未执行关闭。".into(),tool_calls:vec![]}
                 }
@@ -338,11 +374,11 @@ impl Client for ScriptClient {
                     arguments:json!({"program":r#"(eval (requires (tools annotation_probe)) (infer (seq (bind source (call annotation_probe (key "system"))) (decode String source))))"#}).to_string(),
                 }]}
             }
-            (Scenario::Infer, 1) => Self::work(r#"{"key":"system"}"#),
-            (Scenario::Infer, 2) => Response {
-                content: "\"Linux\"".into(),
-                tool_calls: vec![],
-            },
+            (Scenario::Infer, 1) => Self::work(r#"{"key":"system","_annotations":{"execution":{"title":"读取合成系统","progress":"读取系统资料"},"intent":"核对系统名称"}}"#),
+            (Scenario::Infer, 2) => Self::reply(json!({
+                "content":"\"Linux\"",
+                "annotations":{"execution":{"title":"读取合成系统","result":"系统名称为 Linux"}}
+            })),
             (Scenario::Infer, 3) => {
                 let mut args = json!({"content":FINAL_TEXT,"annotations":{"execution":{"result":"合成检查已完成"}}});
                 if tools.iter().any(|tool| tool.name == "reply" && tool.parameters["required"].as_array().is_some_and(|required| required.iter().any(|field| field == "annotations"))) {
@@ -433,7 +469,7 @@ impl Client for ScriptClient {
                     }
                 }
                 let mut args = json!({"content":FINAL_TEXT,"annotations":{
-                    "execution":{"result":if matches!(self.scenario, Scenario::WorkYield(_)) {
+                    "execution":{"title":"检查合成环境","result":if matches!(self.scenario, Scenario::WorkYield(_)) {
                         "已确认合成系统为 Linux；后续任务保持排队" } else { "已确认合成系统为 Linux" }},"observations":observations,
                 }});
                 if matches!(self.scenario, Scenario::StrictWorkReply) {
@@ -561,7 +597,7 @@ impl Fixture {
         if matches!(scenario, Scenario::Infer) {
             config.orchestrator.eval_callable_tools = vec!["annotation_probe".into()];
         }
-        let runtime = MorphzRuntime::builder(config, client.clone() as Arc<dyn Client>)
+        let mut builder = MorphzRuntime::builder(config, client.clone() as Arc<dyn Client>)
             .identity(RuntimeIdentity {
                 agent_id: "annotations-agent".into(),
                 context_id: "annotations-context".into(),
@@ -578,10 +614,38 @@ impl Fixture {
             .extra_tool(Arc::new(ProbeTool {
                 arguments: arguments.clone(),
                 business_reserved: matches!(scenario, Scenario::OffBusiness),
-            }))
-            .build()
-            .await
-            .unwrap();
+            }));
+        if let Scenario::InferRoot(case) = scenario {
+            let (entry, _) = infer_root_case(case);
+            let entry = if case == 1 {
+                entry.to_string()
+            } else {
+                let declarations = if case == 3 {
+                    "(types (record Decision (ok Bool) (note String)))"
+                } else {
+                    ""
+                };
+                let body = entry
+                    .replace("(requires (tools))", "")
+                    .replace(declarations, "");
+                format!("(eval (requires (tools)) {declarations} (seq (bind value {body}) \"合成校验完成\"))")
+            };
+            builder = builder.harness_package(
+                morphz::harness_package::HarnessPackage::from_source(
+                    "TEST-infer-annotations.hns",
+                    &format!(
+                        r#"
+                (manifest (id "TEST-infer-annotations") (version "1.0.0")
+                  (title "TEST infer metadata") (capabilities (tools)))
+                (contract (identity "Synthetic inference metadata test"))
+                {entry}
+                "#
+                    ),
+                )
+                .unwrap(),
+            );
+        }
+        let runtime = builder.build().await.unwrap();
         if start {
             runtime.start().await.unwrap();
         } else {
@@ -630,9 +694,16 @@ impl Fixture {
     }
 
     async fn submit(&self, protocol: Option<Protocol>) -> (Event, Event) {
+        let mut input = Self::input(protocol);
+        if matches!(self.client.scenario, Scenario::InferRoot(_)) {
+            input.activation.harness = Some(morphz::harness::ExactHarnessRef {
+                id: "TEST-infer-annotations".into(),
+                version: "1.0.0".into(),
+            });
+        }
         let accepted = self
             .session
-            .send_io_as_principal(Self::input(protocol), &self.runtime.identity().principal_id)
+            .send_io_as_principal(input, &self.runtime.identity().principal_id)
             .await
             .unwrap();
         let reply = tokio::time::timeout(Duration::from_secs(25), async {
@@ -683,7 +754,7 @@ async fn default_and_explicit_off_preserve_complete_system_and_tool_schema_bytes
     let default = Fixture::new(Scenario::Plain, Protocol::Off).await;
     let (root, reply) = default.submit(None).await;
     assert_eq!(reply.payload["text"], FINAL_TEXT);
-    let explicit = Fixture::new(Scenario::Plain, Protocol::V1).await;
+    let explicit = Fixture::new(Scenario::Plain, Protocol::On).await;
     let (other_root, _) = explicit.submit(Some(Protocol::Off)).await;
     let a = default.client.captured.lock().unwrap()[0].clone();
     let b = explicit.client.captured.lock().unwrap()[0].clone();
@@ -708,7 +779,7 @@ async fn default_and_explicit_off_preserve_complete_system_and_tool_schema_bytes
     assert!(!a.tools.iter().any(|t| t.name == "reply"));
     assert!(!systems(&a)
         .iter()
-        .any(|s| String::from_utf8_lossy(s).contains(CONTRACT_V1)));
+        .any(|s| String::from_utf8_lossy(s).contains(CONTRACT)));
     assert_eq!(a.binding.protocol, "openai-responses");
     assert_eq!(a.options, b.options);
     for (fixture, root) in [(&default, root), (&explicit, other_root)] {
@@ -761,10 +832,10 @@ async fn off_keeps_reserved_looking_business_arguments_untouched() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn v1_uses_exact_raw_native_replay_but_stripped_execution_and_durable_annotations() {
+async fn enabled_uses_exact_raw_native_replay_but_stripped_execution_and_durable_annotations() {
     let fixture = Fixture::new(Scenario::WorkReply, Protocol::Off).await;
     let mut stream = fixture.runtime.subscribe("runtime/model_stream", 512);
-    let (accepted, reply) = fixture.submit(Some(Protocol::V1)).await;
+    let (accepted, reply) = fixture.submit(Some(Protocol::On)).await;
     assert_eq!(reply.payload["text"], FINAL_TEXT);
     assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 2);
     assert_eq!(
@@ -784,7 +855,7 @@ async fn v1_uses_exact_raw_native_replay_but_stripped_execution_and_durable_anno
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(thread.response_annotations, Protocol::V1);
+    assert_eq!(thread.response_annotations, Protocol::On);
     let sdk = morphz::sdk::MorphzSdk::new(fixture.runtime.clone());
     let projected = sdk
         .session_thread_annotations("principal-default", "annotations-session", &thread.id)
@@ -877,7 +948,7 @@ async fn v1_uses_exact_raw_native_replay_but_stripped_execution_and_durable_anno
     let bundle: PersistedAnnotations =
         serde_json::from_value(work.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
     assert_eq!(bundle.raw_response.tool_calls[0].arguments, RAW_WORK);
-    assert_eq!(work.payload["response_annotations"], "v1");
+    assert_eq!(work.payload["response_annotations"], "on");
     let business = work.payload["tool_calls"][0]["function"]["arguments"]
         .as_str()
         .unwrap();
@@ -956,7 +1027,7 @@ async fn v1_uses_exact_raw_native_replay_but_stripped_execution_and_durable_anno
     let duplicate = fixture
         .session
         .send_io_as_principal(
-            Fixture::input(Some(Protocol::V1)),
+            Fixture::input(Some(Protocol::On)),
             &fixture.runtime.identity().principal_id,
         )
         .await
@@ -976,7 +1047,7 @@ async fn v1_uses_exact_raw_native_replay_but_stripped_execution_and_durable_anno
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reply_is_terminal_response_not_a_work_job() {
     let fixture = Fixture::new(Scenario::ReplyOnly, Protocol::Off).await;
-    let (root, reply) = fixture.submit(Some(Protocol::V1)).await;
+    let (root, reply) = fixture.submit(Some(Protocol::On)).await;
     assert_eq!(reply.payload["text"], FINAL_TEXT);
     assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 1);
     assert!(fixture.jobs().await.is_empty());
@@ -1026,7 +1097,7 @@ async fn unknown_observation_ref_is_rejected_without_repair_or_extra_execution()
             .unwrap()
             .push(format!("@e{}", event.sequence.unwrap()));
     }
-    let (root, reply) = fixture.submit(Some(Protocol::V1)).await;
+    let (root, reply) = fixture.submit(Some(Protocol::On)).await;
     assert_eq!(reply.payload["text"], FINAL_TEXT);
     assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.arguments.lock().unwrap().len(), 1);
@@ -1051,60 +1122,196 @@ async fn unknown_observation_ref_is_rejected_without_repair_or_extra_execution()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn v1_parent_does_not_augment_typed_infer_schema_or_typed_json_result() {
-    let fixture = Fixture::new(Scenario::Infer, Protocol::Off).await;
-    let (root, reply) = fixture.submit(Some(Protocol::V1)).await;
-    assert_eq!(reply.payload["text"], FINAL_TEXT);
-    assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 4);
-    let captured = fixture.client.captured.lock().unwrap().clone();
-    assert!(captured[0].tools.iter().any(|t| t.name == "reply"));
-    assert!(captured[3].tools.iter().any(|t| t.name == "reply"));
-    for turn in &captured[1..3] {
-        assert!(!turn
-            .tools
-            .iter()
-            .any(|t| t.name == "reply" || t.name == "eval"));
-        assert!(!turn.tools.iter().any(|t| t
-            .parameters
-            .get("properties")
-            .is_some_and(|p| p.get("_annotations").is_some())));
-        assert!(!turn
-            .messages
-            .iter()
-            .filter(|m| m.role == "system")
-            .any(|m| m.content.contains(CONTRACT_V1)));
-        assert!(turn.tools.iter().any(|t| t.name == "annotation_probe"));
+async fn single_infer_harness_keeps_optional_annotations_typed_values_and_streaming_in_one_request()
+{
+    let mut stable_tools = None;
+    let mut baseline_values = std::collections::HashMap::new();
+    for protocol in [Protocol::Off, Protocol::On] {
+        for case in 0..=3 {
+            let fixture = Fixture::new(Scenario::InferRoot(case), Protocol::Off).await;
+            let mut stream = fixture.runtime.subscribe("runtime/model_stream", 512);
+            let (_, reply) = fixture.submit(Some(protocol)).await;
+            let (_, body) = infer_root_case(case);
+            assert_eq!(
+                reply.payload["text"],
+                if case == 1 {
+                    serde_json::from_str::<String>(body).unwrap()
+                } else {
+                    "合成校验完成".into()
+                },
+                "one infer returns directly without a second model response"
+            );
+            let values = fixture
+                .store
+                .query(QueryFilter {
+                    context_id: Some("annotations-context".into()),
+                    topics: vec!["runtime/inference_value".into()],
+                    latest_k: Some(4),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(values.len(), 1);
+            let actual_value =
+                serde_json::from_str::<Value>(values[0].payload["text"].as_str().unwrap()).unwrap();
+            let fields = serde_json::from_str::<Value>(body).unwrap();
+            let expected_value = if case == 3 {
+                json!({"$yao":{"kind":"record","type":"Decision","fields":fields}})
+            } else {
+                fields
+            };
+            assert_eq!(
+                actual_value, expected_value,
+                "annotations never enter the typed business value"
+            );
+            if protocol.is_off() {
+                baseline_values.insert(case, actual_value);
+            } else {
+                assert_eq!(
+                    baseline_values.get(&case),
+                    Some(&actual_value),
+                    "annotation choice cannot change the existing typed representation"
+                );
+            }
+            assert_eq!(
+                fixture.client.calls.load(Ordering::SeqCst),
+                1,
+                "one infer, no model relay or metadata-only inference"
+            );
+            let requests = fixture
+                .store
+                .query(QueryFilter {
+                    context_id: Some("annotations-context".into()),
+                    topics: vec!["chat/infer_request".into()],
+                    latest_k: Some(4),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(requests.len(), 1);
+            let child = fixture
+                .runtime
+                .session_thread_by_root("annotations-session", &requests[0].id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(child.response_annotations, protocol);
+            let annotations = fixture
+                .runtime
+                .session_thread_annotations("annotations-context", "annotations-session", &child.id)
+                .await
+                .unwrap()
+                .unwrap();
+            let captured = fixture.client.captured.lock().unwrap();
+            assert_eq!(captured.len(), 1);
+            if protocol.is_off() {
+                assert!(annotations.is_none());
+                assert!(
+                    captured[0].tools.is_empty(),
+                    "disabled infer tools remain byte-identical and no reply carrier is added"
+                );
+                assert!(captured[0]
+                    .messages
+                    .iter()
+                    .all(|m| !m.content.contains(CONTRACT)));
+            } else {
+                let annotations = annotations.unwrap();
+                assert_eq!(annotations.title.as_deref(), Some("核对合成返回值"));
+                assert_eq!(annotations.result.as_deref(), Some("合成求值已返回"));
+                assert_eq!(captured[0].tools.len(), 1);
+                assert_eq!(captured[0].tools[0].name, "reply");
+                if protocol == Protocol::On {
+                    let encoded = serde_json::to_vec(&captured[0].tools).unwrap();
+                    assert_eq!(
+                        *stable_tools.get_or_insert(encoded.clone()),
+                        encoded,
+                        "return types do not change tool schemas or order"
+                    );
+                }
+            }
+            drop(captured);
+            let mut text = String::new();
+            let mut increments = 0;
+            while let Ok(event) = stream.try_recv() {
+                if let Ok(ModelStreamEvent::TextDelta { text: delta }) =
+                    serde_json::from_value(event.payload["stream"].clone())
+                {
+                    text.push_str(&delta);
+                    increments += 1;
+                }
+            }
+            assert_eq!(
+                text, body,
+                "stream contains only the original value transport, not response metadata"
+            );
+            assert!(increments > 0, "typed values remain visible");
+            if body.chars().count() > 5 {
+                assert!(
+                    increments > 1,
+                    "typed values are still incrementally visible"
+                );
+            }
+            assert!(fixture.arguments.lock().unwrap().is_empty());
+        }
     }
-    assert_eq!(
-        fixture.arguments.lock().unwrap().as_slice(),
-        &[json!({"key":"system"})]
-    );
-    let calls = fixture.events(&root.id, Some("chat/assistant_call")).await;
-    assert!(calls
-        .iter()
-        .filter(|e| e.payload.get("executor_kind").and_then(Value::as_str) == Some("plan_infer"))
-        .all(|e| e.payload.get(BUNDLE_PAYLOAD_KEY).is_none()));
-    let outputs = fixture.events(&root.id, Some("chat/tool_output")).await;
-    assert!(
-        outputs.iter().any(
-            |e| e.payload.get("tool_name").and_then(Value::as_str) == Some("eval")
-                && e.payload.get("text").and_then(Value::as_str) == Some("\"Linux\"")
-        ),
-        "typed infer must return exact JSON String transport"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn restart_replays_seeded_v1_plan_once_without_reasking_or_rewriting_annotations() {
-    assert_restart_replays_seeded_v1_plan_once(None).await;
+async fn invalid_infer_metadata_or_business_value_fails_without_repair_or_a_model_relay() {
+    for case in [4, 5] {
+        let fixture = Fixture::new(Scenario::InferRoot(case), Protocol::Off).await;
+        let mut input = Fixture::input(Some(Protocol::On));
+        input.activation.harness = Some(morphz::harness::ExactHarnessRef {
+            id: "TEST-infer-annotations".into(),
+            version: "1.0.0".into(),
+        });
+        let root = fixture
+            .session
+            .send_io_as_principal(input, &fixture.runtime.identity().principal_id)
+            .await
+            .unwrap();
+        let thread = tokio::time::timeout(Duration::from_secs(25), async {
+            loop {
+                if let Some(thread) = fixture
+                    .runtime
+                    .session_thread_by_root("annotations-session", &root.id)
+                    .await
+                    .unwrap()
+                {
+                    if thread.lifecycle.is_terminal() {
+                        break thread;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("bad infer must reach an explicit failure boundary");
+        assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Failed);
+        assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 1);
+        assert!(fixture.arguments.lock().unwrap().is_empty());
+        assert!(
+            fixture
+                .jobs()
+                .await
+                .iter()
+                .all(|job| job.tool_name == "eval"),
+            "reply is not a physical Job"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn restart_replays_imported_v1_plan_using_actual_nonstable_thread_identity() {
-    assert_restart_replays_seeded_v1_plan_once(Some("imported-annotations-thread")).await;
+async fn restart_replays_seeded_enabled_plan_once_without_reasking_or_rewriting_annotations() {
+    assert_restart_replays_seeded_enabled_plan_once(None).await;
 }
 
-async fn assert_restart_replays_seeded_v1_plan_once(legacy_thread_id: Option<&str>) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restart_replays_imported_enabled_plan_using_actual_nonstable_thread_identity() {
+    assert_restart_replays_seeded_enabled_plan_once(Some("imported-annotations-thread")).await;
+}
+
+async fn assert_restart_replays_seeded_enabled_plan_once(legacy_thread_id: Option<&str>) {
     use morphz::memory::{
         stable_thread_id, stable_thread_signal_id, CustomStore, DeliveryIngressStore, MessageClaim,
         MessageDispatchMode, NewThreadSignal, ThreadSignalStatus,
@@ -1126,7 +1333,7 @@ async fn assert_restart_replays_seeded_v1_plan_once(legacy_thread_id: Option<&st
         json!({
             "agent_id":"annotations-agent",
             "context_id":"annotations-context","session_id":"annotations-session",
-            "text":"Read synthetic system","response_annotations":"v1",
+            "text":"Read synthetic system","response_annotations":"on",
             "principal_id":"principal-default",
         })
         .as_object()
@@ -1152,7 +1359,7 @@ async fn assert_restart_replays_seeded_v1_plan_once(legacy_thread_id: Option<&st
         fixture
             .store
             .ensure_thread(NewThread {
-                response_annotations: Protocol::V1,
+                response_annotations: Protocol::On,
                 model_alias: None,
                 reasoning_effort: None,
                 id: legacy_id.into(),
@@ -1220,7 +1427,7 @@ async fn assert_restart_replays_seeded_v1_plan_once(legacy_thread_id: Option<&st
     } else {
         assert_eq!(thread.id, stable_thread_id(&root.id));
     }
-    assert_eq!(thread.response_annotations, Protocol::V1);
+    assert_eq!(thread.response_annotations, Protocol::On);
     // stable_thread_activation_id is crate-private. Reproduce that documented
     // scheduler identity in this external integration fixture rather than
     // expanding the production API solely for test seeding.
@@ -1286,7 +1493,7 @@ async fn assert_restart_replays_seeded_v1_plan_once(legacy_thread_id: Option<&st
     };
     let source_id = format!("call_{}", activation.id);
     let context = NormalizationContext {
-        protocol: Protocol::V1,
+        protocol: Protocol::On,
         scope: Some(scope.clone()),
         producer: Some(Producer {
             event_id: source_id.clone(),
@@ -1327,7 +1534,7 @@ async fn assert_restart_replays_seeded_v1_plan_once(legacy_thread_id: Option<&st
         "tool_calls":stored_calls(&normalized.execution_response),
         "continuation_tool_calls":stored_calls(&normalized.raw_response),
         "unavailable_tool_names":[],"context_tx_rejection_status":null,
-        "response_annotations":"v1",BUNDLE_PAYLOAD_KEY:bundle,
+        "response_annotations":"on",BUNDLE_PAYLOAD_KEY:bundle,
         "context_view_manifest":manifest,"provider_continuation":ScriptClient::continuation(),
         "model_binding":binding,
     }).as_object().unwrap().clone())).await.unwrap();
@@ -1414,7 +1621,7 @@ async fn assert_restart_replays_seeded_v1_plan_once(legacy_thread_id: Option<&st
         .unwrap()
         .expect("recovery must preserve the owning Thread");
     assert_eq!(recovered_thread.id, thread.id);
-    assert_eq!(recovered_thread.response_annotations, Protocol::V1);
+    assert_eq!(recovered_thread.response_annotations, Protocol::On);
     let bound_custom = fixture
         .store
         .get_thread_custom(&thread.id)
@@ -1470,7 +1677,7 @@ async fn invalid_reply_stream_fails_once_without_tool_dispatch_or_repair_inferen
         let root = fixture
             .session
             .send_io_as_principal(
-                Fixture::input(Some(Protocol::V1)),
+                Fixture::input(Some(Protocol::On)),
                 &fixture.runtime.identity().principal_id,
             )
             .await
@@ -1560,19 +1767,19 @@ async fn invalid_reply_stream_fails_once_without_tool_dispatch_or_repair_inferen
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn real_kernel_supersede_keeps_v1_and_fences_old_generation_annotations() {
+async fn real_kernel_supersede_keeps_enabled_and_fences_old_generation_annotations() {
     // Use the real Kernel/controller/store transaction, but do not start the
     // Runtime or dispatch its queued wake: generation fencing is deterministic.
     let fixture = Fixture::construct(Scenario::Plain, Protocol::Off, false).await;
     let root=Event::new("annotations-generation-root".into(),"Test-User".into(),"user_message".into(),"chat/user_message".into(),json!({
         "context_id":"annotations-context","session_id":"annotations-session","text":"old intent",
-        "response_annotations":"v1",
+        "response_annotations":"on",
     }).as_object().unwrap().clone());
     fixture.store.append(root.clone()).await.unwrap();
     let thread = fixture
         .store
         .ensure_thread(NewThread {
-            response_annotations: Protocol::V1,
+            response_annotations: Protocol::On,
             model_alias: None,
             reasoning_effort: None,
             id: "annotations-generation-thread".into(),
@@ -1597,7 +1804,7 @@ async fn real_kernel_supersede_keeps_v1_and_fences_old_generation_annotations() 
     let normalized = normalize_response(
         &ScriptClient::work(RAW_WORK),
         &NormalizationContext {
-            protocol: Protocol::V1,
+            protocol: Protocol::On,
             scope: Some(old_scope.clone()),
             producer: Some(Producer {
                 event_id: source_id.into(),
@@ -1611,7 +1818,7 @@ async fn real_kernel_supersede_keeps_v1_and_fences_old_generation_annotations() 
     fixture.store.append(Event::new(source_id.into(),"Agent-Morphz".into(),"agent_call".into(),"chat/assistant_call".into(),json!({
         "context_id":thread.context_id,"session_id":thread.session_id,"thread_id":thread.id,
         "thread_generation":thread.generation,"root_turn_id":root.id,"model_attempt_id":"annotations-generation-old",
-        "response_annotations":"v1",BUNDLE_PAYLOAD_KEY:PersistedAnnotations::from_normalized(old_scope.clone(),&normalized),
+        "response_annotations":"on",BUNDLE_PAYLOAD_KEY:PersistedAnnotations::from_normalized(old_scope.clone(),&normalized),
     }).as_object().unwrap().clone())).await.unwrap();
     let source = fixture
         .store
@@ -1648,7 +1855,7 @@ async fn real_kernel_supersede_keeps_v1_and_fences_old_generation_annotations() 
     };
     assert_eq!(updated.id, thread.id);
     assert_eq!(updated.generation, thread.generation + 1);
-    assert_eq!(updated.response_annotations, Protocol::V1);
+    assert_eq!(updated.response_annotations, Protocol::On);
     let display = fixture
         .runtime
         .session_thread_annotations("annotations-context", "annotations-session", &updated.id)
@@ -1677,7 +1884,7 @@ async fn real_kernel_supersede_keeps_v1_and_fences_old_generation_annotations() 
             .unwrap()
             .unwrap()
             .response_annotations,
-        Protocol::V1
+        Protocol::On
     );
     assert_eq!(
         reopen
@@ -1695,16 +1902,16 @@ async fn real_kernel_supersede_keeps_v1_and_fences_old_generation_annotations() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn restart_settles_seeded_v1_wait_receipt_without_reasking_or_rearming() {
-    assert_restart_settles_seeded_v1_wait_receipt(false).await;
+async fn restart_settles_seeded_enabled_wait_receipt_without_reasking_or_rearming() {
+    assert_restart_settles_seeded_enabled_wait_receipt(false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn restart_settles_legacy_v1_wait_receipt_without_reasking_or_rearming() {
-    assert_restart_settles_seeded_v1_wait_receipt(true).await;
+async fn restart_settles_legacy_enabled_wait_receipt_without_reasking_or_rearming() {
+    assert_restart_settles_seeded_enabled_wait_receipt(true).await;
 }
 
-async fn assert_restart_settles_seeded_v1_wait_receipt(legacy: bool) {
+async fn assert_restart_settles_seeded_enabled_wait_receipt(legacy: bool) {
     use morphz::memory::{
         stable_thread_signal_id, DeliveryIngressStore, MessageClaim, MessageDispatchMode,
         NewRuntimeTimer, NewThreadSignal, RuntimeTimerKind, RuntimeTimerStatus, SignalOutboxStatus,
@@ -1728,7 +1935,7 @@ async fn assert_restart_settles_seeded_v1_wait_receipt(legacy: bool) {
             "agent_id":"annotations-agent",
             "context_id":"annotations-context","session_id":"annotations-session",
             "principal_id":"principal-default","text":"Continue after pending work",
-            "response_annotations":"v1",
+            "response_annotations":"on",
         })
         .as_object()
         .unwrap()
@@ -1764,7 +1971,7 @@ async fn assert_restart_settles_seeded_v1_wait_receipt(legacy: bool) {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(thread.response_annotations, Protocol::V1);
+    assert_eq!(thread.response_annotations, Protocol::On);
     assert_eq!(thread.kind, ThreadKind::DialogueTurn);
     // The Store's stable activation helper is crate-private. Reproduce its
     // public scheduler-contract digest here, instead of inventing a new ID.
@@ -1844,7 +2051,7 @@ async fn assert_restart_settles_seeded_v1_wait_receipt(legacy: bool) {
         "armed_at":chrono::Utc::now(),
     });
     if !legacy {
-        timer_payload["response_annotations"] = json!("v1");
+        timer_payload["response_annotations"] = json!("on");
         timer_payload["thread_generation"] = json!(thread.generation);
     }
     let timer = fixture
@@ -1872,10 +2079,10 @@ async fn assert_restart_settles_seeded_v1_wait_receipt(legacy: bool) {
     let normalized = normalize_response(
         &ScriptClient::reply(json!({
             "content":"等待尚未完成的工作。",
-            "annotations":{"execution":{"result":"WAIT_CANDIDATE_MUST_NOT_APPLY"}},
+            "annotations":{"execution":{"title":"等待现有工作","result":"WAIT_CANDIDATE_MUST_NOT_APPLY"}},
         })),
         &NormalizationContext {
-            protocol: Protocol::V1,
+            protocol: Protocol::On,
             scope: Some(scope.clone()),
             producer: Some(Producer {
                 event_id: source_id.clone(),
@@ -1921,7 +2128,7 @@ async fn assert_restart_settles_seeded_v1_wait_receipt(legacy: bool) {
                 "phase":"waiting","terminal_outcome":false,
                 "text":normalized.execution_response.content,"tool_calls":[],
                 "context_snapshot_version":0,"context_view_manifest":manifest,
-                "response_annotations":"v1",
+                "response_annotations":"on",
                 BUNDLE_PAYLOAD_KEY:PersistedAnnotations::from_normalized(scope.clone(),&normalized),
                 "provider_continuation":ScriptClient::continuation(),"model_binding":binding,
                 "model_disposition":"deliver","wait_secs":86400,
@@ -2058,7 +2265,7 @@ async fn assert_restart_settles_seeded_v1_wait_receipt(legacy: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interactive_delivery_with_a_future_schedule_preserves_off_outcome_and_v1_source() {
+async fn interactive_delivery_with_a_future_schedule_preserves_off_outcome_and_enabled_source() {
     use morphz::memory::{
         ExecutionJobStatus, NewSchedule, ScheduleStatus, ScheduleStore, ThreadLifecycle, TimerStore,
     };
@@ -2069,7 +2276,7 @@ async fn interactive_delivery_with_a_future_schedule_preserves_off_outcome_and_v
         let accepted = fixture
             .session
             .send_io_as_principal(
-                Fixture::input(annotated.then_some(Protocol::V1)),
+                Fixture::input(annotated.then_some(Protocol::On)),
                 &fixture.runtime.identity().principal_id,
             )
             .await
@@ -2090,7 +2297,7 @@ async fn interactive_delivery_with_a_future_schedule_preserves_off_outcome_and_v
         assert_eq!(
             thread.response_annotations,
             if annotated {
-                Protocol::V1
+                Protocol::On
             } else {
                 Protocol::Off
             }
@@ -2101,7 +2308,7 @@ async fn interactive_delivery_with_a_future_schedule_preserves_off_outcome_and_v
         assert_eq!(jobs[0].status, ExecutionJobStatus::Succeeded);
         // Only this future Schedule is host-authored via the actual Store.
         // The Runtime must decide its real Outcome; no terminal or wait facts
-        // are injected, and V1 may not change the existing Off decision.
+        // are injected, and enabled annotations may not change the existing Off decision.
         let schedule = fixture
             .store
             .ensure_schedule(NewSchedule {
@@ -2182,7 +2389,7 @@ async fn interactive_delivery_with_a_future_schedule_preserves_off_outcome_and_v
             );
             assert_eq!(final_source.payload["thread_id"], thread.id);
             assert_eq!(final_source.payload["thread_generation"], thread.generation);
-            assert_eq!(final_source.payload["response_annotations"], "v1");
+            assert_eq!(final_source.payload["response_annotations"], "on");
             assert_eq!(final_source.payload["text"], FINAL_TEXT);
             assert!(final_source.payload["tool_calls"]
                 .as_array()
@@ -2243,10 +2450,11 @@ async fn interactive_delivery_with_a_future_schedule_preserves_off_outcome_and_v
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn rejected_objective_completion_then_reply_has_distinct_v1_boundaries_in_one_activation() {
+async fn rejected_objective_completion_then_reply_has_distinct_enabled_boundaries_in_one_activation(
+) {
     for annotated in [true, false] {
         let fixture = Fixture::new(Scenario::CompletionRejected(annotated), Protocol::Off).await;
-        let protocol = annotated.then_some(Protocol::V1);
+        let protocol = annotated.then_some(Protocol::On);
         let (root, reply) = fixture.submit(protocol).await;
         assert_eq!(reply.payload["text"], "目标未绑定，因此未执行关闭。");
         assert_eq!(
@@ -2396,7 +2604,7 @@ fn assert_lifecycle_work_result_rejected(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn actual_no_reply_silent_preserves_v1_grammar_without_a_result_or_extra_request() {
+async fn actual_no_reply_silent_preserves_enabled_grammar_without_a_result_or_extra_request() {
     use morphz::memory::{ExecutionJobStatus, ThreadLifecycle};
     use morphz::response_annotations::{project_authorized_events, ExecutionFact};
 
@@ -2405,7 +2613,7 @@ async fn actual_no_reply_silent_preserves_v1_grammar_without_a_result_or_extra_r
         let accepted = fixture
             .session
             .send_io_as_principal(
-                Fixture::input(annotated.then_some(Protocol::V1)),
+                Fixture::input(annotated.then_some(Protocol::On)),
                 &fixture.runtime.identity().principal_id,
             )
             .await
@@ -2494,7 +2702,7 @@ async fn actual_no_reply_silent_preserves_v1_grammar_without_a_result_or_extra_r
                 records_from_authorized_event(final_event, &scope)
                     .unwrap()
                     .is_empty(),
-                "V1 must not smuggle annotations into no_reply's original grammar"
+                "enabled annotations must not smuggle annotations into no_reply's original grammar"
             );
             let work = events
                 .iter()
@@ -2554,7 +2762,7 @@ async fn actual_no_reply_wait_uses_real_pending_work_and_does_not_finalize_or_re
     };
     use morphz::response_annotations::{project_authorized_events, ExecutionFact};
 
-    for protocol in [Protocol::V1, Protocol::Off, Protocol::V2] {
+    for protocol in [Protocol::On, Protocol::Off] {
         let annotated = !protocol.is_off();
         let fixture = Fixture::new(Scenario::NoReplyWait(annotated), Protocol::Off).await;
         let accepted = fixture
@@ -2747,7 +2955,7 @@ async fn actual_operator_cancel_drops_native_request_without_model_final_or_extr
     };
     use morphz::response_annotations::{project_execution, ExecutionFact};
 
-    for protocol in [Protocol::V1, Protocol::Off, Protocol::V2] {
+    for protocol in [Protocol::On, Protocol::Off] {
         let annotated = !protocol.is_off();
         let fixture = Fixture::new(Scenario::CancelModel(annotated), Protocol::Off).await;
         let accepted = fixture
@@ -2947,7 +3155,7 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
     };
     use morphz::response_annotations::{project_authorized_events, ExecutionFact};
 
-    let fixture = Fixture::new(Scenario::WorkYield(true), Protocol::V1).await;
+    let fixture = Fixture::new(Scenario::WorkYield(true), Protocol::On).await;
     let session = fixture
         .runtime
         .get_session("annotations-session")
@@ -2985,7 +3193,7 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
         .unwrap()
         .unwrap();
     assert_eq!(thread.kind, ThreadKind::Execution);
-    assert_eq!(thread.response_annotations, Protocol::V1);
+    assert_eq!(thread.response_annotations, Protocol::On);
     assert_eq!(thread.root_turn_id, initial.source_turn_id);
     let before = fixture.events(&thread.root_turn_id, None).await;
     let due = before
@@ -3105,7 +3313,7 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
     assert_eq!(waiting.id, format!("call_{activation_id}_final"));
     assert_eq!(waiting.payload["thread_id"], thread.id);
     assert_eq!(waiting.payload["thread_generation"], thread.generation);
-    assert_eq!(waiting.payload["response_annotations"], "v1");
+    assert_eq!(waiting.payload["response_annotations"], "on");
     assert_eq!(waiting.payload["model_disposition"], "deliver");
     assert_eq!(waiting.payload["wait_source"], "runtime_default");
     assert_eq!(waiting.payload["pending_schedules"], 1);
@@ -3155,7 +3363,7 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
         timer.payload["thread_generation"],
         detail.snapshot.thread.generation
     );
-    assert_eq!(timer.payload["response_annotations"], "v1");
+    assert_eq!(timer.payload["response_annotations"], "on");
     assert_eq!(
         Some(timer.generation),
         waiting.payload["wait_timer_generation"].as_u64()
@@ -3214,97 +3422,14 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn v1_accepts_legacy_unannotated_plain_final_text_without_an_extra_request() {
-    use morphz::memory::ThreadLifecycle;
-    use morphz::response_annotations::{project_authorized_events, ExecutionFact};
-
-    let fixture = Fixture::new(Scenario::Plain, Protocol::V1).await;
-    let (accepted, reply) = fixture.submit(None).await;
-    assert_eq!(reply.payload["text"], FINAL_TEXT);
-    let thread = fixture
-        .runtime
-        .session_thread_by_root("annotations-session", &accepted.id)
-        .await
-        .unwrap()
-        .unwrap();
-    let detail = fixture
-        .runtime
-        .thread_detail(&thread.context_id, &thread.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(detail.snapshot.thread.response_annotations, Protocol::V1);
-    assert_eq!(detail.snapshot.thread.kind, ThreadKind::DialogueTurn);
-    assert_eq!(detail.snapshot.thread.lifecycle, ThreadLifecycle::Completed);
-    let outcome = detail.snapshot.outcome.as_ref().unwrap();
-    assert_eq!(outcome.terminal_kind, ThreadLifecycle::Completed);
-    assert_eq!(outcome.result_event_id, reply.id);
-    let calls = fixture
-        .events(&accepted.id, Some("chat/assistant_call"))
-        .await;
-    assert_eq!(calls.len(), 1);
-    let final_event = &calls[0];
-    assert_eq!(final_event.payload["terminal_outcome"], true);
-    assert_eq!(final_event.payload["text"], FINAL_TEXT);
-    assert!(final_event.payload["tool_calls"]
-        .as_array()
-        .unwrap()
-        .is_empty());
-    let scope = ExecutionScope {
-        execution_id: thread.id.clone(),
-        generation: thread.generation,
-    };
-    let bundle: PersistedAnnotations =
-        serde_json::from_value(final_event.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-    assert_eq!(bundle.scope, scope);
-    assert_eq!(bundle.raw_response.content, FINAL_TEXT);
-    assert!(bundle.raw_response.tool_calls.is_empty());
-    assert!(bundle.records.is_empty() && bundle.diagnostics.is_empty());
-    assert_eq!(bundle.omitted_diagnostics, 0);
-    assert!(records_from_authorized_event(final_event, &scope)
-        .unwrap()
-        .is_empty());
-    let projection = project_authorized_events(
-        &ExecutionFact {
-            scope,
-            status: detail.snapshot.thread.lifecycle.as_str().into(),
-            terminal: detail.snapshot.thread.lifecycle.is_terminal(),
-            terminal_sequence: outcome.terminal_event_sequence,
-        },
-        &calls,
-    )
-    .unwrap();
-    assert_eq!(projection.status, "completed");
-    assert!(projection.title.is_none() && projection.progress.is_none() && projection.result.is_none(),
-        "legacy final text stays normal reply content; it must not be inferred into annotation metadata");
-    assert!(fixture.jobs().await.is_empty());
-    assert!(fixture.arguments.lock().unwrap().is_empty());
-    {
-        let captured = fixture.client.captured.lock().unwrap();
-        assert_eq!(captured.len(), 1);
-        assert!(
-            captured[0].tools.iter().any(|tool| tool.name == "reply"),
-            "the V1 carrier is offered but plain text remains a valid opt-in alternative"
-        );
-    }
-    assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 1);
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        fixture.events(&accepted.id, Some("chat/reply")).await.len(),
-        1
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn v2_final_reply_persists_required_metadata_in_original_requests_and_native_stream() {
+async fn enabled_final_reply_persists_required_metadata_in_original_requests_and_native_stream() {
     for (scenario, expected_calls, expected_jobs) in [
         (Scenario::ReplyOnly, 1, 0),
         (Scenario::StrictWorkReply, 2, 1),
     ] {
         let fixture = Fixture::new(scenario, Protocol::Off).await;
         let mut stream = fixture.runtime.subscribe("runtime/model_stream", 512);
-        let (accepted, reply) = fixture.submit(Some(Protocol::V2)).await;
+        let (accepted, reply) = fixture.submit(Some(Protocol::On)).await;
         assert_eq!(reply.payload["text"], FINAL_TEXT);
         assert_eq!(fixture.client.calls.load(Ordering::SeqCst), expected_calls);
         assert_eq!(
@@ -3318,7 +3443,7 @@ async fn v2_final_reply_persists_required_metadata_in_original_requests_and_nati
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(thread.response_annotations, Protocol::V2);
+        assert_eq!(thread.response_annotations, Protocol::On);
         assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Completed);
         let projection = fixture
             .runtime
@@ -3327,7 +3452,7 @@ async fn v2_final_reply_persists_required_metadata_in_original_requests_and_nati
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(projection.protocol, Protocol::V2);
+        assert_eq!(projection.protocol, Protocol::On);
         assert_eq!(projection.title.as_deref(), Some("检查合成环境"));
         assert!(projection.result.is_some());
         let events = fixture
@@ -3344,11 +3469,11 @@ async fn v2_final_reply_persists_required_metadata_in_original_requests_and_nati
         };
         let bundle: PersistedAnnotations =
             serde_json::from_value(final_source.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-        assert_eq!(bundle.protocol, Protocol::V2);
+        assert_eq!(bundle.protocol, Protocol::On);
         assert!(bundle
             .records
             .iter()
-            .all(|record| record.protocol == Protocol::V2));
+            .all(|record| record.protocol == Protocol::On));
         assert!(bundle
             .records
             .iter()
@@ -3366,7 +3491,7 @@ async fn v2_final_reply_persists_required_metadata_in_original_requests_and_nati
             assert!(request
                 .messages
                 .iter()
-                .any(|message| message.role == "system" && message.content.contains(CONTRACT_V2)));
+                .any(|message| message.role == "system" && message.content.contains(CONTRACT)));
             let schema = &request
                 .tools
                 .iter()
@@ -3402,7 +3527,7 @@ async fn v2_final_reply_persists_required_metadata_in_original_requests_and_nati
                 .unwrap()
                 .unwrap()
                 .response_annotations,
-            Protocol::V2
+            Protocol::On
         );
         assert_eq!(
             fixture.client.calls.load(Ordering::SeqCst),
@@ -3413,11 +3538,8 @@ async fn v2_final_reply_persists_required_metadata_in_original_requests_and_nati
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn v2_plain_or_invalid_required_final_fails_once_with_terminal_attempt_audit() {
-    for scenario in std::iter::once(Scenario::Plain)
-        .chain((0..=6).map(Scenario::StrictBadFinal))
-        .chain(std::iter::once(Scenario::WorkReply))
-    {
+async fn enabled_plain_or_invalid_required_final_fails_once_with_terminal_attempt_audit() {
+    for scenario in std::iter::once(Scenario::Plain).chain((0..=6).map(Scenario::StrictBadFinal)) {
         let expected_calls = if matches!(scenario, Scenario::WorkReply) {
             2
         } else {
@@ -3427,7 +3549,7 @@ async fn v2_plain_or_invalid_required_final_fails_once_with_terminal_attempt_aud
         let root = fixture
             .session
             .send_io_as_principal(
-                Fixture::input(Some(Protocol::V2)),
+                Fixture::input(Some(Protocol::On)),
                 &fixture.runtime.identity().principal_id,
             )
             .await
@@ -3497,7 +3619,7 @@ async fn v2_plain_or_invalid_required_final_fails_once_with_terminal_attempt_aud
             "full-response normalization and stream failures use the same Attempt audit"
         );
         assert_eq!(invalid[0].payload["terminal"], true);
-        assert_eq!(invalid[0].payload["response_annotations"], "v2");
+        assert_eq!(invalid[0].payload["response_annotations"], "on");
         assert!(states
             .iter()
             .filter(|event| event.payload["attempt_id"] == invalid[0].payload["attempt_id"])
@@ -3514,25 +3636,87 @@ async fn v2_plain_or_invalid_required_final_fails_once_with_terminal_attempt_aud
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn v2_parent_does_not_augment_typed_infer_or_change_typed_result() {
+async fn every_new_infer_has_scoped_metadata_and_stable_tools_without_extra_requests() {
     let fixture = Fixture::new(Scenario::Infer, Protocol::Off).await;
-    let (root, reply) = fixture.submit(Some(Protocol::V2)).await;
+    let (root, reply) = fixture.submit(Some(Protocol::On)).await;
     assert_eq!(reply.payload["text"], FINAL_TEXT);
     assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 4);
     let captured = fixture.client.captured.lock().unwrap().clone();
     for request in &captured[1..3] {
-        assert!(!request.tools.iter().any(|tool| tool.name == "reply"));
+        assert!(request.tools.iter().any(|tool| tool.name == "reply"));
         assert!(request
             .tools
             .iter()
-            .all(|tool| tool.parameters["properties"].get("_annotations").is_none()));
+            .filter(|tool| tool.name != "reply")
+            .all(|tool| tool.parameters["properties"].get("_annotations").is_some()));
         assert!(request
             .messages
             .iter()
             .filter(|message| message.role == "system")
-            .all(|message| !message.content.contains(CONTRACT_V1)
-                && !message.content.contains(CONTRACT_V2)));
+            .any(|message| message.content.contains(CONTRACT)));
     }
+    assert_eq!(
+        serde_json::to_vec(&captured[1].tools).unwrap(),
+        serde_json::to_vec(&captured[2].tools).unwrap(),
+        "the complete infer tool contract stays byte-identical across physical tool continuations"
+    );
+    let request = fixture
+        .store
+        .query(QueryFilter {
+            context_id: Some("annotations-context".into()),
+            topics: vec!["chat/infer_request".into()],
+            latest_k: Some(8),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let child = fixture
+        .runtime
+        .session_thread_by_root("annotations-session", &request.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(child.response_annotations, Protocol::On);
+    let projected = fixture
+        .runtime
+        .session_thread_annotations("annotations-context", "annotations-session", &child.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(projected.title.as_deref(), Some("读取合成系统"));
+    assert_eq!(projected.result.as_deref(), Some("系统名称为 Linux"));
+    assert_eq!(projected.steps.len(), 1);
+    assert_eq!(projected.steps[0].intent.as_deref(), Some("核对系统名称"));
+    assert!(fixture
+        .runtime
+        .session_thread_annotations("annotations-context", "foreign-session", &child.id)
+        .await
+        .unwrap()
+        .is_none());
+    let parent = fixture
+        .runtime
+        .session_thread_by_root("annotations-session", &root.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        child.supervision.parent_thread_id.as_deref(),
+        Some(parent.id.as_str())
+    );
+    let parent_metadata = fixture
+        .runtime
+        .session_thread_annotations("annotations-context", "annotations-session", &parent.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        parent_metadata.title, projected.title,
+        "child metadata must not rename the parent work"
+    );
     let outputs = fixture.events(&root.id, Some("chat/tool_output")).await;
     assert!(outputs
         .iter()
@@ -3540,11 +3724,11 @@ async fn v2_parent_does_not_augment_typed_infer_or_change_typed_result() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn v2_no_reply_silent_preserves_grammar_without_required_final_metadata() {
+async fn enabled_no_reply_silent_preserves_grammar_without_required_final_metadata() {
     let fixture = Fixture::new(Scenario::NoReplySilent(true), Protocol::Off).await;
     let accepted = fixture
         .session
-        .send_io_as_principal(Fixture::input(Some(Protocol::V2)), "principal-default")
+        .send_io_as_principal(Fixture::input(Some(Protocol::On)), "principal-default")
         .await
         .unwrap();
     let thread = tokio::time::timeout(Duration::from_secs(25), async {
@@ -3564,7 +3748,7 @@ async fn v2_no_reply_silent_preserves_grammar_without_required_final_metadata() 
     })
     .await
     .unwrap();
-    assert_eq!(thread.response_annotations, Protocol::V2);
+    assert_eq!(thread.response_annotations, Protocol::On);
     assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Completed);
     assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 2);
     assert_eq!(fixture.jobs().await.len(), 1);
@@ -3579,7 +3763,7 @@ async fn v2_no_reply_silent_preserves_grammar_without_required_final_metadata() 
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(projected.protocol, Protocol::V2);
+    assert_eq!(projected.protocol, Protocol::On);
     assert!(projected.result.is_none());
 }
 
@@ -3622,8 +3806,8 @@ async fn schedule_annotation_override_is_frozen_and_none_keeps_legacy_retry_fing
         Protocol::Off
     );
     let mut explicit = request.clone();
-    explicit.id = "annotation-schedule-v1".into();
-    explicit.response_annotations = Some(Protocol::V1);
+    explicit.id = "annotation-schedule-on".into();
+    explicit.response_annotations = Some(Protocol::On);
     let enabled = fixture
         .runtime
         .create_session_schedule(&session, "principal-default", explicit.clone())
@@ -3635,7 +3819,7 @@ async fn schedule_annotation_override_is_frozen_and_none_keeps_legacy_retry_fing
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(owner.response_annotations, Protocol::V1);
+    assert_eq!(owner.response_annotations, Protocol::On);
     assert_eq!(
         fixture
             .runtime
@@ -3662,7 +3846,7 @@ async fn schedule_annotation_override_is_frozen_and_none_keeps_legacy_retry_fing
     // Restore the real durable store under a changed new-execution default.
     // An accepted None request must still resolve its original immutable owner.
     let mut config = fixture.runtime.config().clone();
-    config.orchestrator.response_annotations = Protocol::V1;
+    config.orchestrator.response_annotations = Protocol::On;
     let restored = MorphzRuntime::builder(config, fixture.client.clone() as Arc<dyn Client>)
         .identity(fixture.runtime.identity().clone())
         .store(
@@ -3707,7 +3891,7 @@ async fn schedule_annotation_override_is_frozen_and_none_keeps_legacy_retry_fing
             .unwrap()
             .unwrap()
             .response_annotations,
-        Protocol::V1
+        Protocol::On
     );
     assert_eq!(
         fixture.client.calls.load(Ordering::SeqCst),

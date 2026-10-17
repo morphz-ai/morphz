@@ -592,7 +592,7 @@ export function workInputRequest(
         : {
             // Freeze this application's display protocol on NEW executions.
             // A supplement inherits the original Thread's immutable choice.
-            response_annotations: "v2",
+            response_annotations: "on",
             ...(input.application?.harness
               ? { harness: input.application.harness }
               : {}),

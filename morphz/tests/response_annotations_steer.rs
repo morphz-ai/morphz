@@ -582,8 +582,8 @@ impl Fixture {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn first_steered_title_after_tool_receipt_uses_the_same_execution_input_revision() {
-    let enabled = Fixture::with_scenario(Protocol::V1, Scenario::DeferredTitle).await;
-    let (_initial, directed, owner, events) = enabled.exercise(Protocol::V1).await;
+    let enabled = Fixture::with_scenario(Protocol::On, Scenario::DeferredTitle).await;
+    let (_initial, directed, owner, events) = enabled.exercise(Protocol::On).await;
     let mut boundaries = events
         .iter()
         .filter(|event| {
@@ -661,8 +661,8 @@ async fn first_steered_title_after_tool_receipt_uses_the_same_execution_input_re
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn accepted_steer_updates_whole_task_title_without_extra_inference_or_repeating_jobs() {
-    let enabled = Fixture::new(Protocol::V1).await;
-    let (_initial, directed, owner, events) = enabled.exercise(Protocol::V1).await;
+    let enabled = Fixture::new(Protocol::On).await;
+    let (_initial, directed, owner, events) = enabled.exercise(Protocol::On).await;
     let scope = ExecutionScope {
         execution_id: owner.id.clone(),
         generation: owner.generation,
@@ -712,10 +712,11 @@ async fn accepted_steer_updates_whole_task_title_without_extra_inference_or_repe
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn v2_accepted_steer_keeps_generation_and_required_final_title_result_without_extra_calls() {
+async fn enabled_accepted_steer_keeps_generation_and_required_final_title_result_without_extra_calls(
+) {
     for scenario in [Scenario::DirectTitle, Scenario::DeferredTitle] {
-        let fixture = Fixture::with_scenario(Protocol::V2, scenario).await;
-        let (_, directed, owner, events) = fixture.exercise(Protocol::V2).await;
+        let fixture = Fixture::with_scenario(Protocol::On, scenario).await;
+        let (_, directed, owner, events) = fixture.exercise(Protocol::On).await;
         let projection = fixture
             .runtime
             .session_thread_annotations(&owner.context_id, &owner.session_id, &owner.id)
@@ -723,7 +724,7 @@ async fn v2_accepted_steer_keeps_generation_and_required_final_title_result_with
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(projection.protocol, Protocol::V2);
+        assert_eq!(projection.protocol, Protocol::On);
         assert_eq!(projection.scope.generation, owner.generation);
         assert_eq!(projection.title.as_deref(), Some(UPDATED_TITLE));
         assert_eq!(
@@ -738,12 +739,12 @@ async fn v2_accepted_steer_keeps_generation_and_required_final_title_result_with
             })
             .map(|event| serde_json::from_value(event.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap())
             .unwrap();
-        assert_eq!(bundle.protocol, Protocol::V2);
+        assert_eq!(bundle.protocol, Protocol::On);
         assert_eq!(bundle.title_input_revision.unwrap().event_id, directed.id);
         assert!(bundle
             .records
             .iter()
-            .all(|record| record.protocol == Protocol::V2));
+            .all(|record| record.protocol == Protocol::On));
         for kind in [AnnotationKind::Title, AnnotationKind::Result] {
             assert!(bundle.records.iter().any(|record| record.kind == kind));
         }
