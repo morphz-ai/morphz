@@ -16,6 +16,12 @@ Dashboard 是 Morphz Runtime 的浏览器界面。它围绕 Morphz 自身的三�
 
 顶部主题菜单支持鸢尾紫、电光青、暖珊瑚和纯单色四种强调色。选择保存在浏览器本地，不会写入 Runtime 或认知 Context。
 
+发送中的消息、未送达的失败消息与已接收消息使用同一历史顺序和有界分页，不单独
+置于消息流底部。发送时保存已观察的 Runtime 事件位置；失败及重试不改变此位置，
+后续回复正常排在其后，旧失败记录可通过历史分页找回。状态和错误仍在原消息旁，
+手动重试复用原 `client_message_id`、正文、附件与定向目标；不会自动转成普通聊天、
+重开已结束的线程或重发。权威事件确认接收后才替换本地发送记录。
+
 ## 开发
 
 ```bash
@@ -29,6 +35,11 @@ Dashboard 可以部署在反向代理子路径。Runtime 读取 `MORPHZ_DASHBOAR
 `/console/`），把该路径写入 HTML 的 `<base>`；静态资源、BrowserRouter、HTTP API 和
 WebSocket 会从同一基路径派生。未配置时保持根路径 `/`。当 Runtime 返回 401 时，Dashboard
 会显示 Token 登录界面；URL query/fragment Token 仍作为自动启动和兼容入口保留。
+
+`npm test` 覆盖发送排序、确认去重、精确重试、会话隔离、历史窗口与界面接线；
+`npm run build` 同时执行类型检查并生成单二进制所用产物。更新当前已运行实例的
+嵌入式 Dashboard 需要升级其 Runtime 二进制，不能把仅构建前端当作原页面已更新，
+也不能为了界面验证中断仍在执行的工作。
 
 ## 单二进制交付
 

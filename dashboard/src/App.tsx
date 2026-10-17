@@ -94,7 +94,7 @@ import {
 } from './scheduler/model'
 import { findTurnSettlement } from './turnSettlement'
 import { requiresInitialProviderSetup, resolveSelectedModelOption } from './app/modelSelection'
-import { buildOptimisticMessageRequest, reconcileOptimisticMessages } from './app/optimisticMessages'
+import { buildOptimisticMessageRequest, mergeConversationTimeline, reconcileOptimisticMessages } from './app/optimisticMessages'
 import { canSteerThread, threadAssignment, threadDestination, objectiveReplyDestination, type InputDestination, type InputSelection } from './app/steering'
 import { SteeringTarget } from './pages/SteeringTarget'
 import { ObjectiveSteeringButton } from './pages/ObjectiveSteeringButton'
@@ -1237,6 +1237,7 @@ interface OptimisticMessage {
   contextId: string
   text: string
   createdAt: string
+  afterSequence?: number
   attachments: ComposerAttachment[]
   references: ComposerSessionReference[]
   dispatchMode?: MessageDispatchMode
@@ -5473,15 +5474,31 @@ export default function App() {
   )
   // Split lanes are independent presentation surfaces. Each receives a full
   // window so high-volume tool calls cannot evict dialogue (or vice versa).
+  const mergedConversationTimeline = useMemo(
+    () => mergeConversationTimeline(conversationEventsForObjective, visibleOptimisticMessages),
+    [conversationEventsForObjective, visibleOptimisticMessages],
+  )
+  const dialogueConversationTimeline = useMemo(
+    () => mergeConversationTimeline(dialogueEventsForObjective, visibleOptimisticMessages),
+    [dialogueEventsForObjective, visibleOptimisticMessages],
+  )
+  const visibleMergedTimeline = useMemo(
+    () => mergedConversationTimeline.slice(-messageWindowForSession.merged),
+    [mergedConversationTimeline, messageWindowForSession.merged],
+  )
   const visibleMergedEvents = useMemo(
-    () => newestConversationEventsForLane(conversationEventsForObjective, 'merged', messageWindowForSession.merged),
-    [conversationEventsForObjective, messageWindowForSession.merged],
+    () => visibleMergedTimeline.flatMap(item => item.kind === 'event' ? [item.event] : []),
+    [visibleMergedTimeline],
+  )
+  const visibleDialogueTimeline = useMemo(
+    () => conversationLayout === 'split'
+      ? dialogueConversationTimeline.slice(-messageWindowForSession.dialogue)
+      : visibleMergedTimeline,
+    [dialogueConversationTimeline, conversationLayout, messageWindowForSession.dialogue, visibleMergedTimeline],
   )
   const visibleDialogueEvents = useMemo(
-    () => conversationLayout === 'split'
-      ? newestConversationEventsForLane(conversationEventsForObjective, 'dialogue', messageWindowForSession.dialogue)
-      : visibleMergedEvents,
-    [conversationEventsForObjective, conversationLayout, messageWindowForSession.dialogue, visibleMergedEvents],
+    () => visibleDialogueTimeline.flatMap(item => item.kind === 'event' ? [item.event] : []),
+    [visibleDialogueTimeline],
   )
   const visibleExecutionOutputEvents = useMemo(
     () => conversationLayout === 'split'
@@ -5496,16 +5513,16 @@ export default function App() {
     [conversationLayout, visibleDialogueEvents, visibleExecutionOutputEvents, visibleMergedEvents],
   )
   const hiddenEventCounts = useMemo<Record<ConversationWindowLane, number>>(() => ({
-    merged: Math.max(0, conversationEventsForObjective.length - visibleMergedEvents.length),
-    dialogue: Math.max(0, dialogueEventsForObjective.length - visibleDialogueEvents.length),
+    merged: Math.max(0, mergedConversationTimeline.length - visibleMergedTimeline.length),
+    dialogue: Math.max(0, dialogueConversationTimeline.length - messageWindowForSession.dialogue),
     execution_output: Math.max(0, executionEventsForObjective.length - visibleExecutionOutputEvents.length),
   }), [
-    conversationEventsForObjective.length,
-    dialogueEventsForObjective.length,
+    mergedConversationTimeline.length,
+    dialogueConversationTimeline.length,
+    messageWindowForSession.dialogue,
     executionEventsForObjective.length,
-    visibleDialogueEvents.length,
     visibleExecutionOutputEvents.length,
-    visibleMergedEvents.length,
+    visibleMergedTimeline.length,
   ])
   const dialogueHistoryLane: 'merged' | 'dialogue' = conversationLayout === 'split' ? 'dialogue' : 'merged'
   const dialogueHiddenEventCount = hiddenEventCounts[dialogueHistoryLane]
@@ -5522,13 +5539,13 @@ export default function App() {
           ? 'execution_output'
           : 'dialogue'
         : 'merged'
-      const laneEvents = hitLane === 'execution_output'
-        ? executionEventsForObjective
+      const laneItems = hitLane === 'execution_output'
+        ? executionEventsForObjective.map(event => ({ kind: 'event' as const, event }))
         : hitLane === 'dialogue'
-          ? dialogueEventsForObjective
-          : conversationEventsForObjective
-      const eventIndex = laneEvents.findIndex(event => event.id === hit.event_id)
-      const requiredCount = eventIndex >= 0 ? laneEvents.length - eventIndex : MESSAGE_PAGE_SIZE
+          ? dialogueConversationTimeline
+          : mergedConversationTimeline
+      const eventIndex = laneItems.findIndex(item => item.kind === 'event' && item.event.id === hit.event_id)
+      const requiredCount = eventIndex >= 0 ? laneItems.length - eventIndex : MESSAGE_PAGE_SIZE
       if (messageWindowForSession[hitLane] < requiredCount) {
         const revealFrame = window.requestAnimationFrame(() => {
           setMessageWindow(current => ({
@@ -5586,9 +5603,11 @@ export default function App() {
     conversationEventsForObjective,
     conversationLayout,
     dialogueEventsForObjective,
+    dialogueConversationTimeline,
     eventsSessionId,
     executionEventsForObjective,
     messageWindowForSession,
+    mergedConversationTimeline,
     pendingDialogueSearchHit,
     selectedSessionId,
     t,
@@ -6192,9 +6211,9 @@ export default function App() {
     // lane is exhausted, continue from the shared durable Event cursor.
     if (hiddenEventCounts[lane] > 0) {
       const availableCount = lane === 'merged'
-        ? conversationEventsForObjective.length
+        ? mergedConversationTimeline.length
         : lane === 'dialogue'
-          ? dialogueEventsForObjective.length
+          ? dialogueConversationTimeline.length
           : executionEventsForObjective.length
       setMessageWindow(current => {
         const base = current.sessionId === selectedSessionId ? current : freshMessageWindow(selectedSessionId)
@@ -6250,8 +6269,8 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : String(reason))
     }
   }, [
-    conversationEventsForObjective.length,
-    dialogueEventsForObjective.length,
+    mergedConversationTimeline.length,
+    dialogueConversationTimeline.length,
     executionEventsForObjective.length,
     hiddenEventCounts,
     selectedSessionId,
@@ -6675,6 +6694,7 @@ export default function App() {
         contextId: targetSession.context_id,
         text: composedText,
         createdAt: new Date().toISOString(),
+        afterSequence: targetSession.id === selectedSessionId ? sessionEvents.at(-1)?.sequence : undefined,
         attachments: attachments.map(attachment => ({ ...attachment, previewUrl: undefined })),
         references: references.map(reference => ({ ...reference })),
         dispatchMode,
@@ -6691,7 +6711,7 @@ export default function App() {
       setSending(false)
       return false
     }
-  }, [createContext, createSession, deliverOptimisticMessage, quotes, selectedContext, selectedSession, sending, t])
+  }, [createContext, createSession, deliverOptimisticMessage, quotes, selectedContext, selectedSession, selectedSessionId, sending, sessionEvents, t])
 
   const steerThread = (snapshot: SchedulerThreadSnapshot) => {
     if (observingForeignPrincipal) { setError(t('header.principalScopeReadOnly')); return }
@@ -8404,7 +8424,7 @@ export default function App() {
                 {sessionEventsError?.sessionId === selectedSessionId && (
                   <ConversationReadError message={sessionEventsError.message} onRetry={() => void loadSession(selectedSessionId, selectedContextId)} />
                 )}
-                {eventsSessionId === selectedSessionId && sessionEventsError?.sessionId !== selectedSessionId && visibleDialogueEvents.length === 0 && visibleOptimisticMessages.length === 0 && dialogueStreamingAttempts.length === 0 && (
+                {eventsSessionId === selectedSessionId && sessionEventsError?.sessionId !== selectedSessionId && visibleDialogueTimeline.length === 0 && dialogueStreamingAttempts.length === 0 && (
                   <div className="empty-state conversation-empty">
                     <div className="empty-icon"><MessageSquare size={28} /></div>
                     <strong>{t('conversation.emptyTitle')}</strong>
@@ -8434,7 +8454,18 @@ export default function App() {
                         : t('conversation.historyMore')}
                   </button>
                 )}
-                {visibleDialogueEvents.map(event => {
+                {visibleDialogueTimeline.map(item => {
+                  if (item.kind === 'optimistic') {
+                    return <OptimisticMessageCard
+                      key={item.message.id}
+                      message={item.message}
+                      currentContextId={selectedContextId}
+                      locale={i18n.language}
+                      t={t}
+                      onRetry={message => void deliverOptimisticMessage(message)}
+                    />
+                  }
+                  const event = item.event
                   const kind = eventKind(event) ?? 'system'
                   const lineage = objectiveLineage.forEvent(event)
                   const tintStyle = tintStyleForLineage(lineage)
@@ -8605,16 +8636,6 @@ export default function App() {
                     </article>
                   )
                 })}
-                {visibleOptimisticMessages.map(message => (
-                  <OptimisticMessageCard
-                    key={message.id}
-                    message={message}
-                    currentContextId={selectedContextId}
-                    locale={i18n.language}
-                    t={t}
-                    onRetry={item => void deliverOptimisticMessage(item)}
-                  />
-                ))}
                 {dialogueStreamingAttempts.map(attempt => {
                   const lineage = lineageForLiveAttempt(attempt)
                   const dialogueThread = attempt.threadKind === 'dialogue_turn'

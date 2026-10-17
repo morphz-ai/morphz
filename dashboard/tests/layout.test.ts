@@ -24,6 +24,17 @@ const optimisticMessagesSource = readFileSync(
   new URL('../src/app/optimisticMessages.ts', import.meta.url),
   'utf8',
 )
+
+test('unaccepted sends share chronological history and pagination instead of a permanent tail', () => {
+  assert.match(appSource, /mergeConversationTimeline\(conversationEventsForObjective, visibleOptimisticMessages\)/)
+  assert.match(appSource, /mergeConversationTimeline\(dialogueEventsForObjective, visibleOptimisticMessages\)/)
+  assert.match(appSource, /visibleDialogueTimeline\.map\(item =>/)
+  assert.doesNotMatch(appSource, /visibleOptimisticMessages\.map\(/)
+  assert.match(appSource, /afterSequence: targetSession\.id === selectedSessionId \? sessionEvents\.at\(-1\)\?\.sequence : undefined/)
+  assert.match(appSource, /mergedConversationTimeline\.slice\(-messageWindowForSession\.merged\)/)
+  assert.match(appSource, /dialogueConversationTimeline\.slice\(-messageWindowForSession\.dialogue\)/)
+  assert.match(appSource, /eventIndex >= 0 \? laneItems\.length - eventIndex/)
+})
 const runtimeOverviewSource = readFileSync(
   new URL('../src/pages/RuntimeOverviewPage.tsx', import.meta.url),
   'utf8',

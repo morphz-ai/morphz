@@ -4,6 +4,7 @@ import {
   buildOptimisticMessageRequest,
   isOptimisticMessagePending,
   matchesAuthoritativeMessage,
+  mergeConversationTimeline,
   reconcileOptimisticMessages,
 } from '../src/app/optimisticMessages.ts'
 
@@ -14,6 +15,7 @@ test('a retry reuses the exact idempotent request identity and body', () => {
     attachments: [{ stageId: 'stage-1', name: 'note.txt', mediaType: 'text/plain' }],
     references: [{ sessionId: 'session-2' }],
     dispatchMode: 'parallel' as const,
+    afterSequence: 15,
   }
 
   const initial = buildOptimisticMessageRequest(optimistic)
@@ -23,6 +25,7 @@ test('a retry reuses the exact idempotent request identity and body', () => {
   assert.equal(retry.client_message_id, 'client-1')
   assert.equal(retry.dispatch_mode, 'parallel')
   assert.deepEqual(retry.staged_attachment_ids, ['stage-1'])
+  assert.equal('afterSequence' in retry, false, 'a display anchor is not a Runtime request field')
 })
 
 test('reconciles an optimistic message by client message id before the receipt arrives', () => {
@@ -115,4 +118,77 @@ test('matching message text is not proof of delivery', () => {
   const messages = [{ sessionId: 'session-1', clientMessageId: 'client-1', text: 'hello' }]
   const events = [{ id: 'unrelated-event', payload: { text: 'hello', client_message_id: 'other-client' } }]
   assert.strictEqual(reconcileOptimisticMessages(messages, 'session-1', events), messages)
+})
+
+function event(id: string, sequence: number, timestamp = `2026-10-17T08:00:${String(sequence).padStart(2, '0')}Z`) {
+  return { id, sequence, timestamp, payload: {} }
+}
+
+function timelineIds(timeline: ReturnType<typeof mergeConversationTimeline>) {
+  return timeline.map(item => item.kind === 'event' ? item.event.id : item.message.clientMessageId)
+}
+
+test('a rejected directed send remains at its original position as later replies arrive', () => {
+  const failed = {
+    sessionId: 'session-1', clientMessageId: 'failed', createdAt: '2026-10-17T08:00:01.500Z',
+    afterSequence: 1, status: 'failed', error: 'Thread is closed',
+    text: 'a directed supplement', attachments: [], references: [],
+    inputDestination: { kind: 'thread' as const, thread_id: 'closed-thread', generation: 1 },
+  }
+  const history = [event('before', 1)]
+  for (const status of ['sending', 'failed', 'sending', 'accepted']) {
+    const originalPosition = { ...failed, status }
+    assert.deepEqual(timelineIds(mergeConversationTimeline(history, [originalPosition])), ['before', 'failed'])
+    assert.deepEqual(timelineIds(mergeConversationTimeline([...history, event('later', 2), event('latest', 3)], [originalPosition])),
+      ['before', 'failed', 'later', 'latest'])
+    assert.deepEqual(buildOptimisticMessageRequest(originalPosition).input_destination, failed.inputDestination)
+  }
+  assert.equal(failed.status, 'failed', 'presentation does not retry, acknowledge or mutate a failed send')
+})
+
+test('the observed Runtime position wins over a different browser clock and late history pages', () => {
+  const failed = { clientMessageId: 'failed', afterSequence: 20, createdAt: '2030-01-01T00:00:00Z' }
+  const resident = [event('later', 30), event('latest', 40)]
+  assert.deepEqual(timelineIds(mergeConversationTimeline(resident, [failed])), ['failed', 'later', 'latest'])
+  assert.deepEqual(timelineIds(mergeConversationTimeline([event('older', 10), event('anchor', 20), ...resident], [failed])),
+    ['older', 'anchor', 'failed', 'later', 'latest'])
+})
+
+test('failed sends share the bounded history window and can be revealed without being deleted', () => {
+  const failed = { clientMessageId: 'failed', afterSequence: 1, createdAt: '2026-10-17T08:00:01.500Z' }
+  const history = Array.from({ length: 250 }, (_, index) => event(`event-${index + 1}`, index + 1))
+  const timeline = mergeConversationTimeline(history, [failed])
+  assert.equal(timeline.length, 251)
+  assert.equal(timeline.slice(-100).some(item => item.kind === 'optimistic'), false)
+  assert.equal(timeline.slice(-251)[1].kind, 'optimistic')
+  assert.equal(failed.clientMessageId, 'failed')
+})
+
+test('multiple pending sends keep send order across status changes and exact retries', () => {
+  const messages = ['failed-first', 'sending-second', 'failed-third'].map((clientMessageId, index) => ({
+    clientMessageId, afterSequence: index === 2 ? 2 : 1,
+    createdAt: '2026-10-17T08:00:01.500Z', status: index === 1 ? 'sending' : 'failed',
+  }))
+  const events = [event('one', 1), event('two', 2), event('three', 3)]
+  assert.deepEqual(timelineIds(mergeConversationTimeline(events, messages)),
+    ['one', 'failed-first', 'sending-second', 'two', 'failed-third', 'three'])
+  assert.deepEqual(timelineIds(mergeConversationTimeline(events, messages.map(message => ({ ...message, status: 'sending' })))),
+    ['one', 'failed-first', 'sending-second', 'two', 'failed-third', 'three'])
+})
+
+test('a send with no observed Event uses instants, not timestamp string ordering', () => {
+  const message = { clientMessageId: 'first-send', createdAt: '2026-10-17T16:00:00.100+08:00' }
+  assert.deepEqual(timelineIds(mergeConversationTimeline([
+    event('older', 1, '2026-10-17T08:00:00.000000Z'),
+    event('later', 2, '2026-10-17T08:00:00.200000Z'),
+  ], [message])), ['older', 'first-send', 'later'])
+  assert.deepEqual(timelineIds(mergeConversationTimeline([], [message])), ['first-send'])
+})
+
+test('authoritative acknowledgement replaces the local row without duplicating or resurrecting it', () => {
+  const failed = { sessionId: 'one', clientMessageId: 'failed', afterSequence: 1, createdAt: '2026-10-17T08:00:01.500Z' }
+  const events = [event('before', 1), { ...event('accepted', 2), payload: { client_message_id: 'failed' } }, event('later', 3)]
+  const pending = reconcileOptimisticMessages([failed], 'one', events)
+  assert.deepEqual(timelineIds(mergeConversationTimeline(events, pending)), ['before', 'accepted', 'later'])
+  assert.deepEqual(timelineIds(mergeConversationTimeline([event('new-page', 4)], pending)), ['new-page'])
 })
