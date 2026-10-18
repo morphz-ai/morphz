@@ -1,7 +1,10 @@
 import { z } from "zod";
 import { refineDocumentRevision } from "../../core/src/document-edits.js";
 import { DomainError } from "../../core/src/model.js";
-import { scriptStudioApplication } from "../../core/src/applications.js";
+import {
+  scriptStudioApplication,
+  applicationNavigationStateSchema,
+} from "../../core/src/applications.js";
 import { scriptCommandSchema } from "../../core/src/script-studio.js";
 import { scriptToolSchema } from "../../core/src/script-tool.js";
 import { bookmarkRequestSchema } from "../../core/src/bookmarks.js";
@@ -113,7 +116,13 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
       `applications.${action}`,
       action === "list" ? "查找已安装应用和当前项目窗口" : "打开已安装应用窗口",
       action === "list" ? "read" : "write",
-      withoutAction(schema),
+      action === "launch"
+        ? withoutAction(
+            schema.extend({
+              state: applicationNavigationStateSchema.default({}),
+            }),
+          )
+        : withoutAction(schema),
       (params) => ({
         action: "applications",
         applications: { action, ...params },

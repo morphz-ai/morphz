@@ -165,6 +165,18 @@ const externalViewStateSchema = z
     view: z.string().max(100).optional(),
   })
   .strict();
+const terminalViewStateSchema = z
+  .object({ terminalId: locationId.nullable().optional() })
+  .strict();
+
+/** Discovery exposes the actual navigation fields rather than an opaque
+ * dictionary. Per-app validation below still rejects cross-domain state. */
+export const applicationNavigationStateSchema = z.union([
+  readerViewStateSchema,
+  builtinViewStateSchema,
+  terminalViewStateSchema,
+  externalViewStateSchema,
+]);
 
 /** Platform persists window navigation, never an application's own content.
  * External Apps can keep a small shell location, not drafts or documents.
@@ -173,7 +185,7 @@ export function parseApplicationViewState(appId: string, value: unknown) {
   const bounded = applicationStateSchema.parse(value);
   const schema =
     appId === "morphz.terminal"
-      ? z.object({ terminalId: locationId.nullable().optional() }).strict()
+      ? terminalViewStateSchema
       : appId === "morphz.script-studio"
         ? builtinViewStateSchema
         : appId === "morphz.reader"

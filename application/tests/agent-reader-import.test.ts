@@ -181,6 +181,33 @@ for (const backend of ["sqlite", "postgres"] as const) {
           route,
         );
         assert.equal(contents.sections.length, 2);
+        const navigationDescription = await h.call<{
+          operation: { parameters: unknown };
+        }>(
+          {
+            action: "operations",
+            operations: {
+              action: "describe",
+              operationId: "applications.launch",
+            },
+          },
+          route,
+        );
+        for (const field of [
+          "artifactId",
+          "revision",
+          "sectionId",
+          "location",
+          "sourceId",
+          "start",
+          "end",
+        ])
+          assert.ok(
+            JSON.stringify(navigationDescription.operation.parameters).includes(
+              `"${field}"`,
+            ),
+            `Navigation discovery must expose ${field}`,
+          );
         const opened = await h.call<{
           instance: {
             state: { artifactId: string; location: { sectionId: string } };
