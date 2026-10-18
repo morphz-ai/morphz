@@ -114,7 +114,9 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
     const action = schema.shape.action.value;
     add(
       `applications.${action}`,
-      action === "list" ? "查找已安装应用和当前项目窗口" : "打开已安装应用窗口",
+      action === "list"
+        ? "查找已安装应用和当前项目窗口"
+        : "打开或导航已安装应用窗口；阅读跳转用 state 的读物、版本与章节／位置，不是保存阅读偏好",
       action === "list" ? "read" : "write",
       action === "launch"
         ? withoutAction(
@@ -163,7 +165,8 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
     "mark-update": "修改已有标注",
     "mark-remove": "移除标注（可恢复）",
     "mark-restore": "恢复已移除标注",
-    "save-position": "按用户要求更新阅读位置与偏好",
+    "save-position":
+      "仅持久保存阅读进度与偏好，不跳转当前窗口；打开书籍或跳转章节／页面请用 applications.launch",
     ocr: "本机逐页 OCR、状态、取消与校对（模型安装须用户确认）",
   };
   for (const schema of readerToolSchema.options) {

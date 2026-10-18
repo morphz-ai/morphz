@@ -21,6 +21,7 @@ import {
 import { workInputFormats } from "./session-io.js";
 import { RuntimeInputSourceError } from "./runtime-input-evidence.js";
 import { PlatformStorageError } from "../../platform/src/store.js";
+import { ReaderStorageError } from "../../reader/src/store.js";
 
 const maxRequest = 4 * 1024 * 1024,
   maxResponse = 2 * 1024 * 1024;
@@ -224,7 +225,8 @@ export async function listenLocalHostTools(
             send({ protocol: 1, ok: false, code: error.code });
           else if (
             (error instanceof DomainError ||
-              error instanceof PlatformStorageError) &&
+              error instanceof PlatformStorageError ||
+              error instanceof ReaderStorageError) &&
             error.code !== "forbidden"
           )
             send({
@@ -244,7 +246,8 @@ export async function listenLocalHostTools(
               ok: false,
               code:
                 error instanceof DomainError ||
-                error instanceof PlatformStorageError
+                error instanceof PlatformStorageError ||
+                error instanceof ReaderStorageError
                   ? "forbidden"
                   : "unavailable",
             });

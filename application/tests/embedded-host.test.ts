@@ -26,6 +26,7 @@ import {
   listenLocalHostTools,
 } from "../packages/application/src/host-tools-ipc.js";
 import { localAccess } from "../packages/core/src/model.js";
+import { ReaderStorageError } from "../packages/reader/src/store.js";
 import { bindIdentityTestPlatform } from "./identity-platform-fixture.js";
 const require = createRequire(import.meta.url);
 
@@ -537,6 +538,44 @@ test("真实 Unix 工具回调写入应用域；认证、拆帧、持久幂等�
       1,
     );
     fixture.assertNoLegacyData();
+    const originalCall = tools.call.bind(tools);
+    try {
+      for (const code of [
+        "conflict",
+        "invalid",
+        "not_found",
+        "forbidden",
+      ] as const) {
+        tools.call = () => {
+          throw new ReaderStorageError(code, "阅读领域的明确拒绝");
+        };
+        const rejected = await exchange({
+          protocol: 1,
+          token: manifest.token,
+          request,
+        });
+        assert.deepEqual(
+          rejected,
+          code === "forbidden"
+            ? { protocol: 1, ok: false, code: "forbidden" }
+            : {
+                protocol: 1,
+                ok: true,
+                value: { ok: false, code, message: "阅读领域的明确拒绝" },
+              },
+          "A known Reader refusal is not an unavailable or unknown write result",
+        );
+      }
+      tools.call = () => {
+        throw new Error("private details must not escape IPC");
+      };
+      assert.deepEqual(
+        await exchange({ protocol: 1, token: manifest.token, request }),
+        { protocol: 1, ok: false, code: "unavailable" },
+      );
+    } finally {
+      tools.call = originalCall;
+    }
   } finally {
     await listener?.close();
     await fixture.close();
