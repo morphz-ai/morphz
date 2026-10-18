@@ -216,6 +216,86 @@ async function prepare(page: Page) {
   return { ...fixture, runtime, panel, queries, source, draft, writes, origin };
 }
 
+test("目标行的展开与查看紧邻，密度有上界而不是只检查按钮不越界", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  const target = f.runtime.activity.objectives[0]!;
+  target.title =
+    "TEST 完整目标保持两行摘要，查看与展开紧邻，不用大片空白挤走可读内容。".repeat(
+      4,
+    );
+  target.waitKinds = ["thread_group"];
+  await f.refresh();
+  const goal = f.panel.locator('[data-objective-id="TEST-related-goal"]');
+  const heading = goal.locator(".subject-objective-heading");
+  const view = goal.getByRole("button", { name: "查看目标", exact: true });
+  await expect(heading.locator("strong")).toHaveText(target.title);
+  for (const [width, zoom] of [
+    [1440, 1],
+    [760, 1],
+    [390, 1],
+    [760, 2],
+  ] as const) {
+    await page.setViewportSize({ width, height: 960 });
+    await page.evaluate(
+      (value) => (document.body.style.zoom = String(value)),
+      zoom,
+    );
+    const geometry = await goal.evaluate((element) => {
+      const scale =
+        Number.parseFloat(getComputedStyle(document.body).zoom) || 1;
+      const trigger = element.querySelector<HTMLElement>(
+        ".subject-objective-heading",
+      )!;
+      const arrow = trigger
+        .querySelector(":scope > svg:last-child")!
+        .getBoundingClientRect();
+      const action = element
+        .querySelector<HTMLElement>(".subject-objective-view")!
+        .getBoundingClientRect();
+      const row = element
+        .querySelector(".subject-objective-row")!
+        .getBoundingClientRect();
+      const text = trigger.querySelector("strong")!.getBoundingClientRect();
+      const metadata = trigger.querySelector("small")!.getBoundingClientRect();
+      const css = getComputedStyle(trigger);
+      return {
+        centerGap:
+          (action.left + action.right - arrow.left - arrow.right) / 2 / scale,
+        actionWidth: action.width / scale,
+        actionHeight: action.height / scale,
+        rowHeight: row.height / scale,
+        metadataGap: (metadata.top - text.bottom) / scale,
+        padding:
+          Number.parseFloat(css.paddingTop) +
+          Number.parseFloat(css.paddingBottom),
+        overflow: element.scrollWidth > element.clientWidth + 1,
+      };
+    });
+    expect(geometry.centerGap).toBeGreaterThan(0);
+    expect(geometry.centerGap).toBeLessThanOrEqual(26);
+    expect(geometry.actionWidth).toBeCloseTo(24, 0);
+    expect(geometry.actionHeight).toBeCloseTo(24, 0);
+    expect(geometry.padding).toBeLessThanOrEqual(8);
+    expect(geometry.metadataGap).toBeLessThanOrEqual(3);
+    expect(geometry.overflow).toBe(false);
+    if (width === 1440 && zoom === 1)
+      expect(geometry.rowHeight).toBeLessThanOrEqual(72);
+    await f.panel.screenshot({
+      path: info.outputPath(`objective-row-compact-${width}-${zoom}.png`),
+    });
+  }
+  await view.click();
+  await expect(
+    page.getByRole("dialog", { name: "目标", exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(view).toBeFocused();
+  await expect(await openInput(page)).toHaveValue(f.draft);
+  expect(f.writes).toEqual([]);
+});
+
 for (const colorScheme of ["light", "dark"] as const)
   test(`目标下直接看见四条并行执行及等待协调线程，分段详情独立且刷新不改展开 ${colorScheme}`, async ({
     page,
@@ -979,6 +1059,15 @@ test.describe("目标入口触控", () => {
     const f = await prepare(page);
     const goal = f.panel.locator('[data-objective-id="TEST-related-goal"]');
     const heading = goal.locator(".subject-objective-heading");
+    const view = goal.getByRole("button", { name: "查看目标", exact: true });
+    const hit = await view.boundingBox();
+    expect(hit!.width).toBeGreaterThanOrEqual(44);
+    expect(hit!.height).toBeGreaterThanOrEqual(44);
+    await view.tap();
+    await expect(
+      page.getByRole("dialog", { name: "目标", exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "关闭目标", exact: true }).tap();
     await heading.tap();
     const child = goal.locator(".subject-objective-detail > button");
     for (const button of [heading, child]) {

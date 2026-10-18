@@ -49,6 +49,7 @@ function ObjectiveHeading({
       <Tooltip label="查看目标">
         <button
           className="icon-button subject-objective-view"
+          data-size="icon-xs"
           aria-label="查看目标"
           onClick={onView}
         >

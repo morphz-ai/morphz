@@ -132,21 +132,24 @@
 .subject-objective-row {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
 }
-.subject-objective-row > .subject-objective-heading {
+.app .subject-objective-row > .subject-objective-heading {
   flex: 1;
   min-width: 0;
+  gap: 6px;
+  padding: 4px 2px 4px 4px;
+  border-radius: 6px;
+}
+.subject-objective-row .subject-objective-heading > span {
+  gap: 2px;
+}
+.subject-objective-heading > svg:last-child {
+  width: 14px;
+  height: 14px;
 }
 .app .subject-objective-view {
   flex: none;
-  width: 28px;
-  height: 32px;
-  padding: 6px;
-}
-.subject-objective-view svg {
-  width: 16px;
-  height: 16px;
 }
 .subject-objective-dialog {
   --ui-dialog-width: 680px;

@@ -11,3 +11,24 @@
   min-width: 32px;
   min-height: 32px;
 }
+/* Explicit dense actions, following shadcn/ui's icon-xs size role. This is
+   a shared native-control recipe, not a claim that shadcn is installed. */
+.app .icon-button[data-size="icon-xs"] {
+  --ui-control-size: 24px;
+  width: var(--ui-control-size);
+  height: var(--ui-control-size);
+  min-width: var(--ui-control-size);
+  min-height: var(--ui-control-size);
+  padding: 4px;
+  gap: 0;
+}
+.app .icon-button[data-size="icon-xs"] > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+@media (pointer: coarse) {
+  .app .icon-button[data-size="icon-xs"] {
+    --ui-control-size: 44px;
+  }
+}
