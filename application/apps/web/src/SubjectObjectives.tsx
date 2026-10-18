@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { Target, ChevronDown, ChevronRight } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { Target, ChevronDown, ChevronRight, Eye } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import {
@@ -13,6 +14,50 @@ import {
 } from "./execution-activity.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { PersistentDetails } from "./PersistentDetails.js";
+import { Tooltip } from "./ui/Tooltip.js";
+import { SubjectObjectiveDialog } from "./SubjectObjectiveDialog.js";
+
+function ObjectiveHeading({
+  title,
+  open,
+  status,
+  onToggle,
+  onView,
+}: {
+  title: string;
+  open: boolean;
+  status: ReactNode;
+  onToggle(): void;
+  onView(): void;
+}) {
+  return (
+    <div className="subject-objective-row">
+      <Tooltip label={title} className="subject-objective-preview">
+        <button
+          className="subject-objective-heading"
+          aria-expanded={open}
+          onClick={onToggle}
+        >
+          <Target aria-hidden="true" />
+          <span>
+            <strong>{title}</strong>
+            <small>{status}</small>
+          </span>
+          {open ? <ChevronDown /> : <ChevronRight />}
+        </button>
+      </Tooltip>
+      <Tooltip label="查看目标">
+        <button
+          className="icon-button subject-objective-view"
+          aria-label="查看目标"
+          onClick={onView}
+        >
+          <Eye />
+        </button>
+      </Tooltip>
+    </div>
+  );
+}
 
 export function SubjectObjectives({
   client,
@@ -24,6 +69,7 @@ export function SubjectObjectives({
   onSelect(scope: ExecutionReadScope): void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<string | null>(null);
   const runtime = client.boot!.runtime,
     state = client.boot!.workspace;
   const goals =
@@ -96,15 +142,13 @@ export function SubjectObjectives({
         className="subject-objective"
         data-objective-id={goal.id}
       >
-        <button
-          className="subject-objective-heading"
-          aria-expanded={open}
-          onClick={() => setExpanded(open ? null : goal.id)}
-        >
-          <Target aria-hidden="true" />
-          <span>
-            <strong>{goal.title}</strong>
-            <small>
+        <ObjectiveHeading
+          title={goal.title}
+          open={open}
+          onToggle={() => setExpanded(open ? null : goal.id)}
+          onView={() => setViewing(goal.id)}
+          status={
+            <>
               {fresh
                 ? goal.readiness === "waiting"
                   ? objectiveDetailStatus(
@@ -116,10 +160,9 @@ export function SubjectObjectives({
                 : "状态待核对"}{" "}
               · {threads.length} 个关联执行
               {running > 0 && ` · ${running} 条执行中`}
-            </small>
-          </span>
-          {open ? <ChevronDown /> : <ChevronRight />}
-        </button>
+            </>
+          }
+        />
         {open && (
           <div className="subject-objective-detail">
             <p role="status">
@@ -134,28 +177,33 @@ export function SubjectObjectives({
             {threads.map((thread) => {
               const status = executionActivityStatus(thread, !!fresh);
               return (
-                <button
+                <Tooltip
                   key={thread.id}
-                  className="subject-objective-execution"
-                  data-thread-id={thread.id}
-                  aria-label={`${thread.title} · ${status.label}`}
-                  onClick={() =>
-                    onSelect(executionActivityScope(thread, state))
-                  }
+                  label={thread.title}
+                  className="subject-objective-preview"
                 >
-                  <span
-                    className="execution-thread-state"
-                    data-status={status.kind}
-                    title={status.label}
+                  <button
+                    className="subject-objective-execution"
+                    data-thread-id={thread.id}
+                    aria-label={`${thread.title} · ${status.label}`}
+                    onClick={() =>
+                      onSelect(executionActivityScope(thread, state))
+                    }
                   >
-                    <ExecutionStatusIcon kind={status.kind} size={18} />
-                  </span>
-                  <span className="subject-objective-execution-copy">
-                    <span>{thread.title}</span>
-                    <small>{status.label}</small>
-                  </span>
-                  <ChevronRight />
-                </button>
+                    <span
+                      className="execution-thread-state"
+                      data-status={status.kind}
+                      title={status.label}
+                    >
+                      <ExecutionStatusIcon kind={status.kind} size={18} />
+                    </span>
+                    <span className="subject-objective-execution-copy">
+                      <span>{thread.title}</span>
+                      <small>{status.label}</small>
+                    </span>
+                    <ChevronRight />
+                  </button>
+                </Tooltip>
               );
             })}
             {!threads.length && <p className="muted">当前概览中没有关联执行</p>}
@@ -204,6 +252,25 @@ export function SubjectObjectives({
           <section aria-label="已结束目标">{history.map(renderGoal)}</section>
         </PersistentDetails>
       )}
+      {viewing &&
+        (() => {
+          const goal = goals.find((goal) => goal.id === viewing);
+          const host =
+            document.querySelector(".primary-panel") ??
+            document.querySelector(".workspace");
+          return goal && host
+            ? createPortal(
+                <SubjectObjectiveDialog
+                  key={`${client.boot!.centerId}:${client.boot!.principalId}:${goal.id}`}
+                  goal={goal}
+                  client={client}
+                  fresh={!!fresh}
+                  onClose={() => setViewing(null)}
+                />,
+                host,
+              )
+            : null;
+        })()}
     </>
   );
 }

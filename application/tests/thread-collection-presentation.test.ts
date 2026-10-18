@@ -251,8 +251,8 @@ test("input complete phases/control and mixed priority stay running then unknown
   const phases = {
     running: ["running", "执行中"],
     runnable: ["waiting", "待执行"],
-    waiting: ["waiting", "等待条件（原因待核对）"],
-    idle: ["waiting", "等待条件（原因待核对）"],
+    waiting: ["waiting", "等待中（未提供具体原因）"],
+    idle: ["waiting", "等待中（未提供具体原因）"],
     future: ["unknown", "状态待核对"],
   } as const;
   for (const [phase, [kind, label]] of Object.entries(phases))
@@ -311,7 +311,7 @@ test("input complete phases/control and mixed priority stay running then unknown
         thread({ phase: "runnable", id: "second" }),
       ]),
     ).workStatus?.label,
-    "等待条件（原因待核对）",
+    "等待中（未提供具体原因）",
   );
 });
 

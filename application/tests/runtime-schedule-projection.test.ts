@@ -272,6 +272,7 @@ test("Objective创建事件的synthetic来源由持久parent Thread恢复，未�
               source_event_id: "objective-created-event",
               stated_objective: "TEST 提醒目标",
               status: "active",
+              revision: 1,
               status_reason: null,
               parent_objective_id: null,
               updated_at: stamp,

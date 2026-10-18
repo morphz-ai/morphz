@@ -129,6 +129,68 @@
   color: var(--muted);
   font-size: 11px;
 }
+.subject-objective-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.subject-objective-row > .subject-objective-heading {
+  flex: 1;
+  min-width: 0;
+}
+.app .subject-objective-view {
+  flex: none;
+  width: 28px;
+  height: 32px;
+  padding: 6px;
+}
+.subject-objective-view svg {
+  width: 16px;
+  height: 16px;
+}
+.subject-objective-dialog {
+  --ui-dialog-width: 680px;
+}
+.subject-objective-dialog-text {
+  max-height: min(52vh, 420px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-size: 14px;
+  line-height: 1.75;
+}
+.subject-objective-dialog > .muted {
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+.subject-objective-dialog > footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+.app .subject-objective-dialog > footer > .secondary-action.danger {
+  margin-left: auto;
+  color: var(--danger, light-dark(#a72a32, #f8a9ad));
+}
+.subject-objective-delete-warning {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.app .subject-objective-preview {
+  width: 440px;
+  max-height: 360px;
+  padding: 10px 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  white-space: pre-wrap;
+  user-select: text;
+}
+.subject-objective-heading small,
+.subject-objective-execution-copy > small {
+  overflow-wrap: anywhere;
+}
 .subject-record-icon {
   display: grid;
   place-items: center;

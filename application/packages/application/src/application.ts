@@ -3123,6 +3123,14 @@ export class ApplicationSession {
     this.active();
     return result;
   }
+  async objectiveControl(raw: unknown) {
+    this.active();
+    if (!this.options.platformWork)
+      throw new ApplicationUnavailable("目标控制尚未接入 Platform。");
+    return this.runtime().platformObjectiveControl(raw, this.access, () =>
+      this.active(),
+    );
+  }
   async executionControl(raw: unknown) {
     const runtime = this.runtime(),
       control = executionControlSchema.parse(raw);
@@ -4100,6 +4108,8 @@ export function invokeApplication(
       return session.executionResult(params);
     case "execution.control":
       return session.executionControl(params);
+    case "objective.control":
+      return session.objectiveControl(params);
     case "task.snapshot":
       return session.taskSnapshot(params);
     case "task.run-history":

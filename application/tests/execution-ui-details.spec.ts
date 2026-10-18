@@ -1035,7 +1035,7 @@ test("根活动仅实际运行时有动效，等待、失败、结束及断线�
   await f.panel.locator('[data-thread-id="TEST-ui-thread"]').click();
   const status = f.panel.locator(".execution-origin-status");
   for (const [phase, lifecycle, kind, label] of [
-    ["waiting", "open", "waiting", "等待条件（原因待核对）"],
+    ["waiting", "open", "waiting", "等待中（未提供具体原因）"],
     ["idle", "completed", "ended", "已结束"],
     ["idle", "failed", "failed", "执行失败"],
     ["idle", "cancelled", "cancelled", "已取消"],

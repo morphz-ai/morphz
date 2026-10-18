@@ -60,6 +60,9 @@ export const activitySchema = z.object({
         sessionId: z.string(),
         title: z.string(),
         status: z.string(),
+        /** Missing control metadata cannot authorize an action. */
+        revision: z.number().int().positive().optional(),
+        controlAllowed: z.boolean().optional(),
         statusReason: z.string().nullable(),
         readiness: z.string(),
         waitKinds: z.array(z.string()).optional(),
@@ -88,6 +91,8 @@ export const activitySchema = z.object({
       annotationsTruncated: z.boolean().optional(),
       phase: z.string(),
       waitKinds: z.array(z.string()).optional(),
+      /** Exact queued Schedule time, not a prediction or a parent goal's wait. */
+      waitUntil: z.string().optional(),
       lifecycle: z.string(),
       controlState: z.string().optional(),
       createdAt: z.string().optional(),

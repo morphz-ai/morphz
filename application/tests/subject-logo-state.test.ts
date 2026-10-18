@@ -312,6 +312,8 @@ test("单个Objective不能把整个主体称暂停或正在执行，未知类�
       sessionId: "logo-session",
       title: "TEST 目标样本",
       status,
+      revision: 1,
+      controlAllowed: true,
       statusReason: null,
       readiness: "waiting",
       parentId: null,

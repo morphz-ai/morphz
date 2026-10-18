@@ -40,7 +40,7 @@ export function executionActivitySummary(
 /** Lifecycle is authoritative. A completed Thread is not proof that its task succeeded. */
 export function executionActivityStatus(
   thread: Pick<ActivityThread, "lifecycle" | "phase" | "controlState"> &
-    Partial<Pick<ActivityThread, "waitKinds">>,
+    Partial<Pick<ActivityThread, "waitKinds" | "waitUntil">>,
   available: boolean,
 ): ActivityStatus {
   if (thread.lifecycle === "failed")
@@ -61,7 +61,10 @@ export function executionActivityStatus(
     return { kind: "paused", label: "已暂停" };
   if (thread.phase === "runnable") return { kind: "waiting", label: "待执行" };
   if (thread.phase === "waiting" || thread.phase === "idle")
-    return { kind: "waiting", label: executionWaitLabel(thread.waitKinds) };
+    return {
+      kind: "waiting",
+      label: executionWaitLabel(thread.waitKinds, thread.waitUntil),
+    };
   return { kind: "unknown", label: "状态待核对" };
 }
 

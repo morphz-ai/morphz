@@ -215,6 +215,7 @@ export const applicationMethods = [
   "terminal.open",
   "execution.result",
   "execution.control",
+  "objective.control",
   "task.snapshot",
   "task.run-history",
   "task.run-status",

@@ -87,6 +87,13 @@ export function useModal(
     // chrome (and leave activeElement on body). Keep this task's keyboard loop
     // explicit, including compact headers/footers whose DOM order has changed.
     const keepFocus = (event: KeyboardEvent) => {
+      // A cancel handler may synchronously unmount the dialog before the
+      // window shortcut sees this key. Escape still belongs to this modal,
+      // never to the inspector/composer underneath it. Keep native cancel.
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        return;
+      }
       if (event.key !== "Tab" || event.defaultPrevented) return;
       const controls = [
         ...element.querySelectorAll<HTMLElement>(

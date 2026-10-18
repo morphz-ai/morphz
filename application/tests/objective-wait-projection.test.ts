@@ -69,7 +69,7 @@ test("Human input, approval, tasks, timer and unknown are distinct; terminal/run
       text,
     );
   }
-  assert.equal(executionWaitLabel(), "等待条件（原因待核对）");
+  assert.equal(executionWaitLabel(), "等待中（未提供具体原因）");
   assert.equal(executionWaitLabel(["future"]), "等待其他条件");
   assert.equal(
     executionWaitLabel(["user_input", "timer"]),

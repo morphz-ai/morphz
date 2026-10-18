@@ -30,7 +30,7 @@ type Internals = {
       request: any;
     }>;
   };
-  request(path: string): Promise<unknown>;
+  request(path: string, method?: string, body?: unknown): Promise<unknown>;
   refreshActivity(): Promise<void>;
 };
 const now = "2026-10-01T12:00:00.000Z";
@@ -139,6 +139,7 @@ async function fixture() {
       source_event_id: delivery.rootId,
       stated_objective: "真实持久目标",
       status: "active",
+      revision: 1,
       status_reason: null,
       parent_objective_id: null,
       updated_at: now,
@@ -312,6 +313,224 @@ test("idle Objective primary retains supplement via exact original input and exp
     });
     assert.deepEqual(activity.threads[0]!.waitKinds, ["user_input"]);
     assert.deepEqual(activity.objectives![0]!.waitKinds, ["user_input"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("线程自己的定时和审批原因透传到活动，不被父目标的等待覆盖或触发额外读取", async () => {
+  const { f, internal, delivery, thread, bounds, objective, contextId } =
+    await fixture();
+  try {
+    const timer = {
+      ...thread("timer"),
+      phase: "waiting",
+      schedules: [
+        {
+          id: "own-schedule",
+          thread_id: "timer",
+          source_turn_id: delivery.rootId,
+          status: "queued",
+          not_before: "2026-10-23T01:00:00Z",
+        },
+      ],
+    };
+    const approval = {
+      ...thread("approval"),
+      phase: "waiting",
+      activations: [
+        {
+          jobs: [
+            {
+              job: {
+                thread_id: "approval",
+                session_id: delivery.sessionId,
+                context_id: contextId,
+                status: "waiting_approval",
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const waiting = {
+      ...objective,
+      objective: { ...objective.objective, generation: 1 },
+      readiness: { state: "waiting", dependency_ids: ["human-edge"] },
+      dependencies: [
+        {
+          id: "human-edge",
+          owner_kind: "objective",
+          owner_id: objective.objective.id,
+          owner_generation: 1,
+          required: true,
+          status: "pending",
+          dependency_kind: "user_input",
+        },
+      ],
+    };
+    const calls: string[] = [];
+    internal.request = async (path) => {
+      calls.push(path);
+      return {
+        detail_bounds: bounds,
+        threads: [timer, approval],
+        objectives: [waiting],
+      };
+    };
+    await internal.refreshActivity();
+    const activity = f.runtime.platformNavigationSnapshot(localAccess, [
+      f.projectId,
+    ]).runtime.activity!;
+    assert.equal(calls.length, 2);
+    assert.deepEqual(activity.threads[0]!.waitKinds, ["timer"]);
+    assert.equal(activity.threads[0]!.waitUntil, "2026-10-23T01:00:00Z");
+    assert.deepEqual(activity.threads[1]!.waitKinds, ["permission"]);
+    assert.equal(activity.threads[1]!.waitUntil, undefined);
+    assert.deepEqual(activity.objectives![0]!.waitKinds, ["user_input"]);
+  } finally {
+    await f.close();
+  }
+});
+
+test("目标控制共用 Runtime 的暂停恢复删除协议，校验真实来源和修订号，不创建线程或输入", async () => {
+  const { f, internal, delivery, bounds, objective } = await fixture();
+  const mutations: { path: string; method: string; body: any }[] = [];
+  const request = (
+    action: "pause" | "resume" | "delete",
+    revision = objective.objective.revision,
+  ) => ({
+    objectiveId: objective.objective.id,
+    projectId: delivery.platformSource.projectId,
+    conversationId: delivery.platformSource.conversationId,
+    revision,
+    action,
+  });
+  try {
+    internal.request = async (path, method = "GET", raw) => {
+      if (method === "GET")
+        return { detail_bounds: bounds, threads: [], objectives: [objective] };
+      const body = raw as { expected_revision: number };
+      mutations.push({ path, method, body });
+      assert.equal(body.expected_revision, objective.objective.revision);
+      objective.objective.revision++;
+      if (method === "DELETE") {
+        objective.objective.status = "cancelled";
+        return {
+          deleted: true,
+          objective_id: objective.objective.id,
+          terminal_status: "cancelled",
+        };
+      }
+      const paused = path.endsWith("/pause");
+      objective.objective.status = paused ? "paused" : "active";
+      return {
+        [paused ? "paused" : "resumed"]: true,
+        objective: { ...objective.objective },
+      };
+    };
+    await internal.refreshActivity();
+    const read = () =>
+      f.runtime.platformNavigationSnapshot(localAccess, [f.projectId]).runtime
+        .activity!.objectives![0]!;
+    assert.equal(read().controlAllowed, true);
+    assert.equal(read().revision, 1);
+    await f.session().objectiveControl(request("pause"));
+    assert.equal(read().status, "paused");
+    await assert.rejects(
+      f.session().objectiveControl(request("resume", 1)),
+      /目标已发生变化/,
+    );
+    assert.equal(mutations.length, 1);
+    await f.session().objectiveControl(request("resume"));
+    assert.equal(read().status, "active");
+    await assert.rejects(
+      f
+        .session()
+        .objectiveControl({ ...request("pause"), objectiveId: "foreign-goal" }),
+      /不属于/,
+    );
+    await assert.rejects(
+      f
+        .session({ principalId: "foreign-human", actantId: "foreign" })
+        .objectiveControl(request("pause")),
+    );
+    assert.equal(mutations.length, 2);
+    const probe = createPortProbe();
+    await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+    const port = (probe.address() as { port: number }).port;
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    const server = createAppServer(f.store, {
+      port,
+      webRoot: "/nonexistent",
+      runtime: f.runtime,
+      platformWork: f.domains.work,
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(port, "127.0.0.1", resolve),
+    );
+    try {
+      const remote = new HttpApplicationClient(`http://127.0.0.1:${port}`);
+      const boot = (await remote.call("platform.bootstrap")) as {
+        csrfToken: string;
+      };
+      await remote.call("objective.control", request("delete"), {
+        identityGeneration: boot.csrfToken,
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+    assert.equal(read().status, "cancelled");
+    assert.deepEqual(
+      mutations.map((value) => [
+        value.path,
+        value.method,
+        value.body.expected_revision,
+      ]),
+      [
+        ["/api/objectives/objective-1/pause", "POST", 1],
+        ["/api/objectives/objective-1/resume", "POST", 2],
+        ["/api/objectives/objective-1", "DELETE", 3],
+      ],
+    );
+    assert.equal(internal.state.deliveries.length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("目标操作在异步读取期间撤权时拒绝，不能把可读误当可控制", async () => {
+  const { f, internal, bounds, objective } = await fixture();
+  const source = internal as unknown as {
+    authorizePlatformRead: (...args: any[]) => Promise<any>;
+  };
+  const authorize = source.authorizePlatformRead;
+  let revoked = false,
+    writes = 0;
+  try {
+    source.authorizePlatformRead = async (...args) => {
+      if (revoked) throw new Error("TEST 已撤销权限");
+      return authorize(...args);
+    };
+    internal.request = async (_path, method = "GET") => {
+      if (method !== "GET") writes++;
+      revoked = true;
+      return { detail_bounds: bounds, threads: [], objectives: [objective] };
+    };
+    await assert.rejects(
+      f.session().objectiveControl({
+        objectiveId: objective.objective.id,
+        projectId: f.projectId,
+        conversationId:
+          internal.state.deliveries[0]!.platformSource.conversationId,
+        action: "pause",
+        revision: 1,
+      }),
+      /撤销权限/,
+    );
+    assert.equal(writes, 0);
   } finally {
     await f.close();
   }

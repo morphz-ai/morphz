@@ -14,9 +14,11 @@ import {
  * name. One native target; no wrapper that changes layout or hit testing. */
 export function Tooltip({
   label,
+  className,
   children,
 }: {
   label: string;
+  className?: string;
   children: ReactElement<HTMLAttributes<HTMLElement>>;
 }) {
   const id = useId();
@@ -56,6 +58,7 @@ export function Tooltip({
     const width = innerWidth / zoom;
     const height = innerHeight / zoom;
     element.style.maxWidth = `${Math.max(1, width - 16)}px`;
+    element.style.maxHeight = `${Math.max(1, Math.min(Number.parseFloat(getComputedStyle(element).maxHeight) || Infinity, height - 16))}px`;
     const left =
       (rect.left + rect.right) / (2 * zoom) - element.offsetWidth / 2;
     const above = rect.top / zoom - element.offsetHeight - 6;
@@ -68,17 +71,27 @@ export function Tooltip({
       event.stopPropagation();
       close();
     };
+    const outsideScroll = (event: Event) => {
+      // Full-text hints can scroll without dismissing themselves. Scrolling
+      // the underlying page still removes the hint from its old anchor.
+      if (event.target instanceof Node && element.contains(event.target))
+        return;
+      close();
+    };
     document.addEventListener("keydown", escape, true);
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("wheel", close, { passive: true, capture: true });
+    window.addEventListener("scroll", outsideScroll, true);
+    window.addEventListener("wheel", outsideScroll, {
+      passive: true,
+      capture: true,
+    });
     window.addEventListener("resize", close);
     return () => {
       document.removeEventListener("keydown", escape, true);
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("wheel", close, true);
+      window.removeEventListener("scroll", outsideScroll, true);
+      window.removeEventListener("wheel", outsideScroll, true);
       window.removeEventListener("resize", close);
     };
-  }, [anchor, label, close]);
+  }, [anchor, label, className, close]);
 
   function leave() {
     clearTimers();
@@ -133,7 +146,7 @@ export function Tooltip({
           id={id}
           role="tooltip"
           popover="manual"
-          className="ui-tooltip"
+          className={["ui-tooltip", className].filter(Boolean).join(" ")}
           onPointerEnter={clearTimers}
           onPointerLeave={leave}
           onClick={(event) => {

@@ -2134,6 +2134,18 @@ export function createAppServer(
           );
           return;
         }
+        if (url.pathname === "/api/objectives/control") {
+          if (req.headers["content-type"] !== "application/json") {
+            json(res, 415, { message: "需要 JSON 请求。" });
+            return;
+          }
+          json(
+            res,
+            200,
+            await business.objectiveControl(await jsonBody(req, 16384)),
+          );
+          return;
+        }
         if (url.pathname === "/api/executions/control") {
           if (req.headers["content-type"] !== "application/json") {
             json(res, 415, { message: "需要 JSON 请求。" });

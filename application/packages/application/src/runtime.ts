@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { HostFailureReporter } from "./host-diagnostics.js";
 import { objectiveWaitKinds } from "./objective-wait-projection.js";
+import { threadWaitProjection } from "./thread-wait-projection.js";
+import { objectiveControlSchema } from "../../core/src/objective-control.js";
 import {
   terminalCatalogSchema,
   terminalReceiptSchema,
@@ -2853,6 +2855,112 @@ export class RuntimeBridge {
     };
   }
 
+  async platformObjectiveControl(
+    raw: unknown,
+    access: AccessContext,
+    active: () => void,
+  ) {
+    const control = objectiveControlSchema.parse(raw);
+    const authorize = this.authorizePlatformRead;
+    if (!authorize) throw new DomainError("forbidden", "目标控制尚未接入。");
+    const scope = {
+      projectId: control.projectId,
+      conversationId: control.conversationId,
+    };
+    active();
+    await authorize(scope, access);
+    await this.refreshActivity();
+    const verify = async () => {
+      active();
+      const grant = await authorize(scope, access);
+      active();
+      const goal =
+        this.state.activity?.available &&
+        this.state.activity.objectives?.find(
+          (goal) =>
+            goal.id === control.objectiveId &&
+            goal.projectId === scope.projectId &&
+            goal.conversationId === scope.conversationId,
+        );
+      const source = goal ? this.activitySources.get(goal.inputId) : undefined;
+      if (
+        !goal ||
+        !source ||
+        source.author.principalId !== access.principalId ||
+        !this.platformSourceReadable(source, scope, access, grant) ||
+        source.projectId !== goal.projectId ||
+        source.conversationId !== goal.conversationId ||
+        this.objectSessionId(
+          source.projectId,
+          source.conversationId,
+          source.sharedDefault,
+        ) !== goal.sessionId
+      )
+        throw new DomainError(
+          "forbidden",
+          "目标不属于当前有权控制的工作，请刷新后查看。",
+        );
+      if (goal.revision !== control.revision)
+        throw new DomainError(
+          "conflict",
+          "目标已发生变化，请核对最新状态后再操作。",
+        );
+      if (
+        (control.action === "pause" && goal.status !== "active") ||
+        (control.action === "resume" &&
+          !["paused", "blocked"].includes(goal.status))
+      )
+        throw new DomainError("conflict", "目标状态已变化，请核对后再操作。");
+      return goal;
+    };
+    await verify();
+    try {
+      const path = `/api/objectives/${encodeURIComponent(control.objectiveId)}`;
+      const response = await this.request(
+        control.action === "delete" ? path : `${path}/${control.action}`,
+        control.action === "delete" ? "DELETE" : "POST",
+        {
+          expected_revision: control.revision,
+          reason: `用户通过 Desktop ${{ pause: "暂停", resume: "恢复", delete: "删除" }[control.action]}目标`,
+        },
+        access,
+        undefined,
+      );
+      if (control.action === "delete")
+        z.object({
+          deleted: z.literal(true),
+          objective_id: z.literal(control.objectiveId),
+          terminal_status: z.literal("cancelled"),
+        }).parse(response);
+      else
+        z.object({
+          [control.action === "pause" ? "paused" : "resumed"]: z.literal(true),
+          objective: z.object({
+            id: z.literal(control.objectiveId),
+            status: z.literal(control.action === "pause" ? "paused" : "active"),
+          }),
+        }).parse(response);
+      active();
+      return { objectiveId: control.objectiveId, action: control.action };
+    } catch (error) {
+      if (error instanceof UpstreamError)
+        throw new DomainError(
+          error.status === 409 || error.status === 404 ? "conflict" : "invalid",
+          error.status === 409 || error.status === 404
+            ? "目标已发生变化，请核对最新状态后再操作。"
+            : "目标操作未确认，请核对最新状态后再试。",
+        );
+      if (error instanceof DomainError) throw error;
+      throw new DomainError(
+        "invalid",
+        "目标操作回执尚未确认，请核对最新状态。",
+      );
+    } finally {
+      await this.refreshActivity();
+      this.publishWorkspaceChange();
+    }
+  }
+
   async platformExecutionControls(
     scope: ExecutionScope,
     access: AccessContext,
@@ -4713,6 +4821,7 @@ export class RuntimeBridge {
                 objectives: this.platformActivityObjectives(
                   readableProjects,
                   visibleInputs,
+                  access,
                 ),
                 schedules: this.platformActivitySchedules(
                   readableProjects,
@@ -4862,6 +4971,7 @@ export class RuntimeBridge {
   private platformActivityObjectives(
     projects: ReadonlySet<string>,
     inputs: ReadonlySet<string>,
+    access: AccessContext,
   ) {
     const threads = new Set(
       (this.state.activity?.threads ?? [])
@@ -4881,6 +4991,9 @@ export class RuntimeBridge {
       )
       .map((objective) => ({
         ...objective,
+        controlAllowed:
+          this.activitySources.get(objective.inputId)?.author.principalId ===
+          access.principalId,
         threadIds: objective.threadIds.filter((id) => threads.has(id)),
       }));
   }
@@ -5004,6 +5117,7 @@ export class RuntimeBridge {
                 objectives: this.platformActivityObjectives(
                   readable,
                   allowedInputIds,
+                  access,
                 ),
                 schedules: this.platformActivitySchedules(
                   readable,
@@ -5299,6 +5413,7 @@ export class RuntimeBridge {
                 source_event_id: z.string(),
                 stated_objective: z.string(),
                 status: z.string(),
+                revision: z.number().int().positive(),
                 generation: z.number().int().positive().optional(),
                 status_reason: z.string().nullable(),
                 parent_objective_id: z.string().nullable(),
@@ -5314,6 +5429,22 @@ export class RuntimeBridge {
             intent: z.string().nullable().optional(),
             phase: z.string(),
             schedules: z.array(scheduleLink).optional(),
+            activations: z
+              .array(
+                z.object({
+                  jobs: z.array(
+                    z.object({
+                      job: z.object({
+                        thread_id: z.string(),
+                        session_id: z.string(),
+                        context_id: z.string(),
+                        status: z.string(),
+                      }),
+                    }),
+                  ),
+                }),
+              )
+              .optional(),
             outcome: z
               .object({
                 terminal_kind: z.string(),
@@ -5601,6 +5732,7 @@ export class RuntimeBridge {
             title: threadTitle,
             ...(activityAnnotationFields(value.response_annotations, t) ?? {}),
             phase: value.phase,
+            ...threadWaitProjection(value),
             lifecycle: t.lifecycle,
             controlState: t.control_state,
             createdAt: t.created_at,
@@ -5662,7 +5794,8 @@ export class RuntimeBridge {
               primaryObjectives.get(thread.id)?.generation ===
                 objective.generation &&
               thread.sessionId === objective.coordinator_session_id &&
-              thread.contextId === contextId
+              thread.contextId === contextId &&
+              !thread.waitKinds?.length
             )
               thread.waitKinds = waitKinds;
           activity.objectives!.push({
@@ -5674,6 +5807,8 @@ export class RuntimeBridge {
             sessionId: objective.coordinator_session_id,
             title: objective.stated_objective,
             status: objective.status,
+            revision: objective.revision,
+            controlAllowed: false,
             statusReason: objective.status_reason,
             readiness: value.readiness.state,
             ...(waitKinds === undefined ? {} : { waitKinds }),

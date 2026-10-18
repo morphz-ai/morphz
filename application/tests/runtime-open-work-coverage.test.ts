@@ -111,6 +111,7 @@ async function fixture() {
       source_event_id: rootId,
       stated_objective: `TEST ${id}`,
       status,
+      revision: 1,
       status_reason: null,
       parent_objective_id: null,
       updated_at: now,
@@ -296,7 +297,7 @@ test("先核验开放线程和目标来源，200条历史不抢占原16次来源
   }
 });
 
-test("缺当前目标、缺或截断当前bounds、开放来源失效与预算耗尽都不能证明完整", async () => {
+test("当前覆盖取真实inventory；缺目标或bounds不能证明完整，来源关联缺失不否定物理覆盖", async () => {
   const { f, internal, thread, objective, read } = await fixture();
   try {
     const cases = [
@@ -335,7 +336,8 @@ test("缺当前目标、缺或截断当前bounds、开放来源失效与预算�
         ),
       },
     ];
-    for (const active of cases) {
+    const expected = [false, false, false, false, false, true, false, true];
+    for (const [index, active] of cases.entries()) {
       let roots = 0;
       internal.request = async (path) => {
         if (path.includes("/events/")) {
@@ -348,7 +350,7 @@ test("缺当前目标、缺或截断当前bounds、开放来源失效与预算�
       };
       await internal.refreshActivity();
       assert.equal(read().available, true);
-      assert.equal(read().openWorkComplete, false);
+      assert.equal(read().openWorkComplete, expected[index]);
       assert.ok(roots <= 16);
     }
     internal.request = async () => {
@@ -458,7 +460,9 @@ test("scheduled root不是Event时使用Runtime确认的原输入，保留运行
             objectives: [],
           };
     await internal.refreshActivity();
-    assert.equal(read().openWorkComplete, false);
+    // The complete Runtime inventory still covers these physical Threads;
+    // association failure does not establish project/read ownership.
+    assert.equal(read().openWorkComplete, true);
     assert.deepEqual(read().threads, []);
   } finally {
     await f.close();
@@ -545,7 +549,7 @@ test("目标协调线程及三个并行分段root均不必是Event，授权投�
       });
       await internal.refreshActivity();
       assert.deepEqual(read().threads, []);
-      assert.equal(read().openWorkComplete, false);
+      assert.equal(read().openWorkComplete, true);
     }
   } finally {
     await f.close();
@@ -788,7 +792,7 @@ test("同一运行root的冲突来源与A→B→A持久来源环均有界拒绝"
           : { detail_bounds: bounds, threads: [], objectives: [] };
       };
       await internal.refreshActivity();
-      assert.equal(read().openWorkComplete, false);
+      assert.equal(read().openWorkComplete, true);
       assert.deepEqual(read().threads, []);
       assert.equal(schedulerReads, 2);
       assert.equal(eventReads, 0);

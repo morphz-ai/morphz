@@ -848,6 +848,10 @@ export class HttpApplicationClient {
         path = "/api/executions/control";
         post(params);
         break;
+      case "objective.control":
+        path = "/api/objectives/control";
+        post(params);
+        break;
       case "task.snapshot":
         path = `/api/tasks/${encodeURIComponent(String(params))}/runtime`;
         break;
