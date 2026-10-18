@@ -45,3 +45,36 @@
 .app .secondary-action .creation-icon {
   color: inherit;
 }
+
+/* Quiet secondary actions and deliberate destructive confirmation share the
+   existing control metrics; their hierarchy comes from the surface, not size. */
+.app button.secondary-action.danger,
+.app .create-dialog button.secondary-action.danger {
+  color: var(--danger);
+}
+.app button.secondary-action[data-variant="ghost"],
+.app button.secondary-action[data-variant="ghost"]:hover:not(:disabled),
+.app .create-dialog button.secondary-action[data-variant="ghost"],
+.app
+  .create-dialog
+  button.secondary-action[data-variant="ghost"]:hover:not(:disabled) {
+  border-color: transparent;
+  background: transparent;
+}
+.app button.secondary-action[data-variant="ghost"]:hover:not(:disabled),
+.app
+  .create-dialog
+  button.secondary-action[data-variant="ghost"]:hover:not(:disabled) {
+  background: var(--hover);
+}
+.app button.primary.danger {
+  background: var(--danger);
+  color: var(--on-danger);
+  box-shadow: none;
+}
+.app button.primary.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger), var(--ink) 10%);
+}
+.app button.primary.danger:active:not(:disabled) {
+  background: color-mix(in srgb, var(--danger), var(--ink) 18%);
+}

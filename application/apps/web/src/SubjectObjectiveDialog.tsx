@@ -22,9 +22,12 @@ export function SubjectObjectiveDialog({
 }) {
   const dialog = useRef<HTMLDialogElement>(null),
     cancel = useRef<HTMLButtonElement>(null),
+    deleteAction = useRef<HTMLButtonElement>(null),
+    wasConfirming = useRef(false),
     pending = useRef(false),
     alive = useRef(true);
-  const titleId = useId();
+  const titleId = useId(),
+    warningId = useId();
   const [confirmation, setConfirmation] = useState<Goal | null>(null);
   const [busy, setBusy] = useState<ObjectiveControl["action"] | "">("");
   const [error, setError] = useState("");
@@ -37,6 +40,8 @@ export function SubjectObjectiveDialog({
   }, []);
   useEffect(() => {
     if (confirmation) cancel.current?.focus();
+    else if (wasConfirming.current) deleteAction.current?.focus();
+    wasConfirming.current = !!confirmation;
   }, [confirmation]);
   async function control(action: ObjectiveControl["action"], selected = goal) {
     if (
@@ -92,6 +97,8 @@ export function SubjectObjectiveDialog({
       ref={dialog}
       className="create-dialog subject-objective-dialog"
       aria-labelledby={titleId}
+      aria-describedby={confirmation ? warningId : undefined}
+      data-confirmation={!!confirmation}
       onCancel={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -99,7 +106,18 @@ export function SubjectObjectiveDialog({
       }}
     >
       <header>
-        <h2 id={titleId}>{confirmation ? "删除这个目标？" : "目标"}</h2>
+        <div className="subject-objective-dialog-heading">
+          <h2 id={titleId}>{confirmation ? "删除这个目标？" : "目标"}</h2>
+          <p className="muted" role="status">
+            {fresh
+              ? objectiveDetailStatus(
+                  goal.status,
+                  goal.readiness,
+                  goal.waitKinds,
+                )
+              : "目标状态暂时无法读取"}
+          </p>
+        </div>
         <button
           className="icon-button"
           aria-label="关闭目标"
@@ -109,11 +127,11 @@ export function SubjectObjectiveDialog({
           <X />
         </button>
       </header>
-      <p className="muted" role="status">
-        {fresh
-          ? objectiveDetailStatus(goal.status, goal.readiness, goal.waitKinds)
-          : "目标状态暂时无法读取"}
-      </p>
+      {confirmation && (
+        <p id={warningId} className="subject-objective-delete-warning">
+          删除会停止目标的自动推进，保留已有内容和执行记录；已发生的操作不会撤回。
+        </p>
+      )}
       <div
         className="subject-objective-dialog-text"
         role="region"
@@ -122,76 +140,78 @@ export function SubjectObjectiveDialog({
       >
         {displayed.title}
       </div>
-      {confirmation && (
-        <p className="subject-objective-delete-warning">
-          删除会停止目标的自动推进，保留已有内容和执行记录；已发生的操作不会撤回。
-        </p>
-      )}
       {error && (
         <p className="form-error" role="alert">
           {error}
         </p>
       )}
-      <footer>
-        {confirmation ? (
-          <>
-            <button
-              ref={cancel}
-              className="secondary-action"
-              disabled={!!busy}
-              onClick={() => {
-                setConfirmation(null);
-                setError("");
-              }}
-            >
-              保留目标
-            </button>
-            <button
-              className="secondary-action danger"
-              disabled={disabled}
-              onClick={() => void control("delete", confirmation)}
-            >
-              {busy === "delete" ? "删除中…" : "确认删除"}
-            </button>
-          </>
-        ) : (
-          <>
-            {goal.status === "active" && (
+      {(confirmation || goal.status !== "cancelled") && (
+        <footer
+          role="group"
+          aria-label={confirmation ? "删除目标确认" : "目标操作"}
+        >
+          {confirmation ? (
+            <>
               <button
+                ref={cancel}
                 className="secondary-action"
-                disabled={disabled}
-                onClick={() => void control("pause")}
-              >
-                <Pause />
-                {busy === "pause" ? "暂停中…" : "暂停"}
-              </button>
-            )}
-            {["paused", "blocked"].includes(goal.status) && (
-              <button
-                className="secondary-action"
-                disabled={disabled}
-                onClick={() => void control("resume")}
-              >
-                <Play />
-                {busy === "resume" ? "恢复中…" : "恢复"}
-              </button>
-            )}
-            {goal.status !== "cancelled" && (
-              <button
-                className="secondary-action danger"
-                disabled={disabled}
+                disabled={!!busy}
                 onClick={() => {
-                  setConfirmation({ ...goal });
+                  setConfirmation(null);
                   setError("");
                 }}
               >
-                <Trash2 />
-                删除
+                保留目标
               </button>
-            )}
-          </>
-        )}
-      </footer>
+              <button
+                className="primary danger"
+                disabled={disabled}
+                onClick={() => void control("delete", confirmation)}
+              >
+                {busy === "delete" ? "删除中…" : "确认删除"}
+              </button>
+            </>
+          ) : (
+            <>
+              {goal.status === "active" && (
+                <button
+                  className="secondary-action"
+                  disabled={disabled}
+                  onClick={() => void control("pause")}
+                >
+                  <Pause />
+                  {busy === "pause" ? "暂停中…" : "暂停"}
+                </button>
+              )}
+              {["paused", "blocked"].includes(goal.status) && (
+                <button
+                  className="secondary-action"
+                  disabled={disabled}
+                  onClick={() => void control("resume")}
+                >
+                  <Play />
+                  {busy === "resume" ? "恢复中…" : "恢复"}
+                </button>
+              )}
+              {goal.status !== "cancelled" && (
+                <button
+                  ref={deleteAction}
+                  className="secondary-action danger"
+                  data-variant="ghost"
+                  disabled={disabled}
+                  onClick={() => {
+                    setConfirmation({ ...goal });
+                    setError("");
+                  }}
+                >
+                  <Trash2 />
+                  删除
+                </button>
+              )}
+            </>
+          )}
+        </footer>
+      )}
     </dialog>
   );
 }

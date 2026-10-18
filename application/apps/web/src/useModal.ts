@@ -60,13 +60,23 @@ export function useModal(
         }
       }
       if (!Number.isFinite(zoom) || zoom <= 0) zoom = 1;
+      const viewportWidth = window.innerWidth / zoom;
+      element.style.setProperty("--modal-viewport-width", `${viewportWidth}px`);
+      // A reading dialog may declare a minimum useful measure. Preserve its
+      // canvas anchor while it fits; a squeezed canvas must not turn a modal
+      // into a two-character-wide column. Surfaces without that declaration
+      // keep their existing content-local boundary (including annotations).
+      const minimumWidth =
+        Number.parseFloat(getComputedStyle(element).minWidth) || 0;
+      const useViewport =
+        minimumWidth > 0 && bounds.width / zoom - 32 < minimumWidth;
       element.style.setProperty(
         "--modal-center",
-        `${(bounds.x + bounds.width / 2) / zoom}px`,
+        `${useViewport ? viewportWidth / 2 : (bounds.x + bounds.width / 2) / zoom}px`,
       );
       element.style.setProperty(
         "--modal-max-width",
-        `${Math.max(0, bounds.width / zoom - 32)}px`,
+        `${Math.max(0, (useViewport ? viewportWidth : bounds.width / zoom) - 32)}px`,
       );
       element.style.setProperty(
         "--modal-max-height",

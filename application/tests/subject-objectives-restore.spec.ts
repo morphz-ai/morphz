@@ -910,9 +910,205 @@ test("目标子任务展示自己的等待类别和确切定时时间，刷新�
   expect(f.writes).toEqual([]);
 });
 
+for (const appearance of ["light", "dark"] as const)
+  test(`目标弹窗按阅读与确认分层，动作不分散，窄窗缩放保留全文与焦点 ${appearance}`, async ({
+    page,
+  }, info) => {
+    const f = await prepare(page);
+    const target = f.runtime.activity.objectives[0]!;
+    target.title = [
+      "TEST 持续核查公开资料与真实条件，把可追溯、可行动的结果留在同一份记录中。",
+      "每轮优先阅读原始材料，区分已经核实的事实、仍待确认的条件和暂不可访问的来源。记录核验时间与适用范围，不把搜索摘要、推测或第三方陈述当成已完成的结果。",
+      "沿用既有工作范围和检查安排，不重复创建任务，不自动对外发送消息。出现重要变化时说明变化、依据和下一步；没有新增信息时保留本轮记录，不重复通知。",
+      "保留已有内容、原始引用与执行历史。遇到资格、权限、付款条件或访问限制时如实说明，不绕过限制，也不以局部失败推断所有来源不可用。",
+      "TEST 最后一段仍可完整阅读与复制；暂停目标只停止后续自动推进，不撤回已经发生的操作。",
+    ].join("\n\n");
+    target.waitKinds = ["thread_group"];
+    await f.refresh();
+    const view = f.panel
+      .locator('[data-objective-id="TEST-related-goal"]')
+      .getByRole("button", { name: "查看目标", exact: true });
+    await page
+      .locator(".app")
+      .evaluate(
+        (node, value) => node.setAttribute("data-appearance", value),
+        appearance,
+      );
+    await view.click();
+    const dialog = page.getByRole("dialog", { name: "目标", exact: true });
+    const body = dialog.getByRole("region", { name: "完整目标" });
+    const remove = dialog.getByRole("button", { name: "删除", exact: true });
+    for (const [width, zoom] of [
+      [1440, 1],
+      [760, 1],
+      [390, 1],
+      [760, 2],
+    ] as const) {
+      await page.setViewportSize({ width, height: 820 });
+      await page.evaluate(
+        (value) => (document.body.style.zoom = String(value)),
+        zoom,
+      );
+      for (const accent of ["cyan", "iris", "coral", "mono"]) {
+        await page
+          .locator(".app")
+          .evaluate(
+            (node, value) => node.setAttribute("data-accent", value),
+            accent,
+          );
+        await expect(body).toHaveText(target.title);
+        const layout = await dialog.evaluate((node) => {
+          const scale =
+            Number.parseFloat(getComputedStyle(document.body).zoom) || 1;
+          const actions = [
+            ...node.querySelectorAll<HTMLElement>("footer > button"),
+          ];
+          const a = actions[0]!.getBoundingClientRect(),
+            b = actions[1]!.getBoundingClientRect();
+          const body = node.querySelector<HTMLElement>(
+            ".subject-objective-dialog-text",
+          )!;
+          const footer = node.querySelector("footer")!.getBoundingClientRect();
+          const header = node.querySelector("header")!.getBoundingClientRect();
+          const rect = node.getBoundingClientRect();
+          const css = getComputedStyle(body);
+          return {
+            gap:
+              (Math.abs(b.top - a.top) < 1
+                ? b.left - a.right
+                : b.top - a.bottom) / scale,
+            heights: actions.map(
+              (action) => action.getBoundingClientRect().height / scale,
+            ),
+            headerHasStatus: !!node.querySelector("header [role=status]"),
+            statusWhiteSpace: getComputedStyle(
+              node.querySelector("header [role=status]")!,
+            ).whiteSpace,
+            bodyFont: css.fontSize,
+            bodyLine: css.lineHeight,
+            bodyPadding: css.paddingLeft,
+            footerGap:
+              (footer.top - body.getBoundingClientRect().bottom) / scale,
+            horizontalOverflow: node.scrollWidth > node.clientWidth + 1,
+            bounded:
+              rect.top >= 0 &&
+              rect.bottom <= innerHeight + 1 &&
+              rect.left >= 0 &&
+              rect.right <= innerWidth + 1,
+            readableWidth:
+              rect.width / scale >= Math.min(280, innerWidth / scale - 32) - 1,
+            headerVisible: header.top >= 0,
+            footerVisible: footer.bottom <= innerHeight + 1,
+          };
+        });
+        expect(layout.gap).toBeGreaterThanOrEqual(6);
+        expect(layout.gap).toBeLessThanOrEqual(12);
+        for (const height of layout.heights) expect(height).toBeCloseTo(32, 2);
+        expect(layout.headerHasStatus).toBe(true);
+        expect(layout.statusWhiteSpace).toBe("normal");
+        expect(layout.bodyFont).toBe("14px");
+        expect(layout.bodyLine).toBe("24.5px");
+        expect(layout.bodyPadding).toBe("8px");
+        // Fractional dialog centering can differ by <0.001 CSS px.
+        expect(Math.round(layout.footerGap * 1000) / 1000).toBeLessThanOrEqual(
+          12,
+        );
+        expect(layout.horizontalOverflow).toBe(false);
+        expect(layout.bounded).toBe(true);
+        expect(layout.readableWidth).toBe(true);
+        expect(layout.headerVisible && layout.footerVisible).toBe(true);
+        await expect(remove).toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
+        if (accent === "cyan")
+          await dialog.screenshot({
+            path: info.outputPath(
+              `goal-reading-${appearance}-${width}-${zoom}.png`,
+            ),
+          });
+      }
+    }
+    await remove.click();
+    const confirmation = page.getByRole("dialog", {
+      name: "删除这个目标？",
+      exact: true,
+    });
+    const keep = confirmation.getByRole("button", {
+      name: "保留目标",
+      exact: true,
+    });
+    await expect(keep).toBeFocused();
+    const warning = confirmation.locator(".subject-objective-delete-warning");
+    expect(
+      await warning.evaluate(
+        (node) =>
+          !!(
+            node.compareDocumentPosition(
+              node.parentElement!.querySelector(
+                ".subject-objective-dialog-text",
+              )!,
+            ) & Node.DOCUMENT_POSITION_FOLLOWING
+          ),
+      ),
+    ).toBe(true);
+    await expect(confirmation).toHaveAttribute(
+      "aria-describedby",
+      (await warning.getAttribute("id")) ?? "",
+    );
+    await expect(
+      confirmation.getByRole("button", { name: "确认删除", exact: true }),
+    ).toHaveClass(/\bdanger\b/);
+    await confirmation.screenshot({
+      path: info.outputPath(`goal-confirm-${appearance}-zoom.png`),
+    });
+    // A short, zoomed window may scroll the modal as a whole, but must not
+    // shrink the original goal to an empty padding-only scroll region.
+    await page.setViewportSize({ width: 760, height: 400 });
+    // ResizeObserver updates the shared native-modal frame after viewport
+    // reflow; observe its settled geometry rather than racing the first frame.
+    await expect
+      .poll(() =>
+        confirmation.evaluate((node) => {
+          const body = node.querySelector<HTMLElement>(
+            ".subject-objective-dialog-text",
+          )!;
+          const css = getComputedStyle(body);
+          const rect = node.getBoundingClientRect();
+          return {
+            readable:
+              body.clientHeight -
+                Number.parseFloat(css.paddingTop) -
+                Number.parseFloat(css.paddingBottom) >=
+              Number.parseFloat(css.lineHeight) - 1,
+            bounded: rect.top >= 0 && rect.bottom <= innerHeight + 1,
+          };
+        }),
+      )
+      .toEqual({ readable: true, bounded: true });
+    await keep.scrollIntoViewIfNeeded();
+    await expect(keep).toBeInViewport();
+    await confirmation.screenshot({
+      path: info.outputPath(`goal-confirm-${appearance}-short-window.png`),
+    });
+    await keep.click();
+    await expect(remove).toBeFocused();
+    await page.evaluate(() => (document.body.style.zoom = "1"));
+    await page.setViewportSize({ width: 1440, height: 960 });
+    target.title = "TEST 只核验一次并保存结果。";
+    await f.refresh();
+    await expect(body).toHaveText(target.title);
+    const short = await dialog.boundingBox();
+    expect(short!.height).toBeLessThanOrEqual(180);
+    await dialog.screenshot({
+      path: info.outputPath(`goal-short-${appearance}.png`),
+    });
+    await page.keyboard.press("Escape");
+    await expect(view).toBeFocused();
+    await expect(await openInput(page)).toHaveValue(f.draft);
+    expect(f.writes).toEqual([]);
+  });
+
 test("查看不发送，暂停恢复沿同一目标修订号；删除须确认，冲突不覆盖，历史及草稿保留", async ({
   page,
-}) => {
+}, info) => {
   const f = await prepare(page);
   const target = f.runtime.activity.objectives[0]!;
   const originalOther = structuredClone(f.runtime.activity.objectives[1]);
@@ -960,6 +1156,7 @@ test("查看不发送，暂停恢复沿同一目标修订号；删除须确认�
   ).toHaveCSS("color", "rgb(167, 42, 50)");
   await dialog.getByRole("button", { name: "暂停", exact: true }).click();
   await expect(dialog.getByRole("status")).toHaveText("已暂停");
+  await dialog.screenshot({ path: info.outputPath("goal-paused.png") });
   await dialog.getByRole("button", { name: "恢复", exact: true }).click();
   await expect(
     dialog.getByRole("button", { name: "暂停", exact: true }),
@@ -979,11 +1176,17 @@ test("查看不发送，暂停恢复沿同一目标修订号；删除须确认�
     confirmation.getByRole("button", { name: "保留目标", exact: true }),
   ).toBeFocused();
   await expect(confirmation).toContainText("保留已有内容和执行记录");
+  await confirmation.screenshot({
+    path: info.outputPath("goal-delete-confirmation.png"),
+  });
   expect(accepted).toBe(2);
   await confirmation
     .getByRole("button", { name: "保留目标", exact: true })
     .click();
   expect(accepted).toBe(2);
+  await expect(
+    dialog.getByRole("button", { name: "删除", exact: true }),
+  ).toBeFocused();
   await dialog.getByRole("button", { name: "删除", exact: true }).click();
   target.revision = 9;
   target.title = "TEST 目标内容已在别处修订，不能按旧确认删除";
@@ -995,6 +1198,9 @@ test("查看不发送，暂停恢复沿同一目标修订号；删除须确认�
     .getByRole("button", { name: "确认删除", exact: true })
     .click();
   await expect(dialog.getByRole("alert")).toContainText("目标已发生变化");
+  await dialog.screenshot({
+    path: info.outputPath("goal-revision-conflict.png"),
+  });
   await expect(dialog.getByRole("region", { name: "完整目标" })).toHaveText(
     target.title,
   );
@@ -1016,7 +1222,9 @@ test("查看不发送，暂停恢复沿同一目标修订号；删除须确认�
   );
 });
 
-test("只读或断线仍能查看完整目标，但不能暂停恢复或删除", async ({ page }) => {
+test("只读或断线仍能查看完整目标，但不能暂停恢复或删除", async ({
+  page,
+}, info) => {
   const f = await prepare(page);
   const target = f.runtime.activity.objectives[0]!;
   target.controlAllowed = false;
@@ -1035,6 +1243,7 @@ test("只读或断线仍能查看完整目标，但不能暂停恢复或删除",
   await expect(dialog.getByRole("region", { name: "完整目标" })).toHaveText(
     target.title,
   );
+  await dialog.screenshot({ path: info.outputPath("goal-readonly.png") });
   target.controlAllowed = true;
   f.runtime.connected = false;
   await f.refresh();
@@ -1042,6 +1251,7 @@ test("只读或断线仍能查看完整目标，但不能暂停恢复或删除",
     dialog.getByRole("button", { name: "暂停", exact: true }),
   ).toBeDisabled();
   await expect(dialog.getByRole("status")).toHaveText("目标状态暂时无法读取");
+  await dialog.screenshot({ path: info.outputPath("goal-offline.png") });
   await page.keyboard.press("Escape");
   await expect(await openInput(page)).toHaveValue(f.draft);
   expect(f.writes).toEqual([]);

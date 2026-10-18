@@ -1,6 +1,3 @@
-.task-list {
-  --danger: light-dark(#a72a32, #f8a9ad);
-}
 .task-view-tabs {
   display: flex;
   gap: 2px;
