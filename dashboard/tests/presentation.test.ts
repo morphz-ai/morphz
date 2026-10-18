@@ -13,7 +13,7 @@ import {
   tintIdForLineage,
   toneForSlot,
 } from '../src/app/objectiveLineage.ts'
-import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, delegatedContextIds, formatLocalRfc3339, newestConversationEventsForLane, objectiveDisplayStatus, objectiveWaitRepresentsExecution, selectConversationEvents, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
+import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, delegatedContextIds, formatLocalRfc3339, formatTime, newestConversationEventsForLane, objectiveDisplayStatus, objectiveWaitRepresentsExecution, selectConversationEvents, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
 
 test('Objective presentation distinguishes supervised execution from external waiting', () => {
   assert.equal(objectiveDisplayStatus({ status: 'active', wait_condition: { kind: 'thread_group' } }), 'running')
@@ -60,6 +60,37 @@ test('local RFC 3339 values preserve the instant and expose an explicit offset',
   const local = formatLocalRfc3339(instant)
   assert.match(local, /[+-]\d{2}:\d{2}$/)
   assert.equal(new Date(local).getTime(), instant.getTime())
+})
+
+test('message timestamps show time today, date across days, and year across years', () => {
+  const now = new Date(2026, 9, 18, 12, 0)
+  for (const locale of ['zh-CN', 'en-US']) {
+    for (const [date, dateOptions] of [
+      [new Date(2026, 9, 18, 9, 45), {}],
+      [new Date(2026, 9, 17, 9, 45), { month: '2-digit', day: '2-digit' }],
+      [new Date(2026, 9, 16, 9, 45), { month: '2-digit', day: '2-digit' }],
+      [new Date(2025, 9, 18, 9, 45), { year: 'numeric', month: '2-digit', day: '2-digit' }],
+      [new Date(2026, 9, 19, 9, 45), { month: '2-digit', day: '2-digit' }],
+    ] as const) {
+      assert.equal(formatTime(date.toISOString(), locale, now), date.toLocaleString(locale, {
+        hour: '2-digit', minute: '2-digit', ...dateOptions,
+      }))
+    }
+  }
+})
+
+test('message dates use local calendar boundaries, not elapsed hours or UTC days', () => {
+  const now = new Date(2026, 0, 1, 0, 1)
+  const previousYear = new Date(2025, 11, 31, 23, 59)
+  const earlierToday = new Date(2026, 0, 1, 0, 0)
+  assert.equal(formatTime(previousYear.toISOString(), 'zh-CN', now), previousYear.toLocaleString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+  }))
+  assert.equal(formatTime(earlierToday.toISOString(), 'zh-CN', now), earlierToday.toLocaleTimeString('zh-CN', {
+    hour: '2-digit', minute: '2-digit',
+  }))
+  assert.equal(formatTime(undefined, 'zh-CN', now), '')
+  assert.equal(formatTime('invalid', 'zh-CN', now), '')
 })
 
 test('delegated Contexts are classified from authoritative child Context ids', () => {

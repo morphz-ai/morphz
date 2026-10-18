@@ -151,11 +151,21 @@ export function newestConversationEventsForLane<T extends ConversationPresentati
   return laneEvents.slice(-Math.max(0, count))
 }
 
-export function formatTime(value: string | undefined, locale: string) {
+export function formatTime(value: string | undefined, locale: string, now = new Date()) {
   if (!value) return ''
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleTimeString([locale], { hour: '2-digit', minute: '2-digit' })
+  const sameYear = date.getFullYear() === now.getFullYear()
+  const today = sameYear
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  const options: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit' }
+  if (!today) {
+    options.month = '2-digit'
+    options.day = '2-digit'
+    if (!sameYear) options.year = 'numeric'
+  }
+  return date.toLocaleString([locale], options)
 }
 
 /** Format an instant as RFC 3339 in the browser's local time zone. */
