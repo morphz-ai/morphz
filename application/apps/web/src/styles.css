@@ -2910,7 +2910,7 @@ kbd {
   align-items: flex-start;
   gap: 4px;
   min-width: 0;
-  margin-top: 10px;
+  margin-top: var(--ui-space-2);
 }
 .message-resources:first-child {
   margin-top: 0;

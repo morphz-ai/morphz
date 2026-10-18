@@ -3909,6 +3909,47 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       beforeRemoteEvent.historyVersion,
       "the selected conversation invalidates its cache from Runtime's persistent head",
     );
+    const failedAttempt = "history-protocol-" + command.commandId;
+    const originalDiagnostic =
+      "The model returned invalid response-annotation control syntax.";
+    remoteEvents.push({
+      id: "terminal-protocol-history",
+      sequence: remoteEvents.at(-1)!.sequence + 1,
+      timestamp: new Date().toISOString(),
+      topic: "session/io_state",
+      payload: {
+        session_id: remoteSessionId,
+        root_turn_id: `root-${command.commandId}`,
+        attempt_id: failedAttempt,
+        thread_id: `thread-${command.commandId}`,
+        terminal_kind: "failed",
+        runtime_failure_kind: "response_annotations_protocol",
+        text: originalDiagnostic,
+      },
+    });
+    for (let refresh = 0; refresh < 2; refresh++) {
+      const reloaded =
+        await session().platformConversationHistory(selectedScope);
+      const failure = reloaded.runtime.messages.find(
+        (item) => item.failure?.attemptId === failedAttempt,
+      );
+      assert.ok(
+        failure,
+        "Runtime terminal protocol failure survives paged history and reload",
+      );
+      assert.equal(failure.kind, "error");
+      assert.equal(
+        failure.text,
+        originalDiagnostic,
+        "raw source is preserved for details/copy",
+      );
+      assert.deepEqual(failure.failure, {
+        kind: "response_protocol",
+        phase: "terminal",
+        attemptId: failedAttempt,
+        state: "response_annotations",
+      });
+    }
   } finally {
     stopPlatformStream?.();
     await secondRuntime?.stop();

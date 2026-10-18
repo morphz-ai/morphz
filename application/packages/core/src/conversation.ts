@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { runtimeMessageFailureSchema } from "./runtime-message-failure.js";
 import {
   evaluationResultSchema,
   evaluationSourceSchema,
@@ -188,6 +189,7 @@ export const conversationRuntimeSchema = z.object({
       modelAttemptId: z.string().optional(),
       threadId: z.string().optional(),
       providerRecovery: providerRecoverySchema.optional(),
+      failure: runtimeMessageFailureSchema.optional(),
       incomplete: z.boolean().optional(),
       truncated: z.boolean().optional(),
       sequence: z.number().int().nonnegative().optional(),

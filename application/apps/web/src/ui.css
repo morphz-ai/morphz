@@ -1285,6 +1285,10 @@ body:has(dialog[open]) .cognitive-application-frame {
   opacity: 1;
   pointer-events: auto;
 }
+.message-peek:has(.message-resend) {
+  opacity: 1;
+  pointer-events: auto;
+}
 .app .message-copy {
   display: inline-flex;
   align-items: center;
@@ -1326,6 +1330,33 @@ body:has(dialog[open]) .cognitive-application-frame {
 .conversation .human-message > small {
   margin-top: 5px;
   font-size: 11px;
+}
+.runtime-message-error > p {
+  margin: 0;
+  color: var(--danger);
+  font:
+    var(--ui-detail-body-font-size)/var(--ui-detail-body-line-height) system-ui,
+    sans-serif;
+}
+.runtime-message-error > details {
+  margin-top: var(--ui-space-1);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.runtime-message-error summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.runtime-message-error pre {
+  margin: var(--ui-space-2) 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+.conversation .human-message > .delivery-error {
+  margin-top: var(--ui-space-1);
+  line-height: 1.5;
 }
 .conversation .agent-reply.tool {
   width: 94%;

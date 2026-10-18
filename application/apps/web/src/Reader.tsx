@@ -64,6 +64,7 @@ import {
 } from "../../../packages/core/src/reader-ocr.js";
 import { ReaderOcrControls } from "./ReaderOcrControls.js";
 import { useTextQuotes } from "./TextQuotes.js";
+import { useReaderPagination } from "./reader-pagination.js";
 import { captureTextQuote, quoteSource } from "./text-quote-dom.js";
 const ReaderPdf = lazy(() => import("./ReaderPdf.js"));
 
@@ -341,6 +342,8 @@ function ReadingBook({
     version.content.kind === "pdf" ||
     (version.content.kind === "publication" &&
       version.content.format === "pdf");
+  const paginated =
+    version.content.kind === "publication" && version.content.format === "epub";
   const pdfAssetId =
     version.content.kind === "pdf" || version.content.kind === "publication"
       ? version.content.assetId
@@ -358,6 +361,7 @@ function ReadingBook({
     x: number;
     y: number;
     scrollTop: number;
+    scrollLeft: number;
     location: ReadingLocation;
   } | null>(null);
   const [marks, setMarks] = useState<ReadingMark[]>([]);
@@ -444,6 +448,16 @@ function ReadingBook({
   latest.current = { section, preferences, active };
   const progress = useRef<ReadingLocation | null>(null),
     progressQueue = useRef(Promise.resolve());
+  const pages = useReaderPagination({
+    enabled: paginated,
+    active,
+    section,
+    preferences,
+    viewport,
+    article,
+    progress,
+  });
+  const arriveAtEnd = useRef(false);
   const positionRevision = useRef(0);
   const savedPosition = useRef<{
     location: ReadingLocation;
@@ -477,6 +491,7 @@ function ReadingBook({
   const contextKey = `reading-${highlightId}`;
   const lastViewport = useRef<ReadingLocation | null>(null);
   const selectionScrollTop = useRef(0);
+  const selectionScrollLeft = useRef(0);
   const captureContext = useRef<() => ReadingFocus | null>(() => null);
   captureContext.current = () => {
     if (
@@ -870,6 +885,7 @@ function ReadingBook({
     )
       return;
     jump.current = target.location;
+    arriveAtEnd.current = false;
     restoredSection.current = null;
     consumedTarget.current = target.requestId;
     setSectionId(target.location.sectionId);
@@ -1013,12 +1029,18 @@ function ReadingBook({
       if (!restored) {
         restored = true;
         restoredSection.current = section;
+        const endArrival = paginated && arriveAtEnd.current;
         const location = jump.current ?? progress.current;
         const anchor = anchorJump.current
           ? root.querySelector(`[id="${CSS.escape(anchorJump.current)}"]`)
           : null;
         anchorJump.current = null;
-        if (anchor) {
+        if (paginated && arriveAtEnd.current) {
+          pages.go(Number.MAX_SAFE_INTEGER);
+          arriveAtEnd.current = false;
+        } else if (anchor && paginated) {
+          pages.reveal(anchor);
+        } else if (anchor) {
           view.scrollTop +=
             anchor.getBoundingClientRect().top -
             view.getBoundingClientRect().top -
@@ -1035,7 +1057,8 @@ function ReadingBook({
               Math.min(section.text.length, location.start + 1)
             ]!,
           );
-          if (range)
+          if (range && paginated) pages.reveal(range);
+          else if (range)
             view.scrollTop =
               location.start === 0
                 ? 0
@@ -1058,7 +1081,8 @@ function ReadingBook({
               }, 1800);
             }
           }
-        } else view.scrollTop = 0;
+        } else if (paginated) pages.go(0);
+        else view.scrollTop = 0;
         const current =
           location?.sectionId === section.id &&
           location.sourceId === section.sourceId &&
@@ -1070,7 +1094,14 @@ function ReadingBook({
                 start: 0,
                 end: 0,
               };
-        savePosition({ ...current, end: current.start });
+        const visible = endArrival
+          ? readerViewport(root, section.text, view, "visible")
+          : null;
+        savePosition({
+          ...current,
+          ...(visible ? { start: visible.start } : {}),
+          end: visible?.start ?? current.start,
+        });
         jump.current = null;
       }
     };
@@ -1101,7 +1132,8 @@ function ReadingBook({
       if (
         active &&
         pending.section === section &&
-        pending.scrollTop === viewport.current?.scrollTop
+        pending.scrollTop === viewport.current?.scrollTop &&
+        pending.scrollLeft === viewport.current?.scrollLeft
       )
         openMarks(pending.x, pending.y, pending.location);
     }
@@ -1142,6 +1174,7 @@ function ReadingBook({
         return;
       }
       selectionScrollTop.current = viewport.current?.scrollTop ?? 0;
+      selectionScrollLeft.current = viewport.current?.scrollLeft ?? 0;
       setSelectionMenuOpen(true);
       setSelected({
         sourceId: section.sourceId,
@@ -1178,12 +1211,14 @@ function ReadingBook({
             x,
             y,
             scrollTop: viewport.current?.scrollTop ?? 0,
+            scrollLeft: viewport.current?.scrollLeft ?? 0,
             location: hitLocation,
           };
       return false;
     }
     pendingMarkPoint.current = null;
     selectionScrollTop.current = viewport.current?.scrollTop ?? 0;
+    selectionScrollLeft.current = viewport.current?.scrollLeft ?? 0;
     setSelectionMenuOpen(true);
     setSelected({
       ...hits[0]!.location,
@@ -1208,6 +1243,64 @@ function ReadingBook({
     // Saving zero without restoring the viewport would leave the two out of sync.
     if (id === sectionId) setRetry((n) => n + 1);
   }
+  function turnPage(direction: -1 | 1) {
+    if (
+      !active ||
+      !section ||
+      section.id !== sectionId ||
+      loadedAttempt !== retry
+    )
+      return;
+    if (!pages.turn(direction) && sections[index + direction]) {
+      arriveAtEnd.current = direction === -1;
+      changeSection(sections[index + direction]!.id);
+    }
+    viewport.current?.focus({ preventScroll: true });
+  }
+  const pageTurn = useRef(turnPage);
+  pageTurn.current = turnPage;
+  useEffect(() => {
+    const view = viewport.current;
+    if (!paginated || !active || !view) return;
+    let lastEvent = 0,
+      distance = 0,
+      consumed = false;
+    const wheel = (event: WheelEvent) => {
+      if (
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        !section ||
+        window.getSelection()?.toString()
+      )
+        return;
+      event.preventDefault();
+      const time = performance.now();
+      if (time - lastEvent > 160) {
+        distance = 0;
+        consumed = false;
+      }
+      lastEvent = time;
+      if (consumed) return;
+      const delta =
+        Math.abs(event.deltaX) > Math.abs(event.deltaY)
+          ? event.deltaX
+          : event.deltaY;
+      distance +=
+        delta *
+        (event.deltaMode === 1
+          ? 16
+          : event.deltaMode === 2
+            ? view.clientHeight
+            : 1);
+      if (Math.abs(distance) >= 40) {
+        consumed = true; // Trackpad inertia must not race through several pages.
+        pageTurn.current(distance > 0 ? 1 : -1);
+      }
+    };
+    view.addEventListener("wheel", wheel, { passive: false });
+    return () => view.removeEventListener("wheel", wheel);
+  }, [paginated, active, section]);
   async function addMark(
     location: ReadingLocation,
     kind: ReadingMark["kind"],
@@ -1358,6 +1451,7 @@ function ReadingBook({
   return (
     <section
       className="reading-app"
+      data-paginated={paginated || undefined}
       data-theme={preferences.theme}
       aria-label={`阅读 ${version.title}`}
     >
@@ -1422,7 +1516,9 @@ function ReadingBook({
         </button>
         <h2 title={version.title}>{version.title}</h2>
         <span className="reader-page-count">
-          {index >= 0 ? `${index + 1} / ${sections.length}` : ""}
+          {index >= 0
+            ? `${paginated ? "章节 " : ""}${index + 1} / ${sections.length}`
+            : ""}
         </span>
         <button
           className="icon-button"
@@ -1657,212 +1753,296 @@ function ReadingBook({
             )}
           </aside>
         )}
-        <div
-          className="reader-viewport"
-          ref={viewport}
-          tabIndex={0}
-          aria-label="阅读正文"
-          onKeyDown={(e) => {
-            if (
-              e.target !== e.currentTarget ||
-              e.ctrlKey ||
-              e.metaKey ||
-              e.altKey
-            )
-              return;
-            if (e.key === "ArrowRight" && sections[index + 1]) {
-              e.preventDefault();
-              changeSection(sections[index + 1]!.id);
-            }
-            if (e.key === "ArrowLeft" && sections[index - 1]) {
-              e.preventDefault();
-              changeSection(sections[index - 1]!.id);
-            }
-          }}
-          onScroll={() => {
-            if (
-              pendingMarkPoint.current?.scrollTop !==
-              viewport.current?.scrollTop
-            )
-              pendingMarkPoint.current = null;
-            // Scroll events can arrive after mouseup from the previous frame.
-            // Only navigation after this selection invalidates its context.
-            setSelected((current) =>
-              selectionScrollTop.current === viewport.current?.scrollTop
-                ? current
-                : null,
-            );
-            if (
-              !active ||
-              !section ||
-              !article.current ||
-              restoredSection.current !== section
-            )
-              return;
-            clearTimeout(timer.current);
-            const position = readerViewport(
-              article.current,
-              section.text,
-              viewport.current!,
-              "visible",
-            );
-            if (!position) return;
-            const range = {
-              sourceId: section.sourceId,
-              sectionId: section.id,
-              ...position,
-            };
-            setVisibleRange((old) =>
-              JSON.stringify(old) === JSON.stringify(range) ? old : range,
-            );
-            const location = {
-              sourceId: section.sourceId,
-              sectionId: section.id,
-              start: position.start,
-              end: position.start,
-            };
-            progress.current = location;
-            pendingPosition.current = location;
-            timer.current = setTimeout(flushPosition, 700);
-          }}
-        >
-          {error ? (
-            <div className="reader-empty" role="alert">
-              <p>{error}</p>
-              <button onClick={() => setRetry((n) => n + 1)}>重试读取</button>
-            </div>
-          ) : !section ? (
-            <p className="reader-loading" role="status">
-              正在读取原文…
-            </p>
-          ) : (
-            <>
-              {isPdf && (
-                <ReaderOcrControls
-                  key={readingBaseSection(section.id)}
-                  client={client}
-                  artifactId={artifact.id}
-                  revision={version.revision}
-                  section={section}
-                  active={active}
-                  onOpen={changeSection}
-                  onFocusLine={setOcrLine}
-                />
-              )}
-              <div className={section.ocr ? "reader-ocr-compare" : undefined}>
-                {section.ocr && isPdf && (
-                  <aside
-                    className="reader-ocr-original"
-                    aria-label="OCR 原页对照"
-                  >
-                    <Suspense fallback={<p>正在打开原页…</p>}>
-                      <ReaderPdf
-                        assetId={pdfAssetId}
-                        url={pdfUrl}
-                        page={readingPage(section.id)}
-                        ocr={section.ocr}
-                        line={ocrLine}
-                      />
-                    </Suspense>
-                  </aside>
+        <div className="reader-stage">
+          <div
+            className="reader-viewport"
+            data-layout={paginated ? "pages" : "scroll"}
+            ref={viewport}
+            tabIndex={0}
+            aria-label="阅读正文"
+            onKeyDown={(e) => {
+              if (
+                e.target !== e.currentTarget ||
+                e.ctrlKey ||
+                e.metaKey ||
+                e.altKey
+              )
+                return;
+              if (paginated) {
+                const direction = [
+                  "ArrowRight",
+                  "ArrowDown",
+                  "PageDown",
+                  " ",
+                ].includes(e.key)
+                  ? e.shiftKey && e.key === " "
+                    ? -1
+                    : 1
+                  : ["ArrowLeft", "ArrowUp", "PageUp"].includes(e.key)
+                    ? -1
+                    : null;
+                if (direction) {
+                  e.preventDefault();
+                  turnPage(direction);
+                } else if (e.key === "Home" || e.key === "End") {
+                  e.preventDefault();
+                  pages.go(
+                    e.key === "Home" ? 0 : Number.MAX_SAFE_INTEGER,
+                    false,
+                    false,
+                  );
+                }
+                return;
+              }
+              if (e.key === "ArrowRight" && sections[index + 1]) {
+                e.preventDefault();
+                changeSection(sections[index + 1]!.id);
+              }
+              if (e.key === "ArrowLeft" && sections[index - 1]) {
+                e.preventDefault();
+                changeSection(sections[index - 1]!.id);
+              }
+            }}
+            onScroll={() => {
+              if (
+                pendingMarkPoint.current?.scrollTop !==
+                  viewport.current?.scrollTop ||
+                pendingMarkPoint.current?.scrollLeft !==
+                  viewport.current?.scrollLeft
+              )
+                pendingMarkPoint.current = null;
+              // Scroll events can arrive after mouseup from the previous frame.
+              // Only navigation after this selection invalidates its context.
+              setSelected((current) =>
+                selectionScrollTop.current === viewport.current?.scrollTop &&
+                selectionScrollLeft.current === viewport.current?.scrollLeft
+                  ? current
+                  : null,
+              );
+              if (
+                !active ||
+                !section ||
+                !article.current ||
+                restoredSection.current !== section
+              )
+                return;
+              clearTimeout(timer.current);
+              const position = readerViewport(
+                article.current,
+                section.text,
+                viewport.current!,
+                "visible",
+              );
+              if (!position) return;
+              const range = {
+                sourceId: section.sourceId,
+                sectionId: section.id,
+                ...position,
+              };
+              setVisibleRange((old) =>
+                JSON.stringify(old) === JSON.stringify(range) ? old : range,
+              );
+              // Reflow keeps the logical source anchor. Saving the first line
+              // of every intermediate layout causes drift when panels/fonts change.
+              if (paginated && pages.preservingAnchor()) return;
+              const location = {
+                sourceId: section.sourceId,
+                sectionId: section.id,
+                start: position.start,
+                end: position.start,
+              };
+              progress.current = location;
+              pendingPosition.current = location;
+              timer.current = setTimeout(flushPosition, 700);
+            }}
+          >
+            {error ? (
+              <div className="reader-empty" role="alert">
+                <p>{error}</p>
+                <button onClick={() => setRetry((n) => n + 1)}>重试读取</button>
+              </div>
+            ) : !section ? (
+              <p className="reader-loading" role="status">
+                正在读取原文…
+              </p>
+            ) : (
+              <>
+                {isPdf && (
+                  <ReaderOcrControls
+                    key={readingBaseSection(section.id)}
+                    client={client}
+                    artifactId={artifact.id}
+                    revision={version.revision}
+                    section={section}
+                    active={active}
+                    onOpen={changeSection}
+                    onFocusLine={setOcrLine}
+                  />
                 )}
                 <div
-                  ref={article}
-                  data-quote-menu="local"
-                  {...quoteSource({
-                    kind: "reading",
-                    projectId: artifact.projectId,
-                    artifactId: artifact.id,
-                    revision: version.revision,
-                    title: version.title,
-                    chapter: section.title,
-                    location: {
-                      sourceId: section.sourceId,
-                      sectionId: section.id,
-                      start: 0,
-                      end: 0,
-                    },
-                  })}
-                  className={`reader-text ${isPdf ? "reader-pdf" : ""}`}
-                  style={
-                    {
-                      fontSize: preferences.fontSize,
-                      fontFamily:
-                        preferences.font === "serif"
-                          ? '"Noto Serif CJK SC", "Songti SC", "STSong", serif'
-                          : "system-ui, sans-serif",
-                    } as CSSProperties
+                  className={
+                    section.ocr
+                      ? "reader-ocr-compare"
+                      : paginated
+                        ? "reader-page-flow"
+                        : undefined
                   }
-                  onMouseUp={capture}
-                  onKeyUp={(e) => {
-                    if (e.key === "Shift") capture();
-                  }}
-                  onClick={(e) => {
-                    const a = (e.target as HTMLElement).closest("a[href]");
-                    if (!a) {
-                      if (!window.getSelection()?.toString())
-                        openMarks(e.clientX, e.clientY);
-                      return;
-                    }
-                    e.preventDefault();
-                    const href = a.getAttribute("href")!;
-                    const match = /^#reader:(section-\d+):(.*)$/.exec(href);
-                    if (match) {
-                      const anchorId = decodeURIComponent(match[2]!);
-                      if (match[1] === section.id) {
-                        article.current
-                          ?.querySelector(`[id="${CSS.escape(anchorId)}"]`)
-                          ?.scrollIntoView({ block: "center" });
-                      } else {
-                        anchorJump.current = anchorId;
-                        changeSection(match[1]!);
-                      }
-                    } else if (href.startsWith("#")) {
-                      const anchor = article.current?.querySelector(
-                        `[id="${CSS.escape(href.slice(1))}"]`,
-                      );
-                      anchor?.scrollIntoView({ block: "center" });
-                    }
-                  }}
-                  onContextMenu={(e) => {
-                    if (openMarks(e.clientX, e.clientY)) e.preventDefault();
-                  }}
                 >
-                  {isPdf && !section.ocr ? (
-                    <Suspense fallback={<p role="status">正在打开 PDF…</p>}>
-                      <ReaderPdf
-                        assetId={pdfAssetId}
-                        url={pdfUrl}
-                        page={readingPage(section.id)}
-                      />
-                    </Suspense>
-                  ) : (
-                    <ReadingHtml html={section.html} />
+                  {section.ocr && isPdf && (
+                    <aside
+                      className="reader-ocr-original"
+                      aria-label="OCR 原页对照"
+                    >
+                      <Suspense fallback={<p>正在打开原页…</p>}>
+                        <ReaderPdf
+                          assetId={pdfAssetId}
+                          url={pdfUrl}
+                          page={readingPage(section.id)}
+                          ocr={section.ocr}
+                          line={ocrLine}
+                        />
+                      </Suspense>
+                    </aside>
                   )}
+                  <div
+                    ref={article}
+                    data-quote-menu="local"
+                    {...quoteSource({
+                      kind: "reading",
+                      projectId: artifact.projectId,
+                      artifactId: artifact.id,
+                      revision: version.revision,
+                      title: version.title,
+                      chapter: section.title,
+                      location: {
+                        sourceId: section.sourceId,
+                        sectionId: section.id,
+                        start: 0,
+                        end: 0,
+                      },
+                    })}
+                    className={`reader-text ${isPdf ? "reader-pdf" : ""}`}
+                    style={
+                      {
+                        fontSize: preferences.fontSize,
+                        fontFamily:
+                          preferences.font === "serif"
+                            ? '"Noto Serif CJK SC", "Songti SC", "STSong", serif'
+                            : "system-ui, sans-serif",
+                      } as CSSProperties
+                    }
+                    onMouseUp={capture}
+                    onKeyUp={(e) => {
+                      if (e.key === "Shift") capture();
+                    }}
+                    onClick={(e) => {
+                      const a = (e.target as HTMLElement).closest("a[href]");
+                      if (!a) {
+                        if (!window.getSelection()?.toString())
+                          openMarks(e.clientX, e.clientY);
+                        return;
+                      }
+                      e.preventDefault();
+                      const href = a.getAttribute("href")!;
+                      const match = /^#reader:(section-\d+):(.*)$/.exec(href);
+                      if (match) {
+                        const anchorId = decodeURIComponent(match[2]!);
+                        if (match[1] === section.id) {
+                          const anchor = article.current?.querySelector(
+                            `[id="${CSS.escape(anchorId)}"]`,
+                          );
+                          if (anchor && paginated) pages.reveal(anchor, false);
+                          else anchor?.scrollIntoView({ block: "center" });
+                        } else {
+                          anchorJump.current = anchorId;
+                          changeSection(match[1]!);
+                        }
+                      } else if (href.startsWith("#")) {
+                        const anchor = article.current?.querySelector(
+                          `[id="${CSS.escape(href.slice(1))}"]`,
+                        );
+                        if (anchor && paginated) pages.reveal(anchor, false);
+                        else anchor?.scrollIntoView({ block: "center" });
+                      }
+                    }}
+                    onContextMenu={(e) => {
+                      if (openMarks(e.clientX, e.clientY)) e.preventDefault();
+                    }}
+                  >
+                    {isPdf && !section.ocr ? (
+                      <Suspense fallback={<p role="status">正在打开 PDF…</p>}>
+                        <ReaderPdf
+                          assetId={pdfAssetId}
+                          url={pdfUrl}
+                          page={readingPage(section.id)}
+                        />
+                      </Suspense>
+                    ) : (
+                      <ReadingHtml html={section.html} />
+                    )}
+                  </div>
                 </div>
+                {isPdf && !section.text.trim() && (
+                  <p className="reader-scan-notice">
+                    这一页没有可选文字；可展开“扫描文字识别”，在本机识别后选择文字提问或标注。
+                  </p>
+                )}
+                {!paginated && (
+                  <footer className="reader-navigation">
+                    <button
+                      disabled={index <= 0}
+                      onClick={() => changeSection(sections[index - 1]!.id)}
+                    >
+                      <ChevronLeft />
+                      上一{isPdf ? "页" : "章"}
+                    </button>
+                    <span>{section.title}</span>
+                    <button
+                      disabled={index < 0 || index >= sections.length - 1}
+                      onClick={() => changeSection(sections[index + 1]!.id)}
+                    >
+                      下一{isPdf ? "页" : "章"}
+                      <ChevronRight />
+                    </button>
+                  </footer>
+                )}
+              </>
+            )}
+          </div>
+          {paginated && section && !error && (
+            <>
+              <button
+                className="icon-button reader-page-turn reader-page-previous"
+                aria-label="上一页"
+                title="上一页 · ← / Page Up / Shift+空格"
+                aria-keyshortcuts="ArrowLeft PageUp Shift+Space"
+                disabled={index <= 0 && pages.page === 0}
+                onClick={() => turnPage(-1)}
+              >
+                <ChevronLeft />
+              </button>
+              <button
+                className="icon-button reader-page-turn reader-page-next"
+                aria-label="下一页"
+                title="下一页 · → / Page Down / 空格"
+                aria-keyshortcuts="ArrowRight PageDown Space"
+                disabled={
+                  index >= sections.length - 1 && pages.page >= pages.count - 1
+                }
+                onClick={() => turnPage(1)}
+              >
+                <ChevronRight />
+              </button>
+              <div
+                className="reader-page-position"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <span title={section.title}>{section.title}</span>
+                <span>
+                  本章 {pages.page + 1} / {pages.count} 页
+                </span>
               </div>
-              {isPdf && !section.text.trim() && (
-                <p className="reader-scan-notice">
-                  这一页没有可选文字；可展开“扫描文字识别”，在本机识别后选择文字提问或标注。
-                </p>
-              )}
-              <footer className="reader-navigation">
-                <button
-                  disabled={index <= 0}
-                  onClick={() => changeSection(sections[index - 1]!.id)}
-                >
-                  <ChevronLeft />
-                  上一{isPdf ? "页" : "章"}
-                </button>
-                <span>{section.title}</span>
-                <button
-                  disabled={index < 0 || index >= sections.length - 1}
-                  onClick={() => changeSection(sections[index + 1]!.id)}
-                >
-                  下一{isPdf ? "页" : "章"}
-                  <ChevronRight />
-                </button>
-              </footer>
             </>
           )}
         </div>

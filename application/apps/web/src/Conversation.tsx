@@ -8,6 +8,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { SafeMarkdown } from "./SafeMarkdown.js";
+import { RuntimeMessageError } from "./RuntimeMessageError.js";
+import { presentRuntimeErrors } from "./runtime-error-presentation.js";
 import { EvaluationMessage } from "./EvaluationMessage.js";
 import { evaluationDisplayText } from "../../../packages/core/src/evaluation-result.js";
 import { copyText as copyMessage } from "./clipboard-text.js";
@@ -103,6 +105,7 @@ export function Conversation({
   onRead,
   conversationId,
   onRetry,
+  onResend,
   client,
   onOpen,
   onOpenScript,
@@ -150,6 +153,7 @@ export function Conversation({
   onRead: (receipts: ReplyReceipt[]) => void;
   conversationId: string;
   onRetry: (id: string) => Promise<void>;
+  onResend?: (id: string) => Promise<void>;
   client: WorkspaceClient;
   onOpen: (
     id: string,
@@ -164,6 +168,32 @@ export function Conversation({
   onSupplement?: (target: InputContinuation) => void;
 }) {
   const [allHistory, setAllHistory] = useState(true);
+  const resending = useRef(new Set<string>());
+  const [resendStates, setResendStates] = useState<
+    Record<string, { pending: boolean; error?: string }>
+  >({});
+  async function resend(id: string) {
+    if (!onResend || resending.current.has(id)) return;
+    resending.current.add(id);
+    setResendStates((old) => ({ ...old, [id]: { pending: true } }));
+    try {
+      await onResend(id);
+      setResendStates((old) => ({ ...old, [id]: { pending: false } }));
+    } catch (error) {
+      setResendStates((old) => ({
+        ...old,
+        [id]: {
+          pending: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : "重新发送失败，原消息仍保留。",
+        },
+      }));
+    } finally {
+      resending.current.delete(id);
+    }
+  }
   const [searchOpen, setSearchOpen] = useState(false);
   const searchWasOpen = useRef(false);
   useLayoutEffect(() => {
@@ -284,6 +314,11 @@ export function Conversation({
     awayFromLatest,
   } = viewport;
   const groups = conversationGroups(inputs, readScope.messages);
+  const publishedErrorInputs = new Set(
+    readScope.messages
+      .filter((message) => message.kind === "error" && message.inputId)
+      .map((message) => message.inputId),
+  );
   // The initiating input owns cancellation, even without a current output.
   // Background execution branches retain their separate inspector controls.
   const responseControls = new Map(
@@ -311,7 +346,7 @@ export function Conversation({
         input,
         reply: null,
       })),
-      ...group.messages
+      ...presentRuntimeErrors(group.messages)
         .filter(
           (m) =>
             m.kind !== "evaluation" ||
@@ -451,7 +486,9 @@ export function Conversation({
       });
   }
   const receipts = replyReceipts(
-    items.flatMap((item) => (item.reply ? [item.reply] : [])),
+    items.flatMap((item) =>
+      item.reply ? (item.reply.representedMessages ?? [item.reply]) : [],
+    ),
     outputs,
     scriptOutputs,
   );
@@ -832,7 +869,11 @@ export function Conversation({
                         sending: "",
                         running: "",
                         completed: "",
-                        failed: "执行失败",
+                        failed:
+                          delivery.error ||
+                          publishedErrorInputs.has(item?.id ?? "")
+                            ? ""
+                            : "执行失败",
                         cancelled: "已取消",
                         merged: "并入后续处理",
                       }[delivery.state];
@@ -1088,6 +1129,8 @@ export function Conversation({
                               </SafeMarkdown>
                             )}
                           />
+                        ) : reply?.kind === "error" && reply.failure ? (
+                          <RuntimeMessageError message={reply} />
                         ) : reply?.tool ? (
                           <ToolMessage message={reply} state={state} />
                         ) : (
@@ -1160,7 +1203,46 @@ export function Conversation({
                             state,
                             catalog: client.contentCatalog,
                           }}
-                          control={item ? stopControl : undefined}
+                          control={
+                            item ? (
+                              <>
+                                {stopControl}
+                                {onResend &&
+                                  !submission &&
+                                  delivery?.state === "failed" &&
+                                  !delivery.retryable &&
+                                  !item.continuation &&
+                                  item.author.actantId ===
+                                    client.boot?.actantId && (
+                                    <Tooltip label="重新发送原消息">
+                                      <button
+                                        type="button"
+                                        className="message-copy message-resend"
+                                        aria-label="重新发送原消息"
+                                        disabled={
+                                          !runtime.connected ||
+                                          !client.online ||
+                                          resendStates[item.id]?.pending
+                                        }
+                                        onClick={() => void resend(item.id)}
+                                      >
+                                        {resendStates[item.id]?.pending ? (
+                                          <LoaderCircle
+                                            size={13}
+                                            aria-hidden="true"
+                                          />
+                                        ) : (
+                                          <RotateCcw
+                                            size={13}
+                                            aria-hidden="true"
+                                          />
+                                        )}
+                                      </button>
+                                    </Tooltip>
+                                  )}
+                              </>
+                            ) : undefined
+                          }
                           text={
                             item
                               ? quotedInputText(item.body, item.textQuotes)
@@ -1241,11 +1323,12 @@ export function Conversation({
                         {item && status && <span>{status}</span>}
                       </div>
                     )}
-                    {delivery?.error && (
-                      <div className="delivery-error" role="alert">
-                        {delivery.error}
-                      </div>
-                    )}
+                    {delivery?.error &&
+                      !publishedErrorInputs.has(item?.id ?? "") && (
+                        <div className="delivery-error" role="alert">
+                          {delivery.error}
+                        </div>
+                      )}
                     {item && submission?.state === "sending" && (
                       <span
                         className="message-submission"
@@ -1265,6 +1348,11 @@ export function Conversation({
                       >
                         <RotateCcw size={16} aria-hidden="true" />
                       </button>
+                    )}
+                    {item && resendStates[item.id]?.error && (
+                      <div className="delivery-error" role="alert">
+                        {resendStates[item.id]!.error}
+                      </div>
                     )}
                     {item &&
                       !submission &&

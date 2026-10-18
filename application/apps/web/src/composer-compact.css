@@ -25,6 +25,13 @@
   min-height: 60px;
   overflow: auto;
 }
+.app .composer:has(> .composer-reading-context) > .composer-writing,
+.app .composer:has(> .composer-reading-context) .composer-writing > textarea {
+  min-height: 48px;
+}
+.app .composer:has(> .composer-reading-context) .composer-writing > textarea {
+  padding-top: 0;
+}
 .app .composer:has(.composer-action-bar) > div:has(> .message-attachments) {
   /* Keep a single preview intact; long lists scroll inside this capped slot.
      Let the writing area shrink first instead of painting over its first line. */

@@ -103,7 +103,13 @@ const optionalTests = [
   ],
   [
     "response-annotations-runtime.test.ts",
-    "actual Runtime + Platform HTTP: enabled required final metadata fails once without repair requests or physical Jobs",
+    "actual Runtime + Platform HTTP: native metadata never wraps or invalidates normal reply content",
+    "runtime",
+    "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
+  ],
+  [
+    "response-annotations-runtime.test.ts",
+    "actual Runtime setting: disabling during an active response preserves its contract, new input is off without annotations",
     "runtime",
     "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
   ],

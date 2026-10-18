@@ -12,7 +12,6 @@ import {
 test("deterministic default final response follows only the offered annotation reply schema", () => {
   const parameters = {
     properties: {
-      content: { type: "string" },
       annotations: {
         properties: {
           execution: {
@@ -32,13 +31,15 @@ test("deterministic default final response follows only the offered annotation r
     const carrier = profileFixtureReplyCarrier({ messages: [], tools });
     assert.equal(carrier?.name, "reply");
     const args = carrier?.arguments as {
-      content: string;
       annotations: { execution: { title: string; result: string } };
     };
     assert.ok(
-      args.content &&
-        args.annotations.execution.title &&
-        args.annotations.execution.result,
+      args.annotations.execution.title && args.annotations.execution.result,
+    );
+    assert.equal(
+      "content" in args,
+      false,
+      "the model never JSON-encodes the body for annotations",
     );
   }
   assert.equal(profileFixtureReplyCarrier({ messages: [] }), undefined);
@@ -371,16 +372,20 @@ test(
       );
       assert.equal(continued[0]!.title, "检查资料与输入");
       assert.equal(continued[0]!.id, threadId);
-      f.releaseWithTool(marker, "reply", {
-        content: "TEST：两次只读检查完成，没有修改资料。",
-        annotations: {
-          execution: {
-            title: "检查资料与输入",
-            result: "资料与输入检查完成，未修改任何参数",
+      f.releaseWithTool(
+        marker,
+        "reply",
+        {
+          annotations: {
+            execution: {
+              title: "检查资料与输入",
+              result: "资料与输入检查完成，未修改任何参数",
+            },
+            observations: [{ ref: secondRef, result: "已核对本次输入" }],
           },
-          observations: [{ ref: secondRef, result: "已核对本次输入" }],
         },
-      });
+        "TEST：两次只读检查完成，没有修改资料。",
+      );
       const terminal = await eventually(
         activity,
         (threads) => threads[0]?.lifecycle === "completed",
@@ -449,7 +454,7 @@ test(
 );
 
 test(
-  "actual Runtime + Platform HTTP: implicit reply requires separate annotations and invalid replies retain exact evidence without repair",
+  "actual Runtime + Platform HTTP: native metadata never wraps or invalidates normal reply content",
   {
     skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",
     timeout: 120_000,
@@ -551,14 +556,13 @@ test(
             f.releaseWithText(
               marker,
               entry.metadata.annotations
-                ? JSON.stringify({ content: candidate, ...entry.metadata })
+                ? candidate +
+                    "\n:::morphz-reply\n" +
+                    JSON.stringify(entry.metadata) +
+                    "\n:::"
                 : candidate,
             );
-          else
-            f.releaseWithTool(marker, "reply", {
-              content: candidate,
-              ...entry.metadata,
-            });
+          else f.releaseWithTool(marker, "reply", entry.metadata, candidate);
           let terminal: ExecutionActivity["threads"][number] | undefined;
           for (let attempt = 0; attempt < 300; attempt++) {
             const data = (await f.client.call(
@@ -573,14 +577,10 @@ test(
             terminal = data.runtime.activity?.threads.find(
               (thread) => thread.projectId === projectId,
             );
-            if (terminal?.lifecycle === (entry.valid ? "completed" : "failed"))
-              break;
+            if (terminal?.lifecycle === "completed") break;
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
-          assert.equal(
-            terminal?.lifecycle,
-            entry.valid ? "completed" : "failed",
-          );
+          assert.equal(terminal?.lifecycle, "completed");
           assert.ok(terminal);
           const detail = executionSnapshotSchema.parse(
             await f.client.call(
@@ -608,7 +608,7 @@ test(
           assert.deepEqual(
             { ...thread[0] },
             {
-              status: entry.valid ? "completed" : "failed",
+              status: "completed",
               response_annotations: "on",
             },
           );
@@ -616,63 +616,58 @@ test(
             "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_fused'",
             terminal.id,
           );
-          assert.equal(fused.length, entry.valid ? 0 : 1);
+          assert.equal(fused.length, 0);
           const failures = f.sql<{ payload: string }>(
             "SELECT payload FROM events WHERE thread_id = ? AND topic IN ('chat/reply', 'session/io_state') AND json_extract(payload, '$.terminal_kind') = 'failed'",
             terminal.id,
           );
-          assert.equal(failures.length, entry.valid ? 0 : 1);
+          assert.equal(failures.length, 0);
           const replies = f.sql<{ payload: string }>(
             "SELECT payload FROM events WHERE thread_id = ? AND topic = 'chat/reply'",
             terminal.id,
           );
-          assert.equal(replies.length, entry.valid ? 1 : 0);
-          if (entry.valid)
-            assert.equal(JSON.parse(replies[0]!.payload).text, candidate);
-          else {
-            assert.notEqual(JSON.parse(failures[0]!.payload).text, candidate);
-            assert.equal(
-              JSON.parse(failures[0]!.payload).runtime_failure_kind,
-              "response_annotations_protocol",
-            );
-          }
+          assert.equal(replies.length, 1);
+          assert.equal(JSON.parse(replies[0]!.payload).text, candidate);
           const sources = f.sql<{ payload: string }>(
             "SELECT payload FROM events WHERE thread_id = ? AND topic = 'chat/assistant_call' AND json_extract(payload, '$.terminal_outcome') = 1",
             terminal.id,
           );
-          assert.equal(sources.length, entry.valid ? 1 : 0);
+          assert.equal(sources.length, 1);
+          const bundle = JSON.parse(
+            sources[0]!.payload,
+          ).response_annotation_bundle;
+          assert.equal(
+            bundle.raw_response.content,
+            entry.text && entry.metadata.annotations
+              ? candidate +
+                  "\n:::morphz-reply\n" +
+                  JSON.stringify(entry.metadata) +
+                  "\n:::"
+              : candidate,
+          );
+          if (entry.text)
+            assert.equal(bundle.raw_response.tool_calls.length, 0);
+          else {
+            assert.equal(bundle.raw_response.tool_calls.length, 1);
+            assert.deepEqual(
+              JSON.parse(bundle.raw_response.tool_calls[0].arguments),
+              entry.metadata,
+            );
+          }
           if (entry.valid) {
-            const bundle = JSON.parse(
-              sources[0]!.payload,
-            ).response_annotation_bundle;
             assert.equal(bundle.diagnostics.length, 0);
             assert.equal(terminal.title, "TEST 普通文本注解");
             assert.equal(terminal.summary, "TEST 正文已返回");
-            assert.equal(bundle.raw_response.tool_calls.length, 0);
-            assert.equal(
-              JSON.parse(bundle.raw_response.content).content,
-              candidate,
-            );
           } else {
             const errors = f.sql<{ payload: string }>(
               "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_error'",
               terminal.id,
             );
-            assert.equal(errors.length, 1);
-            const capture = JSON.parse(errors[0]!.payload).response_capture;
-            assert.equal(capture.state, "complete");
-            if (entry.text)
-              assert.equal(
-                capture.raw_response.content,
-                entry.metadata.annotations
-                  ? JSON.stringify({ content: candidate, ...entry.metadata })
-                  : candidate,
-              );
-            else
-              assert.deepEqual(
-                JSON.parse(capture.raw_response.tool_calls[0].arguments),
-                { content: candidate, ...entry.metadata },
-              );
+            assert.equal(errors.length, 0);
+            assert.ok(
+              bundle.diagnostics.length > 0,
+              "missing metadata is diagnosed, never fabricated",
+            );
           }
           await new Promise((resolve) => setTimeout(resolve, 150));
           assert.equal(

@@ -51,6 +51,7 @@ export function ReadingContext({
       <button
         type="button"
         className="icon-button"
+        data-size="icon-xs"
         aria-label="移除阅读引用"
         title="移除引用"
         onClick={onRemove}

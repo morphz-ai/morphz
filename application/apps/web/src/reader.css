@@ -368,10 +368,111 @@
 .reader-viewport {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
   scroll-padding: 28px;
   position: relative;
+}
+.reader-stage {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+.reading-app[data-paginated] .reader-stage {
+  padding-bottom: 56px;
+}
+.reader-viewport[data-layout="pages"] {
+  overflow: hidden;
+  scrollbar-width: none;
+  scroll-padding: 0;
+  touch-action: pan-y pinch-zoom;
+}
+.reader-viewport[data-layout="pages"]::-webkit-scrollbar {
+  display: none;
+}
+.reader-page-flow {
+  width: var(--reader-flow-width, 100%);
+  padding: var(--reader-page-inset, 24px) var(--reader-page-gutter, 36px);
+}
+.reader-page-flow .reader-text {
+  max-width: none;
+  width: var(--reader-column-width);
+  height: var(--reader-page-height);
+  margin: 0;
+  padding: 0;
+  columns: var(--reader-column-width);
+  column-gap: var(--reader-page-gap);
+  column-fill: auto;
+  line-height: 1.8;
+  orphans: 2;
+  widows: 2;
+}
+.reader-page-flow .reader-text h1 {
+  font-size: 1.35em;
+}
+.reader-page-flow .reader-text :is(h1, h2, h3) {
+  break-after: avoid;
+}
+.reader-page-flow .reader-text img {
+  max-height: var(--reader-page-height);
+  object-fit: contain;
+  break-inside: avoid;
+}
+.reader-page-flow .reader-text :is(td, th) {
+  border: 0;
+}
+.reader-page-flow .reader-text ::selection {
+  background: var(--tint);
+  color: var(--ink);
+}
+.reader-page-turn {
+  position: absolute;
+  top: calc(50% - 40px);
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 110ms;
+}
+.reader-page-previous {
+  left: 2px;
+}
+.reader-page-next {
+  right: 2px;
+}
+.reader-stage:is(:hover, :focus-within) .reader-page-turn:not(:disabled) {
+  opacity: 1;
+}
+.reader-page-position {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  flex: none;
+  min-width: 0;
+  padding: 4px 36px;
+  color: var(--muted);
+  font:
+    12px/1.5 system-ui,
+    sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.reader-page-position > span:first-child {
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (hover: none) {
+  .reader-page-turn:not(:disabled) {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reader-page-turn {
+    transition: none;
+  }
 }
 .reader-viewport:focus-visible {
   outline-offset: -3px;
@@ -689,8 +790,9 @@
   align-items: flex-start;
   gap: 4px;
   color: var(--text-secondary);
-  margin-bottom: 4px;
+  margin-bottom: 0;
   font-size: 12px;
+  line-height: 1.5;
 }
 .composer-reading-context details {
   flex: 1;
@@ -701,7 +803,7 @@
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  min-height: 28px;
+  min-height: 24px;
 }
 .composer-reading-context summary span {
   overflow: hidden;

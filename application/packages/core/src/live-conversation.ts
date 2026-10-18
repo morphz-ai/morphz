@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  runtimeMessageFailureSchema,
+  runtimeMessageFailureFromEvent,
+} from "./runtime-message-failure.js";
 import { internalModelOutput } from "./model-publication.js";
 import {
   evaluationResultSchema,
@@ -34,6 +38,7 @@ export const liveMessageSchema = z.object({
   threadId: z.string().optional(),
   /** A durable Runtime provider_wait, not a failed physical HTTP stream. */
   providerRecovery: providerRecoverySchema.optional(),
+  failure: runtimeMessageFailureSchema.optional(),
   tool: z
     .object({
       name: z.string(),
@@ -124,6 +129,7 @@ export class LiveConversationProjection {
       attempt.closed = true;
   }
   private base(e: StreamEvent): LiveMessage {
+    const failure = runtimeMessageFailureFromEvent(e);
     return {
       ...this.route(e),
       id: e.id,
@@ -156,6 +162,7 @@ export class LiveConversationProjection {
         : {}),
       text: "",
       kind: "reply",
+      ...(failure ? { failure } : {}),
     };
   }
   consume(e: StreamEvent) {

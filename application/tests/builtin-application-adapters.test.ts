@@ -184,8 +184,10 @@ import {initialWorkspace} from '/@fs/${resolve("packages/core/src/model.ts")}';i
 const fixed=new URL(location.href).searchParams.get('lane')==='fixed',factory=fixed?createFixedBuiltinAdapters:createBuiltinApplicationAdapters;
 const events=[],reads=[],nodeIds=new WeakMap();let serial=0,api,last,root,currentPage=null,lastMotion=[];const stateListeners=new Set();
 const id=n=>{if(!n)return null;if(!nodeIds.has(n))nodeIds.set(n,++serial);return nodeIds.get(n);};
-const stamp='2026-10-05T00:00:00Z',text=('原始阅读正文。'+String.fromCharCode(10)).repeat(160),book={title:'TEST原读物',author:'',edition:'',format:'markdown'},section={id:'body',title:'正文',sourceId:'reading:book:3',html:'<p>'+text.split(String.fromCharCode(10)).join('</p><p>')+'</p>',text,book};
-const artifact={id:'book',projectId:'project-original',title:book.title,revision:3,content:{kind:'document',body:text},versions:[{revision:3,title:book.title,content:{kind:'document',body:text},createdAt:stamp}],createdAt:stamp,updatedAt:stamp};
+const epub=new URL(location.href).searchParams.has('pages');
+const stamp='2026-10-05T00:00:00Z',text=('原始阅读正文。'+String.fromCharCode(10)).repeat(160),book={title:'TEST原读物',author:'',edition:'',format:epub?'epub':'markdown'},section={id:'body',title:'正文',sourceId:'reading:book:3',html:'<p>'+text.split(String.fromCharCode(10)).join('</p><p>')+'</p>',text,book};
+const content=epub?{kind:'publication',format:'epub',assetId:'a'.repeat(64)}:{kind:'document',body:text};
+const artifact={id:'book',projectId:'project-original',title:book.title,revision:3,content,versions:[{revision:3,title:book.title,content,createdAt:stamp}],createdAt:stamp,updatedAt:stamp};
 const instances=[['browser',browserApplication,{url:'https://original.invalid'}],['reader',readerApplication,{artifactId:'book'}],['script',scriptStudioApplication,{}]].map(([id,app,value])=>({id,workspaceId:'project-original',applicationId:app.id,applicationVersion:app.version,revision:7,state:value,status:'open',createdAt:stamp,updatedAt:stamp}));
 window.morphzDesktop={browser:{onState:fn=>{stateListeners.add(fn);return()=>stateListeners.delete(fn);},onSelection:()=>()=>{},onInput:()=>()=>{},state:async()=>currentPage,open:async()=>{currentPage={pageId:'guest-original',surface:{partition:'persist:builtin-fixture',src:'https://original.invalid'},artifactId:null,projectId:'project-original',url:'https://original.invalid',title:'原网页',epoch:'1',granted:false,loading:false,visible:true,error:'',pending:null};events.push(['guest-open']);return currentPage;},close:async pageId=>events.push(['guest-close',pageId]),visibility:async(...args)=>events.push(['guest-visibility',...args]),navigate:async(id,url)=>{currentPage={...currentPage,url};return currentPage;},control:async()=>currentPage}};
 function Frame(){const[facts,setFacts]=useState({active:'browser',foreground:true,wrapper:0,show:true,accent:'cyan',appearance:'light',zoom:1}),[toolbar,setToolbar]=useState(null);api=value=>setFacts(old=>({...old,...value}));last=facts;
@@ -198,7 +200,7 @@ function Frame(){const[facts,setFacts]=useState({active:'browser',foreground:tru
  resolveArtifact:async(id,revision)=>{reads.push(['resolve',id,revision]);if(!artifact.versions.some(version=>version.revision===revision))artifact.versions.push({...artifact.versions[0],revision});api({wrapper:facts.wrapper+1});return artifact;},
  execute:async command=>{events.push(['execute',command]);return{entityId:'original',revision:8};},readScriptEditor:async()=>undefined};
  const adapters=factory({client,onOpenScript:id=>events.push(['script-open',id]),onScriptLibrary:()=>events.push(['script-library']),onReadingOpen:id=>events.push(['reading-open',id]),onReadingLibrary:()=>events.push(['reading-library']),onReadingJump:target=>events.push(['reading-jump',target]),onReadingCompose:()=>({ok:true}),onReadingContext:(key,value)=>events.push(['context',key,value?{artifactId:value.artifactId,revision:value.revision,focus:value.focus}:null]),onReadingTargetConsumed:id=>events.push(['consumed',id]),onCompose:(...args)=>{events.push(['compose',...args]);return{ok:true};},onComposeIntent:intent=>events.push(['intent',intent]),onOpen:id=>events.push(['open',id]),onNotice:value=>events.push(['notice',value]),onBrowserPage:page=>events.push(['page',page]),onNativeDialog:value=>events.push(['native-dialog',value]),readingRevision:3});
- return <TextQuoteProvider quotes={[]} scope="builtin-fixture" disabled={false} onChange={()=>{}} onEngage={()=>{}} onFocusComposer={()=>{}} onOpen={()=>{}} onNotice={()=>{}}><div className="app without-collaboration" data-accent={facts.accent} data-appearance={facts.appearance} style={{zoom:facts.zoom}}><aside className="sidebar"/><div className="workspace"><header className="topbar" ref={setToolbar}/><div className="workspace-body"><div className="primary-panel"><main>{facts.show&&<ApplicationHost client={client} workspaceId="project-original" activeId={facts.active} foreground={facts.foreground} navigationId={1} toolbarTarget={toolbar} applicationActions={{activate:id=>{events.push(['activate',id]);api({active:id});},launch(){throw Error('no fixture launch');},close(){throw Error('no fixture close');}}} onOpen={()=>{}} onCompose={()=>({ok:true})} onNotice={value=>events.push(['notice',value])} renderBuiltin={adapters.renderBuiltin} onOpenRecent={adapters.openRecentContent}><span id="fallback">原内容fallback</span></ApplicationHost>}</main></div></div></div><textarea id="persistent-entry" aria-label="测试原输入" defaultValue="原草稿"/></div></TextQuoteProvider>;}
+ return <TextQuoteProvider quotes={[]} scope="builtin-fixture" disabled={false} onChange={()=>{}} onEngage={()=>{}} onFocusComposer={()=>{}} onOpen={()=>{}} onNotice={()=>{}}><div className="app without-collaboration" data-accent={facts.accent} data-appearance={facts.appearance} style={{zoom:facts.zoom}}><aside className="sidebar"/><div className="workspace"><header className="topbar" ref={setToolbar}/><div className="workspace-body"><div className="primary-panel"><main className={epub?'application-canvas':undefined}>{facts.show&&<ApplicationHost client={client} workspaceId="project-original" activeId={facts.active} foreground={facts.foreground} navigationId={1} toolbarTarget={toolbar} applicationActions={{activate:id=>{events.push(['activate',id]);api({active:id});},launch(){throw Error('no fixture launch');},close(){throw Error('no fixture close');}}} onOpen={()=>{}} onCompose={()=>({ok:true})} onNotice={value=>events.push(['notice',value])} renderBuiltin={adapters.renderBuiltin} onOpenRecent={adapters.openRecentContent}><span id="fallback">原内容fallback</span></ApplicationHost>}</main></div></div></div><textarea id="persistent-entry" aria-label="测试原输入" defaultValue="原草稿"/></div></TextQuoteProvider>;}
 root=createRoot(document.getElementById('root'));flushSync(()=>root.render(<StrictMode><Frame/></StrictMode>));
 async function settle(){await Promise.resolve();await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));await Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));await Promise.resolve();}
 function snapshot(){const pane=document.querySelector('.application-pane:not([hidden])'),host=document.querySelector('.application-host'),rect=n=>{const r=n?.getBoundingClientRect();return r?['x','y','width','height'].map(k=>Math.round(r[k]*100)/100):null;};const style=n=>{if(!n)return null;const s=getComputedStyle(n);return Object.fromEntries(['backgroundColor','color','border','borderRadius','boxShadow','backdropFilter','padding','gap','transition','animation'].map(k=>[k,s[k]]));};return{facts:last,events:[...events],reads:[...reads],panes:[...document.querySelectorAll('.application-pane')].map(n=>({id:id(n),label:n.getAttribute('aria-label'),hidden:n.hidden,role:n.getAttribute('role')})),reader:{node:id(document.querySelector('.reader-text')),viewport:id(document.querySelector('.reader-viewport')),scroll:document.querySelector('.reader-viewport')?.scrollTop??null,text:document.querySelector('.reader-text')?.textContent??null},browser:{node:id(document.querySelector('.browser-host')),inputNode:id(document.querySelector('.browser-host input')),inputFocused:document.querySelector('.browser-host input')===document.activeElement,value:document.querySelector('.browser-host input')?.value??null},geometry:{host:rect(host),pane:rect(pane),center:rect(document.querySelector('.primary-panel')),materials:style(pane),hostMaterials:style(host)},motionBeforeSettle:lastMotion,focus:document.activeElement?.id??'',html:host?.outerHTML??null};}
@@ -1124,6 +1126,114 @@ test(
                 (event[1] as Props).state?.revision === 2,
             ),
           );
+        });
+      },
+    );
+    await context.test(
+      "EPUB retains exact Agent ranges across pages, repeated targets, reflow and tab return",
+      async () => {
+        await each(async (page) => {
+          await page.goto(page.url() + "&pages=1");
+          await page.waitForFunction(
+            () => !!Reflect.get(window, "builtinFixture"),
+          );
+        });
+        const navigate = (start: number) =>
+          set({
+            active: "reader",
+            foreground: true,
+            readingNavigation: {
+              artifactId: "book",
+              revision: 3,
+              navigationId: `epub-${start}`,
+              location: {
+                sourceId: "reading:book:3",
+                sectionId: "body",
+                start,
+                end: start + 20,
+              },
+            },
+          });
+        const target = (page: Page) =>
+          page.evaluate(() => {
+            const root = document.querySelector(".reader-text")!;
+            const registry = (
+              CSS as unknown as { highlights: Map<string, Set<Range>> }
+            ).highlights;
+            const entry = [...registry.entries()].find(
+              ([key, ranges]) =>
+                key.endsWith("-citation") &&
+                [...ranges].some((range) =>
+                  root.contains(range.startContainer),
+                ),
+            );
+            const range = entry && [...entry[1]][0];
+            if (!range) return null;
+            const view = root
+              .closest(".reader-viewport")!
+              .getBoundingClientRect();
+            const rect = [...range.getClientRects()].find(
+              (r) => r.width && r.height,
+            );
+            return rect
+              ? {
+                  text: range.toString(),
+                  left: rect.left - view.left,
+                  top: rect.top - view.top,
+                  width: view.width,
+                  height: view.height,
+                }
+              : null;
+          });
+        for (const start of [1000, 400]) {
+          await navigate(start);
+          await each(async (page) => {
+            await expect(page.locator(".reader-viewport")).toHaveAttribute(
+              "data-layout",
+              "pages",
+            );
+            await expect
+              .poll(async () => (await target(page))?.text.replace(/\s/g, ""))
+              .toBe(
+                "原始阅读正文。\n"
+                  .repeat(160)
+                  .slice(start, start + 20)
+                  .replace(/\s/g, ""),
+              );
+            const value = (await target(page))!;
+            assert.ok(
+              value.left >= 0 &&
+                value.left < value.width &&
+                value.top >= 0 &&
+                value.top < value.height,
+              JSON.stringify(value),
+            );
+            const source = await page.evaluate(
+              () =>
+                Reflect.get(window, "builtinFixture")
+                  .snapshot()
+                  .events.filter((e: unknown[]) => e[0] === "context" && e[2])
+                  .at(-1)[2].focus.reference.location,
+            );
+            assert.ok(
+              source.start <= start && source.end > start,
+              JSON.stringify(source),
+            );
+          });
+        }
+        const positions = await each((page) =>
+          page.locator(".reader-viewport").evaluate((v) => v.scrollLeft),
+        );
+        await set({ active: "browser" });
+        await set({ active: "reader" });
+        await each(async (page) => {
+          assert.equal(
+            await page
+              .locator(".reader-viewport")
+              .evaluate((v) => v.scrollLeft),
+            positions[pages.indexOf(page)],
+          );
+          await expect(page.getByLabel("测试原输入")).toHaveValue("原草稿");
         });
       },
     );

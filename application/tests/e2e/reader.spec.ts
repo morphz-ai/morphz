@@ -676,7 +676,17 @@ test("常见阅读格式走同一导入、选文标注和恢复流程，不隐�
     }, format.text);
     await page.getByRole("button", { name: "高亮选文", exact: true }).click();
     if (format.next) {
-      await page.getByRole("button", { name: "下一章", exact: true }).click();
+      if (format.name.endsWith(".epub")) {
+        await page.getByRole("button", { name: "目录", exact: true }).click();
+        await page
+          .locator(".reading-app:visible .reader-panel nav button")
+          .nth(1)
+          .click();
+        await page
+          .getByRole("button", { name: "关闭阅读侧栏", exact: true })
+          .click();
+      } else
+        await page.getByRole("button", { name: "下一章", exact: true }).click();
       await expect(body).toContainText(format.next);
     }
     await page.getByRole("button", { name: "书签与批注", exact: true }).click();
@@ -819,6 +829,7 @@ test("阅读闭环：导入、高亮批注、进度恢复、未发送提问固�
     name: "查看引用 1 的原文",
     exact: true,
   });
+  await openExchangeReading(page);
   await expect(links.last()).toBeVisible();
   await links.last().click();
   await expect(page.locator(".reading-app:visible .reader-text")).toContainText(
@@ -916,7 +927,7 @@ test("直接聊天只附带阅读位置，选文才附原文；可检查、移�
   // explicitly before following its original reference back to the book.
   await openExchangeReading(page);
   await page
-    .getByRole("button", { name: /周纪一 · 回到原文/ })
+    .getByRole("button", { name: /打开关联资源：.* · 周纪一 · v1/ })
     .last()
     .click();
   await expect(reader.locator(".reader-text")).toContainText("第二处原文");

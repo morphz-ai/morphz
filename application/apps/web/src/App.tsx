@@ -40,6 +40,7 @@ import { ComposerActionBar } from "./ComposerActionBar.js";
 import { ComposerStatus } from "./ComposerStatus.js";
 import { ComposerScope } from "./ComposerScope.js";
 import { inputApplicationReference } from "./host/input-application-reference.js";
+import { resendRecordedInput } from "./host/resend-recorded-input.js";
 import {
   detachComposerAssociation,
   inputSurfaceDetached,
@@ -2870,6 +2871,9 @@ function WorkspaceApp({
               className={
                 (cognitiveView.requested ||
                   applicationWorkspaceOpen ||
+                  (artifact &&
+                    (prefs.readerMode ||
+                      artifact.content.kind === "publication")) ||
                   (prefs.view === "content" && !artifact)) &&
                 creating !== "document"
                   ? "application-canvas"
@@ -3222,6 +3226,23 @@ function WorkspaceApp({
                               : "发送失败。",
                           );
                       }
+                    }}
+                    onResend={async (id) => {
+                      const original = state.inputs.find(
+                        (item) => item.id === id,
+                      );
+                      if (
+                        !original ||
+                        original.author.actantId !== client.boot?.actantId
+                      )
+                        throw new Error("原消息不可用，未重新发送。");
+                      input.current?.focus({ preventScroll: true });
+                      await client.execute(
+                        resendRecordedInput(original),
+                        true,
+                        undefined,
+                        crypto.randomUUID(),
+                      );
                     }}
                   />
                 )}

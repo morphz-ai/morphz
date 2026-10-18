@@ -184,6 +184,7 @@ export function readerViewport(
   const offsets = readerOffsets(root.textContent ?? "", source);
   if (!offsets) return null;
   const bounds = view.getBoundingClientRect();
+  const paginated = view.dataset.layout === "pages";
   const visible = (r: DOMRect) =>
     r.width > 0 &&
     r.height > 0 &&
@@ -211,8 +212,17 @@ export function readerViewport(
           range.setStart(node!, mid);
           range.setEnd(node!, mid + 1);
           const r = range.getBoundingClientRect();
-          if (bottom ? r.top < bounds.bottom : r.bottom <= bounds.top)
-            low = mid + 1;
+          // In horizontal columns y starts over on each page. Compare the
+          // column's x first, then its line; a long text node can span pages.
+          const before = paginated
+            ? r.right <= bounds.left ||
+              (r.left < bounds.right && r.bottom <= bounds.top)
+            : r.bottom <= bounds.top;
+          const after = paginated
+            ? r.left >= bounds.right ||
+              (r.right > bounds.left && r.top >= bounds.bottom)
+            : r.top >= bounds.bottom;
+          if (bottom ? !after : before) low = mid + 1;
           else high = mid;
         }
         return low;

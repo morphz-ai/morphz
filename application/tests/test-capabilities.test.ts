@@ -86,7 +86,7 @@ const declarations = [
   },
   {
     file: "response-annotations-runtime.test.ts",
-    name: "actual Runtime + Platform HTTP: enabled required final metadata fails once without repair requests or physical Jobs",
+    name: "actual Runtime + Platform HTTP: native metadata never wraps or invalidates normal reply content",
     capability: "runtime",
     flag: "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
   },

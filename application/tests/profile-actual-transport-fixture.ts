@@ -64,7 +64,7 @@ export function profileFixtureReplyCarrier(
     const execution = annotations?.properties?.execution?.properties;
     return (
       definition.name === "reply" &&
-      !!definition.parameters?.properties?.content &&
+      !definition.parameters?.properties?.content &&
       !!execution?.title &&
       !!execution?.result
     );
@@ -73,7 +73,6 @@ export function profileFixtureReplyCarrier(
   return {
     name: "reply",
     arguments: {
-      content: "TEST deterministic provider: request accepted.",
       annotations: {
         execution: {
           title: "处理合成测试请求",
@@ -208,7 +207,15 @@ export async function profileActualTransportFixture(
           }
         : undefined;
     const message = call
-      ? { role: "assistant", content: "", tool_calls: [call] }
+      ? {
+          role: "assistant",
+          content:
+            selectedTool?.name === "reply"
+              ? (providedText ??
+                "TEST deterministic provider: request accepted.")
+              : "",
+          tool_calls: [call],
+        }
       : {
           role: "assistant",
           content:
@@ -553,13 +560,24 @@ export async function profileActualTransportFixture(
         respond(item.response, item.request);
         held.delete(marker);
       },
-      releaseWithTool(marker: string, name: string, args: unknown) {
+      releaseWithTool(
+        marker: string,
+        name: string,
+        args: unknown,
+        body?: string,
+      ) {
         const item = held.get(marker);
         assert.ok(item, "Expected held actual provider request");
-        respond(item.response, item.request, undefined, {
-          name,
-          arguments: args,
-        });
+        respond(
+          item.response,
+          item.request,
+          undefined,
+          {
+            name,
+            arguments: args,
+          },
+          body,
+        );
         held.delete(marker);
       },
       releaseWithText(marker: string, text: string) {

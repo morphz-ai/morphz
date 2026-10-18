@@ -35,6 +35,7 @@ import {
 import { workInputRequest } from "./session-io.js";
 import { scriptGenerationSchema } from "../../core/src/script-studio.js";
 import { internalModelOutput } from "../../core/src/model-publication.js";
+import { runtimeMessageFailureFromEvent } from "../../core/src/runtime-message-failure.js";
 import {
   evaluationSourceSchema,
   evaluationMessageId,
@@ -4456,6 +4457,7 @@ export class RuntimeBridge {
     // existing live projection so the original exchange can render them.
     const publicOutput = item.event.topic === "runtime/model_public_output";
     const threadId = payloadString(item.event, "thread_id");
+    const failure = runtimeMessageFailureFromEvent(item.event);
     const message: ConversationRuntime["messages"][number] = {
       id: evaluation
         ? evaluationMessageId(
@@ -4472,6 +4474,7 @@ export class RuntimeBridge {
       inputId,
       rootId: item.root_turn_id,
       ...(threadId ? { threadId } : {}),
+      ...(failure ? { failure } : {}),
       ...(item.attempt_id ? { publicationKey: item.attempt_id } : {}),
       ...(payloadString(item.event, "model_attempt_id")
         ? { modelAttemptId: payloadString(item.event, "model_attempt_id")! }
@@ -7843,7 +7846,9 @@ export class RuntimeBridge {
           delivery.error =
             delivery.state === "failed"
               ? (payloadString(result, "error") ??
-                "Morphz 执行失败，请查看错误信息。")
+                payloadString(result, "message") ??
+                payloadString(result, "reason") ??
+                "本次执行未完成。")
               : null;
           this.markDeliveryDirty(delivery);
         }
