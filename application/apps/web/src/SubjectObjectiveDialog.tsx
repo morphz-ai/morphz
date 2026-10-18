@@ -233,6 +233,7 @@ export function SubjectObjectiveDialog({
       data-view={view}
       data-confirmation={view === "delete"}
       aria-busy={!!busy}
+      closedby={view === "reading" && !busy ? "any" : "closerequest"}
       onCancel={(event) => {
         event.preventDefault();
         event.stopPropagation();

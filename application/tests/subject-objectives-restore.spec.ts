@@ -1139,6 +1139,111 @@ for (const appearance of ["light", "dark"] as const)
     expect(f.writes).toEqual([]);
   });
 
+test("目标查看点击外部关闭，内部点击和向外拖选不误关，不穿透、不丢草稿", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  const view = f.panel
+    .locator('[data-objective-id="TEST-related-goal"]')
+    .getByRole("button", { name: "查看目标", exact: true });
+  const project = page
+    .getByRole("navigation", { name: "主导航" })
+    .getByRole("button", { name: "项目", exact: true });
+  const hit = (await project.boundingBox())!;
+  const outside = { x: hit.x + hit.width / 2, y: hit.y + hit.height / 2 };
+  await view.click();
+  const dialog = page.getByRole("dialog", { name: "目标", exact: true });
+  await expect(dialog).toHaveAttribute("closedby", "any");
+  const body = dialog.getByRole("region", { name: "完整目标" });
+  await body.click();
+  await expect(dialog).toBeVisible();
+  const frame = (await dialog.boundingBox())!;
+  expect(outside.x).toBeLessThan(frame.x);
+  await page.mouse.click(frame.x + 4, frame.y + 4);
+  await expect(dialog).toBeVisible();
+  const text = (await body.boundingBox())!;
+  await page.mouse.move(text.x + 8, text.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(outside.x, outside.y, { steps: 8 });
+  await page.mouse.up();
+  await expect(dialog).toBeVisible();
+  await (await goalOption(dialog, "编辑目标")).click();
+  await expect(
+    page.getByRole("dialog", { name: "编辑目标", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.screenshot({
+    path: info.outputPath("goal-outside-dismiss-before.png"),
+  });
+  await page.mouse.click(outside.x, outside.y);
+  await expect(dialog).toHaveCount(0);
+  await expect(view).toBeFocused();
+  await expect(f.panel).toBeVisible();
+  await expect(
+    page
+      .getByRole("navigation", { name: "主导航" })
+      .getByRole("button", { name: "对话", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  await expect(await openInput(page)).toHaveValue(f.draft);
+  expect(f.writes).toEqual([]);
+  await page.screenshot({
+    path: info.outputPath("goal-outside-dismiss-after.png"),
+  });
+});
+
+test("编辑、删除确认及操作处理中不因点击外部而关闭", async ({ page }) => {
+  const f = await prepare(page);
+  const target = f.runtime.activity.objectives[0]!;
+  const view = f.panel
+    .locator('[data-objective-id="TEST-related-goal"]')
+    .getByRole("button", { name: "查看目标", exact: true });
+  await view.click();
+  const dialog = page.getByRole("dialog");
+  const frame = (await dialog.boundingBox())!;
+  const outside = { x: frame.x - 8, y: frame.y + frame.height / 2 };
+  await (await goalOption(dialog, "编辑目标")).click();
+  const editor = dialog.getByRole("textbox", { name: "目标内容", exact: true });
+  const edited = "TEST 未保存的目标修改不能因点击外部丢失";
+  await editor.fill(edited);
+  await expect(dialog).toHaveAttribute("closedby", "closerequest");
+  await page.mouse.click(outside.x, outside.y);
+  await expect(dialog).toBeVisible();
+  await expect(editor).toHaveValue(edited);
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await (await goalOption(dialog, "删除目标")).click();
+  await page.mouse.click(outside.x, outside.y);
+  await expect(dialog).toHaveAccessibleName("删除这个目标？");
+  expect(f.writes).toEqual([]);
+  await dialog.getByRole("button", { name: "保留目标", exact: true }).click();
+  let release!: () => void;
+  const response = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/objectives/control", async (route) => {
+    await response;
+    target.status = "paused";
+    target.revision!++;
+    await route.fulfill({ json: { objectiveId: target.id, action: "pause" } });
+  });
+  await dialog.getByRole("button", { name: "暂停", exact: true }).click();
+  await expect(dialog).toHaveAttribute("aria-busy", "true");
+  await expect(dialog).toHaveAttribute("closedby", "closerequest");
+  await page.mouse.click(outside.x, outside.y);
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "关闭目标", exact: true }),
+  ).toBeDisabled();
+  release();
+  await expect(dialog.getByRole("status")).toHaveText("已暂停");
+  await expect(dialog).toHaveAttribute("closedby", "any");
+  await page.mouse.click(outside.x, outside.y);
+  await expect(dialog).toHaveCount(0);
+  await expect(view).toBeFocused();
+  await expect(await openInput(page)).toHaveValue(f.draft);
+  expect(f.writes).toHaveLength(1);
+  expect(f.writes[0]).toMatch(/\/api\/objectives\/control$/);
+});
+
 test("查看不发送，暂停恢复沿同一目标修订号；删除须确认，冲突不覆盖，历史及草稿保留", async ({
   page,
 }, info) => {
@@ -1460,6 +1565,11 @@ test.describe("目标入口触控", () => {
       page.getByRole("dialog", { name: "目标", exact: true }),
     ).toBeVisible();
     const dialog = page.getByRole("dialog", { name: "目标", exact: true });
+    const frame = (await dialog.boundingBox())!;
+    await page.touchscreen.tap(frame.x + frame.width / 2, frame.y - 8);
+    await expect(dialog).toHaveCount(0);
+    await expect(view).toBeFocused();
+    await view.tap();
     await (await goalOption(dialog, "编辑目标")).tap();
     await expect(
       page.getByRole("textbox", { name: "目标内容", exact: true }),
