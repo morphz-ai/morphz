@@ -391,8 +391,28 @@ impl CustomStore for PostgresStore {
             return Ok(manifest);
         }
         let principal: Option<String> = row.try_get("initiating_principal_id")?;
-        let mut entries = sqlx::query(&format!("{SELECT_VERSION} WHERE h.agent_id=$1 AND (h.principal_scope IS NULL OR h.principal_scope=$2) AND v.revision=h.current_revision AND v.enabled ORDER BY h.namespace,h.principal_scope NULLS FIRST,h.entry_id"))
-            .bind(&agent_id).bind(&principal).fetch_all(&mut *tx).await?.into_iter().map(record).collect::<Result<Vec<_>, _>>()?;
+        // Keep the same durable Context boundary as SQLite, including nested
+        // delegates and new Threads after restart. Never fetch suppressed bodies.
+        let suppress_custom: bool = sqlx::query_scalar(
+            "WITH RECURSIVE ancestry(context_id) AS (
+                SELECT context_id FROM threads WHERE id=$1
+                UNION
+                SELECT d.parent_context_id FROM delegations d
+                JOIN ancestry a ON d.child_context_id=a.context_id
+             )
+             SELECT EXISTS(SELECT 1 FROM delegations d
+                JOIN ancestry a ON d.child_context_id=a.context_id
+                WHERE d.context_scope='blank')",
+        )
+        .bind(thread_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let mut entries = if suppress_custom {
+            Vec::new()
+        } else {
+            sqlx::query(&format!("{SELECT_VERSION} WHERE h.agent_id=$1 AND (h.principal_scope IS NULL OR h.principal_scope=$2) AND v.revision=h.current_revision AND v.enabled ORDER BY h.namespace,h.principal_scope NULLS FIRST,h.entry_id"))
+                .bind(&agent_id).bind(&principal).fetch_all(&mut *tx).await?.into_iter().map(record).collect::<Result<Vec<_>, _>>()?
+        };
         retain_new_thread_effective_custom(&mut entries);
         validate_selection(&entries)?;
         let manifest = ThreadCustomManifest {

@@ -10319,7 +10319,7 @@ impl Tool for DelegateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "delegate".to_string(),
-            description: "Delegate a substantial task to a cognitively isolated Sub Agent. This does not create a new container, process, or physical sandbox: parent and child share the Runtime workspace, filesystem, and permission boundary, and Runtime configuration changes cannot create isolation. The default mode is attached: the Runtime suspends the current evaluation, does not wake it with the queued receipt as a new Observation, and resumes the current Session with the delegate result only after the Sub Agent finishes; do not poll recall. Use detached only when the task should explicitly continue in the background beyond the current turn. The Sub Agent inherits the shared Mind and, optionally, evidence from the current Session, but cannot directly modify the parent Mind; verify, report, or integrate its result yourself.".to_string(),
+            description: "Delegate a substantial task to a cognitively isolated Sub Agent. This does not create a new container, process, or physical sandbox: parent and child share the Runtime workspace, filesystem, and permission boundary, and Runtime configuration changes cannot create isolation. The default mode is attached: the Runtime suspends the current evaluation, does not wake it with the queued receipt as a new Observation, and resumes the current Session with the delegate result only after the Sub Agent finishes; do not poll recall. Use detached only when the task should explicitly continue in the background beyond the current turn. context_scope selects inherited cognition: current_session copies Mind and current Session evidence; mind_only copies only Mind; blank starts without inherited Mind, historical Observations, or Agent/Principal Custom. For an independent blind review use blank and supply only the review material and neutral criteria in task. New task Observations and tools remain available. The Sub Agent cannot directly modify the parent Mind; verify, report, or integrate its result yourself.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -10335,8 +10335,8 @@ impl Tool for DelegateTool {
                     },
                     "context_scope": {
                         "type": "string",
-                        "enum": ["current_session", "mind_only"],
-                        "description": "current_session inherits the Mind and current Session; mind_only inherits only the Mind",
+                        "enum": ["current_session", "mind_only", "blank"],
+                        "description": "current_session inherits Mind and current Session evidence; mind_only inherits only Mind; blank inherits neither Mind, historical Observations, nor Agent/Principal Custom. All scopes keep the same tools and physical permission boundary",
                         "default": "current_session"
                     },
                     "mode": {
@@ -10366,7 +10366,10 @@ impl Tool for DelegateTool {
         if args.task.trim().is_empty() {
             return Err("delegate.task must not be empty".into());
         }
-        if !matches!(args.context_scope.as_str(), "current_session" | "mind_only") {
+        if !matches!(
+            args.context_scope.as_str(),
+            "current_session" | "mind_only" | "blank"
+        ) {
             return Err(
                 format!("Unsupported delegate.context_scope: {}", args.context_scope).into(),
             );

@@ -3,8 +3,8 @@ use morphz::context::*;
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    CustomStore, NewAgent, NewCognitiveContext, NewPrincipal, NewSession, NewThread, RuntimeStore,
-    SessionMountKind, ThreadKind, ThreadSupervision,
+    CustomStore, DelegationStatus, NewAgent, NewCognitiveContext, NewDelegation, NewPrincipal,
+    NewSession, NewThread, RuntimeStore, SessionMountKind, ThreadKind, ThreadSupervision,
 };
 use std::sync::Arc;
 
@@ -1093,7 +1093,129 @@ async fn conformance<S: RuntimeStore + 'static>(store: Arc<S>, prefix: &str) {
         store.list_custom(&head_limits.0, None).await.unwrap().len(),
         CUSTOM_MAX_SELECTED_ENTRIES
     );
+    blank_delegation_custom_conformance(store.clone(), prefix).await;
     authoring_conformance(store, prefix).await;
+}
+
+/// The same durable inheritance policy applies to both SQL authorities. A
+/// blank ancestor suppresses Custom even when a nested delegate asks for Mind
+/// or current-Session inheritance; completed edges remain authoritative.
+async fn blank_delegation_custom_conformance<S: RuntimeStore + 'static>(
+    store: Arc<S>,
+    prefix: &str,
+) {
+    let ids = setup(&*store, &format!("{prefix}-blank")).await;
+    for (namespace, principal) in [
+        ("example.agent", None),
+        ("example.human", Some(ids.3.as_str())),
+    ] {
+        store
+            .put_custom(
+                command(
+                    &ids.0,
+                    namespace,
+                    principal,
+                    &format!("{prefix}-blank-{namespace}"),
+                    0,
+                    "(configuration (prior-verdict OLD_REVIEW_MUST_NOT_LEAK))",
+                ),
+                "host",
+            )
+            .await
+            .unwrap();
+    }
+    let parent_id = thread(&*store, &ids, "parent", Some(&ids.3)).await;
+    let original_parent = store.bind_thread_custom(&parent_id).await.unwrap();
+    assert_eq!(original_parent.entries.len(), 2);
+    let mut blank_ids = None;
+    for (suffix, scope, nested, suppressed) in [
+        ("blank", "blank", false, true),
+        ("nested-mind", "mind_only", true, true),
+        ("nested-session", "current_session", true, true),
+        ("normal", "mind_only", false, false),
+    ] {
+        let parent = if nested {
+            blank_ids.as_ref().unwrap()
+        } else {
+            &ids
+        };
+        let child_context = format!("{}-{suffix}-context", ids.0);
+        let child_session = format!("{}-{suffix}-session", ids.0);
+        let delegation_id = format!("{}-{suffix}-delegation", ids.0);
+        store
+            .create_delegation_scaffold(
+                NewCognitiveContext {
+                    id: child_context.clone(),
+                    agent_id: ids.0.clone(),
+                    title: suffix.into(),
+                },
+                NewSession {
+                    id: child_session.clone(),
+                    agent_id: ids.0.clone(),
+                    context_id: child_context.clone(),
+                    parent_session_id: None,
+                    title: suffix.into(),
+                    mount_kind: if scope == "blank" {
+                        SessionMountKind::NewBlankContext
+                    } else {
+                        SessionMountKind::DelegationProjection
+                    },
+                },
+                NewDelegation {
+                    id: delegation_id.clone(),
+                    agent_id: ids.0.clone(),
+                    parent_context_id: parent.1.clone(),
+                    parent_session_id: parent.2.clone(),
+                    child_context_id: child_context.clone(),
+                    child_session_id: child_session.clone(),
+                    initiating_principal_id: Some(ids.3.clone()),
+                    task: "Review only the provided manuscript".into(),
+                    success_when: None,
+                    context_scope: scope.into(),
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .update_delegation_status(&delegation_id, DelegationStatus::Completed, None)
+            .await
+            .unwrap();
+        let child_ids = (
+            ids.0.clone(),
+            child_context,
+            child_session,
+            ids.3.clone(),
+            ids.4.clone(),
+        );
+        for generation in ["first", "later"] {
+            let id = thread(
+                &*store,
+                &child_ids,
+                &format!("{suffix}-{generation}"),
+                Some(&ids.3),
+            )
+            .await;
+            let frozen = store.bind_thread_custom(&id).await.unwrap();
+            assert_eq!(
+                frozen.entries.is_empty(),
+                suppressed,
+                "{scope} / {suffix} / {generation}"
+            );
+            assert_eq!(
+                store.get_thread_custom(&id).await.unwrap(),
+                Some(frozen.clone())
+            );
+            assert_eq!(store.bind_thread_custom(&id).await.unwrap(), frozen);
+        }
+        if scope == "blank" {
+            blank_ids = Some(child_ids);
+        }
+    }
+    assert_eq!(
+        store.bind_thread_custom(&parent_id).await.unwrap(),
+        original_parent,
+        "existing parent Threads must keep their exact frozen Custom"
+    );
 }
 
 #[tokio::test]

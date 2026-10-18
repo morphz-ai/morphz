@@ -8023,7 +8023,10 @@ impl Orchestrator {
             )
             .into());
         }
-        if !matches!(context_scope.as_str(), "current_session" | "mind_only") {
+        if !matches!(
+            context_scope.as_str(),
+            "current_session" | "mind_only" | "blank"
+        ) {
             return Err(format!("Unsupported delegate context_scope: {context_scope}").into());
         }
         let instruction = match success_when.as_deref() {
@@ -8073,7 +8076,11 @@ impl Orchestrator {
                     context_id: child_context_id.clone(),
                     parent_session_id: None,
                     title: format!("Sub Agent for {}", parent_session_id),
-                    mount_kind: SessionMountKind::DelegationProjection,
+                    mount_kind: if context_scope == "blank" {
+                        SessionMountKind::NewBlankContext
+                    } else {
+                        SessionMountKind::DelegationProjection
+                    },
                 },
                 NewDelegation {
                     id: delegation_id.clone(),
@@ -8131,7 +8138,7 @@ impl Orchestrator {
                     projection,
                 )
                 .await?;
-        } else {
+        } else if context_scope != "blank" {
             self.context_engine
                 .seed_context_from_mind(&parent_context_id, None, &child_context_id)
                 .await?;

@@ -8829,6 +8829,8 @@ pub trait CustomStore: Send + Sync {
     ) -> Result<crate::context::CustomMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically freezes the latest public + exact initiating-Principal versions,
     /// or returns the already bound immutable manifest. Never follows heads again.
+    /// Threads inside a blank Delegation Context (including descendants) bind
+    /// an empty manifest instead; isolation must survive later Threads/restarts.
     async fn bind_thread_custom(
         &self,
         thread_id: &str,

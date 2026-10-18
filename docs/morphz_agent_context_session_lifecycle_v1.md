@@ -379,6 +379,28 @@ Agent 创建响应返回：
 - 模型使用标准 Function Calling 工具 `delegate(task, success_when?, context_scope?, mode?)`；
 - Dashboard 显示当前 Session 的 Delegation 总数和运行数；REST API 可列出、读取和取消 Delegation。
 
+`context_scope` 是启动时的认知继承范围，与 attached/detached 调度方式、工具集合及物理权限分离：
+
+| 范围 | 父 Mind 快照 | 父当前 Session 有效 Observation | Agent／发起用户 Custom |
+| --- | --- | --- | --- |
+| `current_session`（默认） | 复制 | 复制并重新绑定引用 | 正常绑定 |
+| `mind_only` | 复制 | 不复制 | 正常绑定 |
+| `blank` | 不复制 | 不复制 | 不挂载 |
+
+`blank` 只接收显式的 `task`、`success_when` 与必要的 Runtime 协议／身份／权限，
+不是零输入或物理沙箱。本轮读取资料、工具结果以及子代理新形成的 Mind 都正常保留；
+原 Context 的 Event 不能通过 `recall` 越界读取。父子因果路由与结果回传不变。
+完整 Function Calling 工具定义在三种范围中保持一致，不按范围删减或重建。
+
+独立盲审应使用 `context_scope="blank"`，只在任务中提供原文（或指定原文路径）和中性审阅标准，
+不要把旧评价或预期结论放进显式任务。Custom 的空挂载由持久化委派来源链决定，
+在完成后、重开数据库、后续 Thread 和嵌套委派中继续生效；已有 Thread 的冻结绑定不变。
+这不限制同一物理权限下主动读取其他文件，因此不宣称文件系统／恶意代码隔离。
+
+验证入口：`cargo test -p morphz --test delegation_blank` 捕获真实 Runtime 编译后的模型请求和完整工具定义，
+以污染标记正反对照核查隔离、新 Observation、记忆独立性及并行在途任务；
+`cargo test -p morphz --test custom_conformance` 核查 SQLite／PostgreSQL 的持久化 Custom 边界。
+
 旧 `spawn` 实现只保留为历史测试兼容面，默认工具注册表和 System Prompt 均不再暴露；新功能只使用 `delegate`。
 
 ### 11.3 已验证不变量

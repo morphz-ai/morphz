@@ -8,6 +8,122 @@ use tempfile::TempDir;
 struct NeverCalledClient;
 
 #[tokio::test]
+async fn blank_detached_delegation_starts_without_seed_or_historical_observations() {
+    let f = Fixture::new().await;
+    f.orchestrator
+        .context_engine
+        .apply_context_transaction(
+            "parent-context",
+            "parent-session",
+            "(context-tx (base-version 0) (create parent-opinion (assessment PRIOR_REVIEW_BIAS)))",
+        )
+        .await
+        .unwrap();
+    f.store.append(Event::new(
+        "prior-review".into(), "Human".into(), TYPE_USER_MESSAGE.into(), "chat/user_message".into(),
+        json!({"context_id":"parent-context", "session_id":"parent-session", "text":"PRIOR_HISTORY_BIAS"})
+            .as_object().unwrap().clone(),
+    )).await.unwrap();
+    let request = Event::new(
+        "blank-delegate-request".into(), "Parent-Agent".into(), TYPE_AGENT_CALL.into(), "chat/delegate".into(),
+        json!({
+            "parent_context_id":"parent-context", "parent_session_id":"parent-session",
+            "child_context_id":"blank-child-context", "child_session_id":"blank-child-session",
+            "delegation_id":"blank-delegation", "task":"Independently review the supplied manuscript",
+            "context_scope":"blank", "mode":"detached"
+        }).as_object().unwrap().clone(),
+    );
+    f.orchestrator.start_delegation(&request).await.unwrap();
+    let view = f
+        .orchestrator
+        .context_engine
+        .build_context_encoding(
+            "blank-child-context",
+            "blank-child-session",
+            &HashSet::new(),
+        )
+        .await
+        .unwrap();
+    assert!(view.state.frames.is_empty());
+    assert!(view.state.relations.is_empty());
+    assert!(view.observations.is_empty());
+    assert_eq!(view.state.version, 0);
+    assert!(
+        f.store
+            .query(QueryFilter {
+                context_id: Some("blank-child-context".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty(),
+        "blank must not generate a parent Mind seed or import old Events"
+    );
+    let parent = f
+        .orchestrator
+        .context_engine
+        .build_context_encoding("parent-context", "parent-session", &HashSet::new())
+        .await
+        .unwrap();
+    assert_eq!(parent.state.version, 1);
+    assert!(parent
+        .state
+        .frames
+        .iter()
+        .any(|frame| frame.id == "parent-opinion"));
+    assert!(parent
+        .observations
+        .iter()
+        .any(|observation| observation.preview.contains("PRIOR_HISTORY_BIAS")));
+    let delegation = f
+        .store
+        .get_delegation("blank-delegation")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(delegation.context_scope, "blank");
+    assert_eq!(delegation.status, DelegationStatus::Running);
+}
+
+#[tokio::test]
+async fn unsupported_delegation_scope_does_not_create_or_mutate_child_state() {
+    let f = Fixture::new().await;
+    let request = Event::new(
+        "invalid-delegate-request".into(), "Parent-Agent".into(), TYPE_AGENT_CALL.into(), "chat/delegate".into(),
+        json!({
+            "parent_context_id":"parent-context", "parent_session_id":"parent-session",
+            "child_context_id":"invalid-child-context", "child_session_id":"invalid-child-session",
+            "delegation_id":"invalid-delegation", "task":"Review", "context_scope":"unknown", "mode":"detached"
+        }).as_object().unwrap().clone(),
+    );
+    assert!(f
+        .orchestrator
+        .start_delegation(&request)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("Unsupported delegate context_scope"));
+    assert!(f
+        .store
+        .get_context("invalid-child-context")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(f
+        .store
+        .get_session("invalid-child-session")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(f
+        .store
+        .get_delegation("invalid-delegation")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn delegation_model_controls_are_persisted_without_changing_parent() {
     let f = Fixture::new().await;
     f.orchestrator
