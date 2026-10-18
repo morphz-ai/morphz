@@ -3,6 +3,7 @@ import type { ScriptGeneration } from "../../../../packages/core/src/script-stud
 import type { ScriptLocation } from "../../../../packages/core/src/script-delivery.js";
 import type { InputIntent } from "../../../../packages/core/src/input-intent.js";
 import type { ReaderTarget } from "../../../../packages/core/src/reader.js";
+import { readerViewStateSchema } from "../../../../packages/core/src/applications.js";
 import type { WorkspaceClient } from "../client.js";
 import type { BuiltinApplicationSurface } from "../ApplicationHost.js";
 import { ScriptStudio, type ScriptComposeResult } from "../ScriptStudio.js";
@@ -91,6 +92,21 @@ export function createBuiltinApplicationAdapters({
     returnLabel,
     fallback,
   }: BuiltinApplicationSurface): ReactNode {
+    const readingState =
+      view === "reader"
+        ? readerViewStateSchema.safeParse(instance.state)
+        : null;
+    const navigation = readingState?.success ? readingState.data : null;
+    const windowTarget: ReaderTarget | null =
+      navigation?.artifactId && navigation.revision && navigation.location
+        ? {
+            artifactId: navigation.artifactId,
+            revision: navigation.revision,
+            location: navigation.location,
+            requestId:
+              navigation.navigationId ?? `${instance.id}:${instance.revision}`,
+          }
+        : null;
     return view === "terminal" ? (
       <Terminal
         client={client}
@@ -134,14 +150,33 @@ export function createBuiltinApplicationAdapters({
             ? instance.state.artifactId
             : undefined
         }
-        revision={readingRevision}
-        target={readingTarget}
+        revision={navigation?.revision ?? readingRevision}
+        target={windowTarget ?? readingTarget}
         active={activeView}
         globalLibrary={globalLibrary}
         onOpen={onReadingOpen}
         onLibrary={onReadingLibrary}
         onJump={onReadingJump}
-        onTargetConsumed={onReadingTargetConsumed}
+        onTargetConsumed={
+          windowTarget
+            ? (requestId) => {
+                if (requestId !== windowTarget.requestId) return;
+                if (readingTarget?.requestId)
+                  onReadingTargetConsumed(readingTarget.requestId);
+                void client
+                  .execute({
+                    type: "set-application-state",
+                    instanceId: instance.id,
+                    expectedRevision: instance.revision,
+                    state: {
+                      artifactId: windowTarget.artifactId,
+                      revision: windowTarget.revision,
+                    },
+                  })
+                  .catch((error) => onNotice(error.message));
+              }
+            : onReadingTargetConsumed
+        }
         onCompose={onReadingCompose}
         onContext={selected ? onReadingContext : undefined}
         onNotice={onNotice}

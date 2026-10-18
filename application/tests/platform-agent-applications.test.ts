@@ -116,7 +116,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
           action: "applications",
           applications: { action: "list" },
         });
-        assert.equal(headerList.total, 4);
+        assert.equal(headerList.total, 5);
         assert.ok(
           headerList.applications.some(
             (app) =>
@@ -150,10 +150,10 @@ for (const backend of ["sqlite", "postgres"] as const) {
           operations: {
             action: "invoke",
             operationId: "applications.list",
-            parameters: { offset: 4, limit: 1 },
+            parameters: { offset: 5, limit: 1 },
           },
         });
-        assert.equal(installed.total, 5);
+        assert.equal(installed.total, 6);
         assert.equal(installed.applications[0]!.id, manifest.id);
         assert.equal(installed.hasMore, false);
         assert.doesNotMatch(
@@ -365,7 +365,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
           action: "applications",
           applications: { action: "list" },
         });
-        assert.equal(restoredList.total, 5);
+        assert.equal(restoredList.total, 6);
         assert.equal(restoredList.instances.length, 2);
 
         // This is a genuine Platform task admission and a controlled Runtime
@@ -405,6 +405,18 @@ for (const backend of ["sqlite", "postgres"] as const) {
             resolveScope = resolve;
           },
           inputEvidenceReader: () => ({
+            async readThreadInputSource() {
+              const { snapshot } = await this.readThread();
+              return {
+                thread: snapshot.thread,
+                source: {
+                  kind: "schedule",
+                  schedule_id: admission.request.id,
+                  source_turn_id: rootId,
+                  root_thread_id: route.thread_id,
+                },
+              };
+            },
             readThread: async () => ({
               snapshot: {
                 thread: {

@@ -112,6 +112,33 @@ export function Reader(props: ReaderProps) {
   const file = useRef<HTMLInputElement>(null);
   const state = client.boot!.workspace,
     artifact = state.artifacts.find((a) => a.id === artifactId);
+  const versionAvailable = artifact?.versions.some(
+    (version) => version.revision === (props.revision ?? artifact.revision),
+  );
+  const [openError, setOpenError] = useState("");
+  useEffect(() => {
+    if (!props.active || !artifactId || versionAvailable) return;
+    let current = true;
+    setOpenError("");
+    void client
+      .resolveArtifact(artifactId, props.revision ?? undefined)
+      .then((opened) => {
+        if (
+          !opened ||
+          !opened.versions.some(
+            (version) =>
+              version.revision === (props.revision ?? opened.revision),
+          )
+        )
+          throw new Error("这份读物的指定版本暂时无法读取，请重新打开。");
+      })
+      .catch((error) => {
+        if (current) setOpenError(error.message);
+      });
+    return () => {
+      current = false;
+    };
+  }, [artifactId, props.revision, props.active, versionAvailable]);
   const directory = useContentDirectory(
     client,
     {
@@ -137,6 +164,12 @@ export function Reader(props: ReaderProps) {
     input?.addEventListener("cancel", cancel);
     return () => input?.removeEventListener("cancel", cancel);
   }, [artifactId]);
+  if (artifactId && !versionAvailable)
+    return (
+      <p className="reader-loading" role={openError ? "alert" : "status"}>
+        {openError || "正在打开读物…"}
+      </p>
+    );
   if (artifact && readable(artifact.content))
     return (
       <ReadingBook
@@ -385,6 +418,7 @@ function ReadingBook({
     };
   }, [section, active]);
   const [retry, setRetry] = useState(0);
+  const consumedTarget = useRef<string | undefined>(undefined);
   const [ocrLine, setOcrLine] = useState(0);
   const [feedback, setFeedback] = useState("");
   useEffect(() => {
@@ -572,7 +606,13 @@ function ReadingBook({
         if (!abort.signal.aborted) setError(e.message);
       });
     return () => abort.abort();
-  }, [artifact.id, version.revision, active, retry, client.workspaceChangeRevision]);
+  }, [
+    artifact.id,
+    version.revision,
+    active,
+    retry,
+    client.workspaceChangeRevision,
+  ]);
   useEffect(() => {
     if (!active || !readerReady) return;
     const abort = new AbortController();
@@ -799,7 +839,14 @@ function ReadingBook({
       sizes.disconnect();
       view.removeEventListener("scroll", check);
     };
-  }, [artifact.id, version.revision, panel, active, marksRefresh, client.workspaceChangeRevision]);
+  }, [
+    artifact.id,
+    version.revision,
+    panel,
+    active,
+    marksRefresh,
+    client.workspaceChangeRevision,
+  ]);
   function refreshMarks() {
     markReadGeneration.current++;
     pendingMarkPoint.current = null;
@@ -810,11 +857,14 @@ function ReadingBook({
     if (
       !active ||
       !target ||
+      (target.requestId && consumedTarget.current === target.requestId) ||
       target.artifactId !== artifact.id ||
       target.revision !== version.revision
     )
       return;
     jump.current = target.location;
+    restoredSection.current = null;
+    consumedTarget.current = target.requestId;
     setSectionId(target.location.sectionId);
     setSelected(null);
     setRetry((n) => n + 1);
@@ -913,11 +963,15 @@ function ReadingBook({
   );
   useEffect(() => {
     if (!section || !article.current || !viewport.current || !active) return;
+    // A new navigation can still see the previous loaded section during this
+    // effect pass. Do not consume its jump before the requested read completes.
+    if (loadedAttempt.current !== retry) return;
     const root = article.current,
       view = viewport.current;
     // Updating a highlight must not scroll the reader back to the start.
     let restored = restoredSection.current === section;
     const paint = () => {
+      if (jump.current && jump.current.sectionId !== section.id) return;
       const offsets = readerOffsets(root.textContent ?? "", section.text);
       if (!offsets) return;
       const registry = (CSS as unknown as { highlights?: Map<string, unknown> })
@@ -1032,7 +1086,7 @@ function ReadingBook({
       ])
         h?.delete(`${markClass}-${c}`);
     };
-  }, [section, signature, active]);
+  }, [section, signature, active, retry]);
   useEffect(() => {
     const pending = pendingMarkPoint.current;
     if (pending && visibleMarksReady) {

@@ -2924,10 +2924,10 @@ kbd {
   min-height: 24px;
   min-width: 0;
   margin: 0;
-  padding: 2px 4px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--ink) 16%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
   color: color-mix(in srgb, var(--text-secondary) 20%, var(--ink));
   box-shadow: none;
   outline: none;
@@ -2935,9 +2935,6 @@ kbd {
   font-weight: 400;
   line-height: 1.5;
   text-align: left;
-}
-.message-resource-prefix {
-  flex: 0 0 auto;
 }
 .message-resource-icon {
   display: inline-flex;
@@ -2961,6 +2958,11 @@ kbd {
   white-space: nowrap;
   text-overflow: ellipsis;
   font-size: inherit;
+}
+.message-object-link > .message-resource-open {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
 }
 .app .conversation .message-object-link:focus-visible {
   outline: none;

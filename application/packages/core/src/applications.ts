@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { textQuoteAnchorSchema } from "./text-quotes.js";
+import { readingLocationSchema } from "./reader.js";
 import {
   applicationManifestFormat,
   legacyApplicationManifestFormat,
@@ -138,6 +139,26 @@ const nonScriptBuiltinViewStateSchema = builtinViewStateSchema.omit({
   itemId: true,
   scriptTarget: true,
 });
+/** Reading navigation contains immutable source coordinates, never book text. */
+export const readerViewStateSchema = nonScriptBuiltinViewStateSchema
+  .extend({
+    revision: z.number().int().positive().optional(),
+    sectionId: readingLocationSchema.shape.sectionId.optional(),
+    location: readingLocationSchema.optional(),
+  })
+  .refine(
+    (state) =>
+      !(state.revision || state.sectionId || state.location) ||
+      !!state.artifactId,
+    "阅读定位需要读物标识。",
+  )
+  .refine(
+    (state) =>
+      !state.sectionId ||
+      !state.location ||
+      state.sectionId === state.location.sectionId,
+    "章节与阅读位置不一致。",
+  );
 const externalViewStateSchema = z
   .object({
     artifactId: locationId.nullable().optional(),
@@ -155,9 +176,11 @@ export function parseApplicationViewState(appId: string, value: unknown) {
       ? z.object({ terminalId: locationId.nullable().optional() }).strict()
       : appId === "morphz.script-studio"
         ? builtinViewStateSchema
-        : appId.startsWith("morphz.")
-          ? nonScriptBuiltinViewStateSchema
-          : externalViewStateSchema;
+        : appId === "morphz.reader"
+          ? readerViewStateSchema
+          : appId.startsWith("morphz.")
+            ? nonScriptBuiltinViewStateSchema
+            : externalViewStateSchema;
   return schema.parse(bounded);
 }
 export const applicationInstanceSchema = z

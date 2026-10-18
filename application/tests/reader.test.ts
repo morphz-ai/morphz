@@ -86,6 +86,94 @@ const epubFiles = {
     '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="note">后章</h1><p>这是后文。</p></body></html>',
 };
 
+test("Agent 打开阅读章节和精确选文沿用原件权限、真实坐标、幂等窗口与可消费导航", async () => {
+  const f = await agentDomainFixture();
+  try {
+    const imported = await f.withHuman((actor) =>
+      f.domains.reader.service.import(actor, {
+        commandId: randomUUID(),
+        projectId: f.projectId,
+        name: "navigation.epub",
+        bytes: zip(epubFiles),
+      }),
+    );
+    const artifactId = imported.entityId;
+    const location = {
+      sourceId: `${artifactId}@1`,
+      sectionId: "section-2",
+      start: 0,
+      end: 4,
+    };
+    const launch = (state: Record<string, unknown>) => ({
+      action: "applications",
+      applications: {
+        action: "launch",
+        appId: "morphz.reader",
+        packageVersion: "1.0.0",
+        state,
+      },
+    });
+    const accepted = f.envelope(
+      launch({ artifactId, revision: 1, sectionId: "section-2", location }),
+    );
+    const first = (await f.tools.call(accepted)) as {
+      instance: {
+        id: string;
+        revision: number;
+        state: Record<string, unknown>;
+      };
+    };
+    assert.deepEqual(first.instance.state.location, location);
+    assert.equal(first.instance.state.revision, 1);
+    assert.equal(typeof first.instance.state.navigationId, "string");
+    assert.deepEqual(await f.tools.call(accepted), first);
+    const chapter = await f.call<typeof first>(
+      launch({ artifactId, sectionId: "section-1" }),
+    );
+    assert.equal(chapter.instance.id, first.instance.id);
+    assert.deepEqual(chapter.instance.state.location, {
+      sourceId: `${artifactId}@1`,
+      sectionId: "section-1",
+      start: 0,
+      end: 0,
+    });
+    for (const state of [
+      {
+        artifactId,
+        revision: 1,
+        location: { ...location, sourceId: "another-book@1" },
+      },
+      { artifactId, revision: 1, location: { ...location, end: 900 } },
+      { artifactId, sectionId: "missing-section" },
+      { artifactId, revision: 2, location },
+    ])
+      await assert.rejects(() => f.call(launch(state)));
+    const afterFailure = await f.withHuman((actor) =>
+      f.domains.work.service.listAppViews(actor),
+    );
+    assert.equal(
+      afterFailure.find((entry) => entry.id === first.instance.id)!.revision,
+      chapter.instance.revision,
+    );
+    const reopened = await f.withHuman((actor) =>
+      f.domains.work.service.launchAppView(actor, {
+        commandId: randomUUID(),
+        projectId: f.projectId,
+        appId: "morphz.reader",
+        packageVersion: "1.0.0",
+        state: { artifactId },
+      }),
+    );
+    assert.deepEqual(
+      reopened.state,
+      { artifactId },
+      "a fresh open never inherits another chapter's old navigation",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
 test("阅读设置不附加剧情限制；原书、位置、标注和已提交请求重启后保持", async () => {
   const f = await platformRuntimeHostFixture();
   try {

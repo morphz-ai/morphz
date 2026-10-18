@@ -44,3 +44,36 @@ test("剧本精确定位仅属于剧本窗口，其他应用不接收错误的�
     { url: "https://example.invalid/" },
   );
 });
+
+test("阅读窗口保存精确原件版本和章节坐标，不接收正文或跨领域状态", () => {
+  const location = {
+    sourceId: "book@2",
+    sectionId: "section-2",
+    start: 40,
+    end: 60,
+  };
+  const state = {
+    artifactId: "book",
+    revision: 2,
+    sectionId: "section-2",
+    location,
+    navigationId: "jump",
+  };
+  assert.deepEqual(parseApplicationViewState("morphz.reader", state), state);
+  assert.deepEqual(
+    parseApplicationViewState("morphz.reader", {
+      artifactId: "book",
+      sectionId: "section-2",
+    }),
+    { artifactId: "book", sectionId: "section-2" },
+  );
+  for (const invalid of [
+    { ...state, markdown: "不能放正文" },
+    { ...state, revision: 0 },
+    { ...state, sectionId: "section-3" },
+    { ...state, artifactId: "" },
+    { ...state, location: { ...location, end: 30 } },
+  ])
+    assert.throws(() => parseApplicationViewState("morphz.reader", invalid));
+  assert.throws(() => parseApplicationViewState("morphz.browser", state));
+});

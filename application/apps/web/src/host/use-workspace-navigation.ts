@@ -814,7 +814,7 @@ export function createWorkspaceNavigationCommands<
         type: "set-application-state",
         instanceId: activeInstance.id,
         expectedRevision: activeInstance.revision,
-        state: { ...activeInstance.state, artifactId: "" },
+        state: { artifactId: "" },
       });
       // Preserve Reader's original default-current completion policy while
       // rejecting a retired private instance/session or revoked Reader target.

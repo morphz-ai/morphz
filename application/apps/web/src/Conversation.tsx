@@ -56,6 +56,7 @@ import {
   MessageSquarePlus,
   Pause,
   Link2,
+  ArrowUpRight,
   Search,
   Image as ImageIcon,
 } from "lucide-react";
@@ -999,12 +1000,6 @@ export function Conversation({
                                   }
                                 >
                                   <span
-                                    className="message-resource-prefix"
-                                    aria-hidden
-                                  >
-                                    关联
-                                  </span>
-                                  <span
                                     className="message-resource-icon"
                                     aria-hidden
                                   >
@@ -1024,6 +1019,10 @@ export function Conversation({
                                       {linkedVersion}
                                     </small>
                                   )}
+                                  <ArrowUpRight
+                                    className="message-resource-open"
+                                    aria-hidden
+                                  />
                                 </button>
                               </Tooltip>
                             )}
@@ -1039,12 +1038,6 @@ export function Conversation({
                                   }
                                 >
                                   <span
-                                    className="message-resource-prefix"
-                                    aria-hidden
-                                  >
-                                    关联
-                                  </span>
-                                  <span
                                     className="message-resource-icon"
                                     aria-hidden
                                   >
@@ -1056,6 +1049,10 @@ export function Conversation({
                                   <small className="message-resource-version">
                                     {item.cognitiveObject.object.versionRef}
                                   </small>
+                                  <ArrowUpRight
+                                    className="message-resource-open"
+                                    aria-hidden
+                                  />
                                 </button>
                               </Tooltip>
                             )}

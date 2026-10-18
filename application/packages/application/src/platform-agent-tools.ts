@@ -63,6 +63,7 @@ import {
   browserApplication,
   terminalApplication,
   readerApplication,
+  readerViewStateSchema,
   scriptStudioApplication,
 } from "../../core/src/applications.js";
 import {
@@ -442,12 +443,63 @@ export class PlatformAgentTools {
           ),
         };
       }
+      let state = request.state;
+      if (request.appId === readerApplication.id) {
+        const navigation = readerViewStateSchema.parse(state);
+        if (
+          navigation.artifactId &&
+          (navigation.location || navigation.sectionId)
+        ) {
+          const reader = this.domain.reader;
+          if (!reader) throw new DomainError("invalid", "阅读应用尚未就绪。");
+          const original = await content.platform.content(
+            actor,
+            navigation.artifactId,
+          );
+          if (
+            original.project_id !== projectId ||
+            original.availability !== "available"
+          )
+            throw new DomainError("forbidden", "读物不属于本次输入的项目。");
+          const revision =
+            navigation.revision ?? Number(original.observed_version_ref);
+          const location = navigation.location;
+          const section = await reader.readSlice(
+            actor,
+            navigation.artifactId,
+            revision,
+            location?.sectionId ?? navigation.sectionId!,
+            location?.start ?? 0,
+            1,
+          );
+          if (
+            location &&
+            (location.sourceId !== section.sourceLocatorId ||
+              location.end > section.totalCharacters)
+          )
+            throw new DomainError(
+              "invalid",
+              "阅读位置与原件版本或章节范围不匹配。",
+            );
+          state = {
+            ...navigation,
+            revision,
+            location: location ?? {
+              sourceId: section.sourceLocatorId,
+              sectionId: navigation.sectionId!,
+              start: 0,
+              end: 0,
+            },
+            navigationId: this.commandId(route),
+          };
+        }
+      }
       const instance = await work.launchAppView(actor, {
         commandId: this.commandId(route),
         projectId,
         appId: request.appId,
         packageVersion: request.packageVersion,
-        state: request.state,
+        state,
       });
       return {
         ok: true,

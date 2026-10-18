@@ -376,7 +376,8 @@ test("本人消息的关联文档引用条：悬停、Tab与按下不套用中�
       await page.mouse.move(0, 0);
       const normal = await state();
       const tokens = await colors(quote);
-      expect(normal.background[3]).toBe(0);
+      expect(normal.background[3]).toBeGreaterThan(0);
+      expect(normal.background[3]).toBeLessThanOrEqual(13);
       await reference.hover();
       // Save the actual pre-assertion appearance too, so a regression retains
       // its white surface rather than only reporting a token mismatch.

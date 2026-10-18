@@ -13180,7 +13180,11 @@ export class PlatformStore {
             );
         }
         const merged = viewNavigationState(request.appId, {
-          ...JSON.parse(existing.state_json),
+          // Opening a Reader original is a new location, not a partial edit
+          // of the previously opened book's chapter or immutable version.
+          ...(request.appId === "morphz.reader" && Object.hasOwn(state, "artifactId")
+            ? {}
+            : JSON.parse(existing.state_json)),
           ...state,
         });
         await q.change(

@@ -132,7 +132,9 @@ test("选文在正文上方，关联资源独立放在正文下方；亮暗窄�
   const footer = message.getByRole("group", { name: "关联资源", exact: true });
   await expect(footer).toHaveCount(1);
   await expect(footer.locator(".message-object-link")).toHaveCount(1);
-  await expect(resource.locator(".message-resource-prefix")).toHaveText("关联");
+  await expect(resource.locator(".message-resource-prefix")).toHaveCount(0);
+  await expect(resource).not.toContainText("关联");
+  await expect(resource.locator(".message-resource-open")).toHaveCount(1);
   for (const appearance of ["亮色", "暗色"]) {
     const settings = await openSettings(page, "外观");
     await settings
@@ -607,8 +609,9 @@ test("关联资源不是选文：类型图标、次级标题与版本同行，�
       expect((await resource.boundingBox())!.y).toBeGreaterThanOrEqual(
         body.y + body.height,
       );
-      expect(normal.background[3]).toBe(0);
-      expect(normal.border).toBe("0px");
+      expect(normal.background[3]).toBeGreaterThan(0);
+      expect(normal.background[3]).toBeLessThanOrEqual(13);
+      expect(normal.border).toBe("1px");
       expect(normal.shadow).toBe("none");
       expect(normal.font).toBeLessThan(normal.bodyFont);
       expect(normal.contrast).toBeGreaterThanOrEqual(4.5);

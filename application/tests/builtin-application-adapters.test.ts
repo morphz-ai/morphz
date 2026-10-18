@@ -178,17 +178,18 @@ import {initialWorkspace} from '/@fs/${resolve("packages/core/src/model.ts")}';i
 const fixed=new URL(location.href).searchParams.get('lane')==='fixed',factory=fixed?createFixedBuiltinAdapters:createBuiltinApplicationAdapters;
 const events=[],reads=[],nodeIds=new WeakMap();let serial=0,api,last,root,currentPage=null,lastMotion=[];const stateListeners=new Set();
 const id=n=>{if(!n)return null;if(!nodeIds.has(n))nodeIds.set(n,++serial);return nodeIds.get(n);};
-const stamp='2026-10-05T00:00:00Z',text='原始阅读正文。\\n'.repeat(160),book={title:'TEST原读物',author:'',edition:'',format:'markdown'},section={id:'body',title:'正文',sourceId:'reading:book:3',html:'<p>'+text.replaceAll('\\n','</p><p>')+'</p>',text,book};
+const stamp='2026-10-05T00:00:00Z',text=('原始阅读正文。'+String.fromCharCode(10)).repeat(160),book={title:'TEST原读物',author:'',edition:'',format:'markdown'},section={id:'body',title:'正文',sourceId:'reading:book:3',html:'<p>'+text.split(String.fromCharCode(10)).join('</p><p>')+'</p>',text,book};
 const artifact={id:'book',projectId:'project-original',title:book.title,revision:3,content:{kind:'document',body:text},versions:[{revision:3,title:book.title,content:{kind:'document',body:text},createdAt:stamp}],createdAt:stamp,updatedAt:stamp};
 const instances=[['browser',browserApplication,{url:'https://original.invalid'}],['reader',readerApplication,{artifactId:'book'}],['script',scriptStudioApplication,{}]].map(([id,app,value])=>({id,workspaceId:'project-original',applicationId:app.id,applicationVersion:app.version,revision:7,state:value,status:'open',createdAt:stamp,updatedAt:stamp}));
 window.morphzDesktop={browser:{onState:fn=>{stateListeners.add(fn);return()=>stateListeners.delete(fn);},onSelection:()=>()=>{},onInput:()=>()=>{},state:async()=>currentPage,open:async()=>{currentPage={pageId:'guest-original',surface:{partition:'persist:builtin-fixture',src:'https://original.invalid'},artifactId:null,projectId:'project-original',url:'https://original.invalid',title:'原网页',epoch:'1',granted:false,loading:false,visible:true,error:'',pending:null};events.push(['guest-open']);return currentPage;},close:async pageId=>events.push(['guest-close',pageId]),visibility:async(...args)=>events.push(['guest-visibility',...args]),navigate:async(id,url)=>{currentPage={...currentPage,url};return currentPage;},control:async()=>currentPage}};
 function Frame(){const[facts,setFacts]=useState({active:'browser',foreground:true,wrapper:0,show:true,accent:'cyan',appearance:'light',zoom:1}),[toolbar,setToolbar]=useState(null);api=value=>setFacts(old=>({...old,...value}));last=facts;
- const workspace=initialWorkspace(stamp);workspace.projects.push({id:'project-original',title:'TEST原项目',kind:'project',revision:1});workspace.artifacts.push(artifact);workspace.applicationInstances.push(...instances);
+ const workspace=initialWorkspace(stamp);workspace.projects.push({id:'project-original',title:'TEST原项目',kind:'project',revision:1});workspace.artifacts.push(artifact);workspace.applicationInstances.push(...instances.map(instance=>instance.id==='reader'&&facts.readingNavigation?{...instance,state:facts.readingNavigation}:instance));
  const boot={centerId:'builtin-fixture-center',principalId:'human-fixture',actantId:'human-fixture',csrfToken:'fixture-only',workspace,capabilities:{browserBookmarks:false},scriptLibrary:[],runtime:{configured:false,connected:false,harnesses:[]}};
  const client={boot,online:true,workspaceChangeRevision:0,contentCatalog:[],contentCatalogVersion:1,getSnapshot:()=>boot,
  listContentPage:async(...args)=>{reads.push(['directory',...args.slice(0,1)]);return{items:[],total:0};},countContent:async()=>0,
- readingState:async(...args)=>{reads.push(['reading-state',...args.slice(0,2)]);return{position:null,marks:[]};},readingContents:async(...args)=>{reads.push(['contents',...args.slice(0,2)]);return[{id:'body',title:'正文',characters:text.length}];},readReading:async(...args)=>{reads.push(['section',...args.slice(0,3)]);return section;},readingMarks:async()=>({marks:[],nextCursor:null,hasMore:false}),
+ readingState:async(...args)=>{reads.push(['reading-state',...args.slice(0,2)]);return{position:null,marks:[]};},readingContents:async(...args)=>{reads.push(['contents',...args.slice(0,2)]);return[{id:'body',title:'正文',characters:text.length}];},readReading:async(...args)=>{reads.push(['section',...args.slice(0,3)]);return args[1]===3?section:{...section,sourceId:'reading:book:'+args[1]};},readingMarks:async()=>({marks:[],nextCursor:null,hasMore:false}),
  readerCommand:async command=>{events.push(['reader-command',command]);return{revision:1};},bookmarkList:async()=>[],
+ resolveArtifact:async(id,revision)=>{reads.push(['resolve',id,revision]);if(!artifact.versions.some(version=>version.revision===revision))artifact.versions.push({...artifact.versions[0],revision});api({wrapper:facts.wrapper+1});return artifact;},
  execute:async command=>{events.push(['execute',command]);return{entityId:'original',revision:8};},readScriptEditor:async()=>undefined};
  const adapters=factory({client,onOpenScript:id=>events.push(['script-open',id]),onScriptLibrary:()=>events.push(['script-library']),onReadingOpen:id=>events.push(['reading-open',id]),onReadingLibrary:()=>events.push(['reading-library']),onReadingJump:target=>events.push(['reading-jump',target]),onReadingCompose:()=>({ok:true}),onReadingContext:(key,value)=>events.push(['context',key,value?{artifactId:value.artifactId,revision:value.revision,focus:value.focus}:null]),onReadingTargetConsumed:id=>events.push(['consumed',id]),onCompose:(...args)=>{events.push(['compose',...args]);return{ok:true};},onComposeIntent:intent=>events.push(['intent',intent]),onOpen:id=>events.push(['open',id]),onNotice:value=>events.push(['notice',value]),onBrowserPage:page=>events.push(['page',page]),onNativeDialog:value=>events.push(['native-dialog',value]),readingRevision:3});
  return <TextQuoteProvider quotes={[]} scope="builtin-fixture" disabled={false} onChange={()=>{}} onEngage={()=>{}} onFocusComposer={()=>{}} onOpen={()=>{}} onNotice={()=>{}}><div className="app without-collaboration" data-accent={facts.accent} data-appearance={facts.appearance} style={{zoom:facts.zoom}}><aside className="sidebar"/><div className="workspace"><header className="topbar" ref={setToolbar}/><div className="workspace-body"><div className="primary-panel"><main>{facts.show&&<ApplicationHost client={client} workspaceId="project-original" activeId={facts.active} foreground={facts.foreground} navigationId={1} toolbarTarget={toolbar} applicationActions={{activate:id=>{events.push(['activate',id]);api({active:id});},launch(){throw Error('no fixture launch');},close(){throw Error('no fixture close');}}} onOpen={()=>{}} onCompose={()=>({ok:true})} onNotice={value=>events.push(['notice',value])} renderBuiltin={adapters.renderBuiltin} onOpenRecent={adapters.openRecentContent}><span id="fallback">原内容fallback</span></ApplicationHost>}</main></div></div></div><textarea id="persistent-entry" aria-label="测试原输入" defaultValue="原草稿"/></div></TextQuoteProvider>;}
@@ -395,6 +396,54 @@ test(
             assert.equal(p.onNotice, options.onNotice);
           }
         }
+      },
+    );
+    await context.test(
+      "Reader consumes Agent window coordinates once without a message or content write",
+      async () => {
+        const events: unknown[][] = [];
+        const location = {
+          sourceId: "book@3",
+          sectionId: "section-2",
+          start: 40,
+          end: 60,
+        };
+        const instance = {
+          ...surface("reader").instance,
+          applicationId: "morphz.reader",
+          state: {
+            artifactId: "book",
+            revision: 3,
+            location,
+            navigationId: "agent-jump",
+          },
+        };
+        const p = element(
+          actual(ports(events, { readingRevision: 1 })).renderBuiltin(
+            surface("reader", { instance }),
+          ),
+        ).props;
+        assert.equal(p.revision, 3);
+        assert.deepEqual(p.target, {
+          artifactId: "book",
+          revision: 3,
+          location,
+          requestId: "agent-jump",
+        });
+        p.onTargetConsumed("unrelated");
+        assert.deepEqual(events, []);
+        p.onTargetConsumed("agent-jump");
+        assert.deepEqual(events, [
+          [
+            "execute",
+            {
+              type: "set-application-state",
+              instanceId: instance.id,
+              expectedRevision: 7,
+              state: { artifactId: "book", revision: 3 },
+            },
+          ],
+        ]);
       },
     );
     await context.test(
@@ -652,7 +701,11 @@ test(
         else {
           published++;
           assert.equal(payload.artifactId, "book");
-          assert.equal(payload.revision, 3);
+          assert.ok(
+            [3, value.facts.readingNavigation?.revision].includes(
+              payload.revision,
+            ),
+          );
           if (payload.focus !== null) {
             assert.equal(payload.focus.selected, false);
             assert.deepEqual(payload.focus.reference.book, {
@@ -662,7 +715,7 @@ test(
               format: "markdown",
             });
             const location = payload.focus.reference.location;
-            assert.equal(location.sourceId, "reading:book:3");
+            assert.equal(location.sourceId, `reading:book:${payload.revision}`);
             assert.equal(location.sectionId, "body");
             assert.ok(
               Number.isInteger(location.start) &&
@@ -888,6 +941,123 @@ test(
           widths[2],
           "CSS zoom actually changes geometry",
         );
+      },
+    );
+    await context.test(
+      "actual Reader scrolls to Agent coordinates and does not jump again on tab return",
+      async () => {
+        await each((page) =>
+          page.setViewportSize({ width: 1280, height: 900 }),
+        );
+        // This component fixture has no production shell height owner. Give its
+        // reading viewport a finite height before testing real Range scrolling.
+        await each((page) =>
+          page.addStyleTag({
+            content: ".reader-viewport { height: 400px; max-height: 400px; }",
+          }),
+        );
+        await set({
+          active: "reader",
+          foreground: true,
+          zoom: 1,
+          appearance: "light",
+          readingNavigation: {
+            artifactId: "book",
+            revision: 3,
+            navigationId: "mounted-agent-jump",
+            location: {
+              sourceId: "reading:book:3",
+              sectionId: "body",
+              start: 800,
+              end: 820,
+            },
+          },
+        });
+        await each(async (page) => {
+          await expect
+            .poll(() =>
+              page
+                .locator(".reader-viewport")
+                .evaluate((node) => node.scrollTop),
+            )
+            .toBeGreaterThan(200);
+          const consumed = () =>
+            page.evaluate(
+              () =>
+                Reflect.get(window, "builtinFixture")
+                  .snapshot()
+                  .events.filter(
+                    (event: unknown[]) =>
+                      event[0] === "execute" &&
+                      (event[1] as Props).type === "set-application-state" &&
+                      (event[1] as Props).state?.artifactId === "book",
+                  ).length,
+            );
+          assert.equal(await consumed(), 1);
+          await page.locator(".reader-viewport").evaluate((node) => {
+            node.scrollTop = 120;
+          });
+        });
+        await set({ active: "browser" });
+        await set({ active: "reader" });
+        await each(async (page) => {
+          await expect
+            .poll(() =>
+              page
+                .locator(".reader-viewport")
+                .evaluate((node) => node.scrollTop),
+            )
+            .toBe(120);
+          await expect(page.getByLabel("测试原输入")).toHaveValue("原草稿");
+        });
+      },
+    );
+    await context.test(
+      "Reader resolves an unloaded exact version before mounting its text",
+      async () => {
+        await set({
+          active: "reader",
+          readingNavigation: {
+            artifactId: "book",
+            revision: 2,
+            navigationId: "older-version-jump",
+            location: {
+              sourceId: "reading:book:2",
+              sectionId: "body",
+              start: 400,
+              end: 420,
+            },
+          },
+        });
+        await each(async (page) => {
+          await expect(page.locator(".reader-text")).toContainText(
+            "原始阅读正文",
+          );
+          await expect
+            .poll(() =>
+              page
+                .locator(".reader-viewport")
+                .evaluate((node) => node.scrollTop),
+            )
+            .toBeGreaterThan(200);
+          const value = await page.evaluate(() =>
+            Reflect.get(window, "builtinFixture").snapshot(),
+          );
+          assert.equal(
+            value.reads.filter(
+              (read: unknown[]) =>
+                read[0] === "resolve" && read[1] === "book" && read[2] === 2,
+            ).length,
+            1,
+          );
+          assert.ok(
+            value.events.some(
+              (event: unknown[]) =>
+                event[0] === "execute" &&
+                (event[1] as Props).state?.revision === 2,
+            ),
+          );
+        });
       },
     );
     await context.test(
