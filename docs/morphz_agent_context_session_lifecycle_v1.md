@@ -401,6 +401,16 @@ Agent 创建响应返回：
 以污染标记正反对照核查隔离、新 Observation、记忆独立性及并行在途任务；
 `cargo test -p morphz --test custom_conformance` 核查 SQLite／PostgreSQL 的持久化 Custom 边界。
 
+2026-10-18 原环境交付：默认 ContextDB 配置下相关 35 项测试通过（含真实
+PostgreSQL、模型输入污染标记对照、完整工具定义一致性、并行请求与委派
+生命周期回归）。原 Runtime 确认零在途 Activation／Job 且无所属子进程后，
+保留原环境、配置、身份、数据库与监听地址升级；认证 `/api/status` 实际
+报告 `git_commit=dd5822d6dcf6`，替换进程为 PID 62176。原 49 项 Schedule、
+5 个 Objective、24 个 Session 和 676 个 Thread 均保留；原 Session 的正常
+活动时间不被误当成数据损坏。18763／18764 预览仍可用，Desktop 原进程
+恢复“智能体已连接”，未重发原消息或启动新的实际书稿审阅。备份与恢复
+材料仅保留在本机 Cache 的 `Morphz-blank-cutover-H98IHE`。
+
 旧 `spawn` 实现只保留为历史测试兼容面，默认工具注册表和 System Prompt 均不再暴露；新功能只使用 `delegate`。
 
 ### 11.3 已验证不变量
