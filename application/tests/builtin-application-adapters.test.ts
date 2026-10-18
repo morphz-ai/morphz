@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -799,7 +805,7 @@ test(
           errors,
           businessRequests: requests,
           scope:
-            "controlled real builtin mount; raw Reader measurement chronology recorded, source and complete last boundary value compared; Reader loaded-node preservation only, not scroll/target UI; not full old Host/native/ACL",
+            "controlled real builtin mount; raw Reader chronology and complete source boundary; actual Range scrolling and cached same-chapter targeting; not full old Host/native/ACL",
         }),
       ),
     );
@@ -1008,6 +1014,67 @@ test(
                 .evaluate((node) => node.scrollTop),
             )
             .toBe(120);
+          await expect(page.getByLabel("测试原输入")).toHaveValue("原草稿");
+        });
+        await set({
+          readingNavigation: {
+            artifactId: "book",
+            revision: 3,
+            navigationId: "mounted-agent-same-chapter-paragraph",
+            location: {
+              sourceId: "reading:book:3",
+              sectionId: "body",
+              start: 400,
+              end: 420,
+            },
+          },
+        });
+        await each(async (page) => {
+          await expect
+            .poll(() =>
+              page
+                .locator(".reader-viewport")
+                .evaluate((node) => node.scrollTop),
+            )
+            .toBeGreaterThan(200);
+          const target = await page.evaluate(() => {
+            const registry = (
+              CSS as unknown as { highlights: Map<string, Set<Range>> }
+            ).highlights;
+            const entry = [...registry.entries()].find(([key]) =>
+              key.endsWith("-citation"),
+            );
+            const range = entry && [...entry[1]][0];
+            const viewport = document
+              .querySelector(".reader-viewport")!
+              .getBoundingClientRect();
+            return range
+              ? {
+                  text: range.toString(),
+                  top: range.getBoundingClientRect().top - viewport.top,
+                }
+              : null;
+          });
+          assert.ok(
+            target,
+            "Exact target text is visually located, not only a chapter selected",
+          );
+          assert.equal(
+            target.text.replace(/\s/g, ""),
+            "原始阅读正文。\n".repeat(160).slice(400, 420).replace(/\s/g, ""),
+            "The actual highlighted DOM range matches the exact source offsets",
+          );
+          assert.ok(
+            target.top >= 0 && target.top < 100,
+            JSON.stringify(target),
+          );
+          const evidence = process.env.MORPHZ_TEST_READER_EVIDENCE_DIR;
+          if (evidence) {
+            mkdirSync(evidence, { recursive: true });
+            await page.screenshot({
+              path: join(evidence, "mounted-reader-paragraph.png"),
+            });
+          }
           await expect(page.getByLabel("测试原输入")).toHaveValue("原草稿");
         });
       },

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
+import { readFileSync } from "node:fs";
 import { zip, epubFiles } from "./fixtures/reader-publication.js";
 import { join } from "node:path";
 import {
@@ -114,6 +115,101 @@ test("Agent 打开阅读章节和精确选文沿用原件权限、真实坐标�
       reopened.state,
       { artifactId },
       "a fresh open never inherits another chapter's old navigation",
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+test("Agent 直接跳转 PDF 的每一页及页内任意文字范围，不以保存进度代替导航", async () => {
+  const f = await agentDomainFixture();
+  try {
+    const imported = await f.withHuman((actor) =>
+      f.domains.reader.service.import(actor, {
+        commandId: randomUUID(),
+        projectId: f.projectId,
+        name: "TEST-page-navigation.pdf",
+        bytes: readFileSync(new URL("./fixtures/reader.pdf", import.meta.url)),
+      }),
+    );
+    const contents = await f.call<{
+      sections: { id: string; title: string }[];
+    }>({
+      action: "operations",
+      operations: {
+        action: "invoke",
+        operationId: "reader.contents",
+        parameters: { artifactId: imported.entityId, revision: 1 },
+      },
+    });
+    assert.deepEqual(
+      contents.sections.map((section) => section.id),
+      ["page-1", "page-2"],
+    );
+    let windowId: string | undefined;
+    for (const section of contents.sections) {
+      const read = await f.call<{
+        text: string;
+        location: {
+          sourceId: string;
+          sectionId: string;
+          start: number;
+          end: number;
+        };
+      }>({
+        action: "operations",
+        operations: {
+          action: "invoke",
+          operationId: "reader.read",
+          parameters: {
+            artifactId: imported.entityId,
+            revision: 1,
+            sectionId: section.id,
+            offset: 0,
+            limit: 1000,
+          },
+        },
+      });
+      assert.ok(read.text.length > 20);
+      for (const start of [
+        0,
+        7,
+        Math.floor(read.text.length / 2),
+        read.text.length - 1,
+      ]) {
+        const location = {
+          ...read.location,
+          start,
+          end: Math.min(start + 8, read.text.length),
+        };
+        const opened = await f.call<{
+          ok: true;
+          instance: { id: string; state: { location: typeof location } };
+        }>({
+          action: "operations",
+          operations: {
+            action: "invoke",
+            operationId: "applications.launch",
+            parameters: {
+              appId: "morphz.reader",
+              packageVersion: "1.0.0",
+              state: { artifactId: imported.entityId, revision: 1, location },
+            },
+          },
+        });
+        assert.equal(opened.ok, true);
+        assert.deepEqual(opened.instance.state.location, location);
+        if (windowId) assert.equal(opened.instance.id, windowId);
+        windowId = opened.instance.id;
+      }
+    }
+    const state = await f.withHuman((actor) =>
+      f.domains.reader.service.state(actor, imported.entityId, 1),
+    );
+    assert.equal(
+      state.position,
+      null,
+      "Agent navigation does not fake a saved position",
     );
   } finally {
     await f.close();

@@ -433,7 +433,9 @@ function ReadingBook({
   const citationTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
-  const loadedAttempt = useRef<number | null>(null);
+  // A cached read may return the same section object. The completed attempt
+  // must still trigger paint for a second target inside that same section.
+  const [loadedAttempt, setLoadedAttempt] = useState<number | null>(null);
   const jump = useRef<ReadingLocation | null>(
     target?.artifactId === artifact.id ? target.location : null,
   );
@@ -635,10 +637,7 @@ function ReadingBook({
     if (!active || !readerReady || !sectionId) return;
     // Switching applications only hides this reader. Reuse the loaded page so
     // returning does not clear its DOM, selection or scroll position.
-    if (
-      latest.current.section?.id === sectionId &&
-      loadedAttempt.current === retry
-    )
+    if (latest.current.section?.id === sectionId && loadedAttempt === retry)
       return;
     const abort = new AbortController();
     setError("");
@@ -648,14 +647,22 @@ function ReadingBook({
       .readReading(artifact.id, version.revision, sectionId, abort.signal)
       .then((value) => {
         if (abort.signal.aborted) return;
-        loadedAttempt.current = retry;
+        setLoadedAttempt(retry);
         setSection(value);
       })
       .catch((e) => {
         if (!abort.signal.aborted) setError(e.message);
       });
     return () => abort.abort();
-  }, [artifact.id, version.revision, sectionId, active, retry, readerReady]);
+  }, [
+    artifact.id,
+    version.revision,
+    sectionId,
+    active,
+    retry,
+    readerReady,
+    loadedAttempt,
+  ]);
   useLayoutEffect(() => {
     const root = article.current,
       view = viewport.current;
@@ -965,7 +972,7 @@ function ReadingBook({
     if (!section || !article.current || !viewport.current || !active) return;
     // A new navigation can still see the previous loaded section during this
     // effect pass. Do not consume its jump before the requested read completes.
-    if (loadedAttempt.current !== retry) return;
+    if (loadedAttempt !== retry) return;
     const root = article.current,
       view = viewport.current;
     // Updating a highlight must not scroll the reader back to the start.
@@ -1086,7 +1093,7 @@ function ReadingBook({
       ])
         h?.delete(`${markClass}-${c}`);
     };
-  }, [section, signature, active, retry]);
+  }, [section, signature, active, retry, loadedAttempt]);
   useEffect(() => {
     const pending = pendingMarkPoint.current;
     if (pending && visibleMarksReady) {
