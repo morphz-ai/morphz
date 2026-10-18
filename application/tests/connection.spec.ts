@@ -133,6 +133,7 @@ test("凭据失败保留输入，成功后退出设置；模型未配置有真�
         accounts: [],
         services: [],
         servicesUnavailable: false,
+        responseAnnotations: "on",
       },
     }),
   );

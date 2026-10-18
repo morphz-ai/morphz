@@ -199,7 +199,7 @@ export class RuntimeModelSettings {
     signal: AbortSignal,
     assertActive: () => void,
   ): Promise<ModelSettingsSnapshot> {
-    const [raw, inference, services] = await Promise.all([
+    const [raw, inference, services, annotations] = await Promise.all([
       this.request("/api/runtime/providers", signal, assertActive).then((v) =>
         providersSchema.parse(v),
       ),
@@ -213,10 +213,16 @@ export class RuntimeModelSettings {
       )
         .then((v) => servicesSchema.parse(v))
         .catch(() => null),
+      this.request(
+        "/api/runtime/response-annotations",
+        signal,
+        assertActive,
+      ).then((value) => z.object({ mode: z.enum(["off", "on"]) }).parse(value)),
     ]);
     assertActive();
     signal.throwIfAborted();
     return {
+      responseAnnotations: annotations.mode,
       catalog: {
         current: inference.model,
         options:
@@ -292,6 +298,21 @@ export class RuntimeModelSettings {
     try {
       assertActive();
       signal.throwIfAborted();
+      if (action.action === "response-annotations") {
+        z.object({
+          mode: z.literal(action.mode),
+          scope: z.literal("new_executions"),
+          persistent: z.literal(true),
+        }).parse(
+          await call("/api/runtime/response-annotations", "PUT", {
+            mode: action.mode,
+            expected_mode: action.expectedMode,
+          }),
+        );
+        assertActive();
+        signal.throwIfAborted();
+        return { kind: "saved" };
+      }
       if (
         action.action === "api-connection-read" ||
         action.action === "api-endpoint" ||

@@ -24,6 +24,7 @@ async function prepare(page: Page) {
     });
   });
   const state: ModelSettingsSnapshot = {
+    responseAnnotations: "on",
     catalog: {
       current: "first",
       options: [
@@ -88,6 +89,79 @@ async function open(page: Page) {
   ).toBeEnabled();
   return dialog;
 }
+
+test("响应注解开关持久显示、键盘操作、失败不假成功，保持未保存的模型选择", async ({
+  page,
+}, testInfo) => {
+  const state = await prepare(page);
+  const writes: any[] = [];
+  let reject = false;
+  await page.route("**/api/model-settings/update", async (route) => {
+    const action = route.request().postDataJSON();
+    writes.push(action);
+    if (reject)
+      return route.fulfill({
+        status: 409,
+        json: { message: "设置已被修改，请刷新后重试。" },
+      });
+    expect(action.action).toBe("response-annotations");
+    state.responseAnnotations = action.mode;
+    await route.fulfill({ json: { kind: "saved" } });
+  });
+  const dialog = await open(page);
+  const toggle = dialog.getByRole("switch", { name: "响应注解", exact: true });
+  await expect(toggle).toBeChecked();
+  await dialog.getByLabel("默认模型", { exact: true }).selectOption("second");
+  await toggle.focus();
+  await page.keyboard.press("Space");
+  await expect(toggle).not.toBeChecked();
+  await expect(dialog.getByRole("status")).toHaveText("响应注解已关闭。");
+  await expect(dialog.getByLabel("默认模型", { exact: true })).toHaveValue(
+    "second",
+  );
+  expect(writes).toEqual([
+    { action: "response-annotations", mode: "off", expectedMode: "on" },
+  ]);
+  await page.screenshot({
+    path: testInfo.outputPath("annotations-settings-desktop-off.png"),
+    animations: "disabled",
+  });
+  await page.reload();
+  await openSettings(page, "模型与账号");
+  await expect(toggle).not.toBeChecked();
+  reject = true;
+  await toggle.click();
+  await expect(dialog.getByRole("alert")).toContainText("设置已被修改");
+  await expect(toggle).not.toBeChecked();
+  reject = false;
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await expect(dialog.getByRole("status")).toHaveText("响应注解已开启。");
+  await page.screenshot({
+    path: testInfo.outputPath("annotations-settings-desktop-on.png"),
+    animations: "disabled",
+  });
+  await page.setViewportSize({ width: 760, height: 820 });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(toggle).toBeVisible();
+  const row = dialog.locator(".model-annotations-setting");
+  expect(await row.evaluate((e) => getComputedStyle(e).display)).toBe("flex");
+  const rowBox = await row.boundingBox(),
+    toggleBox = await toggle.boundingBox();
+  expect(toggleBox!.x).toBeGreaterThan(rowBox!.x + rowBox!.width - 48);
+  expect(await row.evaluate((e) => e.scrollWidth <= e.clientWidth)).toBe(true);
+  expect(await row.evaluate((e) => getComputedStyle(e).fontSize)).toBe("13px");
+  expect(
+    await row.evaluate((e) => {
+      const style = getComputedStyle(e);
+      return [style.marginBlockStart, style.marginBlockEnd];
+    }),
+  ).toEqual(["0px", "4px"]);
+  await page.screenshot({
+    path: testInfo.outputPath("annotations-settings-narrow-dark.png"),
+    animations: "disabled",
+  });
+});
 test("API 连接可修改地址和替换密钥；独立保存、不回显、冲突可恢复", async ({
   page,
 }, testInfo) => {
@@ -336,6 +410,7 @@ test("统一设置切换分类保留账号表单，保存期间禁止离开，�
     .getByRole("button", { name: "关闭设置", exact: true })
     .boundingBox();
   await expect(navigation.getByRole("button")).toHaveText([
+    "个人资料",
     "模型与账号",
     "外观",
     "输入",

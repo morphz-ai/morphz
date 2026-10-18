@@ -538,6 +538,7 @@ export function workInputRequest(
   input: Workspace["inputs"][number],
   model?: string | null,
   original?: Workspace["inputs"][number],
+  responseAnnotations?: "off" | "on",
 ) {
   return {
     io_version: "1",
@@ -590,9 +591,11 @@ export function workInputRequest(
             harness: undefined,
           }
         : {
-            // Freeze this application's display protocol on NEW executions.
-            // A supplement inherits the original Thread's immutable choice.
-            response_annotations: "on",
+            // Runtime freezes the operator default on admission. An explicit
+            // caller choice is optional; supplements inherit their old Thread.
+            ...(responseAnnotations
+              ? { response_annotations: responseAnnotations }
+              : {}),
             ...(input.application?.harness
               ? { harness: input.application.harness }
               : {}),

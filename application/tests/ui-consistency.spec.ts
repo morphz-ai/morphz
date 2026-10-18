@@ -52,6 +52,7 @@ async function prepare(
         ],
         services: [],
         servicesUnavailable: false,
+        responseAnnotations: "on",
       },
     }),
   );

@@ -16,6 +16,13 @@ const apiConnection = {
 export const modelSettingsActionSchema = z.discriminatedUnion("action", [
   z
     .object({
+      action: z.literal("response-annotations"),
+      mode: z.enum(["off", "on"]),
+      expectedMode: z.enum(["off", "on"]),
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal("default"),
       model: id,
       expectedCurrent: z.string(),
@@ -72,6 +79,7 @@ export const modelSettingsActionSchema = z.discriminatedUnion("action", [
 ]);
 export type ModelSettingsAction = z.infer<typeof modelSettingsActionSchema>;
 export const modelSettingsSchema = z.object({
+  responseAnnotations: z.enum(["off", "on"]),
   catalog: modelCatalogSchema,
   accounts: z.array(
     z.object({

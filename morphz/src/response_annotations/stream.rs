@@ -278,7 +278,9 @@ pub struct ModelStreamNormalizer {
     tools: HashMap<usize, ToolStream>,
     ordinary_text_seen: bool,
     reply_started: bool,
-    text: super::text::TextAnnotationDecoder,
+    text_prefix: String,
+    implicit_decoder: Option<ReplyContentDecoder>,
+    implicit_reply: Option<DecodedReply>,
 }
 impl ModelStreamNormalizer {
     pub fn new(protocol: Protocol) -> Self {
@@ -287,11 +289,15 @@ impl ModelStreamNormalizer {
             tools: HashMap::new(),
             ordinary_text_seen: false,
             reply_started: false,
-            text: super::text::TextAnnotationDecoder::default(),
+            text_prefix: String::new(),
+            implicit_decoder: None,
+            implicit_reply: None,
         }
     }
     pub fn decoded_reply(&self) -> Option<&DecodedReply> {
-        self.tools.values().find_map(|tool| tool.reply.as_ref())
+        self.implicit_reply
+            .as_ref()
+            .or_else(|| self.tools.values().find_map(|tool| tool.reply.as_ref()))
     }
     pub fn push(
         &mut self,
@@ -305,8 +311,28 @@ impl ModelStreamNormalizer {
                 if self.reply_started && !text.trim().is_empty() {
                     return Err(error("reply cannot mix with ordinary content"));
                 }
-                self.ordinary_text_seen |= !text.trim().is_empty();
-                let text = self.text.push(text);
+                let text = if let Some(decoder) = &mut self.implicit_decoder {
+                    decoder.push(text)?
+                } else if self.ordinary_text_seen || !self.tools.is_empty() {
+                    text.clone()
+                } else {
+                    self.text_prefix.push_str(text);
+                    let prefix = self.text_prefix.trim_start();
+                    if prefix.starts_with('{') {
+                        let mut decoder = ReplyContentDecoder::default();
+                        let body = decoder.push(&std::mem::take(&mut self.text_prefix))?;
+                        self.implicit_decoder = Some(decoder);
+                        body
+                    } else if prefix.is_empty() && self.text_prefix.len() <= 64 {
+                        String::new()
+                    } else {
+                        std::mem::take(&mut self.text_prefix)
+                    }
+                };
+                // Keep explicit/implicit reply exclusivity independent from
+                // whether any decoded body has reached the public stream yet.
+                self.ordinary_text_seen |=
+                    !text.trim().is_empty() || self.implicit_decoder.is_some();
                 return Ok(if text.is_empty() {
                     vec![]
                 } else {
@@ -318,6 +344,7 @@ impl ModelStreamNormalizer {
                     return Err(error("Duplicate tool stream start"));
                 }
                 if self.reply_started
+                    || self.implicit_decoder.is_some()
                     || name == "reply" && (!self.tools.is_empty() || self.ordinary_text_seen)
                 {
                     return Err(error("reply must be sole call with no ordinary content"));
@@ -372,6 +399,9 @@ impl ModelStreamNormalizer {
             {
                 return Err(error("Completed reply lacks validated control body"))
             }
+            ModelStreamEvent::Completed if self.implicit_decoder.is_some() => {
+                self.implicit_reply = Some(self.implicit_decoder.as_mut().unwrap().finish()?);
+            }
             _ => (),
         }
         if matches!(
@@ -381,7 +411,7 @@ impl ModelStreamNormalizer {
                 | ModelStreamEvent::Failed { .. }
         ) && !self.reply_started
         {
-            let text = self.text.finish();
+            let text = std::mem::take(&mut self.text_prefix);
             if !text.is_empty() {
                 return Ok(vec![ModelStreamEvent::TextDelta { text }, event]);
             }
@@ -394,6 +424,49 @@ impl ModelStreamNormalizer {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn implicit_reply_streams_only_content_and_uses_the_explicit_decoder() {
+        let body = "中文🧠\n```json\n{\"annotations\":\"业务数据\"}\n```";
+        let annotations = json!({"execution":{"title":"检查合成数据","result":"已检查"}});
+        for raw in [
+            format!(
+                "{{\"annotations\":{annotations},\"content\":{}}}",
+                json!(body)
+            ),
+            format!(
+                "{{\"content\":{},\"annotations\":{annotations}}}",
+                json!(body)
+            ),
+        ] {
+            for split in raw.char_indices().map(|(i, _)| i).chain([raw.len()]) {
+                let mut normalizer = ModelStreamNormalizer::new(Protocol::On);
+                let mut public = String::new();
+                for delta in [&raw[..split], &raw[split..]] {
+                    for event in normalizer
+                        .push(ModelStreamEvent::TextDelta { text: delta.into() })
+                        .unwrap()
+                    {
+                        if let ModelStreamEvent::TextDelta { text } = event {
+                            public.push_str(&text);
+                        }
+                    }
+                }
+                assert_eq!(
+                    public, body,
+                    "body must arrive before completion at split {split}"
+                );
+                normalizer.push(ModelStreamEvent::Completed).unwrap();
+                let decoded = normalizer.decoded_reply().unwrap();
+                assert_eq!(decoded.content, body);
+                assert_eq!(decoded.annotations, Some(annotations.clone()));
+                assert_eq!(decoded.arguments, raw);
+            }
+            let mut off = ModelStreamNormalizer::new(Protocol::Off);
+            assert!(
+                matches!(&off.push(ModelStreamEvent::TextDelta{text:raw.clone()}).unwrap()[0],ModelStreamEvent::TextDelta{text} if text==&raw)
+            );
+        }
+    }
     #[test]
     fn unicode_utf8_all_byte_splits_emit_before_finish_exact_body_no_metadata() {
         let content = "中文 🧠 \"引号\" \\ 换行\n制表\t尾";

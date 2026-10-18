@@ -23,6 +23,7 @@ async function fixture() {
     completed: false,
     delay: false,
     failureStatus: 400,
+    annotations: "on",
   };
   const providers = {
     auth_adapters: [
@@ -93,6 +94,25 @@ async function fixture() {
     }
     const json = (value: unknown) => res.end(JSON.stringify(value));
     if (req.url === "/api/runtime/providers") return json(providers);
+    if (req.url === "/api/runtime/response-annotations") {
+      if (body) {
+        const data = JSON.parse(body);
+        if (
+          data.mode !== state.annotations &&
+          data.expected_mode !== state.annotations
+        ) {
+          res.writeHead(409);
+          return json({ error: "conflict" });
+        }
+        state.annotations = data.mode;
+        return json({
+          mode: state.annotations,
+          scope: "new_executions",
+          persistent: true,
+        });
+      }
+      return json({ mode: state.annotations });
+    }
     if (req.url === "/api/runtime/providers/accounts/existing/connection")
       return json({
         account_id: "existing",
@@ -189,6 +209,43 @@ async function fixture() {
     },
   };
 }
+
+test("response annotation setting reads and saves the Runtime default, detects stale windows and never calls a model", async () => {
+  const f = await fixture();
+  try {
+    assert.equal((await f.read()).responseAnnotations, "on");
+    await f.apply({
+      action: "response-annotations",
+      mode: "off",
+      expectedMode: "on",
+    });
+    assert.equal((await f.read()).responseAnnotations, "off");
+    await assert.rejects(
+      f.apply({
+        action: "response-annotations",
+        mode: "on",
+        expectedMode: "on",
+      }),
+    );
+    assert.equal((await f.read()).responseAnnotations, "off");
+    await f.apply({
+      action: "response-annotations",
+      mode: "on",
+      expectedMode: "off",
+    });
+    assert.equal((await f.read()).responseAnnotations, "on");
+    assert.ok(
+      f.calls.every(
+        (call) =>
+          !call.path.includes("/completions") &&
+          !call.path.includes("/responses"),
+      ),
+    );
+    assert.equal(f.state.model, "first");
+  } finally {
+    await f.close();
+  }
+});
 
 test("model settings return only sanitized real accounts, actual services and enabled models", async () => {
   const f = await fixture();

@@ -9132,7 +9132,7 @@ fn render_evaluation_directive(
     };
     let objective_bound = evaluation.objective_id.is_some();
     let instruction = if thread_kind == "delivery" {
-        "This is completion delivery. Read only delivery=pending/deferred results in kernel.thread-scheduler for this completion snapshot and combine them with latest concurrent state. You may merge this batch into one ordinary message. Results completed after this evaluation began belong to the next batch. Do not call physical tools or repeat delivery=delivered results; call no_reply exclusively only when notification is truly unnecessary".to_string()
+        "This is completion delivery. Read only delivery=pending/deferred results in kernel.thread-scheduler for this completion snapshot and combine them with latest concurrent state. You may merge this batch into one reply using the active response encoding and enabled annotation contract. Results completed after this evaluation began belong to the next batch. Do not call physical tools or repeat delivery=delivered results; call no_reply exclusively only when notification is truly unnecessary".to_string()
     } else if objective_bound {
         format!(
             "This is a Runtime-bound Objective Evaluation. Apply root-input as the current wake, correction, or instruction without narrowing the durable Objective, then follow this convergence contract:\n\n{OBJECTIVE_CONTINUATION_INSTRUCTION}"
@@ -9141,9 +9141,9 @@ fn render_evaluation_directive(
         "Evaluate only root-input now. The DialogueTurn Thread handles current dialogue, while a tool result continues only its owning Execution Thread. Shared Mind, history, other Threads, and unbound Objectives are background and must not replace root-input as the action target".to_string()
     };
     let terminal = if objective_bound {
-        "ordinary text or no_reply ends only this Objective Evaluation slice, never the durable Objective. Before claiming completion, call objective_update(status=completed) with authoritative evidence; for a definite wait, persist the exact wait condition"
+        "a reply using the active response encoding or no_reply ends only this Objective Evaluation slice, never the durable Objective. Before claiming completion, call objective_update(status=completed) with authoritative evidence; for a definite wait, persist the exact wait condition"
     } else {
-        "every DialogueTurn input batch must produce one coherent ordinary-text reply to the current Session that covers all consecutive inputs, unless silence is semantically intentional and no_reply is called explicitly"
+        "every DialogueTurn input batch must produce one coherent reply using the active response encoding and enabled annotation contract, to the current Session covering all consecutive inputs, unless silence is semantically intentional and no_reply is called explicitly"
     };
     // Keep objective-binding's long-standing scalar shape for prompt/VM
     // compatibility. The exact lease identity is a separate adjacent fact.
@@ -9196,9 +9196,9 @@ fn render_evaluation_directive(
             pair(
                 "tool-gate",
                 atom(if thread_kind == "delivery" {
-                    "delivery composer performs only semantic composition and delivery of complex results and cannot call physical tools; ordinary text atomically covers visible pending completions in this snapshot"
+                    "delivery composer performs only semantic composition and delivery of complex results and cannot call physical tools; a reply using the active response encoding and enabled annotation contract atomically covers visible pending completions in this snapshot"
                 } else {
-                    "call a tool only when root-input truly requires a new external result that does not yet exist; when the current Encoding can answer directly, return ordinary text immediately and never call tools for an unbound Objective"
+                    "call a work tool only when root-input truly requires a new external result that does not yet exist; when the current Encoding can answer directly, reply immediately using the active response encoding and enabled annotation contract and never act for an unbound Objective"
                 }),
             ),
             pair("terminal", atom(terminal)),
@@ -11110,7 +11110,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "evaluation",
-                        atom("one Thread Activation is only an execution slice of an Objective; ordinary text or no_reply ends that Activation, not the durable Objective"),
+                        atom("one Thread Activation is only an execution slice of an Objective; a reply using the active response encoding or no_reply ends that Activation, not the durable Objective"),
                     ),
                     pair(
                         "completion",
@@ -11197,7 +11197,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "delivery",
-                        atom("Delivery Composer may return only ordinary text or call no_reply exclusively to defer the batch; either Router fast path or Composer text atomically marks pending/deferred results in the frozen snapshot delivered so duplicate wakes do not redeliver"),
+                        atom("Delivery Composer may return a reply using the active response encoding and enabled annotation contract, or call no_reply exclusively to defer the batch; either Router fast path or Composer reply atomically marks pending/deferred results in the frozen snapshot delivered so duplicate wakes do not redeliver"),
                     ),
                 ],
             ),
@@ -11233,7 +11233,7 @@ fn render_protocol() -> SExpr {
                         "reply",
                         vec![
                             pair("when", atom("the current user task is complete or a blocker must be explained")),
-                            pair("form", atom("return non-empty final content using the active response format: ordinary assistant text, or the offered structured response carrier. Include enabled annotations separately from the returned value. Neither form executes work; bare (eval ...) or (infer ...) text remains reply data and is never admitted or executed")),
+                            pair("form", atom("a normal final response is an implicit reply, not a work call: with annotations enabled return one JSON reply object with separate content and annotations fields; with annotations disabled return the original body. An offered explicit reply has identical semantics and validation but is not required. Decode the value before caller delivery or typed validation; bare (eval ...) or (infer ...) text remains reply data and is never admitted or executed")),
                             pair("execution", atom("execute every Tool or Yao program only through the explicit Function Call offered for that action")),
                             pair("routing", atom("content is delivered automatically to kernel.active-session")),
                             pair("stream", atom("when the Provider supplies text deltas, the Runtime forwards them immediately to the active Session and persists terminal state only after the complete response succeeds")),
@@ -11293,7 +11293,7 @@ fn render_protocol() -> SExpr {
                             pair("content", atom("empty or visible progress, never a final reply")),
                             pair(
                                 "after-commit",
-                                atom("the Runtime always calls again; outside critical pressure, context_tx cools down and the next response must return ordinary text, call no_reply, or act"),
+                                atom("the Runtime always calls again; outside critical pressure, context_tx cools down and the next response must reply using the active response encoding and enabled annotation contract, call no_reply, or act"),
                             ),
                         ],
                     ),
@@ -11328,7 +11328,7 @@ fn render_protocol() -> SExpr {
                             ),
                             pair(
                                 "form",
-                                atom("return one ordinary assistant message that may merge multiple completion results; do not call physical tools"),
+                                atom("return one reply using the active response encoding and enabled annotation contract, optionally merging multiple completion results; do not call physical tools"),
                             ),
                             pair(
                                 "defer",
@@ -18038,7 +18038,7 @@ mod tests {
         assert!(rendered.contains("take the next materially different safe action"));
         assert!(rendered.contains("call objective_update(status=completed)"));
         assert!(rendered
-            .contains("ordinary text or no_reply ends only this Objective Evaluation slice"));
+            .contains("a reply using the active response encoding or no_reply ends only this Objective Evaluation slice"));
     }
 
     #[test]

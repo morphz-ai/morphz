@@ -532,6 +532,13 @@ struct UpdateInferenceRequest {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UpdateResponseAnnotationsRequest {
+    mode: crate::response_annotations::Protocol,
+    expected_mode: crate::response_annotations::Protocol,
+}
+
+#[derive(serde::Deserialize)]
 struct ResumeObjectiveRequest {
     expected_revision: u64,
     reason: Option<String>,
@@ -1170,6 +1177,10 @@ impl Server {
             .route(
                 "/api/runtime/inference",
                 get(handle_get_inference).put(handle_update_inference),
+            )
+            .route(
+                "/api/runtime/response-annotations",
+                get(handle_get_response_annotations).put(handle_update_response_annotations),
             )
             .route(
                 "/api/runtime/harnesses",
@@ -3596,6 +3607,39 @@ async fn handle_mutate_frame_lifecycle(
     {
         Ok(commit) => Json(commit).into_response(),
         Err(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+    }
+}
+
+async fn handle_get_response_annotations(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> Response {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    Json(json!({"mode": state.runtime.default_response_annotations()})).into_response()
+}
+
+async fn handle_update_response_annotations(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<UpdateResponseAnnotationsRequest>,
+) -> Response {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return unauthorized_response();
+    }
+    let Some(path) = state.core_config_path.as_deref() else {
+        return error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Cannot persist response annotations: Runtime core configuration path unavailable",
+        );
+    };
+    match state.runtime.set_default_response_annotations(request.mode,request.expected_mode,path) {
+        Ok(true) => Json(json!({"mode": state.runtime.default_response_annotations(),"scope":"new_executions","persistent":true})).into_response(),
+        Ok(false) => error_response(StatusCode::CONFLICT,"Response annotation setting changed; reload before saving"),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR,error.to_string()),
     }
 }
 
@@ -16730,6 +16774,119 @@ account = "xai-account"
         .into_response();
         assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
         assert_eq!(runtime.model(), "fixture-model");
+    }
+
+    #[tokio::test]
+    async fn response_annotation_setting_is_operator_only_persistent_and_revision_fenced() {
+        use crate::response_annotations::Protocol;
+        let (state, runtime) = test_state().await;
+        let mut state = Arc::try_unwrap(state).ok().unwrap();
+        state.auth_token = Some("test-operator".into());
+        state.gateway_token = Some("test-gateway".into());
+        let path = state.core_config_path.clone().unwrap();
+        let state = Arc::new(state);
+        let mut gateway = HeaderMap::new();
+        gateway.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer test-gateway"),
+        );
+        assert_eq!(
+            handle_get_response_annotations(
+                State(state.clone()),
+                gateway.clone(),
+                Query(AuthQuery::default())
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            handle_update_response_annotations(
+                State(state.clone()),
+                gateway,
+                Query(AuthQuery::default()),
+                Json(UpdateResponseAnnotationsRequest {
+                    mode: Protocol::On,
+                    expected_mode: Protocol::Off
+                })
+            )
+            .await
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(runtime.default_response_annotations(), Protocol::Off);
+        let mut operator = HeaderMap::new();
+        operator.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer test-operator"),
+        );
+        let response = handle_update_response_annotations(
+            State(state.clone()),
+            operator.clone(),
+            Query(AuthQuery::default()),
+            Json(UpdateResponseAnnotationsRequest {
+                mode: Protocol::On,
+                expected_mode: Protocol::Off,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(runtime.default_response_annotations(), Protocol::On);
+        let persisted: AppConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(persisted.orchestrator.response_annotations, Protocol::On);
+        let restarted = MorphzRuntime::builder(persisted, Arc::new(ReplyClient::default()))
+            .database_path(path.with_extension("restart.sqlite").to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(restarted.default_response_annotations(), Protocol::On);
+        assert!(serde_json::from_value::<UpdateResponseAnnotationsRequest>(
+            json!({"mode":"auto","expected_mode":"on"})
+        )
+        .is_err());
+        assert_eq!(
+            handle_update_response_annotations(
+                State(state.clone()),
+                operator.clone(),
+                Query(AuthQuery::default()),
+                Json(UpdateResponseAnnotationsRequest {
+                    mode: Protocol::Off,
+                    expected_mode: Protocol::Off
+                })
+            )
+            .await
+            .status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(runtime.default_response_annotations(), Protocol::On);
+        assert_eq!(
+            handle_update_response_annotations(
+                State(state),
+                operator,
+                Query(AuthQuery::default()),
+                Json(UpdateResponseAnnotationsRequest {
+                    mode: Protocol::Off,
+                    expected_mode: Protocol::On
+                })
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(runtime.default_response_annotations(), Protocol::Off);
+        let persisted: AppConfig =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(persisted.orchestrator.response_annotations, Protocol::Off);
+        let invalid = path.join("not-a-file.toml");
+        assert!(runtime
+            .set_default_response_annotations(Protocol::On, Protocol::Off, &invalid)
+            .is_err());
+        assert_eq!(
+            runtime.default_response_annotations(),
+            Protocol::Off,
+            "failed persistence must not change live admission"
+        );
     }
 
     #[tokio::test]

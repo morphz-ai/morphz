@@ -220,10 +220,14 @@ test("source delivery lost-response retry reuses the exact admitted request byte
   }
 });
 
-test("new ordinary/follow-up inputs enable annotations; a directed supplement has no protocol override", () => {
+test("new ordinary/follow-up inputs inherit the Runtime setting; explicit choices and supplements remain distinct", () => {
   const ordinary = workInputRequest(input, "fixture-model");
-  assert.ok("response_annotations" in ordinary.activation);
-  assert.equal(ordinary.activation.response_annotations, "on");
+  assert.equal("response_annotations" in ordinary.activation, false);
+  for (const mode of ["off", "on"] as const) {
+    const explicit = workInputRequest(input, "fixture-model", undefined, mode);
+    assert.ok("response_annotations" in explicit.activation);
+    assert.equal(explicit.activation.response_annotations, mode);
+  }
   assert.equal(ordinary.activation.dispatch_mode, "interrupt");
   assert.equal(ordinary.activation.model_alias, "fixture-model");
   const followUp = workInputRequest({
@@ -235,8 +239,7 @@ test("new ordinary/follow-up inputs enable annotations; a directed supplement ha
       generation: 2,
     },
   });
-  assert.ok("response_annotations" in followUp.activation);
-  assert.equal(followUp.activation.response_annotations, "on");
+  assert.equal("response_annotations" in followUp.activation, false);
   const supplement = workInputRequest(
     {
       ...input,
@@ -690,16 +693,30 @@ test("new durable task admissions freeze enabled annotations; explicit off and d
         }),
     );
     const admission = await start();
-    assert.equal(admission.request.response_annotations, "on");
+    assert.equal(admission.request.response_annotations, undefined);
     assert.deepEqual(await start(), admission);
     assert.equal(
       prepareTaskAdmission(admission, []).request.response_annotations,
-      "on",
+      undefined,
     );
     for (const protocol of [undefined, "off", "on"] as const) {
       const legacy = structuredClone(admission);
       if (protocol === undefined) delete legacy.request.response_annotations;
-      else legacy.request.response_annotations = protocol;
+      else {
+        const {
+          not_before,
+          interval_seconds,
+          dependency_thread_ids,
+          ...prefix
+        } = legacy.request;
+        legacy.request = {
+          ...prefix,
+          response_annotations: protocol,
+          not_before,
+          interval_seconds,
+          dependency_thread_ids,
+        };
+      }
       const parsed = taskRunAdmissionSchema.parse(legacy);
       assert.equal(JSON.stringify(parsed), JSON.stringify(legacy));
       assert.equal(

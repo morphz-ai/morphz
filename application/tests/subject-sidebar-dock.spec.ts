@@ -108,6 +108,7 @@ test("设定 tab 使用静态 Agent 头像且左品牌保持，不再提供项�
         accounts: [],
         services: [],
         servicesUnavailable: false,
+        responseAnnotations: "on",
       },
     }),
   );

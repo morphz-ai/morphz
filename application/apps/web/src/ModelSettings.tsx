@@ -349,6 +349,48 @@ export function ModelSettings({
                 新消息默认使用此模型，也可在输入框中单独选择。
               </small>
             </form>
+            <label className="settings-row model-annotations-setting">
+              <span>
+                响应注解
+                <small id="response-annotations-help">
+                  为回复生成简短标题和结果。模型不支持时可关闭，仅影响新任务。
+                </small>
+              </span>
+              <input
+                className="settings-switch"
+                type="checkbox"
+                role="switch"
+                aria-label="响应注解"
+                aria-describedby="response-annotations-help"
+                checked={snapshot.responseAnnotations === "on"}
+                disabled={busy}
+                onChange={(event) => {
+                  const next = event.target.checked ? "on" : "off";
+                  void run(async (signal) => {
+                    await update(
+                      {
+                        action: "response-annotations",
+                        mode: next,
+                        expectedMode: snapshot.responseAnnotations,
+                      },
+                      signal,
+                    );
+                    const saved = modelSettingsSchema.parse(
+                      await applicationCall("model-settings.read", undefined, {
+                        signal,
+                      }),
+                    );
+                    if (!signal.aborted) {
+                      setSnapshot(saved);
+                      setNotice(
+                        next === "on" ? "响应注解已开启。" : "响应注解已关闭。",
+                      );
+                      changed();
+                    }
+                  });
+                }}
+              />
+            </label>
             <section aria-label="已连接账号">
               <div className="model-settings-section-heading">
                 <h3>已连接账号</h3>

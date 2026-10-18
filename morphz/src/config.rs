@@ -2728,6 +2728,19 @@ pub fn save_managed_inference_at(
 /// Persist the optional logical Model Route used exclusively by the built-in
 /// automatic permission reviewer. Removing the value restores main-model
 /// fallback without disturbing the remaining permission profile.
+pub fn save_managed_response_annotations_at(
+    path: &Path,
+    mode: crate::response_annotations::Protocol,
+) -> Result<(), String> {
+    let mut root = read_managed_value(path)?;
+    insert_managed_value(
+        &mut root,
+        &["orchestrator", "response_annotations"],
+        toml::Value::String(mode.as_str().to_string()),
+    )?;
+    write_managed_value(path, &root)
+}
+
 pub fn save_managed_auto_review_model_at(path: &Path, model: Option<&str>) -> Result<(), String> {
     let model = model.map(str::trim).filter(|value| !value.is_empty());
     let mut root = read_managed_value(path)?;

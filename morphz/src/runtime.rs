@@ -1838,6 +1838,9 @@ impl MorphzRuntimeBuilder {
         thread_control.bind(&orchestrator);
         let runtime = MorphzRuntime {
             inner: Arc::new(RuntimeInner {
+                default_response_annotations: std::sync::Mutex::new(
+                    self.config.orchestrator.response_annotations,
+                ),
                 config: self.config,
                 provider_catalog_config: RwLock::new(provider_catalog_config),
                 identity: self.identity,
@@ -2107,6 +2110,8 @@ struct RuntimeInner {
     terminals: Arc<crate::terminal::TerminalManager>,
     session_io: crate::session_io::Registry,
     config: AppConfig,
+    /// Admission default only. Every accepted Thread keeps its frozen choice.
+    default_response_annotations: std::sync::Mutex<crate::response_annotations::Protocol>,
     /// Authoritative in-process Provider/Account/Route catalog. Unlike the
     /// immutable startup config, operator mutations replace this snapshot and
     /// the routed client atomically without restarting the Runtime.
@@ -3942,7 +3947,7 @@ impl MorphzRuntime {
         }
         let response_annotations = request
             .response_annotations
-            .unwrap_or(self.inner.config.orchestrator.response_annotations);
+            .unwrap_or_else(|| self.default_response_annotations());
         if !response_annotations.is_off() {
             self.inner
                 .orchestrator
@@ -4174,6 +4179,41 @@ impl MorphzRuntime {
     /// change before applying it here.
     pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
         self.inner.client.reasoning_effort()
+    }
+
+    pub fn default_response_annotations(&self) -> crate::response_annotations::Protocol {
+        *self
+            .inner
+            .default_response_annotations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Persist before publishing the new default; no active Thread, Job, tool
+    /// definition or Objective is changed or woken by this operator preference.
+    pub fn set_default_response_annotations(
+        &self,
+        mode: crate::response_annotations::Protocol,
+        expected: crate::response_annotations::Protocol,
+        path: &std::path::Path,
+    ) -> Result<bool, RuntimeError> {
+        let mut current = self
+            .inner
+            .default_response_annotations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *current == mode {
+            return Ok(true);
+        }
+        if *current != expected {
+            return Ok(false);
+        }
+        self.inner
+            .orchestrator
+            .validate_response_annotations_protocol(mode)?;
+        crate::config::save_managed_response_annotations_at(path, mode)?;
+        *current = mode;
+        Ok(true)
     }
 
     /// Effective level sent to the selected route after applying the native
@@ -11849,8 +11889,8 @@ impl SessionHandle {
         // read on every accepted message.
         let client_message_id = client_message_id.unwrap_or_else(|| runtime_id("client"));
         validate_client_message_id(&client_message_id)?;
-        let effective_annotations = response_annotations
-            .unwrap_or(self.runtime.inner.config.orchestrator.response_annotations);
+        let effective_annotations =
+            response_annotations.unwrap_or_else(|| self.runtime.default_response_annotations());
         if input_destination.is_none()
             && !effective_annotations.is_off()
             && self

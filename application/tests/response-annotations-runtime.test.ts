@@ -66,6 +66,161 @@ test("deterministic default final response follows only the offered annotation r
   );
 });
 
+test(
+  "actual Runtime setting: disabling during an active response preserves its contract, new input is off without annotations",
+  {
+    skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",
+    timeout: 120_000,
+  },
+  async () => {
+    const f = await profileActualTransportFixture();
+    try {
+      const projectId = "setting_" + randomUUID().replaceAll("-", ""),
+        conversationId = "conversation_" + randomUUID().replaceAll("-", "");
+      let created = false;
+      const send = async (marker: string) => {
+        f.hold(marker);
+        await f.client.call(
+          "platform.message",
+          {
+            commandId: randomUUID(),
+            operation: {
+              type: "record-input",
+              projectId,
+              conversationId,
+              artifactId: null,
+              artifactRevision: null,
+              selection: "",
+              body: marker,
+              targetActantId: "morphz-agent",
+              ...(!created
+                ? { newConversation: { title: "TEST 注解设置隔离验证" } }
+                : {}),
+            },
+          },
+          f.options,
+        );
+        created = true;
+        return f.waitRequest(marker);
+      };
+      const settle = async (id: string) => {
+        for (let i = 0; i < 300; i++) {
+          const thread = f.sql<{ status: string }>(
+            "SELECT status FROM threads WHERE id = ?",
+            id,
+          )[0];
+          if (
+            ["completed", "failed", "cancelled"].includes(thread?.status ?? "")
+          ) {
+            assert.equal(thread?.status, "completed");
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        assert.fail("Input did not settle");
+      };
+      await f.client.call(
+        "projects.create",
+        { commandId: randomUUID(), projectId, title: "TEST 响应注解设置" },
+        f.options,
+      );
+      const marker = "TEST_SETTING_ACTIVE_" + randomUUID();
+      const activeRequest = await send(marker);
+      const active = f.sql<{ id: string; response_annotations: string }>(
+        "SELECT id,response_annotations FROM threads ORDER BY rowid DESC LIMIT 1",
+      )[0]!;
+      assert.equal(active.response_annotations, "on");
+      // Remote HTTP deliberately lacks local admin capabilities. Use the
+      // canonical local Host domain without weakening that RPC boundary.
+      await f.runtime.modelSettings.apply(
+        { action: "response-annotations", mode: "off", expectedMode: "on" },
+        AbortSignal.timeout(5000),
+        () => {},
+      );
+      assert.equal(
+        (
+          await f.runtime.modelSettings.read(
+            AbortSignal.timeout(5000),
+            () => {},
+          )
+        ).responseAnnotations,
+        "off",
+      );
+      assert.equal(
+        f.sql<{ response_annotations: string }>(
+          "SELECT response_annotations FROM threads WHERE id = ?",
+          active.id,
+        )[0]!.response_annotations,
+        "on",
+      );
+      f.releaseWithText(
+        marker,
+        JSON.stringify({
+          annotations: {
+            execution: { title: "TEST 原执行仍开启", result: "原设置未被改变" },
+          },
+          content: "TEST ON BODY",
+        }),
+      );
+      await settle(active.id);
+      const nextMarker = "TEST_SETTING_NEW_OFF_" + randomUUID();
+      const nextRequest = await send(nextMarker);
+      assert.ok(
+        JSON.stringify(activeRequest).includes("Response annotations (enabled"),
+      );
+      assert.ok(
+        !JSON.stringify(nextRequest).includes("Response annotations (enabled"),
+      );
+      assert.ok(
+        (activeRequest.tools as any[]).some(
+          (t) => (t.function ?? t).name === "reply",
+        ),
+      );
+      assert.ok(
+        !(nextRequest.tools as any[]).some(
+          (t) => (t.function ?? t).name === "reply",
+        ),
+      );
+      const next = f.sql<{ id: string; response_annotations: string }>(
+        "SELECT id,response_annotations FROM threads ORDER BY rowid DESC LIMIT 1",
+      )[0]!;
+      assert.equal(next.response_annotations, "off");
+      f.releaseWithText(nextMarker, "TEST OFF BODY");
+      await settle(next.id);
+      assert.equal(
+        f
+          .sql<{ payload: string }>(
+            "SELECT payload FROM events WHERE thread_id = ? AND topic = 'chat/reply'",
+            next.id,
+          )
+          .map((row) => JSON.parse(row.payload).text)
+          .join(""),
+        "TEST OFF BODY",
+      );
+      assert.equal(
+        f.sql<{ n: number }>(
+          "SELECT count(*) AS n FROM execution_jobs WHERE thread_id IN (?,?)",
+          active.id,
+          next.id,
+        )[0]!.n,
+        0,
+      );
+      assert.equal(
+        f.sql<{ n: number }>(
+          "SELECT count(*) AS n FROM events WHERE thread_id IN (?,?) AND topic = 'runtime/response_protocol_error'",
+          active.id,
+          next.id,
+        )[0]!.n,
+        0,
+      );
+      assert.equal(f.requests.length, 2);
+      assert.equal(f.realCalls, 0);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
 /** The provider is deterministic, but every admission, schema, carrier, Host
  * tool, receipt, EventStore projection and Application Client read is real.
  * No original profile, provider credential or paid model is used. */
@@ -294,7 +449,7 @@ test(
 );
 
 test(
-  "actual Runtime + Platform HTTP: text metadata and missing display fields preserve one reply without repair requests or Jobs",
+  "actual Runtime + Platform HTTP: implicit reply requires separate annotations and invalid replies retain exact evidence without repair",
   {
     skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",
     timeout: 120_000,
@@ -304,6 +459,7 @@ test(
       name: string;
       metadata: Record<string, unknown>;
       text?: boolean;
+      valid?: boolean;
     }[] = [
       { name: "missing annotations", metadata: {} },
       {
@@ -322,8 +478,21 @@ test(
       },
       { name: "plain text without metadata", metadata: {}, text: true },
       {
-        name: "ordinary text with metadata",
+        name: "implicit reply without title",
+        metadata: { annotations: { execution: { result: "TEST result" } } },
         text: true,
+      },
+      {
+        name: "implicit reply with empty result",
+        metadata: {
+          annotations: { execution: { title: "TEST title", result: " " } },
+        },
+        text: true,
+      },
+      {
+        name: "implicit reply with required annotations",
+        text: true,
+        valid: true,
         metadata: {
           annotations: {
             execution: {
@@ -382,7 +551,7 @@ test(
             f.releaseWithText(
               marker,
               entry.metadata.annotations
-                ? `<morphz-annotations>${JSON.stringify(entry.metadata.annotations)}</morphz-annotations>\n${candidate}`
+                ? JSON.stringify({ content: candidate, ...entry.metadata })
                 : candidate,
             );
           else
@@ -404,10 +573,14 @@ test(
             terminal = data.runtime.activity?.threads.find(
               (thread) => thread.projectId === projectId,
             );
-            if (terminal?.lifecycle === "completed") break;
+            if (terminal?.lifecycle === (entry.valid ? "completed" : "failed"))
+              break;
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
-          assert.equal(terminal?.lifecycle, "completed");
+          assert.equal(
+            terminal?.lifecycle,
+            entry.valid ? "completed" : "failed",
+          );
           assert.ok(terminal);
           const detail = executionSnapshotSchema.parse(
             await f.client.call(
@@ -434,43 +607,73 @@ test(
           );
           assert.deepEqual(
             { ...thread[0] },
-            { status: "completed", response_annotations: "on" },
+            {
+              status: entry.valid ? "completed" : "failed",
+              response_annotations: "on",
+            },
           );
           const fused = f.sql<{ payload: string }>(
             "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_fused'",
             terminal.id,
           );
-          assert.equal(fused.length, 0);
+          assert.equal(fused.length, entry.valid ? 0 : 1);
           const failures = f.sql<{ payload: string }>(
             "SELECT payload FROM events WHERE thread_id = ? AND topic IN ('chat/reply', 'session/io_state') AND json_extract(payload, '$.terminal_kind') = 'failed'",
             terminal.id,
           );
-          assert.equal(failures.length, 0);
+          assert.equal(failures.length, entry.valid ? 0 : 1);
           const replies = f.sql<{ payload: string }>(
             "SELECT payload FROM events WHERE thread_id = ? AND topic = 'chat/reply'",
             terminal.id,
           );
-          assert.equal(replies.length, 1);
-          assert.equal(JSON.parse(replies[0]!.payload).text, candidate);
+          assert.equal(replies.length, entry.valid ? 1 : 0);
+          if (entry.valid)
+            assert.equal(JSON.parse(replies[0]!.payload).text, candidate);
+          else {
+            assert.notEqual(JSON.parse(failures[0]!.payload).text, candidate);
+            assert.equal(
+              JSON.parse(failures[0]!.payload).runtime_failure_kind,
+              "response_annotations_protocol",
+            );
+          }
           const sources = f.sql<{ payload: string }>(
             "SELECT payload FROM events WHERE thread_id = ? AND topic = 'chat/assistant_call' AND json_extract(payload, '$.terminal_outcome') = 1",
             terminal.id,
           );
-          assert.equal(sources.length, 1);
-          const bundle = JSON.parse(
-            sources[0]!.payload,
-          ).response_annotation_bundle;
-          if (entry.name === "ordinary text with metadata") {
+          assert.equal(sources.length, entry.valid ? 1 : 0);
+          if (entry.valid) {
+            const bundle = JSON.parse(
+              sources[0]!.payload,
+            ).response_annotation_bundle;
             assert.equal(bundle.diagnostics.length, 0);
             assert.equal(terminal.title, "TEST 普通文本注解");
             assert.equal(terminal.summary, "TEST 正文已返回");
             assert.equal(bundle.raw_response.tool_calls.length, 0);
-            assert.match(bundle.raw_response.content, /^<morphz-annotations>/);
-          } else
-            assert.ok(
-              bundle.diagnostics.length > 0,
-              "Missing or invalid fields have explicit evidence, not fabricated annotations",
+            assert.equal(
+              JSON.parse(bundle.raw_response.content).content,
+              candidate,
             );
+          } else {
+            const errors = f.sql<{ payload: string }>(
+              "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_error'",
+              terminal.id,
+            );
+            assert.equal(errors.length, 1);
+            const capture = JSON.parse(errors[0]!.payload).response_capture;
+            assert.equal(capture.state, "complete");
+            if (entry.text)
+              assert.equal(
+                capture.raw_response.content,
+                entry.metadata.annotations
+                  ? JSON.stringify({ content: candidate, ...entry.metadata })
+                  : candidate,
+              );
+            else
+              assert.deepEqual(
+                JSON.parse(capture.raw_response.tool_calls[0].arguments),
+                { content: candidate, ...entry.metadata },
+              );
+          }
           await new Promise((resolve) => setTimeout(resolve, 150));
           assert.equal(
             f.requests.length,

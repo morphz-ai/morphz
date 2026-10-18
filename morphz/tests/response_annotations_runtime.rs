@@ -42,7 +42,7 @@ const RAW_WORK: &str = r#"{ "key": "system", "_annotations": {"execution":{"titl
 const RAW_BUSINESS: &str = r#"{"key":"system","_annotations":{"business":"ordinary payload"}}"#;
 const RAW_LIFECYCLE_WORK: &str = r#"{"key":"system","_annotations":{"execution":{"title":"检查后选择生命周期边界","progress":"读取合成系统","result":"LIFECYCLE_CANDIDATE_MUST_NOT_FINALIZE"},"intent":"读取合成系统，不把候选结果当成终态"}}"#;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Scenario {
     Plain,
     OffBusiness,
@@ -63,6 +63,7 @@ enum Scenario {
     BadDuplicateReply,
     StrictWorkReply,
     StrictBadFinal(u8),
+    ImplicitBadFinal(u8),
 }
 
 fn infer_root_case(case: u8) -> (&'static str, &'static str) {
@@ -155,10 +156,7 @@ impl ScriptClient {
 
     fn text_reply(content: &str, title: &str, result: &str) -> Response {
         Response {
-            content: format!(
-                "<morphz-annotations>{}</morphz-annotations>\n{content}",
-                json!({"execution":{"title":title,"result":result}})
-            ),
+            content: json!({"annotations":{"execution":{"title":title,"result":result}},"content":content}).to_string(),
             tool_calls: vec![],
         }
     }
@@ -408,7 +406,7 @@ impl Client for ScriptClient {
                 }
                 Self::reply(args)
             }
-            (Scenario::StrictBadFinal(case), 0) => {
+            (Scenario::StrictBadFinal(case) | Scenario::ImplicitBadFinal(case), 0) => {
                 let mut args = json!({"content":FINAL_TEXT,"annotations":{"execution":{"title":"检查合成环境","result":"检查完成"}}});
                 match case {
                     0 => { args.as_object_mut().unwrap().remove("annotations"); }
@@ -419,6 +417,9 @@ impl Client for ScriptClient {
                     5 => args["annotations"]["execution"]["result"] = Value::Null,
                     6 => args["annotations"]["execution"]["result"] = json!("长".repeat(513)),
                     _ => panic!("unknown strict fixture case"),
+                }
+                if matches!(self.scenario, Scenario::ImplicitBadFinal(_)) {
+                    return self.stream_text_response(Response {content:args.to_string(),tool_calls:vec![]},stream).await;
                 }
                 Self::reply(args)
             }
@@ -753,20 +754,33 @@ impl Fixture {
         let reply = tokio::time::timeout(Duration::from_secs(25), async {
             loop {
                 let events = self.events(&accepted.id, None).await;
-                if let Some(reply) = events.iter().find(|e| e.topic == "chat/reply") {
-                    return reply.clone();
-                }
-                if let Some(failed) = events.iter().find(|e| {
-                    e.topic == "session/io_state"
-                        && e.payload.get("state").and_then(Value::as_str) == Some("failed")
+                if let Some(reply) = events.iter().find(|e| {
+                    e.topic == "chat/reply"
+                        || e.topic == "session/io_state"
+                            && e.payload.get("terminal_kind").and_then(Value::as_str)
+                                == Some("failed")
                 }) {
-                    panic!("Runtime failed before reply: {failed:?}");
+                    return reply.clone();
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
-        .await
-        .expect("scripted Runtime did not deliver");
+        .await;
+        let reply = match reply {
+            Ok(reply) => reply,
+            Err(error) => {
+                let topics = self
+                    .events(&accepted.id, None)
+                    .await
+                    .into_iter()
+                    .map(|event| event.topic)
+                    .collect::<Vec<_>>();
+                panic!(
+                    "scripted Runtime did not deliver for {:?}: {error}; topics: {topics:?}",
+                    self.client.scenario
+                );
+            }
+        };
         (accepted, reply)
     }
 
@@ -1166,13 +1180,13 @@ async fn unknown_observation_ref_is_rejected_without_repair_or_extra_execution()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn single_infer_harness_keeps_optional_annotations_typed_values_and_streaming_in_one_request()
+async fn single_infer_harness_keeps_required_annotations_typed_values_and_streaming_in_one_request()
 {
     let mut stable_tools = None;
     let mut baseline_values = std::collections::HashMap::new();
     for protocol in [Protocol::Off, Protocol::On] {
         for text_carrier in [false, true] {
-            for case in 0..=4 {
+            for case in 0..=3 {
                 let fixture = Fixture::new(
                     if text_carrier {
                         Scenario::TextInferRoot(case)
@@ -1274,22 +1288,8 @@ async fn single_infer_harness_keeps_optional_annotations_typed_values_and_stream
                         .all(|m| !m.content.contains(CONTRACT)));
                 } else {
                     let annotations = annotations.unwrap();
-                    assert_eq!(
-                        annotations.title.as_deref(),
-                        if case == 4 {
-                            None
-                        } else {
-                            Some("核对合成返回值")
-                        }
-                    );
-                    assert_eq!(
-                        annotations.result.as_deref(),
-                        if case == 4 {
-                            None
-                        } else {
-                            Some("合成求值已返回")
-                        }
-                    );
+                    assert_eq!(annotations.title.as_deref(), Some("核对合成返回值"));
+                    assert_eq!(annotations.result.as_deref(), Some("合成求值已返回"));
                     assert_eq!(captured[0].tools.len(), 1);
                     assert_eq!(captured[0].tools[0].name, "reply");
                     if protocol == Protocol::On {
@@ -1331,8 +1331,13 @@ async fn single_infer_harness_keeps_optional_annotations_typed_values_and_stream
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn invalid_infer_business_value_still_fails_without_repair_or_a_model_relay() {
-    for case in [5] {
-        let fixture = Fixture::new(Scenario::InferRoot(case), Protocol::Off).await;
+    for scenario in [
+        Scenario::InferRoot(4),
+        Scenario::TextInferRoot(4),
+        Scenario::InferRoot(5),
+        Scenario::TextInferRoot(5),
+    ] {
+        let fixture = Fixture::new(scenario, Protocol::Off).await;
         let mut input = Fixture::input(Some(Protocol::On));
         input.activation.harness = Some(morphz::harness::ExactHarnessRef {
             id: "TEST-infer-annotations".into(),
@@ -3573,10 +3578,9 @@ async fn enabled_final_reply_persists_required_metadata_in_original_requests_and
             .any(|record| record.kind == AnnotationKind::Result));
         if matches!(scenario, Scenario::TextReply) {
             assert!(bundle.raw_response.tool_calls.is_empty());
-            assert!(bundle
-                .raw_response
-                .content
-                .starts_with("<morphz-annotations>"));
+            let envelope: Value = serde_json::from_str(&bundle.raw_response.content).unwrap();
+            assert_eq!(envelope["content"], FINAL_TEXT);
+            assert!(envelope["annotations"]["execution"]["title"].is_string());
         } else {
             assert_eq!(bundle.raw_response.tool_calls[0].func_name, "reply");
         }
@@ -3635,49 +3639,54 @@ async fn enabled_final_reply_persists_required_metadata_in_original_requests_and
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn enabled_plain_or_invalid_display_metadata_preserves_reply_and_durable_diagnostics() {
-    for scenario in std::iter::once(Scenario::Plain).chain((0..=6).map(Scenario::StrictBadFinal)) {
+async fn enabled_plain_or_invalid_annotations_fail_with_exact_capture_and_no_repair() {
+    for scenario in std::iter::once(Scenario::Plain)
+        .chain((0..=6).map(Scenario::StrictBadFinal))
+        .chain((0..=6).map(Scenario::ImplicitBadFinal))
+    {
         let fixture = Fixture::new(scenario, Protocol::Off).await;
         let (root, reply) = fixture.submit(Some(Protocol::On)).await;
-        assert_eq!(reply.payload["text"], FINAL_TEXT);
+        assert_ne!(
+            reply.payload["text"], FINAL_TEXT,
+            "missing annotations must not masquerade as a successful annotated reply"
+        );
         let thread = fixture
             .runtime
             .session_thread_by_root("annotations-session", &root.id)
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Completed);
+        assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Failed);
         assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 1);
         assert!(fixture.jobs().await.is_empty());
-        assert!(fixture
+        let errors = fixture
             .events(&root.id, Some("runtime/response_protocol_error"))
-            .await
-            .is_empty());
-        assert!(fixture
-            .events(&root.id, Some("runtime/response_protocol_fused"))
-            .await
-            .is_empty());
-        let sources = fixture.events(&root.id, Some("chat/assistant_call")).await;
-        let terminal = sources
-            .iter()
-            .find(|e| e.payload["terminal_outcome"] == true)
-            .unwrap();
-        let bundle: PersistedAnnotations =
-            serde_json::from_value(terminal.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-        assert!(
-            !bundle.diagnostics.is_empty(),
-            "missing or invalid metadata must leave precise evidence"
+            .await;
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].payload["response_capture"]["state"], "complete");
+        let raw: &Value = &errors[0].payload["response_capture"]["raw_response"];
+        assert_eq!(
+            fixture
+                .events(&root.id, Some("runtime/response_protocol_fused"))
+                .await
+                .len(),
+            1
         );
-        assert!(bundle
-            .records
-            .iter()
-            .all(|record| !record.value.trim().is_empty()));
-        if let Scenario::StrictBadFinal(case) = scenario {
-            assert!(bundle.raw_response.content.is_empty());
-            assert_eq!(bundle.raw_response.tool_calls.len(), 1);
-            assert_eq!(bundle.raw_response.tool_calls[0].func_name, "reply");
-            let args: Value =
-                serde_json::from_str(&bundle.raw_response.tool_calls[0].arguments).unwrap();
+        assert!(fixture
+            .events(&root.id, Some("chat/assistant_call"))
+            .await
+            .is_empty());
+        if let Scenario::StrictBadFinal(case) | Scenario::ImplicitBadFinal(case) = scenario {
+            let captured: Response = serde_json::from_value(raw.clone()).unwrap();
+            let args: Value = if matches!(scenario, Scenario::ImplicitBadFinal(_)) {
+                assert!(captured.tool_calls.is_empty());
+                serde_json::from_str(&captured.content).unwrap()
+            } else {
+                assert!(captured.content.is_empty());
+                assert_eq!(captured.tool_calls.len(), 1);
+                assert_eq!(captured.tool_calls[0].func_name, "reply");
+                serde_json::from_str(&captured.tool_calls[0].arguments).unwrap()
+            };
             assert_eq!(args["content"], FINAL_TEXT);
             match case {
                 0 => assert!(args.get("annotations").is_none()),
@@ -3701,8 +3710,8 @@ async fn enabled_plain_or_invalid_display_metadata_preserves_reply_and_durable_d
                 _ => unreachable!(),
             }
         } else {
-            assert_eq!(bundle.raw_response.content, FINAL_TEXT);
-            assert!(bundle.raw_response.tool_calls.is_empty());
+            assert_eq!(raw["content"], FINAL_TEXT);
+            assert_eq!(raw["tool_calls"], json!([]));
         }
     }
 }
@@ -3914,6 +3923,51 @@ async fn schedule_annotation_override_is_frozen_and_none_keeps_legacy_retry_fing
             .unwrap()
             .unwrap(),
         owner
+    );
+    // A hot operator toggle changes only subsequent schedule admissions. The
+    // prior omitted-choice command retains its exact accepted owner on retry.
+    assert!(fixture
+        .runtime
+        .set_default_response_annotations(
+            Protocol::On,
+            Protocol::Off,
+            &fixture.temp.path().join("setting.toml")
+        )
+        .unwrap());
+    assert_eq!(
+        fixture
+            .runtime
+            .create_session_schedule(&session, "principal-default", request.clone())
+            .await
+            .unwrap(),
+        legacy
+    );
+    let mut hot = request.clone();
+    hot.id = "annotation-schedule-hot-default".into();
+    let hot = fixture
+        .runtime
+        .create_session_schedule(&session, "principal-default", hot)
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .get_thread(&hot.thread_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .response_annotations,
+        Protocol::On
+    );
+    assert_eq!(
+        fixture
+            .store
+            .get_thread(&legacy.thread_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .response_annotations,
+        Protocol::Off
     );
     // Restore the real durable store under a changed new-execution default.
     // An accepted None request must still resolve its original immutable owner.

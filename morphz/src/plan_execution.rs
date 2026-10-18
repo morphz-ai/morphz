@@ -3065,15 +3065,15 @@ fn infer_request_event(
     let root_turn_id = event_id.clone();
     let result_instruction = match result {
         crate::sexpr_eval::InferResultKind::Json { ty, definitions, .. } => format!(
-            "This infer returns a model-evaluated result of type {ty:?}. Evaluate the complete BODY to fulfill its requirements, not to echo literal instructions or example values. The declared type constrains your result, not the task description. Return only ordinary JSON matching this strict schema (no $yao envelopes, Markdown fences, extra fields or commentary). Runtime constructs and validates the named data before continuing: {}",
+            "This infer returns a model-evaluated result of type {ty:?}. Evaluate the complete BODY to fulfill its requirements, not to echo literal instructions or example values. The declared type constrains your result, not the task description. The decoded final body must contain only ordinary JSON matching this strict schema (no $yao envelopes, Markdown fences, extra fields or commentary inside the value). Runtime constructs and validates the named data before continuing: {}",
             serde_json::to_string(&crate::yao::json::json_schema(ty, definitions).map_err(|error| format!("invalid infer result schema: {error}"))?)?
         ),
         crate::sexpr_eval::InferResultKind::Yao {
             ty: crate::yao::Type::Program { .. },
             ..
-        } => "This node requires a Yao Program Value candidate. The final body must be exactly one raw Yao program with one explicit (eval ...) or (infer ...) root. Follow the single Yao Language Card in Context Encoding and do not include (version ...), JSON wrapping, Markdown fences, or explanatory text. Runtime will parse, type-check, bound effects, canonicalize, hash, and persist the candidate; returned source is never executed directly.".to_string(),
+        } => "This node requires a Yao Program Value candidate. The decoded final body must be exactly one raw Yao program with one explicit (eval ...) or (infer ...) root. Follow the single Yao Language Card in Context Encoding and do not include (version ...), JSON wrapping, Markdown fences, or explanatory text inside that program value. Runtime will parse, type-check, bound effects, canonicalize, hash, and persist the candidate; returned source is never executed directly.".to_string(),
         crate::sexpr_eval::InferResultKind::Yao { ty, .. } => format!(
-            "This node declares typed Yao result type {ty:?}. The final body must contain only the value's valid JSON transport, without Markdown fences or additional explanation. A String result is a JSON string literal such as \"A\"; bare A is invalid. A nominal record is encoded as {{\"$yao\":{{\"kind\":\"record\",\"type\":\"TYPE_NAME\",\"fields\":{{...exact declared fields...}}}}}}. A nominal union uses kind=\"variant\", type=\"TYPE_NAME\", variant=\"VARIANT_NAME\", fields={{...}} inside the same $yao envelope. Nested nominal values use their own envelopes. Json, primitive, List and Map fields retain ordinary JSON values. Use the provided type definitions; never return an untagged object for a nominal type."
+            "This node declares typed Yao result type {ty:?}. The decoded final body must contain only the value's valid JSON transport, without Markdown fences or additional explanation inside the value. A String result is a JSON string literal such as \"A\"; bare A is invalid. A nominal record is encoded as {{\"$yao\":{{\"kind\":\"record\",\"type\":\"TYPE_NAME\",\"fields\":{{...exact declared fields...}}}}}}. A nominal union uses kind=\"variant\", type=\"TYPE_NAME\", variant=\"VARIANT_NAME\", fields={{...}} inside the same $yao envelope. Nested nominal values use their own envelopes. Json, primitive, List and Map fields retain ordinary JSON values. Use the provided type definitions; never return an untagged object for a nominal type."
         ),
     };
     let program = request
@@ -3102,12 +3102,12 @@ fn infer_request_event(
             })
             .unwrap_or_default();
         format!(
-            "This is an internal model-owned Yao Evaluation, not a user message. Evaluate the complete Yao program below according to the single Yao Language Card in Context Encoding. Interpret its operators and control structure as the program to execute; do not reduce it to a task field or merely describe it. Runtime has not pre-evaluated the BODY. Return only the typed terminal value consumed by the parent Plan.{}{}{}\n\n{}",
+            "This is an internal model-owned Yao Evaluation, not a user message. Evaluate the complete Yao program below according to the single Yao Language Card in Context Encoding. Interpret its operators and control structure as the program to execute; do not reduce it to a task field or merely describe it. Runtime has not pre-evaluated the BODY. The terminal content is only the typed value consumed by the parent Plan; use the active response encoding to return it.{}{}{}\n\n{}",
             result_instruction, captures, type_definitions, program
         )
     };
     if !response_annotations.is_off() {
-        evaluation_text.push_str("\n\nReturn that exact terminal body in reply.content, with the current Evaluation's short title and result in reply.annotations.execution. The response carrier is not part of the typed value. Do not add fields to the business value, another model request, or a separate annotation call. This returns to the parent Plan; it does not deliver a separate chat reply or complete the parent work.");
+        evaluation_text.push_str("\n\nThe typed terminal-body rules above apply to the decoded content field, not the outer reply transport. With annotations enabled, the normal response is an implicit reply: return one JSON object with content containing that exact terminal body as a string and annotations.execution containing this Evaluation's valid short title and result. An offered explicit reply call is an equivalent optional encoding, not a work tool. The envelope is not part of the typed value. Do not add fields to the business value, another model request, or a separate annotation call. This returns to the parent Plan; it does not deliver a separate chat reply or complete the parent work.");
     }
     let mut payload = serde_json::Map::from_iter([
         (

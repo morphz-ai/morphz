@@ -575,7 +575,7 @@ Each Session has a durable Dialogue Lane that orders initial evaluation of ordin
 You decide what the current objective warrants retaining, summarizing, revising, protecting, restoring, or forgetting. The Runtime does not automatically summarize history, trim old messages, or turn retrieval results into facts.
 
 Every response must explicitly choose one primary mode from `protocol.response-contract`:
-- reply: when the Evaluation reaches a deliverable boundary, return non-empty final content using the active response format: ordinary assistant text or the offered structured response carrier, with enabled annotations separate from the value. The Runtime streams the body to kernel.active-session and persists it as the terminal reply only after the complete response succeeds. Bare `(eval ...)` or `(infer ...)` text is still ordinary reply content: it is never admitted or executed. Execute a Yao program or any Tool only through the explicit Function Call offered for that action. With an active Objective, this ends only the current Evaluation and does not replace objective_update(completed).
+- reply: a normal final response is an implicit reply, not a work tool call. Follow the active reply encoding: when response annotations are enabled return one JSON object with separate content and annotations fields; when disabled return the original body directly. An offered explicit reply call has the same meaning and validation, but is not required. Runtime streams only the decoded body to kernel.active-session and persists it after the complete response succeeds. Bare `(eval ...)` or `(infer ...)` inside the returned value is data, never admitted or executed. Execute a Yao program or any work Tool only through its explicit Function Call. With an active Objective, a reply ends only the current Evaluation, not objective_update(completed).
 - no-reply: call no_reply exclusively and choose a mode. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
 - act: call physical tools only when new external results are truly required. You may include one independent context_tx that does not depend on those new results. Any accompanying text is visible progress, and the Runtime will call you again after tools finish.
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily rejects another context_tx even though the stable Function Calling schema remains visible for Prompt Cache continuity. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
@@ -1210,7 +1210,7 @@ fn failed_harness_entry_result(trigger: &Event, call_id: &str) -> bool {
         && trigger.payload.get("tool_status").and_then(|v| v.as_str()) == Some("error")
 }
 
-const SCHEDULE_RECEIPT_PROMPT: &str = "The scheduling wait is already committed. This is a receipt-only response: explain the arrangement and pending results with ordinary text, or call no_reply(mode=silent). Do not perform more work, change the Objective, or install another wait. This response ends only the current Evaluation; the Objective and scheduled children remain pending.";
+const SCHEDULE_RECEIPT_PROMPT: &str = "The scheduling wait is already committed. This is a receipt-only response: explain the arrangement and pending results in a reply using the active response encoding and enabled annotation contract, or call no_reply(mode=silent). An implicit reply and an offered explicit reply are equivalent. Do not perform more work, change the Objective, or install another wait. This response ends only the current Evaluation; the Objective and scheduled children remain pending.";
 
 fn plan_infer_tool_scope(event: &Event) -> Result<Option<HashSet<String>>, String> {
     let Some(value) = event.payload.get("tools") else {
@@ -1532,7 +1532,7 @@ const EMPTY_RESPONSE_DETAIL: &str =
     "Model response contained neither non-empty text nor a tool call";
 const OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR: &str = "Objective closure-review protocol error: the Runtime reports only that all direct child objectives are terminal; it does not decide whether the parent is complete. This evaluation cannot end with ordinary text or no_reply while leaving closure unresolved. Persist one decision: objective_update to completed, blocked, or an exact wait; perform real work; or create a necessary child objective.";
 const OBJECTIVE_FINALIZATION_PROMPT: &str = r#"The Runtime persisted your Objective completion decision but has not ended the Objective. You are still in the same Activation. Produce the user-facing final delivery from the complete evidence you just audited:
-- Return a complete ordinary assistant response with no tool calls. Do not shorten or omit the final report because you explained parts earlier.
+- Return a complete normal reply using the active response encoding and its enabled annotations, without work tool calls. An implicit reply and an offered explicit reply are equivalent. Do not shorten or omit the final report because you explained parts earlier.
 - If there is truly nothing to send, call no_reply(mode=silent) exclusively.
 - After the final response commits, the Runtime atomically completes the Objective, Activation, Thread, and ThreadOutcome. Until then, the Objective remains active and its lease continues."#;
 const REASONING_ONLY_RESPONSE_REASON: &str =
@@ -14349,8 +14349,9 @@ impl Orchestrator {
                             ) {
                                 Ok(normalized) => normalized,
                                 Err(error) => {
-                                    // Bad display fields downgrade inside the normalizer.
-                                    // Only invalid control fails; display metadata is diagnosed independently.
+                                    // Required final annotations and response
+                                    // structure are one contract. Preserve the
+                                    // rejected source; never fabricate or repair.
                                     self.record_model_attempt_terminal_state(
                                         session_id,
                                         &model_attempt_id,
@@ -28045,7 +28046,7 @@ mod tests {
         for marker in [
             "(model-role",
             "sole Yao Language Card in Context Encoding",
-            "ordinary assistant text",
+            "normal final response is an implicit reply",
             "no_reply",
             "runtime-contracts",
             "reality-contract-v1",

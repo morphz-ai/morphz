@@ -296,9 +296,7 @@ export async function profileActualTransportFixture(
   const configFile = join(runtimeRoot, "morphz.toml");
   const model = options.realProvider?.model ?? "profile-actual";
   const protocol = options.realProvider?.protocol ?? "openai-chat";
-  const evalConfiguration = options.evalCallableTools
-    ? `[orchestrator]\neval_callable_tools=${JSON.stringify(options.evalCallableTools)}\n`
-    : "";
+  const evalConfiguration = `[orchestrator]\nresponse_annotations="on"\n${options.evalCallableTools ? `eval_callable_tools=${JSON.stringify(options.evalCallableTools)}\n` : ""}`;
   writeFileSync(
     configFile,
     `${evalConfiguration}[llm]\nmodel=${JSON.stringify(model)}\nreasoning_effort="low"\n[accounts.fixture]\nauth_adapter="credential"\ncredential_ref="fixture"\nprovider="fixture"\n[services.fixture]\nadapter="protocol-compatible"\nprotocol=${JSON.stringify(protocol)}\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["fixture"]\n[[models.${JSON.stringify(model)}.targets]]\nservice="fixture"\naccount="fixture"\nphysical_model=${JSON.stringify(model)}\ncapabilities=["tools"]\n[credentials.fixture]\nsource="env"\nname="PROFILE_ACTUAL_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeRoot)}\n`,
