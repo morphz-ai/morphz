@@ -144,6 +144,12 @@ const optionalTests = [
     "受管 Store PostgreSQL：DB已提交而根标记发布失败，不开放业务，同一重开完成升级",
     "non-windows",
   ],
+  [
+    "agent-reader-import-runtime.test.ts",
+    "actual Runtime: accepted attachment imports through Agent and retains stable tools",
+    "runtime",
+    "MORPHZ_READER_IMPORT_RUNTIME_E2E",
+  ],
 ].map(([file, name, capability, flag]) => ({ file, name, capability, flag }));
 
 function existingExecutable(file) {

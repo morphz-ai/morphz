@@ -5,7 +5,7 @@ import { scriptStudioApplication } from "../../core/src/applications.js";
 import { scriptCommandSchema } from "../../core/src/script-studio.js";
 import { scriptToolSchema } from "../../core/src/script-tool.js";
 import { bookmarkRequestSchema } from "../../core/src/bookmarks.js";
-import { readerToolSchema } from "../../core/src/reader.js";
+import { readerToolSchema, readerImportSchema } from "../../core/src/reader.js";
 import { applicationToolSchema } from "../../core/src/application-tool.js";
 import { profileToolSchema } from "../../core/src/profile.js";
 import { cognitiveAppToolSchema } from "../../core/src/cognitive-app-tool.js";
@@ -138,6 +138,13 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
       (params) => ({ action: "cognitive", cognitive: { action, ...params } }),
     );
   }
+  add(
+    "reader.import",
+    "导入本次已提交的附件或已授权目录中的书籍；Host直接读取原文件，返回内容ID和版本，不自动打开",
+    "write",
+    readerImportSchema,
+    (params) => ({ action: "reader-import", readerImport: params }),
+  );
   const readingLabels: Record<string, string> = {
     catalog: "查找获准读物",
     contents: "读取目录和确切版本",

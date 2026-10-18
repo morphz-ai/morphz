@@ -12,6 +12,25 @@ export const maxReadingCharacters = 8_000_000;
 export const readerFileAccept =
   ".epub,.pdf,.md,.markdown,.txt,.docx,.html,.htm,.rtf,.doc";
 
+/** Discovered operation parameters, not another model tool definition. Bytes
+ * are read by the Host from this execution's accepted, authorized sources. */
+export const readerImportSchema = z
+  .object({
+    source: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("attachment"), assetId: hash }).strict(),
+      z
+        .object({
+          kind: z.literal("directory"),
+          grantId: z.uuid(),
+          path: z.string().min(1).max(4096),
+          sha256: hash.optional(),
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
+export type ReaderImport = z.infer<typeof readerImportSchema>;
+
 /** Catalog metadata only. Whole books and images never ride every workspace refresh. */
 export const publicationSchema = z
   .object({

@@ -144,6 +144,12 @@ const declarations = [
     capability: "runtime",
     flag: "MORPHZ_PROFILE_RUNTIME_E2E",
   },
+  {
+    file: "agent-reader-import-runtime.test.ts",
+    name: "actual Runtime: accepted attachment imports through Agent and retains stable tools",
+    capability: "runtime",
+    flag: "MORPHZ_READER_IMPORT_RUNTIME_E2E",
+  },
 ] as const;
 const darwin = [
   {

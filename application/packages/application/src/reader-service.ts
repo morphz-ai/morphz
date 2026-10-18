@@ -161,6 +161,8 @@ export class ReaderService {
       projectId: string;
       name: string;
       bytes: Uint8Array;
+      /** Trusted Host source guard, never a model-supplied callback. */
+      assertSource?: () => void | Promise<void>;
     },
   ) {
     if (
@@ -251,6 +253,7 @@ export class ReaderService {
       this.readerInstanceId,
       bookId,
     );
+    await request.assertSource?.();
     const stored = await this.originalStore.put({
       credential: actor.credential,
       commandId: request.commandId,

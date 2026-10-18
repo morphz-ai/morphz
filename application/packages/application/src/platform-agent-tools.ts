@@ -1,6 +1,7 @@
 import {
   DomainError,
   contentOrganizationChangesSchema,
+  inputAttachmentSchema,
 } from "../../core/src/model.js";
 import { documentRevisionBodySchema } from "../../core/src/document-edits.js";
 import type {
@@ -37,7 +38,11 @@ import {
 import { contentIdForAppObject } from "./content-id.js";
 import type { ReaderService } from "./reader-service.js";
 import type { ReaderOcr } from "./reader-ocr.js";
-import type { ReaderCommand } from "../../core/src/reader.js";
+import {
+  readerImportSchema,
+  type ReaderImport,
+  type ReaderCommand,
+} from "../../core/src/reader.js";
 import { z } from "zod";
 import type { AccessContext } from "../../core/src/model.js";
 import type { ReasoningEffort } from "../../core/src/inference.js";
@@ -134,6 +139,11 @@ export type PlatformAgentDomain = {
     effort?: ReasoningEffort,
   ) => Promise<void>;
   inputForInvocation?: (route: HostInvocation) => Promise<unknown>;
+  readAcceptedAttachment?: (
+    scope: { projectId: string; conversationId: string; inputId: string },
+    author: AccessContext,
+    assetId: string,
+  ) => Promise<{ mime: string; bytes: Uint8Array } | null>;
   searchConversation?: (
     request: ConversationSearchRequest,
     sourceAuthor: AccessContext,
@@ -229,7 +239,16 @@ export class PlatformAgentTools {
     });
   }
 
-  call(route: HostInvocation, scope: ToolScope, args: AgentToolArguments) {
+  call(
+    route: HostInvocation,
+    scope: ToolScope,
+    args:
+      | AgentToolArguments
+      | {
+          action: "reader-import";
+          readerImport: ReaderImport;
+        },
+  ) {
     return this.domain.authority.withInvocation(
       route,
       async (actor, source, identity) => {
@@ -272,7 +291,9 @@ export class PlatformAgentTools {
     inputId: string | null,
     platformSource: ToolScope["platformSource"],
     identity: RuntimePlatformIdentity,
-    args: AgentToolArguments,
+    args:
+      | AgentToolArguments
+      | { action: "reader-import"; readerImport: ReaderImport },
   ): Promise<unknown> {
     const { work, content } = this.domain;
     if (args.action === "conversation-search") {
@@ -340,6 +361,107 @@ export class PlatformAgentTools {
       }))
     )
       throw new DomainError("forbidden", "固定剧本生成只能使用本次剧本工具。");
+    if (args.action === "reader-import") {
+      const reader = this.domain.reader;
+      const readInput = this.domain.inputForInvocation;
+      if (!reader || !readInput || !inputId || platformSource !== "input")
+        throw new DomainError(
+          "forbidden",
+          "导入需要实际提交的输入与文件来源。",
+        );
+      const request = readerImportSchema.parse(args.readerImport);
+      const input = z
+        .object({
+          input_id: z.literal(inputId),
+          workspace_id: z.literal(projectId),
+          author_actant_id: z.literal(identity.humanActantId),
+          conversation_id: z.string().min(1),
+          attachments: z.array(inputAttachmentSchema).optional(),
+          directories: z.array(directoryGrantSchema).optional(),
+        })
+        .parse(await readInput(route));
+      const author = {
+        principalId: identity.principalId,
+        actantId: identity.humanActantId,
+      };
+      const checkProject = async () => {
+        const project = await content.platform.getProject(actor, projectId);
+        if (project.archived_at || project.deleted_at)
+          throw new DomainError(
+            "forbidden",
+            "项目已归档或删除，不能导入书籍。",
+          );
+      };
+      await checkProject();
+      const source = request.source;
+      let file: {
+        name: string;
+        bytes: Uint8Array;
+        sha256: string;
+        assertSource?: () => void;
+      };
+      if (source.kind === "directory") {
+        const grant = input.directories?.find(
+          (g) => g.grantId === source.grantId,
+        );
+        if (!grant || !this.domain.localFiles)
+          throw new DomainError(
+            "forbidden",
+            "本次输入没有此目录的授权；请附带文件或授权其所在目录。",
+          );
+        file = this.domain.localFiles.readingFile(
+          grant,
+          projectId,
+          input.conversation_id,
+          author,
+          source.path,
+          source.sha256,
+        );
+      } else {
+        const declaration = input.attachments?.find(
+          (a) => a.assetId === source.assetId,
+        );
+        if (!declaration || !this.domain.readAcceptedAttachment)
+          throw new DomainError("forbidden", "附件不属于本次已提交的输入。");
+        const attachment = await this.domain.readAcceptedAttachment(
+          { projectId, conversationId: input.conversation_id, inputId },
+          author,
+          source.assetId,
+        );
+        if (
+          !attachment ||
+          (declaration.mime && declaration.mime !== attachment.mime)
+        )
+          throw new DomainError("forbidden", "附件不存在或已无权读取。");
+        file = {
+          name: declaration.name,
+          bytes: attachment.bytes,
+          sha256: createHash("sha256").update(attachment.bytes).digest("hex"),
+        };
+      }
+      const commandId = this.commandId(route);
+      const imported = await reader.import(actor, {
+        commandId,
+        projectId,
+        name: file.name,
+        bytes: file.bytes,
+        assertSource: async () => {
+          await checkProject();
+          file.assertSource?.();
+        },
+      });
+      return {
+        ok: true,
+        ...imported,
+        receipt: {
+          commandId,
+          entityId: imported.entityId,
+          receiptId: imported.receiptId,
+        },
+        source: { kind: source.kind, name: file.name, sha256: file.sha256 },
+        note: "已导入阅读书库；可使用 applications.launch 打开精确版本与章节位置。",
+      };
+    }
     if (args.action === "cognitive") {
       if (!this.domain.cognitiveApps || !args.cognitive)
         throw new DomainError("invalid", "认知应用操作尚未接入。");

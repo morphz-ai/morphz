@@ -3446,7 +3446,16 @@ export class RuntimeBridge {
     // Recheck current identity/membership after the read; no local delivery or
     // view selection substitutes for the immutable, authenticated input.
     await this.toolScope(route);
-    return { ...input, conversation_id: source.conversationId };
+    return {
+      ...input,
+      conversation_id: source.conversationId,
+      // Runtime resources have their own transport locator shape. Host domain
+      // operations consume the exact, persisted Client attachment references,
+      // not a model-selected hash or a transport resource masquerading as one.
+      ...(source.attachments?.length
+        ? { attachments: source.attachments }
+        : {}),
+    };
   }
   /** Check this Host's already-owned delivery. Runtime still owns the actual
    * execution; no other Host recovers or takes over this local outbox. Saved

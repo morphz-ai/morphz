@@ -41,7 +41,7 @@ import {
 import { understandingSourcesSchema } from "../../core/src/understanding.js";
 
 import { scriptToolSchema } from "../../core/src/script-tool.js";
-import { readerToolSchema } from "../../core/src/reader.js";
+import { readerToolSchema, readerImportSchema } from "../../core/src/reader.js";
 import {
   applicationOperations,
   operationRequestSchema,
@@ -392,6 +392,7 @@ const platformOperationIds = new Set([
   "script.restore-item",
   "files.read",
   "files.directory",
+  "reader.import",
   ...readerToolSchema.options.map(
     (schema) => `reader.${schema.shape.action.value}`,
   ),
@@ -908,6 +909,15 @@ export class AgentTools {
       if (request.action === "invoke") {
         if (!available.some((op) => op.id === request.operationId))
           throw new DomainError("forbidden", "本次执行不可使用此操作。");
+        // New domain operations use existing discovery, not a model-tool
+        // schema change. Their typed request still takes the common authority
+        // and fixed-workflow gates in PlatformAgentTools.call.
+        if (request.operationId === "reader.import") {
+          return this.options.platformAgent!.call(envelope.invocation, scope, {
+            action: "reader-import",
+            readerImport: readerImportSchema.parse(request.parameters),
+          });
+        }
         const invoked = {
           ...envelope,
           arguments: requestSchema.parse(
@@ -1028,6 +1038,13 @@ export function runtimeAgentTools(
       validateTaskInference: (access, model, effort) =>
         runtime.as(access, () => runtime.validateInference(model, effort)),
       inputForInvocation: (route) => runtime.platformToolInput(route),
+      readAcceptedAttachment: (scope, author, assetId) =>
+        runtime.platformAcceptedAttachment(
+          scope,
+          author,
+          scope.inputId,
+          assetId,
+        ),
       searchConversation: (request, access, authorize) =>
         runtime.searchAgentConversation(request, access, authorize),
       readUnderstanding: (route, scope, revision) =>

@@ -38,6 +38,8 @@ import {
   type DirectoryRequest,
 } from "../../core/src/local-files.js";
 import { extractPdf } from "./pdf.js";
+import type { Stats } from "node:fs";
+import { maxReadingFileBytes } from "../../core/src/reader.js";
 
 const grantSchema = z
   .object({
@@ -450,12 +452,12 @@ export class LocalFiles {
       throw new DomainError("conflict", "原目录已移动或替换，请重新打开。");
     return grant;
   }
-  read(
+  private resolveFile(
     id: string,
     path: string,
     projectId: string,
     access: AccessContext,
-  ): LocalFileView {
+  ) {
     const grant = this.grant(id, projectId, access);
     if (
       path.length > 4096 ||
@@ -475,7 +477,15 @@ export class LocalFiles {
       lstatSync(target).isSymbolicLink()
     )
       throw new DomainError("forbidden", "不能通过符号链接访问其他位置。");
-    const info = lstatSync(target);
+    return { target, info: lstatSync(target) };
+  }
+  read(
+    id: string,
+    path: string,
+    projectId: string,
+    access: AccessContext,
+  ): LocalFileView {
+    const { target, info } = this.resolveFile(id, path, projectId, access);
     const reference = (
       kind: LocalFileReference["kind"],
       version: string,
@@ -524,38 +534,7 @@ export class LocalFiles {
           })),
       };
     }
-    if (!info.isFile() || info.size > 20 * 1024 * 1024)
-      throw new Error("仅支持不超过 20 MB 的普通文件。");
-    const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
-    let data: Buffer;
-    try {
-      const before = fstatSync(fd);
-      if (
-        before.ino !== info.ino ||
-        before.dev !== info.dev ||
-        !before.isFile() ||
-        before.size > 20 * 1024 * 1024
-      )
-        throw new Error("文件在读取前发生变化，请重试。");
-      const buffer = Buffer.alloc(20 * 1024 * 1024 + 1);
-      let size = 0;
-      while (size < buffer.length) {
-        const read = readSync(fd, buffer, size, buffer.length - size, size);
-        if (!read) break;
-        size += read;
-      }
-      data = buffer.subarray(0, size);
-      const after = fstatSync(fd);
-      if (
-        data.length > 20 * 1024 * 1024 ||
-        before.size !== after.size ||
-        before.mtimeMs !== after.mtimeMs ||
-        realpathSync(target) !== target
-      )
-        throw new Error("文件在读取时发生变化，请重试。");
-    } finally {
-      closeSync(fd);
-    }
+    const data = this.readBytes(target, info, 20 * 1024 * 1024);
     const version = hash(data),
       extension = extname(target).toLowerCase();
     if (extension === ".pdf")
@@ -584,6 +563,80 @@ export class LocalFiles {
       throw new Error("此格式暂未提供原位阅读器；没有导入或复制文件。");
     const text = new TextDecoder("utf-8", { fatal: true }).decode(data);
     return { location: target, reference: reference("text", version), text };
+  }
+
+  /** Same granted path boundary as ordinary reads; only the Reader consumes
+   * these bytes. Binary books are never serialized into a model response. */
+  readingFile(
+    reference: DirectoryGrant,
+    projectId: string,
+    conversationId: string,
+    author: AccessContext,
+    path: string,
+    expectedSha256?: string,
+  ) {
+    const read = () => {
+      this.validateDirectory(reference, projectId, conversationId, author);
+      const { target, info } = this.resolveFile(
+        reference.grantId,
+        path,
+        projectId,
+        author,
+      );
+      const bytes = this.readBytes(target, info, maxReadingFileBytes);
+      this.validateDirectory(reference, projectId, conversationId, author);
+      return { name: basename(target), bytes, sha256: hash(bytes) };
+    };
+    const file = read();
+    if (expectedSha256 && file.sha256 !== expectedSha256)
+      throw new DomainError("conflict", "文件版本已变化，未导入。");
+    return {
+      ...file,
+      assertSource: () => {
+        const current = read();
+        if (current.sha256 !== file.sha256)
+          throw new DomainError("conflict", "文件在导入期间已变化，未提交。");
+      },
+    };
+  }
+
+  private readBytes(target: string, info: Stats, maximum: number) {
+    if (!info.isFile() || info.size > maximum)
+      throw new Error(`仅支持不超过 ${maximum / 1024 / 1024} MB 的普通文件。`);
+    const fd = openSync(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let data: Buffer;
+    try {
+      const before = fstatSync(fd);
+      if (
+        before.ino !== info.ino ||
+        before.dev !== info.dev ||
+        !before.isFile() ||
+        before.size > maximum
+      )
+        throw new Error("文件在读取前发生变化，请重试。");
+      const buffer = Buffer.alloc(before.size + 1);
+      let size = 0;
+      while (size < buffer.length) {
+        const read = readSync(fd, buffer, size, buffer.length - size, size);
+        if (!read) break;
+        size += read;
+      }
+      data = buffer.subarray(0, size);
+      const after = fstatSync(fd);
+      if (
+        data.length !== before.size ||
+        data.length > maximum ||
+        before.size !== after.size ||
+        before.mtimeMs !== after.mtimeMs ||
+        lstatSync(target).ino !== before.ino ||
+        lstatSync(target).dev !== before.dev ||
+        realpathSync(target) !== target
+      )
+        throw new Error("文件在读取时发生变化，请重试。");
+    } finally {
+      closeSync(fd);
+    }
+    return data;
   }
   validate(
     raw: LocalFileReference,

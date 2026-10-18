@@ -22,6 +22,9 @@ import { localAccess, morphzAgentAccess } from "../packages/core/src/model.js";
 import type { ReadingInput } from "../packages/core/src/reader.js";
 import type { ScriptGeneration } from "../packages/core/src/script-studio.js";
 import type { PlatformActor } from "../packages/platform/src/store.js";
+import type { LocalFiles } from "../packages/application/src/local-files.js";
+import type { DirectoryGrant } from "../packages/core/src/local-files.js";
+import type { InputAttachment } from "../packages/core/src/model.js";
 import { storedData } from "./platform-local-input-fixture.js";
 
 /** Real Platform, app private stores and RuntimePlatformAuthority. Only the
@@ -38,6 +41,8 @@ export async function agentDomainFixture(
       actantId: string;
     }) => string;
     readerOcr?: ReaderOcr;
+    localFiles?: LocalFiles;
+    readAcceptedAttachment?: PlatformAgentDomain["readAcceptedAttachment"];
     prepareTaskSession?: PlatformAgentDomain["prepareTaskSession"];
     searchConversation?: PlatformAgentDomain["searchConversation"];
     storage?: Parameters<typeof openApplicationDomainsHost>[3];
@@ -100,6 +105,8 @@ export async function agentDomainFixture(
       selection: string;
       reading?: ReadingInput;
       scriptGeneration?: ScriptGeneration;
+      directories?: DirectoryGrant[];
+      attachments?: InputAttachment[];
     }
   >();
   let resolveScope: ((route: HostInvocation) => Promise<ToolScope>) | undefined;
@@ -212,6 +219,12 @@ export async function agentDomainFixture(
                       author_actant_id: localAccess.actantId,
                       text: root.text,
                       selection: root.selection,
+                      ...(root.directories
+                        ? { directories: root.directories }
+                        : {}),
+                      ...(root.attachments
+                        ? { attachments: root.attachments }
+                        : {}),
                       ...(root.reading ? { reading: root.reading } : {}),
                       ...(root.scriptGeneration
                         ? { scriptGeneration: root.scriptGeneration }
@@ -243,7 +256,12 @@ export async function agentDomainFixture(
     text = "合成的已接收请求",
     selection = "",
     reading?: ReadingInput,
-    source?: { inputId: string; scriptGeneration?: ScriptGeneration },
+    source?: {
+      inputId?: string;
+      scriptGeneration?: ScriptGeneration;
+      directories?: DirectoryGrant[];
+      attachments?: InputAttachment[];
+    },
   ) => {
     const inputId =
       source?.inputId ?? `input_${randomUUID().replaceAll("-", "")}`;
@@ -263,6 +281,12 @@ export async function agentDomainFixture(
       projectId: ownerProjectId,
       text,
       selection,
+      ...(source?.directories
+        ? { directories: structuredClone(source.directories) }
+        : {}),
+      ...(source?.attachments
+        ? { attachments: structuredClone(source.attachments) }
+        : {}),
       ...(reading ? { reading: structuredClone(reading) } : {}),
       ...(source?.scriptGeneration
         ? { scriptGeneration: structuredClone(source.scriptGeneration) }
@@ -282,6 +306,12 @@ export async function agentDomainFixture(
       author_actant_id: localAccess.actantId,
       text: root.text,
       selection: root.selection,
+      ...(root.directories
+        ? { directories: structuredClone(root.directories) }
+        : {}),
+      ...(root.attachments
+        ? { attachments: structuredClone(root.attachments) }
+        : {}),
       ...(root.reading ? { reading: structuredClone(root.reading) } : {}),
       ...(root.scriptGeneration
         ? { scriptGeneration: structuredClone(root.scriptGeneration) }
@@ -299,6 +329,8 @@ export async function agentDomainFixture(
         content: domains.content,
         reader: domains.reader.service,
         readerOcr: options.readerOcr,
+        localFiles: options.localFiles,
+        readAcceptedAttachment: options.readAcceptedAttachment,
         prepareTaskSession: options.prepareTaskSession,
         inputForInvocation: readAcceptedInput,
         ...(options.searchConversation
