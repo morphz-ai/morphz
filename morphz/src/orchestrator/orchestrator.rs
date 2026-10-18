@@ -8273,6 +8273,11 @@ impl Orchestrator {
             && event.event_type != TYPE_RUNTIME_WAKE
             && event.event_type != TYPE_TOOL_OUTPUT
             && event.event_type != TYPE_INFER_REQUEST
+            // A committed amendment wakes the Objective's existing primary
+            // Thread. Keep its control type and route it through the same
+            // durable claims and Objective interrupt fences as other wakes.
+            && !(event.event_type == crate::objective::TYPE_OBJECTIVE_CONTROL
+                && event.topic == "chat/objective_amended")
             && event.topic != "runtime/action_group_settled"
         {
             return Ok(());

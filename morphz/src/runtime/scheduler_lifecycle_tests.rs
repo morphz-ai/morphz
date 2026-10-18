@@ -244,6 +244,266 @@ async fn objective_create_prelude_and_sibling_infer_keep_ordinary_plan_authority
     assert!(plans[0].objective_id.is_some());
 }
 
+struct AmendmentClient {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Client for AmendmentClient {
+    async fn create_completion(
+        &self,
+        messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, RuntimeError> {
+        assert!(serde_json::to_string(&messages)
+            .unwrap()
+            .contains("AMENDED: include original evidence and regression checks"));
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Response {
+            content: "Amended contract read; existing scheduled work remains pending.".into(),
+            tool_calls: vec![],
+        })
+    }
+}
+
+async fn waiting_amendment_fixture(
+    runtime: &MorphzRuntime,
+) -> (ObjectiveRecord, ScheduleRecord, Event) {
+    let mut planner = thread(runtime, "amendment-planner");
+    planner.initiating_principal_id = Some(runtime.identity().principal_id.clone());
+    let parent = runtime.inner.store.ensure_thread(planner).await.unwrap();
+    let objective = runtime
+        .inner
+        .store
+        .create_objective(NewObjective {
+            model_alias: None,
+            reasoning_effort: None,
+            id: "amendment-objective".into(),
+            agent_id: parent.agent_id.clone(),
+            context_id: parent.context_id.clone(),
+            coordinator_session_id: parent.session_id.clone(),
+            delivery_session_id: parent.session_id.clone(),
+            parent_objective_id: None,
+            source_event_id: "amendment-source".into(),
+            initiating_principal_id: parent.initiating_principal_id.clone(),
+            stated_objective: "Keep one hourly research schedule".into(),
+            token_budget: None,
+        })
+        .await
+        .unwrap();
+    let receipt = crate::tool::CURRENT_PRINCIPAL_ID
+        .scope(
+            parent.initiating_principal_id.clone(),
+            invoke(
+                runtime,
+                &parent,
+                "amendment-schedule",
+                "schedule_tx",
+                json!({
+                    "operations": [{
+                        "op": "spawn", "client_id": "hourly-research",
+                        "intent": "Keep the existing research cycle",
+                        "delay_seconds": 3600, "every_seconds": 3600,
+                        "lifetime": "durable",
+                        "objective": {"mode": "existing", "objective_id": objective.id}
+                    }],
+                    "group": {"policy": "all"}
+                }),
+            ),
+        )
+        .await;
+    let schedules: Vec<ScheduleRecord> =
+        serde_json::from_value(receipt["operations"].clone()).unwrap();
+    assert_eq!(schedules.len(), 1);
+    // Compare durable snapshots, not the human-facing tool receipt's rounded
+    // timestamps, when proving that routing did not rewrite the Schedule.
+    let schedule = runtime
+        .inner
+        .store
+        .get_schedule(&schedules[0].id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        runtime
+            .inner
+            .store
+            .update_thread(
+                &parent.id,
+                parent.revision,
+                None,
+                Some(ThreadLifecycle::Completed),
+                Some("Original schedule installed"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap(),
+        ThreadMutation::Updated(_)
+    ));
+    let waiting = runtime.get_objective(&objective.id).await.unwrap().unwrap();
+    assert!(matches!(
+        waiting.wait_condition,
+        Some(ObjectiveWaitCondition::ThreadGroup { .. })
+    ));
+    let source = Event::new(
+        "amendment-user-message".into(),
+        runtime.identity().principal_id.clone(),
+        crate::event::TYPE_USER_MESSAGE.into(),
+        "chat/user_message".into(),
+        json!({
+            "context_id": waiting.context_id,
+            "session_id": waiting.coordinator_session_id,
+            "principal_id": runtime.identity().principal_id,
+            "text": "Include original evidence and regression checks; keep the existing schedule."
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    runtime.inner.store.append(source.clone()).await.unwrap();
+    (waiting, schedule, source)
+}
+
+async fn assert_objective_amendment_routes(dispatch: &str) {
+    let client = Arc::new(AmendmentClient {
+        calls: AtomicUsize::new(0),
+    });
+    let (_file, runtime) = fixture_with_client(client.clone()).await;
+    let (waiting, schedule, source) = waiting_amendment_fixture(&runtime).await;
+    if dispatch != "startup" {
+        runtime.start().await.unwrap();
+    }
+    let mut replies = runtime.subscribe("chat/reply", 8);
+    // A separate bus models a committed amendment whose immediate notify was
+    // lost; the normal live reconciler must deliver that exact persisted Signal.
+    let supervisor = if dispatch == "lost-notify" {
+        Arc::new(ObjectiveSupervisor::new(
+            runtime.inner.store.clone(),
+            runtime.inner.store.clone(),
+            Arc::new(InMemoryEventBus::new()),
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            Arc::new(crate::timer::TimerEngine::new(runtime.inner.store.clone())),
+            std::time::Duration::from_secs(60),
+        ))
+    } else {
+        runtime.inner.objective_supervisor.clone()
+    };
+    assert!(matches!(
+        supervisor
+            .amend_from_dialogue(
+                &waiting.id,
+                waiting.revision,
+                "AMENDED: include original evidence and regression checks",
+                "The owner clarified the existing objective",
+                &source,
+                &runtime.identity().principal_id,
+            )
+            .await
+            .unwrap(),
+        ObjectiveMutation::Updated(_)
+    ));
+    if dispatch == "startup" {
+        runtime.start().await.unwrap();
+    } else if dispatch == "lost-notify" {
+        assert_eq!(
+            runtime
+                .inner
+                .orchestrator
+                .reconcile_runnable_pending_thread_signals()
+                .await
+                .unwrap(),
+            1
+        );
+    }
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+        .await
+        .expect("a committed objective amendment must reach the live model router")
+        .unwrap();
+    assert_eq!(
+        reply.payload["text"],
+        "Amended contract read; existing scheduled work remains pending."
+    );
+    let root = objective_primary_execution_root_id(&waiting.id, waiting.generation);
+    let activations = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let activations = runtime
+                .inner
+                .store
+                .list_thread_activations_by_root(&waiting.context_id, &root)
+                .await
+                .unwrap();
+            if activations.len() == 1 && activations[0].status == ThreadActivationStatus::Succeeded
+            {
+                break activations;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the amendment Activation must settle once");
+    let signals = runtime
+        .inner
+        .store
+        .list_activation_signals(&activations[0].id)
+        .await
+        .unwrap();
+    assert_eq!(signals.len(), 1);
+    assert_eq!(signals[0].status, ThreadSignalStatus::Acknowledged);
+    assert_eq!(signals[0].kind, "chat/objective_amended");
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    let current = runtime.get_objective(&waiting.id).await.unwrap().unwrap();
+    assert_eq!(current.status, ObjectiveStatus::Active);
+    assert_eq!(current.generation, waiting.generation);
+    assert_eq!(current.wait_condition, waiting.wait_condition);
+    assert_eq!(
+        runtime
+            .inner
+            .store
+            .get_schedule(&schedule.id)
+            .await
+            .unwrap()
+            .unwrap(),
+        schedule
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .store
+            .get_thread(&schedule.thread_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle,
+        ThreadLifecycle::Open
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .orchestrator
+            .reconcile_runnable_pending_thread_signals()
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn objective_amendment_reaches_the_live_router_without_replacing_scheduled_children() {
+    assert_objective_amendment_routes("live").await;
+}
+
+#[tokio::test]
+async fn objective_amendment_lost_notify_is_reconciled_without_restart() {
+    assert_objective_amendment_routes("lost-notify").await;
+}
+
+#[tokio::test]
+async fn objective_amendment_is_recovered_from_its_committed_signal_at_startup() {
+    assert_objective_amendment_routes("startup").await;
+}
+
 async fn assert_directed_interrupt_chain(with_infer: bool) {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::WARN)

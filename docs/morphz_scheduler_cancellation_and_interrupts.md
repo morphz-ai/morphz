@@ -28,6 +28,16 @@ Yao `infer` 是新的受管子执行，而不是父输出的复制。其权限�
 
 `derive_objective_readiness` 的 `Leased` 是状态投影，不是跳过依赖的授权。缺失中断绑定的子执行，即使租约尚新，也不能越过未满足的等待。
 
+### 修改目标后的唤醒
+
+`objective_amend` 将目标新修订、`objective_control` 类型的
+`chat/objective_amended` 事件及主 Thread Signal 原子提交。路由必须接收
+这一确切类型／topic 组合，沿用原有 Signal 领取、Activation 准入与
+Objective 中断校验，不能把成功落库当成已经执行，也不能把所有控制
+事件都当输入。普通即时交付、丢失通知后的在线扫描及启动恢复共享这条
+路径；已确认 Signal 不应再次执行。修改目标不自动取消原有子线程、复制
+周期或解除其准确等待依赖；不更改模型工具列表，不增加一次总结推理。
+
 ### 提交替代等待后的收尾
 
 `schedule_tx` 为本次 Evaluation 创建新 Group 并安装等待后，允许一次 `schedule-receipt` 收尾，只能说明安排或 `no_reply(mode=silent)`。权限必须由持久工具回执、同一工具求值/线程的 `objective/thread_group_bound` 事件、当前 generation/Group 与唯一 pending 依赖共同证明，不能仅凭工具名称放行。
@@ -42,9 +52,22 @@ Yao `infer` 是新的受管子执行，而不是父输出的复制。其权限�
 
 - 实际模型工具目录包含 `thread_control`，并通过普通工具调用完成取消。
 - 实际定向 Objective 输入经过多轮工具输出，取消四个未启动子线程后创建四个替代线程；不额外创建普通对话 Thread。
+- 修改目标的真实事件进入模型并确认原 Signal；即时交付、在线丢失通知扫描与启动恢复各仅执行一次，原每小时 Schedule、子线程和 Group 等待保持。
 - 同一干预先经 durable Yao infer，校验真实子线程完成、Plan 成功及 typed result=42 后，再取消与替换；同时覆盖同响应 `objective_create` 前置采用加 `eval` 的普通无等待路径。
 - 四成员组取消仅生成一次终态/屏障；重建 Store、TimerEngine 与 ThreadScheduler 后，只有替代工作被实际投递。
 - 虚拟时钟驱动多次 heartbeat，并覆盖丢失、取消、竞争依赖和旧 Evaluation；不使用随机 sleep 制造竞态。
 - 替代回执后的实际模型请求跨三个心跳周期仍存活；正常回复后释放 Evaluation，旧回执不能重入；Provider 溢出后的工具越权也在执行前拒绝。
 - SQLite/PostgreSQL 共用等待完成前后和 stale route 的 Store 一致性断言。
 - Dashboard 验证 open+idle 可见、可取消，但不计入运行线程。
+
+2026-10-18 唤醒修复的聚焦验证：调度生命周期 8 项、Objective 32 项、
+单次／周期到期执行 2 项及通用丢失通知恢复 1 项，共 43 项通过；新增
+即时交付用例在修正前会因没有执行而超时。这里使用隔离真实 Runtime
+与确定性 Provider，不代表外部模型的业务结论已通过评审。`cargo fmt`
+通过；严格 Clippy 仍被未改动的 `harness_package.rs:1124` 和
+`runtime.rs:7326` 两处已有引用告警阻断，不称全仓库静态检查通过。
+
+正在运行的 Runtime 不能靠重新投递相同事件加载新 Rust 代码。升级须
+保留原环境、凭据与存储路径，先等待在途执行结束；当前本机后台预览
+进程不能跨 Runtime 重启接管，必须取得短暂中断并恢复的明确授权。
+旧 Job 的取消历史与新维护进程分别留证，不能伪造旧执行继续运行。
