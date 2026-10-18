@@ -5952,6 +5952,7 @@ impl ContextEngine {
                         topics: vec![
                             "context/projected_observation".into(),
                             "session/io_output".into(),
+                            "session/io_state".into(),
                         ],
                         ..Default::default()
                     })
@@ -5996,6 +5997,7 @@ impl ContextEngine {
                     topics: vec![
                         "context/projected_observation".into(),
                         "session/io_output".into(),
+                        "session/io_state".into(),
                     ],
                     ..Default::default()
                 })
@@ -6303,9 +6305,12 @@ impl ContextEngine {
             input_destination: crate::event::is_input_event(event)
                 .then(|| crate::steering::destination(event).ok().flatten())
                 .flatten(),
-            response_disposition: (event.topic == "chat/progress")
-                .then(|| event.payload.get("disposition").and_then(|v| v.as_str()))
-                .flatten()
+            response_disposition: crate::event::terminal_delivery_state(event)
+                .or_else(|| {
+                    (event.topic == "chat/progress")
+                        .then(|| event.payload.get("disposition").and_then(|v| v.as_str()))
+                        .flatten()
+                })
                 .map(ToOwned::to_owned),
             sequence: metadata.sequence,
             turn: metadata.turn,
@@ -6682,14 +6687,22 @@ fn observation_metadata(
                 .get("attempt_id")
                 .and_then(|value| value.as_str())
                 .and_then(|id| attempt_ids.get(id).copied());
-            let caused_by = ["source_event_id", "tool_call_id", "attempt_id"]
-                .iter()
-                .find_map(|key| {
-                    event
-                        .payload
-                        .get(*key)
-                        .and_then(|value| value.as_str())
-                        .map(ToOwned::to_owned)
+            // Delivery failure answers no question. Bind that fact to the
+            // accepted request, not merely to the failed internal attempt.
+            let caused_by = crate::event::terminal_delivery_state(event)
+                .and_then(|_| event.payload.get("root_turn_id"))
+                .and_then(|value| value.as_str())
+                .map(|id| references.display(id).to_owned())
+                .or_else(|| {
+                    ["source_event_id", "tool_call_id", "attempt_id"]
+                        .iter()
+                        .find_map(|key| {
+                            event
+                                .payload
+                                .get(*key)
+                                .and_then(|value| value.as_str())
+                                .map(ToOwned::to_owned)
+                        })
                 });
             (
                 event.id.clone(),
@@ -11233,9 +11246,10 @@ fn render_protocol() -> SExpr {
                         "reply",
                         vec![
                             pair("when", atom("the current user task is complete or a blocker must be explained")),
-                            pair("form", atom("a normal final response is an implicit reply, not a work call: with annotations enabled return one JSON reply object with separate content and annotations fields; with annotations disabled return the original body. An offered explicit reply has identical semantics and validation but is not required. Decode the value before caller delivery or typed validation; bare (eval ...) or (infer ...) text remains reply data and is never admitted or executed")),
+                            pair("form", atom("a normal final response is an implicit reply, not a work call: always return the original body directly in assistant content, with no JSON envelope or metadata text header. With annotations enabled append the separate private :::morphz-reply metadata trailer specified by the response-annotation contract. Do not call a tool for this ordinary final response; the Runtime splits the trailer without a work Job or another model round. Missing or invalid display annotations do not invalidate the body; business return types still require exact validation. Bare (eval ...) or (infer ...) text remains reply data and is never admitted or executed")),
                             pair("execution", atom("execute every Tool or Yao program only through the explicit Function Call offered for that action")),
                             pair("routing", atom("content is delivered automatically to kernel.active-session")),
+                            pair("failed-delivery", atom("a session/io_state Observation with response-disposition failed or cancelled records Runtime delivery failure, not an answer to its caused-by request. For a subsequent continuation, resolve that unanswered request from the visible conversation before treating a resource's current position as a new task. A new explicit user request may supersede it. Failure never authorizes replaying physical operations or automatically resuming the previous Thread")),
                             pair("stream", atom("when the Provider supplies text deltas, the Runtime forwards them immediately to the active Session and persists terminal state only after the complete response succeeds")),
                             list(
                                 "preflight",
@@ -17695,10 +17709,10 @@ mod tests {
         assert!(rendered.rfind("(evaluate").unwrap() > rendered.rfind("(inbox").unwrap());
         assert!(rendered.contains("(response-contract"));
         assert!(rendered.contains(
-            "bare (eval ...) or (infer ...) text remains reply data and is never admitted or executed"
+            "Bare (eval ...) or (infer ...) text remains reply data and is never admitted or executed"
         ));
-        assert!(rendered
-            .contains("using the active response format and its enabled annotation contract"));
+        assert!(rendered.contains("always return the original body directly in assistant content"));
+        assert!(rendered.contains("no JSON envelope or metadata text header"));
         assert!(!rendered.contains("return non-empty ordinary assistant text with no tool calls"));
         assert!(rendered
             .contains("execute every Tool or Yao program only through the explicit Function Call"));

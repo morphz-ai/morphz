@@ -683,6 +683,12 @@ impl PostgresStore {
                     store.migrate_tool_call_history(),
                 )
                 .await?;
+            store
+                .run_versioned_migration(
+                    "20261018_01_terminal_delivery_observations",
+                    store.migrate_terminal_delivery_observations(),
+                )
+                .await?;
             // These indexes were introduced after the component migrations
             // above had already shipped. Keep them in a new migration so an
             // existing PostgreSQL deployment receives the same hot-path
@@ -2461,6 +2467,31 @@ impl PostgresStore {
                         .await?;
                 }
             }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn migrate_terminal_delivery_observations(&self) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        let rows = sqlx::query(r#"SELECT e.id, e.timestamp, e.actor, e.type, e.topic, e.payload
+            FROM events e WHERE e.topic = 'session/io_state'
+            AND e.context_id IS NOT NULL AND e.session_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM mind_projections m,
+                jsonb_array_elements_text(COALESCE(m.state_json->'retired', '[]'::jsonb)) r(event_id)
+                WHERE m.context_id = e.context_id AND r.event_id = e.id)"#)
+            .fetch_all(&mut *tx).await?;
+        for row in rows {
+            let event = Event {
+                id: row.get("id"),
+                sequence: None,
+                timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
+                actor: row.get("actor"),
+                event_type: row.get("type"),
+                topic: row.get("topic"),
+                payload: serde_json::from_value(row.get("payload"))?,
+            };
+            project_observation_in_tx(&mut tx, &event).await?;
         }
         tx.commit().await?;
         Ok(())

@@ -2118,6 +2118,7 @@ impl SqliteStore {
         migrate_session_timeline(&pool).await?;
         migrate_recall_projection(&pool).await?;
         migrate_tool_call_history(&pool).await?;
+        migrate_terminal_delivery_observations(&pool).await?;
         migrate_principal_context_encounters(&pool).await?;
         migrate_attention_acknowledgements(&pool).await?;
         custom::migrate(&pool).await?;
@@ -3968,6 +3969,49 @@ async fn migrate_edge_execution(
 
 const SESSION_PROJECTION_MIGRATION: &str = "20260719_01_session_projections";
 const SESSION_PROJECTION_SEQUENCE_MIGRATION: &str = "20260815_03_session_projection_sequences";
+
+/// Repair only the derived read index. Immutable outcomes and user inputs are
+/// never rewritten or replayed, and explicit retirement remains authoritative.
+async fn migrate_terminal_delivery_observations(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const VERSION: &str = "20261018_01_terminal_delivery_observations";
+    let mut tx = pool.begin().await?;
+    let claimed =
+        sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+            .bind(VERSION)
+            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .execute(&mut *tx)
+            .await?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        r#"SELECT e.id, e.timestamp, e.actor, e.type, e.topic, e.payload
+        FROM events e WHERE e.topic = 'session/io_state'
+        AND e.context_id IS NOT NULL AND e.session_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM mind_projections m,
+            json_each(COALESCE(json_extract(m.state_json, '$.retired'), '[]')) r
+            WHERE m.context_id = e.context_id AND r.value = e.id)"#,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    for row in rows {
+        let event = Event {
+            id: row.get("id"),
+            sequence: None,
+            timestamp: parse_time(&row.get::<String, _>("timestamp")),
+            actor: row.get("actor"),
+            event_type: row.get("type"),
+            topic: row.get("topic"),
+            payload: serde_json::from_str(&row.get::<String, _>("payload"))?,
+        };
+        project_observation_in_transaction(&mut tx, &event).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
 
 async fn migrate_session_projection_sequences(
     pool: &SqlitePool,

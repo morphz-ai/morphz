@@ -303,6 +303,7 @@ pub(crate) fn receipt_from_authorized_event(
 /// One opt-in metadata contract for every Evaluation, including child infers.
 /// Disabled means no metadata protocol, not a historical response variant.
 pub const CONTRACT: &str = r#"Response annotations (enabled display metadata contract):
+FINAL RESPONSE FORMAT IS REQUIRED even for ordinary discussion or a request for no tools/actions: write the normal answer, then append the private :::morphz-reply trailer shown below. This trailer is transport metadata, NOT a tool call, saved document, or part of the user's requested prose. Do not omit it when only chatting. Work-call annotations being optional does not make final-response title/result optional.
 Work tools may carry optional top-level _annotations. Business parameters and permissions remain unchanged.
 _annotations may contain execution {title,progress,result}, intent, observations [{ref,result}].
 execution.title names the ENTIRE current Execution/request, never a step. Supply it once for the current input revision; subsequent steps must not rename the task. When the user supplements or adjusts this same task and Runtime has included that new instruction in the current model input, you may supply an updated whole-task title. Only Runtime determines the input revision; do not invent an identity or revision field.
@@ -311,14 +312,17 @@ Submit execution metadata in only one call per response. Each work call may supp
 Interpret only exact observation refs provided by Runtime for this Execution and generation. Do not invent refs or describe another same-batch call's unavailable result.
 title, progress and intent: at most 256 Unicode characters. result: at most 512. At most 16 observations per response; refs: at most 128 ASCII characters.
 Work responses cannot establish execution.result. Work annotations remain optional; do not add calls or inference rounds just for metadata.
-A normal final assistant response is an IMPLICIT reply, not a work tool call. Return exactly one JSON reply object, without a code fence or surrounding prose:
-{"annotations":{"execution":{"title":"short whole-task title","result":"truthful outcome"}},"content":"actual response body"}
-content and annotations are separate fields of the reply, not text appended to its body. Runtime streams only the decoded content string, never the JSON envelope or annotations. content is ordinary Markdown, or the exact typed JSON/Yao transport required by an infer, encoded as a JSON string; preserve that business value unchanged. Prefer annotations before content so display metadata arrives before the streamed body.
-The offered explicit reply({content,annotations}) call means exactly the same thing and uses the same fields and validation. It is optional; an implicit reply needs no tool call. Either form is terminal and cannot accompany work calls or a second response body. Work-call commentary remains ordinary progress prose, not a final reply object.
-When annotations are enabled, EVERY final reply MUST contain valid, nonempty execution.title and execution.result in this SAME response, including failure, partial work and unexecuted parts. A previous work title does not replace these fields. A bare body, missing/invalid required annotation, or invalid reply object is a response-contract error, not a valid annotated reply. Do not add a model request or tool call just to repair metadata.
+A normal final assistant response is an IMPLICIT reply. Return the original Markdown or exact typed JSON/Yao value as ordinary assistant text, then append this separate private metadata trailer on new lines:
+:::morphz-reply
+{"annotations":{"execution":{"title":"short whole-task title","result":"truthful outcome"}}}
+:::
+The trailer is response control, not body text: Runtime removes it before display or typed-value validation. NEVER wrap/stringify the body in JSON, put content inside the metadata, or put annotations into the prose. Use exactly one trailer at the very end. This normal-text form works without calling any tool and without another model round. Do NOT call the reply tool for this ordinary response: some Providers return only a tool call and omit the accompanying body.
+The offered native reply({annotations}) is an alternative carrier only when the Provider actually returns a nonempty ordinary body in the SAME response; it is not mandatory. Never use both carriers, combine either with work calls, or combine them with no_reply. Neither carrier is work or creates a Job. Working responses retain normal progress prose and optional _annotations on their work calls.
+With annotations enabled, provide valid nonempty execution.title and execution.result in this same response, including partial work or an explanation of a blocker. The Runtime records missing or malformed metadata as metadata diagnostics, never fabricates it, and does not reject a readable body solely because metadata is missing or invalid. Business return types, work parameters, permissions and ambiguous work/control combinations remain strictly checked. Never add a request or call just to repair metadata.
 Annotations are separate metadata, never fields of the business value. A child infer's result describes only that infer, not completion of its parent work or Objective. Returning a value by implicit or explicit reply is not a work action or permission to send a chat message. Runtime routes it to its actual caller or authorized recipient; this does not override background work, cancellation, approval, Runtime status or the actual Execution boundary.
 no_reply remains valid where offered. Do not annotate or change no_reply's silent/wait grammar.
-Annotations are display text only, never identities, state, percentages, permissions, executable content, Mind or Custom updates."#;
+Annotations are display text only, never identities, state, percentages, permissions, executable content, Mind or Custom updates.
+Before ending a normal response: keep the answer outside JSON and include exactly one :::morphz-reply trailer containing nonempty annotations.execution.title and annotations.execution.result. Do not call a tool or request another model just to produce that trailer."#;
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -459,8 +463,8 @@ pub fn augment_tools(
             .unwrap()
             .insert("_annotations".into(), annotation_schema());
     }
-    let mut reply_parameters = json!({"type":"object", "additionalProperties":false, "required":["content","annotations"],
-        "properties":{"content":{"type":"string","minLength":1},"annotations":annotation_schema()}});
+    let mut reply_parameters = json!({"type":"object", "additionalProperties":false, "required":["annotations"],
+        "properties":{"annotations":annotation_schema()}});
     reply_parameters["properties"]["annotations"]["required"] = json!(["execution"]);
     let execution = &mut reply_parameters["properties"]["annotations"]["properties"]["execution"];
     execution["required"] = json!(["title", "result"]);
@@ -469,7 +473,7 @@ pub fn augment_tools(
     }
     augmented.push(ToolDefinition {
         name: "reply".into(),
-        description: "Optional explicit form of the normal implicit reply. Both forms return the same JSON fields: content containing the original text or typed value transport, and annotations containing execution.title and execution.result. Use alone, without another body or work call. Runtime determines the recipient; annotations never determine business success. This is a response form, not a work tool.".into(),
+        description: "Optional native metadata carrier, ONLY when the Provider can return a nonempty ordinary body alongside this call. Prefer the normal-text IMPLICIT reply with its private :::morphz-reply metadata trailer; do not call this tool for that form. Never put body/content in these arguments or wrap the body in JSON. Do not combine with the trailer, work calls, or no_reply. Creates no Job or extra model round. Runtime determines recipient and status.".into(),
         parameters: reply_parameters,
     });
     Ok(augmented)
@@ -798,7 +802,6 @@ pub fn project_authorized_events(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReplyArguments {
-    pub content: String,
     // Preserve Some(Null) so an explicitly malformed metadata container still
     // produces a diagnostic; absence remains None. Derive rejects duplicates.
     #[serde(default, deserialize_with = "present_value")]
@@ -810,23 +813,27 @@ fn present_value<'de, D: serde::Deserializer<'de>>(
     Value::deserialize(deserializer).map(Some)
 }
 pub(crate) fn parse_reply_arguments(arguments: &str) -> Result<ReplyArguments, ProtocolError> {
-    let mut decoder = stream::ReplyContentDecoder::new(arguments.len());
-    decoder.push(arguments)?;
-    let reply = decoder.finish()?;
-    Ok(ReplyArguments {
-        content: reply.content,
-        annotations: reply.annotations,
-    })
-}
-pub(crate) fn parse_canonical_reply_arguments(
-    arguments: &str,
-) -> Result<ReplyArguments, ProtocolError> {
     let reply: ReplyArguments = serde_json::from_str(arguments)
         .map_err(|_| error("Malformed, duplicate or unknown reply control field"))?;
-    if reply.content.trim().is_empty() {
-        return Err(error("Invalid reply content"));
-    }
     Ok(reply)
+}
+
+/// A reserved, line-delimited transport trailer. The business body is the
+/// untouched prefix, never JSON-decoded or guessed from its first character.
+pub(crate) const REPLY_TRAILER: &str = "\n:::morphz-reply\n";
+fn implicit_reply_parts(content: &str) -> Option<(&str, &str)> {
+    let index = content.find(REPLY_TRAILER)?;
+    Some((&content[..index], &content[index + REPLY_TRAILER.len()..]))
+}
+fn trailer_arguments(trailer: &str) -> Result<ReplyArguments, ProtocolError> {
+    let trailer = trailer.trim_end_matches(['\r', '\n']);
+    let arguments = trailer
+        .strip_suffix("\n:::")
+        .ok_or_else(|| error("Incomplete reply metadata trailer"))?;
+    if arguments.len() > 64 * 1024 {
+        return Err(error("Reply metadata trailer exceeds bounded contract"));
+    }
+    parse_reply_arguments(arguments)
 }
 
 fn terminal(response: &Response) -> Result<Option<TerminalDecision>, ProtocolError> {
@@ -1151,11 +1158,16 @@ pub fn normalize_response(
         .tool_calls
         .iter()
         .find(|call| call.func_name == "reply");
-    if reply.is_some() && (response.tool_calls.len() != 1 || !response.content.trim().is_empty()) {
-        return Err(error("reply must be sole call with no ordinary content"));
+    let implicit = implicit_reply_parts(&response.content);
+    if implicit.is_some() && !response.tool_calls.is_empty() {
+        return Err(error(
+            "Implicit reply metadata cannot accompany native control or work calls",
+        ));
     }
-    if !response.tool_calls.is_empty() && response.content.trim_start().starts_with('{') {
-        return Err(error("Implicit reply cannot accompany work or control calls; working commentary must be progress prose"));
+    if reply.is_some() && response.tool_calls.len() != 1 {
+        return Err(error(
+            "Reply metadata cannot accompany work or control calls",
+        ));
     }
     let mut extraction = Extraction::new(context);
     let mut execution_response = response.clone();
@@ -1166,18 +1178,34 @@ pub fn normalize_response(
     {
         // Do not strip or accept annotations in the legacy control grammar.
         terminal(response)?;
-    } else if reply.is_some()
-        || response.tool_calls.is_empty() && !response.content.trim().is_empty()
-    {
-        // Normal assistant output is an implicit reply; an explicit function
-        // call is only another transport for exactly the same response value.
-        let arguments = reply.map_or(response.content.as_str(), |call| call.arguments.as_str());
-        let args = parse_reply_arguments(arguments)?;
-        if let Some(annotations) = &args.annotations {
-            extraction.extract(annotations, "reply.annotations", None, true);
+    } else if let Some((body, trailer)) = implicit {
+        execution_response.content = body.to_owned();
+        match trailer_arguments(trailer) {
+            Ok(args) => {
+                if let Some(annotations) = &args.annotations {
+                    extraction.extract(annotations, "reply.annotations", None, true);
+                }
+            }
+            Err(error) => extraction.note("reply.annotations", &error.to_string()),
         }
-        execution_response.content = args.content;
+        if body.trim().is_empty() {
+            return Err(error("Final response has no body"));
+        }
+    } else if let Some(reply) = reply {
+        // Metadata is a separate native channel. Its failure cannot destroy
+        // the original body, and its arguments are never executable work.
+        match parse_reply_arguments(&reply.arguments) {
+            Ok(args) => {
+                if let Some(annotations) = &args.annotations {
+                    extraction.extract(annotations, "reply.annotations", None, true);
+                }
+            }
+            Err(error) => extraction.note("reply.annotations", &error.to_string()),
+        }
         execution_response.tool_calls.clear();
+        if execution_response.content.trim().is_empty() {
+            return Err(error("Final response has no body"));
+        }
     } else {
         for (index, call) in execution_response.tool_calls.iter_mut().enumerate() {
             let mut args: Value = match serde_json::from_str(&call.arguments) {
@@ -1214,11 +1242,8 @@ pub fn normalize_response(
         .filter(|(kind, _)| !extraction.records.iter().any(|record| record.kind == *kind))
         .map(|(_, field)| field)
         .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return Err(error(&format!(
-                "Final reply is missing valid source-bound annotations: {}",
-                missing.join(", ")
-            )));
+        for field in missing {
+            extraction.note(field, "Display metadata missing or invalid; original body preserved; no repair request sent");
         }
     }
     let dispatch_allowed = !context.execution_fact.as_ref().is_some_and(|fact| {
@@ -1345,7 +1370,11 @@ mod tests {
     }
     fn response(calls: Vec<ToolCallRepr>) -> Response {
         Response {
-            content: String::new(),
+            content: if calls.iter().any(|call| call.func_name == "reply") {
+                "正文".into()
+            } else {
+                String::new()
+            },
             tool_calls: calls,
         }
     }
@@ -1445,10 +1474,7 @@ mod tests {
             let fields = execution.as_object_mut().expect("synthetic final metadata");
             fields.entry("title").or_insert(json!("完成合成核对"));
             fields.entry("result").or_insert(json!("合成核对已结束"));
-            (
-                "reply",
-                json!({"content":"正文","annotations":{"execution":execution}}),
-            )
+            ("reply", json!({"annotations":{"execution":execution}}))
         } else {
             (
                 "exec",
@@ -2215,7 +2241,7 @@ mod tests {
         assert!(normalized.records.is_empty());
     }
     #[test]
-    fn both_reply_forms_require_valid_same_response_title_and_result() {
+    fn missing_or_invalid_display_metadata_never_invalidates_the_original_body() {
         let mut ctx = context();
         ctx.protocol = Protocol::On;
         for annotations in [
@@ -2230,29 +2256,43 @@ mod tests {
             Some(json!({"execution":{"title":"🧠".repeat(257),"result":"完成"}})),
             Some(json!({"execution":{"title":"整项工作","result":"🧠".repeat(513)}})),
         ] {
-            let mut args = json!({"content":"已流出的草稿"});
+            let mut args = json!({});
             if let Some(annotations) = annotations {
                 args["annotations"] = annotations;
             }
             let raw = response(vec![call("r", "reply", args.clone())]);
-            assert!(normalize_response(&raw, &ctx).is_err());
+            let normalized = normalize_response(&raw, &ctx).unwrap();
+            assert_eq!(normalized.execution_response.content, "正文");
+            assert!(normalized.execution_response.tool_calls.is_empty());
+            assert!(!normalized.diagnostics.is_empty());
             let implicit = Response {
                 content: args.to_string(),
                 tool_calls: vec![],
             };
-            assert!(normalize_response(&implicit, &ctx).is_err());
+            assert_eq!(
+                normalize_response(&implicit, &ctx)
+                    .unwrap()
+                    .execution_response
+                    .content,
+                args.to_string()
+            );
         }
         let plain = Response {
             content: "正文".into(),
             tool_calls: vec![],
         };
-        assert!(normalize_response(&plain, &ctx).is_err());
+        assert_eq!(
+            normalize_response(&plain, &ctx)
+                .unwrap()
+                .execution_response
+                .content,
+            "正文"
+        );
         assert!(normalize_response(&plain, &NormalizationContext::default()).is_ok());
         let valid = response(vec![call(
             "r",
             "reply",
-            json!({"content":"正文",
-            "annotations":{"execution":{"title":"整项工作","result":"完成"},
+            json!({"annotations":{"execution":{"title":"整项工作","result":"完成"},
             "progress":null,"observations":[{"ref":"@other","result":"越界"}]}}),
         )]);
         let normalized = normalize_response(&valid, &ctx).unwrap();
@@ -2275,10 +2315,13 @@ mod tests {
             } else {
                 unbound.producer = None;
             }
+            let normalized = normalize_response(&valid, &unbound).unwrap();
             assert!(
-                normalize_response(&valid, &unbound).is_err(),
-                "unbound metadata cannot satisfy the required contract"
+                normalized.records.is_empty(),
+                "unbound metadata is never trusted"
             );
+            assert!(!normalized.diagnostics.is_empty());
+            assert_eq!(normalized.execution_response.content, "正文");
         }
     }
 
@@ -2291,7 +2334,8 @@ mod tests {
             original.parameters["required"]
         );
         let terminal = &augmented[1].parameters;
-        assert_eq!(terminal["required"], json!(["content", "annotations"]));
+        assert_eq!(terminal["required"], json!(["annotations"]));
+        assert!(terminal["properties"].get("content").is_none());
         let annotations = &terminal["properties"]["annotations"];
         assert_eq!(annotations["required"], json!(["execution"]));
         let execution = &annotations["properties"]["execution"];
@@ -2308,11 +2352,11 @@ mod tests {
     }
 
     #[test]
-    fn implicit_and_explicit_reply_have_identical_value_and_scoped_annotations() {
+    fn native_metadata_is_separate_from_the_implicit_return_value() {
         let metadata = json!({"execution":{"title":"读取合成系统","result":"合成结果"}});
         let raw = Response {
-            content: json!({"content":"\"Linux\"","annotations":metadata}).to_string(),
-            tool_calls: vec![],
+            content: "\"Linux\"".into(),
+            tool_calls: vec![call("r", "reply", json!({"annotations":metadata}))],
         };
         let normalized = normalize_response(&raw, &context()).unwrap();
         assert_eq!(
@@ -2326,23 +2370,17 @@ mod tests {
             .records
             .iter()
             .all(|record| record.scope == context().scope.unwrap()));
-        let explicit = normalize_response(
-            &response(vec![call(
-                "r",
-                "reply",
-                serde_json::from_str(&raw.content).unwrap(),
-            )]),
-            &context(),
-        )
-        .unwrap();
+        let plain = Response {
+            content: raw.content.clone(),
+            tool_calls: vec![],
+        };
+        let plain = normalize_response(&plain, &context()).unwrap();
         assert_eq!(
-            serde_json::to_value(&normalized.execution_response).unwrap(),
-            serde_json::to_value(&explicit.execution_response).unwrap()
+            plain.execution_response.content,
+            normalized.execution_response.content
         );
-        assert_eq!(
-            serde_json::to_value(&normalized.records).unwrap(),
-            serde_json::to_value(&explicit.records).unwrap()
-        );
+        assert!(plain.records.is_empty());
+        assert!(!plain.diagnostics.is_empty());
         let off = normalize_response(&raw, &NormalizationContext::default()).unwrap();
         assert_eq!(
             serde_json::to_value(off.execution_response).unwrap(),
@@ -2352,12 +2390,40 @@ mod tests {
     }
 
     #[test]
+    fn implicit_reply_keeps_the_body_outside_json_and_metadata_failures_are_local() {
+        let body = "{\"business\":false}\n中文\"\t\\\n\n原文";
+        for trailer in [
+            "{\"annotations\":{\"execution\":{\"title\":\"标题\",\"result\":\"结果\"}}}\n:::",
+            "{bad\n:::",
+            "{\"annotations\":null}",
+        ] {
+            let raw = Response {
+                content: format!("{body}{REPLY_TRAILER}{trailer}"),
+                tool_calls: vec![],
+            };
+            let normalized = normalize_response(&raw, &context()).unwrap();
+            assert_eq!(normalized.execution_response.content, body);
+            assert_eq!(normalized.raw_response.content, raw.content);
+            if trailer.starts_with("{\"annotations\":{") {
+                assert_eq!(normalized.records.len(), 2);
+                assert!(normalized.diagnostics.is_empty());
+            } else {
+                assert!(!normalized.diagnostics.is_empty());
+            }
+        }
+        let raw = Response {
+            content: format!("{body}{REPLY_TRAILER}{{}}\n:::"),
+            tool_calls: vec![call("r", "reply", json!({"annotations":{}}))],
+        };
+        assert!(normalize_response(&raw, &context()).is_err());
+    }
+    #[test]
     fn body_layout_does_not_drop_or_fabricate_required_annotations() {
         let body = "合成第一段。\n\n合成第二段。\t原始缩进。";
         let metadata = json!({"execution":{"title":"解释合成文字","result":"已解释两段"}});
         let raw = Response {
-            content: format!("{{\"annotations\":{metadata},\"content\":\"{body}\"}}"),
-            tool_calls: vec![],
+            content: body.into(),
+            tool_calls: vec![call("r", "reply", json!({"annotations":metadata}))],
         };
         let normalized = normalize_response(&raw, &context()).unwrap();
         assert_eq!(normalized.execution_response.content, body);
@@ -2365,10 +2431,13 @@ mod tests {
         assert_eq!(normalized.records.len(), 2);
         assert!(normalized.diagnostics.is_empty());
         let missing = Response {
-            content: format!("{{\"content\":\"{body}\"}}"),
+            content: body.into(),
             tool_calls: vec![],
         };
-        assert!(normalize_response(&missing, &context()).is_err());
+        let missing = normalize_response(&missing, &context()).unwrap();
+        assert_eq!(missing.execution_response.content, body);
+        assert!(missing.records.is_empty());
+        assert!(!missing.diagnostics.is_empty());
     }
 
     #[test]
@@ -2377,29 +2446,42 @@ mod tests {
             return;
         };
         let raw: Response = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        assert!(raw.tool_calls.is_empty());
+        assert!(
+            raw.tool_calls.is_empty()
+                || raw.tool_calls.len() == 1 && raw.tool_calls[0].func_name == "reply"
+        );
         let normalized = normalize_response(&raw, &context()).unwrap();
         assert_eq!(normalized.records.len(), 2);
         assert!(normalized.diagnostics.is_empty());
         assert_eq!(normalized.raw_response.content, raw.content);
-        let mut decoder = stream::ReplyContentDecoder::default();
+        let mut stream = stream::ModelStreamNormalizer::new(Protocol::On);
         let mut streamed = String::new();
-        for byte in raw.content.as_bytes() {
-            streamed.push_str(&decoder.push_bytes(&[*byte]).unwrap());
+        for character in raw.content.chars() {
+            for event in stream
+                .push(crate::llm::ModelStreamEvent::TextDelta {
+                    text: character.to_string(),
+                })
+                .unwrap()
+            {
+                if let crate::llm::ModelStreamEvent::TextDelta { text } = event {
+                    streamed.push_str(&text);
+                }
+            }
         }
-        let result = decoder.finish().unwrap();
         assert_eq!(streamed, normalized.execution_response.content);
-        assert_eq!(result.content, streamed);
         assert!(normalized.execution_response.tool_calls.is_empty());
     }
 
     #[test]
-    fn implicit_reply_is_terminal_not_an_annotation_on_work_commentary() {
+    fn json_business_text_with_work_is_not_a_reply_control_object() {
         let raw = Response {
             content: json!({"content":"处理中","annotations":{"execution":{"title":"读取合成系统","result":"不得结算"}}}).to_string(),
             tool_calls: vec![call("work", "exec", json!({"command":"original"}))],
         };
-        assert!(normalize_response(&raw, &context()).is_err());
+        let normalized = normalize_response(&raw, &context()).unwrap();
+        assert_eq!(normalized.execution_response.content, raw.content);
+        assert!(normalized.terminal_decision.is_none());
+        assert!(normalized.records.is_empty());
     }
 
     #[test]
@@ -2430,14 +2512,14 @@ mod tests {
             );
         }
         let value = "{\"business\":true}";
-        let raw = response(vec![call(
+        let mut raw = response(vec![call(
             "r",
             "reply",
             json!({
-                "content":value,
                 "annotations":{"execution":{"title":"核对业务值","result":"返回布尔字段"}}
             }),
         )]);
+        raw.content = value.into();
         let typed = normalize_response(&raw, &ctx).unwrap();
         assert_eq!(typed.protocol, Protocol::On);
         assert_eq!(typed.execution_response.content, value);
@@ -2478,13 +2560,13 @@ mod tests {
         let raw = response(vec![call(
             "r",
             "reply",
-            json!({"content":"检查完成。","annotations":{"execution":{"title":"核对环境","result":"已确认"}}}),
+            json!({"annotations":{"execution":{"title":"核对环境","result":"已确认"}}}),
         )]);
         let normalized = normalize_response(&raw, &context()).unwrap();
         assert!(normalized.execution_response.tool_calls.is_empty());
         assert_eq!(
             normalized.terminal_decision,
-            Some(TerminalDecision::Deliver("检查完成。".into()))
+            Some(TerminalDecision::Deliver("正文".into()))
         );
         assert!(
             !normalized
@@ -2510,15 +2592,13 @@ mod tests {
                 .unwrap()
                 .effective
         );
-        assert!(normalize_response(
-            &response(vec![call(
-                "r",
-                "reply",
-                json!({"content":"正文","annotations":null}),
-            )]),
+        let bad_metadata = normalize_response(
+            &response(vec![call("r", "reply", json!({"annotations":null}))]),
             &context(),
         )
-        .is_err());
+        .unwrap();
+        assert_eq!(bad_metadata.execution_response.content, "正文");
+        assert!(!bad_metadata.diagnostics.is_empty());
         assert!(normalize_response(
             &response(vec![
                 call("r", "reply", json!({"content":"x"})),
@@ -2527,15 +2607,12 @@ mod tests {
             &context()
         )
         .is_err());
-        assert!(normalize_response(
-            &response(vec![call(
-                "r",
-                "reply",
-                json!({"content":"", "status":"success"})
-            )]),
-            &context()
-        )
-        .is_err());
+        let mut empty = response(vec![call("r", "reply", json!({"status":"success"}))]);
+        empty.content.clear();
+        assert!(
+            normalize_response(&empty, &context()).is_err(),
+            "metadata is never a substitute for an answer"
+        );
     }
     #[test]
     fn no_reply_bound_mode_and_u64_range_unchanged_no_annotations() {
@@ -2587,7 +2664,7 @@ mod tests {
         .is_err());
     }
     #[test]
-    fn duplicate_control_fields_and_missing_enabled_annotations_are_rejected() {
+    fn malformed_metadata_is_diagnosed_without_repairing_or_executing_it() {
         for args in [
             r#"{"content":"one","content":"two"}"#,
             r#"{"content":"正文","annotations":{},"annotations":{}}"#,
@@ -2598,22 +2675,31 @@ mod tests {
                 func_name: "reply".into(),
                 arguments: args.into(),
             }]);
-            assert!(normalize_response(&raw, &context()).is_err());
+            let result = normalize_response(&raw, &context()).unwrap();
+            assert_eq!(result.execution_response.content, "正文");
+            assert!(result.execution_response.tool_calls.is_empty());
+            assert!(result.records.is_empty());
+            assert!(!result.diagnostics.is_empty());
         }
         let raw = response(vec![call(
             "r",
             "reply",
             json!({"content":"正文","annotations":null}),
         )]);
-        assert!(normalize_response(&raw, &context()).is_err());
+        assert!(!normalize_response(&raw, &context())
+            .unwrap()
+            .diagnostics
+            .is_empty());
     }
     #[test]
-    fn retired_text_header_is_not_an_implicit_reply_or_a_compatibility_path() {
+    fn text_headers_are_body_data_and_never_interpreted_as_metadata() {
         let raw = Response {
             content: "<morphz-annotations>{\"execution\":{\"title\":\"旧头\",\"result\":\"旧结果\"}}</morphz-annotations>\n正文".into(),
             tool_calls: vec![],
         };
-        assert!(normalize_response(&raw, &context()).is_err());
+        let normalized = normalize_response(&raw, &context()).unwrap();
+        assert_eq!(normalized.execution_response.content, raw.content);
+        assert!(normalized.records.is_empty());
         assert_eq!(
             normalize_response(&raw, &NormalizationContext::default())
                 .unwrap()
@@ -2637,7 +2723,7 @@ mod tests {
         let raw = response(vec![call(
             "r",
             "reply",
-            json!({"content":"正文","annotations":{"execution":{"title":"核对执行事实","result":"结果"}}}),
+            json!({"annotations":{"execution":{"title":"核对执行事实","result":"结果"}}}),
         )]);
         let normalized = normalize_response(&raw, &ctx).unwrap();
         assert!(normalized.dispatch_allowed);
@@ -2688,7 +2774,7 @@ mod tests {
         let raw = response(vec![call(
             "r",
             "reply",
-            json!({"content":"正文","annotations":{"execution":{"title":"标题","progress":"进展","result":"结果"}}}),
+            json!({"annotations":{"execution":{"title":"标题","progress":"进展","result":"结果"}}}),
         )]);
         let mut records = normalize_response(&raw, &ctx).unwrap().records;
         let fact = ctx.execution_fact.clone().unwrap();
@@ -2740,10 +2826,7 @@ mod tests {
                 });
             }
             let (name, args) = if terminal {
-                (
-                    "reply",
-                    json!({"content":"正文","annotations":{"execution":execution}}),
-                )
+                ("reply", json!({"annotations":{"execution":execution}}))
             } else {
                 (
                     "exec",

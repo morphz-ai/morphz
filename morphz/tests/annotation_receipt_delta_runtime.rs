@@ -138,7 +138,7 @@ impl Client for DeltaClient {
         } else {
             (
                 "reply",
-                json!({"content":"Both synthetic reads completed.","annotations":{
+                json!({"annotations":{
                     "execution":{"title":TITLE,"result":"Both readonly Recall Jobs completed."}
                 }}),
             )
@@ -149,7 +149,11 @@ impl Client for DeltaClient {
             tools.iter().map(|tool| &tool.name).collect::<Vec<_>>()
         );
         Ok(Response {
-            content: String::new(),
+            content: if name == "reply" {
+                "Both synthetic reads completed.".into()
+            } else {
+                String::new()
+            },
             tool_calls: vec![ToolCallRepr {
                 id: format!("delta-receipt-{count}"),
                 r#type: "function".into(),

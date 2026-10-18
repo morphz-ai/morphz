@@ -157,6 +157,9 @@ impl DurableEventDeliveryQueue {
 /// changing it in only one layer would make the online Projection disagree
 /// with a full replay of persisted Events.
 pub fn is_context_observation(event: &Event) -> bool {
+    if event.topic == "session/io_state" {
+        return terminal_delivery_state(event).is_some();
+    }
     if event.topic == "chat/assistant_call" {
         return assistant_call_has_tool_history(event);
     }
@@ -173,8 +176,7 @@ pub fn is_context_observation(event: &Event) -> bool {
                 .and_then(JsonValue::as_str)
                 .is_some_and(|text| !text.trim().is_empty());
     }
-    if event.topic == "session/io_state"
-        || event.topic == "chat/no_reply"
+    if event.topic == "chat/no_reply"
         || event.topic == "chat/context_inspect"
         || event.topic == "chat/context_tx_committed"
         || event.topic == "chat/runtime_error"
@@ -208,6 +210,25 @@ pub fn is_context_observation(event: &Event) -> bool {
             | TYPE_FILE_CHANGE
             | TYPE_INFER_REQUEST
     )
+}
+
+/// A failed/cancelled delivery is an observable Runtime fact, not a model
+/// answer. Keep this canonical Session IO state in the same retireable stream
+/// as its initiating input; diagnostics and silent/control states stay out.
+pub fn terminal_delivery_state(event: &Event) -> Option<&str> {
+    if event.topic != "session/io_state" || event.event_type != TYPE_AGENT_CALL {
+        return None;
+    }
+    let state = event.payload.get("terminal_kind")?.as_str()?;
+    (matches!(state, "failed" | "cancelled")
+        && ["text", "root_turn_id"].into_iter().all(|key| {
+            event
+                .payload
+                .get(key)
+                .and_then(JsonValue::as_str)
+                .is_some_and(|value| !value.trim().is_empty())
+        }))
+    .then_some(state)
 }
 
 /// Whether an Assistant-call Event records a model-selected tool action.
@@ -262,6 +283,7 @@ pub fn advances_cognitive_clock(event: &Event) -> bool {
         TYPE_EXCEPTION | TYPE_FILE_CHANGE | TYPE_AGENT_CALL
     ) {
         return event.topic != "chat/assistant_call"
+            && event.topic != "session/io_state"
             && !(event.topic == "chat/progress"
                 && event.payload.get("disposition").and_then(JsonValue::as_str)
                     == Some("steering_draft"));
@@ -1203,6 +1225,26 @@ mod tests {
         assert!(!assistant_call_has_tool_history(&event));
         assert!(!advances_cognitive_clock(&event));
         event.payload.remove("disposition");
+        assert!(!is_context_observation(&event));
+    }
+
+    #[test]
+    fn terminal_delivery_is_a_fact_not_a_reply_or_a_new_cognitive_clock_tick() {
+        let mut event=Event::new("delivery".into(),"Agent-Morphz".into(),TYPE_AGENT_CALL.into(),"session/io_state".into(),
+            serde_json::from_value(serde_json::json!({"text":"Not delivered","root_turn_id":"question","terminal_kind":"failed"})).unwrap());
+        assert!(is_context_observation(&event));
+        assert_eq!(terminal_delivery_state(&event), Some("failed"));
+        assert!(!advances_cognitive_clock(&event));
+        for state in ["silent", "completed", "pending"] {
+            event
+                .payload
+                .insert("terminal_kind".into(), serde_json::json!(state));
+            assert!(!is_context_observation(&event));
+        }
+        event
+            .payload
+            .insert("terminal_kind".into(), serde_json::json!("failed"));
+        event.payload.remove("text");
         assert!(!is_context_observation(&event));
     }
 

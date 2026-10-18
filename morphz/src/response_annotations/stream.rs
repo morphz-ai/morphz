@@ -1,322 +1,25 @@
-use super::{parse_canonical_reply_arguments, Protocol, ProtocolError};
+//! Original text is never JSON-decoded or reserialized. Retain only a possible
+//! reserved trailer delimiter prefix; the body streams immediately. Both native
+//! metadata and the separate implicit-reply trailer stay out of public output.
+//! Validate metadata on the final Response independently of its body.
+use super::{Protocol, ProtocolError, REPLY_TRAILER};
 use crate::llm::ModelStreamEvent;
-use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::HashSet;
 
-fn error(message: &str) -> ProtocolError {
-    ProtocolError(message.into())
-}
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Role {
-    Key,
-    Content,
-    Ignored,
-}
-struct JsonString {
-    role: Role,
-    key: String,
-    pending_high: Option<u16>,
-}
-impl JsonString {
-    fn append(&mut self, character: char, output: &mut String) {
-        match self.role {
-            Role::Key => self.key.push(character),
-            Role::Content => output.push(character),
-            Role::Ignored => (),
-        }
-    }
-    fn unit(&mut self, unit: u16, output: &mut String) -> Result<(), ProtocolError> {
-        if let Some(high) = self.pending_high.take() {
-            if !(0xdc00..=0xdfff).contains(&unit) {
-                return Err(error("Invalid Unicode surrogate pair"));
-            }
-            let scalar = 0x10000 + (((high as u32) - 0xd800) << 10) + (unit as u32 - 0xdc00);
-            self.append(char::from_u32(scalar).unwrap(), output);
-        } else if (0xd800..=0xdbff).contains(&unit) {
-            self.pending_high = Some(unit);
-        } else if (0xdc00..=0xdfff).contains(&unit) {
-            return Err(error("Unpaired low Unicode surrogate"));
-        } else {
-            self.append(char::from_u32(unit as u32).unwrap(), output);
-        }
-        Ok(())
-    }
-    fn character(&mut self, character: char, output: &mut String) -> Result<(), ProtocolError> {
-        if self.pending_high.is_some() {
-            return Err(error("Unpaired high Unicode surrogate"));
-        }
-        self.append(character, output);
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct DecodedReply {
-    pub content: String,
-    pub annotations: Option<Value>,
-    pub arguments: String,
-}
-
-/// Bounded incremental UTF-8 / JSON-string lexical decoder. Full JSON validation
-/// is authoritative at finish. Only the root content string becomes public text.
-pub struct ReplyContentDecoder {
-    max_argument_bytes: usize,
-    raw: Vec<u8>,
-    canonical: String,
-    pending_utf8: Vec<u8>,
-    stack: Vec<char>,
-    expect_root_key: bool,
-    root_key: Option<String>,
-    expect_root_value: bool,
-    string: Option<JsonString>,
-    escape: bool,
-    unicode: Option<String>,
-    content_seen: bool,
-    content_finished: bool,
-    finished: bool,
-    emitted: String,
-}
-impl Default for ReplyContentDecoder {
-    fn default() -> Self {
-        Self::new(2_000_000)
-    }
-}
-impl ReplyContentDecoder {
-    pub fn new(max_argument_bytes: usize) -> Self {
-        Self {
-            max_argument_bytes,
-            raw: vec![],
-            canonical: String::new(),
-            pending_utf8: vec![],
-            stack: vec![],
-            expect_root_key: false,
-            root_key: None,
-            expect_root_value: false,
-            string: None,
-            escape: false,
-            unicode: None,
-            content_seen: false,
-            content_finished: false,
-            finished: false,
-            emitted: String::new(),
-        }
-    }
-    pub fn push(&mut self, delta: &str) -> Result<String, ProtocolError> {
-        self.push_bytes(delta.as_bytes())
-    }
-    /// Transport-level fixture entry. Actual ModelStreamEvent deltas are already
-    /// valid String, but this verifies arbitrary UTF-8 byte-boundary splitting.
-    pub fn push_bytes(&mut self, delta: &[u8]) -> Result<String, ProtocolError> {
-        if self.finished {
-            return Err(error("Reply stream already finished"));
-        }
-        if delta.len() > self.max_argument_bytes.saturating_sub(self.raw.len()) {
-            return Err(error("Reply argument budget exceeded"));
-        }
-        self.raw.extend_from_slice(delta);
-        self.pending_utf8.extend_from_slice(delta);
-        let valid_bytes = match std::str::from_utf8(&self.pending_utf8) {
-            Ok(_) => self.pending_utf8.len(),
-            Err(error) if error.error_len().is_none() => error.valid_up_to(),
-            Err(_) => return Err(error("Invalid UTF-8 argument bytes")),
-        };
-        let valid = std::str::from_utf8(&self.pending_utf8[..valid_bytes])
-            .unwrap()
-            .to_string();
-        self.pending_utf8.drain(..valid_bytes);
-        let mut output = String::new();
-        for character in valid.chars() {
-            // Markdown has literal line breaks. Canonicalize only these
-            // unambiguous layout characters in the root display-body string;
-            // metadata, keys, escapes and executable arguments stay strict.
-            let layout = self
-                .string
-                .as_ref()
-                .is_some_and(|s| s.role == Role::Content)
-                && !self.escape
-                && self.unicode.is_none();
-            match (layout, character) {
-                (true, '\n') => self.canonical.push_str("\\n"),
-                (true, '\r') => self.canonical.push_str("\\r"),
-                (true, '\t') => self.canonical.push_str("\\t"),
-                _ => self.canonical.push(character),
-            }
-            self.consume(character, &mut output)?;
-        }
-        self.emitted.push_str(&output);
-        Ok(output)
-    }
-    fn consume(&mut self, character: char, output: &mut String) -> Result<(), ProtocolError> {
-        if self.string.is_some() {
-            if let Some(unicode) = &mut self.unicode {
-                if !character.is_ascii_hexdigit() {
-                    return Err(error("Invalid Unicode escape"));
-                }
-                unicode.push(character);
-                if unicode.len() == 4 {
-                    let unit = u16::from_str_radix(unicode, 16).unwrap();
-                    self.unicode = None;
-                    self.string.as_mut().unwrap().unit(unit, output)?;
-                }
-            } else if self.escape {
-                self.escape = false;
-                if character == 'u' {
-                    self.unicode = Some(String::new());
-                } else {
-                    let character = match character {
-                        '"' => '"',
-                        '\\' => '\\',
-                        '/' => '/',
-                        'b' => '\u{8}',
-                        'f' => '\u{c}',
-                        'n' => '\n',
-                        'r' => '\r',
-                        't' => '\t',
-                        _ => return Err(error("Invalid JSON string escape")),
-                    };
-                    self.string.as_mut().unwrap().character(character, output)?;
-                }
-            } else if character == '\\' {
-                self.escape = true;
-            } else if character == '"' {
-                let string = self.string.take().unwrap();
-                if string.pending_high.is_some() {
-                    return Err(error("Unpaired high Unicode surrogate"));
-                }
-                if string.role == Role::Content {
-                    self.content_finished = true;
-                }
-                if string.role == Role::Key {
-                    self.root_key = Some(string.key);
-                    self.expect_root_key = false;
-                }
-            } else {
-                if character < '\u{20}'
-                    && !(self.string.as_ref().unwrap().role == Role::Content
-                        && matches!(character, '\n' | '\r' | '\t'))
-                {
-                    return Err(error("Unescaped JSON control character"));
-                }
-                self.string.as_mut().unwrap().character(character, output)?;
-            }
-            return Ok(());
-        }
-        if character.is_ascii_whitespace() {
-            return Ok(());
-        }
-        match character {
-            '"' => {
-                let role = if self.stack.len() == 1 && self.stack[0] == '{' && self.expect_root_key
-                {
-                    Role::Key
-                } else if self.stack.len() == 1
-                    && self.expect_root_value
-                    && self.root_key.as_deref() == Some("content")
-                {
-                    if self.content_seen {
-                        return Err(error("Duplicate root content field"));
-                    }
-                    self.content_seen = true;
-                    Role::Content
-                } else {
-                    Role::Ignored
-                };
-                self.string = Some(JsonString {
-                    role,
-                    key: String::new(),
-                    pending_high: None,
-                });
-                self.expect_root_value = false;
-            }
-            '{' | '[' => {
-                if self.stack.len() == 1
-                    && self.expect_root_value
-                    && self.root_key.as_deref() == Some("content")
-                {
-                    return Err(error("Reply content must be a string"));
-                }
-                if self.stack.len() >= 128 {
-                    return Err(error("Reply JSON nesting budget exceeded"));
-                }
-                self.stack.push(character);
-                if self.stack.len() == 1 {
-                    self.expect_root_key = character == '{';
-                }
-                self.expect_root_value = false;
-            }
-            '}' | ']' => {
-                self.stack.pop();
-                self.expect_root_value = false;
-            }
-            ':' if self.stack.len() == 1 => self.expect_root_value = true,
-            ',' if self.stack.len() == 1 => {
-                self.expect_root_key = true;
-                self.root_key = None;
-                self.expect_root_value = false;
-            }
-            _ if self.stack.len() == 1
-                && self.expect_root_value
-                && self.root_key.as_deref() == Some("content") =>
-            {
-                return Err(error("Reply content must be a string"))
-            }
-            _ => (),
-        }
-        Ok(())
-    }
-    pub fn finish(&mut self) -> Result<DecodedReply, ProtocolError> {
-        if self.finished {
-            return Err(error("Reply stream already finished"));
-        }
-        self.finished = true;
-        if !self.pending_utf8.is_empty() {
-            return Err(error("Incomplete UTF-8 reply bytes"));
-        }
-        let arguments = self.canonical.clone();
-        let args = parse_canonical_reply_arguments(&arguments)?;
-        if !self.content_seen || !self.content_finished || self.emitted != args.content {
-            return Err(error("Streamed content does not exactly match final reply"));
-        }
-        Ok(DecodedReply {
-            content: args.content,
-            annotations: args.annotations,
-            arguments,
-        })
-    }
-}
-
-struct ToolStream {
-    decoder: Option<ReplyContentDecoder>,
-    reply: Option<DecodedReply>,
-}
-/// Full normalized ModelStreamEvent stream. Ordinary work events are preserved.
-/// Raw reply events must be retained by the caller separately before push.
-/// Construct one per response/model attempt, not one per entire execution.
 pub struct ModelStreamNormalizer {
     enabled: bool,
-    tools: HashMap<usize, ToolStream>,
-    ordinary_text_seen: bool,
-    reply_started: bool,
-    text_prefix: String,
-    implicit_decoder: Option<ReplyContentDecoder>,
-    implicit_reply: Option<DecodedReply>,
+    metadata: HashSet<usize>,
+    pending: String,
+    in_trailer: bool,
 }
 impl ModelStreamNormalizer {
     pub fn new(protocol: Protocol) -> Self {
         Self {
             enabled: !protocol.is_off(),
-            tools: HashMap::new(),
-            ordinary_text_seen: false,
-            reply_started: false,
-            text_prefix: String::new(),
-            implicit_decoder: None,
-            implicit_reply: None,
+            metadata: HashSet::new(),
+            pending: String::new(),
+            in_trailer: false,
         }
-    }
-    pub fn decoded_reply(&self) -> Option<&DecodedReply> {
-        self.implicit_reply
-            .as_ref()
-            .or_else(|| self.tools.values().find_map(|tool| tool.reply.as_ref()))
     }
     pub fn push(
         &mut self,
@@ -325,387 +28,178 @@ impl ModelStreamNormalizer {
         if !self.enabled {
             return Ok(vec![event]);
         }
-        match &event {
-            ModelStreamEvent::TextDelta { text } => {
-                if self.reply_started && !text.trim().is_empty() {
-                    return Err(error("reply cannot mix with ordinary content"));
-                }
-                let text = if let Some(decoder) = &mut self.implicit_decoder {
-                    decoder.push(text)?
-                } else if self.ordinary_text_seen || !self.tools.is_empty() {
-                    text.clone()
-                } else {
-                    self.text_prefix.push_str(text);
-                    let prefix = self.text_prefix.trim_start();
-                    if prefix.starts_with('{') {
-                        let mut decoder = ReplyContentDecoder::default();
-                        let body = decoder.push(&std::mem::take(&mut self.text_prefix))?;
-                        self.implicit_decoder = Some(decoder);
-                        body
-                    } else if prefix.is_empty() && self.text_prefix.len() <= 64 {
-                        String::new()
-                    } else {
-                        std::mem::take(&mut self.text_prefix)
-                    }
-                };
-                // Keep explicit/implicit reply exclusivity independent from
-                // whether any decoded body has reached the public stream yet.
-                self.ordinary_text_seen |=
-                    !text.trim().is_empty() || self.implicit_decoder.is_some();
-                return Ok(if text.is_empty() {
+        if let ModelStreamEvent::TextDelta { text } = &event {
+            if self.in_trailer {
+                return Ok(vec![]);
+            }
+            self.pending.push_str(text);
+            let body = if let Some(index) = self.pending.find(REPLY_TRAILER) {
+                self.in_trailer = true;
+                self.pending[..index].to_owned()
+            } else {
+                // Retain at most one ASCII delimiter prefix, not the body or
+                // its JSON/Markdown structure. Provider chunks may split it.
+                let keep = (1..REPLY_TRAILER.len())
+                    .rev()
+                    .find(|n| self.pending.ends_with(&REPLY_TRAILER[..*n]))
+                    .unwrap_or(0);
+                let split = self.pending.len() - keep;
+                let body = self.pending[..split].to_owned();
+                self.pending = self.pending[split..].to_owned();
+                return Ok(if body.is_empty() {
                     vec![]
                 } else {
-                    vec![ModelStreamEvent::TextDelta { text }]
+                    vec![ModelStreamEvent::TextDelta { text: body }]
                 });
-            }
-            ModelStreamEvent::ToolCallStarted { index, name, .. } => {
-                if self.tools.contains_key(index) {
-                    return Err(error("Duplicate tool stream start"));
-                }
-                if self.reply_started
-                    || self.implicit_decoder.is_some()
-                    || name == "reply" && (!self.tools.is_empty() || self.ordinary_text_seen)
-                {
-                    return Err(error("reply must be sole call with no ordinary content"));
-                }
-                let decoder = if name == "reply" {
-                    self.reply_started = true;
-                    Some(ReplyContentDecoder::default())
-                } else {
-                    None
-                };
-                self.tools.insert(
-                    *index,
-                    ToolStream {
-                        decoder,
-                        reply: None,
-                    },
-                );
-                if name == "reply" {
-                    return Ok(vec![]);
-                }
-            }
-            ModelStreamEvent::ToolArgumentsDelta { index, delta } => {
-                let tool = self
-                    .tools
-                    .get_mut(index)
-                    .ok_or_else(|| error("Arguments arrived before complete tool identity"))?;
-                if let Some(decoder) = &mut tool.decoder {
-                    let text = decoder.push(delta)?;
-                    return Ok(if text.is_empty() {
-                        vec![]
-                    } else {
-                        vec![ModelStreamEvent::TextDelta { text }]
-                    });
-                }
-            }
-            ModelStreamEvent::ToolCallCompleted { index } => {
-                let tool = self
-                    .tools
-                    .get_mut(index)
-                    .ok_or_else(|| error("Unknown completed tool"))?;
-                if let Some(decoder) = &mut tool.decoder {
-                    tool.reply = Some(decoder.finish()?);
-                    return Ok(vec![]);
-                }
-            }
-            ModelStreamEvent::Completed
-                if self.reply_started
-                    && self
-                        .tools
-                        .values()
-                        .any(|tool| tool.decoder.is_some() && tool.reply.is_none()) =>
-            {
-                return Err(error("Completed reply lacks validated control body"))
-            }
-            ModelStreamEvent::Completed if self.implicit_decoder.is_some() => {
-                self.implicit_reply = Some(self.implicit_decoder.as_mut().unwrap().finish()?);
-            }
-            _ => (),
+            };
+            self.pending.clear();
+            return Ok(if body.is_empty() {
+                vec![]
+            } else {
+                vec![ModelStreamEvent::TextDelta { text: body }]
+            });
         }
         if matches!(
             event,
-            ModelStreamEvent::Completed
-                | ModelStreamEvent::Incomplete { .. }
-                | ModelStreamEvent::Failed { .. }
-        ) && !self.reply_started
+            ModelStreamEvent::Completed | ModelStreamEvent::Incomplete { .. }
+        ) && !self.pending.is_empty()
+            && !self.in_trailer
         {
-            let text = std::mem::take(&mut self.text_prefix);
-            if !text.is_empty() {
-                return Ok(vec![ModelStreamEvent::TextDelta { text }, event]);
-            }
+            return Ok(vec![
+                ModelStreamEvent::TextDelta {
+                    text: std::mem::take(&mut self.pending),
+                },
+                event,
+            ]);
         }
-        Ok(vec![event])
+        let private = match &event {
+            ModelStreamEvent::ToolCallStarted { index, name, .. } if name == "reply" => {
+                self.metadata.insert(*index);
+                true
+            }
+            ModelStreamEvent::ToolArgumentsDelta { index, .. }
+            | ModelStreamEvent::ToolCallCompleted { index } => self.metadata.contains(index),
+            _ => false,
+        };
+        Ok(if private { vec![] } else { vec![event] })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     #[test]
-    fn body_layout_characters_preserve_annotations_and_stream_at_every_byte_boundary() {
-        let body = "第一段。\n\n第二段。\r\n\t缩进，中文🧠。";
-        let annotations =
-            json!({"execution":{"title":"阅读合成材料","result":"已解释两段合成文字"}});
-        for raw in [
-            format!("{{\"annotations\":{annotations},\"content\":\"{body}\"}}"),
-            format!("{{\"content\":\"{body}\",\"annotations\":{annotations}}}"),
-        ] {
-            for split in 0..=raw.len() {
-                let mut decoder = ReplyContentDecoder::default();
-                let mut text = decoder.push_bytes(&raw.as_bytes()[..split]).unwrap();
-                text.push_str(&decoder.push_bytes(&raw.as_bytes()[split..]).unwrap());
-                let decoded = decoder.finish().unwrap();
-                assert_eq!(text, body);
-                assert_eq!(decoded.content, body);
-                assert_eq!(decoded.annotations, Some(annotations.clone()));
-                let canonical: Value = serde_json::from_str(&decoded.arguments).unwrap();
-                assert_eq!(canonical["content"], body);
-                assert_eq!(
-                    super::super::parse_reply_arguments(&raw).unwrap().content,
-                    body
-                );
-            }
-        }
-    }
-    #[test]
-    fn layout_handling_never_repairs_metadata_keys_escapes_or_mixed_work() {
-        for raw in [
-            "{\"content\":\"ok\",\"annotations\":{\"execution\":{\"title\":\"bad\ntitle\",\"result\":\"r\"}}}",
-            "{\"con\ntent\":\"ok\"}",
-            "{\"content\":\"bad\u{0001}body\"}",
-            "{\"content\":\"bad\\qbody\"}",
-            "{\"content\":\"a\nb\",\"content\":\"duplicate\"}",
-            "{\"content\":\"a\nb\",\"execute\":true}",
-        ] {
-            assert!(super::super::parse_reply_arguments(raw).is_err(), "{raw:?}");
-        }
-        let mut normalizer = ModelStreamNormalizer::new(Protocol::On);
-        normalizer
-            .push(ModelStreamEvent::TextDelta {
-                text: "{\"content\":\"a\nb\"}".into(),
-            })
-            .unwrap();
-        assert!(normalizer
-            .push(ModelStreamEvent::ToolCallStarted {
-                index: 0,
-                id: "work".into(),
-                name: "execute".into()
-            })
-            .is_err());
-    }
-    #[test]
-    fn implicit_reply_streams_only_content_and_uses_the_explicit_decoder() {
-        let body = "中文🧠\n```json\n{\"annotations\":\"业务数据\"}\n```";
-        let annotations = json!({"execution":{"title":"检查合成数据","result":"已检查"}});
-        for raw in [
-            format!(
-                "{{\"annotations\":{annotations},\"content\":{}}}",
-                json!(body)
-            ),
-            format!(
-                "{{\"content\":{},\"annotations\":{annotations}}}",
-                json!(body)
-            ),
-        ] {
-            for split in raw.char_indices().map(|(i, _)| i).chain([raw.len()]) {
-                let mut normalizer = ModelStreamNormalizer::new(Protocol::On);
-                let mut public = String::new();
-                for delta in [&raw[..split], &raw[split..]] {
-                    for event in normalizer
-                        .push(ModelStreamEvent::TextDelta { text: delta.into() })
-                        .unwrap()
-                    {
-                        if let ModelStreamEvent::TextDelta { text } = event {
-                            public.push_str(&text);
-                        }
+    fn ordinary_text_is_immediate_and_byte_identical_with_or_without_annotations() {
+        for protocol in [Protocol::On, Protocol::Off] {
+            let mut stream = ModelStreamNormalizer::new(protocol);
+            let body = "{\"business\":\"value\"}\n\n中文🧠\t引号\"与反斜线\\都不是控制语法。";
+            let mut output = String::new();
+            for c in body.chars() {
+                let delta = c.to_string();
+                let events = stream
+                    .push(ModelStreamEvent::TextDelta {
+                        text: delta.clone(),
+                    })
+                    .unwrap();
+                for event in events {
+                    if let ModelStreamEvent::TextDelta { text } = event {
+                        output.push_str(&text);
+                    } else {
+                        panic!("body changed type");
                     }
                 }
-                assert_eq!(
-                    public, body,
-                    "body must arrive before completion at split {split}"
-                );
-                normalizer.push(ModelStreamEvent::Completed).unwrap();
-                let decoded = normalizer.decoded_reply().unwrap();
-                assert_eq!(decoded.content, body);
-                assert_eq!(decoded.annotations, Some(annotations.clone()));
-                assert_eq!(decoded.arguments, raw);
+                assert!(stream.pending.len() < REPLY_TRAILER.len());
             }
-            let mut off = ModelStreamNormalizer::new(Protocol::Off);
-            assert!(
-                matches!(&off.push(ModelStreamEvent::TextDelta{text:raw.clone()}).unwrap()[0],ModelStreamEvent::TextDelta{text} if text==&raw)
-            );
-        }
-    }
-    #[test]
-    fn unicode_utf8_all_byte_splits_emit_before_finish_exact_body_no_metadata() {
-        let content = "中文 🧠 \"引号\" \\ 换行\n制表\t尾";
-        let raw=json!({"annotations":{"content":"nested hidden","execution":{"title":"不泄露"}},"content":content}).to_string();
-        for split in 0..=raw.len() {
-            let mut decoder = ReplyContentDecoder::default();
-            let first = decoder.push_bytes(&raw.as_bytes()[..split]).unwrap();
-            let second = decoder.push_bytes(&raw.as_bytes()[split..]).unwrap();
-            assert_eq!(format!("{first}{second}"), content, "split {split}");
-            assert_eq!(decoder.finish().unwrap().content, content);
-        }
-        let mut early = ReplyContentDecoder::default();
-        assert_eq!(early.push("{\"content\":\"已经到达").unwrap(), "已经到达");
-        early
-            .push("\",\"annotations\":{\"execution\":{\"result\":\"后到\"}}}")
-            .unwrap();
-        early.finish().unwrap();
-    }
-    #[test]
-    fn escaped_keys_unicode_surrogate_pairs_all_splits() {
-        let raw = r#"{"ann\u006ftations":{"content":"hidden"},"c\u006fntent":"\u4e2d\u6587 \ud83e\udde0 \" \\ \n"}"#;
-        let expected: Value = serde_json::from_str(raw).unwrap();
-        let expected = expected["content"].as_str().unwrap();
-        for width in 1..14 {
-            let mut decoder = ReplyContentDecoder::default();
-            let mut text = String::new();
-            for delta in raw.as_bytes().chunks(width) {
-                text.push_str(&decoder.push_bytes(delta).unwrap());
+            for event in stream.push(ModelStreamEvent::Completed).unwrap() {
+                if let ModelStreamEvent::TextDelta { text } = event {
+                    output.push_str(&text);
+                }
             }
-            assert_eq!(text, expected);
-            assert_eq!(decoder.finish().unwrap().content, expected);
+            assert_eq!(output, body);
         }
     }
     #[test]
-    fn malformed_incomplete_duplicate_utf8_and_unpaired_surrogates_rejected() {
-        for raw in [
-            r#"{"content":12}"#,
-            r#"{"content":"a","content":"b"}"#,
-            r#"{"content":"\q"}"#,
-            r#"{"content":"\u12g4"}"#,
-            r#"{"content":"\ud800x"}"#,
-            r#"{"content":"\udc00"}"#,
-        ] {
-            let mut decoder = ReplyContentDecoder::default();
-            assert!(decoder.push(raw).is_err(), "{raw}");
-        }
-        let mut incomplete = ReplyContentDecoder::default();
-        incomplete.push("{\"content\":\"partial").unwrap();
-        assert!(incomplete.finish().is_err());
-        let mut invalid = ReplyContentDecoder::default();
-        assert!(invalid.push_bytes(&[0xff]).is_err());
-        let mut split_utf8 = ReplyContentDecoder::default();
-        split_utf8.push_bytes(&[0xe4]).unwrap();
-        assert!(split_utf8.finish().is_err());
-        let mut control = ReplyContentDecoder::default();
-        control
-            .push(r#"{"content":"正文","status":"success"}"#)
-            .unwrap();
-        assert!(control.finish().is_err());
-        assert!(ReplyContentDecoder::new(10).push("xxxxxxxxxxx").is_err());
-    }
-    #[test]
-    fn long_body_linear_incremental_matching() {
-        let content = "长文本🧠\\\"\n".repeat(50_000);
-        let raw =
-            json!({"content":content,"annotations":{"execution":{"result":"末尾"}}}).to_string();
-        let mut decoder = ReplyContentDecoder::default();
-        let mut text = String::new();
-        for delta in raw.as_bytes().chunks(97) {
-            text.push_str(&decoder.push_bytes(delta).unwrap());
-        }
-        assert_eq!(text, content);
-        assert_eq!(decoder.finish().unwrap().content, content);
-    }
-    #[test]
-    fn full_model_stream_preserves_real_tool_events_and_off_bytes_exactly() {
-        let events = vec![
-            ModelStreamEvent::Started,
-            ModelStreamEvent::ToolCallStarted {
-                index: 0,
-                id: "work".into(),
-                name: "exec".into(),
-            },
-            ModelStreamEvent::ToolArgumentsDelta {
-                index: 0,
-                delta: r#"{"command":"secret"}"#.into(),
-            },
-            ModelStreamEvent::ToolCallCompleted { index: 0 },
-            ModelStreamEvent::Completed,
-        ];
-        for protocol in [Protocol::Off, Protocol::On] {
-            let mut stream = ModelStreamNormalizer::new(protocol);
-            let mut normalized = vec![];
-            for event in events.clone() {
-                normalized.extend(stream.push(event).unwrap());
+    fn implicit_reply_trailer_is_private_across_every_chunk_boundary() {
+        let body = "{\"business\":false}\n中文\"\\\t原样";
+        let content=format!("{body}{REPLY_TRAILER}{{\"annotations\":{{\"execution\":{{\"title\":\"标题\",\"result\":\"结果\"}}}}}}\n:::");
+        let chars: Vec<_> = content.chars().collect();
+        for size in 1..=chars.len() {
+            let mut stream = ModelStreamNormalizer::new(Protocol::On);
+            let mut output = String::new();
+            for chunk in chars.chunks(size) {
+                for event in stream
+                    .push(ModelStreamEvent::TextDelta {
+                        text: chunk.iter().collect(),
+                    })
+                    .unwrap()
+                {
+                    if let ModelStreamEvent::TextDelta { text } = event {
+                        output.push_str(&text);
+                    }
+                }
             }
-            assert_eq!(
-                serde_json::to_vec(&events).unwrap(),
-                serde_json::to_vec(&normalized).unwrap()
-            );
+            assert_eq!(output, body, "chunk size {size}");
+            assert!(stream
+                .push(ModelStreamEvent::Completed)
+                .unwrap()
+                .iter()
+                .all(|event| !matches!(event, ModelStreamEvent::TextDelta { .. })));
         }
-        let mut off = ModelStreamNormalizer::new(Protocol::Off);
-        let unknown = ModelStreamEvent::ToolArgumentsDelta {
-            index: 9,
-            delta: "raw business".into(),
-        };
-        assert_eq!(off.push(unknown.clone()).unwrap(), vec![unknown]);
     }
     #[test]
-    fn reply_normalizes_real_event_type_without_work_turn_and_mixed_control_rejected() {
+    fn metadata_never_becomes_body_and_malformed_metadata_never_cuts_off_text() {
         let mut stream = ModelStreamNormalizer::new(Protocol::On);
         assert!(stream
             .push(ModelStreamEvent::ToolCallStarted {
                 index: 0,
-                id: "r".into(),
+                id: "metadata".into(),
                 name: "reply".into()
+            })
+            .unwrap()
+            .is_empty());
+        assert!(stream
+            .push(ModelStreamEvent::ToolArgumentsDelta {
+                index: 0,
+                delta: "{broken\nmetadata".into()
             })
             .unwrap()
             .is_empty());
         assert_eq!(
             stream
-                .push(ModelStreamEvent::ToolArgumentsDelta {
-                    index: 0,
-                    delta: "{\"content\":\"中文".into()
+                .push(ModelStreamEvent::TextDelta {
+                    text: "正文继续显示。".into()
                 })
-                .unwrap(),
-            vec![ModelStreamEvent::TextDelta {
-                text: "中文".into()
-            }]
+                .unwrap()
+                .len(),
+            1
         );
-        assert!(stream
-            .push(ModelStreamEvent::ToolArgumentsDelta {
-                index: 0,
-                delta: "\",\"annotations\":{\"execution\":{\"result\":\"隐藏\"}}}".into()
-            })
-            .unwrap()
-            .is_empty());
         assert!(stream
             .push(ModelStreamEvent::ToolCallCompleted { index: 0 })
             .unwrap()
             .is_empty());
-        assert_eq!(
-            stream.push(ModelStreamEvent::Completed).unwrap(),
-            vec![ModelStreamEvent::Completed]
-        );
-        assert_eq!(stream.decoded_reply().unwrap().content, "中文");
-        assert!(stream
-            .push(ModelStreamEvent::ToolCallStarted {
-                index: 1,
-                id: "w".into(),
-                name: "exec".into()
-            })
-            .is_err());
-        let mut missing = ModelStreamNormalizer::new(Protocol::On);
-        assert!(missing
-            .push(ModelStreamEvent::ToolArgumentsDelta {
-                index: 0,
-                delta: "{}".into()
-            })
-            .is_err());
-        let mut unfinished = ModelStreamNormalizer::new(Protocol::On);
-        unfinished
-            .push(ModelStreamEvent::ToolCallStarted {
-                index: 0,
-                id: "r".into(),
-                name: "reply".into(),
-            })
-            .unwrap();
-        assert!(unfinished.push(ModelStreamEvent::Completed).is_err());
+        assert_eq!(stream.push(ModelStreamEvent::Completed).unwrap().len(), 1);
+    }
+    #[test]
+    fn work_and_disabled_metadata_events_are_not_rewritten() {
+        for (protocol, name) in [(Protocol::On, "read"), (Protocol::Off, "reply")] {
+            let mut stream = ModelStreamNormalizer::new(protocol);
+            for event in [
+                ModelStreamEvent::ToolCallStarted {
+                    index: 1,
+                    id: "call".into(),
+                    name: name.into(),
+                },
+                ModelStreamEvent::ToolArgumentsDelta {
+                    index: 1,
+                    delta: "{\"value\":1}".into(),
+                },
+                ModelStreamEvent::ToolCallCompleted { index: 1 },
+            ] {
+                let expected = format!("{event:?}");
+                let actual = stream.push(event).unwrap();
+                assert_eq!(actual.len(), 1);
+                assert_eq!(format!("{:?}", actual[0]), expected);
+            }
+        }
     }
 }

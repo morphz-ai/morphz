@@ -501,7 +501,7 @@ impl Client for GroupWaitClient {
             }
             (
                 "reply",
-                json!({"content":format!("Group {role} complete"),"annotations":{
+                json!({"annotations":{
                     "execution":{"title":format!("Group {role}"),"result":format!("Group {role} complete")}
                 }}),
             )
@@ -517,7 +517,11 @@ impl Client for GroupWaitClient {
                 .collect::<Vec<_>>()
         );
         Ok(Response {
-            content: String::new(),
+            content: if name == "reply" {
+                format!("Group {role} complete")
+            } else {
+                String::new()
+            },
             tool_calls: vec![ToolCallRepr {
                 id: format!("group-{role}-{count}"),
                 r#type: "function".into(),

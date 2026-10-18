@@ -135,13 +135,17 @@ impl Client for ScheduledCustomClient {
             assert!(tools.iter().any(|tool| tool.name == "reply"));
             (
                 "reply",
-                json!({"content":format!("Custom {role} complete"),"annotations":{
+                json!({"annotations":{
                     "execution":{"title":format!("Custom {role}"),"result":format!("Custom {role} complete")}
                 }}),
             )
         };
         Ok(Response {
-            content: String::new(),
+            content: if name == "reply" {
+                format!("Custom {role} complete")
+            } else {
+                String::new()
+            },
             tool_calls: vec![ToolCallRepr {
                 id: format!("custom-{role}-{name}"),
                 r#type: "function".into(),

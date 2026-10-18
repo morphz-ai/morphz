@@ -175,12 +175,12 @@ impl Client for ScriptClient {
                 if !self.protocol.is_off() {
                     assert!(tools.iter().any(|tool| tool.name == "reply"));
                     Response {
-                        content: String::new(),
+                        content: FINAL_TEXT.into(),
                         tool_calls: vec![ToolCallRepr {
                             id: "steer-final-reply".into(),
                             r#type: "function".into(),
                             func_name: "reply".into(),
-                            arguments: json!({"content":FINAL_TEXT,"annotations":{"execution":{
+                            arguments: json!({"annotations":{"execution":{
                                 "title":UPDATED_TITLE,"result":"已读取合成系统与架构，并提供中文摘要"
                             }}}).to_string(),
                         }],
