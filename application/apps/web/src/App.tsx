@@ -4084,6 +4084,11 @@ function WorkspaceApp({
                           : undefined
                       }
                       onSelect={subjectInspector.selectExecution}
+                      onSupplement={
+                        client.boot!.capabilities.directedInput
+                          ? supplement
+                          : undefined
+                      }
                     />
                   }
                 />

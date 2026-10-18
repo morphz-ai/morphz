@@ -181,12 +181,23 @@ export function ComposerOptions({
       )
         setOpen(false);
     };
+    // Native modal key handling runs before React's delegated key handler.
+    // A nested menu owns Escape first; otherwise the surrounding dialog's
+    // native cancel closes the whole reading surface instead of this menu.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeToTrigger();
+    };
+    element.addEventListener("keydown", escape);
     document.addEventListener("pointerdown", outside, true);
     document.addEventListener("focusin", outside);
     window.addEventListener("resize", position);
     window.addEventListener("scroll", position, true);
     return () => {
       element.hidePopover();
+      element.removeEventListener("keydown", escape);
       resize.disconnect();
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("focusin", outside);

@@ -2908,7 +2908,9 @@ export class RuntimeBridge {
       if (
         (control.action === "pause" && goal.status !== "active") ||
         (control.action === "resume" &&
-          !["paused", "blocked"].includes(goal.status))
+          !["paused", "blocked"].includes(goal.status)) ||
+        (control.action === "edit" &&
+          !["active", "paused", "blocked"].includes(goal.status))
       )
         throw new DomainError("conflict", "目标状态已变化，请核对后再操作。");
       return goal;
@@ -2917,12 +2919,23 @@ export class RuntimeBridge {
     try {
       const path = `/api/objectives/${encodeURIComponent(control.objectiveId)}`;
       const response = await this.request(
-        control.action === "delete" ? path : `${path}/${control.action}`,
-        control.action === "delete" ? "DELETE" : "POST",
-        {
-          expected_revision: control.revision,
-          reason: `用户通过 Desktop ${{ pause: "暂停", resume: "恢复", delete: "删除" }[control.action]}目标`,
-        },
+        ["delete", "edit"].includes(control.action)
+          ? path
+          : `${path}/${control.action}`,
+        control.action === "edit"
+          ? "PATCH"
+          : control.action === "delete"
+            ? "DELETE"
+            : "POST",
+        control.action === "edit"
+          ? {
+              expected_revision: control.revision,
+              stated_objective: control.statedObjective,
+            }
+          : {
+              expected_revision: control.revision,
+              reason: `用户通过 Desktop ${{ pause: "暂停", resume: "恢复", delete: "删除" }[control.action]}目标`,
+            },
         access,
         undefined,
       );
@@ -2931,6 +2944,14 @@ export class RuntimeBridge {
           deleted: z.literal(true),
           objective_id: z.literal(control.objectiveId),
           terminal_status: z.literal("cancelled"),
+        }).parse(response);
+      else if (control.action === "edit")
+        z.object({
+          edited: z.literal(true),
+          objective: z.object({
+            id: z.literal(control.objectiveId),
+            stated_objective: z.literal(control.statedObjective),
+          }),
         }).parse(response);
       else
         z.object({
@@ -5808,6 +5829,7 @@ export class RuntimeBridge {
             title: objective.stated_objective,
             status: objective.status,
             revision: objective.revision,
+            generation: objective.generation,
             controlAllowed: false,
             statusReason: objective.status_reason,
             readiness: value.readiness.state,

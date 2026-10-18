@@ -1,8 +1,9 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Target, ChevronDown, ChevronRight, Eye } from "lucide-react";
 import type { WorkspaceClient } from "./client.js";
 import type { ExecutionReadScope } from "../../../packages/core/src/execution.js";
+import type { InputContinuation } from "../../../packages/core/src/continuation.js";
 import {
   objectiveDetailStatus,
   objectiveIsTerminal,
@@ -64,13 +65,26 @@ export function SubjectObjectives({
   client,
   scope,
   onSelect,
+  onSupplement,
 }: {
   client: WorkspaceClient;
   scope?: ExecutionReadScope;
   onSelect(scope: ExecutionReadScope): void;
+  onSupplement?: (target: InputContinuation) => void;
 }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [viewing, setViewing] = useState<string | null>(null);
+  const supplement = useRef(onSupplement);
+  supplement.current = onSupplement;
+  const supplementRequest = useRef(0);
+  const currentView = useRef(viewing);
+  currentView.current = viewing;
+  useEffect(
+    () => () => {
+      supplementRequest.current++;
+    },
+    [],
+  );
   const runtime = client.boot!.runtime,
     state = client.boot!.workspace;
   const goals =
@@ -266,7 +280,64 @@ export function SubjectObjectives({
                   goal={goal}
                   client={client}
                   fresh={!!fresh}
-                  onClose={() => setViewing(null)}
+                  threads={runtime.activity!.threads.filter(
+                    (thread) =>
+                      thread.kind === "execution" &&
+                      thread.sessionId === goal.sessionId &&
+                      thread.projectId === goal.projectId &&
+                      thread.conversationId === goal.conversationId &&
+                      goal.threadIds.includes(thread.id),
+                  )}
+                  onSelect={onSelect}
+                  onSupplement={
+                    onSupplement
+                      ? async (target) => {
+                          const request = ++supplementRequest.current;
+                          const identity = `${client.boot!.centerId}:${client.boot!.principalId}:${client.boot!.actantId}`;
+                          await client.loadHistoryUntil(target.inputId);
+                          // History hydration publishes a new render. Invoke its current
+                          // draft command, never a captured pre-hydration draft snapshot.
+                          await new Promise<void>((resolve) =>
+                            requestAnimationFrame(() => resolve()),
+                          );
+                          const boot = client.getSnapshot();
+                          const original = boot?.workspace.inputs.find(
+                            (input) => input.id === target.inputId,
+                          );
+                          if (
+                            request !== supplementRequest.current ||
+                            currentView.current !== goal.id ||
+                            !boot ||
+                            `${boot.centerId}:${boot.principalId}:${boot.actantId}` !==
+                              identity ||
+                            !original ||
+                            original.author.principalId !== boot.principalId ||
+                            original.author.actantId !== boot.actantId ||
+                            !supplement.current
+                          )
+                            throw new Error(
+                              "此目标的原消息暂时无法读取，未改变输入框或发送消息。",
+                            );
+                          setViewing(null);
+                          // Let native-modal focus restoration finish before the shared
+                          // composer takes focus. The command only associates; never sends.
+                          requestAnimationFrame(() => {
+                            const boot = client.getSnapshot();
+                            if (
+                              request === supplementRequest.current &&
+                              boot &&
+                              `${boot.centerId}:${boot.principalId}:${boot.actantId}` ===
+                                identity
+                            )
+                              supplement.current?.(target);
+                          });
+                        }
+                      : undefined
+                  }
+                  onClose={() => {
+                    supplementRequest.current++;
+                    setViewing(null);
+                  }}
                 />,
                 host,
               )

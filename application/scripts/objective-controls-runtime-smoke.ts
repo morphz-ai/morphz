@@ -230,6 +230,20 @@ try {
   assert.equal(goal.status, "paused");
   const pausedRevision = goal.revision!;
   await assert.rejects(control("resume", pausedRevision - 1), /变化/);
+  const edited =
+    "TEST 修改后的隔离目标：保留暂停、执行历史与完整目标正文。\n\n不执行外部操作。";
+  await invoke("objective.control", {
+    objectiveId: goal.id,
+    projectId: goal.projectId,
+    conversationId: goal.conversationId,
+    revision: pausedRevision,
+    action: "edit",
+    statedObjective: edited,
+  });
+  goal = (await read()).objectives!.find((value) => value.id === goalId)!;
+  assert.equal(goal.title, edited);
+  assert.equal(goal.status, "paused");
+  assert.equal(goal.generation, 1);
   await control("resume");
   goal = (await read()).objectives!.find((value) => value.id === goalId)!;
   assert.equal(goal.status, "active");
@@ -254,6 +268,10 @@ try {
   assert.equal(
     (await read()).objectives!.find((value) => value.id === goalId)!.status,
     "cancelled",
+  );
+  assert.equal(
+    (await read()).objectives!.find((value) => value.id === goalId)!.title,
+    edited,
   );
   assert.equal(runtime.exitCode, null);
   passed = true;

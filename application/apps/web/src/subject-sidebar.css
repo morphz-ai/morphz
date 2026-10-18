@@ -152,7 +152,7 @@
   flex: none;
 }
 .subject-objective-dialog {
-  --ui-dialog-width: 680px;
+  --ui-dialog-width: 600px;
   min-width: min(280px, calc(var(--modal-viewport-width, 100vw) - 32px));
 }
 .subject-objective-dialog[open] {
@@ -161,15 +161,24 @@
 }
 .subject-objective-dialog > header {
   flex: none;
+  align-items: flex-start;
 }
 .subject-objective-dialog > header > .subject-objective-dialog-heading {
-  flex-wrap: wrap;
-  column-gap: 10px;
-  row-gap: 2px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
 }
 .subject-objective-dialog > header > .subject-objective-dialog-heading > p {
   white-space: normal;
   overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 18px;
+}
+.app .subject-objective-dialog > header > .subject-objective-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
 }
 .subject-objective-dialog-text {
   flex: 0 1 auto;
@@ -180,30 +189,82 @@
   overflow: auto;
   overscroll-behavior: contain;
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
-  font-size: 14px;
-  line-height: 1.75;
+  font-size: var(--ui-detail-body-font-size);
+  line-height: var(--ui-detail-body-line-height);
 }
-.subject-objective-dialog[data-confirmation="true"]
-  .subject-objective-dialog-text {
-  max-height: min(32vh, 240px);
+.app .subject-objective-dialog .subject-objective-dialog-text > p {
+  margin: 0;
+  white-space: pre-wrap;
+  font: inherit;
+}
+.app .subject-objective-dialog .subject-objective-dialog-text > p + p {
+  margin-block-start: var(--ui-detail-paragraph-gap);
+}
+.app .subject-objective-dialog .subject-objective-editor {
+  flex: 0 1 auto;
+  field-sizing: content;
+  min-height: min(140px, 32vh);
+  max-height: min(44vh, 340px);
+  resize: vertical;
+  font-size: var(--ui-detail-body-font-size);
+  line-height: var(--ui-detail-body-line-height);
+}
+@media (pointer: coarse) {
+  .app .subject-objective-dialog .subject-objective-editor {
+    font-size: var(--ui-dialog-control-font-size);
+  }
+}
+.subject-objective-hint {
+  margin: 0 0 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.subject-objective-records {
+  overflow: auto;
+  min-height: 0;
+  max-height: min(52vh, 420px);
+  overscroll-behavior: contain;
+}
+.subject-objective-record {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 4px;
+  text-align: start;
+}
+.subject-objective-record > span {
+  display: grid;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.subject-objective-record strong {
+  font-size: 14px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.subject-objective-record small {
+  font-size: 12px;
+  color: var(--muted);
+}
+.app .subject-objective-menu > button:last-child {
+  color: var(--danger);
 }
 .app .subject-objective-dialog > footer {
   display: flex;
   flex: none;
   flex-wrap: wrap;
-  justify-content: flex-start;
+  justify-content: flex-end;
   gap: 8px;
   margin-top: 12px;
 }
-.app .subject-objective-dialog[data-confirmation="true"] > footer {
-  justify-content: flex-end;
-}
-.subject-objective-delete-warning {
+.app .subject-objective-dialog > .subject-objective-delete-warning {
   flex: none;
-  margin: 4px 0 8px;
-  font-size: 13px;
-  line-height: 1.6;
+  margin: 0;
+  font-size: var(--ui-detail-body-font-size);
+  line-height: var(--ui-detail-body-line-height);
 }
 .subject-objective-dialog > .form-error {
   flex: none;

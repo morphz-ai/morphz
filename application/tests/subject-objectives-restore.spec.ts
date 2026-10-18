@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
@@ -9,6 +9,15 @@ import {
 import { openInput } from "./interaction-helpers.js";
 import { openSettings } from "./settings-helpers.js";
 import { arrangementTime } from "../apps/web/src/subject-schedules-model.js";
+
+async function goalOption(dialog: Locator, label: string) {
+  await dialog
+    .getByRole("button", { name: "更多目标操作", exact: true })
+    .click();
+  return dialog
+    .getByRole("group", { name: "目标选项", exact: true })
+    .getByRole("button", { name: label, exact: true });
+}
 
 // Controlled presentation facts in the production renderer and isolated center.
 // No Objective, Schedule, Thread or input is created in the user's original App.
@@ -188,6 +197,12 @@ async function prepare(page: Page) {
         limit: 100,
       },
     });
+  });
+  await page.route("**/api/platform/bootstrap", async (route) => {
+    const response = await route.fetch();
+    const boot = await response.json();
+    boot.capabilities.directedInput = true;
+    await route.fulfill({ response, json: boot });
   });
   await page.goto("/");
   await page
@@ -937,7 +952,10 @@ for (const appearance of ["light", "dark"] as const)
     await view.click();
     const dialog = page.getByRole("dialog", { name: "目标", exact: true });
     const body = dialog.getByRole("region", { name: "完整目标" });
-    const remove = dialog.getByRole("button", { name: "删除", exact: true });
+    const more = dialog.getByRole("button", {
+      name: "更多目标操作",
+      exact: true,
+    });
     for (const [width, zoom] of [
       [1440, 1],
       [760, 1],
@@ -961,14 +979,15 @@ for (const appearance of ["light", "dark"] as const)
           const scale =
             Number.parseFloat(getComputedStyle(document.body).zoom) || 1;
           const actions = [
-            ...node.querySelectorAll<HTMLElement>("footer > button"),
+            ...node.querySelectorAll<HTMLElement>(
+              ".subject-objective-toolbar > button",
+            ),
           ];
           const a = actions[0]!.getBoundingClientRect(),
             b = actions[1]!.getBoundingClientRect();
           const body = node.querySelector<HTMLElement>(
             ".subject-objective-dialog-text",
           )!;
-          const footer = node.querySelector("footer")!.getBoundingClientRect();
           const header = node.querySelector("header")!.getBoundingClientRect();
           const rect = node.getBoundingClientRect();
           const css = getComputedStyle(body);
@@ -987,8 +1006,12 @@ for (const appearance of ["light", "dark"] as const)
             bodyFont: css.fontSize,
             bodyLine: css.lineHeight,
             bodyPadding: css.paddingLeft,
-            footerGap:
-              (footer.top - body.getBoundingClientRect().bottom) / scale,
+            footerCount: node.querySelectorAll("footer").length,
+            iconOnly: actions.every(
+              (action) =>
+                !action.textContent?.trim() &&
+                !!action.getAttribute("aria-label"),
+            ),
             horizontalOverflow: node.scrollWidth > node.clientWidth + 1,
             bounded:
               rect.top >= 0 &&
@@ -998,35 +1021,51 @@ for (const appearance of ["light", "dark"] as const)
             readableWidth:
               rect.width / scale >= Math.min(280, innerWidth / scale - 32) - 1,
             headerVisible: header.top >= 0,
-            footerVisible: footer.bottom <= innerHeight + 1,
+            toolbarVisible: actions.every((action) => {
+              const r = action.getBoundingClientRect();
+              return (
+                r.top >= 0 &&
+                r.bottom <= innerHeight + 1 &&
+                r.right <= rect.right
+              );
+            }),
           };
         });
-        expect(layout.gap).toBeGreaterThanOrEqual(6);
-        expect(layout.gap).toBeLessThanOrEqual(12);
+        expect(layout.gap).toBeGreaterThanOrEqual(0);
+        expect(layout.gap).toBeLessThanOrEqual(4);
         for (const height of layout.heights) expect(height).toBeCloseTo(32, 2);
         expect(layout.headerHasStatus).toBe(true);
         expect(layout.statusWhiteSpace).toBe("normal");
         expect(layout.bodyFont).toBe("14px");
-        expect(layout.bodyLine).toBe("24.5px");
+        expect(layout.bodyLine).toBe("22.4px");
         expect(layout.bodyPadding).toBe("8px");
-        // Fractional dialog centering can differ by <0.001 CSS px.
-        expect(Math.round(layout.footerGap * 1000) / 1000).toBeLessThanOrEqual(
-          12,
-        );
+        expect(layout.footerCount).toBe(0);
+        expect(layout.iconOnly).toBe(true);
         expect(layout.horizontalOverflow).toBe(false);
         expect(layout.bounded).toBe(true);
         expect(layout.readableWidth).toBe(true);
-        expect(layout.headerVisible && layout.footerVisible).toBe(true);
-        await expect(remove).toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
+        expect(layout.headerVisible && layout.toolbarVisible).toBe(true);
         if (accent === "cyan")
           await dialog.screenshot({
             path: info.outputPath(
               `goal-reading-${appearance}-${width}-${zoom}.png`,
             ),
           });
+        if (
+          accent === "cyan" &&
+          zoom === 1 &&
+          (width === 1440 || width === 390)
+        )
+          await page.screenshot({
+            path: info.outputPath(`goal-surface-${appearance}-${width}.png`),
+          });
       }
     }
-    await remove.click();
+    await more.click();
+    await page.keyboard.press("Escape");
+    await expect(more).toBeFocused();
+    await expect(dialog).toBeVisible();
+    await (await goalOption(dialog, "删除目标")).click();
     const confirmation = page.getByRole("dialog", {
       name: "删除这个目标？",
       exact: true,
@@ -1037,18 +1076,9 @@ for (const appearance of ["light", "dark"] as const)
     });
     await expect(keep).toBeFocused();
     const warning = confirmation.locator(".subject-objective-delete-warning");
-    expect(
-      await warning.evaluate(
-        (node) =>
-          !!(
-            node.compareDocumentPosition(
-              node.parentElement!.querySelector(
-                ".subject-objective-dialog-text",
-              )!,
-            ) & Node.DOCUMENT_POSITION_FOLLOWING
-          ),
-      ),
-    ).toBe(true);
+    await expect(
+      confirmation.getByRole("region", { name: "完整目标" }),
+    ).toHaveCount(0);
     await expect(confirmation).toHaveAttribute(
       "aria-describedby",
       (await warning.getAttribute("id")) ?? "",
@@ -1059,6 +1089,9 @@ for (const appearance of ["light", "dark"] as const)
     await confirmation.screenshot({
       path: info.outputPath(`goal-confirm-${appearance}-zoom.png`),
     });
+    await page.screenshot({
+      path: info.outputPath(`goal-confirm-surface-${appearance}.png`),
+    });
     // A short, zoomed window may scroll the modal as a whole, but must not
     // shrink the original goal to an empty padding-only scroll region.
     await page.setViewportSize({ width: 760, height: 400 });
@@ -1068,7 +1101,7 @@ for (const appearance of ["light", "dark"] as const)
       .poll(() =>
         confirmation.evaluate((node) => {
           const body = node.querySelector<HTMLElement>(
-            ".subject-objective-dialog-text",
+            ".subject-objective-delete-warning",
           )!;
           const css = getComputedStyle(body);
           const rect = node.getBoundingClientRect();
@@ -1089,7 +1122,7 @@ for (const appearance of ["light", "dark"] as const)
       path: info.outputPath(`goal-confirm-${appearance}-short-window.png`),
     });
     await keep.click();
-    await expect(remove).toBeFocused();
+    await expect(more).toBeFocused();
     await page.evaluate(() => (document.body.style.zoom = "1"));
     await page.setViewportSize({ width: 1440, height: 960 });
     target.title = "TEST 只核验一次并保存结果。";
@@ -1151,9 +1184,11 @@ test("查看不发送，暂停恢复沿同一目标修订号；删除须确认�
     "false",
   );
   expect(attempts).toEqual([]);
-  await expect(
-    dialog.getByRole("button", { name: "删除", exact: true }),
-  ).toHaveCSS("color", "rgb(167, 42, 50)");
+  await expect(await goalOption(dialog, "删除目标")).toHaveCSS(
+    "color",
+    "rgb(167, 42, 50)",
+  );
+  await page.keyboard.press("Escape");
   await dialog.getByRole("button", { name: "暂停", exact: true }).click();
   await expect(dialog.getByRole("status")).toHaveText("已暂停");
   await dialog.screenshot({ path: info.outputPath("goal-paused.png") });
@@ -1167,7 +1202,7 @@ test("查看不发送，暂停恢复沿同一目标修订号；删除须确认�
       ["resume", 2],
     ],
   );
-  await dialog.getByRole("button", { name: "删除", exact: true }).click();
+  await (await goalOption(dialog, "删除目标")).click();
   const confirmation = page.getByRole("dialog", {
     name: "删除这个目标？",
     exact: true,
@@ -1175,7 +1210,7 @@ test("查看不发送，暂停恢复沿同一目标修订号；删除须确认�
   await expect(
     confirmation.getByRole("button", { name: "保留目标", exact: true }),
   ).toBeFocused();
-  await expect(confirmation).toContainText("保留已有内容和执行记录");
+  await expect(confirmation).toContainText("已有内容和执行记录会保留");
   await confirmation.screenshot({
     path: info.outputPath("goal-delete-confirmation.png"),
   });
@@ -1185,15 +1220,15 @@ test("查看不发送，暂停恢复沿同一目标修订号；删除须确认�
     .click();
   expect(accepted).toBe(2);
   await expect(
-    dialog.getByRole("button", { name: "删除", exact: true }),
+    dialog.getByRole("button", { name: "更多目标操作", exact: true }),
   ).toBeFocused();
-  await dialog.getByRole("button", { name: "删除", exact: true }).click();
+  await (await goalOption(dialog, "删除目标")).click();
   target.revision = 9;
   target.title = "TEST 目标内容已在别处修订，不能按旧确认删除";
   await f.refresh();
   await expect(
     confirmation.getByRole("region", { name: "完整目标" }),
-  ).not.toHaveText(target.title);
+  ).toHaveCount(0);
   await confirmation
     .getByRole("button", { name: "确认删除", exact: true })
     .click();
@@ -1206,7 +1241,7 @@ test("查看不发送，暂停恢复沿同一目标修订号；删除须确认�
   );
   expect(attempts.at(-1).revision).toBe(3);
   expect(accepted).toBe(2);
-  await dialog.getByRole("button", { name: "删除", exact: true }).click();
+  await (await goalOption(dialog, "删除目标")).click();
   await confirmation
     .getByRole("button", { name: "确认删除", exact: true })
     .click();
@@ -1237,9 +1272,8 @@ test("只读或断线仍能查看完整目标，但不能暂停恢复或删除",
   await expect(
     dialog.getByRole("button", { name: "暂停", exact: true }),
   ).toBeDisabled();
-  await expect(
-    dialog.getByRole("button", { name: "删除", exact: true }),
-  ).toBeDisabled();
+  await expect(await goalOption(dialog, "删除目标")).toBeDisabled();
+  await page.keyboard.press("Escape");
   await expect(dialog.getByRole("region", { name: "完整目标" })).toHaveText(
     target.title,
   );
@@ -1254,6 +1288,154 @@ test("只读或断线仍能查看完整目标，但不能暂停恢复或删除",
   await dialog.screenshot({ path: info.outputPath("goal-offline.png") });
   await page.keyboard.press("Escape");
   await expect(await openInput(page)).toHaveValue(f.draft);
+  expect(f.writes).toEqual([]);
+});
+
+test("目标菜单复制全文、编辑原目标且保留冲突草稿，执行记录只打开确切关联", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  const target = f.runtime.activity.objectives[0]!;
+  const original = target.title;
+  let writes = 0;
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          (window as any).copiedGoal = text;
+        },
+      },
+    });
+  });
+  await page.route("**/api/objectives/control", async (route) => {
+    const command = route.request().postDataJSON();
+    writes++;
+    expect(command.action).toBe("edit");
+    expect(command.objectiveId).toBe(target.id);
+    if (command.revision !== target.revision)
+      return route.fulfill({
+        status: 409,
+        json: { message: "目标已发生变化，请核对最新状态后再操作。" },
+      });
+    target.title = command.statedObjective;
+    target.revision!++;
+    return route.fulfill({ json: { objectiveId: target.id, action: "edit" } });
+  });
+  await f.panel
+    .locator('[data-objective-id="TEST-related-goal"]')
+    .getByRole("button", { name: "查看目标", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog
+    .getByRole("button", { name: "复制完整目标", exact: true })
+    .click();
+  await expect(dialog.getByRole("status")).toHaveText("已复制完整目标");
+  expect(await page.evaluate(() => (window as any).copiedGoal)).toBe(original);
+  await (await goalOption(dialog, "编辑目标")).click();
+  const editor = dialog.getByRole("textbox", { name: "目标内容", exact: true });
+  await expect(editor).toHaveValue(original);
+  await expect(editor).toBeFocused();
+  await expect(editor).toHaveCSS("font-size", "14px");
+  await expect(editor).toHaveCSS("line-height", "22.4px");
+  await expect(
+    dialog.getByRole("button", { name: "保存修改", exact: true }),
+  ).toBeDisabled();
+  const edited = "TEST 修改后保留完整目标。\n\n正文按段落阅读，不另建任务。";
+  await editor.fill(edited);
+  target.revision!++;
+  await dialog.getByRole("button", { name: "保存修改", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("目标已发生变化");
+  await expect(editor).toHaveValue(edited);
+  await expect(
+    dialog.getByRole("button", { name: "保存修改", exact: true }),
+  ).toBeDisabled();
+  await dialog.screenshot({ path: info.outputPath("goal-edit-conflict.png") });
+  await dialog.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(dialog.getByRole("region", { name: "完整目标" })).toHaveText(
+    original,
+  );
+  await (await goalOption(dialog, "编辑目标")).click();
+  await editor.fill(edited);
+  await dialog.screenshot({ path: info.outputPath("goal-edit.png") });
+  await page.screenshot({ path: info.outputPath("goal-edit-surface.png") });
+  expect((await editor.boundingBox())!.height).toBeLessThanOrEqual(160);
+  await dialog.getByRole("button", { name: "保存修改", exact: true }).click();
+  await expect(dialog.getByRole("region", { name: "完整目标" })).toHaveText(
+    edited,
+  );
+  expect(writes).toBe(2);
+  await (await goalOption(dialog, "执行记录")).click();
+  const records = dialog.getByRole("region", { name: "目标执行记录" });
+  await expect(records.getByRole("button")).toHaveCount(1);
+  await expect(records).not.toContainText("TEST 不应关联");
+  await dialog.screenshot({ path: info.outputPath("goal-executions.png") });
+  await page.screenshot({
+    path: info.outputPath("goal-executions-surface.png"),
+  });
+  await records.getByRole("button").click();
+  await expect(dialog).toHaveCount(0);
+  await expect(f.panel.locator(".execution-origin-title")).toHaveText(
+    f.runtime.activity.threads[0]!.title,
+  );
+  expect(f.queries.at(-1)?.get("threadId")).toBe("TEST-related-thread");
+  await expect(await openInput(page)).toHaveValue(f.draft);
+});
+
+test("补充目标只关联确切主线程，不发送、不丢草稿，可取消回普通聊天", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  const goal = f.runtime.activity.objectives[0]!;
+  goal.generation = 1;
+  const primary = f.runtime.activity.threads[0]!;
+  Object.assign(primary, {
+    lifecycle: "open",
+    phase: "waiting",
+    continuation: {
+      mode: "supplement",
+      inputId: goal.inputId,
+      threadId: primary.id,
+      generation: 1,
+      objective: { id: goal.id, generation: 1 },
+    },
+  });
+  await f.refresh();
+  const view = f.panel
+    .locator('[data-objective-id="TEST-related-goal"]')
+    .getByRole("button", { name: "查看目标", exact: true });
+  await view.click();
+  const dialog = page.getByRole("dialog", { name: "目标", exact: true });
+  const supplement = dialog.getByRole("button", {
+    name: "补充目标",
+    exact: true,
+  });
+  await expect(supplement).toBeEnabled();
+  await dialog.screenshot({
+    path: info.outputPath("goal-supplement-ready.png"),
+  });
+  await supplement.click();
+  await expect(dialog).toHaveCount(0);
+  const composer = page.getByRole("region", { name: "AI 输入", exact: true });
+  await expect(
+    composer.getByRole("group", { name: "补充目标", exact: true }),
+  ).toBeVisible();
+  await expect(await openInput(page)).toHaveValue(f.draft);
+  await composer.screenshot({
+    path: info.outputPath("goal-supplement-composer.png"),
+  });
+  expect(f.writes).toEqual([]);
+  await composer
+    .getByRole("button", { name: "取消补充，改为普通输入", exact: true })
+    .click();
+  await expect(
+    composer.getByRole("group", { name: "补充目标", exact: true }),
+  ).toHaveCount(0);
+  await expect(await openInput(page)).toHaveValue(f.draft);
+  await view.click();
+  goal.generation = 2;
+  await f.refresh();
+  await expect(supplement).toBeDisabled();
   expect(f.writes).toEqual([]);
 });
 
@@ -1277,6 +1459,12 @@ test.describe("目标入口触控", () => {
     await expect(
       page.getByRole("dialog", { name: "目标", exact: true }),
     ).toBeVisible();
+    const dialog = page.getByRole("dialog", { name: "目标", exact: true });
+    await (await goalOption(dialog, "编辑目标")).tap();
+    await expect(
+      page.getByRole("textbox", { name: "目标内容", exact: true }),
+    ).toHaveCSS("font-size", "16px");
+    await page.getByRole("button", { name: "取消", exact: true }).tap();
     await page.getByRole("button", { name: "关闭目标", exact: true }).tap();
     await heading.tap();
     const child = goal.locator(".subject-objective-detail > button");

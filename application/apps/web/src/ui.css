@@ -12,6 +12,9 @@
   --ui-dialog-heading-height: 32px;
   --ui-dialog-control-height: 32px;
   --ui-dialog-control-font-size: 13px;
+  --ui-detail-body-font-size: 14px;
+  --ui-detail-body-line-height: 1.6;
+  --ui-detail-paragraph-gap: 0.65em;
 }
 .visually-hidden {
   position: absolute;

@@ -2142,7 +2142,7 @@ export function createAppServer(
           json(
             res,
             200,
-            await business.objectiveControl(await jsonBody(req, 16384)),
+            await business.objectiveControl(await jsonBody(req, 131072)),
           );
           return;
         }

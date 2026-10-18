@@ -140,6 +140,7 @@ async function fixture() {
       stated_objective: "真实持久目标",
       status: "active",
       revision: 1,
+      generation: 1,
       status_reason: null,
       parent_objective_id: null,
       updated_at: now,
@@ -494,6 +495,80 @@ test("目标控制共用 Runtime 的暂停恢复删除协议，校验真实来�
         ["/api/objectives/objective-1/resume", "POST", 2],
         ["/api/objectives/objective-1", "DELETE", 3],
       ],
+    );
+    assert.equal(internal.state.deliveries.length, 1);
+  } finally {
+    await f.close();
+  }
+});
+
+test("编辑目标复用同一权限和修订栅栏，以 PATCH 确认原文，不恢复暂停或创建执行", async () => {
+  const { f, internal, delivery, bounds, objective } = await fixture();
+  const mutations: { path: string; method: string; body: any }[] = [];
+  const request = (text: string, revision = objective.objective.revision) => ({
+    objectiveId: objective.objective.id,
+    projectId: delivery.platformSource.projectId,
+    conversationId: delivery.platformSource.conversationId,
+    revision,
+    action: "edit",
+    statedObjective: text,
+  });
+  let wrongReceipt = false;
+  try {
+    objective.objective.status = "paused";
+    internal.request = async (path, method = "GET", raw) => {
+      if (method === "GET")
+        return { detail_bounds: bounds, threads: [], objectives: [objective] };
+      const body = raw as {
+        expected_revision: number;
+        stated_objective: string;
+      };
+      mutations.push({ path, method, body });
+      assert.equal(body.expected_revision, objective.objective.revision);
+      objective.objective.revision++;
+      objective.objective.stated_objective = body.stated_objective;
+      return {
+        edited: true,
+        objective: {
+          ...objective.objective,
+          ...(wrongReceipt ? { stated_objective: "unconfirmed" } : {}),
+        },
+      };
+    };
+    await internal.refreshActivity();
+    const edited = "修改后的完整目标\n\n保留原有执行和暂停状态。";
+    await f.session().objectiveControl(request(`  ${edited}  `));
+    assert.equal(objective.objective.stated_objective, edited);
+    assert.equal(objective.objective.status, "paused");
+    assert.equal(mutations[0]!.method, "PATCH");
+    assert.equal(mutations[0]!.path, "/api/objectives/objective-1");
+    assert.deepEqual(mutations[0]!.body, {
+      expected_revision: 1,
+      stated_objective: edited,
+    });
+    await assert.rejects(
+      f.session().objectiveControl(request("stale", 1)),
+      /变化/,
+    );
+    await assert.rejects(f.session().objectiveControl(request("   ")));
+    await assert.rejects(
+      f.session().objectiveControl(request("长".repeat(32001))),
+    );
+    await assert.rejects(
+      f
+        .session({ principalId: "foreign-human", actantId: "foreign" })
+        .objectiveControl(request("forbidden")),
+    );
+    assert.equal(mutations.length, 1);
+    wrongReceipt = true;
+    await assert.rejects(
+      f.session().objectiveControl(request("回执必须逐字一致")),
+      /回执/,
+    );
+    assert.equal(
+      mutations.length,
+      2,
+      "uncertain edit is never automatically retried",
     );
     assert.equal(internal.state.deliveries.length, 1);
   } finally {
