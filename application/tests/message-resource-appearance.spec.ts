@@ -134,7 +134,7 @@ test("选文在正文上方，关联资源独立放在正文下方；亮暗窄�
   await expect(footer.locator(".message-object-link")).toHaveCount(1);
   await expect(resource.locator(".message-resource-prefix")).toHaveCount(0);
   await expect(resource).not.toContainText("关联");
-  await expect(resource.locator(".message-resource-open")).toHaveCount(1);
+  await expect(resource.locator(".message-resource-open")).toHaveCount(0);
   for (const appearance of ["亮色", "暗色"]) {
     const settings = await openSettings(page, "外观");
     await settings
@@ -509,6 +509,7 @@ async function metrics(resource: Locator) {
   return resource.evaluate((element) => {
     const style = getComputedStyle(element);
     const title = element.querySelector(".message-resource-title");
+    const version = element.querySelector(".message-resource-version");
     const body = element
       .closest(".human-message")!
       .querySelector(":scope > p")!;
@@ -545,7 +546,14 @@ async function metrics(resource: Locator) {
       );
     };
     const contrast = (color: string) => {
-      const a = luminance(rgba(color)),
+      const foreground = rgba(color);
+      const alpha = foreground[3]! / 255;
+      const composited = foreground
+        .slice(0, 3)
+        .map(
+          (channel, index) => channel * alpha + surface[index]! * (1 - alpha),
+        );
+      const a = luminance(composited),
         b = luminance(surface);
       return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
     };
@@ -559,10 +567,14 @@ async function metrics(resource: Locator) {
       ink: style.color,
       background: rgba(style.backgroundColor),
       contrast: contrast(style.color),
+      versionContrast: version
+        ? contrast(getComputedStyle(version).color)
+        : null,
       bodyContrast: contrast(bodyStyle.color),
       outline: style.outlineStyle,
       shadow: style.boxShadow,
       border: style.borderLeftWidth,
+      paddingInline: [style.paddingLeft, style.paddingRight],
       titleDecoration: title
         ? getComputedStyle(title).textDecorationLine
         : null,
@@ -609,17 +621,24 @@ test("关联资源不是选文：类型图标、次级标题与版本同行，�
       expect((await resource.boundingBox())!.y).toBeGreaterThanOrEqual(
         body.y + body.height,
       );
-      expect(normal.background[3]).toBeGreaterThan(0);
-      expect(normal.background[3]).toBeLessThanOrEqual(13);
-      expect(normal.border).toBe("1px");
+      expect(normal.background[3]).toBe(0);
+      expect(normal.border).toBe("0px");
+      expect(normal.paddingInline).toEqual(["0px", "0px"]);
+      expect(
+        Math.abs((await resource.boundingBox())!.x - body.x),
+      ).toBeLessThanOrEqual(1);
       expect(normal.shadow).toBe("none");
       expect(normal.font).toBeLessThan(normal.bodyFont);
       expect(normal.contrast).toBeGreaterThanOrEqual(4.5);
+      expect(normal.versionContrast).toBeGreaterThanOrEqual(4.5);
       expect(normal.contrast).toBeLessThan(normal.bodyContrast);
       await resource.hover();
       await settleTransitions(page);
       const hovered = await metrics(resource);
       expect(hovered.hovered).toBe(true);
+      expect(hovered.background[3]).toBe(0);
+      expect(hovered.border).toBe("0px");
+      expect(hovered.titleDecoration).toContain("underline");
       expect(hovered.contrast).toBeGreaterThanOrEqual(4.5);
       await message.screenshot({
         path: info.outputPath(`resource-${appearance}-${accent}-hover.png`),
@@ -632,6 +651,7 @@ test("关联资源不是选文：类型图标、次级标题与版本同行，�
       await settleTransitions(page);
       const focused = await metrics(resource);
       expect(focused.focusVisible).toBe(true);
+      expect(focused.background[3]).toBe(0);
       expect(focused.outline).toBe("none");
       expect(focused.titleDecoration).toContain("underline");
       expect(focused.contrast).toBeGreaterThanOrEqual(4.5);
@@ -643,6 +663,7 @@ test("关联资源不是选文：类型图标、次级标题与版本同行，�
       await settleTransitions(page);
       const pressed = await metrics(resource);
       expect(pressed.active).toBe(true);
+      expect(pressed.background[3]).toBe(0);
       expect(pressed.contrast).toBeGreaterThanOrEqual(4.5);
       for (const state of [hovered, focused, pressed])
         expect([state.width, state.height]).toEqual([

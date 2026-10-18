@@ -56,7 +56,6 @@ import {
   MessageSquarePlus,
   Pause,
   Link2,
-  ArrowUpRight,
   Search,
   Image as ImageIcon,
 } from "lucide-react";
@@ -1011,18 +1010,17 @@ export function Conversation({
                                   </span>
                                   <span className="message-resource-title">
                                     {linkedTitle}
-                                    {item.reading &&
-                                      ` · ${item.reading.chapter}`}
                                   </span>
+                                  {item.reading && (
+                                    <span className="message-resource-location">
+                                      {item.reading.chapter}
+                                    </span>
+                                  )}
                                   {linkedVersion && (
                                     <small className="message-resource-version">
                                       {linkedVersion}
                                     </small>
                                   )}
-                                  <ArrowUpRight
-                                    className="message-resource-open"
-                                    aria-hidden
-                                  />
                                 </button>
                               </Tooltip>
                             )}
@@ -1049,10 +1047,6 @@ export function Conversation({
                                   <small className="message-resource-version">
                                     {item.cognitiveObject.object.versionRef}
                                   </small>
-                                  <ArrowUpRight
-                                    className="message-resource-open"
-                                    aria-hidden
-                                  />
                                 </button>
                               </Tooltip>
                             )}

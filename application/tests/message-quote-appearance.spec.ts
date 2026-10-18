@@ -339,7 +339,7 @@ test("本人消息引用：四强调色亮暗正常、悬停、Tab与按下沿�
   });
 });
 
-test("本人消息的关联文档引用条：悬停、Tab与按下不套用中性白底", async ({
+test("本人消息的文档引用：透明无框，悬停与键盘强调标题且不改变几何", async ({
   page,
 }, info) => {
   const { quote, message } = await prepare(page, true);
@@ -361,6 +361,9 @@ test("本人消息的关联文档引用条：悬停、Tab与按下不套用中�
         hovered: element.matches(":hover"),
         focused: element.matches(":focus-visible"),
         active: element.matches(":active"),
+        titleDecoration: getComputedStyle(
+          element.querySelector(".message-resource-title")!,
+        ).textDecorationLine,
       };
     });
   const observations = [];
@@ -376,8 +379,7 @@ test("本人消息的关联文档引用条：悬停、Tab与按下不套用中�
       await page.mouse.move(0, 0);
       const normal = await state();
       const tokens = await colors(quote);
-      expect(normal.background[3]).toBeGreaterThan(0);
-      expect(normal.background[3]).toBeLessThanOrEqual(13);
+      expect(normal.background[3]).toBe(0);
       await reference.hover();
       // Save the actual pre-assertion appearance too, so a regression retains
       // its white surface rather than only reporting a token mismatch.
@@ -385,10 +387,11 @@ test("本人消息的关联文档引用条：悬停、Tab与按下不套用中�
         path: info.outputPath(`document-${appearance}-${accent}-hover.png`),
       });
       await expect
-        .poll(async () => (await state()).background)
-        .toEqual(tokens.hover);
+        .poll(async () => (await state()).titleDecoration)
+        .toContain("underline");
       const hovered = await state();
       expect(hovered.hovered).toBe(true);
+      expect(hovered.background[3]).toBe(0);
       expect(hovered.background).not.toEqual(tokens.neutral);
       // The preceding quote opens a focusable full-text popover. Close it
       // explicitly, then use the real next Tab stop instead of assuming a
@@ -399,17 +402,16 @@ test("本人消息的关联文档引用条：悬停、Tab与按下不套用中�
       await expect(reference).toBeFocused();
       await page.mouse.move(0, 0);
       await expect
-        .poll(async () => (await state()).background)
-        .toEqual(tokens.hover);
+        .poll(async () => (await state()).titleDecoration)
+        .toContain("underline");
       const focused = await state();
       expect(focused.focused).toBe(true);
+      expect(focused.background[3]).toBe(0);
       await reference.hover();
       await page.mouse.down();
-      await expect
-        .poll(async () => (await state()).background)
-        .toEqual(tokens.pressed);
       const pressed = await state();
       expect(pressed.active).toBe(true);
+      expect(pressed.background[3]).toBe(0);
       for (const interactive of [hovered, focused, pressed])
         expect([interactive.width, interactive.height]).toEqual([
           normal.width,

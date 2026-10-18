@@ -598,24 +598,23 @@
 /* Feedback inside a colored message belongs to its surface, not neutral chrome. */
 .app
   .human-message
-  :is(.sent-text-quote, .message-object-link, .message-execution-link):is(
-    :hover,
-    :focus-visible
-  ) {
+  :is(.sent-text-quote, .message-execution-link):is(:hover, :focus-visible) {
   background: var(--human-message-hover);
 }
 .app
   .human-message
-  :is(
-    .sent-text-quote,
-    .message-object-link,
-    .message-execution-link
-  ):active:not(:disabled) {
+  :is(.sent-text-quote, .message-execution-link):active:not(:disabled) {
   background: var(--human-message-pressed);
 }
 .app
   .human-message
   .message-execution-link:is(:hover, :focus-visible, :active) {
+  color: var(--ink);
+}
+/* Resource references read as part of the message, not a button inside a
+   bubble. Feedback strengthens the linked title without adding another box. */
+.app .human-message .message-object-link:is(:hover, :focus-visible, :active) {
+  background: transparent;
   color: var(--ink);
 }
 .app .primary-panel[data-interaction="recent"] .conversation {
