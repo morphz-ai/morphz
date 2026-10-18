@@ -217,6 +217,54 @@ test("窄窗200%缩放与reduced-motion下长全文仍在视口内且可滚动",
   });
 });
 
+test("引用全文浮层同样避开左右侧栏，调整布局与200%缩放后仍可读", async ({
+  page,
+}, info) => {
+  const { quote, preview } = await prepare(page);
+  await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
+  await quote.focus();
+  for (const [width, height, zoom] of [
+    [1440, 960, 1],
+    [1024, 768, 1],
+    [760, 540, 1],
+    [1440, 960, 2],
+  ]) {
+    await page.setViewportSize({ width: width!, height: height! });
+    await page.locator(".app").evaluate((node, scale) => {
+      (node as HTMLElement).style.zoom = String(scale);
+      (node as HTMLElement).style.height = `calc(100dvh / ${scale})`;
+    }, zoom!);
+    await expect(preview).toBeVisible();
+    await expect
+      .poll(() =>
+        preview.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          const work = document
+            .querySelector(".primary-panel")!
+            .getBoundingClientRect();
+          const inspector = document
+            .querySelector(".workspace-inspector")!
+            .getBoundingClientRect();
+          return (
+            box.left >= Math.max(0, work.left) - 0.5 &&
+            box.right <=
+              Math.min(innerWidth, work.right, inspector.left) + 0.5 &&
+            box.top >= Math.max(0, work.top) - 0.5 &&
+            box.bottom <= Math.min(innerHeight, work.bottom) + 0.5 &&
+            element.scrollWidth <= element.clientWidth
+          );
+        }),
+      )
+      .toBe(true);
+    await expect(preview.locator(".sent-text-quote-preview-text")).toHaveText(
+      quoteText,
+    );
+  }
+  await page.screenshot({
+    path: info.outputPath("quote-preview-content-boundary-200.png"),
+  });
+});
+
 test.describe("触控引用全文", () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 700 } });
   test("全文按钮不触发原文跳转，点击外部关闭", async ({ page }) => {

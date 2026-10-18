@@ -211,6 +211,94 @@ async function collapsedDocument(page: Page, failure?: "reject-once") {
   return { ...source, document, text };
 }
 
+test("评论浮层跟随中间内容区边界，侧栏、窄窗和缩放不丢评论", async ({
+  page,
+}, info) => {
+  const { reply, sentIds } = await fixture(page);
+  await page.getByRole("button", { name: "显示右侧栏", exact: true }).click();
+  await expect(page.locator(".workspace-inspector")).toBeVisible();
+  await selectText(reply.locator("[data-quotable]"), "先");
+  await page.getByRole("button", { name: "评论选中文字" }).click();
+  const editor = page.getByRole("dialog", {
+    name: "引用 1 的评论",
+    exact: true,
+  });
+  const comment = page.getByLabel("引用 1 的评论（可选）");
+  await comment.fill("TEST 原评论与焦点保持，不发送");
+  async function contained() {
+    await expect(editor).toBeVisible();
+    await expect
+      .poll(() =>
+        editor.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          const work = document
+            .querySelector(".primary-panel")!
+            .getBoundingClientRect();
+          const inspector = document
+            .querySelector(".workspace-inspector")
+            ?.getBoundingClientRect();
+          const right = inspector?.width
+            ? Math.min(work.right, inspector.left)
+            : work.right;
+          return (
+            box.left >= Math.max(0, work.left) - 0.5 &&
+            box.right <= Math.min(innerWidth, right) + 0.5 &&
+            box.top >= Math.max(0, work.top) - 0.5 &&
+            box.bottom <= Math.min(innerHeight, work.bottom) + 0.5
+          );
+        }),
+      )
+      .toBe(true);
+    await expect(comment).toHaveValue("TEST 原评论与焦点保持，不发送");
+    await expect(comment).toBeFocused();
+    expect(
+      await comment.evaluate((node) => node.scrollWidth <= node.clientWidth),
+    ).toBe(true);
+  }
+  await contained();
+  for (const [width, height] of [
+    [1024, 768],
+    [760, 540],
+    [1440, 960],
+  ]) {
+    await page.setViewportSize({ width: width!, height: height! });
+    await contained();
+  }
+  await page.getByRole("button", { name: "隐藏右侧栏", exact: true }).click();
+  await page
+    .getByRole("group", { name: "选文与评论", exact: true })
+    .getByRole("button", { name: "编辑引用 1 的评论", exact: true })
+    .click();
+  await contained();
+  const leftResize = page.getByRole("separator", {
+    name: "调整左侧栏宽度",
+    exact: true,
+  });
+  for (const key of ["End", "Home"]) {
+    await leftResize.press(key);
+    await page
+      .getByRole("group", { name: "选文与评论", exact: true })
+      .getByRole("button", { name: "编辑引用 1 的评论", exact: true })
+      .click();
+    await contained();
+  }
+  await page.locator(".app").evaluate((node) => {
+    (node as HTMLElement).style.zoom = "2";
+    (node as HTMLElement).style.height = "calc(100dvh / 2)";
+  });
+  await contained();
+  await page.setViewportSize({ width: 760, height: 900 });
+  await contained();
+  await page.setViewportSize({ width: 390, height: 900 });
+  await contained();
+  await page.screenshot({
+    path: info.outputPath("comment-content-boundary-200.png"),
+  });
+  await page.keyboard.press("Escape");
+  await expect(editor).not.toBeVisible();
+  expect(sentIds).toEqual([]);
+});
+
 test("收起时有非空评论才出现发送，直接从评论框提交原文和评论且不展开输入", async ({
   page,
 }, info) => {

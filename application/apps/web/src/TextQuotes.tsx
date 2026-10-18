@@ -26,8 +26,13 @@ import {
   type QuotePoint,
   type QuoteSelection,
 } from "./text-quote-dom.js";
+import {
+  observeTextQuoteLayout,
+  positionTextQuote,
+  textQuoteRegion,
+} from "./text-quote-layout.js";
 
-type CommentPoint = QuotePoint & { above?: boolean };
+type CommentPoint = QuotePoint & { above?: boolean; start?: boolean };
 const markerSize = 18;
 const markerGap = 4;
 type QuoteActions = {
@@ -96,7 +101,7 @@ export function TextQuoteProvider({
     { id: string; index: number; point: QuotePoint }[]
   >([]);
   const panel = useRef<HTMLDivElement>(null);
-  const [bounds, setBounds] = useState({ width: 260, height: 53 });
+  const offerPanel = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     setOffer(null);
     setEditing(null);
@@ -251,12 +256,25 @@ export function TextQuoteProvider({
   useLayoutEffect(() => {
     if (!editing || !panel.current) return;
     const el = panel.current;
-    const resize = new ResizeObserver(() =>
-      setBounds({ width: el.offsetWidth, height: el.offsetHeight }),
+    return observeTextQuoteLayout(el, () =>
+      positionTextQuote(el, editing.point),
     );
-    resize.observe(el);
-    return () => resize.disconnect();
-  }, [editing?.id]);
+  }, [editing]);
+  useLayoutEffect(() => {
+    if (!offer || editing || !offerPanel.current) return;
+    const el = offerPanel.current;
+    return observeTextQuoteLayout(el, () =>
+      positionTextQuote(
+        el,
+        offer.range
+          ? {
+              x: offer.range.getBoundingClientRect().right,
+              y: offer.range.getBoundingClientRect().bottom,
+            }
+          : offer.point,
+      ),
+    );
+  }, [offer, editing]);
   useEffect(() => {
     if (!quotes.length) {
       setMarkers([]);
@@ -384,16 +402,6 @@ export function TextQuoteProvider({
   const quote = editing && quotes.find((q) => q.id === editing.id);
   const index = quote ? quotes.indexOf(quote) + 1 : 0;
   const host = document.querySelector(".app");
-  const position = (point: CommentPoint, width: number, height: number) => ({
-    left: Math.max(8, Math.min(point.x - width, innerWidth - width - 8)),
-    top: Math.max(
-      8,
-      Math.min(
-        point.above ? point.y - height - 8 : point.y + 8,
-        innerHeight - height - 8,
-      ),
-    ),
-  });
   return (
     <Context.Provider
       value={{ comment, offer: setOffer, edit, open, remove, reveal }}
@@ -404,10 +412,10 @@ export function TextQuoteProvider({
           <>
             {!disabled && !editing && offer && (
               <button
+                ref={offerPanel}
                 data-quote-ui="true"
                 type="button"
                 className="text-quote-select"
-                style={position(offer.point, 80, 34)}
                 aria-label="评论选中文字"
                 onPointerDown={(e) => e.preventDefault()}
                 onClick={() => comment(offer)}
@@ -426,14 +434,16 @@ export function TextQuoteProvider({
                 aria-expanded={editing?.id === m.id}
                 disabled={disabled}
                 onPointerDown={(e) => e.preventDefault()}
-                onClick={() =>
-                  editing?.id === m.id
-                    ? finish(true)
-                    : edit(m.id, {
-                        x: m.point.x + markerSize + markerGap + bounds.width,
-                        y: m.point.y + markerSize,
-                      })
-                }
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  if (editing?.id === m.id) finish(true);
+                  else
+                    edit(m.id, {
+                      x: rect.right + markerGap,
+                      y: rect.bottom,
+                      start: true,
+                    });
+                }}
               >
                 {m.index + 1}
               </button>
@@ -445,7 +455,6 @@ export function TextQuoteProvider({
                 className="text-quote-editor"
                 role="dialog"
                 aria-label={`引用 ${index} 的评论`}
-                style={position(editing.point, bounds.width, bounds.height)}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
                     e.stopPropagation();
@@ -620,34 +629,26 @@ function SentTextQuote({
     element.showPopover();
     function position() {
       if (!element || !anchor) return;
-      // Top-layer rects include CSS zoom; left/top and offset dimensions do not.
-      let zoom = (element as HTMLElement & { currentCSSZoom?: number })
-        .currentCSSZoom;
-      if (!zoom) {
-        zoom = 1;
-        for (
-          let node: HTMLElement | null = element;
-          node;
-          node = node.parentElement
-        )
-          zoom *= Number.parseFloat(getComputedStyle(node).zoom) || 1;
-      }
-      const viewport = { width: innerWidth / zoom, height: innerHeight / zoom };
+      const area = textQuoteRegion(element);
       const rect = anchor.getBoundingClientRect();
-      const top = rect.top / zoom,
-        bottom = rect.bottom / zoom;
-      const below = viewport.height - bottom - 16;
-      const above = top - 16;
+      const top = rect.top / area.zoom,
+        bottom = rect.bottom / area.zoom;
+      const below = area.bottom - bottom - 8;
+      const above = top - area.top - 8;
       const placeBelow =
-        below >= Math.min(240, viewport.height / 2) || below >= above;
-      element.style.maxWidth = `${Math.max(1, viewport.width - 16)}px`;
-      element.style.maxHeight = `${Math.max(1, Math.min(viewport.height - 16, placeBelow ? below : above))}px`;
+        below >= Math.min(240, (area.bottom - area.top) / 2) || below >= above;
+      const availableWidth = Math.max(0, area.right - area.left);
+      const availableHeight = Math.max(0, area.bottom - area.top);
+      element.style.visibility =
+        availableWidth && availableHeight ? "" : "hidden";
+      element.style.maxWidth = `${availableWidth}px`;
+      element.style.maxHeight = `${Math.max(1, Math.min(availableHeight, placeBelow ? below : above))}px`;
       const width = element.offsetWidth,
         height = element.offsetHeight;
-      element.style.left = `${Math.max(8, Math.min(rect.left / zoom, viewport.width - width - 8))}px`;
-      element.style.top = `${Math.max(8, Math.min(placeBelow ? bottom + 6 : top - height - 6, viewport.height - height - 8))}px`;
+      element.style.left = `${Math.max(area.left, Math.min(rect.left / area.zoom, area.right - width))}px`;
+      element.style.top = `${Math.max(area.top, Math.min(placeBelow ? bottom + 6 : top - height - 6, area.bottom - height))}px`;
     }
-    position();
+    const stopLayout = observeTextQuoteLayout(element, position);
     const resize = new ResizeObserver(position);
     resize.observe(element);
     for (let node: HTMLElement | null = anchor; node; node = node.parentElement)
@@ -664,16 +665,13 @@ function SentTextQuote({
     document.addEventListener("pointerdown", outside, true);
     document.addEventListener("focusin", outside);
     document.addEventListener("keydown", escape, true);
-    window.addEventListener("resize", position);
-    window.addEventListener("scroll", position, true);
     return () => {
       element.hidePopover();
+      stopLayout();
       resize.disconnect();
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("focusin", outside);
       document.removeEventListener("keydown", escape, true);
-      window.removeEventListener("resize", position);
-      window.removeEventListener("scroll", position, true);
     };
   }, [open]);
   return (

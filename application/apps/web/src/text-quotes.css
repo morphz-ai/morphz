@@ -24,12 +24,15 @@
   font-size: 13px;
 }
 .app .text-quote-editor {
+  display: flex;
+  flex-direction: column;
   width: min(260px, calc(100vw - 16px));
 }
 .app .text-quote-editor textarea {
   display: block;
   width: 100%;
   min-height: 0;
+  max-height: inherit;
   margin: 0;
   padding: 6px 8px;
   border: 1px solid var(--accent);

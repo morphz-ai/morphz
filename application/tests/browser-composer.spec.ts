@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { openInput } from "./interaction-helpers.js";
+import { openInput, openExchangeReading } from "./interaction-helpers.js";
 import {
   sidebarLayout,
   sidebarPreference,
@@ -1110,9 +1110,9 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     await expect(input).toBeInViewport();
     await expectDraft("native 200 percent reopen before resize keys");
     await expect.poll(siteState).toEqual(zoomed);
-    await page
-      .getByRole("button", { name: "查看交流记录", exact: true })
-      .click();
+    // Reopening preserves the explicitly selected reading state. Request the
+    // visible reading surface, not a toggle whose name assumes it was cleared.
+    await openExchangeReading(page);
     await expect(resize).toBeInViewport();
     await resize.focus();
     await page.keyboard.press("End");
@@ -1168,11 +1168,9 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
     await expectDraft("native 200 percent reopen with retained notice");
     await expect(page.locator(".primary-panel")).toHaveAttribute(
       "data-interaction",
-      "input",
+      "recent",
     );
-    await page
-      .getByRole("button", { name: "查看交流记录", exact: true })
-      .click();
+    await openExchangeReading(page);
     await expect(
       page.locator(".exchange-panel > .conversation > .workspace-notice"),
     ).toHaveCount(1);
