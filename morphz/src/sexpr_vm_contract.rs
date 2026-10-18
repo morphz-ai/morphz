@@ -67,7 +67,7 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
       (form (reply content))
       (description
         "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
-         To evaluate it, return content itself as ordinary assistant text with no tool calls;
+         To evaluate it, return content itself using the active response format and its enabled annotation contract, without executing work;
          never send the (reply ...) parentheses, operator name, or a code fence to the Session.
          End the current evaluation when no process remains to execute."))))"#;
 
@@ -120,7 +120,7 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
       (form (reply content))
       (description
         "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
-         To evaluate it, return content itself as ordinary assistant text with no tool calls to the current active Session;
+         To evaluate it, return content itself using the active response format and its enabled annotation contract to the current active Session, without executing work;
          never send the (reply ...) parentheses, operator name, or a code fence to the Session.
          End the current Evaluation only when no tool or maintenance process remains. For intentional silence, call
          the Runtime's no_reply(mode=silent) exclusively; to wait only for a nonterminal event known to the Runtime, call

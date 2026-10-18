@@ -575,7 +575,7 @@ Each Session has a durable Dialogue Lane that orders initial evaluation of ordin
 You decide what the current objective warrants retaining, summarizing, revising, protecting, restoring, or forgetting. The Runtime does not automatically summarize history, trim old messages, or turn retrieval results into facts.
 
 Every response must explicitly choose one primary mode from `protocol.response-contract`:
-- reply: when the Evaluation reaches a deliverable boundary, return non-empty ordinary assistant text with no tool calls. The Runtime streams that content verbatim to kernel.active-session and persists it as the terminal reply only after the complete response succeeds. Bare `(eval ...)` or `(infer ...)` text is still ordinary reply content: it is never admitted or executed. Execute a Yao program or any Tool only through the explicit Function Call offered for that action. With an active Objective, this ends only the current Evaluation and does not replace objective_update(completed).
+- reply: when the Evaluation reaches a deliverable boundary, return non-empty final content using the active response format: ordinary assistant text or the offered structured response carrier, with enabled annotations separate from the value. The Runtime streams the body to kernel.active-session and persists it as the terminal reply only after the complete response succeeds. Bare `(eval ...)` or `(infer ...)` text is still ordinary reply content: it is never admitted or executed. Execute a Yao program or any Tool only through the explicit Function Call offered for that action. With an active Objective, this ends only the current Evaluation and does not replace objective_update(completed).
 - no-reply: call no_reply exclusively and choose a mode. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
 - act: call physical tools only when new external results are truly required. You may include one independent context_tx that does not depend on those new results. Any accompanying text is visible progress, and the Runtime will call you again after tools finish.
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily rejects another context_tx even though the stable Function Calling schema remains visible for Prompt Cache continuity. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
@@ -590,10 +590,10 @@ Important rules:
 2. Put important objectives, user constraints, key conclusions, and unfinished work into frames; protect them when appropriate. Persistent constraints such as “always,” “throughout this task,” “must not,” or “must” remain protected until explicitly revoked or the lifecycle truly ends.
 3. Derive a faithful summary of large observations before retiring them in the same transaction. Never write assumptions as facts. Completed process records that remain recallable and did not change objective, constraints, or conclusions should be retired directly rather than becoming one long-lived frame per batch.
 4. To verify a specific conclusion in a known file, use read.query for narrow line-numbered evidence and then start_line/end_line for exact contiguous pages. Do not read a long file wholesale first or repeatedly create large output through exec/grep. Observation refs such as `@e27` are stable short references supplied by the Runtime; pass them unchanged to recall and context_tx rather than guessing hidden Event IDs. Page truncated observations with recall. If recall returns next_offset, reuse that exact value rather than restarting at zero or guessing. Prefer query when keywords are known and use matched snippets or suggested_recall. If exec returns an artifact path, use read to inspect only the required archive portions. recall/read results enter inbox; you decide whether they belong in Mind.
-5. context_tx may accompany physical tools only when it is independent of their new results. If a new frame depends on tool output, wait for the result. Within a user turn, the Runtime returns physical results through standard assistant.tool_calls → role=tool/tool_call_id and persists each result as an Event with observation_ref. The same request does not duplicate those result bodies in Context; later snapshots show them according to active/retired state. status=success with output_state=empty means execution completed with no text and must not be repeated merely for emptiness. Every response containing tool calls is intermediate: content is visible progress and the Runtime calls you again. A final reply is ordinary text without tools; no_reply is exclusive.
+5. context_tx may accompany physical tools only when it is independent of their new results. If a new frame depends on tool output, wait for the result. Within a user turn, the Runtime returns physical results through standard assistant.tool_calls → role=tool/tool_call_id and persists each result as an Event with observation_ref. The same request does not duplicate those result bodies in Context; later snapshots show them according to active/retired state. status=success with output_state=empty means execution completed with no text and must not be repeated merely for emptiness. Every response containing work tool calls is intermediate: content is visible progress and the Runtime calls you again. Final content uses the active response format, not work calls; an offered response carrier is not a work tool. no_reply is exclusive.
 6. Submit at most one context_tx per response and combine related changes when they must commit atomically. The Runtime automatically rebases disjoint object-level changes, but an exact semantic boundary changed by another transaction still requires rereading and merging. retire and unprotect require a transaction reason for auditability.
 7. At pressure=normal/notice, do not compress merely to reduce size; maintain only meaningful cross-turn objective, constraint, or conclusion changes. At warning, consider compression before final text or alongside act. At critical, first perform maintain-only work to release capacity.
-8. Before completion, verify that cross-turn objectives, constraints, conclusions, and open questions in Mind remain accurate. If physical results change task state, close it out with one context_tx before final text. The Runtime calls you again after the receipt; then return ordinary text or call no_reply exclusively.
+8. Before completion, verify that cross-turn objectives, constraints, conclusions, and open questions in Mind remain accurate. If physical results change task state, close it out with one context_tx before final text. The Runtime calls you again after the receipt; then return final content using the active response format or call no_reply exclusively.
 9. assistant_call and context_tx receipts are Runtime control traces persisted only as Events, not projected into Inbox. Do not submit housekeeping transactions to clean their own records. Retire procedural recall/read observations when deriving evidence in the same transaction. Once the transaction succeeds and Mind is accurate, reply instead of recalling or cleaning again.
 10. The final `evaluate` is the only entry for this model request. Handle only its `root-input` and explicitly bound Thread; other DialogueTurn, Execution, and Delivery Threads are read-only background. Before every physical tool call, confirm that its new information is necessary for the current root-input. If Mind/inbox already suffice—especially for greetings, reminders, progress questions, or ordinary dialogue—reply immediately. Do not act for an unbound Objective or old Execution Thread, repeat verification, rescan the workspace, or invent follow-up objectives.
 11. kernel.turn-control reports model-evaluation progress for the current user turn. phase=soft-checkpoint is a periodic review, not an Attempt limit. Normal tools remain available. Continue when a reliable progress path exists, while checking alignment among objective, evidence, Mind, and next step. Parallel calls in one model response count as one Attempt.
@@ -1961,6 +1961,7 @@ struct ModelCompletion {
 #[derive(Debug)]
 struct ModelCompletionError {
     source: DynError,
+    rejected_response: Option<crate::llm::Response>,
     reasoning_summary: String,
     partial_text: String,
     provider_continuation: Option<ProviderContinuation>,
@@ -2286,6 +2287,7 @@ impl ModelCompletionError {
     fn provider(source: DynError) -> Self {
         Self {
             source,
+            rejected_response: None,
             reasoning_summary: String::new(),
             partial_text: String::new(),
             provider_continuation: None,
@@ -2298,6 +2300,7 @@ impl ModelCompletionError {
     fn persistence(source: DynError) -> Self {
         Self {
             source,
+            rejected_response: None,
             reasoning_summary: String::new(),
             partial_text: String::new(),
             provider_continuation: None,
@@ -2310,6 +2313,7 @@ impl ModelCompletionError {
     fn internal(source: DynError) -> Self {
         Self {
             source,
+            rejected_response: None,
             reasoning_summary: String::new(),
             partial_text: String::new(),
             provider_continuation: None,
@@ -2322,6 +2326,7 @@ impl ModelCompletionError {
     fn input(source: DynError) -> Self {
         Self {
             source,
+            rejected_response: None,
             reasoning_summary: String::new(),
             partial_text: String::new(),
             provider_continuation: None,
@@ -2339,6 +2344,7 @@ impl ModelCompletionError {
         let accumulator = accumulator.lock().await;
         Self {
             source,
+            rejected_response: None,
             reasoning_summary: accumulator.text.clone(),
             partial_text: accumulator.public_text.clone(),
             provider_continuation: accumulator.provider_continuation.clone(),
@@ -2346,6 +2352,11 @@ impl ModelCompletionError {
             model_binding: None,
             origin,
         }
+    }
+
+    fn with_rejected_response(mut self, response: Option<crate::llm::Response>) -> Self {
+        self.rejected_response = response;
+        self
     }
 
     fn with_model_configuration_snapshot(
@@ -2893,7 +2904,7 @@ fn validate_final_reply_response(
         return match decision {
             Some(TerminalDecision::Deliver(_))
             | Some(TerminalDecision::NoReply(NoReplyMode::Silent)) => Ok(decision),
-            _ => Err("The scheduling wait is committed. Explain the arrangement with ordinary text, or exclusively call no_reply(mode=silent). No further tools or new waits are permitted in this receipt-only response.".into()),
+            _ => Err("The scheduling wait is committed. Explain the arrangement using the active response format and enabled annotation contract, or exclusively call no_reply(mode=silent). No further work tools or new waits are permitted in this receipt-only response.".into()),
         };
     }
     if effective_phase == "objective-finalization" {
@@ -2905,7 +2916,7 @@ fn validate_final_reply_response(
                     .to_string(),
             ),
             None => Err(
-                "Objective finalization must return ordinary text without tools, or exclusively call no_reply(mode=silent)"
+                "Objective finalization must return final content using the active response format and enabled annotation contract, without work tools, or exclusively call no_reply(mode=silent)"
                     .to_string(),
             ),
         };
@@ -2920,7 +2931,7 @@ fn validate_final_reply_response(
         Ok(None)
     } else {
         Err(
-            "The final-reply phase must return ordinary text, exclusively call no_reply, or exclusively call objective_update for the currently bound active Objective"
+            "The final-reply phase must return final content using the active response format and enabled annotation contract, exclusively call no_reply, or exclusively call objective_update for the currently bound active Objective"
                 .to_string(),
         )
     }
@@ -3862,7 +3873,7 @@ fn reasoning_continuation_prompt(summaries: &[String], has_provider_continuation
         format!("<previous_reasoning>\n{reasoning}\n</previous_reasoning>")
     };
     format!(
-        "The previous physical model request produced reasoning progress but no committable content or tool calls. The Runtime restored the available reasoning state in order; it is neither a user message nor assistant content already sent to the user. Continue from that progress without repeating the analysis from the beginning. After reasoning is complete, produce one valid terminal state: return non-empty ordinary assistant text without tool calls, execute the required tool calls, or call no_reply exclusively when no message is genuinely needed.\n\n{prior_progress}"
+        "The previous physical model request produced reasoning progress but no committable content or tool calls. The Runtime restored the available reasoning state in order; it is neither a user message nor assistant content already sent to the user. Continue from that progress without repeating the analysis from the beginning. After reasoning is complete, produce one valid terminal state: return non-empty final content using the active response format and its enabled annotation contract, execute the required work tool calls, or call no_reply exclusively when no message is genuinely needed.\n\n{prior_progress}"
     )
 }
 
@@ -3943,7 +3954,7 @@ fn response_protocol_correction_prompt(
         "No independently replayable Provider-native reasoning continuation is available for this retry."
     };
     format!(
-        "The previous model output was rejected by the Runtime response protocol. None of its tool calls was executed and none of its ordinary content was delivered to the Session.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action. Choose exactly one valid form:\n1. To reply: return non-empty ordinary assistant text and no tool calls.\n2. To act: call the required tool(s), without no_reply.\n3. To send nothing: call no_reply exactly once with mode=\"silent\" and no ordinary text.\n4. To yield for a Runtime-verifiable nonterminal event: call no_reply exactly once with mode=\"wait\" and optional finite wait_secs (default 60), with no ordinary text.\nNever combine no_reply with ordinary text or another tool; an unbounded wait is not supported."
+        "The previous model output was rejected by the Runtime response protocol. None of its tool calls was executed and none of its ordinary content was delivered to the Session.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action. Choose exactly one valid form:\n1. To reply: return non-empty final content using the active response format and enabled annotation contract, without work tool calls.\n2. To act: call the required tool(s), without no_reply.\n3. To send nothing: call no_reply exactly once with mode=\"silent\" and no ordinary text.\n4. To yield for a Runtime-verifiable nonterminal event: call no_reply exactly once with mode=\"wait\" and optional finite wait_secs (default 60), with no ordinary text.\nNever combine no_reply with ordinary text or another tool; an unbounded wait is not supported."
     )
 }
 
@@ -11510,7 +11521,7 @@ impl Orchestrator {
         )
         .await;
         let outcome = match (result, forward_result) {
-            (_, Ok(Err(error))) if error.is::<response_annotations::ProtocolError>() => {
+            (result, Ok(Err(error))) if error.is::<response_annotations::ProtocolError>() => {
                 // Invalid reply control must not be downgraded into a Provider
                 // empty/incomplete response that would trigger a repair round.
                 Err(ModelCompletionError::with_summary_from(
@@ -11518,7 +11529,8 @@ impl Orchestrator {
                     &reasoning_summary,
                     ModelCompletionErrorOrigin::RuntimeInput,
                 )
-                .await)
+                .await
+                .with_rejected_response(result.ok()))
             }
             (Err(error), _) => Err(ModelCompletionError::with_summary_from(
                 error,
@@ -14338,7 +14350,7 @@ impl Orchestrator {
                                 Ok(normalized) => normalized,
                                 Err(error) => {
                                     // Bad display fields downgrade inside the normalizer.
-                                    // Required enabled metadata and bad control fail without repair.
+                                    // Only invalid control fails; display metadata is diagnosed independently.
                                     self.record_model_attempt_terminal_state(
                                         session_id,
                                         &model_attempt_id,
@@ -14352,7 +14364,7 @@ impl Orchestrator {
                                         1,
                                         "response_annotations",
                                         &error.to_string(),
-                                        None,
+                                        Some(&response),
                                     )
                                     .await?;
                                     return Box::pin(self
@@ -14417,7 +14429,7 @@ impl Orchestrator {
                         1,
                         "response_annotations",
                         &error.to_string(),
-                        None,
+                        error.rejected_response.as_ref(),
                     )
                     .await?;
                     return Box::pin(self
@@ -15689,6 +15701,10 @@ impl Orchestrator {
             ),
             ("response_state".to_string(), json!(response_state)),
             ("reason".to_string(), json!(reason)),
+            (
+                "response_capture".to_string(),
+                response_annotations::diagnostics::response_capture(response),
+            ),
         ];
         if let Some(response) = response {
             let snapshot = response_protocol_snapshot(response);

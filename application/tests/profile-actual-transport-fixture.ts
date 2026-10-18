@@ -185,10 +185,11 @@ export async function profileActualTransportFixture(
     request: CapturedRequest,
     transaction?: string,
     providedTool?: { name: string; arguments: unknown },
+    providedText?: string,
   ) => {
     const selectedTool =
       providedTool ??
-      (transaction === undefined
+      (transaction === undefined && providedText === undefined
         ? (options.deterministicTool?.(request) ??
           profileFixtureReplyCarrier(request))
         : undefined);
@@ -210,7 +211,8 @@ export async function profileActualTransportFixture(
       ? { role: "assistant", content: "", tool_calls: [call] }
       : {
           role: "assistant",
-          content: "TEST deterministic provider: request accepted.",
+          content:
+            providedText ?? "TEST deterministic provider: request accepted.",
         };
     if (request.stream) {
       response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -560,6 +562,12 @@ export async function profileActualTransportFixture(
           name,
           arguments: args,
         });
+        held.delete(marker);
+      },
+      releaseWithText(marker: string, text: string) {
+        const item = held.get(marker);
+        assert.ok(item, "Expected held actual provider request");
+        respond(item.response, item.request, undefined, undefined, text);
         held.delete(marker);
       },
       async continueHeld(marker: string) {

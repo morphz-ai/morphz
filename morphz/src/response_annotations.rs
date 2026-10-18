@@ -8,7 +8,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fmt;
 
+pub mod diagnostics;
 pub mod stream;
+pub mod text;
 
 /// Stable payload key, separate from the scalar response_annotations protocol.
 pub const BUNDLE_PAYLOAD_KEY: &str = "response_annotation_bundle";
@@ -226,8 +228,9 @@ pub(crate) fn receipt_from_authorized_event(
         .get("terminal_outcome")
         .and_then(Value::as_bool)
         == Some(true)
-        && bundle.raw_response.tool_calls.len() == 1
-        && bundle.raw_response.tool_calls[0].func_name == "reply";
+        && (bundle.raw_response.tool_calls.is_empty()
+            || bundle.raw_response.tool_calls.len() == 1
+                && bundle.raw_response.tool_calls[0].func_name == "reply");
     for record in records {
         if receipt.accepted.len() >= RECEIPT_DETAIL_LIMIT {
             receipt.truncated = true;
@@ -309,9 +312,12 @@ Submit execution metadata in only one call per response. Each work call may supp
 Interpret only exact observation refs provided by Runtime for this Execution and generation. Do not invent refs or describe another same-batch call's unavailable result.
 title, progress and intent: at most 256 Unicode characters. result: at most 512. At most 16 observations per response; refs: at most 128 ASCII characters.
 Work responses cannot establish execution.result. Work annotations remain optional; do not add calls or inference rounds just for metadata.
-To return the final value you MUST use reply({content,annotations}) as the SOLE call with no other tools or ordinary content. In that SAME reply include nonempty annotations.execution.title naming the current Evaluation's work and annotations.execution.result describing its outcome, including failure, partial work or unexecuted parts. An earlier work title does not replace the required final title. Plain final text, missing or invalid required metadata fails the response protocol without a repair request.
-content carries the value's existing transport unchanged: ordinary response text, or the exact typed JSON/Yao terminal body required by an infer. Annotations are separate metadata, never fields of that business value. A child infer's result describes only that infer, not completion of its parent work or Objective.
-reply is a response form, not a work tool or permission to send a chat message. Runtime routes the returned value to its actual caller or authorized recipient. It does not override background work, cancellation, approval, Runtime status or the actual Execution boundary.
+For ordinary final text, start with one explicit metadata header, then a real newline and the actual body:
+<morphz-annotations>{"execution":{"title":"short whole-task title","result":"truthful outcome"}}</morphz-annotations>
+BODY
+The JSON inside that initial header is annotation metadata; BODY is ordinary Markdown or the exact typed JSON/Yao transport required by an infer, unchanged. Never put the header inside a code fence. Header-looking text anywhere after BODY starts is literal content, not metadata.
+Include a nonempty execution.title and execution.result in the same final response, describing this Evaluation's actual work and outcome, including failure, partial work and unexecuted parts. The offered reply({content,annotations}) carrier is an alternative, not a mandatory tool call. If used, it must be the sole call without an additional ordinary body. Do not combine carriers. Missing or invalid display metadata is diagnosed separately and does not invalidate an otherwise valid value; never add a model request or tool call just to repair metadata.
+Annotations are separate metadata, never fields of the business value. A child infer's result describes only that infer, not completion of its parent work or Objective. Returning a value, either as ordinary text or through reply, is not a work action or permission to send a chat message. Runtime routes it to its actual caller or authorized recipient; this does not override background work, cancellation, approval, Runtime status or the actual Execution boundary.
 no_reply remains valid where offered. Do not annotate or change no_reply's silent/wait grammar.
 Annotations are display text only, never identities, state, percentages, permissions, executable content, Mind or Custom updates."#;
 
@@ -464,7 +470,7 @@ pub fn augment_tools(
     }
     augmented.push(ToolDefinition {
         name: "reply".into(),
-        description: "Return the final value in content using its required text or typed transport. Use alone with valid execution.title and execution.result in annotations. Runtime determines the recipient. Display metadata does not change execution state; this is not a work tool.".into(),
+        description: "Optional structured final-response carrier, alternative to ordinary text with its annotation header. Return the value in content using its required text or typed transport, with execution.title and execution.result in annotations. Use alone, without another body or work call. Runtime determines the recipient; display metadata never determines execution success. This is not a work tool.".into(),
         parameters: reply_parameters,
     });
     Ok(augmented)
@@ -1155,6 +1161,19 @@ pub fn normalize_response(
         execution_response.content = args.content;
         execution_response.tool_calls.clear();
     } else {
+        let (body, annotations, diagnostics) = text::decode(&response.content);
+        execution_response.content = body;
+        for diagnostic in diagnostics {
+            extraction.note(&diagnostic.path, &diagnostic.message);
+        }
+        if let Some(annotations) = annotations {
+            extraction.extract(
+                &annotations,
+                "content.annotations",
+                None,
+                response.tool_calls.is_empty(),
+            );
+        }
         for (index, call) in execution_response.tool_calls.iter_mut().enumerate() {
             let mut args: Value = match serde_json::from_str(&call.arguments) {
                 Ok(args) => args,
@@ -1181,15 +1200,18 @@ pub fn normalize_response(
         }
     }
     let terminal_decision = terminal(&execution_response)?;
-    if matches!(terminal_decision, Some(TerminalDecision::Deliver(_)))
-        && (reply.is_none()
-            || ![AnnotationKind::Title, AnnotationKind::Result]
-                .iter()
-                .all(|kind| extraction.records.iter().any(|record| record.kind == *kind)))
-    {
-        return Err(error(
-            "Required final reply title and result annotations are absent or invalid",
-        ));
+    if matches!(terminal_decision, Some(TerminalDecision::Deliver(_))) {
+        for (kind, field) in [
+            (AnnotationKind::Title, "title"),
+            (AnnotationKind::Result, "result"),
+        ] {
+            if !extraction.records.iter().any(|record| record.kind == kind) {
+                extraction.note(
+                    &format!("response.annotations.execution.{field}"),
+                    "No valid source-bound annotation accepted; reply/value remains valid",
+                );
+            }
+        }
     }
     let dispatch_allowed = !context.execution_fact.as_ref().is_some_and(|fact| {
         Some(&fact.scope) == context.scope.as_ref() && fact.status == "cancelled"
@@ -2185,7 +2207,7 @@ mod tests {
         assert!(normalized.records.is_empty());
     }
     #[test]
-    fn enabled_requires_valid_same_response_title_and_result_not_prior_metadata() {
+    fn invalid_display_metadata_is_diagnosed_without_rejecting_valid_body() {
         let mut ctx = context();
         ctx.protocol = Protocol::On;
         for annotations in [
@@ -2205,13 +2227,20 @@ mod tests {
                 args["annotations"] = annotations;
             }
             let raw = response(vec![call("r", "reply", args)]);
-            assert!(normalize_response(&raw, &ctx).is_err());
+            let normalized = normalize_response(&raw, &ctx).unwrap();
+            assert_eq!(normalized.execution_response.content, "已流出的草稿");
+            assert!(!normalized.diagnostics.is_empty());
         }
         let plain = Response {
             content: "正文".into(),
             tool_calls: vec![],
         };
-        assert!(normalize_response(&plain, &ctx).is_err());
+        let normalized = normalize_response(&plain, &ctx).unwrap();
+        assert_eq!(
+            serde_json::to_value(normalized.execution_response).unwrap(),
+            serde_json::to_value(&plain).unwrap()
+        );
+        assert_eq!(normalized.diagnostics.len(), 2);
         assert!(normalize_response(&plain, &NormalizationContext::default()).is_ok());
         let valid = response(vec![call(
             "r",
@@ -2240,15 +2269,18 @@ mod tests {
             } else {
                 unbound.producer = None;
             }
+            let normalized = normalize_response(&valid, &unbound).unwrap();
             assert!(
-                normalize_response(&valid, &unbound).is_err(),
-                "required records must actually bind"
+                normalized.records.is_empty(),
+                "unbound metadata must never become trusted"
             );
+            assert_eq!(normalized.execution_response.content, "正文");
+            assert!(!normalized.diagnostics.is_empty());
         }
     }
 
     #[test]
-    fn enabled_schema_keeps_work_optional_but_terminal_metadata_required() {
+    fn optional_carrier_schema_requests_metadata_without_changing_business_parameters() {
         let original = tool();
         let augmented = augment_tools(std::slice::from_ref(&original), Protocol::On).unwrap();
         assert_eq!(
@@ -2270,6 +2302,58 @@ mod tests {
             .unwrap(),
             serde_json::to_value(augmented).unwrap()
         );
+    }
+
+    #[test]
+    fn ordinary_text_annotations_use_the_same_scoped_records_as_optional_carrier() {
+        let metadata = json!({"execution":{"title":"读取合成系统","result":"合成结果"}});
+        let raw = Response {
+            content: format!("{}{}{}\n\"Linux\"", text::OPEN, metadata, text::CLOSE),
+            tool_calls: vec![],
+        };
+        let normalized = normalize_response(&raw, &context()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&normalized.raw_response).unwrap(),
+            serde_json::to_value(&raw).unwrap()
+        );
+        assert_eq!(normalized.execution_response.content, "\"Linux\"");
+        assert_eq!(normalized.records.len(), 2);
+        assert!(normalized.diagnostics.is_empty());
+        assert!(normalized
+            .records
+            .iter()
+            .all(|record| record.scope == context().scope.unwrap()));
+        let off = normalize_response(&raw, &NormalizationContext::default()).unwrap();
+        assert_eq!(
+            serde_json::to_value(off.execution_response).unwrap(),
+            serde_json::to_value(raw).unwrap()
+        );
+        assert!(off.records.is_empty());
+    }
+
+    #[test]
+    fn ordinary_progress_header_does_not_make_work_result_effective_or_change_call() {
+        let raw = Response {
+            content: format!(
+                "{}{}{}\n处理中",
+                text::OPEN,
+                json!({"execution":{"title":"读取合成系统","result":"不得结算"}}),
+                text::CLOSE
+            ),
+            tool_calls: vec![call("work", "exec", json!({"command":"original"}))],
+        };
+        let normalized = normalize_response(&raw, &context()).unwrap();
+        assert_eq!(normalized.execution_response.tool_calls, raw.tool_calls);
+        assert_eq!(normalized.execution_response.content, "处理中");
+        assert!(normalized.terminal_decision.is_none());
+        assert!(normalized
+            .records
+            .iter()
+            .all(|record| record.kind != AnnotationKind::Result));
+        assert!(normalized
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("Working response")));
     }
 
     #[test]
@@ -2380,7 +2464,7 @@ mod tests {
                 .unwrap()
                 .effective
         );
-        assert!(normalize_response(
+        assert!(!normalize_response(
             &response(vec![call(
                 "r",
                 "reply",
@@ -2388,7 +2472,9 @@ mod tests {
             )]),
             &context(),
         )
-        .is_err());
+        .unwrap()
+        .diagnostics
+        .is_empty());
         assert!(normalize_response(
             &response(vec![
                 call("r", "reply", json!({"content":"x"})),
@@ -2457,7 +2543,7 @@ mod tests {
         .is_err());
     }
     #[test]
-    fn reply_duplicate_control_fields_and_missing_enabled_metadata_are_rejected() {
+    fn duplicate_control_fields_fail_but_missing_display_fields_remain_local() {
         for args in [
             r#"{"content":"one","content":"two"}"#,
             r#"{"content":"正文","annotations":{},"annotations":{}}"#,
@@ -2475,7 +2561,9 @@ mod tests {
             "reply",
             json!({"content":"正文","annotations":null}),
         )]);
-        assert!(normalize_response(&raw, &context()).is_err());
+        let normalized = normalize_response(&raw, &context()).unwrap();
+        assert_eq!(normalized.execution_response.content, "正文");
+        assert!(!normalized.diagnostics.is_empty());
     }
     #[test]
     fn other_execution_fact_cannot_mark_result_effective_or_cancel_current_execution() {

@@ -768,7 +768,7 @@ impl Tool for SendMessageTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "Proactively send a message to another Session of the same Agent. This is not a reply to the active Session, does not end the current Evaluation, and does not trigger evaluation in the target Session. Reply to the active Session with ordinary assistant text.".to_string(),
+            description: "Proactively send a message to another Session of the same Agent. This is not a reply to the active Session, does not end the current Evaluation, and does not trigger evaluation in the target Session. Reply to the active Session using the active response format and its enabled annotation contract.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -807,7 +807,7 @@ impl Tool for SendMessageTool {
         }
         if target_session_id == source_session_id {
             return Err(
-                "send_message cannot reply to the current active Session; return ordinary assistant text instead".into(),
+                "send_message cannot reply to the current active Session; return final content using the active response format instead".into(),
             );
         }
         if args.content.trim().is_empty() {
@@ -874,7 +874,7 @@ impl Tool for SendMessageTool {
             "status": "sent",
             "session_id": target_session_id,
             "event_id": event_id,
-            "guidance": "The message was delivered to the target Session; the current Evaluation has not ended. If the current active Session needs a reply, eventually return ordinary assistant text."
+            "guidance": "The message was delivered to the target Session; the current Evaluation has not ended. If the current active Session needs a reply, return final content using the active response format and its enabled annotation contract."
         })
         .to_string())
     }

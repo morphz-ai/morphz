@@ -278,6 +278,7 @@ pub struct ModelStreamNormalizer {
     tools: HashMap<usize, ToolStream>,
     ordinary_text_seen: bool,
     reply_started: bool,
+    text: super::text::TextAnnotationDecoder,
 }
 impl ModelStreamNormalizer {
     pub fn new(protocol: Protocol) -> Self {
@@ -286,6 +287,7 @@ impl ModelStreamNormalizer {
             tools: HashMap::new(),
             ordinary_text_seen: false,
             reply_started: false,
+            text: super::text::TextAnnotationDecoder::default(),
         }
     }
     pub fn decoded_reply(&self) -> Option<&DecodedReply> {
@@ -299,11 +301,17 @@ impl ModelStreamNormalizer {
             return Ok(vec![event]);
         }
         match &event {
-            ModelStreamEvent::TextDelta { text } if !text.trim().is_empty() => {
-                if self.reply_started {
+            ModelStreamEvent::TextDelta { text } => {
+                if self.reply_started && !text.trim().is_empty() {
                     return Err(error("reply cannot mix with ordinary content"));
                 }
-                self.ordinary_text_seen = true;
+                self.ordinary_text_seen |= !text.trim().is_empty();
+                let text = self.text.push(text);
+                return Ok(if text.is_empty() {
+                    vec![]
+                } else {
+                    vec![ModelStreamEvent::TextDelta { text }]
+                });
             }
             ModelStreamEvent::ToolCallStarted { index, name, .. } => {
                 if self.tools.contains_key(index) {
@@ -365,6 +373,18 @@ impl ModelStreamNormalizer {
                 return Err(error("Completed reply lacks validated control body"))
             }
             _ => (),
+        }
+        if matches!(
+            event,
+            ModelStreamEvent::Completed
+                | ModelStreamEvent::Incomplete { .. }
+                | ModelStreamEvent::Failed { .. }
+        ) && !self.reply_started
+        {
+            let text = self.text.finish();
+            if !text.is_empty() {
+                return Ok(vec![ModelStreamEvent::TextDelta { text }, event]);
+            }
         }
         Ok(vec![event])
     }

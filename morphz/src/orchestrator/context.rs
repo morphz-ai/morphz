@@ -10946,7 +10946,7 @@ fn render_protocol() -> SExpr {
                     pair("active-session", atom("the sole input source and ordinary-text reply target for this evaluation, not the only globally active Session in the Context")),
                     pair("concurrency", atom("multiple Sessions in one Context may evaluate and reply concurrently")),
                     pair("shared-evidence", atom("inbox observations record a source session but belong to the current Context and may be reasoned over and reused across Sessions")),
-                    pair("reply-routing", atom("ordinary assistant text without tools and visible progress must correspond to kernel.active-session; use send_message for a visible message to another Session or session_signal for internal coordination that must activate it")),
+                    pair("reply-routing", atom("final response content and visible progress must correspond to kernel.active-session, using the active response format and its enabled annotation contract; use send_message for a visible message to another Session or session_signal for internal coordination that must activate it")),
                     pair("write-serialization", atom("context_tx modifies the shared Mind; the Runtime serializes commits per Context and checks version")),
                 ],
             ),
@@ -11233,7 +11233,7 @@ fn render_protocol() -> SExpr {
                         "reply",
                         vec![
                             pair("when", atom("the current user task is complete or a blocker must be explained")),
-                            pair("form", atom("return non-empty ordinary assistant text with no tool calls; the Runtime delivers this content verbatim, so bare (eval ...) or (infer ...) text is a reply and is never admitted or executed")),
+                            pair("form", atom("return non-empty final content using the active response format: ordinary assistant text, or the offered structured response carrier. Include enabled annotations separately from the returned value. Neither form executes work; bare (eval ...) or (infer ...) text remains reply data and is never admitted or executed")),
                             pair("execution", atom("execute every Tool or Yao program only through the explicit Function Call offered for that action")),
                             pair("routing", atom("content is delivered automatically to kernel.active-session")),
                             pair("stream", atom("when the Provider supplies text deltas, the Runtime forwards them immediately to the active Session and persists terminal state only after the complete response succeeds")),
@@ -11341,7 +11341,7 @@ fn render_protocol() -> SExpr {
             list(
                 "session-output-contract",
                 vec![
-                    pair("current", atom("ordinary text without tools replies only to kernel.active-session")),
+                    pair("current", atom("final response content replies only to kernel.active-session, using the active response format and its enabled annotation contract")),
                     pair("other-session-tool", atom("send_message {session_id,content}")),
                     pair("other-session", atom("send_message proactively delivers only to another Session of the same Agent; it neither ends the current Activation nor starts target Session evaluation")),
                     pair("coordination-tool", atom("session_signal {session_id,content}")),
@@ -17695,8 +17695,11 @@ mod tests {
         assert!(rendered.rfind("(evaluate").unwrap() > rendered.rfind("(inbox").unwrap());
         assert!(rendered.contains("(response-contract"));
         assert!(rendered.contains(
-            "bare (eval ...) or (infer ...) text is a reply and is never admitted or executed"
+            "bare (eval ...) or (infer ...) text remains reply data and is never admitted or executed"
         ));
+        assert!(rendered
+            .contains("using the active response format and its enabled annotation contract"));
+        assert!(!rendered.contains("return non-empty ordinary assistant text with no tool calls"));
         assert!(rendered
             .contains("execute every Tool or Yao program only through the explicit Function Call"));
         assert!(rendered.contains("(skill-discovery-contract"));
@@ -18529,8 +18532,17 @@ mod tests {
     fn preview_keeps_head_and_tail_without_semantic_rewrite() {
         let (preview, truncated) = preview_text("abcdefghij", 6);
         assert!(truncated);
+        assert_eq!(
+            preview, "abcdef",
+            "a tiny budget cannot also fit the recall marker"
+        );
+        let original = "abcdefghij".repeat(30);
+        let (preview, truncated) = preview_text(&original, 100);
+        assert!(truncated);
         assert!(preview.starts_with("abc"));
         assert!(preview.ends_with("hij"));
+        assert!(preview.contains("use recall with this ref"));
+        assert!(preview.chars().count() <= 100);
     }
 
     #[test]

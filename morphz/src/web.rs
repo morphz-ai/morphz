@@ -13097,7 +13097,28 @@ mod tests {
                         value["snapshot"]["thread"]["supervision"],
                         json!({"parent_thread_id": null})
                     );
-                    assert_eq!(value["snapshot"]["thread"].as_object().unwrap().len(), 9);
+                    let mut fields = value["snapshot"]["thread"]
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>();
+                    fields.sort_unstable();
+                    assert_eq!(
+                        fields,
+                        [
+                            "agent_id",
+                            "context_id",
+                            "executor_id",
+                            "executor_kind",
+                            "id",
+                            "initiating_principal_id",
+                            "revision",
+                            "root_turn_id",
+                            "session_id",
+                            "supervision"
+                        ]
+                    );
                 }
             }
         }
