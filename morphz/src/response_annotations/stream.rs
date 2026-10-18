@@ -1,4 +1,4 @@
-use super::{parse_reply_arguments, Protocol, ProtocolError};
+use super::{parse_canonical_reply_arguments, Protocol, ProtocolError};
 use crate::llm::ModelStreamEvent;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -62,6 +62,7 @@ pub struct DecodedReply {
 pub struct ReplyContentDecoder {
     max_argument_bytes: usize,
     raw: Vec<u8>,
+    canonical: String,
     pending_utf8: Vec<u8>,
     stack: Vec<char>,
     expect_root_key: bool,
@@ -85,6 +86,7 @@ impl ReplyContentDecoder {
         Self {
             max_argument_bytes,
             raw: vec![],
+            canonical: String::new(),
             pending_utf8: vec![],
             stack: vec![],
             expect_root_key: false,
@@ -124,6 +126,21 @@ impl ReplyContentDecoder {
         self.pending_utf8.drain(..valid_bytes);
         let mut output = String::new();
         for character in valid.chars() {
+            // Markdown has literal line breaks. Canonicalize only these
+            // unambiguous layout characters in the root display-body string;
+            // metadata, keys, escapes and executable arguments stay strict.
+            let layout = self
+                .string
+                .as_ref()
+                .is_some_and(|s| s.role == Role::Content)
+                && !self.escape
+                && self.unicode.is_none();
+            match (layout, character) {
+                (true, '\n') => self.canonical.push_str("\\n"),
+                (true, '\r') => self.canonical.push_str("\\r"),
+                (true, '\t') => self.canonical.push_str("\\t"),
+                _ => self.canonical.push(character),
+            }
             self.consume(character, &mut output)?;
         }
         self.emitted.push_str(&output);
@@ -174,7 +191,10 @@ impl ReplyContentDecoder {
                     self.expect_root_key = false;
                 }
             } else {
-                if character < '\u{20}' {
+                if character < '\u{20}'
+                    && !(self.string.as_ref().unwrap().role == Role::Content
+                        && matches!(character, '\n' | '\r' | '\t'))
+                {
                     return Err(error("Unescaped JSON control character"));
                 }
                 self.string.as_mut().unwrap().character(character, output)?;
@@ -252,9 +272,8 @@ impl ReplyContentDecoder {
         if !self.pending_utf8.is_empty() {
             return Err(error("Incomplete UTF-8 reply bytes"));
         }
-        let arguments =
-            String::from_utf8(self.raw.clone()).map_err(|_| error("Invalid UTF-8 reply bytes"))?;
-        let args = parse_reply_arguments(&arguments)?;
+        let arguments = self.canonical.clone();
+        let args = parse_canonical_reply_arguments(&arguments)?;
         if !self.content_seen || !self.content_finished || self.emitted != args.content {
             return Err(error("Streamed content does not exactly match final reply"));
         }
@@ -424,6 +443,58 @@ impl ModelStreamNormalizer {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn body_layout_characters_preserve_annotations_and_stream_at_every_byte_boundary() {
+        let body = "第一段。\n\n第二段。\r\n\t缩进，中文🧠。";
+        let annotations =
+            json!({"execution":{"title":"阅读合成材料","result":"已解释两段合成文字"}});
+        for raw in [
+            format!("{{\"annotations\":{annotations},\"content\":\"{body}\"}}"),
+            format!("{{\"content\":\"{body}\",\"annotations\":{annotations}}}"),
+        ] {
+            for split in 0..=raw.len() {
+                let mut decoder = ReplyContentDecoder::default();
+                let mut text = decoder.push_bytes(&raw.as_bytes()[..split]).unwrap();
+                text.push_str(&decoder.push_bytes(&raw.as_bytes()[split..]).unwrap());
+                let decoded = decoder.finish().unwrap();
+                assert_eq!(text, body);
+                assert_eq!(decoded.content, body);
+                assert_eq!(decoded.annotations, Some(annotations.clone()));
+                let canonical: Value = serde_json::from_str(&decoded.arguments).unwrap();
+                assert_eq!(canonical["content"], body);
+                assert_eq!(
+                    super::super::parse_reply_arguments(&raw).unwrap().content,
+                    body
+                );
+            }
+        }
+    }
+    #[test]
+    fn layout_handling_never_repairs_metadata_keys_escapes_or_mixed_work() {
+        for raw in [
+            "{\"content\":\"ok\",\"annotations\":{\"execution\":{\"title\":\"bad\ntitle\",\"result\":\"r\"}}}",
+            "{\"con\ntent\":\"ok\"}",
+            "{\"content\":\"bad\u{0001}body\"}",
+            "{\"content\":\"bad\\qbody\"}",
+            "{\"content\":\"a\nb\",\"content\":\"duplicate\"}",
+            "{\"content\":\"a\nb\",\"execute\":true}",
+        ] {
+            assert!(super::super::parse_reply_arguments(raw).is_err(), "{raw:?}");
+        }
+        let mut normalizer = ModelStreamNormalizer::new(Protocol::On);
+        normalizer
+            .push(ModelStreamEvent::TextDelta {
+                text: "{\"content\":\"a\nb\"}".into(),
+            })
+            .unwrap();
+        assert!(normalizer
+            .push(ModelStreamEvent::ToolCallStarted {
+                index: 0,
+                id: "work".into(),
+                name: "execute".into()
+            })
+            .is_err());
+    }
     #[test]
     fn implicit_reply_streams_only_content_and_uses_the_explicit_decoder() {
         let body = "中文🧠\n```json\n{\"annotations\":\"业务数据\"}\n```";

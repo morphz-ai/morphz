@@ -810,6 +810,17 @@ fn present_value<'de, D: serde::Deserializer<'de>>(
     Value::deserialize(deserializer).map(Some)
 }
 pub(crate) fn parse_reply_arguments(arguments: &str) -> Result<ReplyArguments, ProtocolError> {
+    let mut decoder = stream::ReplyContentDecoder::new(arguments.len());
+    decoder.push(arguments)?;
+    let reply = decoder.finish()?;
+    Ok(ReplyArguments {
+        content: reply.content,
+        annotations: reply.annotations,
+    })
+}
+pub(crate) fn parse_canonical_reply_arguments(
+    arguments: &str,
+) -> Result<ReplyArguments, ProtocolError> {
     let reply: ReplyArguments = serde_json::from_str(arguments)
         .map_err(|_| error("Malformed, duplicate or unknown reply control field"))?;
     if reply.content.trim().is_empty() {
@@ -2338,6 +2349,48 @@ mod tests {
             serde_json::to_value(raw).unwrap()
         );
         assert!(off.records.is_empty());
+    }
+
+    #[test]
+    fn body_layout_does_not_drop_or_fabricate_required_annotations() {
+        let body = "合成第一段。\n\n合成第二段。\t原始缩进。";
+        let metadata = json!({"execution":{"title":"解释合成文字","result":"已解释两段"}});
+        let raw = Response {
+            content: format!("{{\"annotations\":{metadata},\"content\":\"{body}\"}}"),
+            tool_calls: vec![],
+        };
+        let normalized = normalize_response(&raw, &context()).unwrap();
+        assert_eq!(normalized.execution_response.content, body);
+        assert_eq!(normalized.raw_response.content, raw.content);
+        assert_eq!(normalized.records.len(), 2);
+        assert!(normalized.diagnostics.is_empty());
+        let missing = Response {
+            content: format!("{{\"content\":\"{body}\"}}"),
+            tool_calls: vec![],
+        };
+        assert!(normalize_response(&missing, &context()).is_err());
+    }
+
+    #[test]
+    fn replay_captured_annotation_response_without_model_or_side_effects() {
+        let Ok(path) = std::env::var("MORPHZ_ANNOTATION_REPLAY_FILE") else {
+            return;
+        };
+        let raw: Response = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert!(raw.tool_calls.is_empty());
+        let normalized = normalize_response(&raw, &context()).unwrap();
+        assert_eq!(normalized.records.len(), 2);
+        assert!(normalized.diagnostics.is_empty());
+        assert_eq!(normalized.raw_response.content, raw.content);
+        let mut decoder = stream::ReplyContentDecoder::default();
+        let mut streamed = String::new();
+        for byte in raw.content.as_bytes() {
+            streamed.push_str(&decoder.push_bytes(&[*byte]).unwrap());
+        }
+        let result = decoder.finish().unwrap();
+        assert_eq!(streamed, normalized.execution_response.content);
+        assert_eq!(result.content, streamed);
+        assert!(normalized.execution_response.tool_calls.is_empty());
     }
 
     #[test]
