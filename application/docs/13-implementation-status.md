@@ -1,5 +1,47 @@
 # 桌面能力实施记录
 
+## 2026-10-19 原生 Session IO Evaluation 已更新至原应用
+
+本节替代下文各日期历史记录中的旧注解执行路径；旧事件只读保留，不
+恢复旧文本协议、注解专用工具或独立模型注解调用。启用时同次响应返回
+注册的 `morphz.evaluation@1` 原生值 `{effects, annotations, body}`；
+Runtime 冻结输入／返回格式、校验原业务类型与权限，并构造 Message、
+身份和因果关系。普通回复与 typed infer 使用同一准入，body 是原始
+业务值，不再手工包成另一层 JSON 字符串。off 保持普通输出与工作能力；
+工具定义、顺序和说明不随开关变化，不增加修复、转述或补注解推理。
+
+Context 明确区分 `caller_format` 与 `body_value_schema`，清除 Chat
+Message `{text}` 和实际 String 字段值之间的冲突。discuss-script 的
+确定性续体只投影可证明原样返回的 infer String 叶子，父草稿和最终
+回复按同一 publication 身份接替；内部 record、注解和其他工具结果
+不冒充公共正文。错误保留原始响应与诊断，不伪造注解或接纳回执。
+
+完整 Rust lib 1583 passed、0 failed、13 个原有显式 ignored；Rust
+专项 43 项、三个独立 PostgreSQL 实测、正式 Node 专项 37/37 和最终
+提交二进制 Runtime／Host／HTTP 专项 11/11 均通过。Script Studio
+合成完整流程 14 分支／68 请求另行通过，包含真实 Host 写入、重开、
+无重放和 DOCX 字节；类型检查与生产构建通过。不冒称全应用 npm test、
+全部 ignored、创作质量或所有模型矩阵已经通过。
+
+现有真实 DeepSeek／max 六类隔离场景、普通与 infer 复验、GPT 对照
+通过后，原安装、原中心和原 Runtime 安全更新到 `7628e11937a3`。
+原窗口另做普通回答一次请求、原 Harness 讨论两次请求的真实验收：
+正文、整体注解、实际步骤 intent／结果解读均正常，无注解诊断；讨论
+只有一个逻辑 infer，没有最终改写请求。两条命名 TEST 对话正常刷新
+再打开后答案各只有一份，原 Script Studio v2 未修改。
+
+整窗截图已审看，正文不泄露 JSON／元数据、不重复显示答案；原有标题、
+次级结果与技术动作密度保留，没有新增 CSS 间距或占位。Impeccable
+用于错误／边界加固与完整窗口复核，不冒称引入 shadcn/ui 或全 UI 重做。
+原 37728 个事件、737 Threads、5 Objectives、49 Schedules、27 Sessions
+在切换时逐项核对；验收后原事件及 Script Studio／Reader／Objects／
+Browser 逻辑数据与快照仍一致，配置／模型文件不变。验收任务已结束，
+原应用恢复全局对话、空输入与原 DeepSeek／max，可以直接使用。
+
+字段衔接、真实请求／回执和安全切换边界见
+[Context 审查交付记录](../../docs/morphz_context_prompt_audit_2026-10-19.md#原应用安全切换与真实窗口交付)。
+Qwen／Kimi／GLM 和其他未验证模型仍按用户要求后补，不以本轮结果代替。
+
 ## 2026-10-19 回复来源在分页外仍显示真实摘要
 
 原来“原消息”是前端的固定兜底：回复／定时执行关联的原输入位于更早
