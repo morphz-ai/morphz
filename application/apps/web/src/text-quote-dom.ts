@@ -11,8 +11,11 @@ export type QuoteSelection = {
   point: QuotePoint;
   range?: Range;
 };
-export function quoteSource(source: TextQuoteSource) {
-  return { "data-text-source": JSON.stringify(source) };
+export function quoteSource(source: TextQuoteSource, offset?: number) {
+  return {
+    "data-text-source": JSON.stringify(source),
+    ...(offset !== undefined ? { "data-text-offset": offset } : {}),
+  };
 }
 const elementOf = (node: Node) =>
   node instanceof Element ? node : node.parentElement;
@@ -118,12 +121,39 @@ export function captureTextQuote(): QuoteSelection | null {
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount !== 1)
     return null;
-  const range = selection.getRangeAt(0),
-    start = elementOf(range.startContainer),
+  const range = selection.getRangeAt(0).cloneRange();
+  const root =
+    elementOf(range.startContainer)?.closest<HTMLElement>(
+      "[data-text-source]",
+    ) ??
+    elementOf(range.endContainer)?.closest<HTMLElement>("[data-text-source]");
+  if (!root) return null;
+  // A native whole-paragraph selection may end at the following block (for
+  // example the hidden timestamp) without selecting any of its text. Clamp
+  // only empty/whitespace edges; never admit another message or UI text.
+  const contents = document.createRange();
+  contents.selectNodeContents(root);
+  const startPoint = contents.comparePoint(
+    range.startContainer,
+    range.startOffset,
+  );
+  const endPoint = contents.comparePoint(range.endContainer, range.endOffset);
+  if (startPoint === 1 || endPoint === -1) return null;
+  if (startPoint === -1) {
+    const outside = range.cloneRange();
+    outside.setEnd(root, 0);
+    if (outside.toString().trim()) return null;
+    range.setStart(root, 0);
+  }
+  if (endPoint === 1) {
+    const outside = range.cloneRange();
+    outside.setStart(root, root.childNodes.length);
+    if (outside.toString().trim()) return null;
+    range.setEnd(root, root.childNodes.length);
+  }
+  const start = elementOf(range.startContainer),
     end = elementOf(range.endContainer);
-  const root = start?.closest<HTMLElement>("[data-text-source]");
   if (
-    !root ||
     root !== end?.closest("[data-text-source]") ||
     start?.closest(
       "[data-quote-ignore],button,input,textarea,[contenteditable],dialog",
@@ -147,6 +177,8 @@ export function captureTextQuote(): QuoteSelection | null {
   const raw = range.toString(),
     offset = before.toString().length + raw.indexOf(text);
   const all = root.textContent ?? "";
+  const sourceOffset = Number(root.dataset.textOffset ?? 0);
+  if (!Number.isSafeInteger(sourceOffset) || sourceOffset < 0) return null;
   const rect = Array.from(range.getClientRects())
     .filter((r) => r.height && r.bottom > 0 && r.top < innerHeight)
     .at(-1);
@@ -158,8 +190,8 @@ export function captureTextQuote(): QuoteSelection | null {
       text,
       comment: "",
       anchor: {
-        start: offset,
-        end: offset + text.length,
+        start: sourceOffset + offset,
+        end: sourceOffset + offset + text.length,
         prefix: all.slice(Math.max(0, offset - 40), offset),
         suffix: all.slice(offset + text.length, offset + text.length + 40),
       },
@@ -190,7 +222,15 @@ export function locateTextQuote(quote: TextQuote): Range | null {
       continue;
     const all = root.textContent ?? "",
       anchor = quote.anchor;
-    let start = anchor?.start ?? -1;
+    const sourceOffset = Number(root.dataset.textOffset ?? 0);
+    if (!Number.isSafeInteger(sourceOffset) || sourceOffset < 0) continue;
+    let start = anchor ? anchor.start - sourceOffset : -1;
+    if (
+      anchor &&
+      root.hasAttribute("data-text-offset") &&
+      (start < 0 || anchor.end - sourceOffset > all.length)
+    )
+      continue;
     if (
       start < 0 ||
       all.slice(start, start + quote.text.length) !== quote.text

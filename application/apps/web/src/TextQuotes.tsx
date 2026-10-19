@@ -16,13 +16,16 @@ import {
   sameQuote,
   textQuotesSchema,
   quoteSourceLabel,
+  authoredMessageText,
   type TextQuote,
+  type TextQuoteSource,
 } from "../../../packages/core/src/text-quotes.js";
 import {
   captureTextQuote,
   locateTextQuote,
   locateTextQuoteField,
   revealTextQuote,
+  quoteSource,
   type QuotePoint,
   type QuoteSelection,
 } from "./text-quote-dom.js";
@@ -567,18 +570,27 @@ export function TextQuoteDrafts({
 export function SentTextQuotes({
   quotes,
   onOpen,
+  message,
 }: {
   quotes: TextQuote[];
   onOpen: (q: TextQuote) => void;
+  message?: { source: TextQuoteSource; body: string };
 }) {
+  const comments = message
+    ? authoredMessageText({ body: message.body, textQuotes: quotes }).comments
+    : [];
   return (
-    <div
-      className="sent-text-quotes"
-      data-quote-ignore="true"
-      aria-label="引用与评论"
-    >
+    <div className="sent-text-quotes" aria-label="引用与评论">
       {quotes.map((q, index) => (
-        <SentTextQuote key={q.id} quote={q} index={index} onOpen={onOpen} />
+        <SentTextQuote
+          key={q.id}
+          quote={q}
+          index={index}
+          onOpen={onOpen}
+          commentSource={
+            message && quoteSource(message.source, comments[index]!.start)
+          }
+        />
       ))}
     </div>
   );
@@ -589,10 +601,12 @@ function SentTextQuote({
   quote,
   index,
   onOpen,
+  commentSource,
 }: {
   quote: TextQuote;
   index: number;
   onOpen: (quote: TextQuote) => void;
+  commentSource?: ReturnType<typeof quoteSource>;
 }) {
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -678,6 +692,7 @@ function SentTextQuote({
     <div className="sent-text-quote-entry" ref={entry}>
       <div
         className="sent-text-quote-card"
+        data-quote-ignore="true"
         onPointerEnter={(event) => {
           if (event.pointerType !== "touch") show();
         }}
@@ -693,7 +708,7 @@ function SentTextQuote({
           type="button"
           className="sent-text-quote"
           ref={trigger}
-          title="查看原文"
+          title={`查看原文 · ${quoteSourceLabel(quote.source)}`}
           aria-label={`查看引用 ${index + 1} 的原文`}
           aria-controls={open ? id : undefined}
           onClick={() => {
@@ -704,7 +719,9 @@ function SentTextQuote({
         >
           <span className="text-quote-number">{index + 1}</span>
           <span>
-            <small>{quoteSourceLabel(quote.source)}</small>
+            {quote.source.kind !== "message" && (
+              <small>{quoteSourceLabel(quote.source)}</small>
+            )}
             <span>{quote.text}</span>
           </span>
           <ArrowUpLeft size={14} aria-hidden="true" />
@@ -755,7 +772,11 @@ function SentTextQuote({
         </header>
         <div className="sent-text-quote-preview-text">{quote.text}</div>
       </div>
-      {quote.comment && <p className="text-quote-comment">{quote.comment}</p>}
+      {quote.comment && (
+        <p className="text-quote-comment" {...commentSource}>
+          {quote.comment}
+        </p>
+      )}
     </div>
   );
 }

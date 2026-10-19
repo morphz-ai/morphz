@@ -36,7 +36,11 @@ async function createDocument(
 /** Message presentation uses controlled Runtime history. Document/Reader data
  * use real app domains. Persistence and source authorization are separately
  * exercised by text-quotes.test.ts through the formal Host ingress/outbox. */
-async function fixture(page: Page, failure?: "reject-once" | "lose-once") {
+async function fixture(
+  page: Page,
+  failure?: "reject-once" | "lose-once",
+  ownMessage?: { body: string; comments: string[] },
+) {
   const inputId = randomUUID();
   const createdAt = "2026-09-30T00:00:00.000Z";
   const records = new Map<
@@ -60,9 +64,20 @@ async function fixture(page: Page, failure?: "reject-once" | "lose-once") {
   }));
   const original = source.input(
     inputId,
-    "TEST 消息引用：如何选择工具？",
+    ownMessage?.body ?? "TEST 消息引用：如何选择工具？",
     createdAt,
   );
+  if (ownMessage)
+    original.textQuotes = ownMessage.comments.map((comment, index) => ({
+      id: randomUUID(),
+      source: {
+        kind: "surface",
+        projectId: source.scope.projectId,
+        title: "TEST 原资料",
+      },
+      text: `TEST 被引用的原资料 ${index + 1}`,
+      comment,
+    }));
   const projectId = source.scope.projectId;
   runtime.messages = [
     {
@@ -181,6 +196,126 @@ async function selectText(locator: Locator, text: string) {
     document.dispatchEvent(new Event("selectionchange"));
   }, text);
 }
+
+test("本人已发送消息可用真实鼠标选中并引用，来源和返回原文保持精确", async ({
+  page,
+}) => {
+  const f = await fixture(page);
+  const own = page.locator(`.human-message[data-input-id="${f.inputId}"] > p`);
+  await own.scrollIntoViewIfNeeded();
+  const range = await own.evaluate((element) => {
+    const node = element.firstChild!;
+    const text = node.textContent!;
+    const selected = "如何选择工具";
+    const start = text.indexOf(selected);
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, start + selected.length);
+    const rect = range.getBoundingClientRect();
+    return {
+      x: rect.left + 1,
+      end: rect.right - 1,
+      y: rect.top + rect.height / 2,
+    };
+  });
+  await page.mouse.move(range.x, range.y);
+  await page.mouse.down();
+  await page.mouse.move(range.end, range.y, { steps: 12 });
+  await page.mouse.up();
+  await page.getByRole("button", { name: "评论选中文字", exact: true }).click();
+  await page.getByLabel("引用 1 的评论（可选）").fill("TEST 追问自己的原话");
+  await page.keyboard.press("Escape");
+  await page.getByLabel("AI 输入内容").fill("TEST 引用本人消息");
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  await expect.poll(() => f.records.size).toBe(1);
+  const saved = [...f.records.values()][0]!;
+  expect(saved.operation.textQuotes![0]).toMatchObject({
+    text: "如何选择工具",
+    comment: "TEST 追问自己的原话",
+    source: {
+      kind: "message",
+      messageId: f.inputId,
+      inputId: f.inputId,
+      title: "我",
+    },
+  });
+  const sent = page
+    .locator(".human-message")
+    .filter({ hasText: "TEST 引用本人消息" });
+  await sent
+    .getByRole("button", { name: "查看引用 1 的原文", exact: true })
+    .click();
+  await expect(own).toBeInViewport();
+  // Check the actual navigation and exact source selection, not only the
+  // temporary outline animation (which can finish during history refresh).
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const selection = window.getSelection();
+        return {
+          text: selection?.toString(),
+          messageId:
+            selection?.anchorNode?.parentElement?.closest<HTMLElement>(
+              "[data-message-id]",
+            )?.dataset.messageId,
+        };
+      }),
+    )
+    .toEqual({ text: "如何选择工具", messageId: f.inputId });
+});
+
+test("本人发出的引用评论同样可选文引用，重复评论回到确切位置而非原资料", async ({
+  page,
+}) => {
+  const comment = "TEST 这倒奇怪了，斧形花纹有什么特别的？";
+  const f = await fixture(page, undefined, {
+    body: "",
+    comments: [comment, comment],
+  });
+  const own = page.locator(`.human-message[data-input-id="${f.inputId}"]`);
+  const paragraph = own.locator(".text-quote-comment").nth(1);
+  await paragraph.scrollIntoViewIfNeeded();
+  // Triple-click is a real whole-paragraph selection, not a synthesized Range.
+  await paragraph.click({ clickCount: 3 });
+  await page.getByRole("button", { name: "评论选中文字", exact: true }).click();
+  await page
+    .getByLabel("引用 1 的评论（可选）")
+    .fill("TEST 继续追问自己的评论");
+  await page.keyboard.press("Escape");
+  await page.getByLabel("AI 输入内容").fill("TEST 引用本人评论");
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  await expect.poll(() => f.records.size).toBe(1);
+  const saved = [...f.records.values()][0]!.operation.textQuotes![0]!;
+  expect(saved).toMatchObject({
+    text: comment,
+    source: {
+      kind: "message",
+      messageId: f.inputId,
+      inputId: f.inputId,
+      title: "我",
+    },
+  });
+  await page
+    .locator(".human-message")
+    .filter({ hasText: "TEST 引用本人评论" })
+    .getByRole("button", { name: "查看引用 1 的原文", exact: true })
+    .click();
+  await expect(paragraph).toBeInViewport();
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const selection = window.getSelection();
+        return {
+          text: selection?.toString(),
+          offset:
+            selection?.anchorNode?.parentElement?.closest<HTMLElement>(
+              "[data-text-source]",
+            )?.dataset.textOffset,
+        };
+      }),
+    )
+    .toEqual({ text: comment, offset: String(saved.anchor!.start) });
+});
 
 async function collapsedDocument(page: Page, failure?: "reject-once") {
   const source = await fixture(page, failure);

@@ -111,6 +111,25 @@ export const textQuotesSchema = z
     "引用内容过长，请分次发送。",
   );
 export type TextQuote = z.infer<typeof textQuoteSchema>;
+
+/** Human-authored text only, never the quoted material or the model prompt.
+ * Keep body at offset zero so existing message anchors remain valid. Comment
+ * offsets also distinguish identical comments within the same immutable input.
+ * This is a projection of existing fields, not another persisted message form.
+ */
+export function authoredMessageText(input: {
+  body: string;
+  textQuotes?: readonly Pick<TextQuote, "comment">[];
+}) {
+  let text = input.body;
+  const comments = (input.textQuotes ?? []).map(({ comment }) => {
+    const start = text.length + (text && comment ? 2 : 0);
+    if (comment) text += (text ? "\n\n" : "") + comment;
+    return { start, text: comment };
+  });
+  return { text, comments };
+}
+
 export function quoteSourceKey(source: TextQuoteSource): string {
   return JSON.stringify(
     source.kind === "reading"

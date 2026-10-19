@@ -28,6 +28,7 @@ import { quoteSource } from "./text-quote-dom.js";
 import {
   quotedInputText,
   type TextQuote,
+  type TextQuoteSource,
 } from "../../../packages/core/src/text-quotes.js";
 import {
   conversationGroups,
@@ -770,7 +771,7 @@ export function Conversation({
               const submission = item
                 ? client.boot!.localInputSubmissions[item.id]
                 : undefined;
-              const textSource = quoteSource({
+              const messageSource: TextQuoteSource = {
                 kind: "message",
                 messageId: id,
                 inputId: item?.id ?? reply?.inputId ?? null,
@@ -782,7 +783,11 @@ export function Conversation({
                     : actorName(state, item.author.actantId)
                   : "Morphz",
                 createdAt: (item ?? reply)!.createdAt,
-              });
+              };
+              const textSource = quoteSource(
+                messageSource,
+                item ? 0 : undefined,
+              );
               const linkedArtifact = item?.artifactId
                 ? state.artifacts.find(
                     (artifact) => artifact.id === item.artifactId,
@@ -985,6 +990,7 @@ export function Conversation({
                       <SentTextQuotes
                         quotes={item.textQuotes}
                         onOpen={onOpenQuote}
+                        message={{ source: messageSource, body: item.body }}
                       />
                     )}
                     {item ? (

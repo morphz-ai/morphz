@@ -4049,6 +4049,56 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         !JSON.stringify(failure).includes("not public diagnostic text"),
       );
     }
+    // Accepted Human comments must resolve through Runtime's immutable source,
+    // on another Host too; the original quoted material is not their own text.
+    const commentProject = "quoted-human-comment-project";
+    await session().createPlatformProject({
+      commandId: randomUUID(),
+      projectId: commentProject,
+      title: "TEST 已接收评论来源",
+    });
+    const commentCommand = input(randomUUID(), commentProject, "TEST 本人正文");
+    const comment = "TEST 本人对原资料的评论";
+    await session().platformMessage({
+      ...commentCommand,
+      operation: {
+        ...commentCommand.operation,
+        textQuotes: [
+          {
+            id: randomUUID(),
+            source: {
+              kind: "surface",
+              projectId: commentProject,
+              title: "TEST 原资料",
+            },
+            text: "TEST 外部原资料不属于本人原话",
+            comment,
+          },
+        ],
+      },
+    });
+    await runtime.tick();
+    const commentScope = {
+      projectId: commentProject,
+      conversationId: commentProject,
+    };
+    const commentSource = await secondRuntime.platformMessageSource(
+      commentScope,
+      localAccess,
+      commentCommand.commandId,
+      commentCommand.commandId,
+    );
+    assert.ok(commentSource);
+    assert.equal(commentSource.text, `TEST 本人正文\n\n${comment}`);
+    assert.ok(!commentSource.text.includes("TEST 外部原资料"));
+    const acceptedHistory =
+      await session().platformConversationHistory(commentScope);
+    assert.equal(
+      acceptedHistory.inputs[0]!.body,
+      "TEST 本人正文",
+      "history body is not rewritten to include comments twice",
+    );
+    assert.equal(acceptedHistory.inputs[0]!.textQuotes![0]!.comment, comment);
   } finally {
     stopPlatformStream?.();
     await secondRuntime?.stop();

@@ -141,7 +141,10 @@ async function colors(quote: Locator) {
       getComputedStyle(element.querySelector("span > span")!).color,
     );
     const settledBody = token("--sent-quote-ink");
-    const small = rgba(getComputedStyle(element.querySelector("small")!).color);
+    const sourceLabel = element.querySelector("small");
+    const small = sourceLabel
+      ? rgba(getComputedStyle(sourceLabel).color)
+      : null;
     const ancestors: Element[] = [];
     for (
       let current: Element | null = element;
@@ -185,7 +188,7 @@ async function colors(quote: Locator) {
       body,
       settledBody,
       bodyContrast: contrast(body),
-      smallContrast: contrast(small),
+      smallContrast: small ? contrast(small) : null,
       messageContrast: contrast(rgba(getComputedStyle(messageBody).color)),
       quoteSize: Number.parseFloat(style.fontSize),
       commentSize: Number.parseFloat(getComputedStyle(comment).fontSize),
@@ -225,7 +228,8 @@ function assertState(
   normal?: Awaited<ReturnType<typeof colors>>,
 ) {
   expect(state.bodyContrast).toBeGreaterThanOrEqual(4.5);
-  expect(state.smallContrast).toBeGreaterThanOrEqual(4.5);
+  if (state.smallContrast !== null)
+    expect(state.smallContrast).toBeGreaterThanOrEqual(4.5);
   if (normal)
     expect([state.width, state.height, state.weight, state.border]).toEqual([
       normal.width,
@@ -250,6 +254,7 @@ test("引用是正文的次级内容：亮暗无常驻高亮、字号与对比�
   page,
 }, info) => {
   const { quote } = await prepare(page);
+  await expect(quote.locator("small")).toHaveCount(0);
   for (const theme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: theme });
     await page.mouse.move(0, 0);
@@ -262,7 +267,7 @@ test("引用是正文的次级内容：亮暗无常驻高亮、字号与对比�
     expect(normal.quoteSize).toBeLessThan(normal.commentSize);
     expect(normal.quoteSize).toBeLessThan(normal.messageSize);
     expect(normal.bodyContrast).toBeLessThan(normal.messageContrast);
-    expect(normal.smallContrast).toBeLessThan(normal.messageContrast);
+    expect(normal.smallContrast).toBeNull();
     assertState(normal);
     await page.screenshot({
       path: info.outputPath(`quote-hierarchy-${theme}.png`),

@@ -84,6 +84,8 @@ test("长多段引用默认一行ellipsis，全文与评论未截断，引用-on
   const { message, quote } = await prepare(page);
   const line = quote.locator("span > span");
   await expect(line).toHaveText(quoteText);
+  await expect(quote.locator("small")).toHaveCount(0);
+  await expect(quote).toHaveAttribute("title", "查看原文 · Morphz");
   await expect(message.locator(".text-quote-comment")).toHaveText(comment);
   expect(
     await line.evaluate((e) => ({
@@ -119,6 +121,8 @@ test("长多段引用默认一行ellipsis，全文与评论未截断，引用-on
   expect(metrics.bottomGap).toBeCloseTo(metrics.padding, 1);
   expect(metrics.horizontalOverflow).toBe(false);
   expect(metrics.emptyParagraphs).toBe(0);
+  // One line of source text plus the existing padding, not a hidden author row.
+  expect((await quote.boundingBox())!.height).toBeLessThanOrEqual(34);
   await page.screenshot({
     path: testInfo.outputPath("quote-preview-default.png"),
   });

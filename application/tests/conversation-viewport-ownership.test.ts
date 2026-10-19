@@ -1588,8 +1588,8 @@ test("viewport permits unrelated JSX/comments/type annotations/domain exports an
     componentEnd,
   )
     .replace(
-      "  onRetry,\n  client,\n  onOpen,",
-      "  onRetry,\n  client: capturedClient,\n  onOpen,",
+      "  onResend,\n  client,\n  onOpen,",
+      "  onResend,\n  client: capturedClient,\n  onOpen,",
     )
     .replaceAll("client.", "capturedClient.")
     .replaceAll("client={client}", "client={capturedClient}")

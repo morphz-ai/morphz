@@ -62,7 +62,10 @@ import {
   coherentCognitiveAppApplicationInput,
   type CognitiveAppApplicationTarget,
 } from "../../core/src/cognitive-app-application-target.js";
-import { textQuotesSchema } from "../../core/src/text-quotes.js";
+import {
+  authoredMessageText,
+  textQuotesSchema,
+} from "../../core/src/text-quotes.js";
 import { isoTimeAtMicros, isoTimeMicros } from "./iso-time.js";
 import {
   directoryGrantSchema,
@@ -4160,7 +4163,10 @@ export class RuntimeBridge {
     )
       return null;
     let createdAt = source.createdAt;
-    let text = source.body;
+    let text = authoredMessageText({
+      body: source.body,
+      textQuotes: source.textQuotes,
+    }).text;
     if (messageId !== inputId) {
       const streamAttemptId = messageId.startsWith("stream:")
         ? messageId.slice("stream:".length)
@@ -4293,7 +4299,10 @@ export class RuntimeBridge {
               projectId: source.projectId,
               conversationId: source.conversationId,
               createdAt: source.createdAt,
-              text: platformInputBody(pending[0]!),
+              text: authoredMessageText({
+                body: platformInputBody(pending[0]!),
+                textQuotes: source.textQuotes,
+              }).text,
             };
         }
       }

@@ -9,6 +9,7 @@ import {
 } from "../packages/core/src/model.js";
 import {
   quotedInputText,
+  authoredMessageText,
   textQuotesSchema,
   type TextQuote,
 } from "../packages/core/src/text-quotes.js";
@@ -46,6 +47,73 @@ const quote = (original: RecordedInput): MessageQuote => ({
   },
   text: "先理解问题，再选择工具。\n不要颠倒顺序。",
   comment: "为什么？",
+});
+
+test("本人正文与评论共享稳定偏移，排除原资料且保留既有body锚点", () => {
+  const message = authoredMessageText({
+    body: "原正文",
+    textQuotes: [
+      { comment: "相同评论" },
+      { comment: "" },
+      { comment: "相同评论" },
+    ],
+  });
+  assert.equal(message.text, "原正文\n\n相同评论\n\n相同评论");
+  assert.equal(message.comments[0]!.start, 5);
+  assert.equal(message.comments[2]!.start, 11);
+  for (const part of message.comments)
+    assert.equal(
+      message.text.slice(part.start, part.start + part.text.length),
+      part.text,
+    );
+  assert.equal(authoredMessageText({ body: "原正文" }).text, "原正文");
+});
+
+test("本人发出的引用评论可再次引用并跨Host重开，外部原资料不冒充本人评论", async () => {
+  const f = await platformMessageFixture();
+  try {
+    const app = f.session();
+    const originalId = randomUUID();
+    await app.platformMessage({
+      commandId: originalId,
+      operation: input(originalText),
+    });
+    const ownCommentId = randomUUID();
+    const selected = {
+      ...quote(f.input(originalId)),
+      comment: "斧形花纹有什么特别的？",
+    };
+    await app.platformMessage({
+      commandId: ownCommentId,
+      operation: input("", [selected]),
+    });
+    const saved = f.input(ownCommentId);
+    const citation = { ...quote(saved), text: selected.comment };
+    // Reload the real Host/outbox before citing the existing comment.
+    await f.reopen();
+    await f
+      .session()
+      .platformMessage({
+        commandId: randomUUID(),
+        operation: input("再解释一下", [citation]),
+      });
+    const before = structuredClone(f.deliveries());
+    await assert.rejects(
+      f
+        .session()
+        .platformMessage({
+          commandId: randomUUID(),
+          operation: input("不可伪造本人原话", [
+            { ...citation, text: selected.text },
+          ]),
+        }),
+      /引用的原消息已不可用/,
+    );
+    assert.deepEqual(f.deliveries(), before);
+    f.assertNoLegacyData();
+  } finally {
+    await f.close();
+  }
 });
 
 test("同一条输入可组合对象、阅读和网页评论：保留确切来源但不获得对象或网页控制权", async () => {
