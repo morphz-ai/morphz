@@ -51,6 +51,7 @@ struct Model {
     work: bool,
     infer: bool,
     malformed: bool,
+    annotation_extras: bool,
     requests: AtomicUsize,
     directory: Mutex<Vec<String>>,
     inputs: Mutex<Vec<Vec<Message>>>,
@@ -103,11 +104,23 @@ impl Client for Model {
                 .push(json!({"ref":reference,"result":"真实合成工具返回 PROBE_FACT_LINUX"}));
         }
         let working = self.work && index == 0;
-        let mut content=json!({
+        let mut value = json!({
             "body":if working {Value::Null}else if self.infer {json!("中文 🧠\n第二行")}else{json!("核对完成。\n正文里的 `deliver_message` 和 {\"body\":1} 都只是文字。")},
             "annotations":{"execution":{"title":"核对合成环境","progress":if working {"读取合成工具"}else{""},"result":if working {""}else{"已返回完整结果"}},"observations":observations},
             "effects":if working {json!([{"name":"evaluation_probe","arguments":{"key":"system","_annotations":{"business":true}},"intent":"读取真实合成工具以核对环境"}])}else{json!([])},
-        }).to_string();
+        });
+        if self.annotation_extras {
+            value["annotations"]["observations_note"] = Value::Null;
+            value["annotations"]["execution"]["unregistered"] = json!({"name":"not-a-proposal"});
+            if let Some(observation) = value["annotations"]["observations"]
+                .as_array_mut()
+                .unwrap()
+                .first_mut()
+            {
+                observation["unregistered"] = json!(false);
+            }
+        }
+        let mut content = value.to_string();
         if self.malformed {
             content.push('}');
         }
@@ -156,6 +169,22 @@ async fn run(
     Event,
     Event,
 ) {
+    run_with_annotation_extras(work, infer, malformed, false).await
+}
+
+async fn run_with_annotation_extras(
+    work: bool,
+    infer: bool,
+    malformed: bool,
+    annotation_extras: bool,
+) -> (
+    tempfile::TempDir,
+    MorphzRuntime,
+    Arc<Model>,
+    Arc<Mutex<Vec<Value>>>,
+    Event,
+    Event,
+) {
     let temp = tempfile::TempDir::new().unwrap();
     let mut config = AppConfig::default();
     config.permissions.workspace_root = temp.path().to_string_lossy().into_owned();
@@ -166,6 +195,7 @@ async fn run(
         work,
         infer,
         malformed,
+        annotation_extras,
         requests: AtomicUsize::new(0),
         directory: Mutex::new(vec![]),
         inputs: Mutex::new(vec![]),
@@ -319,6 +349,119 @@ async fn effects_keep_real_jobs_original_arguments_actual_refs_and_stable_tools(
         .iter()
         .any(|record| record.kind == AnnotationKind::ObservationResult)));
     assert!(bundles.iter().all(|bundle| bundle.diagnostics.is_empty()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unregistered_annotations_are_diagnosed_without_blocking_work_or_streamed_return() {
+    let (_temp, runtime, model, args, root, reply) =
+        run_with_annotation_extras(true, false, false, true).await;
+    assert_eq!(reply.topic, "chat/reply", "{reply:?}");
+    assert_eq!(
+        model.requests.load(Ordering::SeqCst),
+        2,
+        "one work request and one actual result continuation, no repair"
+    );
+    assert_eq!(
+        args.lock().unwrap().as_slice(),
+        &[json!({"key":"system","_annotations":{"business":true}})]
+    );
+    let directory = model.directory.lock().unwrap();
+    assert_eq!(directory.len(), 2);
+    assert_eq!(directory[0], directory[1]);
+    let events = runtime
+        .query_events(QueryFilter {
+            root_turn_id: Some(root.id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(!events
+        .iter()
+        .any(|event| event.topic == "runtime/response_protocol_error"));
+    let sources = events
+        .iter()
+        .filter(|event| event.topic == "chat/assistant_call")
+        .collect::<Vec<_>>();
+    assert_eq!(sources.len(), 2);
+    for source in sources {
+        let bundle: PersistedAnnotations =
+            serde_json::from_value(source.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
+        assert!(bundle.raw_response.content.contains("observations_note"));
+        assert!(bundle.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("/annotations/observations_note")));
+        assert!(bundle
+            .records
+            .iter()
+            .any(|record| record.kind == AnnotationKind::Title));
+        assert!(bundle
+            .annotation_messages
+            .iter()
+            .all(|message| match &message.content {
+                morphz::session_io::Content::Json { value } =>
+                    value.get("observations_note").is_none(),
+                _ => false,
+            }));
+        let output = events
+            .iter()
+            .find(|event| {
+                event.topic == "session/io_output"
+                    && event.payload["source_event_id"] == source.id
+                    && event.payload["io_message"]["format"]["id"] == "morphz.evaluation"
+            })
+            .expect("real registered logical IO publication");
+        let message: morphz::session_io::Message =
+            serde_json::from_value(output.payload["io_message"].clone()).unwrap();
+        let morphz::session_io::Content::Json { value } = &message.content else {
+            panic!()
+        };
+        assert!(value
+            .get("annotations")
+            .unwrap()
+            .get("observations_note")
+            .is_none());
+        morphz::session_io::validate_content(
+            &message,
+            bundle
+                .return_binding
+                .as_ref()
+                .unwrap()
+                .output
+                .as_ref()
+                .unwrap(),
+            &Limits::default(),
+        )
+        .unwrap();
+        assert!(
+            morphz::response_annotations::annotations_from_authorized_event(source, &bundle.scope)
+                .unwrap()
+                .is_some()
+        );
+    }
+    let bundles = events
+        .iter()
+        .filter_map(|event| event.payload.get(BUNDLE_PAYLOAD_KEY))
+        .map(|value| serde_json::from_value::<PersistedAnnotations>(value.clone()).unwrap())
+        .collect::<Vec<_>>();
+    for kind in [
+        AnnotationKind::Intent,
+        AnnotationKind::ObservationResult,
+        AnnotationKind::Result,
+    ] {
+        assert!(bundles
+            .iter()
+            .any(|bundle| bundle.records.iter().any(|record| record.kind == kind)));
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.topic == "chat/reply")
+            .count(),
+        1
+    );
+    assert!(events.iter().any(
+        |event| event.topic == "runtime/model_public_output" && event.sequence < reply.sequence
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

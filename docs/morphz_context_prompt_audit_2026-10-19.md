@@ -609,3 +609,27 @@ Script Studio 24 表、Reader 14 表、Objects 19 表、Browser 4 表的逻辑
 原 DeepSeek／max 选择保留，可以直接继续使用。当前有效 DeepSeek
 原生 JSON 约束与 Runtime 准入的边界仍如上：本轮真实场景通过，不等于
 所有模型永远不会产出语义不合规值；Qwen／Kimi／GLM 矩阵仍待后补。
+
+### 后续真实 Reader 复验发现与经确认的注解投影
+
+原应用 TEST 默认 workspace 导入已取得持久回执，但 DeepSeek 随后的
+合法原生 JSON 增加了 `annotations.observations_note:null`；原闭合
+Evaluation schema 因此拒绝两个 reader.contents／reader.read 的 describe
+提案。不能将导入成功称为读取与定位也成功，更不能把此例概括成非法
+JSON 或模型不具备注解能力。完整原响应已保留，精确摘要与修改前失败
+回归见应用实施记录。
+
+用户 review 并明确同意后，公共边界修正为：Runtime 仅在注解子树内，
+按该 Evaluation 实际冻结 schema 的 properties／items 构造已注册字段。
+未注册注解字段排除出 registered Message，原值仍在原响应中，位置进入
+有界诊断；缺少必需注解和已知字段类型错误不修补、不补造。根结构、正文、
+effects、业务参数和权限完全不走这种字段投影，维持原来的严格检查。
+没有把 schema 改成任意字段可接受，没有兼容别名、正文标记、补注解
+推理、额外模型请求或动态工具定义。最终解码、流式完成与持久发布共用
+同一构造入口，避免一个入口通过、另一个入口仍拒绝的分裂。
+
+本段是明确批准后的边界修正。真实失败原响应重放和严格反例专项 9/9，
+完整 Rust lib 1591 passed、0 failed、13 个既有 ignored；实际 Runtime
+集成 6/6，覆盖多余字段诊断和原响应保存、真实工作续接、提前正文流式、
+已注册发布、原参数与稳定工具，未产生修复／转述请求。原应用 DeepSeek
+复验另行记录；历史事件与失败状态不改写、不自动重放。
