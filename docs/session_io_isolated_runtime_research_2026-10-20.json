@@ -1,0 +1,292 @@
+{
+  "date": "2026-10-20",
+  "scope": "Isolated candidate Runtime research checkpoint, not deployment or complete repair acceptance. Real DeepSeek calls use synthetic data and a disposable SQLite database. No original tasks, books, service route or model configuration were changed.",
+  "base_commit": "25434e56",
+  "candidate_code_status": "Uncommitted integration candidate; exact inspected source hashes below. Native route uses text.format json_schema with strict:false, not claimed constrained decoding.",
+  "endpoint": "https://api.deepseek.com/responses",
+  "model": "deepseek-flash",
+  "reasoning_effort": "max",
+  "native_schema_capability_explicit": true,
+  "native_tool_choice": "none",
+  "semantic_output": "One body/effects/annotations value; Runtime constructs identity and executes authorized effects.",
+  "no_format_repair_or_answer_relay": true,
+  "original_runtime_pid": 25636,
+  "original_runtime_started": "2026-10-20 00:31:05 Asia/Shanghai",
+  "original_application_updated": false,
+  "cases": [
+    {
+      "source": "runtime-discuss-script-on.log",
+      "sha256": "111b927172f9d41422030e236d637946cb89c54049a4fa04d862461d42640243",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 1,
+          "ObservationResult": 1,
+          "Result": 1,
+          "Title": 2
+        },
+        "annotation_records": [
+          3,
+          4
+        ],
+        "body": "从当前项目目录的《合成大纲》看，可讨论的核心冲突是灯塔守望者必须在守约与救人之间选择。",
+        "case": "discuss-script",
+        "diagnostics": [
+          0,
+          0
+        ],
+        "elapsed_ms": 19778,
+        "file_reads": [],
+        "host_reads": [
+          "read-workflow",
+          "list"
+        ],
+        "internal_value_chunks": 0,
+        "jobs": 2,
+        "model": "deepseek-flash",
+        "model_requests": 2,
+        "protocol": "on",
+        "public_body_chunks": 27,
+        "tool_directory_sha256": [
+          "e3cd09235f725f3cffe3fa63bde30d366f46f381d6ef229c6498f4c8358d55af",
+          "e3cd09235f725f3cffe3fa63bde30d366f46f381d6ef229c6498f4c8358d55af"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-infer-on.log",
+      "sha256": "0e504f96f7b84a48862cc592ceca8d06332d2dbc4680ee63e07a38c3efdc39b5",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 0,
+          "ObservationResult": 0,
+          "Result": 0,
+          "Title": 0
+        },
+        "annotation_records": [
+          0
+        ],
+        "body": "2 加 3 的结果是 5，也就是“2 + 3 = 5”。\n“相加”表示把两个数量合并成一个总量，因此把 2 和 3 合在一起便得到 5。🧠",
+        "case": "infer",
+        "diagnostics": [
+          0
+        ],
+        "elapsed_ms": 3510,
+        "file_reads": [],
+        "host_reads": [],
+        "internal_value_chunks": 0,
+        "jobs": 0,
+        "model": "deepseek-flash",
+        "model_requests": 1,
+        "protocol": "on",
+        "public_body_chunks": 50,
+        "tool_directory_sha256": [
+          "dc5c9fe0b40030b32219ac3856b66ea4bf3d38e2f63c4f09a44487bfce73b57c"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-memory-on.log",
+      "sha256": "9bcc224ab4828e87b2ca84f381d21c02c47a025ac10b78c72d2af4f62b3b4a2a",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 1,
+          "ObservationResult": 0,
+          "Result": 1,
+          "Title": 1
+        },
+        "annotation_records": [
+          3,
+          1
+        ],
+        "body": "已将合成阅读进度“已读至卷十四，贾谊陈述治安策”保存到新的 Mind frame `reading-progress`（context 版本 1）。",
+        "case": "memory",
+        "diagnostics": [
+          0,
+          0
+        ],
+        "elapsed_ms": 18680,
+        "file_reads": [],
+        "host_reads": [],
+        "internal_value_chunks": 0,
+        "jobs": 0,
+        "model": "deepseek-flash",
+        "model_requests": 2,
+        "protocol": "on",
+        "public_body_chunks": 34,
+        "tool_directory_sha256": [
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446",
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-plain-on.log",
+      "sha256": "992694cdca4609764addb310051d7681fd111758b9c286e28b38ecfe57298a66",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 0,
+          "ObservationResult": 0,
+          "Result": 0,
+          "Title": 0
+        },
+        "annotation_records": [
+          0
+        ],
+        "body": "2 加 3 等于 5。\n答案是 5。",
+        "case": "plain",
+        "diagnostics": [
+          0
+        ],
+        "elapsed_ms": 3016,
+        "file_reads": [],
+        "host_reads": [],
+        "internal_value_chunks": 0,
+        "jobs": 0,
+        "model": "deepseek-flash",
+        "model_requests": 1,
+        "protocol": "on",
+        "public_body_chunks": 15,
+        "tool_directory_sha256": [
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-review-off.log",
+      "sha256": "83fab1d3189773f8eed7489bb949501cd1578d5937b21a58bec006a3ae91ff66",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 0,
+          "ObservationResult": 0,
+          "Result": 0,
+          "Title": 0
+        },
+        "annotation_records": [
+          0,
+          0
+        ],
+        "body": "故事已经完结——主角解决了全部冲突、所有伏笔均已回收，最后一行明确写着“全书完”。",
+        "case": "review",
+        "diagnostics": [
+          0,
+          0
+        ],
+        "elapsed_ms": 7178,
+        "file_reads": [
+          "review.txt"
+        ],
+        "host_reads": [],
+        "internal_value_chunks": 0,
+        "jobs": 1,
+        "model": "deepseek-flash",
+        "model_requests": 2,
+        "protocol": "off",
+        "public_body_chunks": 23,
+        "tool_directory_sha256": [
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446",
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-review-on.log",
+      "sha256": "aea283a6ba575145d07626d23def6b6dd14abc03296c6b3a4427251e9bbfc4d0",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 1,
+          "ObservationResult": 1,
+          "Result": 1,
+          "Title": 1
+        },
+        "annotation_records": [
+          3,
+          2
+        ],
+        "body": "故事已经完结：主角解决了全部冲突，所有伏笔均已回收，最后一行明确写着“全书完”。",
+        "case": "review",
+        "diagnostics": [
+          0,
+          0
+        ],
+        "elapsed_ms": 7514,
+        "file_reads": [
+          "review.txt"
+        ],
+        "host_reads": [],
+        "internal_value_chunks": 0,
+        "jobs": 1,
+        "model": "deepseek-flash",
+        "model_requests": 2,
+        "protocol": "on",
+        "public_body_chunks": 23,
+        "tool_directory_sha256": [
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446",
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    }
+  ],
+  "source_sha256": {
+    "morphz/examples/session_io_runtime_probe.rs": "8c9de3958754ff35bdcd4853757603fb2fa1e529b9faeda5ced83e7a7439d8c5",
+    "morphz/src/session_io/unified.rs": "9ecb9735e7544aa765a50494da229433cf42ee991e0a42b944f46ad48c61e056",
+    "morphz/src/session_io/response.rs": "0bd9b7d9f10a378b598058c8c3dfc6925380f39abf9f88129288134e061e9af9",
+    "morphz/src/session_io/response_stream.rs": "b35825f552f0b5eea4eb04bb81afbb6733b8afca671a7d7c8b154b217cc4c0f4",
+    "morphz/src/orchestrator/orchestrator.rs": "24ee05265bf7bbbc1fd1c9187b84134ea86f24480f04effa2d9da3ccbc042c09",
+    "morphz/tests/response_annotations_runtime.rs": "68eef43e63092511e722cab515e33a1dcd4518019adf2bcd53e93e761cf07f15"
+  },
+  "regressions": {
+    "command": "cargo test -q -p morphz --test response_annotations_runtime -j1",
+    "passed": 21,
+    "failed": 4,
+    "failures": [
+      {
+        "test": "invalid_display_metadata_is_rejected_without_destroying_an_independent_body_or_requesting_repair",
+        "observed": "Missing optional fields assertion found diagnostics; cause not yet resolved."
+      },
+      {
+        "test": "single_infer_harness_keeps_required_annotations_typed_values_and_streaming_in_one_request",
+        "observed": "Expected private typed-value stream false, observed empty string; public real String infer passed separately."
+      },
+      {
+        "test": "restart_replays_imported_enabled_plan_using_actual_nonstable_thread_identity",
+        "observed": "Scripted client assertion value effects do not forge native handshakes, followed by recovery timeout; cause not yet resolved."
+      },
+      {
+        "test": "restart_replays_seeded_enabled_plan_once_without_reasking_or_rewriting_annotations",
+        "observed": "Scripted client assertion value effects do not forge native handshakes, followed by recovery timeout; cause not yet resolved."
+      }
+    ],
+    "separate_unit_failures": "Two response_annotations unit tests still assert previous contract text; not reclassified as passing."
+  },
+  "remaining_gates": [
+    "Resolve and rerun all regression failures without weakening authority, business validation or frozen-history checks.",
+    "Validate non-string typed infer, cancellation, incomplete response and historical binding recovery.",
+    "Finish full integration review before focused code commit and safe original-app update.",
+    "Original-window acceptance is not performed.",
+    "Qwen/Kimi/GLM and quantized small-model matrix remains deferred."
+  ]
+}
