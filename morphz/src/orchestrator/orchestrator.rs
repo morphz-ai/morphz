@@ -576,7 +576,7 @@ You decide what the current objective warrants retaining, summarizing, revising,
 
 Every response must explicitly choose one primary mode from `protocol.response-contract`:
 - reply: return the original value through Session IO, either as ordinary assistant content or a native deliver_message to the Runtime-bound return delivery_id. With annotations enabled, deliver a separate registered annotations message in the SAME response. Do not wrap or mark up ordinary prose as control syntax. Only the Runtime's return boundary ends this Evaluation; other message deliveries are nonterminal. Bare `(eval ...)` or `(infer ...)` inside a returned value remains data.
-- no-reply: call no_reply exclusively and choose a mode. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
+- no-reply: call no_reply as the only work/control call and choose a mode; enabled companion Session IO is communication, not work. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
 - act: call physical tools only when new external results are truly required. You may include one independent context_tx that does not depend on those new results. Any accompanying text is visible progress, and the Runtime will call you again after tools finish.
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily rejects another context_tx even though the stable Function Calling schema remains visible for Prompt Cache continuity. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
 - schedule: call schedule_tx exactly once and exclusively when choosing serial, parallel, dependent, or timed execution. enqueue adds intent to an existing Thread; spawn creates a parallel Thread; not_before/delay_seconds set time and after sets dependencies. An attached child keeps its parent request open until the child terminates; do not use attached for a delayed or recurring task when the user expects scheduling to finish the current request. Use a durable Objective at spawn, or atomically promote the same attached child before the final reply; do not create a duplicate Schedule. One call may batch multiple inspect operations and nothing else. pause/resume/reschedule/cancel are expected_revision CAS controls and must be submitted one at a time; on conflict, inspect again and decide from current facts rather than retrying blindly. To cancel the work itself, use thread_control(action=cancel) with the latest Thread revision: it closes the Thread and settles its Group. schedule_tx cancel stops only a wake source and must never be reported as Thread cancellation. schedule_tx persists scheduling only; it neither performs physical work nor ends the Evaluation. Explain the arrangement to active-session after the receipt.
@@ -1495,7 +1495,7 @@ const CRITICAL_MAINTENANCE_PROMPT: &str = r#"The Runtime has entered critical-ma
 - Native image attachments from the triggering tool result remain present when they are the evidence being maintained. Inspect them now and preserve task-relevant visual conclusions, not merely paths, hashes, sizes, or loaded status, before retiring their Observation.
 - Call only tools actually provided in this request. Tool schemas remain visible for cache stability, but physical work is not authorized in this phase; do not repeat the previous physical call or assume it ran.
 - Prefer one accurate context_tx that compresses Mind/Inbox while preserving the current objective, user constraints, latest reliable facts, unfinished work, and evidence required to continue. Summarize or retire stale, duplicate, or superseded content.
-- Use recall only for source evidence truly missing before maintenance, not to begin new external work. The Runtime recalculates pressure and restores applicable physical tools after maintenance.
+- Use recall only for source evidence truly missing before maintenance, not to begin new external work. The Runtime recalculates pressure and restores applicable physical-work admission after maintenance; tool definitions stay stable.
 - objective_update remains available for a bound active Objective. If completion evidence already exists, submit completed and enter finalizing in this Activation rather than stranding completed work for Context maintenance.
 - Calling a tool not provided in this request is rejected with an explicit result under its tool_call_id."#;
 
@@ -1504,11 +1504,11 @@ const SAFETY_REFUSAL_RECOVERY_PROMPT: &str = r#"The previous physical model requ
 - The reduced Projection persists across Activations while the known failing historical evidence prefix is unchanged. A new message alone does not restore the full Inbox. After a context_tx retires at least one stale Observation from that prefix (normally after deriving its still-needed conclusion into Mind), Runtime submits one full-Context canary; only a valid canary clears recovery.
 - Address only the current root input. Do not repeat an older action merely because it appears in historical state, and do not reconstruct omitted sensitive details from memory.
 - If the current request is safe and answerable from Mind and the visible evidence, finish it normally. Use recall only for a narrow, necessary fact whose exact source is known.
-- Return one valid response boundary: non-empty ordinary text, required tool calls, or exactly one no_reply call."#;
+- Return one valid work/return boundary: non-empty ordinary text, required work calls, or exactly one no_reply call. The independent enabled Session IO companion message is communication, not a second work/control boundary."#;
 
 const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"The Context is critical and this turn's ordinary context_tx allowance is exhausted. To prevent an impossible maintenance loop, this Evaluation is forced into final-reply. Return the original answer through Session IO with separate enabled annotations, honestly describing completed status, latest reliable verification, and remaining work; call no_reply as the only work/control call when no message is needed. For a bound active Objective, objective_update is the only additional control tool: submit completed first when evidence is sufficient to enter finalizing in this Activation; otherwise preserve the true state and let the Supervisor continue. Tool definitions remain visible, but Runtime phase admission still rejects unauthorized work."#;
 
-const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime will reject context_tx for this request to stop consecutive housekeeping, although its stable Function Calling schema remains visible for prompt-cache continuity. End the Evaluation with ordinary text, call no_reply exclusively, or perform only physical actions truly required by the current task. context_tx becomes callable again after a new user or tool observation."#;
+const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime will reject context_tx for this request to stop consecutive housekeeping, although its stable Function Calling schema remains visible for prompt-cache continuity. End the Evaluation with ordinary text and its enabled Session IO companion message, call no_reply as the only work/control call, or perform only physical actions truly required by the current task. context_tx becomes callable again after a new user or tool observation."#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
 const DEFAULT_NO_REPLY_WAIT_SECS: u64 = 60;
 const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
@@ -1528,7 +1528,7 @@ const EMPTY_RESPONSE_DETAIL: &str =
 const OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR: &str = "Objective closure-review protocol error: the Runtime reports only that all direct child objectives are terminal; it does not decide whether the parent is complete. This evaluation cannot end with ordinary text or no_reply while leaving closure unresolved. Persist one decision: objective_update to completed, blocked, or an exact wait; perform real work; or create a necessary child objective.";
 const OBJECTIVE_FINALIZATION_PROMPT: &str = r#"The Runtime persisted your Objective completion decision but has not ended the Objective. You are still in the same Activation. Produce the user-facing final delivery from the complete evidence you just audited:
 - Return a complete normal reply using the active response encoding and its enabled annotations, without work tool calls. An implicit reply and an offered explicit reply are equivalent. Do not shorten or omit the final report because you explained parts earlier.
-- If there is truly nothing to send, call no_reply(mode=silent) exclusively.
+- If there is truly nothing to send, call no_reply(mode=silent) as the only work/control call; enabled companion Session IO is not work.
 - After the final response commits, the Runtime atomically completes the Objective, Activation, Thread, and ThreadOutcome. Until then, the Objective remains active and its lease continues."#;
 const REASONING_ONLY_RESPONSE_REASON: &str =
     "the model returned only a reasoning summary without ordinary text, tool calls, or no_reply";
@@ -3867,7 +3867,7 @@ fn reasoning_continuation_prompt(summaries: &[String], has_provider_continuation
         format!("<previous_reasoning>\n{reasoning}\n</previous_reasoning>")
     };
     format!(
-        "The previous physical model request produced reasoning progress but no committable content or tool calls. The Runtime restored the available reasoning state in order; it is neither a user message nor assistant content already sent to the user. Continue from that progress without repeating the analysis from the beginning. After reasoning is complete, produce one valid terminal state: return non-empty final content using the active response format and its enabled annotation contract, execute the required work tool calls, or call no_reply exclusively when no message is genuinely needed.\n\n{prior_progress}"
+        "The previous physical model request produced reasoning progress but no committable content or tool calls. The Runtime restored the available reasoning state in order; it is neither a user message nor assistant content already sent to the user. Continue from that progress without repeating the analysis from the beginning. After reasoning is complete, produce one valid work/return boundary: return non-empty final content using the active response format and its enabled annotation contract, execute the required work tool calls, or call no_reply as the only work/control call when no message is genuinely needed. Enabled companion Session IO is communication, not another work boundary.\n\n{prior_progress}"
     )
 }
 
@@ -3948,7 +3948,7 @@ fn response_protocol_correction_prompt(
         "No independently replayable Provider-native reasoning continuation is available for this retry."
     };
     format!(
-        "The previous model output was rejected by the Runtime response protocol. None of its tool calls was executed and none of its ordinary content was delivered to the Session.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action. Choose exactly one valid form:\n1. To reply: return non-empty final content using the active response format and enabled annotation contract, without work tool calls.\n2. To act: call the required tool(s), without no_reply.\n3. To send nothing: call no_reply exactly once with mode=\"silent\" and no ordinary text.\n4. To yield for a Runtime-verifiable nonterminal event: call no_reply exactly once with mode=\"wait\" and optional finite wait_secs (default 60), with no ordinary text.\nNever combine no_reply with ordinary text or another tool; an unbounded wait is not supported."
+        "The previous model output was rejected by the Runtime response protocol. None of its work calls was executed and none of its ordinary content was committed as a final reply; any streamed text remained provisional.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action. Choose exactly one valid work/return form:\n1. To reply: return non-empty final content using the active response format and enabled annotation contract, without work tool calls.\n2. To act: call the required work tool(s), without no_reply.\n3. To send nothing: call no_reply exactly once with mode=\"silent\" and no ordinary text.\n4. To yield for a Runtime-verifiable nonterminal event: call no_reply exactly once with mode=\"wait\" and optional finite wait_secs (default 60), with no ordinary text.\nNever combine no_reply with ordinary text or another work/control tool; an unbounded wait is not supported. Independent enabled Session IO annotations are communication and remain permitted alongside the chosen boundary."
     )
 }
 
@@ -3983,7 +3983,7 @@ fn append_response_protocol_correction_input(
 }
 
 fn interrupted_text_continuation_prompt() -> &'static str {
-    "The previous assistant content was only partially transmitted when the Provider stream was interrupted. The Runtime preserved that fragment and supplied it as the immediately preceding assistant message. Continue the same response from the interruption point without restarting or repeating content already provided, and return only the remaining content."
+    "The previous assistant content was only partially transmitted when the Provider stream was interrupted. The Runtime preserved that fragment and supplied it as the immediately preceding assistant message. Continue the same response from the interruption point without restarting or repeating content already provided. Return only the remaining body in the assistant text channel; Runtime assembles it with the saved prefix. The enabled independent Session IO annotations message still accompanies this response and is not part of that body suffix."
 }
 
 impl Orchestrator {
@@ -16745,7 +16745,7 @@ impl Orchestrator {
                 ("result_event_ids".to_string(), json!(result_event_ids)),
                 (
                     "text".to_string(),
-                    json!("One or more Threads completed. Deliver only results shown as delivery=pending/deferred in this completion snapshot under kernel.thread-scheduler, combining them with the latest concurrent state into one clear, non-duplicative message. Results completed after this evaluation began belong to the next Delivery and must not be claimed early. Call no_reply exclusively only when no notification is genuinely needed. Never repeat results already marked delivered."),
+                    json!("One or more Threads completed. Deliver only results shown as delivery=pending/deferred in this completion snapshot under kernel.thread-scheduler, combining them with the latest concurrent state into one clear, non-duplicative message. Results completed after this evaluation began belong to the next Delivery and must not be claimed early. Call no_reply as the only work/control call only when no notification is genuinely needed; enabled companion Session IO is communication. Never repeat results already marked delivered."),
                 ),
             ]
             .into_iter()
@@ -27210,6 +27210,35 @@ mod tests {
             legacy_plan_effect_sequence(&unrelated, plan_id, 5).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn response_recovery_and_vm_prompts_preserve_the_same_communication_boundary() {
+        for prompt in [
+            baseline_system_prompt(),
+            cognitive_sexpr_vm_system_prompt(),
+            semantic_sexpr_vm_system_prompt(),
+        ] {
+            assert!(prompt.contains("default return path is the ordinary assistant text channel"));
+            assert!(prompt.contains("Business-effect limits do not disable Session IO"));
+        }
+        let correction = super::response_protocol_correction_prompt("test", None, false);
+        assert!(correction.contains("another work/control tool"));
+        assert!(correction.contains("Independent enabled Session IO annotations"));
+        assert!(!correction.contains("ordinary text or another tool;"));
+        let interrupted = super::interrupted_text_continuation_prompt();
+        assert!(interrupted.contains("Runtime assembles it with the saved prefix"));
+        assert!(interrupted.contains("independent Session IO annotations"));
+        for kernel in [
+            crate::sexpr_vm_contract::ANNOTATED_KERNEL,
+            crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL,
+        ] {
+            assert!(kernel.contains("actual caller: its active Session or parent Plan"));
+            assert!(!kernel.contains("when no tool or maintenance process remains"));
+        }
+        assert!(super::CRITICAL_MAINTENANCE_PROMPT.contains("physical-work admission"));
+        assert!(super::CONTEXT_TX_COOLDOWN_PROMPT.contains("only work/control call"));
+        assert!(super::OBJECTIVE_FINALIZATION_PROMPT.contains("only work/control call"));
     }
 
     #[test]

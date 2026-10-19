@@ -9161,7 +9161,7 @@ fn render_evaluation_directive(
     let instruction = if internal_infer {
         "Evaluate the full typed Yao program in root-input. Return only its exact declared business value to the actual parent Plan through the Runtime-owned Session IO return binding; this is not another user-facing answer or completion of parent work. Annotation messages are separate and never part of the typed value. Do not infer unlisted parent state or call a model again merely to relay or annotate this value".to_string()
     } else if thread_kind == "delivery" {
-        "This is completion delivery. Read only delivery=pending/deferred results in kernel.thread-scheduler for this completion snapshot and combine them with latest concurrent state. You may merge this batch into one reply using the active response encoding and enabled annotation contract. Results completed after this evaluation began belong to the next batch. Do not call physical tools or repeat delivery=delivered results; call no_reply exclusively only when notification is truly unnecessary".to_string()
+        "This is completion delivery. Read only delivery=pending/deferred results in kernel.thread-scheduler for this completion snapshot and combine them with latest concurrent state. You may merge this batch into one reply using the active response encoding and enabled annotation contract. Results completed after this evaluation began belong to the next batch. Do not call physical tools or repeat delivery=delivered results; call no_reply as the only work/control call only when notification is truly unnecessary. Enabled companion Session IO is communication, not work".to_string()
     } else if objective_bound {
         format!(
             "This is a Runtime-bound Objective Evaluation. Apply root-input as the current wake, correction, or instruction without narrowing the durable Objective, then follow this convergence contract:\n\n{OBJECTIVE_CONTINUATION_INSTRUCTION}"
@@ -11230,7 +11230,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "delivery",
-                        atom("Delivery Composer may return a reply using the active response encoding and enabled annotation contract, or call no_reply exclusively to defer the batch; either Router fast path or Composer reply atomically marks pending/deferred results in the frozen snapshot delivered so duplicate wakes do not redeliver"),
+                        atom("Delivery Composer may return a reply using the active response encoding and enabled annotation contract, or call no_reply as the only work/control call to defer the batch. Enabled companion Session IO is communication. Either Router fast path or Composer reply atomically marks pending/deferred results in the frozen snapshot delivered so duplicate wakes do not redeliver"),
                     ),
                 ],
             ),
@@ -11366,7 +11366,7 @@ fn render_protocol() -> SExpr {
                             ),
                             pair(
                                 "defer",
-                                atom("when notification is truly inappropriate now, call no_reply exclusively; results remain deferred for later completion events to compose again"),
+                                atom("when notification is truly inappropriate now, call no_reply as the only work/control call; enabled companion Session IO is communication. Results remain deferred for later completion events to compose again"),
                             ),
                         ],
                     ),

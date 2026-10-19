@@ -27,6 +27,7 @@ Session IO 格式、工作续接、维护／收尾／日程回执／拒绝恢复
 | 语义 System profile 后又追加裸文字，破坏单 S 表达式 | 公共 IO／回执规则只装入 System 对应节点一次；Custom 规则也在根内 |
 | “结果后必须再维护一次”与无多余推理、Mind 已准确的情形冲突 | 只有确需保留的状态变化才做 context_tx，不为结束回复或注解额外往返 |
 | critical 先维护与 finalizing／维护额度用尽的指令互相阻塞 | 明确后两种 Runtime 阶段优先，不能再陷维护循环 |
+| 恢复、冷却、收尾和中断续接仍使用“另一个工具／只返回剩余正文”等过宽排他要求；VM 注释核也残留只回 Session 与必须维护后结束 | 全部统一到实际 caller、业务／控制边界和独立通信消息；续接只补正文后缀但仍同响应交付注解，VM 核不再强制多做一轮维护 |
 | evaluate.thread.id 使用了 Session／root 路由；部分协议路径不存在 | 使用真实 Thread ID，未知不猜；修正当前线程／交付模式的路径说明 |
 | context-tx 的 reason-required-for 漏 retire-session | 与操作实现及工具说明对齐 |
 | 新消息可以生成，但部分原生续接会过滤掉其调用或遗漏回执 | 按真实 call ID 保留调用／回执，不把显示元数据变成 Observation、Job 或工作唤醒 |
