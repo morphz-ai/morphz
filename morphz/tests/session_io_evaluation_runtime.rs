@@ -132,8 +132,9 @@ impl Client for Model {
         );
         assert_eq!(
             options.output_encoding, None,
-            "annotation mode must not select a JSON envelope"
+            "this scripted client declares no verified native Schema capability"
         );
+        assert_eq!(options.tool_choice, None);
         self.directory
             .lock()
             .unwrap()
@@ -141,11 +142,10 @@ impl Client for Model {
         self.inputs.lock().unwrap().push(messages.clone());
         let mut observations = vec![];
         if self.work && index == 1 {
-            assert!(
-                messages.iter().any(|message| message.role == "tool"
-                    && message.tool_call_id.as_deref() == Some("actual-probe-call")),
-                "native work keeps its actual function receipt"
-            );
+            assert!(!messages.iter().any(|message| message.role == "tool"),
+                "Evaluation effects produce Runtime observations, not forged native receipts");
+            assert!(messages.iter().any(|message| morphz::llm::model_visible_message_text(message).contains("PROBE_FACT_LINUX")),
+                "the continuation must contain the actual synthetic work result");
             assert!(
                 messages
                     .iter()
@@ -153,24 +153,13 @@ impl Client for Model {
                     .all(|call| call.function.name != "deliver_message"),
                 "logical metadata never creates an unanswered function call in the continuation"
             );
-            let reference = messages
-                .iter()
-                .find(|message| {
-                    message.role == "tool"
-                        && message.tool_call_id.as_deref() == Some("actual-probe-call")
-                })
-                .and_then(|message| serde_json::from_str::<Value>(&message.content).ok())
-                .and_then(|value| value["observation_ref"].as_str().map(str::to_owned))
-                .or_else(|| observation(&messages, "evaluation_probe"))
-                .expect("actual native result must retain its real observation ref");
+            let reference = observation(&messages, "evaluation_probe")
+                .expect("actual Runtime result must retain its real observation ref");
             observations
                 .push(json!({"ref":reference,"result":"真实合成工具返回 PROBE_FACT_LINUX"}));
         }
         let working = self.work && index == 0;
         let mut value = json!({"execution":{"title":"核对合成环境","progress":if working {"读取合成工具"}else{""},"result":if working {""}else{"已返回完整结果"}},"observations":observations});
-        if working {
-            value["calls"] = json!([{"index":0,"intent":"读取真实合成工具以核对环境"}]);
-        }
         if self.annotation_extras {
             value["observations_note"] = Value::Null;
             value["execution"]["progress"] = Value::Null;
@@ -179,35 +168,18 @@ impl Client for Model {
                 observation["unregistered"] = json!(false);
             }
         }
-        let mut tool_calls = vec![];
-        if working {
-            tool_calls.push(ToolCallRepr {
-                id: "actual-probe-call".into(),
-                r#type: "function".into(),
-                func_name: "evaluation_probe".into(),
-                arguments: json!({"key":"system","_annotations":{"business":true}}).to_string(),
-            });
-        }
-        if self.metadata || self.malformed {
-            let binding = ScriptBinding::from_messages(&messages);
-            let mut arguments = json!({"delivery_id":binding,"message":{"format":{"id":"morphz.response.annotations","version":"1"},"content":{"encoding":"json","value":value}}}).to_string();
-            if self.malformed {
-                arguments.push('}');
-            }
-            tool_calls.push(ToolCallRepr {
-                id: "actual-metadata-call".into(),
-                r#type: "function".into(),
-                func_name: "deliver_message".into(),
-                arguments,
-            });
-        }
-        let content = if working {
-            String::new()
-        } else if self.infer {
-            json!("中文 🧠\n第二行").to_string()
-        } else {
-            "核对完成。\n正文里的 `deliver_message` 和 {\"body\":1} 都只是文字。".into()
-        };
+        let _actual_binding = ScriptBinding::from_messages(&messages);
+        let body = if working { Value::Null } else if self.infer {
+            json!("中文 🧠\n第二行")
+        } else { json!("核对完成。\n正文里的 `deliver_message` 和 {\"body\":1} 都只是文字。") };
+        let effects = if working {
+            json!([{"name":"evaluation_probe","arguments":{"key":"system","_annotations":{"business":true}},
+                "intent":if self.metadata { json!("读取真实合成工具以核对环境") } else { Value::Null }}])
+        } else { json!([]) };
+        let mut content = json!({"body":body,"effects":effects,
+            "annotations":if self.metadata { value } else { Value::Null }}).to_string();
+        if self.malformed { content.push('}'); }
+        let tool_calls: Vec<ToolCallRepr> = vec![];
         stream.send(ModelStreamEvent::Started)?;
         for character in content.chars() {
             stream.send(ModelStreamEvent::TextDelta {
@@ -430,8 +402,8 @@ async fn native_body_and_optional_metadata_publish_once_without_a_relay() {
     assert_eq!(sources.len(), 1);
     let bundle: PersistedAnnotations =
         serde_json::from_value(sources[0].payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-    assert_eq!(bundle.raw_response.tool_calls.len(), 1);
-    assert!(bundle.return_binding.as_ref().unwrap().output.is_none());
+    assert!(bundle.raw_response.tool_calls.is_empty());
+    assert!(morphz::session_io::unified::selected(bundle.return_binding.as_ref().unwrap()));
     assert!(bundle
         .records
         .iter()
@@ -511,6 +483,13 @@ async fn missing_metadata_and_off_mode_use_the_same_work_chat_and_infer_path() {
             }
             let (_temp, runtime, model, args, root, reply) =
                 run_optional(work, infer, false, metadata, metadata, protocol).await;
+            if !protocol.is_off() {
+                for messages in model.inputs.lock().unwrap().iter() {
+                    assert!(messages.iter().any(|message| message.role == "system"
+                        && message.content.contains("for actual work, you MUST provide applicable annotations")),
+                        "generation still explicitly requests applicable work metadata even when the scripted model omits it");
+                }
+            }
             assert_eq!(
                 reply.topic, "chat/reply",
                 "{protocol:?} {work} {infer}: {reply:?}"
@@ -549,7 +528,7 @@ async fn missing_metadata_and_off_mode_use_the_same_work_chat_and_infer_path() {
                 let bundle: PersistedAnnotations = serde_json::from_value(value.clone()).unwrap();
                 assert!(bundle.records.is_empty() && bundle.diagnostics.is_empty());
                 assert!(bundle.annotation_messages.is_empty());
-                assert!(bundle.return_binding.unwrap().output.is_none());
+                assert!(morphz::session_io::unified::selected(&bundle.return_binding.unwrap()));
             }
             assert!(
                 !events.iter().any(|event| event.topic == "session/io_output"
@@ -595,11 +574,8 @@ async fn unregistered_annotations_are_diagnosed_without_blocking_work_or_streame
     for source in sources {
         let bundle: PersistedAnnotations =
             serde_json::from_value(source.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-        assert!(bundle
-            .raw_response
-            .tool_calls
-            .iter()
-            .any(|call| call.arguments.contains("observations_note")));
+        assert!(bundle.raw_response.content.contains("observations_note"));
+        assert!(bundle.raw_response.tool_calls.is_empty());
         assert!(bundle.diagnostics.iter().any(|diagnostic| diagnostic
             .message
             .contains("/annotations/observations_note")));

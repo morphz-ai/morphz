@@ -8,11 +8,14 @@ pub(crate) mod output;
 pub mod projection;
 pub mod resources;
 pub mod response;
+pub mod unified;
 pub(crate) mod response_stream;
 pub(crate) mod schema;
 pub(crate) mod stream;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod unified_tests;
 
 pub use data::{Data, Limits};
 use serde::{Deserialize, Serialize};
@@ -434,6 +437,9 @@ impl Default for Registry {
         registry
             .register(evaluation::descriptor())
             .expect("standard Evaluation format");
+        registry
+            .register(unified::descriptor())
+            .expect("unified Evaluation format");
         registry
     }
 }

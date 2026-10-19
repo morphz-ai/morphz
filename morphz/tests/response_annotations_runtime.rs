@@ -57,6 +57,9 @@ const RAW_LIFECYCLE_WORK: &str = r#"{"key":"system","_annotations":{"execution":
 // Test-only semantic comparison view of the actual native response. This is
 // not a provider wire value, production codec or protocol parser.
 fn evaluation_value(bundle: &PersistedAnnotations) -> Value {
+    if bundle.return_binding.as_ref().is_some_and(morphz::session_io::unified::selected) {
+        return serde_json::from_str(&bundle.raw_response.content).unwrap();
+    }
     assert!(bundle
         .return_binding
         .as_ref()
@@ -272,6 +275,7 @@ impl ScriptClient {
                 },
                 annotations_enabled: field(&["annotations_enabled"]) == "true",
                 caller: None,
+                body_value_schema: None,
                 annotation_observation_refs: match binding
                     .get_path(&["annotation_observation_refs"])
                 {
@@ -286,7 +290,11 @@ impl ScriptClient {
                         .collect(),
                     _ => vec![],
                 },
-                output: None,
+                output: match binding.get_path(&["output"]) {
+                    Some(SExpr::Atom(value)) if value == "text" => None,
+                    Some(_) => Some(morphz::session_io::unified::binding()),
+                    None => panic!("missing frozen output definition"),
+                },
             };
         }
         panic!("actual Runtime return binding missing")
@@ -295,12 +303,35 @@ impl ScriptClient {
         Self::encode_for_binding(response, &Self::return_binding(messages))
     }
 
-    // Scenario values are transported as original native content/calls. Only
-    // a generic metadata message's target is bound to the actual Runtime ID.
+    // Scenario builders describe semantic work/body/metadata. Fresh bindings
+    // encode them as the real unified value; seeded historical bindings retain
+    // their original native wire so recovery tests do not rewrite old state.
     fn encode_for_binding(
         mut response: Response,
         binding: &morphz::session_io::response::ReturnBinding,
     ) -> Response {
+        if morphz::session_io::unified::selected(binding) {
+            let mut annotations = Self::annotations(&response).unwrap_or(Value::Null);
+            let intents = annotations.as_object_mut().and_then(|fields| fields.remove("calls"));
+            let effects = response.tool_calls.iter().filter(|call| {
+                !(call.func_name == "deliver_message" && serde_json::from_str::<Value>(&call.arguments).ok()
+                    .is_some_and(|value| value["message"]["format"]["id"] == "morphz.response.annotations"))
+            }).enumerate().map(|(index,call)| json!({
+                "name":call.func_name, "arguments":serde_json::from_str::<Value>(&call.arguments).unwrap(),
+                "intent":intents.as_ref().and_then(Value::as_array)
+                    .and_then(|items|items.iter().find(|item|item["index"].as_u64()==Some(index as u64)))
+                    .and_then(|item|item.get("intent")).cloned().unwrap_or(Value::Null)
+            })).collect::<Vec<_>>();
+            // Keep the synthetic provider's actual JSON spelling and field
+            // order, so typed stream assertions compare wire bytes rather
+            // than a fixture's accidental serde_json re-serialization.
+            let body = if response.content.is_empty() { "null".to_owned() }
+                else if binding.format.id != "morphz.chat" && binding.format.encoding == "json" {
+                    let _: Value = serde_json::from_str(&response.content).unwrap();
+                    response.content.clone()
+                } else { json!(response.content).to_string() };
+            return Response { content:format!("{{\"body\":{body},\"effects\":{},\"annotations\":{annotations}}}", json!(effects)), tool_calls:vec![] };
+        }
         for call in &mut response.tool_calls {
             if call.func_name == "deliver_message" {
                 if let Ok(mut value) = serde_json::from_str::<Value>(&call.arguments) {
@@ -365,6 +396,17 @@ impl ScriptClient {
                 "the actual supplied result has an eligible ref"
             );
         }
+        let control = tools.iter().find(|tool| tool.name == "no_reply").unwrap();
+        assert_eq!(control.parameters["additionalProperties"], false);
+        let properties = control.parameters["properties"].as_object().unwrap();
+        assert_eq!(properties.len(), 2);
+        assert!(properties.contains_key("mode") && properties.contains_key("wait_secs"));
+        assert!(!properties.contains_key("_annotations"));
+        if morphz::session_io::unified::selected(&Self::return_binding(messages)) {
+            assert!(messages.iter().any(|message| morphz::llm::model_visible_message_text(message).contains("Linux")));
+            assert!(!messages.iter().any(|message|message.role=="tool"), "value effects never forge native tool history");
+            return;
+        }
         let call = messages
             .iter()
             .find(|message| {
@@ -393,12 +435,6 @@ impl ScriptClient {
             .expect("actual native work receipt");
         let receipt: Value = serde_json::from_str(&receipt.content).unwrap();
         assert_eq!(receipt["status"], "success");
-        let control = tools.iter().find(|tool| tool.name == "no_reply").unwrap();
-        assert_eq!(control.parameters["additionalProperties"], false);
-        let properties = control.parameters["properties"].as_object().unwrap();
-        assert_eq!(properties.len(), 2);
-        assert!(properties.contains_key("mode") && properties.contains_key("wait_secs"));
-        assert!(!properties.contains_key("_annotations"));
     }
 }
 
@@ -596,9 +632,11 @@ impl Client for ScriptClient {
                     "The Objective completion request did not enter finalizing")),
                     "a real rejected completion receipt must keep this same Activation in its original work phase");
                 assert!(
-                    messages.iter().any(|message| message.role == "tool"
+                    if morphz::session_io::unified::selected(&Self::return_binding(&messages)) {
+                        messages.iter().any(|message| message.role=="user" && message.content.contains("objective_update") && message.content.contains("observation"))
+                    } else { messages.iter().any(|message| message.role == "tool"
                         && message.tool_call_id.as_deref()
-                            == Some("synthetic-objective-completion")),
+                            == Some("synthetic-objective-completion")) },
                     "both modes keep the actual rejected control receipt"
                 );
                 if annotated {
@@ -719,6 +757,10 @@ impl Client for ScriptClient {
                 1,
             ) => {
                 assert!(tools.iter().any(|t| t.name == "deliver_message"));
+                let reference = if morphz::session_io::unified::selected(&Self::return_binding(&messages)) {
+                    assert!(!messages.iter().any(|message|message.role=="tool"), "value effects do not forge native handshakes");
+                    Self::actual_observation_ref(&messages).expect("actual durable result observation")
+                } else {
                 let marker = messages
                     .iter()
                     .position(|m| provider_continuation(m).is_some())
@@ -752,7 +794,8 @@ impl Client for ScriptClient {
                     .expect("actual tool receipt missing");
                 let receipt: Value = serde_json::from_str(&receipt.content).unwrap();
                 assert_eq!(receipt["status"], "success");
-                let reference = receipt["observation_ref"].as_str().unwrap().to_owned();
+                receipt["observation_ref"].as_str().unwrap().to_owned()
+                };
                 if annotations_enabled {
                     assert!(
                         Self::return_binding(&messages)
@@ -1124,7 +1167,7 @@ async fn default_and_explicit_off_preserve_complete_system_and_tool_schema_bytes
     );
     assert!(!a.tools.iter().any(|t| t.name == "reply"));
     assert!(systems(&a).iter().any(|s| String::from_utf8_lossy(s)
-        .contains("Session IO return and optional display annotations:")));
+        .contains("Session IO: one Evaluation return with optional display annotations:")));
     assert_eq!(a.binding.protocol, "openai-responses");
     assert_eq!(a.options, b.options);
     for (fixture, root) in [(&default, root), (&explicit, other_root)] {
@@ -1181,7 +1224,7 @@ async fn off_keeps_reserved_looking_business_arguments_untouched() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn enabled_uses_exact_raw_native_replay_but_stripped_execution_and_durable_annotations() {
+async fn enabled_uses_unified_work_actual_observations_and_durable_annotations() {
     let fixture = Fixture::new(Scenario::WorkReply, Protocol::Off).await;
     let mut stream = fixture.runtime.subscribe("runtime/model_stream", 512);
     let (accepted, reply) = fixture.submit(Some(Protocol::On)).await;
@@ -1310,11 +1353,8 @@ async fn enabled_uses_exact_raw_native_replay_but_stripped_execution_and_durable
             .as_array()
             .unwrap()
             .len(),
-        1
-    );
-    assert_eq!(
-        work.payload["continuation_tool_calls"][0]["id"],
-        "synthetic-work-call"
+        0,
+        "a value effect is not a native call and must not forge a handshake"
     );
     assert_eq!(bundle.scope, scope);
     assert!(bundle.records.iter().all(|r| r.source.sequence.is_none()));
@@ -1687,15 +1727,26 @@ async fn invalid_infer_business_value_still_fails_without_repair_or_a_model_rela
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restart_replays_seeded_enabled_plan_once_without_reasking_or_rewriting_annotations() {
-    assert_restart_replays_seeded_enabled_plan_once(None).await;
+    assert_restart_replays_seeded_plan_once(None, false, Protocol::On).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restart_replays_imported_enabled_plan_using_actual_nonstable_thread_identity() {
-    assert_restart_replays_seeded_enabled_plan_once(Some("imported-annotations-thread")).await;
+    assert_restart_replays_seeded_plan_once(Some("imported-annotations-thread"), false, Protocol::On).await;
 }
 
-async fn assert_restart_replays_seeded_enabled_plan_once(legacy_thread_id: Option<&str>) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restart_preserves_unified_carrier_in_both_annotation_modes() {
+    for protocol in [Protocol::On, Protocol::Off] {
+        assert_restart_replays_seeded_plan_once(None, true, protocol).await;
+    }
+}
+
+async fn assert_restart_replays_seeded_plan_once(
+    legacy_thread_id: Option<&str>,
+    unified: bool,
+    protocol: Protocol,
+) {
     use morphz::memory::{
         stable_thread_id, stable_thread_signal_id, CustomStore, DeliveryIngressStore, MessageClaim,
         MessageDispatchMode, NewThreadSignal, ThreadSignalStatus,
@@ -1717,7 +1768,7 @@ async fn assert_restart_replays_seeded_enabled_plan_once(legacy_thread_id: Optio
         json!({
             "agent_id":"annotations-agent",
             "context_id":"annotations-context","session_id":"annotations-session",
-            "text":"Read synthetic system","response_annotations":"on",
+            "text":"Read synthetic system","response_annotations":protocol,
             "principal_id":"principal-default",
         })
         .as_object()
@@ -1743,7 +1794,7 @@ async fn assert_restart_replays_seeded_enabled_plan_once(legacy_thread_id: Optio
         fixture
             .store
             .ensure_thread(NewThread {
-                response_annotations: Protocol::On,
+                response_annotations: protocol,
                 model_alias: None,
                 reasoning_effort: None,
                 id: legacy_id.into(),
@@ -1811,7 +1862,7 @@ async fn assert_restart_replays_seeded_enabled_plan_once(legacy_thread_id: Optio
     } else {
         assert_eq!(thread.id, stable_thread_id(&root.id));
     }
-    assert_eq!(thread.response_annotations, Protocol::On);
+    assert_eq!(thread.response_annotations, protocol);
     // stable_thread_activation_id is crate-private. Reproduce that documented
     // scheduler identity in this external integration fixture rather than
     // expanding the production API solely for test seeding.
@@ -1876,14 +1927,18 @@ async fn assert_restart_replays_seeded_enabled_plan_once(legacy_thread_id: Optio
         generation: thread.generation,
     };
     let source_id = format!("call_{}", activation.id);
+    let mut return_binding = morphz::session_io::response::ReturnBinding::new(
+        &thread.id,
+        thread.generation,
+        &activation.id,
+        !protocol.is_off(),
+    );
+    if unified {
+        return_binding = return_binding.with_unified_output();
+    }
     let context = NormalizationContext {
-        protocol: Protocol::On,
-        return_binding: Some(morphz::session_io::response::ReturnBinding::new(
-            &thread.id,
-            thread.generation,
-            &activation.id,
-            true,
-        )),
+        protocol,
+        return_binding: Some(return_binding.clone()),
         scope: Some(scope.clone()),
         producer: Some(Producer {
             event_id: source_id.clone(),
@@ -1931,7 +1986,7 @@ async fn assert_restart_replays_seeded_enabled_plan_once(legacy_thread_id: Optio
         "tool_calls":stored_calls(&normalized.execution_response),
         "continuation_tool_calls":stored_calls(&normalized.raw_response),
         "unavailable_tool_names":[],"context_tx_rejection_status":null,
-        "response_annotations":"on",BUNDLE_PAYLOAD_KEY:bundle,
+        "response_annotations":protocol,BUNDLE_PAYLOAD_KEY:bundle,
         "context_view_manifest":manifest,"provider_continuation":ScriptClient::continuation(),
         "model_binding":binding,
     }).as_object().unwrap().clone())).await.unwrap();
@@ -1948,7 +2003,7 @@ async fn assert_restart_replays_seeded_enabled_plan_once(legacy_thread_id: Optio
         records_from_authorized_event(&original, &scope)
             .unwrap()
             .len(),
-        3
+        if protocol.is_off() { 0 } else { 3 }
     );
 
     // The seeding Runtime was never started. Close it and construct a genuinely
@@ -2018,7 +2073,14 @@ async fn assert_restart_replays_seeded_enabled_plan_once(legacy_thread_id: Optio
         .unwrap()
         .expect("recovery must preserve the owning Thread");
     assert_eq!(recovered_thread.id, thread.id);
-    assert_eq!(recovered_thread.response_annotations, Protocol::On);
+    assert_eq!(recovered_thread.response_annotations, protocol);
+    let captured = fixture.client.captured.lock().unwrap();
+    let recovered_binding = ScriptClient::return_binding(&captured[0].messages);
+    assert_eq!(recovered_binding.output, return_binding.output,
+        "recovery must preserve the exact frozen output carrier, not upgrade an old continuation");
+    assert_eq!(recovered_binding.format, return_binding.format);
+    assert_eq!(recovered_binding.annotations_enabled, return_binding.annotations_enabled);
+    drop(captured);
     let bound_custom = fixture
         .store
         .get_thread_custom(&thread.id)
@@ -3904,7 +3966,7 @@ async fn enabled_final_reply_persists_required_metadata_in_original_requests_and
                 .any(|message| message.role == "system"
                     && message
                         .content
-                        .contains("Session IO return and optional display annotations:")));
+                        .contains("Session IO: one Evaluation return with optional display annotations:")));
             let schema = &request
                 .tools
                 .iter()
@@ -4002,13 +4064,13 @@ async fn invalid_display_metadata_is_rejected_without_destroying_an_independent_
         );
         let invalid = matches!(
             scenario,
-            Scenario::StrictBadFinal(1 | 2 | 4 | 5 | 6)
-                | Scenario::ImplicitBadFinal(1 | 2 | 4 | 5 | 6)
+            Scenario::StrictBadFinal(2 | 4 | 5 | 6)
+                | Scenario::ImplicitBadFinal(2 | 4 | 5 | 6)
         );
         assert_eq!(
             !bundle.diagnostics.is_empty(),
             invalid,
-            "missing optional fields are not diagnostics"
+            "{scenario:?}: omitted/null annotations are valid; invalid supplied fields remain diagnostics: {:?}", bundle.diagnostics
         );
         assert_eq!(
             fixture
@@ -4076,7 +4138,7 @@ async fn every_new_infer_has_scoped_metadata_and_stable_tools_without_extra_requ
             .filter(|message| message.role == "system")
             .any(|message| message
                 .content
-                .contains("Session IO return and optional display annotations:")));
+                .contains("Session IO: one Evaluation return with optional display annotations:")));
     }
     assert_eq!(
         serde_json::to_vec(&captured[1].tools).unwrap(),

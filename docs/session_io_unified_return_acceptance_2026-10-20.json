@@ -1,0 +1,344 @@
+{
+  "date": "2026-10-20",
+  "scope": "Real DeepSeek in isolated synthetic-data Runtime; original application acceptance is recorded separately",
+  "endpoint": "https://api.deepseek.com/responses",
+  "model": "deepseek-flash",
+  "reasoning_effort": "max",
+  "strict": false,
+  "tool_choice": "none",
+  "schema_sent": true,
+  "wire_sha256": "0d66748fdb37be649bc000c30992a060f7ea1d489c4ca6e4b7de9cf5b7c6689d",
+  "wire_typed_schema_verified": true,
+  "cases": [
+    {
+      "source": "runtime-plain-on-1792440479788.log",
+      "sha256": "26f2d2b55e58e1e60d23cea3b3f23daef0e2e543a95abf421a0ddf9576b9adff",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 0,
+          "ObservationResult": 0,
+          "Result": 0,
+          "Title": 0
+        },
+        "annotation_records": [
+          0
+        ],
+        "body": "2 加 3 等于 5。\n这是最基础的加法运算，无需借助任何工具即可得出。",
+        "case": "plain",
+        "diagnostics": [
+          0
+        ],
+        "elapsed_ms": 2857,
+        "file_reads": [],
+        "host_reads": [],
+        "internal_value_chunks": 0,
+        "jobs": 0,
+        "model": "deepseek-flash",
+        "model_requests": 1,
+        "protocol": "on",
+        "public_body_chunks": 24,
+        "tool_directory_sha256": [
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-infer-on-1792440436005.log",
+      "sha256": "c34f41bd881df5ac90920b073608be01df537bd1dd27c606420d13f67d68efb1",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 0,
+          "ObservationResult": 0,
+          "Result": 0,
+          "Title": 0
+        },
+        "annotation_records": [
+          0
+        ],
+        "body": "“2 加 3”等于 5。\n“相加”表示把两个数量合并在一起，算出它们合起来的总量🧠。",
+        "case": "infer",
+        "diagnostics": [
+          0
+        ],
+        "elapsed_ms": 7055,
+        "file_reads": [],
+        "host_reads": [],
+        "internal_value_chunks": 33,
+        "jobs": 0,
+        "model": "deepseek-flash",
+        "model_requests": 1,
+        "protocol": "on",
+        "public_body_chunks": 30,
+        "tool_directory_sha256": [
+          "dc5c9fe0b40030b32219ac3856b66ea4bf3d38e2f63c4f09a44487bfce73b57c"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-memory-on-1792440648386.log",
+      "sha256": "665b43013f7a64182a00cb91fce4cd3a0e32b375d1d81294f4170be61eb1bce5",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 1,
+          "ObservationResult": 0,
+          "Result": 1,
+          "Title": 1
+        },
+        "annotation_records": [
+          3,
+          1
+        ],
+        "body": "已通过 context_tx 提交成功：该合成阅读进度保存在共享 Mind 的新 frame `reading_progress`（Mind 版本 1，来源事件 @e2）。",
+        "case": "memory",
+        "diagnostics": [
+          0,
+          0
+        ],
+        "elapsed_ms": 33009,
+        "file_reads": [],
+        "host_reads": [],
+        "internal_value_chunks": 0,
+        "jobs": 0,
+        "model": "deepseek-flash",
+        "model_requests": 2,
+        "protocol": "on",
+        "public_body_chunks": 37,
+        "tool_directory_sha256": [
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446",
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-progress-on-1792440654464.log",
+      "sha256": "e27118356dec208044307ddddd001a65c7755d3100b2ec05ca7ab0ffeca2b1b2",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 1,
+          "ObservationResult": 1,
+          "Result": 1,
+          "Title": 2
+        },
+        "annotation_records": [
+          3,
+          3
+        ],
+        "body": "已读至卷十四，读到贾谊陈述治安策这部分。",
+        "case": "progress",
+        "diagnostics": [
+          0,
+          0
+        ],
+        "elapsed_ms": 5759,
+        "file_reads": [
+          "progress.txt"
+        ],
+        "host_reads": [],
+        "internal_value_chunks": 0,
+        "jobs": 1,
+        "model": "deepseek-flash",
+        "model_requests": 2,
+        "protocol": "on",
+        "public_body_chunks": 14,
+        "tool_directory_sha256": [
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446",
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-discuss-script-on-1792441304769.log",
+      "sha256": "144e80dc27d4d1ede8254e0e0187b560b8967c8aa773aaff741ca842bd9b4ffd",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 1,
+          "ObservationResult": 1,
+          "Result": 1,
+          "Title": 2
+        },
+        "annotation_records": [
+          3,
+          3
+        ],
+        "body": "当前目录中的《合成大纲》显示，故事可讨论的冲突是灯塔守望者必须在守约与救人之间抉择，以及他为此要承担什么代价。",
+        "case": "discuss-script",
+        "diagnostics": [
+          0,
+          0
+        ],
+        "elapsed_ms": 22790,
+        "file_reads": [],
+        "host_reads": [
+          "read-workflow",
+          "list"
+        ],
+        "internal_value_chunks": 47,
+        "jobs": 2,
+        "model": "deepseek-flash",
+        "model_requests": 2,
+        "protocol": "on",
+        "public_body_chunks": 34,
+        "tool_directory_sha256": [
+          "e3cd09235f725f3cffe3fa63bde30d366f46f381d6ef229c6498f4c8358d55af",
+          "e3cd09235f725f3cffe3fa63bde30d366f46f381d6ef229c6498f4c8358d55af"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-review-on-1792441310771.log",
+      "sha256": "7de98b4b5ab5fa9a2e806f02f4b9b277f715b867e3ccc08c514845add00c6445",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 1,
+          "ObservationResult": 1,
+          "Result": 1,
+          "Title": 2
+        },
+        "annotation_records": [
+          3,
+          3
+        ],
+        "body": "已按要求先且仅用 session_io_probe_read 读取 review.txt：文中主角已解决全部冲突、所有伏笔均已回收，最后一行是“全书完”，因此故事已经完结。",
+        "case": "review",
+        "diagnostics": [
+          0,
+          0
+        ],
+        "elapsed_ms": 5608,
+        "file_reads": [
+          "review.txt"
+        ],
+        "host_reads": [],
+        "internal_value_chunks": 0,
+        "jobs": 1,
+        "model": "deepseek-flash",
+        "model_requests": 2,
+        "protocol": "on",
+        "public_body_chunks": 42,
+        "tool_directory_sha256": [
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446",
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-review-off-1792441316022.log",
+      "sha256": "4d8464ca341cf78acb9a55d770afd8fc52af9c9ed2c82a9c27bdab8edde89ec3",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 0,
+          "ObservationResult": 0,
+          "Result": 0,
+          "Title": 0
+        },
+        "annotation_records": [
+          0,
+          0
+        ],
+        "body": "该故事已经完结：主角解决了全部冲突，所有伏笔均已回收，且最后一行明确标注“全书完”。",
+        "case": "review",
+        "diagnostics": [
+          0,
+          0
+        ],
+        "elapsed_ms": 4929,
+        "file_reads": [
+          "review.txt"
+        ],
+        "host_reads": [],
+        "internal_value_chunks": 0,
+        "jobs": 1,
+        "model": "deepseek-flash",
+        "model_requests": 2,
+        "protocol": "off",
+        "public_body_chunks": 25,
+        "tool_directory_sha256": [
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446",
+          "79fe0a1844e18e66d412d905d815e0efcc2c7bd9a0367e43cebd65c8f240b446"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    },
+    {
+      "source": "runtime-infer-record-on-1792441319245.log",
+      "sha256": "a2ae44217f918426372cf6675cef294407ff53b75879fdcdd5502f4ac7c58d17",
+      "result": {
+        "annotation_coverage": {
+          "Intent": 0,
+          "ObservationResult": 0,
+          "Result": 0,
+          "Title": 0
+        },
+        "annotation_records": [
+          0
+        ],
+        "body": "合成类型校验完成",
+        "case": "infer-record",
+        "diagnostics": [
+          0
+        ],
+        "elapsed_ms": 2721,
+        "file_reads": [],
+        "host_reads": [],
+        "internal_value_chunks": 19,
+        "jobs": 0,
+        "model": "deepseek-flash",
+        "model_requests": 1,
+        "protocol": "on",
+        "public_body_chunks": 0,
+        "tool_directory_sha256": [
+          "dc5c9fe0b40030b32219ac3856b66ea4bf3d38e2f63c4f09a44487bfce73b57c"
+        ]
+      },
+      "exit": {
+        "code": 0,
+        "signal": null
+      }
+    }
+  ],
+  "retained_failure": {
+    "source": "runtime-memory-on-1792440510677.log",
+    "sha256": "fd3f3c0ac7b23b377a22c8e74f27f41801a9f578115013df13281f31008804ce",
+    "kind": "output_limit",
+    "test_max_output_tokens": 4096,
+    "retest_max_output_tokens": 8192
+  },
+  "source_sha256": {
+    "morphz/src/session_io/unified.rs": "eaa8c902486cb02eed78ae8bd67e098415d46992da9c0ab22af5c370339af82c",
+    "morphz/src/session_io/response.rs": "63264cc5ff624a25dcbf6618c986030bec7fed32a0efb92bf96bc759fbcd97a2",
+    "morphz/src/session_io/response_stream.rs": "83e7adbdb00355a38c90b1ffb5d12584bd70a835dfa2628cf6f16e2ceae10abc",
+    "morphz/src/orchestrator/context.rs": "1bacc5f83c7878ead5ec5e4fb201f7240263a2885986d136fabd60d7c7b28fe0",
+    "morphz/src/orchestrator/orchestrator.rs": "79122d71dac1f6720ff24bff92bc02a14985d1faef1ab85543186136957e2166",
+    "morphz/src/plan_execution.rs": "5db7a15fe4313d0fb6b9d59573500165667acf6cd5af8c57a1ce90fb56b24c7f",
+    "morphz/src/provider.rs": "84e05d2e2e0c92ef677d0c5bae7ea1da816d8a29c48b00fe0ab155f6367fe5a0",
+    "morphz/src/sexpr_vm_contract.rs": "5bf4503b73efbc10839eb37f5fffa9a1843e1015f6bac0add1b587d8ea465e2a",
+    "morphz/examples/session_io_runtime_probe.rs": "b445a348767909ab31c536ce979901848d22a1ed9f37fa2709189b4d821e22a0"
+  }
+}

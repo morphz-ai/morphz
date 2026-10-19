@@ -399,6 +399,14 @@ pub struct ModelRequestOptions {
     /// is not evidence that a compatible endpoint enforces it: Session IO
     /// still validates the returned business value against its frozen binding.
     pub output_encoding: Option<ModelOutputEncoding>,
+    /// Explicit carrier selection, independent of output schema and annotation
+    /// mode. None preserves the Provider default and the original tool list.
+    pub tool_choice: Option<ModelToolChoice>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelToolChoice {
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1268,10 +1276,12 @@ pub trait Client: Send + Sync {
         stream: ModelStreamSender,
         options: ModelRequestOptions,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
-        if matches!(options.output_encoding, Some(ModelOutputEncoding::JsonSchema { .. })) {
+        if matches!(options.output_encoding, Some(ModelOutputEncoding::JsonSchema { .. }))
+            || options.tool_choice.is_some()
+        {
             let error = ModelFailure::new(
                 ModelFailureKind::InvalidModelOrRequest,
-                "This model client does not implement native JSON Schema output; the bound schema was not silently discarded",
+                "This model client does not implement the requested native output controls; they were not silently discarded",
             );
             let _ = stream.send(ModelStreamEvent::Failed {
                 message: error.to_string(),

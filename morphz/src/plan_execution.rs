@@ -3068,7 +3068,7 @@ fn infer_request_event(
             ..
         } => "This node requires a Yao Program Value candidate. The decoded final body must be exactly one raw Yao program with one explicit (eval ...) or (infer ...) root. Follow the single Yao Language Card in Context Encoding and do not include (version ...), JSON wrapping, Markdown fences, or explanatory text inside that program value. Runtime will parse, type-check, bound effects, canonicalize, hash, and persist the candidate; returned source is never executed directly.".to_string(),
         crate::sexpr_eval::InferResultKind::Yao { ty, .. } => format!(
-            "This node declares typed Yao result type {ty:?}. The decoded final body must contain only the value's valid JSON transport, without Markdown fences or additional explanation inside the value. A String result is a JSON string literal such as \"A\"; bare A is invalid. A nominal record is encoded as {{\"$yao\":{{\"kind\":\"record\",\"type\":\"TYPE_NAME\",\"fields\":{{...exact declared fields...}}}}}}. A nominal union uses kind=\"variant\", type=\"TYPE_NAME\", variant=\"VARIANT_NAME\", fields={{...}} inside the same $yao envelope. Nested nominal values use their own envelopes. Json, primitive, List and Map fields retain ordinary JSON values. Use the provided type definitions; never return an untagged object for a nominal type."
+            "This node declares typed Yao result type {ty:?}. Return the actual value in the frozen Session IO body, without Markdown fences or additional explanation inside the value. Runtime encodes its JSON transport for the Yao decoder. For String, body is the original string itself, not a string containing a second JSON string literal. A nominal record is encoded as {{\"$yao\":{{\"kind\":\"record\",\"type\":\"TYPE_NAME\",\"fields\":{{...exact declared fields...}}}}}}. A nominal union uses kind=\"variant\", type=\"TYPE_NAME\", variant=\"VARIANT_NAME\", fields={{...}} inside the same $yao envelope. Nested nominal values use their own envelopes. Json, primitive, List and Map fields retain ordinary JSON values. Use the provided type definitions; never return an untagged object for a nominal type."
         ),
     };
     let program = request
@@ -3102,7 +3102,7 @@ fn infer_request_event(
         )
     };
     if !response_annotations.is_off() {
-        evaluation_text.push_str("\n\nReturn the exact complete typed terminal value through the Runtime-owned Session IO return binding using its original business encoding. Annotations are optional display communication in the same physical response; their presence or absence never changes this value's encoding. Do not wrap it in an Evaluation object, add a text delimiter, insert metadata in business arguments, or request another model solely to fill annotations or relay a return. Use native calls for permitted work. A JSON String stays its complete JSON String, Bool stays a boolean, and a record retains all fields, not only reply. A Program source remains complete UTF-8 source. This returns to the actual parent Plan, not a separate user chat or completion of parent work.");
+        evaluation_text.push_str("\n\nReturn the exact complete typed terminal value in the body of the frozen Session IO return. When annotations_enabled=true and actual work is performed, provide applicable execution and step annotations in that SAME Evaluation value as required by its generation contract. Runtime tolerates missing annotations, but that is not permission to omit applicable work annotations; their presence or absence never changes the business value. Put permitted work proposals in effects and display metadata in annotations, never inside body or business arguments. Do not add a text delimiter, separate annotation call or another model request solely to fill annotations or relay a return. A String remains its complete original String, Bool stays a boolean, and a record retains all fields, not only reply. Runtime performs the business value's JSON transport encoding. A Program source remains complete UTF-8 source. This returns to the actual parent Plan, not a separate user chat or completion of parent work.");
     }
     let mut payload = serde_json::Map::from_iter([
         (
@@ -5585,8 +5585,11 @@ mod tests {
                 .unwrap();
         let annotated_instruction = annotated_request.payload["text"].as_str().unwrap();
         assert!(annotated_instruction
-            .contains("Annotations are optional display communication"));
-        assert!(annotated_instruction.contains("Use native calls for permitted work"));
+            .contains("provide applicable execution and step annotations"));
+        assert!(annotated_instruction
+            .contains("Runtime tolerates missing annotations, but that is not permission to omit"));
+        assert!(annotated_instruction.contains("Put permitted work proposals in effects"));
+        assert!(!annotated_instruction.contains("Do not wrap it in an Evaluation object"));
         assert!(!instruction.contains("SAME output schema to EVERY response"));
         let runtime_store: Arc<dyn RuntimeStore> = store.clone();
         let coordinator = PlanExecutionCoordinator::new(runtime_store, Arc::clone(&registry));

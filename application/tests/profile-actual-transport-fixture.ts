@@ -98,6 +98,15 @@ const fixtureChild = (node: any, key: string): any =>
     : undefined;
 const fixtureValue = (node: any, key: string): any =>
   fixtureChild(node, key)?.[1];
+const fixtureObjectValue = (node: any, key: string): any =>
+  Array.isArray(node) && node[0] === "object"
+    ? node.find(
+        (entry: any) =>
+          entry?.[0] === "entry" &&
+          entry[1]?.[0] === "string" &&
+          entry[1][1] === key,
+      )?.[2]
+    : undefined;
 export function profileFixtureReturnBinding(request: CapturedRequest) {
   const binding = fixtureChild(
     fixtureChild(profileFixtureContext(request), "evaluation-environment"),
@@ -105,6 +114,10 @@ export function profileFixtureReturnBinding(request: CapturedRequest) {
   );
   if (!binding) return undefined;
   const format = fixtureChild(binding, "caller_format");
+  const outputFormat = fixtureObjectValue(
+    fixtureValue(binding, "output"),
+    "format",
+  );
   return {
     delivery_id: fixtureValue(binding, "delivery_id") as string,
     format: {
@@ -114,6 +127,9 @@ export function profileFixtureReturnBinding(request: CapturedRequest) {
     },
     annotations_enabled:
       fixtureValue(binding, "annotations_enabled") === "true",
+    unified:
+      fixtureObjectValue(outputFormat, "id")?.[1] === "morphz.evaluation" &&
+      fixtureObjectValue(outputFormat, "version")?.[1] === "2",
     annotation_observation_refs: fixtureChild(
       binding,
       "annotation_observation_refs",
@@ -162,8 +178,8 @@ export function fixtureAnnotationsMessage(
   metadata: unknown,
   deliveryId = "fixture-metadata",
 ) {
-  // The real HTTP response uses the existing generic typed IO carrier.
-  // respond() binds test-authored metadata to the actual Runtime return ID.
+  // Historical test-authoring shape only. For a current frozen v2 binding,
+  // respond() builds one Evaluation value; this is never a companion wire call.
   return {
     name: "deliver_message",
     arguments: {
@@ -174,6 +190,35 @@ export function fixtureAnnotationsMessage(
       },
     },
   };
+}
+
+function fixtureEvaluation(
+  body: string | null,
+  messages: Array<{ name: string; arguments: unknown }>,
+) {
+  const metadata = messages.filter(
+    (message) =>
+      message.name === "deliver_message" &&
+      (message.arguments as any)?.message?.format?.id ===
+        "morphz.response.annotations",
+  );
+  assert.ok(metadata.length <= 1, "one test-authored annotation value");
+  const annotations: any = metadata.length
+    ? structuredClone((metadata[0]!.arguments as any).message.content.value)
+    : null;
+  const work = messages.filter((message) => !metadata.includes(message));
+  const effects = work.map((message, index) => ({
+    name: message.name,
+    arguments: message.arguments,
+    intent:
+      annotations?.calls?.find((call: any) => call.index === index)?.intent ??
+      null,
+  }));
+  if (annotations && typeof annotations === "object") {
+    delete annotations.calls;
+    delete annotations.intent;
+  }
+  return { body, effects, annotations };
 }
 
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
@@ -337,6 +382,15 @@ export async function profileActualTransportFixture(
           : ""),
       ...(call ? { tool_calls: calls } : {}),
     };
+    if (profileFixtureReturnBinding(request)?.unified) {
+      message = {
+        role: "assistant",
+        content: JSON.stringify(
+          fixtureEvaluation(message.content || null, selected),
+        ),
+      };
+      call = false;
+    }
     if (rawValue !== undefined) {
       message = { role: "assistant", content: rawValue };
       call = false;
@@ -716,17 +770,39 @@ export async function profileActualTransportFixture(
         assert.ok(item, "Expected held actual provider request");
         assert.equal(item.request.stream, true);
         const id = randomUUID();
+        const unified = profileFixtureReturnBinding(item.request)?.unified;
+        const escaped = (text: string) => JSON.stringify(text).slice(1, -1);
         item.response.writeHead(200, { "Content-Type": "text/event-stream" });
         const delta = (value: unknown, finish: string | null = null) =>
           item.response.write(
             `data: ${JSON.stringify({ id, choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`,
           );
-        delta({ role: "assistant", content: prefix });
+        delta({
+          role: "assistant",
+          content: unified ? '{"body":"' + escaped(prefix) : prefix,
+        });
         return {
           append(text: string) {
-            delta({ content: text });
+            delta({ content: unified ? escaped(text) : text });
           },
           finish(messages: Array<{ name: string; arguments: unknown }> = []) {
+            if (unified) {
+              const value = fixtureEvaluation(null, messages);
+              delta(
+                {
+                  content:
+                    '\",\"effects\":' +
+                    JSON.stringify(value.effects) +
+                    ',\"annotations\":' +
+                    JSON.stringify(value.annotations) +
+                    "}",
+                },
+                "stop",
+              );
+              item.response.end("data: [DONE]\n\n");
+              held.delete(marker);
+              return;
+            }
             delta(
               messages.length
                 ? {

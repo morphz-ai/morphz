@@ -2801,7 +2801,7 @@ impl Client for ProtocolClient {
             self.protocol_for_model(&model),
             &mut request,
             options.output_encoding,
-        ) {
+        ).and_then(|()| apply_tool_choice(self.protocol_for_model(&model), &mut request, options.tool_choice)) {
             let _ = stream.send(ModelStreamEvent::Failed {
                 message: error.to_string(),
             });
@@ -4364,6 +4364,30 @@ fn apply_output_encoding(
             ModelFailureKind::InvalidModelOrRequest,
             "The selected Provider adapter has no verified native JSON output transport; Session IO did not silently downgrade its output contract",
         ))),
+    }
+    Ok(())
+}
+
+fn apply_tool_choice(
+    protocol: ModelProtocol,
+    request: &mut Value,
+    choice: Option<crate::llm::ModelToolChoice>,
+) -> Result<(), ProviderError> {
+    let Some(crate::llm::ModelToolChoice::None) = choice else {
+        return Ok(());
+    };
+    // Keep the complete directory byte-for-byte. The caller explicitly chose
+    // a single Evaluation value; these settings are not inferred from metadata.
+    match protocol {
+        ModelProtocol::OpenaiResponses | ModelProtocol::OpenaiChat => {
+            request["tool_choice"] = json!("none");
+        }
+        ModelProtocol::GeminiContent => {
+            request["toolConfig"]["functionCallingConfig"]["mode"] = json!("NONE");
+        }
+        ModelProtocol::AnthropicMessages => {
+            request["tool_choice"] = json!({"type":"none"});
+        }
     }
     Ok(())
 }

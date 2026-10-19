@@ -298,7 +298,7 @@ fn persisted_work_calls(bundle: &PersistedAnnotations, event: &Event) -> Vec<Too
         .as_ref()
         .filter(|binding| binding.output.is_some())
     {
-        return crate::session_io::evaluation::decode(
+        return crate::session_io::response::split_response_for_attempt(
             &bundle.raw_response,
             binding,
             event
@@ -642,26 +642,7 @@ pub fn annotations_from_authorized_event(
             .diagnostics
             .iter()
             .any(|d| d.path.chars().take(257).count() > 256)
-        || bundle.records.len()
-            > bundle
-                .return_binding
-                .as_ref()
-                .filter(|binding| binding.output.is_some())
-                .and_then(|binding| {
-                    crate::session_io::evaluation::decode(
-                        &bundle.raw_response,
-                        binding,
-                        event
-                            .payload
-                            .get("model_attempt_id")
-                            .and_then(Value::as_str)
-                            .unwrap_or(""),
-                    )
-                    .ok()
-                })
-                .map(|output| output.response.tool_calls.len())
-                .unwrap_or(bundle.raw_response.tool_calls.len())
-                .saturating_add(19)
+        || bundle.records.len() > persisted_work_calls(&bundle, event).len().saturating_add(19)
     {
         return Err(error(
             "Persisted annotation bundle exceeds bounded contract",
@@ -1074,6 +1055,7 @@ pub fn normalize_response(
             delivery_id: String::new(),
             format: crate::session_io::OutputFormat::chat(),
             caller: None,
+            body_value_schema: None,
             annotations_enabled: !context.protocol.is_off(),
             annotation_observation_refs: vec![],
             output: None,
@@ -1521,7 +1503,7 @@ mod tests {
         .diagnostics
         .is_empty());
         assert!(crate::session_io::response::CONTRACT
-            .contains("OPTIONAL for both work and non-work responses"));
+            .contains("for actual work, you MUST provide applicable annotations"));
     }
     fn persisted_event(sequence: u64, execution: Value, terminal: bool) -> Event {
         persisted_event_with_revision(sequence, execution, terminal, None)
@@ -1642,6 +1624,39 @@ mod tests {
             .state,
             ReceiptState::Unknown
         );
+    }
+
+    #[test]
+    fn unified_work_receipts_and_publications_replay_the_frozen_decoder_and_actual_ids() {
+        let mut ctx = context();
+        ctx.return_binding = Some(crate::session_io::response::ReturnBinding::new(
+            "execution-1", 3, "activation", true,
+        ).with_unified_output());
+        let raw = Response {
+            content: json!({"body":null,"effects":[{"name":"exec","arguments":{"command":"safe"},"intent":"读取实际结果"}],"annotations":{"execution":{"title":"合成验证"},"observations_note":null}}).to_string(),
+            tool_calls: vec![],
+        };
+        let normalized = normalize_response(&raw, &ctx).unwrap();
+        let expected_id = normalized.execution_response.tool_calls[0].id.clone();
+        let scope = ctx.scope.clone().unwrap();
+        let bundle = PersistedAnnotations::from_normalized(scope.clone(), &normalized);
+        let mut source = Event::new(
+            "response-event".into(), "Agent-Morphz".into(), TYPE_AGENT_CALL.into(),
+            "chat/assistant_call".into(),
+            json!({"response_annotations":"on","thread_id":"execution-1","thread_generation":3,"activation_id":"activation","model_attempt_id":"attempt",BUNDLE_PAYLOAD_KEY:bundle}).as_object().unwrap().clone(),
+        );
+        source.sequence = Some(9);
+        let receipt = receipt_from_authorized_event(&source, &scope, Protocol::On, "activation", "attempt").unwrap();
+        assert_eq!(receipt.state, ReceiptState::Accepted);
+        assert!(!receipt.truncated);
+        assert!(receipt.accepted.iter().any(|field| field.kind == AnnotationKind::Intent && field.call_id.as_deref() == Some(expected_id.as_str())));
+        let published = crate::session_io::response::evaluation_publications(&source);
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].payload["io_message"]["format"]["id"], ANNOTATIONS_FORMAT);
+        assert_eq!(published[0].payload["source_event_id"], source.id);
+        assert_eq!(published[0].payload["wake_policy"], "none");
+        assert!(published[0].payload["io_message"]["content"]["value"].get("observations_note").is_none());
+        assert_eq!(crate::session_io::response::evaluation_publications(&source)[0].id, published[0].id);
     }
 
     #[test]
@@ -2025,8 +2040,8 @@ mod tests {
         assert_eq!(Protocol::Off.contract(), None);
         assert_eq!(Protocol::On.contract(), Some(CONTRACT));
         assert!(serde_json::from_value::<Protocol>(json!(true)).is_err());
-        assert!(CONTRACT.contains("execution.title describes this Execution"));
-        assert!(CONTRACT.contains("Never make another model request solely"));
+        assert!(CONTRACT.contains("At the start supply execution.title"));
+        assert!(CONTRACT.contains("or call the model again to repair metadata"));
         assert_ne!(BUNDLE_PAYLOAD_KEY, "response_annotations");
     }
     #[test]
@@ -2415,9 +2430,11 @@ mod tests {
     }
 
     #[test]
-    fn metadata_contract_preserves_native_returns_and_optional_registered_values() {
-        assert!(CONTRACT.contains("ordinary assistant content"));
-        assert!(CONTRACT.contains("OPTIONAL for both work and non-work responses"));
+    fn metadata_contract_requires_one_value_and_tolerates_missing_display_fields() {
+        assert!(CONTRACT.contains("return ONE value with body, effects and annotations"));
+        assert!(CONTRACT.contains("for actual work, you MUST provide applicable annotations"));
+        assert!(CONTRACT.contains("Missing or invalid display fields are tolerated at reception"));
+        assert!(CONTRACT.contains("Never use deliver_message as a separate body or annotation companion"));
         assert!(!CONTRACT.contains(":::"));
         let schema = annotation_schema();
         assert_eq!(schema["additionalProperties"], false);

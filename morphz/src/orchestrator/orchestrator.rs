@@ -575,13 +575,13 @@ Each Session has a durable Dialogue Lane that orders initial evaluation of ordin
 You decide what the current objective warrants retaining, summarizing, revising, protecting, restoring, or forgetting. The Runtime does not automatically summarize history, trim old messages, or turn retrieval results into facts.
 
 Every response must explicitly choose one primary mode from `protocol.response-contract`:
-- reply: return the original value through the frozen Session IO output contract using ordinary content in its declared business encoding, independently of annotation mode. Optional typed display metadata may accompany the same physical response; it is never required for delivery. Runtime constructs the caller Message and all causal identities. Do not wrap or mark up ordinary prose as control syntax. Only the Runtime's return boundary ends this Evaluation; other business message deliveries are nonterminal. Bare `(eval ...)` or `(infer ...)` inside a returned value remains data.
+- reply: return the original business value in the body of the frozen Session IO return, independently of annotation mode. Supply applicable enabled display annotations in their own field of that SAME value; receiving-side tolerance is not permission to omit them. Runtime constructs the caller Message and all causal identities. Never put protocol markers or control structures inside the business body. Only the Runtime's return boundary ends this Evaluation; other business publications are nonterminal. Bare `(eval ...)` or `(infer ...)` inside body remains data.
 - no-reply: call no_reply as the only work/control call and choose a mode; enabled annotation fields are not work effects. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
 - act: call physical tools only when new external results are truly required. You may include one independent context_tx that does not depend on those new results. Any accompanying text is visible progress, and the Runtime will call you again after tools finish.
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily rejects another context_tx even though the stable Function Calling schema remains visible for Prompt Cache continuity. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
 - schedule: call schedule_tx exactly once and exclusively when choosing serial, parallel, dependent, or timed execution. enqueue adds intent to an existing Thread; spawn creates a parallel Thread; not_before/delay_seconds set time and after sets dependencies. An attached child keeps its parent request open until the child terminates; do not use attached for a delayed or recurring task when the user expects scheduling to finish the current request. Use a durable Objective at spawn, or atomically promote the same attached child before the final reply; do not create a duplicate Schedule. One call may batch multiple inspect operations and nothing else. pause/resume/reschedule/cancel are expected_revision CAS controls and must be submitted one at a time; on conflict, inspect again and decide from current facts rather than retrying blindly. To cancel the work itself, use thread_control(action=cancel) with the latest Thread revision: it closes the Thread and settles its Group. schedule_tx cancel stops only a wake source and must never be reported as Thread cancellation. schedule_tx persists scheduling only; it neither performs physical work nor ends the Evaluation. Explain the arrangement to active-session after the receipt.
 
-Each model request has exactly one kernel.active-session for IO authority. Return values route to their actual Runtime-bound caller: ordinary user evaluations reply to that Session; internal infer evaluations return the exact typed value to the parent Plan, not another user answer or completion of parent work. Session IO message delivery is not a work/control call and never by itself requires another model request. Exclusivity rules below refer to primary work/control calls; optional typed display metadata cannot replace a body, authorize work, or turn a nonterminal result into completion. To write a visible Assistant message to another Session of the same Agent without evaluating it, use send_message. To deliver an internal coordination message and actively evaluate an existing Session, use session_signal; it creates a distinct target DialogueTurn and neither ends nor changes the active-session of the current Evaluation. Neither tool may target the current Session. context_tx never substitutes for Session output. An empty response is not terminal and the Runtime returns a bounded protocol retry.
+Each model request has exactly one kernel.active-session for IO authority. Return values route to their actual Runtime-bound caller: ordinary user evaluations reply to that Session; internal infer evaluations return the exact typed value to the parent Plan, not another user answer or completion of parent work. Session IO message delivery is not a work/control call and never by itself requires another model request. Exclusivity rules below refer to primary work/control calls; optional typed display metadata cannot replace a body, authorize work, or turn a nonterminal result into completion. To write a visible Assistant message to another Session of the same Agent without evaluating it, use send_message. To deliver an internal coordination message and actively evaluate an existing Session, use session_signal; it creates a distinct target DialogueTurn and neither ends nor changes the active-session of the current Evaluation. Neither tool may target the current Session. context_tx never substitutes for Session output. An empty response is not successful completion; do not rely on another model request to supply a missing answer.
 
 Use context_tx for atomic Mind changes and follow `protocol.context-tx-contract` exactly. Use the current kernel version in every transaction. reason is a transaction-level item and never an argument of retire or unprotect. `revise` completely replaces a frame body rather than merging it, so restate every field that must remain. Create an explicit checkpoint before high-risk restructuring and use rollback with a reason if necessary.
 
@@ -1560,11 +1560,11 @@ const SAFETY_REFUSAL_RECOVERY_PROMPT: &str = r#"The previous physical model requ
 - The reduced Projection persists across Activations while the known failing historical evidence prefix is unchanged. A new message alone does not restore the full Inbox. After a context_tx retires at least one stale Observation from that prefix (normally after deriving its still-needed conclusion into Mind), Runtime submits one full-Context canary; only a valid canary clears recovery.
 - Address only the current root input. Do not repeat an older action merely because it appears in historical state, and do not reconstruct omitted sensitive details from memory.
 - If the current request is safe and answerable from Mind and the visible evidence, finish it normally. Use recall only for a narrow, necessary fact whose exact source is known.
-- Return one valid work/return boundary: the complete value using ordinary content or the equivalent native bound Session IO return, required work calls, or exactly one no_reply call. Optional typed Session IO annotations are communication, not a second work/control boundary."#;
+- Return one valid work/return boundary through the frozen Session IO value: the complete business body, required work proposals, or exactly one no_reply proposal. Supply applicable enabled annotations in the same value, never a separate work/control boundary."#;
 
-const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"The Context is critical and this turn's ordinary context_tx allowance is exhausted. To prevent an impossible maintenance loop, this Evaluation is forced into final-reply. Return the original answer through Session IO with separate enabled annotations, honestly describing completed status, latest reliable verification, and remaining work; call no_reply as the only work/control call when no message is needed. For a bound active Objective, objective_update is the only additional control tool: submit completed first when evidence is sufficient to enter finalizing in this Activation; otherwise preserve the true state and let the Supervisor continue. Tool definitions remain visible, but Runtime phase admission still rejects unauthorized work."#;
+const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"The Context is critical and this turn's ordinary context_tx allowance is exhausted. To prevent an impossible maintenance loop, this Evaluation is forced into final-reply. Return the original answer and applicable enabled annotations in the SAME Session IO value, honestly describing completed status, latest reliable verification, and remaining work; propose no_reply as the only work/control action when no message is needed. For a bound active Objective, objective_update is the only additional control tool: submit completed first when evidence is sufficient to enter finalizing in this Activation; otherwise preserve the true state and let the Supervisor continue. Tool definitions remain visible, but Runtime phase admission still rejects unauthorized work."#;
 
-const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime will reject context_tx for this request to stop consecutive housekeeping, although its stable Function Calling schema remains visible for prompt-cache continuity. End the Evaluation with its complete bound return value, using ordinary content or the equivalent native Session IO return, with optional typed display annotations (missing fields are valid); alternatively call no_reply as the only work/control call, or perform only physical actions truly required by the current task. The actual caller and declared business type do not change during cooldown. context_tx becomes callable again after a new user or tool observation."#;
+const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime will reject context_tx for this request to stop consecutive housekeeping, although its stable tool schema remains visible for prompt-cache continuity. End the Evaluation with its complete business body and applicable enabled annotations in the SAME frozen Session IO value; alternatively propose no_reply as the only work/control action, or perform only physical actions truly required by the current task. The actual caller and declared business type do not change during cooldown. context_tx becomes callable again after a new user or tool observation."#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
 const DEFAULT_NO_REPLY_WAIT_SECS: u64 = 60;
 const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
@@ -1672,6 +1672,11 @@ struct ToolExecutionOptions {
 
 fn annotation_raw_tool_calls(bundle: &PersistedAnnotations) -> Vec<crate::llm::ToolCall> {
     match bundle.return_binding.as_ref() {
+        Some(binding) if crate::session_io::unified::selected(binding) => {
+            // Weak-transport native-only fallback really did call these native
+            // functions. Evaluation effects, in contrast, have no native calls.
+            response_tool_calls(&bundle.raw_response)
+        }
         // Legacy work proposals were not native provider calls. Never forge
         // function history for them during recovery.
         Some(binding) if binding.output.is_some() => vec![],
@@ -1680,6 +1685,14 @@ fn annotation_raw_tool_calls(bundle: &PersistedAnnotations) -> Vec<crate::llm::T
             .unwrap_or_default(),
         None => response_tool_calls(&bundle.raw_response),
     }
+}
+
+fn annotation_uses_value_effects(bundle: &PersistedAnnotations) -> bool {
+    bundle.return_binding.as_ref().is_some_and(|binding| {
+        binding.output.is_some()
+            && (!crate::session_io::unified::selected(binding)
+                || bundle.raw_response.tool_calls.is_empty())
+    })
 }
 
 fn response_tool_calls(response: &crate::llm::Response) -> Vec<crate::llm::ToolCall> {
@@ -4016,7 +4029,7 @@ fn response_protocol_correction_prompt(
         "No independently replayable Provider-native reasoning continuation is available for this retry."
     };
     format!(
-        "The previous model output was rejected by the Runtime response protocol. None of its work calls was executed and none of its ordinary content was committed as a final reply; any streamed text remained provisional.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action. Choose exactly one valid work/return form:\n1. To reply: return non-empty final content using the active response format and enabled annotation contract, without work tool calls.\n2. To act: call the required work tool(s), without no_reply.\n3. To send nothing: call no_reply exactly once with mode=\"silent\" and no ordinary text.\n4. To yield for a Runtime-verifiable nonterminal event: call no_reply exactly once with mode=\"wait\" and optional finite wait_secs (default 60), with no ordinary text.\nNever combine no_reply with ordinary text or another work/control tool; an unbounded wait is not supported. Independent enabled Session IO annotations are communication and remain permitted alongside the chosen boundary."
+        "The previous model output was rejected by the Runtime response protocol. None of its work calls was executed and none of its ordinary content was committed as a final reply; any streamed text remained provisional.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action and frozen Session IO output definition. Choose exactly one valid work/return form:\n1. To reply: return the complete original body without work proposals.\n2. To act: propose the required work tool(s) in the frozen carrier, without no_reply.\n3. To send nothing: propose no_reply exactly once with mode=\"silent\" and no body.\n4. To yield for a Runtime-verifiable nonterminal event: propose no_reply exactly once with mode=\"wait\" and optional finite wait_secs (default 60), with no body.\nNever combine no_reply with ordinary text or another work/control tool; an unbounded wait is not supported. Applicable enabled annotations belong to the SAME return value, never to an independent companion call or body text. Missing display metadata does not require a retry."
     )
 }
 
@@ -4051,7 +4064,7 @@ fn append_response_protocol_correction_input(
 }
 
 fn interrupted_text_continuation_prompt() -> &'static str {
-    "The previous assistant content was only partially transmitted when the Provider stream was interrupted. The Runtime preserved that fragment and supplied it as the immediately preceding assistant message. Continue the same response from the interruption point without restarting or repeating content already provided. Return only the remaining body when ordinary output is admitted; Runtime assembles it with the saved prefix. If the admitted output is ordinary text, return that body suffix normally. A frozen structured business output must instead return its complete declared value. Optional typed annotations are separate communication, never content in the body suffix, and never a reason for another model request."
+    "The previous assistant content was only partially transmitted when the Provider stream was interrupted. The Runtime preserved that fragment and supplied it as the immediately preceding assistant message. Continue the same response from the interruption point without restarting or repeating content already provided. Return only the remaining body when ordinary output is admitted; Runtime assembles it with the saved prefix. If the admitted output is ordinary text, return that body suffix normally. A frozen structured business output must instead return its complete declared value. Applicable annotations stay in their field of that SAME value, never in the body suffix or a companion call, and never cause another model request."
 }
 
 impl Orchestrator {
@@ -10993,7 +11006,8 @@ impl Orchestrator {
         Ok(Some((
             crate::session_io::response_stream::ReplyProjector::new(
                 proofs,
-                route.is_some_and(|route| route.return_binding.output.is_some()),
+                route.is_some_and(|route| route.return_binding.output.is_some()
+                    && !crate::session_io::unified::selected(&route.return_binding)),
             ),
             public_route,
         )))
@@ -11280,10 +11294,9 @@ impl Orchestrator {
                     !response_annotations.is_off(),
                 )
             });
-        let output_encoding = trace_return_binding
-            .output
-            .as_ref()
-            .map(|_| crate::llm::ModelOutputEncoding::JsonObject);
+        let (output_encoding, tool_choice) = crate::session_io::unified::request_options(
+            &trace_return_binding, &model_binding.capabilities, &tools,
+        );
         let projected = self
             .projected_reply_stream(
                 &stream_context_id,
@@ -11301,7 +11314,12 @@ impl Orchestrator {
             let mut projected = projected;
             let mut projected_started = false;
             let mut projected_sequence = 0u64;
-            let project_raw_evaluation = trace_return_binding.output.is_some();
+            // V2 normalizes both the structured carrier and an admitted
+            // implicit typed value into the same original JSON value stream.
+            // Project only that value; assuming an outer body field here loses
+            // the proven reply leaf for a valid weaker-provider fallback.
+            let project_raw_evaluation = trace_return_binding.output.is_some()
+                && !crate::session_io::unified::selected(&trace_return_binding);
             let mut normalizer = crate::session_io::response_stream::ModelStreamNormalizer::new(
                 trace_return_binding,
             );
@@ -11662,6 +11680,7 @@ impl Orchestrator {
                 crate::llm::ModelRequestOptions {
                     reasoning_effort: Some(request_reasoning_effort),
                     output_encoding,
+                    tool_choice,
                 },
             );
             if let Some((deadline, seconds)) = model_hard_deadline {
@@ -11775,6 +11794,7 @@ impl Orchestrator {
                                 crate::llm::ModelRequestOptions {
                                     reasoning_effort: Some(request_reasoning_effort),
                                     output_encoding,
+                                    tool_choice,
                                 },
                             ))
                         });
@@ -13456,6 +13476,12 @@ impl Orchestrator {
             {
                 return Err("infer caller format belongs to another effect".into());
             }
+            if let crate::sexpr_eval::InferResultKind::Json { ty, definitions, .. } = result {
+                return_binding.body_value_schema = Some(
+                    crate::yao::json::json_schema(ty, definitions)
+                        .map_err(|error| format!("invalid admitted infer generation schema: {error}"))?,
+                );
+            }
             if !matches!(
                 result,
                 crate::sexpr_eval::InferResultKind::Yao {
@@ -13476,6 +13502,37 @@ impl Orchestrator {
             } else {
                 return_binding.format.encoding = "utf8".into();
             }
+        }
+        // A recovered/continuing Execution must keep its frozen carrier,
+        // including historical native output. Only an actually new return
+        // boundary adopts v2. IDs/eligible observations remain Runtime-owned
+        // and are refreshed for the current Evaluation, not copied from prose.
+        if let Some(source) = persisted_assistant_call.as_ref().filter(|source| {
+            source.payload.get("thread_id").and_then(serde_json::Value::as_str)
+                == Some(thread.id.as_str())
+                && source.payload.get("thread_generation").and_then(serde_json::Value::as_u64)
+                    == Some(thread.generation)
+        }) {
+            if let Some(value) = source.payload.get(response_annotations::BUNDLE_PAYLOAD_KEY) {
+                let bundle: PersistedAnnotations = serde_json::from_value(value.clone())?;
+                if bundle.scope != (ExecutionScope { execution_id: thread.id.clone(), generation: thread.generation })
+                    || bundle.protocol != thread.response_annotations
+                    || crate::memory::response_annotations_from_payload(&source.payload)? != bundle.protocol
+                {
+                    return Err("Frozen Session IO source differs from its Execution scope or mode".into());
+                }
+                if let Some(frozen) = bundle.return_binding {
+                    if frozen.annotations_enabled != !thread.response_annotations.is_off() {
+                        return Err("Frozen Session IO annotation choice differs from its Execution".into());
+                    }
+                    return_binding.format = frozen.format;
+                    return_binding.caller = frozen.caller;
+                    return_binding.body_value_schema = frozen.body_value_schema;
+                    return_binding.output = frozen.output;
+                }
+            }
+        } else {
+            return_binding = return_binding.with_unified_output();
         }
         self.activation_routes.insert(
             attempt_id.clone(),
@@ -14120,7 +14177,7 @@ impl Orchestrator {
                 };
                 messages.push(self.standard_tool_result_message(native_call, &receipt));
             }
-            if persisted_bundle.as_ref().is_some_and(|bundle| bundle.return_binding.as_ref().is_some_and(|binding| binding.output.is_some())) {
+            if persisted_bundle.as_ref().is_some_and(annotation_uses_value_effects) {
                 messages.push(self.session_io_result_message(&call, &output));
             }
             messages.push(Message {
@@ -14718,7 +14775,7 @@ impl Orchestrator {
                 request_context_view_manifest
                     .event_sequence_upper_bound
                     .max(visible_routed_input_sequence_upper_bound);
-            if return_binding.annotations_enabled && return_binding.output.is_none() {
+            if return_binding.annotations_enabled {
                 let mut physical_binding = return_binding.clone();
                 physical_binding.annotation_observation_refs.clear();
                 let supplied_ids = context.observations.iter()
@@ -15534,7 +15591,7 @@ impl Orchestrator {
                         visible_routed_input_ids.insert(receipt.id.clone());
                         visible_routed_input_sequence_upper_bound=visible_routed_input_sequence_upper_bound.max(receipt.sequence.unwrap_or(0));
                     }
-                    if annotation_bundle.as_ref().is_some_and(|bundle| bundle.return_binding.as_ref().is_some_and(|binding| binding.output.is_some())) {
+                    if annotation_bundle.as_ref().is_some_and(annotation_uses_value_effects) {
                         protocol_messages.push(self.session_io_result_message(&protocol_call, output));
                         visible_routed_input_ids.insert(output.id.clone());
                         visible_routed_input_sequence_upper_bound=visible_routed_input_sequence_upper_bound.max(output.sequence.unwrap_or(0));
@@ -20818,12 +20875,7 @@ impl Orchestrator {
             && !options
                 .response_annotation_bundle
                 .as_ref()
-                .is_some_and(|bundle| {
-                    bundle
-                        .return_binding
-                        .as_ref()
-                        .is_some_and(|binding| binding.output.is_some())
-                })
+                .is_some_and(annotation_uses_value_effects)
         {
             continuation_tool_calls.push(crate::llm::ToolCall {
                 id: "context_tx_batch_rejected".to_string(),
@@ -27751,15 +27803,18 @@ mod tests {
             semantic_sexpr_vm_system_prompt(),
         ] {
             assert!(prompt.contains(
-                "return the original value through the frozen Session IO output contract"
+                "return the original business value in the body of the frozen Session IO return"
             ));
-            assert!(prompt.contains("Pure infer and empty (requires (tools)) still prohibit work"));
-            assert!(prompt.contains("OPTIONAL for both work and non-work responses"));
+            assert!(prompt.contains("Pure infer and empty (requires (tools)) prohibit work"));
+            assert!(prompt.contains("for actual work, you MUST provide applicable annotations"));
+            assert!(prompt.contains("Missing or invalid display fields are tolerated at reception"));
+            assert!(prompt.contains("return ONE value with body, effects and annotations"));
+            assert!(!prompt.contains("include TWO deliver_message calls"));
             assert!(!prompt.contains("return one native JSON value containing body, annotations and effects"));
         }
         let correction = super::response_protocol_correction_prompt("test", None, false);
         assert!(correction.contains("another work/control tool"));
-        assert!(correction.contains("Independent enabled Session IO annotations"));
+        assert!(correction.contains("annotations belong to the SAME return value"));
         assert!(!correction.contains("ordinary text or another tool;"));
         let interrupted = super::interrupted_text_continuation_prompt();
         assert!(interrupted.contains("Runtime assembles it with the saved prefix"));
@@ -27772,10 +27827,10 @@ mod tests {
             assert!(!kernel.contains("when no tool or maintenance process remains"));
         }
         assert!(super::CRITICAL_MAINTENANCE_PROMPT.contains("physical-work admission"));
-        assert!(super::CONTEXT_TX_COOLDOWN_PROMPT.contains("only work/control call"));
+        assert!(super::CONTEXT_TX_COOLDOWN_PROMPT.contains("only work/control action"));
         assert!(super::CONTEXT_TX_COOLDOWN_PROMPT.contains("declared business type do not change"));
         assert!(super::SAFETY_REFUSAL_RECOVERY_PROMPT
-            .contains("equivalent native bound Session IO return"));
+            .contains("through the frozen Session IO value"));
         assert!(super::OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR
             .contains("implicit or native bound return"));
         assert!(super::OBJECTIVE_FINALIZATION_PROMPT.contains("only work/control call"));
@@ -28748,7 +28803,7 @@ mod tests {
         for marker in [
             "(model-role",
             "sole Yao Language Card in Context Encoding",
-            "frozen Session IO output contract",
+            "frozen output definition",
             "no_reply",
             "runtime-contracts",
             "reality-contract-v1",

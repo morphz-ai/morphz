@@ -83,6 +83,7 @@ async fn main() -> Result<(), DynError> {
             schema,
             strict: true,
         }),
+        tool_choice: None,
     };
     for (case, work, annotations, input) in [
         (

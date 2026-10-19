@@ -116,7 +116,7 @@ test(
       );
       assert.equal(events.length, 1);
       const reason = JSON.parse(events[0]!.payload).reason;
-      assert.match(reason, /A return has no body/);
+      assert.match(reason, /Annotations alone are not an answer/);
       for (let refresh = 0; refresh < 2; refresh++) {
         const history: any = await f.client.call(
           "conversations.history",
@@ -599,7 +599,7 @@ test(
       const first = await f.waitRequest(marker);
       assert.ok(
         JSON.stringify(first).includes(
-          "Session IO return and optional display annotations:",
+          "Session IO: one Evaluation return with optional display annotations:",
         ),
       );
       const toolDefinitions = first.tools as Array<{
@@ -813,16 +813,7 @@ test(
             name === "plain text"
               ? body
               : JSON.stringify(value) + (name === "invalid JSON" ? "}" : "");
-          if (name === "plain text" || name === "invalid JSON")
-            f.releaseRawValue(marker, raw);
-          else
-            f.releaseWithMessages(
-              marker,
-              value.annotations
-                ? [fixtureAnnotationsMessage(value.annotations)]
-                : [],
-              body,
-            );
+          f.releaseRawValue(marker, raw);
           let terminal: any;
           for (let attempt = 0; attempt < 300; attempt++) {
             const navigation: any = await f.client.call(
@@ -849,11 +840,39 @@ test(
             "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_error'",
             terminal.id,
           );
+          if (name === "invalid JSON") {
+            assert.equal(
+              terminal.lifecycle,
+              "failed",
+              "malformed bound structural data must not be published as prose",
+            );
+            assert.equal(errors.length, 1);
+            assert.equal(
+              replies.length,
+              0,
+              "failure is a terminal IO state, never a fabricated answer",
+            );
+            assert.ok(
+              JSON.parse(errors[0]!.payload).reason.length > 0,
+              "preserve the actual parsing cause",
+            );
+            assert.equal(
+              f.requests.length,
+              1,
+              "no repair inference for invalid data",
+            );
+            assert.equal(
+              f.sql<{ count: number }>(
+                "SELECT count(*) AS count FROM execution_jobs",
+              )[0]!.count,
+              0,
+            );
+            return;
+          }
           assert.equal(terminal.lifecycle, "completed");
           assert.equal(errors.length, 0);
           assert.equal(replies.length, 1);
-          const expectedBody =
-            name === "plain text" || name === "invalid JSON" ? raw : body;
+          const expectedBody = body;
           assert.equal(
             JSON.parse(replies[0]!.payload).text,
             expectedBody,
@@ -867,18 +886,22 @@ test(
           const bundle = JSON.parse(
             sources[0]!.payload,
           ).response_annotation_bundle;
-          assert.equal(bundle.raw_response.content, expectedBody);
           assert.equal(
-            bundle.return_binding.output,
-            undefined,
-            "annotations do not select a JSON output envelope",
+            bundle.raw_response.content,
+            raw,
+            "retain actual provider bytes independently of the projected body",
           );
-          const plain = [
-            "plain text",
-            "invalid JSON",
-            "missing annotations",
-          ].includes(name);
-          assert.equal(bundle.raw_response.tool_calls.length, plain ? 0 : 1);
+          assert.equal(
+            bundle.return_binding.output.format.id,
+            "morphz.evaluation",
+          );
+          assert.equal(bundle.return_binding.output.format.version, "2");
+          const plain = ["plain text", "missing annotations"].includes(name);
+          assert.equal(
+            bundle.raw_response.tool_calls.length,
+            0,
+            "no separate annotation call",
+          );
           assert.equal(
             bundle.records.length,
             plain ? 0 : name === "valid" ? 2 : 1,

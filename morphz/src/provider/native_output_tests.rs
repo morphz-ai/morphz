@@ -30,6 +30,7 @@ fn options() -> ModelRequestOptions {
             schema: schema(),
             strict: true,
         }),
+        tool_choice: None,
     }
 }
 
@@ -97,7 +98,11 @@ async fn endpoint(State(state): State<Upstream>, Json(request): Json<Value>) -> 
 #[tokio::test]
 async fn schema_is_on_the_actual_wire_without_schema_repair_or_retry() {
     for protocol in [ModelProtocol::OpenaiResponses, ModelProtocol::OpenaiChat] {
-        for rejection in [false, true] {
+        for (rejection, tool_choice) in [
+            (false, None), (true, None),
+            (false, Some(crate::llm::ModelToolChoice::None)),
+            (true, Some(crate::llm::ModelToolChoice::None)),
+        ] {
             let requests = Arc::new(Mutex::new(vec![]));
             let upstream = Upstream {
                 requests: requests.clone(),
@@ -144,7 +149,7 @@ async fn schema_is_on_the_actual_wire_without_schema_repair_or_retry() {
                     tools.clone(),
                     None,
                     stream,
-                    options(),
+                    ModelRequestOptions { tool_choice, ..options() },
                 )
                 .await;
             let events = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
@@ -166,7 +171,11 @@ async fn schema_is_on_the_actual_wire_without_schema_repair_or_retry() {
             assert_eq!(format["schema"], schema());
             assert_eq!(format["name"], "session_io_test");
             assert_eq!(format["strict"], true);
-            assert_ne!(packet["tool_choice"], "none");
+            if tool_choice.is_some() {
+                assert_eq!(packet["tool_choice"], "none");
+            } else {
+                assert_ne!(packet["tool_choice"], "none");
+            }
             assert_eq!(
                 packet["tools"],
                 client.request_for_model("TEST-native-model", &prompt(), &tools)["tools"]

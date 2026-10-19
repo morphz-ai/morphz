@@ -66,7 +66,7 @@ async fn main() -> Result<(), DynError> {
             });
             let response=tokio::time::timeout(std::time::Duration::from_secs(55),client.create_completion_bound_stream_with_options(
                 &physical,messages.clone(),tools.clone(),None,stream,
-                ModelRequestOptions{reasoning_effort:Some(Some(ReasoningEffort::Max)),output_encoding:Some(ModelOutputEncoding::JsonObject)},
+                ModelRequestOptions{reasoning_effort:Some(Some(ReasoningEffort::Max)),output_encoding:Some(ModelOutputEncoding::JsonObject),tool_choice:None},
             )).await??;
             let (first,deltas,streamed)=collector.await?;
             assert_eq!(streamed,response.content,"Provider stream and final value must agree");

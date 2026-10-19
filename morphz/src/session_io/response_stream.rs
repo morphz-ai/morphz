@@ -28,6 +28,9 @@ struct JsonString {
 struct Projection {
     evaluation: bool,
     target_path: Option<Vec<String>>,
+    // Preserve the original JSON business value for internal typed streams;
+    // public visibility remains owned by the Runtime route/parent proof.
+    raw_value_path: Option<Vec<String>>,
     booleans: HashMap<Vec<String>, bool>,
     has_effects: bool,
     scalar_path: Vec<String>,
@@ -49,6 +52,12 @@ struct Projection {
     emitted: usize,
 }
 impl Projection {
+    fn is_raw_value_path(&self, path: &[String]) -> bool {
+        self.raw_value_path.as_ref().map_or_else(
+            || path == ["message", "content", "value"],
+            |target| path == target,
+        )
+    }
     fn path(&self) -> Vec<String> {
         let Some(frame) = self.stack.last() else {
             return vec![];
@@ -62,7 +71,7 @@ impl Projection {
         path
     }
     fn finish_value(&mut self) {
-        if self.path() == ["message", "content", "value"]
+        if self.is_raw_value_path(&self.path())
             && self.value_start.is_some()
             && self.value_end.is_none()
         {
@@ -152,7 +161,7 @@ impl Projection {
             if self.value_start.is_none()
                 && self.string.is_none()
                 && !self.scalar
-                && self.path() == ["message", "content", "value"]
+                && self.is_raw_value_path(&self.path())
                 && !self.stack.last().is_some_and(|frame| frame.expect_colon)
                 && matches!(c, '"' | '{' | '[' | 't' | 'f' | 'n' | '-' | '0'..='9')
             {
@@ -239,7 +248,7 @@ impl Projection {
             }
             if self.scalar {
                 if c.is_ascii_whitespace() || matches!(c, ',' | ']' | '}') {
-                    if self.scalar_path == ["message", "content", "value"] {
+                    if self.is_raw_value_path(&self.scalar_path) {
                         self.value_end = Some(self.at_byte);
                     }
                     if let Some(value) = match self.scalar_text.as_str() {
@@ -331,9 +340,9 @@ impl Projection {
         {
             return String::new();
         }
-        let text = if !self.evaluation
+        let text = if self.raw_value_path.is_some() || (!self.evaluation
             && binding.format.id != "morphz.chat"
-            && binding.format.encoding == "json"
+            && binding.format.encoding == "json")
         {
             self.value_start
                 .map(|start| &self.raw[start..self.value_end.unwrap_or(self.raw.len())])
@@ -353,6 +362,121 @@ pub struct ModelStreamNormalizer {
     binding: ReturnBinding,
     deliveries: HashMap<usize, Projection>,
     evaluation: Projection,
+    unified: Option<UnifiedStream>,
+}
+
+#[derive(Default)]
+struct UnifiedStream {
+    raw: String,
+    parser: Projection,
+    // No scanning delimiters or inner prose: the frozen binding owns one full
+    // value. Plain implicit replies are streamed as-is on weaker transports.
+    mode: Option<bool>, // true = structured JSON, false = implicit text
+    emitted: String,
+    calls: std::collections::BTreeMap<usize, crate::llm::ToolCallRepr>,
+    failed: bool,
+}
+impl UnifiedStream {
+    fn failure(&mut self, message: impl Into<String>) -> Vec<ModelStreamEvent> {
+        self.failed = true;
+        vec![ModelStreamEvent::Failed { message: message.into() }]
+    }
+
+    fn push(&mut self, event: ModelStreamEvent, binding: &ReturnBinding) -> Vec<ModelStreamEvent> {
+        if self.failed {
+            return vec![];
+        }
+        match &event {
+            ModelStreamEvent::TextDelta { text } => {
+                if self.raw.len().saturating_add(text.len()) > Limits::default().max_bytes {
+                    return self.failure("Session IO output exceeded its frozen byte budget");
+                }
+                self.raw.push_str(text);
+                let first_chunk = self.mode.is_none();
+                if first_chunk {
+                    let Some(first) = self.raw.trim_start().chars().next() else {
+                        return vec![];
+                    };
+                    self.mode = Some(matches!(first, '{' | '[' | '"'));
+                    self.parser.evaluation = true;
+                    if first == '"' {
+                        self.parser.target_path = Some(vec![]);
+                    }
+                    if binding.format.id != "morphz.chat" && binding.format.encoding == "json" {
+                        self.parser.raw_value_path = Some(if first == '{' {
+                            vec!["body".into()]
+                        } else {
+                            vec![]
+                        });
+                    }
+                }
+                let chunk = if first_chunk { &self.raw } else { text };
+                let delta = if self.mode == Some(true) {
+                    self.parser.push(chunk, binding)
+                } else {
+                    chunk.to_owned()
+                };
+                if delta.is_empty() { return vec![]; }
+                self.emitted.push_str(&delta);
+                vec![ModelStreamEvent::TextDelta { text: delta }]
+            }
+            ModelStreamEvent::ToolCallStarted { index, id, name } => {
+                self.calls.insert(*index, crate::llm::ToolCallRepr {
+                    id: id.clone(), r#type: "function".into(), func_name: name.clone(), arguments: String::new(),
+                });
+                vec![event]
+            }
+            ModelStreamEvent::ToolArgumentsDelta { index, delta } => {
+                let Some(call) = self.calls.get_mut(index) else {
+                    return self.failure("Native arguments arrived without their actual call identity");
+                };
+                if call.arguments.len().saturating_add(delta.len()) > Limits::default().max_bytes {
+                    return self.failure("Native arguments exceeded the Session IO byte budget");
+                }
+                call.arguments.push_str(delta);
+                vec![event]
+            }
+            ModelStreamEvent::Completed => {
+                let raw = crate::llm::Response {
+                    content: self.raw.clone(), tool_calls: self.calls.values().cloned().collect(),
+                };
+                let parts = match super::unified::decode(&raw, binding, "stream-validation") {
+                    Ok(parts) => parts,
+                    Err(error) => return self.failure(error.to_string()),
+                };
+                // Internal typed streams preserve JSON spelling (including
+                // String quotes), not the Evaluation wrapper or annotations.
+                // A separately proven parent projection alone is public.
+                if binding.format.id != "morphz.chat" && binding.format.encoding == "json" {
+                    let mut events = vec![];
+                    if parts.response.tool_calls.is_empty() {
+                        if self.emitted.is_empty() {
+                            events.push(ModelStreamEvent::TextDelta { text: parts.response.content });
+                        } else if super::Data::parse(self.emitted.as_bytes(), &Limits::default()).ok()
+                            != super::Data::parse(parts.response.content.as_bytes(), &Limits::default()).ok()
+                        {
+                            return self.failure("The provisional typed body differs from its complete value");
+                        }
+                    }
+                    self.failed = true;
+                    events.push(event);
+                    return events;
+                }
+                if !parts.response.content.starts_with(&self.emitted) {
+                    return self.failure("The provisional body differs from the complete bound return");
+                }
+                let remaining = parts.response.content[self.emitted.len()..].to_string();
+                self.emitted.push_str(&remaining);
+                let mut events = vec![];
+                if !remaining.is_empty() { events.push(ModelStreamEvent::TextDelta { text: remaining }); }
+                events.push(event);
+                self.failed = true;
+                events
+            }
+            ModelStreamEvent::Failed { message } => self.failure(message.clone()),
+            _ => vec![event],
+        }
+    }
 }
 
 /// Reads only a Runtime-proven identity projection of a typed business value.
@@ -445,8 +569,10 @@ impl ReplyProjector {
 }
 impl ModelStreamNormalizer {
     pub fn new(binding: ReturnBinding) -> Self {
+        let unified = super::unified::selected(&binding).then(UnifiedStream::default);
         Self {
             binding,
+            unified,
             deliveries: HashMap::new(),
             evaluation: Projection {
                 evaluation: true,
@@ -455,6 +581,9 @@ impl ModelStreamNormalizer {
         }
     }
     pub fn push(&mut self, event: ModelStreamEvent) -> Vec<ModelStreamEvent> {
+        if let Some(unified) = &mut self.unified {
+            return unified.push(event, &self.binding);
+        }
         match &event {
             ModelStreamEvent::TextDelta { text } if self.binding.output.is_some() => {
                 let text = self.evaluation.push(text, &self.binding);
@@ -817,6 +946,132 @@ mod tests {
         let mut binding = ReturnBinding::new("t", 1, "e", true);
         binding.output = Some(crate::session_io::evaluation::binding());
         binding
+    }
+
+    #[test]
+    fn unified_body_streams_incrementally_without_leaking_any_display_metadata() {
+        let body = "第一行\n\"引号\" 🧠 \\ <context_annotation>这是正文</context_annotation>\n{\"effects\":[]}";
+        for enabled in [false, true] {
+            for metadata in [json!(null), json!({"execution":{"title":"PRIVATE_TITLE"},"observations_note":null}), json!(false)] {
+                for raw in [
+                    format!("{{\"body\":{},\"annotations\":{metadata},\"effects\":[]}}", json!(body)),
+                    format!("{{\"annotations\":{metadata},\"effects\":[],\"body\":{}}}", json!(body)),
+                ] {
+                    let chars = raw.chars().collect::<Vec<_>>();
+                    for size in [1, 2, 5, 17, chars.len()] {
+                        let mut stream = ModelStreamNormalizer::new(ReturnBinding::new("t", 1, "e", enabled).with_unified_output());
+                        let mut output = String::new();
+                        for chunk in chars.chunks(size) {
+                            collect(stream.push(ModelStreamEvent::TextDelta { text: chunk.iter().collect() }), &mut output);
+                        }
+                        assert_eq!(output, body, "body is visible before completion, chunk size={size}");
+                        assert_eq!(stream.push(ModelStreamEvent::Completed), vec![ModelStreamEvent::Completed]);
+                        assert!(stream.push(ModelStreamEvent::TextDelta { text: "AFTER_TERMINAL".into() }).is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unified_open_strings_and_unicode_escapes_stream_before_the_return_finishes() {
+        let mut stream = ModelStreamNormalizer::new(ReturnBinding::new("t", 1, "e", true).with_unified_output());
+        let mut output = String::new();
+        for c in r#"{"body":"第一段\n\uD83E\uDDE0"#.chars() {
+            collect(stream.push(ModelStreamEvent::TextDelta { text: c.to_string() }), &mut output);
+        }
+        assert_eq!(output, "第一段\n🧠");
+        assert!(matches!(stream.push(ModelStreamEvent::Completed).as_slice(), [ModelStreamEvent::Failed { .. }]));
+    }
+
+    #[test]
+    fn unified_plain_fallback_is_not_scanned_for_inner_protocol_examples() {
+        let body = "正常回复\n{\"body\":\"不是外壳\",\"effects\":[{}]}\n<context_annotation>原样保留</context_annotation>";
+        for raw in [body.to_string(), json!(body).to_string()] {
+            let mut stream = ModelStreamNormalizer::new(ReturnBinding::new("t", 1, "e", true).with_unified_output());
+            let mut output = String::new();
+            for c in raw.chars() {
+                collect(stream.push(ModelStreamEvent::TextDelta { text: c.to_string() }), &mut output);
+            }
+            collect(stream.push(ModelStreamEvent::Completed), &mut output);
+            assert_eq!(output, body);
+        }
+    }
+
+    #[test]
+    fn unified_invalid_business_returns_do_not_finish_or_leak_metadata() {
+        for raw in [
+            r#"{"annotations":{"execution":{"title":"PRIVATE"}}}"#,
+            r#"{"body":null,"effects":[]}"#,
+            r#"{"body":"draft","body":"PRIVATE_DUPLICATE"}"#,
+            r#"{"body":"draft","effects":[]}}"#,
+            r#"{"body":"draft","effects":"PRIVATE_INVALID"}"#,
+            r#"{"body" "PRIVATE_INVALID"}"#,
+        ] {
+            let mut stream = ModelStreamNormalizer::new(ReturnBinding::new("t", 1, "e", true).with_unified_output());
+            let mut output = String::new();
+            for c in raw.chars() {
+                collect(stream.push(ModelStreamEvent::TextDelta { text: c.to_string() }), &mut output);
+            }
+            assert!(!output.contains("PRIVATE"));
+            assert!(matches!(stream.push(ModelStreamEvent::Completed).as_slice(), [ModelStreamEvent::Failed { .. }]));
+            assert!(stream.push(ModelStreamEvent::Completed).is_empty());
+        }
+    }
+
+    #[test]
+    fn unified_native_work_fallback_preserves_the_real_handshake_without_a_companion() {
+        let mut stream = ModelStreamNormalizer::new(ReturnBinding::new("t", 1, "e", true).with_unified_output());
+        for event in [
+            ModelStreamEvent::ToolCallStarted { index: 0, id: "actual-native-call".into(), name: "read".into() },
+            ModelStreamEvent::ToolArgumentsDelta { index: 0, delta: r#"{"path":"book.txt"}"#.into() },
+            ModelStreamEvent::ToolCallCompleted { index: 0 },
+            ModelStreamEvent::Completed,
+        ] {
+            assert_eq!(stream.push(event.clone()), vec![event]);
+        }
+        let mut stream = ModelStreamNormalizer::new(ReturnBinding::new("t", 1, "e", false).with_unified_output());
+        assert!(matches!(stream.push(ModelStreamEvent::ToolArgumentsDelta { index: 0, delta: "{}".into() }).as_slice(), [ModelStreamEvent::Failed { .. }]));
+    }
+
+    #[test]
+    fn unified_typed_value_stream_keeps_json_but_excludes_the_wrapper_and_metadata() {
+        for value in [json!("PRIVATE"), json!({"answer":"PRIVATE","execute":true}), json!(false), json!(null)] {
+            let mut binding = ReturnBinding::new("t", 1, "e", true).with_unified_output();
+            binding.format.id = "morphz.data".into();
+            let mut stream = ModelStreamNormalizer::new(binding);
+            let raw = json!({"body":value,"effects":[],"annotations":null}).to_string();
+            let mut output = String::new();
+            for c in raw.chars() {
+                collect(stream.push(ModelStreamEvent::TextDelta { text: c.to_string() }), &mut output);
+            }
+            collect(stream.push(ModelStreamEvent::Completed), &mut output);
+            assert_eq!(output, value.to_string());
+        }
+        let mut stream = ModelStreamNormalizer::new(ReturnBinding::new("t", 1, "e", true).with_unified_output());
+        let failure = ModelStreamEvent::Failed { message: "transport interrupted".into() };
+        assert_eq!(stream.push(failure.clone()), vec![failure]);
+        assert!(stream.push(ModelStreamEvent::Completed).is_empty());
+    }
+
+    #[test]
+    fn unified_typed_stream_preserves_original_field_order_numbers_and_chunk_boundaries() {
+        for value in [r#"{"z": false, "a": 9007199254740993123456789}"#, r#"[false,null,"中文 🌱"]"#, r#""正文\n\"引号\"""#, "null", "false"] {
+            for size in [1, 3, 17, 999] {
+                let mut binding = ReturnBinding::new("t", 1, "e", true).with_unified_output();
+                binding.format.id = "morphz.data".into();
+                let mut stream = ModelStreamNormalizer::new(binding);
+                let raw = format!("{{\"annotations\":{{\"execution\":{{\"title\":\"PRIVATE METADATA\"}}}},\"body\":{value},\"effects\":[]}}");
+                let mut output = String::new();
+                for chunk in raw.chars().collect::<Vec<_>>().chunks(size) {
+                    collect(stream.push(ModelStreamEvent::TextDelta { text: chunk.iter().collect() }), &mut output);
+                }
+                let end = stream.push(ModelStreamEvent::Completed);
+                assert!(!end.iter().any(|event| matches!(event, ModelStreamEvent::Failed { .. })), "{end:?}");
+                collect(end, &mut output);
+                assert_eq!(output, value, "size={size}");
+            }
+        }
     }
 
     #[test]

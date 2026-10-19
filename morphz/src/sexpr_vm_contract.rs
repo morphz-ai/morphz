@@ -40,7 +40,7 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
     (operator call
       (form (call tool argument...))
       (description
-        "Submit the exact tool name and standard JSON business arguments through native Function Calling, independently of optional display annotations;
+        "Propose the exact tool name and original business arguments through the frozen Session IO return carrier. A structured Evaluation uses effects with enabled step intent in the same proposal; a historical native binding keeps native calls;
          wait for the tool result and treat it as the current expression's Observation."))
 
     (operator fallback
@@ -68,7 +68,7 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
       (description
         "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
          To evaluate it, return content itself through Session IO to this Evaluation's actual caller: its active Session or parent Plan.
-         Optional annotations are separate typed Session IO communication in the same physical response, not work or a required second return;
+         The business body and applicable enabled annotations occupy their own fields of the SAME returned value, never companion calls or metadata inside the business value;
          never send the (reply ...) parentheses or operator name as a response envelope.
          End the current Evaluation when no required process remains; returning a child value does not complete parent work."))))"#;
 
@@ -94,7 +94,7 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
     (operator call
       (form (call tool argument...))
       (description
-        "Submit the exact tool name and standard JSON business arguments through native Function Calling, independently of optional display annotations;
+        "Propose the exact tool name and original business arguments through the frozen Session IO return carrier. A structured Evaluation uses effects with enabled step intent in the same proposal; a historical native binding keeps native calls;
          wait for the tool result and treat it as the current expression's Observation."))
 
     (operator fallback
@@ -122,7 +122,7 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
       (description
         "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
          To evaluate it, return content itself through Session IO to this Evaluation's actual caller: its active Session or parent Plan.
-         Optional annotations are separate typed Session IO communication in the same physical response, not work or a required second return;
+         The business body and applicable enabled annotations occupy their own fields of the SAME returned value, never companion calls or metadata inside the business value;
          never send the (reply ...) parentheses or operator name as a response envelope.
          End the current Evaluation when no required work remains. Maintain Mind only for an accurate state change worth retaining;
          maintenance is not a mandatory closing step and Runtime finalizing/maintenance-budget limits take precedence.

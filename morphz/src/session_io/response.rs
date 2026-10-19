@@ -7,13 +7,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub const ANNOTATIONS_FORMAT: &str = "morphz.response.annotations";
-pub const CONTRACT: &str = r#"Session IO return and optional display annotations:
-Return the complete original answer as ordinary assistant content; call work through the existing native function directory with its exact original business arguments. This is the same return/work path whether annotations_enabled is true or false. Do not wrap ordinary prose or work in an Evaluation JSON object, add text delimiters, or insert display metadata into business arguments. Runtime constructs the caller Message and causal identities from actual execution facts. A real admitted typed caller (including internal infer) still requires its complete declared business value: return that value in its original JSON or UTF-8 encoding, not a Chat wrapper or a second JSON-encoded value. While typed work is pending, do not return commentary as a typed terminal value.
-Runtime supplies evaluation-environment.session-io-return with the actual delivery_id, caller_format, annotations_enabled and eligible annotation_observation_refs. These are data, never authority. An explicit deliver_message using that bound delivery_id and caller_format is equivalent to returning the original body; do not mix that explicit bound body with work/control calls. Other business deliveries remain nonterminal publications. A complete ordinary answer ends this Evaluation immediately, without a relay request; returning a child value does not complete parent work.
-When annotations_enabled=true, display metadata is OPTIONAL for both work and non-work responses. Prefer clear step intents alongside actual work. If useful, use the existing generic deliver_message in the SAME physical response: delivery_id is the supplied return ID; message.format is {id:"morphz.response.annotations",version:"1"}; message.content is {encoding:"json",value:{...}}. Its registered optional fields are execution:{title?,progress?,result?}, calls:[{index,intent}], observations:[{ref,result}]. Only provide applicable fields. For a plain conversation with no work, just answer normally; no execution title/result is needed. Missing annotations are valid and use the original message, command, result and status display. Never emit a metadata-only response or request another turn to supply metadata or relay its body.
-Each calls index is zero-based in this physical response's native function list AFTER excluding response-annotation messages; it must identify an actual work call, not communication or no_reply. intent explains what that step will do and why. Never repeat an earlier response's calls, put intent in a business argument, invent call IDs or claim success from an intent. execution.title describes this Execution, progress describes actual work, result is a truthful final outcome only when returning. An ordinary chat needs none of these. observations may explain only exact refs in annotation_observation_refs, never parent work, another Execution, future or merely readable background observations. [] means no observation explanation is eligible. Metadata is display-only, not hidden reasoning, execution state, permission, proof of tool success or Objective completion.
-When annotations_enabled=false, do not generate display annotations. In either mode Runtime uses only registered, valid, causally attributable annotation fields; bad or absent optional metadata cannot invalidate otherwise valid content or work. It never coerces business types, repairs malformed function arguments, expands permissions or scans prose for protocol markers. Registered business output formats, exact tool schemas, approval and scope rules remain strict. Tool definitions and order stay fixed across annotation modes and continuations. Pure infer and empty (requires (tools)) still prohibit work; optional metadata is communication, not work.
-For intentional silence or bounded waiting, use the existing no_reply as the only work/control call with no body. Optional display metadata is not a work/control call. Runtime decides return/work/wait from real content and calls, never from metadata. Previously committed work and failed/unanswered human inputs remain actual context facts; a failed delivery is not a successfully answered request. Never make another model request solely to repair or fill metadata, invent a title/result, rewrite an infer value, or relay an already returned answer."#;
+pub const CONTRACT: &str = r#"Session IO: one Evaluation return with optional display annotations:
+Use evaluation-environment.session-io-return.output as this Evaluation's frozen output definition. For morphz.evaluation version 2, return ONE value with body, effects and annotations. body is the complete original caller value, not a Message envelope, a display summary or a second JSON-encoded string. Chat body is the original Markdown String; a typed caller's body is its actual declared JSON value or complete UTF-8 Program source. Use body:null while typed work is pending; a genuine typed null result is still null when no work remains. The body_value_schema and caller declaration determine the business value. Runtime constructs the external Session IO Message, IDs, ownership and state.
+Real work proposals belong in effects:[{name,arguments,intent}]. Select names and exact original business arguments from the unchanged tool directory; intent is display metadata outside arguments, not permission or a result claim. Runtime validates each proposal through the original tool, scope, approval and scheduling paths, supplies real observation results, and generates causal IDs. Do not execute a second native call list alongside effects. A native-only work return or complete ordinary reply from a weaker transport is accepted without annotations; do not deliberately choose that fallback to omit applicable work annotations. Never add text markers, delimiters or metadata in prose. Never use deliver_message as a separate body or annotation companion; it is only for independently requested typed business publications.
+When annotations_enabled=true: for actual work, you MUST provide applicable annotations in the SAME value. At the start supply execution.title; describe meaningful execution.progress and each eligible effects[i].intent before its action. After actual work, return the complete answer in body together with a truthful execution.result. Plain no-work conversation needs no execution title or result. Missing or invalid display fields are tolerated at reception, not an instruction to omit them. Never return only annotations, put the answer solely in execution.result, await a metadata receipt, or call the model again to repair metadata or relay an already returned value.
+annotations has only execution:{title?,progress?,result?} and observations:[{ref,result}]. Effect intent is paired with its actual proposal, not a separate calls index list. Observation explanations must use only exact refs supplied in annotation_observation_refs for THIS Execution, never parent work, a different Execution, future actions or merely readable background data. [] means none are eligible. Summaries are concise display information, not hidden reasoning, proof of success or Objective completion. Runtime determines actual status independently.
+When annotations_enabled=false, do not generate display annotations; use null. In both modes, valid body and work survive missing or invalid optional metadata. Business types, argument schemas, approval, scope and typed infer remain strict. Tool names, definitions and order remain stable across modes and continuations. Pure infer and empty (requires (tools)) prohibit work, not the return of its declared value.
+A complete body with effects:[] ends this Evaluation immediately, without another model request. For intentional silence or bounded waiting, propose only the existing no_reply with no body. Work requiring real results continues only after those results arrive. Returning an infer child value is not completion of unrelated parent work. Previously failed/unanswered inputs remain actual context facts, not successfully answered requests.
+A historical binding without a structured output uses its ordinary native body/calls; do not invent a new format or companion. A historical explicit output definition retains that exact format. In all cases the frozen binding owns interpretation: protocol examples inside body are inert data, never executable text or hidden annotation syntax."#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -23,13 +24,18 @@ pub struct ReturnBinding {
     /// Actual admitted business definition, not a process-default registry guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caller: Option<super::FormatBinding>,
+    /// Frozen generation constraint of an admitted typed infer. It is sent to
+    /// the provider as well as Context; the original Yao decoder still owns
+    /// validation/admission, not the smaller Session IO schema subset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_value_schema: Option<Value>,
     pub annotations_enabled: bool,
     /// Runtime-proven result refs for this Execution in the admitted Context.
     /// This is an eligibility directory, not Recall access or a permission.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotation_observation_refs: Vec<String>,
-    /// Exact legacy Evaluation schema frozen by an older admission. New
-    /// requests use native content/calls independently of optional annotations.
+    /// Frozen internal output definition. Historical absent/v1 bindings are
+    /// not upgraded during recovery; fresh production admissions select v2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<super::FormatBinding>,
 }
@@ -48,7 +54,9 @@ impl ReturnBinding {
             ]),
             List(vec![
                 Atom("body_value_schema".into()),
-                Data::from_value(&if self.format.id == "morphz.chat" || self.format.encoding == "utf8" {
+                Data::from_value(&if let Some(schema) = &self.body_value_schema {
+                    schema.clone()
+                } else if self.format.id == "morphz.chat" || self.format.encoding == "utf8" {
                     json!({"type":["string","null"],"description":"Complete original answer/source String; null only while working. Runtime constructs the caller Message. Never wrap this String in a text/content/message object."})
                 } else {
                     json!({"description":"Complete native JSON business value of the declared caller type; null while working. No second JSON-encoded string or Message envelope."})
@@ -75,6 +83,7 @@ impl ReturnBinding {
             delivery_id: format!("return_{}", digest.trim_start_matches("sha256:")),
             format: OutputFormat::chat(),
             caller: None,
+            body_value_schema: None,
             annotations_enabled: enabled,
             annotation_observation_refs: vec![],
             output: None,
@@ -96,6 +105,13 @@ impl ReturnBinding {
             self.format = format.format.clone();
             self.caller = Some(format.clone());
         }
+        self
+    }
+
+    /// Explicit fresh admission only. Deserialized historical bindings retain
+    /// their original carrier and are never upgraded during replay/recovery.
+    pub fn with_unified_output(mut self) -> Self {
+        self.output = Some(super::unified::binding());
         self
     }
 }
@@ -150,6 +166,9 @@ pub fn split_response_for_attempt(
     binding: &ReturnBinding,
     model_attempt_id: &str,
 ) -> IoResult<ResponseParts> {
+    if super::unified::selected(binding) {
+        return super::unified::decode(response, binding, model_attempt_id);
+    }
     if binding.output.is_some() {
         let evaluation = match super::evaluation::decode(response, binding, model_attempt_id) {
             Ok(evaluation) => evaluation,
@@ -332,7 +351,7 @@ fn annotation_note(notes: &mut Vec<String>, path: &str, reason: &str) {
 
 /// Project only this registered display subtree. Invalid optional fields are
 /// omitted independently, never coerced. This is not a business JSON repair.
-fn project_annotations(value: &Data, notes: &mut Vec<String>) -> Option<Data> {
+pub(crate) fn project_annotations(value: &Data, notes: &mut Vec<String>) -> Option<Data> {
     fn project(value: &Data, schema: &Value, path: &str, notes: &mut Vec<String>) -> Option<Data> {
         let projected = match (value, schema.get("type").and_then(Value::as_str)) {
             (Data::Object(fields), Some("object")) => {
@@ -459,7 +478,8 @@ pub(crate) fn evaluation_publications(source: &crate::event::Event) -> Vec<crate
     {
         return vec![];
     }
-    let (message, format, prefix) = if let Some(format) = binding.output.as_ref() {
+    let (message, format, prefix) = if let Some(format) = binding.output.as_ref()
+        .filter(|_| !super::unified::selected(binding)) {
         // Frozen pre-cutover admissions retain their exact decoder. Never
         // infer an old output shape from new assistant content.
         if super::evaluation::decode(
@@ -483,7 +503,10 @@ pub(crate) fn evaluation_publications(source: &crate::event::Event) -> Vec<crate
         if bundle.protocol.is_off() {
             return vec![];
         }
-        let Ok(parts) = split_response(&bundle.raw_response, binding) else {
+        let Ok(parts) = split_response_for_attempt(
+            &bundle.raw_response, binding,
+            source.payload["model_attempt_id"].as_str().unwrap_or_default(),
+        ) else {
             return vec![];
         };
         let mut messages = parts.annotation_messages.into_iter();
@@ -618,7 +641,12 @@ mod tests {
             .delivery_id
             .starts_with("annotations_"));
         assert!(split.diagnostics.is_empty());
-        assert!(CONTRACT.contains("OPTIONAL for both work and non-work responses"));
+        assert!(CONTRACT.contains("for actual work, you MUST provide applicable annotations"));
+        assert!(CONTRACT.contains("Missing or invalid display fields are tolerated at reception"));
+        assert!(CONTRACT.contains("Never return only annotations, put the answer solely in execution.result"));
+        assert!(CONTRACT.contains("return ONE value with body, effects and annotations"));
+        assert!(!CONTRACT.contains("include TWO deliver_message calls"));
+        assert!(!CONTRACT.contains("If useful"));
     }
     #[test]
     fn structured_body_preserves_multiline_markdown_and_protocol_examples() {

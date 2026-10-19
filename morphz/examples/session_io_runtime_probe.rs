@@ -92,7 +92,7 @@ async fn terminal(runtime: &MorphzRuntime, root: &str) -> Result<Event, DynError
             if let Some(event) = events.into_iter().find(|event| {
                 event.topic == "chat/reply"
                     || event.topic == "session/io_state"
-                        && event.payload["terminal_kind"] == "failed"
+                        && event.payload.get("terminal_kind").and_then(Value::as_str) == Some("failed")
             }) {
                 return Ok::<_, DynError>(event);
             }
@@ -121,10 +121,11 @@ async fn main() -> Result<(), DynError> {
     for (case,input,harness,expected_calls) in [
         ("plain","直接用两行中文回答 2 加 3 等于多少。不需要任何工具。",None,1),
         ("review","必须先且仅用 session_io_probe_read 读取 review.txt，再独立判断故事是否完结，回答一句中文。不要根据已有印象判断。",None,2),
-        ("annotated-review","必须先且仅用 session_io_probe_read 读取 review.txt，再独立判断故事是否完结，回答一句中文。这个 TEST 也请在读取的同一次响应中，用现有通用 Session IO 提供 calls.intent 注解；读取结果之后，用同一次最终响应提供有依据的结果注解，正文照常交付。不要专门追加注解轮次。",None,2),
+        ("annotated-review","必须先且仅用 session_io_probe_read 读取 review.txt，再独立判断故事是否完结，回答一句中文。这个 TEST 也请在读取提案的同一个 Session IO 返回值中提供该步骤的 intent 注解；读取结果之后，最终返回值要同时包含有依据的结果注解和完整正文。不要专门追加注解轮次。",None,2),
         ("progress","必须先且仅用 session_io_probe_read 读取 progress.txt，再回答已读到哪里，回答一句中文。不要虚构记忆。",None,2),
         ("memory","请只用 context_tx 将合成阅读进度‘已读至卷十四，贾谊陈述治安策’保存到一个新 Mind frame，读取真实提交回执后再用一句中文说明保存到了哪里。不读文件、不调用其他工具，不虚构提交成功。",None,2),
         ("infer","用两句中文解释 2 加 3，包含引号、换行和 🧠。不要调用工具。",Some("TEST-single-infer"),1),
+        ("infer-record","执行合成类型校验，不调用工具。",Some("TEST-record-infer"),1),
         ("discuss-script","仅讨论，不创作。",Some("morphz.script-studio"),2),
     ] {
         if selected.as_ref().is_some_and(|selected|selected!=case){continue;}
@@ -144,7 +145,14 @@ async fn main() -> Result<(), DynError> {
             .extra_tool(Arc::new(Read{root:temp.path().into(),calls:reads.clone()}))
             .extra_tool(Arc::new(Host{calls:host.clone()}));
         if let Some(harness)=harness {
-            let source=if harness=="morphz.script-studio" {include_str!("../../application/harnesses/script-studio.hns")}else{r#"(manifest (id "TEST-single-infer") (version "1.0.0") (title "TEST single infer") (capabilities (tools))) (contract (identity "Synthetic arithmetic")) (infer (requires (tools)) (returns String) "用两句中文解释2加3：第一句给出结果，第二句解释相加的含义；包含引号、换行和🧠，返回完整String，不调用工具。")"#};
+            let source=match harness {
+                "morphz.script-studio" => include_str!("../../application/harnesses/script-studio.hns"),
+                "TEST-record-infer" => r#"(manifest (id "TEST-record-infer") (version "1.0.0") (title "TEST record infer") (capabilities (tools)))
+                    (contract (identity "Synthetic typed value check"))
+                    (eval (requires (tools)) (types (record Decision (ok Bool) (count Int) (note String)))
+                      (seq (bind value (infer (returns Decision) "返回 Decision 业务记录：ok 必须是 false，count 必须是整数 9007199254740993，note 必须是字符串 中文 🧠。不调用工具，不生成活动注解。")) "合成类型校验完成"))"#,
+                _ => r#"(manifest (id "TEST-single-infer") (version "1.0.0") (title "TEST single infer") (capabilities (tools))) (contract (identity "Synthetic arithmetic")) (infer (requires (tools)) (returns String) "用两句中文解释2加3：第一句给出结果，第二句解释相加的含义；包含引号、换行和🧠，返回完整String，不调用工具。")"#,
+            };
             builder=builder.harness_package(morphz::harness_package::HarnessPackage::from_source("TEST-sessionio-live.hns",source)?);
         }
         let runtime=builder.build().await?;runtime.start().await?;
@@ -153,6 +161,8 @@ async fn main() -> Result<(), DynError> {
         request.activation.model_alias=Some(model.clone());request.activation.reasoning_effort=Some("max".into());
         if let Some(harness)=harness {request.activation.harness=Some(morphz::harness::ExactHarnessRef{id:harness.into(),version:if harness=="morphz.script-studio"{"2.3.0"}else{"1.0.0"}.into()});}
         let mut stream=runtime.subscribe("runtime/model_stream",8192);
+        runtime.request_ephemeral_observation("TEST-live-io", "runtime/model_request_snapshot", "TEST-sessionio-live");
+        let mut snapshots=runtime.subscribe("runtime/model_request_snapshot",64);
         let start=Instant::now();let root=session.send_io_as_principal(request,&runtime.identity().principal_id).await?;
         let reply=terminal(&runtime,&root.id).await?;
         let events=runtime.query_events(QueryFilter{context_id:Some(runtime.identity().context_id.clone()),after_sequence:Some(0),..Default::default()}).await?;
@@ -163,9 +173,16 @@ async fn main() -> Result<(), DynError> {
         }
         let bundles=events.iter().filter_map(|event|event.payload.get(BUNDLE_PAYLOAD_KEY)).map(|value|serde_json::from_value::<PersistedAnnotations>(value.clone())).collect::<Result<Vec<_>,_>>()?;
         let physical=events.iter().filter(|event|event.topic=="runtime/model_usage").count();
+        let mut directories=Vec::new();
+        while let Ok(event)=snapshots.try_recv() { directories.push(event.payload["tools"].clone()); }
+        assert_eq!(directories.len(),physical,"every physical call has a captured tool directory");
+        assert!(directories.windows(2).all(|pair|pair[0]==pair[1]),"work continuation mutated the tool directory");
+        use sha2::Digest;
+        let directory_hashes=directories.iter().map(|tools|format!("{:x}",sha2::Sha256::digest(serde_json::to_vec(tools).unwrap()))).collect::<Vec<_>>();
         assert_eq!(physical,expected_calls,"{case}: no metadata-repair, relay or extra business request");
         assert!(!bundles.is_empty());
-        assert!(bundles.iter().all(|bundle|bundle.return_binding.as_ref().is_some_and(|binding|binding.output.is_none())),"annotations cannot select an Evaluation envelope");
+        assert!(bundles.iter().all(|bundle|bundle.return_binding.as_ref().is_some_and(morphz::session_io::unified::selected)),"both annotation modes select the same frozen unified return");
+        assert!(bundles.iter().all(|bundle|bundle.raw_response.tool_calls.is_empty()),"the native Schema route must not produce a second work or annotation carrier");
         if protocol.is_off() { assert!(bundles.iter().all(|bundle|bundle.records.is_empty() && bundle.annotation_messages.is_empty())); }
         if case=="review" || case=="annotated-review" || case=="progress" {
             assert_eq!(reads.lock().unwrap().len(),1);
@@ -173,13 +190,36 @@ async fn main() -> Result<(), DynError> {
         }
         if case=="discuss-script" {assert_eq!(host.lock().unwrap().as_slice(),&["read-workflow","list"]);}
         if case=="memory" {assert_eq!(runtime.mind_version(&runtime.identity().context_id).await?,1,"exactly one real Context commit, not a synthetic memory claim");}
+        if case=="infer-record" {
+            let values=events.iter().filter(|event|event.topic=="runtime/inference_value").collect::<Vec<_>>();
+            assert_eq!(values.len(),1);
+            let value:Value=serde_json::from_str(values[0].payload["text"].as_str().ok_or("missing typed value")?)?;
+            assert_eq!(value,json!({"$yao":{"kind":"record","type":"Decision","fields":{"ok":false,"count":9007199254740993_i64,"note":"中文 🧠"}}}));
+            let schema=bundles[0].return_binding.as_ref().unwrap().body_value_schema.as_ref().ok_or("typed generation schema missing")?;
+            assert_eq!(schema["$defs"]["Decision"]["properties"]["ok"]["type"],"boolean");
+            assert_eq!(schema["$defs"]["Decision"]["properties"]["count"]["type"],"integer");
+            assert_eq!(reply.payload["text"],"合成类型校验完成");
+        }
         let mut public=String::new();let mut chunks=0;let mut internal_chunks=0;
         while let Ok(event)=stream.try_recv(){if event.payload["stream"]["kind"]=="text_delta" {if event.payload["model_output_visibility"]=="internal" {internal_chunks+=1;} else {chunks+=1;public.push_str(event.payload["stream"]["text"].as_str().unwrap());}}}
-        assert!(!public.is_empty()&&chunks>1,"{case}: incremental public body missing: public_chars={}, chunks={}, internal_chunks={}",public.chars().count(),chunks,internal_chunks);
+        if case=="infer-record" {
+            assert!(public.is_empty(),"internal record must not become a public draft");
+            assert!(internal_chunks>1,"typed record must retain its internal value stream");
+        } else {
+            assert!(!public.is_empty()&&chunks>1,"{case}: incremental public body missing: public_chars={}, chunks={}, internal_chunks={}",public.chars().count(),chunks,internal_chunks);
+        }
         assert!(!public.contains("\"effects\"")&&!public.contains("\"execution\""),"metadata leaked into public body");
         let jobs=runtime.list_execution_jobs(ExecutionJobFilter{session_id:Some("TEST-sessionio-live".into()),include_terminal:true,..Default::default()}).await?;
         let coverage = [AnnotationKind::Title,AnnotationKind::Intent,AnnotationKind::ObservationResult,AnnotationKind::Result].into_iter().map(|kind| (format!("{kind:?}"),json!(bundles.iter().flat_map(|bundle|&bundle.records).filter(|record|record.kind==kind).count()))).collect::<serde_json::Map<_,_>>();
-        println!("{}",json!({"model":model,"case":case,"protocol":protocol,"model_requests":physical,"jobs":jobs.len(),"public_body_chunks":chunks,"internal_value_chunks":internal_chunks,"body":reply.payload["text"],"elapsed_ms":start.elapsed().as_millis(),"annotation_records":bundles.iter().map(|bundle|bundle.records.len()).collect::<Vec<_>>(),"annotation_coverage":coverage,"diagnostics":bundles.iter().map(|bundle|bundle.diagnostics.len()).collect::<Vec<_>>(),"host_reads":host.lock().unwrap().clone(),"file_reads":reads.lock().unwrap().clone()}));
+        println!("{}",json!({"model":model,"case":case,"protocol":protocol,"model_requests":physical,"tool_directory_sha256":directory_hashes,"jobs":jobs.len(),"public_body_chunks":chunks,"internal_value_chunks":internal_chunks,"body":reply.payload["text"],"elapsed_ms":start.elapsed().as_millis(),"annotation_records":bundles.iter().map(|bundle|bundle.records.len()).collect::<Vec<_>>(),"annotation_coverage":coverage,"diagnostics":bundles.iter().map(|bundle|bundle.diagnostics.len()).collect::<Vec<_>>(),"host_reads":host.lock().unwrap().clone(),"file_reads":reads.lock().unwrap().clone()}));
+        if !protocol.is_off() && matches!(case, "review" | "annotated-review" | "progress") {
+            for kind in [AnnotationKind::Title, AnnotationKind::Intent, AnnotationKind::Result] {
+                assert!(
+                    bundles.iter().flat_map(|bundle| &bundle.records).any(|record| record.kind == kind),
+                    "{model}/{case}: successful work alone does not verify annotation generation; missing {kind:?}"
+                );
+            }
+        }
     }
     Ok(())
 }
