@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { internalModelOutput } from "../packages/core/src/model-publication.js";
 import {
   LiveConversationProjection,
+  sessionIoDraftSchema,
   type StreamEvent,
 } from "../packages/core/src/live-conversation.js";
 let sequence = 0;
@@ -29,6 +30,87 @@ function projection() {
         : null,
   }));
 }
+test("IO 完整草稿恢复不依赖 started，迟到开始与终态不会重置或复活正文", () => {
+  const p = projection();
+  const draft = sessionIoDraftSchema.parse({
+    type: "output.started",
+    snapshot: true,
+    output_id: "io_text_a",
+    session_id: "s",
+    root_turn_id: "a",
+    thread_id: "t",
+    activation_id: "a",
+    model_attempt_id: "a",
+    model_output_visibility: "public",
+    timestamp: "2026-09-09T00:00:00Z",
+    delta_seq: 5,
+    text: "已生成的完整前缀",
+  });
+  p.consumeIoDraft(draft, draft.text);
+  assert.equal(p.snapshot()[0]!.text, draft.text);
+  assert.equal(p.snapshot()[0]!.streaming, true);
+  p.consume(
+    event("runtime/model_stream", {
+      attempt_id: "a",
+      activation_id: "a",
+      root_turn_id: "a",
+      stream: { kind: "started" },
+    }),
+  );
+  assert.equal(p.snapshot()[0]!.text, draft.text);
+  p.consume(
+    event("chat/reply", {
+      attempt_id: "a",
+      activation_id: "a",
+      root_turn_id: "a",
+      text: "最终正文",
+    }),
+  );
+  p.consumeIoDraft({ ...draft, delta_seq: 9 }, "迟到草稿");
+  assert.deepEqual(
+    p.snapshot().map((m) => m.text),
+    ["最终正文"],
+  );
+});
+
+test("IO infer 草稿保持真实类型来源，已接纳值不被迟到快照覆盖", () => {
+  const p = projection();
+  const source = { plan_execution_id: "plan", effect_sequence: 1 };
+  const draft = sessionIoDraftSchema.parse({
+    type: "output.started",
+    snapshot: true,
+    output_id: "io_text_child",
+    session_id: "s",
+    root_turn_id: "infer",
+    thread_id: "child",
+    activation_id: "child",
+    model_attempt_id: "model",
+    model_output_visibility: "internal",
+    inference_source: source,
+    timestamp: "2026-09-09T00:00:00Z",
+    delta_seq: 7,
+    text: '{"reply":"前缀',
+  });
+  p.consumeIoDraft(draft, draft.text);
+  assert.equal(p.snapshot()[0]!.kind, "evaluation");
+  assert.deepEqual(p.snapshot()[0]!.evaluation?.source, source);
+  assert.equal(p.snapshot()[0]!.streaming, true);
+  p.consume(
+    event("runtime/inference_value", {
+      activation_id: "child",
+      model_attempt_id: "model",
+      root_turn_id: "infer",
+      model_output_visibility: "internal",
+      inference_source: source,
+      validation: "accepted",
+      value: { reply: "完成" },
+      text: '{"reply":"完成"}',
+    }),
+  );
+  const before = p.snapshot();
+  p.consumeIoDraft(draft, "迟到快照");
+  assert.deepEqual(p.snapshot(), before);
+});
 test("internal infer JSON and prose stay out of publications; public JSON remains valid user content", () => {
   const p = projection();
   for (const text of [

@@ -69,21 +69,19 @@ export function profileFixtureReturnBinding(request: CapturedRequest) {
       // Runtime SExpr atoms deliberately allow literal layout inside quoted
       // strings. This fixture inspector is not a JSON/prose carrier parser.
       const value = token.startsWith('"')
-        ? token
-            .slice(1, -1)
-            .replace(
-              /\\([\s\S])/g,
-              (_, value: string) =>
-                (
-                  ({
-                    n: "\n",
-                    r: "\r",
-                    t: "\t",
-                    '"': '"',
-                    "\\": "\\",
-                  }) as Record<string, string>
-                )[value] ?? "\\" + value,
-            )
+        ? token.slice(1, -1).replace(
+            /\\([\s\S])/g,
+            (_, value: string) =>
+              (
+                ({
+                  n: "\n",
+                  r: "\r",
+                  t: "\t",
+                  '"': '"',
+                  "\\": "\\",
+                }) as Record<string, string>
+              )[value] ?? "\\" + value,
+          )
         : token;
       (stack.at(-1) ?? roots).push(value);
     }
@@ -633,6 +631,45 @@ export async function profileActualTransportFixture(
       },
       hold(marker: string) {
         holdMarker = marker;
+      },
+      /** Controlled provider timing, with the real Runtime/Host stream path.
+       * Keep the request open so assertions can subscribe after a prefix exists. */
+      beginHeldTextStream(marker: string, prefix: string) {
+        const item = held.get(marker);
+        assert.ok(item, "Expected held actual provider request");
+        assert.equal(item.request.stream, true);
+        const id = randomUUID();
+        item.response.writeHead(200, { "Content-Type": "text/event-stream" });
+        const delta = (value: unknown, finish: string | null = null) =>
+          item.response.write(
+            `data: ${JSON.stringify({ id, choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`,
+          );
+        delta({ role: "assistant", content: prefix });
+        return {
+          append(text: string) {
+            delta({ content: text });
+          },
+          finish(messages: Array<{ name: string; arguments: unknown }> = []) {
+            delta(
+              messages.length
+                ? {
+                    tool_calls: messages.map((tool, index) => ({
+                      index,
+                      id: randomUUID(),
+                      type: "function",
+                      function: {
+                        name: tool.name,
+                        arguments: JSON.stringify(tool.arguments),
+                      },
+                    })),
+                  }
+                : {},
+              messages.length ? "tool_calls" : "stop",
+            );
+            item.response.end("data: [DONE]\n\n");
+            held.delete(marker);
+          },
+        };
       },
       release(marker: string) {
         const item = held.get(marker);

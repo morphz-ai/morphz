@@ -1504,11 +1504,11 @@ const SAFETY_REFUSAL_RECOVERY_PROMPT: &str = r#"The previous physical model requ
 - The reduced Projection persists across Activations while the known failing historical evidence prefix is unchanged. A new message alone does not restore the full Inbox. After a context_tx retires at least one stale Observation from that prefix (normally after deriving its still-needed conclusion into Mind), Runtime submits one full-Context canary; only a valid canary clears recovery.
 - Address only the current root input. Do not repeat an older action merely because it appears in historical state, and do not reconstruct omitted sensitive details from memory.
 - If the current request is safe and answerable from Mind and the visible evidence, finish it normally. Use recall only for a narrow, necessary fact whose exact source is known.
-- Return one valid work/return boundary: non-empty ordinary text, required work calls, or exactly one no_reply call. The independent enabled Session IO companion message is communication, not a second work/control boundary."#;
+- Return one valid work/return boundary: the complete value using ordinary content or the equivalent native bound Session IO return, required work calls, or exactly one no_reply call. The independent enabled Session IO companion message is communication, not a second work/control boundary."#;
 
 const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"The Context is critical and this turn's ordinary context_tx allowance is exhausted. To prevent an impossible maintenance loop, this Evaluation is forced into final-reply. Return the original answer through Session IO with separate enabled annotations, honestly describing completed status, latest reliable verification, and remaining work; call no_reply as the only work/control call when no message is needed. For a bound active Objective, objective_update is the only additional control tool: submit completed first when evidence is sufficient to enter finalizing in this Activation; otherwise preserve the true state and let the Supervisor continue. Tool definitions remain visible, but Runtime phase admission still rejects unauthorized work."#;
 
-const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime will reject context_tx for this request to stop consecutive housekeeping, although its stable Function Calling schema remains visible for prompt-cache continuity. End the Evaluation with ordinary text and its enabled Session IO companion message, call no_reply as the only work/control call, or perform only physical actions truly required by the current task. context_tx becomes callable again after a new user or tool observation."#;
+const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime will reject context_tx for this request to stop consecutive housekeeping, although its stable Function Calling schema remains visible for prompt-cache continuity. End the Evaluation with its complete bound return value, using ordinary content or the equivalent native Session IO return, and its enabled companion message; alternatively call no_reply as the only work/control call, or perform only physical actions truly required by the current task. The actual caller and declared business type do not change during cooldown. context_tx becomes callable again after a new user or tool observation."#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
 const DEFAULT_NO_REPLY_WAIT_SECS: u64 = 60;
 const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
@@ -1525,7 +1525,7 @@ const RESPONSE_PROTOCOL_CONTENT_PREVIEW_CHARS: usize = 2_048;
 const RESPONSE_PROTOCOL_TOOL_CALL_LIMIT: usize = 8;
 const EMPTY_RESPONSE_DETAIL: &str =
     "Model response contained neither non-empty text nor a tool call";
-const OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR: &str = "Objective closure-review protocol error: the Runtime reports only that all direct child objectives are terminal; it does not decide whether the parent is complete. This evaluation cannot end with ordinary text or no_reply while leaving closure unresolved. Persist one decision: objective_update to completed, blocked, or an exact wait; perform real work; or create a necessary child objective.";
+const OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR: &str = "Objective closure-review protocol error: the Runtime reports only that all direct child objectives are terminal; it does not decide whether the parent is complete. This evaluation cannot end with an implicit or native bound return or no_reply while leaving closure unresolved. Persist one decision: objective_update to completed, blocked, or an exact wait; perform real work; or create a necessary child objective. Independent enabled Session IO annotations do not resolve closure or create work authority.";
 const OBJECTIVE_FINALIZATION_PROMPT: &str = r#"The Runtime persisted your Objective completion decision but has not ended the Objective. You are still in the same Activation. Produce the user-facing final delivery from the complete evidence you just audited:
 - Return a complete normal reply using the active response encoding and its enabled annotations, without work tool calls. An implicit reply and an offered explicit reply are equivalent. Do not shorten or omit the final report because you explained parts earlier.
 - If there is truly nothing to send, call no_reply(mode=silent) as the only work/control call; enabled companion Session IO is not work.
@@ -13453,10 +13453,9 @@ impl Orchestrator {
         if thread.executor_kind != "plan_infer" {
             stable_work_tools.push(no_reply_tool_definition());
         }
-        // Pressure measurement uses the ordinary work contract. Explicit
-        // critical/final phase transitions may later narrow the physical
-        // schema because those transitions already invalidate the Context
-        // prefix and rely on tool restriction for protocol safety.
+        // Pressure measurement and Provider requests use the same stable route
+        // contract. Critical/final phases narrow execution admission below,
+        // never the schema bytes measured here or offered to the Provider.
         let measurement_tools = stable_work_tools.clone();
         let prompt_measurement = self
             .refresh_context_pressure(
@@ -27238,6 +27237,11 @@ mod tests {
         }
         assert!(super::CRITICAL_MAINTENANCE_PROMPT.contains("physical-work admission"));
         assert!(super::CONTEXT_TX_COOLDOWN_PROMPT.contains("only work/control call"));
+        assert!(super::CONTEXT_TX_COOLDOWN_PROMPT.contains("declared business type do not change"));
+        assert!(super::SAFETY_REFUSAL_RECOVERY_PROMPT
+            .contains("equivalent native bound Session IO return"));
+        assert!(super::OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR
+            .contains("implicit or native bound return"));
         assert!(super::OBJECTIVE_FINALIZATION_PROMPT.contains("only work/control call"));
     }
 

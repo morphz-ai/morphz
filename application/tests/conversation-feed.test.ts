@@ -6,7 +6,35 @@ import { ConversationFeed } from "../apps/service/src/conversation-feed.js";
 import type { ConversationStream } from "../packages/core/src/live-conversation.js";
 
 test("实时订阅使用服务端凭据、隔离 Session、修复断线且撤销即关闭", async () => {
-  const server = createServer((_req, res) => res.end("{}"));
+  const server = createServer((req, res) => {
+    if (!req.url?.includes("/io/stream")) {
+      res.end("{}");
+      return;
+    }
+    assert.equal(req.headers.authorization, "Bearer private-test-token");
+    assert.ok(!req.url.includes("private-test-token"));
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write('data: {"type":"stream.opened"}\n\n');
+    // The real start and first chunks happened before this subscription.
+    const draft = {
+      type: "output.started",
+      snapshot: true,
+      output_id: "io_text_a",
+      session_id: "owned",
+      root_turn_id: "root",
+      thread_id: "thread",
+      activation_id: "a",
+      model_attempt_id: "a",
+      model_output_visibility: "public",
+      timestamp: "2026-09-09T00:00:00Z",
+      delta_seq: 5,
+      text: "partial",
+    };
+    res.write(
+      `data: ${JSON.stringify({ ...draft, session_id: "foreign", text: "secret foreign content" })}\n\n`,
+    );
+    res.write(`data: ${JSON.stringify(draft)}\n\n`);
+  });
   const sockets = new WebSocketServer({ noServer: true });
   server.on("upgrade", (req, socket, head) => {
     assert.equal(req.headers.authorization, "Bearer private-test-token");
@@ -123,6 +151,7 @@ test("实时订阅使用服务端凭据、隔离 Session、修复断线且撤销
     feed.close();
     for (const ws of sockets.clients) ws.terminate();
     await new Promise<void>((r) => sockets.close(() => r()));
+    server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));
   }
 });

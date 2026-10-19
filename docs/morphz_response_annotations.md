@@ -107,6 +107,13 @@ tool_call_id 关联，不能凭数组第一项推定某个业务操作成功。
 保留既有草稿身份、顺序、失败状态、断线快照及终态去重。infer 返回终态
 清理同一草稿，晚到片段不能复活。活动说明只解释真实执行，不改变事实。
 
+应用的正文直播直接读取既有 Session IO SSE。完整草稿快照携带 Runtime 实际
+Thread／Activation／model attempt／infer 来源和首次可见时间；随后以同一
+output_id、delta_seq 接续。应用不再依赖是否恰好收到 WebSocket 的一次性
+started，WebSocket 只继续提供工作与持久事实，不作为第二份正文增量。
+重复序号丢弃；缺口重新取得完整快照，不拼接未知前缀的后缀。授权、Session
+隔离、撤销、取消、终态和内存上限仍逐层检查；显示草稿不是业务返回已通过校验。
+
 discuss-script 已是单个逻辑 infer；Yao 后续直接取其 reply 字段。
 应用已有根据真实 Harness 声明投影该字段的呈现，不靠模型 JSON 恰好有
 reply 键来猜测。此链路需同时验证正文增量呈现与最终去重；读取资料造成

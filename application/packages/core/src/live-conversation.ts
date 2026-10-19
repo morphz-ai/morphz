@@ -68,6 +68,23 @@ export type StreamEvent = {
   sequence?: number;
   payload: Record<string, unknown>;
 };
+/** Actual Runtime IO provenance, not model arguments or a reconstructed start event. */
+export const sessionIoDraftSchema = z.object({
+  type: z.enum(["output.started", "output.delta", "output.aborted"]),
+  output_id: z.string().min(1).max(256),
+  session_id: z.string().min(1),
+  root_turn_id: z.string().min(1),
+  thread_id: z.string().min(1),
+  activation_id: z.string().min(1),
+  model_attempt_id: z.string().min(1),
+  model_output_visibility: z.enum(["public", "internal", "evaluation"]),
+  inference_source: evaluationSourceSchema.nullish(),
+  timestamp: z.string().refine((value) => Number.isFinite(Date.parse(value))),
+  delta_seq: z.number().int().nonnegative().safe(),
+  text: z.string(),
+  snapshot: z.boolean().optional(),
+});
+export type SessionIoDraft = z.infer<typeof sessionIoDraftSchema>;
 type Attempt = {
   message: LiveMessage;
   activation: string;
@@ -102,6 +119,79 @@ export class LiveConversationProjection {
       e: StreamEvent,
     ) => Omit<LiveMessage, "id" | "text" | "kind" | "createdAt">,
   ) {}
+  /** Complete prefix from the existing IO snapshot/sequence reducer. WebSocket
+   * start timing cannot authorize a suffix or erase an already admitted value. */
+  consumeIoDraft(draft: SessionIoDraft, text: string) {
+    const activation = draft.activation_id,
+      attempt = draft.model_attempt_id;
+    if (
+      this.cancelledRoots.has(draft.root_turn_id) ||
+      this.cancelled.has(activation)
+    )
+      return;
+    const event: StreamEvent = {
+      id: draft.output_id,
+      topic: "session/io_stream",
+      timestamp: draft.timestamp,
+      payload: { ...draft },
+    };
+    const incomplete = draft.type === "output.aborted";
+    if (draft.model_output_visibility !== "public") {
+      if (this.settledEvaluations.has(activation)) return;
+      const id = evaluationMessageId(
+        activation,
+        draft.inference_source,
+        draft.root_turn_id,
+      );
+      const previous = this.messages.get(id);
+      if (
+        previous?.evaluation?.validation &&
+        previous.evaluation.validation !== "pending"
+      )
+        return;
+      if (
+        previous?.modelAttemptId &&
+        previous.modelAttemptId !== attempt &&
+        Date.parse(previous.createdAt) > Date.parse(draft.timestamp)
+      )
+        return;
+      this.evaluationAttempts.set(activation, {
+        id: attempt,
+        continuation: incomplete,
+        closed: incomplete,
+      });
+      this.messages.set(id, {
+        ...this.base(event),
+        id,
+        kind: "evaluation",
+        text,
+        publicationKey: attempt,
+        streaming: !incomplete,
+        incomplete,
+        evaluation: {
+          activationId: activation,
+          validation: "pending",
+          ...(draft.inference_source ? { source: draft.inference_source } : {}),
+        },
+      });
+      return;
+    }
+    if (this.resolved.has(attempt)) return;
+    const previous = this.attempts.get(attempt);
+    this.attempts.set(attempt, {
+      activation,
+      continuation: incomplete,
+      tools: previous?.tools ?? new Map(),
+      message: {
+        ...this.base(event),
+        id: `stream:${attempt}`,
+        text,
+        publicationKey: attempt,
+        streaming: !incomplete,
+        incomplete,
+      },
+    });
+  }
   private retainAttempt(attempt: Attempt) {
     if (attempt.message.text)
       this.messages.set(attempt.message.id, {
@@ -304,6 +394,7 @@ export class LiveConversationProjection {
       const s = obj(p.stream),
         kind = str(s.kind);
       if (kind === "started") {
+        if (this.attempts.has(attemptId)) return;
         const previous = [...this.attempts.entries()].filter(
           ([, a]) => a.activation === activation && a.continuation,
         );

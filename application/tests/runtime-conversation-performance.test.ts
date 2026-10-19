@@ -111,6 +111,21 @@ async function platformObserverFixture(t: import("node:test").TestContext) {
       return { entries: [], next_before: null };
     if (url.pathname.endsWith("/events"))
       return { latest_sequence: 438, events: [] };
+    const eventLookup = /\/events\/([^/]+)$/.exec(url.pathname);
+    if (eventLookup) {
+      // This fixture exercises the bounded source resolver for synthetic
+      // execution roots. The production observer first reads that exact root,
+      // never guesses that its identity is an original user input.
+      return {
+        event: {
+          id: decodeURIComponent(eventLookup[1]!),
+          sequence: 438,
+          timestamp: "2026-09-30T00:00:00Z",
+          topic: "chat/tool_result",
+          payload: { session_id: sessionId },
+        },
+      };
+    }
     const rootId = url.pathname.split("/").at(-2)!;
     const root = /^root-(\d+)$/.exec(rootId);
     const sourceIndex =
@@ -771,7 +786,11 @@ test("持久恢复状态来自精确 Runtime 事件，保留真实时间；普�
     const recovery = messages.find((m) => m.inputId === "input-0")!;
     assert.equal(recovery.kind, "progress");
     assert.equal(recovery.createdAt, stamp);
-    assert.deepEqual(recovery.providerRecovery, { startedAt: recoveredAt });
+    assert.deepEqual(recovery.providerRecovery, {
+      startedAt: recoveredAt,
+      phase: "waiting",
+      reason: "unknown",
+    });
     assert.equal(recovery.rootId, "root-0");
     assert.equal(recovery.threadId, "thread-0");
     assert.equal(

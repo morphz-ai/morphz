@@ -43,6 +43,190 @@ test("metadata follows frozen Runtime binding; tool definitions never select ann
 });
 
 test(
+  "actual Runtime + Host IO: late subscription restores the complete prefix, streams before completion and settles once",
+  {
+    skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",
+    timeout: 120_000,
+  },
+  async () => {
+    const f = await profileActualTransportFixture();
+    const abort = new AbortController();
+    const readers: Promise<void>[] = [];
+    const projectId = "io_" + randomUUID().replaceAll("-", "");
+    const conversationId = "conversation_" + randomUUID().replaceAll("-", "");
+    const marker = "TEST_LATE_IO_" + randomUUID();
+    const prefix = "第一段在订阅前已经生成。\n\n";
+    const suffix = "第二段在原执行结束前实时到达。";
+    const frames: Array<{
+      messages?: Array<{ kind: string; text: string; streaming?: boolean }>;
+    }> = [];
+    const eventually = async (ready: () => boolean) => {
+      for (let i = 0; i < 300; i++) {
+        if (ready()) return;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      assert.fail("Actual Session IO did not reach the authorized Host view");
+    };
+    const consume = async (
+      response: Response,
+      accept: (value: any) => void,
+    ) => {
+      assert.equal(response.status, 200);
+      assert.ok(response.body);
+      let buffer = "";
+      const decoder = new TextDecoder();
+      try {
+        for await (const chunk of response.body) {
+          buffer += decoder.decode(chunk, { stream: true });
+          let end: number;
+          while ((end = buffer.indexOf("\n\n")) >= 0) {
+            const frame = buffer.slice(0, end);
+            buffer = buffer.slice(end + 2);
+            const data = frame
+              .split("\n")
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).trimStart())
+              .join("\n");
+            if (data) accept(JSON.parse(data));
+          }
+        }
+      } catch (error) {
+        if (!abort.signal.aborted) throw error;
+      }
+    };
+    try {
+      await f.client.call(
+        "projects.create",
+        { commandId: randomUUID(), projectId, title: "TEST Session IO 迟订阅" },
+        f.options,
+      );
+      f.hold(marker);
+      await f.client.call(
+        "platform.message",
+        {
+          commandId: randomUUID(),
+          operation: {
+            type: "record-input",
+            projectId,
+            conversationId,
+            artifactId: null,
+            artifactRevision: null,
+            selection: "",
+            body: marker,
+            targetActantId: "morphz-agent",
+            newConversation: { title: marker },
+          },
+        },
+        f.options,
+      );
+      await f.waitRequest(marker);
+      const thread = f.sql<{ id: string; session_id: string }>(
+        "SELECT id,session_id FROM threads ORDER BY rowid DESC LIMIT 1",
+      )[0]!;
+      const producing = f.beginHeldTextStream(marker, prefix);
+      let runtimePrefix = false;
+      readers.push(
+        consume(await f.ioStream(thread.session_id, abort.signal), (value) => {
+          if (value.type?.startsWith("output.") && value.text === prefix)
+            runtimePrefix = true;
+        }),
+      );
+      await eventually(() => runtimePrefix);
+      // The Host did not subscribe to started or the first delta. Its only
+      // truthful recovery is the existing complete Session IO draft snapshot.
+      readers.push(
+        consume(
+          await fetch(
+            `${f.origin}/api/platform/projects/${projectId}/conversations/${conversationId}/stream`,
+            {
+              headers: { "X-Morphz-Token": f.options.identityGeneration },
+              signal: abort.signal,
+            },
+          ),
+          (value) => frames.push(value),
+        ),
+      );
+      const visible = (text: string) =>
+        frames.some((frame) =>
+          frame.messages?.some(
+            (message) =>
+              message.kind === "reply" &&
+              message.text === text &&
+              message.streaming,
+          ),
+        );
+      await eventually(() => visible(prefix));
+      producing.append(suffix);
+      await eventually(() => visible(prefix + suffix));
+      assert.equal(
+        f.sql<{ status: string }>(
+          "SELECT status FROM threads WHERE id = ?",
+          thread.id,
+        )[0]?.status,
+        "open",
+      );
+      assert.equal(
+        f.sql<{ n: number }>(
+          "SELECT count(*) AS n FROM thread_activations a JOIN threads t ON t.context_id = a.context_id AND t.session_id = a.session_id AND t.root_turn_id = a.root_turn_id WHERE t.id = ? AND a.status = 'running'",
+          thread.id,
+        )[0]!.n,
+        1,
+        "The producing Activation must still be running while its body is visible",
+      );
+      producing.finish([
+        fixtureAnnotationsMessage({
+          execution: {
+            title: "TEST 迟订阅流式返回",
+            result: "完整前缀和实时后缀已显示",
+          },
+        }),
+      ]);
+      await eventually(
+        () =>
+          f.sql<{ status: string }>(
+            "SELECT status FROM threads WHERE id = ?",
+            thread.id,
+          )[0]?.status === "completed",
+      );
+      await eventually(() =>
+        frames.some((frame) =>
+          frame.messages?.some(
+            (message) =>
+              message.kind === "reply" &&
+              message.text === prefix + suffix &&
+              !message.streaming,
+          ),
+        ),
+      );
+      const final = frames
+        .at(-1)!
+        .messages!.filter((message) => message.kind === "reply");
+      assert.equal(final.length, 1);
+      assert.equal(final[0]!.text, prefix + suffix);
+      assert.equal(
+        f.requests.length,
+        1,
+        "IO delivery cannot cause another infer",
+      );
+      assert.equal(
+        f.sql<{ n: number }>("SELECT count(*) AS n FROM execution_jobs")[0]!.n,
+        0,
+      );
+      assert.equal(
+        f.sql<{ n: number }>(
+          "SELECT count(*) AS n FROM events WHERE topic = 'runtime/response_protocol_error'",
+        )[0]!.n,
+        0,
+      );
+    } finally {
+      abort.abort();
+      await Promise.allSettled(readers);
+      await f.close();
+    }
+  },
+);
+
+test(
   "actual Runtime setting: disabling during an active response preserves its contract, new input is off without annotations",
   {
     skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",

@@ -64,6 +64,31 @@ mod tests {
             .any(|d| d["output_id"] == "io_text_m99"));
     }
     #[test]
+    fn draft_snapshot_carries_actual_infer_provenance_and_first_visible_time() {
+        let stream = Streams::default();
+        let mut started = event("root", "attempt", "started", "");
+        started
+            .payload
+            .insert("model_output_visibility".into(), json!("internal"));
+        started.payload.insert(
+            "inference_source".into(),
+            json!({"plan_execution_id":"plan", "effect_sequence":2}),
+        );
+        stream.observe(&mut started);
+        let mut text = started.clone();
+        text.timestamp += chrono::Duration::seconds(1);
+        text.payload.insert(
+            "stream".into(),
+            json!({"kind":"text_delta", "text":"typed value"}),
+        );
+        stream.observe(&mut text);
+        let snapshot = &stream.snapshots("s")[0];
+        assert_eq!(snapshot["model_output_visibility"], "internal");
+        assert_eq!(snapshot["inference_source"]["plan_execution_id"], "plan");
+        assert_eq!(snapshot["timestamp"], json!(text.timestamp));
+        assert_eq!(snapshot["text"], "typed value");
+    }
+    #[test]
     fn infer_and_thread_returns_close_only_their_actual_root_draft() {
         for topic in ["plan/infer_result", "runtime/thread_result"] {
             let stream = Streams::default();
@@ -161,7 +186,7 @@ impl Streams {
                 }
             }
             state.order.push_back(output_id.clone());
-            state.drafts.insert(output_id.clone(), json!({"type":"output.started","output_id":output_id,"root_turn_id":root,"session_id":event.payload.get("session_id"),"thread_id":event.payload.get("thread_id"),"activation_id":event.payload.get("activation_id"),"model_attempt_id":attempt,"delta_seq":0,"text":"","complete":false}));
+            state.drafts.insert(output_id.clone(), json!({"type":"output.started","output_id":output_id,"root_turn_id":root,"session_id":event.payload.get("session_id"),"thread_id":event.payload.get("thread_id"),"thread_generation":event.payload.get("thread_generation"),"activation_id":event.payload.get("activation_id"),"model_attempt_id":attempt,"model_output_visibility":event.payload.get("model_output_visibility"),"inference_source":event.payload.get("inference_source"),"timestamp":event.timestamp,"delta_seq":0,"text":"","complete":false}));
         }
         let draft = state.drafts.get_mut(&output_id).expect("draft inserted");
         if draft["aborted"] == true {
@@ -183,7 +208,13 @@ impl Streams {
                     update["text"] = json!("");
                 } else {
                     let seq = draft["delta_seq"].as_u64().unwrap_or_default() + 1;
-                    draft["text"] = json!(format!("{current}{text}"));
+                    let first_visible = current.is_empty();
+                    let prefix = format!("{current}{text}");
+                    if first_visible {
+                        draft["timestamp"] = json!(event.timestamp);
+                        update["timestamp"] = json!(event.timestamp);
+                    }
+                    draft["text"] = json!(prefix);
                     draft["delta_seq"] = json!(seq);
                     update["type"] = json!("output.delta");
                     update["operation"] = json!("text.append");

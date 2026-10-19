@@ -34,6 +34,16 @@ Session IO 格式、工作续接、维护／收尾／日程回执／拒绝恢复
 | 原生 IO 回执被通用工具回执错误赋予 Observation 引用 | IO 回执只关闭自己的调用；不生成 Recall 引用，也不允许作为工作结果注解来源 |
 | 模型流事件没有实际 model_attempt_id，Session IO 草稿关联无法建立 | 从真实物理请求携带该 ID；用真实 DeepSeek 的提前到达增量核验，不以终态重放代替流式显示 |
 
+另查到提示承诺与应用实际接线不符：Host 原本仍依赖 WebSocket 的一次性 started，
+订阅稍晚便丢弃 infer 后续正文。已改用现有 Session IO 完整快照与增量作为唯一
+正文直播来源；工作和持久事实继续沿原事件流。新增真实 Runtime＋Host 的迟订阅
+测试：先生成正文前缀，再订阅应用，断言完整前缀和后续文字都在生产 Activation
+仍运行时可见，终态只保留一份回答，不补推理。
+
+对原应用当前启用的 Agent Custom（revision 87）也作了只读核对：人格、表达和
+主动性要求没有注入退役回复协议；其约束明确不改变权限、事实或协议。没有替用户
+改写自定义资料。本次也未修改 script-studio 2.3.0 的工具能力或另加讨论特例。
+
 discuss-script 源码仍为一个逻辑 infer，后面确定性投影 reply；没有加入第二次模型
 润色。现有应用呈现依赖经授权的 Harness 声明，不从任意模型字段猜业务语义。
 正常资料读取产生的物理往返须与重复 infer 分开计数。
@@ -54,17 +64,21 @@ discuss-script 源码仍为一个逻辑 infer，后面确定性投影 reply；�
 
 ## 已执行的核验
 
-- `cargo test -p morphz --lib -- --test-threads=4`：1560 通过、0 失败、13 原有忽略。
+- 上一轮完整 `cargo test -p morphz --lib -- --test-threads=1`：1562 通过、0 失败、
+  13 原有忽略；新增 IO 草稿来源／快照／终态的 3 项定向测试通过，完整重跑另核最终日志。
 - response_annotations 的 Runtime／ingress／steer／store 集成：32 项实际断言通过；
   PostgreSQL 用独立临时实例另跑 store conformance，来源／伴随消息的原子回滚与幂等通过。
-- 经 `npm test -- <相关文件>` 的实际 Runtime＋Host：13 项通过，0 跳过；
+- 经 `npm test -- <相关文件>` 的实际 Runtime＋Host：15 项通过，0 跳过；
   Session IO、应用注解／活动、类型值呈现、设置与错误呈现等领域回归另有 53 项通过。
+- IO 草稿、Host Feed、授权／撤销／断线／缺口与历史读取：47 项通过，0 跳过。
+  实时来源测试的夹具已补齐生产代码实际使用的 exact-root 读取；没有修改生产权限规则。
 - 实际 script-studio Harness 的合成讨论：无资料读取时 1 次物理请求；项目分段读取时
   4 次物理请求；两种均为 1 个逻辑 infer、无创作写入、无外层模型改写。
 - 本机已配置 `deepseek-flash`、OpenAI Responses 路由真实调用：普通 on/off 均为
-  1 次模型请求、0 工作 Job，分别有 82／144 个终态前正文增量；工具定义的顺序与
-  完整字节哈希相同。discuss-script 为 1 个 infer、1 次模型请求、139 个提前增量，
-  声明类型验证通过，父 Plan 确定性发布 reply，标题和结果注解真实存在。
+  1 次模型请求、0 工作 Job，分别有 152／130 个终态前正文增量；工具定义的顺序与
+  完整字节哈希相同。discuss-script 为 1 个 infer、1 次模型请求，
+  本轮实际产生 155 个生产 infer 终态前增量、应用正文 5 个不同显示值；声明类型
+  验证通过，父 Plan 确定性发布 reply，标题和结果注解真实存在。
 
 这些是提交前工作树的验证，不是 Provider 缓存命中率或对任意模型的保证。
 原始合成证据和构建摘要保留在本机私有验收目录，不含请求认证头。

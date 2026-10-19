@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { WebSocketServer } from "ws";
 import { ConversationFeed } from "../packages/application/src/conversation-feed.js";
 import type {
@@ -29,7 +29,21 @@ const reply = (
   payload: { session_id: session, root_turn_id: "root", text: id },
 });
 async function fixture() {
-  const server = createServer((_request, response) => response.end("{}"));
+  const io = new Set<ServerResponse>();
+  let ioOpened = 0;
+  const server = createServer((request, response) => {
+    if (!request.url?.includes("/io/stream")) {
+      response.end("{}");
+      return;
+    }
+    assert.equal(request.headers.authorization, "Bearer fixture-credential");
+    assert.ok(!request.url.includes("fixture-credential"));
+    response.writeHead(200, { "Content-Type": "text/event-stream" });
+    response.write('data: {"type":"stream.opened"}\n\n');
+    ioOpened++;
+    io.add(response);
+    response.on("close", () => io.delete(response));
+  });
   const sockets = new WebSocketServer({ noServer: true });
   server.on("upgrade", (request, socket, head) => {
     assert.equal(request.headers.authorization, "Bearer fixture-credential");
@@ -87,6 +101,11 @@ async function fixture() {
     accepted,
     durable,
     sockets,
+    ioSend: (value: unknown) => {
+      for (const response of io)
+        response.write(`data: ${JSON.stringify(value)}\n\n`);
+    },
+    ioOpened: () => ioOpened,
     snapshot: () => snapshot,
     failed: () => failed,
     sessions: (value: string[]) => {
@@ -102,6 +121,7 @@ async function fixture() {
       feed.close();
       for (const ws of sockets.clients) ws.terminate();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));
+      server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
@@ -169,6 +189,20 @@ test("真实WS与持久补读使用同一等待投影，不输出no_reply假工�
     send("runtime/model_stream", {
       attempt_id: "wait",
       stream: { kind: "text_delta", text: "公开进度" },
+    });
+    f.ioSend({
+      type: "output.started",
+      snapshot: true,
+      output_id: "io_text_wait",
+      session_id: "owned",
+      root_turn_id: "root",
+      thread_id: "execution",
+      activation_id: "wait",
+      model_attempt_id: "wait",
+      model_output_visibility: "public",
+      timestamp: "2026-10-09T00:00:00Z",
+      delta_seq: 1,
+      text: "公开进度",
     });
     send("runtime/model_stream", {
       attempt_id: "wait",
@@ -345,6 +379,83 @@ test("健康Feed在撤权hint后关闭，关闭后的在途请求不再发布", 
     const requests = f.requests.length;
     await f.feed.sync();
     assert.equal(f.requests.length, requests);
+  } finally {
+    await f.close();
+  }
+});
+
+test("IO 序列缺口只从完整快照恢复，重复增量与 WS 后缀不能冒充正文", async () => {
+  const f = await fixture();
+  const draft = {
+    type: "output.started",
+    snapshot: true,
+    output_id: "io_text_value",
+    session_id: "owned",
+    root_turn_id: "root",
+    thread_id: "thread",
+    activation_id: "value",
+    model_attempt_id: "value",
+    model_output_visibility: "public",
+    timestamp: "2026-10-02T13:00:00Z",
+    delta_seq: 5,
+    text: "完整前缀",
+  };
+  try {
+    f.ioSend(draft);
+    await wait(() => f.snapshot().messages.some((m) => m.text === draft.text));
+    f.ioSend({
+      ...draft,
+      type: "output.delta",
+      snapshot: false,
+      delta_seq: 6,
+      text: "＋增量",
+    });
+    f.ioSend({
+      ...draft,
+      type: "output.delta",
+      snapshot: false,
+      delta_seq: 6,
+      text: "重复不应出现",
+    });
+    await wait(() =>
+      f.snapshot().messages.some((m) => m.text === "完整前缀＋增量"),
+    );
+    const opened = f.ioOpened();
+    f.ioSend({
+      ...draft,
+      type: "output.delta",
+      snapshot: false,
+      delta_seq: 8,
+      text: "缺失前缀的后缀",
+    });
+    await wait(() => f.ioOpened() > opened && f.snapshot().connected);
+    f.ioSend({ ...draft, delta_seq: 8, text: "完整恢复前缀" });
+    await wait(() =>
+      f.snapshot().messages.some((m) => m.text === "完整恢复前缀"),
+    );
+    for (const ws of f.sockets.clients)
+      ws.send(
+        JSON.stringify({
+          id: "ws-suffix",
+          topic: "runtime/model_stream",
+          timestamp: draft.timestamp,
+          payload: {
+            session_id: "owned",
+            attempt_id: "value",
+            activation_id: "value",
+            root_turn_id: "root",
+            stream: { kind: "text_delta", text: "WS 后缀不应出现" },
+          },
+        }),
+      );
+    await pause(80);
+    assert.deepEqual(
+      f
+        .snapshot()
+        .messages.filter((m) => m.kind !== "tool")
+        .map((m) => m.text),
+      ["完整恢复前缀"],
+    );
   } finally {
     await f.close();
   }

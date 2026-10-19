@@ -2,6 +2,7 @@ import WebSocket from "ws";
 import { z } from "zod";
 import {
   LiveConversationProjection,
+  sessionIoDraftSchema,
   type ConversationStream,
   type LiveMessage,
   type StreamEvent,
@@ -18,6 +19,8 @@ const eventSchema = z.object({
 });
 type Connection = {
   socket?: WebSocket;
+  ioAbort?: AbortController;
+  ioReady: boolean;
   projection: LiveConversationProjection;
   cursor: number;
   ready: boolean;
@@ -25,7 +28,8 @@ type Connection = {
   loading?: Promise<void>;
 };
 /** Read-only, per-authorized-conversation observer. Credentials never reach the renderer.
- * WebSocket supplies deltas; durable pagination repairs gaps without replaying work. */
+ * Session IO owns complete draft prefixes and deltas. WebSocket carries work
+ * and durable facts; durable pagination repairs gaps without replaying work. */
 export class ConversationFeed {
   private connections = new Map<string, Connection>();
   private disposed = false;
@@ -153,6 +157,7 @@ export class ConversationFeed {
       if (authorized.has(id)) continue;
       this.connections.delete(id);
       connection.socket?.terminate();
+      connection.ioAbort?.abort();
     }
     await Promise.all(
       sessionIds.map((id) => {
@@ -164,6 +169,7 @@ export class ConversationFeed {
             ),
             cursor: Math.max(0, this.options.initialCursor?.(id) ?? 0),
             ready: false,
+            ioReady: false,
             retryAt: 0,
           };
           this.connections.set(id, c);
@@ -183,6 +189,14 @@ export class ConversationFeed {
     if (!parsed.success) return;
     const event = parsed.data;
     if (event.payload.session_id !== id) return;
+    // Body text has one canonical source, including late subscriptions. Work
+    // tool generation remains observable through the ordinary Event stream.
+    if (
+      event.topic === "runtime/model_stream" &&
+      (event.payload.stream as { kind?: unknown } | undefined)?.kind ===
+        "text_delta"
+    )
+      return;
     this.options.onEvent?.(id, event);
     c.projection.consume(event);
     this.notify();
@@ -240,12 +254,17 @@ export class ConversationFeed {
               done();
               return;
             }
-            c.ready = true;
+            c.ready = c.ioReady;
             done();
             this.notify();
           });
           ws.once("close", done);
         });
+      }
+      if (!c.ioAbort && Date.now() >= c.retryAt) {
+        const controller = new AbortController();
+        c.ioAbort = controller;
+        void this.readIo(id, c, controller);
       }
       // Subscribe before history; use the durable cursor, never transient sequences.
       // Yield between pages so long histories do not delay sending new input.
@@ -265,7 +284,7 @@ export class ConversationFeed {
         this.accept(id, c, event);
         c.cursor = Math.max(c.cursor, event.sequence ?? 0);
       }
-      c.ready = c.socket?.readyState === WebSocket.OPEN;
+      c.ready = c.socket?.readyState === WebSocket.OPEN && c.ioReady;
       if (data.events.length === 1000 && !this.disposed && !this.catchupTimer)
         this.catchupTimer = setTimeout(() => {
           this.catchupTimer = undefined;
@@ -278,13 +297,116 @@ export class ConversationFeed {
       this.notify();
     }
   }
+  private async readIo(id: string, c: Connection, controller: AbortController) {
+    const prefixes = new Map<string, { sequence: number; text: string }>();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await this.options.authorize();
+      if (!this.active(id, c)) return;
+      // This is the existing Session IO cursor codec, using the actual durable
+      // Event head already captured for this authorized subscription.
+      const cursor = Buffer.from(JSON.stringify([id, c.cursor])).toString(
+        "base64url",
+      );
+      const url = new URL(
+        `/api/sessions/${encodeURIComponent(id)}/io/stream`,
+        this.options.url,
+      );
+      url.searchParams.set("after", cursor);
+      timer = setTimeout(() => controller.abort(), 1500);
+      const response = await fetch(url, {
+        headers: this.options.headers(),
+        signal: controller.signal,
+        redirect: "error",
+      });
+      clearTimeout(timer);
+      if (
+        !response.ok ||
+        !response.body ||
+        !response.headers.get("content-type")?.startsWith("text/event-stream")
+      )
+        throw new Error("IO stream unavailable");
+      await this.options.authorize();
+      if (!this.active(id, c) || c.ioAbort !== controller) return;
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      let buffer = "";
+      for await (const chunk of response.body) {
+        await this.options.authorize();
+        if (!this.active(id, c) || c.ioAbort !== controller) return;
+        buffer += decoder.decode(chunk, { stream: true });
+        if (Buffer.byteLength(buffer) > 4 * 1024 * 1024)
+          throw new Error("IO frame exceeds bounds");
+        let end: number;
+        while ((end = buffer.indexOf("\n\n")) >= 0) {
+          const frame = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          const data = frame
+            .split("\n")
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart())
+            .join("\n");
+          if (!data) continue;
+          const raw: unknown = JSON.parse(data);
+          if ((raw as { type?: unknown })?.type === "stream.opened") {
+            c.ioReady = true;
+            c.ready = c.socket?.readyState === WebSocket.OPEN;
+            this.notify();
+            continue;
+          }
+          if ((raw as { type?: unknown })?.type === "stream.reset")
+            throw new Error("IO snapshot reset required");
+          const parsed = sessionIoDraftSchema.safeParse(raw);
+          if (!parsed.success || parsed.data.session_id !== id) continue;
+          const draft = parsed.data;
+          const previous = prefixes.get(draft.output_id);
+          let text: string;
+          if (draft.snapshot === true || draft.type === "output.started") {
+            if (previous && draft.delta_seq < previous.sequence) continue;
+            text = draft.text;
+          } else if (draft.type === "output.aborted") {
+            text = previous?.text ?? "";
+          } else {
+            if (previous && draft.delta_seq <= previous.sequence) continue;
+            if (draft.delta_seq !== (previous?.sequence ?? 0) + 1)
+              throw new Error("IO delta gap requires its complete snapshot");
+            text = (previous?.text ?? "") + draft.text;
+          }
+          if (Buffer.byteLength(text) > 256 * 1024)
+            throw new Error("IO draft exceeds bounds");
+          if (!previous && prefixes.size >= 64)
+            throw new Error("IO draft count exceeds bounds");
+          prefixes.set(draft.output_id, { sequence: draft.delta_seq, text });
+          c.projection.consumeIoDraft(draft, text);
+          this.notify();
+        }
+      }
+    } catch {
+      // No suffix fallback: reconnect to the existing authoritative IO draft
+      // snapshot, while keeping the durable cursor and already shown history.
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      if (this.active(id, c) && c.ioAbort === controller) {
+        c.ioAbort = undefined;
+        c.ioReady = false;
+        c.ready = false;
+        c.retryAt = Date.now() + 2000;
+        c.projection.reconnect();
+        this.notify();
+        this.scheduleRetry();
+      }
+    }
+  }
   close() {
     if (this.disposed) return;
     this.disposed = true;
     clearTimeout(this.retryTimer);
     clearTimeout(this.catchupTimer);
     clearTimeout(this.notifyTimer);
-    for (const c of this.connections.values()) c.socket?.terminate();
+    for (const c of this.connections.values()) {
+      c.socket?.terminate();
+      c.ioAbort?.abort();
+    }
     this.connections.clear();
     this.options.failed();
   }
