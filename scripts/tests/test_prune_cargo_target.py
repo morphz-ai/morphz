@@ -4,6 +4,7 @@ from pathlib import Path
 import struct
 import subprocess
 import shutil
+import selectors
 import tempfile
 import time
 import unittest
@@ -109,13 +110,36 @@ class CollectorTest(unittest.TestCase):
         (project / "src").mkdir(parents=True)
         (project / "Cargo.toml").write_text('[package]\nname="collector_lock_test"\nversion="0.0.0"\nedition="2024"\n[workspace]\n')
         (project / "src/main.rs").write_text('fn main() {}')
-        with prune.cargo_lock(self.target / "debug"):
-            child = subprocess.Popen(["cargo", "build", "--manifest-path", str(project / "Cargo.toml"), "--target-dir", str(self.target)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            time.sleep(1)
-            self.assertIsNone(child.poll(), "Cargo did not wait on the collector lock")
-        _, error = child.communicate(timeout=30)
-        self.assertEqual(child.returncode, 0, error.decode())
-        self.assertIn(b"Blocking waiting for file lock", error)
+        child = None
+        try:
+            with prune.cargo_lock(self.target / "debug"):
+                child = subprocess.Popen(["cargo", "build", "--manifest-path", str(project / "Cargo.toml"), "--target-dir", str(self.target)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                waiting = b""
+                # A fixed delay only proves Cargo is alive: cold startup may
+                # not have reached its lock yet. Require the real lock barrier
+                # while the collector still owns the exact inode.
+                deadline = time.monotonic() + 30
+                with selectors.DefaultSelector() as ready:
+                    ready.register(child.stderr, selectors.EVENT_READ)
+                    while b"Blocking waiting for file lock" not in waiting:
+                        remaining = deadline - time.monotonic()
+                        self.assertGreater(remaining, 0, waiting.decode())
+                        for key, _ in ready.select(timeout=remaining):
+                            chunk = os.read(key.fd, 65536)
+                            self.assertTrue(chunk, "Cargo exited before waiting on the collector lock: " + waiting.decode())
+                            waiting += chunk
+                        self.assertIsNone(child.poll(), "Cargo bypassed the collector lock: " + waiting.decode())
+                self.assertFalse((self.target / "debug/collector_lock_test").exists())
+            _, error = child.communicate(timeout=30)
+            self.assertEqual(child.returncode, 0, (waiting + error).decode())
+            self.assertTrue((self.target / "debug/collector_lock_test").is_file())
+        finally:
+            if child is not None:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=10)
+                child.stdout.close()
+                child.stderr.close()
 
     def test_dev_and_test_share_light_debug_and_incremental_settings(self):
         repository = Path(__file__).resolve().parents[2]
