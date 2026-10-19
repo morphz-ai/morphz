@@ -1,0 +1,28 @@
+{
+  "source": {
+    "event_id": "response_protocol_error_a70f76c85e2dcd50d7f57b1cab0d960f",
+    "raw_response_sha256": "95c57564ab580e9fcf4ebb18ed1a18fb98e6b4ff0ed8cf34a97e2fdf14d0396a",
+    "redaction": "Business text, references and transaction are replaced with synthetic TEST values. The exact failing root field and structural types are retained. Never replay this as work."
+  },
+  "response": {
+    "body": null,
+    "annotations": {
+      "execution": {
+        "title": "TEST 确认合成读物的取文底本",
+        "progress": "TEST 保存合成底本选择",
+        "result": ""
+      },
+      "observations": []
+    },
+    "effects": [
+      {
+        "name": "context_tx",
+        "arguments": {
+          "transaction": "TEST sanitized original transaction; fixture is schema evidence, not executable work"
+        },
+        "intent": "TEST 记录当前合成底本选择"
+      }
+    ],
+    "type": "json_object"
+  }
+}

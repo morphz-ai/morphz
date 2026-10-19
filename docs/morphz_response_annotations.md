@@ -174,6 +174,54 @@ SQLite／PostgreSQL 的同事务与幂等、单 infer Harness 和 discuss-script
 
 ## 本轮交付记录（2026-10-20）
 
+### 00:18 DeepSeek 失败的精确根因及原应用业务复验
+
+失败事件 `response_protocol_error_a70f76c85e2dcd50d7f57b1cab0d960f`，
+原始适配后响应摘要 `95c57564ab580e9fcf4ebb18ed1a18fb98e6b4ff0ed8cf34a97e2fdf14d0396a`。
+完整 content 共3041字符，是合法 JSON，有 body、annotations、effects，
+以及多出的顶层 `"type":"json_object"`。effects 中有一个 context_tx 提案，
+其 name／arguments／intent 结构齐全；body 为 null，表示工作尚待执行。
+
+旧 Evaluation schema 根节点设置 additionalProperties=false，只允许前三个
+字段，故多出的 type 导致根 JSON pointer 的 schema_validation_failed，
+整条响应在工作准入之前被终止，context_tx 未提交。这次不是字符串换行、
+缺注解、业务工具报错，也不是合法 JSON 被语法解析器误判。闭合校验按其
+定义拒绝；错误的设计是仅为展示注解而强制整次工作依赖这个外壳。
+
+Runtime 的 Provider 适配器不向返回正文插入这个字段：它按上游文本增量
+拼接 content，json_object 只用于旧的出站请求格式设置。该失败发生在
+00:18，早于当前 Runtime `9051ee73` 的00:31启动；不能将历史错误当成
+新请求仍使用外壳的证明。原上游逐字 HTTP 正文未留存，故不进一步声称
+字段究竟由模型还是代理产生，也不把它泛化为所有旧失败的直接原因。
+
+执行层修复是 `9051ee73`，不是错误展示提交 `eb3ee01e`：新请求不选择
+Evaluation 输出编码、不由注解开关强制 json_object／禁用原生工具。
+业务动作按原生函数提交，正文原样返回，注解可选；不为 type 添加业务
+别名，也不通过扫描正文自动执行旧 effects。已有冻结记录／历史保留。
+
+新增脱敏根因回归：保留原错误的字段与类型，在旧 schema 下复现相同错误，
+仅移除 type 后校验通过；在新请求的on/off下该 JSON 如作为讨论文字出现，
+完整保留且不执行其中的提案。当前 Session IO Runtime 集成8/8。两次新的
+真实 DeepSeek隔离复验（记忆提交on/off）各2次必要模型请求、一次真实
+Context提交，无修复请求、无注解、无诊断，完整回复正常交付。
+
+原安装应用在 `TEST DeepSeek 失败链验收 1020` 对话完成业务复验：
+
+- Thread `thread_e174a15d6144856bb97c0b08`，DeepSeek-flash／max／on，
+  最终 completed；原生读取 TEST 书 section-3，取得99字符及验收句。
+- 两个 Reader 正式 Job（read／contents）均 succeeded，无 exec、Downloads、
+  文件读取绕路或书籍／书签修改提案。
+- context_tx 真实提交，374→375，changes 只有 create
+  `test-native-io-root-extra-type-20261020`。保留这一条事先限定的 TEST 帧，
+  不修改其他记忆，也不重放原用户失败任务。
+- 3次模型请求分别用于 Reader、Context提交、最终答复；各次冻结绑定均
+  无 Evaluation output，annotations_enabled=true但records=[]，diagnostics=[]。
+  恰有一次最终回复、一个持久公开输出、零 response_protocol_error，
+  没有额外格式／注解修复轮次。
+- 原窗口已核对真实回复及已结束状态，测试对话已命名保留；临时输入固定
+  已取消并返回原全局对话，未发送的用户草稿和在途工作不受影响。Runtime
+  仍为已部署的 `9051ee73`，本次只新增回归与证据，不为测试重启服务。
+
 实现提交 `9051ee730c42c84fb9fd586e19a58c303660f552`。Rust lib 1599 passed，
 13 个既有 ignored；活动／生命周期集成25/25、原生 IO 集成7/7。正式 Node
 专项24/24，真实 Rust Runtime＋Host＋HTTP 链路的导入、原生返回、设置冻结、

@@ -1,5 +1,27 @@
 # 桌面能力实施记录
 
+## 2026-10-20 DeepSeek 00:18失败的执行链根因复验
+
+完整原始响应的 JSON 合法，但在 body／annotations／effects 之外多了
+`type:"json_object"`。旧外壳根 schema 闭合，整次响应被拒，未准入其中的
+context_tx；不是缺注解或 JSON 换行解析错误。执行层修复为 `9051ee73`
+移除新请求的强制 Evaluation 外壳／注解模式的 JSON输出约束，错误详情
+显示修复 `eb3ee01e` 与之不同。没有给 type 添加兼容别名或放松业务参数。
+
+新增脱敏结构回归复现同一根错误；移除多余字段后旧 schema 通过。原生
+Session IO集成8/8；真实 DeepSeek记忆提交on/off各2次请求、真实提交一次、
+无补格式请求。原安装的 `TEST DeepSeek 失败链验收 1020` 对话进一步实测
+成功，Thread `thread_e174a15d6144856bb97c0b08`：Reader两次只读Job成功，
+取得section-3的99字；context_tx只有创建一条预先限定的TEST帧，Mind版本
+374→375；3次正常请求后取得一次完整回复，最终completed，零协议错误。
+三次实际绑定output均为空、注解on且无注解也成功，无exec／Downloads绕路。
+
+原窗口真实结果与结束状态已核对；测试记录和单条TEST帧保留，恢复原对话及
+空输入、取消临时固定，没有重放旧失败输入或停止其他执行。此轮不再把
+历史诊断的显示修复算作业务验证；实际生产执行代码已经部署，不为仅新增
+回归／证据再次重启 Runtime。完整来源摘要与边界见
+`docs/morphz_response_annotations.md` 的00:18根因段。
+
 ## 2026-10-20 错误详情不再用通用终止提示占位
 
 原应用的 `response_protocol_error_a70f76c85e2dcd50d7f57b1cab0d960f` 确有

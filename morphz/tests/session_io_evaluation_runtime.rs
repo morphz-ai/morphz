@@ -25,6 +25,53 @@ use std::{
 };
 type DynError = Box<dyn Error + Send + Sync>;
 
+#[test]
+fn captured_deepseek_extra_type_is_valid_json_but_rejected_by_the_retired_outer_schema() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "fixtures/session-io-deepseek-root-extra-type.json"
+    ))
+    .unwrap();
+    let mut raw = fixture["response"].clone();
+    let old = morphz::session_io::evaluation::binding();
+    let rejection =
+        morphz::session_io::evaluation::message(&raw.to_string(), &old, &Limits::default())
+            .unwrap_err();
+    assert_eq!(rejection.code, "schema_validation_failed");
+    assert_eq!(
+        rejection.message,
+        "Schema validation failed at JSON pointer \"\""
+    );
+    raw.as_object_mut().unwrap().remove("type");
+    morphz::session_io::evaluation::message(&raw.to_string(), &old, &Limits::default())
+        .expect("the exact extra root field, not the business transaction text, caused this schema rejection");
+
+    for enabled in [false, true] {
+        let binding = morphz::session_io::response::ReturnBinding::new(
+            "TEST-thread",
+            1,
+            "TEST-attempt",
+            enabled,
+        );
+        assert!(
+            binding.output.is_none(),
+            "new admissions must never select the retired outer schema"
+        );
+        let response = Response {
+            content: fixture["response"].to_string(),
+            tool_calls: vec![],
+        };
+        let parts = morphz::session_io::response::split_response(&response, &binding).unwrap();
+        assert_eq!(
+            parts.response.content, response.content,
+            "literal discussion of the old schema remains ordinary text"
+        );
+        assert!(
+            parts.response.tool_calls.is_empty(),
+            "removing the wrapper must not execute old proposals found in prose"
+        );
+    }
+}
+
 fn observation(messages: &[Message], tool: &str) -> Option<String> {
     use morphz::sexpr::SExpr;
     fn visit(value: &SExpr, tool: &str) -> Option<String> {
