@@ -1,6 +1,6 @@
 import { useId, useRef, type CSSProperties } from "react";
 import { flushSync } from "react-dom";
-import { Brain, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 import {
   reasoningEffortSchema,
   reasoningLabels,
@@ -55,7 +55,6 @@ export function ComposerReasoningControl({
       title={title}
     >
       <label className="composer-reasoning-heading" htmlFor={`${id}-range`}>
-        <Brain aria-hidden="true" />
         <span>推理强度</span>
         <span className="composer-reasoning-value" id={`${id}-value`}>
           {caption}
@@ -129,6 +128,7 @@ export function ComposerReasoningControl({
             <span
               key={level}
               data-selected={level === value || undefined}
+              data-filled={point < index || undefined}
               style={{
                 left: `${stops.length > 1 ? (point / (stops.length - 1)) * 100 : 0}%`,
               }}

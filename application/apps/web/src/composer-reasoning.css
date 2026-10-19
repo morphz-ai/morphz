@@ -24,12 +24,6 @@
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-.app .composer-reasoning-heading > svg {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  color: var(--text-secondary);
-}
 .composer-reasoning-value {
   min-width: 0;
   margin-left: auto;
@@ -112,12 +106,8 @@
 }
 .composer-reasoning-rail[data-selected] input::-webkit-slider-runnable-track {
   background:
-    linear-gradient(
-        90deg,
-        color-mix(in srgb, var(--accent) 70%, white),
-        var(--accent)
-      )
-      left / var(--reasoning-position) 100% no-repeat,
+    linear-gradient(var(--accent), var(--accent)) left /
+      var(--reasoning-position) 100% no-repeat,
     linear-gradient(
       90deg,
       color-mix(in srgb, var(--accent) 14%, var(--soft)),
@@ -159,22 +149,24 @@
 }
 .composer-reasoning-stops {
   position: absolute;
-  inset: 0 12px auto;
+  inset: 0 12px;
   pointer-events: none;
 }
 .composer-reasoning-stops > span {
   position: absolute;
-  top: 15.5px;
+  top: 50%;
   display: block;
-  transform: translateX(-50%);
-  opacity: 0.42;
+  transform: translate(-50%, -50%);
 }
 .composer-reasoning-stops i {
   display: block;
-  width: 3px;
-  height: 3px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
   background: var(--text-secondary);
+}
+.composer-reasoning-stops [data-filled] i {
+  background: var(--on-accent);
 }
 .composer-reasoning-stops [data-selected] {
   opacity: 0;
@@ -198,8 +190,5 @@
   .app .composer-settings-menu .composer-reasoning-rail input {
     height: 44px;
     min-height: 44px;
-  }
-  .composer-reasoning-stops > span {
-    top: 20.5px;
   }
 }

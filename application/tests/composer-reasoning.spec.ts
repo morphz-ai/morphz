@@ -73,6 +73,188 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
 
+test("模型和推理标签统一纯文字、同轴同字号，不增加空图标位或发送消息", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  await chooseReasoning(f.slider, "max");
+  for (const [width, appearance] of [
+    [1440, "dark"],
+    [390, "light"],
+  ] as const) {
+    await page.keyboard.press("Escape");
+    await page.setViewportSize({ width, height: width === 390 ? 700 : 960 });
+    await page.evaluate((appearance) => {
+      document.documentElement.dataset.appearance = appearance;
+      document.querySelector<HTMLElement>(".app")!.dataset.appearance =
+        appearance;
+    }, appearance);
+    await openInput(page);
+    await openComposerSettings(page);
+    await expect(
+      f.settings.locator(
+        ".composer-model-selector > svg, .composer-reasoning-heading > svg",
+      ),
+    ).toHaveCount(0);
+    const geometry = await f.settings.evaluate((element) => {
+      const model = element.querySelector<HTMLElement>(
+        ".composer-model-selector > span",
+      )!;
+      const effort = element.querySelector<HTMLElement>(
+        ".composer-reasoning-heading > span:first-child",
+      )!;
+      const modelBounds = model.getBoundingClientRect();
+      const effortBounds = effort.getBoundingClientRect();
+      const modelStyle = getComputedStyle(model);
+      const effortStyle = getComputedStyle(effort);
+      return {
+        modelLeft: modelBounds.left,
+        effortLeft: effortBounds.left,
+        modelFont: modelStyle.fontSize,
+        effortFont: effortStyle.fontSize,
+        modelWeight: modelStyle.fontWeight,
+        effortWeight: effortStyle.fontWeight,
+        modelBottom: modelBounds.bottom,
+        effortTop: effortBounds.top,
+      };
+    });
+    expect(
+      Math.abs(geometry.modelLeft - geometry.effortLeft),
+    ).toBeLessThanOrEqual(1);
+    expect(geometry.modelFont).toBe("13px");
+    expect(geometry.effortFont).toBe(geometry.modelFont);
+    expect(geometry.effortWeight).toBe(geometry.modelWeight);
+    expect(geometry.effortTop).toBeGreaterThan(geometry.modelBottom);
+    await f.settings.getByLabel("本次输入模型", { exact: true }).focus();
+    await page.keyboard.press("Tab");
+    await expect(f.slider).toBeFocused();
+    await expect(f.slider).toHaveAttribute("aria-valuetext", "max");
+    await expect(f.reset).toBeEnabled();
+    await page.screenshot({
+      path: info.outputPath(`aligned-settings-${appearance}-${width}.png`),
+      fullPage: true,
+    });
+  }
+  await expect(f.input).toHaveValue(f.draft);
+  expect(f.writes).toEqual([]);
+});
+
+test("每个真实档位都有居中的可见点，亮暗四主题的已填与未填区域均可辨认", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  await expect(f.slider).toBeEnabled();
+  for (const appearance of ["light", "dark"]) {
+    for (const accent of ["cyan", "iris", "coral", "mono"]) {
+      await page.evaluate(
+        ({ accent, appearance }) => {
+          document.documentElement.dataset.appearance = appearance;
+          const app = document.querySelector<HTMLElement>(".app")!;
+          app.dataset.appearance = appearance;
+          app.dataset.accent = accent;
+        },
+        { accent, appearance },
+      );
+      for (const explicit of [false, true]) {
+        if (explicit) await chooseReasoning(f.slider, "high");
+        else if (await f.reset.isEnabled()) await f.reset.click();
+        // Blur the focus treatment without changing either model or effort.
+        await f.settings.getByLabel("本次输入模型", { exact: true }).focus();
+        const rail = f.control.locator(".composer-reasoning-rail");
+        const points = await rail.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          return [
+            ...element.querySelectorAll<HTMLElement>(
+              ".composer-reasoning-stops > span",
+            ),
+          ].map((point) => {
+            const dot = point.querySelector("i")!.getBoundingClientRect();
+            return {
+              x: dot.left + dot.width / 2 - bounds.left,
+              y: dot.top + dot.height / 2 - bounds.top,
+              width: dot.width,
+              selected: point.dataset.selected === "true",
+              centerY: bounds.height / 2,
+            };
+          });
+        });
+        expect(points).toHaveLength(5);
+        expect(points.filter((point) => point.selected)).toHaveLength(
+          explicit ? 1 : 0,
+        );
+        for (const point of points) {
+          expect(point.width).toBe(4);
+          expect(Math.abs(point.y - point.centerY)).toBeLessThanOrEqual(0.5);
+        }
+        const contrasts = await page.evaluate(
+          async ({ encoded, points }) => {
+            const bytes = Uint8Array.from(atob(encoded), (character) =>
+              character.charCodeAt(0),
+            );
+            const bitmap = await createImageBitmap(
+              new Blob([bytes], { type: "image/png" }),
+            );
+            const canvas = document.createElement("canvas");
+            canvas.width = bitmap.width;
+            canvas.height = bitmap.height;
+            const context = canvas.getContext("2d")!;
+            context.drawImage(bitmap, 0, 0);
+            const { data } = context.getImageData(
+              0,
+              0,
+              canvas.width,
+              canvas.height,
+            );
+            const luminance = (x: number, y: number) => {
+              const offset = (Math.floor(y) * canvas.width + Math.floor(x)) * 4;
+              return [0.2126, 0.7152, 0.0722].reduce(
+                (total, weight, channel) => {
+                  const value = data[offset + channel]! / 255;
+                  return (
+                    total +
+                    weight *
+                      (value <= 0.04045
+                        ? value / 12.92
+                        : ((value + 0.055) / 1.055) ** 2.4)
+                  );
+                },
+                0,
+              );
+            };
+            return points
+              .filter((point) => !point.selected)
+              .map((point) => {
+                const dot = luminance(point.x, point.y);
+                const track = luminance(point.x, point.y - 6);
+                return (
+                  (Math.max(dot, track) + 0.05) / (Math.min(dot, track) + 0.05)
+                );
+              });
+          },
+          {
+            encoded: (await rail.screenshot({ scale: "css" })).toString(
+              "base64",
+            ),
+            points,
+          },
+        );
+        for (const contrast of contrasts)
+          expect(
+            contrast,
+            `${appearance}/${accent}, explicit=${explicit}`,
+          ).toBeGreaterThanOrEqual(3);
+        if (accent === "cyan" && explicit)
+          await page.screenshot({
+            path: info.outputPath(`visible-stops-${appearance}.png`),
+            fullPage: true,
+          });
+      }
+    }
+  }
+  await expect(f.input).toHaveValue(f.draft);
+  expect(f.writes).toEqual([]);
+});
+
 test("继承轻量仍显示默认：弹层、底栏、重开与刷新一致，只有明确选择才显示轻量", async ({
   page,
 }) => {
@@ -291,6 +473,7 @@ test("档位按所选模型声明，不兼容选择保留且可恢复默认，�
   };
   const f = await prepare(page, (route) => route.fulfill({ json: models }));
   await expect(f.slider).toHaveAttribute("data-efforts", "low,high");
+  await expect(f.control.locator(".composer-reasoning-stops i")).toHaveCount(2);
   await chooseReasoning(f.slider, "high");
   await f.settings
     .getByLabel("本次输入模型", { exact: true })
@@ -298,6 +481,7 @@ test("档位按所选模型声明，不兼容选择保留且可恢复默认，�
   await expect(f.control).toHaveAttribute("data-state", "unsupported");
   await expect(f.slider).toHaveAttribute("aria-valuetext", "high · 不支持");
   await expect(f.slider).toHaveAttribute("data-efforts", "");
+  await expect(f.control.locator(".composer-reasoning-stops i")).toHaveCount(0);
   await expect(f.slider).toBeDisabled();
   await expect(f.control.getByRole("alert")).toHaveText("请重新选择推理强度");
   await f.reset.click();
@@ -312,6 +496,7 @@ test("档位按所选模型声明，不兼容选择保留且可恢复默认，�
     .selectOption("single");
   await expect(f.slider).toBeEnabled();
   await expect(f.slider).toHaveAttribute("data-efforts", "medium");
+  await expect(f.control.locator(".composer-reasoning-stops i")).toHaveCount(1);
   await f.slider.click({ position: { x: 7, y: 12 } });
   await expect(f.slider).toHaveAttribute("aria-valuetext", "medium");
   models.options[2]!.supported_reasoning_efforts = ["max"];
