@@ -22,6 +22,113 @@ test.beforeEach(async ({ page }) => {
   }));
 });
 
+test("无注解的操作包装显示具体读取动作和不同范围，技术原文仍可核对", async ({
+  page,
+}) => {
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() !== "GET" &&
+      /\/api\/(?:executions\/control|platform\/messages)/.test(request.url())
+    )
+      writes.push(request.url());
+  });
+  const requests = [
+    { offset: 8000, limit: 8000 },
+    { offset: 15500, limit: 4000 },
+  ].map((range) => ({
+    action: "operations",
+    operations: {
+      action: "invoke",
+      operationId: "reader.read",
+      parameters: {
+        artifactId: "test-book",
+        revision: 1,
+        sectionId: "section-17",
+        ...range,
+      },
+    },
+  }));
+  await page.route("**/api/executions?*", (route) =>
+    route.fulfill({
+      json: {
+        limit: 100,
+        approvals: [],
+        jobs: requests.map((request, i) => ({
+          id: `reading-range-${i}`,
+          revision: 1,
+          session_id: "session",
+          context_id: "context",
+          thread_id: "thread",
+          tool_name: "host_morphz",
+          target_id: "local",
+          status: "succeeded",
+          request,
+          result_event_id: `reading-result-${i}`,
+          created_at: "2026-10-19T17:05:02Z",
+          updated_at: "2026-10-19T17:05:02Z",
+        })),
+      },
+    }),
+  );
+  await page.goto("/");
+  await openInput(page);
+  await page.getByLabel("AI 输入内容").fill("TEST 查看步骤保留的草稿");
+  await openExecutionPanel(page);
+  const panel = page.getByRole("complementary", {
+    name: "Morphz 信息",
+    exact: true,
+  });
+  await panel.getByText("工具执行记录", { exact: true }).click();
+  const rows = panel.locator(".execution-job");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0).locator("header strong")).toHaveText("读取书籍原文");
+  await expect(rows.nth(0).locator(".execution-object")).toHaveText(
+    "test-book · v1 · section-17 · 字符 8,001–16,000",
+  );
+  // This fixture deliberately has no loaded original: do not invent a book or
+  // chapter title, or claim the requested upper bound was actually returned.
+  await expect(rows.nth(1).locator(".execution-object")).toHaveText(
+    "test-book · v1 · section-17 · 字符 15,501–19,500",
+  );
+  await expect(panel).not.toContainText("工作对象");
+  await expect(panel).not.toContainText("operations");
+  for (const [width, appearance] of [
+    [1440, "dark"],
+    [390, "light"],
+  ] as const) {
+    await page.setViewportSize({ width, height: 960 });
+    await page.evaluate((appearance) => {
+      document.documentElement.dataset.appearance = appearance;
+      document.querySelector<HTMLElement>(".app")!.dataset.appearance =
+        appearance;
+    }, appearance);
+    await expect(rows.nth(1).locator(".execution-object")).toBeInViewport();
+    expect(
+      await rows.evaluateAll((elements) =>
+        elements.every((e) => e.scrollWidth <= e.clientWidth + 1),
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: `test-results/execution-reading-ranges-${width}-${appearance}.png`,
+    });
+  }
+  await rows
+    .nth(0)
+    .getByRole("button", { name: "技术详情", exact: true })
+    .click();
+  await expect(rows.nth(0).locator(".execution-technical")).toContainText(
+    "reader.read",
+  );
+  await rows.nth(0).getByRole("button", { name: "Raw", exact: true }).click();
+  expect(
+    JSON.parse(await rows.nth(0).locator(".execution-data-raw").innerText()),
+  ).toEqual(requests[0]);
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await expect(await openInput(page)).toHaveValue("TEST 查看步骤保留的草稿");
+  expect(writes).toEqual([]);
+});
+
 test("剧本操作记录直接显示查询、新建剧本和具体分集，返回结果保持可核对", async ({
   page,
 }) => {
@@ -113,9 +220,11 @@ test("剧本操作记录直接显示查询、新建剧本和具体分集，返�
   }
   await rows.nth(0).getByRole("button", { name: "查看结果" }).click();
   await expect(rows.nth(0)).toContainText("找到 2 部剧本。");
-  await expect(rows.nth(0).locator(".execution-result pre")).toContainText(
-    '"total":2',
-  );
+  await rows.nth(0).getByRole("button", { name: "Raw", exact: true }).click();
+  expect(
+    JSON.parse(await rows.nth(0).locator(".execution-result pre").innerText())
+      .total,
+  ).toBe(2);
   await rows.nth(0).getByRole("button", { name: "查看结果" }).click();
   await expect(rows.nth(0).locator(".execution-result")).toHaveCount(0);
 });
@@ -197,8 +306,17 @@ test("执行面板显示真实协议状态，批准只限单次，停止不会�
     dialog.getByText("执行节点：本机 ·", { exact: true }),
   ).toBeHidden();
   await dialog.getByRole("button", { name: "技术详情", exact: true }).click();
+  await dialog
+    .locator(".execution-technical")
+    .getByText("执行信息", { exact: true })
+    .click();
   await expect(
-    dialog.getByText("执行节点：本机 ·", { exact: true }),
+    dialog
+      .locator(".execution-data-identity dt")
+      .filter({ hasText: /^执行节点$/ }),
+  ).toBeVisible();
+  await expect(
+    dialog.locator(".execution-data-identity dd").filter({ hasText: /^本机$/ }),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "技术详情", exact: true }).click();
   expect(calls[0]!.action.type).toBe("allow-once");

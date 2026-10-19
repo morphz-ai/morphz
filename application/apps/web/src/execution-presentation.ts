@@ -18,6 +18,190 @@ const text = (value: unknown) =>
   typeof value === "string" ? value.trim() : "";
 const short = (value: string) => value.replace(/\s+/g, " ").slice(0, 160);
 
+/** Discovery is only a transport wrapper. Project known operations onto the
+ * existing display paths; never execute, validate or infer authority here. */
+function operationRequest(id: string, parameters: Record<string, unknown>) {
+  const actions: Record<string, string> = {
+    "input.read": "read-input",
+    "connection.status": "connection-status",
+    "conversations.search": "conversation-search",
+    "content.list": "list",
+    "content.search": "search",
+    "content.read": "read",
+    "content.create-document": "create-document",
+    "content.revise-document": "revise-document",
+    "content.organize": "organize-content",
+    "content.link": "link",
+    "content.relations": "relations",
+    "content.annotate": "annotate",
+    "table.create": "create-interactive",
+    "table.revise": "revise-interactive",
+    "table.query": "query-interactive",
+    "table.patch": "patch-interactive",
+    "files.read": "local-file",
+    "files.directory": "directory",
+    "browser.control": "browser",
+    "reader.import": "reader-import",
+  };
+  const action = actions[id];
+  if (action)
+    return id === "files.read"
+      ? { ...parameters, action, localFile: { action: "read" } }
+      : action === "reader-import"
+        ? { action, readerImport: parameters }
+        : { ...parameters, action };
+  const [domain, name, extra] = id.split(".");
+  if (!name || extra) return null;
+  const nested: Record<string, [string, string, readonly string[]]> = {
+    reader: [
+      "reader",
+      "reader",
+      [
+        "catalog",
+        "contents",
+        "read",
+        "marks",
+        "mark-add",
+        "mark-update",
+        "mark-remove",
+        "mark-restore",
+        "save-position",
+        "ocr",
+      ],
+    ],
+    applications: ["applications", "applications", ["list", "launch"]],
+    profile: ["profile", "profile", ["read", "update", "propose"]],
+    cognitive: [
+      "cognitive",
+      "cognitive",
+      ["list", "describe", "invoke", "read-object", "status", "recover"],
+    ],
+    projects: [
+      "projects",
+      "management",
+      ["list", "create", "rename", "archive", "restore", "delete"],
+    ],
+    conversations: [
+      "conversations",
+      "management",
+      ["list", "rename", "archive", "restore"],
+    ],
+    bookmarks: [
+      "bookmarks",
+      "bookmarks",
+      ["list", "add", "update", "remove", "restore"],
+    ],
+    "work-tasks": [
+      "work-task",
+      "workTask",
+      [
+        "list",
+        "create",
+        "version",
+        "responses",
+        "revise",
+        "order",
+        "reorder",
+        "start",
+        "runs",
+        "run-status",
+        "stop",
+      ],
+    ],
+  };
+  const route = nested[domain!];
+  if (route?.[2].includes(name))
+    return { action: route[0], [route[1]]: { ...parameters, action: name } };
+  if (domain === "tasks") {
+    const taskActions: Record<string, string> = {
+      list: "list-tasks",
+      create: "create-task",
+      revise: "revise-task",
+      reorder: "reorder-tasks",
+      arrange: "arrange-task",
+      start: "start-task",
+      cancel: "cancel-task",
+      status: "task-status",
+      control: "control-task",
+      finish: "finish-task",
+    };
+    if (taskActions[name]) return { ...parameters, action: taskActions[name] };
+  }
+  if (domain === "script") {
+    const commands = [
+      "create-production",
+      "create-item",
+      "revise-item",
+      "restore-item",
+      "submit-candidate",
+      "add-review",
+    ];
+    return {
+      action: "script",
+      script: commands.includes(name)
+        ? { action: "command", command: { ...parameters, action: name } }
+        : { ...parameters, action: name },
+    };
+  }
+  return null;
+}
+
+function readerPresentation(args: Record<string, unknown>, state: Workspace) {
+  const action = text(args.action);
+  const title =
+    (
+      {
+        catalog: "查找书籍",
+        contents: "读取书籍目录",
+        read: "读取书籍原文",
+        marks: "读取阅读标注",
+        "mark-add": "添加阅读标注",
+        "mark-update": "修改阅读标注",
+        "mark-remove": "移除阅读标注",
+        "mark-restore": "恢复阅读标注",
+        "save-position": "保存阅读进度",
+        ocr: "识别书页文字",
+      } as Record<string, string>
+    )[action] ?? `reader.${action}`;
+  const artifact = state.artifacts.find((item) => item.id === args.artifactId);
+  // Never label an old read using today's chapter list or renamed title.
+  const version =
+    artifact?.versions.find((item) => item.revision === args.revision) ??
+    (artifact?.revision === args.revision ? artifact : undefined);
+  const publication =
+    version?.content.kind === "publication" ? version.content : undefined;
+  const location = record(args.location);
+  const sectionId = text(args.sectionId ?? location.sectionId);
+  const section = publication?.sections.find((item) => item.id === sectionId);
+  // A volume heading can also contain a long date-range synopsis. Keep its
+  // exact leading heading in the scan row, rather than repeating that synopsis
+  // on every slice. Other chapter naming formats stay intact.
+  const sectionLabel =
+    section?.title.match(/^(卷\S{1,16}?【[^】]+】)/u)?.[1] ||
+    section?.title ||
+    sectionId;
+  const scope = [
+    version
+      ? `《${short(version.title).slice(0, 48)}》`
+      : text(args.artifactId),
+    typeof args.revision === "number" ? `v${args.revision}` : "",
+    short(sectionLabel).slice(0, 48),
+  ];
+  if (action === "read") {
+    const offset = typeof args.offset === "number" ? args.offset : 0;
+    const limit = typeof args.limit === "number" ? args.limit : 4000;
+    const end = Math.min(offset + limit, section?.characters ?? Infinity);
+    scope.push(
+      end > offset
+        ? `字符 ${(offset + 1).toLocaleString("en-US")}–${end.toLocaleString("en-US")}`
+        : `偏移 ${offset.toLocaleString("en-US")} · 最多 ${limit.toLocaleString("en-US")} 字符`,
+    );
+  }
+  if (action === "catalog") scope.push(text(args.query));
+  if (!scope.some(Boolean)) scope.push(text(args.markId));
+  return { title, detail: short(scope.filter(Boolean).join(" · ")) };
+}
+
 /** Read the bounded recent Job window chronologically, without changing which
  * Jobs were retrieved. Updated/completion times do not reorder earlier steps. */
 export function executionJobsInReadingOrder(
@@ -68,7 +252,7 @@ export function executionPresentation(
   tool: string,
   request: unknown,
   state: Workspace,
-) {
+): { title: string; detail: string } {
   const args = record(request);
   if (tool === "terminal") {
     const action = text(args.action);
@@ -111,6 +295,37 @@ export function executionPresentation(
     return { title, detail: short(detail) };
   }
   const action = text(args.action);
+  if (action === "operations") {
+    const operation = record(args.operations);
+    const id = text(operation.operationId);
+    if (operation.action === "list")
+      return {
+        title: "查找可用操作",
+        detail: short(
+          [text(operation.domain), text(operation.query)]
+            .filter(Boolean)
+            .join(" · "),
+        ),
+      };
+    if (operation.action === "describe")
+      return { title: "查看操作说明", detail: id };
+    const command =
+      operation.action === "invoke"
+        ? operationRequest(id, record(operation.parameters))
+        : null;
+    return command
+      ? executionPresentation(tool, command, state)
+      : { title: id || "未标明具体操作", detail: "" };
+  }
+  if (action === "reader")
+    return readerPresentation(record(args.reader), state);
+  if (action === "reader-import") {
+    const source = record(record(args.readerImport).source);
+    return {
+      title: "导入书籍",
+      detail: short(text(source.path) || text(source.assetId)),
+    };
+  }
   if (action === "script") {
     const script = record(args.script),
       command = record(script.command);
@@ -132,13 +347,18 @@ export function executionPresentation(
         "read-source": "读取原文",
         "read-generation": "读取创作要求",
         "read-workflow": "读取编剧流程",
+        "prepare-workflow": "准备创作范围",
         "submit-workflow": "提交创作结果",
+        "list-candidates": "查看历史候选稿",
+        "read-candidate": "读取历史候选稿",
         "read-results": "查看创作结果",
         "read-result": "读取创作结果",
         issues: "检查剧本",
         impact: "分析改动影响",
         "create-production": "新建剧本",
         "create-item": `新建${kind}`,
+        "revise-item": "修改剧本条目",
+        "restore-item": "恢复剧本历史版本",
         "submit-candidate": "提交候选稿",
         "add-review": "提交审查意见",
       }[verb] ?? `剧本 · ${verb || "操作"}`;
@@ -187,6 +407,10 @@ export function executionPresentation(
     "publish-understanding": "更新工作理解",
     "list-applications": "查看应用",
     "launch-application": "打开应用",
+    "conversation-search": "搜索对话消息",
+    relations: "读取内容关联",
+    "query-interactive": "查询表格记录",
+    "patch-interactive": "修改表格记录",
   };
   const nouns: Record<string, string> = {
     projects: "项目",
@@ -195,6 +419,10 @@ export function executionPresentation(
     directory: "目录",
     "local-file": "本地文件",
     browser: "浏览器",
+    applications: "应用",
+    profile: "智能体资料",
+    cognitive: "认知应用",
+    "work-task": "事项",
   };
   const verbs: Record<string, string> = {
     list: "查看",
@@ -211,21 +439,61 @@ export function executionPresentation(
     navigate: "访问",
     status: "查看",
     inspect: "检查",
+    launch: "打开",
+    add: "添加",
+    remove: "移除",
+    propose: "提议修改",
+    describe: "查看操作说明 · ",
+    invoke: "调用",
+    "read-object": "读取原件 · ",
+    recover: "核对回执 · ",
+    version: "读取版本 · ",
+    revise: "修改",
+    order: "查看排序 · ",
+    reorder: "调整顺序 · ",
+    start: "请求执行",
+    runs: "查看执行记录 · ",
+    responses: "查看回复 · ",
+    "run-status": "查看执行状态 · ",
+    stop: "停止",
   };
   const nested = record(
     args.management ??
       args.bookmarks ??
       args.directory ??
       args.localFile ??
-      args.browser,
+      args.browser ??
+      args.applications ??
+      args.profile ??
+      args.cognitive ??
+      args.workTask,
   );
+  const nestedAction =
+    text(nested.action) ||
+    text(nested.operation) ||
+    text(record(nested.action).type);
+  const browserTitle =
+    (
+      {
+        snapshot: "读取网页界面",
+        fill: "填写网页表单",
+        click: "点击网页元素",
+      } as Record<string, string>
+    )[nestedAction] ?? (nested.requestId ? "读取网页操作结果" : "查看授权网页");
   const title =
     labels[action] ??
-    (nouns[action]
-      ? `${verbs[text(nested.action)] ?? "操作"}${nouns[action]}`
-      : `工作对象 · ${action || "操作"}`);
+    (action === "browser"
+      ? browserTitle
+      : nouns[action]
+        ? `${verbs[nestedAction] ?? "操作"}${nouns[action]}`
+        : action || tool);
   const artifact = state.artifacts.find(
-    (a) => a.id === (args.artifactId ?? args.taskId ?? record(args.content).id),
+    (a) =>
+      a.id ===
+      (args.artifactId ??
+        args.taskId ??
+        nested.artifactId ??
+        record(args.content).id),
   );
   const production = state.scriptProductions.find(
     (p) =>
@@ -236,7 +504,17 @@ export function executionPresentation(
     text(args.title ?? nested.title) ||
     production?.title ||
     artifact?.title ||
-    text(args.query ?? args.path ?? nested.path);
+    text(
+      args.query ??
+        args.path ??
+        nested.path ??
+        nested.query ??
+        nested.operationId ??
+        nested.applicationId ??
+        nested.taskId ??
+        nested.conversationId ??
+        nested.projectId,
+    );
   return { title, detail: short(detail) };
 }
 

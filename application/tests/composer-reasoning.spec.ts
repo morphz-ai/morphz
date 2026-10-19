@@ -73,6 +73,98 @@ test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
 
+test("真实滑块悬停居中放大、移开恢复，轨道和4px刻度不位移且不改变选择", async ({
+  page,
+}, info) => {
+  const f = await prepare(page);
+  await chooseReasoning(f.slider, "high");
+  const model = f.settings.getByLabel("本次输入模型", { exact: true });
+  const whiteDiameter = async () => {
+    const encoded = (
+      await f.slider.screenshot({ scale: "css", animations: "disabled" })
+    ).toString("base64");
+    return page.evaluate(async (encoded) => {
+      const bitmap = await createImageBitmap(
+        new Blob([Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0))], {
+          type: "image/png",
+        }),
+      );
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const context = canvas.getContext("2d")!;
+      context.drawImage(bitmap, 0, 0);
+      const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+      const center = Math.round(12 + (canvas.width - 24) * 0.75);
+      const y = Math.floor(canvas.height / 2);
+      const white = (x: number) =>
+        [0, 1, 2].every(
+          (channel) => data[(y * canvas.width + x) * 4 + channel]! >= 245,
+        );
+      let left = center,
+        right = center;
+      while (left > 0 && white(left - 1)) left--;
+      while (right < canvas.width - 1 && white(right + 1)) right++;
+      return { width: right - left + 1, center: (left + right) / 2 };
+    }, encoded);
+  };
+  for (const [width, appearance] of [
+    [1440, "dark"],
+    [390, "light"],
+  ] as const) {
+    await page.setViewportSize({ width, height: 960 });
+    await page.evaluate((appearance) => {
+      document.documentElement.dataset.appearance = appearance;
+      document.querySelector<HTMLElement>(".app")!.dataset.appearance =
+        appearance;
+    }, appearance);
+    await model.focus();
+    await model.hover();
+    const normal = await whiteDiameter();
+    const bounds = (await f.slider.boundingBox())!;
+    const positions = await f.control
+      .locator(".composer-reasoning-stops > span")
+      .evaluateAll((points) =>
+        points.map((point) => point.getBoundingClientRect().x),
+      );
+    const x = bounds.x + 12 + (bounds.width - 24) * 0.75;
+    await page.mouse.move(x, bounds.y + bounds.height / 2);
+    // Native pseudo-element transitions can still be mid-frame when the
+    // screenshot API resolves; wait for actual painted diameter, not a sleep.
+    await expect
+      .poll(async () => (await whiteDiameter()).width)
+      .toBeGreaterThanOrEqual(normal.width + 3);
+    const hover = await whiteDiameter();
+    expect(hover.width).toBeGreaterThanOrEqual(normal.width + 3);
+    expect(hover.width).toBeLessThanOrEqual(normal.width + 6);
+    expect(Math.abs(hover.center - normal.center)).toBeLessThanOrEqual(0.5);
+    expect(await f.slider.boundingBox()).toEqual(bounds);
+    expect(
+      await f.control
+        .locator(".composer-reasoning-stops > span")
+        .evaluateAll((points) =>
+          points.map((point) => point.getBoundingClientRect().x),
+        ),
+    ).toEqual(positions);
+    await page.screenshot({
+      path: info.outputPath(`reasoning-hover-${appearance}-${width}.png`),
+      fullPage: true,
+    });
+    await page.mouse.down();
+    try {
+      await expect(f.slider).toHaveAttribute("aria-valuetext", "high");
+    } finally {
+      await page.mouse.up();
+    }
+    await model.focus();
+    await model.hover();
+    await expect.poll(whiteDiameter).toEqual(normal);
+  }
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "high");
+  await expect(f.input).toHaveValue(f.draft);
+  expect(f.writes).toEqual([]);
+});
+
 test("模型和推理标签统一纯文字、同轴同字号，不增加空图标位或发送消息", async ({
   page,
 }, info) => {
@@ -139,7 +231,7 @@ test("模型和推理标签统一纯文字、同轴同字号，不增加空图�
   expect(f.writes).toEqual([]);
 });
 
-test("每个真实档位都有居中的可见点，亮暗四主题的已填与未填区域均可辨认", async ({
+test("刻度保持4px与原位置，亮暗四主题填色区均为柔和浅色而非深色文字色", async ({
   page,
 }, info) => {
   const f = await prepare(page);
@@ -173,6 +265,8 @@ test("每个真实档位都有居中的可见点，亮暗四主题的已填与�
               x: dot.left + dot.width / 2 - bounds.left,
               y: dot.top + dot.height / 2 - bounds.top,
               width: dot.width,
+              height: dot.height,
+              filled: point.dataset.filled === "true",
               selected: point.dataset.selected === "true",
               centerY: bounds.height / 2,
             };
@@ -184,9 +278,10 @@ test("每个真实档位都有居中的可见点，亮暗四主题的已填与�
         );
         for (const point of points) {
           expect(point.width).toBe(4);
+          expect(point.height).toBe(4);
           expect(Math.abs(point.y - point.centerY)).toBeLessThanOrEqual(0.5);
         }
-        const contrasts = await page.evaluate(
+        const samples = await page.evaluate(
           async ({ encoded, points }) => {
             const bytes = Uint8Array.from(atob(encoded), (character) =>
               character.charCodeAt(0),
@@ -221,14 +316,23 @@ test("每个真实档位都有居中的可见点，亮暗四主题的已填与�
                 0,
               );
             };
+            const rgb = (x: number, y: number) => {
+              const offset = (Math.floor(y) * canvas.width + Math.floor(x)) * 4;
+              return Array.from(data.slice(offset, offset + 3));
+            };
             return points
               .filter((point) => !point.selected)
               .map((point) => {
                 const dot = luminance(point.x, point.y);
                 const track = luminance(point.x, point.y - 6);
-                return (
-                  (Math.max(dot, track) + 0.05) / (Math.min(dot, track) + 0.05)
-                );
+                return {
+                  filled: point.filled,
+                  dot: rgb(point.x, point.y),
+                  track: rgb(point.x, point.y - 6),
+                  contrast:
+                    (Math.max(dot, track) + 0.05) /
+                    (Math.min(dot, track) + 0.05),
+                };
               });
           },
           {
@@ -238,11 +342,19 @@ test("每个真实档位都有居中的可见点，亮暗四主题的已填与�
             points,
           },
         );
-        for (const contrast of contrasts)
-          expect(
-            contrast,
-            `${appearance}/${accent}, explicit=${explicit}`,
-          ).toBeGreaterThanOrEqual(3);
+        for (const sample of samples) {
+          const context = `${appearance}/${accent}, explicit=${explicit}`;
+          if (sample.filled) {
+            // Decorative ticks follow the reviewed reference: 55% white tint,
+            // not a black text-contrast target. The value/thumb remain primary.
+            sample.dot.forEach((channel, index) => {
+              expect(
+                Math.abs(channel - (sample.track[index]! * 0.45 + 255 * 0.55)),
+                context,
+              ).toBeLessThanOrEqual(3);
+            });
+          } else expect(sample.contrast, context).toBeGreaterThanOrEqual(3);
+        }
         if (accent === "cyan" && explicit)
           await page.screenshot({
             path: info.outputPath(`visible-stops-${appearance}.png`),

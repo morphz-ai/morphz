@@ -440,6 +440,14 @@ function validate(contents: Sources) {
     "typed-job-result-receipt",
   );
   for (const name of legacyNames) {
+    // Action copy is intentionally extensible: terminal and operations wrappers
+    // now disclose the actual action rather than the archived generic route.
+    // Do not freeze that UI bug. Purity/import rules still cover the entire
+    // owner (including new helpers); exact receipt/status/render bindings and
+    // unchanged algorithms stay pinned here. Allowlisted request details,
+    // immutable source facts and version isolation have behavioral tests in
+    // job-presentation.test.ts and execution-presentation.test.ts.
+    if (name === "executionPresentation") continue;
     const actual =
       name === "record" || name === "text" || name === "short"
         ? declaration(owner, name)
@@ -792,7 +800,7 @@ test("snapshot stop requests cannot override a terminal result or lose active pr
     "snapshot-stop-priority",
   );
 });
-test("typed annotation receipt and all four original complete algorithms stay authoritative", () => {
+test("typed annotation receipt and unchanged original Job algorithms stay authoritative", () => {
   reject(
     changed(
       "Owner",
