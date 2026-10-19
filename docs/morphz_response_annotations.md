@@ -1,13 +1,14 @@
 # 响应、返回值与注解：Session IO 契约与部署记录
 
-## 当前实现：单次 Evaluation 返回（已部署，窗口验收待解锁）
+## 当前实现：单次 Evaluation 返回（已部署，原窗口长 Context 验收失败）
 
 2026-10-20：真实 Responses 调研已证实，上游消息 Schema 不能保证每个
 原生工具轮都同时产生注解消息，因此不再采用正文加独立注解调用作为
 新请求的生成路径。统一 `body / effects / annotations` 返回已通过隔离
 真实 DeepSeek 验证，`1fa0771821f5` 已更新原应用使用的 Runtime。原
-Runtime 的 on/off、普通聊天与 GPT 原路由验证通过；**原窗口被 macOS
-锁屏挡住，尚未完成最终窗口验收**。
+Runtime 新 Context 的 on/off、普通聊天与 GPT 原路由验证通过；**原窗口
+已能操作，但长 Context 两次读书测试失败：代码围栏中的提案被当正文完成，
+后续又在真正读取前生成非法 JSON。不能宣称完整修复或交付。**
 
 - 模型返回业务正文与工作提案；工作意图位于对应 effect 的 intent。
   Runtime 生成 Session IO Message、步骤 ID、归属、实际状态和结果关联。

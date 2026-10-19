@@ -2,8 +2,9 @@
 
 ## 2026-10-20 当前实现入口
 
-`1fa0771821f5` 已统一单次 Evaluation 返回并更新原 Runtime；原窗口
-验收因 macOS 锁屏待补。当前契约与证据分别见
+`1fa0771821f5` 已统一单次 Evaluation 返回并更新原 Runtime；04:43—04:52
+原窗口长 Context 验收失败，仍有提案误作正文完成与非法 JSON 中断，
+不能将隔离短 Context 成功推广到原应用。当前契约与证据分别见
 [实施边界](./session_io_unified_return_v2_2026-10-20.md)和
 [验收记录](./session_io_unified_return_acceptance_2026-10-20.md)。
 本轮同时消除了 internal infer“不得出现 Evaluation 外层”、旧

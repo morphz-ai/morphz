@@ -1,8 +1,9 @@
 # Session IO 统一返回验收（2026-10-20）
 
-状态：代码、隔离真实模型验证及原应用使用的 Runtime 更新已完成；原
-Runtime 的实际接口验证通过。macOS 锁屏阻止最后的原窗口验收，尚不宣称
-完整交付。此前的研究检查点保留，不覆盖失败证据。
+状态：**原窗口真实长 Context 验收未通过，不能交付。** `1fa0771821f5`
+已部署，隔离与新 Context 的接口验证通过，但 04:43 与 04:49 的原窗口
+读取测试先后暴露了“工作提案被当正文完成”和非法 JSON 中断。锁屏已不
+再是阻碍；缺口是实际可靠性。以下历史通过项仅代表其原有测试范围。
 
 ## 修复边界
 
@@ -105,6 +106,47 @@ SHA-256 见 `session_io_original_runtime_acceptance_2026-10-20.json`。
 两条“等待目标已恢复”的审计事件，没有重放工作；只推进对应会话的
 活动时间及客户端游标。两项未来定时计划的身份、到期时间与状态不变。
 
-**剩余门槛：解锁后在同一原应用窗口发送测试消息，检查正文流、活动
-标题／步骤和最终显示。** 当前接口与数据证据不能替代这一项，目标仍未
-标为完成；也没有把其他模型矩阵或任意量化模型标为通过。
+## 原窗口长 Context 反例（04:43—04:52）
+
+正常刷新原应用，在原 TEST 项目新建 `TEST Session IO 统一返回验收 1020`
+会话，使用原共享 Context（snapshot 389），选择实际 deepseek-flash / max。
+请求只读已有合成测试书 section-3，禁止改记忆、书籍、文件和使用网络。
+没有新建替代 Profile、清空 Context、降低思考强度或关闭注解。
+
+1. Thread `thread_4c650628b50ac8ffbb3261f8`：一轮请求返回 Markdown 代码块
+   中的 `{body:null,effects:[list_skills],annotations:...}`。v2 解码把代码块
+   当作隐式正文并标 completed；112 个公开增量展示了提案，没有实际读取。
+   这是验收失败，不能以 terminal=completed 或有输出计作成功。
+2. Thread `thread_69bc300b5195ad4923a9b046`：明确要求实际读取的诊断续测，
+   共五轮模型请求。先后列技能、提交错误 Host 参数（被拒）、列操作、describe，
+   最后读取提案在 `intent` 前多闭合一个 `}`，报 `Invalid JSON at byte 281`。
+   未执行该读取。已显示真实标题／步骤注解，但任务仍失败，不计为通过。
+
+本次冻结输出确为 `morphz.evaluation@2`；物理路由为原生 DeepSeek Responses，
+不是旧代理或旧 Runtime。已捕获完整当前请求（仅留在私有 0600 文件），
+Context 压力估计约 147,866 token，工具目录含 34 个工具和原有 no_reply。
+输入侧仍可见旧注解描述中的 native calls 索引语义，须继续审查层级区分。
+
+实际长请求的隔离逐字节转发确认上游收到 `text.format.type=json_schema`、
+`strict:false`、`tool_choice:none` 和 35 个相同工具定义；HTTP 200 本身不能
+证明可执行。该对照虽是合法 JSON，仍生成缺少 `action` 的 Host 参数。
+仅补 JSON 序列化提示或改为 json_object 的对照也分别产生了错误 Host
+参数、未知工具名；两者都不是修复验收。strict:true 对当前同一 Schema
+返回 HTTP 400：`An object with no properties is not allowed`，不能静默裁剪
+原业务 Schema 或把 strict:false 当成强保证。
+
+私有原始证据位于切换备份的 `original-window-stream.json`、
+`original-request-1.json` 至 `original-request-5.json` 与 `captured-*.json`。
+其中包含真实 Context，禁止提交源码仓库。后续只提交去私有信息的摘要。
+当前没有把上述失败修补成成功、剥离代码围栏执行、增加自动模型修复轮，
+也没有因实验切换生产返回方式。原 Runtime PID 71638 与定时任务保留。
+
+05:06 再次抓包得到上游非法 JSON 反例，response ID
+`9a747390-ff96-48c3-9908-3feae77748aa`。SSE 增量拼接、上游最终正文与
+Adapter content 完全一致，排除了该反例的流式拼接问题。原生函数调用
+对照则通过原 Host 参数纯校验，但没有执行，不作为原应用通过。
+完整研究及需要 review 的后续机制见
+[Responses 实际链路调研](session_io_responses_findings_2026-10-20.md)。
+
+**剩余门槛是修复并重新通过真实长 Context 的完整读书链路、正文流和终态，
+不是补一张窗口截图。** 目标仍未完成；其他模型矩阵仍未验证。
