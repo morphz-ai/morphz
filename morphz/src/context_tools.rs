@@ -53,7 +53,8 @@ impl Tool for ContextTxTool {
                         "description": context_tx_parameter_description()
                     }
                 },
-                "required": ["transaction"]
+                "required": ["transaction"],
+                "additionalProperties": false
             }),
         }
     }

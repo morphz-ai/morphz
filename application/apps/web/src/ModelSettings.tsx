@@ -353,7 +353,7 @@ export function ModelSettings({
               <span>
                 响应注解
                 <small id="response-annotations-help">
-                  为回复生成简短标题和结果。模型不支持时可关闭，仅影响新任务。
+                  为执行补充简短说明；未提供时显示原记录。仅影响新请求。
                 </small>
               </span>
               <input

@@ -40,7 +40,7 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
     (operator call
       (form (call tool argument...))
       (description
-        "Submit the exact tool name and standard JSON arguments through effects in a schema-bound output, or native Function Calling when ordinary output is admitted;
+        "Submit the exact tool name and standard JSON business arguments through native Function Calling, independently of optional display annotations;
          wait for the tool result and treat it as the current expression's Observation."))
 
     (operator fallback
@@ -68,7 +68,7 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
       (description
         "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
          To evaluate it, return content itself through Session IO to this Evaluation's actual caller: its active Session or parent Plan.
-         Keep enabled annotations in fields of the same Evaluation value, without executing work;
+         Optional annotations are separate typed Session IO communication in the same physical response, not work or a required second return;
          never send the (reply ...) parentheses or operator name as a response envelope.
          End the current Evaluation when no required process remains; returning a child value does not complete parent work."))))"#;
 
@@ -94,7 +94,7 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
     (operator call
       (form (call tool argument...))
       (description
-        "Submit the exact tool name and standard JSON arguments through effects in a schema-bound output, or native Function Calling when ordinary output is admitted;
+        "Submit the exact tool name and standard JSON business arguments through native Function Calling, independently of optional display annotations;
          wait for the tool result and treat it as the current expression's Observation."))
 
     (operator fallback
@@ -122,7 +122,7 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
       (description
         "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
          To evaluate it, return content itself through Session IO to this Evaluation's actual caller: its active Session or parent Plan.
-         Keep enabled annotations in fields of the same Evaluation value, without executing work;
+         Optional annotations are separate typed Session IO communication in the same physical response, not work or a required second return;
          never send the (reply ...) parentheses or operator name as a response envelope.
          End the current Evaluation when no required work remains. Maintain Mind only for an accurate state change worth retaining;
          maintenance is not a mandatory closing step and Runtime finalizing/maintenance-budget limits take precedence.

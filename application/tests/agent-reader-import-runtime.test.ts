@@ -189,15 +189,14 @@ for (const [sourceKind, annotations] of [
             ?.format;
           assert.deepEqual(
             textFormat ?? request.response_format,
-            annotations === "on" ? { type: "json_object" } : undefined,
-            "Every actual outbound request preserves the frozen native output mode, including work continuations",
+            undefined,
+            "Annotations must not force JSON output, including work continuations",
           );
-          if (annotations === "on")
-            assert.equal(
-              request.tool_choice,
-              "none",
-              "Effects use the admitted IO value, not mixed native calls",
-            );
+          assert.notEqual(
+            request.tool_choice,
+            "none",
+            "Native work stays available in both annotation modes",
+          );
         }
         assert.equal(f.realCalls, 0);
         assert.equal(

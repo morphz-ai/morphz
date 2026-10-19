@@ -1,5 +1,5 @@
-//! One schema-bound Evaluation value. The model supplies content, not Session IO
-//! envelopes, delivery identities, call IDs, or execution authority.
+//! Decoder for exactly frozen pre-cutover Evaluation admissions and history.
+//! New annotation modes do not select this transport. Never detect it in prose.
 use super::{Content, Data, Descriptor, Format, FormatBinding, IoError, IoResult, Limits, Message};
 use crate::llm::{Response, ToolCallRepr};
 use serde_json::json;
@@ -426,7 +426,14 @@ mod tests {
         Response { content: json!({"body":body,"annotations":{"execution":{"title":"独立盲审","progress":"","result":"审阅完成"},"observations":[]},"effects":effects}).to_string(), tool_calls: vec![] }
     }
     fn bound() -> super::super::response::ReturnBinding {
-        super::super::response::ReturnBinding::new("actual-thread", 3, "actual-evaluation", true)
+        let mut binding = super::super::response::ReturnBinding::new(
+            "actual-thread",
+            3,
+            "actual-evaluation",
+            true,
+        );
+        binding.output = Some(super::binding());
+        binding
     }
     #[test]
     fn captured_deepseek_extra_annotation_does_not_block_reader_proposals() {

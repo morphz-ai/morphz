@@ -3102,7 +3102,7 @@ fn infer_request_event(
         )
     };
     if !response_annotations.is_off() {
-        evaluation_text.push_str("\n\nReturn the exact typed terminal body through the Runtime-owned Session IO return binding. If annotations_enabled=true, return ONE native JSON Evaluation value conforming to the frozen output schema: body contains the complete declared native business value, following its bound JSON or UTF-8 body format, annotations contains title/progress/result and observations, effects contains only required unexecuted work proposals with nonempty intent. For JSON value returns, String is a normal native string in body, Bool is a boolean, and a record retains all its fields: do not add another JSON-encoded string or extract just reply. Runtime performs deterministic JSON transport encoding for its existing typed decoder. A Program source remains a complete UTF-8 string. Apply the SAME output schema to EVERY response, including intermediate work. Runtime constructs envelopes, indexes and causal IDs. Do not defer intents, emit a separate companion call, add a text delimiter or request another model solely to repair annotations or rewrite a return. When annotations_enabled=false, the exact original typed JSON body is ordinary content. This returns to the actual parent Plan, not a separate user chat or completion of parent work.");
+        evaluation_text.push_str("\n\nReturn the exact complete typed terminal value through the Runtime-owned Session IO return binding using its original business encoding. Annotations are optional display communication in the same physical response; their presence or absence never changes this value's encoding. Do not wrap it in an Evaluation object, add a text delimiter, insert metadata in business arguments, or request another model solely to fill annotations or relay a return. Use native calls for permitted work. A JSON String stays its complete JSON String, Bool stays a boolean, and a record retains all fields, not only reply. A Program source remains complete UTF-8 source. This returns to the actual parent Plan, not a separate user chat or completion of parent work.");
     }
     let mut payload = serde_json::Map::from_iter([
         (
@@ -5585,8 +5585,8 @@ mod tests {
                 .unwrap();
         let annotated_instruction = annotated_request.payload["text"].as_str().unwrap();
         assert!(annotated_instruction
-            .contains("SAME output schema to EVERY response, including intermediate work"));
-        assert!(annotated_instruction.contains("Do not defer intents"));
+            .contains("Annotations are optional display communication"));
+        assert!(annotated_instruction.contains("Use native calls for permitted work"));
         assert!(!instruction.contains("SAME output schema to EVERY response"));
         let runtime_store: Arc<dyn RuntimeStore> = store.clone();
         let coordinator = PlanExecutionCoordinator::new(runtime_store, Arc::clone(&registry));

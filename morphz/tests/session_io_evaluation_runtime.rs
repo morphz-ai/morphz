@@ -5,8 +5,8 @@ use morphz::{
     config::AppConfig,
     event::Event,
     llm::{
-        Client, Message, ModelAttemptBinding, ModelOutputEncoding, ModelRequestOptions,
-        ModelStreamEvent, ModelStreamSender, PromptTokenCount, Response, ToolDefinition,
+        Client, Message, ModelAttemptBinding, ModelRequestOptions, ModelStreamEvent,
+        ModelStreamSender, PromptTokenCount, Response, ToolCallRepr, ToolDefinition,
     },
     memory::{ExecutionJobFilter, NewSession, QueryFilter, SessionMountKind},
     response_annotations::{AnnotationKind, PersistedAnnotations, Protocol, BUNDLE_PAYLOAD_KEY},
@@ -52,6 +52,7 @@ struct Model {
     infer: bool,
     malformed: bool,
     annotation_extras: bool,
+    metadata: bool,
     requests: AtomicUsize,
     directory: Mutex<Vec<String>>,
     inputs: Mutex<Vec<Vec<Message>>>,
@@ -83,8 +84,8 @@ impl Client for Model {
             "no annotation-repair or reply-relay request"
         );
         assert_eq!(
-            options.output_encoding,
-            Some(ModelOutputEncoding::JsonObject)
+            options.output_encoding, None,
+            "annotation mode must not select a JSON envelope"
         );
         self.directory
             .lock()
@@ -94,36 +95,72 @@ impl Client for Model {
         let mut observations = vec![];
         if self.work && index == 1 {
             assert!(
-                messages.iter().all(|message| message.role != "tool"
-                    && message.tool_calls.as_ref().is_none_or(Vec::is_empty)),
-                "never forge native function history for an IO effect"
+                messages.iter().any(|message| message.role == "tool"
+                    && message.tool_call_id.as_deref() == Some("actual-probe-call")),
+                "native work keeps its actual function receipt"
             );
-            let reference = observation(&messages, "evaluation_probe")
-                .expect("actual tool observation must be in the new Context");
+            assert!(
+                messages
+                    .iter()
+                    .flat_map(|m| m.tool_calls.iter().flatten())
+                    .all(|call| call.function.name != "deliver_message"),
+                "logical metadata never creates an unanswered function call in the continuation"
+            );
+            let reference = messages
+                .iter()
+                .find(|message| {
+                    message.role == "tool"
+                        && message.tool_call_id.as_deref() == Some("actual-probe-call")
+                })
+                .and_then(|message| serde_json::from_str::<Value>(&message.content).ok())
+                .and_then(|value| value["observation_ref"].as_str().map(str::to_owned))
+                .or_else(|| observation(&messages, "evaluation_probe"))
+                .expect("actual native result must retain its real observation ref");
             observations
                 .push(json!({"ref":reference,"result":"真实合成工具返回 PROBE_FACT_LINUX"}));
         }
         let working = self.work && index == 0;
-        let mut value = json!({
-            "body":if working {Value::Null}else if self.infer {json!("中文 🧠\n第二行")}else{json!("核对完成。\n正文里的 `deliver_message` 和 {\"body\":1} 都只是文字。")},
-            "annotations":{"execution":{"title":"核对合成环境","progress":if working {"读取合成工具"}else{""},"result":if working {""}else{"已返回完整结果"}},"observations":observations},
-            "effects":if working {json!([{"name":"evaluation_probe","arguments":{"key":"system","_annotations":{"business":true}},"intent":"读取真实合成工具以核对环境"}])}else{json!([])},
-        });
+        let mut value = json!({"execution":{"title":"核对合成环境","progress":if working {"读取合成工具"}else{""},"result":if working {""}else{"已返回完整结果"}},"observations":observations});
+        if working {
+            value["calls"] = json!([{"index":0,"intent":"读取真实合成工具以核对环境"}]);
+        }
         if self.annotation_extras {
-            value["annotations"]["observations_note"] = Value::Null;
-            value["annotations"]["execution"]["unregistered"] = json!({"name":"not-a-proposal"});
-            if let Some(observation) = value["annotations"]["observations"]
-                .as_array_mut()
-                .unwrap()
-                .first_mut()
-            {
+            value["observations_note"] = Value::Null;
+            value["execution"]["progress"] = Value::Null;
+            value["execution"]["unregistered"] = json!({"name":"not-a-proposal"});
+            if let Some(observation) = value["observations"].as_array_mut().unwrap().first_mut() {
                 observation["unregistered"] = json!(false);
             }
         }
-        let mut content = value.to_string();
-        if self.malformed {
-            content.push('}');
+        let mut tool_calls = vec![];
+        if working {
+            tool_calls.push(ToolCallRepr {
+                id: "actual-probe-call".into(),
+                r#type: "function".into(),
+                func_name: "evaluation_probe".into(),
+                arguments: json!({"key":"system","_annotations":{"business":true}}).to_string(),
+            });
         }
+        if self.metadata || self.malformed {
+            let binding = ScriptBinding::from_messages(&messages);
+            let mut arguments = json!({"delivery_id":binding,"message":{"format":{"id":"morphz.response.annotations","version":"1"},"content":{"encoding":"json","value":value}}}).to_string();
+            if self.malformed {
+                arguments.push('}');
+            }
+            tool_calls.push(ToolCallRepr {
+                id: "actual-metadata-call".into(),
+                r#type: "function".into(),
+                func_name: "deliver_message".into(),
+                arguments,
+            });
+        }
+        let content = if working {
+            String::new()
+        } else if self.infer {
+            json!("中文 🧠\n第二行").to_string()
+        } else {
+            "核对完成。\n正文里的 `deliver_message` 和 {\"body\":1} 都只是文字。".into()
+        };
         stream.send(ModelStreamEvent::Started)?;
         for character in content.chars() {
             stream.send(ModelStreamEvent::TextDelta {
@@ -131,11 +168,44 @@ impl Client for Model {
             })?;
             tokio::task::yield_now().await;
         }
+        for (index, call) in tool_calls.iter().enumerate() {
+            stream.send(ModelStreamEvent::ToolCallStarted {
+                index,
+                id: call.id.clone(),
+                name: call.func_name.clone(),
+            })?;
+            for c in call.arguments.chars() {
+                stream.send(ModelStreamEvent::ToolArgumentsDelta {
+                    index,
+                    delta: c.to_string(),
+                })?;
+            }
+            stream.send(ModelStreamEvent::ToolCallCompleted { index })?;
+        }
         stream.send(ModelStreamEvent::Completed)?;
         Ok(Response {
             content,
-            tool_calls: vec![],
+            tool_calls,
         })
+    }
+}
+struct ScriptBinding;
+impl ScriptBinding {
+    fn from_messages(messages: &[Message]) -> String {
+        messages
+            .iter()
+            .rev()
+            .find_map(|message| {
+                let text = morphz::llm::model_visible_message_text(message);
+                let start = text.find("(context ")?;
+                let tree = morphz::sexpr::parse(&text[start..]).ok()?;
+                match tree.get_path(&["evaluation-environment", "session-io-return", "delivery_id"])
+                {
+                    Some(morphz::sexpr::SExpr::Atom(id)) => Some(id.clone()),
+                    _ => None,
+                }
+            })
+            .expect("actual Runtime return binding")
     }
 }
 struct Probe(Arc<Mutex<Vec<Value>>>);
@@ -185,17 +255,44 @@ async fn run_with_annotation_extras(
     Event,
     Event,
 ) {
+    run_optional(
+        work,
+        infer,
+        malformed,
+        annotation_extras,
+        true,
+        Protocol::On,
+    )
+    .await
+}
+
+async fn run_optional(
+    work: bool,
+    infer: bool,
+    malformed: bool,
+    annotation_extras: bool,
+    metadata: bool,
+    protocol: Protocol,
+) -> (
+    tempfile::TempDir,
+    MorphzRuntime,
+    Arc<Model>,
+    Arc<Mutex<Vec<Value>>>,
+    Event,
+    Event,
+) {
     let temp = tempfile::TempDir::new().unwrap();
     let mut config = AppConfig::default();
     config.permissions.workspace_root = temp.path().to_string_lossy().into_owned();
     config.background_task.artifact_dir =
         temp.path().join("artifacts").to_string_lossy().into_owned();
-    config.orchestrator.response_annotations = Protocol::On;
+    config.orchestrator.response_annotations = protocol;
     let model = Arc::new(Model {
         work,
         infer,
         malformed,
         annotation_extras,
+        metadata,
         requests: AtomicUsize::new(0),
         directory: Mutex::new(vec![]),
         inputs: Mutex::new(vec![]),
@@ -263,7 +360,7 @@ async fn run_with_annotation_extras(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn one_value_delivers_body_metadata_and_a_real_logical_io_publication_once() {
+async fn native_body_and_optional_metadata_publish_once_without_a_relay() {
     let (_temp, runtime, model, args, root, reply) = run(false, false, false).await;
     assert_eq!(reply.topic, "chat/reply", "{reply:?}");
     assert_eq!(model.requests.load(Ordering::SeqCst), 1);
@@ -286,7 +383,8 @@ async fn one_value_delivers_body_metadata_and_a_real_logical_io_publication_once
     assert_eq!(sources.len(), 1);
     let bundle: PersistedAnnotations =
         serde_json::from_value(sources[0].payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-    assert!(bundle.raw_response.tool_calls.is_empty());
+    assert_eq!(bundle.raw_response.tool_calls.len(), 1);
+    assert!(bundle.return_binding.as_ref().unwrap().output.is_none());
     assert!(bundle
         .records
         .iter()
@@ -300,7 +398,7 @@ async fn one_value_delivers_body_metadata_and_a_real_logical_io_publication_once
         events
             .iter()
             .filter(|event| event.topic == "session/io_output"
-                && event.payload["io_message"]["format"]["id"] == "morphz.evaluation")
+                && event.payload["io_message"]["format"]["id"] == "morphz.response.annotations")
             .count(),
         1
     );
@@ -352,6 +450,70 @@ async fn effects_keep_real_jobs_original_arguments_actual_refs_and_stable_tools(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn missing_metadata_and_off_mode_use_the_same_work_chat_and_infer_path() {
+    let mut directory = None;
+    for protocol in [Protocol::On, Protocol::Off] {
+        for (work, infer, metadata) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, false),
+            (true, false, true),
+        ] {
+            if !protocol.is_off() && metadata {
+                continue;
+            }
+            let (_temp, runtime, model, args, root, reply) =
+                run_optional(work, infer, false, metadata, metadata, protocol).await;
+            assert_eq!(
+                reply.topic, "chat/reply",
+                "{protocol:?} {work} {infer}: {reply:?}"
+            );
+            assert_eq!(
+                model.requests.load(Ordering::SeqCst),
+                if work { 2 } else { 1 },
+                "no metadata repair or answer relay"
+            );
+            assert_eq!(args.lock().unwrap().len(), usize::from(work));
+            if !infer {
+                let current = model.directory.lock().unwrap()[0].clone();
+                if let Some(expected) = &directory {
+                    assert_eq!(
+                        &current, expected,
+                        "tool definitions stay identical across on/off"
+                    );
+                } else {
+                    directory = Some(current);
+                }
+            }
+            let events = runtime
+                .query_events(QueryFilter {
+                    root_turn_id: Some(root.id),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert!(!events
+                .iter()
+                .any(|event| event.topic == "runtime/response_protocol_error"));
+            for value in events
+                .iter()
+                .filter_map(|event| event.payload.get(BUNDLE_PAYLOAD_KEY))
+            {
+                let bundle: PersistedAnnotations = serde_json::from_value(value.clone()).unwrap();
+                assert!(bundle.records.is_empty() && bundle.diagnostics.is_empty());
+                assert!(bundle.annotation_messages.is_empty());
+                assert!(bundle.return_binding.unwrap().output.is_none());
+            }
+            assert!(
+                !events.iter().any(|event| event.topic == "session/io_output"
+                    && event.payload["io_message"]["format"]["id"]
+                        == "morphz.response.annotations")
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unregistered_annotations_are_diagnosed_without_blocking_work_or_streamed_return() {
     let (_temp, runtime, model, args, root, reply) =
         run_with_annotation_extras(true, false, false, true).await;
@@ -386,7 +548,11 @@ async fn unregistered_annotations_are_diagnosed_without_blocking_work_or_streame
     for source in sources {
         let bundle: PersistedAnnotations =
             serde_json::from_value(source.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-        assert!(bundle.raw_response.content.contains("observations_note"));
+        assert!(bundle
+            .raw_response
+            .tool_calls
+            .iter()
+            .any(|call| call.arguments.contains("observations_note")));
         assert!(bundle.diagnostics.iter().any(|diagnostic| diagnostic
             .message
             .contains("/annotations/observations_note")));
@@ -407,7 +573,7 @@ async fn unregistered_annotations_are_diagnosed_without_blocking_work_or_streame
             .find(|event| {
                 event.topic == "session/io_output"
                     && event.payload["source_event_id"] == source.id
-                    && event.payload["io_message"]["format"]["id"] == "morphz.evaluation"
+                    && event.payload["io_message"]["format"]["id"] == "morphz.response.annotations"
             })
             .expect("real registered logical IO publication");
         let message: morphz::session_io::Message =
@@ -415,19 +581,11 @@ async fn unregistered_annotations_are_diagnosed_without_blocking_work_or_streame
         let morphz::session_io::Content::Json { value } = &message.content else {
             panic!()
         };
-        assert!(value
-            .get("annotations")
-            .unwrap()
-            .get("observations_note")
-            .is_none());
+        assert!(value.get("observations_note").is_none());
         morphz::session_io::validate_content(
             &message,
-            bundle
-                .return_binding
-                .as_ref()
-                .unwrap()
-                .output
-                .as_ref()
+            &morphz::session_io::Registry::default()
+                .resolve(&message.format, "json", "registered")
                 .unwrap(),
             &Limits::default(),
         )
@@ -524,7 +682,10 @@ impl Client for NativeCount {
             .iter()
             .any(|message| morphz::llm::model_visible_message_text(message)
                 .contains("test.native-count")));
-        Ok(Response { content: r#"{"effects":[],"annotations":{"execution":{"title":"返回计数","progress":"","result":"完整计数已交付"},"observations":[]},"body":{"count":9007199254740993123456789}}"#.into(), tool_calls: vec![] })
+        Ok(Response {
+            content: r#"{"count":9007199254740993123456789}"#.into(),
+            tool_calls: vec![],
+        })
     }
 }
 

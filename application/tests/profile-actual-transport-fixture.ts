@@ -147,21 +147,27 @@ export function profileFixtureAnnotationsMessage(
   request: CapturedRequest,
 ): { name: string; arguments: unknown } | undefined {
   return profileFixtureReturnBinding(request)?.annotations_enabled
-    ? fixtureAnnotationsMessage({
-        execution: {
-          title: "处理合成测试请求",
-          result: "合成测试请求已处理；未调用付费模型",
+    ? fixtureAnnotationsMessage(
+        {
+          execution: {
+            title: "处理合成测试请求",
+            result: "合成测试请求已处理；未调用付费模型",
+          },
         },
-      })
+        profileFixtureReturnBinding(request)!.delivery_id,
+      )
     : undefined;
 }
-export function fixtureAnnotationsMessage(metadata: unknown) {
-  // Logical test data only. The HTTP fixture below encodes this into fields
-  // of ONE Evaluation value; no annotation tool call is sent to the Runtime.
+export function fixtureAnnotationsMessage(
+  metadata: unknown,
+  deliveryId = "fixture-metadata",
+) {
+  // The real HTTP response uses the existing generic typed IO carrier.
+  // respond() binds test-authored metadata to the actual Runtime return ID.
   return {
     name: "deliver_message",
     arguments: {
-      delivery_id: "fixture-metadata",
+      delivery_id: deliveryId,
       message: {
         format: { id: "morphz.response.annotations", version: "1" },
         content: { encoding: "json", value: metadata },
@@ -299,7 +305,19 @@ export async function profileActualTransportFixture(
       index,
       id: randomUUID(),
       type: "function",
-      function: { name: tool.name, arguments: JSON.stringify(tool.arguments) },
+      function: {
+        name: tool.name,
+        arguments: JSON.stringify(
+          tool.name === "deliver_message" &&
+            (tool.arguments as any)?.message?.format?.id ===
+              "morphz.response.annotations"
+            ? {
+                ...(tool.arguments as object),
+                delivery_id: profileFixtureReturnBinding(request)!.delivery_id,
+              }
+            : tool.arguments,
+        ),
+      },
     }));
     const metadataOnly =
       selected.length > 0 &&
@@ -321,48 +339,6 @@ export async function profileActualTransportFixture(
     };
     if (rawValue !== undefined) {
       message = { role: "assistant", content: rawValue };
-      call = false;
-    } else if (profileFixtureReturnBinding(request)?.annotations_enabled) {
-      const metadata = selected.find(
-        (tool) =>
-          tool.name === "deliver_message" &&
-          (tool.arguments as any)?.message?.format?.id ===
-            "morphz.response.annotations",
-      );
-      const value = (metadata?.arguments as any)?.message?.content?.value;
-      const effects = selected
-        .filter((tool) => tool !== metadata)
-        .map((tool, index) => ({
-          name: tool.name,
-          arguments: tool.arguments,
-          intent:
-            tool.name === "no_reply"
-              ? ""
-              : (value?.calls?.find((call: any) => call.index === index)
-                  ?.intent ?? `执行合成步骤 ${tool.name}`),
-        }));
-      const noReply = effects.length === 1 && effects[0]!.name === "no_reply";
-      const annotations = {
-        execution: {
-          title: noReply ? "" : "核对合成请求",
-          progress: "",
-          result: effects.length ? "" : "合成请求已返回",
-          ...(value?.execution ?? {}),
-        },
-        observations: value?.observations ?? [],
-      };
-      const binding = profileFixtureReturnBinding(request)!;
-      const body =
-        message.content &&
-        !effects.length &&
-        binding.format.id !== "morphz.chat" &&
-        binding.format.encoding === "json"
-          ? JSON.parse(message.content)
-          : message.content || null;
-      message = {
-        role: "assistant",
-        content: JSON.stringify({ body, annotations, effects }),
-      };
       call = false;
     }
     if (request.stream) {
@@ -745,58 +721,12 @@ export async function profileActualTransportFixture(
           item.response.write(
             `data: ${JSON.stringify({ id, choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`,
           );
-        const structured = profileFixtureReturnBinding(
-          item.request,
-        )?.annotations_enabled;
-        delta({
-          role: "assistant",
-          content: structured
-            ? '{"body":' + JSON.stringify(prefix).slice(0, -1)
-            : prefix,
-        });
+        delta({ role: "assistant", content: prefix });
         return {
           append(text: string) {
-            delta({
-              content: structured ? JSON.stringify(text).slice(1, -1) : text,
-            });
+            delta({ content: text });
           },
           finish(messages: Array<{ name: string; arguments: unknown }> = []) {
-            if (structured) {
-              const metadata = messages.find(
-                (tool) =>
-                  tool.name === "deliver_message" &&
-                  (tool.arguments as any)?.message?.format?.id ===
-                    "morphz.response.annotations",
-              );
-              const fields = (metadata?.arguments as any)?.message?.content
-                ?.value;
-              const annotations = {
-                execution: {
-                  title: "核对合成流式请求",
-                  progress: "",
-                  result: "合成流式请求已返回",
-                  ...(fields?.execution ?? {}),
-                },
-                observations: fields?.observations ?? [],
-              };
-              const effects = messages
-                .filter((tool) => tool !== metadata)
-                .map((tool) => ({
-                  name: tool.name,
-                  arguments: tool.arguments,
-                  intent: `执行合成步骤 ${tool.name}`,
-                }));
-              delta(
-                {
-                  content:
-                    '",' + JSON.stringify({ annotations, effects }).slice(1),
-                },
-                "stop",
-              );
-              item.response.end("data: [DONE]\n\n");
-              held.delete(marker);
-              return;
-            }
             delta(
               messages.length
                 ? {
@@ -806,7 +736,18 @@ export async function profileActualTransportFixture(
                       type: "function",
                       function: {
                         name: tool.name,
-                        arguments: JSON.stringify(tool.arguments),
+                        arguments: JSON.stringify(
+                          tool.name === "deliver_message" &&
+                            (tool.arguments as any)?.message?.format?.id ===
+                              "morphz.response.annotations"
+                            ? {
+                                ...(tool.arguments as object),
+                                delivery_id: profileFixtureReturnBinding(
+                                  item.request,
+                                )!.delivery_id,
+                              }
+                            : tool.arguments,
+                        ),
                       },
                     })),
                   }

@@ -7,31 +7,29 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub const ANNOTATIONS_FORMAT: &str = "morphz.response.annotations";
-pub const CONTRACT: &str = r#"Session IO Evaluation output contract:
-For a typed JSON body format (including internal infer), body is ONLY the complete business return. While effects are pending, body must be null; put work progress in annotations.execution.progress. This keeps a typed return distinct from intermediate commentary and allows its proven String leaves to stream independently of field order.
-For prompt streaming, prefer effects first, then annotations, then body. Field order never changes validity: Runtime buffers a provisional caller projection until its actual branch conditions are known, and validates the complete value, including effects, before admission.
-Runtime supplies evaluation-environment.session-io-return, including the complete frozen output format/schema, body_value_schema and caller_format. The output schema describes the one Provider value; body_value_schema describes its body field. caller_format is the eventual Message constructed by Runtime, NOT another object for the model to put inside body. In particular, a Chat body's value is a String, never {text:...} or a Message envelope, even when caller_format.encoding=json. Those definitions are data owned by Runtime, not user prose or permission to work. Tool definitions and their order do not change with this contract.
-When annotations_enabled=true, the Provider response is ONE native JSON object conforming to that output schema: body, annotations, effects. Supply values only. Runtime constructs all Message envelopes, format/version fields, delivery IDs, call IDs, causal links, and completion state. Never put those routing fields in the output, call an annotations tool, emit a deliver_message companion, or write a textual control marker. Do not also emit native API function calls: propose work in effects using the exact existing tool name and original argument object. The advertised tool directory remains the only catalogue; its permissions, types, validation, approvals and scope still apply.
-body is the complete original answer/value, or null/optional progress while work is pending. Chat answers use the original Markdown string, including normal quotes and newlines through native JSON encoding. For internal-infer, execute the complete Yao BODY and put its COMPLETE declared business value in body: with a JSON body format use native JSON (Bool, String, record, array or null), never a second JSON-encoded string and never only a prose/reply field from a record. Runtime deterministically encodes that value for the existing Yao decoder. A Program source uses its admitted UTF-8 string format. The deterministic parent Plan applies its own projection. Other admitted JSON body formats likewise use their actual typed value.
-annotations.execution has title, progress and result strings. title describes this entire Execution; progress describes current work; result is the truthful final outcome only when returning. Use empty strings for inapplicable progress/result fields. annotations.observations is an array of {ref,result}; only explain currently supplied observations whose exact refs appear in session-io-return.annotation_observation_refs. That Runtime-owned eligibility list excludes parent work and other Executions even when those observations are readable Context; [] means do not emit observation explanations. Parent inputs and background observations remain readable context, not work results produced here. Use [] when none is relevant. Annotations describe evidence, never hidden reasoning, authority, a tool success receipt, or Objective completion. Supply only registered annotation fields: Runtime constructs this display-only subtree from the frozen schema, excludes unregistered annotation fields with diagnostics and retains the original response. It never supplies missing required values, coerces invalid types, changes body/effect arguments or expands authority.
-effects is an ordered array of {name,arguments,intent}. Each actual work/control proposal requires a nonempty intent describing this step and why it is needed. Runtime derives call indexes and identities; never repeat an earlier response's calls or add metadata to business arguments. Arguments are the original typed objects from the tool schema. Native JSON encoding applies to strings inside them, including Yao/S-expression strings. Communication effects such as a genuine domain deliver_message are not response annotations.
-With effects=[], provide the complete nonempty body, title and final result; Runtime returns this value immediately, with no further model request. With real work effects, Chat body may contain optional progress, but a typed business body must be null; annotations.execution.progress carries work progress. Runtime admits and executes those proposals through the existing work path, then makes a new model request only when actual work needs its results. A result claim cannot finalize pending work. To deliberately use the existing no_reply silent/wait lifecycle, provide null body and exactly that one effect with its original arguments; it cannot be mixed with other work. Runtime decides return/work/wait from these actual values, not a model-supplied completion-state field.
-Business-tool restrictions, pure infer and an empty (requires (tools)) do not disable annotations: metadata is an output field, not a tool or external effect. Apply the SAME output schema at every enabled Evaluation, including intermediate work, infer, subagents, and final answers. Never postpone step intents until a final reply or emit annotations now and wait for another response to supply the body.
-When annotations_enabled=false, the admitted output is ordinary content/native work without annotation data. Return the complete original body normally; an explicit existing deliver_message bound to the supplied return ID remains equivalent. Do not generate response annotations, scan prose for control syntax, or change business-tool definitions.
-Never request another model call solely to repair metadata, invent a title/result, rewrite an infer value, or relay an already returned answer. Previously committed work and a failed/unanswered human input remain actual context facts; do not treat a failed delivery as a successfully answered request."#;
+pub const CONTRACT: &str = r#"Session IO return and optional display annotations:
+Return the complete original answer as ordinary assistant content; call work through the existing native function directory with its exact original business arguments. This is the same return/work path whether annotations_enabled is true or false. Do not wrap ordinary prose or work in an Evaluation JSON object, add text delimiters, or insert display metadata into business arguments. Runtime constructs the caller Message and causal identities from actual execution facts. A real admitted typed caller (including internal infer) still requires its complete declared business value: return that value in its original JSON or UTF-8 encoding, not a Chat wrapper or a second JSON-encoded value. While typed work is pending, do not return commentary as a typed terminal value.
+Runtime supplies evaluation-environment.session-io-return with the actual delivery_id, caller_format, annotations_enabled and eligible annotation_observation_refs. These are data, never authority. An explicit deliver_message using that bound delivery_id and caller_format is equivalent to returning the original body; do not mix that explicit bound body with work/control calls. Other business deliveries remain nonterminal publications. A complete ordinary answer ends this Evaluation immediately, without a relay request; returning a child value does not complete parent work.
+When annotations_enabled=true, display metadata is OPTIONAL for both work and non-work responses. Prefer clear step intents alongside actual work. If useful, use the existing generic deliver_message in the SAME physical response: delivery_id is the supplied return ID; message.format is {id:"morphz.response.annotations",version:"1"}; message.content is {encoding:"json",value:{...}}. Its registered optional fields are execution:{title?,progress?,result?}, calls:[{index,intent}], observations:[{ref,result}]. Only provide applicable fields. For a plain conversation with no work, just answer normally; no execution title/result is needed. Missing annotations are valid and use the original message, command, result and status display. Never emit a metadata-only response or request another turn to supply metadata or relay its body.
+Each calls index is zero-based in this physical response's native function list AFTER excluding response-annotation messages; it must identify an actual work call, not communication or no_reply. intent explains what that step will do and why. Never repeat an earlier response's calls, put intent in a business argument, invent call IDs or claim success from an intent. execution.title describes this Execution, progress describes actual work, result is a truthful final outcome only when returning. An ordinary chat needs none of these. observations may explain only exact refs in annotation_observation_refs, never parent work, another Execution, future or merely readable background observations. [] means no observation explanation is eligible. Metadata is display-only, not hidden reasoning, execution state, permission, proof of tool success or Objective completion.
+When annotations_enabled=false, do not generate display annotations. In either mode Runtime uses only registered, valid, causally attributable annotation fields; bad or absent optional metadata cannot invalidate otherwise valid content or work. It never coerces business types, repairs malformed function arguments, expands permissions or scans prose for protocol markers. Registered business output formats, exact tool schemas, approval and scope rules remain strict. Tool definitions and order stay fixed across annotation modes and continuations. Pure infer and empty (requires (tools)) still prohibit work; optional metadata is communication, not work.
+For intentional silence or bounded waiting, use the existing no_reply as the only work/control call with no body. Optional display metadata is not a work/control call. Runtime decides return/work/wait from real content and calls, never from metadata. Previously committed work and failed/unanswered human inputs remain actual context facts; a failed delivery is not a successfully answered request. Never make another model request solely to repair or fill metadata, invent a title/result, rewrite an infer value, or relay an already returned answer."#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ReturnBinding {
     pub delivery_id: String,
     pub format: OutputFormat,
+    /// Actual admitted business definition, not a process-default registry guess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<super::FormatBinding>,
     pub annotations_enabled: bool,
     /// Runtime-proven result refs for this Execution in the admitted Context.
     /// This is an eligibility directory, not Recall access or a permission.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotation_observation_refs: Vec<String>,
-    /// Exact output schema frozen at Evaluation admission. Absent only for a
-    /// declared ordinary-text return or an immutable historical record.
+    /// Exact legacy Evaluation schema frozen by an older admission. New
+    /// requests use native content/calls independently of optional annotations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<super::FormatBinding>,
 }
@@ -76,9 +74,10 @@ impl ReturnBinding {
         Self {
             delivery_id: format!("return_{}", digest.trim_start_matches("sha256:")),
             format: OutputFormat::chat(),
+            caller: None,
             annotations_enabled: enabled,
             annotation_observation_refs: vec![],
-            output: enabled.then(super::evaluation::binding),
+            output: None,
         }
     }
     pub fn with_formats(mut self, formats: &[super::FormatBinding]) -> Self {
@@ -95,6 +94,7 @@ impl ReturnBinding {
             .or_else(|| formats.first())
         {
             self.format = format.format.clone();
+            self.caller = Some(format.clone());
         }
         self
     }
@@ -186,13 +186,43 @@ pub fn split_response_for_attempt(
             remaining.push(call.clone());
             continue;
         }
-        let delivery = parse_delivery(&call.arguments, &Limits::default())?;
-        if delivery.message.format.id == ANNOTATIONS_FORMAT {
-            return Err(IoError::new(
-                "invalid_delivery_contract",
-                "Response annotations are Evaluation data, not a deliver_message call",
-            ));
+        let limits = Limits::default();
+        // Only an exact typed carrier is metadata. Never recognize markers in
+        // prose, guess broken JSON, or strip unknown business-tool arguments.
+        let tree = Data::parse(call.arguments.as_bytes(), &limits)?;
+        if tree
+            .get("message")
+            .and_then(|v| v.get("format"))
+            .and_then(|v| v.get("id"))
+            .and_then(Data::string)
+            == Some(ANNOTATIONS_FORMAT)
+        {
+            if binding.annotations_enabled {
+                match parse_delivery(&call.arguments, &limits) {
+                    Ok(mut delivery)
+                        if delivery.delivery_id == binding.delivery_id
+                            && delivery.message.format.version == "1"
+                            && delivery.message.content.encoding() == "json" =>
+                    {
+                        if let super::Content::Json { value } = &mut delivery.message.content {
+                            if let Some(projected) =
+                                project_annotations(value, &mut parts.diagnostics)
+                            {
+                                *value = projected;
+                                parts.annotation_messages.push(delivery);
+                            }
+                        }
+                    }
+                    _ => annotation_note(
+                        &mut parts.diagnostics,
+                        "/annotations",
+                        "Invalid annotation envelope or target ignored",
+                    ),
+                }
+            }
+            continue;
         }
+        let delivery = parse_delivery(&call.arguments, &limits)?;
         if delivery.delivery_id == binding.delivery_id {
             if parts.body_message.is_some() {
                 return Err(IoError::new(
@@ -209,12 +239,21 @@ pub fn split_response_for_attempt(
                     "Bound return does not match its admitted format",
                 ));
             }
-            let registry = super::Registry::default();
-            let registered = registry.resolve(
-                &binding.format.format(),
-                delivery.message.content.encoding(),
-                "registered",
-            )?;
+            let registered = if let Some(caller) = binding.caller.as_ref() {
+                if caller.format != binding.format {
+                    return Err(IoError::new(
+                        "invalid_delivery_contract",
+                        "Caller definition does not match its frozen format",
+                    ));
+                }
+                caller.clone()
+            } else {
+                super::Registry::default().resolve(
+                    &binding.format.format(),
+                    delivery.message.content.encoding(),
+                    "registered",
+                )?
+            };
             super::validate_content(&delivery.message, &registered, &Limits::default())?;
             if let super::Content::Json { value } = &delivery.message.content {
                 for key in ["attachments", "references"] {
@@ -225,7 +264,14 @@ pub fn split_response_for_attempt(
                     }
                 }
             }
-            let text = delivery.message.summary();
+            // A typed String/Bool/record is a business value, not a Chat
+            // object's text field. Keep its lossless original JSON type.
+            let text = match &delivery.message.content {
+                super::Content::Json { value } if binding.format.id != "morphz.chat" => {
+                    value.json()
+                }
+                _ => delivery.message.summary(),
+            };
             if text.trim().is_empty() {
                 return Err(IoError::new(
                     "invalid_delivery_contract",
@@ -243,6 +289,14 @@ pub fn split_response_for_attempt(
         } else {
             remaining.push(call.clone());
         }
+    }
+    if parts.annotation_messages.len() > 1 {
+        parts.annotation_messages.clear();
+        annotation_note(
+            &mut parts.diagnostics,
+            "/annotations",
+            "Ambiguous annotation messages ignored",
+        );
     }
     if parts.body_message.is_some() && !remaining.is_empty() {
         return Err(IoError::new(
@@ -266,6 +320,77 @@ pub fn split_response_for_attempt(
     Ok(parts)
 }
 
+fn annotation_note(notes: &mut Vec<String>, path: &str, reason: &str) {
+    if notes.len() < 64 {
+        let path: String = path.chars().take(192).collect();
+        notes.push(format!(
+            "{reason} at JSON pointer {}; original metadata retained in raw_response",
+            serde_json::to_string(&path).expect("JSON path")
+        ));
+    }
+}
+
+/// Project only this registered display subtree. Invalid optional fields are
+/// omitted independently, never coerced. This is not a business JSON repair.
+fn project_annotations(value: &Data, notes: &mut Vec<String>) -> Option<Data> {
+    fn project(value: &Data, schema: &Value, path: &str, notes: &mut Vec<String>) -> Option<Data> {
+        let projected = match (value, schema.get("type").and_then(Value::as_str)) {
+            (Data::Object(fields), Some("object")) => {
+                let mut accepted = std::collections::BTreeMap::new();
+                for (key, value) in fields {
+                    let child = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
+                    if let Some(rule) = schema.get("properties").and_then(|v| v.get(key)) {
+                        // An omitted optional string and an explicit empty
+                        // optional string both carry no display information.
+                        if matches!(value, Data::String(text) if text.is_empty())
+                            && !schema
+                                .get("required")
+                                .and_then(Value::as_array)
+                                .is_some_and(|required| required.iter().any(|name| name == key))
+                        {
+                            continue;
+                        }
+                        if let Some(value) = project(value, rule, &child, notes) {
+                            accepted.insert(key.clone(), value);
+                        }
+                    } else {
+                        annotation_note(notes, &child, "Unregistered annotation field excluded");
+                    }
+                }
+                Data::Object(accepted)
+            }
+            (Data::Array(items), Some("array")) => {
+                let rule = schema.get("items")?;
+                if items.len() > 16 {
+                    annotation_note(notes, path, "Annotation item limit applied");
+                }
+                Data::Array(
+                    items
+                        .iter()
+                        .take(16)
+                        .enumerate()
+                        .filter_map(|(index, value)| {
+                            project(value, rule, &format!("{path}/{index}"), notes)
+                        })
+                        .collect(),
+                )
+            }
+            _ => value.clone(),
+        };
+        if super::schema::validate(schema, &projected, path).is_err() {
+            annotation_note(notes, path, "Invalid optional annotation value excluded");
+            return None;
+        }
+        Some(projected)
+    }
+    project(
+        value,
+        &crate::response_annotations::annotation_schema(),
+        "/annotations",
+        notes,
+    )
+}
+
 pub fn annotations_value(message: &Message) -> Option<Value> {
     if let super::Content::Json { value } = &message.content {
         serde_json::from_str(&value.json()).ok()
@@ -278,12 +403,12 @@ pub fn annotations_descriptor() -> super::Descriptor {
     super::Descriptor {
         id: ANNOTATIONS_FORMAT.into(), version: "1".into(), encodings: vec!["json".into()],
         schema: Some(crate::response_annotations::annotation_schema()),
-        contract: Some("Display-only accepted annotation fields of their actual producing Evaluation. Runtime projects these fields from the single Evaluation value; they are not a separate model call. Never execution state, authority, or proof of physical success.".into()),
+        contract: Some("Optional display metadata of the same physical response, using its actual session-io-return delivery_id. Missing fields are valid. calls indexes address native calls excluding annotation messages; observations refs must be in annotation_observation_refs. Runtime constructs causal links and excludes invalid display fields. Never execution state, authority, proof of success, a standalone answer, or a reason for another model request.".into()),
         publisher: "morphz".into(), required_visible_paths: vec![], resource_paths: vec![],
     }
 }
 
-/// Materialize the actual typed Evaluation value in the SAME transaction as its
+/// Materialize the actual typed metadata in the SAME transaction as its
 /// immutable model-response source. This is neither a new input nor a wakeup.
 /// The source supplies every identity; no identity is read from model content.
 pub(crate) fn evaluation_publications(source: &crate::event::Event) -> Vec<crate::event::Event> {
@@ -334,27 +459,50 @@ pub(crate) fn evaluation_publications(source: &crate::event::Event) -> Vec<crate
     {
         return vec![];
     }
-    let Some(format) = binding.output.as_ref() else {
-        return vec![];
-    };
-    if super::evaluation::decode(
-        &bundle.raw_response,
-        binding,
-        source.payload["model_attempt_id"]
-            .as_str()
-            .unwrap_or_default(),
-    )
-    .is_err()
-    {
-        return vec![];
-    }
-    let Ok(message) =
-        super::evaluation::message(&bundle.raw_response.content, format, &Limits::default())
-    else {
-        return vec![];
+    let (message, format, prefix) = if let Some(format) = binding.output.as_ref() {
+        // Frozen pre-cutover admissions retain their exact decoder. Never
+        // infer an old output shape from new assistant content.
+        if super::evaluation::decode(
+            &bundle.raw_response,
+            binding,
+            source.payload["model_attempt_id"]
+                .as_str()
+                .unwrap_or_default(),
+        )
+        .is_err()
+        {
+            return vec![];
+        }
+        let Ok(message) =
+            super::evaluation::message(&bundle.raw_response.content, format, &Limits::default())
+        else {
+            return vec![];
+        };
+        (message, format.clone(), "io_evaluation")
+    } else {
+        if bundle.protocol.is_off() {
+            return vec![];
+        }
+        let Ok(parts) = split_response(&bundle.raw_response, binding) else {
+            return vec![];
+        };
+        let mut messages = parts.annotation_messages.into_iter();
+        let Some(delivery) = messages.next() else {
+            return vec![];
+        };
+        if messages.next().is_some() || bundle.annotation_messages != vec![delivery.message.clone()]
+        {
+            return vec![];
+        }
+        let Ok(format) =
+            super::Registry::default().resolve(&delivery.message.format, "json", "registered")
+        else {
+            return vec![];
+        };
+        (delivery.message, format, "io_annotations")
     };
     let digest = super::hash(&(&source.id, &binding.delivery_id));
-    let id = format!("io_evaluation_{}", digest.trim_start_matches("sha256:"));
+    let id = format!("{prefix}_{}", digest.trim_start_matches("sha256:"));
     let mut payload = serde_json::Map::new();
     for key in [
         "context_id",
@@ -424,7 +572,10 @@ mod tests {
     use crate::llm::ToolCallRepr;
     use serde_json::json;
     fn binding(enabled: bool) -> ReturnBinding {
-        ReturnBinding::new("thread", 2, "evaluation", enabled)
+        // Explicit immutable pre-cutover binding, not a new admission.
+        let mut binding = ReturnBinding::new("thread", 2, "evaluation", enabled);
+        binding.output = enabled.then(super::super::evaluation::binding);
+        binding
     }
     fn call(id: &str, format: &str, encoding: &str, value: Value) -> ToolCallRepr {
         ToolCallRepr { id: id.into(), r#type: "function".into(), func_name: "deliver_message".into(),
@@ -467,7 +618,7 @@ mod tests {
             .delivery_id
             .starts_with("annotations_"));
         assert!(split.diagnostics.is_empty());
-        assert!(CONTRACT.contains("ONE native JSON object"));
+        assert!(CONTRACT.contains("OPTIONAL for both work and non-work responses"));
     }
     #[test]
     fn structured_body_preserves_multiline_markdown_and_protocol_examples() {
@@ -571,5 +722,235 @@ mod tests {
             split_response(&raw, &binding(true)).unwrap_err().code,
             "invalid_delivery_contract"
         );
+    }
+
+    fn optional_binding(enabled: bool) -> ReturnBinding {
+        ReturnBinding::new("native-thread", 7, "native-evaluation", enabled)
+    }
+
+    #[test]
+    fn new_modes_keep_the_same_native_body_and_original_business_calls() {
+        let body = "原文\n{\"body\":null,\"effects\":[]}\n:::morphz-reply\n🧠";
+        for enabled in [false, true] {
+            let binding = optional_binding(enabled);
+            assert!(binding.output.is_none());
+            let raw = Response {
+                content: body.into(),
+                tool_calls: vec![],
+            };
+            let parts = split_response(&raw, &binding).unwrap();
+            assert_eq!(parts.response.content, body);
+            assert!(parts.annotation_messages.is_empty() && parts.diagnostics.is_empty());
+            let call = ToolCallRepr { id:"actual-work-id".into(), r#type:"function".into(), func_name:"context_tx".into(), arguments:r#"{ "transaction": "(context-tx)", "intent": "invalid business argument, never removed" }"#.into() };
+            let raw = Response {
+                content: String::new(),
+                tool_calls: vec![call.clone()],
+            };
+            let parts = split_response(&raw, &binding).unwrap();
+            assert_eq!(parts.response.tool_calls[0].id, call.id);
+            assert_eq!(parts.response.tool_calls[0].arguments, call.arguments);
+            assert!(parts.diagnostics.is_empty());
+        }
+    }
+
+    #[test]
+    fn typed_optional_metadata_is_independent_partial_and_scoped_to_this_return() {
+        let b = optional_binding(true);
+        let work = ToolCallRepr {
+            id: "native-work".into(),
+            r#type: "function".into(),
+            func_name: "read".into(),
+            arguments: r#"{ "path": "book", "_annotations": {"business":true} }"#.into(),
+        };
+        let metadata = call(
+            &b.delivery_id,
+            ANNOTATIONS_FORMAT,
+            "json",
+            json!({
+                "execution":{"title":"实际读取","progress":null,"result":17},
+                "calls":[{"index":0,"intent":"读取当前原文"},{"index":"1","intent":"bad"}],
+                "observations_note":null
+            }),
+        );
+        let raw = Response {
+            content: "不解析正文里的 annotations".into(),
+            tool_calls: vec![metadata.clone(), work.clone()],
+        };
+        let parts = split_response(&raw, &b).unwrap();
+        assert_eq!(parts.response.content, raw.content);
+        assert_eq!(parts.response.tool_calls.len(), 1);
+        assert_eq!(parts.response.tool_calls[0].id, work.id);
+        assert_eq!(parts.response.tool_calls[0].arguments, work.arguments);
+        let value = annotations_value(&parts.annotation_messages[0].message).unwrap();
+        assert_eq!(
+            value,
+            json!({"execution":{"title":"实际读取"},"calls":[{"index":0,"intent":"读取当前原文"}]})
+        );
+        assert!(!parts.diagnostics.is_empty() && parts.diagnostics.len() <= 64);
+        let message = &parts.annotation_messages[0].message;
+        let registered = super::super::Registry::default()
+            .resolve(&message.format, "json", "registered")
+            .unwrap();
+        super::super::validate_content(message, &registered, &Limits::default()).unwrap();
+
+        let off = split_response(&raw, &optional_binding(false)).unwrap();
+        assert!(off.annotation_messages.is_empty() && off.diagnostics.is_empty());
+        assert_eq!(off.response.tool_calls[0].arguments, work.arguments);
+
+        let wrong_target = Response {
+            content: "仍是完整正文".into(),
+            tool_calls: vec![call(
+                "not-this-return",
+                ANNOTATIONS_FORMAT,
+                "json",
+                json!({"execution":{"title":"unbound"}}),
+            )],
+        };
+        let wrong = split_response(&wrong_target, &b).unwrap();
+        assert_eq!(wrong.response.content, wrong_target.content);
+        assert!(wrong.annotation_messages.is_empty() && !wrong.diagnostics.is_empty());
+
+        let duplicate = Response {
+            content: "完整正文".into(),
+            tool_calls: vec![metadata.clone(), metadata],
+        };
+        let duplicate = split_response(&duplicate, &b).unwrap();
+        assert!(duplicate.annotation_messages.is_empty() && !duplicate.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn only_proven_display_values_downgrade_not_syntax_business_or_empty_answers() {
+        for enabled in [false, true] {
+            let b = optional_binding(enabled);
+            let metadata = call(&b.delivery_id, ANNOTATIONS_FORMAT, "json", Value::Null);
+            let parts = split_response(
+                &Response {
+                    content: "正文不能消失".into(),
+                    tool_calls: vec![metadata.clone()],
+                },
+                &b,
+            )
+            .unwrap();
+            assert_eq!(parts.response.content, "正文不能消失");
+            assert!(parts.annotation_messages.is_empty());
+            assert!(split_response(
+                &Response {
+                    content: String::new(),
+                    tool_calls: vec![metadata]
+                },
+                &b
+            )
+            .is_err());
+
+            let mut malformed = call(&b.delivery_id, ANNOTATIONS_FORMAT, "json", json!({}));
+            malformed.arguments.push('}');
+            assert!(split_response(
+                &Response {
+                    content: "cannot guess malformed syntax".into(),
+                    tool_calls: vec![malformed]
+                },
+                &b
+            )
+            .is_err());
+            let business = call(&b.delivery_id, "morphz.chat", "json", json!({"text":17}));
+            assert!(split_response(
+                &Response {
+                    content: String::new(),
+                    tool_calls: vec![business]
+                },
+                &b
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn explicit_typed_return_uses_the_business_value_not_a_chat_summary() {
+        for enabled in [false, true] {
+            let mut binding = optional_binding(enabled);
+            binding.format = super::super::Registry::default()
+                .resolve(
+                    &super::super::Format::new("morphz.data", "1"),
+                    "json",
+                    "registered",
+                )
+                .unwrap()
+                .format;
+            for body in [
+                r#""完整正文\n第二行 🧠""#,
+                "false",
+                "null",
+                r#"{"count":9007199254740993123456789}"#,
+            ] {
+                let arguments = [r#"{"delivery_id":"#, &json!(binding.delivery_id).to_string(), r#","message":{"format":{"id":"morphz.data","version":"1"},"content":{"encoding":"json","value":"#, body, "}}}"].concat();
+                let raw = Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        id: "actual-typed-return".into(),
+                        r#type: "function".into(),
+                        func_name: "deliver_message".into(),
+                        arguments,
+                    }],
+                };
+                let parts = split_response(&raw, &binding).unwrap();
+                assert_eq!(
+                    parts.response.content,
+                    Data::parse(body.as_bytes(), &Limits::default())
+                        .unwrap()
+                        .json()
+                );
+                assert!(
+                    parts.response.tool_calls.is_empty()
+                        && parts.annotation_messages.is_empty()
+                        && parts.diagnostics.is_empty()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bound_custom_return_validates_the_frozen_admitted_definition() {
+        let mut registry = super::super::Registry::default();
+        registry.register(super::super::Descriptor {id:"test.actual-count".into(),version:"1".into(),publisher:"test".into(),encodings:vec!["json".into()],required_visible_paths:vec![],resource_paths:vec![],contract:None,schema:Some(json!({"type":"object","required":["count"],"additionalProperties":false,"properties":{"count":{"type":"integer"}}}))}).unwrap();
+        let registered = registry
+            .resolve(
+                &super::super::Format::new("test.actual-count", "1"),
+                "json",
+                "registered",
+            )
+            .unwrap();
+        for enabled in [false, true] {
+            let binding = optional_binding(enabled).with_formats(&[registered.clone()]);
+            let mut raw = Response {
+                content: String::new(),
+                tool_calls: vec![call(
+                    &binding.delivery_id,
+                    "test.actual-count",
+                    "json",
+                    json!({"count":42}),
+                )],
+            };
+            assert_eq!(
+                split_response(&raw, &binding).unwrap().response.content,
+                r#"{"count":42}"#
+            );
+            raw.tool_calls[0] = call(
+                &binding.delivery_id,
+                "test.actual-count",
+                "json",
+                json!({"count":"not an integer"}),
+            );
+            assert_eq!(
+                split_response(&raw, &binding).unwrap_err().code,
+                "schema_validation_failed"
+            );
+            raw.tool_calls[0] = call(
+                &binding.delivery_id,
+                "test.actual-count",
+                "json",
+                json!({"count":42,"intent":"never delete unknown business keys"}),
+            );
+            assert!(split_response(&raw, &binding).is_err());
+        }
     }
 }

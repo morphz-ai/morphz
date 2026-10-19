@@ -492,7 +492,9 @@ test(
       );
       const first = await f.waitRequest(marker);
       assert.ok(
-        JSON.stringify(first).includes("Session IO Evaluation output contract"),
+        JSON.stringify(first).includes(
+          "Session IO return and optional display annotations:",
+        ),
       );
       const toolDefinitions = first.tools as Array<{
         function: {
@@ -637,7 +639,7 @@ test(
 );
 
 test(
-  "actual Runtime + Platform HTTP: one value preserves independent bodies, rejects bad metadata and ambiguous syntax without repair",
+  "actual Runtime + Platform HTTP: native bodies preserve protocol examples and partial optional metadata without repair",
   {
     skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",
     timeout: 120_000,
@@ -705,7 +707,16 @@ test(
             name === "plain text"
               ? body
               : JSON.stringify(value) + (name === "invalid JSON" ? "}" : "");
-          f.releaseRawValue(marker, raw);
+          if (name === "plain text" || name === "invalid JSON")
+            f.releaseRawValue(marker, raw);
+          else
+            f.releaseWithMessages(
+              marker,
+              value.annotations
+                ? [fixtureAnnotationsMessage(value.annotations)]
+                : [],
+              body,
+            );
           let terminal: any;
           for (let attempt = 0; attempt < 300; attempt++) {
             const navigation: any = await f.client.call(
@@ -732,61 +743,63 @@ test(
             "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_error'",
             terminal.id,
           );
-          if (name !== "plain text" && name !== "invalid JSON") {
-            assert.equal(terminal.lifecycle, "completed");
-            assert.equal(errors.length, 0);
-            assert.equal(replies.length, 1);
-            assert.equal(JSON.parse(replies[0]!.payload).text, body);
-            const sources = f.sql<{ payload: string }>(
-              "SELECT payload FROM events WHERE thread_id = ? AND topic = 'chat/assistant_call' AND json_extract(payload, '$.terminal_outcome') = 1",
-              terminal.id,
-            );
-            assert.equal(sources.length, 1);
-            const bundle = JSON.parse(
-              sources[0]!.payload,
-            ).response_annotation_bundle;
-            assert.equal(bundle.raw_response.content, raw);
-            assert.deepEqual(bundle.raw_response.tool_calls, []);
-            if (name === "valid") {
-              assert.equal(bundle.diagnostics.length, 0);
-              assert.equal(terminal.title, valid.annotations.execution.title);
-            } else {
-              assert.ok(bundle.diagnostics.length > 0);
-              assert.equal(
-                bundle.records.length,
-                0,
-                "no fabricated annotations",
-              );
-              assert.equal(
-                f.sql<{ count: number }>(
-                  "SELECT count(*) AS count FROM events WHERE thread_id = ? AND topic = 'session/io_output' AND json_extract(payload, '$.io_message.format.id') = 'morphz.evaluation'",
-                  terminal.id,
-                )[0]!.count,
-                0,
-                "invalid metadata cannot receive an accepted Evaluation receipt",
-              );
-            }
-          } else {
-            assert.equal(terminal.lifecycle, "failed");
-            assert.equal(replies.length, 0);
-            assert.equal(errors.length, 1);
-            const failure = f.sql<{ payload: string }>(
-              "SELECT payload FROM events WHERE thread_id = ? AND topic = 'session/io_state'",
-              terminal.id,
-            );
-            assert.ok(
-              failure.some(
-                (row) => JSON.parse(row.payload).terminal_kind === "failed",
-              ),
-            );
-          }
+          assert.equal(terminal.lifecycle, "completed");
+          assert.equal(errors.length, 0);
+          assert.equal(replies.length, 1);
+          const expectedBody =
+            name === "plain text" || name === "invalid JSON" ? raw : body;
+          assert.equal(
+            JSON.parse(replies[0]!.payload).text,
+            expectedBody,
+            "ordinary body text is never scanned for protocol or JSON",
+          );
+          const sources = f.sql<{ payload: string }>(
+            "SELECT payload FROM events WHERE thread_id = ? AND topic = 'chat/assistant_call' AND json_extract(payload, '$.terminal_outcome') = 1",
+            terminal.id,
+          );
+          assert.equal(sources.length, 1);
+          const bundle = JSON.parse(
+            sources[0]!.payload,
+          ).response_annotation_bundle;
+          assert.equal(bundle.raw_response.content, expectedBody);
+          assert.equal(
+            bundle.return_binding.output,
+            undefined,
+            "annotations do not select a JSON output envelope",
+          );
+          const plain = [
+            "plain text",
+            "invalid JSON",
+            "missing annotations",
+          ].includes(name);
+          assert.equal(bundle.raw_response.tool_calls.length, plain ? 0 : 1);
+          assert.equal(
+            bundle.records.length,
+            plain ? 0 : name === "valid" ? 2 : 1,
+            "valid partial fields are accepted without fabricating missing ones",
+          );
+          assert.equal(bundle.diagnostics.length > 0, name === "empty result");
+          if (name === "valid")
+            assert.equal(terminal.title, valid.annotations.execution.title);
           assert.equal(
             f.requests.length,
             1,
-            "no repair, annotation-only, or relay request",
+            "no metadata repair or reply relay",
           );
-          assert.equal(f.realCalls, 0);
-          assert.equal((await f.read()).agent.revision, 0);
+          assert.equal(
+            f.sql<{ count: number }>(
+              "SELECT count(*) AS count FROM execution_jobs",
+            )[0]!.count,
+            0,
+          );
+          assert.equal(
+            f.sql<{ count: number }>(
+              "SELECT count(*) AS count FROM events WHERE thread_id = ? AND topic = 'session/io_output' AND json_extract(payload, '$.io_message.format.id') = 'morphz.evaluation'",
+              terminal.id,
+            )[0]!.count,
+            0,
+            "new inputs never publish the legacy Evaluation wrapper",
+          );
         } finally {
           await f.close();
         }

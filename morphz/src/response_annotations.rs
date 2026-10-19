@@ -290,10 +290,8 @@ pub(crate) fn receipt_from_authorized_event(
     Some(receipt.bounded())
 }
 
-/// Current native Evaluation proposals are Runtime-derived calls. The raw
-/// provider tool list is intentionally empty and is not their identity source.
-/// Old immutable records still describe their actual original native calls;
-/// this read projection never executes or replays them.
+/// Read the call identities of the actual frozen transport. This projection
+/// never executes or replays immutable records.
 fn persisted_work_calls(bundle: &PersistedAnnotations, event: &Event) -> Vec<ToolCallRepr> {
     if let Some(binding) = bundle
         .return_binding
@@ -1075,9 +1073,10 @@ pub fn normalize_response(
         crate::session_io::response::ReturnBinding {
             delivery_id: String::new(),
             format: crate::session_io::OutputFormat::chat(),
+            caller: None,
             annotations_enabled: !context.protocol.is_off(),
             annotation_observation_refs: vec![],
-            output: (!context.protocol.is_off()).then(crate::session_io::evaluation::binding),
+            output: None,
         }
     });
     let parts = crate::session_io::response::split_response_for_attempt(
@@ -1147,28 +1146,6 @@ fn normalize_parts(
                         }
                     }
                 }
-            }
-        }
-        if matches!(terminal_decision, Some(TerminalDecision::Deliver(_))) {
-            for (kind, field) in [
-                (AnnotationKind::Title, "execution.title"),
-                (AnnotationKind::Result, "execution.result"),
-            ] {
-                if !extraction.records.iter().any(|record| record.kind == kind) {
-                    extraction.note(field, "Display metadata missing or invalid; original body preserved; no repair request sent");
-                }
-            }
-        }
-        for (index, call) in execution_response
-            .tool_calls
-            .iter()
-            .enumerate()
-            .filter(|(_, call)| call.func_name != "deliver_message" && call.func_name != "no_reply")
-        {
-            if !extraction.records.iter().any(|record| {
-                record.kind == AnnotationKind::Intent && record.call_id.as_deref() == Some(&call.id)
-            }) {
-                extraction.note(&format!("calls[{index}].intent"), "Required work-call annotation missing or invalid; original work preserved; no repair request sent");
             }
         }
     }
@@ -1491,7 +1468,7 @@ mod tests {
     }
 
     #[test]
-    fn every_work_call_requires_same_response_intent_without_blocking_or_repair() {
+    fn missing_work_intents_are_optional_without_diagnostics_or_repair() {
         let raw = Response {
             content: String::new(),
             tool_calls: vec![
@@ -1514,8 +1491,7 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(normalized.diagnostics.len(), 1);
-        assert!(format!("{:?}", normalized.diagnostics).contains("calls[1].intent"));
+        assert!(normalized.diagnostics.is_empty());
         assert_eq!(
             serde_json::to_value(&normalized.raw_response).unwrap(),
             serde_json::to_value(&raw).unwrap()
@@ -1545,8 +1521,7 @@ mod tests {
         .diagnostics
         .is_empty());
         assert!(crate::session_io::response::CONTRACT
-            .contains("Each actual work/control proposal requires a nonempty intent"));
-        assert!(crate::session_io::response::CONTRACT.contains("With effects=[]"));
+            .contains("OPTIONAL for both work and non-work responses"));
     }
     fn persisted_event(sequence: u64, execution: Value, terminal: bool) -> Event {
         persisted_event_with_revision(sequence, execution, terminal, None)
@@ -1747,7 +1722,7 @@ mod tests {
                 .unwrap();
         assert_eq!(receipt.state, ReceiptState::NoneAccepted);
         assert!(receipt.accepted.is_empty());
-        assert_eq!(receipt.diagnostic_count, Some(2));
+        assert_eq!(receipt.diagnostic_count, Some(1));
         assert!(!receipt
             .expression()
             .to_string()
@@ -2050,8 +2025,8 @@ mod tests {
         assert_eq!(Protocol::Off.contract(), None);
         assert_eq!(Protocol::On.contract(), Some(CONTRACT));
         assert!(serde_json::from_value::<Protocol>(json!(true)).is_err());
-        assert!(CONTRACT.contains("title describes this entire Execution"));
-        assert!(CONTRACT.contains("Never request another model call solely"));
+        assert!(CONTRACT.contains("execution.title describes this Execution"));
+        assert!(CONTRACT.contains("Never make another model request solely"));
         assert_ne!(BUNDLE_PAYLOAD_KEY, "response_annotations");
     }
     #[test]
@@ -2357,27 +2332,28 @@ mod tests {
     fn missing_or_invalid_display_metadata_never_invalidates_the_original_body() {
         let mut ctx = context();
         ctx.protocol = Protocol::On;
-        for annotations in [
-            None,
-            Some(Value::Null),
-            Some(json!({})),
-            Some(json!({"execution":null})),
-            Some(json!({"execution":{"title":"整项工作"}})),
-            Some(json!({"execution":{"result":"完成"}})),
-            Some(json!({"execution":{"title":" ","result":"完成"}})),
-            Some(json!({"execution":{"title":"整项工作","result":null}})),
-            Some(json!({"execution":{"title":"🧠".repeat(257),"result":"完成"}})),
-            Some(json!({"execution":{"title":"整项工作","result":"🧠".repeat(513)}})),
+        for (annotations, invalid) in [
+            (None, false),
+            (Some(Value::Null), true),
+            (Some(json!({})), false),
+            (Some(json!({"execution":null})), true),
+            (Some(json!({"execution":{"title":"整项工作"}})), false),
+            (Some(json!({"execution":{"result":"完成"}})), false),
+            (Some(json!({"execution":{"title":" ","result":"完成"}})), true),
+            (Some(json!({"execution":{"title":"整项工作","result":null}})), true),
+            (Some(json!({"execution":{"title":"🧠".repeat(257),"result":"完成"}})), true),
+            (Some(json!({"execution":{"title":"整项工作","result":"🧠".repeat(513)}})), true),
         ] {
+            let missing = annotations.is_none();
             let mut args = json!({});
             if let Some(annotations) = annotations {
                 args["annotations"] = annotations;
             }
-            let raw = response(vec![call("r", ANNOTATIONS_FORMAT, args.clone())]);
+            let raw = if missing { Response { content: "正文".into(), tool_calls:vec![] } }else { response(vec![call("r", ANNOTATIONS_FORMAT, args.clone())]) };
             let normalized = normalize_fixture_parts(&raw, &ctx).unwrap();
             assert_eq!(normalized.execution_response.content, "正文");
             assert!(normalized.execution_response.tool_calls.is_empty());
-            assert!(!normalized.diagnostics.is_empty());
+            assert_eq!(!normalized.diagnostics.is_empty(), invalid);
             let implicit = Response {
                 content: args.to_string(),
                 tool_calls: vec![],
@@ -2439,9 +2415,9 @@ mod tests {
     }
 
     #[test]
-    fn metadata_contract_uses_one_schema_bound_evaluation_value() {
-        assert!(CONTRACT.contains("ONE native JSON object"));
-        assert!(CONTRACT.contains("body, annotations, effects"));
+    fn metadata_contract_preserves_native_returns_and_optional_registered_values() {
+        assert!(CONTRACT.contains("ordinary assistant content"));
+        assert!(CONTRACT.contains("OPTIONAL for both work and non-work responses"));
         assert!(!CONTRACT.contains(":::"));
         let schema = annotation_schema();
         assert_eq!(schema["additionalProperties"], false);
@@ -2492,7 +2468,7 @@ mod tests {
             normalized.execution_response.content
         );
         assert!(plain.records.is_empty());
-        assert!(!plain.diagnostics.is_empty());
+        assert!(plain.diagnostics.is_empty());
         let off = normalize_fixture_parts(&raw, &NormalizationContext::default()).unwrap();
         assert_eq!(off.execution_response.content, raw.content);
         assert!(off.execution_response.tool_calls.is_empty());
@@ -2514,7 +2490,7 @@ mod tests {
             let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
             assert_eq!(normalized.execution_response.content, raw.content);
             assert!(normalized.records.is_empty());
-            assert!(!normalized.diagnostics.is_empty());
+            assert!(normalized.diagnostics.is_empty());
         }
     }
     #[test]
@@ -2541,13 +2517,17 @@ mod tests {
         let missing = normalize_fixture_parts(&missing, &context()).unwrap();
         assert_eq!(missing.execution_response.content, body);
         assert!(missing.records.is_empty());
-        assert!(!missing.diagnostics.is_empty());
+        assert!(missing.diagnostics.is_empty());
     }
 
     #[test]
     fn schema_bound_session_io_value_replays_without_model_or_side_effects() {
         let raw=Response {content:json!({"body":"原始中文正文\n第二行", "annotations":{"execution":{"title":"回放合成值","progress":"","result":"已返回原始正文"},"observations":[]},"effects":[]}).to_string(),tool_calls:vec![]};
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let mut ctx = context();
+        let mut frozen = crate::session_io::response::ReturnBinding::new("execution-1", 3, "attempt", true);
+        frozen.output = Some(crate::session_io::evaluation::binding());
+        ctx.return_binding = Some(frozen);
+        let normalized = normalize_response(&raw, &ctx).unwrap();
         assert_eq!(normalized.records.len(), 2);
         assert!(normalized.diagnostics.is_empty());
         assert_eq!(normalized.raw_response.content, raw.content);

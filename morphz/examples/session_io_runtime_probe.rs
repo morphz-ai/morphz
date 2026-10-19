@@ -112,10 +112,16 @@ async fn main() -> Result<(), DynError> {
     let config_path = args.next().ok_or("explicit model config path required")?;
     let model = args.next().ok_or("explicit model alias required")?;
     let selected = args.next();
+    let protocol = if args.next().as_deref() == Some("off") {
+        Protocol::Off
+    } else {
+        Protocol::On
+    };
     let base: AppConfig = toml::from_str(&std::fs::read_to_string(config_path)?)?;
     for (case,input,harness,expected_calls) in [
         ("plain","直接用两行中文回答 2 加 3 等于多少。不需要任何工具。",None,1),
         ("review","必须先且仅用 session_io_probe_read 读取 review.txt，再独立判断故事是否完结，回答一句中文。不要根据已有印象判断。",None,2),
+        ("annotated-review","必须先且仅用 session_io_probe_read 读取 review.txt，再独立判断故事是否完结，回答一句中文。这个 TEST 也请在读取的同一次响应中，用现有通用 Session IO 提供 calls.intent 注解；读取结果之后，用同一次最终响应提供有依据的结果注解，正文照常交付。不要专门追加注解轮次。",None,2),
         ("progress","必须先且仅用 session_io_probe_read 读取 progress.txt，再回答已读到哪里，回答一句中文。不要虚构记忆。",None,2),
         ("memory","请只用 context_tx 将合成阅读进度‘已读至卷十四，贾谊陈述治安策’保存到一个新 Mind frame，读取真实提交回执后再用一句中文说明保存到了哪里。不读文件、不调用其他工具，不虚构提交成功。",None,2),
         ("infer","用两句中文解释 2 加 3，包含引号、换行和 🧠。不要调用工具。",Some("TEST-single-infer"),1),
@@ -128,7 +134,7 @@ async fn main() -> Result<(), DynError> {
         let mut config=base.clone();config.llm.model=model.clone();config.llm.reasoning_effort=Some(ReasoningEffort::Max);
         config.permissions.workspace_root=temp.path().to_string_lossy().into_owned();
         config.background_task.artifact_dir=temp.path().join("artifacts").to_string_lossy().into_owned();
-        config.orchestrator.response_annotations=Protocol::On;
+        config.orchestrator.response_annotations=protocol;
         config.orchestrator.eval_callable_tools=vec!["host_morphz".into(),"session_io_probe_read".into()];
         config.orchestrator.model_attempt_hard_timeout_secs=Some(70);
         let (client,_)=build_configured_client(&config,None,Some(&model))?;
@@ -152,19 +158,18 @@ async fn main() -> Result<(), DynError> {
         let events=runtime.query_events(QueryFilter{context_id:Some(runtime.identity().context_id.clone()),after_sequence:Some(0),..Default::default()}).await?;
         if reply.topic!="chat/reply" || events.iter().any(|event|event.topic=="runtime/response_protocol_error") {
             let all=runtime.query_events(QueryFilter{context_id:Some(runtime.identity().context_id.clone()),after_sequence:Some(0),..Default::default()}).await?;
-            let details=all.iter().filter(|event|event.topic.contains("error")||event.topic=="session/io_state"||event.topic=="chat/infer_result").map(|event|json!({"topic":event.topic,"payload":event.payload})).collect::<Vec<_>>();
+            let details=all.iter().filter(|event|event.topic.contains("error")||event.topic=="session/io_state"||event.topic=="chat/infer_result").map(|event|json!({"topic":event.topic,"reason":event.payload.get("reason"),"failure_kind":event.payload.get("runtime_failure_kind"),"sha256":event.payload.get("response_capture").and_then(|capture|capture.get("sha256")),"raw_response":event.payload.get("response_capture").and_then(|capture|capture.get("raw_response"))})).collect::<Vec<_>>();
             return Err(format!("Live {model}/{case} failed: {}",json!(details)).into());
         }
         let bundles=events.iter().filter_map(|event|event.payload.get(BUNDLE_PAYLOAD_KEY)).map(|value|serde_json::from_value::<PersistedAnnotations>(value.clone())).collect::<Result<Vec<_>,_>>()?;
         let physical=events.iter().filter(|event|event.topic=="runtime/model_usage").count();
         assert_eq!(physical,expected_calls,"{case}: no metadata-repair, relay or extra business request");
-        assert!(!bundles.is_empty());assert!(bundles.iter().all(|bundle|bundle.raw_response.tool_calls.is_empty()&&bundle.diagnostics.is_empty()),"{case}: {:?}",bundles.iter().map(|bundle|&bundle.diagnostics).collect::<Vec<_>>());
-        assert!(bundles.iter().any(|bundle|bundle.records.iter().any(|record|record.kind==AnnotationKind::Title)));
-        assert!(bundles.iter().any(|bundle|bundle.records.iter().any(|record|record.kind==AnnotationKind::Result)));
-        if case=="review" || case=="progress" {
+        assert!(!bundles.is_empty());
+        assert!(bundles.iter().all(|bundle|bundle.return_binding.as_ref().is_some_and(|binding|binding.output.is_none())),"annotations cannot select an Evaluation envelope");
+        if protocol.is_off() { assert!(bundles.iter().all(|bundle|bundle.records.is_empty() && bundle.annotation_messages.is_empty())); }
+        if case=="review" || case=="annotated-review" || case=="progress" {
             assert_eq!(reads.lock().unwrap().len(),1);
-            assert!(bundles.iter().any(|bundle|bundle.records.iter().any(|record|record.kind==AnnotationKind::Intent)));
-            assert!(bundles.iter().any(|bundle|bundle.records.iter().any(|record|record.kind==AnnotationKind::ObservationResult&&record.observation_event_id.is_some())));
+            assert!(reply.payload["text"].as_str().is_some_and(|text| if case=="review" || case=="annotated-review" {text.contains("完")}else{text.contains("十四") || text.contains("14")}));
         }
         if case=="discuss-script" {assert_eq!(host.lock().unwrap().as_slice(),&["read-workflow","list"]);}
         if case=="memory" {assert_eq!(runtime.mind_version(&runtime.identity().context_id).await?,1,"exactly one real Context commit, not a synthetic memory claim");}
@@ -173,7 +178,8 @@ async fn main() -> Result<(), DynError> {
         assert!(!public.is_empty()&&chunks>1,"{case}: incremental public body missing: public_chars={}, chunks={}, internal_chunks={}",public.chars().count(),chunks,internal_chunks);
         assert!(!public.contains("\"effects\"")&&!public.contains("\"execution\""),"metadata leaked into public body");
         let jobs=runtime.list_execution_jobs(ExecutionJobFilter{session_id:Some("TEST-sessionio-live".into()),include_terminal:true,..Default::default()}).await?;
-        println!("{}",json!({"model":model,"case":case,"model_requests":physical,"jobs":jobs.len(),"public_body_chunks":chunks,"internal_value_chunks":internal_chunks,"body":reply.payload["text"],"elapsed_ms":start.elapsed().as_millis(),"annotation_records":bundles.iter().map(|bundle|bundle.records.len()).collect::<Vec<_>>(),"host_reads":host.lock().unwrap().clone(),"file_reads":reads.lock().unwrap().clone()}));
+        let coverage = [AnnotationKind::Title,AnnotationKind::Intent,AnnotationKind::ObservationResult,AnnotationKind::Result].into_iter().map(|kind| (format!("{kind:?}"),json!(bundles.iter().flat_map(|bundle|&bundle.records).filter(|record|record.kind==kind).count()))).collect::<serde_json::Map<_,_>>();
+        println!("{}",json!({"model":model,"case":case,"protocol":protocol,"model_requests":physical,"jobs":jobs.len(),"public_body_chunks":chunks,"internal_value_chunks":internal_chunks,"body":reply.payload["text"],"elapsed_ms":start.elapsed().as_millis(),"annotation_records":bundles.iter().map(|bundle|bundle.records.len()).collect::<Vec<_>>(),"annotation_coverage":coverage,"diagnostics":bundles.iter().map(|bundle|bundle.diagnostics.len()).collect::<Vec<_>>(),"host_reads":host.lock().unwrap().clone(),"file_reads":reads.lock().unwrap().clone()}));
     }
     Ok(())
 }

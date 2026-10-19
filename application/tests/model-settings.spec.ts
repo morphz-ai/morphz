@@ -110,6 +110,9 @@ test("响应注解开关持久显示、键盘操作、失败不假成功，保�
   });
   const dialog = await open(page);
   const toggle = dialog.getByRole("switch", { name: "响应注解", exact: true });
+  await expect(dialog.locator("#response-annotations-help")).toHaveText(
+    "为执行补充简短说明；未提供时显示原记录。仅影响新请求。",
+  );
   await expect(toggle).toBeChecked();
   await dialog.getByLabel("默认模型", { exact: true }).selectOption("second");
   await toggle.focus();

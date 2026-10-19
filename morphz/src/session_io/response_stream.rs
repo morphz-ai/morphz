@@ -33,6 +33,9 @@ struct Projection {
     scalar_path: Vec<String>,
     scalar_text: String,
     raw: String,
+    at_byte: usize,
+    value_start: Option<usize>,
+    value_end: Option<usize>,
     stack: Vec<Frame>,
     string: Option<JsonString>,
     scalar: bool,
@@ -59,6 +62,12 @@ impl Projection {
         path
     }
     fn finish_value(&mut self) {
+        if self.path() == ["message", "content", "value"]
+            && self.value_start.is_some()
+            && self.value_end.is_none()
+        {
+            self.value_end = Some(self.at_byte + 1);
+        }
         if let Some(frame) = self.stack.last_mut() {
             if let Some(index) = &mut frame.array_index {
                 *index += 1;
@@ -133,10 +142,21 @@ impl Projection {
             self.invalid = true;
             return String::new();
         }
+        let base = self.raw.len();
         self.raw.push_str(chunk);
-        for c in chunk.chars() {
+        for (offset, c) in chunk.char_indices() {
+            self.at_byte = base + offset;
             if self.invalid {
                 break;
+            }
+            if self.value_start.is_none()
+                && self.string.is_none()
+                && !self.scalar
+                && self.path() == ["message", "content", "value"]
+                && !self.stack.last().is_some_and(|frame| frame.expect_colon)
+                && matches!(c, '"' | '{' | '[' | 't' | 'f' | 'n' | '-' | '0'..='9')
+            {
+                self.value_start = Some(self.at_byte);
             }
             if let Some(string) = self.string.as_ref() {
                 let escape = string.escape;
@@ -219,6 +239,9 @@ impl Projection {
             }
             if self.scalar {
                 if c.is_ascii_whitespace() || matches!(c, ',' | ']' | '}') {
+                    if self.scalar_path == ["message", "content", "value"] {
+                        self.value_end = Some(self.at_byte);
+                    }
                     if let Some(value) = match self.scalar_text.as_str() {
                         "true" => Some(true),
                         "false" => Some(false),
@@ -308,7 +331,14 @@ impl Projection {
         {
             return String::new();
         }
-        let text = if !self.evaluation && binding.format.encoding == "utf8" {
+        let text = if !self.evaluation
+            && binding.format.id != "morphz.chat"
+            && binding.format.encoding == "json"
+        {
+            self.value_start
+                .map(|start| &self.raw[start..self.value_end.unwrap_or(self.raw.len())])
+                .unwrap_or("")
+        } else if !self.evaluation && binding.format.encoding == "utf8" {
             &self.utf8
         } else {
             &self.text
@@ -722,7 +752,7 @@ mod tests {
         for raw in bodies {
             let chars = raw.chars().collect::<Vec<_>>();
             for size in 1..=chars.len() {
-                let mut stream = ModelStreamNormalizer::new(ReturnBinding::new("t", 1, "e", true));
+                let mut stream = ModelStreamNormalizer::new(legacy_binding());
                 let mut output = String::new();
                 for chunk in chars.chunks(size) {
                     collect(
@@ -743,7 +773,7 @@ mod tests {
 
     #[test]
     fn evaluation_body_is_visible_before_the_json_string_or_response_ends() {
-        let mut stream = ModelStreamNormalizer::new(ReturnBinding::new("t", 1, "e", true));
+        let mut stream = ModelStreamNormalizer::new(legacy_binding());
         let mut output = String::new();
         collect(
             stream.push(ModelStreamEvent::TextDelta {
@@ -765,7 +795,7 @@ mod tests {
             r#"{"body":"visible","body":"PRIVATE_DUPLICATE"}"#,
             r#"{"body":"visible","annotations":{},"effects":[]}}"#,
         ] {
-            let mut stream = ModelStreamNormalizer::new(ReturnBinding::new("t", 1, "e", true));
+            let mut stream = ModelStreamNormalizer::new(legacy_binding());
             let mut output = String::new();
             for c in raw.chars() {
                 collect(
@@ -780,6 +810,75 @@ mod tests {
                 stream.push(ModelStreamEvent::Completed).as_slice(),
                 [ModelStreamEvent::Failed { .. }]
             ));
+        }
+    }
+
+    fn legacy_binding() -> ReturnBinding {
+        let mut binding = ReturnBinding::new("t", 1, "e", true);
+        binding.output = Some(crate::session_io::evaluation::binding());
+        binding
+    }
+
+    #[test]
+    fn optional_annotation_mode_never_changes_or_buffers_ordinary_text() {
+        let body = "开头\n{\"body\":\"不是协议\",\"effects\":[]}\n:::morphz-reply\n完整保留";
+        for enabled in [false, true] {
+            let mut stream = ModelStreamNormalizer::new(ReturnBinding::new("t", 1, "e", enabled));
+            for c in body.chars() {
+                let text = c.to_string();
+                assert_eq!(
+                    stream.push(ModelStreamEvent::TextDelta { text: text.clone() }),
+                    vec![ModelStreamEvent::TextDelta { text }]
+                );
+            }
+            assert_eq!(
+                stream.push(ModelStreamEvent::Completed),
+                vec![ModelStreamEvent::Completed]
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_typed_json_stream_preserves_the_value_and_can_project_a_parent_string() {
+        for enabled in [false, true] {
+            let mut binding = ReturnBinding::new("actual-thread", 1, "actual-evaluation", enabled);
+            binding.format = crate::session_io::Registry::default()
+                .resolve(
+                    &crate::session_io::Format::new("morphz.data", "1"),
+                    "json",
+                    "registered",
+                )
+                .unwrap()
+                .format;
+            for value in [
+                r#""第一行\n中文 🧠 \"引用\"""#,
+                "false",
+                "null",
+                r#"{"count":9007199254740993123456789,"note":"仅为业务字段"}"#,
+                r#"[1,"two",true]"#,
+            ] {
+                for raw in [
+                    [r#"{"delivery_id":"#,&json!(binding.delivery_id).to_string(),r#","message":{"format":{"id":"morphz.data","version":"1"},"content":{"encoding":"json","value":"#,value,"}}}"].concat(),
+                    format!("{{\"message\":{{\"content\":{{\"value\":{value},\"encoding\":\"json\"}},\"format\":{{\"version\":\"1\",\"id\":\"morphz.data\"}}}},\"delivery_id\":{}}}",json!(binding.delivery_id)),
+                ] {
+                    for size in [1,3,17,raw.chars().count()] {
+                        let mut stream = ModelStreamNormalizer::new(binding.clone());
+                        stream.push(ModelStreamEvent::ToolCallStarted{index:0,id:"typed-value".into(),name:"deliver_message".into()});
+                        let mut output=String::new();
+                        for chunk in raw.chars().collect::<Vec<_>>().chunks(size) {
+                            collect(stream.push(ModelStreamEvent::ToolArgumentsDelta{index:0,delta:chunk.iter().collect()}),&mut output);
+                        }
+                        assert_eq!(output,value,"size={size}");
+                        assert!(stream.push(ModelStreamEvent::ToolCallCompleted{index:0}).is_empty());
+                        if value.starts_with('"') {
+                            let mut parent=ReplyProjector::new(vec![crate::sexpr_eval::ReplyProjection{path:vec![],conditions:vec![]}],false);
+                            let mut shown=String::new();
+                            for c in output.chars() {shown.push_str(&parent.push(&c.to_string()).unwrap());}
+                            assert_eq!(shown,serde_json::from_str::<String>(value).unwrap());
+                        }
+                    }
+                }
+            }
         }
     }
 }
