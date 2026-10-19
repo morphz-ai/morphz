@@ -53,6 +53,7 @@ type FixtureEvent = {
   sequence: number;
   timestamp: string;
   topic: string;
+  actor?: string;
   payload: Record<string, unknown>;
 };
 type FixtureTimelineItem = {
@@ -3987,16 +3988,35 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     const failedAttempt = "history-protocol-" + command.commandId;
     const originalDiagnostic =
       "The model returned invalid response-annotation control syntax.";
+    const failureRoute = {
+      session_id: remoteSessionId,
+      context_id: sessions.get(remoteSessionId)!.context_id,
+      root_turn_id: `root-${command.commandId}`,
+      attempt_id: failedAttempt,
+      thread_id: `thread-${command.commandId}`,
+      model_output_visibility: "public",
+    };
+    const reason =
+      'schema_validation_failed: Schema validation failed at JSON pointer ""';
+    remoteEvents.push({
+      id: "actual-protocol-diagnostic",
+      sequence: remoteEvents.at(-1)!.sequence + 1,
+      timestamp: new Date().toISOString(),
+      topic: "runtime/response_protocol_error",
+      actor: "Runtime-Orchestrator",
+      payload: {
+        ...failureRoute,
+        reason,
+        response_capture: { reasoning: "not public diagnostic text" },
+      },
+    });
     remoteEvents.push({
       id: "terminal-protocol-history",
       sequence: remoteEvents.at(-1)!.sequence + 1,
       timestamp: new Date().toISOString(),
       topic: "session/io_state",
       payload: {
-        session_id: remoteSessionId,
-        root_turn_id: `root-${command.commandId}`,
-        attempt_id: failedAttempt,
-        thread_id: `thread-${command.commandId}`,
+        ...failureRoute,
         terminal_kind: "failed",
         runtime_failure_kind: "response_annotations_protocol",
         text: originalDiagnostic,
@@ -4023,7 +4043,11 @@ test("Platform-only project sends a durable Runtime input without a legacy works
         phase: "terminal",
         attemptId: failedAttempt,
         state: "response_annotations",
+        diagnostics: [{ eventId: "actual-protocol-diagnostic", reason }],
       });
+      assert.ok(
+        !JSON.stringify(failure).includes("not public diagnostic text"),
+      );
     }
   } finally {
     stopPlatformStream?.();

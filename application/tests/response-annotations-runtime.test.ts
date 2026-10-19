@@ -43,6 +43,112 @@ test("metadata follows frozen Runtime binding; tool definitions never select ann
 });
 
 test(
+  "actual Runtime + Host history: terminal failure restores its exact cause without response captures or another infer",
+  {
+    skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",
+    timeout: 120_000,
+  },
+  async () => {
+    const f = await profileActualTransportFixture();
+    const projectId = "failure_" + randomUUID().replaceAll("-", "");
+    const conversationId = "conversation_" + randomUUID().replaceAll("-", "");
+    const marker = "TEST_FAILURE_DIAGNOSTIC_" + randomUUID();
+    try {
+      await f.client.call(
+        "projects.create",
+        { commandId: randomUUID(), projectId, title: "TEST 失败原因读取" },
+        f.options,
+      );
+      f.hold(marker);
+      await f.client.call(
+        "platform.message",
+        {
+          commandId: randomUUID(),
+          operation: {
+            type: "record-input",
+            projectId,
+            conversationId,
+            artifactId: null,
+            artifactRevision: null,
+            selection: "",
+            body: marker,
+            targetActantId: "morphz-agent",
+            newConversation: { title: marker },
+          },
+        },
+        f.options,
+      );
+      await f.waitRequest(marker);
+      const thread = f.sql<{ id: string }>(
+        "SELECT id FROM threads ORDER BY rowid DESC LIMIT 1",
+      )[0]!;
+      // A real invalid outcome: display-only metadata cannot stand in for an
+      // answer. The existing business guard must still reject it, once.
+      f.releaseWithMessages(
+        marker,
+        [
+          fixtureAnnotationsMessage({
+            execution: { title: "TEST 只有注解，没有回答" },
+          }),
+        ],
+        "",
+      );
+      for (let i = 0; i < 300; i++) {
+        if (
+          f.sql<{ status: string }>(
+            "SELECT status FROM threads WHERE id = ?",
+            thread.id,
+          )[0]?.status === "failed"
+        )
+          break;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      assert.equal(
+        f.sql<{ status: string }>(
+          "SELECT status FROM threads WHERE id = ?",
+          thread.id,
+        )[0]!.status,
+        "failed",
+      );
+      const events = f.sql<{ id: string; payload: string }>(
+        "SELECT id,payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_error'",
+        thread.id,
+      );
+      assert.equal(events.length, 1);
+      const reason = JSON.parse(events[0]!.payload).reason;
+      assert.match(reason, /A return has no body/);
+      for (let refresh = 0; refresh < 2; refresh++) {
+        const history: any = await f.client.call(
+          "conversations.history",
+          { projectId, conversationId },
+          f.options,
+        );
+        const errors = history.runtime.messages.filter(
+          (message: any) => message.failure?.phase === "terminal",
+        );
+        assert.equal(errors.length, 1);
+        assert.deepEqual(errors[0].failure.diagnostics, [
+          { eventId: events[0]!.id, reason },
+        ]);
+        assert.ok(!JSON.stringify(errors).includes("response_capture"));
+        assert.ok(!JSON.stringify(errors).includes("只有注解，没有回答"));
+      }
+      assert.equal(
+        f.requests.length,
+        1,
+        "reading error details does not repair or resubmit the failed request",
+      );
+      assert.equal(
+        f.sql<{ n: number }>("SELECT count(*) n FROM execution_jobs")[0]!.n,
+        0,
+      );
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
   "actual Runtime + Host IO: late subscription restores the complete prefix, streams before completion and settles once",
   {
     skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",

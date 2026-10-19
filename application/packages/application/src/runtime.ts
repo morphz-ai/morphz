@@ -37,7 +37,10 @@ import {
 import { workInputRequest } from "./session-io.js";
 import { scriptGenerationSchema } from "../../core/src/script-studio.js";
 import { internalModelOutput } from "../../core/src/model-publication.js";
-import { runtimeMessageFailureFromEvent } from "../../core/src/runtime-message-failure.js";
+import {
+  runtimeMessageFailureFromEvent,
+  runtimeFailureDiagnostics,
+} from "../../core/src/runtime-message-failure.js";
 import {
   evaluationSourceSchema,
   evaluationMessageId,
@@ -4769,6 +4772,7 @@ export class RuntimeBridge {
     );
     const limit = Math.min(Math.max(page.limit ?? 100, 1), 100);
     const accepted: HistoryEntry[] = [];
+    const pageFailureSources = new Map<string, RuntimeEvent>();
     let before = page.before
       ? {
           visible_at_micros: historyTimeMicros(page.before.createdAt),
@@ -4823,7 +4827,14 @@ export class RuntimeBridge {
           access,
           grant,
         );
-        if (mapped) accepted.push(mapped);
+        if (mapped) {
+          accepted.push(mapped);
+          if (
+            mapped.kind === "message" &&
+            mapped.value.failure?.phase === "terminal"
+          )
+            pageFailureSources.set(mapped.id, item.event);
+        }
         if (accepted.length > limit) break;
       }
       if (accepted.length > limit || !batch.next_before) break;
@@ -4896,6 +4907,65 @@ export class RuntimeBridge {
     const descending = [...byId.values()].sort((a, b) => historyOrder(b, a));
     const hasEarlier = descending.length > limit;
     const pageItems = descending.slice(0, limit).reverse();
+    // The timeline deliberately contains only public messages, not internal
+    // diagnostic Events. Join reasons through the existing exact root/attempt
+    // endpoint for visible authorized failures only; never scan Session history
+    // or forward model captures. Historical Events and message text stay intact.
+    await Promise.all(
+      pageItems.map(async (item) => {
+        if (item.kind !== "message" || item.value.failure?.phase !== "terminal")
+          return;
+        const source = pageFailureSources.get(item.id);
+        const attempt = item.value.failure.attemptId;
+        const root = source?.payload.root_turn_id;
+        if (
+          !source?.sequence ||
+          !attempt ||
+          !item.value.threadId ||
+          typeof root !== "string" ||
+          !root
+        )
+          return;
+        const params = new URLSearchParams({
+          root_turn_id: root,
+          attempt_id: attempt,
+          before_sequence: String(source.sequence),
+          limit: "64",
+        });
+        try {
+          const data = z
+            .object({ events: z.array(eventSchema).max(64) })
+            .parse(
+              await this.request(
+                `/api/sessions/${encodeURIComponent(sessionId)}/events?${params}`,
+                "GET",
+                undefined,
+                access,
+                undefined,
+              ),
+            );
+          const diagnostics = runtimeFailureDiagnostics(source, data.events);
+          if (diagnostics.length)
+            item.value.failure = { ...item.value.failure, diagnostics };
+        } catch (error) {
+          if (
+            !(error instanceof UpstreamError && error.status === 404) &&
+            !this.runtimeReadUnavailable(error)
+          )
+            throw error;
+          // Optional diagnostics becoming unavailable must not hide the failure
+          // or turn its preserved notice into invented technical information.
+        }
+      }),
+    );
+    const current = await authorize();
+    if (
+      current.personalDefault !== grant.personalDefault ||
+      pageItems.some(
+        (item) => !current.projectIds.includes(item.value.projectId),
+      )
+    )
+      throw new DomainError("forbidden", "对话读取授权已变化，请重试。");
     const visibleInputs = new Set(
       pageItems.filter((item) => item.kind === "input").map((item) => item.id),
     );

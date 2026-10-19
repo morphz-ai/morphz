@@ -1354,6 +1354,13 @@ body:has(dialog[open]) .cognitive-application-frame {
   overflow-wrap: anywhere;
   font: inherit;
 }
+.runtime-message-error > .runtime-message-error-reason {
+  margin-top: var(--ui-space-1);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
 .conversation .human-message > .delivery-error {
   margin-top: var(--ui-space-1);
   line-height: 1.5;

@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { replyReceipts } from "../apps/web/src/conversation-read.js";
-import { presentRuntimeErrors } from "../apps/web/src/runtime-error-presentation.js";
+import {
+  presentRuntimeErrors,
+  runtimeErrorDetails,
+} from "../apps/web/src/runtime-error-presentation.js";
+import { runtimeFailureDiagnostics } from "../packages/core/src/runtime-message-failure.js";
 import {
   LiveConversationProjection,
   type LiveMessage,
@@ -50,6 +54,114 @@ test("one physical rejection has one visible error without losing either origina
     terminal.text,
     "execution safely stopped",
     "presentation never mutates raw history",
+  );
+});
+test("a generic terminal notice is not an error detail; persisted reasons survive without a live diagnostic message", () => {
+  const terminal = {
+    ...message("terminal", "terminal"),
+    text: "本次回复未能正确交付；已保留此前完成的工作。",
+  };
+  const empty = presentRuntimeErrors([terminal])[0]!;
+  assert.equal(runtimeErrorDetails(empty), "");
+  assert.equal(runtimeErrorDetails(terminal), "");
+  const reason =
+    'schema_validation_failed: Schema validation failed at JSON pointer ""';
+  const populated = presentRuntimeErrors([
+    {
+      ...terminal,
+      failure: {
+        ...terminal.failure!,
+        diagnostics: [{ eventId: "actual-rejection", reason }],
+      },
+    },
+  ])[0]!;
+  assert.equal(populated.errorDetails, reason);
+  assert.equal(
+    populated.text,
+    terminal.text,
+    "immutable terminal text is preserved",
+  );
+  assert.equal(
+    populated.representedMessages?.length,
+    1,
+    "diagnostics are not fabricated messages",
+  );
+});
+
+test("history diagnostics require exact persisted public rejection scope and never expose captures", () => {
+  const payload = {
+    session_id: "session",
+    context_id: "context",
+    root_turn_id: "root",
+    thread_id: "thread",
+    attempt_id: "attempt",
+    principal_id: "human",
+    model_output_visibility: "public",
+  };
+  const terminal = {
+    id: "terminal",
+    sequence: 50,
+    topic: "session/io_state",
+    actor: "Runtime-Orchestrator",
+    payload: { ...payload, runtime_failure_kind: "response_protocol" },
+  };
+  const diagnostic = {
+    id: "diagnostic",
+    sequence: 49,
+    topic: "runtime/response_protocol_error",
+    actor: "Runtime-Orchestrator",
+    payload: {
+      ...payload,
+      reason: "actual schema failure",
+      response_capture: { reasoning: "never public" },
+    },
+  };
+  const mutations = [
+    "session_id",
+    "context_id",
+    "root_turn_id",
+    "thread_id",
+    "attempt_id",
+    "principal_id",
+    "model_output_visibility",
+  ];
+  const events = mutations.map((key) => ({
+    ...diagnostic,
+    id: key,
+    payload: {
+      ...diagnostic.payload,
+      [key]: key === "model_output_visibility" ? "internal" : "foreign",
+    },
+  }));
+  assert.deepEqual(
+    runtimeFailureDiagnostics(terminal, [
+      ...events,
+      { ...diagnostic, actor: "Model" },
+      { ...diagnostic, sequence: 51 },
+      { ...diagnostic, topic: "runtime/model_output" },
+      diagnostic,
+    ]),
+    [{ eventId: "diagnostic", reason: "actual schema failure" }],
+  );
+  assert.deepEqual(
+    runtimeFailureDiagnostics(
+      { ...terminal, payload: { ...terminal.payload, thread_id: "" } },
+      [diagnostic],
+    ),
+    [],
+  );
+  assert.deepEqual(
+    runtimeFailureDiagnostics({ ...terminal, sequence: undefined }, [
+      diagnostic,
+    ]),
+    [],
+  );
+  assert.equal(
+    runtimeFailureDiagnostics(
+      terminal,
+      Array.from({ length: 64 }, (_, i) => ({ ...diagnostic, id: String(i) })),
+    ).length,
+    16,
   );
 });
 test("independent threads, attempts, unattributed and nonprotocol failures remain separate", () => {

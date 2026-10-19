@@ -6,7 +6,60 @@ export const runtimeMessageFailureSchema = z.object({
   phase: z.enum(["diagnostic", "terminal"]),
   attemptId: z.string().optional(),
   state: z.string().optional(),
+  /** Exact persisted rejection reasons, not model captures or invented copy. */
+  diagnostics: z
+    .array(z.object({ eventId: z.string(), reason: z.string() }))
+    .max(16)
+    .optional(),
 });
+
+type FailureEvent = {
+  id: string;
+  sequence?: number;
+  topic: string;
+  actor?: string;
+  payload: Record<string, unknown>;
+};
+
+/** Read-model join only. Never expose response_capture, arguments, or reasoning.
+ * Exact indexed root/attempt reads are still checked at the product boundary. */
+export function runtimeFailureDiagnostics(
+  terminal: FailureEvent,
+  events: FailureEvent[],
+) {
+  const failure = runtimeMessageFailureFromEvent(terminal);
+  const route = ["session_id", "context_id", "root_turn_id", "thread_id"];
+  if (
+    failure?.phase !== "terminal" ||
+    !failure.attemptId ||
+    !terminal.sequence ||
+    route.some(
+      (key) =>
+        typeof terminal.payload[key] !== "string" || !terminal.payload[key],
+    )
+  )
+    return [];
+  return events
+    .filter(
+      (event) =>
+        event.topic === "runtime/response_protocol_error" &&
+        event.actor === "Runtime-Orchestrator" &&
+        !!event.sequence &&
+        event.sequence < terminal.sequence! &&
+        event.payload.attempt_id === failure.attemptId &&
+        route.every((key) => event.payload[key] === terminal.payload[key]) &&
+        event.payload.principal_id === terminal.payload.principal_id &&
+        event.payload.model_output_visibility !== "internal" &&
+        event.payload.model_output_visibility !== "evaluation" &&
+        typeof event.payload.reason === "string" &&
+        !!event.payload.reason.trim(),
+    )
+    .slice(-16)
+    .map((event) => ({
+      eventId: event.id,
+      reason: event.payload.reason as string,
+    }));
+}
 
 /** One fact-based classifier for both live deltas and reloaded history. */
 export function runtimeMessageFailureFromEvent(event: {
