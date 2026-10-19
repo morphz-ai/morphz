@@ -9,6 +9,16 @@ export const reasoningEffortSchema = z.enum([
   "max",
 ]);
 export type ReasoningEffort = z.infer<typeof reasoningEffortSchema>;
+/** Immutable physical request facts, not the current composer/default settings. */
+export const executionModelSchema = z.object({
+  model_attempt_id: z.string().min(1),
+  activation_id: z.string().min(1),
+  model: z.string().min(1).max(256),
+  requested_alias: z.string().min(1).max(256),
+  reasoning_effort: reasoningEffortSchema.nullable(),
+  observed_at: z.string(),
+});
+export type ExecutionModel = z.infer<typeof executionModelSchema>;
 export const reasoningLabels: Record<ReasoningEffort, string> = {
   none: "关闭",
   low: "轻量",

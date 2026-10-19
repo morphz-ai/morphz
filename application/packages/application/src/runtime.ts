@@ -16,6 +16,7 @@ import { isDeepStrictEqual } from "node:util";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { executionModelSchema } from "../../core/src/inference.js";
 import { runtimeSchedulerSourceSchema } from "./runtime-thread-provenance.js";
 import {
   conversationSearchRequestSchema,
@@ -5483,6 +5484,7 @@ export class RuntimeBridge {
           z.object({
             source: runtimeSchedulerSourceSchema,
             response_annotations: z.unknown().optional(),
+            execution_model: executionModelSchema.nullish(),
             intent: z.string().nullable().optional(),
             phase: z.string(),
             schedules: z.array(scheduleLink).optional(),
@@ -5787,6 +5789,9 @@ export class RuntimeBridge {
             contextId: t.context_id,
             initiatingPrincipalId: t.initiating_principal_id ?? null,
             title: threadTitle,
+            ...(value.execution_model
+              ? { executionModel: value.execution_model }
+              : {}),
             ...(activityAnnotationFields(value.response_annotations, t) ?? {}),
             phase: value.phase,
             ...threadWaitProjection(value),

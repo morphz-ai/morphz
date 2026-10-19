@@ -122,7 +122,13 @@ impl MorphzRuntime {
         let sources = self
             .inner
             .store
-            .list_thread_annotation_sources(context_id, &ids, SOURCE_LIMIT + 1)
+            .list_thread_event_sources(
+                context_id,
+                &ids,
+                crate::event::TYPE_AGENT_CALL,
+                &["chat/assistant_call", "runtime/thread_waiting"],
+                SOURCE_LIMIT + 1,
+            )
             .await?;
         let activation_ids = sources
             .iter()

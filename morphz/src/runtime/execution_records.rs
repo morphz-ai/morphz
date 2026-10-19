@@ -67,6 +67,7 @@ impl ExecutionRecordsQuery {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionRecordThread {
+    pub execution_model: Option<super::ExecutionModel>,
     pub id: String,
     pub session_id: String,
     pub context_id: String,
@@ -304,6 +305,7 @@ impl MorphzRuntime {
                     })
                     .collect();
                 SchedulerThreadSnapshot {
+                    execution_model: None,
                     source: None,
                     response_annotations: None,
                     intent: intents
@@ -328,6 +330,8 @@ impl MorphzRuntime {
                 }
             })
             .collect::<Vec<_>>();
+        self.attach_execution_models(context_id, &mut snapshots)
+            .await?;
         if !query.metadata_only {
             self.attach_response_annotations(context_id, &mut snapshots)
                 .await?;
@@ -367,6 +371,7 @@ impl MorphzRuntime {
                 .map(|snapshot| {
                     let thread = snapshot.thread;
                     ExecutionRecordThread {
+                        execution_model: snapshot.execution_model,
                         id: thread.id,
                         session_id: thread.session_id,
                         context_id: thread.context_id,

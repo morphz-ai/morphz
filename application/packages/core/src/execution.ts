@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { executionModelSchema } from "./inference.js";
 import { id } from "./model.js";
 export const executionScopeSchema = z
   .object({
@@ -74,6 +75,7 @@ export const approvalSchema = z.object({
 /** Authorized read projection of real Runtime Threads, not another activity
  * ledger. Roots and parent links retain each execution's original identity. */
 export const executionThreadSchema = z.object({
+  executionModel: executionModelSchema.nullable().optional(),
   id: z.string(),
   sessionId: z.string(),
   contextId: z.string(),

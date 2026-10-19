@@ -85,6 +85,11 @@
   white-space: nowrap;
   max-width: 100%;
 }
+.execution-model-meta {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
 .execution-activity-row > svg {
   align-self: center;
   flex-shrink: 0;

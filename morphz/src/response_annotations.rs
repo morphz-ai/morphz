@@ -1101,6 +1101,17 @@ pub fn normalize_response(
                 }
             }
         }
+        for (index, call) in
+            response.tool_calls.iter().enumerate().filter(|(_, call)| {
+                call.func_name != "deliver_message" && call.func_name != "no_reply"
+            })
+        {
+            if !extraction.records.iter().any(|record| {
+                record.kind == AnnotationKind::Intent && record.call_id.as_deref() == Some(&call.id)
+            }) {
+                extraction.note(&format!("calls[{index}].intent"), "Required work-call annotation missing or invalid; original work preserved; no repair request sent");
+            }
+        }
     }
     let dispatch_allowed = !context.execution_fact.as_ref().is_some_and(|fact| {
         Some(&fact.scope) == context.scope.as_ref() && fact.status == "cancelled"
@@ -1366,6 +1377,66 @@ mod tests {
             ..Default::default()
         }
     }
+
+    #[test]
+    fn every_work_call_requires_same_response_intent_without_blocking_or_repair() {
+        let raw = Response {
+            content: String::new(),
+            tool_calls: vec![
+                call("read-book", "host_morphz", json!({"action":"reader"})),
+                call("recall-text", "recall", json!({"event_id":"@e123"})),
+                metadata_call(
+                    "step-metadata",
+                    json!({"calls":[{"index":0,"intent":"读取当前原文以核对解释"}]}),
+                ),
+            ],
+        };
+        let normalized = normalize_response(&raw, &context()).unwrap();
+        assert!(normalized.dispatch_allowed);
+        assert_eq!(normalized.execution_response.tool_calls.len(), 2);
+        assert_eq!(
+            normalized
+                .records
+                .iter()
+                .filter(|r| r.kind == AnnotationKind::Intent)
+                .count(),
+            1
+        );
+        assert_eq!(normalized.diagnostics.len(), 1);
+        assert!(format!("{:?}", normalized.diagnostics).contains("calls[1].intent"));
+        assert_eq!(
+            serde_json::to_value(&normalized.raw_response).unwrap(),
+            serde_json::to_value(&raw).unwrap()
+        );
+        let mut complete = raw.clone();
+        complete.tool_calls[2] = metadata_call(
+            "step-metadata",
+            json!({"calls":[
+                {"index":0,"intent":"读取当前原文以核对解释"},
+                {"index":1,"intent":"展开已取得的原文，避免凭记忆作答"}
+            ]}),
+        );
+        assert!(normalize_response(&complete, &context())
+            .unwrap()
+            .diagnostics
+            .is_empty());
+        let mut off = context();
+        off.protocol = Protocol::Off;
+        assert!(normalize_response(
+            &Response {
+                content: String::new(),
+                tool_calls: raw.tool_calls[..2].to_vec()
+            },
+            &off
+        )
+        .unwrap()
+        .diagnostics
+        .is_empty());
+        assert!(
+            crate::session_io::response::CONTRACT.contains("For EVERY actual work/control call")
+        );
+        assert!(crate::session_io::response::CONTRACT.contains("For a value-returning response"));
+    }
     fn persisted_event(sequence: u64, execution: Value, terminal: bool) -> Event {
         persisted_event_with_revision(sequence, execution, terminal, None)
     }
@@ -1565,7 +1636,7 @@ mod tests {
                 .unwrap();
         assert_eq!(receipt.state, ReceiptState::NoneAccepted);
         assert!(receipt.accepted.is_empty());
-        assert_eq!(receipt.diagnostic_count, Some(1));
+        assert_eq!(receipt.diagnostic_count, Some(2));
         assert!(!receipt
             .expression()
             .to_string()

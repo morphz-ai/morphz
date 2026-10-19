@@ -27000,13 +27000,15 @@ impl EventStore for SqliteStore {
         Ok(events)
     }
 
-    async fn list_thread_annotation_sources(
+    async fn list_thread_event_sources(
         &self,
         context_id: &str,
         thread_ids: &[String],
+        event_type: &str,
+        topics: &[&str],
         per_thread_limit: usize,
     ) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
-        if thread_ids.is_empty() {
+        if thread_ids.is_empty() || topics.is_empty() {
             return Ok(Vec::new());
         }
         let mut builder = QueryBuilder::new(
@@ -27015,10 +27017,13 @@ impl EventStore for SqliteStore {
         builder
             .push_bind(context_id)
             .push(" AND type = ")
-            .push_bind(crate::event::TYPE_AGENT_CALL)
-            .push(
-                " AND topic IN ('chat/assistant_call','runtime/thread_waiting') AND thread_id IN (",
-            );
+            .push_bind(event_type)
+            .push(" AND topic IN (");
+        let mut selected_topics = builder.separated(", ");
+        for topic in topics {
+            selected_topics.push_bind(*topic);
+        }
+        builder.push(") AND thread_id IN (");
         let mut selected = builder.separated(", ");
         for id in thread_ids.iter().take(2_000) {
             selected.push_bind(id);

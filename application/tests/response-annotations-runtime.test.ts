@@ -353,6 +353,35 @@ test(
       assert.equal(next.response_annotations, "off");
       f.releaseWithText(nextMarker, "TEST OFF BODY");
       await settle(next.id);
+      const modelRows = (await f.client.call(
+        "runtime.navigation",
+        { projectId, conversationId, refreshActivity: true },
+        f.options,
+      )) as { runtime: { activity: ExecutionActivity } };
+      for (const id of [active.id, next.id]) {
+        const recorded = modelRows.runtime.activity.threads.find(
+          (thread) => thread.id === id,
+        )?.executionModel;
+        assert.ok(
+          recorded,
+          "Actual physical configuration survives annotation on/off",
+        );
+        assert.ok(recorded.model_attempt_id);
+        assert.ok(recorded.model);
+        assert.ok("reasoning_effort" in recorded);
+        assert.ok(!JSON.stringify(recorded).includes("auth_account_id"));
+        const source = JSON.parse(
+          f.sql<{ payload: string }>(
+            "SELECT payload FROM events WHERE thread_id=? AND topic='runtime/model_attempt_state' AND json_extract(payload,'$.model_binding') IS NOT NULL ORDER BY rowid DESC LIMIT 1",
+            id,
+          )[0]!.payload,
+        );
+        assert.equal(recorded.model, source.model_binding.physical_model);
+        assert.equal(
+          recorded.reasoning_effort,
+          source.effective_reasoning_effort,
+        );
+      }
       assert.equal(
         f
           .sql<{ payload: string }>(

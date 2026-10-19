@@ -968,7 +968,13 @@ async fn annotation_source_windows<S: RuntimeStore + ?Sized>(store: &S) -> Resul
         ))
         .await?;
     let selected = store
-        .list_thread_annotation_sources(&route.context, &ids, 129)
+        .list_thread_event_sources(
+            &route.context,
+            &ids,
+            morphz::event::TYPE_AGENT_CALL,
+            &["chat/assistant_call", "runtime/thread_waiting"],
+            129,
+        )
         .await?;
     let long = selected
         .iter()
@@ -990,7 +996,13 @@ async fn annotation_source_windows<S: RuntimeStore + ?Sized>(store: &S) -> Resul
         .all(|event| event.payload["context_id"] == route.context
             && event.topic == "chat/assistant_call"));
     assert!(store
-        .list_thread_annotation_sources(&route.context, &[], 129)
+        .list_thread_event_sources(
+            &route.context,
+            &[],
+            morphz::event::TYPE_AGENT_CALL,
+            &["chat/assistant_call", "runtime/thread_waiting"],
+            129
+        )
         .await?
         .is_empty());
     let first = ingress(store, &route, "revision-source-one", Protocol::On).await?;
@@ -1034,6 +1046,41 @@ async fn annotation_source_windows<S: RuntimeStore + ?Sized>(store: &S) -> Resul
         .is_empty());
     assert!(store
         .list_annotation_revision_signals(&route.context, &owners, &[])
+        .await?
+        .is_empty());
+    for (number, owner) in ids.iter().enumerate() {
+        store
+            .append(Event::new(
+                format!("physical-{number}"),
+                "Runtime".into(),
+                "runtime_control".into(),
+                "runtime/model_attempt_state".into(),
+                json!({"context_id":route.context,"session_id":route.session,"thread_id":owner})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ))
+            .await?;
+    }
+    let models = store
+        .list_thread_event_sources(
+            &route.context,
+            &ids,
+            "runtime_control",
+            &["runtime/model_attempt_state"],
+            1,
+        )
+        .await?;
+    assert_eq!(
+        models.len(),
+        2,
+        "each selected Thread keeps its own bounded model source"
+    );
+    assert!(models
+        .iter()
+        .all(|source| source.topic == "runtime/model_attempt_state"));
+    assert!(store
+        .list_thread_event_sources(&route.context, &ids, "runtime_control", &[], 1)
         .await?
         .is_empty());
     Ok(())

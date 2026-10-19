@@ -5,6 +5,7 @@ use crate::approval::{
     CAPABILITY_LEASE_APPROVED_RISK_TAG, CAPABILITY_LEASE_OBJECTIVE_REQUEST_KEY,
 };
 
+mod execution_model;
 mod execution_records;
 mod response_annotation_projection;
 mod session_approval;
@@ -113,6 +114,7 @@ use crate::tool::{
     ReadFileTool, Registry, ScheduleTxTool, SearchTool, SendMessageTool, SessionSignalTool,
     TaskStatusTool, ThreadScheduler, Tool, WriteFileTool,
 };
+pub use execution_model::ExecutionModel;
 pub use execution_records::{
     ExecutionRecordThread, ExecutionRecords, ExecutionRecordsError, ExecutionRecordsQuery,
 };
@@ -9253,6 +9255,7 @@ impl MorphzRuntime {
                 &dependencies,
             );
             threads.push(SchedulerThreadSnapshot {
+                execution_model: None,
                 source: thread_sources.get(&thread.id).cloned(),
                 response_annotations: None,
                 intent: root_intents
@@ -9283,6 +9286,8 @@ impl MorphzRuntime {
                 schedules,
             });
         }
+        self.attach_execution_models(context_id, &mut threads)
+            .await?;
         self.attach_response_annotations(context_id, &mut threads)
             .await?;
         orphan_activations.extend(activations_by_thread.into_values().flatten());
@@ -10694,6 +10699,7 @@ impl MorphzRuntime {
             context_id: context_id.to_string(),
             generated_at: chrono::Utc::now(),
             snapshot: SchedulerThreadSnapshot {
+                execution_model: None,
                 source: self
                     .scheduler_thread_sources(context_id, std::slice::from_ref(&thread))
                     .await?
@@ -10723,6 +10729,8 @@ impl MorphzRuntime {
             },
             model_attempt_events,
         };
+        self.attach_execution_models(context_id, std::slice::from_mut(&mut detail.snapshot))
+            .await?;
         self.attach_response_annotations(context_id, std::slice::from_mut(&mut detail.snapshot))
             .await?;
         Ok(Some(detail))

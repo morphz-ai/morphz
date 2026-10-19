@@ -27,6 +27,10 @@ import {
 import { projectDisplayLabel } from "./project-display-label.js";
 import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { ExecutionProgress } from "./ExecutionProgress.js";
+import {
+  executionModelLabel,
+  executionModelDescription,
+} from "./execution-model.js";
 
 export function ExecutionSidebar({
   client,
@@ -255,6 +259,14 @@ export function ExecutionSidebar({
               </span>
             )}
             {children.length > 0 && <span>{children.length} 个子任务</span>}
+            {t.executionModel && (
+              <span
+                className="execution-model-meta"
+                title={executionModelDescription(t.executionModel)}
+              >
+                {executionModelLabel(t.executionModel)}
+              </span>
+            )}
           </span>
         </span>
         <ChevronRight size={14} aria-hidden="true" />
@@ -333,6 +345,12 @@ export function ExecutionSidebar({
                   {threadSummary}
                 </p>
               )}
+              <p
+                className="execution-model"
+                title={executionModelDescription(thread?.executionModel)}
+              >
+                最近调用：{executionModelLabel(thread?.executionModel)}
+              </p>
               <div>
                 <span
                   className="execution-origin-status"

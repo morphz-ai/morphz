@@ -65,6 +65,14 @@ test("活动按同一Execution更新语义标题与一行摘要，不改真实�
       title: "核对运行环境",
       summary: "已读取系统版本，继续核对架构",
       annotationProtocol: "on",
+      executionModel: {
+        model_attempt_id: "TEST-model-attempt",
+        activation_id: "TEST-activation",
+        model: "gpt-6.1-sol",
+        requested_alias: "TEST-review",
+        reasoning_effort: "max",
+        observed_at: stamp,
+      },
       phase: "running",
       lifecycle: "open",
       revision: 3,
@@ -99,6 +107,9 @@ test("活动按同一Execution更新语义标题与一行摘要，不改真实�
   const current = panel.locator('[data-thread-id="TEST-annotation-thread"]');
   await expect(panel.locator(".execution-activity-row")).toHaveCount(2);
   await expect(current.locator("strong")).toHaveText("核对运行环境");
+  await expect(current.locator(".execution-activity-meta")).toContainText(
+    "gpt-6.1-sol · 思考：最高",
+  );
   await expect(current.locator(".execution-activity-summary")).toHaveText(
     "已读取系统版本，继续核对架构",
   );
@@ -121,6 +132,9 @@ test("活动按同一Execution更新语义标题与一行摘要，不改真实�
   await expect(current.locator("strong")).toHaveText("核对环境并确认启动要求");
   await expect(current.locator("time")).toHaveAttribute("dateTime", stamp);
   await current.click();
+  await expect(panel.locator(".execution-model")).toHaveText(
+    "最近调用：gpt-6.1-sol · 思考：最高",
+  );
   await expect(panel.locator(".execution-origin")).toContainText(
     "架构已确认，正在核对新增的启动要求",
   );

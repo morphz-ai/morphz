@@ -60,6 +60,9 @@ pub struct SchedulerActivationSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerThreadSnapshot {
+    /// Latest physically bound request, never today's mutable default model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_model: Option<crate::runtime::ExecutionModel>,
     /// Original authenticated input provenance, resolved by the Runtime even
     /// when this Thread has a synthetic scheduled/Objective root.
     pub source: Option<SchedulerSource>,

@@ -15,6 +15,10 @@ import { ExecutionStatusIcon } from "./ExecutionStatusIcon.js";
 import { ApprovalDetails } from "./ApprovalCard.js";
 import { type ExecutionReadScope } from "../../../packages/core/src/execution.js";
 import type { WorkspaceClient } from "./client.js";
+import {
+  executionModelLabel,
+  executionModelDescription,
+} from "./execution-model.js";
 export function ExecutionDialog({
   client,
   scope,
@@ -206,6 +210,13 @@ export function ExecutionDialog({
                       {group.thread.title ||
                         (group.depth > 0 ? "子任务" : "本次执行")}
                     </strong>
+                    <small
+                      title={executionModelDescription(
+                        group.thread.executionModel,
+                      )}
+                    >
+                      {executionModelLabel(group.thread.executionModel)}
+                    </small>
                   </div>
                   <span className="execution-thread-status">
                     {status?.label}

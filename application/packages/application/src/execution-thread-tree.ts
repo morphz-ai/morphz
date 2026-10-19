@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { executionModelSchema } from "../../core/src/inference.js";
 import { DomainError } from "../../core/src/model.js";
 import { jobSchema, type ExecutionThread } from "../../core/src/execution.js";
 import type { RuntimeRequest } from "./execution.js";
@@ -31,6 +32,7 @@ export const runtimeExecutionRecordsSchema = z.object({
         updated_at: z.string(),
         intent: z.string().nullable(),
         response_annotations: z.unknown().optional(),
+        execution_model: executionModelSchema.nullish(),
       }),
     )
     .max(100),
@@ -50,6 +52,7 @@ export function executionRecordThread(
     rootId: t.root_turn_id,
     parentThreadId: t.parent_thread_id,
     title: annotation?.title ?? t.intent?.trim() ?? "",
+    ...(t.execution_model ? { executionModel: t.execution_model } : {}),
     ...(annotation?.summary ? { summary: annotation.summary } : {}),
     phase: t.phase,
     lifecycle: t.lifecycle,

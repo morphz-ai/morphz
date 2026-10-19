@@ -5818,23 +5818,25 @@ pub trait EventStore: Send + Sync {
     /// Bounded display-only source read for selected, already authorized
     /// Threads. Durable stores override this with a single partitioned query;
     /// the caller still validates each source's Session/generation/producer.
-    async fn list_thread_annotation_sources(
+    async fn list_thread_event_sources(
         &self,
         context_id: &str,
         thread_ids: &[String],
+        event_type: &str,
+        topics: &[&str],
         per_thread_limit: usize,
     ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>> {
+        if topics.is_empty() {
+            return Ok(Vec::new());
+        }
         let mut events = Vec::new();
         for thread_id in thread_ids.iter().take(2_000) {
             events.extend(
                 self.query(QueryFilter {
                     context_id: Some(context_id.to_string()),
                     thread_id: Some(thread_id.clone()),
-                    types: vec![crate::event::TYPE_AGENT_CALL.into()],
-                    topics: vec![
-                        "chat/assistant_call".into(),
-                        "runtime/thread_waiting".into(),
-                    ],
+                    types: vec![event_type.into()],
+                    topics: topics.iter().map(|topic| (*topic).into()).collect(),
                     latest_k: Some(per_thread_limit.clamp(1, 129)),
                     ..Default::default()
                 })

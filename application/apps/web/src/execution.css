@@ -68,6 +68,12 @@
   -webkit-line-clamp: 2;
   overflow: hidden;
 }
+.execution-origin > .execution-model {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-block: 0 6px;
+}
 .execution-origin > div {
   display: flex;
   justify-content: space-between;

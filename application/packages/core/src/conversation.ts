@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { executionModelSchema } from "./inference.js";
 import { runtimeMessageFailureSchema } from "./runtime-message-failure.js";
 import {
   evaluationResultSchema,
@@ -90,6 +91,7 @@ export const activitySchema = z.object({
       /** Display-only Runtime projection, never a separate activity state. */
       summary: z.string().optional(),
       annotationProtocol: z.enum(["on"]).optional(),
+      executionModel: executionModelSchema.nullable().optional(),
       annotationsTruncated: z.boolean().optional(),
       phase: z.string(),
       waitKinds: z.array(z.string()).optional(),
