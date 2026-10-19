@@ -151,7 +151,7 @@ export function applicationOperations(shape: Record<string, z.ZodType>) {
   }
   add(
     "reader.import",
-    "导入本次已提交的附件或已授权目录中的书籍；Host直接读取原文件，返回内容ID和版本，不自动打开",
+    "导入书籍：workspace 使用当前执行已授权的默认工作目录中的相对路径，无需额外目录授权；attachment 使用本次附件，directory 使用本次目录授权。返回内容ID和版本，不自动打开",
     "write",
     readerImportSchema,
     (params) => ({ action: "reader-import", readerImport: params }),

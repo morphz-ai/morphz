@@ -7,6 +7,8 @@ use crate::approval::{
 
 mod execution_model;
 mod execution_records;
+mod execution_workspace;
+pub use execution_workspace::{ExecutionWorkspaceFile, ExecutionWorkspaceRead};
 mod response_annotation_projection;
 mod session_approval;
 use crate::artifact::{

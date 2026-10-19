@@ -1360,6 +1360,10 @@ impl Server {
             )
             .route("/api/execution-jobs", get(handle_list_execution_jobs))
             .route(
+                "/api/execution-jobs/:job_id/workspace-file",
+                post(handle_execution_workspace_file),
+            )
+            .route(
                 "/api/sessions/:session_id/terminals",
                 get(handle_session_terminals).post(handle_session_terminal_open),
             )
@@ -6103,6 +6107,29 @@ async fn handle_inspect_execution_job(
         .await
     {
         Ok(job) => Json(job).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_execution_workspace_file(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+    Json(command): Json<crate::runtime::ExecutionWorkspaceRead>,
+) -> Response {
+    if !is_authorized(&state, &headers, None) {
+        return unauthorized_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .read_execution_workspace_file(&principal.principal_id, &job_id, command)
+        .await
+    {
+        Ok(file) => ([(header::CACHE_CONTROL, "no-store")], Json(file)).into_response(),
         Err(error) => sdk_error_response(error),
     }
 }

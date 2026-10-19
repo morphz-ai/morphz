@@ -195,6 +195,8 @@ export async function profileActualTransportFixture(
     /** Trusted descriptor selection for this test-owned startup manifest only.
      * Omitting it preserves the canonical Host formats and all old fixtures. */
     inputFormats?: readonly (typeof workInputFormats)[number][];
+    workspaceFiles?: Readonly<Record<string, string | Uint8Array>>;
+    responseAnnotations?: "on" | "off";
     /** Test-owned packages installed by the actual canonical CLI before serve.
      * No production installation, existing Runtime or account is touched. */
     harnessPackages?: readonly { filename: string; source: string }[];
@@ -245,6 +247,10 @@ export async function profileActualTransportFixture(
   const directory = mkdtempSync(join(tmpdir(), "morphz-profile-actual-"));
   const runtimeRoot = join(directory, "runtime");
   mkdirSync(runtimeRoot, { mode: 0o700 });
+  for (const [name, bytes] of Object.entries(options.workspaceFiles ?? {})) {
+    assert.match(name, /^[^/\\.][^/\\]*\.[a-z]+$/);
+    writeFileSync(join(runtimeRoot, name), bytes);
+  }
   const databasePath = join(runtimeRoot, "runtime.sqlite");
   const operator = randomBytes(32).toString("hex");
   const runtimePort = await port(),
@@ -456,7 +462,7 @@ export async function profileActualTransportFixture(
   const configFile = join(runtimeRoot, "morphz.toml");
   const model = options.realProvider?.model ?? "profile-actual";
   const protocol = options.realProvider?.protocol ?? "openai-chat";
-  const evalConfiguration = `[orchestrator]\nresponse_annotations="on"\n${options.evalCallableTools ? `eval_callable_tools=${JSON.stringify(options.evalCallableTools)}\n` : ""}`;
+  const evalConfiguration = `[orchestrator]\nresponse_annotations=${JSON.stringify(options.responseAnnotations ?? "on")}\n${options.evalCallableTools ? `eval_callable_tools=${JSON.stringify(options.evalCallableTools)}\n` : ""}`;
   writeFileSync(
     configFile,
     `${evalConfiguration}[llm]\nmodel=${JSON.stringify(model)}\nreasoning_effort="low"\n[accounts.fixture]\nauth_adapter="credential"\ncredential_ref="fixture"\nprovider="fixture"\n[services.fixture]\nadapter="protocol-compatible"\nprotocol=${JSON.stringify(protocol)}\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["fixture"]\n[[models.${JSON.stringify(model)}.targets]]\nservice="fixture"\naccount="fixture"\nphysical_model=${JSON.stringify(model)}\ncapabilities=["tools"]\n[credentials.fixture]\nsource="env"\nname="PROFILE_ACTUAL_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeRoot)}\n`,
@@ -683,6 +689,21 @@ export async function profileActualTransportFixture(
       runtime,
       client,
       options: callOptions,
+      workspaceFile: (
+        jobId: string,
+        command: { tool_call_id: string; path: string; sha256?: string },
+      ) =>
+        fetch(
+          `${runtimeUrl}/api/execution-jobs/${encodeURIComponent(jobId)}/workspace-file`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer " + operator,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(command),
+          },
+        ),
       ioStream: (sessionId: string, signal: AbortSignal) =>
         fetch(
           `${runtimeUrl}/api/sessions/${encodeURIComponent(sessionId)}/io/stream`,

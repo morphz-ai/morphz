@@ -3426,10 +3426,58 @@ export class RuntimeBridge {
     }
     return scope;
   }
-  /** Read the exact submitted Platform input after resolving the Runtime
-   * invocation root. Neither model arguments nor the selected UI page can
-   * substitute another input here.
-   */
+  /** Runtime reads bytes under the active Job's route and permission profile;
+   * Host never opens a Runtime path locally or creates an extra file grant. */
+  async platformWorkspaceFile(
+    route: HostInvocation,
+    path: string,
+    expectedSha256?: string,
+  ) {
+    const read = async (sha256?: string) => {
+      const scope = await this.toolScope(route);
+      const value = z
+        .object({
+          name: z.string().min(1).max(4096),
+          target_id: z.literal(route.target_id),
+          sha256: z.string().regex(/^[a-f0-9]{64}$/),
+          size_bytes: z
+            .number()
+            .int()
+            .min(0)
+            .max(32 * 1024 * 1024),
+          data_base64: z.string().max(45 * 1024 * 1024),
+        })
+        .parse(
+          await this.request(
+            `/api/execution-jobs/${encodeURIComponent(route.job_id)}/workspace-file`,
+            "POST",
+            { tool_call_id: route.tool_call_id, path, sha256 },
+            scope.access,
+          ),
+        );
+      const bytes = Buffer.from(value.data_base64, "base64");
+      if (
+        bytes.length !== value.size_bytes ||
+        createHash("sha256").update(bytes).digest("hex") !== value.sha256 ||
+        (sha256 && sha256 !== value.sha256)
+      )
+        throw new DomainError(
+          "conflict",
+          "Workspace 文件字节或版本不匹配，未导入。",
+        );
+      await this.toolScope(route);
+      return { name: value.name, bytes, sha256: value.sha256 };
+    };
+    const file = await read(expectedSha256);
+    return {
+      ...file,
+      assertSource: async () => {
+        await read(file.sha256);
+      },
+    };
+  }
+
+  /** Read the exact submitted input, not a model- or UI-selected substitute. */
   async platformToolInput(route: HostInvocation) {
     const scope = await this.toolScope(route);
     if (!scope.platform || !scope.inputId)

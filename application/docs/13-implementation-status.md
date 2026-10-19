@@ -1,5 +1,35 @@
 # 桌面能力实施记录
 
+## 2026-10-19 默认 workspace 阅读器导入与开发资源治理
+
+`reader.import` 新增 `source:{kind:"workspace",path:<相对路径>,sha256?}`。
+Runtime 以实际活动 Job／call、发起 Principal、冻结节点和当前权限交付
+原字节，Host 复核后调用原 Reader 导入服务与持久回执。不伪造目录授权，
+不搬运模型中的 base64，不创建额外模型请求，不改变根工具列表。正文、
+书籍版本、目录、窗口定位继续复用既有业务模型；附件和目录授权路径保留
+各自独立的来源检查。当前 workspace 字节适配为本地 macOS／Linux，
+远程及非 Unix 后端明确拒绝，不退回读取 Host 的同名路径。
+
+专项检查覆盖原文件、哈希、权限、撤权、重试、重开、大小、符号链接与
+路径逃逸。真实 Rust Runtime／Host／HTTP 三场景通过：附件、workspace
+注解 on、workspace 注解 off；每场景工具定义稳定，结束 Job 不能再读。
+正式 Node 专项共 66 passed、0 failed、0 skipped（含 SQLite／PostgreSQL
+原服务、权限和来源回归），Rust lib 1587 passed、0 failed、13 个既有
+ignored；Python 回收契约 9/9，类型检查与生产构建通过。未运行全应用
+npm test 或其他模型矩阵，不将合成 provider 当作真实 DeepSeek。
+
+Cargo dev/test 统一 `line-tables-only`，保留 incremental；默认构建并发
+为 2，移除 CI 独立 debug 覆盖。新回收器只删除有完成产物、依赖和指纹
+证明、且不被当前调试引用使用的失效 loose object；持 Cargo 原锁，忙时
+不运行。增量缓存、依赖、二进制、指纹、构建脚本与 release 不删除。
+标准开发入口构建后每日至多自动回收 16 GiB，手动默认只检查；旧兼容
+脚本和会删除增量目录／调用 cargo-sweep 的行为已移除。
+
+本机删除 31,493 个已证明失效的对象文件，分配块计 63,370,227,712 字节，
+约 59.0 GiB；受保护目录清单前后完全一致。获用户另行批准后，系统清理
+两份可清理 Time Machine 本地快照，空闲约 119 GiB；这是文件块与快照
+的不同口径，不把两者重复相加。没有停止原 Runtime 或其他执行来清缓存。
+
 ## 2026-10-19 原生 Session IO Evaluation 已更新至原应用
 
 本节替代下文各日期历史记录中的旧注解执行路径；旧事件只读保留，不

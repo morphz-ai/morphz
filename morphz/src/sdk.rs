@@ -4368,6 +4368,27 @@ impl MorphzSdk {
         Ok(job)
     }
 
+    /// Read authorized workspace bytes on the invoking Job's actual node.
+    /// This does not create a permission grant, Job, or model request.
+    pub async fn read_execution_workspace_file(
+        &self,
+        principal_id: &str,
+        job_id: &str,
+        request: crate::runtime::ExecutionWorkspaceRead,
+    ) -> SdkResult<crate::runtime::ExecutionWorkspaceFile> {
+        let job = self.inspect_execution_job(principal_id, job_id).await?;
+        self.authorize_session(principal_id, &job.session_id)
+            .await?;
+        let file = self
+            .runtime
+            .read_execution_workspace_file(principal_id, job_id, request)
+            .await
+            .map_err(|message| SdkError::new(SdkErrorCode::Forbidden, message))?;
+        self.authorize_session(principal_id, &job.session_id)
+            .await?;
+        Ok(file)
+    }
+
     /// Read-only PTY projection. The initiating Human, Session membership and
     /// exact Context are checked before and after any physical screen read.
     pub async fn session_terminals(

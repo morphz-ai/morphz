@@ -139,6 +139,16 @@ export type PlatformAgentDomain = {
     effort?: ReasoningEffort,
   ) => Promise<void>;
   inputForInvocation?: (route: HostInvocation) => Promise<unknown>;
+  readWorkspaceFile?: (
+    route: HostInvocation,
+    path: string,
+    sha256?: string,
+  ) => Promise<{
+    name: string;
+    bytes: Uint8Array;
+    sha256: string;
+    assertSource: () => Promise<void>;
+  }>;
   readAcceptedAttachment?: (
     scope: { projectId: string; conversationId: string; inputId: string },
     author: AccessContext,
@@ -364,22 +374,29 @@ export class PlatformAgentTools {
     if (args.action === "reader-import") {
       const reader = this.domain.reader;
       const readInput = this.domain.inputForInvocation;
-      if (!reader || !readInput || !inputId || platformSource !== "input")
-        throw new DomainError(
-          "forbidden",
-          "导入需要实际提交的输入与文件来源。",
-        );
+      if (!reader) throw new DomainError("forbidden", "阅读器导入尚未接入。");
       const request = readerImportSchema.parse(args.readerImport);
-      const input = z
-        .object({
-          input_id: z.literal(inputId),
-          workspace_id: z.literal(projectId),
-          author_actant_id: z.literal(identity.humanActantId),
-          conversation_id: z.string().min(1),
-          attachments: z.array(inputAttachmentSchema).optional(),
-          directories: z.array(directoryGrantSchema).optional(),
-        })
-        .parse(await readInput(route));
+      const sourceInput = async () => {
+        if (!readInput || !inputId || platformSource !== "input")
+          throw new DomainError(
+            "forbidden",
+            "附件或目录导入需要实际提交的输入与文件来源。",
+          );
+        return z
+          .object({
+            input_id: z.literal(inputId),
+            workspace_id: z.literal(projectId),
+            author_actant_id: z.literal(identity.humanActantId),
+            conversation_id: z.string().min(1),
+            attachments: z.array(inputAttachmentSchema).optional(),
+            directories: z.array(directoryGrantSchema).optional(),
+          })
+          .parse(await readInput(route));
+      };
+      // Workspace authority belongs to the actual Runtime Job (including
+      // admitted scheduled work), not to a redundant input picker grant.
+      const input =
+        request.source.kind === "workspace" ? null : await sourceInput();
       const author = {
         principalId: identity.principalId,
         actantId: identity.humanActantId,
@@ -398,10 +415,21 @@ export class PlatformAgentTools {
         name: string;
         bytes: Uint8Array;
         sha256: string;
-        assertSource?: () => void;
+        assertSource?: () => void | Promise<void>;
       };
-      if (source.kind === "directory") {
-        const grant = input.directories?.find(
+      if (source.kind === "workspace") {
+        if (!this.domain.readWorkspaceFile)
+          throw new DomainError(
+            "forbidden",
+            "当前执行节点未提供 workspace 文件读取。",
+          );
+        file = await this.domain.readWorkspaceFile(
+          route,
+          source.path,
+          source.sha256,
+        );
+      } else if (source.kind === "directory") {
+        const grant = input!.directories?.find(
           (g) => g.grantId === source.grantId,
         );
         if (!grant || !this.domain.localFiles)
@@ -412,19 +440,23 @@ export class PlatformAgentTools {
         file = this.domain.localFiles.readingFile(
           grant,
           projectId,
-          input.conversation_id,
+          input!.conversation_id,
           author,
           source.path,
           source.sha256,
         );
       } else {
-        const declaration = input.attachments?.find(
+        const declaration = input!.attachments?.find(
           (a) => a.assetId === source.assetId,
         );
         if (!declaration || !this.domain.readAcceptedAttachment)
           throw new DomainError("forbidden", "附件不属于本次已提交的输入。");
         const attachment = await this.domain.readAcceptedAttachment(
-          { projectId, conversationId: input.conversation_id, inputId },
+          {
+            projectId,
+            conversationId: input!.conversation_id,
+            inputId: input!.input_id,
+          },
           author,
           source.assetId,
         );
@@ -447,7 +479,7 @@ export class PlatformAgentTools {
         bytes: file.bytes,
         assertSource: async () => {
           await checkProject();
-          file.assertSource?.();
+          await file.assertSource?.();
         },
       });
       return {

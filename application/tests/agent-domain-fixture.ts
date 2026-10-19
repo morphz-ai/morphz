@@ -43,6 +43,7 @@ export async function agentDomainFixture(
     readerOcr?: ReaderOcr;
     localFiles?: LocalFiles;
     readAcceptedAttachment?: PlatformAgentDomain["readAcceptedAttachment"];
+    readWorkspaceFile?: PlatformAgentDomain["readWorkspaceFile"];
     prepareTaskSession?: PlatformAgentDomain["prepareTaskSession"];
     searchConversation?: PlatformAgentDomain["searchConversation"];
     storage?: Parameters<typeof openApplicationDomainsHost>[3];
@@ -331,6 +332,7 @@ export async function agentDomainFixture(
         readerOcr: options.readerOcr,
         localFiles: options.localFiles,
         readAcceptedAttachment: options.readAcceptedAttachment,
+        readWorkspaceFile: options.readWorkspaceFile,
         prepareTaskSession: options.prepareTaskSession,
         inputForInvocation: readAcceptedInput,
         ...(options.searchConversation

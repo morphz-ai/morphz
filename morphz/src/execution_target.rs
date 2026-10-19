@@ -5382,7 +5382,7 @@ impl ExecutionTargetDispatcher {
         Ok((source, destination))
     }
 
-    async fn ensure_target_authorized(
+    pub(crate) async fn ensure_target_authorized(
         &self,
         target: &ExecutionTargetRecord,
         principal_id: Option<&str>,

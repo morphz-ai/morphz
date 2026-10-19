@@ -33,6 +33,7 @@ test("Platform Agent reads only the actual input's local grants and revocation f
       human,
     );
     let source: Record<string, unknown> = {
+      input_id: "input-one",
       workspace_id: "project-one",
       author_actant_id: human.actantId,
       conversation_id: "conversation-one",
@@ -52,7 +53,7 @@ test("Platform Agent reads only the actual input's local grants and revocation f
         ) =>
           action(
             { credential: "verified-agent" },
-            { projectId: "project-one", inputId: "input-one" },
+            { kind: "input", projectId: "project-one", inputId: "input-one" },
             {
               principalId: human.principalId,
               humanActantId: human.actantId,

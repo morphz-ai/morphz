@@ -20,6 +20,13 @@ export const readerImportSchema = z
       z.object({ kind: z.literal("attachment"), assetId: hash }).strict(),
       z
         .object({
+          kind: z.literal("workspace"),
+          path: z.string().min(1).max(4096),
+          sha256: hash.optional(),
+        })
+        .strict(),
+      z
+        .object({
           kind: z.literal("directory"),
           grantId: z.uuid(),
           path: z.string().min(1).max(4096),

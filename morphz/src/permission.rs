@@ -276,7 +276,7 @@ impl PermissionConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionProfile {
     pub mode: PermissionMode,
     pub sandbox_mode: SandboxMode,

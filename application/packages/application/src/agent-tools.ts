@@ -1038,6 +1038,8 @@ export function runtimeAgentTools(
       validateTaskInference: (access, model, effort) =>
         runtime.as(access, () => runtime.validateInference(model, effort)),
       inputForInvocation: (route) => runtime.platformToolInput(route),
+      readWorkspaceFile: (route, path, sha256) =>
+        runtime.platformWorkspaceFile(route, path, sha256),
       readAcceptedAttachment: (scope, author, assetId) =>
         runtime.platformAcceptedAttachment(
           scope,
