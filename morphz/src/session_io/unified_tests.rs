@@ -522,3 +522,77 @@ fn an_admitted_chat_definition_preserves_the_ordinary_implicit_string() {
         response.content
     );
 }
+
+// These are explicit failing reproductions, not passing acceptance coverage.
+// Request-side wire selection currently cannot be supplied to the decoder or
+// stream normalizer. Changing that carrier boundary is still under review.
+#[test]
+#[ignore = "Known original-window failure: the actual JSON carrier is not frozen into receiving interpretation"]
+fn known_transport_boundary_regression_fenced_proposal_is_not_a_completed_answer() {
+    use super::response_stream::ModelStreamNormalizer;
+    use crate::llm::{ModelOutputEncoding, ModelStreamEvent, ModelToolChoice};
+
+    let binding = bound(true);
+    let tools = vec![ToolDefinition {
+        name: "list_skills".into(),
+        description: "List existing skills".into(),
+        parameters: json!({"type":"object","properties":{}}),
+    }];
+    let (encoding, choice) =
+        request_options(&binding, &[NATIVE_SCHEMA_CAPABILITY.into()], &tools);
+    assert!(matches!(encoding, Some(ModelOutputEncoding::JsonSchema { .. })));
+    assert_eq!(choice, Some(ModelToolChoice::None));
+
+    // Same shape as the observed original-window response, with only a
+    // synthetic title. No private Context and no actual tools are executed.
+    let content = concat!(
+        "```json\n",
+        "{\"body\":null,\"effects\":[{\"name\":\"list_skills\",\"arguments\":{},",
+        "\"intent\":\"确认现有阅读工具\"}],\"annotations\":{\"execution\":",
+        "{\"title\":\"TEST 只读验收\"},\"observations\":[]}}\n```"
+    );
+    let response = Response { content: content.into(), tool_calls: vec![] };
+    let decoded = split_response_for_attempt(&response, &binding, "TEST-fenced-work");
+    let mut stream = ModelStreamNormalizer::new(binding);
+    let mut events = vec![];
+    for character in content.chars() {
+        events.extend(stream.push(ModelStreamEvent::TextDelta { text: character.to_string() }));
+    }
+    events.extend(stream.push(ModelStreamEvent::Completed));
+    let publicly_completed = events.iter().any(|event| matches!(event, ModelStreamEvent::Completed));
+
+    // Reject this malformed response in its requested JSON carrier. Never
+    // strip the fence and execute it, nor call an unexecuted proposal success.
+    assert!(
+        decoded.is_err() && !publicly_completed,
+        "requested JSON carrier must not silently become prose: decoder accepted={}, public completed={publicly_completed}",
+        decoded.is_ok()
+    );
+}
+
+#[test]
+#[ignore = "Known converse boundary failure: ordinary native text is sniffed for Evaluation field names"]
+fn known_transport_boundary_regression_literal_json_does_not_propose_work() {
+    let binding = bound(true);
+    let tools = vec![ToolDefinition {
+        name: "read".into(),
+        description: "Read an authorized file".into(),
+        parameters: json!({"type":"object","required":["path"],"properties":{"path":{"type":"string"}}}),
+    }];
+    // This physical transport did not request a structured message. A literal
+    // JSON example in ordinary text must not become a new source of actions.
+    assert_eq!(request_options(&binding, &[], &tools), (None, None));
+    let content = json!({
+        "body":"这是协议示例，不是执行请求",
+        "effects":[{"name":"read","arguments":{"path":"TEST-not-executed.txt"},"intent":null}],
+        "annotations":null
+    }).to_string();
+    let response = Response { content: content.clone(), tool_calls: vec![] };
+    let decoded = split_response_for_attempt(&response, &binding, "TEST-literal-example").unwrap();
+    assert!(
+        decoded.response.tool_calls.is_empty() && decoded.response.content == content,
+        "ordinary text must stay data: synthesized work proposals={}, body preserved={}",
+        decoded.response.tool_calls.len(),
+        decoded.response.content == content
+    );
+}

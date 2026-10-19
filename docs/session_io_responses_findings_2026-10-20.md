@@ -188,6 +188,44 @@ JSON 工作提案当普通正文并结束，另一次在读取前的提案中多
 原始 Context 和 SSE 只留本机私有证据目录，不进入 Git；本轮 15 项统一解码单元测试
 通过，也不能覆盖或推翻上述真实原窗口失败。
 
+### 接收边界与 strict 限制的进一步定位
+
+当前 `request_options` 根据物理入口能力选择原生 JSON Schema 或普通原生返回，
+但 `ReturnBinding`、`unified::decode` 和 `ModelStreamNormalizer` 没有本次实际
+物理编码模式这一字段。解码和流式仍按首字符／对象字段猜测。于是同一个 v2
+绑定同时承诺“普通正文是数据”和“带 body/effects 的正文是工作提案”。
+这不是依靠增加关键词或剥 Markdown 围栏能消除的歧义。
+
+两个离线反例已放入 `unified_tests.rs` 的 `known_transport_boundary_regression_*`：
+
+- 请求已选择 JSON Schema 时，fenced 工作提案不能以无工作普通回答完成；
+  同时检查最终解码和公开流的 Completed 事件。
+- 请求实际选择普通原生返回时，合法 JSON 协议示例不能被合成成 read 工作提案；
+  普通正文也必须逐字保留。没有执行 read 或其他工具。
+
+这些是显式 ignored 的**待修复断言**，不是绿色验收项。复现命令为：
+
+```sh
+cargo test -p morphz --lib known_transport_boundary_regression -- --ignored --test-threads=1
+```
+
+本轮实际执行结果为 **0 通过、2 失败**：第一项最终解码 accepted=true、公开流
+completed=true；第二项合成了 1 个工作提案且没有逐字保留正文。这两项仅运行
+解码／投影，不执行工具；第二项是离线边界反例，不是已观察到用户文件被操作。
+
+真实上游请求的 generation Schema 中，唯一没有 properties 的 object 位于
+`/properties/effects/items/properties/arguments`。其定义只有 type:object
+和说明，没有 required 或 additionalProperties；工具名虽有 enum，具体参数
+结构并没有按工具名纳入这个返回 Schema。因此服务端即使遵守这一 Schema，
+也无法替我们判断 host_morphz 是否缺 action。原始工具参数定义虽仍在 tools
+中，但当前 tool_choice:none 已让工作提案走另一处开放对象。
+这与真实 strict:true 的 HTTP 400 相吻合；不能将其概括为模型不支持 JSON。
+
+后续任何获批方案都须把**实际返回载体**和业务值类型分开冻结，并由同一份
+绑定驱动请求参数、完整解码和增量投影。普通原生文本不得因内容长得像协议
+而被解释为执行提案；明确请求的结构化返回不得因解码失败而伪装普通正文成功。
+这是待修复边界，不是现在再给普通聊天加一层强制外壳的理由。
+
 ## 下一步候选机制：保留原生工作，Session IO 负责归一（待 review，未实施）
 
 这不是把正文和注解改回两次 deliver_message；整个结果仍只来自同一物理
