@@ -139,11 +139,13 @@ Cargo dev/test 统一 `line-tables-only`，保留 incremental；默认构建并�
 的不同口径，不把两者重复相加。没有停止原 Runtime 或其他执行来清缓存。
 
 资源补记：最终构建的 morphz 二进制为 208,760,728 字节（约 199 MiB）；
-后续测试／备份后本机空闲约 102 GiB，不将整套缓存目录等同于一个二进制。
+测试／备份后本机一度空闲约 102 GiB，最后只读检查约 77 GiB；不能把
+整套缓存目录等同于一个二进制，也不能把较早空闲值冒充当前值。
 获明确批准后仅停止端口 4190、运行 43 天的旧 SVG 预览，已核对进程和
 监听消失；原命令保留，可按需重启。没有停止其他服务或系统进程。
 24 GiB 机器仍有显著内存压力：fseventsd（PID 519，135 天）在 top 的
-MEM footprint 约 21 GiB，另有约 10 GiB compressor／约 21 GiB swap；
+MEM footprint 约 21 GiB，另有约 10 GiB compressor；swap 由约 21 GiB
+增加到约 27 GiB，此时无 cargo／rustc，也无新的本地 Time Machine 快照。
 footprint 不等于同量常驻 RAM。具体泄漏机制尚未证明，不能称内存问题
 已经解决；没有擅自重启系统服务或 Mac，建议保存并结束工作后正常重启。
 
