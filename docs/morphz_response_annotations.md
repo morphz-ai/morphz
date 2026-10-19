@@ -1,7 +1,8 @@
 # 响应、返回值与注解：Session IO 当前契约
 
-2026-10-20。状态：按用户确认的“注解均可选”修正实现并验收中；此段不是
-原应用已更新的声明。具体构建、真实模型与原应用验收结果在完成后单独记录。
+2026-10-20。状态：按用户确认的“注解均可选”完成实现及本轮验收；原安装
+应用已更新到 Runtime `9051ee73` 与 Desktop 修复 `eb3ee01e`。这不是所有
+模型均可靠的声明，实际范围见文末交付记录。
 核验范围和整库测试的已知缺口见 [Context 审查记录](./morphz_context_prompt_audit_2026-10-19.md)。旧载体的历史记录见
 [历史记录](./archive/2026-10-17-response-annotations-history.md)；
 本轮之前的完整文档可从 Git 的 d98f4e4c 版本读取，不构成当前执行接口。
@@ -170,3 +171,39 @@ Evaluation 绑定只按原定义用于历史读取与恢复；已有身份、正
 同一路由开关及阶段下的工具字节、来源与授权、补充／等待／取消／崩溃恢复、
 SQLite／PostgreSQL 的同事务与幂等、单 infer Harness 和 discuss-script，
 然后用实际可用的 DeepSeek 路由复验，并检查原应用。合成测试不能代替这些证据。
+
+## 本轮交付记录（2026-10-20）
+
+实现提交 `9051ee730c42c84fb9fd586e19a58c303660f552`。Rust lib 1599 passed，
+13 个既有 ignored；活动／生命周期集成25/25、原生 IO 集成7/7。正式 Node
+专项24/24，真实 Rust Runtime＋Host＋HTTP 链路的导入、原生返回、设置冻结、
+迟订阅和部分元数据均通过，范围不等于全应用测试套件通过。
+
+真实现有 DeepSeek 路由共10个场景，7个 on、3个 off。on 覆盖纯聊天、读取
+盲审、显式注解盲审、进度读取、真实记忆提交、typed infer 和 discuss-script；
+off 覆盖纯聊天、读取盲审及 typed infer。普通回复无注解可正常交付，显式
+注解场景取得实际步骤意图、观察结果和最终结果；都没有补元数据或转述请求。
+推理／剧本工作按其实际类型结束，父 Plan 有真实提前流式 String 投影。
+材料为合成 TEST 内容，不能称为用户书籍的领域审查。Qwen／Kimi／GLM、
+27B及量化模型尚未实测，不由这10例推出跨模型保证。
+
+原安装 `/Users/shafreeck/Applications/Morphz.app` 与原中心已实际更新，
+Runtime 为 `9051ee730c42`／PID25636。空闲切换前备份
+`/Users/shafreeck/Library/Caches/Morphz-workspace-import-1wa8iN`；原38344个
+Events无缺失／改写，761 Threads、5 Objectives、49 Schedules、30 Sessions
+身份与控制保留。配置／模型文件摘要未变，没有中止或重放在途工作。
+
+随后 Desktop 提交 `eb3ee01e` 修复了错误详情：既有 Runtime 已保存真实原因，
+但历史投影未携带，界面又无条件把通用终止提示放进详情。现在只读关联同一
+root／Thread／attempt 的实际原因，短原因直接显示，无原因不制造空折叠。
+专项32/32、实际 Runtime 新增1/1、浏览器3/3，类型检查与生产构建通过。
+更新 Host 时没有重启已更新的 Runtime；等待用户当时执行结束后，正常退出并
+打开同一个原 App，重开 PID28116，Runtime PID25636保持。再次对照原备份，
+38344个旧事件仍无改写，配置／模型文件不变，状态接口HTTP200／started=true。
+
+原应用整窗核验：00:18历史失败已直接显示保存的 schema_validation_failed
+及根 JSON pointer；00:17显示原 Invalid JSON at byte730，没有第二句泛化
+提示或空详情框。完整设置页实际显示“为执行补充简短说明；未提供时显示
+原记录。仅影响新请求。”，注解仍on，没有为验收切换全局设置。恢复原对话
+最新位置与空输入；本次只读测试的未发送草稿保留、临时固定已取消，没有
+点击重新发送用户失败消息。合成截图与原窗口核验分别报告，不混作一类证据。
