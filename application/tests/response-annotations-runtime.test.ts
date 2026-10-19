@@ -668,8 +668,11 @@ test(
             );
           if (entry.valid) {
             assert.equal(bundle.diagnostics.length, 0);
-            assert.equal(terminal.title, "TEST 普通文本注解");
-            assert.equal(terminal.summary, "TEST 正文已返回");
+            const expected = entry.metadata.annotations as {
+              execution: { title: string; result: string };
+            };
+            assert.equal(terminal.title, expected.execution.title);
+            assert.equal(terminal.summary, expected.execution.result);
           } else {
             const errors = f.sql<{ payload: string }>(
               "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_error'",

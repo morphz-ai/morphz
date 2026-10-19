@@ -9227,7 +9227,7 @@ fn render_evaluation_directive(
             pair(
                 "tool-gate",
                 atom(if internal_infer {
-                    "execute the complete typed Yao BODY with its declared calls and data dependencies, within actual Runtime authority. The embedded human topic is not a standalone chat request: return the complete declared value, not merely a prose field. Do not add work or a model request solely for annotations or final rewriting"
+                    "execute the complete typed Yao BODY with its declared calls and data dependencies, within actual Runtime authority. The embedded human topic is not a standalone chat request: return the complete declared value, not merely a prose field. Business-tool limits and body-only type rules do not forbid the offered Session IO communication channel: when session-io-return.annotations_enabled is true, deliver its separate registered annotations message alongside that value in the same response. Do not add work or a model request solely for annotations or final rewriting"
                 } else if thread_kind == "delivery" {
                     "delivery composer performs only semantic composition and delivery of complex results and cannot call physical tools; a reply using the active response encoding and enabled annotation contract atomically covers visible pending completions in this snapshot"
                 } else {
