@@ -71,24 +71,13 @@
   line-height: 1.5;
 }
 .execution-activity-meta {
-  display: flex;
-  flex-wrap: wrap;
-  column-gap: 8px;
-  row-gap: 3px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.4;
-}
-.execution-activity-project {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 100%;
-}
-.execution-model-meta {
-  min-width: 0;
-  max-width: 100%;
-  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 .execution-activity-row > svg {
   align-self: center;

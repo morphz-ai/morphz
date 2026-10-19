@@ -18,16 +18,16 @@ const physical = executionModelSchema.parse({
   auth_account_id: "must-not-project",
 });
 test("activity model labels use only physical recorded facts, with explicit unknown/default distinctions", () => {
-  assert.equal(executionModelLabel(physical), "gpt-6.1-sol · 思考：max");
+  assert.equal(executionModelLabel(physical), "gpt-6.1-sol · max");
   assert.match(executionModelDescription(physical), /最近一次实际调用/);
   assert.match(executionModelDescription(physical), /请求名：审阅者/);
   assert.equal(
     executionModelLabel({ ...physical, reasoning_effort: null }),
-    "gpt-6.1-sol · 思考：default",
+    "gpt-6.1-sol · default",
   );
   assert.equal(
     executionModelLabel({ ...physical, reasoning_effort: "none" }),
-    "gpt-6.1-sol · 思考：none",
+    "gpt-6.1-sol · none",
   );
   assert.equal(executionModelLabel(null), "模型信息未记录");
   assert.equal(executionModelLabel(undefined), "模型信息未记录");

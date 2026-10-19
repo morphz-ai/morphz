@@ -212,6 +212,15 @@ export function ExecutionSidebar({
       client.boot!.outputs,
       client.boot!.scriptOutputs,
     );
+    const model = t.executionModel ? executionModelLabel(t.executionModel) : "";
+    const metadata = [
+      executionActivityClock(t),
+      model,
+      origin,
+      children.length > 0 ? `${children.length} 个子任务` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
     return (
       <button
         className="execution-activity-row"
@@ -224,6 +233,7 @@ export function ExecutionSidebar({
           summary,
           origin,
           executionActivityClock(t),
+          model,
         ]
           .filter(Boolean)
           .join(" · ")}
@@ -243,7 +253,7 @@ export function ExecutionSidebar({
               {summary}
             </span>
           )}
-          <span className="execution-activity-meta">
+          <span className="execution-activity-meta" title={metadata}>
             <time
               dateTime={
                 t.outcome?.terminalKind === t.lifecycle
@@ -253,19 +263,30 @@ export function ExecutionSidebar({
             >
               {executionActivityClock(t)}
             </time>
-            {origin && (
-              <span className="execution-activity-project" title={origin}>
-                {origin}
-              </span>
-            )}
-            {children.length > 0 && <span>{children.length} 个子任务</span>}
             {t.executionModel && (
-              <span
-                className="execution-model-meta"
-                title={executionModelDescription(t.executionModel)}
-              >
-                {executionModelLabel(t.executionModel)}
-              </span>
+              <>
+                {" · "}
+                <span
+                  className="execution-model-meta"
+                  title={executionModelDescription(t.executionModel)}
+                >
+                  {model}
+                </span>
+              </>
+            )}
+            {origin && (
+              <>
+                {" · "}
+                <span className="execution-activity-project" title={origin}>
+                  {origin}
+                </span>
+              </>
+            )}
+            {children.length > 0 && (
+              <>
+                {" · "}
+                {children.length} 个子任务
+              </>
             )}
           </span>
         </span>

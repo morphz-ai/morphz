@@ -108,7 +108,7 @@ test("活动按同一Execution更新语义标题与一行摘要，不改真实�
   await expect(panel.locator(".execution-activity-row")).toHaveCount(2);
   await expect(current.locator("strong")).toHaveText("核对运行环境");
   await expect(current.locator(".execution-activity-meta")).toContainText(
-    "gpt-6.1-sol · 思考：max",
+    "gpt-6.1-sol · max",
   );
   await expect(current.locator(".execution-activity-summary")).toHaveText(
     "已读取系统版本，继续核对架构",
@@ -118,6 +118,17 @@ test("活动按同一Execution更新语义标题与一行摘要，不改真实�
     "running",
   );
   await expect(current.locator("time")).toHaveAttribute("dateTime", stamp);
+  const meta = current.locator(".execution-activity-meta");
+  await expect(meta).not.toContainText("思考");
+  await expect(meta).toHaveAttribute("title", /gpt-6.1-sol · max/);
+  const rects = await current.evaluate((element) => {
+    const time = element.querySelector("time")!.getBoundingClientRect();
+    const model = element
+      .querySelector(".execution-model-meta")!
+      .getBoundingClientRect();
+    return { timeY: time.y, modelY: model.y };
+  });
+  expect(Math.abs(rects.timeY - rects.modelY)).toBeLessThan(1);
   await expect(
     panel.locator(
       '[data-thread-id="TEST-legacy-thread"] .execution-activity-summary',
@@ -133,7 +144,7 @@ test("活动按同一Execution更新语义标题与一行摘要，不改真实�
   await expect(current.locator("time")).toHaveAttribute("dateTime", stamp);
   await current.click();
   await expect(panel.locator(".execution-model")).toHaveText(
-    "最近调用：gpt-6.1-sol · 思考：max",
+    "最近调用：gpt-6.1-sol · max",
   );
   await expect(panel.locator(".execution-origin")).toContainText(
     "架构已确认，正在核对新增的启动要求",
@@ -315,6 +326,14 @@ test("长注解在明暗窄窗与CSS缩放保持简洁，普通文本不执行HT
     sessionId: "TEST-session",
     title,
     summary,
+    executionModel: {
+      model_attempt_id: "TEST-long-model",
+      activation_id: "TEST-long-activation",
+      model: "deepseek-flash-with-a-very-long-physical-model-name",
+      requested_alias: "TEST-reader",
+      reasoning_effort: "max",
+      observed_at: stamp,
+    },
     phase: "running",
     lifecycle: "open",
     revision: 1,
@@ -357,8 +376,21 @@ test("长注解在明暗窄窗与CSS缩放保持简洁，普通文本不执行HT
         return element.clientHeight / parseFloat(style.lineHeight);
       });
       expect(lines).toBeLessThanOrEqual(1.05);
-      await panel.screenshot({
+      const meta = row.locator(".execution-activity-meta");
+      await expect(meta).toHaveAttribute(
+        "title",
+        /deepseek-flash-with-a-very-long-physical-model-name · max/,
+      );
+      expect(
+        await meta.evaluate(
+          (element) =>
+            element.clientHeight /
+            parseFloat(getComputedStyle(element).lineHeight),
+        ),
+      ).toBeLessThanOrEqual(1.05);
+      await page.screenshot({
         path: info.outputPath(`activity-${appearance}-${width}.png`),
+        fullPage: true,
       });
     }
   }
