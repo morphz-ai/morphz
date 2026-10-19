@@ -96,6 +96,12 @@ const optionalTests = [
     "MORPHZ_COGNITIVE_APPLICATION_RUNTIME_E2E",
   ],
   [
+    "infer-model-controls-runtime.test.ts",
+    "actual Harness infer inherits task model controls through every physical request, without changing defaults or tools",
+    "runtime",
+    "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
+  ],
+  [
     "response-annotations-runtime.test.ts",
     "actual Runtime + Platform HTTP: two commands form one activity, three original model rounds, durable refresh and exact Job receipts",
     "runtime",

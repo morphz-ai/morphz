@@ -1,19 +1,28 @@
 .app .composer-settings-menu .composer-setting-row.composer-reasoning-control {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--ui-space-1) var(--ui-space-2);
   min-width: 0;
+  min-height: 0;
+  margin-top: var(--ui-space-2);
   padding: 6px 8px 8px;
   white-space: normal;
 }
 .composer-reasoning-control:focus {
   outline: none;
 }
-.composer-reasoning-heading {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 24px;
+.app .composer-settings-menu .composer-reasoning-heading {
+  display: flex;
+  grid-column: 1;
+  grid-row: 1;
   align-items: center;
-  gap: 8px;
+  gap: var(--ui-space-2);
   min-height: 24px;
   min-width: 0;
+  margin: 0;
+  font-size: var(--ui-dialog-control-font-size);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 .app .composer-reasoning-heading > svg {
   width: 16px;
@@ -23,9 +32,9 @@
 }
 .composer-reasoning-value {
   min-width: 0;
-  text-align: center;
+  margin-left: auto;
   color: var(--ink);
-  font-size: 15px;
+  font-size: inherit;
   font-weight: 600;
 }
 .composer-reasoning-control[data-state="explicit"] .composer-reasoning-value {
@@ -33,46 +42,46 @@
 }
 .app .composer-reasoning-control .composer-reasoning-reset {
   display: grid;
+  grid-column: 2;
+  grid-row: 1;
   place-items: center;
-  flex: 0 0 24px;
-  width: 24px;
-  height: 24px;
-  min-height: 24px;
-  padding: 4px;
   border: 0;
   background: transparent;
   box-shadow: none;
   color: var(--text-secondary);
-}
-.app .composer-reasoning-reset svg {
-  width: 14px;
-  height: 14px;
 }
 .app .composer-reasoning-reset:hover:not(:disabled) {
   color: var(--ink);
 }
 .composer-reasoning-rail {
   position: relative;
-  margin: 6px 2px 0;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  margin: 0 2px;
 }
 .app .composer-settings-menu .composer-model-selector {
-  display: block;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--ui-space-2);
   min-width: 0;
-  text-align: center;
+  margin: 0;
+  padding: 0 var(--ui-space-2);
+  font-size: var(--ui-dialog-control-font-size);
 }
 .app .composer-settings-menu .composer-model-selector select {
-  width: max-content;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
-  min-height: 26px;
+  min-height: 32px;
   padding: 0 3px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 13px;
-  text-align: center;
-  text-align-last: center;
+  font-size: inherit;
+  text-align: right;
+  text-align-last: right;
   text-overflow: ellipsis;
 }
 .app .composer-settings-menu .composer-reasoning-rail input {
@@ -126,8 +135,20 @@
   background: #fff;
   box-shadow: 0 1px 3px #0002;
 }
+.composer-reasoning-rail input:focus::-webkit-slider-thumb {
+  /* Label clicks must visibly reach the slider, not just move invisible focus. */
+  box-shadow:
+    inset 0 0 0 2px var(--accent),
+    0 1px 3px #0002;
+}
 .composer-reasoning-rail:not([data-selected]) input::-webkit-slider-thumb {
   opacity: 0;
+}
+.composer-reasoning-control:has(input:focus) .composer-reasoning-value {
+  /* Local feedback survives pointer-focus rules without inventing a selected
+     stop for inherited default or adding another frame around the control. */
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 .app
   .composer-settings-menu[data-keyboard-navigation]
@@ -162,16 +183,17 @@
   display: none;
 }
 .app .composer-reasoning-control > small {
+  grid-column: 1 / -1;
   display: block;
   max-width: none;
   margin: 3px 0 0 26px;
 }
 @media (pointer: coarse) {
-  .app .composer-reasoning-control .composer-reasoning-reset {
-    width: 32px;
-    height: 32px;
-    min-height: 32px;
-    flex-basis: 32px;
+  .app .composer-settings-menu .composer-model-selector select {
+    font-size: 16px;
+  }
+  .app .composer-settings-menu .composer-reasoning-heading {
+    min-height: 44px;
   }
   .app .composer-settings-menu .composer-reasoning-rail input {
     height: 44px;

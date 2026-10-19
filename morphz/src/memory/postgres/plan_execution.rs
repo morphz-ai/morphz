@@ -811,6 +811,10 @@ impl PlanExecutionStore for PostgresStore {
                 ..ThreadSupervision::runtime("event-router")
             },
         };
+        // Freeze task overrides with the child in this same hand-off. Infer
+        // is part of its owning task, not a fresh Session-default request.
+        // An explicit child override wins; absence on both sides stays absent.
+        // Existing Events/Threads are replayed unchanged, never backfilled.
         let child_thread = ensure_thread_in_tx(
             &mut tx,
             &NewThread {
@@ -819,12 +823,14 @@ impl PlanExecutionStore for PostgresStore {
                     .payload
                     .get("model_alias")
                     .and_then(JsonValue::as_str)
-                    .map(str::to_string),
+                    .map(str::to_string)
+                    .or_else(|| parent_thread.model_alias.clone()),
                 reasoning_effort: request_event
                     .payload
                     .get("reasoning_effort")
                     .and_then(JsonValue::as_str)
-                    .map(str::to_string),
+                    .map(str::to_string)
+                    .or_else(|| parent_thread.reasoning_effort.clone()),
                 id: stable_thread_id(&request_event.id),
                 agent_id: current_plan.agent_id.clone(),
                 context_id: current_plan.context_id.clone(),

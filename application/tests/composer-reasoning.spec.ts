@@ -133,14 +133,24 @@ test("默认不冒充标准：首档可鼠标选择、键盘离散调节并恢�
   ).not.toHaveAttribute("data-selected", "true");
   await expect(f.control.locator(".composer-reasoning-model")).toHaveCount(0);
   await expect(f.slider).toHaveAttribute("title", /TEST-real-model/);
-  await expect(f.control.locator("select")).toHaveCount(1);
+  await expect(f.control.locator("select")).toHaveCount(0);
   await expect(
-    f.control.getByLabel("本次输入模型", { exact: true }),
+    f.settings.getByLabel("本次输入模型", { exact: true }),
   ).toHaveCount(1);
   await expect(
     f.control.locator("select[aria-label='本次输入推理强度']"),
   ).toHaveCount(0);
   await expect(f.reset).toBeDisabled();
+  await f.control.locator(".composer-reasoning-value").click();
+  await expect(f.slider).toBeFocused();
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "default");
+  await expect(f.control.locator(".composer-reasoning-value")).toHaveCSS(
+    "text-decoration-line",
+    "underline",
+  );
+  await expect(
+    f.control.locator(".composer-reasoning-rail"),
+  ).not.toHaveAttribute("data-selected", "true");
   // Native range DOM value is already min while inherited. A real click on
   // that same first stop still has to become an explicit choice.
   await f.slider.click({ position: { x: 7, y: 12 } });
@@ -158,6 +168,12 @@ test("默认不冒充标准：首档可鼠标选择、键盘离散调节并恢�
   await expect(f.slider).toHaveAttribute("aria-valuetext", "low");
   await f.slider.press("End");
   await expect(f.slider).toHaveAttribute("aria-valuetext", "max");
+  await f.settings.getByLabel("本次输入模型", { exact: true }).focus();
+  await page.keyboard.press("Tab");
+  await expect(f.slider).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(f.reset).toBeFocused();
+  await f.slider.focus();
   await f.slider.press("ArrowLeft");
   await expect(f.slider).toHaveAttribute("aria-valuetext", "high");
   await f.slider.press("Home");
@@ -170,6 +186,8 @@ test("默认不冒充标准：首档可鼠标选择、键盘离散调节并恢�
     path: info.outputPath("reasoning-default.png"),
   });
   await chooseReasoning(f.slider, "high");
+  // Verify the unchanged normal thumb separately from its deliberate focus cue.
+  await f.settings.getByLabel("本次输入模型", { exact: true }).focus();
   for (const appearance of ["light", "dark"] as const) {
     await page.evaluate((appearance) => {
       document.documentElement.dataset.appearance = appearance;
@@ -379,7 +397,7 @@ test("加载、失败、旧服务与未声明模型能力分别保留，重试�
   }
 });
 
-test("390px 与 200% 下居中强度与胶囊轨道不溢出，键盘焦点可见且调节不关闭菜单", async ({
+test("390px 与 200% 下强度组与胶囊轨道不溢出，键盘焦点可见且调节不关闭菜单", async ({
   page,
 }, info) => {
   const f = await prepare(page);
@@ -406,7 +424,7 @@ test("390px 与 200% 下居中强度与胶囊轨道不溢出，键盘焦点可�
       const heading = element
         .querySelector(".composer-reasoning-heading")!
         .getBoundingClientRect();
-      const output = element.querySelector("output")!;
+      const output = element.querySelector(".composer-reasoning-value")!;
       const outputRect = output.getBoundingClientRect();
       const markers = [
         ...element.querySelectorAll<HTMLElement>(".composer-reasoning-stops i"),
@@ -419,8 +437,8 @@ test("390px 与 200% 下居中强度与胶囊轨道不溢出，键盘焦点可�
         headingBottom: heading.bottom,
         outputFont: getComputedStyle(output).fontSize,
         railWidth: slider.width,
-        headingCenter: heading.x + heading.width / 2,
-        outputCenter: outputRect.x + outputRect.width / 2,
+        headingRight: heading.right,
+        outputRight: outputRect.right,
         sliderHeight: slider.height,
         markerText: element.querySelector(".composer-reasoning-stops")!
           .textContent,
@@ -436,12 +454,15 @@ test("390px 与 200% 下居中强度与胶囊轨道不溢出，键盘焦点可�
     expect(geometry.markerText).toBe("");
     expect(geometry.markersWithin).toBe(true);
     expect(
-      Math.abs(geometry.headingCenter - geometry.outputCenter),
+      Math.abs(geometry.headingRight - geometry.outputRight),
     ).toBeLessThanOrEqual(1);
     expect(geometry.sliderHeight).toBeGreaterThanOrEqual(34 * zoom!);
     expect(geometry.railWidth).toBeGreaterThan(150);
     expect(geometry.sliderTop).toBeGreaterThanOrEqual(geometry.headingBottom);
-    expect(Number.parseFloat(geometry.outputFont)).toBeGreaterThanOrEqual(15);
+    expect(Number.parseFloat(geometry.outputFont)).toBe(13);
+    expect(geometry.sliderTop - geometry.headingBottom).toBeLessThanOrEqual(
+      4 * zoom!,
+    );
     await f.settings.getByLabel("本次输入模型", { exact: true }).focus();
     await page.keyboard.press("Tab");
     await expect(f.slider).toBeFocused();
@@ -456,4 +477,54 @@ test("390px 与 200% 下居中强度与胶囊轨道不溢出，键盘焦点可�
     });
   }
   expect(f.writes).toEqual([]);
+});
+
+test.describe("触控执行设置", () => {
+  test.use({ hasTouch: true, viewport: { width: 390, height: 700 } });
+  test("四主题亮暗下模型和强度仍分组，触控目标完整，点击当前值不更改强度", async ({
+    page,
+  }, info) => {
+    const f = await prepare(page);
+    await chooseReasoning(f.slider, "max");
+    await expect(
+      f.settings.getByLabel("本次输入模型", { exact: true }),
+    ).toHaveCSS("font-size", "16px");
+    for (const control of [
+      f.reset,
+      f.slider,
+      f.control.locator(".composer-reasoning-heading"),
+    ])
+      expect((await control.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await expect(f.control.locator(".composer-reasoning-heading")).toHaveCSS(
+      "-webkit-tap-highlight-color",
+      "rgba(0, 0, 0, 0)",
+    );
+    for (const accent of ["cyan", "iris", "coral", "mono"]) {
+      for (const appearance of ["light", "dark"]) {
+        await page.evaluate(
+          ({ accent, appearance }) => {
+            document.documentElement.dataset.appearance = appearance;
+            const app = document.querySelector<HTMLElement>(".app")!;
+            app.dataset.appearance = appearance;
+            app.dataset.accent = accent;
+          },
+          { accent, appearance },
+        );
+        await f.control.locator(".composer-reasoning-value").tap();
+        await expect(f.slider).toBeFocused();
+        await expect(f.slider).toHaveAttribute("aria-valuetext", "max");
+        await expect(f.control.locator(".composer-reasoning-value")).toHaveCSS(
+          "text-decoration-line",
+          "underline",
+        );
+        await page.screenshot({
+          path: info.outputPath(
+            `full-touch-settings-${accent}-${appearance}.png`,
+          ),
+        });
+      }
+    }
+    await expect(f.input).toHaveValue(f.draft);
+    expect(f.writes).toEqual([]);
+  });
 });

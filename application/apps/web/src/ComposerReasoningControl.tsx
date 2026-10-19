@@ -1,4 +1,4 @@
-import { useId, useRef, type CSSProperties, type ReactNode } from "react";
+import { useId, useRef, type CSSProperties } from "react";
 import { flushSync } from "react-dom";
 import { Brain, RotateCcw } from "lucide-react";
 import {
@@ -14,7 +14,6 @@ export function ComposerReasoningControl({
   value,
   levels,
   model,
-  modelControl,
   label = "本次输入推理强度",
   title,
   disabled = false,
@@ -24,7 +23,6 @@ export function ComposerReasoningControl({
   value?: ReasoningEffort;
   levels: ReasoningEffort[];
   model: string;
-  modelControl?: ReactNode;
   label?: string;
   title: string;
   disabled?: boolean;
@@ -56,36 +54,13 @@ export function ComposerReasoningControl({
       data-state={state}
       title={title}
     >
-      <div className="composer-reasoning-heading">
+      <label className="composer-reasoning-heading" htmlFor={`${id}-range`}>
         <Brain aria-hidden="true" />
-        <span className="visually-hidden">推理强度 · {model}</span>
-        <output className="composer-reasoning-value" id={`${id}-value`}>
+        <span>推理强度</span>
+        <span className="composer-reasoning-value" id={`${id}-value`}>
           {caption}
-        </output>
-        <button
-          type="button"
-          className="composer-reasoning-reset"
-          aria-label="恢复默认推理强度"
-          title="恢复默认 · 沿用模型设置"
-          disabled={disabled || !value}
-          onClick={(event) => {
-            const ownedFocus = document.activeElement === event.currentTarget;
-            flushSync(() => onChange(undefined));
-            // Reset disables its own button; keep keyboard navigation on the
-            // still-valid rail, without stealing focus from another surface.
-            if (ownedFocus)
-              (!disabled && stops.length
-                ? range.current
-                : control.current
-              )?.focus({
-                preventScroll: true,
-              });
-          }}
-        >
-          <RotateCcw aria-hidden="true" />
-        </button>
-      </div>
-      {modelControl}
+        </span>
+      </label>
       <div
         className="composer-reasoning-rail"
         data-empty={!stops.length || undefined}
@@ -98,6 +73,7 @@ export function ComposerReasoningControl({
       >
         <input
           ref={range}
+          id={`${id}-range`}
           type="range"
           aria-label={label}
           aria-valuetext={caption}
@@ -162,6 +138,29 @@ export function ComposerReasoningControl({
           ))}
         </div>
       </div>
+      <button
+        type="button"
+        className="icon-button composer-reasoning-reset"
+        data-size="icon-xs"
+        aria-label="恢复默认推理强度"
+        title="恢复默认 · 沿用模型设置"
+        disabled={disabled || !value}
+        onClick={(event) => {
+          const ownedFocus = document.activeElement === event.currentTarget;
+          flushSync(() => onChange(undefined));
+          // Reset disables itself; keep focus on the still-valid rail without
+          // stealing it from a newer surface or changing the selected model.
+          if (ownedFocus)
+            (!disabled && stops.length
+              ? range.current
+              : control.current
+            )?.focus({
+              preventScroll: true,
+            });
+        }}
+      >
+        <RotateCcw aria-hidden="true" />
+      </button>
       {invalid && (
         <small role="alert" id={`${id}-invalid`}>
           请重新选择推理强度

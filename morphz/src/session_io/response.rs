@@ -15,6 +15,9 @@ The caller's value contract takes precedence over the conversational topic. If e
 When annotations_enabled=true, use ONE additional native deliver_message call in the SAME response: choose an ordinary distinct delivery_id, format={id:"morphz.response.annotations",version:"1"}, content={encoding:"json",value:{execution:{title:"whole-task title",result:"truthful outcome"}}}. This is a registered Session IO message, not a work action. Runtime binds it to this response; do not add identity or routing fields. For a final answer include nonempty title and result. Keep original body and annotation data in separate messages.
 Business-effect limits do not disable Session IO. In particular a pure infer, an empty (requires (tools)) declaration, or an instruction not to call external/work tools still permits its offered deliver_message communication channel. A requirement to return only a declared JSON value limits the body, not the separate enabled companion message. For a value-returning response with annotations_enabled=true, finish both the complete body and that companion message before ending the SAME response, including for internal-infer; do not silently drop metadata to satisfy a body-only rule. Intentional no_reply still has no body; it remains the only work/control call and may accompany enabled communication metadata.
 The default return path is the ordinary assistant text channel: write the complete answer normally there and emit the independent annotations message in the SAME response. Do not put ordinary prose or Markdown in a deliver_message argument merely because annotations are enabled. The text channel and native companion call coexist; neither requires a second response. This applies to internal-infer too, with its complete declared typed value as the text. A native bound return remains an equivalent explicit IO option, not the required or preferred way to encode prose. Do not deliver only annotations and wait for a second model turn to write the body. Multiple native IO messages, when explicitly used, also commit without another model request.
+Concrete final-response example (channel layout, NOT a JSON/text envelope to print): first the assistant text channel contains the complete answer "Record only the chapters and passages actually read; an unknown whole-book percentage stays unknown." The SAME response then calls native deliver_message with these complete arguments:
+{"delivery_id":"example-annotation","message":{"format":{"id":"morphz.response.annotations","version":"1"},"content":{"encoding":"json","value":{"execution":{"title":"Explain reading-progress records","result":"Explained actual read ranges and the limits of a whole-book percentage."}}}}}
+Here message.format and message.content are siblings. format is NEVER inside content or content.value. The example's result is only a description of the separately emitted answer; it is not that answer, a substitute body, or a request for another turn. The assistant text is not printed as part of this argument object. For actual work, replace only the annotation value with truthful progress/calls/observations as applicable; keep this same message structure. The example delivery_id is merely a companion ID, never the Runtime-bound return ID.
 For a value-returning response, produce the complete return value BEFORE the companion annotations call, not after its receipt. Emit the complete user-visible answer as an assistant commentary/text message FIRST, then emit the independent annotations call. For a Provider that distinguishes commentary from final-channel text, that commentary is the answer itself, not a progress announcement: Runtime accepts it as the implicit return when only companion communication accompanies it. Do not reserve the answer for a final-channel item after a tool receipt, and do not stop after the text before emitting annotations. This is ONE Provider response, with no subsequent tool-result turn for composing the answer. An annotations-only function call contains no answer, even if its result field claims one was given. If deliberately choosing the equivalent explicit native return, BOTH the exact bound return and its separate companion must be present in this same response, never one now and another after a receipt. This body-first requirement does not require a final answer while real work is still pending: a working response carries its work calls and the same enabled companion, not a premature bound return.
 When annotations_enabled=false, return the normal body without an annotations message. Tool names, schemas, and order stay the same. Do not alter business-tool arguments to add metadata.
 Annotations enabled is a generation requirement on working responses too, not just on the final answer. Use the SAME registered format and companion channel at every level. For EVERY actual work/control call, including recall, context_tx and delegation, include exactly one calls entry: calls:[{index:zero-based index in this response's complete native call array,intent:"what this step does and why"}]. Do not annotate communication calls or no_reply as work. Include these entries in this SAME response, not in a later final answer. Call indexes are local to the current response: never repeat an earlier response's calls entry. If this response contains only the answer and communication, omit calls or use calls:[]; describe earlier tool results using their supplied observation refs instead. A working companion may contain calls without an execution.result; never postpone it until a complete user answer exists. The title covers the entire current Execution, not only the latest tool. On working responses execution.progress describes current work; execution.result cannot establish completion. When interpreting or relying on a supplied work observation, include its observations:[{ref:"actual supplied ref",result:"what the observed result establishes"}] in the same companion. Use only refs actually supplied to this request, do not invent a future result, and do not restate irrelevant observations. Runtime owns all routes, scopes, acceptance and completion facts.
@@ -454,6 +457,41 @@ mod tests {
         assert!(CONTRACT.contains("Call indexes are local to the current response"));
         assert!(CONTRACT.contains("omit calls or use calls:[]"));
         assert!(!CONTRACT.contains("prefer two deliver_message"));
+    }
+
+    #[test]
+    fn model_contract_example_is_a_valid_companion_not_a_body_or_text_protocol() {
+        let arguments = CONTRACT
+            .lines()
+            .find(|line| line.starts_with("{\"delivery_id\":\"example-annotation\""))
+            .expect("model-facing example must contain complete native arguments");
+        let b = binding();
+        let delivery = parse_delivery(arguments, &Limits::default()).unwrap();
+        assert_ne!(delivery.delivery_id, b.delivery_id);
+        assert_eq!(delivery.message.format.id, ANNOTATIONS_FORMAT);
+        let response = Response {
+            content: "The real answer stays in the assistant text channel.".into(),
+            tool_calls: vec![ToolCallRepr {
+                id: "example-call".into(),
+                r#type: "function".into(),
+                func_name: "deliver_message".into(),
+                arguments: arguments.into(),
+            }],
+        };
+        let parts = split_response(&response, &b).unwrap();
+        assert_eq!(parts.response.content, response.content);
+        assert!(parts.body_message.is_none());
+        assert!(parts.response.tool_calls.is_empty());
+        assert_eq!(parts.annotation_messages.len(), 1);
+        assert!(parts.diagnostics.is_empty());
+        let missing_body = Response {
+            content: String::new(),
+            ..response
+        };
+        assert_eq!(
+            split_response(&missing_body, &b).unwrap_err().code,
+            "invalid_delivery_contract"
+        );
     }
     #[test]
     fn publications_and_annotation_omission_do_not_change_return_semantics() {

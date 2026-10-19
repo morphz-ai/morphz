@@ -212,7 +212,7 @@ async function desktopFixture(page: Page, host: Host) {
   return { ...state, state, input, settings };
 }
 
-test("执行设置以强度、模型和滑轨为主，审批与目录同排；390×540 长模型名不撑破弹层", async ({
+test("模型在首行、强度紧邻滑轨，审批与目录同排；390×540 长模型名不撑破弹层", async ({
   page,
   messageHost,
 }, info) => {
@@ -287,13 +287,11 @@ test("执行设置以强度、模型和滑轨为主，审批与目录同排；39
         directory: rect(".composer-directory-settings > summary"),
       };
     });
-    expect(layout.heading.bottom).toBeLessThanOrEqual(layout.model.top + 1);
-    expect(layout.model.bottom).toBeLessThanOrEqual(layout.rail.top + 1);
+    expect(layout.model.bottom).toBeLessThanOrEqual(layout.heading.top);
+    expect(layout.heading.bottom).toBeLessThanOrEqual(layout.rail.top);
+    expect(layout.rail.top - layout.heading.bottom).toBeLessThanOrEqual(4);
     expect(layout.rail.bottom).toBeLessThanOrEqual(layout.footer.top + 1);
     expect(layout.rail.width).toBeGreaterThan(200);
-    expect(
-      Math.abs(layout.model.centerX - layout.heading.centerX),
-    ).toBeLessThanOrEqual(1);
     expect(
       Math.abs(layout.approval.centerY - layout.directory.centerY),
     ).toBeLessThanOrEqual(1);
@@ -305,10 +303,16 @@ test("执行设置以强度、模型和滑轨为主，审批与目录同排；39
       layout.footer.bottom -
         Math.max(layout.approval.bottom, layout.directory.bottom),
     ).toBeLessThanOrEqual(2);
-    // Duplicate field names remain available to assistive technology, but
-    // cannot take a permanent text column from the primary/secondary controls.
+    // Model is an explicitly labelled selector, separate from the slider.
+    await expect(modelRow.locator(":scope > span")).toHaveText("模型");
+    await expect(modelRow.locator(":scope > span")).toHaveCSS(
+      "font-size",
+      "13px",
+    );
+    await expect(
+      settings.locator(".composer-reasoning-control select"),
+    ).toHaveCount(0);
     for (const label of [
-      modelRow.locator(".visually-hidden"),
       approval.locator("span.visually-hidden"),
       directory.locator(".visually-hidden"),
     ]) {
@@ -317,11 +321,14 @@ test("执行设置以强度、模型和滑轨为主，审批与目录同排；39
       await expect(label).toHaveCSS("width", "1px");
     }
     await expect(model).toHaveAttribute("title", new RegExp("TEST 很长"));
-    await expect(model).toHaveCSS("text-align-last", "center");
+    await expect(model).toHaveCSS("text-align-last", "right");
     await expect(model).toHaveCSS("text-overflow", "ellipsis");
     await model.selectOption(modelId);
     await expect(model).toHaveValue(modelId);
     await expect(input).toHaveValue("TEST 三行执行设置草稿，不发送");
+    await page.screenshot({
+      path: info.outputPath(`full-settings-${width}.png`),
+    });
     if (width === 390) {
       const overflow = await model.evaluate((element) => {
         const select = element as HTMLSelectElement;
@@ -537,14 +544,14 @@ test("最高推理在刷新和连续输入后保持；真实Host冻结参数一�
     window.dispatchEvent(new Event("morphz:models-changed"));
     window.dispatchEvent(new Event("focus"));
   });
-  await expect(summary).toHaveText("最高");
+  await expect(summary).toHaveText("max");
   await expect(input).toHaveValue("TEST 最高推理的持久草稿");
   await page.reload();
   const nextInput = await openInput(page);
   await expect(nextInput).toHaveValue("TEST 最高推理的持久草稿");
   await openComposerSettings(page);
   await expect(model).toHaveValue(modelId);
-  await expect(effort).toHaveAttribute("aria-valuetext", "最高");
+  await expect(effort).toHaveAttribute("aria-valuetext", "max");
   await page.keyboard.press("Escape");
   for (const [index, body] of [
     "TEST 第一次最高输入只记录不调用LLM",
@@ -556,7 +563,7 @@ test("最高推理在刷新和连续输入后保持；真实Host冻结参数一�
     await expect(nextInput).toBeEmpty();
     // This assertion reproduces the previous bug after local staging: the
     // empty content draft used to erase both model and reasoningEffort.
-    await expect(summary).toHaveText("最高");
+    await expect(summary).toHaveText("max");
     const frozen = messageHost.deliveries()[index]!;
     const submitted = state.calls
       .filter((call) => call.method === "platform.message")
@@ -579,7 +586,7 @@ test("最高推理在刷新和连续输入后保持；真实Host冻结参数一�
       await page.reload();
       await openInput(page);
       await expect(nextInput).toBeEmpty();
-      await expect(summary).toHaveText("最高");
+      await expect(summary).toHaveText("max");
     }
   }
   const admitted = structuredClone(messageHost.deliveries());
@@ -587,11 +594,11 @@ test("最高推理在刷新和连续输入后保持；真实Host冻结参数一�
   await settings
     .getByRole("button", { name: "恢复默认推理强度", exact: true })
     .click();
-  await expect(summary).toHaveText("默认");
+  await expect(summary).toHaveText("default");
   await page.keyboard.press("Escape");
   await page.reload();
   await openInput(page);
-  await expect(summary).toHaveText("默认");
+  await expect(summary).toHaveText("default");
   await nextInput.fill("TEST 主动恢复默认后的输入");
   await nextInput.press("Enter");
   await expect.poll(() => messageHost.deliveries().length).toBe(3);

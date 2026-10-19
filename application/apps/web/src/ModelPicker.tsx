@@ -119,11 +119,7 @@ export function ModelPicker({
       className={`model-picker${compact ? " model-picker-compact" : ""}${menu ? " model-picker-menu" : ""}`}
     >
       <label className={menu ? "composer-model-selector" : undefined}>
-        {menu ? (
-          <span className="visually-hidden">模型</span>
-        ) : (
-          !compact && label
-        )}
+        {menu ? <span>模型</span> : !compact && label}
         <select
           ref={select}
           aria-label={label}
@@ -182,7 +178,7 @@ export function ModelPicker({
   );
   return (
     <>
-      {!(reasoning && menu) && modelControl}
+      {modelControl}
       {reasoning && menu && (
         <ComposerReasoningControl
           value={reasoning.value}
@@ -194,7 +190,6 @@ export function ModelPicker({
             value ||
             defaultMenuLabel
           }
-          modelControl={modelControl}
           label={reasoning.label}
           title={reasoningTitle}
           disabled={disabled || !catalog?.reasoning}

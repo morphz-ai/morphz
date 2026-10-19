@@ -133,6 +133,15 @@ async fn ingress<S: RuntimeStore + ?Sized>(
     protocol: Protocol,
 ) -> Result<Event, TestError> {
     let event = input(route, suffix, protocol);
+    ingress_event(store, route, suffix, event).await
+}
+
+async fn ingress_event<S: RuntimeStore + ?Sized>(
+    store: &S,
+    route: &Route,
+    suffix: &str,
+    event: Event,
+) -> Result<Event, TestError> {
     match store
         .claim_message(
             &route.session,
@@ -637,9 +646,32 @@ async fn infer_inherits_actual_owner(store: Arc<dyn RuntimeStore>) -> Result<(),
     use morphz::plan_execution::{
         PlanArtifactBinding, PlanDriveReceipt, PlanExecutionCoordinator, PlanExecutionRoute,
     };
-    for mode in [Protocol::Off, Protocol::On] {
-        let route = create_route(store.as_ref(), &format!("infer-{}", mode.as_str())).await?;
-        let root = ingress(store.as_ref(), &route, "root", mode).await?;
+    for (mode, effort) in [Protocol::Off, Protocol::On].into_iter().flat_map(|mode| {
+        [
+            None,
+            Some("max"),
+            Some("low"),
+            Some("none"),
+            Some("provider_default"),
+        ]
+        .into_iter()
+        .map(move |effort| (mode, effort))
+    }) {
+        let route = create_route(
+            store.as_ref(),
+            &format!("infer-{}-{}", mode.as_str(), effort.unwrap_or("absent")),
+        )
+        .await?;
+        let mut event = input(&route, "root", mode);
+        if let Some(effort) = effort {
+            event
+                .payload
+                .insert("model_alias".into(), json!("task-model"));
+            event
+                .payload
+                .insert("reasoning_effort".into(), json!(effort));
+        }
+        let root = ingress_event(store.as_ref(), &route, "root", event).await?;
         let parent = claim_ingress(store.as_ref(), &route, &root, "parent")
             .await?
             .activation
@@ -693,6 +725,9 @@ async fn infer_inherits_actual_owner(store: Arc<dyn RuntimeStore>) -> Result<(),
         let child = store.get_thread_by_root(&request_event.id).await?.unwrap();
         assert_eq!(child.executor_kind, "plan_infer");
         assert_eq!(child.response_annotations, mode);
+        assert_eq!(child.model_alias, owner.model_alias);
+        assert_eq!(child.reasoning_effort.as_deref(), effort);
+        assert_eq!(owner.reasoning_effort.as_deref(), effort);
         assert_eq!(
             child.supervision.parent_thread_id.as_deref(),
             Some(owner.id.as_str())
@@ -700,6 +735,11 @@ async fn infer_inherits_actual_owner(store: Arc<dyn RuntimeStore>) -> Result<(),
         assert_eq!(child.initiating_principal_id, owner.initiating_principal_id);
         assert_eq!(child.session_id, owner.session_id);
         let persisted_request = persisted(store.as_ref(), &request_event).await?;
+        assert_eq!(
+            morphz::plan_execution::pending_infer_request_event(&plan, mode)?.payload,
+            persisted_request.payload,
+            "policy inheritance must not rewrite the immutable request or recovery protocol",
+        );
         assert_eq!(
             persisted_request
                 .payload
