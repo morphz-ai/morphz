@@ -660,3 +660,9 @@ incomplete 且无正文。后者不是完整响应，更不能拿它证明 Schem
 DeepSeek 阅读／跳转交付仍存在新的语法故障。不能宣称全部修复，也不
 据此擅自加入语法修补、额外模型请求或另一套交付协议；新的输出约束
 变更须先以实际链路证据形成完整方案再 review。
+
+最后追加的带惰性合成工具目录／tool_choice=none 的原生 json_object
+对照返回 completed、合法 JSON（329 output tokens）；仅证明小样本
+能力，不证明旧失败请求或全局保证。实际 Runtime HTTP 导入回归已逐次
+检查原生 format 与 tool_choice（含工作续接／off），三场景 3/3 再次
+通过。该出站验证同样不能替代真实长 Context 故障的端到端取证。

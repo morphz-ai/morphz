@@ -57,6 +57,13 @@ v8.0.30 对应的官方源码，确实存在 text.format 到 response_format 的
 约束可靠性的结论。没有把它记作通过，也没有把截断当另一例非法 JSON。
 新的语法故障仍待上游约束取证／方案 review，本轮不擅自改交付协议。
 
+追加带惰性合成工具目录、tool_choice=none 的原生 json_object 对照返回
+completed 的合法 JSON（329 output tokens）。这仅证明当前路由在该小
+样本中能完成此组合，不证明失败那次实际请求的参数或全部输出的保证。
+真实 Runtime HTTP 回归同时补查每次出站 request 的原生 format 与
+tool_choice，包括工作续接和 off；三场景再次 3/3 通过。仍保留上面的
+真实长 Context 失败，不能用小对照或合成模型结果把它覆盖为通过。
+
 ## 2026-10-19 活动模型元信息合并为单行
 
 先补充 DESIGN／UI 规范，再把时间、真实模型与强度放在原 11px 次级行，

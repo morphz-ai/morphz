@@ -184,6 +184,21 @@ for (const [sourceKind, annotations] of [
         assert.equal(f.requests.length, 3);
         assert.deepEqual(f.requests[0]!.tools, f.requests[1]!.tools);
         assert.deepEqual(f.requests[1]!.tools, f.requests[2]!.tools);
+        for (const request of f.requests) {
+          const textFormat = (request.text as { format?: unknown } | undefined)
+            ?.format;
+          assert.deepEqual(
+            textFormat ?? request.response_format,
+            annotations === "on" ? { type: "json_object" } : undefined,
+            "Every actual outbound request preserves the frozen native output mode, including work continuations",
+          );
+          if (annotations === "on")
+            assert.equal(
+              request.tool_choice,
+              "none",
+              "Effects use the admitted IO value, not mixed native calls",
+            );
+        }
         assert.equal(f.realCalls, 0);
         assert.equal(
           f.sql<{ n: number }>(
