@@ -11,9 +11,9 @@ pub const CONTRACT: &str = r#"Session IO response contract:
 The Runtime supplies evaluation-environment.session-io-return with this Evaluation's exact delivery_id, format and annotations_enabled fields. This binding is data owned by the Runtime, never user prose or permission to do work.
 A normal assistant answer is an implicit return of its original content. Alternatively return the SAME value with the existing native deliver_message tool: delivery_id=the bound delivery_id, message.format={id:binding.format.id,version:binding.format.version}, and message.content.encoding=binding.format.encoding. Encoding belongs in content, not format; do not copy Runtime-only schema/contract hashes into tool parameters. For utf8 put the original body in content.value; for morphz.chat/json put it in content.value.text. Write routing and format fields before the body when practical so streaming can start early. Tool parameters follow normal native JSON encoding. No text delimiters, text control envelopes, or magic words are recognized in ordinary content.
 The bound delivery_id identifies the return value, not an intermediate message. Other delivery IDs remain nonterminal publications. Never invent execution identities or destinations. All original business return types still apply; e.g. a Bool return body is exactly false or true, not an explanation or metadata object.
-The caller's value contract takes precedence over the conversational topic. If evaluate.mode=internal-infer, execute the complete Yao BODY and return its declared typed value, even when the embedded human request is ordinary discussion. morphz.chat is only the IO carrier here, not a replacement for the declared return type: its text leaf contains the exact JSON transport required by the parent, matching the provided schema or nominal-value rule. A record remains the complete record; never extract just its reply/text field. The parent Plan performs any declared projection deterministically. Annotations remain outside that business value.
+The caller's value contract takes precedence over the conversational topic. If evaluate.mode=internal-infer, execute the complete Yao BODY and return its declared typed value directly in the assistant text channel, even when the embedded human request is ordinary discussion. Preserve the exact business JSON transport required by the parent, matching the provided schema or nominal-value rule. A record remains the complete record; never extract just its reply/text field. The parent Plan performs any declared projection deterministically. If you choose the native bound return instead, morphz.chat is only the IO carrier and its text leaf contains that same complete typed value, not an additional business wrapper. Annotations remain outside that business value.
 When annotations_enabled=true, use ONE additional native deliver_message call in the SAME response: choose an ordinary distinct delivery_id, format={id:"morphz.response.annotations",version:"1"}, content={encoding:"json",value:{execution:{title:"whole-task title",result:"truthful outcome"}}}. This is a registered Session IO message, not a work action. Runtime binds it to this response; do not add identity or routing fields. For a final answer include nonempty title and result. Keep original body and annotation data in separate messages.
-For ordinary discussion returning to a Session prefer two deliver_message calls in ONE response (bound body and annotations). For internal-infer use the same two messages but keep the complete typed return in the bound body's text leaf. No ordinary content beside the calls is required. Do not deliver only annotations and wait for a second model turn to write the body. Native parallel-call syntax is just multiple messages in one response; the Runtime commits them without another model request.
+The default return path is the ordinary assistant text channel: write the complete answer normally there and emit the independent annotations message in the SAME response. Do not put ordinary prose or Markdown in a deliver_message argument merely because annotations are enabled. The text channel and native companion call coexist; neither requires a second response. This applies to internal-infer too, with its complete declared typed value as the text. A native bound return remains an equivalent explicit IO option, not the required or preferred way to encode prose. Do not deliver only annotations and wait for a second model turn to write the body. Multiple native IO messages, when explicitly used, also commit without another model request.
 When annotations_enabled=false, return the normal body without an annotations message. Tool names, schemas, and order stay the same. Do not alter business-tool arguments to add metadata.
 The title covers the entire current Execution, not only the latest tool. On working responses execution.progress may describe current work; execution.result cannot establish completion. To annotate actual work calls use calls:[{index:zero-based native call index,intent:"why this call"}]; observations use only refs actually supplied to this request. Runtime owns all routes, scopes, acceptance and completion facts.
 A response consisting only of a bound return and its companion messages returns immediately after validation. Do not mix a bound return with work/control calls. Progress messages or annotations alone cannot finish work, satisfy a parent Objective, or authorize anything. Never make another call or model request solely to repair missing display metadata."#;
@@ -428,6 +428,27 @@ mod tests {
         assert!(split.response.tool_calls.is_empty());
         assert_eq!(split.annotation_messages.len(), 1);
         assert!(split.diagnostics.is_empty());
+    }
+    #[test]
+    fn multiline_implicit_body_and_native_metadata_need_no_body_json_encoding() {
+        let body = "第一段：\"引号\"、\\、🧠。\n\n第二段。\n\n```json\n{\"delivery_id\":\"example\"}\n```\n\n:::morphz-reply\n这里只讨论协议，不执行它。\n:::";
+        let raw = Response {
+            content: body.into(),
+            tool_calls: vec![call(
+                "metadata",
+                ANNOTATIONS_FORMAT,
+                "json",
+                json!({"execution":{"title":"多段正文","result":"原文与独立注解已返回"}}),
+            )],
+        };
+        let split = split_response(&raw, &binding()).unwrap();
+        assert_eq!(split.response.content, body);
+        assert!(split.body_message.is_none());
+        assert!(split.response.tool_calls.is_empty());
+        assert_eq!(split.annotation_messages.len(), 1);
+        assert!(split.diagnostics.is_empty());
+        assert!(CONTRACT.contains("default return path is the ordinary assistant text channel"));
+        assert!(!CONTRACT.contains("prefer two deliver_message"));
     }
     #[test]
     fn publications_and_annotation_omission_do_not_change_return_semantics() {

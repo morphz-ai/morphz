@@ -441,6 +441,7 @@ test(
       metadata: Record<string, unknown>;
       text?: boolean;
       valid?: boolean;
+      body?: string;
     }[] = [
       { name: "missing annotations", metadata: {} },
       {
@@ -479,6 +480,20 @@ test(
             execution: {
               title: "TEST 普通文本注解",
               result: "TEST 正文已返回",
+            },
+          },
+        },
+      },
+      {
+        name: "multiline Markdown stays in implicit content with independent annotations",
+        text: true,
+        valid: true,
+        body: '第一段："引号"、反斜线 \\ 和中文 🧠。\n\n第二段保留真实换行。\n\n```json\n{"delivery_id":"example"}\n```\n\n:::morphz-reply\n这里是讨论协议的正文，不是可执行消息。\n:::',
+        metadata: {
+          annotations: {
+            execution: {
+              title: "TEST 多段正文独立注解",
+              result: "TEST 原文已完整返回，未包裹为工具参数",
             },
           },
         },
@@ -523,7 +538,7 @@ test(
           const request = await f.waitRequest(marker);
           assert.ok(profileFixtureReturnBinding(request)?.annotations_enabled);
           assert.equal(f.requests.length, 1);
-          const candidate = "TEST VALID BODY MUST REMAIN VISIBLE";
+          const candidate = entry.body ?? "TEST VALID BODY MUST REMAIN VISIBLE";
           const binding = profileFixtureReturnBinding(request)!;
           const nativeMessages = [];
           if (!entry.text)
