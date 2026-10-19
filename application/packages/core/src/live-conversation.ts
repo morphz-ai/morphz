@@ -20,6 +20,9 @@ export const liveMessageSchema = z.object({
   conversationId: z.string(),
   artifactId: z.string().nullable(),
   inputId: z.string().nullable(),
+  /** Host-verified excerpt of this input; independent of timeline pagination.
+   * Disposable presentation only, never identity, authority or model output. */
+  inputPreview: z.string().min(1).max(101).optional(),
   rootId: z.string().nullable(),
   createdAt: z.string(),
   text: z.string(),

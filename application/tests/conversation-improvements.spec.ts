@@ -275,12 +275,15 @@ test("查找失败可以重试，过期查询不覆盖新结果，预览不会�
   expect(f.writes).toEqual([]);
 });
 
-test("旧消息来源直接回填历史，使用精确 ID 且不误开活动", async ({ page }) => {
+test("分页外的回复先显示真实来源摘要，点击才回填历史，使用精确 ID 且不误开活动", async ({
+  page,
+}, info) => {
   const f = await setup(page);
   f.runtime.messages.push({
     id: "late-older-reply",
     ...f.scope,
     inputId: f.old.id,
+    inputPreview: f.old.body,
     artifactId: null,
     kind: "reply",
     text: "TEST 对旧输入的迟到回复",
@@ -289,10 +292,18 @@ test("旧消息来源直接回填历史，使用精确 ID 且不误开活动", a
   await f.refresh();
   const input = await openInput(page);
   await input.fill("TEST 来源跳转保留的草稿");
-  await page
+  const reference = page
     .locator('[data-message-id="late-older-reply"]')
-    .getByRole("button", { name: "回复：原消息", exact: true })
-    .click();
+    .getByRole("button", { name: "回复：" + f.old.body, exact: true });
+  await expect(reference).toHaveText(f.old.body);
+  await expect(page.locator(`[data-message-id="${f.old.id}"]`)).toHaveCount(0);
+  expect(f.historyReads.some((url) => url.searchParams.has("beforeId"))).toBe(
+    false,
+  );
+  await page.screenshot({
+    path: info.outputPath("unloaded-input-reference.png"),
+  });
+  await reference.click();
   await expect(page.locator(`[data-message-id="${f.old.id}"]`)).toHaveAttribute(
     "data-quote-revealed",
     "true",

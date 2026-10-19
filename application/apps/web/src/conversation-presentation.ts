@@ -1,22 +1,6 @@
 import type { ConversationRuntime } from "../../../packages/core/src/conversation.js";
 import type { LiveMessage } from "../../../packages/core/src/live-conversation.js";
-import type { RecordedInput } from "../../../packages/core/src/model.js";
-
-export function messageSourceSummary(input: RecordedInput | undefined): string {
-  if (!input) return "原消息";
-  const text =
-    input.body.trim() ||
-    input.textQuotes
-      ?.map((q) => q.comment.trim())
-      .filter(Boolean)
-      .join("；") ||
-    input.textQuotes?.map((q) => q.text.trim()).join("；") ||
-    input.attachments?.map((a) => a.name).join("、") ||
-    "原消息";
-  const compact = text.replace(/\s+/g, " ").trim();
-  const chars = Array.from(compact);
-  return chars.length > 50 ? chars.slice(0, 50).join("") + "…" : compact;
-}
+export { messageSourceSummary } from "../../../packages/core/src/message-source.js";
 
 /** Only actual input-bound receipts may name a stage. Silence is not proof
  * of model reasoning, retrieval, tool execution, or percentage progress. */

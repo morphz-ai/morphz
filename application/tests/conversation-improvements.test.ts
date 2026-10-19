@@ -120,7 +120,24 @@ test("来源摘要优先正文或批注评论，不拿原文盖过人的问题�
     ),
     "引用原文",
   );
-  assert.equal(messageSourceSummary(undefined), "原消息");
+  assert.equal(messageSourceSummary(undefined), null);
+  assert.equal(messageSourceSummary(input({ body: " \n " })), null);
+  assert.equal(
+    messageSourceSummary(
+      input({
+        body: "",
+        textQuotes: [{ ...quote, text: "", comment: "" }],
+        attachments: [
+          {
+            assetId: "a".repeat(64),
+            name: "测试附件.pdf",
+            mime: "application/pdf",
+          },
+        ],
+      }),
+    ),
+    "测试附件.pdf",
+  );
   assert.equal(
     messageSourceSummary(input({ body: "🙂".repeat(51) })),
     "🙂".repeat(50) + "…",

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { HostFailureReporter } from "./host-diagnostics.js";
 import { objectiveWaitKinds } from "./objective-wait-projection.js";
 import { threadWaitProjection } from "./thread-wait-projection.js";
+import { messageSourceSummary } from "../../core/src/message-source.js";
 import { objectiveControlSchema } from "../../core/src/objective-control.js";
 import {
   terminalCatalogSchema,
@@ -1304,6 +1305,7 @@ export class RuntimeBridge {
               !raw.id.startsWith("stream:") &&
               !raw.id.startsWith("tool:") &&
               (raw.kind === "reply" || raw.kind === "error");
+            const inputPreview = messageSourceSummary(source);
             return [
               {
                 ...raw,
@@ -1328,6 +1330,7 @@ export class RuntimeBridge {
                 conversationId: source.conversationId,
                 artifactId: null,
                 inputId: route.inputId,
+                ...(inputPreview ? { inputPreview } : {}),
                 rootId: raw.rootId!,
               },
             ];
@@ -4482,6 +4485,7 @@ export class RuntimeBridge {
     const publicOutput = item.event.topic === "runtime/model_public_output";
     const threadId = payloadString(item.event, "thread_id");
     const failure = runtimeMessageFailureFromEvent(item.event);
+    const inputPreview = messageSourceSummary(source);
     const message: ConversationRuntime["messages"][number] = {
       id: evaluation
         ? evaluationMessageId(
@@ -4496,6 +4500,7 @@ export class RuntimeBridge {
       conversationId: source.conversationId,
       artifactId: null,
       inputId,
+      ...(inputPreview ? { inputPreview } : {}),
       rootId: item.root_turn_id,
       ...(threadId ? { threadId } : {}),
       ...(failure ? { failure } : {}),

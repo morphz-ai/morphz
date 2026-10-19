@@ -657,7 +657,9 @@ export function Conversation({
                 previous?.output?.inputId ??
                 previous?.scriptOutput?.inputId;
               const replySourceText = reply?.inputId
-                ? messageSourceSummary(stateInputById.get(reply.inputId))
+                ? (messageSourceSummary(stateInputById.get(reply.inputId)) ??
+                  reply.inputPreview ??
+                  "来源内容暂不可用")
                 : "";
               const startsTurn =
                 !!previous &&

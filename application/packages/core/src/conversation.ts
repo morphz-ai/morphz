@@ -186,6 +186,7 @@ export const conversationRuntimeSchema = z.object({
       conversationId: z.string().optional(),
       artifactId: z.string().nullable(),
       inputId: z.string().nullable().optional(),
+      inputPreview: z.string().min(1).max(101).optional(),
       rootId: z.string().nullable().optional(),
       publicationKey: z.string().optional(),
       modelAttemptId: z.string().optional(),

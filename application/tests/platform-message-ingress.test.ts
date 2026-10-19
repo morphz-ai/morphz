@@ -1091,6 +1091,12 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       limit: 1,
     });
     assert.ok(latestPage.nextCursor);
+    assert.deepEqual(latestPage.inputs, []);
+    assert.equal(
+      latestPage.runtime.messages[0]?.inputPreview,
+      "从新项目发送",
+      "an authorized reply carries its exact input excerpt even outside the input's history page",
+    );
     const previousPage = await session().platformConversationHistory({
       ...historyScope,
       before: latestPage.nextCursor!,
@@ -1172,10 +1178,17 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     );
     assert.deepEqual(remoteHistory.runtime.deliveries, []);
     const remoteFrames: string[][] = [];
+    const remotePreviews: Array<string | undefined> = [];
     const stopRemoteStream = await secondRuntime.observePlatformConversation(
       sourceScope,
       localAccess,
-      (value) => remoteFrames.push(value.messages.map((item) => item.text)),
+      (value) => {
+        remoteFrames.push(value.messages.map((item) => item.text));
+        remotePreviews.push(
+          value.messages.find((item) => item.inputId === command.commandId)
+            ?.inputPreview,
+        );
+      },
       () => {},
     );
     const remoteFrameDeadline = Date.now() + 4000;
@@ -1185,6 +1198,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     )
       await new Promise((resolve) => setTimeout(resolve, 25));
     assert.ok(remoteFrames.at(-1)?.includes("回复 从新项目发送"));
+    assert.equal(remotePreviews.at(-1), "从新项目发送");
     stopRemoteStream();
     assert.deepEqual(
       await secondRuntime.platformMessageSource(
@@ -1285,6 +1299,10 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     );
     assert.ok(
       goalMessages.every((message) => message.inputId === command.commandId),
+    );
+    assert.ok(
+      goalMessages.every((message) => message.inputPreview === "从新项目发送"),
+      "scheduled/goal replies use Runtime's proven original input, not schedule prose or current UI",
     );
     assert.equal(
       goalMessages.find((message) => message.kind === "reply")?.modelAttemptId,
