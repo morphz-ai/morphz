@@ -27,6 +27,7 @@ import {
 } from "../../../packages/application/src/application.js";
 import type { WorkspaceStore } from "../../../packages/application/src/store.js";
 import type { AgentTools } from "../../../packages/application/src/agent-tools.js";
+import { hostToolValidationFailure } from "../../../packages/application/src/host-tool-validation.js";
 import { cognitiveAppApplicationRoutes } from "../../../packages/core/src/application-api.js";
 import { cognitiveAppViewApplicationRoutes } from "../../../packages/core/src/cognitive-app-view-methods.js";
 import { parseCognitiveAppViewResponse } from "../../../packages/core/src/cognitive-app-view-api.js";
@@ -257,11 +258,7 @@ export function createAppServer(
               message: error.message,
             });
           else if (error instanceof ZodError)
-            json(res, 200, {
-              ok: false,
-              code: "invalid",
-              message: "工具参数无效。",
-            });
+            json(res, 200, hostToolValidationFailure(error));
           else throw error;
         }
         return;

@@ -819,11 +819,14 @@ test("Host HTTP rejects UI credentials, browser origins and missing service cred
       }),
     });
     assert.equal(retired.status, 200);
-    assert.deepEqual(await retired.json(), {
-      ok: false,
-      code: "invalid",
-      message: "工具参数无效。",
-    });
+    const rejected = (await retired.json()) as {
+      ok: boolean;
+      code: string;
+      issues: { path: string[]; code: string }[];
+    };
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.code, "invalid");
+    assert.ok(rejected.issues.some((issue) => issue.path.join(".") === "tool"));
     assert.equal(
       (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
         .length,

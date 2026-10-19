@@ -181,6 +181,67 @@ for (const backend of ["sqlite", "postgres"] as const) {
           route,
         );
         assert.equal(contents.sections.length, 2);
+        const readingDescription = await h.call<{
+          operation: { parameters: { properties: Record<string, unknown> } };
+        }>(
+          {
+            action: "operations",
+            operations: { action: "describe", operationId: "reader.read" },
+          },
+          route,
+        );
+        assert.deepEqual(
+          Object.keys(
+            readingDescription.operation.parameters.properties,
+          ).sort(),
+          ["artifactId", "revision", "sectionId", "offset", "limit"].sort(),
+        );
+        const reading = await h.call<{ ok: boolean; text: string }>(
+          {
+            action: "operations",
+            operations: {
+              action: "invoke",
+              operationId: "reader.read",
+              parameters: {
+                artifactId: imported.entityId,
+                revision: 1,
+                sectionId: contents.sections[1]!.id,
+                offset: 0,
+                limit: 100,
+              },
+            },
+          },
+          route,
+        );
+        assert.equal(reading.ok, true);
+        assert.ok(reading.text.length > 0);
+        for (const bad of [
+          {
+            action: "read",
+            artifactId: imported.entityId,
+            revision: 1,
+            sectionId: "section-16",
+            start: 7900,
+            limit: 11000,
+          },
+          {
+            action: "reader.read",
+            artifactId: imported.entityId,
+            artifactRevision: 1,
+            sectionId: "section-17",
+            start: 12500,
+            end: 16500,
+          },
+          {
+            action: "read",
+            artifactId: imported.entityId,
+            revision: 1,
+            sectionId: "section-17",
+            offset: 0,
+            limit: 4000,
+          },
+        ])
+          await assert.rejects(h.call(bad, route));
         const navigationDescription = await h.call<{
           operation: { parameters: unknown };
         }>(

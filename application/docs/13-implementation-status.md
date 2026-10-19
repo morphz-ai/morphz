@@ -1,5 +1,22 @@
 # 桌面能力实施记录
 
+## 2026-10-19 已导入书籍的 Agent 读取契约与错误反馈
+
+原应用实际五个失败 Job 的 JSON 均可读取，但调用使用了普通顶层 `read`
+加 Reader 字段，或把 `reader.read` 当顶层 action；还混用了 location 的
+start／end、read 的 offset／limit，其中一次 limit=11000。请求在 Host
+schema 准入时被拒，尚未读取书籍，不是书架丢失或原文权限不足。两种
+Host 通道原来统一丢弃 Zod 字段信息，只返回「工具参数无效」，导致连续
+猜参不能自纠。不能把这一点归因于 Session IO 解析失败或书籍损坏。
+
+现明确 Reader operationId 与 Objects read 的边界，发现 schema 精确说明
+offset／limit 与 location.end 续读；不兼容转换错误字段，不放宽领域或
+权限校验。HTTP／Unix 复用有界字段级错误回执，保留字段路径、未知键、
+类型和数值范围，不回显参数值或堆栈，不自动重放调用或增加修复推理。
+SQLite／PostgreSQL 已导入原件的 canonical reader.read、实际错误参数
+拒绝、HTTP／Unix 反馈及资源隔离等正式专项 20/20；原应用真实模型与
+窗口交付在更新后另行记录，不拿夹具结果冒充。
+
 ## 2026-10-19 默认 workspace 阅读器导入与开发资源治理
 
 `reader.import` 新增 `source:{kind:"workspace",path:<相对路径>,sha256?}`。

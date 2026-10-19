@@ -498,6 +498,37 @@ test("真实 Unix 工具回调写入应用域；认证、拆帧、持久幂等�
     assert.equal(retired.ok, true);
     assert.equal(retired.value.ok, false);
     assert.equal(retired.value.code, "invalid");
+    // The five real 2026-10-19 reading failures were rejected before any
+    // book read, but used to lose all shape diagnostics in this transport.
+    const rejectedRead = await exchange({
+      protocol: 1,
+      token: manifest.token,
+      request: {
+        ...request,
+        arguments: {
+          action: "read",
+          artifactId: "TEST-book",
+          revision: 1,
+          sectionId: "section-16",
+          start: 7900,
+          limit: 11000,
+          privateValue: "DO_NOT_ECHO_ARGUMENT_CONTENT",
+        },
+      },
+    });
+    assert.equal(rejectedRead.value.code, "invalid");
+    assert.match(rejectedRead.value.message, /list／describe/);
+    assert.ok(
+      rejectedRead.value.issues.some(
+        (issue: any) =>
+          issue.path.join(".") === "arguments" &&
+          issue.keys.includes("sectionId") &&
+          issue.keys.includes("start"),
+      ),
+    );
+    assert.ok(
+      !JSON.stringify(rejectedRead).includes("DO_NOT_ECHO_ARGUMENT_CONTENT"),
+    );
     assert.equal(
       (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
         .length,

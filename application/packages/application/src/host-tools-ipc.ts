@@ -22,6 +22,7 @@ import { workInputFormats } from "./session-io.js";
 import { RuntimeInputSourceError } from "./runtime-input-evidence.js";
 import { PlatformStorageError } from "../../platform/src/store.js";
 import { ReaderStorageError } from "../../reader/src/store.js";
+import { hostToolValidationFailure } from "./host-tool-validation.js";
 
 const maxRequest = 4 * 1024 * 1024,
   maxResponse = 2 * 1024 * 1024;
@@ -238,7 +239,7 @@ export async function listenLocalHostTools(
             send({
               protocol: 1,
               ok: true,
-              value: { ok: false, code: "invalid", message: "工具参数无效。" },
+              value: hostToolValidationFailure(error),
             });
           else
             send({

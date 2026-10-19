@@ -91,6 +91,15 @@ Runtime 根据当前发起 Principal、活动 Job／call、冻结执行节点、
 不存在静默降级、扩权或再次调用模型搬运原字节。workspace 本身不依赖
 附件／目录选择声明；已准入的事项执行仍使用其原项目和发起 Human 权限。
 
+Reader 的领域读取通过原 `operations` 入口发现并调用：`reader.read` 是
+operationId，不是顶层 action。`parameters` 使用目录返回的 artifactId、
+revision、sectionId，以及 offset／limit（最多 8000）；续读以返回的
+location.end 为下一次 offset。顶层 `read` 属于 Objects，不能把 Reader
+的 sectionId／start／end 混入其中。两条业务路径不互相猜测或兼容转换。
+Host 的 HTTP／Unix 回调对无效参数返回同一有界字段级校验回执，包含
+路径、未声明字段和类型／范围，不回显参数值或堆栈。参数错误不执行业务；
+Agent 可以按实际 schema 纠正调用，不能因隐藏校验细节而反复盲试。
+
 本阶段不增加 Host 权限业务表、Renderer 数据库、pending 用户权限副本或全空间快照。唯一新增持久字段是既有 runtime_sessions 传输账本中可选的 permissionInitializationRequired：Host 负责此首建安全初始化回执，按原 Session 主键关联；确认 Runtime Session 不存在后、创建请求之前存为 true。继承状态必须先完成询问批准初始化及真实读回才能清除；重试／409 已读到 Runtime 的显式设置时尊重该实际权威，不用 Host 默认覆盖人的选择。创建响应未知、初始化失败和重启重试均不得在未核验时清掉或投递输入；先核验 Session／Principal 绑定，未初始化时设置只读。此标记不是实际权限权威，旧记录默认未要求重新初始化，不能据此重置既有选择；首建与其他 Runtime 客户端修改并非原子事务。沿用现有单行账本事务、读写和生命周期，不新增查询索引、业务删除路径或跨库双写；JSON 字段兼容读取，无 SQL schema 迁移。测试须覆盖共享默认会话和命名会话路由、原有预设再次发送保留、安全首建及响应未知后重启、授权／身份变化、只读无创建、真实默认目录、PATCH 失败／读回与完全访问确认；真实原窗口验收只读，不替用户更改审批或目录授权。实际实施与证据另记于实施记录。
 
 ## 应用生命周期

@@ -316,8 +316,23 @@ export const readerToolSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("read"),
       ...readerReadSchema.shape,
-      offset: z.number().int().nonnegative().default(0),
-      limit: z.number().int().min(1).max(8000).default(4000),
+      offset: z
+        .number()
+        .int()
+        .nonnegative()
+        .default(0)
+        .describe(
+          "章节内的原文字偏移；不是 location.start/end，也不是页面编号。",
+        ),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(8000)
+        .default(4000)
+        .describe(
+          "本次读取的最多字符数，范围 1–8000；hasMore 时以返回的 location.end 作为下一次 offset。",
+        ),
     })
     .strict(),
   z
