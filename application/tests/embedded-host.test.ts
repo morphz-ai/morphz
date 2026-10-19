@@ -529,6 +529,36 @@ test("真实 Unix 工具回调写入应用域；认证、拆帧、持久幂等�
     assert.ok(
       !JSON.stringify(rejectedRead).includes("DO_NOT_ECHO_ARGUMENT_CONTENT"),
     );
+    const discoveryArguments = JSON.parse(
+      rejectedRead.value.message.match(/\{"action":"operations".*?\}\}/)![0],
+    );
+    const discovered = await exchange({
+      protocol: 1,
+      token: manifest.token,
+      request: { ...request, arguments: discoveryArguments },
+    });
+    assert.equal(discovered.value.ok, true);
+    assert.ok(discovered.value.operations.length > 0);
+    for (const argumentsValue of [
+      { operations: [{ op: "describe", operationId: "reader.read" }] },
+      {
+        action: "operations",
+        operations: [{ action: "describe", operationId: "reader.read" }],
+      },
+    ]) {
+      const rejected = await exchange({
+        protocol: 1,
+        token: manifest.token,
+        request: { ...request, arguments: argumentsValue },
+      });
+      assert.equal(rejected.value.code, "invalid");
+      assert.match(rejected.value.message, /缺少必需字段|不能是数组/);
+      assert.ok(
+        rejected.value.message.includes(
+          '{"action":"operations","operations":{"action":"list"}}',
+        ),
+      );
+    }
     assert.equal(
       (await fixture.call<{ items: unknown[] }>({ action: "list" })).items
         .length,

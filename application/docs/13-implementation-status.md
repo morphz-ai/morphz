@@ -27,6 +27,17 @@ schema 准入时被拒，尚未读取书籍，不是书架丢失或原文权限�
 Host 通道原来统一丢弃 Zod 字段信息，只返回「工具参数无效」，导致连续
 猜参不能自纠。不能把这一点归因于 Session IO 解析失败或书籍损坏。
 
+首轮真实 DeepSeek 复验还暴露另一处：缺少 action 或把 operations 写成
+数组时，普通 JSON 对象会被错误地概括成「必须是普通 JSON」。现将缺少
+选择器字段和非对象形状分开诊断；定义与错误均给出同一现有 operations
+入口的准确 JSON 发现示例。Unix 实测会解析错误中的示例并真正调用成功，
+不靠猜字段、不添加兼容别名，也不擅自将错误请求转成业务执行。
+
+本轮首个原应用 DeepSeek／max 输入已取得 workspace 导入的持久回执，
+随后独立暴露 Session IO 注解中的多余 observations_note:null 被闭合 schema
+拒绝，读取提议未执行。原响应和已提交导入均保留。此项公共契约变更已
+请求用户 review；在获准前不放宽解析或称端到端盲审／阅读验收成功。
+
 现明确 Reader operationId 与 Objects read 的边界，发现 schema 精确说明
 offset／limit 与 location.end 续读；不兼容转换错误字段，不放宽领域或
 权限校验。HTTP／Unix 复用有界字段级错误回执，保留字段路径、未知键、

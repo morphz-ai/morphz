@@ -1,5 +1,8 @@
 import type { ZodError } from "zod";
 
+export const hostOperationInvocationGuide =
+  '先调用 {"action":"operations","operations":{"action":"list"}}，再按返回的 operationId 用同样的双层 action 调用 describe／invoke；operations 是单个对象，不是数组，parameters 只承载该操作的 schema 字段。';
+
 /** Describe the rejected shape, never echo argument values or a Zod stack.
  * Both Host transports preserve this same bounded, non-executing receipt. */
 export function hostToolValidationFailure(error: ZodError) {
@@ -8,7 +11,8 @@ export function hostToolValidationFailure(error: ZodError) {
     ok: false as const,
     code: "invalid" as const,
     message:
-      "工具参数不符合已声明契约，未执行操作。请先通过 operations 的 list／describe 读取确切 schema，再 invoke；不要混用顶层 action、operationId 和参数字段。",
+      "工具参数不符合已声明契约，未执行操作。请先 list／describe 读取确切 schema。" +
+      hostOperationInvocationGuide,
     issues: error.issues.slice(0, 8).map((issue) => ({
       path: issue.path.slice(0, 8).map(key),
       code: issue.code,
