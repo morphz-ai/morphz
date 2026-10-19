@@ -11222,7 +11222,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "exclusive",
-                        atom("one response may call schedule_tx exactly once and cannot combine it with physical tools, context_tx, or another control tool"),
+                        atom("one response may call schedule_tx exactly once and cannot combine it with physical tools, context_tx, or another control tool; the separate enabled Session IO annotations companion is communication and remains required"),
                     ),
                     pair(
                         "completion-inbox",
@@ -11324,6 +11324,7 @@ fn render_protocol() -> SExpr {
                                 atom("Mind must be changed first; at normal/notice pressure do not maintain merely to reduce size"),
                             ),
                             pair("tool", atom("context_tx")),
+                            pair("exclusive", atom("context_tx is the only work/control call; its separate enabled Session IO companion is communication, not another work call, and remains required in this same response")),
                             pair("content", atom("empty or visible progress, never a final reply")),
                             pair(
                                 "after-commit",
@@ -17736,6 +17737,8 @@ mod tests {
         assert!(rendered
             .contains("Bare (eval ...) or (infer ...) text is data, never executable control"));
         assert!(rendered.contains("return the original body by implicit Session IO chat"));
+        assert!(rendered.contains("context_tx is the only work/control call"));
+        assert!(rendered.contains("its separate enabled Session IO companion is communication"));
         assert!(
             rendered.contains("separate registered message in the same response, never in prose")
         );
