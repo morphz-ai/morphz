@@ -3107,7 +3107,7 @@ fn infer_request_event(
         )
     };
     if !response_annotations.is_off() {
-        evaluation_text.push_str("\n\nReturn the exact typed terminal body through the Runtime-owned Session IO return binding; ordinary content is its implicit form. With annotations enabled, submit a separate registered annotations message in the SAME native response. Keep title/result outside the typed business value. Do not add a JSON envelope to ordinary prose, a text delimiter, another model request, or a tool for final rewriting. This returns to the actual parent Plan, not a separate user chat or completion of parent work.");
+        evaluation_text.push_str("\n\nReturn the exact typed terminal body through the Runtime-owned Session IO return binding; ordinary content is its implicit form. Apply the enabled shared Session IO annotation contract on EVERY response, including intermediate work responses: each work call needs its intent in that same response's separate registered companion. Do not defer those intents to the final response or repeat earlier call indexes. For the terminal response, keep the title/result companion outside the complete typed business value. Do not add a JSON envelope to ordinary prose, a text delimiter, another model request, or a tool for final rewriting. This returns to the actual parent Plan, not a separate user chat or completion of parent work.");
     }
     let mut payload = serde_json::Map::from_iter([
         (
@@ -5574,6 +5574,15 @@ mod tests {
             "(infer (returns (Program Int (effects))) (seq (bind target (add 20 22)) target))"
         ));
         assert!(!instruction.contains("infer-request"));
+        let annotated_request =
+            infer_request_event(&parent, &infer, crate::response_annotations::Protocol::On)
+                .unwrap();
+        let annotated_instruction = annotated_request.payload["text"].as_str().unwrap();
+        assert!(
+            annotated_instruction.contains("EVERY response, including intermediate work responses")
+        );
+        assert!(annotated_instruction.contains("Do not defer those intents to the final response"));
+        assert!(!instruction.contains("EVERY response, including intermediate work responses"));
         let runtime_store: Arc<dyn RuntimeStore> = store.clone();
         let coordinator = PlanExecutionCoordinator::new(runtime_store, Arc::clone(&registry));
         let (waiting_parent, child) = match coordinator

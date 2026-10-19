@@ -9227,7 +9227,7 @@ fn render_evaluation_directive(
             pair(
                 "tool-gate",
                 atom(if internal_infer {
-                    "execute the complete typed Yao BODY with its declared calls and data dependencies, within actual Runtime authority. The embedded human topic is not a standalone chat request: return the complete declared value, not merely a prose field. Business-tool limits and body-only type rules do not forbid the offered Session IO communication channel: when session-io-return.annotations_enabled is true, deliver its separate registered annotations message alongside that value in the same response. Do not add work or a model request solely for annotations or final rewriting"
+                    "execute the complete typed Yao BODY with its declared calls and data dependencies, within actual Runtime authority. The embedded human topic is not a standalone chat request: return the complete declared value, not merely a prose field. Business-tool limits and body-only type rules do not forbid the offered Session IO communication channel. When session-io-return.annotations_enabled is true, apply the shared Session IO contract to EVERY response: intermediate work calls need their own same-response companion with current call intents; the final response needs its complete typed value and separate title/result companion. Do not postpone step annotations to the final response or repeat earlier call indexes there. Do not add work or a model request solely for annotations or final rewriting"
                 } else if thread_kind == "delivery" {
                     "delivery composer performs only semantic composition and delivery of complex results and cannot call physical tools; a reply using the active response encoding and enabled annotation contract atomically covers visible pending completions in this snapshot"
                 } else {
@@ -18085,6 +18085,43 @@ mod tests {
         assert!(rendered.contains("call objective_update(status=completed)"));
         assert!(rendered
             .contains("a reply using the active response encoding or no_reply ends only this Objective Evaluation slice"));
+    }
+
+    #[test]
+    fn internal_infer_directive_requires_annotations_on_working_responses_too() {
+        let evaluation = ActivationFocus {
+            activation_id: "infer-work".into(),
+            thread_id: Some("infer-thread".into()),
+            session_id: "infer-session".into(),
+            principal_id: Some("human".into()),
+            principal_first_seen_in_context: false,
+            principal_encounter_id: None,
+            root_turn_id: "infer-root".into(),
+            root_event_id: "infer-root".into(),
+            root_input_format: None,
+            thread_kind: "execution".into(),
+            root_kind: "chat/infer_request".into(),
+            root_preview: "typed body".into(),
+            trigger_event_id: "work-result".into(),
+            trigger_kind: "chat/tool_output".into(),
+            trigger_preview: "actual result".into(),
+            trigger_fallback_preview: None,
+            signal_batch: vec![],
+            objective_id: None,
+            objective_evaluation_id: None,
+            supervisor_kind: "runtime".into(),
+            supervisor_id: Some("event-router".into()),
+            model_alias: None,
+        };
+        let directive =
+            render_evaluation_directive(&evaluation, &[], &ContextReferences::default())
+                .to_string();
+        assert!(directive.contains("(mode internal-infer)"));
+        assert!(
+            directive.contains("intermediate work calls need their own same-response companion")
+        );
+        assert!(directive.contains("Do not postpone step annotations to the final response"));
+        assert!(directive.contains("without a second model rewrite"));
     }
 
     #[test]
