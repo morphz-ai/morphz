@@ -29,6 +29,17 @@ homepage = "https://morphz.ai"
 
 [workspace.lints]
 
+# One daily development/test configuration. Full variable/type DWARF is the
+# principal source of multi-GB unpacked object growth; line tables retain
+# filename/line backtraces, and incremental compilation stays enabled.
+[profile.dev]
+debug = "line-tables-only"
+incremental = true
+
+[profile.test]
+debug = "line-tables-only"
+incremental = true
+
 [patch."https://github.com/openai/codex"]
 # The Windows sandbox crate uses Codex OTEL only for optional setup metrics.
 # Morphz keeps its telemetry boundary independent and supplies the same tiny

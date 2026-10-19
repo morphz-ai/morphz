@@ -27,7 +27,6 @@ jobs:
           --health-retries 10
     env:
       CARGO_BUILD_JOBS: 2
-      CARGO_PROFILE_TEST_DEBUG: 0
       RUSTFLAGS: "-D warnings"
       PGPASSWORD: isolated-fixture
       MORPHZ_SESSION_IO_POSTGRES_BIN_DIR: /usr/lib/postgresql/16/bin

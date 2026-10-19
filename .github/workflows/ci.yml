@@ -33,6 +33,8 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Verify dependency audit refusal boundaries
         run: bash scripts/test_audit_rust_dependencies.sh
+      - name: Verify cache retention and real Cargo lock boundaries
+        run: python3 -m unittest discover -s scripts/tests -p test_prune_cargo_target.py -v
       - name: Audit Rust dependency advisories
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
@@ -60,11 +62,8 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     env:
-      # The workspace contains many evaluation binaries. Linking all of them
-      # concurrently with full test debuginfo can exhaust the hosted runner and
-      # crash LLD with SIGBUS before any test starts.
+      # Bound linker concurrency; dev/test debug settings live in Cargo.toml.
       CARGO_BUILD_JOBS: 2
-      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,7 +88,7 @@ jobs:
         # a deterministic order so hosted-runner scheduling cannot manufacture
         # database-lock and wall-clock failures between otherwise isolated
         # harnesses. Tests that verify concurrency still spawn it internally.
-        run: cargo test --all --verbose -- --test-threads=1
+        run: ./scripts/cargo-dev.sh test --all --verbose -- --test-threads=1
 
   postgres-conformance:
     name: PostgreSQL Runtime Store

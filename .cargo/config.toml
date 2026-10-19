@@ -1,0 +1,4 @@
+[build]
+# Bound simultaneous rustc/linker memory on development machines as well as CI.
+# Per-invocation CARGO_BUILD_JOBS remains Cargo's explicit operator override.
+jobs = 2

@@ -107,18 +107,39 @@ On macOS, Rust's fast `unpacked` debug-info mode leaves `*.rcgu.o` files beside 
 They make iterative linking faster, but frequent test and feature combinations can accumulate
 hundreds of gigabytes because Cargo does not impose a target-directory size limit.
 
-Inspect the repository cache after a long development or test session:
+Use one configuration for development and tests (`line-tables-only` debug information,
+incremental enabled). Do not add per-command `CARGO_PROFILE_DEV_DEBUG` /
+`CARGO_PROFILE_TEST_DEBUG` overrides. For full variable inspection use an explicitly named
+diagnostic profile rather than multiplying daily-cache variants.
+The workspace bounds build concurrency to two jobs in `.cargo/config.toml`, including
+ordinary direct Cargo invocations; an operator may explicitly override `CARGO_BUILD_JOBS`.
+
+The canonical development/test entrypoint forwards arguments and exit status to Cargo and
+performs bounded post-build collection at most once daily:
+
+```sh
+./scripts/cargo-dev.sh build --locked -p morphz --bin morphz
+./scripts/cargo-dev.sh test --locked -p morphz --lib
+```
+
+Inspect or explicitly collect superseded objects:
 
 ```sh
 ./scripts/prune-cargo-target.sh --dry-run
-./scripts/prune-cargo-target.sh
+./scripts/prune-cargo-target.sh --apply
 ```
 
-It removes unpacked debug objects and incremental sessions that have not been used for 24 hours.
-When `cargo-sweep` is installed it also removes stale hashed artifacts from the same retention
-window. Current-day incremental state, dependency libraries, metadata, fingerprints, and binaries
-remain available, so the hot edit/build loop stays incremental. The command refuses to run while
-Cargo or rustc is active, validates `CACHEDIR.TAG`, and reports target size and reclaimed space.
-Use `MORPHZ_CARGO_CACHE_MIN_AGE_MINUTES` to choose another retention window, or pass a Cargo target
-directory as the first argument. The former `prune-cargo-unpacked-debuginfo.sh` name remains as a
-compatibility entrypoint.
+Inspection is the default. Collection requires a tagged canonical Cargo target directory,
+no active compiler, and the same exclusive `.cargo-lock` used by Cargo. It only removes
+single-link loose macOS objects older than 24 hours, with a completed newer artifact,
+dependency record and fingerprint, absent from all current executable debug maps and the
+current library archive. Unknown formats, symlinks, partial builds and changed files fail
+closed. Incremental directories (of any age), dependencies, fingerprints, build scripts,
+executables and release products are never removed. There is no optional `cargo-sweep` or
+legacy cleanup alias. Automatic collection is capped at 16 GiB per daily run and is a no-op
+when another build is active. `--minimum-age-minutes` selects an explicit manual retention
+window; the final positional argument selects an exact target directory.
+
+The JSON report counts removed files and their allocated blocks, not guaranteed physical
+free space: APFS clones and local Time Machine snapshots can retain those blocks. Do not
+delete backup snapshots, running processes or user files as a side effect of Cargo cleanup.

@@ -179,7 +179,6 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_BUILD_JOBS: 2
-      CARGO_PROFILE_DEV_DEBUG: 0
     defaults:
       run:
         working-directory: application
@@ -196,7 +195,7 @@ jobs:
           node-version: 24.13.0
           cache: npm
           cache-dependency-path: application/package-lock.json
-      - run: cargo build --locked --manifest-path ../Cargo.toml -p morphz --bin morphz
+      - run: ../scripts/cargo-dev.sh build --locked --manifest-path ../Cargo.toml -p morphz --bin morphz
       - run: npm ci
       - run: npm run build
       - run: sudo apt-get update && sudo apt-get install -y postgresql
@@ -229,7 +228,6 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_BUILD_JOBS: 2
-      CARGO_PROFILE_DEV_DEBUG: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -243,7 +241,7 @@ jobs:
           node-version: 24.13.0
           cache: npm
           cache-dependency-path: application/package-lock.json
-      - run: cargo build --locked -p morphz --bin morphz
+      - run: ./scripts/cargo-dev.sh build --locked -p morphz --bin morphz
       - run: npm ci --prefix application
       - run: npm --prefix application run build
       - run: sudo apt-get update && sudo apt-get install -y postgresql
