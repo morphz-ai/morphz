@@ -1,6 +1,7 @@
 # 响应、返回值与注解：Session IO 当前契约
 
-2026-10-19。状态：实现、相关自动回归与真实 DeepSeek 已核验；原应用仍须核对实际运行版本。
+2026-10-19。状态：实现、相关自动回归、真实 DeepSeek／GPT 和原应用重开已核验；
+原 Runtime 实际运行代码提交 `3ae7cdfc6e3b`，原安装 App 已更新，数据与身份保留。
 核验范围和整库测试的已知缺口见 [Context 审查记录](./morphz_context_prompt_audit_2026-10-19.md)。旧载体的历史记录见
 [历史记录](./archive/2026-10-17-response-annotations-history.md)；
 本轮之前的完整文档可从 Git 的 d98f4e4c 版本读取，不构成当前执行接口。
