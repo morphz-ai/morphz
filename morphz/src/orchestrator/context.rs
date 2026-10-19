@@ -670,6 +670,8 @@ pub struct WakeSignal {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActivationFocus {
     pub activation_id: String,
+    /// Actual durable Thread identity, never a Session or root route alias.
+    pub thread_id: Option<String>,
     pub session_id: String,
     /// Runtime-authoritative identity for this physical Evaluation. This is
     /// copied from the durable Activation route (with legacy Event fallback),
@@ -9075,7 +9077,10 @@ fn render_evaluation_directive(
     objectives: &[ObjectiveRecord],
     references: &ContextReferences,
 ) -> SExpr {
-    let mode = if evaluation.objective_id.is_some() {
+    let internal_infer = evaluation.root_kind == "chat/infer_request";
+    let mode = if internal_infer {
+        "internal-infer"
+    } else if evaluation.objective_id.is_some() {
         "objective-evaluation"
     } else if evaluation.thread_kind == "delivery" {
         "completion-delivery"
@@ -9119,7 +9124,10 @@ fn render_evaluation_directive(
             "thread",
             vec![
                 pair("kind", atom("dialogue-turn")),
-                pair("id", atom(&evaluation.session_id)),
+                pair(
+                    "id",
+                    atom(evaluation.thread_id.as_deref().unwrap_or("unknown")),
+                ),
                 pair("turn", atom(&evaluation.root_turn_id)),
             ],
         )
@@ -9128,7 +9136,10 @@ fn render_evaluation_directive(
             "thread",
             vec![
                 pair("kind", atom("delivery")),
-                pair("id", atom(&evaluation.root_turn_id)),
+                pair(
+                    "id",
+                    atom(evaluation.thread_id.as_deref().unwrap_or("unknown")),
+                ),
                 pair("session", atom(&evaluation.session_id)),
             ],
         )
@@ -9137,14 +9148,19 @@ fn render_evaluation_directive(
             "thread",
             vec![
                 pair("kind", atom("execution")),
-                pair("id", atom(&evaluation.root_turn_id)),
+                pair(
+                    "id",
+                    atom(evaluation.thread_id.as_deref().unwrap_or("unknown")),
+                ),
                 pair("parent-dialogue", atom(&evaluation.session_id)),
                 pair("origin-turn", atom(&evaluation.root_turn_id)),
             ],
         )
     };
     let objective_bound = evaluation.objective_id.is_some();
-    let instruction = if thread_kind == "delivery" {
+    let instruction = if internal_infer {
+        "Evaluate the full typed Yao program in root-input. Return only its exact declared business value to the actual parent Plan through the Runtime-owned Session IO return binding; this is not another user-facing answer or completion of parent work. Annotation messages are separate and never part of the typed value. Do not infer unlisted parent state or call a model again merely to relay or annotate this value".to_string()
+    } else if thread_kind == "delivery" {
         "This is completion delivery. Read only delivery=pending/deferred results in kernel.thread-scheduler for this completion snapshot and combine them with latest concurrent state. You may merge this batch into one reply using the active response encoding and enabled annotation contract. Results completed after this evaluation began belong to the next batch. Do not call physical tools or repeat delivery=delivered results; call no_reply exclusively only when notification is truly unnecessary".to_string()
     } else if objective_bound {
         format!(
@@ -9153,7 +9169,9 @@ fn render_evaluation_directive(
     } else {
         "Evaluate only root-input now. The DialogueTurn Thread handles current dialogue, while a tool result continues only its owning Execution Thread. Shared Mind, history, other Threads, and unbound Objectives are background and must not replace root-input as the action target".to_string()
     };
-    let terminal = if objective_bound {
+    let terminal = if internal_infer {
+        "return the declared typed value to the parent Plan; the parent deterministically resumes its continuation or forwards a tail return without a second model rewrite"
+    } else if objective_bound {
         "a reply using the active response encoding or no_reply ends only this Objective Evaluation slice, never the durable Objective. Before claiming completion, call objective_update(status=completed) with authoritative evidence; for a definite wait, persist the exact wait condition"
     } else {
         "every DialogueTurn input batch must produce one coherent reply using the active response encoding and enabled annotation contract, to the current Session covering all consecutive inputs, unless silence is semantically intentional and no_reply is called explicitly"
@@ -9208,7 +9226,9 @@ fn render_evaluation_directive(
             pair("instruction", atom(instruction)),
             pair(
                 "tool-gate",
-                atom(if thread_kind == "delivery" {
+                atom(if internal_infer {
+                    "execute the complete typed Yao BODY with its declared calls and data dependencies, within actual Runtime authority. The embedded human topic is not a standalone chat request: return the complete declared value, not merely a prose field. Do not add work or a model request solely for annotations or final rewriting"
+                } else if thread_kind == "delivery" {
                     "delivery composer performs only semantic composition and delivery of complex results and cannot call physical tools; a reply using the active response encoding and enabled annotation contract atomically covers visible pending completions in this snapshot"
                 } else {
                     "call a work tool only when root-input truly requires a new external result that does not yet exist; when the current Encoding can answer directly, reply immediately using the active response encoding and enabled annotation contract and never act for an unbound Objective"
@@ -10931,7 +10951,7 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "physical-order",
-                        atom("protocol → evaluation-profile → inbox → observation-state → mind → session-directory → kernel → optional cognitive-capabilities → evaluation-environment → evaluate"),
+                        atom("protocol → optional custom → evaluation-profile → inbox → observation-state → mind → session-directory → kernel → optional application-format-definitions → optional cognitive-capabilities → evaluation-environment → evaluate"),
                     ),
                     pair(
                         "prefix",
@@ -10956,10 +10976,10 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair("ownership", atom("one Cognitive Context owns one shared Mind and multiple Sessions")),
                     pair("session-role", atom("a Session is an IO connection and progress boundary; it does not own a separate Mind")),
-                    pair("active-session", atom("the sole input source and ordinary-text reply target for this evaluation, not the only globally active Session in the Context")),
+                    pair("active-session", atom("the IO authority for this evaluation, not the only globally active Session and not the return destination of an internal infer value")),
                     pair("concurrency", atom("multiple Sessions in one Context may evaluate and reply concurrently")),
                     pair("shared-evidence", atom("inbox observations record a source session but belong to the current Context and may be reasoned over and reused across Sessions")),
-                    pair("reply-routing", atom("final response content and visible progress must correspond to kernel.active-session, using the active response format and its enabled annotation contract; use send_message for a visible message to another Session or session_signal for internal coordination that must activate it")),
+                    pair("reply-routing", atom("return the original value to the Runtime-bound caller: a user evaluation answers kernel.active-session; internal infer returns its exact typed value to the parent Plan. Visible publications remain scoped to active-session and are not returns. Use send_message for another Session or session_signal for internal coordination that must activate it")),
                     pair("write-serialization", atom("context_tx modifies the shared Mind; the Runtime serializes commits per Context and checks version")),
                 ],
             ),
@@ -11164,7 +11184,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "current-thread",
-                        atom("direct physical tool calls inherit the Thread in kernel.current-activation; any number of tool results return to that mailbox without creating a new Thread"),
+                        atom("direct physical tool calls inherit the actual durable Thread ID in evaluate.thread.id; root-turn.id is its causal route, not a Thread or Session ID. Tool results return to that mailbox without creating a new Thread"),
                     ),
                     pair(
                         "enqueue",
@@ -11245,10 +11265,10 @@ fn render_protocol() -> SExpr {
                     list(
                         "reply",
                         vec![
-                            pair("when", atom("the current user task is complete or a blocker must be explained")),
-                            pair("form", atom("a normal final response is an implicit reply, not a work call: always return the original body directly in assistant content, with no JSON envelope or metadata text header. With annotations enabled append the separate private :::morphz-reply metadata trailer specified by the response-annotation contract. Do not call a tool for this ordinary final response; the Runtime splits the trailer without a work Job or another model round. Missing or invalid display annotations do not invalidate the body; business return types still require exact validation. Bare (eval ...) or (infer ...) text remains reply data and is never admitted or executed")),
+                            pair("when", atom("this Evaluation has a return value for its actual caller; a user-facing return may report completion or a blocker, while an internal infer returns only its declared business type")),
+                            pair("form", atom("return the original body by implicit Session IO chat or the native deliver_message using evaluation-environment.session-io-return.delivery_id and its frozen format. If enabled, deliver annotations as a separate registered message in the same response, never in prose. A bound return plus companion IO ends without another model request; ordinary publications are not returns. Missing or invalid display annotations do not invalidate a valid body; exact business types and authorization still apply. Bare (eval ...) or (infer ...) text is data, never executable control")),
                             pair("execution", atom("execute every Tool or Yao program only through the explicit Function Call offered for that action")),
-                            pair("routing", atom("content is delivered automatically to kernel.active-session")),
+                            pair("routing", atom("the Runtime routes the return to its actual caller: root Session or parent Plan; an internal infer return is not an extra user answer or completion of parent work")),
                             pair("failed-delivery", atom("a session/io_state Observation with response-disposition failed or cancelled records Runtime delivery failure, not an answer to its caused-by request. For a subsequent continuation, resolve that unanswered request from the visible conversation before treating a resource's current position as a new task. A new explicit user request may supersede it. Failure never authorizes replaying physical operations or automatically resuming the previous Thread")),
                             pair("stream", atom("when the Provider supplies text deltas, the Runtime forwards them immediately to the active Session and persists terminal state only after the complete response succeeds")),
                             list(
@@ -11274,7 +11294,7 @@ fn render_protocol() -> SExpr {
                         vec![
                             pair("when", atom("the current Activation intentionally needs to send no message to the active Session")),
                             pair("tool", atom("no_reply")),
-                            pair("exclusive", atom("no_reply must be the only call, carry exactly one mode, and include no content")),
+                            pair("exclusive", atom("no_reply is the only work/control call, carries exactly one mode and has no body; it may accompany a separate enabled Session IO annotations message")),
                             pair("silent", atom("mode=silent intentionally ends the evaluation without sending a Session message")),
                             pair("wait", atom("mode=wait yields only while the Runtime can verify a background task, schedule, or pending event; process its result after a terminal event arrives")),
                             pair("scope", atom("does not complete an Objective or cancel background work")),
@@ -11289,7 +11309,7 @@ fn render_protocol() -> SExpr {
                                 atom("physical-tools + optional independent context_tx"),
                             ),
                             pair("content", atom("visible progress, not a final reply")),
-                            pair("after-tools", atom("the Runtime always calls the model again")),
+                            pair("after-tools", atom("physical work results continue the owning Evaluation; a Session IO bound return with companion annotations is delivery, not work, and requires no further model request")),
                             pair(
                                 "scope",
                                 atom("perform only actions required by the current explicit task; do not expand exploration autonomously"),
@@ -11321,7 +11341,7 @@ fn render_protocol() -> SExpr {
                             pair("tool", atom("schedule_tx")),
                             pair(
                                 "exclusive",
-                                atom("schedule_tx must be the response's only tool call"),
+                                atom("schedule_tx is the response's only work/control call; a separate enabled Session IO annotations message is not work"),
                             ),
                             pair(
                                 "after-commit",
@@ -11334,7 +11354,7 @@ fn render_protocol() -> SExpr {
                         vec![
                             pair(
                                 "when",
-                                atom("current-activation.thread.kind=delivery and one or more Execution Threads completed and await Session-facing delivery"),
+                                atom("evaluate.thread.kind=delivery and one or more Execution Threads completed and await Session-facing delivery"),
                             ),
                             pair(
                                 "input",
@@ -11355,7 +11375,7 @@ fn render_protocol() -> SExpr {
             list(
                 "session-output-contract",
                 vec![
-                    pair("current", atom("final response content replies only to kernel.active-session, using the active response format and its enabled annotation contract")),
+                    pair("current", atom("user-facing returns reply to kernel.active-session; internal infer returns its exact typed value to the parent Plan. Use the frozen Session IO return binding and separate annotation message; never redirect an internal value through send_message")),
                     pair("other-session-tool", atom("send_message {session_id,content}")),
                     pair("other-session", atom("send_message proactively delivers only to another Session of the same Agent; it neither ends the current Activation nor starts target Session evaluation")),
                     pair("coordination-tool", atom("session_signal {session_id,content}")),
@@ -11417,7 +11437,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "failure-boundary",
-                        atom("declare capability unavailable to the Session only after direct capability and on-demand Skill discovery both fail for the current intent"),
+                        atom("when list_skills is offered, declare capability unavailable only after direct capability and on-demand Skill discovery fail for this intent. When it is not offered, state the actual current capability boundary without inventing a catalog or unprovided tool"),
                     ),
                     pair(
                         "token-policy",
@@ -11458,7 +11478,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "reason-required-for",
-                        atom("retire unprotect unrelate rollback drop-checkpoint"),
+                        atom("retire retire-session unprotect unrelate rollback drop-checkpoint"),
                     ),
                     pair(
                         "checkpoint-policy",
@@ -12706,6 +12726,7 @@ fn activation_focus(
         .map(|event| bounded_event_preview(Some(event), 800));
     ActivationFocus {
         activation_id: activation.id.clone(),
+        thread_id: thread.map(|thread| thread.id.clone()),
         session_id: activation.session_id.clone(),
         principal_id: activation
             .initiating_principal_id
@@ -14853,7 +14874,9 @@ mod tests {
                 generation: thread.generation,
             };
             let normalized = response_annotations::normalize_response(&crate::llm::Response {
-                content: String::new(), tool_calls: vec![crate::llm::ToolCallRepr { id: format!("precise-call-{index}"), r#type: "function".into(), func_name: "read".into(), arguments: json!({"path":"safe", "_annotations":{"intent":"read", "execution":{"progress":"inspect"}}}).to_string() }],
+                content: String::new(), tool_calls: vec![crate::llm::ToolCallRepr { id: format!("precise-call-{index}"), r#type: "function".into(), func_name: "read".into(), arguments: json!({"path":"safe"}).to_string() },
+                crate::llm::ToolCallRepr { id:format!("precise-metadata-{index}"),r#type:"function".into(),func_name:"deliver_message".into(),
+                    arguments:json!({"delivery_id":"metadata","message":{"format":{"id":"morphz.response.annotations","version":"1"},"content":{"encoding":"json","value":{"execution":{"progress":"inspect"},"calls":[{"index":0,"intent":"read"}]}}}}).to_string() }],
             }, &NormalizationContext { protocol: Protocol::On, scope: Some(scope.clone()), producer: Some(Producer { event_id: id.clone(), attempt_id: attempt.clone(), sequence: None }), ..Default::default() }).unwrap();
             let clean_calls = normalized
                 .execution_response
@@ -17543,6 +17566,7 @@ mod tests {
         }];
         let evaluation = ActivationFocus {
             activation_id: "work-current".to_string(),
+            thread_id: Some("actual-test-thread".into()),
             session_id: "s1".to_string(),
             principal_id: None,
             principal_first_seen_in_context: false,
@@ -17703,24 +17727,30 @@ mod tests {
             "kernel.concurrent-activations is read-only state for other Execution and Delivery Threads"
         ));
         assert!(rendered.contains("(evaluate"));
-        assert!(rendered.contains("(thread (kind dialogue-turn) (id s1) (turn user:1))"));
+        assert!(rendered
+            .contains("(thread (kind dialogue-turn) (id actual-test-thread) (turn user:1))"));
         assert!(rendered.contains("(objective-binding none)"));
         assert!(rendered.contains("(root-input 先回答我)"));
         assert!(rendered.rfind("(evaluate").unwrap() > rendered.rfind("(inbox").unwrap());
         assert!(rendered.contains("(response-contract"));
-        assert!(rendered.contains(
-            "Bare (eval ...) or (infer ...) text remains reply data and is never admitted or executed"
-        ));
-        assert!(rendered.contains("always return the original body directly in assistant content"));
-        assert!(rendered.contains("no JSON envelope or metadata text header"));
+        assert!(rendered
+            .contains("Bare (eval ...) or (infer ...) text is data, never executable control"));
+        assert!(rendered.contains("return the original body by implicit Session IO chat"));
+        assert!(
+            rendered.contains("separate registered message in the same response, never in prose")
+        );
+        assert!(!rendered.contains(":::morphz-reply"));
         assert!(!rendered.contains("return non-empty ordinary assistant text with no tool calls"));
         assert!(rendered
             .contains("execute every Tool or Yao program only through the explicit Function Call"));
         assert!(rendered.contains("(skill-discovery-contract"));
         assert!(rendered.contains("(fallback"));
         assert!(rendered.contains("without binding to a platform, domain, or specific Skill name"));
+        assert!(rendered.contains(
+            "only after direct capability and on-demand Skill discovery fail for this intent"
+        ));
         assert!(rendered
-            .contains("only after direct capability and on-demand Skill discovery both fail"));
+            .contains("When it is not offered, state the actual current capability boundary"));
         assert!(rendered.contains("(reality-contract"));
         assert!(rendered.contains("(name reality-contract-v1)"));
         assert!(rendered.contains("(epistemic-contract"));
@@ -17924,6 +17954,7 @@ mod tests {
     fn final_dialogue_directive_keeps_objective_visible_but_read_only() {
         let evaluation = ActivationFocus {
             activation_id: "work-dialogue".to_string(),
+            thread_id: Some("actual-test-thread".into()),
             session_id: "session-a".to_string(),
             principal_id: Some("principal:a".to_string()),
             principal_first_seen_in_context: false,
@@ -17988,6 +18019,7 @@ mod tests {
     fn routed_user_wake_keeps_exact_objective_binding_and_convergence_contract() {
         let evaluation = ActivationFocus {
             activation_id: "work-objective-user-wake".to_string(),
+            thread_id: Some("actual-test-thread".into()),
             session_id: "session-a".to_string(),
             principal_id: Some("principal:a".to_string()),
             principal_first_seen_in_context: false,
@@ -18059,6 +18091,7 @@ mod tests {
     fn first_seen_principal_is_rendered_as_a_distinct_authenticated_arrival() {
         let evaluation = ActivationFocus {
             activation_id: "work-first-seen".to_string(),
+            thread_id: Some("actual-test-thread".into()),
             session_id: "session-first-seen".to_string(),
             principal_id: Some("principal:new".to_string()),
             principal_first_seen_in_context: true,
@@ -18429,6 +18462,7 @@ mod tests {
     fn control_plane_signal_does_not_expose_a_forgeable_observation_sequence() {
         let focus = ActivationFocus {
             activation_id: "work-control".to_string(),
+            thread_id: Some("actual-test-thread".into()),
             session_id: "session-control".to_string(),
             principal_id: None,
             principal_first_seen_in_context: false,

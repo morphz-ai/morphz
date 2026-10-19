@@ -606,7 +606,10 @@ export function workInputRequest(
           }),
     },
     delivery: {
-      accept_formats: [{ id: "morphz.chat", version: "1", encoding: "json" }],
+      accept_formats: [
+        { id: "morphz.chat", version: "1", encoding: "utf8" },
+        { id: "morphz.chat", version: "1", encoding: "json" },
+      ],
     },
   };
 }

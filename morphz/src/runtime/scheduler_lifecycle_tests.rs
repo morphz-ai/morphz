@@ -109,13 +109,7 @@ impl Client for ScriptedInterruptClient {
         match response {
             Some(response) => {
                 if response.content == "simulate-receipt-overflow" {
-                    assert_eq!(
-                        tools
-                            .iter()
-                            .map(|tool| tool.name.as_str())
-                            .collect::<Vec<_>>(),
-                        vec!["no_reply"]
-                    );
+                    assert!(["no_reply","deliver_message","schedule_tx"].iter().all(|name|tools.iter().any(|tool|tool.name==*name)),"receipt phase retains stable definitions; execution admission is independent");
                     return Err(Box::new(crate::llm::ModelFailure::new(
                         crate::llm::ModelFailureKind::ContextLimit,
                         "simulated provider context_length_exceeded during receipt",
@@ -123,24 +117,17 @@ impl Client for ScriptedInterruptClient {
                 }
                 for call in &response.tool_calls {
                     if call.id == "forbidden-receipt-control" {
-                        assert_eq!(
-                            tools
-                                .iter()
-                                .map(|tool| tool.name.as_str())
-                                .collect::<Vec<_>>(),
-                            vec!["no_reply"]
-                        );
+                        assert!(tools.iter().any(|tool|tool.name==call.func_name),"stable schema visibility does not grant receipt-phase execution permission");
                         continue;
                     }
                     assert!(tools.iter().any(|tool| tool.name == call.func_name));
                 }
                 if response.content.starts_with("The four replacement workers") {
-                    assert_eq!(
-                        tools
+                    assert!(
+                        ["no_reply", "deliver_message", "schedule_tx"]
                             .iter()
-                            .map(|tool| tool.name.as_str())
-                            .collect::<Vec<_>>(),
-                        vec!["no_reply"]
+                            .all(|name| tools.iter().any(|tool| tool.name == *name)),
+                        "receipt phase retains stable definitions"
                     );
                     self.receipt_started.notify_one();
                     self.receipt_release.notified().await;

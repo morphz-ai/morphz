@@ -6,64 +6,39 @@ import type { ExecutionActivity } from "../packages/core/src/conversation.js";
 import { executionSnapshotSchema } from "../packages/core/src/execution.js";
 import {
   profileActualTransportFixture,
-  profileFixtureReplyCarrier,
+  profileFixtureAnnotationsMessage,
+  profileFixtureReturnBinding,
+  fixtureAnnotationsMessage,
 } from "./profile-actual-transport-fixture.js";
 
-test("deterministic default final response follows only the offered annotation reply schema", () => {
-  const parameters = {
-    properties: {
-      annotations: {
-        properties: {
-          execution: {
-            properties: {
-              title: { type: "string" },
-              result: { type: "string" },
-            },
-          },
-        },
-      },
+test("metadata follows frozen Runtime binding; tool definitions never select annotation mode", () => {
+  const tools = [
+    {
+      type: "function",
+      function: { name: "deliver_message", parameters: { type: "object" } },
     },
-  };
-  for (const tools of [
-    [{ type: "function", function: { name: "reply", parameters } }],
-    [{ type: "function", name: "reply", parameters }],
-  ]) {
-    const carrier = profileFixtureReplyCarrier({ messages: [], tools });
-    assert.equal(carrier?.name, "reply");
-    const args = carrier?.arguments as {
-      annotations: { execution: { title: string; result: string } };
-    };
-    assert.ok(
-      args.annotations.execution.title && args.annotations.execution.result,
-    );
-    assert.equal(
-      "content" in args,
-      false,
-      "the model never JSON-encodes the body for annotations",
-    );
+  ];
+  for (const enabled of [false, true]) {
+    const messages = [
+      {
+        role: "user",
+        content: `Runtime Context:\n(context (evaluation-environment (session-io-return (delivery_id return-test) (format (id morphz.chat) (version 1) (encoding utf8)) (annotations_enabled ${enabled}))))`,
+      },
+    ];
+    const carrier = profileFixtureAnnotationsMessage({ messages, tools });
+    assert.equal(!!carrier, enabled);
+    if (carrier) {
+      assert.equal(carrier.name, "deliver_message");
+      const args = carrier.arguments as any;
+      assert.equal(args.message.format.id, "morphz.response.annotations");
+      assert.ok(args.message.content.value.execution.title);
+      assert.ok(args.message.content.value.execution.result);
+      assert.equal("content" in args, false);
+    }
   }
-  assert.equal(profileFixtureReplyCarrier({ messages: [] }), undefined);
   assert.equal(
-    profileFixtureReplyCarrier({
-      messages: [],
-      tools: [{ function: { name: "no_reply", parameters } }],
-    }),
+    profileFixtureAnnotationsMessage({ messages: [], tools }),
     undefined,
-  );
-  assert.equal(
-    profileFixtureReplyCarrier({
-      messages: [],
-      tools: [
-        {
-          function: {
-            name: "reply",
-            parameters: { properties: { content: { type: "string" } } },
-          },
-        },
-      ],
-    }),
-    undefined,
-    "A similarly named business tool cannot enable annotation behavior",
   );
 });
 
@@ -154,33 +129,30 @@ test(
         )[0]!.response_annotations,
         "on",
       );
-      f.releaseWithText(
+      f.releaseWithMessages(
         marker,
-        JSON.stringify({
-          annotations: {
+        [
+          fixtureAnnotationsMessage({
             execution: { title: "TEST 原执行仍开启", result: "原设置未被改变" },
-          },
-          content: "TEST ON BODY",
-        }),
+          }),
+        ],
+        "TEST ON BODY",
       );
       await settle(active.id);
       const nextMarker = "TEST_SETTING_NEW_OFF_" + randomUUID();
       const nextRequest = await send(nextMarker);
-      assert.ok(
-        JSON.stringify(activeRequest).includes("Response annotations (enabled"),
+      assert.equal(
+        profileFixtureReturnBinding(activeRequest)?.annotations_enabled,
+        true,
       );
-      assert.ok(
-        !JSON.stringify(nextRequest).includes("Response annotations (enabled"),
+      assert.equal(
+        profileFixtureReturnBinding(nextRequest)?.annotations_enabled,
+        false,
       );
-      assert.ok(
-        (activeRequest.tools as any[]).some(
-          (t) => (t.function ?? t).name === "reply",
-        ),
-      );
-      assert.ok(
-        !(nextRequest.tools as any[]).some(
-          (t) => (t.function ?? t).name === "reply",
-        ),
+      assert.deepEqual(
+        activeRequest.tools,
+        nextRequest.tools,
+        "Setting does not mutate schemas or order",
       );
       const next = f.sql<{ id: string; response_annotations: string }>(
         "SELECT id,response_annotations FROM threads ORDER BY rowid DESC LIMIT 1",
@@ -314,31 +286,36 @@ test(
         f.options,
       );
       const first = await f.waitRequest(marker);
-      assert.ok(
-        JSON.stringify(first).includes("Response annotations (enabled"),
-      );
+      assert.ok(JSON.stringify(first).includes("Session IO response contract"));
       const toolDefinitions = first.tools as Array<{
         function: {
           name: string;
           parameters: { properties?: Record<string, unknown> };
         };
       }>;
-      assert.ok(
+      assert.equal(
         toolDefinitions.find((tool) => tool.function.name === objectToolName)
           ?.function.parameters.properties?._annotations,
+        undefined,
       );
-      assert.ok(toolDefinitions.some((tool) => tool.function.name === "reply"));
+      assert.ok(
+        toolDefinitions.some(
+          (tool) => tool.function.name === "deliver_message",
+        ),
+      );
 
       const secondIndex = f.requests.length;
       f.hold(marker);
-      f.releaseWithTool(marker, objectToolName, {
-        action: "profile",
-        profile: { action: "read" },
-        _annotations: {
-          execution: { title: "检查资料与输入", progress: "正在读取资料" },
-          intent: "读取当前 Agent 资料",
+      f.releaseWithMessages(marker, [
+        {
+          name: objectToolName,
+          arguments: { action: "profile", profile: { action: "read" } },
         },
-      });
+        fixtureAnnotationsMessage({
+          execution: { title: "检查资料与输入", progress: "正在读取资料" },
+          calls: [{ index: 0, intent: "读取当前 Agent 资料" }],
+        }),
+      ]);
       const second = await f.waitRequest(marker, secondIndex);
       const firstRef = receiptRef(second);
       const working = await eventually(
@@ -352,17 +329,17 @@ test(
 
       const thirdIndex = f.requests.length;
       f.hold(marker);
-      f.releaseWithTool(marker, objectToolName, {
-        action: "read-input",
-        _annotations: {
+      f.releaseWithMessages(marker, [
+        { name: objectToolName, arguments: { action: "read-input" } },
+        fixtureAnnotationsMessage({
           execution: {
             title: "同一输入的后续步骤不应改名",
             progress: "资料已读取，正在核对输入",
           },
-          intent: "核对本次输入",
+          calls: [{ index: 0, intent: "核对本次输入" }],
           observations: [{ ref: firstRef, result: "已读取当前 Agent 资料" }],
-        },
-      });
+        }),
+      ]);
       const third = await f.waitRequest(marker, thirdIndex);
       const secondRef = receiptRef(third);
       assert.notEqual(secondRef, firstRef);
@@ -372,18 +349,17 @@ test(
       );
       assert.equal(continued[0]!.title, "检查资料与输入");
       assert.equal(continued[0]!.id, threadId);
-      f.releaseWithTool(
+      f.releaseWithMessages(
         marker,
-        "reply",
-        {
-          annotations: {
+        [
+          fixtureAnnotationsMessage({
             execution: {
               title: "检查资料与输入",
               result: "资料与输入检查完成，未修改任何参数",
             },
             observations: [{ ref: secondRef, result: "已核对本次输入" }],
-          },
-        },
+          }),
+        ],
         "TEST：两次只读检查完成，没有修改资料。",
       );
       const terminal = await eventually(
@@ -545,24 +521,40 @@ test(
             f.options,
           );
           const request = await f.waitRequest(marker);
-          assert.ok(
-            JSON.stringify(request).includes("Response annotations (enabled"),
-          );
+          assert.ok(profileFixtureReturnBinding(request)?.annotations_enabled);
           assert.equal(f.requests.length, 1);
           const candidate = "TEST VALID BODY MUST REMAIN VISIBLE";
-          // Explicit provider text bypasses the default reply carrier. The same
-          // tool definitions remain offered for both text and function carriers.
-          if (entry.text)
-            f.releaseWithText(
-              marker,
-              entry.metadata.annotations
-                ? candidate +
-                    "\n:::morphz-reply\n" +
-                    JSON.stringify(entry.metadata) +
-                    "\n:::"
-                : candidate,
+          const binding = profileFixtureReturnBinding(request)!;
+          const nativeMessages = [];
+          if (!entry.text)
+            nativeMessages.push({
+              name: "deliver_message",
+              arguments: {
+                delivery_id: binding.delivery_id,
+                message: {
+                  format: {
+                    id: binding.format.id,
+                    version: binding.format.version,
+                  },
+                  content: {
+                    encoding: binding.format.encoding,
+                    value:
+                      binding.format.encoding === "utf8"
+                        ? candidate
+                        : { text: candidate },
+                  },
+                },
+              },
+            });
+          if (entry.metadata.annotations !== undefined)
+            nativeMessages.push(
+              fixtureAnnotationsMessage(entry.metadata.annotations),
             );
-          else f.releaseWithTool(marker, "reply", entry.metadata, candidate);
+          f.releaseWithMessages(
+            marker,
+            nativeMessages,
+            entry.text ? candidate : undefined,
+          );
           let terminal: ExecutionActivity["threads"][number] | undefined;
           for (let attempt = 0; attempt < 300; attempt++) {
             const data = (await f.client.call(
@@ -638,22 +630,27 @@ test(
           ).response_annotation_bundle;
           assert.equal(
             bundle.raw_response.content,
-            entry.text && entry.metadata.annotations
-              ? candidate +
-                  "\n:::morphz-reply\n" +
-                  JSON.stringify(entry.metadata) +
-                  "\n:::"
-              : candidate,
+            entry.text ? candidate : "",
           );
-          if (entry.text)
-            assert.equal(bundle.raw_response.tool_calls.length, 0);
-          else {
-            assert.equal(bundle.raw_response.tool_calls.length, 1);
+          assert.equal(
+            bundle.raw_response.tool_calls.length,
+            nativeMessages.length,
+          );
+          assert.ok(
+            bundle.raw_response.tool_calls.every(
+              (call: any) => call.func_name === "deliver_message",
+            ),
+          );
+          const metadataCall = bundle.raw_response.tool_calls.find(
+            (call: any) =>
+              JSON.parse(call.arguments).message.format.id ===
+              "morphz.response.annotations",
+          );
+          if (entry.metadata.annotations !== undefined)
             assert.deepEqual(
-              JSON.parse(bundle.raw_response.tool_calls[0].arguments),
-              entry.metadata,
+              JSON.parse(metadataCall.arguments).message.content.value,
+              entry.metadata.annotations,
             );
-          }
           if (entry.valid) {
             assert.equal(bundle.diagnostics.length, 0);
             assert.equal(terminal.title, "TEST 普通文本注解");

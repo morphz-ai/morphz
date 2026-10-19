@@ -157,6 +157,9 @@ impl DurableEventDeliveryQueue {
 /// changing it in only one layer would make the online Projection disagree
 /// with a full replay of persisted Events.
 pub fn is_context_observation(event: &Event) -> bool {
+    if crate::session_io::response::is_annotations_event(event) {
+        return false;
+    }
     if event.topic == "session/io_state" {
         return terminal_delivery_state(event).is_some();
     }
@@ -254,6 +257,9 @@ pub fn assistant_call_has_tool_history(event: &Event) -> bool {
 /// delivery barriers and model continuations may be useful operationally, but
 /// they must not age the Mind merely because Runtime is busy.
 pub fn advances_cognitive_clock(event: &Event) -> bool {
+    if crate::session_io::response::is_annotations_event(event) {
+        return false;
+    }
     if event
         .payload
         .get("external_cognitive_fact")
@@ -595,6 +601,14 @@ impl InMemoryEventBus {
                     .into(),
                     ev_clone_for_err,
                 ),
+            }
+        }
+
+        // Companions were persisted with their source, not by a second input
+        // or business tool. Redispatch is safe and preserves existing cursors.
+        if durable || ev.sequence.is_some() {
+            for companion in crate::session_io::response::companion_events(&ev) {
+                Box::pin(self.publish_with_options(companion, false, bypass_async_limit)).await?;
             }
         }
 

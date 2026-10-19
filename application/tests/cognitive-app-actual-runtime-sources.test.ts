@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
 import {
   profileActualTransportFixture,
-  profileFixtureReplyCarrier,
+  profileFixtureAnnotationsMessage,
 } from "./profile-actual-transport-fixture.js";
 import {
   packCognitiveAuthor,
@@ -103,7 +103,8 @@ type ModelRequest = {
   messages: Array<{ role: string; content: unknown }>;
   [key: string]: unknown;
 };
-type ModelResponse = { name: string; arguments: unknown } | { content: string };
+type ModelResponse =
+  { name: string; arguments: unknown; content?: string } | { content: string };
 /** Explicitly local second HTTP hop supplies the typed infer JSON final.
  * Neither hop delegates to a real provider. The first proxy still records
  * actual Rust bytes; its realCalls counter here means local controlled hops. */
@@ -131,11 +132,10 @@ async function controlledModel(
       assert.ok(Array.isArray(input.messages));
       const output = select(input);
       const message =
-        "content" in output
-          ? { role: "assistant", content: output.content }
-          : {
+        "name" in output
+          ? {
               role: "assistant",
-              content: "",
+              content: output.content ?? "",
               tool_calls: [
                 {
                   index: 0,
@@ -147,8 +147,9 @@ async function controlledModel(
                   },
                 },
               ],
-            };
-      const finish = "content" in output ? "stop" : "tool_calls";
+            }
+          : { role: "assistant", content: output.content };
+      const finish = "name" in output ? "tool_calls" : "stop";
       if (input.stream) {
         response.writeHead(200, { "Content-Type": "text/event-stream" });
         response.end(
@@ -328,9 +329,17 @@ test(
               round < 4,
               "A controlled model may not retry indefinitely",
             );
-            const choose = (name: string, arguments_: unknown) => {
+            const choose = (
+              name: string,
+              arguments_: unknown,
+              content?: string,
+            ) => {
               selected.push({ threadId: thread.id, name });
-              return { name, arguments: arguments_ };
+              return {
+                name,
+                arguments: arguments_,
+                ...(content !== undefined ? { content } : {}),
+              };
             };
             if (thread.executor_kind === "plan_infer") {
               // A non-Objective infer has runtime supervision, not an attached
@@ -372,18 +381,18 @@ test(
               const created = parseCognitiveAppCommandResult(value.result);
               assert.equal(created.command.state, "committed");
               inferCommandId = created.commandId;
-              // infer inherits the same enabled annotation contract. Supply
-              // its typed String through the actually offered reply carrier,
-              // without an extra model/repair round or a special tool list.
-              const reply = profileFixtureReplyCarrier(request);
+              // The typed String is the implicit return; annotations are a
+              // separate native Session IO message in the same response.
+              const reply = profileFixtureAnnotationsMessage(request);
               assert.ok(
                 reply,
-                "Enabled infer must offer its normal reply carrier",
+                "Enabled infer must admit its registered annotations message",
               );
-              return choose(reply.name, {
-                ...(reply.arguments as object),
-                content: JSON.stringify(inferMarker),
-              });
+              return choose(
+                reply.name,
+                reply.arguments,
+                JSON.stringify(inferMarker),
+              );
             } else if (thread.root_turn_id.startsWith("client-schedule-")) {
               scheduledThreadId = thread.id;
               assert.ok(text.includes(scheduleMarker));
@@ -440,12 +449,12 @@ test(
               assert.ok("state" in value && value.state === "queued");
               startedEventId = value.eventId;
             }
-            const reply = profileFixtureReplyCarrier(request);
+            const reply = profileFixtureAnnotationsMessage(request);
             assert.ok(
               reply,
-              "Ordinary execution must use its actual reply contract",
+              "Ordinary execution must admit its registered annotations message",
             );
-            return choose(reply.name, reply.arguments);
+            return choose(reply.name, reply.arguments, "合成来源验证已完成。");
           } catch (error) {
             errors.push(
               error instanceof Error

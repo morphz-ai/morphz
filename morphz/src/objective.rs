@@ -63,6 +63,9 @@ const OBJECTIVE_RECONCILE_FALLBACK_INTERVAL: std::time::Duration =
 const OBJECTIVE_ORPHAN_SCHEDULE_GRACE: Duration = Duration::seconds(2);
 
 fn objective_reconcile_event(event: &Event) -> bool {
+    if crate::session_io::response::is_annotations_event(event) {
+        return false;
+    }
     event.payload.contains_key("context_id")
         && !matches!(
             event.topic.as_str(),

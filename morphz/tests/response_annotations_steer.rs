@@ -36,6 +36,14 @@ use tempfile::TempDir;
 use tokio::sync::Notify;
 
 type DynError = Box<dyn Error + Send + Sync>;
+fn no_annotation_records(event: &Event) -> bool {
+    event.payload.get(BUNDLE_PAYLOAD_KEY).is_none_or(|value| {
+        let bundle: PersistedAnnotations = serde_json::from_value(value.clone()).unwrap();
+        bundle.protocol.is_off()
+            && bundle.records.is_empty()
+            && bundle.annotation_messages.is_empty()
+    })
+}
 const ORIGINAL_TEXT: &str = "读取合成系统与架构，完成后报告结果。";
 const STEER_TEXT: &str = "请保留原检查，并将最终结果用中文概述，附加一句简短摘要。";
 const ORIGINAL_TITLE: &str = "检查合成系统与架构";
@@ -132,7 +140,7 @@ impl Client for ScriptClient {
             "no dedicated title request or repeated execution inference is allowed"
         );
         self.messages.lock().unwrap().push(messages.clone());
-        let response = match index {
+        let mut response = match index {
             0 => {
                 assert!(messages
                     .iter()
@@ -173,20 +181,13 @@ impl Client for ScriptClient {
                 assert!(messages.iter().any(|message| message.content.contains(STEER_TEXT)),
                     "accepted steering text must be in the actual next model request, not just queued in SQL");
                 if !self.protocol.is_off() {
-                    assert!(tools.iter().any(|tool| tool.name == "reply"));
-                    Response {
-                        content: FINAL_TEXT.into(),
-                        tool_calls: vec![ToolCallRepr {
-                            id: "steer-final-reply".into(),
-                            r#type: "function".into(),
-                            func_name: "reply".into(),
-                            arguments: json!({"annotations":{"execution":{
-                                "title":UPDATED_TITLE,"result":"已读取合成系统与架构，并提供中文摘要"
-                            }}}).to_string(),
-                        }],
-                    }
+                    assert!(tools.iter().any(|tool| tool.name == "deliver_message"));
+                    Response {content:FINAL_TEXT.into(),tool_calls:vec![ToolCallRepr{
+                        id:"steer-final-metadata".into(),r#type:"function".into(),func_name:"deliver_message".into(),
+                        arguments:json!({"delivery_id":"steer-final-metadata","message":{"format":{"id":"morphz.response.annotations","version":"1"},"content":{"encoding":"json","value":{"execution":{"title":UPDATED_TITLE,"result":"已读取合成系统与架构，并提供中文摘要"}}}}}).to_string(),
+                    }]}
                 } else {
-                    assert!(!tools.iter().any(|tool| tool.name == "reply"));
+                    assert!(tools.iter().all(|tool| tool.name != "reply"));
                     Response {
                         content: FINAL_TEXT.into(),
                         tool_calls: vec![],
@@ -195,6 +196,36 @@ impl Client for ScriptClient {
             }
             _ => unreachable!(),
         };
+        // Fixture-only authored metadata is encoded into the current native
+        // Session IO format before reaching any Runtime parser or Tool.
+        let mut metadata = serde_json::Map::new();
+        let mut intents = Vec::new();
+        for (index, call) in response.tool_calls.iter_mut().enumerate() {
+            if call.func_name == "deliver_message" {
+                continue;
+            }
+            let mut arguments: Value = serde_json::from_str(&call.arguments).unwrap();
+            if let Some(annotations) = arguments
+                .as_object_mut()
+                .and_then(|args| args.remove("_annotations"))
+            {
+                if let Some(execution) = annotations.get("execution") {
+                    metadata
+                        .entry("execution")
+                        .or_insert_with(|| execution.clone());
+                }
+                if let Some(intent) = annotations.get("intent") {
+                    intents.push(json!({"index":index,"intent":intent}));
+                }
+                call.arguments = arguments.to_string();
+            }
+        }
+        if !intents.is_empty() {
+            metadata.insert("calls".into(), json!(intents));
+        }
+        if !metadata.is_empty() {
+            response.tool_calls.push(ToolCallRepr{id:"steer-work-metadata".into(),r#type:"function".into(),func_name:"deliver_message".into(),arguments:json!({"delivery_id":"steer-work-metadata","message":{"format":{"id":"morphz.response.annotations","version":"1"},"content":{"encoding":"json","value":metadata}}}).to_string()});
+        }
         let _ = stream.send(ModelStreamEvent::Started);
         for character in response.content.chars() {
             let _ = stream.send(ModelStreamEvent::TextDelta {
@@ -651,9 +682,7 @@ async fn first_steered_title_after_tool_receipt_uses_the_same_execution_input_re
         "a first valid title under the supplement revision must replace the original revision-zero title");
     let off = Fixture::with_scenario(Protocol::Off, Scenario::DeferredTitle).await;
     let (_, _, _, off_events) = off.exercise(Protocol::Off).await;
-    assert!(off_events
-        .iter()
-        .all(|event| !event.payload.contains_key(BUNDLE_PAYLOAD_KEY)));
+    assert!(off_events.iter().all(no_annotation_records));
     assert_eq!(enabled.client.calls.load(Ordering::SeqCst), 3);
     assert_eq!(enabled.client.calls.load(Ordering::SeqCst), off.client.calls.load(Ordering::SeqCst),
         "the title is supplied by the existing terminal request, never a dedicated naming inference");
@@ -704,9 +733,7 @@ async fn accepted_steer_updates_whole_task_title_without_extra_inference_or_repe
 
     let off = Fixture::new(Protocol::Off).await;
     let (_initial, _directed, _owner, events) = off.exercise(Protocol::Off).await;
-    assert!(events
-        .iter()
-        .all(|event| !event.payload.contains_key(BUNDLE_PAYLOAD_KEY)));
+    assert!(events.iter().all(no_annotation_records));
     assert_eq!(enabled.client.calls.load(Ordering::SeqCst), off.client.calls.load(Ordering::SeqCst),
         "annotations and steer title updates must reuse ordinary requests, not add an inference round");
 }

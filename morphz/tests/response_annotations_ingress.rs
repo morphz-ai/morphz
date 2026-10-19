@@ -14,7 +14,7 @@ use morphz::{
         ExecutionJobStore, NewAgent, NewCognitiveContext, NewSession, QueryFilter, RuntimeStore,
         SessionMountKind, ThreadLifecycle, ThreadStore,
     },
-    response_annotations::{Protocol, BUNDLE_PAYLOAD_KEY},
+    response_annotations::Protocol,
     runtime::{
         MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy, SessionHandle, SessionMessageOptions,
     },
@@ -166,11 +166,15 @@ impl Client for NativeClient {
     ) -> Result<Response, DynError> {
         let index = self.calls.fetch_add(1, Ordering::SeqCst);
         assert!(
-            index < 2,
+            index < 4,
             "retry/preflight must not cause an extra model request"
         );
         self.captured_tools.lock().unwrap().push(tools);
-        let response = if index == 0 {
+        let receipt = messages.iter().find(|message| {
+            message.role == "tool"
+                && message.tool_call_id.as_deref() == Some("ingress-business-call")
+        });
+        let response = if receipt.is_none() {
             Response {
                 content: String::new(),
                 tool_calls: vec![ToolCallRepr {
@@ -181,13 +185,8 @@ impl Client for NativeClient {
                 }],
             }
         } else {
-            let receipt = messages
-                .iter()
-                .find(|message| {
-                    message.role == "tool"
-                        && message.tool_call_id.as_deref() == Some("ingress-business-call")
-                })
-                .expect("a real business Job receipt must precede the second request");
+            let receipt =
+                receipt.expect("a real business Job receipt must precede the second request");
             let receipt: Value = serde_json::from_str(&receipt.content).unwrap();
             assert_eq!(receipt["status"], "success");
             Response {
@@ -369,103 +368,76 @@ fn accepted_input(event: &Event) -> AcceptedInput {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn enabled_reserved_business_schema_is_rejected_before_acceptance_but_off_executes_unchanged()
-{
+async fn annotation_mode_does_not_reserve_business_names_or_mutate_business_arguments() {
     for schema in [
         BusinessSchema::ReplyName,
         BusinessSchema::AnnotationsParameter,
     ] {
-        let temp = TempDir::new().unwrap();
-        let fixture = Fixture::open(temp.path(), schema, Protocol::Off).await;
-        fixture.runtime.start().await.unwrap();
-        let error = fixture
-            .send(Fixture::request("same-after-rejection", Some(Protocol::On)))
-            .await
-            .unwrap_err();
-        assert_eq!(error.code, "invalid_response_annotation_contract");
-        assert_eq!(error.status(), 422);
-        // Both ingress surfaces must report the precise preflight cause,
-        // without accepting/scheduling work or inviting transient retries.
-        let legacy_error = fixture
-            .session
-            .send_as_principal_with_options(
-                "Run synthetic business operation",
-                "Session-Client",
-                PRINCIPAL,
-                Some("legacy-reserved-rejection".into()),
-                SessionMessageOptions {
-                    response_annotations: Some(Protocol::On),
-                    ..Default::default()
-                },
-            )
-            .await
-            .unwrap_err();
-        let expected_cause = match schema {
-            BusinessSchema::ReplyName => "Reserved reply tool name is occupied",
-            BusinessSchema::AnnotationsParameter => "Reserved _annotations parameter is occupied",
-            BusinessSchema::Ordinary => unreachable!(),
-        };
-        assert_eq!(error.message, expected_cause);
-        assert!(legacy_error.to_string().contains(expected_cause));
-        assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 0);
-        assert!(fixture.arguments.lock().unwrap().is_empty());
-        assert!(fixture.jobs().await.is_empty());
-        assert!(fixture
-            .store
-            .message_event_id(SESSION, "same-after-rejection")
-            .await
-            .unwrap()
-            .is_none());
-        assert!(fixture
-            .store
-            .message_event_id(SESSION, "legacy-reserved-rejection")
-            .await
-            .unwrap()
-            .is_none());
-        assert!(fixture
-            .store
-            .list_session_threads(CONTEXT, SESSION, true)
-            .await
-            .unwrap()
-            .is_empty());
-        let accepted = fixture
-            .send(Fixture::request(
-                "same-after-rejection",
-                Some(Protocol::Off),
-            ))
-            .await
-            .unwrap();
-        fixture.wait_completed(&accepted.id).await;
-        assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            fixture.arguments.lock().unwrap().as_slice(),
-            &[schema.arguments()]
-        );
-        let jobs = fixture.jobs().await;
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].tool_name, schema.name());
-        {
-            let actual_tools = fixture.client.captured_tools.lock().unwrap();
-            let actual = actual_tools[0]
-                .iter()
-                .find(|tool| tool.name == schema.name())
-                .unwrap();
-            // Registry's established physical-tool schema also exposes `target`.
-            // Compare the entire production Off definition, not the author's raw
-            // schema and not a weakened comparison with injected fields removed.
-            let baseline = morphz::tool::Registry::new();
-            baseline.register(Arc::new(BusinessTool {
-                schema,
-                arguments: fixture.arguments.clone(),
-            }));
-            let expected = baseline.definitions().pop().unwrap();
-            assert_eq!(actual.parameters, expected.parameters);
+        let mut baseline_bytes = None;
+        for protocol in [Protocol::Off, Protocol::On] {
+            for typed in [true, false] {
+                let temp = TempDir::new().unwrap();
+                let fixture = Fixture::open(temp.path(), schema, Protocol::Off).await;
+                fixture.runtime.start().await.unwrap();
+                let accepted_id = if typed {
+                    fixture
+                        .send(Fixture::request("same-business-request", Some(protocol)))
+                        .await
+                        .unwrap()
+                        .id
+                } else {
+                    fixture
+                        .session
+                        .send_as_principal_with_options(
+                            "Run synthetic business operation",
+                            "Session-Client",
+                            PRINCIPAL,
+                            Some("native-business-request".into()),
+                            SessionMessageOptions {
+                                response_annotations: Some(protocol),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                        .unwrap()
+                        .event_id
+                };
+                fixture.wait_completed(&accepted_id).await;
+                assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 2);
+                assert_eq!(
+                    fixture.arguments.lock().unwrap().as_slice(),
+                    &[schema.arguments()]
+                );
+                let jobs = fixture.jobs().await;
+                assert_eq!(jobs.len(), 1);
+                assert_eq!(jobs[0].tool_name, schema.name());
+                let actual_tools = fixture.client.captured_tools.lock().unwrap();
+                let bytes = serde_json::to_vec(&actual_tools[0]).unwrap();
+                assert_eq!(*baseline_bytes.get_or_insert(bytes.clone()), bytes);
+                assert_eq!(serde_json::to_vec(&actual_tools[1]).unwrap(), bytes);
+                let actual = actual_tools[0]
+                    .iter()
+                    .find(|tool| tool.name == schema.name())
+                    .unwrap();
+                let baseline = morphz::tool::Registry::new();
+                baseline.register(Arc::new(BusinessTool {
+                    schema,
+                    arguments: fixture.arguments.clone(),
+                }));
+                assert_eq!(
+                    actual.parameters,
+                    baseline.definitions().pop().unwrap().parameters
+                );
+                drop(actual_tools);
+                let thread = fixture
+                    .store
+                    .get_thread_by_root(&accepted_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(thread.response_annotations, protocol);
+            }
         }
-        assert!(fixture
-            .events(&accepted.id, Some("chat/assistant_call"))
-            .await
-            .iter()
-            .all(|event| event.payload.get(BUNDLE_PAYLOAD_KEY).is_none()));
     }
 }
 
@@ -528,47 +500,61 @@ async fn omitted_choice_retry_after_restart_keeps_old_off_binding_despite_enable
         1,
         "an exact retry must not manufacture another execution",
     );
-    // Changed defaults cannot turn a duplicate into a reserved-name rejection,
-    // but genuinely fresh omitted input still resolves enabled annotations and fails preflight.
-    restarted
+    // Defaults affect only fresh acceptance. A business tool named reply is
+    // not an annotation carrier or a reserved name in either mode.
+    let fresh = restarted
         .send(Fixture::request("fresh-on-collision", None))
         .await
-        .unwrap_err();
-    assert!(restarted
-        .store
-        .message_event_id(SESSION, "fresh-on-collision")
-        .await
-        .unwrap()
-        .is_none());
+        .unwrap();
+    assert_eq!(
+        restarted
+            .store
+            .message_event_id(SESSION, "fresh-on-collision")
+            .await
+            .unwrap(),
+        Some(fresh.id.clone())
+    );
+    assert_eq!(
+        restarted
+            .store
+            .get_thread_by_root(&fresh.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .response_annotations,
+        Protocol::On
+    );
     assert_eq!(restarted.client.calls.load(Ordering::SeqCst), 0);
 
     restarted.runtime.start().await.unwrap();
     restarted.wait_completed(&accepted.id).await;
-    assert_eq!(restarted.client.calls.load(Ordering::SeqCst), 2);
+    restarted.wait_completed(&fresh.id).await;
+    assert_eq!(restarted.client.calls.load(Ordering::SeqCst), 4);
     assert_eq!(
         restarted.arguments.lock().unwrap().as_slice(),
-        &[BusinessSchema::ReplyName.arguments()]
+        &[
+            BusinessSchema::ReplyName.arguments(),
+            BusinessSchema::ReplyName.arguments()
+        ]
     );
     let jobs = restarted.jobs().await;
     assert_eq!(
         jobs.len(),
-        1,
-        "only the original accepted input may execute"
+        2,
+        "each distinct accepted input executes once, not each retry"
     );
-    assert_eq!(
-        jobs[0].thread_id,
-        restarted
-            .store
-            .get_thread_by_root(&accepted.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .id
-    );
+    let original_thread_id = restarted
+        .store
+        .get_thread_by_root(&accepted.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    assert!(jobs.iter().any(|job| job.thread_id == original_thread_id));
     let duplicate = restarted.send(request).await.unwrap();
     assert_eq!(duplicate, accepted);
     assert_eq!(accepted_input(&duplicate), original_input);
-    assert_eq!(restarted.client.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(restarted.client.calls.load(Ordering::SeqCst), 4);
     assert_eq!(
         restarted.jobs().await,
         jobs,

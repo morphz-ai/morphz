@@ -6,6 +6,8 @@ pub(crate) mod file_lock;
 pub(crate) mod output;
 pub mod projection;
 pub mod resources;
+pub mod response;
+pub(crate) mod response_stream;
 pub(crate) mod schema;
 pub(crate) mod stream;
 #[cfg(test)]
@@ -425,6 +427,9 @@ impl Default for Registry {
             Descriptor { id: "morphz.data".into(), version: "1".into(), encodings: vec!["json".into(), "resource".into()], schema: None,
                 contract: None, publisher: "morphz".into(), required_visible_paths: vec![], resource_paths: vec![] },
         ] { registry.register(descriptor).expect("standard format definition"); }
+        registry
+            .register(response::annotations_descriptor())
+            .expect("standard annotations format");
         registry
     }
 }

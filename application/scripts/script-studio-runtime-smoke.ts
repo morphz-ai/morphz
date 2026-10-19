@@ -268,7 +268,7 @@ const provider = createServer(async (req, res) => {
         tools.every(
           (name: string) =>
             name === "no_reply" ||
-            name === "reply" ||
+            name === "deliver_message" ||
             (["discussion", "prepare"].includes(stage) &&
               name === "host_morphz"),
         ),
@@ -333,18 +333,41 @@ const provider = createServer(async (req, res) => {
       );
     const returnValue = (content: string) => {
       assert.ok(
-        tools.includes("reply"),
+        tools.includes("deliver_message"),
         "Every enabled infer uses the same response carrier",
       );
-      return call("reply", {
-        content,
-        annotations: {
-          execution: {
-            title: `合成工序 ${stage}`,
-            result: `合成工序 ${stage} 已返回`,
-          },
+      return respond(
+        {
+          role: "assistant",
+          content,
+          tool_calls: [
+            {
+              index: 0,
+              id: randomUUID(),
+              type: "function",
+              function: {
+                name: "deliver_message",
+                arguments: JSON.stringify({
+                  delivery_id: "fixture-metadata-" + randomUUID(),
+                  message: {
+                    format: { id: "morphz.response.annotations", version: "1" },
+                    content: {
+                      encoding: "json",
+                      value: {
+                        execution: {
+                          title: `合成工序 ${stage}`,
+                          result: `合成工序 ${stage} 已返回`,
+                        },
+                      },
+                    },
+                  },
+                }),
+              },
+            },
+          ],
         },
-      });
+        "tool_calls",
+      );
     };
     if (projectDiscussion && stage === "discussion") {
       assert.ok(
@@ -694,7 +717,7 @@ try {
     // This local synthetic Provider models fourteen Harness branches, not
     // Context-maintenance. Bound the aggregate fixture Context explicitly;
     // live-provider validation retains its real capacity and request limits.
-    `[llm]\nmodel="test-model"\nreasoning_effort="low"\n[orchestrator]\ncontext_soft_token_limit=1500000\ncontext_hard_token_limit=2000000\n[accounts.stub]\nauth_adapter="credential"\ncredential_ref="stub"\nprovider="stub"\n[services.stub]\nadapter="protocol-compatible"\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["stub"]\n[models.test-model]\n[[models.test-model.targets]]\nservice="stub"\naccount="stub"\nphysical_model="test-model"\ncapabilities=["tools"]\n[credentials.stub]\nsource="env"\nname="MORPHZ_APP_TEST_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir=${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
+    `[llm]\nmodel="test-model"\nreasoning_effort="low"\n[orchestrator]\nresponse_annotations="on"\ncontext_soft_token_limit=1500000\ncontext_hard_token_limit=2000000\n[accounts.stub]\nauth_adapter="credential"\ncredential_ref="stub"\nprovider="stub"\n[services.stub]\nadapter="protocol-compatible"\nprotocol="openai-chat"\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["stub"]\n[models.test-model]\n[[models.test-model.targets]]\nservice="stub"\naccount="stub"\nphysical_model="test-model"\ncapabilities=["tools"]\n[credentials.stub]\nsource="env"\nname="MORPHZ_APP_TEST_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeDirectory)}\n[background_task]\nartifact_dir=${JSON.stringify(join(runtimeDirectory, "artifacts"))}\n`,
     { mode: 0o600 },
   );
   // Only the test provider and Runtime API may use TCP. The actual embedded application must use Unix IPC.

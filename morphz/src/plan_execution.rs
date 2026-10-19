@@ -3102,12 +3102,12 @@ fn infer_request_event(
             })
             .unwrap_or_default();
         format!(
-            "This is an internal model-owned Yao Evaluation, not a user message. Evaluate the complete Yao program below according to the single Yao Language Card in Context Encoding. Interpret its operators and control structure as the program to execute; do not reduce it to a task field or merely describe it. Runtime has not pre-evaluated the BODY. The terminal content is only the typed value consumed by the parent Plan; use the active response encoding to return it.{}{}{}\n\n{}",
+            "This is an internal model-owned Yao Evaluation, not a user message. Evaluate the complete Yao program below according to the single Yao Language Card in Context Encoding. Interpret its operators and control structure as the program to execute; do not reduce it to a task field or merely describe it. Runtime has not pre-evaluated the BODY. The terminal content is only the typed value consumed by the parent Plan; use the active response encoding to return it.\n\n{}{}{}\n\n{}",
             result_instruction, captures, type_definitions, program
         )
     };
     if !response_annotations.is_off() {
-        evaluation_text.push_str("\n\nThe typed terminal-body rules above apply to the decoded content field, not the outer reply transport. With annotations enabled, the normal response is an implicit reply: return one JSON object with content containing that exact terminal body as a string and annotations.execution containing this Evaluation's valid short title and result. An offered explicit reply call is an equivalent optional encoding, not a work tool. The envelope is not part of the typed value. Do not add fields to the business value, another model request, or a separate annotation call. This returns to the parent Plan; it does not deliver a separate chat reply or complete the parent work.");
+        evaluation_text.push_str("\n\nReturn the exact typed terminal body through the Runtime-owned Session IO return binding; ordinary content is its implicit form. With annotations enabled, submit a separate registered annotations message in the SAME native response. Keep title/result outside the typed business value. Do not add a JSON envelope to ordinary prose, a text delimiter, another model request, or a tool for final rewriting. This returns to the actual parent Plan, not a separate user chat or completion of parent work.");
     }
     let mut payload = serde_json::Map::from_iter([
         (

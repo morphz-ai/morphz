@@ -63,6 +63,35 @@ mod tests {
             .iter()
             .any(|d| d["output_id"] == "io_text_m99"));
     }
+    #[test]
+    fn infer_and_thread_returns_close_only_their_actual_root_draft() {
+        for topic in ["plan/infer_result", "runtime/thread_result"] {
+            let stream = Streams::default();
+            stream.observe(&mut event("infer-root", "infer-attempt", "started", ""));
+            stream.observe(&mut event(
+                "infer-root",
+                "infer-attempt",
+                "text_delta",
+                "typed value",
+            ));
+            stream.observe(&mut event("other-root", "other-attempt", "started", ""));
+            stream.observe(&mut event(
+                "other-root",
+                "other-attempt",
+                "text_delta",
+                "other draft",
+            ));
+            assert_eq!(stream.snapshots("s").len(), 2);
+            let mut returned = event("infer-root", "infer-attempt", "completed", "");
+            returned.topic = topic.into();
+            stream.observe(&mut returned);
+            assert_eq!(stream.snapshots("s").len(), 1);
+            assert_eq!(stream.snapshots("s")[0]["text"], "other draft");
+            let mut late = event("infer-root", "infer-attempt", "text_delta", "late");
+            stream.observe(&mut late);
+            assert!(!late.payload.contains_key("session_io_stream"));
+        }
+    }
 }
 #[derive(Default)]
 struct State {
@@ -86,7 +115,12 @@ impl Streams {
         };
         if matches!(
             event.topic.as_str(),
-            "chat/reply" | "chat/no_reply" | "chat/cancelled" | "session/io_state"
+            "chat/reply"
+                | "chat/no_reply"
+                | "chat/cancelled"
+                | "session/io_state"
+                | "plan/infer_result"
+                | "runtime/thread_result"
         ) {
             state
                 .drafts

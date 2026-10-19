@@ -38,46 +38,102 @@ type CapturedRequest = {
   [key: string]: unknown;
 };
 
-/** Only the normal deterministic final response adapts to the offered control
- * schema. Explicit scripted tools (including invalid replies) bypass this.
- * Off/typed-infer requests with no annotation carrier retain plain text. */
-export function profileFixtureReplyCarrier(
+/** Read only the Runtime-owned field in the actual Context tree; this is a
+ * test request inspector, never an executable protocol parsed from prose. */
+export function profileFixtureReturnBinding(request: CapturedRequest) {
+  const textOf = (content: unknown): string =>
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((part: any) =>
+              typeof part.text === "string" ? part.text : "",
+            )
+            .join("")
+        : "";
+  for (const message of [...request.messages].reverse()) {
+    if (message.role !== "user") continue;
+    const text = textOf(message.content);
+    const stack: any[][] = [],
+      roots: any[] = [];
+    for (const token of text.match(/"(?:\\.|[^"\\])*"|[()]|[^\s()]+/g) ?? []) {
+      if (token === "(") {
+        stack.push([]);
+        continue;
+      }
+      if (token === ")") {
+        const value = stack.pop();
+        if (value) (stack.at(-1) ?? roots).push(value);
+        continue;
+      }
+      // Runtime SExpr atoms deliberately allow literal layout inside quoted
+      // strings. This fixture inspector is not a JSON/prose carrier parser.
+      const value = token.startsWith('"')
+        ? token
+            .slice(1, -1)
+            .replace(
+              /\\([\s\S])/g,
+              (_, value: string) =>
+                (
+                  ({
+                    n: "\n",
+                    r: "\r",
+                    t: "\t",
+                    '"': '"',
+                    "\\": "\\",
+                  }) as Record<string, string>
+                )[value] ?? "\\" + value,
+            )
+        : token;
+      (stack.at(-1) ?? roots).push(value);
+    }
+    const context = roots.find(
+      (node: any) => Array.isArray(node) && node[0] === "context",
+    );
+    const child = (node: any, key: string) =>
+      Array.isArray(node)
+        ? node.find((item: any) => Array.isArray(item) && item[0] === key)
+        : undefined;
+    const value = (node: any, key: string) => child(node, key)?.[1];
+    const binding = child(
+      child(context, "evaluation-environment"),
+      "session-io-return",
+    );
+    if (binding) {
+      const format = child(binding, "format");
+      return {
+        delivery_id: value(binding, "delivery_id") as string,
+        format: {
+          id: value(format, "id") as string,
+          version: value(format, "version") as string,
+          encoding: value(format, "encoding") as string,
+        },
+        annotations_enabled: value(binding, "annotations_enabled") === "true",
+      };
+    }
+  }
+  return undefined;
+}
+export function profileFixtureAnnotationsMessage(
   request: CapturedRequest,
 ): { name: string; arguments: unknown } | undefined {
-  if (!Array.isArray(request.tools)) return undefined;
-  const carrier = request.tools.find((value: unknown) => {
-    if (!value || typeof value !== "object") return false;
-    const tool = value as {
-      function?: {
-        name?: string;
-        parameters?: { properties?: Record<string, unknown> };
-      };
-      name?: string;
-      parameters?: { properties?: Record<string, unknown> };
-    };
-    const definition = tool.function ?? tool;
-    const annotations = definition.parameters?.properties?.annotations as
-      | {
-          properties?: { execution?: { properties?: Record<string, unknown> } };
-        }
-      | undefined;
-    const execution = annotations?.properties?.execution?.properties;
-    return (
-      definition.name === "reply" &&
-      !definition.parameters?.properties?.content &&
-      !!execution?.title &&
-      !!execution?.result
-    );
-  });
-  if (!carrier) return undefined;
-  return {
-    name: "reply",
-    arguments: {
-      annotations: {
+  return profileFixtureReturnBinding(request)?.annotations_enabled
+    ? fixtureAnnotationsMessage({
         execution: {
           title: "处理合成测试请求",
           result: "合成测试请求已处理；未调用付费模型",
         },
+      })
+    : undefined;
+}
+export function fixtureAnnotationsMessage(metadata: unknown) {
+  return {
+    name: "deliver_message",
+    arguments: {
+      delivery_id: "fixture-metadata",
+      message: {
+        format: { id: "morphz.response.annotations", version: "1" },
+        content: { encoding: "json", value: metadata },
       },
     },
   };
@@ -183,44 +239,48 @@ export async function profileActualTransportFixture(
     response: ServerResponse,
     request: CapturedRequest,
     transaction?: string,
-    providedTool?: { name: string; arguments: unknown },
+    providedTool?:
+      | { name: string; arguments: unknown }
+      | Array<{ name: string; arguments: unknown }>,
     providedText?: string,
   ) => {
     const selectedTool =
       providedTool ??
       (transaction === undefined && providedText === undefined
         ? (options.deterministicTool?.(request) ??
-          profileFixtureReplyCarrier(request))
+          profileFixtureAnnotationsMessage(request))
         : undefined);
-    const call =
-      transaction || selectedTool
-        ? {
-            index: 0,
-            id: randomUUID(),
-            type: "function",
-            function: {
-              name: selectedTool?.name ?? "context_tx",
-              arguments: JSON.stringify(
-                selectedTool?.arguments ?? { transaction },
-              ),
-            },
-          }
-        : undefined;
-    const message = call
-      ? {
-          role: "assistant",
-          content:
-            selectedTool?.name === "reply"
-              ? (providedText ??
-                "TEST deterministic provider: request accepted.")
-              : "",
-          tool_calls: [call],
-        }
-      : {
-          role: "assistant",
-          content:
-            providedText ?? "TEST deterministic provider: request accepted.",
-        };
+    const selected = Array.isArray(selectedTool)
+      ? selectedTool
+      : selectedTool
+        ? [selectedTool]
+        : [];
+    if (transaction)
+      selected.push({ name: "context_tx", arguments: { transaction } });
+    const calls = selected.map((tool, index) => ({
+      index,
+      id: randomUUID(),
+      type: "function",
+      function: { name: tool.name, arguments: JSON.stringify(tool.arguments) },
+    }));
+    const metadataOnly =
+      selected.length > 0 &&
+      selected.every(
+        (tool) =>
+          tool.name === "deliver_message" &&
+          (tool.arguments as any)?.message?.format?.id ===
+            "morphz.response.annotations",
+      );
+    const call = calls.length > 0;
+    const message = {
+      role: "assistant",
+      content:
+        providedText ??
+        (!call || metadataOnly
+          ? "TEST deterministic provider: request accepted."
+          : ""),
+      ...(call ? { tool_calls: calls } : {}),
+    };
     if (request.stream) {
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       response.end(
@@ -278,16 +338,31 @@ export async function profileActualTransportFixture(
             signal: AbortSignal.timeout(90_000),
           },
         );
-        const result = await upstream.text();
-        // Only synthetic probe response text; never save or log request headers,
-        // credentials, provider errors or any original user's conversation.
-        if (upstream.ok) modelReplies.push(result);
-        response
-          .writeHead(upstream.status, {
-            "Content-Type":
-              upstream.headers.get("content-type") ?? "application/json",
-          })
-          .end(result);
+        response.writeHead(upstream.status, {
+          "Content-Type":
+            upstream.headers.get("content-type") ?? "application/json",
+        });
+        // Preserve real upstream timing: buffering text() would falsely prove
+        // only replayed deltas, not body visibility during live generation.
+        const captured: Uint8Array[] = [];
+        let capturedBytes = 0;
+        if (upstream.body)
+          for await (const chunk of upstream.body) {
+            if (upstream.ok) {
+              capturedBytes += chunk.byteLength;
+              assert.ok(
+                capturedBytes <= 4 * 1024 * 1024,
+                "Bounded synthetic provider capture",
+              );
+              captured.push(chunk);
+            }
+            response.write(chunk);
+          }
+        // Only synthetic response bytes; no headers, credentials, provider
+        // errors or original user conversations are persisted by this fixture.
+        if (upstream.ok)
+          modelReplies.push(Buffer.concat(captured).toString("utf8"));
+        response.end();
         return;
       }
       if (holdMarker && JSON.stringify(data.messages).includes(holdMarker)) {
@@ -530,6 +605,11 @@ export async function profileActualTransportFixture(
       runtime,
       client,
       options: callOptions,
+      ioStream: (sessionId: string, signal: AbortSignal) =>
+        fetch(
+          `${runtimeUrl}/api/sessions/${encodeURIComponent(sessionId)}/io/stream`,
+          { headers: { Authorization: "Bearer " + operator }, signal },
+        ),
       read: async () =>
         profileSnapshotSchema.parse(
           await client.call("profile.read", {}, callOptions),
@@ -578,6 +658,16 @@ export async function profileActualTransportFixture(
           },
           body,
         );
+        held.delete(marker);
+      },
+      releaseWithMessages(
+        marker: string,
+        messages: Array<{ name: string; arguments: unknown }>,
+        body?: string,
+      ) {
+        const item = held.get(marker);
+        assert.ok(item, "Expected held actual provider request");
+        respond(item.response, item.request, undefined, messages, body);
         held.delete(marker);
       },
       releaseWithText(marker: string, text: string) {

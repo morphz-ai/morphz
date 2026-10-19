@@ -761,6 +761,170 @@ async fn conformance<S: RuntimeStore + 'static>(
     retry_and_supersede(store, Protocol::On).await?;
     retry_and_supersede(store, Protocol::Off).await?;
     annotation_source_windows(store).await?;
+    native_companions_are_atomic_source_bound_and_idempotent(store).await?;
+    Ok(())
+}
+
+async fn native_companions_are_atomic_source_bound_and_idempotent<S: RuntimeStore + ?Sized>(
+    store: &S,
+) -> Result<(), TestError> {
+    use morphz::memory::EventAppend;
+    use morphz::response_annotations::{
+        normalize_response, ExecutionScope, NormalizationContext, PersistedAnnotations, Producer,
+        BUNDLE_PAYLOAD_KEY,
+    };
+    use morphz::session_io::response::{ReturnBinding, ANNOTATIONS_FORMAT};
+    let route = create_route(store, "native-companions").await?;
+    let owner = store
+        .ensure_thread(thread(&route, "owner", ThreadKind::Execution, Protocol::On))
+        .await?;
+    let source = |id: &str, enabled: bool| {
+        let evaluation = format!("{id}-evaluation");
+        let model = format!("{id}-model");
+        let scope = ExecutionScope {
+            execution_id: owner.id.clone(),
+            generation: owner.generation,
+        };
+        let context = NormalizationContext {
+            return_binding: Some(ReturnBinding::new(
+                &owner.id,
+                owner.generation,
+                &evaluation,
+                enabled,
+            )),
+            protocol: if enabled { Protocol::On } else { Protocol::Off },
+            scope: Some(scope.clone()),
+            producer: Some(Producer {
+                event_id: id.into(),
+                attempt_id: model.clone(),
+                sequence: None,
+            }),
+            ..Default::default()
+        };
+        let raw=morphz::llm::Response{content:"synthetic body".into(),tool_calls:vec![morphz::llm::ToolCallRepr{
+            id:"actual-annotation-call".into(),r#type:"function".into(),func_name:"deliver_message".into(),
+            arguments:json!({"delivery_id":"synthetic-metadata","message":{"format":{"id":ANNOTATIONS_FORMAT,"version":"1"},"content":{"encoding":"json","value":{"execution":{"title":"合成执行","result":"合成检查完成"}}}}}).to_string()
+        }]};
+        let normalized = normalize_response(&raw, &context).unwrap();
+        Event::new(id.into(),"Synthetic-Model".into(),morphz::event::TYPE_AGENT_CALL.into(),"chat/assistant_call".into(),
+            json!({"context_id":route.context,"session_id":route.session,"principal_id":route.principal,"root_turn_id":owner.root_turn_id,
+                "thread_id":owner.id,"thread_generation":owner.generation,"activation_id":evaluation,"attempt_id":evaluation,"model_attempt_id":model,
+                "response_annotations":context.protocol,BUNDLE_PAYLOAD_KEY:PersistedAnnotations::from_normalized(scope,&normalized)})
+                .as_object().unwrap().clone())
+    };
+    for enabled in [true, false] {
+        let original = source(
+            if enabled {
+                "native-source-on"
+            } else {
+                "native-source-off"
+            },
+            enabled,
+        );
+        store.append(original.clone()).await?;
+        store.append(original.clone()).await?;
+        let all = store
+            .query(QueryFilter {
+                context_id: Some(route.context.clone()),
+                ..Default::default()
+            })
+            .await?;
+        let outputs = all
+            .iter()
+            .filter(|event| {
+                event
+                    .payload
+                    .get("source_event_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(original.id.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outputs.len(),
+            1,
+            "source retry cannot duplicate native outputs"
+        );
+        let output = outputs[0];
+        assert_eq!(
+            output.topic,
+            if enabled {
+                "session/io_output"
+            } else {
+                "runtime/io_receipt"
+            }
+        );
+        assert_eq!(output.payload["tool_call_id"], "actual-annotation-call");
+        for key in [
+            "context_id",
+            "session_id",
+            "principal_id",
+            "thread_id",
+            "thread_generation",
+            "activation_id",
+            "attempt_id",
+            "model_attempt_id",
+            "root_turn_id",
+        ] {
+            assert_eq!(
+                output.payload.get(key),
+                original.payload.get(key),
+                "source owns {key}"
+            );
+        }
+        assert_eq!(output.payload["wake_policy"], "none");
+        assert_eq!(output.payload.contains_key("io_message"), enabled);
+        assert!(!morphz::event::is_context_observation(output));
+        assert!(!morphz::event::advances_cognitive_clock(output));
+        assert_eq!(
+            output.payload["target_delivery_id"],
+            original.payload[BUNDLE_PAYLOAD_KEY]["return_binding"]["delivery_id"]
+        );
+    }
+    let rollback = source("native-rollback-source", true);
+    let mut collision = source("native-source-on", true);
+    collision
+        .payload
+        .insert("text".into(), json!("different immutable payload"));
+    assert!(store
+        .append_batch(vec![
+            EventAppend {
+                event: rollback.clone()
+            },
+            EventAppend { event: collision }
+        ])
+        .await
+        .is_err());
+    let all = store
+        .query(QueryFilter {
+            context_id: Some(route.context.clone()),
+            ..Default::default()
+        })
+        .await?;
+    assert!(
+        !all.iter().any(|event| event.id == rollback.id
+            || event
+                .payload
+                .get("source_event_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(rollback.id.as_str())),
+        "source and companion must roll back together"
+    );
+    let mut mismatched = source("native-mismatched-source", true);
+    mismatched
+        .payload
+        .insert("thread_id".into(), json!("another-thread"));
+    store.append(mismatched.clone()).await?;
+    let all = store
+        .query(QueryFilter {
+            context_id: Some(route.context.clone()),
+            ..Default::default()
+        })
+        .await?;
+    assert!(!all.iter().any(|event| event
+        .payload
+        .get("source_event_id")
+        .and_then(serde_json::Value::as_str)
+        == Some(mismatched.id.as_str())));
     Ok(())
 }
 

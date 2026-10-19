@@ -3948,11 +3948,6 @@ impl MorphzRuntime {
         let response_annotations = request
             .response_annotations
             .unwrap_or_else(|| self.default_response_annotations());
-        if !response_annotations.is_off() {
-            self.inner
-                .orchestrator
-                .validate_response_annotations_protocol(response_annotations)?;
-        }
         let thread = NewThread {
             response_annotations,
             model_alias: request.model_alias.clone(),
@@ -4208,9 +4203,6 @@ impl MorphzRuntime {
         if *current != expected {
             return Ok(false);
         }
-        self.inner
-            .orchestrator
-            .validate_response_annotations_protocol(mode)?;
         crate::config::save_managed_response_annotations_at(path, mode)?;
         *current = mode;
         Ok(true)
@@ -11891,21 +11883,6 @@ impl SessionHandle {
         validate_client_message_id(&client_message_id)?;
         let effective_annotations =
             response_annotations.unwrap_or_else(|| self.runtime.default_response_annotations());
-        if input_destination.is_none()
-            && !effective_annotations.is_off()
-            && self
-                .runtime
-                .inner
-                .store
-                .message_event_id(&self.id, &client_message_id)
-                .await?
-                .is_none()
-        {
-            self.runtime
-                .inner
-                .orchestrator
-                .validate_response_annotations_protocol(effective_annotations)?;
-        }
         let staged_attachments = self
             .runtime
             .inner
@@ -12293,6 +12270,24 @@ impl SessionHandle {
             });
             if let Some(protocol) = payload.get("response_annotations") {
                 input.binding.execution["response_annotations"] = protocol.clone();
+                if protocol.as_str() == Some("on")
+                    && !input.binding.accept_formats.iter().any(|binding| {
+                        binding.format.id == crate::session_io::response::ANNOTATIONS_FORMAT
+                    })
+                {
+                    let annotations = self.runtime.inner.session_io.resolve(
+                        &crate::session_io::Format::new(
+                            crate::session_io::response::ANNOTATIONS_FORMAT,
+                            "1",
+                        ),
+                        "json",
+                        "registered",
+                    )?;
+                    // This effective display-output policy is frozen together
+                    // with the accepted annotation mode. The original request
+                    // and its idempotency fingerprint remain byte-identical.
+                    input.binding.accept_formats.push(annotations);
+                }
             }
             payload.insert("session_io".into(), serde_json::to_value(input)?);
         }
@@ -17800,7 +17795,8 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 return Ok(no_reply_response(format!("objective-long-run-call-{call}")));
             }
-            if !tools.iter().any(|tool| tool.name == "objective_update") {
+            assert!(tools.iter().any(|tool| tool.name == "objective_update"));
+            if messages.iter().any(|message|message.role=="user"&&message.content.starts_with("The Runtime persisted your Objective completion decision but has not ended the Objective.")) {
                 return Ok(text_response("long-objective-complete"));
             }
             let arguments = json!({
@@ -17975,7 +17971,8 @@ mod tests {
             } else {
                 return Err("shared Context Objective test cannot identify active Session".into());
             };
-            if !tools.iter().any(|tool| tool.name == "objective_update") {
+            assert!(tools.iter().any(|tool| tool.name == "objective_update"));
+            if messages.iter().any(|message|message.role=="user"&&message.content.starts_with("The Runtime persisted your Objective completion decision but has not ended the Objective.")) {
                 return Ok(text_response(format!("{session_id}-complete")));
             }
             let arguments = json!({
@@ -18115,8 +18112,9 @@ mod tests {
             let observed_prepared_status = transcript.contains("completion_prepared");
             let observed_receipt =
                 transcript.contains("The Runtime persisted your Objective completion decision");
-            let observed_finalization_tools =
-                !tools.is_empty() && tools.iter().all(|tool| tool.name == "no_reply");
+            let observed_finalization_tools = ["no_reply", "deliver_message", "objective_update"]
+                .iter()
+                .all(|name| tools.iter().any(|tool| tool.name == *name));
             let observed =
                 observed_prepared_status && observed_receipt && observed_finalization_tools;
             self.observed_repaired_receipt
@@ -18228,8 +18226,9 @@ mod tests {
                     }],
                 });
             }
-            assert!(!tools.iter().any(|tool| tool.name == "objective_update"));
-            assert!(!tools.iter().any(|tool| tool.name == "objective_amend"));
+            assert!(tools.iter().any(|tool| tool.name == "objective_update"));
+            assert!(tools.iter().any(|tool| tool.name == "objective_amend"));
+            assert!(messages.iter().any(|message|message.role=="user"&&message.content.starts_with("The Runtime persisted your Objective completion decision but has not ended the Objective.")));
             Ok(text_response("objective-complete"))
         }
     }
