@@ -1,0 +1,134 @@
+{
+  "date": "2026-10-20",
+  "scope": "Real DeepSeek through Morphz RoutedClient and ProtocolClient, using a disposable synthetic file. Provider-boundary evidence only; not full Session IO Runtime or original Desktop acceptance.",
+  "model": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com/responses",
+  "reasoning_effort": "max",
+  "explicit_output_mode": "json_schema",
+  "schema_sent": true,
+  "schema_only_sentinel_verified": "MORPHZ_NATIVE_SCHEMA_WIRE_20261020",
+  "original_runtime_restarted": false,
+  "original_model_or_proxy_config_changed": false,
+  "production_session_io_admission_changed": false,
+  "helper": "morphz/examples/native_output_probe.rs",
+  "helper_sha256": "9a7ee3f620217fd6311f04d872a3060349b80e2915cb5e94c6cb161d155fb5c2",
+  "source_log_sha256": "c779418e024c8dbc9c1012208b398180cda61d04671cc18029ce9caa82d5e6b7",
+  "source_log": "/tmp/morphz-native-provider-gate.laKeTh/rust-provider-all.log",
+  "assertions": [
+    "Raw stream equals the returned content",
+    "Strictly typed body and summary, no unknown fields",
+    "Schema-only sentinel received",
+    "Real synthetic fixture result appears in answer",
+    "No work in plain chat; exactly one read in each work case",
+    "No annotation companion tool, repair request or final relay",
+    "Identical tool definitions across all five requests",
+    "Applicable summary present when enabled, null for plain chat and disabled mode"
+  ],
+  "unit_gate": {
+    "command": "cargo test -p morphz --lib provider:: -j 1",
+    "passed": 188,
+    "failed": 0,
+    "ignored": 3,
+    "ignored_scope": "Existing live Codex and Kimi login/account tests"
+  },
+  "records": [
+    {
+      "case": "plain",
+      "elapsed_ms": 2548,
+      "endpoint": "https://api.deepseek.com",
+      "first_delta_ms": 2363,
+      "physical_model": "deepseek-flash",
+      "protocol": "openai-responses",
+      "raw_delta_count": 69,
+      "tool_definitions_sha256": "66a3419698ec7306e0c4905ea783193ecdd1ec9e501186cd8fe1a9a716d2e666",
+      "turn": 0,
+      "work_calls": []
+    },
+    {
+      "annotations_present": false,
+      "body": "2+3 等于 5，这是一个\"简单又确定\"的答案。\n像刚发芽的 🌱 一样，数学的小种子也长成了 5。",
+      "case": "plain",
+      "complete": true,
+      "provider_boundary_only": true,
+      "reads": 0,
+      "requests": 1,
+      "stable_tools": true
+    },
+    {
+      "case": "work",
+      "elapsed_ms": 1026,
+      "endpoint": "https://api.deepseek.com",
+      "first_delta_ms": null,
+      "physical_model": "deepseek-flash",
+      "protocol": "openai-responses",
+      "raw_delta_count": 0,
+      "tool_definitions_sha256": "66a3419698ec7306e0c4905ea783193ecdd1ec9e501186cd8fe1a9a716d2e666",
+      "turn": 0,
+      "work_calls": [
+        "read_fixture"
+      ]
+    },
+    {
+      "case": "work",
+      "elapsed_ms": 1217,
+      "endpoint": "https://api.deepseek.com",
+      "first_delta_ms": 1018,
+      "physical_model": "deepseek-flash",
+      "protocol": "openai-responses",
+      "raw_delta_count": 70,
+      "tool_definitions_sha256": "66a3419698ec7306e0c4905ea783193ecdd1ec9e501186cd8fe1a9a716d2e666",
+      "turn": 1,
+      "work_calls": []
+    },
+    {
+      "annotations_present": true,
+      "body": "book.txt 中记录的作者是测试作者。",
+      "case": "work",
+      "complete": true,
+      "provider_boundary_only": true,
+      "reads": 1,
+      "requests": 2,
+      "stable_tools": true
+    },
+    {
+      "case": "off",
+      "elapsed_ms": 884,
+      "endpoint": "https://api.deepseek.com",
+      "first_delta_ms": null,
+      "physical_model": "deepseek-flash",
+      "protocol": "openai-responses",
+      "raw_delta_count": 0,
+      "tool_definitions_sha256": "66a3419698ec7306e0c4905ea783193ecdd1ec9e501186cd8fe1a9a716d2e666",
+      "turn": 0,
+      "work_calls": [
+        "read_fixture"
+      ]
+    },
+    {
+      "case": "off",
+      "elapsed_ms": 1239,
+      "endpoint": "https://api.deepseek.com",
+      "first_delta_ms": 1131,
+      "physical_model": "deepseek-flash",
+      "protocol": "openai-responses",
+      "raw_delta_count": 41,
+      "tool_definitions_sha256": "66a3419698ec7306e0c4905ea783193ecdd1ec9e501186cd8fe1a9a716d2e666",
+      "turn": 1,
+      "work_calls": []
+    },
+    {
+      "annotations_present": false,
+      "body": "根据 book.txt 的记录，这本书的作者是测试作者。",
+      "case": "off",
+      "complete": true,
+      "provider_boundary_only": true,
+      "reads": 1,
+      "requests": 2,
+      "stable_tools": true
+    },
+    {
+      "code": 0,
+      "signal": null
+    }
+  ]
+}

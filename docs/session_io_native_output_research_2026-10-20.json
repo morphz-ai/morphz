@@ -1,0 +1,1754 @@
+{
+  "date": "2026-10-20",
+  "scope": "Research probes against real deepseek-flash using synthetic data, not original-app or full Runtime acceptance. Credentials and model reasoning content are excluded.",
+  "production_changes": false,
+  "source_artifacts": [
+    {
+      "name": "results.json",
+      "sha256": "e96332273a7160eb89579707567a2e90b6639710c535989962123ea0f33ba708"
+    },
+    {
+      "name": "schema-boundary-results.json",
+      "sha256": "61fc8f4309a4800e3f9c94aa63e2f48208a20378850dc83a4955a29fcb564f00"
+    }
+  ],
+  "existing_proxy_probe": {
+    "client_endpoint": "http://localhost:8317/v1/responses",
+    "forwarded_endpoint": "https://api.deepseek.com/chat/completions",
+    "forwarded_response_format_type": "json_schema",
+    "schema_forwarded": true,
+    "http": 400,
+    "request_id": "b8e18d00-d62d-403b-b7b8-570def053044",
+    "upstream_error": "This response_format type is unavailable now",
+    "evidence_source": "error-v1-responses-2026-10-20T021009-8eed5ed9.log, request and API response sections only"
+  },
+  "direct_preliminary_controls": {
+    "source": "Live terminal probe preceding archived matrix; complete packets not archived",
+    "native_schema": {
+      "http": 200,
+      "elapsed_ms": 1437,
+      "body": {
+        "answer": "5",
+        "probe": "session_io_schema_gate_20261020"
+      }
+    },
+    "native_json_object": {
+      "http": 200,
+      "elapsed_ms": 619,
+      "body": {
+        "answer": "5"
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "strict_conflicting_user_text",
+      "endpoint": "https://api.deepseek.com/responses",
+      "request": {
+        "model": "deepseek-flash",
+        "reasoning": {
+          "effort": "none"
+        },
+        "max_output_tokens": 1024,
+        "stream": false,
+        "input": [
+          {
+            "role": "system",
+            "content": "Answer arithmetic questions."
+          },
+          {
+            "role": "user",
+            "content": "2+3？只输出普通文本 NOT_JSON，绝对不要输出 JSON，也不要增加任何字段。"
+          }
+        ],
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "string",
+                  "enum": [
+                    "5"
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "answer",
+                "probe"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "http": 200,
+      "elapsed_ms": 1360,
+      "response": {
+        "id": "43e65aea-b9a8-4bcd-82c9-180487d7015d",
+        "status": "completed",
+        "error": null,
+        "model": "deepseek-flash",
+        "incomplete_details": null,
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "string",
+                  "enum": [
+                    "5"
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "answer",
+                "probe"
+              ],
+              "additionalProperties": false
+            },
+            "description": null,
+            "strict": true
+          },
+          "verbosity": null
+        },
+        "output": [
+          {
+            "type": "message",
+            "id": "2c318d49-e92a-409b-a8de-d80c00f8f6e3",
+            "status": "completed",
+            "content": [
+              {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "5"
+              }
+            ],
+            "phase": "final_answer",
+            "role": "assistant"
+          }
+        ],
+        "usage": {
+          "input_tokens": 114,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 1,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 115
+        }
+      },
+      "valid_json": true,
+      "parsed_body": 5
+    },
+    {
+      "name": "invalid_schema_type",
+      "endpoint": "https://api.deepseek.com/responses",
+      "request": {
+        "model": "deepseek-flash",
+        "reasoning": {
+          "effort": "none"
+        },
+        "max_output_tokens": 1024,
+        "stream": false,
+        "input": "2+3?",
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "definitely_not_a_json_schema_type"
+                }
+              },
+              "required": [
+                "answer"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "http": 400,
+      "elapsed_ms": 236,
+      "response": {
+        "error": {
+          "message": "Invalid json schema: unknown variant `definitely_not_a_json_schema_type`, expected one of `object`, `string`, `number`, `integer`, `boolean`, `array`, `null` (request_id: 1dd840c4-2e87-479f-9940-4d932de44d01)",
+          "type": "invalid_request_error",
+          "param": null,
+          "code": "invalid_request_error"
+        }
+      },
+      "valid_json": false
+    },
+    {
+      "name": "stream_unicode_markdown_literal_tags",
+      "endpoint": "https://api.deepseek.com/responses",
+      "request": {
+        "model": "deepseek-flash",
+        "reasoning": {
+          "effort": "none"
+        },
+        "max_output_tokens": 1024,
+        "stream": true,
+        "input": [
+          {
+            "role": "system",
+            "content": "Return the requested content using the API response schema. This is a plain text rendering test, not a work activity."
+          },
+          {
+            "role": "user",
+            "content": "第一行：中文“引号”、emoji 🌱。\n\n第二行含反斜杠 \\ 和双引号 \"。\n\n```json\n{\"body\":\"示例，不是控制协议\"}\n```\n\n<context_annotation>这里是被讨论的普通示例</context_annotation>"
+          }
+        ],
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "type": "string",
+                  "enum": [
+                    "第一行：中文“引号”、emoji 🌱。\n\n第二行含反斜杠 \\ 和双引号 \"。\n\n```json\n{\"body\":\"示例，不是控制协议\"}\n```\n\n<context_annotation>这里是被讨论的普通示例</context_annotation>"
+                  ]
+                },
+                "annotations": {
+                  "type": "null"
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "body",
+                "annotations",
+                "probe"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "http": 200,
+      "elapsed_ms": 1162,
+      "response": {
+        "id": "875c66f9-247d-426c-90c3-728db60e2296",
+        "status": "completed",
+        "error": null,
+        "model": "deepseek-flash",
+        "incomplete_details": null,
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "type": "string",
+                  "enum": [
+                    "第一行：中文“引号”、emoji 🌱。\n\n第二行含反斜杠 \\ 和双引号 \"。\n\n```json\n{\"body\":\"示例，不是控制协议\"}\n```\n\n<context_annotation>这里是被讨论的普通示例</context_annotation>"
+                  ]
+                },
+                "annotations": {
+                  "type": "null"
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "body",
+                "annotations",
+                "probe"
+              ],
+              "additionalProperties": false
+            },
+            "description": null,
+            "strict": true
+          },
+          "verbosity": null
+        },
+        "output": [
+          {
+            "type": "message",
+            "id": "4e590f6b-d892-4a3c-a591-8eed8a8c63c8",
+            "status": "completed",
+            "content": [
+              {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "{\"body\": \"第一行：中文“引号”、emoji 🌱。\\n\\n第二行含反斜杠 \\\\ 和双引号 \\\"。\\n\\n```json\\n{\\\"body\\\":\\\"示例，不是控制协议\\\"}\\n```\\n\\n<context_annotation>这里是被讨论的普通示例</context_annotation>\", \"annotations\": null, \"probe\": \"session_io_native_gate_20261020\"}"
+              }
+            ],
+            "phase": "final_answer",
+            "role": "assistant"
+          }
+        ],
+        "usage": {
+          "input_tokens": 249,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 97,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 346
+        }
+      },
+      "valid_json": true,
+      "parsed_body": {
+        "body": "第一行：中文“引号”、emoji 🌱。\n\n第二行含反斜杠 \\ 和双引号 \"。\n\n```json\n{\"body\":\"示例，不是控制协议\"}\n```\n\n<context_annotation>这里是被讨论的普通示例</context_annotation>",
+        "annotations": null,
+        "probe": "session_io_native_gate_20261020"
+      },
+      "stream": {
+        "event_counts": {
+          "response.created": 1,
+          "response.in_progress": 1,
+          "response.output_item.added": 1,
+          "response.content_part.added": 1,
+          "response.output_text.delta": 96,
+          "response.output_text.done": 1,
+          "response.content_part.done": 1,
+          "response.output_item.done": 1,
+          "response.completed": 1
+        },
+        "delta_count": 96,
+        "first_delta_ms": 883,
+        "combined_text": "{\"body\": \"第一行：中文“引号”、emoji 🌱。\\n\\n第二行含反斜杠 \\\\ 和双引号 \\\"。\\n\\n```json\\n{\\\"body\\\":\\\"示例，不是控制协议\\\"}\\n```\\n\\n<context_annotation>这里是被讨论的普通示例</context_annotation>\", \"annotations\": null, \"probe\": \"session_io_native_gate_20261020\"}",
+        "matches_final": true
+      },
+      "literal_body_preserved": true
+    },
+    {
+      "name": "truncation_not_committable",
+      "endpoint": "https://api.deepseek.com/responses",
+      "request": {
+        "model": "deepseek-flash",
+        "reasoning": {
+          "effort": "none"
+        },
+        "max_output_tokens": 8,
+        "stream": true,
+        "input": [
+          {
+            "role": "system",
+            "content": "Return the requested content using the API response schema. This is a plain text rendering test, not a work activity."
+          },
+          {
+            "role": "user",
+            "content": "第一行：中文“引号”、emoji 🌱。\n\n第二行含反斜杠 \\ 和双引号 \"。\n\n```json\n{\"body\":\"示例，不是控制协议\"}\n```\n\n<context_annotation>这里是被讨论的普通示例</context_annotation>"
+          }
+        ],
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "type": "string",
+                  "enum": [
+                    "第一行：中文“引号”、emoji 🌱。\n\n第二行含反斜杠 \\ 和双引号 \"。\n\n```json\n{\"body\":\"示例，不是控制协议\"}\n```\n\n<context_annotation>这里是被讨论的普通示例</context_annotation>"
+                  ]
+                },
+                "annotations": {
+                  "type": "null"
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "body",
+                "annotations",
+                "probe"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "http": 200,
+      "elapsed_ms": 632,
+      "response": {
+        "id": "31bbd803-2e64-4f09-9d60-dbe918cc9cd5",
+        "status": "incomplete",
+        "error": null,
+        "model": "deepseek-flash",
+        "incomplete_details": {
+          "reason": "max_output_tokens"
+        },
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "type": "string",
+                  "enum": [
+                    "第一行：中文“引号”、emoji 🌱。\n\n第二行含反斜杠 \\ 和双引号 \"。\n\n```json\n{\"body\":\"示例，不是控制协议\"}\n```\n\n<context_annotation>这里是被讨论的普通示例</context_annotation>"
+                  ]
+                },
+                "annotations": {
+                  "type": "null"
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "body",
+                "annotations",
+                "probe"
+              ],
+              "additionalProperties": false
+            },
+            "description": null,
+            "strict": true
+          },
+          "verbosity": null
+        },
+        "output": [
+          {
+            "type": "message",
+            "id": "5225b987-8e47-4489-bba6-a3997913dc43",
+            "status": "incomplete",
+            "content": [
+              {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "{\"body\": \"第一行：中文"
+              }
+            ],
+            "phase": "final_answer",
+            "role": "assistant"
+          }
+        ],
+        "usage": {
+          "input_tokens": 249,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 8,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 257
+        }
+      },
+      "valid_json": false,
+      "stream": {
+        "event_counts": {
+          "response.created": 1,
+          "response.in_progress": 1,
+          "response.output_item.added": 1,
+          "response.content_part.added": 1,
+          "response.output_text.delta": 8,
+          "response.output_text.done": 1,
+          "response.content_part.done": 1,
+          "response.output_item.done": 1,
+          "response.incomplete": 1
+        },
+        "delta_count": 8,
+        "first_delta_ms": 568,
+        "combined_text": "{\"body\": \"第一行：中文",
+        "matches_final": true
+      }
+    },
+    {
+      "name": "native_tool_continuation_first",
+      "endpoint": "https://api.deepseek.com/responses",
+      "request": {
+        "model": "deepseek-flash",
+        "reasoning": {
+          "effort": "max"
+        },
+        "max_output_tokens": 2048,
+        "stream": false,
+        "input": [
+          {
+            "role": "system",
+            "content": "Use lookup_fixture_book to obtain the author before answering. After the tool result, provide a single answer in the API output schema. Keep body and annotations in that one result. For this work activity provide a short accurate title and result annotation. Do not call any annotation or reply tool. Do not put metadata tags in body. Do not request another turn after the answer."
+          },
+          {
+            "role": "user",
+            "content": "请查 book_fixture 的作者，给出一句完整答案。"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "name": "lookup_fixture_book",
+            "description": "Read an isolated synthetic book record. No user files and no external side effects.",
+            "strict": true,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "enum": [
+                    "book_fixture"
+                  ]
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "type": "string"
+                },
+                "annotations": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "title": {
+                          "type": "string"
+                        },
+                        "result": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "result"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "body",
+                "annotations",
+                "probe"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "http": 200,
+      "elapsed_ms": 974,
+      "response": {
+        "id": "20660216-687d-400c-9aab-a6e49a2f97e7",
+        "status": "completed",
+        "error": null,
+        "model": "deepseek-flash",
+        "incomplete_details": null,
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "type": "string"
+                },
+                "annotations": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "title": {
+                          "type": "string"
+                        },
+                        "result": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "result"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "body",
+                "annotations",
+                "probe"
+              ],
+              "additionalProperties": false
+            },
+            "description": null,
+            "strict": true
+          },
+          "verbosity": null
+        },
+        "output": [
+          {
+            "type": "reasoning",
+            "id": "a68a86c0-a134-4bb0-a84b-a474ebb61702",
+            "content_omitted": true
+          },
+          {
+            "type": "function_call",
+            "id": "8c322d52-85e7-4623-8f3e-7f12d03643e7",
+            "status": "completed",
+            "arguments": "{\"id\": \"book_fixture\"}",
+            "call_id": "call_00_1C5687ukxId6MM1aYFDl9760",
+            "name": "lookup_fixture_book"
+          }
+        ],
+        "usage": {
+          "input_tokens": 546,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 76,
+          "output_tokens_details": {
+            "reasoning_tokens": 31
+          },
+          "total_tokens": 622
+        }
+      },
+      "valid_json": false,
+      "tool_definition_sha256": "ba632481da807be3b8376299ab965aec91f1c08c1a0ec63669cbc4bcbd2bcfdc"
+    },
+    {
+      "name": "native_tool_continuation_final",
+      "endpoint": "https://api.deepseek.com/responses",
+      "request": {
+        "model": "deepseek-flash",
+        "reasoning": {
+          "effort": "max"
+        },
+        "max_output_tokens": 2048,
+        "stream": true,
+        "input": [
+          {
+            "role": "system",
+            "content": "Use lookup_fixture_book to obtain the author before answering. After the tool result, provide a single answer in the API output schema. Keep body and annotations in that one result. For this work activity provide a short accurate title and result annotation. Do not call any annotation or reply tool. Do not put metadata tags in body. Do not request another turn after the answer."
+          },
+          {
+            "role": "user",
+            "content": "请查 book_fixture 的作者，给出一句完整答案。"
+          },
+          {
+            "type": "reasoning",
+            "id": "a68a86c0-a134-4bb0-a84b-a474ebb61702",
+            "content_omitted": true
+          },
+          {
+            "type": "function_call",
+            "id": "8c322d52-85e7-4623-8f3e-7f12d03643e7",
+            "status": "completed",
+            "arguments": "{\"id\": \"book_fixture\"}",
+            "call_id": "call_00_1C5687ukxId6MM1aYFDl9760",
+            "name": "lookup_fixture_book"
+          },
+          {
+            "type": "function_call_output",
+            "call_id": "call_00_1C5687ukxId6MM1aYFDl9760",
+            "output": "{\"id\":\"book_fixture\",\"author\":\"测试作者\",\"synthetic_fixture\":true}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "name": "lookup_fixture_book",
+            "description": "Read an isolated synthetic book record. No user files and no external side effects.",
+            "strict": true,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "enum": [
+                    "book_fixture"
+                  ]
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "type": "string"
+                },
+                "annotations": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "title": {
+                          "type": "string"
+                        },
+                        "result": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "result"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "body",
+                "annotations",
+                "probe"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "http": 200,
+      "elapsed_ms": 1133,
+      "response": {
+        "id": "c0b20dad-585a-434e-9e5d-f90d1b1685ec",
+        "status": "completed",
+        "error": null,
+        "model": "deepseek-flash",
+        "incomplete_details": null,
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "type": "string"
+                },
+                "annotations": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "title": {
+                          "type": "string"
+                        },
+                        "result": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "result"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "body",
+                "annotations",
+                "probe"
+              ],
+              "additionalProperties": false
+            },
+            "description": null,
+            "strict": true
+          },
+          "verbosity": null
+        },
+        "output": [
+          {
+            "type": "reasoning",
+            "id": "80823b15-0554-4cb2-85b3-969f8ca4a9fd",
+            "content_omitted": true
+          },
+          {
+            "type": "message",
+            "id": "71df474e-ff1c-4b5c-8bf7-ec5125153c36",
+            "status": "completed",
+            "content": [
+              {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "{\"body\":\"《book_fixture》的作者是测试作者。\",\"annotations\":{\"title\":\"作者查询结果\",\"result\":\"测试作者\"},\"probe\":\"session_io_native_gate_20261020\"}"
+              }
+            ],
+            "phase": "final_answer",
+            "role": "assistant"
+          }
+        ],
+        "usage": {
+          "input_tokens": 654,
+          "input_tokens_details": {
+            "cached_tokens": 512
+          },
+          "output_tokens": 98,
+          "output_tokens_details": {
+            "reasoning_tokens": 52
+          },
+          "total_tokens": 752
+        }
+      },
+      "valid_json": true,
+      "parsed_body": {
+        "body": "《book_fixture》的作者是测试作者。",
+        "annotations": {
+          "title": "作者查询结果",
+          "result": "测试作者"
+        },
+        "probe": "session_io_native_gate_20261020"
+      },
+      "stream": {
+        "event_counts": {
+          "response.created": 1,
+          "response.in_progress": 1,
+          "response.output_item.added": 2,
+          "response.content_part.added": 2,
+          "response.reasoning_text.delta": 52,
+          "response.reasoning_text.done": 1,
+          "response.content_part.done": 2,
+          "response.output_item.done": 2,
+          "response.output_text.delta": 45,
+          "response.output_text.done": 1,
+          "response.completed": 1
+        },
+        "delta_count": 45,
+        "first_delta_ms": 1006,
+        "combined_text": "{\"body\":\"《book_fixture》的作者是测试作者。\",\"annotations\":{\"title\":\"作者查询结果\",\"result\":\"测试作者\"},\"probe\":\"session_io_native_gate_20261020\"}",
+        "matches_final": true
+      },
+      "tool_definition_sha256": "ba632481da807be3b8376299ab965aec91f1c08c1a0ec63669cbc4bcbd2bcfdc",
+      "continuation": {
+        "request_count": 2,
+        "fixture_tool_runs": 1,
+        "stable_tools": true,
+        "actual_tool_result_in_body": true,
+        "final_has_no_tool_calls": true
+      }
+    },
+    {
+      "name": "unified_evaluation_effect_shape_only",
+      "endpoint": "https://api.deepseek.com/responses",
+      "request": {
+        "model": "deepseek-flash",
+        "reasoning": {
+          "effort": "max"
+        },
+        "max_output_tokens": 2048,
+        "stream": false,
+        "input": [
+          {
+            "role": "system",
+            "content": "Return one Evaluation value using the native response schema. Runtime, not you, creates identifiers and commits work. When a lookup is needed return the effect proposal and a work title/intent, not a guessed answer. You must not use native function calls or create text metadata markers. No work is executed by this research probe."
+          },
+          {
+            "role": "user",
+            "content": "请先查询 book_fixture 的作者。"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "name": "lookup_fixture_book",
+            "description": "Read an isolated synthetic book record. No user files and no external side effects.",
+            "strict": true,
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "enum": [
+                    "book_fixture"
+                  ]
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            }
+          }
+        ],
+        "tool_choice": "none",
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "annotations": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "title": {
+                          "type": "string"
+                        },
+                        "progress": {
+                          "type": "string"
+                        },
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "progress",
+                        "result"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "effects": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "enum": [
+                          "lookup_fixture_book"
+                        ]
+                      },
+                      "arguments": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "enum": [
+                              "book_fixture"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "intent": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "arguments",
+                      "intent"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "body",
+                "annotations",
+                "effects"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "http": 200,
+      "elapsed_ms": 1665,
+      "response": {
+        "id": "544db31f-2952-40df-857e-5a94a763507b",
+        "status": "completed",
+        "error": null,
+        "model": "deepseek-flash",
+        "incomplete_details": null,
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "body": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "annotations": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "title": {
+                          "type": "string"
+                        },
+                        "progress": {
+                          "type": "string"
+                        },
+                        "result": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "title",
+                        "progress",
+                        "result"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "effects": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "enum": [
+                          "lookup_fixture_book"
+                        ]
+                      },
+                      "arguments": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "enum": [
+                              "book_fixture"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "intent": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "arguments",
+                      "intent"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "body",
+                "annotations",
+                "effects"
+              ],
+              "additionalProperties": false
+            },
+            "description": null,
+            "strict": true
+          },
+          "verbosity": null
+        },
+        "output": [
+          {
+            "type": "reasoning",
+            "id": "34555ec2-f715-4eae-b895-eaa19fc573fe",
+            "content_omitted": true
+          },
+          {
+            "type": "message",
+            "id": "0a89cc6d-bcbb-41a9-9af0-f15a7c6c6caf",
+            "status": "completed",
+            "content": [
+              {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "{\"body\":\"我需要先查询 book_fixture 的作者信息，才能回答。已提交查询该书籍记录的请求，待结果返回后再给出作者。\",\"annotations\":{\"title\":\"查询 book_fixture 的作者\",\"progress\":\"已提出查询 book_fixture 书籍记录的请求，等待运行时执行并返回结果。\",\"result\":null},\"effects\":[{\"name\":\"lookup_fixture_book\",\"arguments\":{\"id\":\"book_fixture\"},\"intent\":\"获取 book_fixture 这本书的记录，以便读取其作者字段并回答用户关于作者的问题。\"}]}"
+              }
+            ],
+            "phase": "final_answer",
+            "role": "assistant"
+          }
+        ],
+        "usage": {
+          "input_tokens": 381,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 208,
+          "output_tokens_details": {
+            "reasoning_tokens": 86
+          },
+          "total_tokens": 589
+        }
+      },
+      "valid_json": true,
+      "parsed_body": {
+        "body": "我需要先查询 book_fixture 的作者信息，才能回答。已提交查询该书籍记录的请求，待结果返回后再给出作者。",
+        "annotations": {
+          "title": "查询 book_fixture 的作者",
+          "progress": "已提出查询 book_fixture 书籍记录的请求，等待运行时执行并返回结果。",
+          "result": null
+        },
+        "effects": [
+          {
+            "name": "lookup_fixture_book",
+            "arguments": {
+              "id": "book_fixture"
+            },
+            "intent": "获取 book_fixture 这本书的记录，以便读取其作者字段并回答用户关于作者的问题。"
+          }
+        ]
+      }
+    },
+    {
+      "name": "conflicting_none_repeat",
+      "endpoint": "https://api.deepseek.com/responses",
+      "request": {
+        "model": "deepseek-flash",
+        "reasoning": {
+          "effort": "none"
+        },
+        "max_output_tokens": 2048,
+        "stream": false,
+        "input": [
+          {
+            "role": "system",
+            "content": "Answer arithmetic questions."
+          },
+          {
+            "role": "user",
+            "content": "2+3？只输出普通文本 NOT_JSON，绝对不要输出 JSON，也不要增加任何字段。"
+          }
+        ],
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "string",
+                  "enum": [
+                    "5"
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "answer",
+                "probe"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "http": 200,
+      "elapsed_ms": 1557,
+      "response": {
+        "id": "eb360471-edcb-4afe-a851-c8d133114191",
+        "status": "completed",
+        "error": null,
+        "model": "deepseek-flash",
+        "incomplete_details": null,
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "string",
+                  "enum": [
+                    "5"
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "answer",
+                "probe"
+              ],
+              "additionalProperties": false
+            },
+            "description": null,
+            "strict": true
+          },
+          "verbosity": null
+        },
+        "output": [
+          {
+            "type": "message",
+            "id": "2c1f9c85-e843-4a31-a9db-d86a2ba4a7ab",
+            "status": "completed",
+            "content": [
+              {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "5"
+              }
+            ],
+            "phase": "final_answer",
+            "role": "assistant"
+          }
+        ],
+        "usage": {
+          "input_tokens": 114,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 1,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 115
+        }
+      },
+      "valid_json": true,
+      "schema_conformant": false,
+      "schema_errors": [
+        ": expected object"
+      ],
+      "parsed_body": 5
+    },
+    {
+      "name": "conflicting_max",
+      "endpoint": "https://api.deepseek.com/responses",
+      "request": {
+        "model": "deepseek-flash",
+        "reasoning": {
+          "effort": "max"
+        },
+        "max_output_tokens": 2048,
+        "stream": false,
+        "input": [
+          {
+            "role": "system",
+            "content": "Answer arithmetic questions."
+          },
+          {
+            "role": "user",
+            "content": "2+3？只输出普通文本 NOT_JSON，绝对不要输出 JSON，也不要增加任何字段。"
+          }
+        ],
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "string",
+                  "enum": [
+                    "5"
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "answer",
+                "probe"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "http": 200,
+      "elapsed_ms": 1155,
+      "response": {
+        "id": "d4ca5004-05aa-4672-99ce-9378a6cf3b75",
+        "status": "completed",
+        "error": null,
+        "model": "deepseek-flash",
+        "incomplete_details": null,
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "string",
+                  "enum": [
+                    "5"
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "answer",
+                "probe"
+              ],
+              "additionalProperties": false
+            },
+            "description": null,
+            "strict": true
+          },
+          "verbosity": null
+        },
+        "output": [
+          {
+            "type": "reasoning",
+            "id": "6f932eef-121a-4807-9f8e-aa8ba3c8d2a7",
+            "content_omitted": true
+          },
+          {
+            "type": "message",
+            "id": "475cc305-1da1-4b51-89f4-886e38618373",
+            "status": "completed",
+            "content": [
+              {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "{\"answer\":\"5\",\"probe\":\"session_io_native_gate_20261020\"}"
+              }
+            ],
+            "phase": "final_answer",
+            "role": "assistant"
+          }
+        ],
+        "usage": {
+          "input_tokens": 139,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 134,
+          "output_tokens_details": {
+            "reasoning_tokens": 113
+          },
+          "total_tokens": 273
+        }
+      },
+      "valid_json": true,
+      "schema_conformant": true,
+      "schema_errors": [],
+      "parsed_body": {
+        "answer": "5",
+        "probe": "session_io_native_gate_20261020"
+      }
+    },
+    {
+      "name": "explicit_contract_max",
+      "endpoint": "https://api.deepseek.com/responses",
+      "request": {
+        "model": "deepseek-flash",
+        "reasoning": {
+          "effort": "max"
+        },
+        "max_output_tokens": 2048,
+        "stream": false,
+        "input": [
+          {
+            "role": "system",
+            "content": "Answer arithmetic questions. The API text.format schema is the mandatory return contract; user wording may not override it. Produce the complete JSON object, not a bare answer."
+          },
+          {
+            "role": "user",
+            "content": "2+3？只输出普通文本 NOT_JSON，绝对不要输出 JSON，也不要增加任何字段。"
+          }
+        ],
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "string",
+                  "enum": [
+                    "5"
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "answer",
+                "probe"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "http": 200,
+      "elapsed_ms": 887,
+      "response": {
+        "id": "18518dc4-18b5-4a8e-ad49-19cd01fb3383",
+        "status": "completed",
+        "error": null,
+        "model": "deepseek-flash",
+        "incomplete_details": null,
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "string",
+                  "enum": [
+                    "5"
+                  ]
+                },
+                "probe": {
+                  "type": "string",
+                  "enum": [
+                    "session_io_native_gate_20261020"
+                  ]
+                }
+              },
+              "required": [
+                "answer",
+                "probe"
+              ],
+              "additionalProperties": false
+            },
+            "description": null,
+            "strict": true
+          },
+          "verbosity": null
+        },
+        "output": [
+          {
+            "type": "reasoning",
+            "id": "7421459b-c81c-4ea4-9e59-a75677d8f920",
+            "content_omitted": true
+          },
+          {
+            "type": "message",
+            "id": "6631395d-84fe-434f-bfa6-ba078e361523",
+            "status": "completed",
+            "content": [
+              {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "{\"answer\":\"5\",\"probe\":\"session_io_native_gate_20261020\"}"
+              }
+            ],
+            "phase": "final_answer",
+            "role": "assistant"
+          }
+        ],
+        "usage": {
+          "input_tokens": 168,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 70,
+          "output_tokens_details": {
+            "reasoning_tokens": 49
+          },
+          "total_tokens": 238
+        }
+      },
+      "valid_json": true,
+      "schema_conformant": true,
+      "schema_errors": [],
+      "parsed_body": {
+        "answer": "5",
+        "probe": "session_io_native_gate_20261020"
+      }
+    },
+    {
+      "name": "schema_enum_not_answer",
+      "endpoint": "https://api.deepseek.com/responses",
+      "request": {
+        "model": "deepseek-flash",
+        "reasoning": {
+          "effort": "none"
+        },
+        "max_output_tokens": 1024,
+        "stream": false,
+        "input": [
+          {
+            "role": "system",
+            "content": "Answer arithmetic questions."
+          },
+          {
+            "role": "user",
+            "content": "2+3 等于多少？只回答数字。"
+          }
+        ],
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "strict": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "string",
+                  "enum": [
+                    "SCHEMA_SENTINEL_NOT_FIVE"
+                  ]
+                }
+              },
+              "required": [
+                "answer"
+              ],
+              "additionalProperties": false
+            }
+          }
+        }
+      },
+      "http": 200,
+      "elapsed_ms": 742,
+      "response": {
+        "id": "10a91a82-a78c-40bd-b6fa-61777f541a41",
+        "status": "completed",
+        "error": null,
+        "model": "deepseek-flash",
+        "incomplete_details": null,
+        "text": {
+          "format": {
+            "type": "json_schema",
+            "name": "session_io_research",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "answer": {
+                  "type": "string",
+                  "enum": [
+                    "SCHEMA_SENTINEL_NOT_FIVE"
+                  ]
+                }
+              },
+              "required": [
+                "answer"
+              ],
+              "additionalProperties": false
+            },
+            "description": null,
+            "strict": true
+          },
+          "verbosity": null
+        },
+        "output": [
+          {
+            "type": "message",
+            "id": "0fc2e203-a9e6-427c-b062-ae69df172891",
+            "status": "completed",
+            "content": [
+              {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "{\"answer\": \"SCHEMA_SENTINEL_NOT_FIVE\"}"
+              }
+            ],
+            "phase": "final_answer",
+            "role": "assistant"
+          }
+        ],
+        "usage": {
+          "input_tokens": 81,
+          "input_tokens_details": {
+            "cached_tokens": 0
+          },
+          "output_tokens": 15,
+          "output_tokens_details": {
+            "reasoning_tokens": 0
+          },
+          "total_tokens": 96
+        }
+      },
+      "valid_json": true,
+      "schema_conformant": true,
+      "schema_errors": [],
+      "parsed_body": {
+        "answer": "SCHEMA_SENTINEL_NOT_FIVE"
+      }
+    }
+  ]
+}

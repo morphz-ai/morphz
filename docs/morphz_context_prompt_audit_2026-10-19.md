@@ -774,8 +774,10 @@ attempt 记录最多一次修正；绝不能重跑整轮任务、复做已完成
 注解／每个调用必须提供intent”的要求。以下是本次获准实现的边界；
 验证与原应用更新完成前，不把规范更新描述成 Runtime 已交付。
 
-- on：鼓励提供注解，有合法值才使用；没有时保留原正文、调用命令、
-  原始结果和执行状态。不开额外模型请求来补齐缺少的显示元数据。
+- on：生成侧明确要求实际工作提供适用注解，接收侧兼容缺失；这不是
+  “随意加不加”。有合法值才使用，没有时保留原正文、调用命令、原始
+  结果和执行状态。普通无工作聊天不要求活动摘要；不开额外模型请求
+  来补齐缺少的显示元数据。此措辞落实用户随后对“可选”的明确纠正。
 - off：不提示生成注解、不以注解作为展示来源；意外元数据不能让原本
   合法的正文／调用失败，也不能从正文猜测或剥离所谓注解。
 - 注解可以部分提供：仅采用已注册、类型正确、来源关系可证明的字段；
@@ -798,7 +800,11 @@ attempt 记录最多一次修正；绝不能重跑整轮任务、复做已完成
 原参数拒绝、工具目录稳定。分别记录注解覆盖率与业务成功率；真实
 DeepSeek优先，27B／量化模型在具备实际模型条件时另验，不冒充已通过。
 
-### 本次实现载体与迁移
+### 历史实现载体与迁移 9051ee73
+
+以下记录 2026年10月20日00:28 提交的实现，不代表新的设计认可。用户
+随后明确否定了正文与独立注解伴随调用的双路交付；这一部分必须替换，
+不能再把“复用通用工具”当作满足“统一返回”的证明。
 
 - on/off 均使用原生正文和原生函数调用，不再由注解开关设置 JSON
   输出模式或禁用原生函数调用。普通聊天只需原正文，无执行时不要求
@@ -819,3 +825,154 @@ DeepSeek优先，27B／量化模型在具备实际模型条件时另验，不冒
   既有执行恢复与历史读取，不靠内容猜测旧格式。新请求不再产生它。
 - 此为现有实验性应用注解与 Session IO 适配层的修正，不修改 Session
   IO 公共 Message 编码、业务格式验证或已发布规范的兼容性声明。
+
+## 2026年10月20日 原生结构化输出调研
+
+本节记录用户要求“先调研”后的首轮事实核查与实施约束，不是修复验收。
+该轮没有修改产品源码、模型配置或代理配置，没有重启原 Runtime 和代理。
+所有新模型请求使用真实 `deepseek-flash` 与合成资料，未提交用户会话、
+书籍或业务工具。逐请求证据保存在
+[脱敏测试记录](session_io_native_output_research_2026-10-20.json)。
+
+### 三个已确认的实现缺口
+
+1. **Session IO 校验不是生成约束。** 调研时的源码及仍在运行的版本中，
+   `llm.rs::ModelRequestOptions` 只能指定 `JsonObject`，
+   `provider.rs::apply_output_encoding` 只写 `json_object`，不上传完整
+   Session IO Schema。旧统一 Evaluation 的字段约束仍靠提示词和收件后
+   校验，不能称为“上游已按我们的 Schema 生成”。
+2. **当前代理路径没有直通原生 Responses。** 客户端发往本机
+   `/v1/responses` 的 `text.format=json_schema` 被转换为发往 DeepSeek
+   `/chat/completions` 的 `response_format=json_schema`。实际抓到的
+   上游返回 HTTP 400，错误为 `This response_format type is unavailable now`。
+   完整 Schema 确已转发；不是 Runtime 拦截，也不是模型生成后解析失败。
+3. **不能把这次 400 概括为 DeepSeek 不支持 Schema。** 同一现有凭据、
+   同一模型直连官方 `/responses` 时，原生 Schema 请求 HTTP 200 并返回
+   符合所给对象结构的结果。入口与适配路径不同，能力结论必须分别记录。
+
+第二点同时有本机实际请求日志与安装版本源码交叉印证：
+[CLIProxyAPI v8.0.30 的兼容执行器](https://github.com/router-for-me/CLIProxyAPI/blob/v8.0.30/internal/runtime/executor/openai_compat_executor.go)
+普通及流式执行均选 `/chat/completions`；仅特殊 compact 分支另选入口。
+这解释现有路由行为，不意味着已批准把其他任务或全部服务改为直连。
+
+### 接口保证必须分层判断
+
+| 层级 | 能说明什么 | 不能据此声称什么 |
+| --- | --- | --- |
+| `json_object` | 请求合法 JSON 语法 | 必填字段、枚举、业务类型一定正确 |
+| 原生 `json_schema` | 向服务提交明确输出结构；具体强制程度须按服务验证 | HTTP 200、参数回显或一次成功等于硬保证 |
+| Runtime Session IO | 构造身份与因果外壳，检查类型、权限和交付状态 | 可以凭空生成模型没给出的回答、意图或结论 |
+| 业务验收 | 判断真实操作、答案依据及原应用效果 | schema 正确等于事实正确、工具已成功或用户已收到 |
+
+OpenAI 文档区分 JSON mode 与 Structured Outputs；后者在支持的模型和
+Schema 子集上提供严格结构约束，既可用于 Responses 的 `text.format`，
+也可用于相应的 Chat Completions 与严格函数调用。其工程机制包括服务端
+约束解码，而非客户端在提示词里多写一句“请返回 JSON”。这项保证不
+自动扩展到所有提供同名兼容接口的服务，拒绝回答、长度截断及传输失败
+仍需独立处理，结构正确也不保证内容事实正确。
+参见 [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)、
+[约束解码说明](https://openai.com/index/introducing-structured-outputs-in-the-api/)。
+
+DeepSeek 当前
+[Chat Completions 参数](https://api-docs.deepseek.com/api/create-chat-completion)
+列出 `text` / `json_object`；
+[Responses 参数](https://api-docs.deepseek.com/api/create-response)
+列出 `text` / `json_object` / `json_schema`。
+[Responses 兼容说明](https://api-docs.deepseek.com/guides/responses_api)
+还说明部分不支持的参数会被忽略。因此不能仅凭接口名字、`strict:true`
+被接收或返回对象中回显了 Schema，就认定有无条件的严格解码保证。
+
+### 真实 DeepSeek 的边界测试
+
+本轮共 14 个实际 HTTP 请求：1 个现有代理请求、2 个直连初始对照、
+11 个归档矩阵请求。未测试其他模型，也没有用这些合成小样本替代原应用
+完整 Context 的回归。
+
+| 场景 | 实测结果 | 证据边界 |
+| --- | --- | --- |
+| 经现有代理提交 Schema | 上游 Chat Completions HTTP 400 | 该转换路径不接受此格式，不是生成能力结论 |
+| 直连原生 Responses 的 Schema 与 JSON mode 初始对照 | 均 HTTP 200，返回预期对象 | 仅证明该入口存在且普通用例可用 |
+| 交给接口一个非法 Schema 类型 | HTTP 400，明确指出非法类型 | 服务确实解析了 Schema，但不等于所有生成都受硬约束 |
+| `none` 下用户要求不要 JSON，与对象 Schema 冲突 | 两次均返回合法 JSON 数字 `5`，违反对象 Schema；状态仍是 completed | 已证实不能无条件信任此组合的 schema 保证 |
+| 同一冲突场景改为 `max` | 本次遵守 Schema；显式加强系统契约的另一请求也遵守 | 小样本差异，不宣称 `max` 永不违反 |
+| Schema 枚举要求一个并非数学答案的固定字符串 | 返回该枚举 | 原生 Schema 会影响输出，不是完全被忽略 |
+| 中文、8个真实换行、反斜杠、引号、emoji、代码块、伪协议示例 | 96 个正文 delta，拼接与终态一致，原文精确保留 | 证明 API 流成立；尚非 Morphz 窗口流式验收 |
+| 输出限额为8 tokens | HTTP 200，但状态 incomplete，JSON 未完成 | 不可当作正常交付，不能只看 HTTP 状态 |
+| `max` 下调用合成只读工具再回答 | 两次请求、一次工具运行；终态单个对象同时含正文和注解，无新的调用 | 两次工具定义 SHA-256 一致；没有额外元数据补写请求 |
+| 单一 Evaluation 的 body、annotations、effects 形状 | 原生 Schema 请求返回合法工作提案与意图 | 未执行该提案，不冒充 Runtime 权限、调度或完整闭环通过 |
+
+其中“正文＋注解”工具续接是同一个结构化返回值，没有单独的注解工具，
+没有伴随 `deliver_message`，也没有正文分隔标记。普通示例中的
+`<context_annotation>` 被精确保留为业务文本；试验没有扫描或剥离它。
+它说明统一返回在该入口上有可行样本，不代表现有应用已切换过去。
+
+### 由证据确定的后续设计边界
+
+- **先修完整链路，再承诺约束。** 输出格式绑定必须真正进入 Provider
+  请求，并核验代理前后实际协议与 Schema；能力记录应关联实际入口、
+  模型及模式，不能把“OpenAI-compatible”当作严格保证。
+- **一次语义返回，Runtime 构造外壳。** 回答、适用显示注解和工作提案
+  必须属于一次返回的确定字段；ID、格式版本、归属和提交状态由 Runtime
+  构造。移除 JSON 手写外壳不等于恢复独立注解调用，也不应新增正文标记。
+- **生成要求与接收容错分开。** 开启时明确要求工作注解；缺少或无效
+  显示字段不否定已有合法回答／操作。普通无工作聊天不要求活动摘要。
+  这不放松业务参数、typed infer、权限、审批或事实校验。
+- **流式只投影正文。** 按已绑定的原生结构增量解码正文值，正确处理
+  转义和 chunk 边界，元数据不进入可见正文；完整结束与验证后才正式
+  提交。不能通过匹配正文里的标签或关键词截取回答。
+- **终态不多调用一次模型。** 合法最终返回直接提交；只有真实工作
+  需要结果续接。注解不唤醒执行，不为补显示字段增加请求，不把无正文
+  的元数据当作回答，不重复推理或重放已完成的副作用。
+- **现有工作保持原准入。** 新返回格式及 Provider 行为只作用于新
+  admission，保留既有 frozen binding 的恢复语义；工具目录不因开关、
+  流式阶段或续接动态改写。切换前必须验证正在运行的任务可持续执行。
+
+还需收敛的关键设计是：当服务仅“尽力遵守”Schema时，普通回答如何
+保持可用，同时不误执行损坏的工作提案，也不把残缺外壳直接展示给用户。
+这一点不能靠声称 strict 已保证、强制所有模型套同一外壳、修补括号或
+隐藏实际错误解决。本轮先保留上述反例和验证边界，尚未批准／部署新的
+退化规则；真实 Runtime、discuss-script、长 Context 及原应用验收仍待
+对应实现完成后进行。
+
+### 后续隔离验证：Provider 的原生 Schema 参数
+
+在上述事实基础上，候选源码补入显式的 `ModelOutputEncoding::JsonSchema`，
+把完整的 `name`、`schema` 和 `strict` 交给原生 API 参数。Responses 使用
+`text.format`，Chat Completions 使用 `response_format.json_schema`。
+这一层只负责准确发送要求，不谎称已保证模型输出，也不自行修改工具目录、
+`tool_choice`、推理强度或业务提示词。尚未验证的适配器与未实现该控制的
+自定义 Client 会明确报出不支持这个新参数，而非默默丢掉 Schema。
+
+本阶段**尚未把新的输出模式接入正式 Session IO admission**：旧的
+`JsonObject` 及其冻结行为不变，原 Runtime、模型配置和代理均未切换。
+当前正式请求仍沿原路径；不能把 Provider 基础设施测试宣称为用户遇到的
+注解问题已经修复，也不能用这一步替代统一返回、活动投影和原应用验收。
+
+`cargo test -p morphz --lib provider:: -j 1`：188 项通过、0 失败，
+3 项原有真实账号/登录测试保持 ignored。新增测试涵盖两个原生协议的
+完整 Schema 出站值、工具与推理控制不变、HTTP 400 不降级/不修复重试，
+以及 HTTP 200 返回数字 `5` 时仍由 Session IO 拒绝错误业务类型。
+这些 HTTP 边界测试使用隔离的合成服务，不冒充真实 DeepSeek 验收。
+
+随后用 `morphz/examples/native_output_probe.rs` 经真正的 RoutedClient /
+ProtocolClient，直连同一现有凭据的 DeepSeek Responses，`max` 模式完成
+三个隔离用例，合计五个真实模型请求。仅在临时目录生成并读取合成
+`book.txt`，未访问用户会话或书籍。结果归档为
+[Rust Provider 真实测试记录](session_io_native_provider_gate_2026-10-20.json)。
+
+| 用例 | 请求数 / 真实文件读取数 | 本次结果 |
+| --- | --- | --- |
+| 普通回复 | 1 / 0 | 两行中文、引号与 emoji 保留，注解为 null |
+| 工具后回复，注解开启 | 2 / 1 | 同一个返回值包含有依据的正文及非空标题、结果注解 |
+| 工具后回复，注解关闭 | 2 / 1 | 正文保留，注解为 null |
+
+五次请求的工具定义摘要完全一致。只放在 API Schema 中、未写入提示词
+的固定哨兵字段也在返回中得到验证；三次终态原始流分别为 69、70、41
+个 text delta，拼接与完整返回逐字一致，没有额外注解、修复或最终中继
+请求。这证明候选适配器可以走通此入口，不消除首轮发现的违约反例。
+此探针没有完整 Runtime 的 Context、活动步骤投影、持久化、
+`discuss-script` 和原窗口，因此不把这些尚未验收的项目写成通过。
+
+`cargo build -p morphz --example native_output_probe -j 1` 与
+`cargo check -p morphz --tests --examples -j 1` 均通过。前者生成上述
+真实请求使用的探针，后者只证明测试与示例能编译，不替代各自运行验收。

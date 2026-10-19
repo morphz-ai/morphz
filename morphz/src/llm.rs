@@ -392,17 +392,27 @@ pub enum ReasoningEffort {
 ///
 /// The outer `Option` distinguishes "this caller did not bind a policy" from
 /// an explicit `None`, which means preserve the Provider/model default.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelRequestOptions {
     pub reasoning_effort: Option<Option<ReasoningEffort>>,
-    /// Native transport syntax, not a text prompt or a claim that a Provider
-    /// enforces the caller's Schema. Session IO validates the frozen Schema.
+    /// Native output controls for this physical Attempt. Requesting a schema
+    /// is not evidence that a compatible endpoint enforces it: Session IO
+    /// still validates the returned business value against its frozen binding.
     pub output_encoding: Option<ModelOutputEncoding>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelOutputEncoding {
+    /// Legacy syntax-only mode, including its frozen tool-choice behavior.
     JsonObject,
+    /// The complete output schema is sent as a native API parameter, not
+    /// merely printed in Context. This does not change the function directory
+    /// or choose whether work calls are allowed in the current Evaluation.
+    JsonSchema {
+        name: String,
+        schema: serde_json::Value,
+        strict: bool,
+    },
 }
 
 impl ReasoningEffort {
@@ -1247,7 +1257,8 @@ pub trait Client: Send + Sync {
 
     /// Execute against a persisted binding and an immutable Evaluation policy.
     /// The default preserves compatibility with custom Clients that do not
-    /// expose native reasoning controls.
+    /// expose native reasoning controls. A newly requested native schema must
+    /// never be silently discarded by that compatibility path.
     async fn create_completion_bound_stream_with_options(
         &self,
         binding: &ModelAttemptBinding,
@@ -1255,8 +1266,18 @@ pub trait Client: Send + Sync {
         tools: Vec<ToolDefinition>,
         measurement: Option<PromptTokenCount>,
         stream: ModelStreamSender,
-        _options: ModelRequestOptions,
+        options: ModelRequestOptions,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        if matches!(options.output_encoding, Some(ModelOutputEncoding::JsonSchema { .. })) {
+            let error = ModelFailure::new(
+                ModelFailureKind::InvalidModelOrRequest,
+                "This model client does not implement native JSON Schema output; the bound schema was not silently discarded",
+            );
+            let _ = stream.send(ModelStreamEvent::Failed {
+                message: error.to_string(),
+            });
+            return Err(Box::new(error));
+        }
         self.create_completion_bound_stream(binding, messages, tools, measurement, stream)
             .await
     }

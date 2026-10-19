@@ -27,6 +27,8 @@ pub mod control;
 pub(crate) mod gemini_schema;
 mod refresh_diagnostics;
 pub mod routing;
+#[cfg(test)]
+mod native_output_tests;
 
 pub(crate) type ProviderError = Box<dyn std::error::Error + Send + Sync>;
 pub type ConfiguredClient = (Arc<dyn Client>, SelectedProvider);
@@ -2795,11 +2797,16 @@ impl Client for ProtocolClient {
             &tools,
             options.reasoning_effort,
         );
-        apply_output_encoding(
+        if let Err(error) = apply_output_encoding(
             self.protocol_for_model(&model),
             &mut request,
             options.output_encoding,
-        )?;
+        ) {
+            let _ = stream.send(ModelStreamEvent::Failed {
+                message: error.to_string(),
+            });
+            return Err(error);
+        }
         let claude_aliases = self.claude_tool_aliases(&tools);
         match self
             .send_stream(
@@ -4304,9 +4311,40 @@ fn apply_output_encoding(
     request: &mut Value,
     encoding: Option<crate::llm::ModelOutputEncoding>,
 ) -> Result<(), ProviderError> {
-    let Some(crate::llm::ModelOutputEncoding::JsonObject) = encoding else {
+    let Some(encoding) = encoding else {
         return Ok(());
     };
+    if let crate::llm::ModelOutputEncoding::JsonSchema {
+        name,
+        schema,
+        strict,
+    } = encoding
+    {
+        // Forward exactly the bound schema. Never silently replace it with
+        // json_object, strip constraints, put it in a prompt, or disable work
+        // tools. A compatible service may reject or fail to enforce this
+        // request; neither HTTP success nor a format echo proves conformance.
+        let format = json!({"name":name,"schema":schema,"strict":strict});
+        match protocol {
+            ModelProtocol::OpenaiChat => {
+                request["response_format"] = json!({
+                    "type":"json_schema", "json_schema":format
+                });
+            }
+            ModelProtocol::OpenaiResponses => {
+                let mut format = format;
+                format["type"] = json!("json_schema");
+                request["text"]["format"] = format;
+            }
+            ModelProtocol::GeminiContent | ModelProtocol::AnthropicMessages => {
+                return Err(Box::new(ModelFailure::new(
+                    ModelFailureKind::InvalidModelOrRequest,
+                    "The selected Provider adapter has no verified native JSON Schema output transport; the bound schema was not silently downgraded",
+                )));
+            }
+        }
+        return Ok(());
+    }
     match protocol {
         ModelProtocol::OpenaiChat => {
             request["response_format"] = json!({"type":"json_object"});
@@ -6383,6 +6421,78 @@ mod tests {
             json!({"sentinel":true}),
             "unsupported native mode must not downgrade the contract or mutate tools"
         );
+    }
+
+    #[test]
+    fn native_schema_uploads_the_complete_binding_without_rewriting_tools() {
+        let schema = json!({
+            "type":"object", "additionalProperties":false,
+            "required":["body","annotations"],
+            "properties":{
+                "body":{"type":"string"},
+                "annotations":{"anyOf":[
+                    {"type":"null"},
+                    {"type":"object","additionalProperties":false,
+                     "required":["title"],"properties":{"title":{"type":"string"}}}
+                ]}
+            }
+        });
+        for protocol in [ModelProtocol::OpenaiChat, ModelProtocol::OpenaiResponses] {
+            for strict in [false, true] {
+                for choice in [None, Some(json!("auto")), Some(json!("none"))] {
+                    let mut request = build_request(
+                        protocol, "test-model", Some(2048), Some(ReasoningEffort::Max),
+                        &messages(), &tools(),
+                    );
+                    if let Some(choice) = choice {
+                        request["tool_choice"] = choice;
+                    }
+                    if protocol == ModelProtocol::OpenaiResponses {
+                        request["text"]["verbosity"] = json!("low");
+                    }
+                    let unchanged = request.clone();
+                    apply_output_encoding(protocol, &mut request, Some(
+                        crate::llm::ModelOutputEncoding::JsonSchema {
+                            name:"session_io_output".into(), schema:schema.clone(), strict,
+                        }
+                    )).unwrap();
+                    let format = match protocol {
+                        ModelProtocol::OpenaiChat => {
+                            assert_eq!(request["response_format"]["type"], "json_schema");
+                            &request["response_format"]["json_schema"]
+                        }
+                        ModelProtocol::OpenaiResponses => {
+                            assert_eq!(request["text"]["format"]["type"], "json_schema");
+                            assert_eq!(request["text"]["verbosity"], "low");
+                            &request["text"]["format"]
+                        }
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(format["schema"], schema);
+                    assert_eq!(format["name"], "session_io_output");
+                    assert_eq!(format["strict"], strict);
+                    for key in ["tools", "tool_choice", "parallel_tool_calls", "reasoning",
+                        "reasoning_effort", "max_tokens", "max_output_tokens", "input", "messages"] {
+                        assert_eq!(request.get(key), unchanged.get(key), "{protocol:?}: {key}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_schema_does_not_downgrade_an_unsupported_adapter() {
+        for protocol in [ModelProtocol::GeminiContent, ModelProtocol::AnthropicMessages] {
+            let original = json!({"sentinel":true,"tools":[{"name":"unchanged"}]});
+            let mut request = original.clone();
+            let error = apply_output_encoding(protocol, &mut request, Some(
+                crate::llm::ModelOutputEncoding::JsonSchema {
+                    name:"bound_output".into(), schema:json!({"type":"object"}), strict:true,
+                }
+            )).unwrap_err();
+            assert!(error.to_string().contains("not silently downgraded"));
+            assert_eq!(request, original);
+        }
     }
 
     #[test]
