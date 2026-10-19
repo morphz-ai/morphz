@@ -25,6 +25,38 @@
 跳过，类型检查和生产构建通过。原应用真实 DeepSeek 复验随后记录，
 不将合成 Provider、离线重放或既有导入回执称为读取完成。
 
+原应用切换与真实复验补记（整体未通过）：
+
+- 原安装／中心已更新至 `6c1058413649`，Runtime PID 667。静止切换前
+  备份为 `/Users/shafreeck/Library/Caches/Morphz-workspace-import-tU6qWy`；
+  原 38046 Events 无缺失／改写，749 Threads、5 Objectives、49 Schedules、
+  30 Sessions 的身份／控制保留，配置与模型文件不变，没有中止在途工作。
+- 最终提交二进制的实际 Runtime＋Host＋HTTP 导入专项 3/3：附件、
+  workspace/on、workspace/off，均未跳过。此为合成模型，非 DeepSeek。
+- 原窗口命名 `TEST workspace 导入与读取 1019` 的现有 DeepSeek/max/on
+  实测 Thread 为 `thread_9791f97d88e46161a49fd557`。4 次正常请求中，
+  list、三个 describe、reader.contents、reader.read 共 6 个正式 Job
+  全部 succeeded，accepted diagnostics=[]；没有 exec／Downloads／
+  代码检索／新目录授权／重新导入。已从书架 v1 的 section-3 读到完整
+  99 字符，含「验收句：青色书签停在第二节，原文件仍在默认工作目录。」
+- 第四次响应的 applications.launch 提案多一个右花括号，原响应摘要
+  `c4227e78fade8a45149b660a512bf8104d2156089c29757fa3a7ed551450a8b9`。
+  Rust 报 `Invalid JSON at byte 1314`，独立 JSON.parse 也拒绝同一内容。
+  这不是 observations_note 的 schema 故障，也不是合法 JSON 被误解析。
+  跳转未执行、没有最终回复，Thread 正确保留 failed；不能称为完整
+  阅读／定位验收通过。未补括号、重放提案、补发元数据修复推理或伪造成功。
+- 验收时对照快照，Reader 14、Script Studio 24、Objects 19、Browser 4
+  张表逻辑行均未改变，原事件仍无改写。整窗已审看，时间／模型／max
+  同行且没有「思考：」；截图时用户已自行切到事项，未强行恢复旧导航。
+
+代理主日志未保存这次上游 HTTP 正文。只读核对安装版本 CLIProxyAPI
+v8.0.30 对应的官方源码，确实存在 text.format 到 response_format 的
+映射，不能据此断言本次请求一定正确送达，或直接归咎于模型能力。
+另两次无用户资料的约束对照中，off 返回刻意要求的非法测试片段；on
+在 2048 output-token 上限处 incomplete、无正文，因而对照没有得出
+约束可靠性的结论。没有把它记作通过，也没有把截断当另一例非法 JSON。
+新的语法故障仍待上游约束取证／方案 review，本轮不擅自改交付协议。
+
 ## 2026-10-19 活动模型元信息合并为单行
 
 先补充 DESIGN／UI 规范，再把时间、真实模型与强度放在原 11px 次级行，
@@ -105,6 +137,15 @@ Cargo dev/test 统一 `line-tables-only`，保留 incremental；默认构建并�
 约 59.0 GiB；受保护目录清单前后完全一致。获用户另行批准后，系统清理
 两份可清理 Time Machine 本地快照，空闲约 119 GiB；这是文件块与快照
 的不同口径，不把两者重复相加。没有停止原 Runtime 或其他执行来清缓存。
+
+资源补记：最终构建的 morphz 二进制为 208,760,728 字节（约 199 MiB）；
+后续测试／备份后本机空闲约 102 GiB，不将整套缓存目录等同于一个二进制。
+获明确批准后仅停止端口 4190、运行 43 天的旧 SVG 预览，已核对进程和
+监听消失；原命令保留，可按需重启。没有停止其他服务或系统进程。
+24 GiB 机器仍有显著内存压力：fseventsd（PID 519，135 天）在 top 的
+MEM footprint 约 21 GiB，另有约 10 GiB compressor／约 21 GiB swap；
+footprint 不等于同量常驻 RAM。具体泄漏机制尚未证明，不能称内存问题
+已经解决；没有擅自重启系统服务或 Mac，建议保存并结束工作后正常重启。
 
 ## 2026-10-19 原生 Session IO Evaluation 已更新至原应用
 

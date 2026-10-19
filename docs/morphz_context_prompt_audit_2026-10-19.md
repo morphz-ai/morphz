@@ -633,3 +633,30 @@ effects、业务参数和权限完全不走这种字段投影，维持原来的�
 集成 6/6，覆盖多余字段诊断和原响应保存、真实工作续接、提前正文流式、
 已注册发布、原参数与稳定工具，未产生修复／转述请求。原应用 DeepSeek
 复验另行记录；历史事件与失败状态不改写、不自动重放。
+
+### 本次原应用复验的实际未通过点
+
+原应用已安全更新至 `6c1058413649`。DeepSeek/max/on 的 TEST 复验
+`thread_9791f97d88e46161a49fd557` 完成 6 个正式 Host Job，目录与
+reader.read 均成功，已取得测试书 v1／section-3 的 99 字符原文。
+在第四次实际请求中，applications.launch 提案返回多一个右花括号；
+这是 JSON 语法错误，不是多余注解字段，也不是合法 JSON 被 Runtime
+误解析。独立 JSON.parse 同样拒绝原响应；该提案未执行、未交付最终
+回复，不能把部分业务读取成功算成端到端验收通过。
+
+完整原响应仍可按 SHA-256
+`c4227e78fade8a45149b660a512bf8104d2156089c29757fa3a7ed551450a8b9`
+定位；未补括号、猜测结构、重放提案或增加修复推理。既有原件／业务表
+及旧事件在复验后对照快照未改变，详见应用实施记录。
+
+原代理日志无该次 HTTP 正文。已只读核对安装的 CLIProxyAPI v8.0.30
+官方 [Responses→Chat 格式映射](https://github.com/router-for-me/CLIProxyAPI/blob/5be2cdab0869cbaa3d401891f740aebf7e15aa99/internal/translator/openai/openai/responses/openai_openai-responses_request.go#L58)
+与同文件的 json_object 转换分支，代码中存在格式传递，不凭这个静态
+事实冒充本次实际请求链已验证。两次无用户资料的原生约束对照也未得出
+可靠性结论：off 返回所要求的非法片段，on 在 2048 output-token 处
+incomplete 且无正文。后者不是完整响应，更不能拿它证明 Schema 成功。
+
+因此本轮已批准的字段投影有原响应重放与 Runtime 回归证据；整体
+DeepSeek 阅读／跳转交付仍存在新的语法故障。不能宣称全部修复，也不
+据此擅自加入语法修补、额外模型请求或另一套交付协议；新的输出约束
+变更须先以实际链路证据形成完整方案再 review。
