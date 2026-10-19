@@ -1,11 +1,13 @@
 # 响应、返回值与注解：Session IO 契约与部署记录
 
-## 当前修正候选：单次 Evaluation 返回（未交付）
+## 当前实现：单次 Evaluation 返回（已部署，窗口验收待解锁）
 
 2026-10-20：真实 Responses 调研已证实，上游消息 Schema 不能保证每个
 原生工具轮都同时产生注解消息，因此不再采用正文加独立注解调用作为
-新请求的生成路径。实现候选现已接入统一 `body / effects / annotations`
-返回，仍在隔离 Runtime 验证，**尚未更新原应用，也未完成验收**。
+新请求的生成路径。统一 `body / effects / annotations` 返回已通过隔离
+真实 DeepSeek 验证，`1fa0771821f5` 已更新原应用使用的 Runtime。原
+Runtime 的 on/off、普通聊天与 GPT 原路由验证通过；**原窗口被 macOS
+锁屏挡住，尚未完成最终窗口验收**。
 
 - 模型返回业务正文与工作提案；工作意图位于对应 effect 的 intent。
   Runtime 生成 Session IO Message、步骤 ID、归属、实际状态和结果关联。
@@ -19,8 +21,9 @@
 - 旧请求保留冻结的原绑定；不重新解释历史响应或重放已完成的副作用。
 
 完整依据见 [实际链路研究](./session_io_responses_findings_2026-10-20.md)，
-落地边界见 [单次返回候选](./session_io_unified_return_v2_2026-10-20.md)。
-下文保留旧版本的部署事实与契约用于诊断，**不是新候选的生成要求**。
+落地边界见 [单次返回实现](./session_io_unified_return_v2_2026-10-20.md)，
+测试与部署证据见 [验收记录](./session_io_unified_return_acceptance_2026-10-20.md)。
+下文保留旧版本的部署事实与契约用于诊断，**不是当前实现的生成要求**。
 
 ## 历史部署与旧载体记录
 

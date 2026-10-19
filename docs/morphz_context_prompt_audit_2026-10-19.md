@@ -1,5 +1,20 @@
 # Context 提示与执行契约审查
 
+## 2026-10-20 当前实现入口
+
+`1fa0771821f5` 已统一单次 Evaluation 返回并更新原 Runtime；原窗口
+验收因 macOS 锁屏待补。当前契约与证据分别见
+[实施边界](./session_io_unified_return_v2_2026-10-20.md)和
+[验收记录](./session_io_unified_return_acceptance_2026-10-20.md)。
+本轮同时消除了 internal infer“不得出现 Evaluation 外层”、旧
+`calls[index].intent` 路径及不存在的格式自动重试承诺；历史冻结 native
+绑定不被新的 effects 指令覆盖。typed infer 的实际业务 Schema 已发送
+上游；1,626 项完整库回归通过，另外验证真实 discuss-script、流式与结束。
+下文按时间保留旧方案、失败与研究证据，其中“正文＋伴随注解调用”和
+“尚未接入 admission”等阶段性描述不是当前生成要求或当前部署状态。
+
+## 既有审查记录
+
 既有 20 类冲突的自动回归、真实 DeepSeek／GPT 路由及原应用重开证据对应
 `3ae7cdfc6e3b`。后续实际工作又发现第 21 类：工作轮次缺少步骤注解。
 下方保留前一轮证据；本轮补充的实现、验证与限制单独列出，不用历史成功

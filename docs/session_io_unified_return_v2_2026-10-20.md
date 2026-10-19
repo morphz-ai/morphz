@@ -1,4 +1,8 @@
-# Session IO 单次返回修正：实施边界（未验收）
+# Session IO 单次返回修正：实施边界
+
+2026-10-20 状态：`1fa0771821f5` 已通过回归与真实 DeepSeek 验证并更新
+原 Runtime；原窗口验收待 macOS 解锁。具体证据与未完成项见
+[验收记录](./session_io_unified_return_acceptance_2026-10-20.md)。
 
 本文件是既定统一返回方案的落地约束，不是新文本协议，也不是完成报告。
 公开 Session IO Message / Request 保持 v1；内部 Evaluation 使用新的冻结

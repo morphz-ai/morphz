@@ -1,0 +1,279 @@
+{
+  "at": "2026-10-19T20:38:03.253Z",
+  "runtimeCommit": "1fa0771821f5",
+  "profile": "original MorphzWork-development",
+  "originalAppWindow": "blocked by macOS lock screen; not accepted",
+  "cases": [
+    {
+      "case": "plain",
+      "terminal": "completed",
+      "modelRequests": 1,
+      "reply": [
+        "2 加 3 等于 5。"
+      ],
+      "rawResponse": "{\"body\": \"2 加 3 等于 5。\", \"effects\": [], \"annotations\": null}",
+      "annotations": 0,
+      "streamEvidence": "Persisted public-output snapshot, not live UI capture"
+    },
+    {
+      "case": "work",
+      "terminal": "completed",
+      "terminalEventId": "thread_terminal_thread_a3acf789abed3025ddaa0209_g1",
+      "modelRequests": 2,
+      "reply": [
+        "已读取 artifacts/TEST_SESSION_IO_20261020.txt，核对结果如下：\n\n- 验证口令：蓝鲸-7284\n- 页码：17\n- 段落：第二段"
+      ],
+      "bodyCommits": 1,
+      "annotationMessages": 2,
+      "bodyIncrements": 44,
+      "incrementBeforeCommit": true,
+      "annotationKinds": [
+        "execution.progress",
+        "execution.title",
+        "intent",
+        "execution.result",
+        "execution.title",
+        "observation.result"
+      ],
+      "providerBindings": [
+        {
+          "provider": "deepseek-native",
+          "endpoint": "https://api.deepseek.com",
+          "model": "deepseek-flash",
+          "capabilities": [
+            "native-json-schema"
+          ]
+        },
+        {
+          "provider": "deepseek-native",
+          "endpoint": "https://api.deepseek.com",
+          "model": "deepseek-flash",
+          "capabilities": [
+            "native-json-schema"
+          ]
+        }
+      ],
+      "receiptFile": "deployed-work.json",
+      "receiptSha256": "3dc90303f15273c6e221af7d6c892f0747735584400b87d8345f6d41f0bdaee7"
+    },
+    {
+      "case": "off",
+      "terminal": "completed",
+      "terminalEventId": "thread_terminal_thread_d10498fb1965952d0b737041_g1",
+      "modelRequests": 2,
+      "reply": [
+        "已重新调用 read 读取 artifacts/TEST_SESSION_IO_20261020.txt，本次核对结果：\n\n- 验证口令：蓝鲸-7284\n- 页码：17\n- 段落：第二段"
+      ],
+      "bodyCommits": 1,
+      "annotationMessages": 0,
+      "bodyIncrements": 48,
+      "incrementBeforeCommit": true,
+      "annotationKinds": [],
+      "providerBindings": [
+        {
+          "provider": "deepseek-native",
+          "endpoint": "https://api.deepseek.com",
+          "model": "deepseek-flash",
+          "capabilities": [
+            "native-json-schema"
+          ]
+        },
+        {
+          "provider": "deepseek-native",
+          "endpoint": "https://api.deepseek.com",
+          "model": "deepseek-flash",
+          "capabilities": [
+            "native-json-schema"
+          ]
+        }
+      ],
+      "receiptFile": "deployed-off.json",
+      "receiptSha256": "1ce7256081d8ee33db35dd3f0a3a8a7d604e6664f74cd6a2ae728577d5481951"
+    },
+    {
+      "case": "gpt",
+      "terminal": "completed",
+      "terminalEventId": "thread_terminal_thread_76de658fcbd0c423bb77786e_g1",
+      "modelRequests": 1,
+      "reply": [
+        "GPT 基线路由可用。"
+      ],
+      "bodyCommits": 1,
+      "annotationMessages": 0,
+      "bodyIncrements": 7,
+      "incrementBeforeCommit": true,
+      "annotationKinds": [],
+      "providerBindings": [
+        {
+          "provider": "development",
+          "endpoint": "http://localhost:8317/v1",
+          "model": "gpt-6.1-sol",
+          "capabilities": []
+        }
+      ],
+      "receiptFile": "deployed-gpt.json",
+      "receiptSha256": "fe8eb641d8c74831789153ee85781e4ff7716947336aa13e8747f1cb479b20f7"
+    }
+  ],
+  "preservation": {
+    "runtime": [
+      {
+        "table": "events",
+        "originalRows": 39319,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "sessions",
+        "originalRows": 31,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 1
+      },
+      {
+        "table": "threads",
+        "originalRows": 782,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "thread_activations",
+        "originalRows": 4217,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "execution_jobs",
+        "originalRows": 4374,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "plan_executions",
+        "originalRows": 49,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "runtime_timers",
+        "originalRows": 4325,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "objectives",
+        "originalRows": 5,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      }
+    ],
+    "application": [
+      {
+        "table": "workspace",
+        "originalRows": 1,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "assets",
+        "originalRows": 17,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "asset_owners",
+        "originalRows": 17,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "asset_project",
+        "originalRows": 10,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "publication_metadata",
+        "originalRows": 8,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "publication_sections",
+        "originalRows": 307,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "reading_ocr",
+        "originalRows": 5,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "pdf_metadata",
+        "originalRows": 2,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "artifact_outputs",
+        "originalRows": 18,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "script_outputs",
+        "originalRows": 4,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      },
+      {
+        "table": "runtime_sessions",
+        "originalRows": 23,
+        "missing": 0,
+        "changed": 1,
+        "serviceTimestampChanges": 0,
+        "verifiedCursorAdvance": {
+          "from": 39319,
+          "to": 39321,
+          "reason": "Two audited waiting-objective recovery events; no work replay"
+        }
+      },
+      {
+        "table": "runtime_thread_bindings",
+        "originalRows": 706,
+        "missing": 0,
+        "changed": 0,
+        "serviceTimestampChanges": 0
+      }
+    ]
+  },
+  "collectorCorrection": "First work collector initially missed terminal events without root_turn_id and counted typed annotation commits as body commits. Original captured stream retained; verification above uses persisted Thread identity and exact body format, without another model request.",
+  "installation": {
+    "runtimePid": 71638,
+    "desktopPid": 44726,
+    "desktopRestarted": false,
+    "deepseekNativeEndpoint": "https://api.deepseek.com/responses",
+    "gptRoutesUnchanged": true,
+    "credentialStorage": "macos_keychain",
+    "pendingTimersPreserved": 2
+  }
+}
