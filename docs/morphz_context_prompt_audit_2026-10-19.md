@@ -666,3 +666,103 @@ DeepSeek 阅读／跳转交付仍存在新的语法故障。不能宣称全部�
 能力，不证明旧失败请求或全局保证。实际 Runtime HTTP 导入回归已逐次
 检查原生 format 与 tool_choice（含工作续接／off），三场景 3/3 再次
 通过。该出站验证同样不能替代真实长 Context 故障的端到端取证。
+
+## 对照旧符号流程：究竟增加了什么负担（只读机制核查）
+
+用户追问「旧复杂 S 表达式已能遵循，为何加入 Session IO 后变脆弱」。
+本次对照源码和原响应证据，不改变输出机制、工具定义或模型配置。
+
+旧注解前基线 `f5c04be1^` 的 `sexpr_vm_contract.rs` 明确区分：
+`call` 通过标准 Function Calling，`reply` 直接返回普通助手正文。
+S 表达式表达程序语义，不要求把每次正文也写成完整程序。旧 typed infer
+确有结构化业务返回，不能概括为以前全都无结构；但这与每轮普通正文／
+工具提案都必须满足统一 Evaluation 契约并不相同。
+
+当前 on 的实际新增要求为：
+
+| 维度 | 注解前输出基线 | 当前启用注解 |
+| --- | --- | --- |
+| 工作调用载体 | 原生 Function Calling 及原参数 | 提案写入整个 JSON 的 effects 数组，再由 Runtime 生成正式调用 |
+| 普通回答载体 | 原正文直接返回 | body 字符串，与 effects／annotations 一起构成单个完整对象 |
+| 每轮必填信息 | 原业务要求 | 额外满足执行标题／进度／结果、步骤 intent、真实 observation refs 和工作／返回关系 |
+| 生成约束 | 原生工具参数及原业务返回约定 | 当前适配器请求 json_object 并设置 tool_choice=none；完整 Schema 仍由 Runtime 收到后检查 |
+
+证据归属：`session_io/response.rs::CONTRACT`、
+`session_io/evaluation.rs::descriptor/decode`、
+`provider.rs::apply_output_encoding`。工具目录没有随开关改变，但 on 的
+调用载体确实改变了；不能用「工具列表稳定」冒充「执行输出方式未变」。
+
+「Runtime 构造外壳」只对已确定的 Message、身份、因果关系和准入事实
+成立；当前 Evaluation 的内层 JSON 仍由模型生成，Runtime 构造并校验
+注册值，并没有由 Runtime 代替模型生成其全部语法。json_object 不是
+完整 Schema 的生成保证；本次真实失败也未抓到代理上游原包，不能声称
+已定位到模型本身或已证明约束端到端透传。
+
+已证实的脆弱点有两类：合法 JSON 的多余显示字段曾导致整轮失败（批准的
+投影修复已验证）；非法 JSON 的工作提案仍无法安全准入（尚未解决）。
+后者独立解析器同样拒绝，不是已经证明的 Runtime 误解析。更大字段／
+语义负担增加失败面是机制分析，不是同模型同 Context 的 A/B 测量结论，
+不能据此给出未经测量的遵循率或把一切归因为 JSON 比 S 表达式难。
+
+改进顺序应先验证真实 Provider／代理的约束链，再以相同模型、Context、
+任务和续接比较承载方式及字段负担，分开统计语法、Schema、业务参数与
+交付失败。不能先补长提示词、修括号、取消必需注解或再造文本协议。
+这些是诊断方向，不是已批准的新机制；结构变更仍须完整 review。
+
+### 新截图 23:29 的确切失败原因
+
+原窗口新输入的 Thread `thread_4087becd80d8f8bdf12c46a9`，原响应摘要
+`6f2553562ccdc7167f1b218fa657abebfb0c287760496f0c14bf0a1d880f023a`。
+独立 JSON.parse 可正常解析；根字段为 body／annotations／effects，整体
+注解 execution 的 title／progress／result 与 observations 均有提交。
+`body=null`，存在一个尚未执行的 context_tx 提案，不是已有最终正文被
+解析器截断，也不是只有纯聊天而无任何工作提案。
+
+该 effect 只有 name 和 arguments；意图字符串（54字符）实际被放入
+arguments.intent，而不是新增 Evaluation 层要求的同级 effect.intent。
+完整 Schema 因 `/effects/0` 缺失必填字段而拒绝，尚未进入正式工具
+执行。不能说模型完全没写意图，或这次 JSON 不合法。
+
+继续对照 `context_tools.rs::ContextTxArgs/definition`：context_tx 的
+合法业务字段只有 transaction，执行端 deny_unknown_fields。因此
+arguments.intent 也不是可复用的原生业务意图；这是步骤注解被放错
+层级、污染业务参数，不是工具原本合法的 intent 被误拒。工具定义目前
+未显式关闭 additionalProperties，与执行端拒绝多余字段也不完全一致，
+不能把“把意图挪出来”未经测试地当作整条调用已修复。没有进行自动挪
+字段、执行未知参数或新契约实施。
+
+Session IO 的通用能力允许 utf8／普通 Chat；当前 response.rs 的 off
+仍走普通正文及原生工作路径，on 才绑定 Evaluation。没有动作时步骤
+effects 为空，但当前 on 仍要求整体 execution 注解；「无动作所以必定
+无任何注解」与实际契约不同。问题属于注解应用接入时改变了输出载体与
+准入要求，不能概括为 Session IO 天生不能正常聊天。本次仅核查并记录，
+未取消必需注解、拷贝参数充当注解、放宽 Schema 或自动重放该执行。
+
+### 用户纠正：普通聊天不是一条待展示的工作执行
+
+核对当前消费端：`execution-activity.ts::executionActivityThreads` 只纳入
+kind=execution；本次三个普通聊天 Thread 均为 dialogue_turn。虽然
+`runtime.ts` 会读取并用 `activityAnnotationFields` 投影其注解，但普通
+聊天不会进入该活动概览。不能以这一概览需要工作标题／结果为理由，
+强制每条普通回复生成整体执行注解。前述“on 时每轮必填”描述的是当前
+实现，不是用户认可的必然设计；它与用户本次澄清的产品语义有偏差。
+
+语义修正要求：普通 Chat 的 payload 可以是原文本，Session IO 仍由
+Runtime 构造身份、类型、因果关系与持久交付外壳；不因开启注解而给
+无工作动作的聊天强制增加 execution.title/result。真实工具调用才有
+其步骤意图／观察结果；实际工作执行的整体摘要与普通聊天分开约定。
+本次提议 context_tx 属于模型先做偏好维护，不是已生成的纯文本回答；
+仍须走真实工具参数与权限检查，不能借普通聊天为理由自动执行坏参数。
+
+格式修正重试可以作为待 review 的有限兜底，不是本次已实施能力：
+仅在完整失败响应尚无任何 effect 获准／执行时，对该未接纳响应返回
+有界的结构化错误，保留原输入、冻结格式／工具目录及身份，用独立
+attempt 记录最多一次修正；绝不能重跑整轮任务、复做已完成操作、重试
+权限拒绝，或靠补请求掩盖首轮失败率。当前为保留诊断仍不启用重试。
+
+用户明确要求后续支持27B及更多量化模型。基础聊天／工作可用性不能
+建立在高端模型能自行组装复杂承载格式上；新设计须把 Runtime 已知
+结构与模型新增语义值分开，减少重复填写和多层含义，真实验证生成端
+约束／代理／工作续接。验收分别报告首轮成功、兜底修正、token及延迟；
+不能拿单个强模型或合成响应过关冒充小模型兼容，也不重启已失效订阅
+或将关闭注解冒充注解支持。具体传输方案尚待完整 review，本次未实施。
