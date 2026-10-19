@@ -7,6 +7,8 @@ import { localAccess } from "../packages/core/src/model.js";
 import type { ConversationStream } from "../packages/core/src/live-conversation.js";
 import { conversationRuntimeSchema } from "../packages/core/src/conversation.js";
 import { forbidLegacySnapshot } from "./host-transport-invariant.js";
+import { platformHistorySchema } from "../apps/web/src/platform-client.js";
+import { resendRecordedInput } from "../apps/web/src/host/resend-recorded-input.js";
 import {
   conversationSearchPageSchema,
   type ConversationSearchPage,
@@ -47,6 +49,39 @@ test("Platform 实时订阅从已保存游标开始，不重放整段历史", as
     assert.equal(requestedAfter, 438);
   } finally {
     feed.close();
+  }
+});
+
+test("失败后重发保留不可变原输入的模型和推理设置，不采用当前默认", async () => {
+  const store = new WorkspaceStore(":memory:", { mode: "transport" });
+  const at = "2026-10-19T00:00:00.000Z";
+  const { bridge } = timelineBridge(store, (runtime, sessionId) => {
+    const entries = timelinePair(runtime, sessionId, 0, at, at, at, "");
+    entries[0]!.event.payload.model_alias = "deepseek-flash";
+    entries[0]!.event.payload.reasoning_effort = "low";
+    return entries.slice(0, 1);
+  });
+  try {
+    const history = platformHistorySchema.parse(
+      await bridge.platformConversationHistory(
+        { projectId: "project", conversationId: "conversation" },
+        localAccess,
+      ),
+    );
+    const input = history.inputs[0]!;
+    const resend = resendRecordedInput({
+      ...input,
+      artifactId: null,
+      artifactRevision: null,
+      selection: "",
+      status: "recorded",
+    });
+    assert.equal(resend.model, "deepseek-flash");
+    assert.equal(resend.reasoningEffort, "low");
+    assert.equal(resend.body, input.body);
+    assert.equal("id" in resend, false);
+  } finally {
+    store.close();
   }
 });
 

@@ -113,6 +113,8 @@ test(
             artifactRevision: null,
             selection: "",
             body: marker,
+            model: "profile-actual",
+            reasoningEffort: "low",
             targetActantId: "morphz-agent",
             newConversation: { title: marker },
           },
@@ -203,6 +205,13 @@ test(
         .messages!.filter((message) => message.kind === "reply");
       assert.equal(final.length, 1);
       assert.equal(final[0]!.text, prefix + suffix);
+      const history = (await f.client.call(
+        "conversations.history",
+        { projectId, conversationId },
+        f.options,
+      )) as { inputs: Array<{ model?: string; reasoningEffort?: string }> };
+      assert.equal(history.inputs[0]!.model, "profile-actual");
+      assert.equal(history.inputs[0]!.reasoningEffort, "low");
       assert.equal(
         f.requests.length,
         1,

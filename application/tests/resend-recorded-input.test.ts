@@ -19,6 +19,8 @@ test("重新发送使用原问题、引用和阅读位置，而不是当前页�
     targetActantId: "morphz-agent",
     author: { principalId: "human", actantId: "human" },
     createdAt: "2026-10-18T14:00:00Z",
+    model: "deepseek-flash",
+    reasoningEffort: "low",
     reading: {
       book: { title: "合成原书", author: "合成", edition: "", format: "epub" },
       chapter: "原章",
@@ -62,6 +64,8 @@ test("重新发送使用原问题、引用和阅读位置，而不是当前页�
   assert.deepEqual(next.reading, original.reading);
   assert.deepEqual(next.attachments, original.attachments);
   assert.deepEqual(next.textQuotes, original.textQuotes);
+  assert.equal(next.model, "deepseek-flash");
+  assert.equal(next.reasoningEffort, "low");
   assert.equal("id" in next, false);
   assert.equal("author" in next, false);
   assert.equal("createdAt" in next, false);

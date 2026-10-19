@@ -645,6 +645,26 @@ function platformInputBody(delivery: StoredDelivery): string {
       .text
   );
 }
+/** The immutable admitted input owns its inference selection. The current
+ * composer/default is never evidence of which model a previous request used. */
+function inputInferenceSelection(raw: unknown): {
+  model?: RecordedInput["model"];
+  reasoningEffort?: RecordedInput["reasoningEffort"];
+} {
+  const parsed = z
+    .object({
+      model_alias: z.string().trim().min(1).max(256).optional(),
+      reasoning_effort: reasoningEffortSchema.nullish(),
+    })
+    .safeParse(raw);
+  if (!parsed.success) return {};
+  return {
+    ...(parsed.data.model_alias ? { model: parsed.data.model_alias } : {}),
+    ...(parsed.data.reasoning_effort
+      ? { reasoningEffort: parsed.data.reasoning_effort }
+      : {}),
+  };
+}
 export type PlatformConversationHistory = {
   inputs: Array<{
     id: string;
@@ -666,6 +686,8 @@ export type PlatformConversationHistory = {
     textQuotes?: RecordedInput["textQuotes"];
     localFile?: RecordedInput["localFile"];
     directories?: RecordedInput["directories"];
+    model?: RecordedInput["model"];
+    reasoningEffort?: RecordedInput["reasoningEffort"];
     createdAt: string;
   }>;
   runtime: ConversationRuntime;
@@ -4407,6 +4429,7 @@ export class RuntimeBridge {
       if (item.entry_id !== inputId) return null;
       const input: PlatformConversationHistory["inputs"][number] = {
         id: inputId,
+        ...inputInferenceSelection(root.payload),
         projectId: source.projectId,
         conversationId: source.conversationId,
         author: source.author,
@@ -4770,6 +4793,7 @@ export class RuntimeBridge {
       if (!source || delivery.rootId) return [];
       const input: PlatformConversationHistory["inputs"][number] = {
         id: delivery.inputId,
+        ...inputInferenceSelection(delivery.request.activation),
         projectId: source.projectId,
         conversationId: source.conversationId,
         author: source.author,

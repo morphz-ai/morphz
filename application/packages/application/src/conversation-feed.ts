@@ -208,6 +208,9 @@ export class ConversationFeed {
         // The existing HTTP principal-claim path must succeed before subscribing.
         await this.options.request(`/api/sessions/${encodeURIComponent(id)}`);
         if (!this.active(id, c)) return;
+        // IO and work-event transport are independent. A failed/blocked
+        // WebSocket handshake must not prevent authorized IO draft recovery.
+        this.startIo(id, c);
         const url = new URL("/ws", this.options.url);
         url.protocol = "ws:";
         url.searchParams.set("session_id", id);
@@ -262,9 +265,7 @@ export class ConversationFeed {
         });
       }
       if (!c.ioAbort && Date.now() >= c.retryAt) {
-        const controller = new AbortController();
-        c.ioAbort = controller;
-        void this.readIo(id, c, controller);
+        this.startIo(id, c);
       }
       // Subscribe before history; use the durable cursor, never transient sequences.
       // Yield between pages so long histories do not delay sending new input.
@@ -296,6 +297,12 @@ export class ConversationFeed {
       c.retryAt = Date.now() + 2000;
       this.notify();
     }
+  }
+  private startIo(id: string, c: Connection) {
+    if (c.ioAbort || !this.active(id, c)) return;
+    const controller = new AbortController();
+    c.ioAbort = controller;
+    void this.readIo(id, c, controller);
   }
   private async readIo(id: string, c: Connection, controller: AbortController) {
     const prefixes = new Map<string, { sequence: number; text: string }>();

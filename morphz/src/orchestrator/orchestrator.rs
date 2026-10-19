@@ -27220,6 +27220,7 @@ mod tests {
         ] {
             assert!(prompt.contains("default return path is the ordinary assistant text channel"));
             assert!(prompt.contains("Business-effect limits do not disable Session IO"));
+            assert!(prompt.contains("complete return value BEFORE the companion annotations call"));
         }
         let correction = super::response_protocol_correction_prompt("test", None, false);
         assert!(correction.contains("another work/control tool"));

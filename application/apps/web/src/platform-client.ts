@@ -28,7 +28,10 @@ import {
   conversationSearchPageSchema,
   type ConversationSearchRequest,
 } from "../../../packages/core/src/conversation-search.js";
-import type { ReasoningEffort } from "../../../packages/core/src/inference.js";
+import {
+  reasoningEffortSchema,
+  type ReasoningEffort,
+} from "../../../packages/core/src/inference.js";
 import type { LiveScriptDraft } from "../../../packages/script-studio/src/store.js";
 import { scriptOutputSchema } from "../../../packages/core/src/script-delivery.js";
 import {
@@ -275,6 +278,8 @@ export const platformHistorySchema = z.object({
       attachments: z.array(inputAttachmentSchema).optional(),
       localFile: localFileReferenceSchema.optional(),
       directories: z.array(directoryGrantSchema).max(8).optional(),
+      model: z.string().trim().min(1).max(256).optional(),
+      reasoningEffort: reasoningEffortSchema.optional(),
       createdAt: isoTime,
     }),
   ),

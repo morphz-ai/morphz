@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
@@ -110,6 +110,18 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     { id: string; context_id: string; permission_mode: string | null }
   >();
   const events = new Map<string, FixtureEvent[]>();
+  const ioSubscribers = new Map<string, Set<ServerResponse>>();
+  const ioDrafts = new Map<string, Map<string, Record<string, unknown>>>();
+  const publishIoSnapshot = (
+    sessionId: string,
+    draft: Record<string, unknown>,
+  ) => {
+    const current = ioDrafts.get(sessionId) ?? new Map();
+    current.set(String(draft.output_id), draft);
+    ioDrafts.set(sessionId, current);
+    for (const response of ioSubscribers.get(sessionId) ?? [])
+      response.write(`data: ${JSON.stringify(draft)}\n\n`);
+  };
   const sent: Array<Record<string, unknown>> = [];
   let rootLookupReads = 0;
   const acceptedRoots = new Map<
@@ -190,6 +202,19 @@ test("Platform-only project sends a durable Runtime input without a legacy works
       return send(201, session);
     }
     const sessionId = path.split("/")[3]!;
+    if (request.method === "GET" && path.endsWith("/io/stream")) {
+      if (!sessions.has(sessionId))
+        return send(404, { error: "Unknown Runtime session" });
+      response.writeHead(200, { "Content-Type": "text/event-stream" });
+      response.write('data: {"type":"stream.opened"}\n\n');
+      const subscribers = ioSubscribers.get(sessionId) ?? new Set();
+      subscribers.add(response);
+      ioSubscribers.set(sessionId, subscribers);
+      for (const draft of ioDrafts.get(sessionId)?.values() ?? [])
+        response.write(`data: ${JSON.stringify(draft)}\n\n`);
+      response.on("close", () => subscribers.delete(response));
+      return;
+    }
     if (/^\/api\/sessions\/[^/]+$/.test(path) && request.method === "PATCH") {
       const session = sessions.get(sessionId);
       if (!session) return send(404, { error: "Unknown Runtime session" });
@@ -1927,6 +1952,20 @@ test("Platform-only project sends a durable Runtime input without a legacy works
           stream: { kind, text },
         },
       });
+    publishIoSnapshot(sharedSessionId, {
+      type: "output.delta",
+      output_id: `io_text_attempt-${sharedB.commandId}`,
+      session_id: sharedSessionId,
+      root_turn_id: `root-${sharedB.commandId}`,
+      thread_id: `thread-${sharedB.commandId}`,
+      activation_id: `activation-${sharedB.commandId}`,
+      model_attempt_id: `attempt-${sharedB.commandId}`,
+      model_output_visibility: "public",
+      timestamp: new Date().toISOString(),
+      delta_seq: 1,
+      text: "实时增量",
+      snapshot: true,
+    });
     const deltaDeadline = Date.now() + 4000;
     while (
       !streamed.at(-1)?.some((message) => message.text === "实时增量") &&
@@ -1971,6 +2010,24 @@ test("Platform-only project sends a durable Runtime input without a legacy works
           stream: { kind, text },
         },
       });
+    publishIoSnapshot(sharedSessionId, {
+      type: "output.delta",
+      output_id: "io_text_actual-infer-attempt",
+      session_id: sharedSessionId,
+      root_turn_id: inferRoot,
+      thread_id: "actual-infer-thread",
+      activation_id: "actual-infer-activation",
+      model_attempt_id: "actual-infer-attempt",
+      model_output_visibility: "internal",
+      inference_source: {
+        plan_execution_id: "actual-plan",
+        effect_sequence: 1,
+      },
+      timestamp: new Date().toISOString(),
+      delta_seq: 1,
+      text: '\"获授权的求值结果',
+      snapshot: true,
+    });
     const evaluationDeadline = Date.now() + 4000;
     while (
       !streamed
@@ -3956,6 +4013,7 @@ test("Platform-only project sends a durable Runtime input without a legacy works
     await runtime.stop();
     await domains.unbindRuntime(binding.authority);
     await domains.close();
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     workspace.close();
     secondWorkspace?.close();
