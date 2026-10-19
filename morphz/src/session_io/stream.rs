@@ -64,6 +64,33 @@ mod tests {
             .any(|d| d["output_id"] == "io_text_m99"));
     }
     #[test]
+    fn projected_parent_and_private_child_have_distinct_drafts_with_one_physical_identity() {
+        let streams = Streams::default();
+        let mut private = event("child", "physical", "text_delta", "internal value");
+        private
+            .payload
+            .insert("model_output_visibility".into(), json!("internal"));
+        streams.observe(&mut private);
+        let mut public = event("parent", "physical", "text_delta", "public leaf");
+        public
+            .payload
+            .insert("publication_key".into(), json!("parent-activation"));
+        public.payload.insert(
+            "result_source".into(),
+            json!({"plan_execution_id":"plan","effect_sequence":2,"path":["answer"]}),
+        );
+        streams.observe(&mut public);
+        let snapshots = streams.snapshots("s");
+        assert_eq!(snapshots.len(), 2);
+        let public = snapshots
+            .iter()
+            .find(|value| value["root_turn_id"] == "parent")
+            .unwrap();
+        assert_eq!(public["model_attempt_id"], "physical");
+        assert_eq!(public["publication_key"], "parent-activation");
+        assert_eq!(public["result_source"]["path"][0], "answer");
+    }
+    #[test]
     fn draft_snapshot_carries_actual_infer_provenance_and_first_visible_time() {
         let stream = Streams::default();
         let mut started = event("root", "attempt", "started", "");
@@ -87,6 +114,33 @@ mod tests {
         assert_eq!(snapshot["inference_source"]["plan_execution_id"], "plan");
         assert_eq!(snapshot["timestamp"], json!(text.timestamp));
         assert_eq!(snapshot["text"], "typed value");
+    }
+
+    #[test]
+    fn cancelled_generation_fences_late_drafts_but_not_an_explicit_retry() {
+        let streams = Streams::default();
+        let mut first = event("root", "old", "text_delta", "old body");
+        first.payload.insert("thread_generation".into(), json!(1));
+        streams.observe(&mut first);
+        let mut cancelled = first.clone();
+        cancelled.topic = "runtime/thread_cancelled".into();
+        streams.observe(&mut cancelled);
+        assert!(streams.snapshots("s").is_empty());
+        let mut late = first.clone();
+        streams.observe(&mut late);
+        assert!(
+            !late.payload.contains_key("session_io_stream") || streams.snapshots("s").is_empty()
+        );
+        let mut retry = event("root", "new", "text_delta", "retry body");
+        retry.payload.insert("thread_generation".into(), json!(2));
+        streams.observe(&mut retry);
+        assert_eq!(streams.snapshots("s")[0]["text"], "retry body");
+        streams.observe(&mut cancelled);
+        assert_eq!(
+            streams.snapshots("s")[0]["text"],
+            "retry body",
+            "a late old-generation terminal must not erase the new generation"
+        );
     }
     #[test]
     fn infer_and_thread_returns_close_only_their_actual_root_draft() {
@@ -122,7 +176,7 @@ mod tests {
 struct State {
     drafts: BTreeMap<String, Value>,
     order: VecDeque<String>,
-    closed: VecDeque<String>,
+    closed: VecDeque<(String, Option<u64>)>,
 }
 impl Streams {
     pub fn observe(&self, event: &mut Event) {
@@ -138,28 +192,40 @@ impl Streams {
         else {
             return;
         };
+        let generation = event
+            .payload
+            .get("thread_generation")
+            .and_then(Value::as_u64);
         if matches!(
             event.topic.as_str(),
             "chat/reply"
                 | "chat/no_reply"
                 | "chat/cancelled"
+                | "runtime/thread_cancelled"
                 | "session/io_state"
                 | "plan/infer_result"
                 | "runtime/thread_result"
         ) {
-            state
-                .drafts
-                .retain(|_, draft| draft["root_turn_id"] != root);
+            state.drafts.retain(|_, draft| {
+                draft["root_turn_id"] != root
+                    || generation.is_some_and(|generation| {
+                        draft["thread_generation"].as_u64() != Some(generation)
+                    })
+            });
             // Completed drafts must not leave an ever-growing eviction queue.
             let live_ids: std::collections::BTreeSet<_> = state.drafts.keys().cloned().collect();
             state.order.retain(|id| live_ids.contains(id));
-            state.closed.push_back(root);
+            state.closed.push_back((root, generation));
             if state.closed.len() > 4096 {
                 state.closed.pop_front();
             }
             return;
         }
-        if event.topic != "runtime/model_stream" || state.closed.contains(&root) {
+        if event.topic != "runtime/model_stream"
+            || state.closed.iter().any(|(closed, version)| {
+                closed == &root && (version.is_none() || *version == generation)
+            })
+        {
             return;
         }
         let Some(attempt) = event
@@ -169,7 +235,11 @@ impl Streams {
         else {
             return;
         };
-        let output_id = format!("io_text_{attempt}");
+        let publication = event.payload.get("publication_key").and_then(Value::as_str);
+        let output_id = publication
+            .filter(|key| *key != attempt)
+            .map(|key| format!("io_text_{key}_{attempt}"))
+            .unwrap_or_else(|| format!("io_text_{attempt}"));
         let Some(stream) = event.payload.get("stream") else {
             return;
         };
@@ -186,7 +256,7 @@ impl Streams {
                 }
             }
             state.order.push_back(output_id.clone());
-            state.drafts.insert(output_id.clone(), json!({"type":"output.started","output_id":output_id,"root_turn_id":root,"session_id":event.payload.get("session_id"),"thread_id":event.payload.get("thread_id"),"thread_generation":event.payload.get("thread_generation"),"activation_id":event.payload.get("activation_id"),"model_attempt_id":attempt,"model_output_visibility":event.payload.get("model_output_visibility"),"inference_source":event.payload.get("inference_source"),"timestamp":event.timestamp,"delta_seq":0,"text":"","complete":false}));
+            state.drafts.insert(output_id.clone(), json!({"type":"output.started","output_id":output_id,"root_turn_id":root,"session_id":event.payload.get("session_id"),"thread_id":event.payload.get("thread_id"),"thread_generation":event.payload.get("thread_generation"),"activation_id":event.payload.get("activation_id"),"model_attempt_id":attempt,"publication_key":publication,"result_source":event.payload.get("result_source"),"model_output_visibility":event.payload.get("model_output_visibility"),"inference_source":event.payload.get("inference_source"),"timestamp":event.timestamp,"delta_seq":0,"text":"","complete":false}));
         }
         let draft = state.drafts.get_mut(&output_id).expect("draft inserted");
         if draft["aborted"] == true {

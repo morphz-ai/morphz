@@ -263,7 +263,11 @@ assistant content，message.format 与 message.content 为兄弟字段，
 review 候选设计，不继续改协议／工具／模型路由。任务控制继承、设置
 分组及独立消息来源展示属于各自已授权缺陷，验证和更新与此设计分开。
 
-## Session IO 完整候选设计：一次类型化求值结果（待 review，未实施）
+## Session IO 完整候选设计：一次类型化求值结果（历史 review 稿）
+
+本节保留 review 时点的候选、证据和边界。用户随后明确批准实施完整
+Session IO 输入／输出方案；当前实现与验收进度见本文末节，不再将本节
+「未实施」表述当作当前状态，也不把候选设计本身当作验收证据。
 
 ### 1. 结论与需要明确审阅的变化
 
@@ -462,3 +466,104 @@ Runtime 拥有求值绑定、接纳回执、工作状态与完整来源；Format
 Provider 结构约束、工具载体、Schema 关键词、模式或数据库，也未修改
 原模型路由。review 的核心选择是是否接受一次完整类型化求值结果及
 其工作提案载体的改变；若只批准更小变更，需要相应降低可承诺的保证。**
+
+## 已批准实施：Runtime 构造外壳、模型填写值
+
+当前仅保留一条启用注解的执行路径：同一次 Provider 响应给出注册的
+`morphz.evaluation@1` 原生 JSON 值 `{effects, annotations, body}`。它不是
+正文里的协议文本，也不是原生工作调用再附一个注解调用。off 仍是明确的
+普通内容／原生工作输出；开关和格式在 Evaluation 准入时冻结。
+
+### 字段如何衔接
+
+| 部分 | 谁填写 | Runtime 如何处理 |
+| --- | --- | --- |
+| body | LLM 的完整回答或声明的业务值 | 按已冻结的调用方格式检查，构造真正的 Session IO Message |
+| annotations.execution | LLM 的标题、进展、结果 | 同次校验后归入真实 Execution；不是执行终态或成功证据 |
+| annotations.observations | LLM 的 ref 与解释 | 只接受 Context 中实际提供、且属于此 Execution／代次的精确 ref |
+| effects | LLM 的原工具名、原参数对象、步骤意图 | Runtime 按实际 Model Attempt 与顺序生成 call ID，走原类型／权限／审批／Job 路径 |
+| Message 格式、返回 ID、Thread、generation、attempt、因果关系、结束决定 | Runtime | 不交给模型填写，不从正文或当前页面猜测 |
+
+`caller_format` 是 Runtime 最终构造的调用方 Message 格式；输出字段值
+另有明确的 `body_value_schema`，不能混用。真实 DeepSeek 复验曾抓到
+Chat 的 body 被生成为 `{text: ...}`：此前 Context 同时暴露了 Chat JSON
+Message 和 String 要求，字段含义有歧义。现已统一名称、字段值 Schema
+与完整输出定义，明确 Chat body 是原 String；不是容忍两种执行协议，
+也没有通过提取 `body.text` 的兼容分支掩盖错误。
+
+候选中的 disposition 字段已删除：Runtime 由实际 effects／no_reply／body
+确定 work、return、wait 或 silent。没有额外的注解专用工具、文本尾段、
+修补 JSON 解析器、临时工具列表或只为补元数据／转述答案的模型调用。
+唯一工具目录的清理仅更新既有通用交付和 Yao 描述；模式、类型和普通
+请求不再动态改写同一工具的名称、Schema、顺序或说明。
+
+### 原生值与流式
+
+Chat 的 body 是原 Markdown String；typed infer 的 JSON body 则是原生
+Bool／String／record／array／null，不让模型再手工编码一层 JSON 字符串。
+Runtime 为原 Yao decoder 做确定性的无损序列化，再检查完整声明类型；
+record 的其他字段不会因界面只读 reply 而丢失。Program 仍走已准入的
+UTF-8 源码、解析／类型／效果上界检查，不直接运行返回的任意源码。
+
+正文只从 Schema 的确定字段路径投影，不扫描 Markdown。键乱序可以
+缓冲；重复键、无效 Unicode、超限、截断和尾随数据仍被严格拒绝。
+建议先 effects、后 annotations、最后 body 以降低首字等待，但顺序不是
+接纳条件。普通文字讨论本协议不会切换解析模式或截断回答。
+
+父 Harness 只有在其已持久 Plan 的确定性续体能证明「本 infer 的这个
+String 叶子会原样成为最终回复」时，才投影该叶子到父执行的公共草稿。
+运行时按真实 Bool 分支投影临时前缀，最终仍须完整校验 effects=[]；typed
+infer 在工作时只能返回 null body，进展放在已有 progress 字段中。若临时
+前缀后出现工作提案，完整值拒绝准入，前缀不标记完成。未知变换、后续工作和普通 eval
+工具结果没有这个公开资格。publication 身份与真实物理子 Model Attempt
+分开保存，最终结果按相同来源和值路径接替，不把内部 JSON 混到正文。
+断线保留前缀，取消按实际 root／generation 封住迟到增量，不冒充完成。
+
+### 约束与错误，不夸大生成保证
+
+当前有效 DeepSeek 路由使用原生 json_object；Provider 约束 JSON 语法，
+Runtime 负责完整 Schema、原业务类型、作用域和执行准入。它不等于厂商
+严格保证全部字段，更不保证模型判断真实。Responses／Chat 适配分别使用
+原生 text.format／response_format，保持原模型、max 与实际工具目录。
+未验证的提供方／模型不记为通过，不能静默退回自由文本协议。
+
+完整值不合规会留下原始响应及诊断，不伪造 accepted Evaluation 回执。
+若完整、无歧义 JSON 中只有显示注解不合规，且 effects=[]、原正文独立
+通过调用方检查，则保留答案，另记注解错误；这不算注解验收通过。
+语法边界不明、没有实际正文、业务类型错误或未接纳工作仍严格失败。
+不补造标题、不自动多推理一次；真实模型 gate 仍要求整体、步骤及观察
+注解实际有效，不能靠这个错误隔离策略获得绿色验收。
+
+已有 IO／Event／Plan 存储和原子提交复用，没有新增业务表或双写权威。
+旧事件只读保留，不执行旧文本协议或退役工具。
+
+### 本轮代码验收证据
+
+- 最终完整 Rust lib：1583 passed、0 failed、13 个原有显式 ignored。
+  首轮并行编译负载中，已有百轮 Objective 测试因两秒续租窗口过期失败；
+  未放宽断言、改测试时限或修改 Objective 策略，最终完整复跑通过。
+- Rust 专项：响应注解 25、Session IO 13、原生 Evaluation Runtime 5，
+  合计 43 项通过；三项独立新建 PostgreSQL 实际验证另行通过，覆盖
+  显式写入栅栏、并发资源提交和带栅栏的输入／交付／重开／取消。
+  这些不代表其余 ignored 或全模型矩阵已经覆盖。
+- 正式 Node 入口专项 37/37、无跳过，包含真实 Runtime＋Host＋HTTP、
+  开关冻结、完整前缀恢复、取消与去重、损坏元数据和严格语法边界。
+  类型检查、生产构建和差异检查通过；不是全应用 npm test 的完成声明。
+- 真实现有 DeepSeek 路由／max 六场景全部通过：普通回答 1 次请求、
+  独立盲审读取 2 次、进度读取 2 次、真实 context_tx 提交 2 次、单 infer
+  1 次、原 discuss-script 2 次。原文件／Host 读取均有实际回执；记忆
+  场景核对实际 Mind version=1。整体、步骤、精确观察注解没有诊断，
+  公开正文均有多段增量，单 infer 没有转述或元数据修复模型请求。
+  普通回答与单 infer 随后各重复通过一次；现有 GPT 路由普通回答一次
+  对照通过。Qwen／Kimi／GLM 和未启用订阅仍明确后补，不借用旧帐号。
+- 原 Script Studio 包的项目讨论隔离验收通过：4 次合成物理模型请求
+  属于同一个逻辑 infer，按需真实读取项目／目录／局部原文，不写稿，
+  原草稿保持不变，没有第二次 infer 或最终模型转述。合成 Provider
+  只验证运行时契约；真实 DeepSeek 上述讨论场景另有独立证据。
+- 原 Script Studio 完整隔离流程另行通过：14 个实际分支、68 次固定
+  合成 Provider 请求，覆盖选择工序、项目准备、0／1／2 轮审稿、修改、
+  阻塞与无效类型拒绝、真实 Unix Host 写入、重开、无重放和真实 DOCX
+  字节；不是线上创作质量、Word 渲染或原 Desktop 窗口验收。
+
+原应用尚需本次安全切换与实际窗口验收，随后补记，不能用这些源码、
+隔离测试或模型调用记录冒充原窗口已经升级。

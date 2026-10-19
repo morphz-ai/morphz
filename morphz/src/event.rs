@@ -607,7 +607,7 @@ impl InMemoryEventBus {
         // Companions were persisted with their source, not by a second input
         // or business tool. Redispatch is safe and preserves existing cursors.
         if durable || ev.sequence.is_some() {
-            for companion in crate::session_io::response::companion_events(&ev) {
+            for companion in crate::session_io::response::evaluation_publications(&ev) {
                 Box::pin(self.publish_with_options(companion, false, bypass_async_limit)).await?;
             }
         }

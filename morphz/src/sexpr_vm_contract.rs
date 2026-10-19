@@ -40,7 +40,7 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
     (operator call
       (form (call tool argument...))
       (description
-        "Call tool through standard Function Calling. argument uses the tool's standard JSON parameters;
+        "Submit the exact tool name and standard JSON arguments through effects in a schema-bound output, or native Function Calling when ordinary output is admitted;
          wait for the tool result and treat it as the current expression's Observation."))
 
     (operator fallback
@@ -68,7 +68,7 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
       (description
         "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
          To evaluate it, return content itself through Session IO to this Evaluation's actual caller: its active Session or parent Plan.
-         Keep enabled annotations in their separate communication message, without executing work;
+         Keep enabled annotations in fields of the same Evaluation value, without executing work;
          never send the (reply ...) parentheses or operator name as a response envelope.
          End the current Evaluation when no required process remains; returning a child value does not complete parent work."))))"#;
 
@@ -94,7 +94,7 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
     (operator call
       (form (call tool argument...))
       (description
-        "Call tool through standard Function Calling. argument uses the tool's standard JSON parameters;
+        "Submit the exact tool name and standard JSON arguments through effects in a schema-bound output, or native Function Calling when ordinary output is admitted;
          wait for the tool result and treat it as the current expression's Observation."))
 
     (operator fallback
@@ -122,11 +122,11 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
       (description
         "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
          To evaluate it, return content itself through Session IO to this Evaluation's actual caller: its active Session or parent Plan.
-         Keep enabled annotations in their separate communication message, without executing work;
+         Keep enabled annotations in fields of the same Evaluation value, without executing work;
          never send the (reply ...) parentheses or operator name as a response envelope.
          End the current Evaluation when no required work remains. Maintain Mind only for an accurate state change worth retaining;
          maintenance is not a mandatory closing step and Runtime finalizing/maintenance-budget limits take precedence.
-         For intentional silence, call the Runtime's no_reply(mode=silent) as the only work/control call; companion Session IO is not work.
+         For intentional silence, call the Runtime's no_reply(mode=silent) as the only work/control call; annotation fields are not work.
          To wait only for a nonterminal event known to the Runtime, call
          no_reply(mode=wait). Do not keep waiting after completion or failure arrives; an empty response is not completion."))))"#;
 
@@ -148,6 +148,8 @@ mod tests {
         for contract in [SYMBOLIC_KERNEL, ANNOTATED_KERNEL, ANNOTATED_RESPONSE_KERNEL] {
             crate::sexpr::parse(contract).expect("VM contract must be one valid S-expression");
             assert!(!contains_cjk(contract), "contract: {contract}");
+            assert!(!contract.contains("separate communication message"));
+            assert!(!contract.contains("Call tool through standard Function Calling"));
         }
     }
 

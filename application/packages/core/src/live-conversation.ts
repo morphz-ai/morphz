@@ -80,6 +80,10 @@ export const sessionIoDraftSchema = z.object({
   thread_id: z.string().min(1),
   activation_id: z.string().min(1),
   model_attempt_id: z.string().min(1),
+  publication_key: z.string().min(1).max(256).nullish(),
+  result_source: evaluationSourceSchema
+    .extend({ path: z.array(z.string()).optional() })
+    .nullish(),
   model_output_visibility: z.enum(["public", "internal", "evaluation"]),
   inference_source: evaluationSourceSchema.nullish(),
   timestamp: z.string().refine((value) => Number.isFinite(Date.parse(value))),
@@ -126,7 +130,7 @@ export class LiveConversationProjection {
    * start timing cannot authorize a suffix or erase an already admitted value. */
   consumeIoDraft(draft: SessionIoDraft, text: string) {
     const activation = draft.activation_id,
-      attempt = draft.model_attempt_id;
+      attempt = draft.publication_key || draft.model_attempt_id;
     if (
       this.cancelledRoots.has(draft.root_turn_id) ||
       this.cancelled.has(activation)
@@ -181,6 +185,12 @@ export class LiveConversationProjection {
     }
     if (this.resolved.has(attempt)) return;
     const previous = this.attempts.get(attempt);
+    if (
+      previous?.message.modelAttemptId &&
+      previous.message.modelAttemptId !== draft.model_attempt_id &&
+      Date.parse(previous.message.createdAt) > Date.parse(draft.timestamp)
+    )
+      return;
     this.attempts.set(attempt, {
       activation,
       continuation: incomplete,
@@ -234,8 +244,11 @@ export class LiveConversationProjection {
       // A recoverable protocol rejection is diagnostic, not the attempt's
       // final publication. It must not replace already-public streamed words.
       ...(e.topic !== "runtime/response_protocol_error" &&
-      typeof e.payload.attempt_id === "string"
-        ? { publicationKey: e.payload.attempt_id }
+      typeof (e.payload.publication_key ?? e.payload.attempt_id) === "string"
+        ? {
+            publicationKey: (e.payload.publication_key ??
+              e.payload.attempt_id) as string,
+          }
         : {}),
       ...(typeof e.payload.thread_id === "string"
         ? { threadId: e.payload.thread_id }
@@ -274,6 +287,7 @@ export class LiveConversationProjection {
       // Semantic outcomes can name the exact physical request. A protocol
       // retry is not inferred from an Activation or an identifier suffix.
       attemptId =
+        str(p.publication_key) ||
         ([
           "runtime/thread_waiting",
           "chat/reply",

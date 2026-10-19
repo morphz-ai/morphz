@@ -918,7 +918,15 @@ async fn cancelling_a_typed_root_fences_late_model_delivery() {
     assert!(!events
         .iter()
         .any(|event| event.payload.contains_key("io_message")));
-    assert!(runtime.session_io_snapshots("typed-session").is_empty());
+    assert!(
+        runtime.session_io_snapshots("typed-session").is_empty(),
+        "snapshots={:?}; events={:?}",
+        runtime.session_io_snapshots("typed-session"),
+        events
+            .iter()
+            .map(|event| (&event.topic, &event.payload))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -8378,7 +8378,7 @@ async fn append_event_in_transaction(
         enqueue_event_recall_in_transaction(tx, event, context_id, false).await?;
     }
     project_observation_in_transaction(tx, event).await?;
-    for companion in crate::session_io::response::companion_events(event) {
+    for companion in crate::session_io::response::evaluation_publications(event) {
         Box::pin(append_event_in_transaction(tx, &companion)).await?;
     }
     Ok(sequence)
@@ -9299,7 +9299,7 @@ async fn append_event_idempotent_in_transaction(
             enqueue_event_recall_in_transaction(tx, event, context_id, false).await?;
         }
         project_observation_in_transaction(tx, event).await?;
-        for companion in crate::session_io::response::companion_events(event) {
+        for companion in crate::session_io::response::evaluation_publications(event) {
             Box::pin(append_event_idempotent_in_transaction(tx, &companion)).await?;
         }
         return Ok(true);

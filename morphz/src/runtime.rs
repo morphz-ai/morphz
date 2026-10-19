@@ -20454,10 +20454,25 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(
-            outputs.is_empty(),
-            "internal JSON must not create a public snapshot"
+        assert_eq!(
+            outputs.len(),
+            1,
+            "the proven reply leaf, not the internal JSON, has one public snapshot"
         );
+        assert_eq!(outputs[0].payload["text"], reply.payload["text"]);
+        assert_eq!(
+            outputs[0].payload["result_source"],
+            reply.payload["result_source"]
+        );
+        assert_eq!(
+            outputs[0].payload["publication_key"],
+            reply.payload["publication_key"]
+        );
+        assert_eq!(outputs[0].payload["root_turn_id"], original.event_id);
+        assert!(!outputs[0].payload["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"execute\""));
         let validations = runtime
             .query_events(QueryFilter {
                 session_id: Some(session.id().into()),

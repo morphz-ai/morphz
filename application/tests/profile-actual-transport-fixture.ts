@@ -40,7 +40,7 @@ type CapturedRequest = {
 
 /** Read only the Runtime-owned field in the actual Context tree; this is a
  * test request inspector, never an executable protocol parsed from prose. */
-export function profileFixtureReturnBinding(request: CapturedRequest) {
+function profileFixtureContext(request: CapturedRequest): any {
   const textOf = (content: unknown): string =>
     typeof content === "string"
       ? content
@@ -88,29 +88,60 @@ export function profileFixtureReturnBinding(request: CapturedRequest) {
     const context = roots.find(
       (node: any) => Array.isArray(node) && node[0] === "context",
     );
-    const child = (node: any, key: string) =>
-      Array.isArray(node)
-        ? node.find((item: any) => Array.isArray(item) && item[0] === key)
-        : undefined;
-    const value = (node: any, key: string) => child(node, key)?.[1];
-    const binding = child(
-      child(context, "evaluation-environment"),
-      "session-io-return",
-    );
-    if (binding) {
-      const format = child(binding, "format");
-      return {
-        delivery_id: value(binding, "delivery_id") as string,
-        format: {
-          id: value(format, "id") as string,
-          version: value(format, "version") as string,
-          encoding: value(format, "encoding") as string,
-        },
-        annotations_enabled: value(binding, "annotations_enabled") === "true",
-      };
-    }
+    if (context) return context;
   }
   return undefined;
+}
+const fixtureChild = (node: any, key: string): any =>
+  Array.isArray(node)
+    ? node.find((item: any) => Array.isArray(item) && item[0] === key)
+    : undefined;
+const fixtureValue = (node: any, key: string): any =>
+  fixtureChild(node, key)?.[1];
+export function profileFixtureReturnBinding(request: CapturedRequest) {
+  const binding = fixtureChild(
+    fixtureChild(profileFixtureContext(request), "evaluation-environment"),
+    "session-io-return",
+  );
+  if (!binding) return undefined;
+  const format = fixtureChild(binding, "caller_format");
+  return {
+    delivery_id: fixtureValue(binding, "delivery_id") as string,
+    format: {
+      id: fixtureValue(format, "id") as string,
+      version: fixtureValue(format, "version") as string,
+      encoding: fixtureValue(format, "encoding") as string,
+    },
+    annotations_enabled:
+      fixtureValue(binding, "annotations_enabled") === "true",
+    annotation_observation_refs: fixtureChild(
+      binding,
+      "annotation_observation_refs",
+    )?.slice(1) as string[] | undefined,
+  };
+}
+/** Inspect actual Runtime observations, not a fabricated native tool history. */
+export function profileFixtureObservationResult(
+  request: CapturedRequest,
+  tool: string,
+): any {
+  const observations: any[] = [];
+  const visit = (node: any) => {
+    if (!Array.isArray(node)) return;
+    if (
+      node[0] === "observation" &&
+      fixtureValue(node, "tool") === tool &&
+      fixtureValue(node, "kind") === "tool_output"
+    )
+      observations.push(node);
+    else node.forEach(visit);
+  };
+  visit(profileFixtureContext(request));
+  const latest = observations.sort(
+    (a, b) => Number(fixtureValue(b, "seq")) - Number(fixtureValue(a, "seq")),
+  )[0];
+  const text = fixtureValue(fixtureChild(latest, "content"), "text");
+  return typeof text === "string" ? JSON.parse(text) : undefined;
 }
 export function profileFixtureAnnotationsMessage(
   request: CapturedRequest,
@@ -125,6 +156,8 @@ export function profileFixtureAnnotationsMessage(
     : undefined;
 }
 export function fixtureAnnotationsMessage(metadata: unknown) {
+  // Logical test data only. The HTTP fixture below encodes this into fields
+  // of ONE Evaluation value; no annotation tool call is sent to the Runtime.
   return {
     name: "deliver_message",
     arguments: {
@@ -241,6 +274,7 @@ export async function profileActualTransportFixture(
       | { name: string; arguments: unknown }
       | Array<{ name: string; arguments: unknown }>,
     providedText?: string,
+    rawValue?: string,
   ) => {
     const selectedTool =
       providedTool ??
@@ -269,8 +303,8 @@ export async function profileActualTransportFixture(
           (tool.arguments as any)?.message?.format?.id ===
             "morphz.response.annotations",
       );
-    const call = calls.length > 0;
-    const message = {
+    let call = calls.length > 0;
+    let message: any = {
       role: "assistant",
       content:
         providedText ??
@@ -279,6 +313,52 @@ export async function profileActualTransportFixture(
           : ""),
       ...(call ? { tool_calls: calls } : {}),
     };
+    if (rawValue !== undefined) {
+      message = { role: "assistant", content: rawValue };
+      call = false;
+    } else if (profileFixtureReturnBinding(request)?.annotations_enabled) {
+      const metadata = selected.find(
+        (tool) =>
+          tool.name === "deliver_message" &&
+          (tool.arguments as any)?.message?.format?.id ===
+            "morphz.response.annotations",
+      );
+      const value = (metadata?.arguments as any)?.message?.content?.value;
+      const effects = selected
+        .filter((tool) => tool !== metadata)
+        .map((tool, index) => ({
+          name: tool.name,
+          arguments: tool.arguments,
+          intent:
+            tool.name === "no_reply"
+              ? ""
+              : (value?.calls?.find((call: any) => call.index === index)
+                  ?.intent ?? `执行合成步骤 ${tool.name}`),
+        }));
+      const noReply = effects.length === 1 && effects[0]!.name === "no_reply";
+      const annotations = {
+        execution: {
+          title: noReply ? "" : "核对合成请求",
+          progress: "",
+          result: effects.length ? "" : "合成请求已返回",
+          ...(value?.execution ?? {}),
+        },
+        observations: value?.observations ?? [],
+      };
+      const binding = profileFixtureReturnBinding(request)!;
+      const body =
+        message.content &&
+        !effects.length &&
+        binding.format.id !== "morphz.chat" &&
+        binding.format.encoding === "json"
+          ? JSON.parse(message.content)
+          : message.content || null;
+      message = {
+        role: "assistant",
+        content: JSON.stringify({ body, annotations, effects }),
+      };
+      call = false;
+    }
     if (request.stream) {
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       response.end(
@@ -644,12 +724,58 @@ export async function profileActualTransportFixture(
           item.response.write(
             `data: ${JSON.stringify({ id, choices: [{ index: 0, delta: value, finish_reason: finish }] })}\n\n`,
           );
-        delta({ role: "assistant", content: prefix });
+        const structured = profileFixtureReturnBinding(
+          item.request,
+        )?.annotations_enabled;
+        delta({
+          role: "assistant",
+          content: structured
+            ? '{"body":' + JSON.stringify(prefix).slice(0, -1)
+            : prefix,
+        });
         return {
           append(text: string) {
-            delta({ content: text });
+            delta({
+              content: structured ? JSON.stringify(text).slice(1, -1) : text,
+            });
           },
           finish(messages: Array<{ name: string; arguments: unknown }> = []) {
+            if (structured) {
+              const metadata = messages.find(
+                (tool) =>
+                  tool.name === "deliver_message" &&
+                  (tool.arguments as any)?.message?.format?.id ===
+                    "morphz.response.annotations",
+              );
+              const fields = (metadata?.arguments as any)?.message?.content
+                ?.value;
+              const annotations = {
+                execution: {
+                  title: "核对合成流式请求",
+                  progress: "",
+                  result: "合成流式请求已返回",
+                  ...(fields?.execution ?? {}),
+                },
+                observations: fields?.observations ?? [],
+              };
+              const effects = messages
+                .filter((tool) => tool !== metadata)
+                .map((tool) => ({
+                  name: tool.name,
+                  arguments: tool.arguments,
+                  intent: `执行合成步骤 ${tool.name}`,
+                }));
+              delta(
+                {
+                  content:
+                    '",' + JSON.stringify({ annotations, effects }).slice(1),
+                },
+                "stop",
+              );
+              item.response.end("data: [DONE]\n\n");
+              held.delete(marker);
+              return;
+            }
             delta(
               messages.length
                 ? {
@@ -711,6 +837,20 @@ export async function profileActualTransportFixture(
         const item = held.get(marker);
         assert.ok(item, "Expected held actual provider request");
         respond(item.response, item.request, undefined, undefined, text);
+        held.delete(marker);
+      },
+      /** Exact current Provider carrier, including deliberately invalid data. */
+      releaseRawValue(marker: string, rawValue: string) {
+        const item = held.get(marker);
+        assert.ok(item, "Expected held actual provider request");
+        respond(
+          item.response,
+          item.request,
+          undefined,
+          undefined,
+          undefined,
+          rawValue,
+        );
         held.delete(marker);
       },
       async continueHeld(marker: string) {

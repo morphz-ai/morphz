@@ -1,6 +1,7 @@
 //! Stable Session IO v1 contracts. Transport data, execution authority and
 //! presentation preferences have separate, immutable boundaries.
 pub mod data;
+pub mod evaluation;
 pub mod fence;
 pub(crate) mod file_lock;
 pub(crate) mod output;
@@ -430,6 +431,9 @@ impl Default for Registry {
         registry
             .register(response::annotations_descriptor())
             .expect("standard annotations format");
+        registry
+            .register(evaluation::descriptor())
+            .expect("standard Evaluation format");
         registry
     }
 }

@@ -3056,12 +3056,7 @@ fn infer_request_event(
         return Err("only an infer effect can generate an internal evaluation request".into());
     };
     let effect_id = deterministic_plan_effect_id(&plan.id, *sequence)?;
-    let event_id = stable_id(
-        b"morphz.plan-infer-request.v1\0",
-        "infer_request",
-        &plan.id,
-        &sequence.to_string(),
-    )?;
+    let event_id = deterministic_infer_request_id(&plan.id, *sequence)?;
     let root_turn_id = event_id.clone();
     let result_instruction = match result {
         crate::sexpr_eval::InferResultKind::Json { ty, definitions, .. } => format!(
@@ -3107,7 +3102,7 @@ fn infer_request_event(
         )
     };
     if !response_annotations.is_off() {
-        evaluation_text.push_str("\n\nReturn the exact typed terminal body through the Runtime-owned Session IO return binding; ordinary content is its implicit form. Apply the enabled shared Session IO annotation contract on EVERY response, including intermediate work responses: each work call needs its intent in that same response's separate registered companion. Do not defer those intents to the final response or repeat earlier call indexes. For the terminal response, keep the title/result companion outside the complete typed business value. Do not add a JSON envelope to ordinary prose, a text delimiter, another model request, or a tool for final rewriting. This returns to the actual parent Plan, not a separate user chat or completion of parent work.");
+        evaluation_text.push_str("\n\nReturn the exact typed terminal body through the Runtime-owned Session IO return binding. If annotations_enabled=true, return ONE native JSON Evaluation value conforming to the frozen output schema: body contains the complete declared native business value, following its bound JSON or UTF-8 body format, annotations contains title/progress/result and observations, effects contains only required unexecuted work proposals with nonempty intent. For JSON value returns, String is a normal native string in body, Bool is a boolean, and a record retains all its fields: do not add another JSON-encoded string or extract just reply. Runtime performs deterministic JSON transport encoding for its existing typed decoder. A Program source remains a complete UTF-8 string. Apply the SAME output schema to EVERY response, including intermediate work. Runtime constructs envelopes, indexes and causal IDs. Do not defer intents, emit a separate companion call, add a text delimiter or request another model solely to repair annotations or rewrite a return. When annotations_enabled=false, the exact original typed JSON body is ordinary content. This returns to the actual parent Plan, not a separate user chat or completion of parent work.");
     }
     let mut payload = serde_json::Map::from_iter([
         (
@@ -3239,6 +3234,17 @@ pub fn deterministic_infer_activation_id(event_id: &str) -> PlanExecutionResult<
         return Err("infer request Event id must not be empty".into());
     }
     Ok(stable_thread_activation_id(event_id))
+}
+
+/// Exact durable infer input identity, also used to join a returned leaf to
+/// its physical producer without scanning history or parsing identifier text.
+pub fn deterministic_infer_request_id(plan_id: &str, sequence: u64) -> PlanExecutionResult<String> {
+    stable_id(
+        b"morphz.plan-infer-request.v1\0",
+        "infer_request",
+        plan_id,
+        &sequence.to_string(),
+    )
 }
 
 fn validate_terminal_evaluation_route(
@@ -5578,11 +5584,10 @@ mod tests {
             infer_request_event(&parent, &infer, crate::response_annotations::Protocol::On)
                 .unwrap();
         let annotated_instruction = annotated_request.payload["text"].as_str().unwrap();
-        assert!(
-            annotated_instruction.contains("EVERY response, including intermediate work responses")
-        );
-        assert!(annotated_instruction.contains("Do not defer those intents to the final response"));
-        assert!(!instruction.contains("EVERY response, including intermediate work responses"));
+        assert!(annotated_instruction
+            .contains("SAME output schema to EVERY response, including intermediate work"));
+        assert!(annotated_instruction.contains("Do not defer intents"));
+        assert!(!instruction.contains("SAME output schema to EVERY response"));
         let runtime_store: Arc<dyn RuntimeStore> = store.clone();
         let coordinator = PlanExecutionCoordinator::new(runtime_store, Arc::clone(&registry));
         let (waiting_parent, child) = match coordinator

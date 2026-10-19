@@ -3991,7 +3991,8 @@ export class RuntimeBridge {
       return null;
     if (
       event.topic !== "runtime/model_public_output" ||
-      payloadString(event, "attempt_id") !== attemptId ||
+      (payloadString(event, "publication_key") ??
+        payloadString(event, "attempt_id")) !== attemptId ||
       input_event?.id !== rootId ||
       !createdAt ||
       !Number.isFinite(Date.parse(createdAt)) ||

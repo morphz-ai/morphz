@@ -395,6 +395,14 @@ pub enum ReasoningEffort {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ModelRequestOptions {
     pub reasoning_effort: Option<Option<ReasoningEffort>>,
+    /// Native transport syntax, not a text prompt or a claim that a Provider
+    /// enforces the caller's Schema. Session IO validates the frozen Schema.
+    pub output_encoding: Option<ModelOutputEncoding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelOutputEncoding {
+    JsonObject,
 }
 
 impl ReasoningEffort {

@@ -74,15 +74,20 @@ pub(crate) fn classify(event: &Event, sequence: i64) -> Option<TimelineMutation>
     let has_text = ["text", "error", "message"]
         .into_iter()
         .any(|key| string(event, key).is_some_and(|value| !value.is_empty()));
-    let attempt_id = string(
-        event,
-        if evaluation {
-            "activation_id"
-        } else {
-            "attempt_id"
-        },
-    )
-    .filter(|value| !value.is_empty());
+    let attempt_id = (!evaluation)
+        .then(|| string(event, "publication_key"))
+        .flatten()
+        .or_else(|| {
+            string(
+                event,
+                if evaluation {
+                    "activation_id"
+                } else {
+                    "attempt_id"
+                },
+            )
+        })
+        .filter(|value| !value.is_empty());
     let (kind, display_kind, entry_id, root_turn_id, visible_at) = match event.topic.as_str() {
         "chat/user_message" | "chat/steering" if string(event, "client_message_id").is_some() => (
             MutationKind::Input,

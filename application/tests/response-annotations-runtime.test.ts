@@ -22,7 +22,7 @@ test("metadata follows frozen Runtime binding; tool definitions never select ann
     const messages = [
       {
         role: "user",
-        content: `Runtime Context:\n(context (evaluation-environment (session-io-return (delivery_id return-test) (format (id morphz.chat) (version 1) (encoding utf8)) (annotations_enabled ${enabled}))))`,
+        content: `Runtime Context:\n(context (evaluation-environment (session-io-return (delivery_id return-test) (caller_format (id morphz.chat) (version 1) (encoding utf8)) (annotations_enabled ${enabled}))))`,
       },
     ];
     const carrier = profileFixtureAnnotationsMessage({ messages, tools });
@@ -456,33 +456,16 @@ test(
         "Actual annotations did not reach the authorized Application view",
       );
     };
-    const receiptRef = (request: {
-      messages: Array<{ role: string; content: unknown }>;
-    }) => {
-      const receipts = request.messages.flatMap((message) => {
-        if (message.role !== "tool" || typeof message.content !== "string")
-          return [];
-        const receipt = JSON.parse(message.content) as {
-          status?: string;
-          observation_ref?: string;
-        };
-        return receipt.observation_ref ? [receipt] : [];
-      });
+    const receiptRef = (
+      request: Parameters<typeof profileFixtureReturnBinding>[0],
+    ) => {
+      const refs =
+        profileFixtureReturnBinding(request)?.annotation_observation_refs;
       assert.ok(
-        receipts.length > 0,
-        "Actual Runtime must supply a trusted observation reference: " +
-          JSON.stringify(
-            request.messages.map((message) => ({
-              role: message.role,
-              content:
-                typeof message.content === "string"
-                  ? message.content.slice(-1000)
-                  : message.content,
-            })),
-          ),
+        refs?.length,
+        "Runtime must supply the actual eligible result directory, never forged native history",
       );
-      assert.equal(receipts.at(-1)!.status, "success");
-      return receipts.at(-1)!.observation_ref!;
+      return refs.at(-1)!;
     };
     try {
       await f.client.call(
@@ -508,7 +491,9 @@ test(
         f.options,
       );
       const first = await f.waitRequest(marker);
-      assert.ok(JSON.stringify(first).includes("Session IO response contract"));
+      assert.ok(
+        JSON.stringify(first).includes("Session IO Evaluation output contract"),
+      );
       const toolDefinitions = first.tools as Array<{
         function: {
           name: string;
@@ -652,92 +637,44 @@ test(
 );
 
 test(
-  "actual Runtime + Platform HTTP: native metadata never wraps or invalidates normal reply content",
+  "actual Runtime + Platform HTTP: one value preserves independent bodies, rejects bad metadata and ambiguous syntax without repair",
   {
     skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",
     timeout: 120_000,
   },
   async (parent) => {
-    const cases: {
-      name: string;
-      metadata: Record<string, unknown>;
-      text?: boolean;
-      valid?: boolean;
-      body?: string;
-    }[] = [
-      { name: "missing annotations", metadata: {} },
-      {
-        name: "missing final title",
-        metadata: {
-          annotations: { execution: { result: "TEST synthetic result" } },
+    const body =
+      '第一段："引号"、反斜线 \\ 和中文 🧠。\n\n`deliver_message` 与 :::morphz-reply 是正文，不是协议。';
+    const valid = {
+      body,
+      annotations: {
+        execution: {
+          title: "TEST 完整结构化交付",
+          progress: "",
+          result: "TEST 正文与注解已完整返回",
         },
+        observations: [],
       },
-      {
-        name: "empty final result",
-        metadata: {
-          annotations: {
-            execution: { title: "TEST synthetic task", result: " " },
-          },
-        },
-      },
-      { name: "plain text without metadata", metadata: {}, text: true },
-      {
-        name: "implicit reply without title",
-        metadata: { annotations: { execution: { result: "TEST result" } } },
-        text: true,
-      },
-      {
-        name: "implicit reply with empty result",
-        metadata: {
-          annotations: { execution: { title: "TEST title", result: " " } },
-        },
-        text: true,
-      },
-      {
-        name: "implicit reply with required annotations",
-        text: true,
-        valid: true,
-        metadata: {
-          annotations: {
-            execution: {
-              title: "TEST 普通文本注解",
-              result: "TEST 正文已返回",
-            },
-          },
-        },
-      },
-      {
-        name: "multiline Markdown stays in implicit content with independent annotations",
-        text: true,
-        valid: true,
-        body: '第一段："引号"、反斜线 \\ 和中文 🧠。\n\n第二段保留真实换行。\n\n```json\n{"delivery_id":"example"}\n```\n\n:::morphz-reply\n这里是讨论协议的正文，不是可执行消息。\n:::',
-        metadata: {
-          annotations: {
-            execution: {
-              title: "TEST 多段正文独立注解",
-              result: "TEST 原文已完整返回，未包裹为工具参数",
-            },
-          },
-        },
-      },
-    ];
-    for (const entry of cases)
-      await parent.test(entry.name, async () => {
+      effects: [],
+    };
+    for (const name of [
+      "valid",
+      "missing annotations",
+      "missing title",
+      "empty result",
+      "plain text",
+      "invalid JSON",
+    ] as const)
+      await parent.test(name, async () => {
         const f = await profileActualTransportFixture();
-        const projectId =
-          "annotations_invalid_" + randomUUID().replaceAll("-", "");
-        const conversationId =
-          "conversation_" + randomUUID().replaceAll("-", "");
-        const marker = "TEST_ANNOTATIONS_INVALID_" + randomUUID();
+        const projectId = "io_schema_" + randomUUID().replaceAll("-", ""),
+          conversationId = "conversation_" + randomUUID().replaceAll("-", "");
+        const marker = "TEST_SCHEMA_" + randomUUID();
         const scope = { projectId, conversationId, artifactId: null };
         try {
           await f.client.call(
             "projects.create",
-            {
-              commandId: randomUUID(),
-              projectId,
-              title: "注解与正文独立隔离验证",
-            },
+            { commandId: randomUUID(), projectId, title: "TEST IO Schema" },
             f.options,
           );
           f.hold(marker);
@@ -759,158 +696,94 @@ test(
           );
           const request = await f.waitRequest(marker);
           assert.ok(profileFixtureReturnBinding(request)?.annotations_enabled);
-          assert.equal(f.requests.length, 1);
-          const candidate = entry.body ?? "TEST VALID BODY MUST REMAIN VISIBLE";
-          const binding = profileFixtureReturnBinding(request)!;
-          const nativeMessages = [];
-          if (!entry.text)
-            nativeMessages.push({
-              name: "deliver_message",
-              arguments: {
-                delivery_id: binding.delivery_id,
-                message: {
-                  format: {
-                    id: binding.format.id,
-                    version: binding.format.version,
-                  },
-                  content: {
-                    encoding: binding.format.encoding,
-                    value:
-                      binding.format.encoding === "utf8"
-                        ? candidate
-                        : { text: candidate },
-                  },
-                },
-              },
-            });
-          if (entry.metadata.annotations !== undefined)
-            nativeMessages.push(
-              fixtureAnnotationsMessage(entry.metadata.annotations),
-            );
-          f.releaseWithMessages(
-            marker,
-            nativeMessages,
-            entry.text ? candidate : undefined,
-          );
-          let terminal: ExecutionActivity["threads"][number] | undefined;
+          const value: any = structuredClone(valid);
+          if (name === "missing annotations") delete value.annotations;
+          if (name === "missing title")
+            delete value.annotations.execution.title;
+          if (name === "empty result") value.annotations.execution.result = " ";
+          const raw =
+            name === "plain text"
+              ? body
+              : JSON.stringify(value) + (name === "invalid JSON" ? "}" : "");
+          f.releaseRawValue(marker, raw);
+          let terminal: any;
           for (let attempt = 0; attempt < 300; attempt++) {
-            const data = (await f.client.call(
+            const navigation: any = await f.client.call(
               "runtime.navigation",
-              {
-                projectId,
-                conversationId,
-                refreshActivity: true,
-              },
+              { projectId, conversationId, refreshActivity: true },
               f.options,
-            )) as { runtime: { activity?: ExecutionActivity } };
-            terminal = data.runtime.activity?.threads.find(
-              (thread) => thread.projectId === projectId,
             );
-            if (terminal?.lifecycle === "completed") break;
-            await new Promise((resolve) => setTimeout(resolve, 50));
+            terminal = navigation.runtime.activity?.threads.find(
+              (thread: any) => thread.projectId === projectId,
+            );
+            if (
+              terminal &&
+              ["completed", "failed"].includes(terminal.lifecycle)
+            )
+              break;
+            await new Promise((resolve) => setTimeout(resolve, 30));
           }
-          assert.equal(terminal?.lifecycle, "completed");
-          assert.ok(terminal);
-          const detail = executionSnapshotSchema.parse(
-            await f.client.call(
-              "execution.snapshot",
-              {
-                ...scope,
-                threadId: terminal.id,
-                inputId: terminal.inputId,
-              },
-              f.options,
-            ),
-          );
-          assert.equal(
-            detail.jobs.length,
-            0,
-            "Neither response carrier nor missing metadata dispatches a physical Job",
-          );
-          const thread = f.sql<{
-            status: string;
-            response_annotations: string;
-          }>(
-            "SELECT status, response_annotations FROM threads WHERE id = ?",
-            terminal.id,
-          );
-          assert.deepEqual(
-            { ...thread[0] },
-            {
-              status: "completed",
-              response_annotations: "on",
-            },
-          );
-          const fused = f.sql<{ payload: string }>(
-            "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_fused'",
-            terminal.id,
-          );
-          assert.equal(fused.length, 0);
-          const failures = f.sql<{ payload: string }>(
-            "SELECT payload FROM events WHERE thread_id = ? AND topic IN ('chat/reply', 'session/io_state') AND json_extract(payload, '$.terminal_kind') = 'failed'",
-            terminal.id,
-          );
-          assert.equal(failures.length, 0);
+          assert.ok(terminal, "the real Runtime must settle the input");
           const replies = f.sql<{ payload: string }>(
             "SELECT payload FROM events WHERE thread_id = ? AND topic = 'chat/reply'",
             terminal.id,
           );
-          assert.equal(replies.length, 1);
-          assert.equal(JSON.parse(replies[0]!.payload).text, candidate);
-          const sources = f.sql<{ payload: string }>(
-            "SELECT payload FROM events WHERE thread_id = ? AND topic = 'chat/assistant_call' AND json_extract(payload, '$.terminal_outcome') = 1",
+          const errors = f.sql<{ payload: string }>(
+            "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_error'",
             terminal.id,
           );
-          assert.equal(sources.length, 1);
-          const bundle = JSON.parse(
-            sources[0]!.payload,
-          ).response_annotation_bundle;
-          assert.equal(
-            bundle.raw_response.content,
-            entry.text ? candidate : "",
-          );
-          assert.equal(
-            bundle.raw_response.tool_calls.length,
-            nativeMessages.length,
-          );
-          assert.ok(
-            bundle.raw_response.tool_calls.every(
-              (call: any) => call.func_name === "deliver_message",
-            ),
-          );
-          const metadataCall = bundle.raw_response.tool_calls.find(
-            (call: any) =>
-              JSON.parse(call.arguments).message.format.id ===
-              "morphz.response.annotations",
-          );
-          if (entry.metadata.annotations !== undefined)
-            assert.deepEqual(
-              JSON.parse(metadataCall.arguments).message.content.value,
-              entry.metadata.annotations,
-            );
-          if (entry.valid) {
-            assert.equal(bundle.diagnostics.length, 0);
-            const expected = entry.metadata.annotations as {
-              execution: { title: string; result: string };
-            };
-            assert.equal(terminal.title, expected.execution.title);
-            assert.equal(terminal.summary, expected.execution.result);
-          } else {
-            const errors = f.sql<{ payload: string }>(
-              "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_error'",
+          if (name !== "plain text" && name !== "invalid JSON") {
+            assert.equal(terminal.lifecycle, "completed");
+            assert.equal(errors.length, 0);
+            assert.equal(replies.length, 1);
+            assert.equal(JSON.parse(replies[0]!.payload).text, body);
+            const sources = f.sql<{ payload: string }>(
+              "SELECT payload FROM events WHERE thread_id = ? AND topic = 'chat/assistant_call' AND json_extract(payload, '$.terminal_outcome') = 1",
               terminal.id,
             );
-            assert.equal(errors.length, 0);
+            assert.equal(sources.length, 1);
+            const bundle = JSON.parse(
+              sources[0]!.payload,
+            ).response_annotation_bundle;
+            assert.equal(bundle.raw_response.content, raw);
+            assert.deepEqual(bundle.raw_response.tool_calls, []);
+            if (name === "valid") {
+              assert.equal(bundle.diagnostics.length, 0);
+              assert.equal(terminal.title, valid.annotations.execution.title);
+            } else {
+              assert.ok(bundle.diagnostics.length > 0);
+              assert.equal(
+                bundle.records.length,
+                0,
+                "no fabricated annotations",
+              );
+              assert.equal(
+                f.sql<{ count: number }>(
+                  "SELECT count(*) AS count FROM events WHERE thread_id = ? AND topic = 'session/io_output' AND json_extract(payload, '$.io_message.format.id') = 'morphz.evaluation'",
+                  terminal.id,
+                )[0]!.count,
+                0,
+                "invalid metadata cannot receive an accepted Evaluation receipt",
+              );
+            }
+          } else {
+            assert.equal(terminal.lifecycle, "failed");
+            assert.equal(replies.length, 0);
+            assert.equal(errors.length, 1);
+            const failure = f.sql<{ payload: string }>(
+              "SELECT payload FROM events WHERE thread_id = ? AND topic = 'session/io_state'",
+              terminal.id,
+            );
             assert.ok(
-              bundle.diagnostics.length > 0,
-              "missing metadata is diagnosed, never fabricated",
+              failure.some(
+                (row) => JSON.parse(row.payload).terminal_kind === "failed",
+              ),
             );
           }
-          await new Promise((resolve) => setTimeout(resolve, 150));
           assert.equal(
             f.requests.length,
             1,
-            "Display metadata never requests a repair or independent summary",
+            "no repair, annotation-only, or relay request",
           );
           assert.equal(f.realCalls, 0);
           assert.equal((await f.read()).agent.revision, 0);

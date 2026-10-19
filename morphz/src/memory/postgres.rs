@@ -5148,7 +5148,7 @@ async fn append_event_with_sequence_in_tx(
             enqueue_event_recall_in_tx(tx, event, context_id, false).await?;
         }
         project_observation_in_tx(tx, event).await?;
-        for companion in crate::session_io::response::companion_events(event) {
+        for companion in crate::session_io::response::evaluation_publications(event) {
             Box::pin(append_event_with_sequence_in_tx(tx, &companion)).await?;
         }
         return Ok(EventAppendInTx {

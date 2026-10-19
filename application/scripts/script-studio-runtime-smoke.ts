@@ -1,4 +1,5 @@
 import { scriptDocxManifest } from "../tests/script-docx-fixture.js";
+import { profileFixtureObservationResult } from "../tests/profile-actual-transport-fixture.js";
 /** Real Runtime/Harness/Unix Host/SQLite integration. Synthetic provider and fresh data only. */
 import "./application-configuration.mjs";
 import assert from "node:assert/strict";
@@ -300,6 +301,47 @@ const provider = createServer(async (req, res) => {
     );
     if (res.destroyed) return;
     const respond = (message: unknown, finish = "stop") => {
+      if ((input as any).response_format?.type === "json_object") {
+        const logical = message as any;
+        const calls = logical.tool_calls ?? [];
+        const metadata = calls.find(
+          (call: any) =>
+            call.function.name === "deliver_message" &&
+            JSON.parse(call.function.arguments)?.message?.format?.id ===
+              "morphz.response.annotations",
+        );
+        const fields = metadata
+          ? JSON.parse(metadata.function.arguments).message.content.value
+          : {};
+        const effects = calls
+          .filter((call: any) => call !== metadata)
+          .map((call: any) => ({
+            name: call.function.name,
+            arguments: JSON.parse(call.function.arguments),
+            intent: `执行合成工序 ${stage} 的 ${call.function.name}`,
+          }));
+        const body =
+          logical.content && !effects.length && stage !== "select"
+            ? JSON.parse(logical.content)
+            : logical.content || null;
+        message = {
+          role: "assistant",
+          content: JSON.stringify({
+            body,
+            annotations: {
+              execution: {
+                title: `合成工序 ${stage}`,
+                progress: "",
+                result: effects.length ? "" : `合成工序 ${stage} 已返回`,
+                ...(fields.execution ?? {}),
+              },
+              observations: fields.observations ?? [],
+            },
+            effects,
+          }),
+        };
+        finish = "stop";
+      }
       if (input.stream) {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         res.end(
@@ -375,15 +417,7 @@ const provider = createServer(async (req, res) => {
         "Discussion has actual bounded Host reads",
       );
       const step = projectReadStep++;
-      const last = input.messages
-        .filter((m: { role: string }) => m.role === "tool")
-        .at(-1);
-      const observation = last ? JSON.parse(last.content) : undefined;
-      const result = observation?.result
-        ? typeof observation.result === "string"
-          ? JSON.parse(observation.result)
-          : observation.result
-        : observation;
+      const result = profileFixtureObservationResult(input, "host_morphz");
       if (step === 0) return call("host_morphz", { action: "read-input" });
       if (step === 1) {
         assert.equal(result.project.id, "first-project");
@@ -455,27 +489,14 @@ const provider = createServer(async (req, res) => {
     }
     if (stage === "prepare") {
       const step = preparationStep++;
-      const last = input.messages
-        .filter((m: { role: string }) => m.role === "tool")
-        .at(-1);
-      const observation = last ? JSON.parse(last.content) : undefined;
-      const result = observation?.result
-        ? typeof observation.result === "string" &&
-          observation.result.startsWith("{")
-          ? JSON.parse(observation.result)
-          : observation.result
-        : observation;
+      const result = profileFixtureObservationResult(input, "host_morphz");
       if (scenario === "chat-create") {
         if (step === 0)
           return call("host_morphz", {
             action: "script",
             script: { action: "read-workflow" },
           });
-        assert.equal(
-          result?.ok,
-          true,
-          JSON.stringify({ observation, hostErrors }),
-        );
+        assert.equal(result?.ok, true, JSON.stringify({ result, hostErrors }));
         if (step === 1) {
           assert.equal(result.generating, false);
           assert.equal(result.projectId, "first-project");
@@ -570,7 +591,7 @@ const provider = createServer(async (req, res) => {
         result?.ok,
         true,
         "Use the actual previous Host result: " +
-          JSON.stringify({ observation, hostErrors }),
+          JSON.stringify({ result, hostErrors }),
       );
       if (step === 1) {
         assert.equal(result.items.length, 1);

@@ -2789,12 +2789,17 @@ impl Client for ProtocolClient {
             options.reasoning_effort,
             true,
         )?;
-        let request = self.request_for_model_with_reasoning(
+        let mut request = self.request_for_model_with_reasoning(
             &model,
             &messages,
             &tools,
             options.reasoning_effort,
         );
+        apply_output_encoding(
+            self.protocol_for_model(&model),
+            &mut request,
+            options.output_encoding,
+        )?;
         let claude_aliases = self.claude_tool_aliases(&tools);
         match self
             .send_stream(
@@ -4292,6 +4297,37 @@ fn parse_sse_frame(frame: &[u8]) -> Result<ParsedSseFrame, ProviderError> {
         event,
         data: (!data.is_empty()).then(|| data.join("\n")),
     })
+}
+
+fn apply_output_encoding(
+    protocol: ModelProtocol,
+    request: &mut Value,
+    encoding: Option<crate::llm::ModelOutputEncoding>,
+) -> Result<(), ProviderError> {
+    let Some(crate::llm::ModelOutputEncoding::JsonObject) = encoding else {
+        return Ok(());
+    };
+    match protocol {
+        ModelProtocol::OpenaiChat => {
+            request["response_format"] = json!({"type":"json_object"});
+            if request.get("tools").is_some() { request["tool_choice"] = json!("none"); }
+        }
+        ModelProtocol::OpenaiResponses => {
+            request["text"]["format"] = json!({"type":"json_object"});
+            if request.get("tools").is_some() { request["tool_choice"] = json!("none"); }
+        }
+        ModelProtocol::GeminiContent => {
+            request["generationConfig"]["responseMimeType"] = json!("application/json");
+            if request.get("tools").is_some() {
+                request["toolConfig"]["functionCallingConfig"]["mode"] = json!("NONE");
+            }
+        }
+        ModelProtocol::AnthropicMessages => return Err(Box::new(ModelFailure::new(
+            ModelFailureKind::InvalidModelOrRequest,
+            "The selected Provider adapter has no verified native JSON output transport; Session IO did not silently downgrade its output contract",
+        ))),
+    }
+    Ok(())
 }
 
 fn build_request(
@@ -6267,6 +6303,86 @@ mod tests {
             description: "read".to_string(),
             parameters: json!({"type":"object"}),
         }]
+    }
+
+    #[test]
+    fn native_io_output_mode_preserves_tools_order_and_reasoning_controls() {
+        for protocol in [
+            ModelProtocol::OpenaiChat,
+            ModelProtocol::OpenaiResponses,
+            ModelProtocol::GeminiContent,
+        ] {
+            let mut request = build_request(
+                protocol,
+                "test-model",
+                Some(1024),
+                Some(ReasoningEffort::Max),
+                &messages(),
+                &tools(),
+            );
+            let unchanged = request.clone();
+            apply_output_encoding(protocol, &mut request, None).unwrap();
+            assert_eq!(
+                request, unchanged,
+                "off must be byte-equivalent at the request-value boundary"
+            );
+            apply_output_encoding(
+                protocol,
+                &mut request,
+                Some(crate::llm::ModelOutputEncoding::JsonObject),
+            )
+            .unwrap();
+            assert_eq!(request["tools"], unchanged["tools"]);
+            for key in [
+                "reasoning",
+                "reasoning_effort",
+                "thinking",
+                "max_tokens",
+                "max_output_tokens",
+                "generationConfig",
+            ] {
+                if key != "generationConfig" {
+                    assert_eq!(
+                        request.get(key),
+                        unchanged.get(key),
+                        "output mode must not lower reasoning or token controls"
+                    );
+                }
+            }
+            match protocol {
+                ModelProtocol::OpenaiChat => {
+                    assert_eq!(request["response_format"]["type"], "json_object");
+                    assert_eq!(request["tool_choice"], "none");
+                }
+                ModelProtocol::OpenaiResponses => {
+                    assert_eq!(request["text"]["format"]["type"], "json_object");
+                    assert_eq!(request["tool_choice"], "none");
+                }
+                ModelProtocol::GeminiContent => {
+                    assert_eq!(
+                        request["generationConfig"]["responseMimeType"],
+                        "application/json"
+                    );
+                    assert_eq!(
+                        request["toolConfig"]["functionCallingConfig"]["mode"],
+                        "NONE"
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+        let mut request = json!({"sentinel":true});
+        assert!(apply_output_encoding(
+            ModelProtocol::AnthropicMessages,
+            &mut request,
+            Some(crate::llm::ModelOutputEncoding::JsonObject)
+        )
+        .is_err());
+        assert_eq!(
+            request,
+            json!({"sentinel":true}),
+            "unsupported native mode must not downgrade the contract or mutate tools"
+        );
     }
 
     #[test]

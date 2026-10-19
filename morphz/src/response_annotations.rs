@@ -2,7 +2,7 @@
 //! Execution scope, authorization and status remain Runtime-owned facts. This
 //! module never dispatches work, requests an inference or reads a database.
 use crate::event::{Event, TYPE_AGENT_CALL};
-use crate::llm::Response;
+use crate::llm::{Response, ToolCallRepr};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -226,6 +226,7 @@ pub(crate) fn receipt_from_authorized_event(
         .get("terminal_outcome")
         .and_then(Value::as_bool)
         == Some(true);
+    let work_calls = persisted_work_calls(&bundle, event);
     for record in records {
         if receipt.accepted.len() >= RECEIPT_DETAIL_LIMIT {
             receipt.truncated = true;
@@ -246,14 +247,7 @@ pub(crate) fn receipt_from_authorized_event(
                     receipt.truncated = true;
                     continue;
                 };
-                if bundle
-                    .raw_response
-                    .tool_calls
-                    .iter()
-                    .filter(|call| call.id == id)
-                    .count()
-                    != 1
-                {
+                if work_calls.iter().filter(|call| call.id == id).count() != 1 {
                     receipt.truncated = true;
                     continue;
                 }
@@ -294,6 +288,31 @@ pub(crate) fn receipt_from_authorized_event(
         ReceiptState::Unknown
     };
     Some(receipt.bounded())
+}
+
+/// Current native Evaluation proposals are Runtime-derived calls. The raw
+/// provider tool list is intentionally empty and is not their identity source.
+/// Old immutable records still describe their actual original native calls;
+/// this read projection never executes or replays them.
+fn persisted_work_calls(bundle: &PersistedAnnotations, event: &Event) -> Vec<ToolCallRepr> {
+    if let Some(binding) = bundle
+        .return_binding
+        .as_ref()
+        .filter(|binding| binding.output.is_some())
+    {
+        return crate::session_io::evaluation::decode(
+            &bundle.raw_response,
+            binding,
+            event
+                .payload
+                .get("model_attempt_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+        .map(|evaluation| evaluation.response.tool_calls)
+        .unwrap_or_default();
+    }
+    bundle.raw_response.tool_calls.clone()
 }
 
 /// One opt-in metadata contract for every Evaluation, including child infers.
@@ -625,7 +644,26 @@ pub fn annotations_from_authorized_event(
             .diagnostics
             .iter()
             .any(|d| d.path.chars().take(257).count() > 256)
-        || bundle.records.len() > bundle.raw_response.tool_calls.len().saturating_add(19)
+        || bundle.records.len()
+            > bundle
+                .return_binding
+                .as_ref()
+                .filter(|binding| binding.output.is_some())
+                .and_then(|binding| {
+                    crate::session_io::evaluation::decode(
+                        &bundle.raw_response,
+                        binding,
+                        event
+                            .payload
+                            .get("model_attempt_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or(""),
+                    )
+                    .ok()
+                })
+                .map(|output| output.response.tool_calls.len())
+                .unwrap_or(bundle.raw_response.tool_calls.len())
+                .saturating_add(19)
     {
         return Err(error(
             "Persisted annotation bundle exceeds bounded contract",
@@ -1038,10 +1076,30 @@ pub fn normalize_response(
             delivery_id: String::new(),
             format: crate::session_io::OutputFormat::chat(),
             annotations_enabled: !context.protocol.is_off(),
+            annotation_observation_refs: vec![],
+            output: (!context.protocol.is_off()).then(crate::session_io::evaluation::binding),
         }
     });
-    let parts = crate::session_io::response::split_response(response, &binding)
-        .map_err(|cause| error(&cause.to_string()))?;
+    let parts = crate::session_io::response::split_response_for_attempt(
+        response,
+        &binding,
+        context
+            .producer
+            .as_ref()
+            .map(|producer| producer.attempt_id.as_str())
+            .unwrap_or(&binding.delivery_id),
+    )
+    .map_err(|cause| error(&cause.to_string()))?;
+    normalize_parts(response, context, parts)
+}
+
+/// Metadata extraction is deliberately independent from the model transport
+/// decoder. Inputs here are Runtime-built parts of an admitted IO value.
+fn normalize_parts(
+    response: &Response,
+    context: &NormalizationContext,
+    parts: crate::session_io::response::ResponseParts,
+) -> Result<NormalizedResponse, ProtocolError> {
     let execution_response = parts.response;
     let terminal_decision = terminal(&execution_response)?;
     let mut extraction = Extraction::new(context);
@@ -1069,7 +1127,7 @@ pub fn normalize_response(
                         let target = reference
                             .get("index")
                             .and_then(Value::as_u64)
-                            .and_then(|index| response.tool_calls.get(index as usize))
+                            .and_then(|index| execution_response.tool_calls.get(index as usize))
                             .filter(|target| {
                                 target.func_name != "deliver_message"
                                     && target.func_name != "no_reply"
@@ -1101,10 +1159,11 @@ pub fn normalize_response(
                 }
             }
         }
-        for (index, call) in
-            response.tool_calls.iter().enumerate().filter(|(_, call)| {
-                call.func_name != "deliver_message" && call.func_name != "no_reply"
-            })
+        for (index, call) in execution_response
+            .tool_calls
+            .iter()
+            .enumerate()
+            .filter(|(_, call)| call.func_name != "deliver_message" && call.func_name != "no_reply")
         {
             if !extraction.records.iter().any(|record| {
                 record.kind == AnnotationKind::Intent && record.call_id.as_deref() == Some(&call.id)
@@ -1241,8 +1300,61 @@ mod tests {
     // Negative test data only; production contains no delimiter parser.
     const REPLY_TRAILER: &str = "\n:::morphz-reply\n";
     use crate::session_io::response::ANNOTATIONS_FORMAT;
-    // Abstract fixture metadata is emitted only as the CURRENT native IO
-    // carrier. No retired tool or prose protocol reaches the Runtime parser.
+    // These are metadata-extraction unit tests, after transport admission.
+    // Test literals keep logical work and metadata separate for readability;
+    // they are not a model wire format or a retired Runtime execution path.
+    // The actual model decoder is covered in session_io::evaluation/response
+    // and by real Runtime integration tests.
+    fn normalize_fixture_parts(
+        raw: &Response,
+        context: &NormalizationContext,
+    ) -> Result<NormalizedResponse, ProtocolError> {
+        use crate::session_io::response::{Delivery, ResponseParts};
+        let mut logical = raw.clone();
+        let mut annotations = Vec::<Delivery>::new();
+        let mut work = Vec::new();
+        let mut diagnostics = vec![];
+        for call in &raw.tool_calls {
+            if call.func_name == "deliver_message" {
+                let value = crate::session_io::response::parse_delivery(
+                    &call.arguments,
+                    &crate::session_io::Limits::default(),
+                )
+                .map_err(|cause| error(&cause.to_string()))?;
+                if value.message.format.id == ANNOTATIONS_FORMAT {
+                    let limits = crate::session_io::Limits::default();
+                    let binding = crate::session_io::Registry::default()
+                        .resolve(&value.message.format, "json", "registered")
+                        .unwrap();
+                    if crate::session_io::validate_content(&value.message, &binding, &limits)
+                        .is_ok()
+                    {
+                        annotations.push(value);
+                    } else {
+                        diagnostics.push("Malformed fixture metadata ignored".into());
+                    }
+                    continue;
+                }
+            }
+            work.push(call.clone());
+        }
+        logical.tool_calls = work;
+        if annotations.len() > 1 {
+            annotations.clear();
+            diagnostics.push("Ambiguous fixture metadata ignored".into());
+        }
+        super::normalize_parts(
+            raw,
+            context,
+            ResponseParts {
+                response: logical,
+                body_message: None,
+                annotation_messages: annotations,
+                diagnostics,
+            },
+        )
+    }
+    // Test-only logical metadata fixture; never sent to the Runtime decoder.
     fn metadata_call(id: &str, metadata: Value) -> ToolCallRepr {
         ToolCallRepr { id:id.into(), r#type:"function".into(), func_name:"deliver_message".into(),
             arguments:json!({"delivery_id":format!("metadata-{id}"),"message":{"format":{"id":ANNOTATIONS_FORMAT,"version":"1"},"content":{"encoding":"json","value":metadata}}}).to_string() }
@@ -1391,7 +1503,7 @@ mod tests {
                 ),
             ],
         };
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
         assert!(normalized.dispatch_allowed);
         assert_eq!(normalized.execution_response.tool_calls.len(), 2);
         assert_eq!(
@@ -1416,13 +1528,13 @@ mod tests {
                 {"index":1,"intent":"展开已取得的原文，避免凭记忆作答"}
             ]}),
         );
-        assert!(normalize_response(&complete, &context())
+        assert!(normalize_fixture_parts(&complete, &context())
             .unwrap()
             .diagnostics
             .is_empty());
         let mut off = context();
         off.protocol = Protocol::Off;
-        assert!(normalize_response(
+        assert!(normalize_fixture_parts(
             &Response {
                 content: String::new(),
                 tool_calls: raw.tool_calls[..2].to_vec()
@@ -1432,10 +1544,9 @@ mod tests {
         .unwrap()
         .diagnostics
         .is_empty());
-        assert!(
-            crate::session_io::response::CONTRACT.contains("For EVERY actual work/control call")
-        );
-        assert!(crate::session_io::response::CONTRACT.contains("For a value-returning response"));
+        assert!(crate::session_io::response::CONTRACT
+            .contains("Each actual work/control proposal requires a nonempty intent"));
+        assert!(crate::session_io::response::CONTRACT.contains("With effects=[]"));
     }
     fn persisted_event(sequence: u64, execution: Value, terminal: bool) -> Event {
         persisted_event_with_revision(sequence, execution, terminal, None)
@@ -1477,7 +1588,7 @@ mod tests {
             )
         };
         let normalized =
-            normalize_response(&response(vec![call("call", name, args)]), &ctx).unwrap();
+            normalize_fixture_parts(&response(vec![call("call", name, args)]), &ctx).unwrap();
         let bundle = PersistedAnnotations::from_normalized(ctx.scope.clone().unwrap(), &normalized);
         let mut event = Event::new(
             format!("event-{sequence}"), "Agent-Morphz".into(), TYPE_AGENT_CALL.into(),
@@ -1572,7 +1683,7 @@ mod tests {
                 })
                 .collect(),
         );
-        let normalized = normalize_response(&raw, &ctx).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &ctx).unwrap();
         let mut event = Event::new("response-event".into(), "Agent-Morphz".into(), TYPE_AGENT_CALL.into(), "chat/assistant_call".into(), json!({"response_annotations":"on", "thread_id":"execution-1", "thread_generation":3, "model_attempt_id":"attempt", BUNDLE_PAYLOAD_KEY:PersistedAnnotations::from_normalized(ctx.scope.clone().unwrap(), &normalized)}).as_object().unwrap().clone());
         event.sequence = Some(9);
         let receipt = receipt_from_authorized_event(
@@ -1687,7 +1798,7 @@ mod tests {
             json!({"command":"unchanged",
             "_annotations":{"execution":{"title":"整项工作", "title_input_revision":{"event_id":"invented","sequence":999}}}}),
         )]);
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
         assert!(normalized.title_input_revision.is_none());
         assert!(normalized
             .records
@@ -1705,7 +1816,7 @@ mod tests {
             event_id: "host-steer".into(),
             sequence: 8,
         });
-        let normalized = normalize_response(&raw, &off).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &off).unwrap();
         assert!(normalized.title_input_revision.is_none());
         assert_eq!(
             serde_json::to_vec(&normalized.execution_response).unwrap(),
@@ -1868,7 +1979,7 @@ mod tests {
         ] {
             let mut ctx = context();
             ctx.title_input_revision = Some(revision);
-            let normalized = normalize_response(&raw, &ctx).unwrap();
+            let normalized = normalize_fixture_parts(&raw, &ctx).unwrap();
             assert!(normalized.title_input_revision.is_none());
             assert!(normalized.records[0].title_input_revision.is_none());
             assert_eq!(normalized.execution_response.tool_calls.len(), 1);
@@ -1939,8 +2050,8 @@ mod tests {
         assert_eq!(Protocol::Off.contract(), None);
         assert_eq!(Protocol::On.contract(), Some(CONTRACT));
         assert!(serde_json::from_value::<Protocol>(json!(true)).is_err());
-        assert!(CONTRACT.contains("whole-task title"));
-        assert!(CONTRACT.contains("Never make another call or model request"));
+        assert!(CONTRACT.contains("title describes this entire Execution"));
+        assert!(CONTRACT.contains("Never request another model call solely"));
         assert_ne!(BUNDLE_PAYLOAD_KEY, "response_annotations");
     }
     #[test]
@@ -2085,7 +2196,7 @@ mod tests {
         for protocol in [Protocol::Off, Protocol::On] {
             let mut ctx = context();
             ctx.protocol = protocol;
-            let normalized = normalize_response(&raw, &ctx).unwrap();
+            let normalized = normalize_fixture_parts(&raw, &ctx).unwrap();
             assert_eq!(
                 serde_json::to_value(&normalized.execution_response).unwrap(),
                 serde_json::to_value(&raw).unwrap()
@@ -2112,7 +2223,7 @@ mod tests {
             "execution":{"title":"检查环境","result":"不能提前完成"},"intent":"确认架构","observations":[
                 {"ref":"@e123","result":"Linux"},{"ref":"@future","result":"future"},{"ref":"@other","result":"other"},{"ref":"@old","result":"old"}]}});
         let raw = response(vec![call("provider-id", "exec", args.clone())]);
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
         assert_eq!(
             raw.tool_calls[0].arguments,
             normalized.raw_response.tool_calls[0].arguments
@@ -2148,7 +2259,7 @@ mod tests {
             .map(|_| json!({"ref":"@e123","result":"有效"}))
             .collect();
         let raw = response((0..2).map(|i| call(&format!("call-{i}"), "exec", json!({"command":"x", "_annotations":{"intent":format!("step-{i}"),"execution":{"title":format!("title-{i}")},"observations":observations}}))).collect());
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
         assert_eq!(
             normalized
                 .records
@@ -2181,7 +2292,7 @@ mod tests {
             "exec",
             json!({"command":"x","_annotations":{"execution":{"title":"🧠".repeat(256),"progress":"🧠".repeat(257),"status":"success"},"intent":12,"observations":[{"ref":"@e123","result":"有效"}]}}),
         )]);
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
         assert!(normalized.records.is_empty());
         assert!(!normalized.diagnostics.is_empty());
         assert_eq!(normalized.execution_response.tool_calls.len(), 1);
@@ -2189,7 +2300,7 @@ mod tests {
         for i in 0..100 {
             unknown.insert(format!("unknown-{i}"), Value::Null);
         }
-        let excessive = normalize_response(
+        let excessive = normalize_fixture_parts(
             &response(vec![call(
                 "2",
                 "exec",
@@ -2212,7 +2323,7 @@ mod tests {
             "exec",
             json!({"command":"unchanged","payload":{"_annotations":"business"},"_annotations":unknown}),
         )]);
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
         assert!(!normalized.diagnostics.is_empty());
         assert!(normalized.records.is_empty());
         assert_eq!(
@@ -2263,7 +2374,7 @@ mod tests {
                 args["annotations"] = annotations;
             }
             let raw = response(vec![call("r", ANNOTATIONS_FORMAT, args.clone())]);
-            let normalized = normalize_response(&raw, &ctx).unwrap();
+            let normalized = normalize_fixture_parts(&raw, &ctx).unwrap();
             assert_eq!(normalized.execution_response.content, "正文");
             assert!(normalized.execution_response.tool_calls.is_empty());
             assert!(!normalized.diagnostics.is_empty());
@@ -2272,7 +2383,7 @@ mod tests {
                 tool_calls: vec![],
             };
             assert_eq!(
-                normalize_response(&implicit, &ctx)
+                normalize_fixture_parts(&implicit, &ctx)
                     .unwrap()
                     .execution_response
                     .content,
@@ -2284,20 +2395,20 @@ mod tests {
             tool_calls: vec![],
         };
         assert_eq!(
-            normalize_response(&plain, &ctx)
+            normalize_fixture_parts(&plain, &ctx)
                 .unwrap()
                 .execution_response
                 .content,
             "正文"
         );
-        assert!(normalize_response(&plain, &NormalizationContext::default()).is_ok());
+        assert!(normalize_fixture_parts(&plain, &NormalizationContext::default()).is_ok());
         let valid = response(vec![call(
             "r",
             ANNOTATIONS_FORMAT,
             json!({"annotations":{"execution":{"title":"整项工作","result":"完成"},
             "observations":[{"ref":"@other","result":"越界"}]}}),
         )]);
-        let normalized = normalize_response(&valid, &ctx).unwrap();
+        let normalized = normalize_fixture_parts(&valid, &ctx).unwrap();
         assert_eq!(normalized.protocol, Protocol::On);
         assert!(normalized
             .records
@@ -2317,7 +2428,7 @@ mod tests {
             } else {
                 unbound.producer = None;
             }
-            let normalized = normalize_response(&valid, &unbound).unwrap();
+            let normalized = normalize_fixture_parts(&valid, &unbound).unwrap();
             assert!(
                 normalized.records.is_empty(),
                 "unbound metadata is never trusted"
@@ -2328,9 +2439,9 @@ mod tests {
     }
 
     #[test]
-    fn metadata_contract_uses_the_existing_generic_message_carrier() {
-        assert!(CONTRACT.contains("deliver_message"));
-        assert!(CONTRACT.contains("SAME response"));
+    fn metadata_contract_uses_one_schema_bound_evaluation_value() {
+        assert!(CONTRACT.contains("ONE native JSON object"));
+        assert!(CONTRACT.contains("body, annotations, effects"));
         assert!(!CONTRACT.contains(":::"));
         let schema = annotation_schema();
         assert_eq!(schema["additionalProperties"], false);
@@ -2359,7 +2470,7 @@ mod tests {
                 json!({"annotations":metadata}),
             )],
         };
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
         assert_eq!(
             serde_json::to_value(&normalized.raw_response).unwrap(),
             serde_json::to_value(&raw).unwrap()
@@ -2375,14 +2486,14 @@ mod tests {
             content: raw.content.clone(),
             tool_calls: vec![],
         };
-        let plain = normalize_response(&plain, &context()).unwrap();
+        let plain = normalize_fixture_parts(&plain, &context()).unwrap();
         assert_eq!(
             plain.execution_response.content,
             normalized.execution_response.content
         );
         assert!(plain.records.is_empty());
         assert!(!plain.diagnostics.is_empty());
-        let off = normalize_response(&raw, &NormalizationContext::default()).unwrap();
+        let off = normalize_fixture_parts(&raw, &NormalizationContext::default()).unwrap();
         assert_eq!(off.execution_response.content, raw.content);
         assert!(off.execution_response.tool_calls.is_empty());
         assert!(off.records.is_empty());
@@ -2400,7 +2511,7 @@ mod tests {
                 content: format!("正文{REPLY_TRAILER}{trailer}"),
                 tool_calls: vec![],
             };
-            let normalized = normalize_response(&raw, &context()).unwrap();
+            let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
             assert_eq!(normalized.execution_response.content, raw.content);
             assert!(normalized.records.is_empty());
             assert!(!normalized.diagnostics.is_empty());
@@ -2418,7 +2529,7 @@ mod tests {
                 json!({"annotations":metadata}),
             )],
         };
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
         assert_eq!(normalized.execution_response.content, body);
         assert_eq!(normalized.raw_response.content, raw.content);
         assert_eq!(normalized.records.len(), 2);
@@ -2427,18 +2538,15 @@ mod tests {
             content: body.into(),
             tool_calls: vec![],
         };
-        let missing = normalize_response(&missing, &context()).unwrap();
+        let missing = normalize_fixture_parts(&missing, &context()).unwrap();
         assert_eq!(missing.execution_response.content, body);
         assert!(missing.records.is_empty());
         assert!(!missing.diagnostics.is_empty());
     }
 
     #[test]
-    fn replay_captured_session_io_response_without_model_or_side_effects() {
-        let Ok(path) = std::env::var("MORPHZ_ANNOTATION_REPLAY_FILE") else {
-            return;
-        };
-        let raw: Response = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    fn schema_bound_session_io_value_replays_without_model_or_side_effects() {
+        let raw=Response {content:json!({"body":"原始中文正文\n第二行", "annotations":{"execution":{"title":"回放合成值","progress":"","result":"已返回原始正文"},"observations":[]},"effects":[]}).to_string(),tool_calls:vec![]};
         let normalized = normalize_response(&raw, &context()).unwrap();
         assert_eq!(normalized.records.len(), 2);
         assert!(normalized.diagnostics.is_empty());
@@ -2452,7 +2560,7 @@ mod tests {
             content: json!({"content":"处理中","annotations":{"execution":{"title":"读取合成系统","result":"不得结算"}}}).to_string(),
             tool_calls: vec![call("work", "exec", json!({"command":"original"}))],
         };
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
         assert_eq!(normalized.execution_response.content, raw.content);
         assert!(normalized.terminal_decision.is_none());
         assert!(normalized.records.is_empty());
@@ -2463,7 +2571,7 @@ mod tests {
         let mut ctx = context();
         ctx.protocol = Protocol::On;
         let work = response(vec![call("w", "exec", json!({"command":"unchanged"}))]);
-        let normalized = normalize_response(&work, &ctx).unwrap();
+        let normalized = normalize_fixture_parts(&work, &ctx).unwrap();
         assert_eq!(normalized.protocol, Protocol::On);
         assert_eq!(
             serde_json::to_value(normalized.execution_response).unwrap(),
@@ -2477,7 +2585,7 @@ mod tests {
             let control = response(vec![call("n", "no_reply", args)]);
             assert_eq!(
                 serde_json::to_value(
-                    normalize_response(&control, &ctx)
+                    normalize_fixture_parts(&control, &ctx)
                         .unwrap()
                         .execution_response
                 )
@@ -2494,7 +2602,7 @@ mod tests {
             }),
         )]);
         raw.content = value.into();
-        let typed = normalize_response(&raw, &ctx).unwrap();
+        let typed = normalize_fixture_parts(&raw, &ctx).unwrap();
         assert_eq!(typed.protocol, Protocol::On);
         assert_eq!(typed.execution_response.content, value);
         assert!(typed.execution_response.tool_calls.is_empty());
@@ -2536,7 +2644,7 @@ mod tests {
             ANNOTATIONS_FORMAT,
             json!({"annotations":{"execution":{"title":"核对环境","result":"已确认"}}}),
         )]);
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
         assert!(normalized.execution_response.tool_calls.is_empty());
         assert_eq!(
             normalized.terminal_decision,
@@ -2558,7 +2666,7 @@ mod tests {
             terminal_sequence: Some(9),
         });
         assert!(
-            normalize_response(&raw, &completed)
+            normalize_fixture_parts(&raw, &completed)
                 .unwrap()
                 .records
                 .iter()
@@ -2566,7 +2674,7 @@ mod tests {
                 .unwrap()
                 .effective
         );
-        let bad_metadata = normalize_response(
+        let bad_metadata = normalize_fixture_parts(
             &response(vec![call(
                 "r",
                 ANNOTATIONS_FORMAT,
@@ -2577,7 +2685,7 @@ mod tests {
         .unwrap();
         assert_eq!(bad_metadata.execution_response.content, "正文");
         assert!(!bad_metadata.diagnostics.is_empty());
-        assert!(normalize_response(
+        assert!(normalize_fixture_parts(
             &response(vec![
                 call("r", ANNOTATIONS_FORMAT, json!({"content":"x"})),
                 call("w", "exec", json!({"command":"x"}))
@@ -2594,13 +2702,13 @@ mod tests {
         )]);
         empty.content.clear();
         assert!(
-            normalize_response(&empty, &context()).is_err(),
+            normalize_fixture_parts(&empty, &context()).is_err(),
             "metadata is never a substitute for an answer"
         );
     }
     #[test]
     fn no_reply_bound_mode_and_u64_range_unchanged_no_annotations() {
-        let default = normalize_response(
+        let default = normalize_fixture_parts(
             &response(vec![call("n", "no_reply", json!({"mode":"wait"}))]),
             &context(),
         )
@@ -2612,7 +2720,7 @@ mod tests {
                 explicitly_requested: false
             }))
         );
-        let explicit = normalize_response(
+        let explicit = normalize_fixture_parts(
             &response(vec![call(
                 "n",
                 "no_reply",
@@ -2628,7 +2736,7 @@ mod tests {
                 explicitly_requested: true
             }))
         );
-        assert!(normalize_response(
+        assert!(normalize_fixture_parts(
             &response(vec![call(
                 "n",
                 "no_reply",
@@ -2637,7 +2745,7 @@ mod tests {
             &context()
         )
         .is_err());
-        assert!(normalize_response(
+        assert!(normalize_fixture_parts(
             &response(vec![call(
                 "n",
                 "no_reply",
@@ -2658,7 +2766,7 @@ mod tests {
                 content: "正文".into(),
                 tool_calls: vec![metadata_call("bad", metadata)],
             };
-            let result = normalize_response(&raw, &context()).unwrap();
+            let result = normalize_fixture_parts(&raw, &context()).unwrap();
             assert_eq!(result.execution_response.content, "正文");
             assert!(result.execution_response.tool_calls.is_empty());
             assert!(result.records.is_empty());
@@ -2671,11 +2779,11 @@ mod tests {
             content: "<morphz-annotations>{\"execution\":{\"title\":\"旧头\",\"result\":\"旧结果\"}}</morphz-annotations>\n正文".into(),
             tool_calls: vec![],
         };
-        let normalized = normalize_response(&raw, &context()).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &context()).unwrap();
         assert_eq!(normalized.execution_response.content, raw.content);
         assert!(normalized.records.is_empty());
         assert_eq!(
-            normalize_response(&raw, &NormalizationContext::default())
+            normalize_fixture_parts(&raw, &NormalizationContext::default())
                 .unwrap()
                 .execution_response
                 .content,
@@ -2699,7 +2807,7 @@ mod tests {
             ANNOTATIONS_FORMAT,
             json!({"annotations":{"execution":{"title":"核对执行事实","result":"结果"}}}),
         )]);
-        let normalized = normalize_response(&raw, &ctx).unwrap();
+        let normalized = normalize_fixture_parts(&raw, &ctx).unwrap();
         assert!(normalized.dispatch_allowed);
         assert!(
             !normalized
@@ -2711,7 +2819,7 @@ mod tests {
         );
         ctx.execution_fact.as_mut().unwrap().status = "completed".into();
         assert!(
-            !normalize_response(&raw, &ctx)
+            !normalize_fixture_parts(&raw, &ctx)
                 .unwrap()
                 .records
                 .iter()
@@ -2727,8 +2835,8 @@ mod tests {
             "exec",
             json!({"command":"x","_annotations":{"observations":[{"ref":"@e123","result":"Linux"}]}}),
         )]);
-        let first = normalize_response(&raw, &context()).unwrap();
-        let repeated = normalize_response(&raw, &context()).unwrap();
+        let first = normalize_fixture_parts(&raw, &context()).unwrap();
+        let repeated = normalize_fixture_parts(&raw, &context()).unwrap();
         let (merged, conflicts) = merge_records(&first.records, &repeated.records);
         assert_eq!(merged.len(), 1);
         assert!(conflicts.is_empty());
@@ -2750,7 +2858,7 @@ mod tests {
             ANNOTATIONS_FORMAT,
             json!({"annotations":{"execution":{"title":"标题","progress":"进展","result":"结果"}}}),
         )]);
-        let mut records = normalize_response(&raw, &ctx).unwrap().records;
+        let mut records = normalize_fixture_parts(&raw, &ctx).unwrap().records;
         let fact = ctx.execution_fact.clone().unwrap();
         let completed = project_execution(&fact, &records);
         assert_eq!(completed.result.as_deref(), Some("结果"));
@@ -2777,7 +2885,7 @@ mod tests {
         let mut cancel_context = context();
         cancel_context.execution_fact = Some(cancelled);
         assert!(
-            !normalize_response(&raw, &cancel_context)
+            !normalize_fixture_parts(&raw, &cancel_context)
                 .unwrap()
                 .dispatch_allowed
         );
@@ -2810,7 +2918,7 @@ mod tests {
                     json!({"command":"safe","_annotations":{"execution":execution}}),
                 )
             };
-            normalize_response(
+            normalize_fixture_parts(
                 &response(vec![call(&format!("call-{sequence}"), name, args)]),
                 &ctx,
             )

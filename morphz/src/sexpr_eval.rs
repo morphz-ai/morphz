@@ -21,6 +21,9 @@ use sha2::{Digest, Sha256};
 use crate::sexpr::SExpr;
 use crate::tool::Registry;
 
+mod stream_projection;
+pub use stream_projection::{ReplyProjection, ReplyProjectionCondition};
+
 /// Guards against a submitted program that is merely large rather than
 /// recursive. Depth is checked before evaluation, so it costs nothing at run
 /// time.

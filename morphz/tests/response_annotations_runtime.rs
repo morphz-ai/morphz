@@ -54,6 +54,20 @@ const RAW_WORK: &str = r#"{ "key": "system", "_annotations": {"execution":{"titl
 const RAW_BUSINESS: &str = r#"{"key":"system","_annotations":{"business":"ordinary payload"}}"#;
 const RAW_LIFECYCLE_WORK: &str = r#"{"key":"system","_annotations":{"execution":{"title":"检查后选择生命周期边界","progress":"读取合成系统","result":"LIFECYCLE_CANDIDATE_MUST_NOT_FINALIZE"},"intent":"读取合成系统，不把候选结果当成终态"}}"#;
 
+fn evaluation_value(bundle: &PersistedAnnotations) -> Value {
+    assert!(
+        bundle.raw_response.tool_calls.is_empty(),
+        "structured IO is a single content value, not a native tool companion"
+    );
+    let value: Value = serde_json::from_str(&bundle.raw_response.content).unwrap();
+    assert!(
+        value.get("body").is_some()
+            && value.get("annotations").is_some()
+            && value.get("effects").is_some()
+    );
+    value
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Scenario {
     Plain,
@@ -201,6 +215,11 @@ impl ScriptClient {
         Self::reply(arguments)
     }
     fn annotations(response: &Response) -> Option<Value> {
+        if let Ok(value) = serde_json::from_str::<Value>(&response.content) {
+            if value.get("effects").is_some() {
+                return value.get("annotations").cloned();
+            }
+        }
         response.tool_calls.iter().find_map(|call| {
             let args: Value = serde_json::from_str(&call.arguments).ok()?;
             (call.func_name == "deliver_message"
@@ -233,39 +252,118 @@ impl ScriptClient {
             return morphz::session_io::response::ReturnBinding {
                 delivery_id: field(&["delivery_id"]),
                 format: morphz::session_io::OutputFormat {
-                    id: field(&["format", "id"]),
-                    version: field(&["format", "version"]),
-                    encoding: field(&["format", "encoding"]),
+                    id: field(&["caller_format", "id"]),
+                    version: field(&["caller_format", "version"]),
+                    encoding: field(&["caller_format", "encoding"]),
                     ..morphz::session_io::OutputFormat::chat()
                 },
                 annotations_enabled: field(&["annotations_enabled"]) == "true",
+                annotation_observation_refs: vec![],
+                output: (field(&["annotations_enabled"]) == "true")
+                    .then(morphz::session_io::evaluation::binding),
             };
         }
         panic!("actual Runtime return binding missing")
     }
-    fn bind_return(mut response: Response, messages: &[Message]) -> Response {
+    fn encode_evaluation(response: Response, messages: &[Message]) -> Response {
         let binding = Self::return_binding(messages);
-        if !response.content.is_empty() {
-            let content = std::mem::take(&mut response.content);
-            let value = if binding.format.encoding == "utf8" {
-                json!(content)
-            } else {
-                json!({"text":content})
-            };
-            // Write the routing header before the body to exercise real early streaming.
-            let arguments=format!("{{\"delivery_id\":{},\"message\":{{\"format\":{},\"content\":{{\"encoding\":{},\"value\":{}}}}}}}",
-                json!(binding.delivery_id),json!({"id":binding.format.id,"version":binding.format.version}),json!(binding.format.encoding),value);
-            response.tool_calls.insert(
-                0,
-                ToolCallRepr {
-                    id: "synthetic-body-call".into(),
-                    r#type: "function".into(),
-                    func_name: "deliver_message".into(),
-                    arguments,
-                },
-            );
+        if !binding.annotations_enabled {
+            return response;
         }
-        response
+        let body = if binding.format.id != "morphz.chat"
+            && binding.format.encoding == "json"
+            && !response.content.is_empty()
+            && response
+                .tool_calls
+                .iter()
+                .all(|call| call.func_name == "deliver_message")
+        {
+            Some(
+                morphz::session_io::Data::parse(response.content.as_bytes(), &Limits::default())
+                    .expect("typed fixture body is the original decoder JSON"),
+            )
+        } else {
+            None
+        };
+        let mut encoded = Self::encode_for_binding(response);
+        if let Some(body) = body {
+            let morphz::session_io::Data::Object(mut value) =
+                morphz::session_io::Data::parse(encoded.content.as_bytes(), &Limits::default())
+                    .unwrap()
+            else {
+                unreachable!()
+            };
+            value.insert("body".into(), body);
+            encoded.content = morphz::session_io::Data::Object(value).json();
+        }
+        encoded
+    }
+
+    // Scenario literals describe semantic values; the fixture emits ONLY the
+    // current native-JSON Evaluation carrier to the actual Runtime.
+    fn encode_for_binding(response: Response) -> Response {
+        let metadata = Self::annotations(&response).unwrap_or_else(|| json!({}));
+        let mut execution = metadata
+            .get("execution")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        for field in ["title", "progress", "result"] {
+            if execution.get(field).is_none() {
+                execution[field] = json!("");
+            }
+        }
+        let intents = metadata.get("calls").and_then(Value::as_array);
+        let effects = response
+            .tool_calls
+            .iter()
+            .enumerate()
+            .filter_map(|(index, call)| {
+                let arguments: Value = serde_json::from_str(&call.arguments).unwrap();
+                if call.func_name == "deliver_message"
+                    && arguments["message"]["format"]["id"] == "morphz.response.annotations"
+                {
+                    return None;
+                }
+                let intent = intents
+                    .and_then(|values| {
+                        values
+                            .iter()
+                            .find(|value| value["index"].as_u64() == Some(index as u64))
+                    })
+                    .and_then(|value| value.get("intent"))
+                    .cloned()
+                    .unwrap_or_else(|| json!(""));
+                Some(json!({"name":call.func_name,"arguments":arguments,"intent":intent}))
+            })
+            .collect::<Vec<_>>();
+        Response {
+            content:json!({"body":if response.content.is_empty(){Value::Null}else{json!(response.content)},
+                "annotations":{"execution":execution,"observations":metadata.get("observations").cloned().unwrap_or_else(||json!([]))},"effects":effects}).to_string(),
+            tool_calls:vec![],
+        }
+    }
+
+    fn actual_observation_ref(messages: &[Message]) -> Option<String> {
+        use morphz::sexpr::SExpr;
+        fn visit(value: &SExpr) -> Option<String> {
+            if let SExpr::List(items) = value {
+                if matches!(items.first(),Some(SExpr::Atom(name)) if name=="observation")
+                    && matches!(value.get_path(&["tool"]),Some(SExpr::Atom(name)) if name=="annotation_probe")
+                    && value.to_string().contains("Linux")
+                {
+                    if let Some(SExpr::Atom(reference)) = value.get_path(&["ref"]) {
+                        return Some(reference.clone());
+                    }
+                }
+                return items.iter().find_map(visit);
+            }
+            None
+        }
+        messages.iter().rev().find_map(|message| {
+            let text = morphz::llm::model_visible_message_text(message);
+            let start = text.find("(context ")?;
+            visit(&morphz::sexpr::parse(&text[start..]).ok()?)
+        })
     }
 
     fn no_reply(arguments: Value) -> Response {
@@ -281,34 +379,46 @@ impl ScriptClient {
     }
 
     fn assert_lifecycle_receipt(messages: &[Message], tools: &[ToolDefinition], annotated: bool) {
-        let call = messages
-            .iter()
-            .find(|message| {
-                message.role == "assistant"
-                    && message.tool_calls.as_ref().is_some_and(|calls| {
-                        calls.iter().any(|call| call.id == "synthetic-work-call")
-                    })
-            })
-            .expect("the second original request must contain its actual work call");
-        assert_eq!(
-            call.tool_calls.as_ref().unwrap()[0].function.arguments,
-            if annotated {
-                Self::work(RAW_LIFECYCLE_WORK).tool_calls[0]
-                    .arguments
-                    .clone()
-            } else {
-                r#"{"key":"system"}"#.to_owned()
-            }
-        );
-        let receipt = messages
-            .iter()
-            .find(|message| {
-                message.role == "tool"
-                    && message.tool_call_id.as_deref() == Some("synthetic-work-call")
-            })
-            .expect("a real physical ToolOutput must precede the lifecycle decision");
-        let receipt: Value = serde_json::from_str(&receipt.content).unwrap();
-        assert_eq!(receipt["status"], "success");
+        if annotated {
+            assert!(
+                Self::actual_observation_ref(messages).is_some(),
+                "the real work observation must precede a lifecycle decision"
+            );
+            assert!(
+                messages.iter().all(|message| message.role != "tool"
+                    && message.tool_calls.as_ref().is_none_or(Vec::is_empty)),
+                "IO effects must not be fabricated as native function history"
+            );
+        } else {
+            let call = messages
+                .iter()
+                .find(|message| {
+                    message.role == "assistant"
+                        && message.tool_calls.as_ref().is_some_and(|calls| {
+                            calls.iter().any(|call| call.id == "synthetic-work-call")
+                        })
+                })
+                .expect("the second original request must contain its actual work call");
+            assert_eq!(
+                call.tool_calls.as_ref().unwrap()[0].function.arguments,
+                if annotated {
+                    Self::work(RAW_LIFECYCLE_WORK).tool_calls[0]
+                        .arguments
+                        .clone()
+                } else {
+                    r#"{"key":"system"}"#.to_owned()
+                }
+            );
+            let receipt = messages
+                .iter()
+                .find(|message| {
+                    message.role == "tool"
+                        && message.tool_call_id.as_deref() == Some("synthetic-work-call")
+                })
+                .expect("a real physical ToolOutput must precede the lifecycle decision");
+            let receipt: Value = serde_json::from_str(&receipt.content).unwrap();
+            assert_eq!(receipt["status"], "success");
+        }
         let control = tools.iter().find(|tool| tool.name == "no_reply").unwrap();
         assert_eq!(control.parameters["additionalProperties"], false);
         let properties = control.parameters["properties"].as_object().unwrap();
@@ -439,14 +549,17 @@ impl Client for ScriptClient {
                     if matches!(self.scenario, Scenario::TextInferRoot(_)) {
                         return self
                             .stream_text_response(
-                                if case == 4 {
-                                    Response {
-                                        content: value.into(),
-                                        tool_calls: vec![],
-                                    }
-                                } else {
-                                    Self::text_reply(value, "核对合成返回值", "合成求值已返回")
-                                },
+                                Self::encode_evaluation(
+                                    if case == 4 {
+                                        Response {
+                                            content: value.into(),
+                                            tool_calls: vec![],
+                                        }
+                                    } else {
+                                        Self::text_reply(value, "核对合成返回值", "合成求值已返回")
+                                    },
+                                    &messages,
+                                ),
                                 stream,
                             )
                             .await;
@@ -508,12 +621,23 @@ impl Client for ScriptClient {
                 assert!(messages.iter().any(|message| message.content.contains(
                     "The Objective completion request did not enter finalizing")),
                     "a real rejected completion receipt must keep this same Activation in its original work phase");
-                assert!(
-                    messages.iter().any(|message| message.role == "tool"
-                        && message.tool_call_id.as_deref()
-                            == Some("synthetic-objective-completion")),
-                    "the next ordinary model request must contain its actual control receipt"
-                );
+                if annotated {
+                    assert!(
+                        messages.iter().any(|message| message
+                            .content
+                            .contains("unbound-synthetic-objective")
+                            && message.content.contains("objective_update")),
+                        "the typed observation must contain the actual rejected control receipt"
+                    );
+                    assert!(messages.iter().all(|message| message.role != "tool"));
+                } else {
+                    assert!(
+                        messages.iter().any(|message| message.role == "tool"
+                            && message.tool_call_id.as_deref()
+                                == Some("synthetic-objective-completion")),
+                        "the next ordinary model request must contain its actual control receipt"
+                    );
+                }
                 if annotated {
                     Self::reply(json!({"content":"目标未绑定，因此未执行关闭。",
                         "annotations":{"execution":{"title":"核对目标关闭条件","result":"未绑定目标，关闭请求被拒绝"}}}))
@@ -548,7 +672,7 @@ impl Client for ScriptClient {
                 Response {content:String::new(),tool_calls:vec![ToolCallRepr {
                     id:"synthetic-eval-call".into(),r#type:"function".into(),func_name:"eval".into(),
                     arguments:json!({"program":r#"(eval (requires (tools annotation_probe)) (infer (seq (bind source (call annotation_probe (key "system"))) (decode String source))))"#}).to_string(),
-                }]}
+                }, Self::metadata(json!({"execution":{"title":"核对合成环境"},"calls":[{"index":0,"intent":"通过显式 infer 核对系统事实"}]}))]}
             }
             (Scenario::Infer, 1) => Self::work(
                 r#"{"key":"system","_annotations":{"execution":{"title":"读取合成系统","progress":"读取系统资料"},"intent":"核对系统名称"}}"#,
@@ -583,7 +707,10 @@ impl Client for ScriptClient {
                 }
                 if matches!(self.scenario, Scenario::ImplicitBadFinal(_)) {
                     return self
-                        .stream_text_response(Self::implicit_reply(args), stream)
+                        .stream_text_response(
+                            Self::encode_evaluation(Self::implicit_reply(args), &messages),
+                            stream,
+                        )
                         .await;
                 }
                 Self::reply(args)
@@ -628,42 +755,61 @@ impl Client for ScriptClient {
                 1,
             ) => {
                 assert!(tools.iter().any(|t| t.name == "deliver_message"));
-                let marker = messages
-                    .iter()
-                    .position(|m| provider_continuation(m).is_some())
-                    .expect("native signed continuation missing");
-                assert_eq!(
-                    provider_continuation(&messages[marker]),
-                    Some(Self::continuation())
-                );
-                let raw = messages
-                    .iter()
-                    .position(|m| {
-                        m.role == "assistant"
-                            && m.tool_calls
-                                .as_ref()
-                                .is_some_and(|c| c.iter().any(|c| c.id == "synthetic-work-call"))
-                    })
-                    .unwrap();
-                assert!(
-                    marker < raw,
-                    "signed state must precede its exact raw carrier call"
-                );
-                assert_eq!(
-                    messages[raw].tool_calls.as_ref().unwrap()[0]
-                        .function
-                        .arguments,
-                    Self::work(RAW_WORK).tool_calls[0].arguments
-                );
-                let receipt = messages
-                    .iter()
-                    .find(|m| {
-                        m.role == "tool" && m.tool_call_id.as_deref() == Some("synthetic-work-call")
-                    })
-                    .expect("actual tool receipt missing");
-                let receipt: Value = serde_json::from_str(&receipt.content).unwrap();
-                assert_eq!(receipt["status"], "success");
-                let reference = receipt["observation_ref"].as_str().unwrap().to_owned();
+                let marker = if annotations_enabled {
+                    None
+                } else {
+                    Some(
+                        messages
+                            .iter()
+                            .position(|m| provider_continuation(m).is_some())
+                            .expect("native signed continuation missing"),
+                    )
+                };
+                if let Some(marker) = marker {
+                    assert_eq!(
+                        provider_continuation(&messages[marker]),
+                        Some(Self::continuation())
+                    );
+                }
+                let reference = if annotations_enabled {
+                    assert!(
+                        messages.iter().all(|message| message.role != "tool"
+                            && message.tool_calls.as_ref().is_none_or(Vec::is_empty)),
+                        "IO work proposals must not become fabricated native function history"
+                    );
+                    Self::actual_observation_ref(&messages)
+                        .expect("actual IO effect observation missing")
+                } else {
+                    let raw = messages
+                        .iter()
+                        .position(|m| {
+                            m.role == "assistant"
+                                && m.tool_calls.as_ref().is_some_and(|c| {
+                                    c.iter().any(|c| c.id == "synthetic-work-call")
+                                })
+                        })
+                        .unwrap();
+                    assert!(
+                        marker.unwrap() < raw,
+                        "signed state must precede its exact raw carrier call"
+                    );
+                    assert_eq!(
+                        messages[raw].tool_calls.as_ref().unwrap()[0]
+                            .function
+                            .arguments,
+                        Self::work(RAW_WORK).tool_calls[0].arguments
+                    );
+                    let receipt = messages
+                        .iter()
+                        .find(|m| {
+                            m.role == "tool"
+                                && m.tool_call_id.as_deref() == Some("synthetic-work-call")
+                        })
+                        .expect("actual tool receipt missing");
+                    let receipt: Value = serde_json::from_str(&receipt.content).unwrap();
+                    assert_eq!(receipt["status"], "success");
+                    receipt["observation_ref"].as_str().unwrap().to_owned()
+                };
                 assert!(reference.starts_with("@e"));
                 *self.receipt_ref.lock().unwrap() = Some(reference.clone());
                 let mut observations = vec![json!({"ref":reference,"result":"合成系统为 Linux"})];
@@ -686,11 +832,11 @@ impl Client for ScriptClient {
             }
             _ => panic!("unexpected scripted completion"),
         };
-        let response = if matches!(
+        let response = if !matches!(
             self.scenario,
-            Scenario::ReplyOnly | Scenario::BadMixedReply | Scenario::BadDuplicateReply
+            Scenario::BadMixedReply | Scenario::BadDuplicateReply
         ) {
-            Self::bind_return(response, &messages)
+            Self::encode_evaluation(response, &messages)
         } else {
             response
         };
@@ -1028,7 +1174,7 @@ async fn default_and_explicit_off_preserve_complete_system_and_tool_schema_bytes
     assert!(!a.tools.iter().any(|t| t.name == "reply"));
     assert!(systems(&a)
         .iter()
-        .any(|s| String::from_utf8_lossy(s).contains("Session IO response contract")));
+        .any(|s| String::from_utf8_lossy(s).contains("Session IO Evaluation output contract")));
     assert_eq!(a.binding.protocol, "openai-responses");
     assert_eq!(a.options, b.options);
     for (fixture, root) in [(&default, root), (&explicit, other_root)] {
@@ -1188,22 +1334,19 @@ async fn enabled_uses_exact_raw_native_replay_but_stripped_execution_and_durable
     assert_eq!(calls.len(), 2);
     let work = calls
         .iter()
-        .find(|e| {
-            e.payload
-                .get("continuation_tool_calls")
-                .and_then(Value::as_array)
-                .is_some_and(|c| {
-                    c.iter()
-                        .any(|c| c.get("id").and_then(Value::as_str) == Some("synthetic-work-call"))
-                })
+        .find(|event| {
+            event.payload["tool_calls"].as_array().is_some_and(|calls| {
+                calls
+                    .iter()
+                    .any(|call| call["function"]["name"] == "annotation_probe")
+            })
         })
-        .expect("raw continuation calls not persisted");
+        .expect("actual work proposals not persisted");
     let bundle: PersistedAnnotations =
         serde_json::from_value(work.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-    assert_eq!(
-        bundle.raw_response.tool_calls[0].arguments,
-        ScriptClient::work(RAW_WORK).tool_calls[0].arguments
-    );
+    let value = evaluation_value(&bundle);
+    assert_eq!(value["effects"][0]["arguments"], json!({"key":"system"}));
+    assert_eq!(value["effects"][0]["intent"], "读取合成系统");
     assert_eq!(work.payload["response_annotations"], "on");
     let business = work.payload["tool_calls"][0]["function"]["arguments"]
         .as_str()
@@ -1212,10 +1355,10 @@ async fn enabled_uses_exact_raw_native_replay_but_stripped_execution_and_durable
         serde_json::from_str::<Value>(business).unwrap(),
         json!({"key":"system"})
     );
-    assert_eq!(
-        work.payload["continuation_tool_calls"][0]["function"]["arguments"],
-        ScriptClient::work(RAW_WORK).tool_calls[0].arguments
-    );
+    assert!(work.payload["continuation_tool_calls"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     assert_eq!(bundle.scope, scope);
     assert!(bundle.records.iter().all(|r| r.source.sequence.is_none()));
     let mut records = vec![];
@@ -1316,10 +1459,7 @@ async fn reply_is_terminal_response_not_a_work_job() {
         .is_empty());
     let bundle: PersistedAnnotations =
         serde_json::from_value(calls[0].payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-    assert_eq!(
-        bundle.raw_response.tool_calls[0].func_name,
-        "deliver_message"
-    );
+    assert_eq!(evaluation_value(&bundle)["body"], FINAL_TEXT);
     assert!(bundle
         .records
         .iter()
@@ -1501,21 +1641,37 @@ async fn single_infer_harness_keeps_required_annotations_typed_values_and_stream
                 }
                 drop(captured);
                 let mut text = String::new();
+                let mut public = String::new();
                 let mut increments = 0;
                 while let Ok(event) = stream.try_recv() {
                     if let Ok(ModelStreamEvent::TextDelta { text: delta }) =
                         serde_json::from_value(event.payload["stream"].clone())
                     {
+                        if event.payload["model_output_visibility"] != "internal" {
+                            public.push_str(&delta);
+                            continue;
+                        }
                         text.push_str(&delta);
                         increments += 1;
                     }
                 }
                 assert_eq!(
-                    text, body,
-                    "stream contains only the original value transport, not response metadata"
+                    text, if protocol.is_off(){body.to_owned()}else if case==1 {serde_json::from_str::<String>(body).unwrap()}else{String::new()},
+                    "the native String body streams as text; non-String values remain in their typed IO publication, never flattened to prose"
                 );
-                assert!(increments > 0, "typed values remain visible");
-                if body.chars().count() > 5 {
+                assert_eq!(
+                    public,
+                    if case == 1 {
+                        serde_json::from_str::<String>(body).unwrap()
+                    } else {
+                        String::new()
+                    },
+                    "only the proven String return is public; internal values never mingle with it"
+                );
+                if protocol.is_off() || case == 1 {
+                    assert!(increments > 0, "String values remain visible");
+                }
+                if (protocol.is_off() || case == 1) && body.chars().count() > 5 {
                     assert!(
                         increments > 1,
                         "typed values are still incrementally visible"
@@ -1779,7 +1935,11 @@ async fn assert_restart_replays_seeded_enabled_plan_once(legacy_thread_id: Optio
         }),
         ..Default::default()
     };
-    let normalized = normalize_response(&ScriptClient::work(RAW_WORK), &context).unwrap();
+    let normalized = normalize_response(
+        &ScriptClient::encode_for_binding(ScriptClient::work(RAW_WORK)),
+        &context,
+    )
+    .unwrap();
     let bundle = PersistedAnnotations::from_normalized(scope.clone(), &normalized);
     let stored_calls = |response: &Response| {
         response.tool_calls.iter().map(|c|json!({"id":c.id,"type":c.r#type,"function":{"name":c.func_name,"arguments":c.arguments}})).collect::<Vec<_>>()
@@ -1940,7 +2100,7 @@ async fn assert_restart_replays_seeded_enabled_plan_once(legacy_thread_id: Optio
         outputs
             .iter()
             .filter(|e| e.payload.get("tool_call_id").and_then(Value::as_str)
-                == Some("synthetic-work-call"))
+                == original.payload["tool_calls"][0]["id"].as_str())
             .count(),
         1
     );
@@ -2094,7 +2254,7 @@ async fn real_kernel_supersede_keeps_enabled_and_fences_old_generation_annotatio
     };
     let source_id = "call_annotations-generation-old";
     let normalized = normalize_response(
-        &ScriptClient::work(RAW_WORK),
+        &ScriptClient::encode_for_binding(ScriptClient::work(RAW_WORK)),
         &NormalizationContext {
             protocol: Protocol::On,
             scope: Some(old_scope.clone()),
@@ -2369,10 +2529,10 @@ async fn assert_restart_settles_seeded_enabled_wait_receipt(legacy: bool) {
         format!("call_{}_final", activation.id)
     };
     let normalized = normalize_response(
-        &ScriptClient::reply(json!({
+        &ScriptClient::encode_for_binding(ScriptClient::reply(json!({
             "content":"等待尚未完成的工作。",
             "annotations":{"execution":{"title":"等待现有工作","result":"WAIT_CANDIDATE_MUST_NOT_APPLY"}},
-        })),
+        }))),
         &NormalizationContext {
             protocol: Protocol::On,
             scope: Some(scope.clone()),
@@ -2690,10 +2850,7 @@ async fn interactive_delivery_with_a_future_schedule_preserves_off_outcome_and_e
                 .is_empty());
             let bundle: PersistedAnnotations =
                 serde_json::from_value(final_source.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-            assert_eq!(
-                bundle.raw_response.tool_calls[0].func_name,
-                "deliver_message"
-            );
+            assert_eq!(evaluation_value(&bundle)["body"], FINAL_TEXT);
             let scope = ExecutionScope {
                 execution_id: thread.id.clone(),
                 generation: thread.generation,
@@ -2818,12 +2975,12 @@ async fn rejected_objective_completion_then_reply_has_distinct_enabled_boundarie
         let final_bundle: PersistedAnnotations =
             serde_json::from_value(final_event.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
         assert_eq!(
-            work_bundle.raw_response.tool_calls[0].func_name,
+            evaluation_value(&work_bundle)["effects"][0]["name"],
             "objective_update"
         );
         assert_eq!(
-            final_bundle.raw_response.tool_calls[0].func_name,
-            "deliver_message"
+            evaluation_value(&final_bundle)["body"],
+            "目标未绑定，因此未执行关闭。"
         );
         assert_eq!(work_bundle.scope, final_bundle.scope);
         assert!(records_from_authorized_event(work, &work_bundle.scope)
@@ -2850,14 +3007,12 @@ fn assert_lifecycle_work_result_rejected(
     let bundle: PersistedAnnotations =
         serde_json::from_value(event.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
     assert_eq!(bundle.scope, *scope);
-    assert_eq!(bundle.raw_response.tool_calls.len(), 2);
+    let value = evaluation_value(&bundle);
+    assert_eq!(value["effects"].as_array().unwrap().len(), 1);
+    assert_eq!(value["effects"][0]["name"], "annotation_probe");
     assert_eq!(
-        bundle.raw_response.tool_calls[0].func_name,
-        "annotation_probe"
-    );
-    assert_eq!(
-        bundle.raw_response.tool_calls[0].arguments,
-        ScriptClient::work(RAW_LIFECYCLE_WORK).tool_calls[0].arguments,
+        value["effects"][0]["arguments"],
+        json!({"key":"system"}),
         "rejection must retain the model's exact original candidate for audit"
     );
     let original = ScriptClient::annotations(&bundle.raw_response).unwrap();
@@ -2987,12 +3142,9 @@ async fn actual_no_reply_silent_preserves_enabled_grammar_without_a_result_or_ex
             );
             let bundle: PersistedAnnotations =
                 serde_json::from_value(final_event.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-            assert_eq!(bundle.raw_response.tool_calls[0].func_name, "no_reply");
-            assert_eq!(
-                serde_json::from_str::<Value>(&bundle.raw_response.tool_calls[0].arguments)
-                    .unwrap(),
-                json!({"mode":"silent"})
-            );
+            let value = evaluation_value(&bundle);
+            assert_eq!(value["effects"][0]["name"], "no_reply");
+            assert_eq!(value["effects"][0]["arguments"], json!({"mode":"silent"}));
             assert!(
                 records_from_authorized_event(final_event, &scope)
                     .unwrap()
@@ -3182,10 +3334,10 @@ async fn actual_no_reply_wait_uses_real_pending_work_and_does_not_finalize_or_re
             let bundle: PersistedAnnotations =
                 serde_json::from_value(waiting.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
             assert_eq!(bundle.protocol, protocol);
-            assert_eq!(bundle.raw_response.tool_calls[0].func_name, "no_reply");
+            let value = evaluation_value(&bundle);
+            assert_eq!(value["effects"][0]["name"], "no_reply");
             assert_eq!(
-                serde_json::from_str::<Value>(&bundle.raw_response.tool_calls[0].arguments)
-                    .unwrap(),
+                value["effects"][0]["arguments"],
                 json!({"mode":"wait","wait_secs":86_400})
             );
             assert!(records_from_authorized_event(&waiting, &scope)
@@ -3616,17 +3768,11 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
     let bundle: PersistedAnnotations =
         serde_json::from_value(waiting.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
     assert_eq!(bundle.scope, scope);
-    assert_eq!(bundle.raw_response.content, FINAL_TEXT);
-    assert_eq!(bundle.raw_response.tool_calls.len(), 1);
+    let original = evaluation_value(&bundle);
+    assert_eq!(original["body"], FINAL_TEXT);
+    assert!(original["effects"].as_array().unwrap().is_empty());
     assert_eq!(
-        bundle.raw_response.tool_calls[0].func_name,
-        "deliver_message"
-    );
-    let original: Value =
-        serde_json::from_str(&bundle.raw_response.tool_calls[0].arguments).unwrap();
-    assert!(original.get("content").is_none());
-    assert_eq!(
-        original["message"]["content"]["value"]["execution"]["result"],
+        original["annotations"]["execution"]["result"],
         "已确认合成系统为 Linux；后续任务保持排队"
     );
     let records = records_from_authorized_event(&waiting, &scope).unwrap();
@@ -3775,15 +3921,7 @@ async fn enabled_final_reply_persists_required_metadata_in_original_requests_and
             .records
             .iter()
             .any(|record| record.kind == AnnotationKind::Result));
-        assert!(
-            bundle.raw_response.content == FINAL_TEXT
-                || (bundle.raw_response.content.is_empty()
-                    && bundle
-                        .raw_response
-                        .tool_calls
-                        .iter()
-                        .any(|call| call.id == "synthetic-body-call"))
-        );
+        assert_eq!(evaluation_value(&bundle)["body"], FINAL_TEXT);
         let metadata = ScriptClient::annotations(&bundle.raw_response)
             .expect("separate typed metadata message");
         assert!(metadata["execution"]["title"].as_str().is_some());
@@ -3797,7 +3935,9 @@ async fn enabled_final_reply_persists_required_metadata_in_original_requests_and
                 .messages
                 .iter()
                 .any(|message| message.role == "system"
-                    && message.content.contains("Session IO response contract")));
+                    && message
+                        .content
+                        .contains("Session IO Evaluation output contract")));
             let schema = &request
                 .tools
                 .iter()
@@ -3853,27 +3993,27 @@ async fn enabled_final_reply_persists_required_metadata_in_original_requests_and
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn display_metadata_failure_preserves_exact_body_and_diagnostics_without_repair() {
+async fn invalid_display_metadata_is_rejected_without_destroying_an_independent_body_or_requesting_repair(
+) {
     for scenario in std::iter::once(Scenario::Plain)
         .chain((0..=6).map(Scenario::StrictBadFinal))
         .chain((0..=6).map(Scenario::ImplicitBadFinal))
     {
         let fixture = Fixture::new(scenario, Protocol::Off).await;
         let (root, reply) = fixture.submit(Some(Protocol::On)).await;
+        assert_eq!(reply.topic, "chat/reply", "{scenario:?}: {reply:?}");
         assert_eq!(reply.payload["text"], FINAL_TEXT);
-        let thread = fixture
-            .runtime
-            .session_thread_by_root("annotations-session", &root.id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Completed);
         assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 1);
         assert!(fixture.jobs().await.is_empty());
+        assert!(fixture.arguments.lock().unwrap().is_empty());
         let errors = fixture
             .events(&root.id, Some("runtime/response_protocol_error"))
             .await;
-        assert!(errors.is_empty(), "display metadata is not a delivery fuse");
+        assert_eq!(
+            errors.len(),
+            0,
+            "a metadata rejection is not a failed independent body"
+        );
         assert_eq!(
             fixture
                 .events(&root.id, Some("runtime/response_protocol_fused"))
@@ -3881,83 +4021,61 @@ async fn display_metadata_failure_preserves_exact_body_and_diagnostics_without_r
                 .len(),
             0
         );
-        let events = fixture.events(&root.id, Some("chat/assistant_call")).await;
-        assert_eq!(events.len(), 1);
+        let sources = fixture.events(&root.id, Some("chat/assistant_call")).await;
         let bundle: PersistedAnnotations =
-            serde_json::from_value(events[0].payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
+            serde_json::from_value(sources[0].payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
+        assert!(
+            bundle.records.is_empty(),
+            "never fabricate accepted metadata"
+        );
         assert!(
             !bundle.diagnostics.is_empty(),
-            "do not fabricate missing annotations"
+            "the exact rejected metadata remains diagnosable"
         );
-        let captured = bundle.raw_response;
-        if let Scenario::StrictBadFinal(case) | Scenario::ImplicitBadFinal(case) = scenario {
-            let metadata = ScriptClient::annotations(&captured);
-            assert_eq!(captured.content, FINAL_TEXT);
-            let args = json!({"annotations":metadata.clone().unwrap_or(Value::Null)});
-            assert!(args.get("content").is_none());
-            match case {
-                0 => assert!(metadata.is_none()),
-                1 => assert!(args["annotations"].is_null()),
-                2 => assert!(args["annotations"]["execution"].is_null()),
-                3 => assert!(args["annotations"]["execution"].get("title").is_none()),
-                4 => assert!(args["annotations"]["execution"]["title"]
-                    .as_str()
-                    .unwrap()
-                    .trim()
-                    .is_empty()),
-                5 => assert!(args["annotations"]["execution"]["result"].is_null()),
-                6 => assert_eq!(
-                    args["annotations"]["execution"]["result"]
-                        .as_str()
-                        .unwrap()
-                        .chars()
-                        .count(),
-                    513
-                ),
-                _ => unreachable!(),
-            }
-        } else {
-            assert_eq!(captured.content, FINAL_TEXT);
-            assert!(captured.tool_calls.is_empty());
-        }
+        assert_eq!(
+            fixture
+                .events(&root.id, Some("session/io_output"))
+                .await
+                .iter()
+                .filter(|event| event.payload["io_message"]["format"]["id"] == "morphz.evaluation")
+                .count(),
+            0,
+            "never register an invalid Evaluation as accepted"
+        );
     }
 }
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn infer_without_display_metadata_keeps_its_valid_typed_return_and_diagnostics() {
+async fn infer_preserves_the_business_value_but_never_masquerades_as_annotation_compliant() {
     for scenario in [Scenario::InferRoot(4), Scenario::TextInferRoot(4)] {
         let fixture = Fixture::new(scenario, Protocol::Off).await;
-        let (root, reply) = fixture.submit(Some(Protocol::On)).await;
+        let (_root, reply) = fixture.submit(Some(Protocol::On)).await;
         assert_eq!(reply.payload["text"], "合成校验完成");
-        let thread = fixture
-            .runtime
-            .session_thread_by_root("annotations-session", &root.id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(thread.lifecycle, morphz::memory::ThreadLifecycle::Completed);
         assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 1);
         assert!(fixture.arguments.lock().unwrap().is_empty());
-        let mut query = QueryFilter {
-            topic: Some("chat/assistant_call".into()),
-            after_sequence: Some(0),
-            ..Default::default()
-        };
-        query.context_id = Some("annotations-context".into());
-        let events = fixture.store.query(query).await.unwrap();
-        assert!(events.iter().any(|event| event
-            .payload
-            .get(BUNDLE_PAYLOAD_KEY)
-            .and_then(|bundle| bundle.get("diagnostics"))
-            .and_then(Value::as_array)
-            .is_some_and(|items| !items.is_empty())));
-        assert!(fixture
-            .events(&root.id, Some("runtime/response_protocol_error"))
+        assert!(fixture.jobs().await.is_empty());
+        let sources = fixture
+            .store
+            .query(QueryFilter {
+                session_id: Some("annotations-session".into()),
+                topics: vec!["chat/assistant_call".into()],
+                latest_k: Some(16),
+                ..Default::default()
+            })
             .await
-            .is_empty());
+            .unwrap();
+        let bundles = sources
+            .iter()
+            .filter_map(|event| event.payload.get(BUNDLE_PAYLOAD_KEY))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            bundles.len(),
+            1,
+            "metadata belongs to the real child Evaluation, not the parent root"
+        );
+        assert!(!bundles[0]["diagnostics"].as_array().unwrap().is_empty());
+        assert!(bundles[0]["records"].as_array().unwrap().is_empty());
     }
 }
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_new_infer_has_scoped_metadata_and_stable_tools_without_extra_requests() {
     let fixture = Fixture::new(Scenario::Infer, Protocol::Off).await;
@@ -3978,7 +4096,9 @@ async fn every_new_infer_has_scoped_metadata_and_stable_tools_without_extra_requ
             .messages
             .iter()
             .filter(|message| message.role == "system")
-            .any(|message| message.content.contains("Session IO response contract")));
+            .any(|message| message
+                .content
+                .contains("Session IO Evaluation output contract")));
     }
     assert_eq!(
         serde_json::to_vec(&captured[1].tools).unwrap(),

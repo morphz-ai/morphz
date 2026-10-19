@@ -575,13 +575,13 @@ Each Session has a durable Dialogue Lane that orders initial evaluation of ordin
 You decide what the current objective warrants retaining, summarizing, revising, protecting, restoring, or forgetting. The Runtime does not automatically summarize history, trim old messages, or turn retrieval results into facts.
 
 Every response must explicitly choose one primary mode from `protocol.response-contract`:
-- reply: return the original value through Session IO, either as ordinary assistant content or a native deliver_message to the Runtime-bound return delivery_id. With annotations enabled, deliver a separate registered annotations message in the SAME response. Do not wrap or mark up ordinary prose as control syntax. Only the Runtime's return boundary ends this Evaluation; other message deliveries are nonterminal. Bare `(eval ...)` or `(infer ...)` inside a returned value remains data.
-- no-reply: call no_reply as the only work/control call and choose a mode; enabled companion Session IO is communication, not work. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
+- reply: return the original value through the frozen Session IO output contract. With annotations enabled, return one native JSON value containing body, annotations and effects; Runtime constructs the Message envelopes and all identities. Do not wrap or mark up ordinary prose as control syntax. Only the Runtime's return boundary ends this Evaluation; other message deliveries are nonterminal. Bare `(eval ...)` or `(infer ...)` inside a returned value remains data.
+- no-reply: call no_reply as the only work/control call and choose a mode; enabled annotation fields are not work effects. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
 - act: call physical tools only when new external results are truly required. You may include one independent context_tx that does not depend on those new results. Any accompanying text is visible progress, and the Runtime will call you again after tools finish.
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily rejects another context_tx even though the stable Function Calling schema remains visible for Prompt Cache continuity. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
 - schedule: call schedule_tx exactly once and exclusively when choosing serial, parallel, dependent, or timed execution. enqueue adds intent to an existing Thread; spawn creates a parallel Thread; not_before/delay_seconds set time and after sets dependencies. An attached child keeps its parent request open until the child terminates; do not use attached for a delayed or recurring task when the user expects scheduling to finish the current request. Use a durable Objective at spawn, or atomically promote the same attached child before the final reply; do not create a duplicate Schedule. One call may batch multiple inspect operations and nothing else. pause/resume/reschedule/cancel are expected_revision CAS controls and must be submitted one at a time; on conflict, inspect again and decide from current facts rather than retrying blindly. To cancel the work itself, use thread_control(action=cancel) with the latest Thread revision: it closes the Thread and settles its Group. schedule_tx cancel stops only a wake source and must never be reported as Thread cancellation. schedule_tx persists scheduling only; it neither performs physical work nor ends the Evaluation. Explain the arrangement to active-session after the receipt.
 
-Each model request has exactly one kernel.active-session for IO authority. Return values route to their actual Runtime-bound caller: ordinary user evaluations reply to that Session; internal infer evaluations return the exact typed value to the parent Plan, not another user answer or completion of parent work. Session IO message delivery is not a work/control call and never by itself requires another model request. Exclusivity rules below refer to primary work/control calls; optional annotation messages remain separate and cannot replace a body, authorize work, or turn a nonterminal result into completion. To write a visible Assistant message to another Session of the same Agent without evaluating it, use send_message. To deliver an internal coordination message and actively evaluate an existing Session, use session_signal; it creates a distinct target DialogueTurn and neither ends nor changes the active-session of the current Evaluation. Neither tool may target the current Session. context_tx never substitutes for Session output. An empty response is not terminal and the Runtime returns a bounded protocol retry.
+Each model request has exactly one kernel.active-session for IO authority. Return values route to their actual Runtime-bound caller: ordinary user evaluations reply to that Session; internal infer evaluations return the exact typed value to the parent Plan, not another user answer or completion of parent work. Session IO message delivery is not a work/control call and never by itself requires another model request. Exclusivity rules below refer to primary work/control calls; enabled annotations remain fields of the single typed output and cannot replace a body, authorize work, or turn a nonterminal result into completion. To write a visible Assistant message to another Session of the same Agent without evaluating it, use send_message. To deliver an internal coordination message and actively evaluate an existing Session, use session_signal; it creates a distinct target DialogueTurn and neither ends nor changes the active-session of the current Evaluation. Neither tool may target the current Session. context_tx never substitutes for Session output. An empty response is not terminal and the Runtime returns a bounded protocol retry.
 
 Use context_tx for atomic Mind changes and follow `protocol.context-tx-contract` exactly. Use the current kernel version in every transaction. reason is a transaction-level item and never an argument of retire or unprotect. `revise` completely replaces a frame body rather than merging it, so restate every field that must remain. Create an explicit checkpoint before high-risk restructuring and use rollback with a reason if necessary.
 
@@ -1504,11 +1504,11 @@ const SAFETY_REFUSAL_RECOVERY_PROMPT: &str = r#"The previous physical model requ
 - The reduced Projection persists across Activations while the known failing historical evidence prefix is unchanged. A new message alone does not restore the full Inbox. After a context_tx retires at least one stale Observation from that prefix (normally after deriving its still-needed conclusion into Mind), Runtime submits one full-Context canary; only a valid canary clears recovery.
 - Address only the current root input. Do not repeat an older action merely because it appears in historical state, and do not reconstruct omitted sensitive details from memory.
 - If the current request is safe and answerable from Mind and the visible evidence, finish it normally. Use recall only for a narrow, necessary fact whose exact source is known.
-- Return one valid work/return boundary: the complete value using ordinary content or the equivalent native bound Session IO return, required work calls, or exactly one no_reply call. The independent enabled Session IO companion message is communication, not a second work/control boundary."#;
+- Return one valid work/return boundary: the complete value using ordinary content or the equivalent native bound Session IO return, required work calls, or exactly one no_reply call. Enabled annotations are fields of that same Evaluation value, not a second work/control boundary."#;
 
 const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"The Context is critical and this turn's ordinary context_tx allowance is exhausted. To prevent an impossible maintenance loop, this Evaluation is forced into final-reply. Return the original answer through Session IO with separate enabled annotations, honestly describing completed status, latest reliable verification, and remaining work; call no_reply as the only work/control call when no message is needed. For a bound active Objective, objective_update is the only additional control tool: submit completed first when evidence is sufficient to enter finalizing in this Activation; otherwise preserve the true state and let the Supervisor continue. Tool definitions remain visible, but Runtime phase admission still rejects unauthorized work."#;
 
-const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime will reject context_tx for this request to stop consecutive housekeeping, although its stable Function Calling schema remains visible for prompt-cache continuity. End the Evaluation with its complete bound return value, using ordinary content or the equivalent native Session IO return, and its enabled companion message; alternatively call no_reply as the only work/control call, or perform only physical actions truly required by the current task. The actual caller and declared business type do not change during cooldown. context_tx becomes callable again after a new user or tool observation."#;
+const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime will reject context_tx for this request to stop consecutive housekeeping, although its stable Function Calling schema remains visible for prompt-cache continuity. End the Evaluation with its complete bound return value, using ordinary content or the equivalent native Session IO return, and its enabled annotation fields; alternatively call no_reply as the only work/control call, or perform only physical actions truly required by the current task. The actual caller and declared business type do not change during cooldown. context_tx becomes callable again after a new user or tool observation."#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
 const DEFAULT_NO_REPLY_WAIT_SECS: u64 = 60;
 const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
@@ -1528,7 +1528,7 @@ const EMPTY_RESPONSE_DETAIL: &str =
 const OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR: &str = "Objective closure-review protocol error: the Runtime reports only that all direct child objectives are terminal; it does not decide whether the parent is complete. This evaluation cannot end with an implicit or native bound return or no_reply while leaving closure unresolved. Persist one decision: objective_update to completed, blocked, or an exact wait; perform real work; or create a necessary child objective. Independent enabled Session IO annotations do not resolve closure or create work authority.";
 const OBJECTIVE_FINALIZATION_PROMPT: &str = r#"The Runtime persisted your Objective completion decision but has not ended the Objective. You are still in the same Activation. Produce the user-facing final delivery from the complete evidence you just audited:
 - Return a complete normal reply using the active response encoding and its enabled annotations, without work tool calls. An implicit reply and an offered explicit reply are equivalent. Do not shorten or omit the final report because you explained parts earlier.
-- If there is truly nothing to send, call no_reply(mode=silent) as the only work/control call; enabled companion Session IO is not work.
+- If there is truly nothing to send, call no_reply(mode=silent) as the only work/control call; enabled annotation fields are not work.
 - After the final response commits, the Runtime atomically completes the Objective, Activation, Thread, and ThreadOutcome. Until then, the Objective remains active and its lease continues."#;
 const REASONING_ONLY_RESPONSE_REASON: &str =
     "the model returned only a reasoning summary without ordinary text, tool calls, or no_reply";
@@ -2791,7 +2791,7 @@ impl TerminalDecision {
 fn no_reply_tool_definition() -> crate::llm::ToolDefinition {
     crate::llm::ToolDefinition {
         name: NO_REPLY_TOOL_NAME.to_string(),
-        description: format!("Send no message to the active Session and explicitly select why. mode=silent intentionally ends without a message. mode=wait temporarily yields only because a Runtime-verifiable background task, schedule, open Thread Group owned by the current Thread generation, or pending event still exists; it always has a finite fallback wake. Set wait_secs to choose that upper bound, or omit it for the Runtime default of {DEFAULT_NO_REPLY_WAIT_SECS} seconds. A physical event wakes the Thread immediately and cancels the remaining delay. The Runtime validates wait; if the event already completed or failed, process the latest result and reply or continue instead. no_reply neither completes an Objective nor cancels background work. It must be the only work/control call and cannot accompany a body; a separate enabled Session IO annotations message is not work and may accompany it."),
+        description: format!("Send no message to the active Session and explicitly select why. mode=silent intentionally ends without a message. mode=wait temporarily yields only because a Runtime-verifiable background task, schedule, open Thread Group owned by the current Thread generation, or pending event still exists; it always has a finite fallback wake. Set wait_secs to choose that upper bound, or omit it for the Runtime default of {DEFAULT_NO_REPLY_WAIT_SECS} seconds. A physical event wakes the Thread immediately and cancels the remaining delay. The Runtime validates wait; if the event already completed or failed, process the latest result and reply or continue instead. no_reply neither completes an Objective nor cancels background work. It must be the only work/control call and cannot accompany a body; enabled annotations remain fields of the same Evaluation value, not another effect."),
         parameters: json!({
             "type": "object",
             "properties": {
@@ -3693,7 +3693,7 @@ async fn persist_model_public_output(
         (
             accumulator.public_text[..end].to_string(),
             first_visible_at,
-            accumulator.complete && !force_incomplete,
+            accumulator.complete && accumulator.failure.is_none() && !force_incomplete,
             end < accumulator.public_text.len(),
         )
     };
@@ -3712,8 +3712,12 @@ async fn persist_model_public_output(
     } else {
         "model_public_output"
     };
+    let publication = route
+        .iter()
+        .find_map(|(key, value)| (key == "publication_key").then(|| value.as_str()).flatten())
+        .unwrap_or(attempt_id);
     let event = Event::new(
-        format!("{output_kind}_{attempt_id}"),
+        format!("{output_kind}_{publication}"),
         "Model-Provider".to_string(),
         "runtime_control".to_string(),
         format!("runtime/{output_kind}"),
@@ -3867,7 +3871,7 @@ fn reasoning_continuation_prompt(summaries: &[String], has_provider_continuation
         format!("<previous_reasoning>\n{reasoning}\n</previous_reasoning>")
     };
     format!(
-        "The previous physical model request produced reasoning progress but no committable content or tool calls. The Runtime restored the available reasoning state in order; it is neither a user message nor assistant content already sent to the user. Continue from that progress without repeating the analysis from the beginning. After reasoning is complete, produce one valid work/return boundary: return non-empty final content using the active response format and its enabled annotation contract, execute the required work tool calls, or call no_reply as the only work/control call when no message is genuinely needed. Enabled companion Session IO is communication, not another work boundary.\n\n{prior_progress}"
+        "The previous physical model request produced reasoning progress but no committable content or tool calls. The Runtime restored the available reasoning state in order; it is neither a user message nor assistant content already sent to the user. Continue from that progress without repeating the analysis from the beginning. After reasoning is complete, produce one valid work/return boundary: return non-empty final content using the active response format and its enabled annotation contract, execute the required work tool calls, or call no_reply as the only work/control call when no message is genuinely needed. Enabled annotation fields are not another work boundary.\n\n{prior_progress}"
     )
 }
 
@@ -3983,7 +3987,7 @@ fn append_response_protocol_correction_input(
 }
 
 fn interrupted_text_continuation_prompt() -> &'static str {
-    "The previous assistant content was only partially transmitted when the Provider stream was interrupted. The Runtime preserved that fragment and supplied it as the immediately preceding assistant message. Continue the same response from the interruption point without restarting or repeating content already provided. Return only the remaining body in the assistant text channel; Runtime assembles it with the saved prefix. The enabled independent Session IO annotations message still accompanies this response and is not part of that body suffix."
+    "The previous assistant content was only partially transmitted when the Provider stream was interrupted. The Runtime preserved that fragment and supplied it as the immediately preceding assistant message. Continue the same response from the interruption point without restarting or repeating content already provided. Return only the remaining body when ordinary output is admitted; Runtime assembles it with the saved prefix. If the admitted output is ordinary text, return that body suffix normally. A structured output must instead return a complete schema-bound Evaluation value; annotations stay in their own fields, never in the body suffix."
 }
 
 impl Orchestrator {
@@ -10453,6 +10457,43 @@ impl Orchestrator {
         }
     }
 
+    /// A result for a Session IO effect is an actual Runtime observation, not
+    /// a response to a Provider-native function call that never occurred.
+    fn session_io_result_message(&self, call: &crate::llm::ToolCall, output: &Event) -> Message {
+        let bounded = self.standard_tool_result_message(call, output);
+        let data = crate::session_io::Data::parse(
+            bounded.content.as_bytes(),
+            &crate::session_io::Limits::default(),
+        )
+        .expect("Runtime's bounded result is JSON");
+        let registry = crate::session_io::Registry::default();
+        let format = registry
+            .resolve(
+                &crate::session_io::Format::new("morphz.data", "1"),
+                "json",
+                "registered",
+            )
+            .expect("built-in observation carrier");
+        let message = crate::session_io::Message {
+            format: format.format.format(),
+            validation: "registered".into(),
+            content: crate::session_io::Content::Json { value: data },
+        };
+        Message {
+            role: "user".into(),
+            content: crate::session_io::projection::render(
+                &message,
+                &output.id,
+                Some(&format),
+                crate::session_io::Limits::default().max_projection_bytes,
+            )
+            .to_string(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        }
+    }
+
     async fn parent_session_for(
         &self,
         context_id: &str,
@@ -10774,6 +10815,126 @@ impl Orchestrator {
         }
     }
 
+    /// Only a root Harness whose deterministic continuation returns this
+    /// unchanged infer leaf can expose it as a provisional public reply.
+    /// Ordinary eval tools, future work, nested infer and guessed field names
+    /// have no such authority. The physical model identity remains the child.
+    async fn projected_reply_stream(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        route: Option<&ActivationRoute>,
+        physical_route: &[(String, serde_json::Value)],
+    ) -> Result<
+        Option<(
+            crate::session_io::response_stream::ReplyProjector,
+            Vec<(String, serde_json::Value)>,
+        )>,
+        DynError,
+    > {
+        let Some(source) = route.and_then(|route| route.inference_source.as_ref()) else {
+            return Ok(None);
+        };
+        let Some(plan_id) = source["plan_execution_id"].as_str() else {
+            return Ok(None);
+        };
+        let Some(store) = self.plan_store.as_ref() else {
+            return Ok(None);
+        };
+        let Some(plan) = store.get_plan_execution(plan_id).await? else {
+            return Ok(None);
+        };
+        if plan.context_id != context_id || plan.session_id != session_id {
+            return Ok(None);
+        }
+        let Some(parent) = self.activation_route(&plan.activation_id) else {
+            return Ok(None);
+        };
+        if parent.internal_child_handoff || parent.return_binding.format.id != "morphz.chat" {
+            return Ok(None);
+        }
+        let Some(thread) = store.get_thread(&parent.thread_id).await? else {
+            return Ok(None);
+        };
+        if thread.generation != parent.thread_generation
+            || thread.lifecycle != crate::memory::ThreadLifecycle::Open
+        {
+            return Ok(None);
+        }
+        if thread.kind == crate::memory::ThreadKind::Execution {
+            let Some(activation) = store.get_thread_activation(&parent.activation_id).await? else {
+                return Ok(None);
+            };
+            let primary = thread.supervision.supervisor_kind
+                == crate::memory::ThreadSupervisorKind::Objective
+                && thread.supervision.origin_evaluation_id.is_none();
+            if !primary
+                && !self
+                    .execution_result_is_interactive(&thread, &activation)
+                    .await?
+            {
+                return Ok(None);
+            }
+        }
+        let evaluation_id = plan
+            .objective_evaluation_id
+            .as_deref()
+            .unwrap_or(&parent.root_turn_id);
+        let Some(binding) =
+            load_evaluation_harness_binding(self.store.as_ref(), evaluation_id).await?
+        else {
+            return Ok(None);
+        };
+        if stable_harness_entry_call_id(&binding, evaluation_id) != plan.tool_call_id {
+            return Ok(None);
+        }
+        let machine: crate::sexpr_eval::PlanMachine = serde_json::from_value(plan.state_json)?;
+        if !matches!(machine.pending_effect(), Some(crate::sexpr_eval::PlanEffect::Infer { sequence, .. }) if Some(*sequence) == source["effect_sequence"].as_u64())
+        {
+            return Ok(None);
+        }
+        let proofs = machine.reply_projections();
+        if proofs.is_empty() {
+            return Ok(None);
+        }
+        let mut public_route = Vec::new();
+        self.append_activation_route(&parent.activation_id, &mut public_route);
+        for key in [
+            "model_attempt_id",
+            "model_binding",
+            "effective_reasoning_effort",
+        ] {
+            if let Some(pair) = physical_route.iter().find(|(name, _)| name == key) {
+                public_route.push(pair.clone());
+            }
+        }
+        let Some(model_attempt) = physical_route.iter().find_map(|(name, value)| {
+            (name == "model_attempt_id")
+                .then(|| value.as_str())
+                .flatten()
+        }) else {
+            return Ok(None);
+        };
+        public_route.push((
+            "publication_key".into(),
+            json!(format!("infer_reply_{model_attempt}")),
+        ));
+        public_route.push((
+            "result_source".into(),
+            json!({
+                "plan_execution_id": plan_id,
+                "effect_sequence": source["effect_sequence"],
+            }),
+        ));
+        Ok(Some((
+            crate::session_io::response_stream::ReplyProjector::new(
+                proofs,
+                route.is_some_and(|route| route.return_binding.output.is_some()),
+            ),
+            public_route,
+        )))
+    }
+
     async fn request_model_completion_with_policy(
         &self,
         session_id: &str,
@@ -11055,7 +11216,27 @@ impl Orchestrator {
                     !response_annotations.is_off(),
                 )
             });
+        let output_encoding = trace_return_binding
+            .output
+            .as_ref()
+            .map(|_| crate::llm::ModelOutputEncoding::JsonObject);
+        let projected = self
+            .projected_reply_stream(
+                &stream_context_id,
+                session_id,
+                trace_route.as_ref(),
+                &stream_route,
+            )
+            .await
+            .map_err(ModelCompletionError::internal)?;
+        let projected_accumulator =
+            Arc::new(Mutex::new(ModelReasoningSummaryAccumulator::default()));
+        let projected_route = projected.as_ref().map(|(_, route)| route.clone());
+        let forward_projected_accumulator = Arc::clone(&projected_accumulator);
         let stream_forwarder = tokio::spawn(async move {
+            let mut projected = projected;
+            let mut projected_started = false;
+            let mut projected_sequence = 0u64;
             let mut normalizer = crate::session_io::response_stream::ModelStreamNormalizer::new(
                 trace_return_binding,
             );
@@ -11068,6 +11249,60 @@ impl Orchestrator {
             let mut provider_started_recorded = false;
             let mut first_output_recorded = false;
             while let Some(stream_event) = stream_rx.recv().await {
+                if let (
+                    Some((projector, route)),
+                    crate::llm::ModelStreamEvent::TextDelta { text },
+                ) = (&mut projected, &stream_event)
+                {
+                    match projector.push(text) {
+                        Ok(text) if !text.is_empty() => {
+                            let now = Utc::now();
+                            let proof = projector.proof().expect("projection selected");
+                            if let Some((_, source)) =
+                                route.iter_mut().find(|(name, _)| name == "result_source")
+                            {
+                                source["path"] = json!(proof.path);
+                            }
+                            let mut events = Vec::new();
+                            if !projected_started {
+                                events.push(crate::llm::ModelStreamEvent::Started);
+                                projected_started = true;
+                            }
+                            events.push(crate::llm::ModelStreamEvent::TextDelta {
+                                text: text.clone(),
+                            });
+                            {
+                                let mut accumulator = forward_projected_accumulator.lock().await;
+                                accumulator.public_text_started_at.get_or_insert(now);
+                                accumulator.public_text.push_str(&text);
+                            }
+                            for stream in events {
+                                projected_sequence += 1;
+                                let mut payload = vec![
+                                    ("context_id".into(), json!(forward_context_id)),
+                                    ("session_id".into(), json!(forward_session_id)),
+                                    ("attempt_id".into(), json!(forward_attempt_id)),
+                                    ("stream".into(), json!(stream)),
+                                ];
+                                payload.extend(route.clone());
+                                let mut event = Event::new(
+                                    format!("projected_stream_{forward_attempt_id}_{projected_sequence}"),
+                                    "Runtime".into(),
+                                    "runtime_ephemeral".into(),
+                                    "runtime/model_stream".into(),
+                                    payload.into_iter().collect(),
+                                );
+                                event.timestamp = now;
+                                forward_bus.publish_ephemeral(event).await?;
+                            }
+                        }
+                        Err(error) => {
+                            forward_projected_accumulator.lock().await.failure =
+                                Some(error.to_string());
+                        }
+                        _ => {}
+                    }
+                }
                 // Opaque Provider state remains in the Attempt; reply JSON and
                 // annotation metadata never enter public draft persistence.
                 for stream_event in normalizer.push(stream_event) {
@@ -11202,6 +11437,7 @@ impl Orchestrator {
                             );
                         }
                         crate::llm::ModelStreamEvent::Completed => {
+                            forward_projected_accumulator.lock().await.complete = true;
                             forward_reasoning_summary.lock().await.complete = true;
                             if let Err(error) = persist_model_attempt_state(
                                 &forward_bus,
@@ -11250,6 +11486,8 @@ impl Orchestrator {
                             }
                         }
                         crate::llm::ModelStreamEvent::Failed { message } => {
+                            forward_projected_accumulator.lock().await.failure =
+                                Some(message.clone());
                             forward_reasoning_summary.lock().await.failure = Some(message.clone());
                             forward_observability.record_operation(
                                 "provider",
@@ -11293,6 +11531,18 @@ impl Orchestrator {
                         tracing::debug!(event_code = "orchestrator.model_stream.ephemeral_event_publish_failed", %error, "Failed to publish an ephemeral model-stream Event");
                     }
                 }
+            }
+            if let Some((_, route)) = projected.as_ref() {
+                persist_model_public_output(
+                    &forward_bus,
+                    &forward_context_id,
+                    &forward_session_id,
+                    &forward_attempt_id,
+                    route,
+                    &forward_projected_accumulator,
+                    false,
+                )
+                .await?;
             }
             persist_model_public_output(
                 &forward_bus,
@@ -11338,6 +11588,7 @@ impl Orchestrator {
                 stream_tx,
                 crate::llm::ModelRequestOptions {
                     reasoning_effort: Some(request_reasoning_effort),
+                    output_encoding,
                 },
             );
             if let Some((deadline, seconds)) = model_hard_deadline {
@@ -11350,6 +11601,19 @@ impl Orchestrator {
                         );
                         stream_forwarder.abort();
                         let _ = stream_forwarder.await;
+                        if let Some(route) = projected_route.as_ref() {
+                            persist_model_public_output(
+                                &stream_bus,
+                                &stream_context_id,
+                                &stream_session_id,
+                                &stream_attempt_id,
+                                route,
+                                &projected_accumulator,
+                                true,
+                            )
+                            .await
+                            .map_err(ModelCompletionError::persistence)?;
+                        }
                         persist_model_public_output(
                             &stream_bus,
                             &stream_context_id,
@@ -11437,6 +11701,7 @@ impl Orchestrator {
                                 stream_tx,
                                 crate::llm::ModelRequestOptions {
                                     reasoning_effort: Some(request_reasoning_effort),
+                                    output_encoding,
                                 },
                             ))
                         });
@@ -11454,6 +11719,19 @@ impl Orchestrator {
                         );
                         stream_forwarder.abort();
                         let _ = stream_forwarder.await;
+                        if let Some(route) = projected_route.as_ref() {
+                            persist_model_public_output(
+                                &stream_bus,
+                                &stream_context_id,
+                                &stream_session_id,
+                                &stream_attempt_id,
+                                route,
+                                &projected_accumulator,
+                                true,
+                            )
+                            .await
+                            .map_err(ModelCompletionError::persistence)?;
+                        }
                         persist_model_public_output(
                             &stream_bus,
                             &stream_context_id,
@@ -13052,29 +13330,81 @@ impl Orchestrator {
         } else {
             Vec::new()
         };
+        let mut return_binding = crate::session_io::response::ReturnBinding::new(
+            &thread.id,
+            thread.generation,
+            &activation.id,
+            !thread.response_annotations.is_off(),
+        )
+        .with_formats(
+            &root_event
+                .as_ref()
+                .and_then(|event| event.payload.get("session_io"))
+                .and_then(|io| io.get("binding"))
+                .and_then(|binding| binding.get("accept_formats"))
+                .and_then(|formats| {
+                    serde_json::from_value::<Vec<crate::session_io::FormatBinding>>(formats.clone())
+                        .ok()
+                })
+                .unwrap_or_default(),
+        );
+        if thread.executor_kind == "plan_infer" {
+            let root = root_event.as_ref().ok_or("infer has no actual request")?;
+            let plan_id = root
+                .payload
+                .get("plan_execution_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("infer request has no parent Plan binding")?;
+            let plan = self
+                .plan_store
+                .as_ref()
+                .ok_or("infer requires PlanStore")?
+                .get_plan_execution(plan_id)
+                .await?
+                .ok_or("infer parent Plan disappeared")?;
+            if plan.context_id != activation.context_id || plan.session_id != session_id {
+                return Err("infer caller format has a foreign Plan route".into());
+            }
+            let machine: crate::sexpr_eval::PlanMachine = serde_json::from_value(plan.state_json)?;
+            let Some(crate::sexpr_eval::PlanEffect::Infer {
+                sequence, result, ..
+            }) = machine.pending_effect()
+            else {
+                return Err("infer caller has no pending typed value".into());
+            };
+            if Some(*sequence)
+                != root
+                    .payload
+                    .get("plan_effect_sequence")
+                    .and_then(serde_json::Value::as_u64)
+            {
+                return Err("infer caller format belongs to another effect".into());
+            }
+            if !matches!(
+                result,
+                crate::sexpr_eval::InferResultKind::Yao {
+                    ty: crate::yao::Type::Program { .. },
+                    ..
+                }
+            ) {
+                // The model supplies a native business value. Runtime performs
+                // the deterministic JSON transport encoding for the existing
+                // Yao decoder, including String quoting and null/Bool values.
+                return_binding.format = crate::session_io::OutputFormat {
+                    id: "morphz.data".into(),
+                    version: "1".into(),
+                    encoding: "json".into(),
+                    schema_hash: None,
+                    contract_hash: None,
+                };
+            } else {
+                return_binding.format.encoding = "utf8".into();
+            }
+        }
         self.activation_routes.insert(
             attempt_id.clone(),
             ActivationRoute {
-                return_binding: crate::session_io::response::ReturnBinding::new(
-                    &thread.id,
-                    thread.generation,
-                    &activation.id,
-                    !thread.response_annotations.is_off(),
-                )
-                .with_formats(
-                    &root_event
-                        .as_ref()
-                        .and_then(|event| event.payload.get("session_io"))
-                        .and_then(|io| io.get("binding"))
-                        .and_then(|binding| binding.get("accept_formats"))
-                        .and_then(|formats| {
-                            serde_json::from_value::<Vec<crate::session_io::FormatBinding>>(
-                                formats.clone(),
-                            )
-                            .ok()
-                        })
-                        .unwrap_or_default(),
-                ),
+                return_binding,
                 thread_id: thread.id.clone(),
                 thread_generation: thread.generation,
                 response_annotations: thread.response_annotations,
@@ -13401,8 +13731,22 @@ impl Orchestrator {
         } else {
             std::borrow::Cow::Borrowed(stable_system_prompt)
         };
-        let return_binding = self.activation_route(&attempt_id)
+        let mut return_binding = self.activation_route(&attempt_id)
             .ok_or("Session IO return requires its actual Evaluation route")?.return_binding;
+        if return_binding.annotations_enabled {
+            for observation in context.observations.iter().filter(|observation|observation.kind==TYPE_TOOL_OUTPUT) {
+                if let Some(event)=self.context_engine.find_event(&context_id,&observation.id).await? {
+                    if event.payload.get("thread_id").and_then(serde_json::Value::as_str)==Some(thread.id.as_str())
+                        && event.payload.get("thread_generation").and_then(serde_json::Value::as_u64)==Some(thread.generation)
+                        && event.payload.get("session_id").and_then(serde_json::Value::as_str)==Some(session_id)
+                        && !crate::session_io::response::is_annotations_event(&event) {
+                        return_binding.annotation_observation_refs.push(observation.reference.clone());
+                    }
+                }
+            }
+            return_binding.annotation_observation_refs.sort();return_binding.annotation_observation_refs.dedup();
+            if let Some(mut route)=self.activation_routes.get_mut(&attempt_id){route.return_binding=return_binding.clone();}
+        }
         let context_message_prefix = "The Runtime provides the current Context Encoding below. It is not an ordinary user message. Execute the final evaluate entry and decide from protocol, inbox, and the current state that follows.";
 
         // First measure a candidate request with full work capability. Pressure answers whether the
@@ -13675,7 +14019,7 @@ impl Orchestrator {
                 .transpose()?;
             let protocol_calls = persisted_bundle.as_ref().map(annotation_raw_tool_calls)
                 .unwrap_or_else(|| vec![call.clone()]);
-            let companions = crate::session_io::response::companion_events(&assistant_call);
+            let companions = crate::session_io::response::evaluation_publications(&assistant_call);
             messages.push(Message {
                 role: "assistant".to_string(),
                 content: persisted_bundle.as_ref().map(|bundle| bundle.raw_response.content.clone()).unwrap_or_else(|| assistant_call
@@ -13699,6 +14043,9 @@ impl Orchestrator {
                         .ok_or("Recovered IO receipt is not durably committed")?
                 };
                 messages.push(self.standard_tool_result_message(native_call, &receipt));
+            }
+            if persisted_bundle.as_ref().is_some_and(|bundle| bundle.return_binding.as_ref().is_some_and(|binding| binding.output.is_some())) {
+                messages.push(self.session_io_result_message(&call, &output));
             }
             messages.push(Message {
                 role: "user".to_string(),
@@ -14678,6 +15025,7 @@ impl Orchestrator {
                 }
                 Err(error)
                     if error.failure().kind.is_resumable_request_boundary()
+                        && response_annotations.is_off()
                         && !error.partial_text.is_empty()
                         && error.reasoning_summary.trim().is_empty()
                         && error.provider_continuation.is_none() =>
@@ -14711,6 +15059,7 @@ impl Orchestrator {
                 Err(error)
                     if (!error.reasoning_summary.trim().is_empty()
                         || error.provider_continuation.is_some())
+                        && (error.partial_text.is_empty() || response_annotations.is_off())
                         && (error.failure().kind.is_resumable_request_boundary()
                             || error.failure().kind == ModelFailureKind::EmptyResponse) =>
                 {
@@ -15076,6 +15425,11 @@ impl Orchestrator {
                         protocol_messages.push(self.standard_tool_result_message(call,receipt));
                         visible_routed_input_ids.insert(receipt.id.clone());
                         visible_routed_input_sequence_upper_bound=visible_routed_input_sequence_upper_bound.max(receipt.sequence.unwrap_or(0));
+                    }
+                    if annotation_bundle.as_ref().is_some_and(|bundle| bundle.return_binding.as_ref().is_some_and(|binding| binding.output.is_some())) {
+                        protocol_messages.push(self.session_io_result_message(&protocol_call, output));
+                        visible_routed_input_ids.insert(output.id.clone());
+                        visible_routed_input_sequence_upper_bound=visible_routed_input_sequence_upper_bound.max(output.sequence.unwrap_or(0));
                     }
                     let completion_committed = output
                         .payload
@@ -16744,7 +17098,7 @@ impl Orchestrator {
                 ("result_event_ids".to_string(), json!(result_event_ids)),
                 (
                     "text".to_string(),
-                    json!("One or more Threads completed. Deliver only results shown as delivery=pending/deferred in this completion snapshot under kernel.thread-scheduler, combining them with the latest concurrent state into one clear, non-duplicative message. Results completed after this evaluation began belong to the next Delivery and must not be claimed early. Call no_reply as the only work/control call only when no notification is genuinely needed; enabled companion Session IO is communication. Never repeat results already marked delivered."),
+                    json!("One or more Threads completed. Deliver only results shown as delivery=pending/deferred in this completion snapshot under kernel.thread-scheduler, combining them with the latest concurrent state into one clear, non-duplicative message. Results completed after this evaluation began belong to the next Delivery and must not be claimed early. Call no_reply as the only work/control call only when no notification is genuinely needed; enabled annotation fields are not work effects. Never repeat results already marked delivered."),
                 ),
             ]
             .into_iter()
@@ -16984,16 +17338,45 @@ impl Orchestrator {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            let mut message = Message::chat(text.clone());
-            if let Some(binding) =
-                input.binding.accept_formats.iter().find(|format| {
-                    format.format.id == "morphz.chat" && format.format.version == "1"
-                })
-            {
-                if binding.format.encoding == "utf8" {
+            let selected_format = crate::session_io::response::ReturnBinding::new("", 0, "", false)
+                .with_formats(&input.binding.accept_formats)
+                .format;
+            let message = if selected_format.id == "morphz.chat" {
+                let mut message = Message::chat(text.clone());
+                if selected_format.encoding == "utf8" {
                     message.content = Content::Utf8 { value: text };
                 }
-            }
+                message
+            } else {
+                let content = match selected_format.encoding.as_str() {
+                    "utf8" => Ok(Content::Utf8 { value: text }),
+                    "json" => {
+                        crate::session_io::Data::parse(text.as_bytes(), &input.binding.limits)
+                            .map(|value| Content::Json { value })
+                    }
+                    _ => Err(crate::session_io::IoError::new(
+                        "invalid_delivery_contract",
+                        "Resource outputs require the authorized delivery path",
+                    )),
+                };
+                match content {
+                    Ok(content) => Message {
+                        format: selected_format.format(),
+                        validation: "registered".into(),
+                        content,
+                    },
+                    Err(failure) => {
+                        event.topic = "session/io_state".into();
+                        event
+                            .payload
+                            .insert("terminal_kind".into(), json!("failed"));
+                        event
+                            .payload
+                            .insert("io_delivery_error".into(), json!(failure));
+                        return Ok(());
+                    }
+                }
+            };
             match crate::session_io::output::validate_output(&input, &message, &Limits::default()) {
                 Ok(()) => {
                     outputs.push(message.clone());
@@ -20321,15 +20704,19 @@ impl Orchestrator {
                 })
                 .collect::<Vec<_>>()
         });
-        continuation_tool_calls.retain(|call| {
-            continuation_ids.contains(call.id.as_str())
-                || call.function.name == "deliver_message"
-                    && crate::session_io::response::is_annotation_call_arguments(
-                        &call.function.arguments,
-                    )
-        });
+        continuation_tool_calls.retain(|call| continuation_ids.contains(call.id.as_str()));
         drop(continuation_ids);
-        if context_tx_batch_error.is_some() {
+        if context_tx_batch_error.is_some()
+            && !options
+                .response_annotation_bundle
+                .as_ref()
+                .is_some_and(|bundle| {
+                    bundle
+                        .return_binding
+                        .as_ref()
+                        .is_some_and(|binding| binding.output.is_some())
+                })
+        {
             continuation_tool_calls.push(crate::llm::ToolCall {
                 id: "context_tx_batch_rejected".to_string(),
                 r#type: "function".to_string(),
@@ -21480,10 +21867,11 @@ impl Orchestrator {
                 .into_iter()
                 .next()
             {
-                let event_ids: Vec<_> = crate::session_io::response::companion_events(&source)
-                    .into_iter()
-                    .map(|event| event.id)
-                    .collect();
+                let event_ids: Vec<_> =
+                    crate::session_io::response::evaluation_publications(&source)
+                        .into_iter()
+                        .map(|event| event.id)
+                        .collect();
                 if !event_ids.is_empty() {
                     outcome.outputs.extend(
                         self.store
@@ -22184,6 +22572,35 @@ impl Orchestrator {
         if let Some(plan) = store.get_plan_execution(&plan_id).await? {
             let machine: crate::sexpr_eval::PlanMachine = serde_json::from_value(plan.state_json)?;
             if let Some(source) = machine.result_provenance() {
+                let infer_root = crate::plan_execution::deterministic_infer_request_id(
+                    &plan_id,
+                    source.effect_sequence,
+                )?;
+                if let Some(child) = store.get_thread_by_root(&infer_root).await? {
+                    if child.executor_kind != "plan_infer"
+                        || child.executor_id.as_deref() != Some(plan_id.as_str())
+                    {
+                        return Err("returned infer value has a foreign producer".into());
+                    }
+                    if let Some(event_id) = child.result_event_id.as_deref() {
+                        if let Some(event) = self
+                            .context_engine
+                            .find_event(&activation.context_id, event_id)
+                            .await?
+                        {
+                            if let Some(attempt) = event
+                                .payload
+                                .get("model_attempt_id")
+                                .and_then(serde_json::Value::as_str)
+                            {
+                                attributes.push((
+                                    "publication_key".into(),
+                                    json!(format!("infer_reply_{attempt}")),
+                                ));
+                            }
+                        }
+                    }
+                }
                 attributes.push((
                     "result_source".to_string(),
                     json!({
@@ -22464,6 +22881,13 @@ impl Orchestrator {
         if let ThreadMutation::Updated(updated) = &mutation {
             self.activation_admission.notify_durable_queue_change();
             if action == ThreadControlAction::Cancel {
+                // The Kernel commits this fact directly. Observe its exact
+                // persisted identity before cancelling futures, so late custom
+                // clients cannot resurrect a Session IO draft after cancellation.
+                let id = format!("thread_cancelled_{}_g{}", current.id, current.generation);
+                if let Some(event) = self.context_engine.find_event(context_id, &id).await? {
+                    self.bus.dispatch_persisted(event).await?;
+                }
                 self.cancel_thread_activations(&current, reason).await?;
             }
             // The caller may be the parent Thread executing this control as
@@ -27218,9 +27642,11 @@ mod tests {
             cognitive_sexpr_vm_system_prompt(),
             semantic_sexpr_vm_system_prompt(),
         ] {
-            assert!(prompt.contains("default return path is the ordinary assistant text channel"));
-            assert!(prompt.contains("Business-effect limits do not disable Session IO"));
-            assert!(prompt.contains("complete return value BEFORE the companion annotations call"));
+            assert!(prompt.contains(
+                "return the original value through the frozen Session IO output contract"
+            ));
+            assert!(prompt.contains("Business-tool restrictions, pure infer"));
+            assert!(prompt.contains("ONE native JSON object"));
         }
         let correction = super::response_protocol_correction_prompt("test", None, false);
         assert!(correction.contains("another work/control tool"));
@@ -27228,7 +27654,7 @@ mod tests {
         assert!(!correction.contains("ordinary text or another tool;"));
         let interrupted = super::interrupted_text_continuation_prompt();
         assert!(interrupted.contains("Runtime assembles it with the saved prefix"));
-        assert!(interrupted.contains("independent Session IO annotations"));
+        assert!(interrupted.contains("complete schema-bound Evaluation value"));
         for kernel in [
             crate::sexpr_vm_contract::ANNOTATED_KERNEL,
             crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL,
@@ -28183,7 +28609,7 @@ mod tests {
         for marker in [
             "(model-role",
             "sole Yao Language Card in Context Encoding",
-            "ordinary assistant content",
+            "frozen Session IO output contract",
             "no_reply",
             "runtime-contracts",
             "reality-contract-v1",

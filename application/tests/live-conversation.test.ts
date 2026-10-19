@@ -73,6 +73,70 @@ test("IO 完整草稿恢复不依赖 started，迟到开始与终态不会重置
   );
 });
 
+test("Runtime-proven parent draft keeps physical child identity and settles once in either replay order", () => {
+  const draft = sessionIoDraftSchema.parse({
+    type: "output.started",
+    output_id: "projected",
+    session_id: "s",
+    root_turn_id: "parent-root",
+    thread_id: "parent-thread",
+    activation_id: "parent",
+    model_attempt_id: "physical-child",
+    publication_key: "infer_reply_physical-child",
+    model_output_visibility: "public",
+    timestamp: "2026-10-19T12:00:00Z",
+    delta_seq: 3,
+    text: "确定的正文",
+    result_source: {
+      plan_execution_id: "plan",
+      effect_sequence: 2,
+      path: ["answer"],
+    },
+  });
+  for (const finalFirst of [false, true]) {
+    const p = projection();
+    const final = event("chat/reply", {
+      attempt_id: "parent",
+      publication_key: "infer_reply_physical-child",
+      activation_id: "parent",
+      root_turn_id: "parent-root",
+      text: "确定的正文",
+      result_source: draft.result_source,
+    });
+    if (finalFirst) p.consume(final);
+    p.consumeIoDraft(draft, draft.text);
+    if (!finalFirst) {
+      assert.equal(p.snapshot().length, 1);
+      assert.equal(p.snapshot()[0]!.modelAttemptId, "physical-child");
+      assert.equal(
+        p.snapshot()[0]!.publicationKey,
+        "infer_reply_physical-child",
+      );
+      assert.equal(p.snapshot()[0]!.resultSource?.path?.[0], "answer");
+      p.reconnect();
+      p.consumeIoDraft(draft, draft.text);
+      p.consume(final);
+    }
+    p.consume(
+      event("runtime/model_public_output", {
+        attempt_id: "physical-child",
+        model_attempt_id: "physical-child",
+        publication_key: "infer_reply_physical-child",
+        activation_id: "parent",
+        root_turn_id: "parent-root",
+        text: "late prefix",
+        first_visible_at: draft.timestamp,
+        complete: true,
+      }),
+    );
+    p.consumeIoDraft(draft, "late prefix");
+    assert.deepEqual(
+      p.snapshot().map((m) => m.text),
+      ["确定的正文"],
+    );
+  }
+});
+
 test("IO infer 草稿保持真实类型来源，已接纳值不被迟到快照覆盖", () => {
   const p = projection();
   const source = { plan_execution_id: "plan", effect_sequence: 1 };

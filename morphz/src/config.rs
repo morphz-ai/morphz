@@ -314,8 +314,9 @@ pub(crate) fn host_state_path(filename: &str) -> Option<PathBuf> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OrchestratorConfig {
-    /// Default for newly accepted ordinary executions only. Existing Threads
-    /// retain their frozen protocol; typed infer remains unwrapped.
+    /// Default for newly accepted executions. Existing Threads retain their
+    /// frozen setting; enabled infer uses the same Evaluation output schema
+    /// while preserving its complete declared business value.
     #[serde(skip_serializing_if = "crate::response_annotations::Protocol::is_off")]
     pub response_annotations: crate::response_annotations::Protocol,
     /// Maximum number of concurrent physical model-provider requests.
