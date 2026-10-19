@@ -18,7 +18,6 @@ export function ComposerReasoningControl({
   label = "本次输入推理强度",
   title,
   disabled = false,
-  automatic = false,
   invalid = false,
   onChange,
 }: {
@@ -29,7 +28,6 @@ export function ComposerReasoningControl({
   label?: string;
   title: string;
   disabled?: boolean;
-  automatic?: boolean;
   invalid?: boolean;
   onChange(value?: ReasoningEffort): void;
 }) {
@@ -45,9 +43,7 @@ export function ComposerReasoningControl({
     ? `${reasoningLabels[value!]} · 不支持`
     : value
       ? reasoningLabels[value]
-      : automatic && !stops.length
-        ? "模型自动"
-        : "默认";
+      : "default";
   const choose = (next: number) => {
     if (!disabled && stops.length)
       onChange(stops[Math.max(0, Math.min(stops.length - 1, next))]);

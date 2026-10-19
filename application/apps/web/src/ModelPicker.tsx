@@ -198,7 +198,6 @@ export function ModelPicker({
           label={reasoning.label}
           title={reasoningTitle}
           disabled={disabled || !catalog?.reasoning}
-          automatic={!!catalog?.reasoning}
           invalid={invalidEffort}
         />
       )}
@@ -228,9 +227,7 @@ export function ModelPicker({
               )
             }
           >
-            <option value="">
-              {levels.length === 0 && catalog?.reasoning ? "模型自动" : "默认"}
-            </option>
+            <option value="">default</option>
             {invalidEffort && (
               <option value={reasoning.value}>
                 {reasoningLabels[reasoning.value!]} · 不支持

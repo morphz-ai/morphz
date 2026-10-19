@@ -830,12 +830,12 @@
   "reasoning": {
     "label": "推理",
     "title": "设置当前会话后续求值的推理强度；可选档位由当前物理模型的原生能力决定",
-    "defaultUnknown": "服务默认",
-    "off": "关闭",
-    "low": "低",
-    "medium": "中",
-    "high": "高",
-    "max": "最高"
+    "defaultUnknown": "default",
+    "off": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "max"
   },
   "permission": {
     "label": "权限预设",

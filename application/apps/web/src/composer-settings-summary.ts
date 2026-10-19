@@ -24,7 +24,7 @@ export function composerSettingsSummary({
     model: modelName,
     // Inheritance is a choice, not an explicit copy of the Runtime default.
     // Keep the trigger consistent with the rail even after catalog readback.
-    reasoning: reasoning ? reasoningLabels[reasoning] : "默认",
+    reasoning: reasoning ? reasoningLabels[reasoning] : "default",
     explicit: !!model || !!reasoning,
   };
 }

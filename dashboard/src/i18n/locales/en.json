@@ -830,12 +830,12 @@
   "reasoning": {
     "label": "Reasoning",
     "title": "Sets the reasoning effort for subsequent Evaluations in this Session; choices follow the current physical model's native capabilities.",
-    "defaultUnknown": "Provider default",
-    "off": "Off",
-    "low": "Low",
-    "medium": "Medium",
-    "high": "High",
-    "max": "Max"
+    "defaultUnknown": "default",
+    "off": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "max"
   },
   "permission": {
     "label": "Permission preset",

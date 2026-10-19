@@ -84,16 +84,16 @@ test("继承轻量仍显示默认：弹层、底栏、重开与刷新一致，�
   const summary = page.locator(
     ".composer-settings-trigger .composer-settings-effort",
   );
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "默认");
-  await expect(summary).toHaveText("默认");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "default");
+  await expect(summary).toHaveText("default");
   await page.keyboard.press("Escape");
-  await expect(summary).toHaveText("默认");
+  await expect(summary).toHaveText("default");
   await openComposerSettings(page);
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "默认");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "default");
   await chooseReasoning(f.slider, "low");
-  await expect(summary).toHaveText("轻量");
+  await expect(summary).toHaveText("low");
   await f.reset.click();
-  await expect(summary).toHaveText("默认");
+  await expect(summary).toHaveText("default");
   await expect(f.input).toHaveValue(f.draft);
   expect(f.writes).toEqual([]);
   await f.input.fill("");
@@ -102,8 +102,8 @@ test("继承轻量仍显示默认：弹层、底栏、重开与刷新一致，�
   await openComposerSettings(page);
   await expect(
     page.getByLabel("本次输入推理强度", { exact: true }),
-  ).toHaveAttribute("aria-valuetext", "默认");
-  await expect(summary).toHaveText("默认");
+  ).toHaveAttribute("aria-valuetext", "default");
+  await expect(summary).toHaveText("default");
   expect(f.writes).toEqual([]);
 });
 
@@ -124,9 +124,9 @@ test("默认不冒充标准：首档可鼠标选择、键盘离散调节并恢�
     "none,low,medium,high,max",
   );
   await expect(f.control).toHaveAttribute("data-state", "default");
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "默认");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "default");
   await expect(f.control.locator(".composer-reasoning-value")).toHaveText(
-    "默认",
+    "default",
   );
   await expect(
     f.control.locator(".composer-reasoning-rail"),
@@ -144,24 +144,24 @@ test("默认不冒充标准：首档可鼠标选择、键盘离散调节并恢�
   // Native range DOM value is already min while inherited. A real click on
   // that same first stop still has to become an explicit choice.
   await f.slider.click({ position: { x: 7, y: 12 } });
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "关闭");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "none");
   await expect(f.control).toHaveAttribute("data-state", "explicit");
   await expect(f.reset).toBeEnabled();
   await f.reset.click();
   await expect(f.control).toHaveAttribute("data-state", "default");
   await expect(f.slider).toBeFocused();
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "默认");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "default");
   await f.slider.focus();
   await f.slider.press("ArrowRight");
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "关闭");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "none");
   await f.slider.press("ArrowRight");
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "轻量");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "low");
   await f.slider.press("End");
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "最高");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "max");
   await f.slider.press("ArrowLeft");
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "深入");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "high");
   await f.slider.press("Home");
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "关闭");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "none");
   await f.reset.click();
   await expect(f.control).toHaveAttribute("data-state", "default");
   await expect(f.input).toHaveValue(f.draft);
@@ -278,7 +278,7 @@ test("档位按所选模型声明，不兼容选择保留且可恢复默认，�
     .getByLabel("本次输入模型", { exact: true })
     .selectOption("automatic");
   await expect(f.control).toHaveAttribute("data-state", "unsupported");
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "深入 · 不支持");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "high · 不支持");
   await expect(f.slider).toHaveAttribute("data-efforts", "");
   await expect(f.slider).toBeDisabled();
   await expect(f.control.getByRole("alert")).toHaveText("请重新选择推理强度");
@@ -286,7 +286,7 @@ test("档位按所选模型声明，不兼容选择保留且可恢复默认，�
   await expect(f.control).toHaveAttribute("data-state", "default");
   await expect(f.control).toBeFocused();
   await expect(f.control.locator(".composer-reasoning-value")).toHaveText(
-    "模型自动",
+    "default",
   );
   await expect(f.control.getByRole("alert")).toHaveCount(0);
   await f.settings
@@ -295,17 +295,17 @@ test("档位按所选模型声明，不兼容选择保留且可恢复默认，�
   await expect(f.slider).toBeEnabled();
   await expect(f.slider).toHaveAttribute("data-efforts", "medium");
   await f.slider.click({ position: { x: 7, y: 12 } });
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "标准");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "medium");
   models.options[2]!.supported_reasoning_efforts = ["max"];
   await page.evaluate(() =>
     window.dispatchEvent(new Event("morphz:models-changed")),
   );
   await expect(f.slider).toHaveAttribute("data-efforts", "max");
   await expect(f.control).toHaveAttribute("data-state", "unsupported");
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "标准 · 不支持");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "medium · 不支持");
   await f.slider.focus();
   await f.slider.press("Home");
-  await expect(f.slider).toHaveAttribute("aria-valuetext", "最高");
+  await expect(f.slider).toHaveAttribute("aria-valuetext", "max");
   await expect(f.input).toHaveValue(f.draft);
   expect(f.writes).toEqual([]);
 });
@@ -447,7 +447,7 @@ test("390px 与 200% 下居中强度与胶囊轨道不溢出，键盘焦点可�
     await expect(f.slider).toBeFocused();
     await expect(f.slider).toHaveCSS("outline-style", "solid");
     await f.slider.press("End");
-    await expect(f.slider).toHaveAttribute("aria-valuetext", "最高");
+    await expect(f.slider).toHaveAttribute("aria-valuetext", "max");
     await expect(f.settings).toBeVisible();
     await f.reset.click();
     await expect(f.input).toHaveValue(f.draft);

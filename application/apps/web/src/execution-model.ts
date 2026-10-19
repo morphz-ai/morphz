@@ -5,7 +5,7 @@ import {
 
 export function executionModelLabel(model?: ExecutionModel | null) {
   return model
-    ? `${model.model} · 思考：${model.reasoning_effort === null ? "模型默认" : reasoningLabels[model.reasoning_effort]}`
+    ? `${model.model} · 思考：${model.reasoning_effort === null ? "default" : reasoningLabels[model.reasoning_effort]}`
     : "模型信息未记录";
 }
 

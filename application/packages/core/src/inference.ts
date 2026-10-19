@@ -20,11 +20,11 @@ export const executionModelSchema = z.object({
 });
 export type ExecutionModel = z.infer<typeof executionModelSchema>;
 export const reasoningLabels: Record<ReasoningEffort, string> = {
-  none: "关闭",
-  low: "轻量",
-  medium: "标准",
-  high: "深入",
-  max: "最高",
+  none: "none",
+  low: "low",
+  medium: "medium",
+  high: "high",
+  max: "max",
 };
 export const modelOptionSchema = z.object({
   id: z.string(),

@@ -32,7 +32,7 @@ test("底栏使用真实物理模型；未指定强度始终显示默认，不�
     }),
     {
       model: "gpt-6.1-sol",
-      reasoning: "默认",
+      reasoning: "default",
       explicit: false,
     },
   );
@@ -46,7 +46,7 @@ test("模型默认为轻量也不把本次默认选择改为轻量", () => {
         reasoning: { current: "low", levels: ["low", "high"] },
       },
     }).reasoning,
-    "默认",
+    "default",
   );
 });
 
@@ -65,7 +65,7 @@ test("本次模型与推理选择优先于默认，省略推理才沿用默认",
     }),
     {
       model: "actual-one / actual-two",
-      reasoning: "轻量",
+      reasoning: "low",
       explicit: true,
     },
   );
@@ -74,17 +74,17 @@ test("本次模型与推理选择优先于默认，省略推理才沿用默认",
 test("未读取到能力时只保留已知模型，不编造推理档位或权限", () => {
   assert.deepEqual(composerSettingsSummary({ current: "known-model" }), {
     model: "known-model",
-    reasoning: "默认",
+    reasoning: "default",
     explicit: false,
   });
   assert.deepEqual(composerSettingsSummary({ model: "unconfirmed-route" }), {
     model: "unconfirmed-route",
-    reasoning: "默认",
+    reasoning: "default",
     explicit: true,
   });
   assert.deepEqual(composerSettingsSummary({}), {
     model: "默认模型",
-    reasoning: "默认",
+    reasoning: "default",
     explicit: false,
   });
 });
