@@ -316,14 +316,14 @@ class DiagnosticRunner(unittest.TestCase):
         self.assertIn('     res = write_to_fd (fd, content, strlen (content));', source)
         self.assertNotIn("\n-", source.split("+++ b/utils.c", 1)[1])
 
-    def test_workflow_restores_even_after_failure_and_uses_same_source_pair(self):
+    def test_workflow_checks_original_binary_even_after_failure(self):
         source = (runner.HERE / "workflow.yml").read_text()
-        self.assertIn("receive_api_counterfactual.py --execute", source)
-        self.assertIn("bwrap_diagnostic_runner.py --restore-only", source)
+        self.assertIn("system_bwrap_receiver.py --execute", source)
+        self.assertIn("system_bwrap_receiver.py --verify-only", source)
         self.assertIn("test_*.py", source)
         self.assertIn('bubblewrap=0.9.0-1ubuntu0.3', source)
-        restore = source.split("- name: Independently verify original binary restoration", 1)[1]
-        self.assertIn("if: always()", restore.split("- name:", 1)[0])
+        verify = source.split("- name: Independently verify the distribution binary remains unchanged", 1)[1]
+        self.assertIn("if: always()", verify.split("- name:", 1)[0])
         self.assertNotIn("continue-on-error:", source)
 
 

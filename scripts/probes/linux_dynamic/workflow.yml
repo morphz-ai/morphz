@@ -35,18 +35,18 @@ jobs:
       - name: Build fixed non-setuid entry with system parsers
         working-directory: scripts/probes/linux_dynamic
         run: cc -std=c11 -Wall -Wextra -Werror -O2 entry.c -o entry -ljson-c -lapparmor
-      - name: Compare fixed socket acknowledgement APIs without changing policy
+      - name: Verify recv acknowledgement with the original distribution Bubblewrap
         env:
           MORPHZ_ISOLATED_DYNAMIC_PROBE: "1"
         run: |
-          python3 -B scripts/probes/linux_dynamic/receive_api_counterfactual.py --execute \
+          python3 -B scripts/probes/linux_dynamic/system_bwrap_receiver.py --execute \
             --output "${{ runner.temp }}/morphz-dynamic-evidence"
-      - name: Independently verify original binary restoration
+      - name: Independently verify the distribution binary remains unchanged
         if: always()
         env:
           MORPHZ_ISOLATED_DYNAMIC_PROBE: "1"
         run: |
-          python3 -B scripts/probes/linux_dynamic/bwrap_diagnostic_runner.py --restore-only \
+          python3 -B scripts/probes/linux_dynamic/system_bwrap_receiver.py --verify-only \
             --output "${{ runner.temp }}/morphz-dynamic-evidence"
       - name: Preserve failures as well as successes
         if: always()
