@@ -40,7 +40,7 @@ FROZEN = {
     "entry.c": "83abd345c2626cabc8239be96ae98c5531078efcaf47729581322d88846ae6ca",
     "controller.py": "5d994988929da134997b1d335c93d29239b2b2de30b8fdaaef9ebbe76af3843f",
     "loader.py": "b5b419e91b67e17276051ab444c7963377d0207ac874f61dd86d7f9a060d372d",
-    "worker.py": "0d9a34ee7c17e3b8170759e82083526801c8af7b3a42a2b91c59b0547d21b814",
+    "worker.py": "960ee2b184ee1296b4ae23a98f24de01b7b61b03646334a9227bfd8ec9e26e59",
     "bwrap-ubuntu-map-diagnostic.patch":
         "3ce3d2bfe666aa57011bcfd323a15aebec18cdcb458947db53c0c87db567e03b",
 }

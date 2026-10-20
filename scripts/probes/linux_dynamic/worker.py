@@ -95,8 +95,13 @@ def inherited_fd_check(target, nonce):
     # closed directory FD can be mistaken for successful target absence.
     with os.scandir("/proc/self/fd") as entries:
         for entry in entries:
-            info = os.stat(entry.path)
-            row = {"fd": int(entry.name), "dev": info.st_dev,
+            if not entry.name.isdecimal():
+                raise RuntimeError("unexpected proc FD entry")
+            fd = int(entry.name)
+            # Inspect this already-open object, not the pathname reached by a
+            # proc magic link. Every metadata error still aborts the whole scan.
+            info = os.fstat(fd)
+            row = {"fd": fd, "dev": info.st_dev,
                    "ino": info.st_ino, "kind": stat.S_IFMT(info.st_mode)}
             rows.append(row)
             if (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)) == (

@@ -99,7 +99,7 @@ class InheritedObjectEvidence(unittest.TestCase):
             target = TARGET
             entry = SimpleNamespace(name=str(leaked.fileno()), path="mock-proc-entry")
             with patch.object(worker.os, "scandir", return_value=nullcontext([entry])), \
-                 patch.object(worker.os, "stat", return_value=info):
+                 patch.object(worker.os, "fstat", return_value=info):
                 result = worker.inherited_fd_check(target, NONCE)
             host.settimeout(1)
             self.assertEqual(host.recv(100), NONCE.encode())
@@ -117,7 +117,7 @@ class InheritedObjectEvidence(unittest.TestCase):
         peer = Mock()
         peer.sendall.side_effect = PermissionError(errno.EACCES, "denied")
         with patch.object(worker.os, "scandir", return_value=nullcontext([entry])), \
-             patch.object(worker.os, "stat", return_value=info), \
+             patch.object(worker.os, "fstat", return_value=info), \
              patch.object(worker.os, "dup", return_value=100), \
              patch.object(worker.socket, "socket", return_value=nullcontext(peer)):
             result = worker.inherited_fd_check(TARGET, NONCE)
@@ -130,7 +130,7 @@ class InheritedObjectEvidence(unittest.TestCase):
         info = SimpleNamespace(st_dev=9, st_ino=1000, st_mode=stat.S_IFSOCK)
         entry = SimpleNamespace(name="64", path="mock-proc-entry")
         with patch.object(worker.os, "scandir", return_value=nullcontext([entry])), \
-             patch.object(worker.os, "stat", return_value=info), \
+             patch.object(worker.os, "fstat", return_value=info), \
              patch.object(worker.os, "dup") as duplicate:
             result = worker.inherited_fd_check(TARGET, NONCE)
         duplicate.assert_not_called()
@@ -145,6 +145,42 @@ class InheritedObjectEvidence(unittest.TestCase):
                               (TARGET, "anything"), (TARGET, NONCE.replace("a", "z"))):
             with self.subTest(target=target, nonce=nonce), self.assertRaises(ValueError):
                 worker.inherited_fd_check(target, nonce)
+
+    def test_payload_fstats_every_fd_without_magic_link_resolution(self):
+        entries = [SimpleNamespace(name=str(fd), path=f"/proc/self/fd/{fd}")
+                   for fd in (0, 1, 2, 3, 64)]
+        infos = [SimpleNamespace(st_dev=9, st_ino=1000 + fd, st_mode=stat.S_IFREG)
+                 for fd in (0, 1, 2, 3, 64)]
+        with patch.object(worker.os, "scandir", return_value=nullcontext(entries)), \
+             patch.object(worker.os, "fstat", side_effect=infos) as inspect, \
+             patch.object(worker.os, "stat", side_effect=PermissionError(errno.EACCES, "path denied")) as path, \
+             patch.object(worker.os, "dup") as duplicate:
+            result = worker.inherited_fd_check(TARGET, NONCE)
+        self.assertEqual([call.args for call in inspect.call_args_list],
+                         [(0,), (1,), (2,), (3,), (64,)])
+        self.assertEqual([row["fd"] for row in result["fds"]], [0, 1, 2, 3, 64])
+        path.assert_not_called()
+        duplicate.assert_not_called()
+        self.assertEqual(result["matching_fds"], [])
+
+    def test_payload_closed_denied_or_invalid_descriptor_is_never_absence(self):
+        entries = [SimpleNamespace(name=str(fd), path=f"/proc/self/fd/{fd}") for fd in (0, 2, 64)]
+        first = SimpleNamespace(st_dev=9, st_ino=1000, st_mode=stat.S_IFREG)
+        for failure in (OSError(errno.EBADF, "closed"), PermissionError(errno.EACCES, "denied")):
+            with self.subTest(error=failure), \
+                 patch.object(worker.os, "scandir", return_value=nullcontext(entries)), \
+                 patch.object(worker.os, "fstat", side_effect=[first, failure]) as inspect, \
+                 patch.object(worker.os, "dup") as duplicate, \
+                 self.assertRaises(OSError):
+                worker.inherited_fd_check(TARGET, NONCE)
+            self.assertEqual([call.args for call in inspect.call_args_list], [(0,), (2,)])
+            duplicate.assert_not_called()
+        with patch.object(worker.os, "scandir",
+                          return_value=nullcontext([SimpleNamespace(name="invalid")])), \
+             patch.object(worker.os, "fstat") as inspect, \
+             self.assertRaisesRegex(RuntimeError, "unexpected proc FD entry"):
+            worker.inherited_fd_check(TARGET, NONCE)
+        inspect.assert_not_called()
 
     def test_source_places_snapshots_inside_real_barriers_and_eof_after_exit(self):
         source = (HERE / "controller.py").read_text()
@@ -333,13 +369,13 @@ class WorkerExceptionDiagnostics(unittest.TestCase):
     def test_fd_scan_errors_keep_original_repr_paths_errno_and_worker_callsite(self):
         request = {"op": "inherited_fd", "id": 1, "target": TARGET, "nonce": NONCE}
         entries = [SimpleNamespace(name="64", path="/proc/self/fd/64")]
-        for operation in ("scandir", "stat"):
+        for operation in ("scandir", "fstat"):
             original = PermissionError(errno.EACCES, "synthetic denied",
                                        "/proc/self/fd/64", None, "/synthetic/second")
             with self.subTest(operation=operation), \
                  patch.object(worker, "os", wraps=os) as worker_os:
                 worker_os.scandir.return_value = nullcontext(entries)
-                failing = worker_os.scandir if operation == "scandir" else worker_os.stat
+                failing = worker_os.scandir if operation == "scandir" else worker_os.fstat
                 failing.side_effect = original
                 record = self.run_worker(request)
                 failing.assert_called_once()
