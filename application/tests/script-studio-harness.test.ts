@@ -9,6 +9,25 @@ import { workInputRequest } from "../packages/application/src/session-io.js";
 import { receivedWorkflowText } from "../scripts/script-studio-quality-evidence.js";
 import { workToolDefinitions } from "../packages/application/src/agent-tools.js";
 
+test("Harness 静态检查使用真实 Host 工具 schema，不维护另一份收窄契约", () => {
+  const registered = JSON.parse(
+    JSON.stringify(
+      Object.fromEntries(
+        workToolDefinitions.map(({ name, parameters }) => [name, parameters]),
+      ),
+    ),
+  );
+  assert.deepEqual(
+    JSON.parse(
+      readFileSync(
+        new URL("../harnesses/script-studio.tools.json", import.meta.url),
+        "utf8",
+      ),
+    ),
+    registered,
+  );
+});
+
 test("唯一 Host 工具说明符合真实 Runtime 的 16000 字节上限", () => {
   for (const definition of workToolDefinitions) {
     assert.ok(Buffer.byteLength(definition.description, "utf8") <= 16000);

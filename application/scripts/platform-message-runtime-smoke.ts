@@ -838,7 +838,7 @@ try {
     quotedSource,
     "the sending Host must see the other Host's newly accepted quote through real Runtime",
   );
-  assert.equal(quotedSource.text, "继续讨论");
+  assert.equal(quotedSource.text, "继续讨论\n\n请解释这句");
   const quotedHistory = await bridge.platformConversationHistory(
     scope,
     localAccess,

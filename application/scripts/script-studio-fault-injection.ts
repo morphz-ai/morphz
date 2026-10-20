@@ -13,7 +13,8 @@ export const scriptFaultPoints = [
   "model-review-2",
   "model-revise-2",
   "model-delivery",
-  "model-relay",
+  // A tail result is forwarded deterministically. The Runtime smoke rejects
+  // any model-relay request, so it is not an executable crash point anymore.
   "host-read-1",
   "host-read-2",
   "host-read-3",

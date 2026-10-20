@@ -301,47 +301,6 @@ const provider = createServer(async (req, res) => {
     );
     if (res.destroyed) return;
     const respond = (message: unknown, finish = "stop") => {
-      if ((input as any).response_format?.type === "json_object") {
-        const logical = message as any;
-        const calls = logical.tool_calls ?? [];
-        const metadata = calls.find(
-          (call: any) =>
-            call.function.name === "deliver_message" &&
-            JSON.parse(call.function.arguments)?.message?.format?.id ===
-              "morphz.response.annotations",
-        );
-        const fields = metadata
-          ? JSON.parse(metadata.function.arguments).message.content.value
-          : {};
-        const effects = calls
-          .filter((call: any) => call !== metadata)
-          .map((call: any) => ({
-            name: call.function.name,
-            arguments: JSON.parse(call.function.arguments),
-            intent: `执行合成工序 ${stage} 的 ${call.function.name}`,
-          }));
-        const body =
-          logical.content && !effects.length && stage !== "select"
-            ? JSON.parse(logical.content)
-            : logical.content || null;
-        message = {
-          role: "assistant",
-          content: JSON.stringify({
-            body,
-            annotations: {
-              execution: {
-                title: `合成工序 ${stage}`,
-                progress: "",
-                result: effects.length ? "" : `合成工序 ${stage} 已返回`,
-                ...(fields.execution ?? {}),
-              },
-              observations: fields.observations ?? [],
-            },
-            effects,
-          }),
-        };
-        finish = "stop";
-      }
       if (input.stream) {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         res.end(
@@ -357,8 +316,24 @@ const provider = createServer(async (req, res) => {
         );
       }
     };
-    const call = (name: string, args: unknown) =>
-      respond(
+    const call = (name: string, args: Record<string, unknown>) => {
+      const definition = input.tools?.find(
+        (tool: { function: { name: string } }) => tool.function.name === name,
+      )?.function;
+      assert.ok(definition, `Only an advertised native tool may run: ${name}`);
+      const argumentsWithMetadata = definition.parameters?.properties?._morphz
+        ? {
+            ...args,
+            _morphz: {
+              intent: `执行合成工序 ${stage} 的 ${name}`,
+              execution: {
+                title: `合成工序 ${stage}`,
+                progress: `正在执行 ${name}`,
+              },
+            },
+          }
+        : args;
+      return respond(
         {
           role: "assistant",
           content: "",
@@ -367,49 +342,22 @@ const provider = createServer(async (req, res) => {
               index: 0,
               id: randomUUID(),
               type: "function",
-              function: { name, arguments: JSON.stringify(args) },
-            },
-          ],
-        },
-        "tool_calls",
-      );
-    const returnValue = (content: string) => {
-      assert.ok(
-        tools.includes("deliver_message"),
-        "Every enabled infer uses the same response carrier",
-      );
-      return respond(
-        {
-          role: "assistant",
-          content,
-          tool_calls: [
-            {
-              index: 0,
-              id: randomUUID(),
-              type: "function",
               function: {
-                name: "deliver_message",
-                arguments: JSON.stringify({
-                  delivery_id: "fixture-metadata-" + randomUUID(),
-                  message: {
-                    format: { id: "morphz.response.annotations", version: "1" },
-                    content: {
-                      encoding: "json",
-                      value: {
-                        execution: {
-                          title: `合成工序 ${stage}`,
-                          result: `合成工序 ${stage} 已返回`,
-                        },
-                      },
-                    },
-                  },
-                }),
+                name,
+                arguments: JSON.stringify(argumentsWithMetadata),
               },
             },
           ],
         },
         "tool_calls",
       );
+    };
+    const returnValue = (content: string) => {
+      // The caller's infer schema owns this JSON business value. It is not a
+      // Chat answer envelope and needs neither a metadata call nor a relay.
+      assert.ok(internal, "Harness results belong to the typed infer caller");
+      JSON.parse(content);
+      return respond({ role: "assistant", content });
     };
     if (projectDiscussion && stage === "discussion") {
       assert.ok(
