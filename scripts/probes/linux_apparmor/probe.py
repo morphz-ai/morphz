@@ -70,8 +70,8 @@ def profile_source(name):
     if not re.fullmatch(r"morphz_probe_[a-f0-9]{20}", name):
         raise ValueError("profile name must be generated, not supplied by a command")
     denial = "\n".join(
-        f'  audit deny "/probe/work/{path}" rwklmx,\n'
-        f'  audit deny "/probe/work/{path}/**" rwklmx,'
+        f'  audit deny "/tmp/probe/work/{path}" rwklmx,\n'
+        f'  audit deny "/tmp/probe/work/{path}/**" rwklmx,'
         for path in POLICY_PATHS
     )
     body = f"""
@@ -135,18 +135,20 @@ class Worker:
             "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-net",
             "--proc", "/proc", "--cap-drop", "ALL",
             "--tmpfs", "/home", "--tmpfs", "/root", "--tmpfs", "/tmp",
-            "--dir", "/probe", "--ro-bind", str(code), "/probe/code",
-            "--bind", str(workspace), "/probe/work",
+            # The immutable root cannot acquire a new /probe mount target.
+            # These carrier directories live only in the private /tmp tmpfs.
+            "--dir", "/tmp/probe", "--ro-bind", str(code), "/tmp/probe/code",
+            "--bind", str(workspace), "/tmp/probe/work",
             "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
-            "--setenv", "HOME", "/probe/work", "--setenv", "LANG", "C.UTF-8",
-            "--chdir", "/probe/work",
+            "--setenv", "HOME", "/tmp/probe/work", "--setenv", "LANG", "C.UTF-8",
+            "--chdir", "/tmp/probe/work",
         ]
         if mode == "exec":
             bwrap += ["--new-session"]
         if mask_existing:
-            bwrap += ["--ro-bind", "/dev/null", "/probe/work/.env"]
+            bwrap += ["--ro-bind", "/dev/null", "/tmp/probe/work/.env"]
         inner = [
-            "/usr/bin/python3", "-B", "/probe/code/worker.py",
+            "/usr/bin/python3", "-B", "/tmp/probe/code/worker.py",
             "--expect-label",
             expect_label or f"{profile}_{lane} (enforce)",
         ]

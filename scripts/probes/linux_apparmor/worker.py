@@ -14,7 +14,7 @@ import time
 
 
 PREFIX = "MORPHZ_PROBE_JSON "
-WORK = Path("/probe/work")
+WORK = Path("/tmp/probe/work")
 
 
 def emit(kind, **values):

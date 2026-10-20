@@ -43,8 +43,8 @@ class ProbeHarnessTests(unittest.TestCase):
         self.assertIn("abi <abi/4.0>,", profile)
         self.assertEqual(profile.count("\nprofile "), 3)
         for path in (".env", ".ssh", ".morphz/config.toml"):
-            self.assertEqual(profile.count(f'audit deny "/probe/work/{path}" rwklmx,'), 2)
-            self.assertEqual(profile.count(f'audit deny "/probe/work/{path}/**" rwklmx,'), 2)
+            self.assertEqual(profile.count(f'audit deny "/tmp/probe/work/{path}" rwklmx,'), 2)
+            self.assertEqual(profile.count(f'audit deny "/tmp/probe/work/{path}/**" rwklmx,'), 2)
         enforced = profile.split("_enforced flags=(mediate_deleted)", 1)[1].split("\nprofile ", 1)[0]
         self.assertNotIn("change_profile", enforced)
         self.assertNotIn("capability", enforced)
@@ -56,6 +56,25 @@ class ProbeHarnessTests(unittest.TestCase):
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
                     module()(name)
+
+    def test_mount_carriers_are_below_private_tmpfs_not_readonly_root(self):
+        probe = load_probe()
+        with patch.object(probe.subprocess, "Popen") as spawn:
+            probe.Worker(
+                MagicMock(), "morphz_probe_" + "a" * 20,
+                Path("/synthetic/code"), Path("/synthetic/workspace"), "exec",
+            )
+        argv = spawn.call_args.args[0]
+        self.assertIn(["--tmpfs", "/tmp"], [argv[index:index + 2] for index in range(len(argv))])
+        self.assertLess(argv.index("/tmp"), argv.index("/tmp/probe"))
+        self.assertNotIn("/probe", argv)
+        self.assertIn("/tmp/probe/code", argv)
+        self.assertIn("/tmp/probe/work", argv)
+        self.assertIn("/tmp/probe/code/worker.py", argv)
+        spec = importlib.util.spec_from_file_location("isolated_worker", HERE / "worker.py")
+        worker = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(worker)
+        self.assertEqual(worker.WORK, Path("/tmp/probe/work"))
 
     def test_interrupt_requires_sigint_not_arbitrary_failure(self):
         probe = load_probe()

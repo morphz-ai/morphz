@@ -19,7 +19,9 @@ The fixed bootstrap profile permits the namespace preparation phase without
 disabling the runner's unprivileged-user-namespace restriction. Bubblewrap
 sets up the read-only root, hidden home/temp roots, network/PID/user/IPC
 namespaces, dropped capabilities, and a single **synthetic live writable
-workspace**. Only after setup does `aa-exec` enter the enforced profile.
+workspace**. Namespace-only mount carriers `/tmp/probe/code` and
+`/tmp/probe/work` are created beneath the private `/tmp` tmpfs, never beneath
+the read-only host root. Only after setup does `aa-exec` enter the enforced profile.
 The child checks its exact kernel-reported `(enforce)` label, NoNewPrivs=1,
 and zero effective/permitted/ambient capabilities before signalling readiness
 or executing any synthetic action. Unknown/stacked/complain labels are not
