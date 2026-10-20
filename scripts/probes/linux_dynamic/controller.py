@@ -1,6 +1,7 @@
 """Isolated Linux campaign. Default is prepare-only; no production installation."""
 
 import argparse
+from contextlib import contextmanager
 import errno
 import fcntl
 import hashlib
@@ -12,6 +13,7 @@ import select
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -83,6 +85,106 @@ def proc_identity(pid):
     return {"pid": pid, "ppid": int(tail[1]), "starttime": int(tail[19])}
 
 
+@contextmanager
+def stable_sender(pid):
+    """Host-only Linux pidfd pin; disappearing or changing peers fail closed."""
+    if type(pid) is not int or pid <= 1:
+        raise RuntimeError("invalid kernel sender PID")
+    handle = os.pidfd_open(pid, 0)
+    try:
+        poller = select.poll()
+        poller.register(handle, select.POLLIN)
+        if poller.poll(0):
+            raise RuntimeError("sender already exited")
+        identity = proc_identity(pid)
+
+        def verify_current():
+            if poller.poll(0) or proc_identity(pid) != identity:
+                raise RuntimeError("sender identity changed during admission")
+
+        # Revalidate immediately before the reply, keeping pidfd open through
+        # send. Do not demand survival after a deliberate NO/EOF response.
+        yield identity, verify_current
+    finally:
+        os.close(handle)
+
+
+def receive_startup(connection):
+    """One bounded stream frame, authenticated by every received byte's sender.
+
+    The connection was made by outer. Its SO_PEERCRED is not evidence of inner:
+    SO_PASSCRED supplies kernel SCM_CREDENTIALS on the later inner sendmsg.
+    """
+    raw, sender = bytearray(), None
+    credentials_size = struct.calcsize("3i")
+    while not raw.endswith(b"\n"):
+        block, ancillary, flags, _ = connection.recvmsg(
+            4097 - len(raw), socket.CMSG_SPACE(credentials_size), socket.MSG_CMSG_CLOEXEC,
+        )
+        credentials, unexpected = [], False
+        for level, kind, data in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                # Reject rights, but close kernel-delivered FDs even on a
+                # truncated/invalid frame. No FD round-trip protocol is used.
+                width = struct.calcsize("i")
+                for offset in range(0, len(data) - width + 1, width):
+                    os.close(struct.unpack_from("i", data, offset)[0])
+                unexpected = True
+            elif (level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS
+                  and len(data) == credentials_size):
+                credentials.append(struct.unpack("3i", data))
+            else:
+                unexpected = True
+        if (flags & (socket.MSG_CTRUNC | socket.MSG_TRUNC) or unexpected
+                or len(credentials) != 1 or not block):
+            raise RuntimeError("startup bytes lack one intact kernel credential")
+        if sender is None:
+            sender = credentials[0]
+        if sender != credentials[0]:
+            raise RuntimeError("startup frame mixed different senders")
+        raw.extend(block)
+        if len(raw) > 4096 or (b"\n" in raw and not raw.endswith(b"\n")):
+            raise RuntimeError("startup frame bound or trailing data")
+    if raw.count(b"\n") != 1:
+        raise RuntimeError("multiple startup frames before acknowledgement")
+    return decode(bytes(raw[:-1])), sender
+
+
+def manifest_fd_identity(fd):
+    info = os.fstat(fd)
+    access = fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022
+            or not 0 < info.st_size <= 65536 or access != os.O_RDONLY):
+        raise RuntimeError("host manifest is not immutable root-owned read-only file")
+    return {"dev": info.st_dev, "ino": info.st_ino, "size": info.st_size,
+            "mode": info.st_mode, "access": access}
+
+
+def expected_startup(manifest, phase, identity):
+    return {
+        **{key: manifest[key] for key in ("run_id", "launch_id", "policy_hash", "profile", "uid")},
+        "phase": phase, "manifest_fd": identity,
+    }
+
+
+def verify_outer(peer, expected_process, record, manifest, manifest_identity, identity):
+    pid, uid, gid = peer
+    if (pid != expected_process["pid"] or uid != manifest["uid"] or gid != os.getgid()
+            or record != expected_startup(manifest, "outer", manifest_identity)):
+        raise RuntimeError("outer identity or manifest FD mismatch")
+    if identity != expected_process or identity["ppid"] != os.getpid():
+        raise RuntimeError("outer is not the original direct child")
+    if os.readlink(f"/proc/{pid}/exe") != manifest["entry"]:
+        raise RuntimeError("outer executable mismatch")
+    label = Path(f"/proc/{pid}/attr/current").read_text().strip()
+    if label != manifest["bootstrap"] + " (enforce)":
+        raise RuntimeError("outer is not exact bootstrap-only")
+    for kind in ("mnt", "pid", "user", "net"):
+        if os.readlink(f"/proc/{pid}/ns/{kind}") != os.readlink(f"/proc/self/ns/{kind}"):
+            raise RuntimeError("outer already left the host namespace")
+    return {"peer": identity, "label": label, "manifest_fd": manifest_identity}
+
+
 def descendant(pid, parent):
     seen = set()
     while pid > 1 and pid not in seen:
@@ -148,6 +250,7 @@ class Lane:
         self.closed = False
         self.expected_sequence = 0
         self.listener = None
+        self.manifest_file = None
         self.socket_path = Path(manifest["control"]) / "admit.sock"
         self.campaign.lanes.append(self)
 
@@ -160,7 +263,11 @@ class Lane:
             raise RuntimeError("fresh per-launch sentinel already exists")
         control = Path(self.manifest["control"])
         control.mkdir(mode=0o700)
+        self.manifest_file = os.open(self.manifest["manifest"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        expected_manifest = manifest_fd_identity(self.manifest_file)
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # Before connect/data, so queued outer bytes also carry real credentials.
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         self.listener.bind(str(self.socket_path))
         self.listener.listen(1)
         self.listener.settimeout(15)
@@ -189,25 +296,47 @@ class Lane:
         connection, _ = self.listener.accept()
         with connection:
             connection.settimeout(10)
-            peer_pid, peer_uid, _ = struct.unpack("3i", connection.getsockopt(
+            connected_peer = struct.unpack("3i", connection.getsockopt(
                 socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
-            raw = bytearray()
-            while not raw.endswith(b"\n") and len(raw) < 4096:
-                data = connection.recv(4096 - len(raw))
-                if not data:
-                    raise RuntimeError("admission EOF")
-                raw.extend(data)
-            evidence = verify_admission(
-                peer_pid, peer_uid, self.process.pid, decode(bytes(raw)), self.manifest,
-            )
-            # No second admission can be accepted after the verified bootstrap.
-            self.listener.close()
-            self.listener = None
-            self.socket_path.unlink()
-            if self.admission == "allow":
-                connection.sendall(b"GO\n")
-            elif self.admission == "reject":
-                connection.sendall(b"NO\n")
+            outer_record, outer_peer = receive_startup(connection)
+            if outer_peer != connected_peer:
+                raise RuntimeError("outer sender differs from connection peer")
+            with stable_sender(outer_peer[0]) as (outer_identity, verify_outer_sender):
+                outer_evidence = verify_outer(
+                    outer_peer, self.process_identity, outer_record, self.manifest,
+                    expected_manifest, outer_identity,
+                )
+                self.campaign.record("outer_authenticated", True, launch=self.manifest["launch_id"],
+                                     evidence=outer_evidence)
+                # Keep only this connected channel; inner must inherit, never reconnect.
+                self.listener.close()
+                self.listener = None
+                self.socket_path.unlink()
+                verify_outer_sender()
+                connection.sendall(b"HOST\n")
+            inner_record, (peer_pid, peer_uid, peer_gid) = receive_startup(connection)
+            if (peer_pid == connected_peer[0] or peer_gid != self.campaign.gid
+                    or inner_record != expected_startup(self.manifest, "inner", expected_manifest)):
+                raise RuntimeError("inner sender or inherited manifest FD mismatch")
+            core_record = {key: inner_record[key] for key in
+                           ("run_id", "launch_id", "policy_hash", "profile", "uid")}
+            with stable_sender(peer_pid) as (inner_identity, verify_inner_sender):
+                evidence = verify_admission(
+                    peer_pid, peer_uid, self.process.pid, core_record, self.manifest,
+                )
+                if evidence["peer"] != inner_identity:
+                    raise RuntimeError("inner identity changed while inspecting namespace")
+                # Original FD and sender pidfd remain held through the reply.
+                # Namespace owner numbers are never accepted as overflow root.
+                if manifest_fd_identity(self.manifest_file) != expected_manifest:
+                    raise RuntimeError("host manifest changed during startup")
+                evidence["manifest_fd"] = inner_record["manifest_fd"]
+                evidence["outer"] = outer_evidence["peer"]
+                verify_inner_sender()
+                if self.admission == "allow":
+                    connection.sendall(b"GO\n")
+                elif self.admission == "reject":
+                    connection.sendall(b"NO\n")
             # disconnect deliberately sends no acknowledgement; context closes.
         self.campaign.record("admission", True, launch=self.manifest["launch_id"], evidence=evidence)
         if self.admission != "allow":
@@ -335,6 +464,9 @@ class Lane:
                     cleanup_errors.append(repr(error))
         if self.listener is not None:
             self.listener.close()
+        if self.manifest_file is not None:
+            os.close(self.manifest_file)
+            self.manifest_file = None
         if self.socket_path.exists():
             self.socket_path.unlink()
         if self.err is not None:

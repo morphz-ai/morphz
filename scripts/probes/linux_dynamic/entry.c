@@ -21,6 +21,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#define MANIFEST_FD 3
+#define CONTROL_FD 4
+static struct stat manifest_metadata;
+
 static void fail(const char *why) {
     fprintf(stderr, "dynamic entry refused: %s (errno=%d)\n", why, errno);
     exit(78);
@@ -44,6 +48,38 @@ static void exact_label(const char *profile) {
     fclose(stream);
     actual[strcspn(actual, "\n")] = 0;
     if (strcmp(expected, actual)) fail("not the exact enforcing label");
+}
+static void hex_token(const char *value) {
+    if (strlen(value) != 32 || strspn(value, "0123456789abcdef") != 32)
+        fail("fixed launch identifier");
+}
+static void bootstrap_only(void) {
+    /* An untrusted workload may exec this file, but it retains the work stack.
+     * Reject it before reading any caller-supplied FD or descriptor fields. */
+    char actual[512];
+    FILE *stream = fopen("/proc/self/attr/current", "r");
+    if (!stream || !fgets(actual, sizeof(actual), stream)) fail("read bootstrap label");
+    fclose(stream);
+    actual[strcspn(actual, "\n")] = 0;
+    const char *prefix = "morphz_dynamic_";
+    size_t at = strlen(prefix);
+    if (strncmp(actual, prefix, at) ||
+        strlen(actual) != at + 32 + 1 + 32 + strlen("_boot (enforce)") ||
+        strspn(actual + at, "0123456789abcdef") != 32 ||
+        actual[at + 32] != '_' ||
+        strspn(actual + at + 33, "0123456789abcdef") != 32 ||
+        strcmp(actual + at + 65, "_boot (enforce)"))
+        fail("requires one exact bootstrap-only enforcing label");
+}
+static void descriptor_labels(struct json_object *obj) {
+    const char *run = text(obj, "run_id"), *launch = text(obj, "launch_id");
+    char boot[256], work[256];
+    hex_token(run); hex_token(launch);
+    if (snprintf(boot, sizeof(boot), "morphz_dynamic_%s_%s_boot", run, launch) >= (int)sizeof(boot) ||
+        snprintf(work, sizeof(work), "morphz_dynamic_%s_%s_work", run, launch) >= (int)sizeof(work) ||
+        strcmp(boot, text(obj, "bootstrap")) || strcmp(work, text(obj, "profile")))
+        fail("descriptor labels are not derived from this launch");
+    exact_label(boot);
 }
 static const char *exact_stack(struct json_object *obj) {
     static char result[512];
@@ -81,21 +117,24 @@ static void security_state(void) {
     fclose(stream);
     if (!nnp || !effective || !permitted || !inherited || !ambient) fail("privileges were not dropped");
 }
-static struct json_object *manifest(const char *file) {
-    int fd = open(file, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+static struct json_object *manifest_fd(int fd, int host_owner, const char *file) {
     struct stat info;
-    if (fd < 0 || fstat(fd, &info) || !S_ISREG(info.st_mode) ||
-        info.st_uid != 0 || (info.st_mode & 0022) ||
-        info.st_size <= 0 || info.st_size > 65536) fail("immutable root manifest");
+    int flags = fcntl(fd, F_GETFL);
+    if (fd < 0 || flags < 0 || (flags & O_ACCMODE) != O_RDONLY ||
+        fstat(fd, &info) || !S_ISREG(info.st_mode) || (info.st_mode & 0022) ||
+        info.st_size <= 0 || info.st_size > 65536)
+        fail("immutable read-only manifest FD");
+    /* Host root is checked only before user namespaces. No overflow-owner case. */
+    if (host_owner && info.st_uid != 0) fail("immutable root manifest");
+    manifest_metadata = info;
     size_t size = (size_t)info.st_size, have = 0;
     char *raw = calloc(size + 1, 1);
     if (!raw) fail("allocation");
     while (have < size) {
-        ssize_t n = read(fd, raw + have, size - have);
+        ssize_t n = pread(fd, raw + have, size - have, (off_t)have);
         if (n <= 0) fail("manifest read");
         have += (size_t)n;
     }
-    close(fd);
     struct json_tokener *parser = json_tokener_new();
     if (!parser) fail("JSON parser allocation");
     json_tokener_set_flags(parser, JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
@@ -110,7 +149,8 @@ static struct json_object *manifest(const char *file) {
     int64_t uid = json_object_get_int64(field(obj, "uid", json_type_int));
     if (uid <= 0 || uid > UINT_MAX || getuid() != (uid_t)uid || geteuid() != (uid_t)uid)
         fail("non-root workload UID");
-    if (strcmp(text(obj, "manifest"), file)) fail("manifest self identity");
+    if (file && strcmp(text(obj, "manifest"), file)) fail("manifest self identity");
+    (void)text(obj, "manifest");
     const char *mode = text(obj, "mode"), *network = text(obj, "network");
     if ((strcmp(mode, "exec") && strcmp(mode, "pty")) ||
         (strcmp(network, "allow") && strcmp(network, "deny"))) fail("mode/network");
@@ -118,11 +158,11 @@ static struct json_object *manifest(const char *file) {
     if (json_object_array_length(roots) < 1 || json_object_array_length(roots) > 4)
         fail("roots bound");
     (void)field(obj, "protected", json_type_array);
-    (void)text(obj, "run_id"); (void)text(obj, "launch_id");
     (void)text(obj, "policy_hash"); (void)text(obj, "bootstrap");
     (void)text(obj, "profile"); (void)text(obj, "stage");
     (void)text(obj, "entry"); (void)text(obj, "worker");
     (void)text(obj, "control"); (void)text(obj, "cwd");
+    descriptor_labels(obj);
     return obj;
 }
 static void verify_roots(struct json_object *obj, int keep_open) {
@@ -190,8 +230,83 @@ static void startup_diagnostic(void) {
             json_object_to_json_string_ext(record, JSON_C_TO_STRING_PLAIN));
     json_object_put(record);
 }
-static void outer(struct json_object *obj, const char *file) {
-    exact_label(text(obj, "bootstrap"));
+static void send_startup(int fd, struct json_object *obj, const char *phase) {
+    struct json_object *record = json_object_new_object();
+    const char *keys[] = {"run_id", "launch_id", "policy_hash", "profile"};
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+        json_object_object_add(record, keys[i], json_object_new_string(text(obj, keys[i])));
+    json_object_object_add(record, "uid", json_object_new_int64(getuid()));
+    json_object_object_add(record, "phase", json_object_new_string(phase));
+    struct json_object *identity = json_object_new_object();
+    json_object_object_add(identity, "dev", json_object_new_uint64(manifest_metadata.st_dev));
+    json_object_object_add(identity, "ino", json_object_new_uint64(manifest_metadata.st_ino));
+    json_object_object_add(identity, "size", json_object_new_int64(manifest_metadata.st_size));
+    json_object_object_add(identity, "mode", json_object_new_int64(manifest_metadata.st_mode));
+    json_object_object_add(identity, "access", json_object_new_int(O_RDONLY));
+    json_object_object_add(record, "manifest_fd", identity);
+    const char *data = json_object_to_json_string_ext(record, JSON_C_TO_STRING_PLAIN);
+    size_t count = strlen(data);
+    struct iovec vectors[] = {{.iov_base = (void *)data, .iov_len = count},
+                              {.iov_base = "\n", .iov_len = 1}};
+    struct msghdr message = {.msg_iov = vectors, .msg_iovlen = 2};
+    /* SO_PASSCRED is set on the receiver before connect. Kernel credentials are
+     * attached to this sender's bytes, including after bwrap forks the inner. */
+    if (count >= 4096 || sendmsg(fd, &message, MSG_NOSIGNAL) != (ssize_t)count + 1)
+        fail("send startup record");
+    json_object_put(record);
+}
+static void expect_reply(int fd, const char *expected, size_t size, const char *why) {
+    char reply[8];
+    size_t have = 0;
+    if (size > sizeof(reply)) fail("fixed reply bound");
+    while (have < size) {
+        ssize_t n = read(fd, reply + have, size - have);
+        if (n <= 0) fail(why);
+        have += (size_t)n;
+    }
+    if (memcmp(reply, expected, size)) fail("admission refused");
+}
+static int connect_host(struct json_object *obj) {
+    pid_t parent = getppid();
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0 || parent <= 1) fail("host control socket");
+    struct timeval limit = {.tv_sec = 10, .tv_usec = 0};
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit)) ||
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, sizeof(limit)))
+        fail("socket timeout");
+    struct sockaddr_un address = {.sun_family = AF_UNIX};
+    join(address.sun_path, sizeof(address.sun_path), text(obj, "control"), "admit.sock");
+    if (connect(fd, (struct sockaddr *)&address, sizeof(address))) fail("connect host control");
+    struct ucred peer;
+    socklen_t size = sizeof(peer);
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &size) || size != sizeof(peer) ||
+        peer.pid != parent || getppid() != parent || peer.uid != getuid() ||
+        peer.gid != getgid()) fail("control peer is not the original host parent");
+    char label[128] = {0};
+    size = sizeof(label) - 1;
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERSEC, label, &size) || size >= sizeof(label) ||
+        strcmp(label, "unconfined")) fail("host controller is not the expected label");
+    send_startup(fd, obj, "outer");
+    expect_reply(fd, "HOST\n", 5, "host acknowledgement");
+    return fd;
+}
+static void fixed_startup_fds(int manifest, int control) {
+    /* Duplicate both above the fixed slots before replacing either; no
+     * descriptor number or already-authenticated flag comes from the caller. */
+    int saved_manifest = fcntl(manifest, F_DUPFD_CLOEXEC, 5);
+    int saved_control = fcntl(control, F_DUPFD_CLOEXEC, 5);
+    if (saved_manifest < 0 || saved_control < 0 ||
+        dup2(saved_manifest, MANIFEST_FD) != MANIFEST_FD ||
+        dup2(saved_control, CONTROL_FD) != CONTROL_FD)
+        fail("fixed startup FD handoff");
+    close(saved_manifest); close(saved_control);
+    if (manifest > CONTROL_FD) close(manifest);
+    if (control > CONTROL_FD) close(control);
+    /* dup2 cleared CLOEXEC on exactly the two intended handoff slots. */
+}
+static void outer(struct json_object *obj, int manifest) {
+    int control = connect_host(obj);
+    fixed_startup_fds(manifest, control);
     verify_roots(obj, 1);
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) fail("NoNewPrivs");
     const char *stage = text(obj, "stage");
@@ -219,7 +334,7 @@ static void outer(struct json_object *obj, const char *file) {
     pair("--setenv", "HOME"); arg(text(obj, "cwd"));
     pair("--chdir", text(obj, "cwd"));
     if (!strcmp(text(obj, "mode"), "exec")) arg("--new-session");
-    arg("--"); arg(text(obj, "entry")); arg("--inner"); arg(file);
+    arg("--"); arg(text(obj, "entry")); arg("--inner");
     startup_diagnostic();
     execv(argv_buf[0], argv_buf);
     fail("fixed bwrap exec");
@@ -237,42 +352,18 @@ static void close_extra(int keep) {
     closedir(list);
 }
 static void admission(struct json_object *obj) {
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) fail("control socket");
-    struct timeval limit = { .tv_sec = 10, .tv_usec = 0 };
-    if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &limit, sizeof(limit)) ||
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &limit, sizeof(limit))) fail("socket timeout");
-    struct sockaddr_un address = { .sun_family = AF_UNIX };
-    join(address.sun_path, sizeof(address.sun_path), text(obj, "control"), "admit.sock");
-    if (connect(fd, (struct sockaddr *)&address, sizeof(address))) fail("connect admission");
-    struct json_object *record = json_object_new_object();
-    const char *keys[] = {"run_id", "launch_id", "policy_hash", "profile"};
-    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
-        json_object_object_add(record, keys[i], json_object_new_string(text(obj, keys[i])));
-    json_object_object_add(record, "uid", json_object_new_int64(getuid()));
-    const char *data = json_object_to_json_string_ext(record, JSON_C_TO_STRING_PLAIN);
-    size_t count = strlen(data);
-    if (write(fd, data, count) != (ssize_t)count || write(fd, "\n", 1) != 1)
-        fail("send admission");
-    char ack[3];
-    size_t have = 0;
-    while (have < sizeof(ack)) {
-        ssize_t n = read(fd, ack + have, sizeof(ack) - have);
-        if (n <= 0) fail("admission acknowledgement");
-        have += (size_t)n;
-    }
-    if (memcmp(ack, "GO\n", sizeof(ack))) fail("admission refused");
-    close(fd);
-    json_object_put(record);
+    send_startup(CONTROL_FD, obj, "inner");
+    expect_reply(CONTROL_FD, "GO\n", 3, "admission acknowledgement");
+    close(CONTROL_FD);
 }
 static void inner(struct json_object *obj) {
-    exact_label(text(obj, "bootstrap"));
     verify_roots(obj, 0);
     security_state();
+    close(MANIFEST_FD);
     if (aa_stack_profile(text(obj, "profile"))) fail("stack exact work profile");
     const char *stack = exact_stack(obj);
     security_state();
-    close_extra(-1);
+    close_extra(CONTROL_FD);
     admission(obj);
     close_extra(-1);
     const char *worker = text(obj, "worker"), *profile = stack;
@@ -294,15 +385,18 @@ static void inner(struct json_object *obj) {
     fail("fixed synthetic worker exec");
 }
 int main(int argc, char **argv) {
-    if (argc != 3 || (strcmp(argv[1], "--outer") && strcmp(argv[1], "--inner")))
-        fail("only fixed outer/inner manifest interface is supported");
-    struct json_object *obj = manifest(argv[2]);
+    int is_outer = argc == 3 && !strcmp(argv[1], "--outer");
+    int is_inner = argc == 2 && !strcmp(argv[1], "--inner");
+    if (!is_outer && !is_inner) fail("only fixed outer/path or inner/FD interface is supported");
+    bootstrap_only();
+    int fd = is_outer ? open(argv[2], O_RDONLY | O_NOFOLLOW | O_CLOEXEC) : MANIFEST_FD;
+    struct json_object *obj = manifest_fd(fd, is_outer, is_outer ? argv[2] : NULL);
     char executable[PATH_MAX];
     ssize_t n = readlink("/proc/self/exe", executable, sizeof(executable) - 1);
     if (n <= 0 || n >= (ssize_t)sizeof(executable) - 1) fail("entry executable");
     executable[n] = 0;
     if (strcmp(executable, text(obj, "entry"))) fail("unexpected executable identity");
-    if (!strcmp(argv[1], "--outer")) outer(obj, argv[2]);
+    if (is_outer) outer(obj, fd);
     inner(obj);
     return 78;
 }
