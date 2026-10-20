@@ -48,7 +48,7 @@
     "prettier": "3.9.6",
     "tsx": "4.23.13",
     "typescript": "7.0.2",
-    "vite": "8.2.2"
+    "vite": "8.2.4"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
