@@ -5738,7 +5738,7 @@ mod tests {
     use crate::scheduler::{
         stable_scheduler_dependency_id, NewSchedulerDependency, SchedulerDependencyKind,
     };
-    use tempfile::NamedTempFile;
+    use crate::test_sqlite::TempSqliteDb;
 
     fn objective_update_arguments(wait_condition: JsonValue) -> JsonValue {
         json!({
@@ -5922,7 +5922,7 @@ mod tests {
 
     #[tokio::test]
     async fn recoverable_objective_cursor_visits_each_live_row_once() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(database.path().to_str().unwrap())
             .await
             .unwrap();
@@ -5973,7 +5973,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_isolates_objective_whose_primary_thread_is_terminal() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -6087,7 +6087,7 @@ mod tests {
 
     #[tokio::test]
     async fn directed_primary_thread_event_claims_bound_interrupt_without_clearing_wait() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -6298,7 +6298,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_exact_question_reply_claims_an_objective_evaluation_binding() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -6508,7 +6508,7 @@ mod tests {
 
     #[tokio::test]
     async fn reconciliation_does_not_steal_a_reply_between_dependency_and_evaluation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -6634,7 +6634,7 @@ mod tests {
 
     #[tokio::test]
     async fn owner_dialogue_amendment_commits_contract_and_primary_signal_atomically() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -6778,7 +6778,7 @@ mod tests {
 
     #[tokio::test]
     async fn active_objective_recovers_wait_for_legacy_open_supervised_group() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -6877,7 +6877,7 @@ mod tests {
 
     #[tokio::test]
     async fn structured_dependency_blocks_every_objective_schedule_entrypoint() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -6973,7 +6973,7 @@ mod tests {
 
     #[tokio::test]
     async fn continuous_reconcile_consumes_a_persisted_resource_event_without_live_delivery() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -7067,7 +7067,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_group_barrier_reconciles_an_objective_whose_legacy_wait_was_precleared() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -7229,7 +7229,7 @@ mod tests {
 
     #[tokio::test]
     async fn closure_review_requires_at_least_one_child_and_all_children_terminal() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -7453,7 +7453,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_failure_waits_for_runtime_resource_and_restart_releases_process_gate() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -7538,7 +7538,7 @@ mod tests {
     }
 
     async fn assert_failure_waits_for_configuration_change(failure_kind: &str) {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -7637,7 +7637,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_old_request_does_not_miss_a_concurrent_configuration_change() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -7697,7 +7697,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_configuration_failure_never_terminally_blocks_objective() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -7768,7 +7768,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_objective_evaluation_cancels_old_activation_before_replacement() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -7933,7 +7933,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_recovers_a_persisted_external_wake_that_was_never_dispatched() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -8079,7 +8079,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_task_wait_validates_runtime_jobs_and_resolves_terminal_results() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -8153,7 +8153,7 @@ mod tests {
 
     #[tokio::test]
     async fn delegation_wait_validates_routes_and_resolves_terminal_results() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -8218,7 +8218,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_consumes_a_terminal_delegation_wait_from_projection() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -8300,7 +8300,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_invalidates_a_missing_tool_task_wait_and_resumes_objective() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -8368,7 +8368,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_consumes_a_terminal_tool_task_wait_from_execution_projection() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await
@@ -8544,7 +8544,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_evaluation_heartbeat_loses_fence_and_cancels_its_activation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(&database.path().to_string_lossy())
                 .await

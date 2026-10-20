@@ -37,12 +37,12 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RenewalCommitNotif
 }
 
 async fn fixture() -> (
-    tempfile::NamedTempFile,
+    crate::test_sqlite::TempSqliteDb,
     Arc<SqliteStore>,
     Arc<ObjectiveSupervisor>,
     ActiveObjectiveEvaluation,
 ) {
-    let file = tempfile::NamedTempFile::new().unwrap();
+    let file = crate::test_sqlite::TempSqliteDb::new().unwrap();
     let store = Arc::new(
         SqliteStore::new(&file.path().to_string_lossy())
             .await

@@ -1049,7 +1049,7 @@ mod tests {
         ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
         NewApprovalRequest,
     };
-    use tempfile::NamedTempFile;
+    use crate::test_sqlite::TempSqliteDb;
 
     struct NeverReviewClient;
 
@@ -1529,7 +1529,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_reviewer_binds_the_model_to_the_approval_causal_context() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await
@@ -1559,7 +1559,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_reviewer_cannot_invent_a_capability_lease() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await
@@ -1582,7 +1582,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_capability_lease_offer_can_be_approved() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await
@@ -1621,7 +1621,7 @@ mod tests {
 
     #[tokio::test]
     async fn approval_evidence_is_frozen_at_its_causal_root_turn() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await

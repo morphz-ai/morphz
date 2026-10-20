@@ -12911,6 +12911,7 @@ mod tests {
     use crate::memory::{ActivationStore as _, ScheduleStatus, SessionDirectoryStore as _};
     use crate::permission::PermissionMode;
     use crate::sdk::MessageAttachmentInput;
+    use crate::test_sqlite::TempSqliteDb;
     use tempfile::NamedTempFile;
 
     struct ReplyClient;
@@ -13005,7 +13006,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_policy_defaults_follow_live_catalog_and_preserve_restrictions() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.auth_accounts.insert(
             "legacy-account".to_string(),
@@ -13176,7 +13177,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_policy_empty_startup_and_restart_preserve_explicit_denials() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .build()
@@ -13335,7 +13336,7 @@ mod tests {
 
     #[tokio::test]
     async fn model_configuration_change_wakes_configuration_objectives_and_provider_threads() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .build()
@@ -13590,7 +13591,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_model_change_wakes_only_that_sessions_provider_waiters() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .build()
@@ -13797,7 +13798,7 @@ mod tests {
 
     #[tokio::test]
     async fn running_runtime_reclaims_an_import_deferred_during_startup() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
         config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
@@ -14073,7 +14074,7 @@ mod tests {
         boundary: SteeringTestBoundary,
     ) {
         let late_commit = matches!(boundary, SteeringTestBoundary::TerminalCommit);
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let marker = workspace.path().join("obsolete.txt");
         let mut config = AppConfig::default();
@@ -14627,7 +14628,7 @@ mod tests {
 
     #[tokio::test]
     async fn embedding_host_can_register_a_physical_tool_before_target_materialization() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -14749,7 +14750,7 @@ mod tests {
 
     #[tokio::test]
     async fn one_shot_schedule_due_executes_through_the_live_runtime() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -14831,7 +14832,7 @@ mod tests {
 
     #[tokio::test]
     async fn recurring_schedule_due_executes_on_an_independent_occurrence_thread() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -14922,7 +14923,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_runtime_reconciles_a_persisted_signal_after_notify_is_lost() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -15008,7 +15009,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_runtime_routes_background_session_wake_through_the_dialogue_router() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -15102,7 +15103,7 @@ mod tests {
 
     #[tokio::test]
     async fn restart_recovers_background_wake_before_following_user_signal_without_starvation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let config = AppConfig::default();
         let tool_policy = RuntimeToolPolicy {
             context_only: true,
@@ -15249,7 +15250,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_builder_accepts_one_injected_complete_store() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let sqlite = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await
@@ -15321,7 +15322,7 @@ mod tests {
             )
             .unwrap();
 
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let sqlite = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await
@@ -15351,7 +15352,7 @@ mod tests {
 
     #[tokio::test]
     async fn trajectory_verifier_and_reward_facts_are_durable_idempotent_and_exportable() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let sqlite = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await
@@ -15442,7 +15443,7 @@ mod tests {
 
     #[tokio::test]
     async fn production_tool_contracts_are_english_only() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let sqlite = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await
@@ -15492,7 +15493,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_production_tool_schema_projects_to_gemini_and_antigravity() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .build()
@@ -15566,7 +15567,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_only_context_configuration_omits_context_tx_from_production_registry() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.orchestrator.context_transactions_enabled = false;
         let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
@@ -15585,7 +15586,7 @@ mod tests {
 
     #[tokio::test]
     async fn automatic_review_uses_the_independent_reviewer_client() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let reviewer = Arc::new(ReviewerDecisionClient {
             calls: AtomicU64::new(0),
             requested_models: std::sync::Mutex::new(Vec::new()),
@@ -15628,7 +15629,7 @@ mod tests {
 
     #[tokio::test]
     async fn automatic_review_without_an_override_follows_the_request_session_model() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let shared_client = Arc::new(ReviewerDecisionClient {
             calls: AtomicU64::new(0),
             requested_models: std::sync::Mutex::new(Vec::new()),
@@ -15674,7 +15675,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_message_interrupts_a_thinking_dialogue_and_replays_both_inputs() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await
@@ -15686,7 +15687,7 @@ mod tests {
     #[cfg(feature = "context-db")]
     #[tokio::test]
     async fn new_message_interrupts_context_maintenance_continuation_and_replays_inputs() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await
@@ -15916,7 +15917,7 @@ mod tests {
 
     #[tokio::test]
     async fn unconfigured_runtime_exposes_no_invented_models() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .build()
@@ -15930,7 +15931,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_routes_are_selectable_without_duplicate_service_model_entries() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.llm.model = "configured-route".to_string();
         config.provider_instances.insert(
@@ -15980,7 +15981,7 @@ mod tests {
 
     #[tokio::test]
     async fn one_shot_message_model_is_persisted_on_its_root_event_without_mutating_session() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.llm.model = "primary-route".to_string();
         config.provider_instances.insert(
@@ -16104,7 +16105,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_sessions_freeze_distinct_persisted_default_targets_at_message_ingress() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .build()
@@ -16249,7 +16250,7 @@ mod tests {
 
     #[tokio::test]
     async fn cloud_config_removes_local_execution_fallback_with_machine_readable_boundary() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.execution_targets.local_enabled = false;
         let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
@@ -16287,7 +16288,7 @@ mod tests {
 
     #[tokio::test]
     async fn cloud_config_artifact_transfer_only_keeps_physical_tools_disabled() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.execution_targets.local_enabled = false;
         config.execution_targets.local_artifact_transfer_enabled = true;
@@ -16367,7 +16368,7 @@ mod tests {
 
     #[tokio::test]
     async fn cloud_physical_preflight_terminalizes_without_binding_the_missing_local_target() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.execution_targets.local_enabled = false;
         config.permissions.mode = PermissionMode::FullAccess;
@@ -16481,7 +16482,7 @@ mod tests {
 
     #[tokio::test]
     async fn message_ingress_rejects_missing_offline_and_foreign_targets_before_commit() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .build()
@@ -16566,7 +16567,7 @@ mod tests {
 
     #[tokio::test]
     async fn attention_acknowledgement_is_durable_audit_not_scheduler_work() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .build()
@@ -16654,7 +16655,7 @@ mod tests {
     #[tokio::test]
     async fn pluggable_identity_provider_anchors_authenticated_messages_without_owning_runtime_default(
     ) {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .identity_provider(Arc::new(ExternalIdentityProvider))
@@ -18289,7 +18290,7 @@ mod tests {
 
     #[tokio::test]
     async fn durable_turn_reply_waiter_bypasses_business_saturation_and_fences_root() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.orchestrator.event_bus.max_in_flight = 1;
         let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
@@ -18392,7 +18393,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_builder_handles_message_event_and_context_through_one_api() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -18442,7 +18443,7 @@ mod tests {
     #[cfg(feature = "context-db")]
     #[tokio::test]
     async fn context_db_runtime_completes_a_real_dialogue_turn() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -18534,7 +18535,7 @@ mod tests {
     #[cfg(feature = "context-db")]
     #[tokio::test]
     async fn context_db_model_learning_survives_restart_and_remains_recallable() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -18705,7 +18706,7 @@ mod tests {
 
     #[tokio::test]
     async fn scheduler_snapshot_joins_the_durable_causal_chain_and_controls() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -19063,7 +19064,7 @@ mod tests {
 
     #[tokio::test]
     async fn scheduler_snapshot_pages_complete_thread_aggregates_without_false_orphans() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -19226,7 +19227,7 @@ mod tests {
 
     #[tokio::test]
     async fn scheduler_snapshot_keeps_exact_counts_when_detail_is_bounded() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -19335,7 +19336,7 @@ mod tests {
 
     #[tokio::test]
     async fn scheduler_snapshot_counts_live_rows_whose_terminal_parent_route_disappeared() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {
@@ -19536,7 +19537,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_closes_approved_job_whose_causal_owner_is_terminal() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -19781,7 +19782,7 @@ mod tests {
 
     #[tokio::test]
     async fn interactive_physical_tool_batch_delivers_its_execution_terminal_directly() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -19905,7 +19906,7 @@ mod tests {
 
     #[tokio::test]
     async fn eval_runs_through_durable_plan_and_physical_execution_job_before_replying() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let fixture_path = workspace.path().join("durable-plan.txt");
         std::fs::write(&fixture_path, "durable-plan-fixture").unwrap();
@@ -19990,7 +19991,7 @@ mod tests {
 
     #[tokio::test]
     async fn eval_write_and_exec_use_durable_jobs_end_to_end() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let output_path = workspace.path().join("created-by-yao.txt");
         let mut config = AppConfig::default();
@@ -20086,7 +20087,7 @@ mod tests {
 
     #[tokio::test]
     async fn eval_write_outside_workspace_waits_for_the_normal_approval_boundary() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let external = tempfile::tempdir().unwrap();
         let output_path = external.path().join("approved-by-yao.txt");
@@ -20180,7 +20181,7 @@ mod tests {
 
     #[tokio::test]
     async fn bound_runtime_harness_returns_without_a_model_rewrite_or_goal_completion() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let fixture_path = workspace.path().join("automatic-harness-entry.txt");
         std::fs::write(&fixture_path, "automatic-harness-entry-fixture").unwrap();
@@ -20333,7 +20334,7 @@ mod tests {
 
     #[tokio::test]
     async fn ordinary_message_can_bind_exact_harness_to_its_evaluation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let workspace = tempfile::tempdir().unwrap();
         let fixture_path = workspace.path().join("ordinary-harness-entry.txt");
         std::fs::write(&fixture_path, "ordinary-harness-entry-fixture").unwrap();
@@ -20429,7 +20430,7 @@ mod tests {
 
     #[tokio::test]
     async fn ordinary_harness_reply_publishes_once_without_a_second_model_call() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let package = HarnessPackage::from_source("single-reply.hns", r#"
           (manifest (id single-reply) (version "1.0.0") (title "TEST single reply") (capabilities (tools)))
           (contract (identity "TEST internal intent with authored reply"))
@@ -20574,7 +20575,7 @@ mod tests {
             r#"(eval (requires (tools)) (infer (returns String) "Return the test string"))"#,
             r#"(infer (requires (tools)) (returns String) "Return the test string")"#,
         ] {
-            let database = NamedTempFile::new().unwrap();
+            let database = TempSqliteDb::new().unwrap();
             let package = HarnessPackage::from_source("typed-root.hns", &format!(
                 "(manifest (id typed-root) (version \"1\") (title \"TEST typed root\") (capabilities (tools))) (contract (identity \"TEST\")) {source}"
             )).unwrap();
@@ -20648,7 +20649,7 @@ mod tests {
 
     #[tokio::test]
     async fn model_can_discover_and_select_harness_for_ordinary_evaluation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let package = HarnessPackage::from_source(
             "discovery-test.hns",
             r#"
@@ -20726,7 +20727,7 @@ mod tests {
 
     #[tokio::test]
     async fn detached_execution_delivers_exactly_once_after_completion_inbox_wake() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
         // This test exercises detached execution and delivery, not sandbox
@@ -20878,7 +20879,7 @@ mod tests {
         // a finished answer look interim for good: a server the user asked to
         // keep running never exits, so the follow-up reply implied by the
         // downgrade could never arrive.
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
         // This test exercises reply/background lifecycle, not filesystem
@@ -20982,7 +20983,7 @@ mod tests {
         // the turn is waiting on. Counting it kept the Thread from ever
         // closing, because such a process never exits and the condition could
         // never clear.
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let artifacts = tempfile::tempdir().unwrap();
         let mut config = AppConfig::default();
         // Keep the lifecycle test independent from native sandbox setup; the
@@ -21065,7 +21066,7 @@ mod tests {
         delay: std::time::Duration,
         expected_rejected: bool,
     ) {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let fixture = NamedTempFile::new().unwrap();
         std::fs::write(fixture.path(), "durable-approval-fixture").unwrap();
         let observed_result = Arc::new(AtomicBool::new(false));
@@ -21180,7 +21181,7 @@ mod tests {
         expected_leases: usize,
         expected_reviews: u64,
     ) {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let target_id = format!("target-managed-ssh-{suffix}");
         let session_id = format!("session-managed-ssh-{suffix}");
         let client = Arc::new(TwoManagedSshExecClient {
@@ -21341,7 +21342,7 @@ mod tests {
 
     #[tokio::test]
     async fn protected_path_preflight_rejection_returns_to_the_same_thread() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let protected = tempfile::tempdir().unwrap();
         let protected_path = protected.path().to_string_lossy().into_owned();
         let observed_result = Arc::new(AtomicBool::new(false));
@@ -21432,7 +21433,7 @@ mod tests {
 
     #[tokio::test]
     async fn human_approval_can_outlive_model_deadline_and_executes_job_once() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let fixture = NamedTempFile::new().unwrap();
         std::fs::write(fixture.path(), "durable-approval-fixture").unwrap();
         let observed_result = Arc::new(AtomicBool::new(false));
@@ -21600,7 +21601,7 @@ mod tests {
 
     #[tokio::test]
     async fn unavailable_automatic_reviewer_hands_the_same_job_to_human_review() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let fixture = NamedTempFile::new().unwrap();
         std::fs::write(fixture.path(), "durable-approval-fixture").unwrap();
         let observed_result = Arc::new(AtomicBool::new(false));
@@ -21752,7 +21753,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_approval_creates_a_restricted_rule_without_enabling_full_access() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let fixture = NamedTempFile::new().unwrap();
         std::fs::write(fixture.path(), "durable-approval-fixture").unwrap();
         let observed_result = Arc::new(AtomicBool::new(false));
@@ -21956,7 +21957,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_capability_rule_covers_new_threads_only_in_its_owning_session() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let fixture = NamedTempFile::new().unwrap();
         std::fs::write(fixture.path(), "durable-session-rule-fixture").unwrap();
         let client = Arc::new(RepeatedApprovalReadClient {
@@ -22130,7 +22131,7 @@ mod tests {
         };
 
         for cancel_before_command in [None, Some(true), Some(false)] {
-            let database = NamedTempFile::new().unwrap();
+            let database = TempSqliteDb::new().unwrap();
             let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
                 .database_path(database.path().to_string_lossy())
                 .build()
@@ -22350,7 +22351,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_cancellation_closes_unstarted_pending_human_job_and_waiter() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let fixture = NamedTempFile::new().unwrap();
         std::fs::write(fixture.path(), "must-not-be-read-after-cancel").unwrap();
         let client = Arc::new(ApprovalReadClient {
@@ -22589,7 +22590,7 @@ mod tests {
 
     #[tokio::test]
     async fn restart_passthrough_delivers_singleton_without_model_evaluation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -22658,7 +22659,7 @@ mod tests {
 
     #[tokio::test]
     async fn restart_deterministically_batches_small_execution_results_without_model() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -22706,7 +22707,7 @@ mod tests {
 
     #[tokio::test]
     async fn semantic_delivery_hint_routes_a_small_batch_to_the_composer() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -22769,7 +22770,7 @@ mod tests {
 
     #[tokio::test]
     async fn restart_merges_two_pending_results_into_one_delivery_evaluation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -22907,7 +22908,7 @@ mod tests {
 
     #[tokio::test]
     async fn delivery_reply_covers_only_the_trigger_snapshot() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -23085,7 +23086,7 @@ mod tests {
 
     #[tokio::test]
     async fn activation_claim_uses_persistent_lease_timer_and_terminal_commit_cancels_it() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -23183,7 +23184,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_activation_lease_renews_while_same_local_execution_is_in_flight() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -23344,7 +23345,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_activation_is_recovered_without_restarting_the_runtime() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -23516,7 +23517,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_same_host_activation_recovers_before_lease_expiry_after_restart() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -23745,7 +23746,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_restart_dispatches_a_committed_but_unpublished_message() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -23909,7 +23910,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_restart_materializes_a_pre_routed_consecutive_message_batch() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -24177,7 +24178,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_restart_dispatches_a_committed_session_signal_once() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -24299,7 +24300,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_session_signal_is_symmetric_and_runs_target_concurrently() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -24417,7 +24418,7 @@ mod tests {
 
     #[tokio::test]
     async fn objective_supervisor_continues_without_fake_user_message_and_stops_after_commit() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -24515,7 +24516,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_user_reply_cannot_steal_an_active_objective_evaluation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -24630,7 +24631,7 @@ mod tests {
 
     #[tokio::test]
     async fn same_session_objectives_run_concurrently_and_pause_is_scoped() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -25057,7 +25058,7 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_objective_keeps_final_reply_routing_then_releases_its_evaluation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -25127,7 +25128,7 @@ mod tests {
 
     #[tokio::test]
     async fn active_objective_survives_more_than_one_hundred_model_evaluations() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -25194,7 +25195,7 @@ mod tests {
 
     #[tokio::test]
     async fn llm_can_create_one_idempotent_objective_and_current_evaluation_is_adopted() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -25600,7 +25601,7 @@ mod tests {
 
     #[tokio::test]
     async fn one_activation_can_create_multiple_objectives_that_start_concurrently() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -25720,7 +25721,7 @@ mod tests {
     #[tokio::test]
     async fn abandoned_execution_jobs_reconcile_after_startup_without_replaying_unsafe_work() {
         use crate::memory::{ExecutionJobMutation, ExecutionRetrySafety, NewExecutionJob};
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -25921,7 +25922,7 @@ mod tests {
 
     #[tokio::test]
     async fn objective_wait_is_event_driven_and_the_matching_task_event_resumes_it_once() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -26136,7 +26137,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_restart_recovers_an_expired_objective_evaluation_lease_once() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let database_path = database.path().to_string_lossy().into_owned();
         let store = SqliteStore::new(&database_path).await.unwrap();
         store
@@ -26243,7 +26244,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_restart_repairs_completion_receipt_and_finishes_original_activation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let database_path = database.path().to_string_lossy().into_owned();
         let store = SqliteStore::new(&database_path).await.unwrap();
         store
@@ -26504,7 +26505,7 @@ mod tests {
 
     #[tokio::test]
     async fn shared_context_objectives_keep_two_session_evaluations_and_replies_isolated() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let database_path = database.path().to_string_lossy().into_owned();
         let store = SqliteStore::new(&database_path).await.unwrap();
         store
@@ -26634,7 +26635,7 @@ mod tests {
 
     #[tokio::test]
     async fn persisted_objective_timer_wakes_after_restart_without_polling() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let database_path = database.path().to_string_lossy().into_owned();
         let store = SqliteStore::new(&database_path).await.unwrap();
         store
@@ -26795,7 +26796,7 @@ mod tests {
 
     #[tokio::test]
     async fn inspect_session_context_uses_persisted_mount_before_first_message() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -26844,7 +26845,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_delegation_recursively_cancels_descendants() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -26934,7 +26935,7 @@ mod tests {
 
     #[tokio::test]
     async fn slow_runtime_subscriber_drops_only_model_drafts_and_preserves_durable_correction() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
@@ -27334,7 +27335,7 @@ mod tests {
 
     #[tokio::test]
     async fn artifact_transfer_startup_repair_closes_terminal_scheduler_projection() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
             .build()

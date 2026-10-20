@@ -1,3 +1,6 @@
+#[path = "support/temp_sqlite.rs"]
+mod temp_sqlite;
+
 use morphz::event::Event;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
@@ -19,7 +22,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tempfile::NamedTempFile;
+use temp_sqlite::TempSqliteDb;
 use tracing::Instrument;
 use tracing::{Event as TracingEvent, Subscriber};
 use tracing_subscriber::layer::Context as LayerContext;
@@ -114,7 +117,7 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
     tracing::subscriber::set_global_default(subscriber).unwrap();
 
     runtime.block_on(async {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await
@@ -188,7 +191,7 @@ fn sqlite_hot_path_statement_budgets_are_enforced() {
         // experimental schema lookup.
         #[cfg(feature = "context-db")]
         {
-            let context_db_file = NamedTempFile::new().unwrap();
+            let context_db_file = TempSqliteDb::new().unwrap();
             let context_db_store = SqliteStore::new_with_context_db(
                 context_db_file.path().to_str().unwrap(),
                 &morphz::config::SqliteStorageConfig::default(),

@@ -378,8 +378,13 @@ mod tests {
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::*;
 
-    async fn fixture() -> (tempfile::NamedTempFile, SqliteStore, ThreadRecord, Event) {
-        let file = tempfile::NamedTempFile::new().unwrap();
+    async fn fixture() -> (
+        crate::test_sqlite::TempSqliteDb,
+        SqliteStore,
+        ThreadRecord,
+        Event,
+    ) {
+        let file = crate::test_sqlite::TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(&file.path().to_string_lossy())
             .await
             .unwrap();
@@ -688,7 +693,7 @@ mod tests {
             crate::response_annotations::Protocol::Off,
             crate::response_annotations::Protocol::On,
         ] {
-            let file = tempfile::NamedTempFile::new().unwrap();
+            let file = crate::test_sqlite::TempSqliteDb::new().unwrap();
             let store = std::sync::Arc::new(
                 SqliteStore::new(&file.path().to_string_lossy())
                     .await
@@ -700,7 +705,7 @@ mod tests {
 
     #[tokio::test]
     async fn natural_steering_cannot_transfer_an_explicitly_parallel_typed_input() {
-        let file = tempfile::NamedTempFile::new().unwrap();
+        let file = crate::test_sqlite::TempSqliteDb::new().unwrap();
         let store = std::sync::Arc::new(
             SqliteStore::new(&file.path().to_string_lossy())
                 .await

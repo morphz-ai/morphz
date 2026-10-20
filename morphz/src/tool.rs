@@ -10731,6 +10731,7 @@ mod tests {
         ThreadStore as _, TimerStore,
     };
     use crate::permission::PermissionMode;
+    use crate::test_sqlite::TempSqliteDb;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Weak;
     use tempfile::{NamedTempFile, TempDir};
@@ -10906,7 +10907,7 @@ Body
 
     #[tokio::test]
     async fn principal_tool_uses_runtime_identity_and_returns_only_owned_sessions() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -11089,12 +11090,8 @@ Body
 
     async fn start_test_background_scheduler(
         bus: Arc<InMemoryEventBus>,
-    ) -> (
-        Arc<BackgroundTaskScheduler>,
-        NamedTempFile,
-        Arc<SqliteStore>,
-    ) {
-        let database = NamedTempFile::new().unwrap();
+    ) -> (Arc<BackgroundTaskScheduler>, TempSqliteDb, Arc<SqliteStore>) {
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -11279,7 +11276,7 @@ Body
 
     #[tokio::test]
     async fn send_message_routes_to_another_session_without_ending_current_evaluation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -11369,7 +11366,7 @@ Body
 
     #[tokio::test]
     async fn session_signal_commits_one_target_dialogue_turn_and_is_idempotent() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -11493,7 +11490,7 @@ Body
 
     #[tokio::test]
     async fn schedule_tx_persists_and_dispatches_a_timed_spawn_once() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -11616,7 +11613,7 @@ Body
 
     #[tokio::test]
     async fn schedule_tx_atomically_creates_concurrent_tasks_with_independent_models() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -11837,7 +11834,7 @@ Body
 
     #[tokio::test]
     async fn schedule_tx_atomically_creates_objective_singleton_group_and_durable_thread() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -12016,7 +12013,7 @@ Body
     }
 
     async fn assert_existing_objective_dispatches_four_threads(binding_mode: &str) {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -12245,7 +12242,7 @@ Body
     }
 
     async fn assert_promoted_thread_dispatches(binding_mode: &str) {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -12523,7 +12520,7 @@ Body
     }
 
     async fn scheduler_store_with_threads(
-        database: &NamedTempFile,
+        database: &TempSqliteDb,
         thread_ids: &[(&str, &str)],
     ) -> Arc<SqliteStore> {
         let store = Arc::new(
@@ -12606,7 +12603,7 @@ Body
 
     #[tokio::test]
     async fn peer_runtime_can_claim_and_dispatch_a_durable_schedule_timer() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let owner_store = scheduler_store_with_threads(
             &database,
             &[("thread-peer-schedule", "root-peer-schedule")],
@@ -12660,7 +12657,7 @@ Body
 
     #[tokio::test]
     async fn one_shot_schedule_to_objective_primary_thread_marks_interrupt_route() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(&database, &[]).await;
         let objective_id = "objective-scheduled-interrupt";
         let objective = store
@@ -12734,7 +12731,7 @@ Body
 
     #[tokio::test]
     async fn stale_objective_generation_cannot_dispatch_a_schedule_or_signal() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(&database, &[]).await;
         let objective = store
             .create_objective(NewObjective {
@@ -12890,7 +12887,7 @@ Body
 
     #[tokio::test]
     async fn paused_objective_atomically_fences_its_queued_schedules() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(&database, &[]).await;
         let objective = store
             .create_objective(NewObjective {
@@ -13010,7 +13007,7 @@ Body
 
     #[tokio::test]
     async fn scheduler_pause_cancels_timer_and_resume_rearms_current_generation() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(
             &database,
             &[("thread-control-pause", "root-control-pause")],
@@ -13097,7 +13094,7 @@ Body
 
     #[tokio::test]
     async fn schedule_tx_batches_read_only_inspects_but_not_mutations() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(
             &database,
             &[("thread-inspect-batch", "root-inspect-batch")],
@@ -13214,7 +13211,7 @@ Body
 
     #[tokio::test]
     async fn schedule_tx_exposes_revision_fenced_control_receipts() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(
             &database,
             &[("thread-control-tool", "root-control-tool")],
@@ -13338,7 +13335,7 @@ Body
 
     #[tokio::test]
     async fn scheduler_reschedule_moves_timer_both_later_and_earlier_and_fences_stale_timer() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(
             &database,
             &[("thread-control-reschedule", "root-control-reschedule")],
@@ -13419,7 +13416,7 @@ Body
 
     #[tokio::test]
     async fn scheduler_restart_recovers_pause_and_resume_crash_windows_without_duplicate_signal() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let path = database.path().to_string_lossy().to_string();
         let store = scheduler_store_with_threads(
             &database,
@@ -13534,7 +13531,7 @@ Body
 
     #[tokio::test]
     async fn scheduler_waits_for_dependency_terminal_state_before_dispatch() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(
             &database,
             &[
@@ -13629,7 +13626,7 @@ Body
 
     #[tokio::test]
     async fn scheduler_recovery_replays_terminal_dependency_after_notification_crash_window() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(
             &database,
             &[
@@ -13715,7 +13712,7 @@ Body
 
     #[tokio::test]
     async fn concurrent_dependency_notifications_deliver_one_schedule_occurrence() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(
             &database,
             &[
@@ -13796,7 +13793,7 @@ Body
 
     #[tokio::test]
     async fn scheduler_recover_rearms_queued_intent_after_restart() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(
             &database,
             &[("thread-after-restart", "root-after-restart")],
@@ -13845,7 +13842,7 @@ Body
 
     #[tokio::test]
     async fn recurring_schedule_routes_each_due_event_to_its_occurrence_thread() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = scheduler_store_with_threads(
             &database,
             &[("thread-recurring-template", "root-recurring-template")],
@@ -15447,7 +15444,7 @@ Body
 
     #[tokio::test]
     async fn explicit_background_reserves_child_before_spawn_and_returns_started_receipt() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -15582,7 +15579,7 @@ Body
 
     #[tokio::test]
     async fn edge_scoped_background_exec_detaches_stream_and_has_one_local_terminal_owner() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -15790,7 +15787,7 @@ Body
 
     #[tokio::test]
     async fn durable_background_process_completion_commits_one_terminal_event_and_outbox() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -15932,7 +15929,7 @@ Body
 
     #[tokio::test]
     async fn background_completion_escalates_to_session_after_owner_thread_is_terminal() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -16137,7 +16134,7 @@ Body
 
     #[tokio::test]
     async fn terminal_supervisor_owned_child_completion_is_not_session_escalated() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -16332,7 +16329,7 @@ Body
 
     #[tokio::test]
     async fn durable_background_execution_is_authoritative_and_cancelled_after_pgid_exit() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -16587,7 +16584,7 @@ Body
 
     #[tokio::test]
     async fn restart_marks_unowned_background_job_lost_and_controls_read_store() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -16901,7 +16898,7 @@ Body
 
     #[tokio::test]
     async fn online_reconciliation_closes_an_expired_edge_background_owner() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -17026,7 +17023,7 @@ Body
 
     #[tokio::test]
     async fn restart_closes_cancel_requested_background_when_local_process_is_absent() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -17196,7 +17193,7 @@ Body
 
     #[tokio::test]
     async fn restart_closes_running_job_from_already_durable_result_event() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -17639,7 +17636,7 @@ Body
 
     #[tokio::test]
     async fn restart_recovers_terminal_result_after_owner_thread_completed() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -17817,7 +17814,7 @@ Body
 
     #[tokio::test]
     async fn peer_runtime_can_deliver_background_checkpoint_without_live_process_handle() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -17987,7 +17984,7 @@ Body
     /// and passes once Thread -> Session escalation is implemented.
     #[tokio::test]
     async fn terminal_thread_background_checkpoint_escalates_to_session() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -18184,7 +18181,7 @@ Body
 
     #[tokio::test]
     async fn terminal_supervisor_owned_child_checkpoint_is_not_session_escalated() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -18386,7 +18383,7 @@ Body
 
     #[tokio::test]
     async fn persisted_background_wake_orphan_is_absorbed_after_runtime_restart() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await

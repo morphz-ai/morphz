@@ -7058,11 +7058,11 @@ mod tests {
     use crate::config::AppConfig;
     use crate::llm::{Client, Message, Response, ToolDefinition};
     use crate::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind};
+    use crate::test_sqlite::TempSqliteDb;
     use async_trait::async_trait;
     use ratatui::backend::TestBackend;
     use std::collections::BTreeSet;
     use std::sync::Arc;
-    use tempfile::NamedTempFile;
 
     struct OfflineTuiClient;
 
@@ -7133,7 +7133,7 @@ mod tests {
 
     #[tokio::test]
     async fn tui_model_selection_is_persisted_per_session_and_restored_on_reentry() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let mut config = AppConfig::default();
         config.llm.model = "model-a".to_string();
         config.llm.models = vec!["model-a".to_string(), "model-b".to_string()];

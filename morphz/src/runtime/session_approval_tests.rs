@@ -545,7 +545,7 @@ async fn conformance(runtime: &MorphzRuntime, sdk: &MorphzSdk) {
 
 #[tokio::test]
 async fn session_approval_sqlite_contract_and_recovery() {
-    let db = tempfile::NamedTempFile::new().unwrap();
+    let db = crate::test_sqlite::TempSqliteDb::new().unwrap();
     let raw = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(db.path()))

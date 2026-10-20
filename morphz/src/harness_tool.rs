@@ -227,7 +227,7 @@ mod tests {
         // SqliteStore uses multiple pooled connections, so `:memory:` would
         // create one private database per connection.  A temporary file keeps
         // the migration/schema visible to the whole pool just like production.
-        let database = tempfile::NamedTempFile::new().unwrap();
+        let database = crate::test_sqlite::TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await

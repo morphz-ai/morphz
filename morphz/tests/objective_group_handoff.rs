@@ -1,3 +1,6 @@
+#[path = "support/temp_sqlite.rs"]
+mod temp_sqlite;
+
 use chrono::{Duration, Utc};
 use morphz::event::Event;
 use morphz::memory::sqlite::SqliteStore;
@@ -9,11 +12,11 @@ use morphz::memory::{
     ThreadKind, ThreadStore as _, ThreadSupervision, ThreadSupervisorKind,
 };
 use serde_json::json;
-use tempfile::NamedTempFile;
+use temp_sqlite::TempSqliteDb;
 
 #[tokio::test]
 async fn objective_group_terminal_commit_returns_its_durable_supervisor_wake() {
-    let database = NamedTempFile::new().unwrap();
+    let database = TempSqliteDb::new().unwrap();
     let store = SqliteStore::new(database.path().to_str().unwrap())
         .await
         .unwrap();

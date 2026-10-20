@@ -1,4 +1,7 @@
 //! Real-store conformance for executable retention, not a UI catalog filter.
+#[path = "support/temp_sqlite.rs"]
+mod temp_sqlite;
+
 use morphz::event::Event;
 use morphz::harness::{ExactHarnessRef, HarnessRegistry};
 use morphz::harness_package::{
@@ -466,7 +469,7 @@ async fn conformance<S: RuntimeStore>(store: &S) -> Result<(), TestError> {
 
 #[tokio::test]
 async fn sqlite_harness_upgrade_retention_cleanup_restart_and_history() {
-    let file = tempfile::NamedTempFile::new().unwrap();
+    let file = temp_sqlite::TempSqliteDb::new().unwrap();
     let store = SqliteStore::new(file.path().to_str().unwrap())
         .await
         .unwrap();

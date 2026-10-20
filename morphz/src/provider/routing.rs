@@ -2304,7 +2304,7 @@ mod tests {
     use crate::config::{CredentialSource, ModelProtocol, ProviderModelConfig};
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{NewAgent, NewCognitiveContext, SessionDirectoryStore};
-    use tempfile::NamedTempFile;
+    use crate::test_sqlite::TempSqliteDb;
 
     fn routed_config() -> AppConfig {
         let mut app = AppConfig::default();
@@ -2878,7 +2878,7 @@ mod tests {
 
     #[tokio::test]
     async fn durable_account_state_fails_over_without_changing_the_alias() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -2916,7 +2916,7 @@ mod tests {
 
     #[tokio::test]
     async fn inherited_agent_accounts_follow_catalog_without_bypassing_exclusions_or_route_gates() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await
@@ -3029,7 +3029,7 @@ mod tests {
 
     #[tokio::test]
     async fn durable_agent_binding_filters_accounts_by_context_owner() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3169,7 +3169,7 @@ mod tests {
             axum::serve(listener, provider_app).await.unwrap();
         });
 
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3272,7 +3272,7 @@ mod tests {
 
     #[tokio::test]
     async fn account_failure_never_switches_physical_model_without_explicit_fallback() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3312,7 +3312,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_route_fallback_allows_switching_physical_model() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3350,7 +3350,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_static_auth_failure_is_retried_after_restart() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3424,7 +3424,7 @@ mod tests {
 
     #[tokio::test]
     async fn healthy_account_beats_stale_static_auth_affinity() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3466,7 +3466,7 @@ mod tests {
 
     #[tokio::test]
     async fn quota_exhaustion_fails_over_then_route_success_recovers_account() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3553,7 +3553,7 @@ mod tests {
 
     #[tokio::test]
     async fn route_failure_does_not_fence_sibling_route_sharing_account() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3646,7 +3646,7 @@ mod tests {
 
     #[tokio::test]
     async fn oauth_auth_failure_remains_fenced_until_login() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3708,7 +3708,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_flight_success_does_not_revive_operator_disabled_account() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await

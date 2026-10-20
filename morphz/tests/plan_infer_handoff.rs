@@ -1,3 +1,6 @@
+#[path = "support/temp_sqlite.rs"]
+mod temp_sqlite;
+
 use morphz::config::AppConfig;
 use morphz::event::{Event, TYPE_INFER_REQUEST, TYPE_USER_MESSAGE};
 use morphz::llm::{Client, Message, Response, ToolCallRepr, ToolDefinition};
@@ -14,7 +17,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use tempfile::NamedTempFile;
+use temp_sqlite::TempSqliteDb;
 
 struct PlanInferClient {
     responses: Mutex<VecDeque<Response>>,
@@ -68,7 +71,7 @@ impl Client for CancelledInferClient {
 
 #[tokio::test]
 async fn cancelling_live_infer_refills_parent_and_releases_child() {
-    let database = NamedTempFile::new().unwrap();
+    let database = TempSqliteDb::new().unwrap();
     let store = Arc::new(
         SqliteStore::new(database.path().to_str().unwrap())
             .await
@@ -319,7 +322,7 @@ impl Client for PlanInferClient {
 
 #[tokio::test]
 async fn durable_plan_infer_dispatches_its_committed_signal_without_restart() {
-    let database = NamedTempFile::new().unwrap();
+    let database = TempSqliteDb::new().unwrap();
     let store = Arc::new(
         SqliteStore::new(database.path().to_str().unwrap())
             .await
@@ -432,7 +435,7 @@ async fn durable_plan_infer_dispatches_its_committed_signal_without_restart() {
 
 #[tokio::test]
 async fn plan_infer_tool_continuation_bypasses_its_waiting_parent_event_bus_slot() {
-    let database = NamedTempFile::new().unwrap();
+    let database = TempSqliteDb::new().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(
         workspace.path().join("Cargo.toml"),
@@ -553,7 +556,7 @@ async fn plan_infer_tool_continuation_bypasses_its_waiting_parent_event_bus_slot
 
 #[tokio::test]
 async fn concurrent_plan_infers_share_one_suspended_parent_admission_slot() {
-    let database = NamedTempFile::new().unwrap();
+    let database = TempSqliteDb::new().unwrap();
     let store = Arc::new(
         SqliteStore::new(database.path().to_str().unwrap())
             .await
@@ -709,7 +712,7 @@ async fn concurrent_plan_infers_share_one_suspended_parent_admission_slot() {
 
 #[tokio::test]
 async fn claiming_a_pre_fix_direct_signal_backfills_its_parent_activation() {
-    let database = NamedTempFile::new().unwrap();
+    let database = TempSqliteDb::new().unwrap();
     let store = Arc::new(
         SqliteStore::new(database.path().to_str().unwrap())
             .await

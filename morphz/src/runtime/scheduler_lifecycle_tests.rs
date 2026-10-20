@@ -39,15 +39,17 @@ impl Client for CancelClient {
     }
 }
 
-async fn fixture() -> (tempfile::NamedTempFile, MorphzRuntime) {
+async fn fixture() -> (crate::test_sqlite::TempSqliteDb, MorphzRuntime) {
     fixture_with_client(Arc::new(CancelClient {
         calls: AtomicUsize::new(0),
     }))
     .await
 }
 
-async fn fixture_with_client(client: Arc<dyn Client>) -> (tempfile::NamedTempFile, MorphzRuntime) {
-    let file = tempfile::NamedTempFile::new().unwrap();
+async fn fixture_with_client(
+    client: Arc<dyn Client>,
+) -> (crate::test_sqlite::TempSqliteDb, MorphzRuntime) {
+    let file = crate::test_sqlite::TempSqliteDb::new().unwrap();
     let runtime = MorphzRuntime::builder(AppConfig::default(), client)
         .database_path(file.path().to_string_lossy())
         .build()

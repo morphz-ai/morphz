@@ -3418,11 +3418,11 @@ mod tests {
         admit_program_value_candidate, validate, AllowList, PlanProgramValue,
         ProgramValueProvenance,
     };
+    use crate::test_sqlite::TempSqliteDb;
     use crate::timer::TimerEngine;
     use crate::tool::Tool;
     use chrono::Duration;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-    use tempfile::NamedTempFile;
 
     struct DefinitionOnlyTool;
 
@@ -3584,7 +3584,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_context_is_injected_and_host_view_replays_its_immutable_receipt() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3660,7 +3660,7 @@ mod tests {
 
     #[tokio::test]
     async fn typed_context_proposal_commits_once_and_recovers_the_commit_window() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3757,7 +3757,7 @@ mod tests {
 
     #[tokio::test]
     async fn objective_wait_proposal_uses_authority_and_replays_without_a_second_transition() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3868,7 +3868,7 @@ mod tests {
 
     #[tokio::test]
     async fn objective_completion_proposal_consumes_committed_outcome_and_replays_intent() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -3988,7 +3988,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_view_normalizes_optional_fields_into_typed_yao_values() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -4037,7 +4037,7 @@ mod tests {
 
     #[tokio::test]
     async fn evidence_and_outcome_candidates_commit_once_and_return_opaque_refs() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -4114,7 +4114,7 @@ mod tests {
 
     #[tokio::test]
     async fn host_commit_rejects_forged_candidates_and_uncommitted_reference_kinds() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -4199,7 +4199,7 @@ mod tests {
 
     #[tokio::test]
     async fn physical_call_is_atomically_suspended_and_refilled_through_execution_job() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -4338,7 +4338,7 @@ mod tests {
 
     #[tokio::test]
     async fn waiting_plan_keyset_pages_do_not_starve_a_later_terminal_child() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -4478,7 +4478,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_call_planning_error_terminates_the_claimed_plan_instead_of_stranding_it() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -4523,7 +4523,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_running_plan_is_fenced_and_requeued_for_immediate_recovery() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -4579,7 +4579,7 @@ mod tests {
 
     #[tokio::test]
     async fn infer_is_atomically_suspended_and_refilled_through_child_activation() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -4866,7 +4866,7 @@ mod tests {
 
     #[tokio::test]
     async fn complete_infer_body_and_explicit_captures_survive_durable_reconstruction() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -4934,7 +4934,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_json_infer_result_fails_closed_after_restart_without_physical_call() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -5138,7 +5138,7 @@ mod tests {
 
     #[tokio::test]
     async fn typed_par_materializes_durable_child_plans_and_recovers_the_join() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -5371,7 +5371,7 @@ mod tests {
 
     #[tokio::test]
     async fn typed_par_aggregates_failure_only_after_every_branch_is_terminal() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -5486,7 +5486,7 @@ mod tests {
 
     #[tokio::test]
     async fn admitted_program_value_runs_as_a_durable_child_and_recovers_the_join() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -5678,7 +5678,7 @@ mod tests {
 
     #[tokio::test]
     async fn infer_root_program_value_recovers_then_dispatches_a_formal_child_evaluation() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await

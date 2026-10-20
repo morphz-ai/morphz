@@ -1,3 +1,6 @@
+#[path = "support/temp_sqlite.rs"]
+mod temp_sqlite;
+
 use morphz::approval_authority::stable_approval_identity;
 use morphz::config::AppConfig;
 use morphz::context_state::MindState;
@@ -57,7 +60,8 @@ use std::pin::Pin;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tempfile::{NamedTempFile, TempDir};
+use temp_sqlite::TempSqliteDb;
+use tempfile::TempDir;
 use tokio::sync::Barrier;
 
 type TestError = Box<dyn std::error::Error + Send + Sync>;
@@ -2254,7 +2258,7 @@ async fn assert_thread_family_created_at_tie<S: ThreadStore>(store: &S) {
 
 #[tokio::test]
 async fn sqlite_thread_family_read_satisfies_bounded_scoped_conformance() {
-    let database = NamedTempFile::new().unwrap();
+    let database = TempSqliteDb::new().unwrap();
     let store = Arc::new(
         SqliteStore::new(database.path().to_str().unwrap())
             .await
@@ -11215,7 +11219,7 @@ async fn assert_two_postgres_runtimes_deliver_one_dialogue_once(
 
 #[tokio::test]
 async fn sqlite_two_runtimes_with_different_contexts_keep_a_long_activation_single_owned() {
-    let database = NamedTempFile::new().unwrap();
+    let database = TempSqliteDb::new().unwrap();
     let first = Arc::new(
         SqliteStore::new(database.path().to_str().unwrap())
             .await
@@ -12073,7 +12077,7 @@ where
 
 #[tokio::test]
 async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
-    let database = NamedTempFile::new().unwrap();
+    let database = TempSqliteDb::new().unwrap();
     let store = Arc::new(
         SqliteStore::new(database.path().to_str().unwrap())
             .await

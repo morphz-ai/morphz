@@ -253,8 +253,8 @@ mod tests {
     use super::*;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::RuntimeTimerStatus;
+    use crate::test_sqlite::TempSqliteDb;
     use std::sync::atomic::AtomicUsize;
-    use tempfile::NamedTempFile;
 
     #[test]
     fn timer_claimants_are_unique_inside_one_process() {
@@ -263,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn timer_engine_fires_persisted_timer_once() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await

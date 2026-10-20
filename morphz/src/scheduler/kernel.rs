@@ -607,7 +607,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_dependency_command_replay_is_idempotent_in_sqlite() {
-        let database = tempfile::NamedTempFile::new().unwrap();
+        let database = crate::test_sqlite::TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_string_lossy().as_ref())
                 .await
@@ -651,7 +651,7 @@ mod tests {
 
     #[tokio::test]
     async fn retries_same_fenced_command_after_sqlite_writer_contention() {
-        let database = tempfile::NamedTempFile::new().unwrap();
+        let database = crate::test_sqlite::TempSqliteDb::new().unwrap();
         let path = database.path().to_path_buf();
         let store = Arc::new(
             SqliteStore::new(path.to_string_lossy().as_ref())

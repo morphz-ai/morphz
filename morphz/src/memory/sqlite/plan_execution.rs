@@ -1103,8 +1103,8 @@ mod tests {
         NewSession, NewThread, NewThreadActivation, QueryFilter, SessionDirectoryStore,
         SessionMountKind, SignalOutboxStatus, ThreadKind, ThreadStore,
     };
+    use crate::test_sqlite::TempSqliteDb;
     use chrono::Duration;
-    use tempfile::NamedTempFile;
 
     async fn seed_plan_route(store: &SqliteStore, suffix: &str) -> NewPlanExecution {
         let context_id = format!("plan-context-{suffix}");
@@ -1213,7 +1213,7 @@ mod tests {
 
     #[tokio::test]
     async fn plan_execution_lifecycle_is_fenced_and_survives_restart() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_string_lossy().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         let new = seed_plan_route(&store, "lifecycle").await;
@@ -1367,7 +1367,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_plan_claim_can_be_taken_over_but_old_fence_cannot_write() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -1418,7 +1418,7 @@ mod tests {
 
     #[tokio::test]
     async fn infer_request_and_plan_wait_commit_atomically_and_replay_exactly() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -1535,7 +1535,7 @@ mod tests {
 
     #[tokio::test]
     async fn child_job_and_plan_wait_are_atomic_idempotent_and_route_fenced() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();

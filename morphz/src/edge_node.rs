@@ -2757,7 +2757,7 @@ mod tests {
     #[tokio::test]
     async fn edge_worker_detaches_two_services_and_runs_sibling_before_background_exit() {
         let workspace = tempfile::TempDir::new().unwrap();
-        let database = tempfile::NamedTempFile::new().unwrap();
+        let database = crate::test_sqlite::TempSqliteDb::new().unwrap();
         let release_first = workspace.path().join("release-first-service");
         let release_second = workspace.path().join("release-second-service");
         let first_completed = workspace.path().join("first-service-completed");

@@ -10511,11 +10511,11 @@ mod tests {
     };
     use crate::runtime::{RuntimeIdentity, RuntimeToolPolicy};
     use crate::secret_store::{SecretStore, SecretValueBackend};
+    use crate::test_sqlite::TempSqliteDb;
     use chrono::{Duration as ChronoDuration, Utc};
     use serde_json::Value;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
-    use tempfile::NamedTempFile;
 
     #[test]
     fn session_turn_thread_view_distinguishes_dialogue_from_execution_without_exposing_body() {
@@ -10919,11 +10919,11 @@ mod tests {
         test_state_at_with_workers(path, true).await
     }
 
-    async fn test_state() -> (Arc<AppState>, MorphzRuntime) {
-        let tmp = NamedTempFile::new().unwrap();
+    async fn test_state() -> (TempSqliteDb, Arc<AppState>, MorphzRuntime) {
+        let tmp = TempSqliteDb::new().unwrap();
         let path = tmp.path().to_path_buf();
-        drop(tmp);
-        test_state_at(&path).await
+        let (state, runtime) = test_state_at(&path).await;
+        (tmp, state, runtime)
     }
 
     #[tokio::test]
@@ -11194,7 +11194,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_declares_http_and_sdk_contract_versions() {
-        let (state, _) = test_state().await;
+        let (_database, state, _) = test_state().await;
         let response = handle_status(State(state), HeaderMap::new(), Query(AuthQuery::default()))
             .await
             .into_response();
@@ -11212,7 +11212,7 @@ mod tests {
 
     #[tokio::test]
     async fn observability_endpoints_require_operator_auth_and_export_metrics() {
-        let (mut state, runtime) = test_state().await;
+        let (_database, mut state, runtime) = test_state().await;
         Arc::get_mut(&mut state).unwrap().auth_token = Some("metrics-secret".to_string());
         runtime.observability().record_turn_stage(
             "msg-observability-test",
@@ -11269,7 +11269,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_prompt_endpoint_exposes_the_authoritative_profile_content_and_hash() {
-        let (state, _) = test_state().await;
+        let (_database, state, _) = test_state().await;
         let response =
             handle_get_system_prompt(State(state), HeaderMap::new(), Query(AuthQuery::default()))
                 .await
@@ -11430,7 +11430,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_io_capabilities_reports_live_exact_harnesses() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let response =
             session_io_http::capabilities(State(Arc::clone(&state)), HeaderMap::new()).await;
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -11734,7 +11734,7 @@ mod tests {
 
     #[tokio::test]
     async fn objective_http_creation_atomically_binds_exact_harness() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let session_response = handle_create_session(
             State(Arc::clone(&state)),
             HeaderMap::new(),
@@ -11906,7 +11906,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_with_only_session_route_mounts_into_default_context() {
-        let (_, runtime) = test_state().await;
+        let (_database, _, runtime) = test_state().await;
 
         ensure_dashboard_event_session_route(
             &runtime,
@@ -11935,7 +11935,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_without_context_uses_registered_session_mount() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let response = handle_create_session(
             State(state),
             HeaderMap::new(),
@@ -12737,7 +12737,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejected_gateway_preconditions_do_not_leave_new_blank_context() {
-        let (default_state, runtime) = test_state().await;
+        let (_database, default_state, runtime) = test_state().await;
         let state = Arc::new(AppState {
             runtime: runtime.clone(),
             sdk: MorphzSdk::new(runtime.clone()),
@@ -12833,7 +12833,7 @@ mod tests {
 
     #[tokio::test]
     async fn catalog_mutations_rename_and_archive_without_erasing_context_history() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let create_context = handle_create_context(
             State(Arc::clone(&state)),
             HeaderMap::new(),
@@ -12938,7 +12938,7 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_gateway_requires_principal_and_fences_cross_identity_sessions() {
-        let (default_state, runtime) = test_state().await;
+        let (_database, default_state, runtime) = test_state().await;
         let state = Arc::new(AppState {
             runtime: runtime.clone(),
             sdk: MorphzSdk::new(runtime.clone()),
@@ -13912,7 +13912,7 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_gateway_can_explicitly_claim_legacy_session_mapping() {
-        let (default_state, runtime) = test_state().await;
+        let (_database, default_state, runtime) = test_state().await;
         runtime
             .create_session(NewSession {
                 id: "legacy-site-session".to_string(),
@@ -13964,7 +13964,7 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_reasoning_control_persists_for_restart_and_changes_subsequent_requests() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let managed_config_path = state.managed_config_path.clone().unwrap();
         let response = handle_update_inference(
             State(state),
@@ -13997,9 +13997,8 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_exposes_only_native_grok_45_effort_levels_and_rejects_max() {
-        let tmp = NamedTempFile::new().unwrap();
+        let tmp = TempSqliteDb::new().unwrap();
         let database_path = tmp.path().to_path_buf();
-        drop(tmp);
         let mut config = AppConfig::default();
         config.llm.model = "grok-route".to_string();
         config.provider_instances.insert(
@@ -14065,9 +14064,8 @@ mod tests {
 
     #[tokio::test]
     async fn provider_catalog_http_mutations_compose_before_runtime_restart() {
-        let tmp = NamedTempFile::new().unwrap();
+        let tmp = TempSqliteDb::new().unwrap();
         let database_path = tmp.path().to_path_buf();
-        drop(tmp);
         let (state, _runtime) = test_state_at_with_workers(&database_path, false).await;
         let managed_config_path = state.managed_config_path.clone().unwrap();
         let provider = ProviderInstanceConfig {
@@ -14173,7 +14171,7 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_auto_review_model_is_hot_applied_persisted_and_removable() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let snapshot = runtime.provider_control_snapshot().await.unwrap();
         assert_eq!(
             snapshot.reviewer,
@@ -15238,9 +15236,8 @@ mod tests {
 
     #[tokio::test]
     async fn enabled_account_models_remain_visible_without_discovery_cache() {
-        let tmp = NamedTempFile::new().unwrap();
+        let tmp = TempSqliteDb::new().unwrap();
         let database_path = tmp.path().to_path_buf();
-        drop(tmp);
         let (state, runtime) = test_state_at_with_workers(&database_path, false).await;
         let managed_config_path = state.managed_config_path.clone().unwrap();
 
@@ -16281,7 +16278,7 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_model_capacity_is_persistent_and_immediately_updates_context_budget() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let managed_config_path = state.managed_config_path.clone().unwrap();
         let response = handle_update_inference(
             State(state),
@@ -16318,9 +16315,8 @@ mod tests {
 
     #[tokio::test]
     async fn dashboard_model_capacity_follows_modern_route_without_legacy_provider() {
-        let tmp = NamedTempFile::new().unwrap();
+        let tmp = TempSqliteDb::new().unwrap();
         let database_path = tmp.path().to_path_buf();
-        drop(tmp);
         let managed_config_path = database_path.with_extension("managed").join("managed.toml");
         std::fs::create_dir_all(managed_config_path.parent().unwrap()).unwrap();
         let managed = r#"
@@ -16770,7 +16766,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn dashboard_model_control_switches_only_to_the_configured_catalog() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let response = handle_update_inference(
             State(Arc::clone(&state)),
             HeaderMap::new(),
@@ -16806,7 +16802,7 @@ account = "xai-account"
     #[tokio::test]
     async fn response_annotation_setting_is_operator_only_persistent_and_revision_fenced() {
         use crate::response_annotations::Protocol;
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let mut state = Arc::try_unwrap(state).ok().unwrap();
         state.auth_token = Some("test-operator".into());
         state.gateway_token = Some("test-gateway".into());
@@ -16918,9 +16914,8 @@ account = "xai-account"
 
     #[tokio::test]
     async fn dashboard_evaluation_model_policy_updates_runtime_and_managed_config_atomically() {
-        let tmp = NamedTempFile::new().unwrap();
+        let tmp = TempSqliteDb::new().unwrap();
         let path = tmp.path().to_path_buf();
-        drop(tmp);
         let mut config = AppConfig::default();
         config.llm.provider = Some("fixture-provider".to_string());
         config.llm.model = "primary-model".to_string();
@@ -16988,7 +16983,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn dashboard_session_policy_controls_are_scoped_persistent_and_catalog_validated() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let session_id = "session-model-scope";
         runtime
             .ensure_session(crate::memory::NewSession {
@@ -17240,9 +17235,8 @@ account = "xai-account"
 
     #[tokio::test]
     async fn cloud_session_target_api_distinguishes_edge_onboarding_from_device_selection() {
-        let tmp = NamedTempFile::new().unwrap();
+        let tmp = TempSqliteDb::new().unwrap();
         let path = tmp.path().to_path_buf();
-        drop(tmp);
         let mut config = AppConfig::default();
         config.llm.provider = Some("fixture-provider".to_string());
         config.llm.model = "fixture-model".to_string();
@@ -17324,7 +17318,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn context_token_budget_http_control_is_revision_fenced_and_reversible() {
-        let (state, _) = test_state().await;
+        let (_database, state, _) = test_state().await;
 
         let initial = handle_get_context_token_budget(
             State(Arc::clone(&state)),
@@ -17641,7 +17635,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn attachment_stage_http_flow_resumes_and_binds_once_to_the_message_event() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let create_session = handle_create_session(
             State(Arc::clone(&state)),
             HeaderMap::new(),
@@ -17851,7 +17845,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn session_cancel_notification_preserves_authorized_context_route() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let session = runtime
             .ensure_session(NewSession {
                 id: "api-cancel-route".to_string(),
@@ -17888,7 +17882,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn session_message_endpoint_is_idempotent_and_routes_to_session() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let create = handle_create_session(
             State(Arc::clone(&state)),
             HeaderMap::new(),
@@ -18153,7 +18147,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn model_stream_precedes_durable_reply_and_carries_stable_route() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let create = handle_create_session(
             State(Arc::clone(&state)),
             HeaderMap::new(),
@@ -18468,7 +18462,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn context_observability_endpoints_expose_working_set_and_activations() {
-        let (state, _) = test_state().await;
+        let (_database, state, _) = test_state().await;
         let create = handle_create_session(
             State(Arc::clone(&state)),
             HeaderMap::new(),
@@ -18734,7 +18728,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn event_history_query_returns_the_latest_page_and_pages_backward_without_overlap() {
-        let (_, runtime) = test_state().await;
+        let (_database, _, runtime) = test_state().await;
         for index in 1..=5 {
             runtime
                 .publish(Event::new(
@@ -18797,7 +18791,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn model_usage_endpoint_returns_exact_durable_facts_without_pricing() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         runtime
             .publish(Event::new(
                 "model_usage_http_attempt-1".to_string(),
@@ -18856,7 +18850,7 @@ account = "xai-account"
     async fn session_turn_cancel_is_root_scoped_and_revision_fenced() {
         use crate::memory::sqlite::SqliteStore;
         use crate::memory::{NewThread, ThreadKind};
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
                 id: "scoped-cancel".into(),
@@ -18943,7 +18937,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn session_schedule_uses_kernel_idempotency_and_live_dispatch() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
                 id: "work-schedule-session".into(),
@@ -19067,7 +19061,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn session_annotations_endpoint_authorizes_before_reading_and_keeps_off_nullable() {
-        let (base, runtime) = test_state().await;
+        let (_database, base, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
                 id: "annotations-http-own".into(),
@@ -19393,7 +19387,7 @@ account = "xai-account"
         use crate::memory::sqlite::SqliteStore;
         use crate::memory::{NewSchedule, NewThread, ThreadKind};
 
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
                 id: "api-schedule-session".to_string(),
@@ -19488,7 +19482,7 @@ account = "xai-account"
         use crate::memory::sqlite::SqliteStore;
         use crate::memory::{NewThread, ThreadKind};
 
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
                 id: "api-supersede-session".to_string(),
@@ -19563,7 +19557,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn recall_http_endpoints_share_the_runtime_domain_service() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
                 id: "api-recall-session".to_string(),
@@ -19688,7 +19682,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn dialogue_history_search_only_returns_openable_messages() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
                 id: "dialogue-search-session".to_string(),
@@ -19787,7 +19781,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn session_events_http_pages_backward_without_losing_old_messages() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
                 id: "dialogue-page-session".to_string(),
@@ -19903,7 +19897,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn session_timeline_http_pages_by_first_visible_time_and_validates_cursor() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
                 id: "timeline-http-session".to_string(),
@@ -20036,7 +20030,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn session_events_http_filters_one_root_without_scanning_other_dialogue() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
                 id: "root-page-session".to_string(),
@@ -20147,7 +20141,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn conversation_events_include_durable_tool_lifecycle_and_public_output() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         runtime
             .ensure_session(NewSession {
                 id: "dialogue-tool-lifecycle-session".to_string(),
@@ -20277,7 +20271,7 @@ account = "xai-account"
 
     #[tokio::test]
     async fn agent_and_independent_session_endpoints_preserve_lifecycle_semantics() {
-        let (state, runtime) = test_state().await;
+        let (_database, state, runtime) = test_state().await;
         let create_agent = handle_create_agent(
             State(Arc::clone(&state)),
             HeaderMap::new(),

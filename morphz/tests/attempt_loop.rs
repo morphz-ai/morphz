@@ -1,3 +1,6 @@
+#[path = "support/temp_sqlite.rs"]
+mod temp_sqlite;
+
 use morphz::config::AppConfig;
 use morphz::context_tools::ContextTxTool;
 use morphz::event::{
@@ -5405,7 +5408,7 @@ async fn adversarial_observation_cannot_expand_the_runtime_tool_boundary() {
 
     let blocked_workspace = TempDir::new().unwrap();
     let blocked_path = blocked_workspace.path().join("must-not-exist.txt");
-    let blocked_database = NamedTempFile::new().unwrap();
+    let blocked_database = temp_sqlite::TempSqliteDb::new().unwrap();
     let mut blocked_config = AppConfig::default();
     blocked_config.permissions.mode = PermissionMode::FullAccess;
     blocked_config.permissions.workspace_root = blocked_workspace.path().to_string_lossy().into();
@@ -5482,7 +5485,7 @@ async fn adversarial_observation_cannot_expand_the_runtime_tool_boundary() {
     // execute normally when the Runtime actually offers the capability.
     let control_workspace = TempDir::new().unwrap();
     let control_path = control_workspace.path().join("authorized-control.txt");
-    let control_database = NamedTempFile::new().unwrap();
+    let control_database = temp_sqlite::TempSqliteDb::new().unwrap();
     let mut control_config = AppConfig::default();
     control_config.permissions.mode = PermissionMode::FullAccess;
     control_config.permissions.workspace_root = control_workspace.path().to_string_lossy().into();

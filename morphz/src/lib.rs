@@ -67,6 +67,9 @@ pub mod sexpr_eval;
 pub mod sexpr_vm_contract;
 pub mod steering;
 pub mod terminal;
+#[cfg(test)]
+#[path = "../tests/support/temp_sqlite.rs"]
+pub(crate) mod test_sqlite;
 mod thread_control;
 pub mod timer;
 pub mod tool;

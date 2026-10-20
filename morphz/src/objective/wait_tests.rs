@@ -3,16 +3,17 @@ use super::*;
 use crate::memory::{sqlite::SqliteStore, *};
 
 struct Fixture {
-    database: tempfile::NamedTempFile,
     store: Arc<SqliteStore>,
     supervisor: Arc<ObjectiveSupervisor>,
     objective: ObjectiveRecord,
     job: ExecutionJobRecord,
+    // Struct fields drop in declaration order; keep the database owner last.
+    database: crate::test_sqlite::TempSqliteDb,
 }
 
 impl Fixture {
     async fn new() -> Self {
-        let database = tempfile::NamedTempFile::new().unwrap();
+        let database = crate::test_sqlite::TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(database.path().to_str().unwrap())
                 .await

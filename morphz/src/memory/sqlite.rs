@@ -28511,6 +28511,7 @@ mod tests {
         PlanExecutionFilter, PlanExecutionStatus, PlanExecutionStore, PlanExecutionWaitKind,
         QueryFilter,
     };
+    use crate::test_sqlite::TempSqliteDb;
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
     use sqlx::{Connection, Executor, SqliteConnection};
     use std::collections::HashMap;
@@ -28518,7 +28519,6 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
     use std::time::Duration;
-    use tempfile::NamedTempFile;
 
     async fn bind_message_test_principal(
         store: &SqliteStore,
@@ -28581,7 +28581,7 @@ mod tests {
     async fn concurrent_node_pairings_wait_out_sqlite_writer_contention() {
         const PAIRING_COUNT: usize = 8;
 
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_path_buf();
         let store = Arc::new(
             SqliteStore::new(path.to_string_lossy().as_ref())
@@ -28662,7 +28662,7 @@ mod tests {
     async fn concurrent_redemption_of_one_pairing_code_creates_exactly_one_node() {
         const REDEEMER_COUNT: usize = 8;
 
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_string_lossy().as_ref())
                 .await
@@ -28748,7 +28748,7 @@ mod tests {
 
     #[tokio::test]
     async fn work_assignments_are_durable_idempotent_and_terminally_fenced() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -29028,7 +29028,7 @@ mod tests {
 
     #[tokio::test]
     async fn fresh_schema_enforces_directory_foreign_keys() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -29064,7 +29064,7 @@ mod tests {
 
     #[tokio::test]
     async fn transient_retention_is_bounded_and_preserves_events() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -29178,7 +29178,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_rebuilds_legacy_directory_tables_without_losing_routes() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let mut connection = SqliteConnection::connect_with(
             &SqliteConnectOptions::new()
                 .filename(tmp_file.path())
@@ -29277,7 +29277,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_adds_session_projection_sequence_before_creating_its_index() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(
@@ -29320,7 +29320,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_sqlite_supervisor_check_is_widened_without_losing_threads() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(
@@ -29424,7 +29424,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_legacy_attached_rows_migrate_to_parent_thread_generation() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -29555,7 +29555,7 @@ mod tests {
 
     #[tokio::test]
     async fn scheduler_dependency_store_is_idempotent_and_generation_fenced() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -29678,7 +29678,7 @@ mod tests {
 
     #[tokio::test]
     async fn principal_directory_is_many_to_many_and_survives_restart() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_string_lossy().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         seed_identity_directory(&store).await;
@@ -29816,7 +29816,7 @@ mod tests {
 
     #[tokio::test]
     async fn principal_directory_search_matches_identity_fragments_and_is_paginated() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -29898,7 +29898,7 @@ mod tests {
 
     #[tokio::test]
     async fn principal_causal_route_is_persistent_and_fences_conflicting_replay() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_string_lossy().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         seed_identity_directory(&store).await;
@@ -30036,7 +30036,7 @@ mod tests {
 
     #[tokio::test]
     async fn recall_projection_has_one_logical_and_one_physical_document() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -30102,7 +30102,7 @@ mod tests {
 
     #[tokio::test]
     async fn recall_projection_indexes_chinese_events_frames_and_nfkc() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -30290,7 +30290,7 @@ mod tests {
 
     #[tokio::test]
     async fn recall_indexes_long_event_suffix_and_pages_an_authoritative_time_range() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -30507,7 +30507,7 @@ mod tests {
 
     #[tokio::test]
     async fn recall_whole_document_migration_collapses_chunks_and_reprojects_events() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         store
@@ -30669,7 +30669,7 @@ mod tests {
 
     #[tokio::test]
     async fn recall_fts_tracks_whole_document_text_without_metadata_rewrites() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -30743,7 +30743,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_topic_query_uses_context_topic_time_index() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -30771,7 +30771,7 @@ mod tests {
 
     #[tokio::test]
     async fn activation_reasoning_recovery_uses_activation_topic_index() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -30805,7 +30805,7 @@ mod tests {
 
     #[tokio::test]
     async fn root_scoped_session_history_uses_causal_index() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -30858,7 +30858,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_timeline_cursor_uses_ordering_index() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -30890,7 +30890,7 @@ mod tests {
 
     #[tokio::test]
     async fn bounded_scheduler_history_queries_use_context_updated_indexes() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -30932,7 +30932,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_topic_prefix_query_uses_indexed_binary_bounds() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -30991,7 +30991,7 @@ mod tests {
 
     #[tokio::test]
     async fn recall_outbox_filters_diagnostics_bounds_text_and_fences_stale_claims() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -31084,7 +31084,7 @@ mod tests {
 
     #[tokio::test]
     async fn recall_outbox_consumes_legacy_serialized_chunks_without_losing_suffix() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -31144,7 +31144,7 @@ mod tests {
 
     #[tokio::test]
     async fn recall_fts_identity_survives_vacuum() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -31198,7 +31198,7 @@ mod tests {
 
     #[tokio::test]
     async fn recall_whole_document_schema_is_idempotent() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         sqlx::query(
@@ -31438,7 +31438,7 @@ mod tests {
 
     #[tokio::test]
     async fn schedule_control_plane_is_revision_fenced_and_atomic() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let store = SqliteStore::new(path).await.unwrap();
         let created = seed_schedule(&store, "control").await;
@@ -31510,7 +31510,7 @@ mod tests {
 
     #[tokio::test]
     async fn schedule_terminal_states_are_irreversible_and_paused_state_persists() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let store = SqliteStore::new(path).await.unwrap();
 
@@ -31653,7 +31653,7 @@ mod tests {
 
     #[tokio::test]
     async fn migrates_pre_target_execution_jobs_before_creating_target_index() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let legacy = SqlitePoolOptions::new()
             .max_connections(1)
@@ -31755,7 +31755,7 @@ mod tests {
 
     #[tokio::test]
     async fn migrates_legacy_schedule_schema_without_losing_rows_or_dependencies() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let legacy = SqlitePoolOptions::new()
             .max_connections(1)
@@ -32109,7 +32109,7 @@ mod tests {
 
     #[tokio::test]
     async fn execution_job_approval_and_request_event_are_created_atomically_and_replayable() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         let job = seed_execution_job_input(
@@ -32166,7 +32166,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_or_conflicting_approval_event_rolls_back_job_and_approval() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -32211,7 +32211,7 @@ mod tests {
 
     #[tokio::test]
     async fn allowed_grant_is_atomically_consumed_with_job_claim_and_exact_retry() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         let job = seed_execution_job_input(
@@ -32313,7 +32313,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_revision_never_consumes_grant_and_competing_claim_is_fenced() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -32415,7 +32415,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_denied_or_wrong_job_grant_cannot_claim_execution_job() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -32546,7 +32546,7 @@ mod tests {
 
     #[tokio::test]
     async fn approval_request_is_durable_and_exact_replay_is_fenced() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         let job = seed_execution_job(
@@ -32615,7 +32615,7 @@ mod tests {
 
     #[tokio::test]
     async fn automatic_approval_failure_is_durably_escalated_once_for_human_review() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -32669,7 +32669,7 @@ mod tests {
 
     #[tokio::test]
     async fn approval_allow_and_deny_decisions_are_revision_fenced_and_idempotent() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -32776,7 +32776,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn approval_exact_replay_waits_for_writer_instead_of_failing_snapshot_upgrade() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_path_buf();
         let store = Arc::new(
             SqliteStore::new(path.to_string_lossy().as_ref())
@@ -32853,7 +32853,7 @@ mod tests {
 
     #[tokio::test]
     async fn capability_lease_scope_migration_backfills_the_owning_session_before_indexing() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_path_buf();
         let store = SqliteStore::new(path.to_string_lossy().as_ref())
             .await
@@ -32966,7 +32966,7 @@ mod tests {
 
     #[tokio::test]
     async fn approval_decision_event_is_atomic_and_exact_replay_repairs_legacy_gap() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -33128,7 +33128,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_or_unconsumed_allowed_approval_can_be_cancelled() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -33251,7 +33251,7 @@ mod tests {
 
     #[tokio::test]
     async fn execution_job_claim_heartbeat_cancel_and_terminal_are_fenced() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -33422,7 +33422,7 @@ mod tests {
 
     #[tokio::test]
     async fn execution_job_creation_is_causally_idempotent_and_results_are_durable() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let store = SqliteStore::new(path).await.unwrap();
         let created =
@@ -33553,7 +33553,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_monitor_execution_jobs_are_context_bounded_and_nonterminal() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -33620,7 +33620,7 @@ mod tests {
 
     #[tokio::test]
     async fn execution_job_terminal_and_result_event_commit_atomically_before_batch_signal() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -33782,7 +33782,7 @@ mod tests {
 
     #[tokio::test]
     async fn late_execution_result_closes_job_without_waking_terminal_thread() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -33890,7 +33890,7 @@ mod tests {
 
     #[tokio::test]
     async fn execution_job_exact_replay_cannot_repair_missing_event_with_wrong_route() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -33990,7 +33990,7 @@ mod tests {
 
     #[tokio::test]
     async fn execution_job_requeue_follows_the_persisted_side_effect_boundary() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -34099,7 +34099,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_immediate_transaction_does_not_poison_the_pooled_writer() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -34132,7 +34132,7 @@ mod tests {
 
     #[tokio::test]
     async fn delivery_flush_rearm_never_crosses_first_result_max_wait() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -34211,7 +34211,7 @@ mod tests {
 
     #[tokio::test]
     async fn bounded_delivery_snapshot_rearms_the_remaining_results() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -34284,7 +34284,7 @@ mod tests {
 
     #[tokio::test]
     async fn delivery_flush_generation_fence_and_event_outbox_are_idempotent() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -34413,7 +34413,7 @@ mod tests {
 
     #[tokio::test]
     async fn delivery_flush_reply_atomically_covers_singleton_without_signal_outbox() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -34504,7 +34504,7 @@ mod tests {
 
     #[tokio::test]
     async fn migrates_runtime_timer_check_to_bounded_wait_kinds_without_losing_rows() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -34583,7 +34583,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_timer_claim_is_leased_and_generation_safe() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -34736,7 +34736,7 @@ mod tests {
 
     #[tokio::test]
     async fn migrates_legacy_evaluation_work_items_into_thread_activations() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -34978,7 +34978,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_sqlite_event_store() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -35025,7 +35025,7 @@ mod tests {
 
     #[tokio::test]
     async fn schema_enforces_one_active_mount_per_session() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -35080,7 +35080,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_causal_route_is_projected_and_exactly_queryable() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -35154,7 +35154,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_thread_events_are_lazily_projected_once_without_payload_search() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -35222,7 +35222,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_thread_spanning_the_projection_upgrade_is_filled_completely() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -35297,7 +35297,7 @@ mod tests {
 
     #[tokio::test]
     async fn legacy_causal_projection_backfill_is_bounded_and_resumable() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -35400,7 +35400,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_dialogue_turn_restarts_in_place_and_fences_old_generation() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -35924,7 +35924,7 @@ mod tests {
 
     #[tokio::test]
     async fn target_preflight_retry_atomically_adopts_selected_online_target() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -36096,7 +36096,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_batch_is_ordered_and_atomic() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -36166,7 +36166,7 @@ mod tests {
 
     #[tokio::test]
     async fn user_message_commits_its_thread_signal_before_dispatch() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let store = Arc::new(SqliteStore::new(path).await.unwrap());
         store
@@ -36306,7 +36306,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_activation_admission_query_is_bounded_reserved_and_restart_safe() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let store = SqliteStore::new(path).await.unwrap();
         store
@@ -36650,7 +36650,7 @@ mod tests {
 
     #[tokio::test]
     async fn thread_signals_are_claimed_in_one_bounded_ordered_activation_batch() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = Arc::new(
             SqliteStore::new(tmp_file.path().to_str().unwrap())
                 .await
@@ -37029,7 +37029,7 @@ mod tests {
 
     #[tokio::test]
     async fn direct_thread_signal_waits_out_sqlite_writer_contention() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_path_buf();
         let store = Arc::new(
             SqliteStore::new(path.to_string_lossy().as_ref())
@@ -37165,7 +37165,7 @@ mod tests {
 
     #[tokio::test]
     async fn activation_signal_binding_waits_out_sqlite_writer_contention() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_path_buf();
         let store = Arc::new(
             SqliteStore::new(path.to_string_lossy().as_ref())
@@ -37335,7 +37335,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_direct_signal_replay_is_idempotent_after_thread_termination() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -37465,7 +37465,7 @@ mod tests {
     #[tokio::test]
     async fn response_annotations_are_frozen_and_isolate_ingress_batches() {
         use crate::response_annotations::Protocol;
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let store = SqliteStore::new(path).await.unwrap();
         store
@@ -37586,7 +37586,7 @@ mod tests {
 
     #[tokio::test]
     async fn consecutive_unread_user_messages_share_the_next_dialogue_turn() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -37875,7 +37875,7 @@ mod tests {
 
     #[tokio::test]
     async fn thread_control_is_revision_checked_and_persisted() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -38010,7 +38010,7 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_thread_group_barrier_is_atomic_and_not_repaired_afterward() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -38147,7 +38147,7 @@ mod tests {
 
     #[tokio::test]
     async fn attached_group_barrier_wakes_its_parent_thread_after_origin_activation_ends() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -38279,7 +38279,7 @@ mod tests {
 
     #[tokio::test]
     async fn attached_group_can_close_after_its_parent_is_terminal() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -38467,7 +38467,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_queries_bound_tail_incremental_reads_and_exclusions_in_sql() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -38608,7 +38608,7 @@ mod tests {
 
     #[tokio::test]
     async fn bounded_read_model_hot_queries_use_ordered_indexes() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -38652,7 +38652,7 @@ mod tests {
 
     #[tokio::test]
     async fn incomplete_event_schema_is_rejected() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let url = format!("sqlite://{}", tmp_file.path().display());
         let incomplete_pool = SqlitePool::connect(&url).await.unwrap();
         sqlx::query(
@@ -38681,7 +38681,7 @@ mod tests {
 
     #[tokio::test]
     async fn events_do_not_implicitly_create_session_registry_entries() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -38719,7 +38719,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_message_interrupts_only_pre_execution_dialogue_and_replays_its_input_batch() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -38973,7 +38973,7 @@ mod tests {
 
     #[tokio::test]
     async fn follow_up_waits_for_preceding_delivery() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -39301,7 +39301,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_registry_persists_lifecycle_and_message_idempotency() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -39562,7 +39562,7 @@ mod tests {
 
     #[tokio::test]
     async fn archiving_context_atomically_archives_its_sessions_without_deleting_history() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -39647,7 +39647,7 @@ mod tests {
 
     #[tokio::test]
     async fn context_token_budget_update_is_revision_checked_and_persistent() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_string_lossy().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         store
@@ -39710,7 +39710,7 @@ mod tests {
 
     #[tokio::test]
     async fn context_capability_binding_is_revision_checked_and_persistent() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_string_lossy().to_string();
         let store = SqliteStore::new(&path).await.unwrap();
         store
@@ -39786,7 +39786,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_migrates_existing_context_table_with_token_budget_columns() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_path_buf();
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -39852,7 +39852,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_bootstrap_mounts_and_delegations_are_persistent_and_auditable() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let db_path = tmp_file.path().to_path_buf();
         let store = SqliteStore::new(db_path.to_str().unwrap()).await.unwrap();
 
@@ -40069,7 +40069,7 @@ mod tests {
 
     #[tokio::test]
     async fn objective_and_initialization_events_commit_or_rollback_together() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -40176,7 +40176,7 @@ mod tests {
 
     #[tokio::test]
     async fn objective_claim_and_continuation_outbox_commit_atomically() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let db_path = tmp_file.path().to_path_buf();
         let store = SqliteStore::new(db_path.to_str().unwrap()).await.unwrap();
         store
@@ -40499,7 +40499,7 @@ mod tests {
 
     #[tokio::test]
     async fn objectives_persist_wait_state_and_enforce_revisioned_lifecycle() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let db_path = tmp_file.path().to_path_buf();
         let store = SqliteStore::new(db_path.to_str().unwrap()).await.unwrap();
         store
@@ -40826,7 +40826,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_backfills_legacy_objective_wait_as_authoritative_dependency() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_path_buf();
         let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
         store
@@ -40912,7 +40912,7 @@ mod tests {
 
     #[tokio::test]
     async fn mind_projection_commit_is_atomic_and_cas_fenced() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -41059,7 +41059,7 @@ mod tests {
             format!("{:x}", Sha256::digest(serde_json::to_vec(&legacy).unwrap()))
         }
 
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let legacy = SqliteStore::new(path).await.unwrap();
         legacy
@@ -41239,7 +41239,7 @@ mod tests {
         use crate::context_store::context_state_commitment;
         use crate::orchestrator::context::MindState;
 
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let config = SqliteStorageConfig::default();
         let context_id = "large-cognitive-store-migration-context";
@@ -41350,7 +41350,7 @@ mod tests {
             )
         }
 
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let config = SqliteStorageConfig::default();
         let context_id = "cognitive-store-switch-context";
@@ -41525,7 +41525,7 @@ mod tests {
         use crate::context_store::{context_state_commitment, context_state_hash};
         use crate::orchestrator::context::MindState;
 
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let config = SqliteStorageConfig::default();
         let context_id = "cognitive-store-divergence-context";
@@ -41628,7 +41628,7 @@ mod tests {
             }
         }
 
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new_with_context_db(
             tmp_file.path().to_str().unwrap(),
             &SqliteStorageConfig::default(),
@@ -42279,7 +42279,7 @@ mod tests {
         };
         use crate::orchestrator::context::MindState;
 
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let context_id = "context-db-writer-reservation";
         let store = SqliteStore::new_with_context_db(path, &SqliteStorageConfig::default())
@@ -42517,7 +42517,7 @@ mod tests {
             )
         }
 
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let context_id = "context-db-snapshot-boundary";
         let store = SqliteStore::new_with_context_db(
             tmp_file.path().to_str().unwrap(),
@@ -42695,7 +42695,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_projection_tracks_append_retire_restore_atomically() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -42871,7 +42871,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_projection_migration_backfills_active_and_preserves_retired() {
-        let tmp = NamedTempFile::new().unwrap();
+        let tmp = TempSqliteDb::new().unwrap();
         let path = tmp.path().to_path_buf();
         let context_id = "session-projection-migration-context";
         let session_id = "session-projection-migration-session";
@@ -42984,7 +42984,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_call_history_migration_backfills_active_calls_and_preserves_retirement() {
-        let tmp = NamedTempFile::new().unwrap();
+        let tmp = TempSqliteDb::new().unwrap();
         let path = tmp.path().to_path_buf();
         let context_id = "tool-history-migration-context";
         let session_id = "tool-history-migration-session";
@@ -43120,7 +43120,7 @@ mod tests {
 
     #[tokio::test]
     async fn principal_encounter_migration_prevents_returning_principal_from_becoming_first_seen() {
-        let tmp = NamedTempFile::new().unwrap();
+        let tmp = TempSqliteDb::new().unwrap();
         let path = tmp.path().to_path_buf();
         let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
         store
@@ -43237,7 +43237,7 @@ mod tests {
 
     #[tokio::test]
     async fn independent_sqlite_stores_share_leases_and_context_cas() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap().to_string();
         let bootstrap = SqliteStore::new(&path).await.unwrap();
         bootstrap
@@ -43336,7 +43336,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_account_state_affinity_and_refresh_fencing_are_durable() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -43399,7 +43399,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_migrates_legacy_global_throttling_without_reviving_disabled_accounts() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         {
             let store = SqliteStore::new(path).await.unwrap();
@@ -43451,7 +43451,7 @@ mod tests {
 
     #[tokio::test]
     async fn remote_model_catalog_replaces_one_account_without_touching_another() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -43536,7 +43536,7 @@ mod tests {
 
     #[tokio::test]
     async fn scheduler_history_is_bounded_per_root_without_dropping_live_work() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -43607,7 +43607,7 @@ mod tests {
 
     #[tokio::test]
     async fn plan_wait_kind_filter_cannot_be_starved_by_irrelevant_rows() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -43709,7 +43709,7 @@ mod tests {
 
     #[tokio::test]
     async fn scheduler_and_projection_hot_paths_have_indexed_query_plans() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -43791,7 +43791,7 @@ mod tests {
 
     #[tokio::test]
     async fn recent_contexts_use_per_context_session_index_instead_of_global_session_aggregation() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -43833,7 +43833,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_scheduler_claims_do_not_append_sqlite_wal_frames() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
@@ -43887,7 +43887,7 @@ mod tests {
 
     #[tokio::test]
     async fn target_authorization_existence_is_not_truncated_by_history_size() {
-        let tmp_file = NamedTempFile::new().unwrap();
+        let tmp_file = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();

@@ -1,3 +1,6 @@
+#[path = "support/temp_sqlite.rs"]
+mod temp_sqlite;
+
 use morphz::config::AppConfig;
 use morphz::llm::{Client, Message, Response, ToolDefinition};
 use morphz::memory::sqlite::SqliteStore;
@@ -9,7 +12,7 @@ use morphz::memory::{
 use morphz::runtime::MorphzRuntime;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tempfile::NamedTempFile;
+use temp_sqlite::TempSqliteDb;
 
 struct TerminalHandoffClient {
     calls: AtomicUsize,
@@ -32,7 +35,7 @@ impl Client for TerminalHandoffClient {
 
 #[tokio::test]
 async fn operator_cancel_closes_physical_work_and_dispatches_the_parent_signal() {
-    let database = NamedTempFile::new().unwrap();
+    let database = TempSqliteDb::new().unwrap();
     let store = Arc::new(
         SqliteStore::new(database.path().to_str().unwrap())
             .await

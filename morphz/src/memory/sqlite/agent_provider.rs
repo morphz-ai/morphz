@@ -322,8 +322,8 @@ impl AgentProviderBindingStore for SqliteStore {
 mod tests {
     use super::*;
     use crate::memory::{NewAgent, NewCognitiveContext, SessionDirectoryStore};
+    use crate::test_sqlite::TempSqliteDb;
     use std::sync::Arc;
-    use tempfile::NamedTempFile;
 
     async fn create_agent(store: &SqliteStore, agent_id: &str, context_id: &str) {
         store
@@ -346,7 +346,7 @@ mod tests {
 
     #[tokio::test]
     async fn inherited_provider_policy_exclusions_cas_and_legacy_migration_survive_restart() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let path = database.path().to_str().unwrap();
         let store = Arc::new(SqliteStore::new(path).await.unwrap());
         create_agent(&store, "inherited", "context-inherited").await;
@@ -481,7 +481,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_accounts_are_reusable_and_empty_policy_is_durable() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let store = SqliteStore::new(database.path().to_str().unwrap())
             .await
             .unwrap();

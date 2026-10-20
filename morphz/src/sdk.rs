@@ -5204,9 +5204,9 @@ mod tests {
     use crate::config::AppConfig;
     use crate::llm::{Client, Message, Response, ToolDefinition};
     use crate::memory::{NewAgent, QueryFilter, SessionMountKind, SessionStatus};
+    use crate::test_sqlite::TempSqliteDb;
     use async_trait::async_trait;
     use std::sync::Arc;
-    use tempfile::NamedTempFile;
 
     #[test]
     fn conversation_event_page_includes_durable_stream_publications() {
@@ -5246,9 +5246,9 @@ mod tests {
         }
     }
 
-    async fn thread_family_sdk_fixture() -> (NamedTempFile, MorphzSdk) {
+    async fn thread_family_sdk_fixture() -> (TempSqliteDb, MorphzSdk) {
         use crate::memory::{NewThread, ThreadKind, ThreadStore, ThreadSupervision};
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(OfflineClient))
             .database_path(database.path().to_str().unwrap())
             .build()
@@ -5446,7 +5446,7 @@ mod tests {
 
     #[tokio::test]
     async fn principal_scoped_contract_rejects_cross_session_access() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(OfflineClient))
             .database_path(database.path().to_str().unwrap())
             .build()
@@ -5563,7 +5563,7 @@ mod tests {
 
     #[tokio::test]
     async fn typed_session_reference_is_authorized_and_persisted_by_stable_id() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(OfflineClient))
             .database_path(database.path().to_str().unwrap())
             .build()
@@ -5779,7 +5779,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_subscription_never_exposes_another_session() {
-        let database = NamedTempFile::new().unwrap();
+        let database = TempSqliteDb::new().unwrap();
         let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(OfflineClient))
             .database_path(database.path().to_str().unwrap())
             .build()
