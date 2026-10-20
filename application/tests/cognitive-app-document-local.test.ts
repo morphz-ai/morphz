@@ -408,6 +408,36 @@ for (const backend of ["sqlite", "postgres"] as const) {
       await withViewTransport(backend, async (f) => {
         const request = await launch(f),
           abort = new AbortController();
+        const readDocument = f.ui.readCognitiveDocument.bind(f.ui);
+        let reportedFailure = false;
+        t.mock.method(
+          f.ui,
+          "readCognitiveDocument",
+          async (...args: Parameters<typeof readDocument>) => {
+            try {
+              return await readDocument(...args);
+            } catch (error) {
+              // Public carriers intentionally redact storage errors. Preserve
+              // only their code in this synthetic concurrency fixture, never
+              // SQL text, connection strings, credentials or document bytes.
+              if (!abort.signal.aborted && !reportedFailure) {
+                reportedFailure = true;
+                t.diagnostic(
+                  JSON.stringify({
+                    stage: "held-document-resource-failure",
+                    backend,
+                    name: error instanceof Error ? error.name : typeof error,
+                    code:
+                      error && typeof error === "object" && "code" in error
+                        ? String(error.code).slice(0, 80)
+                        : null,
+                  }),
+                );
+              }
+              throw error;
+            }
+          },
+        );
         const author = new TextEncoder().encode(f.input.manifest.ui.html);
         const digest = crypto.subtle.digest.bind(crypto.subtle);
         let release!: () => void,

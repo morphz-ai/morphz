@@ -965,9 +965,17 @@ test(
       ["named", "parent"],
     );
     assert.ok(initial.rows[1]!.aria.includes("子任务执行中"));
-    await page
-      .locator('.human-message[data-background-execution="true"]')
+    const activeCard = page.locator(
+      '.human-message[data-background-execution="true"]',
+    );
+    // The whole card's center can land in its resource/action region when
+    // platform fonts change geometry. Those controls must not inspect work.
+    await activeCard
+      .getByRole("button", { name: "打开关联资源：原对象", exact: true })
       .click();
+    assert.deepEqual((await snapshot()).events, []);
+    // Exercise the actual body click, not a forced event or the nested action.
+    await activeCard.locator("p[data-quotable]").click();
     assert.deepEqual((await snapshot()).events.at(-1), [
       "inspect",
       "input-one",
