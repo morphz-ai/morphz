@@ -70,16 +70,22 @@ but failed bwrap UID-map startup. See `REVIEW_DELTA.md`.
 5. Launch B again without the extra root; the previous grant must not persist.
 6. Compare frozen network deny and allow against a real bound host loopback
    listener. Allow must connect and deliver a fixed synthetic greeting.
-   In the shared-network allow lane, a real abstract Unix listener must still
-   reject connection, and anonymous socketpair communication must be denied;
-   both require EACCES/EPERM rather than a missing listener or timeout.
+   In the shared-network allow lane, the exact abstract Unix listener is first
+   proven reachable by an unconfined same-UID peer; confined connect must then
+   fail EACCES/EPERM. Same-process socketpair communication is a separate
+   functional positive, not a prohibited operation. This corrects the run10
+   probe assumption, not the security policy; its original red receipt remains.
+   The first exec lane separately injects one synthetic extra socket FD: prove
+   its inode present in outer before HOST, absent in inner before GO and in the
+   payload, then require real peer EOF with zero bytes after normal exit.
 7. Graceful close and exact policy collection; unexpected fallback kill is a
    failed cleanup, never a success.
 
 This minimal campaign does not repeat the prior probe's 244 receipts or claim to
 replace its evidence. It is specifically about dynamic policy and a trusted
-startup chain. The source-level NNP contradiction has a reviewed stacking
-candidate, but no kernel test has demonstrated this revised scope yet.
+startup chain. Run10 reached the dynamic candidate and failed the self-IPC
+assumption; see `UNIX_BOUNDARY_REVIEW.md` for the test-only revision, preserved
+evidence, pending new run and unresolved production boundaries.
 
 ## Isolation and intended dependencies
 

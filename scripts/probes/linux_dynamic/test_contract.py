@@ -248,16 +248,17 @@ class StaticLaunchBoundary(unittest.TestCase):
 
 
 class AdmissionAndCleanup(unittest.TestCase):
-    def test_unix_boundary_requires_real_permission_refusal_for_both_channels(self):
-        denied = {"abstract": {"ok": False, "phase": "connect", "errno": errno.EACCES},
-                  "anonymous": {"ok": False, "phase": "socketpair", "errno": errno.EPERM}}
-        self.assertTrue(controller.unix_communication_denied(denied))
-        for kind in denied:
-            for value in ({"ok": True}, {"ok": False, "errno": errno.ENOENT},
-                          {"ok": False, "errno": errno.ECONNREFUSED},
-                          {"ok": False, "errno": errno.EACCES, "received": "LEAK"}):
-                with self.subTest(kind=kind, value=value):
-                    self.assertFalse(controller.unix_communication_denied({**denied, kind: value}))
+    def test_actual_host_abstract_denial_and_self_ipc_positive_are_independent(self):
+        denied = {"ok": False, "phase": "connect", "errno": errno.EACCES}
+        self.assertTrue(controller.abstract_connection_denied(denied))
+        for change in ({"ok": True}, {"errno": errno.ENOENT}, {"errno": errno.ECONNREFUSED},
+                       {"received": "LEAK"}, {"phase": "create"}):
+            with self.subTest(change=change):
+                self.assertFalse(controller.abstract_connection_denied({**denied, **change}))
+        positive = {"ok": True, "phase": "receive", "received": "DYNAMIC_ANONYMOUS_SYNTHETIC\n"}
+        self.assertTrue(controller.self_ipc_works(positive))
+        for change in ({"ok": False}, {"phase": "send"}, {"received": ""}):
+            self.assertFalse(controller.self_ipc_works({**positive, **change}))
 
     def test_ungranted_root_requires_open_refusal_cat_failure_and_empty_output(self):
         denied = {"open": {"ok": False, "errno": errno.ENOENT},

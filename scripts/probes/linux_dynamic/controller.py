@@ -68,11 +68,101 @@ def ungranted_root_unreadable(result):
             and result["cat_stdout"] == "")
 
 
-def unix_communication_denied(result):
-    return all(result[kind].get("ok") is False
-               and result[kind].get("errno") in (errno.EACCES, errno.EPERM)
-               and not result[kind].get("received")
-               for kind in ("abstract", "anonymous"))
+def abstract_connection_denied(result):
+    return (result.get("ok") is False and result.get("phase") == "connect"
+            and result.get("errno") in (errno.EACCES, errno.EPERM)
+            and not result.get("received"))
+
+
+def self_ipc_works(result):
+    return (result.get("ok") is True and result.get("phase") == "receive"
+            and result.get("received") == "DYNAMIC_ANONYMOUS_SYNTHETIC\n")
+
+
+def fd_table(pid):
+    """Complete snapshot while the authenticated single-threaded entry is blocked.
+
+    Any unreadable/disappearing FD is an inspection failure, never an absent
+    target. The host calls this with the sender pidfd held before HOST / GO.
+    """
+    rows = []
+    with os.scandir(f"/proc/{pid}/fd") as entries:
+        for entry in entries:
+            if not entry.name.isdecimal():
+                raise RuntimeError("unexpected proc FD entry")
+            info = os.stat(entry.path)
+            rows.append({"fd": int(entry.name), "dev": info.st_dev,
+                         "ino": info.st_ino, "kind": stat.S_IFMT(info.st_mode),
+                         "link": os.readlink(entry.path)})
+    return sorted(rows, key=lambda row: row["fd"])
+
+
+def matching_socket_fds(rows, target):
+    return [row["fd"] for row in rows if
+            (row["dev"], row["ino"], row["kind"]) ==
+            (target["dev"], target["ino"], stat.S_IFSOCK)]
+
+
+def require_outer_injection(rows, target, injected_fd):
+    matching = matching_socket_fds(rows, target)
+    if injected_fd not in matching:
+        raise RuntimeError("synthetic socket was not actually inherited by outer")
+    return matching
+
+
+def peer_eof(peer, timeout=3):
+    """No data is insufficient: require actual EOF, bounded bytes and time."""
+    deadline = time.monotonic() + timeout
+    data = bytearray()
+    try:
+        while len(data) <= 128:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("peer EOF deadline expired")
+            peer.settimeout(remaining)
+            block = peer.recv(129 - len(data))
+            if not block:
+                return {"eof": True, "received_hex": data.hex(), "error": None}
+            data.extend(block)
+        return {"eof": False, "received_hex": data.hex(), "error": "byte bound exceeded"}
+    except OSError as error:
+        return {"eof": False, "received_hex": data.hex(),
+                "error": repr(error), "errno": error.errno}
+
+
+def inherited_fd_closed(outer_verified, inner_absent, payload, peer_result):
+    return (outer_verified is True and inner_absent is True and payload is not None
+            and payload.get("matching_fds") == [] and payload.get("send_attempts") == []
+            and peer_result.get("eof") is True and peer_result.get("received_hex") == ""
+            and peer_result.get("error") is None)
+
+
+def abstract_reachable_same_uid(listener, name):
+    """Positive control on this exact listener, before the confined attempt."""
+    label = Path("/proc/self/attr/current").read_text().strip()
+    if label != "unconfined":
+        raise RuntimeError("abstract positive control must be unconfined")
+    greeting = b"DYNAMIC_HOST_ABSTRACT_CONTROL\n"
+    listener.settimeout(3)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(3)
+        client.connect("\0" + name)
+        client.sendall(greeting)
+        client.shutdown(socket.SHUT_WR)
+        connection, _ = listener.accept()
+        with connection:
+            credentials = struct.unpack("3i", connection.getsockopt(
+                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
+            received = peer_eof(connection)
+    evidence = {"peer": credentials, "label": label, **received}
+    passed = (credentials == (os.getpid(), os.getuid(), os.getgid())
+              and received["eof"] is True and received["error"] is None
+              and received["received_hex"] == greeting.hex())
+    listener.setblocking(False)
+    if not passed:
+        raise RuntimeError("same-UID abstract listener positive control failed: "
+                           + json.dumps(evidence))
+    return evidence
 
 
 def privileged(*argv, input_data=None):
@@ -235,7 +325,7 @@ def verify_admission(peer_pid, peer_uid, child_pid, record, manifest):
 
 
 class Lane:
-    def __init__(self, campaign, manifest, admission="allow"):
+    def __init__(self, campaign, manifest, admission="allow", *, extra_fd_probe=False):
         if admission not in ("allow", "reject", "disconnect"):
             raise ValueError("only fixed synthetic admission lanes")
         self.campaign, self.manifest = campaign, manifest
@@ -251,6 +341,13 @@ class Lane:
         self.expected_sequence = 0
         self.listener = None
         self.manifest_file = None
+        self.extra_fd_probe = extra_fd_probe
+        self.extra_child_fd = None
+        self.extra_peer = None
+        self.extra_target = None
+        self.extra_outer_verified = False
+        self.extra_inner_absent = False
+        self.extra_payload = None
         self.socket_path = Path(manifest["control"]) / "admit.sock"
         self.campaign.lanes.append(self)
 
@@ -273,6 +370,21 @@ class Lane:
         self.listener.settimeout(15)
         argv = ["/usr/bin/aa-exec", "-p", self.manifest["bootstrap"], "--",
                 self.manifest["entry"], "--outer", self.manifest["manifest"]]
+        pass_fds = ()
+        if self.extra_fd_probe:
+            # Synthetic endpoint only. Not part of entry's fixed FD3/FD4 ABI.
+            self.extra_peer, child_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                self.extra_child_fd = fcntl.fcntl(child_end.fileno(), fcntl.F_DUPFD_CLOEXEC, 64)
+                info = os.fstat(self.extra_child_fd)
+                if not stat.S_ISSOCK(info.st_mode):
+                    raise RuntimeError("injection target is not a socket")
+                self.extra_target = {"dev": info.st_dev, "ino": info.st_ino}
+                self.extra_injected_fd = self.extra_child_fd
+                self.extra_nonce = "DYNAMIC_FD_" + uuid.uuid4().hex + "\n"
+                pass_fds = (self.extra_child_fd,)
+            finally:
+                child_end.close()
         self.err = open(self.campaign.output / (self.manifest["launch_id"] + ".stderr"), "wb")
         if self.manifest["mode"] == "pty":
             self.master, slave = pty.openpty()
@@ -284,14 +396,17 @@ class Lane:
                 fcntl.ioctl(0, termios.TIOCSCTTY, 0)
             self.process = subprocess.Popen(
                 argv, stdin=slave, stdout=slave, stderr=self.err, env=CLEAN_ENV,
-                close_fds=True, preexec_fn=terminal_setup,
+                close_fds=True, pass_fds=pass_fds, preexec_fn=terminal_setup,
             )
             os.close(slave)
         else:
             self.process = subprocess.Popen(
                 argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err,
-                env=CLEAN_ENV, close_fds=True, start_new_session=True,
+                env=CLEAN_ENV, close_fds=True, pass_fds=pass_fds, start_new_session=True,
             )
+        if self.extra_child_fd is not None:
+            os.close(self.extra_child_fd)
+            self.extra_child_fd = None  # All host copies of the injected end are closed.
         self.process_identity = proc_identity(self.process.pid)
         connection, _ = self.listener.accept()
         with connection:
@@ -308,6 +423,22 @@ class Lane:
                 )
                 self.campaign.record("outer_authenticated", True, launch=self.manifest["launch_id"],
                                      evidence=outer_evidence)
+                if self.extra_fd_probe:
+                    rows = fd_table(outer_peer[0])
+                    matching = require_outer_injection(rows, self.extra_target, self.extra_injected_fd)
+                    host_rows = fd_table(os.getpid())
+                    if matching_socket_fds(host_rows, self.extra_target):
+                        raise RuntimeError("host still retains an injected socket endpoint")
+                    verify_outer_sender()
+                    self.extra_outer_verified = True
+                    self.campaign.record(
+                        "synthetic_fd_outer_injection_proved", True,
+                        launch=self.manifest["launch_id"], barrier="blocked-before-HOST",
+                        peer=outer_identity, target=self.extra_target, fds=rows,
+                        matching_fds=matching, pidfd_held=True,
+                        host_injection_end_closed=self.extra_child_fd is None,
+                        host_fds=host_rows,
+                    )
                 # Keep only this connected channel; inner must inherit, never reconnect.
                 self.listener.close()
                 self.listener = None
@@ -332,6 +463,18 @@ class Lane:
                     raise RuntimeError("host manifest changed during startup")
                 evidence["manifest_fd"] = inner_record["manifest_fd"]
                 evidence["outer"] = outer_evidence["peer"]
+                if self.extra_fd_probe:
+                    rows = fd_table(peer_pid)
+                    matching = matching_socket_fds(rows, self.extra_target)
+                    self.extra_inner_absent = not matching and not self.sentinel.exists()
+                    verify_inner_sender()
+                    self.campaign.record(
+                        "synthetic_fd_absent_before_payload", self.extra_inner_absent,
+                        launch=self.manifest["launch_id"], barrier="blocked-before-GO",
+                        peer=inner_identity, target=self.extra_target, fds=rows,
+                        matching_fds=matching, pidfd_held=True,
+                        sentinel_absent=not self.sentinel.exists(),
+                    )
                 verify_inner_sender()
                 if self.admission == "allow":
                     connection.sendall(b"GO\n")
@@ -364,6 +507,14 @@ class Lane:
                              sentinel=str(self.sentinel))
         if not sentinel_valid:
             raise RuntimeError("positive payload sentinel not verified")
+        if self.extra_fd_probe:
+            self.extra_payload = self.ask("inherited_fd", target=self.extra_target,
+                                          nonce=self.extra_nonce)["value"]
+            self.campaign.record(
+                "synthetic_fd_payload_absent", self.extra_payload["matching_fds"] == []
+                and self.extra_payload["send_attempts"] == [],
+                launch=self.manifest["launch_id"], evidence=self.extra_payload,
+            )
         return self
 
     def send(self, value):
@@ -436,6 +587,8 @@ class Lane:
         if self.closed:
             return
         cleanup_errors = []
+        normal_exit = False
+        extra_cleanup = None
         if self.process is not None:
             try:
                 if self.rejection_verified:
@@ -451,6 +604,7 @@ class Lane:
                     tail = self.drain()
                     if self.master is not None and "DYNAMIC_SHELL_CONTINUED" not in tail:
                         raise RuntimeError("interactive Bash continuation receipt absent")
+                    normal_exit = True
             except Exception as error:
                 cleanup_errors.append(repr(error))
             if self.process.poll() is None:
@@ -462,6 +616,34 @@ class Lane:
                     self.process.wait(timeout=5)
                 except Exception as error:
                     cleanup_errors.append(repr(error))
+        if self.extra_child_fd is not None:
+            os.close(self.extra_child_fd)
+            self.extra_child_fd = None
+        if self.extra_peer is not None:
+            try:
+                # EOF after normal bye + wrapper wait. Timeout or forced kill
+                # can never establish the boundary; A/B remain incomplete.
+                result = peer_eof(self.extra_peer)
+                extra_cleanup = {"normal_exit": normal_exit,
+                                 "host_injection_end_closed": self.extra_child_fd is None,
+                                 **result}
+                if normal_exit:
+                    passed = inherited_fd_closed(
+                        self.extra_outer_verified, self.extra_inner_absent,
+                        self.extra_payload, result,
+                    )
+                    self.campaign.record(
+                        "synthetic_fd_peer_eof_without_nonce", passed,
+                        launch=self.manifest["launch_id"], evidence=result,
+                        normal_exit=True, host_injection_end_closed=True,
+                        target=self.extra_target,
+                    )
+                elif result["error"] is not None or not result["eof"]:
+                    cleanup_errors.append("synthetic peer did not reach EOF during cleanup: "
+                                          + json.dumps(result))
+            finally:
+                self.extra_peer.close()
+                self.extra_peer = None
         if self.listener is not None:
             self.listener.close()
         if self.manifest_file is not None:
@@ -477,7 +659,8 @@ class Lane:
             json.dumps(self.transcript, indent=2))
         self.closed = True
         self.campaign.record("lane_cleanup", not cleanup_errors,
-                             launch=self.manifest["launch_id"], errors=cleanup_errors)
+                             launch=self.manifest["launch_id"], errors=cleanup_errors,
+                             extra_fd_cleanup=extra_cleanup)
 
 
 class Campaign:
@@ -592,7 +775,7 @@ class Campaign:
         sub.mkdir()
         (root_a / "live.txt").write_text("A-before")
         first = self.acquire(root_a, cwd=sub)
-        with_lane = Lane(self, first).start()
+        with_lane = Lane(self, first, extra_fd_probe=True).start()
         # The readiness receipt is the host-write barrier; no sleeps/racy timing fixture.
         (root_a / ".env").write_text("SYNTHETIC-A-SECRET")
         (root_a / ".ssh").mkdir()
@@ -677,7 +860,8 @@ class Campaign:
                 abstract_name = "morphz-dynamic-" + uuid.uuid4().hex
                 abstract_listener.bind("\0" + abstract_name)
                 abstract_listener.listen(1)
-                abstract_listener.setblocking(False)
+                reachable = abstract_reachable_same_uid(abstract_listener, abstract_name)
+                self.record("host_abstract_listener_same_uid_positive", True, evidence=reachable)
                 unix_result = allowed.ask("unix_boundary", name=abstract_name)["value"]
                 unexpected_connection = False
                 try:
@@ -687,9 +871,13 @@ class Campaign:
                 else:
                     unexpected_connection = True
                     connection.close()
-                self.record("unix_lifecycle_does_not_allow_abstract_or_anonymous_communication",
-                            unix_communication_denied(unix_result) and not unexpected_connection,
-                            evidence=unix_result, listener_accepted=unexpected_connection)
+                self.record("host_abstract_connection_denied",
+                            abstract_connection_denied(unix_result["abstract"])
+                            and not unexpected_connection,
+                            evidence=unix_result["abstract"], listener_accepted=unexpected_connection)
+                self.record("same_process_socketpair_functional_positive",
+                            self_ipc_works(unix_result["anonymous"]),
+                            evidence=unix_result["anonymous"])
             allowed.close()
         self.record("unique_immutable_profiles",
                     len({item["profile"] for item in self.manifests}) == len(self.manifests)

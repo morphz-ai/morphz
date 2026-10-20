@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import signal
 import socket
+import stat
 import subprocess
 import sys
 
@@ -80,6 +81,45 @@ def unix_boundary(name):
     return {"abstract": abstract, "anonymous": anonymous}
 
 
+def inherited_fd_check(target, nonce):
+    """Finite synthetic leak attempt, never a general FD write operation."""
+    if (not isinstance(target, dict) or set(target) != {"dev", "ino"}
+            or any(type(value) is not int or value <= 0 for value in target.values())
+            or not isinstance(nonce, str) or not nonce.startswith("DYNAMIC_FD_")
+            or len(nonce) != 44 or nonce[-1] != "\n"
+            or any(char not in "0123456789abcdef" for char in nonce[11:-1])):
+        raise ValueError("invalid synthetic inherited-socket target")
+    rows, matching, attempts = [], [], []
+    # Keep scandir's own descriptor alive throughout enumeration: no transient
+    # closed directory FD can be mistaken for successful target absence.
+    with os.scandir("/proc/self/fd") as entries:
+        for entry in entries:
+            info = os.stat(entry.path)
+            row = {"fd": int(entry.name), "dev": info.st_dev,
+                   "ino": info.st_ino, "kind": stat.S_IFMT(info.st_mode)}
+            rows.append(row)
+            if (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)) == (
+                    target["dev"], target["ino"], stat.S_IFSOCK):
+                matching.append(row["fd"])
+    for fd in matching:
+        # If the chain leaks this exact inode (even under another FD number),
+        # actively attempt nonce transmission. Presence alone already fails.
+        duplicate = os.dup(fd)
+        try:
+            with socket.socket(fileno=duplicate) as peer:
+                duplicate = None
+                peer.settimeout(2)
+                peer.sendall(nonce.encode())
+                attempts.append({"fd": fd, "sent": True})
+        except OSError as error:
+            attempts.append({"fd": fd, "sent": False, "errno": error.errno, "error": str(error)})
+        finally:
+            if duplicate is not None:
+                os.close(duplicate)
+    return {"target": target, "fds": sorted(rows, key=lambda row: row["fd"]),
+            "matching_fds": matching, "send_attempts": attempts}
+
+
 def operations(request, profile):
     op = request["op"]
     if op == "read":
@@ -104,6 +144,8 @@ def operations(request, profile):
         return outcome(connect)
     if op == "unix_boundary":
         return unix_boundary(request["name"])
+    if op == "inherited_fd":
+        return inherited_fd_check(request["target"], request["nonce"])
     if op == "escape":
         library = ctypes.CDLL("libapparmor.so.1", use_errno=True)
         library.aa_change_profile.argtypes = [ctypes.c_char_p]
