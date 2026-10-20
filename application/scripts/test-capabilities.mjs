@@ -96,6 +96,12 @@ const optionalTests = [
     "MORPHZ_COGNITIVE_APPLICATION_RUNTIME_E2E",
   ],
   [
+    "host-tool-current-runtime.test.ts",
+    "actual Runtime installs both exact Terminal descriptors and accepts unselected and selected inputs",
+    "runtime",
+    "MORPHZ_PROFILE_RUNTIME_E2E",
+  ],
+  [
     "infer-model-controls-runtime.test.ts",
     "actual Harness infer inherits task model controls through every physical request, without changing defaults or tools",
     "runtime",

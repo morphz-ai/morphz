@@ -110,6 +110,24 @@ test("safe test selection preserves original default inventory and cannot replac
     files: ["tests/platform-storage.test.ts"],
     options: ["--test-name-pattern", "SQLite"],
   });
+  for (const count of [1, 2, 3, 4]) {
+    assert.deepEqual(
+      await testSelection([`--test-concurrency=${count}`, "tests/platform-storage.test.ts"]),
+      {
+        files: ["tests/platform-storage.test.ts"],
+        options: [`--test-concurrency=${count}`],
+      },
+    );
+  }
+  for (const count of ["0", "5", "Infinity", "-1", "2.5", "2 --eval=1"])
+    await assert.rejects(
+      testSelection([`--test-concurrency=${count}`]),
+      /concurrency must be specified once, from 1 to 4/,
+    );
+  await assert.rejects(
+    testSelection(["--test-concurrency=1", "--test-concurrency=2"]),
+    /concurrency must be specified once/,
+  );
   assert.ok(
     (await testSelection()).files.includes("tests/test-postgres-entry.test.ts"),
   );

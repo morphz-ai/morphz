@@ -140,6 +140,12 @@ const declarations = [
   },
   {
     file: "host-tool-current-runtime.test.ts",
+    name: "actual Runtime installs both exact Terminal descriptors and accepts unselected and selected inputs",
+    capability: "runtime",
+    flag: "MORPHZ_PROFILE_RUNTIME_E2E",
+  },
+  {
+    file: "host-tool-current-runtime.test.ts",
     name: "实际 Rust 请求只公布唯一 Host 定义，局部片段经真实 Job 保存且历史原文不变",
     capability: "runtime",
     flag: "MORPHZ_PROFILE_RUNTIME_E2E",
@@ -395,7 +401,7 @@ test("required Runtime checks only selected files and all corresponding exact fl
     { ...runtime, MORPHZ_PROFILE_RUNTIME_E2E: "1" },
     { files: ["host-tool-current-runtime.test.ts"] },
   );
-  assert.equal(currentHost.selected.length, 1);
+  assert.equal(currentHost.selected.length, 2);
   const currentDeclaration = declarations.find(
     (value) => value.file === "host-tool-current-runtime.test.ts",
   )!;

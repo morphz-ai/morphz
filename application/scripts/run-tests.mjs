@@ -23,6 +23,16 @@ export async function testSelection(args = []) {
         throw new Error("Test selection: missing name pattern");
       options.push(value, args[++index]);
     } else if (value.startsWith("--test-name-pattern=")) options.push(value);
+    else if (value.startsWith("--test-concurrency=")) {
+      if (
+        !/^--test-concurrency=[1-4]$/.test(value) ||
+        options.some((option) => option.startsWith("--test-concurrency="))
+      )
+        throw new Error("Test selection: concurrency must be specified once, from 1 to 4");
+      // Reducing local resource use changes scheduling, never selection or
+      // capability requirements. Keep the default upper bound unchanged.
+      options.push(value);
+    }
     else {
       if (value.startsWith("-") || !value.endsWith(".test.ts"))
         throw new Error(
