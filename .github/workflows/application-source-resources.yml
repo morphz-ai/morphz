@@ -1,6 +1,17 @@
 name: Application source resource diagnosis
 
 on:
+  # The diagnostic workflow is not on the default branch yet, so GitHub cannot
+  # dispatch it by filename. This trigger is restricted to the repair branch
+  # and the files under investigation; normal Runtime callers stay source-only.
+  push:
+    branches: [fix/full-application-regressions-20261021]
+    paths:
+      - .github/workflows/application-source-resources.yml
+      - application/apps/desktop/main.cjs
+      - application/apps/desktop/preferences.cjs
+      - application/tests/cognitive-document-native.test.ts
+      - application/tests/fixtures/native-test-environment.ts
   workflow_dispatch:
     inputs:
       native_probes:
@@ -18,7 +29,7 @@ permissions:
 
 jobs:
   source-contracts:
-    if: ${{ !inputs.native_probes }}
+    if: ${{ !inputs.native_probes && github.event_name != 'push' }}
     name: Isolated native compiler and source contracts
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -48,7 +59,7 @@ jobs:
             tests/builtin-application-adapters-boundary.test.ts
 
   linux-native-regressions:
-    if: ${{ inputs.native_probes }}
+    if: ${{ inputs.native_probes || github.event_name == 'push' }}
     name: Isolated Linux native and timing regression diagnosis
     runs-on: ubuntu-latest
     timeout-minutes: 20
