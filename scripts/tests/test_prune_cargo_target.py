@@ -113,7 +113,14 @@ class CollectorTest(unittest.TestCase):
         child = None
         try:
             with prune.cargo_lock(self.target / "debug"):
-                child = subprocess.Popen(["cargo", "build", "--manifest-path", str(project / "Cargo.toml"), "--target-dir", str(self.target)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                # CI forces colored Cargo output; ANSI between "Blocking" and
+                # "waiting" must not disguise the actual lock barrier. Exercise
+                # that inherited setting and explicitly request machine text.
+                child = subprocess.Popen(
+                    ["cargo", "build", "--color", "never", "--manifest-path", str(project / "Cargo.toml"), "--target-dir", str(self.target)],
+                    env={**os.environ, "CARGO_TERM_COLOR": "always"},
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
                 waiting = b""
                 # A fixed delay only proves Cargo is alive: cold startup may
                 # not have reached its lock yet. Require the real lock barrier
@@ -129,6 +136,7 @@ class CollectorTest(unittest.TestCase):
                             self.assertTrue(chunk, "Cargo exited before waiting on the collector lock: " + waiting.decode())
                             waiting += chunk
                         self.assertIsNone(child.poll(), "Cargo bypassed the collector lock: " + waiting.decode())
+                self.assertNotIn(b"\x1b[", waiting)
                 self.assertFalse((self.target / "debug/collector_lock_test").exists())
             _, error = child.communicate(timeout=30)
             self.assertEqual(child.returncode, 0, (waiting + error).decode())
