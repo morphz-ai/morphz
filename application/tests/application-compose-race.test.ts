@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { createServer, transformWithOxc } from "vite";
 import react from "@vitejs/plugin-react";
-import { chromium, type Page } from "@playwright/test";
+import { chromium, expect, type Page } from "@playwright/test";
 
 // Real ApplicationHost + its opaque SandboxApplication iframe in StrictMode.
 // Only the WorkspaceClient reads and the consumer callback are fixtures; no
@@ -56,11 +56,12 @@ createRoot(document.getElementById('root')!).render(<StrictMode><Fixture/></Stri
 
 const frameHtml = `<!doctype html><html><body><script>
 let channel; const pending = new Map(); window.ready = false;
+window.handshake = { initializations: 0, readyRequests: 0, responses: 0 };
 window.request = request => new Promise(resolve => { const requestId = crypto.randomUUID(); pending.set(requestId, resolve); parent.postMessage({ type: 'morphz-app:request', channel, requestId, request }, '*'); });
 window.addEventListener('message', async event => {
  if (event.source !== parent) return;
- if (event.data.type === 'morphz-app:init') { if (!channel) { channel = event.data.channel; const reply = await window.request({ method: 'ready' }); window.ready = !reply.error; } return; }
- if (event.data.type === 'morphz-app:response' && event.data.channel === channel) { const resolve = pending.get(event.data.requestId); if (resolve) { pending.delete(event.data.requestId); resolve(event.data); } }
+ if (event.data.type === 'morphz-app:init') { window.handshake.initializations++; if (!channel) { channel = event.data.channel; window.handshake.readyRequests++; const reply = await window.request({ method: 'ready' }); window.ready = !reply.error; } return; }
+ if (event.data.type === 'morphz-app:response' && event.data.channel === channel) { window.handshake.responses++; const resolve = pending.get(event.data.requestId); if (resolve) { pending.delete(event.data.requestId); resolve(event.data); } }
 });
 </script></body></html>`;
 type Report = {
@@ -82,7 +83,10 @@ const browserExecutable = process.env.MORPHZ_TEST_BROWSER_EXECUTABLE;
 test(
   "真实 Sandbox compose 桥保留最新回调、精确范围，并返回真实拒绝",
   {
-    timeout: 45000,
+    // Nine independent real-browser cases share setup, not a single short
+    // readiness deadline. An unready frame must fail its own bounded probe
+    // with evidence before cleanup closes the browser for all later cases.
+    timeout: 150000,
     skip:
       !browserExecutable && !existsSync(chromium.executablePath())
         ? "No matching Playwright browser"
@@ -139,15 +143,48 @@ test(
       const page = await browser.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(url);
-      const frame = page.frameLocator(
-        'iframe[title="Compose fixture应用界面"]',
-      );
-      await frame.locator("body").evaluate(async () => {
-        while (!(window as any).ready)
-          await new Promise((resolve) => setTimeout(resolve, 10));
-      });
-      return { page, frame, errors };
+      try {
+        await page.goto(url);
+        const frame = page.frameLocator(
+          'iframe[title="Compose fixture应用界面"]',
+        );
+        await expect
+          .poll(
+            () =>
+              frame.locator("body").evaluate(() => ({
+                ready: (window as any).ready === true,
+                handshake: (window as any).handshake,
+              })),
+            {
+              timeout: 12_000,
+              message: "actual isolated iframe ready handshake",
+            },
+          )
+          .toMatchObject({ ready: true });
+        return { page, frame, errors };
+      } catch (error) {
+        console.error(
+          "[compose fixture readiness]",
+          JSON.stringify({
+            errors,
+            frames: page
+              .frames()
+              .map((frame) => ({
+                url: frame.url(),
+                detached: frame.isDetached(),
+              })),
+            host: await page
+              .evaluate(() => ({
+                readyState: document.readyState,
+                visibility: document.visibilityState,
+                report: (window as any).composeFixture?.report(),
+              }))
+              .catch(() => null),
+          }),
+        );
+        await page.close();
+        throw error;
+      }
     }
     await context.test(
       "对象读取期间编辑正文和最高推理，不被旧 onCompose 回滚",
