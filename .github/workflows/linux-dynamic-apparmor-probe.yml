@@ -35,11 +35,11 @@ jobs:
       - name: Build fixed non-setuid entry with system parsers
         working-directory: scripts/probes/linux_dynamic
         run: cc -std=c11 -Wall -Wextra -Werror -O2 entry.c -o entry -ljson-c -lapparmor
-      - name: Compare only startup socket pathname lifetime using the same diagnostic binary
+      - name: Compare fixed socket acknowledgement APIs without changing policy
         env:
           MORPHZ_ISOLATED_DYNAMIC_PROBE: "1"
         run: |
-          python3 -B scripts/probes/linux_dynamic/socket_path_lifecycle_counterfactual.py --execute \
+          python3 -B scripts/probes/linux_dynamic/receive_api_counterfactual.py --execute \
             --output "${{ runner.temp }}/morphz-dynamic-evidence"
       - name: Independently verify original binary restoration
         if: always()

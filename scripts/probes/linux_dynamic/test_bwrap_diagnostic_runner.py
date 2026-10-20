@@ -318,7 +318,7 @@ class DiagnosticRunner(unittest.TestCase):
 
     def test_workflow_restores_even_after_failure_and_uses_same_source_pair(self):
         source = (runner.HERE / "workflow.yml").read_text()
-        self.assertIn("socket_path_lifecycle_counterfactual.py --execute", source)
+        self.assertIn("receive_api_counterfactual.py --execute", source)
         self.assertIn("bwrap_diagnostic_runner.py --restore-only", source)
         self.assertIn("test_*.py", source)
         self.assertIn('bubblewrap=0.9.0-1ubuntu0.3', source)
