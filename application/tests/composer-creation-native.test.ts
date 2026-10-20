@@ -6,6 +6,7 @@ import test from "node:test";
 import react from "@vitejs/plugin-react";
 import { _electron, expect } from "@playwright/test";
 import { createServer } from "vite";
+import { nativeTestEnvironment } from "./fixtures/native-test-environment.js";
 
 test(
   "actual Electron page zoom 1/2 at 760px keeps + mouse-hit and popover reachable; controlled transport only",
@@ -73,16 +74,10 @@ test(
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
     const url = `http://127.0.0.1:${address.port}/__new-menu-native?mode=fresh`;
-    const allowedEnvironment = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"];
-    const env = Object.fromEntries(
-      allowedEnvironment.flatMap((key) =>
-        process.env[key] === undefined ? [] : [[key, process.env[key]!]],
-      ),
-    );
     const desktop = await _electron.launch({
       args: [resolve("tests/fixtures/composer-creation-native-entry.cjs")],
       env: {
-        ...env,
+        ...nativeTestEnvironment(),
         MORPHZ_CREATION_NATIVE_PROFILE: profile,
         MORPHZ_CREATION_NATIVE_URL: url,
       },

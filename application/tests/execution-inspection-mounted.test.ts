@@ -203,7 +203,7 @@ test(
             businessReads.push(request.url());
         });
         if (options.clock) {
-          await page.clock.install({ time: new Date("2026-10-04T00:00:00Z") });
+          // Start paused before navigation; do not first run beyond the target time.
           await page.clock.pauseAt(new Date("2026-10-04T00:00:00Z"));
         }
         const query = new URLSearchParams({

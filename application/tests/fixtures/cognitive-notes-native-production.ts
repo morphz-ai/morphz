@@ -29,24 +29,10 @@ import {
 } from "../../packages/core/src/application-names.js";
 import type { InputDraft } from "../../apps/web/src/host/exchange-drafts.js";
 import type { NotesGuiTransports } from "./cognitive-notes-gui-transports.js";
+import { nativeTestEnvironment as environment } from "./native-test-environment.js";
 
 const hash = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
-function environment() {
-  const value: NodeJS.ProcessEnv = {};
-  for (const name of [
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "LANG",
-    "LC_ALL",
-    "SYSTEMROOT",
-    "DISPLAY",
-    "XDG_RUNTIME_DIR",
-  ])
-    if (process.env[name] !== undefined) value[name] = process.env[name];
-  return value;
-}
 function desktopFiles(root: string): string[] {
   return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
     const path = join(root, entry.name);

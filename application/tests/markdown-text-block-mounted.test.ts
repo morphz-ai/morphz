@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { chromium, type Browser } from "@playwright/test";
+import { chromium, expect, type Browser } from "@playwright/test";
 import { createServer, transformWithOxc, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import { currentAppCSSImports } from "./fixtures/current-app-css.js";
@@ -176,11 +176,21 @@ createRoot(document.getElementById('root')).render(<App/>);Reflect.set(window,'b
     Reflect.get(window, "blockFixture").setText("旧内容的延迟复制");
   });
   await block.getByRole("button", { name: "复制文本" }).click();
+  await expect(block.locator("button")).toBeDisabled();
   await page.evaluate(() =>
     Reflect.get(window, "blockFixture").setText("更新后的正文"),
   );
-  await block.getByRole("button", { name: "复制文本" }).waitFor();
+  // "Copy text" also labels the old pending/disabled button. Require the real
+  // replacement commit and its idle state before resolving the old promise.
+  await expect(block.locator("pre")).toHaveText("更新后的正文\n");
+  await expect(block.locator("button")).toHaveAttribute("data-state", "idle");
   await page.evaluate(() => Reflect.get(window, "blockFixture").resolve());
+  await page.evaluate(
+    () =>
+      new Promise<void>((done) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => done())),
+      ),
+  );
   assert.equal(
     await block.getByRole("button", { name: "已复制" }).count(),
     0,

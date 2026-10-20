@@ -74,21 +74,7 @@ const transportTables = [
   "runtime_thread_bindings",
   "runtime_session_events",
 ] as const;
-function environment() {
-  const value: NodeJS.ProcessEnv = {};
-  for (const name of [
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "LANG",
-    "LC_ALL",
-    "SYSTEMROOT",
-    "DISPLAY",
-    "XDG_RUNTIME_DIR",
-  ])
-    if (process.env[name] !== undefined) value[name] = process.env[name];
-  return value;
-}
+import { nativeTestEnvironment as environment } from "./native-test-environment.js";
 function rows(filename: string, table: string) {
   const db = new DatabaseSync(filename, { readOnly: true });
   try {

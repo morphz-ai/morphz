@@ -231,7 +231,7 @@ test(
         )
           business.push(req.url());
       });
-      await page.clock.install({ time: new Date("2026-10-04T00:00:00Z") });
+      // Start paused before navigation; do not first run beyond the target time.
       await page.clock.pauseAt(new Date("2026-10-04T00:00:00Z"));
       await page.goto(
         `http://127.0.0.1:${address.port}/__task_panel?lane=${lane}`,
