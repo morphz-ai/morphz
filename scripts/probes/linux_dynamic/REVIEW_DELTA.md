@@ -155,3 +155,20 @@ The existing policy, controller, loader, entry and worker hashes are unchanged.
 Local pure/source tests are 37/37; Linux build and real syscall results are
 pending. Preserve all three earlier failed runs; this preparation does not turn
 them into passing security evidence.
+
+## Run 4: source extraction allowlist stopped before any replacement
+
+Commit `c62ab258ee1305dcd7d3f7fc323709b770c349c5`, run
+<https://github.com/morphz-ai/morphz/actions/runs/39438767606>:
+37 source tests and entry C compilation passed. The source-download checksums
+passed, then the archive extractor refused Ubuntu's existing relative symlink
+`debian/tests/upstream-usrmerge -> upstream`. No binary lease or campaign was
+created, no `/usr/bin/bwrap` replacement happened, and the always-step explicitly
+reported restoration not required. Raw artifacts remain retained.
+
+The narrow preparation fix adds only that exact source-package name/target to
+the existing two-source pinned extraction allowlist, retaining rejection of
+hardlinks/devices/traversal/unreviewed links and Python's data extraction filter.
+An added positive/negative unit test accepts that exact relative link but rejects
+changed targets. No policy, privileges, build inputs or campaign assertions
+change. This failure is a probe preparation defect, not Linux sandbox evidence.

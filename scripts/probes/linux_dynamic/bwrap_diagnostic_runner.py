@@ -219,14 +219,18 @@ class BinaryLease:
 
 
 def extract(archive, destination, prefix):
+    allowed_symlinks = {
+        "bubblewrap-0.9.0/LICENSE": "COPYING",
+        "debian/tests/upstream-usrmerge": "upstream",
+    }
     with tarfile.open(archive, "r:xz") as source:
         for member in source.getmembers():
             path = PurePosixPath(member.name)
             if (path.is_absolute() or ".." in path.parts or path.parts[0] != prefix
                     or not (member.isdir() or member.isfile() or
-                            (member.issym() and member.name == prefix + "/LICENSE"
-                             and member.linkname == "COPYING"))):
-                raise RuntimeError("unexpected upstream archive member")
+                            (member.issym() and member.name in allowed_symlinks
+                             and member.linkname == allowed_symlinks[member.name]))):
+                raise RuntimeError("unexpected upstream archive member: " + member.name)
         source.extractall(destination, filter="data")
 
 

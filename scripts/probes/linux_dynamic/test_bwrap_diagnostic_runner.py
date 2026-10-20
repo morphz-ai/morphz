@@ -157,6 +157,24 @@ class DiagnosticRunner(unittest.TestCase):
                 with self.subTest(kind=kind), self.assertRaises(RuntimeError):
                     runner.extract(archive, root, "expected")
 
+    def test_exact_ubuntu_test_symlink_is_allowed_but_changed_target_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for target in ("upstream", "../../outside", "/etc/passwd"):
+                archive = root / "source.tar.xz"
+                with tarfile.open(archive, "w:xz") as output:
+                    info = tarfile.TarInfo("debian/tests/upstream-usrmerge")
+                    info.type = tarfile.SYMTYPE
+                    info.linkname = target
+                    output.addfile(info)
+                if target == "upstream":
+                    runner.extract(archive, root, "debian")
+                    self.assertEqual((root / "debian/tests/upstream-usrmerge").readlink(),
+                                     Path("upstream"))
+                else:
+                    with self.subTest(target=target), self.assertRaises(RuntimeError):
+                        runner.extract(archive, root, "debian")
+
     def test_restoration_failure_preserves_original_campaign_error(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "new"
