@@ -137,11 +137,20 @@ export function profileFixtureReturnBinding(request: CapturedRequest) {
     )?.slice(1) as string[] | undefined,
   };
 }
-/** Inspect actual Runtime observations, not a fabricated native tool history. */
+/** Inspect actual Runtime output, including native continuation messages that
+ * are newer than the last frozen Context projection. */
 export function profileFixtureObservationResult(
   request: CapturedRequest,
   tool: string,
 ): any {
+  for (const message of [...request.messages].reverse()) {
+    if (message.role !== "tool" || typeof message.content !== "string") continue;
+    const output = JSON.parse(message.content);
+    if (output.tool_name !== tool) continue;
+    return typeof output.result === "string"
+      ? JSON.parse(output.result)
+      : output.result;
+  }
   const observations: any[] = [];
   const visit = (node: any) => {
     if (!Array.isArray(node)) return;

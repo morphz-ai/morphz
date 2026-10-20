@@ -1,12 +1,31 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TaskSummary } from "../../apps/web/src/TaskSummary.js";
-import { SafeMarkdown } from "../../apps/web/src/SafeMarkdown.js";
+import { registerHooks } from "node:module";
 import {
   artifactSchema,
   initialWorkspace,
   taskContentSchema,
 } from "../../packages/core/src/model.js";
+
+// This process produces real React markup only. Vite serves the production
+// styles to the browser; Node must not try to execute a component's CSS import.
+const styles = registerHooks({
+  load(url, context, nextLoad) {
+    return url.endsWith(".css")
+      ? { format: "module", source: "export {};", shortCircuit: true }
+      : nextLoad(url, context);
+  },
+});
+const [{ TaskSummary }, { SafeMarkdown }] = await (async () => {
+  try {
+    return await Promise.all([
+      import("../../apps/web/src/TaskSummary.js"),
+      import("../../apps/web/src/SafeMarkdown.js"),
+    ]);
+  } finally {
+    styles.deregister();
+  }
+})();
 
 const now = "2026-10-03T00:00:00.000Z";
 const wide = [

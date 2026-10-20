@@ -373,7 +373,13 @@ function ownership(contents = sources, historical = false) {
     ...contents,
     Expected: historical
       ? expectedText
-      : expectedText.replace("activity: subjectActivity, ", ""),
+      : expectedText
+          .replace("activity: subjectActivity, ", "")
+          // 009b1826 made observed execution scopes explicitly read-only.
+          .replace(
+            "useState<ExecutionScope | null>",
+            "useState<ExecutionReadScope | null>",
+          ),
   });
   const app = parsed.get("App")!,
     owner = parsed.get("Owner")!,
@@ -577,7 +583,10 @@ function ownership(contents = sources, historical = false) {
         assert.ok(
           !moved.some((field) => contains(node, field)) &&
             !contains(node, "InspectorSelection") &&
-            !contains(node, "ExecutionScope"),
+            !contains(
+              node,
+              historical ? "ExecutionScope" : "ExecutionReadScope",
+            ),
           "no mirrored inspector state/ref",
         );
     }

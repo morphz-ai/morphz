@@ -157,7 +157,12 @@ export function verifyExecutionInteractionOwner(
   for (const name of executionNames)
     assert.equal(
       readerFunction(owner, name).getText(),
-      readerFunction(fixed, name).getText(),
+      // 009b1826 separates read-only, unattributed execution inspection from
+      // action authority. Preserve the original algorithm/hash below; only the
+      // two read ports use the reviewed read scope.
+      readerFunction(fixed, name)
+        .getText()
+        .replace("scope: ExecutionScope", "scope: ExecutionReadScope"),
       "complete original execution algorithm " + name,
     );
   for (const statement of owner.source.statements)
@@ -183,7 +188,7 @@ export function verifyExecutionInteractionOwner(
       .map((node) => node.getText()),
     [
       'import { z } from "zod";',
-      'import {\n  executionSnapshotSchema,\n  type ExecutionScope,\n  type ExecutionControl,\n} from "../../../../packages/core/src/execution.js";',
+      'import {\n  executionSnapshotSchema,\n  type ExecutionReadScope,\n  type ExecutionControl,\n} from "../../../../packages/core/src/execution.js";',
     ],
     "only original execution schemas at runtime",
   );
@@ -269,6 +274,8 @@ export function verifyExecutionInteractionConsumption(
         readerVariable(scoped, "operationDelivery").parent.parent &&
       siblings.indexOf(localStatement) < index - 1 &&
       siblings[index + 1] ===
+        readerVariable(scoped, "terminalInteractions").parent.parent &&
+      siblings[index + 2] ===
         readerFunction(scoped, "clearProtectedProjection"),
     "original execution registration location",
   );

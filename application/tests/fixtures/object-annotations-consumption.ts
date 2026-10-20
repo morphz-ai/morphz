@@ -161,6 +161,28 @@ currentSessionInvalidation = uniqueReplace(
   "}, [changeIdentity, authenticationRequired])",
   "one approved stable lifecycle dependency, including same-session reinstatement",
 );
+// EventSource does not expose a revoked subscription's HTTP status. This
+// separately approved delta reconciles once per owned disconnection and resets
+// only after reconnection. Keep every archived raw/hash and the rest of the
+// update/connected/closed ownership and access-invalidation recipe unchanged.
+currentSessionInvalidation = uniqueReplace(
+  currentSessionInvalidation,
+  '    setWorkspaceConnection("connecting");',
+  '    setWorkspaceConnection("connecting");\n    let reconciledDisconnection = false;',
+  "one approved per-subscription disconnected reconciliation guard",
+);
+currentSessionInvalidation = uniqueReplace(
+  currentSessionInvalidation,
+  '          setWorkspaceConnection("connected");',
+  '          reconciledDisconnection = false;\n          setWorkspaceConnection("connected");',
+  "one approved owned reconnection guard reset",
+);
+currentSessionInvalidation = uniqueReplace(
+  currentSessionInvalidation,
+  '          setWorkspaceConnection("reconnecting");',
+  '          setWorkspaceConnection("reconnecting");\n          // EventSource hides the HTTP status of a revoked subscription. One\n          // authoritative read distinguishes that from a lost hint channel,\n          // so an idle revoked window cannot keep displaying protected data.\n          // Repeated reconnect errors do not create a new polling loop.\n          if (!reconciledDisconnection) {\n            reconciledDisconnection = true;\n            void refresh();\n          }',
+  "one approved owned once-only authoritative reconciliation on disconnect",
+);
 export const currentWorkspaceInvalidations = [
   currentStartupInvalidation,
   currentSessionInvalidation,

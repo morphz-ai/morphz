@@ -43,6 +43,10 @@ test(
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
+      optimizeDeps: {
+        entries: [fixture],
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {

@@ -172,8 +172,8 @@ test("current private project scope: keep independent original hook registration
   );
   const reordered = changed(
     moved,
-    "  const { writeInputs: writeDrafts } = draftCommands;",
-    "  const { writeInputs: writeDrafts } = draftCommands;\n  useCommittedConversationDraftRetirement(draftCommands, state);",
+    "  const writeDrafts = createCognitiveDraftWriter({",
+    "  useCommittedConversationDraftRetirement(draftCommands, state);\n  const writeDrafts = createCognitiveDraftWriter({",
   );
   rejected(
     reordered,

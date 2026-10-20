@@ -167,6 +167,57 @@ async function collaborationFixture(
       res.end(JSON.stringify(value));
     };
     if (path === "/api/approvals") return send(200, { approvals });
+    if (path === "/api/sessions/collaboration-session/execution-records") {
+      const query = new URL(req.url!, "http://localhost").searchParams;
+      const selected = query.get("thread_id");
+      const selectedIds = query.has("thread_ids")
+        ? (JSON.parse(query.get("thread_ids")!) as string[])
+        : undefined;
+      const roots = query.has("root_turn_ids")
+        ? (JSON.parse(query.get("root_turn_ids")!) as string[])
+        : undefined;
+      const allThreads = [
+        ...[...records.entries()].map(([id, schedule]) => ({
+          id: schedule.thread_id,
+          root_turn_id: schedule.source_turn_id,
+          ...threads.get(id)!,
+        })),
+        ...[...sourceThreads.values()].map(({ thread_id, ...thread }) => ({
+          id: thread_id,
+          ...thread,
+        })),
+      ].filter(
+        (thread) =>
+          (!selected || thread.id === selected) &&
+          (!selectedIds || selectedIds.includes(thread.id)) &&
+          (!roots || roots.includes(thread.root_turn_id)),
+      );
+      const ids = new Set(allThreads.map((thread) => thread.id));
+      const matching = jobs.filter((job) => ids.has(String(job.thread_id)));
+      const limit = Number(query.get("limit") ?? 100);
+      return send(200, {
+        session_id: "collaboration-session",
+        context_id: contextId,
+        selected_thread_id: selected,
+        source_root_id: selected ? (allThreads[0]?.root_turn_id ?? null) : null,
+        limit,
+        has_more_jobs: matching.length > limit,
+        threads_truncated: false,
+        jobs: matching.slice(0, limit),
+        threads: allThreads.map((thread) => ({
+          ...thread,
+          session_id: "collaboration-session",
+          context_id: contextId,
+          parent_thread_id: null,
+          generation: 1,
+          control_state: "running",
+          phase: thread.lifecycle === "completed" ? "completed" : "ready",
+          created_at: "2026-09-30T12:00:00Z",
+          updated_at: "2026-09-30T12:00:00Z",
+          intent: null,
+        })),
+      });
+    }
     if (path === "/api/execution-jobs") {
       const query = new URL(req.url!, "http://localhost").searchParams;
       const threadId = query.get("thread_id");
@@ -206,7 +257,9 @@ async function collaborationFixture(
       return event ? send(200, { event }) : send(404, {});
     }
     const evidenceThread =
-      /^\/api\/sessions\/collaboration-session\/threads\/(.+)$/.exec(path);
+      /^\/api\/sessions\/collaboration-session\/threads\/([^/]+)(\/input-source)?$/.exec(
+        path,
+      );
     if (evidenceThread) {
       const sourceThread = [...sourceThreads.values()].find(
         (item) => item.thread_id === evidenceThread[1],
@@ -215,22 +268,30 @@ async function collaborationFixture(
         const event = [...sourceEvents.values()].find(
           (item) => item.id === sourceThread.root_turn_id,
         )!;
-        return send(200, {
-          snapshot: {
-            thread: {
-              id: sourceThread.thread_id,
-              session_id: "collaboration-session",
-              context_id: contextId,
-              root_turn_id: sourceThread.root_turn_id,
-              initiating_principal_id: (
-                event.payload as Record<string, unknown>
-              ).principal_id,
-              agent_id: "morphz-agent",
-              executor_kind: "agent",
-              executor_id: null,
-            },
-          },
-        });
+        const thread = {
+          id: sourceThread.thread_id,
+          session_id: "collaboration-session",
+          context_id: contextId,
+          root_turn_id: sourceThread.root_turn_id,
+          initiating_principal_id: (event.payload as Record<string, unknown>)
+            .principal_id,
+          agent_id: "morphz-agent",
+          executor_kind: "agent",
+          executor_id: null,
+        };
+        return send(
+          200,
+          evidenceThread[2]
+            ? {
+                thread,
+                source: {
+                  kind: "input",
+                  input_event: event,
+                  root_thread_id: sourceThread.thread_id,
+                },
+              }
+            : { snapshot: { thread } },
+        );
       }
       return send(404, {});
     }

@@ -83,7 +83,44 @@ import {buildScriptDocx} from "../../../../../packages/core/src/script-studio-do
 import {spaceKind} from "../../../../../packages/core/src/model.js";
 import {scopedStorage} from "../../local-preferences.js";
 import {scriptFocusReturn} from "../../script-studio-focus.js";
-import {useScriptEditorRead} from "../../useScriptEditorRead.js";`;
+import {useScriptEditorRead} from "../../useScriptEditorRead.js";
+import {createScriptLocationWriter} from "./script-location-writer.js";`;
+// Explicit current delta, not a rewrite of the frozen migration oracle:
+// the location-only writer serializes our own receipts while retaining CAS.
+const locationRecipes = `
+const locationContext = useRef({ client, instance });
+locationContext.current = { client, instance };
+const locationLease = useRef(0);
+useLayoutEffect(() => {
+  locationLease.current++;
+  return () => { locationLease.current++; };
+}, [activeView, instance.id, instance.workspaceId,
+  boot.centerId, boot.principalId, boot.actantId, boot.csrfToken]);
+const locationWriter = useRef<ReturnType<typeof createScriptLocationWriter> | null>(null);
+if (!locationWriter.current)
+  locationWriter.current = createScriptLocationWriter({
+    current() {
+      const { client, instance } = locationContext.current;
+      const current = client.getSnapshot();
+      if (!alive.current || !activeViewRef.current || !client.online || !current)
+        return null;
+      return {
+        owner: JSON.stringify([
+          locationLease.current, current.centerId, current.principalId,
+          current.actantId, current.csrfToken, instance.workspaceId,
+          instance.applicationId, instance.applicationVersion,
+        ]),
+        instanceId: instance.id,
+        revision: instance.revision,
+      };
+    },
+    save(instanceId, expectedRevision, state) {
+      return locationContext.current.client.execute({
+        type: "set-application-state", instanceId, expectedRevision, state,
+      });
+    },
+  });
+`;
 const original =
   imports +
   `function Original({${inputs.join(",")}}){\n` +
@@ -98,10 +135,15 @@ const original =
               'command.action !== "record-export"',
               'command.action !== "record-export" && !options?.deferFocusReturn',
             )
-        : raw,
+        : raw.startsWith("const choose")
+          ? raw.replace(
+              /void client\s*\.execute\(\{\s*type: "set-application-state",\s*instanceId: instance\.id,\s*expectedRevision: instance\.revision,\s*state: (\{[\s\S]*?\}),\s*\}\)/,
+              "void locationWriter.current!($1)",
+            )
+          : raw,
     )
     .join("\n") +
-  "\n" +
+  "\n" + locationRecipes + "\n" +
   actions
     .map((name) => `const ${name}=${arrows[actionIndices[name]].raw};`)
     .join("\n") +
@@ -419,9 +461,16 @@ function validate(current: Sources) {
     previous = matches[0]!.at;
     owned.push(matches[0]!.node);
   }
+  const locationEnd = old.body!.statements.length - actions.length;
+  for (let index = prelude.length; index < locationEnd; index++) {
+    const wanted = JSON.stringify(shape(old.body!.statements[index]!, expected));
+    const matches = statementShapes.filter(({ key }) => key === wanted);
+    assert.equal(matches.length, 1, "serialized-location-recipe:" + index);
+    owned.push(matches[0]!.node);
+  }
   for (const [index, name] of actions.entries()) {
     const declaration = variable(main.body!, name),
-      originalAction = old.body!.statements[prelude.length + index]!;
+      originalAction = old.body!.statements[locationEnd + index]!;
     assert.deepEqual(
       shape(declaration.parent.parent, owner),
       shape(originalAction, expected),

@@ -76,10 +76,11 @@ function hide() { return <IconButton controlRole="exchange-operation" iconId="ch
 function compact() { return <ComposerOptions label="更多交流选项" menuLabel="交流选项" below={conversationVisible}
   options={secondaryOptions.map(({ iconId, ...option }) => ({ ...option, icon: <ControlIcon name={iconId} /> }))} />; }
 const secondary = [
-  { id: "history-size", label: historyVisible ? "返回工作内容" : "展开完整记录", iconId: historyVisible ? "minimize" : "maximize", pressed: historyVisible, onSelect: () => onInteraction(historyVisible ? "recent" : "history") },
-  { id: "pin", label: pinned ? "取消固定输入框" : "固定输入框", iconId: "pin", pressed: pinned, onSelect: onPin },
+  { id: "history-size", label: historyVisible ? "返回工作内容" : "展开完整记录", iconId: historyVisible ? "minimize" : "maximize", pressed: historyVisible, onSelect: () => onInteraction(historyVisible ? inputVisible ? "recent" : "recent-only" : inputVisible ? "history" : "history-only") },
+  ...(conversationVisible && onHistoryPin ? [{ id: "history-pin", label: historyPinned ? "取消固定交流记录" : "固定交流记录", iconId: "pin" as const, pressed: historyPinned, onSelect: onHistoryPin }] : []),
+  ...(inputVisible ? [{ id: "pin", label: pinned ? "取消固定输入框" : "固定输入框", iconId: "pin" as const, pressed: pinned, groupStart: conversationVisible && !!onHistoryPin, onSelect: onPin }] : []),
 ];
-const visible = [{ id: "history-visibility", label: conversationVisible ? "收起交流记录" : "查看交流记录", iconId: "message-square-text", pressed: conversationVisible, onSelect: () => onInteraction(conversationVisible ? "input" : "recent") }];
+const visible = [{ id: "history-visibility", label: readingSelected ? "收起交流记录" : "查看交流记录", iconId: "message-square-text", pressed: readingSelected, onSelect: () => onInteraction(readingSelected ? inputVisible ? "input" : "hidden" : "recent") }];
 function exchangeLifecycle() {
   const tools = useRef<HTMLDivElement>(null);
   const hide = useRef<HTMLButtonElement>(null);

@@ -80,7 +80,7 @@ test("未知创建时间不伪造时刻，留在已知步骤后并保持确定�
   );
 });
 
-test("真实Platform读取继续请求newest_first，只把返回的最近窗口改成顺序阅读", async () => {
+test("Platform读取有界 execution-records 最近窗口，展示层只改成顺序阅读", async () => {
   const recent = Array.from({ length: 103 }, (_, index) =>
     job(
       `TEST-${String(index).padStart(3, "0")}`,
@@ -91,11 +91,41 @@ test("真实Platform读取继续请求newest_first，只把返回的最近窗口
   const controls = new ExecutionControls(
     async (path) => {
       if (path === "/api/approvals") return { approvals: [] };
-      const query = new URL(path, "http://TEST-runtime").searchParams;
-      assert.equal(query.get("newest_first"), "true");
+      const url = new URL(path, "http://TEST-runtime");
+      assert.equal(
+        url.pathname,
+        "/api/sessions/TEST-session/execution-records",
+      );
+      const query = url.searchParams;
       assert.equal(query.get("limit"), "100");
       reads++;
-      return { jobs: recent };
+      return {
+        session_id: "TEST-session",
+        context_id: "TEST-context",
+        selected_thread_id: null,
+        source_root_id: null,
+        limit: 100,
+        has_more_jobs: true,
+        threads_truncated: false,
+        jobs: recent.slice(0, 100),
+        threads: [
+          {
+            id: "TEST-thread",
+            session_id: "TEST-session",
+            context_id: "TEST-context",
+            root_turn_id: "TEST-root",
+            parent_thread_id: null,
+            generation: 0,
+            revision: 1,
+            lifecycle: "completed",
+            control_state: "running",
+            phase: "completed",
+            created_at: recent.at(-1)!.created_at,
+            updated_at: recent[0]!.created_at,
+            intent: "TEST bounded original execution",
+          },
+        ],
+      };
     },
     () => ({ sessionId: "TEST-session", contextId: "TEST-context" }),
   );

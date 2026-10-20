@@ -8,8 +8,37 @@ import {
   profileActualTransportFixture,
   profileFixtureAnnotationsMessage,
   profileFixtureReturnBinding,
+  profileFixtureObservationResult,
   fixtureAnnotationsMessage,
 } from "./profile-actual-transport-fixture.js";
+
+test("fixture reads the latest actual native tool continuation before frozen Context", () => {
+  const messages = [
+    {
+      role: "user",
+      content:
+        '(context (observation (seq 999) (tool host_morphz) (kind tool_output) (content (text "{\\"items\\":[\\"old\\"]}"))))',
+    },
+    {
+      role: "tool",
+      content: JSON.stringify({
+        tool_name: "host_morphz",
+        result: JSON.stringify({ items: ["current"] }),
+      }),
+    },
+    {
+      role: "tool",
+      content: JSON.stringify({ tool_name: "another_tool", result: "{}" }),
+    },
+  ];
+  assert.deepEqual(profileFixtureObservationResult({ messages }, "host_morphz"), {
+    items: ["current"],
+  });
+  assert.deepEqual(
+    profileFixtureObservationResult({ messages: messages.slice(0, 1) }, "host_morphz"),
+    { items: ["old"] },
+  );
+});
 
 test("metadata follows frozen Runtime binding; tool definitions never select annotation mode", () => {
   const tools = [

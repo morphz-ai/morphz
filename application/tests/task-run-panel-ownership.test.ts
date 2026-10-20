@@ -679,7 +679,7 @@ function validate(contents: Sources) {
   same(
     attribute(dialogs[0]!, "scope"),
     renderer,
-    "{projectId:thread?.projectId??artifact.projectId,artifactId:artifact.id,conversationId:thread?.conversationId,threadId,taskRun:true}",
+    "{projectId:thread?.projectId??artifact.projectId,artifactId:artifact.id,conversationId:thread?.conversationId??undefined,threadId,taskRun:true}",
     "original-inspection-scope",
   );
   same(

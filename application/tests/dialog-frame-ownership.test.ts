@@ -38,12 +38,14 @@ const currentNeighbors = fixedDialogFrame.neighbors.map((tuple) => ({
   ...tuple,
   source: adjacentOwner,
 }));
-// These three approved control carriers preserve the original frame/UI phase.
+// Approved control/terminal carriers preserve the original frame/UI phase.
 // No other CSS is removed when checking the original adjacent frame slot.
 const entryCarriers = [
   "ui/controls/adaptive.css",
   "features/browser/browser-controls.css",
   "ui/controls/metrics.css",
+  "features/terminal/terminal.css",
+  "features/terminal/terminal-emulator.css",
 ] as const;
 const directory = new URL("../apps/web/src/", import.meta.url).pathname;
 type Sources = { css: Map<string, string>; modules: Map<string, string> };
@@ -344,6 +346,8 @@ function framePhase(styles: string[], rule: string) {
       "styles.css",
       entryCarriers[0],
       entryCarriers[1],
+      entryCarriers[3],
+      entryCarriers[4],
       owner,
       entryCarriers[2],
       "ui.css",

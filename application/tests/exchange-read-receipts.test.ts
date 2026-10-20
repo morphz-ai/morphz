@@ -553,7 +553,27 @@ test("actual Conversation keeps its original items/receipt initializers and allH
     });
   assert.deepEqual(
     extract(actual, "Conversation"),
-    extract(fixedSource, "fixedHistoryRead"),
+    extract(
+      // Error deduplication/localized notices and consumed-evaluation hiding
+      // were added after 4ce98b64. They must not alter receipt ordering/reset.
+      fixedSource
+        .replace(
+          `...group.messages
+        .filter((m) => !onInspect || m.kind === "reply" || m.kind === "error")
+        .filter(
+          (m) => (m.kind !== "reply" && m.kind !== "error") || m.text.trim(),
+        )`,
+          `...presentRuntimeErrors(group.messages)
+        .filter((m) => m.kind !== "evaluation" || (!m.evaluation?.consumed && evaluationDisplayText(m).trim()))
+        .filter((m) => !onInspect || m.kind !== "tool")
+        .filter((m) => m.kind === "tool" || m.text.trim())`,
+        )
+        .replace(
+          "items.flatMap((item) => (item.reply ? [item.reply] : []))",
+          "items.flatMap((item) => item.reply ? (item.reply.representedMessages ?? [item.reply]) : [])",
+        ),
+      "fixedHistoryRead",
+    ),
   );
   verifyCognitiveHistoryReset(actual);
   // The renderer still owns receipt computation; its visibility/focus/modal

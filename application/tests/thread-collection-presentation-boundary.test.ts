@@ -128,6 +128,16 @@ const fixed = {
   threadSummary:
     'const threadSummary = thread\n    ? executionActivitySummary(thread, activityAvailable && !!currentThread)\n    : "";',
 } as const;
+// Keep the captured a1acc677 hashes above immutable. These two domain owners
+// evolved independently: exact wait labels in 06efe937/8ad574a8 and nullable
+// provenance/read-only scope in 009b1826. Their negative mutations still fail.
+const currentAlgorithms = {
+  ...fixed.algorithms,
+  executionActivityStatus:
+    "6377c4bee67e8fa5dcb848a85972cbd120e7b03f1e412056f379c77d8b5a5b5b",
+  executionActivityThreads:
+    "e33894d20af8d765371073ae4ac28159ebf95ef85916f666b66d50b050e60fb3",
+};
 const paths = {
   Owner: "../apps/web/src/execution-activity.ts",
   Conversation: "../apps/web/src/Conversation.tsx",
@@ -341,7 +351,7 @@ function param(component: FunctionDeclaration, name: string) {
 }
 function consumption(
   parsed: Parsed,
-  component: FunctionDeclaration,
+  component: Node,
   name: string,
   fields: readonly string[],
   argumentsText: string,
@@ -412,7 +422,7 @@ const expected = parse({
       .replace("client.online", "online")}
     return {activeBranch,workStatus};
   }`,
-  Overview: `export function executionActivityOverview(state:Workspace,threads:readonly ActivityThread[],scope:ExecutionScope,allWork:boolean,sharedDefault:boolean,runtime:ConversationRuntime):Readonly<{activityThreads:ActivityThread[];active:ActivityThread[];recent:ReturnType<typeof executionActivityDateGroups>;activeCount:number;activityAvailable:boolean;activityComplete:boolean}>{
+  Overview: `export function executionActivityOverview(state:Workspace,threads:readonly ActivityThread[],scope:ExecutionReadScope,allWork:boolean,sharedDefault:boolean,runtime:ConversationRuntime):Readonly<{activityThreads:ActivityThread[];active:ActivityThread[];recent:ReturnType<typeof executionActivityDateGroups>;activeCount:number;activityAvailable:boolean;activityComplete:boolean}>{
     ${overviewNames
       .map((name) => fixed.recipes[name].raw)
       .join("\n")
@@ -445,7 +455,7 @@ function typedCoreInputs(owner: Parsed) {
     ],
     ["RecordedInput", "model", ["inputExecutionActivityPresentation"]],
     ["Workspace", "model", ["executionActivityOverview"]],
-    ["ExecutionScope", "execution", ["executionActivityOverview"]],
+    ["ExecutionReadScope", "execution", ["executionActivityOverview"]],
   ] as const) {
     const matches = owner.source.statements
       .filter(isImportDeclaration)
@@ -519,6 +529,7 @@ function pureOwner(parsed: Parsed) {
         [
           "../../../packages/core/src/conversation.js",
           "../../../packages/core/src/model.js",
+          "./execution-wait-label.js",
         ].includes(node.moduleSpecifier.text) &&
         clause &&
         !clause.name &&
@@ -529,9 +540,11 @@ function pureOwner(parsed: Parsed) {
       entries.every(
         (entry) =>
           entry.isTypeOnly ||
-          ["activeExecutionThreads", "inConversation"].includes(
-            (entry.propertyName ?? entry.name).text,
-          ),
+          (isStringLiteral(node.moduleSpecifier) &&
+          node.moduleSpecifier.text === "./execution-wait-label.js"
+            ? ["executionWaitLabel"]
+            : ["activeExecutionThreads", "inConversation"]
+          ).includes((entry.propertyName ?? entry.name).text),
       ),
       "pure-owner-dependencies",
     );
@@ -648,7 +661,7 @@ function validate(contents: Sources) {
     ],
   ] as const)
     same(fn(owner, name), fn(expected.get(key)!, name), rule, owner);
-  for (const [name, digest] of Object.entries(fixed.algorithms)) {
+  for (const [name, digest] of Object.entries(currentAlgorithms)) {
     const where = name === "activeExecutionThreads" ? core : owner;
     const node =
       name === "sameActivityDomain"
@@ -668,9 +681,20 @@ function validate(contents: Sources) {
   imported(owner, "inConversation", "../../../packages/core/src/model.js");
   const conversation = parsed.get("Conversation")!,
     conversationFn = fn(conversation, "Conversation");
+  const background = inside(conversationFn)
+    .filter(isJsxAttribute)
+    .filter((node) => node.name.getText() === "data-background-execution");
+  assert.equal(background.length, 1, "input-background-marker");
+  // d98f4e4c also uses the projection for continuation progress. This contract
+  // owns the timeline item's render phase, not every call in Conversation.
+  // Anchor the scope to the real DOM marker so changed arguments/wrappers or
+  // a shadowed import in that phase remain detectable.
+  let timeline: Node | undefined = background[0]!.parent;
+  while (timeline && !isArrowFunction(timeline)) timeline = timeline.parent;
+  assert.ok(timeline, "input-original-timeline-phase");
   const input = consumption(
     conversation,
-    conversationFn,
+    timeline,
     "inputExecutionActivityPresentation",
     ["activeBranch", "workStatus"],
     "runtime,item,item && client.online",
@@ -703,10 +727,6 @@ function validate(contents: Sources) {
     "input-captured-render-facts",
   );
   const inputBindings = input.fields;
-  const background = inside(conversationFn)
-    .filter(isJsxAttribute)
-    .filter((node) => node.name.getText() === "data-background-execution");
-  assert.equal(background.length, 1, "input-background-marker");
   assert.ok(
     background[0]!.initializer &&
       isJsxExpression(background[0]!.initializer) &&
@@ -1095,8 +1115,8 @@ test("real input import, direct alias and captured item-online guard reject wrap
   rejected(
     changed(
       "Conversation",
-      "const { activeBranch, workStatus } =",
-      "const inputExecutionActivityPresentation = () => ({activeBranch:false,workStatus:undefined});\n              const { activeBranch, workStatus } =",
+      "const { activeBranch, workStatus } =\n",
+      "const inputExecutionActivityPresentation = () => ({activeBranch:false,workStatus:undefined});\n              const { activeBranch, workStatus } =\n",
     ),
     "input-direct-consumer:import-binding",
   );
@@ -1267,7 +1287,7 @@ test("unrelated JSX, comments, CSS/type imports and pure exports plus true owner
   allowed.Conversation = allowed.Conversation.replace(
     "import { inputExecutionActivityPresentation }",
     "import { inputExecutionActivityPresentation as presentInput }",
-  ).replace("inputExecutionActivityPresentation(\n", "presentInput(\n");
+  ).replaceAll("inputExecutionActivityPresentation(\n", "presentInput(\n");
   allowed.Sidebar = allowed.Sidebar.replace(
     "  executionActivityOverview,",
     "  executionActivityOverview as collectOverview,",
@@ -1315,10 +1335,10 @@ test("true core type-import aliases and local process data parameters remain pur
       .replace("type Workspace,", "type Workspace as BorrowedWorkspace,")
       .replaceAll(": Workspace", ": BorrowedWorkspace")
       .replace(
-        "import type { ExecutionScope }",
-        "import type { ExecutionScope as BorrowedScope }",
+        "import type { ExecutionReadScope }",
+        "import type { ExecutionReadScope as BorrowedScope }",
       )
-      .replaceAll(": ExecutionScope", ": BorrowedScope") +
+      .replaceAll(": ExecutionReadScope", ": BorrowedScope") +
     "\nexport const localPure=(process:{value:number})=>process.value+1;\n" +
     "\nexport const localMap=(process:readonly number[])=>process.map(value=>value+1);\n" +
     "\nexport const localGlobalMap=(globalThis:readonly number[])=>globalThis.map(value=>value+1);\n";

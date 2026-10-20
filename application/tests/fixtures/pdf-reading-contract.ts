@@ -292,7 +292,23 @@ export function pdfReadingCssViolations(css: ReadonlyMap<string, string>) {
         postcss.parse(text, { from: file }),
       ]),
     );
-  const primitiveFacts = fixedPdfPrimitiveRefinements.map((fact) => {
+  // 6c14bdcc introduced the approved dense action role. Keep c932's archive
+  // immutable; this exact shared control recipe is not a second PDF owner.
+  const primitiveFacts = [
+    ...fixedPdfPrimitiveRefinements,
+    {
+      file: "ui/controls/metrics.css",
+      raw: `.app .icon-button[data-size="icon-xs"] {
+      --ui-control-size: 24px;
+      width: var(--ui-control-size);
+      height: var(--ui-control-size);
+      min-width: var(--ui-control-size);
+      min-height: var(--ui-control-size);
+      padding: 4px;
+      gap: 0;
+    }`,
+    },
+  ].map((fact) => {
     let selected: Rule | undefined;
     postcss.parse(fact.raw).walkRules((rule) => {
       selected = rule;

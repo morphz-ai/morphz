@@ -598,6 +598,36 @@ test("current annotation contracts accept aliases and consumed independent React
     objectOwner,
   );
 });
+test("current annotation invalidation allows only the owned once-per-disconnection refresh delta", () => {
+  const once =
+    "          if (!reconciledDisconnection) {\n            reconciledDisconnection = true;\n            void refresh();\n          }";
+  for (const [before, after] of [
+    [once, ""],
+    [once, "          void refresh();"],
+    [
+      "        onClosed: () => {\n          if (!owned()) return;",
+      "        onClosed: () => {",
+    ],
+    [
+      '          reconciledDisconnection = false;\n          setWorkspaceConnection("connected");',
+      '          setWorkspaceConnection("connected");',
+    ],
+    [
+      "let reconciledDisconnection = false;",
+      "let reconciledDisconnection = true;",
+    ],
+    [
+      "          epoch.current++;\n          clearProtectedProjection();",
+      "          epoch.current++;",
+    ],
+  ])
+    rejected(
+      app,
+      feature,
+      /original annotation cross-domain refresh and access invalidation effects/,
+      changed(client, before!, after!),
+    );
+});
 test("current annotation source origins reject unused-correct plus consumed foreign namesakes", () => {
   for (const name of [
     "useObjectAnnotations",

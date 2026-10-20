@@ -393,7 +393,8 @@ test("历史/focus与stream可见性仍由调用方确定，补充与未来安�
   ]);
   assert.deepEqual(
     render(observation, { focusedArtifactId: "TEST-artifact-b" }).pendingIds,
-    ["TEST-input-b"],
+    ["TEST-input-a", "TEST-input-b"],
+    "the approved default is all history; selecting an object does not silently hide an outstanding reply",
   );
   const stream: ConversationStream = {
     connected: true,

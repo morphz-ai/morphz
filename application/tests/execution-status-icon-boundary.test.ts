@@ -54,6 +54,18 @@ const baseline = {
   },
   Running: "7ef4664820d8b216d1ee724b63456459185b15eca9c741963e3f57b687e6478e",
 } as const;
+// Reviewed production deltas, independently traced to 009b1826 (read-only
+// visibility), e2d82aa5 (actual model settings), and 856cd6c0 (one metadata row).
+// Historical glyph/lifecycle proofs above remain unchanged.
+const currentBaseline = {
+  Sidebar: {
+    scope: "0ab55533292aca4ae028e76bf1112caeca88f0c0984a308f312c5ac2cd43f6d0",
+    hooks: "dab58667dc6c0edc0fda3180ce7c9857f13bd709743e64a6dae56d3f6cacf12f",
+  },
+  Dialog: {
+    scope: "b8b8c27ce8b4d8db892e1a65d7fdc79d6d4c829c4d1eb61a01fb30c1da0fc983",
+  },
+} as const;
 const paths = {
   Icon: "ExecutionStatusIcon.tsx",
   Sidebar: "ExecutionSidebar.tsx",
@@ -430,8 +442,9 @@ function inspect(sources: Sources) {
         : "Dialog-original-facts-span-tree",
       () => {
         const actual = scopes(consumer, owner);
-        if (owner === "Sidebar") assert.deepEqual(actual, baseline.Sidebar);
-        else assert.equal(actual.scope, baseline.Dialog.scope);
+        if (owner === "Sidebar")
+          assert.deepEqual(actual, currentBaseline.Sidebar);
+        else assert.equal(actual.scope, currentBaseline.Dialog.scope);
       },
     );
   }

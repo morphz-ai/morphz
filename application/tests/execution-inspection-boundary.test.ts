@@ -104,6 +104,12 @@ const statementNames = [
 const originalRefs = parse({ Refs: fixed.spans.refs.raw })
   .get("Refs")!
   .nodes.filter(isVariableDeclaration);
+// 009b1826 added read-only inspection without granting action authority.
+// Keep the signed historical spans unchanged, and pin the exact reviewed guard.
+const currentControl = fixed.spans.control.raw.replace(
+  "    const origin = observationScope;",
+  '    if ("runtime" in scope) return;\n    const origin = observationScope;',
+);
 const expectedBody = statementNames
   .map((name) =>
     name === "refs"
@@ -116,7 +122,9 @@ const expectedBody = statementNames
             "useObservedRead({",
             'useObservedRead({ invalidation: "coalesce",',
           )
-        : fixed.spans[name].raw,
+        : name === "control"
+          ? currentControl
+          : fixed.spans[name].raw,
   )
   .join("\n");
 const templates = parse({
@@ -124,7 +132,7 @@ const templates = parse({
   DialogRef: `const ${fixed.spans.dialogDeclaration.raw};`,
   Options: `function expected({client,scope,dialog,embedded}: {
     client: Pick<WorkspaceClient,"boot"|"online"|"workspaceChangeRevision"|"executionSnapshot"|"executionResult"|"controlExecution"|"contentCatalog">;
-    scope: ExecutionScope; dialog: RefObject<HTMLDialogElement|null>; embedded:boolean;
+    scope: ExecutionReadScope; dialog: RefObject<HTMLDialogElement|null>; embedded:boolean;
   }) {}`,
   Consumer: `const {${returnedNames.join(",")}} = useExecutionInspection({client,scope,dialog,embedded});`,
   Original: fixed.originalComponent.raw,
@@ -290,7 +298,7 @@ function canonicalImports(parsed: Parsed, owner: boolean) {
     for (const [module, name] of [
       ["react", "RefObject"],
       ["../../client.js", "WorkspaceClient"],
-      ...["ExecutionScope", "ExecutionSnapshot", "ExecutionControl"].map(
+      ...["ExecutionReadScope", "ExecutionSnapshot", "ExecutionControl"].map(
         (name) => ["../../../../../packages/core/src/execution.js", name],
       ),
     ]) {
@@ -509,7 +517,7 @@ function inputs(
   );
   imported(owner, "react", "RefObject", true);
   for (const name of [
-    "ExecutionScope",
+    "ExecutionReadScope",
     "ExecutionSnapshot",
     "ExecutionControl",
   ])
@@ -1018,7 +1026,7 @@ test("consumer shorthand values must be borrowed from actual renderer parameters
           sources.Dialog,
           "  scope,\n  onClose,",
           "  scope: _renderScope,\n  onClose,",
-        ) + "\nconst scope = {} as ExecutionScope;\n",
+        ) + "\nconst scope = {} as ExecutionReadScope;\n",
     },
     "borrowed-inspection-consumer-symbols",
   );
@@ -1265,7 +1273,7 @@ test("observation captures exact scope with latest API and original enablement/i
   );
 });
 test("control, result, late guards and refresh strategies remain independently complete", () => {
-  const control = fixed.spans.control.raw,
+  const control = currentControl,
     result = fixed.spans.readResult.raw;
   reject(
     changed(
@@ -1443,7 +1451,7 @@ test("unrelated legal JSX/CSS/comments/type imports/pure increments and real hoo
     "useEffect",
     "RefObject",
     "WorkspaceClient",
-    "ExecutionScope",
+    "ExecutionReadScope",
     "ExecutionSnapshot",
     "ExecutionControl",
   ]) {
