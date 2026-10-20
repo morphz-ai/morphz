@@ -9,8 +9,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import test from "node:test";
-import { verifyTestElectron } from "../scripts/test-electron.mjs";
+
+const {
+  verifyTestElectron,
+}: {
+  verifyTestElectron(packageDirectory?: string): string;
+} = createRequire(import.meta.url)("../scripts/test-electron.mjs");
 
 function fixture(context: { after(callback: () => void): void }) {
   const root = mkdtempSync(join(tmpdir(), "morphz-test-electron-ready-"));
