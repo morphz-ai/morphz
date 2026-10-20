@@ -239,6 +239,7 @@ impl ModelFailure {
                 "usage limit for this billing cycle",
                 "quota will be refreshed in the next cycle",
                 "used all the included free usage",
+                "individual quota reached",
             ],
         ) {
             ModelFailureKind::QuotaExhausted

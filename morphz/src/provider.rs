@@ -632,13 +632,17 @@ fn request_model_failure(error: reqwest::Error) -> ModelFailure {
 /// Provider-local retries cover only the short request-establishment window.
 /// Respect an explicit Retry-After as a lower bound and add bounded jitter so
 /// concurrent Activations do not all hit the same endpoint on one clock edge.
-/// Longer outage coordination is owned by the Runtime-wide recovery gate.
+/// An outage longer than this local retry window belongs to Runtime recovery,
+/// not a sleeping physical Model Attempt that keeps its Activation alive.
 fn provider_retry_delay(
     exponential: Duration,
     retry_after_secs: Option<u64>,
     attempt: u32,
-) -> Duration {
+) -> Option<Duration> {
     const MAX_LOCAL_BACKOFF_SECS: u64 = 300;
+    if retry_after_secs.is_some_and(|seconds| seconds > MAX_LOCAL_BACKOFF_SECS) {
+        return None;
+    }
     let base_millis = exponential
         .min(Duration::from_secs(MAX_LOCAL_BACKOFF_SECS))
         .as_millis();
@@ -651,9 +655,12 @@ fn provider_retry_delay(
     let jitter_percent = 80_u128 + u128::from(entropy % 41);
     let jittered_millis = base_millis.saturating_mul(jitter_percent) / 100;
     let retry_after_millis = retry_after_secs.unwrap_or_default().saturating_mul(1_000) as u128;
-    Duration::from_millis(
-        u64::try_from(jittered_millis.max(retry_after_millis)).unwrap_or(u64::MAX),
-    )
+    let bounded_millis = jittered_millis
+        .max(retry_after_millis)
+        .min(u128::from(MAX_LOCAL_BACKOFF_SECS) * 1_000);
+    Some(Duration::from_millis(
+        u64::try_from(bounded_millis).unwrap_or(u64::MAX),
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1835,7 +1842,7 @@ impl ProtocolClient {
                         ),
                     )),
                 };
-            match send_result {
+            let delay = match send_result {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
@@ -1863,22 +1870,36 @@ impl ProtocolClient {
                         return Ok(body);
                     }
                     retry_after = retry_after_seconds(response.headers());
-                    let text = response.text().await.unwrap_or_default();
+                    let text = tokio::time::timeout(self.stream_idle_timeout, response.text())
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_default();
                     let failure = http_model_failure(status, text, retry_after);
                     let retryable = failure.kind.is_provider_transient();
-                    if retryable && attempt < self.max_retries {
+                    if !retryable || attempt >= self.max_retries {
+                        return Err(boxed_model_failure(failure));
+                    }
+                    let Some(delay) = provider_retry_delay(backoff, retry_after, attempt) else {
                         tracing::warn!(
                             protocol = protocol.as_str(),
                             %status,
-                            failure_kind = failure.kind.as_str(),
-                            attempt,
-                            max = self.max_retries,
+                            retry_after_secs = retry_after,
+                            event_code = "provider.request.retry_deferred",
+                            "Provider Retry-After exceeds the local retry window; returning failure to Runtime recovery"
+                        );
+                        return Err(boxed_model_failure(failure));
+                    };
+                    tracing::warn!(
+                        protocol = protocol.as_str(),
+                        %status,
+                        failure_kind = failure.kind.as_str(),
+                        attempt,
+                        max = self.max_retries,
                         event_code = "provider.request.retrying_status",
                         "Provider request failed; preparing to retry"
-                        );
-                    } else {
-                        return Err(boxed_model_failure(failure));
-                    }
+                    );
+                    delay
                 }
                 Err(failure)
                     if failure.kind.is_provider_transient() && attempt < self.max_retries =>
@@ -1892,10 +1913,11 @@ impl ProtocolClient {
                         event_code = "provider.request.retrying_network",
                         "Provider network error; preparing to retry"
                     );
+                    provider_retry_delay(backoff, None, attempt)
+                        .expect("no Retry-After cannot defer local retry")
                 }
                 Err(failure) => return Err(boxed_model_failure(failure)),
-            }
-            let delay = provider_retry_delay(backoff, retry_after, attempt);
+            };
             tracing::debug!(
                 protocol = protocol.as_str(),
                 attempt,
@@ -1956,17 +1978,31 @@ impl ProtocolClient {
                     ),
                 )),
             };
-            match send_result {
+            let delay = match send_result {
                 Ok(response) if response.status().is_success() => break response,
                 Ok(response) => {
                     let status = response.status();
                     retry_after = retry_after_seconds(response.headers());
-                    let text = response.text().await.unwrap_or_default();
+                    let text = tokio::time::timeout(self.stream_idle_timeout, response.text())
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or_default();
                     let failure = http_model_failure(status, text, retry_after);
                     let retryable = failure.kind.is_provider_transient();
                     if !retryable || attempt >= self.max_retries {
                         return Err(boxed_model_failure(failure));
                     }
+                    let Some(delay) = provider_retry_delay(backoff, retry_after, attempt) else {
+                        tracing::warn!(
+                            protocol = protocol.as_str(),
+                            %status,
+                            retry_after_secs = retry_after,
+                            event_code = "provider.stream_open.retry_deferred",
+                            "Provider Retry-After exceeds the local retry window; returning failure to Runtime recovery"
+                        );
+                        return Err(boxed_model_failure(failure));
+                    };
                     tracing::warn!(
                         protocol = protocol.as_str(),
                         %status,
@@ -1976,6 +2012,7 @@ impl ProtocolClient {
                         event_code = "provider.stream_open.retrying_status",
                         "Provider stream establishment failed; preparing to retry"
                     );
+                    delay
                 }
                 Err(failure)
                     if failure.kind.is_provider_transient() && attempt < self.max_retries =>
@@ -1989,10 +2026,11 @@ impl ProtocolClient {
                         event_code = "provider.stream_open.retrying_network",
                         "Provider stream establishment encountered a network error; preparing to retry"
                     );
+                    provider_retry_delay(backoff, None, attempt)
+                        .expect("no Retry-After cannot defer local retry")
                 }
                 Err(failure) => return Err(boxed_model_failure(failure)),
-            }
-            let delay = provider_retry_delay(backoff, retry_after, attempt);
+            };
             tracing::debug!(
                 protocol = protocol.as_str(),
                 attempt,
@@ -6184,8 +6222,91 @@ mod tests {
 
     #[test]
     fn provider_retry_after_is_a_lower_bound_even_with_jitter() {
-        let delay = provider_retry_delay(Duration::from_secs(1), Some(17), 3);
+        let delay = provider_retry_delay(Duration::from_secs(1), Some(17), 3).unwrap();
         assert!(delay >= Duration::from_secs(17));
+        assert_eq!(provider_retry_delay(Duration::from_secs(1), Some(393_782), 1), None);
+    }
+
+    #[test]
+    fn individual_quota_cooldown_is_not_a_transient_rate_limit() {
+        let failure = http_model_failure(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            json!({
+                "error": {
+                    "code": "model_cooldown",
+                    "last_upstream_error": "Individual quota reached. Please upgrade your subscription."
+                }
+            })
+            .to_string(),
+            Some(393_782),
+        );
+        assert_eq!(failure.kind, ModelFailureKind::QuotaExhausted);
+        assert_eq!(failure.retry_after_secs, Some(393_782));
+        assert!(!failure.kind.uses_provider_recovery());
+    }
+
+    #[tokio::test]
+    async fn long_retry_after_returns_to_runtime_without_sleeping_in_a_model_attempt() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let app = Router::new().route(
+            "/responses",
+            post(move || {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [("Retry-After", "393782")],
+                        Json(json!({"error": {"code": "model_cooldown", "message": "Model temporarily unavailable"}})),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "test-model".to_string(),
+            None,
+            &LlmConfig {
+                max_retries: 5,
+                initial_backoff_secs: 0,
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+
+        let (stream, _events) = tokio::sync::mpsc::unbounded_channel();
+        let streamed = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.send_stream("test-model", &json!({}), None, &stream, None),
+        )
+        .await
+        .expect("a long Retry-After must not hold the streaming Attempt")
+        .unwrap_err();
+        let failure = streamed.downcast_ref::<ModelFailure>().unwrap();
+        assert_eq!(failure.kind, ModelFailureKind::RateLimited);
+        assert_eq!(failure.retry_after_secs, Some(393_782));
+
+        let ordinary = tokio::time::timeout(
+            Duration::from_secs(2),
+            client.send("test-model", &json!({})),
+        )
+        .await
+        .expect("a long Retry-After must not hold an ordinary request")
+        .unwrap_err();
+        let failure = ordinary.downcast_ref::<ModelFailure>().unwrap();
+        assert_eq!(failure.kind, ModelFailureKind::RateLimited);
+        assert_eq!(failure.retry_after_secs, Some(393_782));
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
