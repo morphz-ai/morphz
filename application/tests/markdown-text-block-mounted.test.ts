@@ -1,16 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { chromium } from "@playwright/test";
-import { createServer, transformWithOxc } from "vite";
+import { chromium, type Browser } from "@playwright/test";
+import { createServer, transformWithOxc, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
 import { currentAppCSSImports } from "./fixtures/current-app-css.js";
 
 test("actual SafeMarkdown wraps literal blocks and copies only their text with stable in-place feedback", async (context) => {
-  const cacheDir = mkdtempSync(join(tmpdir(), "morphz-markdown-block-"));
-  context.after(() => rmSync(cacheDir, { recursive: true, force: true }));
+  const cacheDir = await mkdtemp(join(tmpdir(), "morphz-markdown-block-"));
+  let server: ViteDevServer | undefined, browser: Browser | undefined;
+  context.after(async () => {
+    try {
+      await browser?.close();
+    } finally {
+      try {
+        await server?.close();
+      } finally {
+        await rm(cacheDir, { recursive: true, force: true });
+      }
+    }
+  });
   const original =
     "请为中文长篇小说设计封面。".repeat(80) +
     "\n\n    保留缩进与空行。\n<script>window.untrustedRan=true</script>";
@@ -24,10 +35,17 @@ document.execCommand=()=>{copied.push(['fallback',document.activeElement?.value]
 function App(){const[text,update]=useState(original);setText=update;const markdown=${JSON.stringify("正文\n\n~~~text\n")}+text+${JSON.stringify("\n~~~\n\n普通 `inline` 文本")};return <main className="app" data-appearance="light" style={{display:'block',padding:12}}><textarea id="origin" defaultValue="original draft"/><section className="reply-content" aria-label="可复制正文"><SafeMarkdown state={workspace} onOpen={()=>{}}>{markdown}</SafeMarkdown></section><section className="message-share-sheet" aria-label="分享图片内容"><SafeMarkdown copyable={false} state={workspace} onOpen={()=>{}}>{markdown}</SafeMarkdown></section></main>;}
 createRoot(document.getElementById('root')).render(<App/>);Reflect.set(window,'blockFixture',{copied,setMode:value=>mode=value,setText:text=>setText(text),resolve:()=>resolveCopy?.()});
 `;
-  const server = await createServer({
+  server = await createServer({
     configFile: false,
     root: resolve("apps/web"),
     cacheDir,
+    optimizeDeps: {
+      entries: [
+        resolve("apps/web/src/SafeMarkdown.tsx"),
+        resolve("packages/core/src/model.ts"),
+      ],
+      include: ["react", "react-dom/client", "react/jsx-runtime"],
+    },
     plugins: [
       react(),
       {
@@ -55,15 +73,13 @@ createRoot(document.getElementById('root')).render(<App/>);Reflect.set(window,'b
     ],
     server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
   });
-  context.after(() => server.close());
   await server.listen();
   const address = server.httpServer!.address();
   assert.ok(address && typeof address !== "string");
-  const browser = await chromium.launch({
+  browser = await chromium.launch({
     headless: true,
     executablePath: process.env.MORPHZ_TEST_BROWSER_EXECUTABLE || undefined,
   });
-  context.after(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 360, height: 800 } });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

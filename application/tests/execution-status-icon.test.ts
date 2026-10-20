@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { createServer, transformWithOxc } from "vite";
+import { createServer, transformWithOxc, type ViteDevServer } from "vite";
 import react from "@vitejs/plugin-react";
-import { chromium } from "@playwright/test";
+import { chromium, type Browser } from "@playwright/test";
 import { ExecutionStatusIcon } from "../apps/web/src/ExecutionStatusIcon.js";
 import {
   FixedDialogGlyph,
@@ -158,10 +160,35 @@ test(
         : false,
   },
   async (context) => {
-    const server = await createServer({
+    const cacheDir = await mkdtemp(
+      resolve(tmpdir(), "morphz-status-icon-vite-"),
+    );
+    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    context.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          await rm(cacheDir, { recursive: true, force: true });
+        }
+      }
+    });
+    server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
+      cacheDir,
       logLevel: "error",
+      optimizeDeps: {
+        // The served document has a virtual entry, so scan only its real
+        // component dependencies rather than the unrelated full App entry.
+        entries: [
+          resolve("apps/web/src/ExecutionStatusIcon.tsx"),
+          resolve("tests/fixtures/execution-status-icon-14ae1de6.tsx"),
+        ],
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {
@@ -195,12 +222,10 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
     await server.listen();
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");

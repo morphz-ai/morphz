@@ -5,8 +5,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import react from "@vitejs/plugin-react";
-import { chromium, type Page } from "@playwright/test";
-import { createServer, transformWithOxc } from "vite";
+import { chromium, type Browser, type Page } from "@playwright/test";
+import {
+  createLogger,
+  createServer,
+  transformWithOxc,
+  type ViteDevServer,
+} from "vite";
 import { currentAppCSSImports } from "./fixtures/current-app-css.js";
 
 // Actual React/Provider/SearchDocuments/ArtifactEditor/SelectionActions and
@@ -151,11 +156,46 @@ test(
     const cache = mkdtempSync(
       join(tmpdir(), "morphz-reference-preparation-cache-"),
     );
-    context.after(() => rmSync(cache, { recursive: true, force: true }));
-    const server = await createServer({
+    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    context.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          rmSync(cache, { recursive: true, force: true });
+        }
+      }
+    });
+    const compileErrors: string[] = [];
+    const logger = createLogger();
+    server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      customLogger: {
+        ...logger,
+        error(message, options) {
+          compileErrors.push(message);
+          logger.error(message, options);
+        },
+      },
+      optimizeDeps: {
+        entries: [
+          resolve("apps/web/src/TextQuotes.tsx"),
+          resolve("apps/web/src/LibraryDialogs.tsx"),
+          resolve("apps/web/src/ArtifactEditor.tsx"),
+          resolve("apps/web/src/host/exchange-reference-commands.ts"),
+          resolve("tests/fixtures/exchange-reference-preparation-75ba44c0.tsx"),
+        ],
+        include: [
+          "react",
+          "react-dom",
+          "react-dom/client",
+          "react/jsx-runtime",
+        ],
+      },
       plugins: [
         react(),
         {
@@ -183,16 +223,22 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
     await server.listen();
+    const client = server.environments.client!;
+    assert.ok(await client.transformRequest("/__reference.tsx"));
+    await client.waitForRequestsIdle();
+    assert.deepEqual(
+      compileErrors,
+      [],
+      "Reference preparation fixture compilation failed",
+    );
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
     const url = `http://127.0.0.1:${address.port}/__reference`;
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
     const errors: string[] = [],
       businessReads: string[] = [];
     let phase = "initial";
@@ -202,10 +248,9 @@ test(
     async function pair() {
       const pages: Page[] = [];
       for (const lane of ["fixed", "actual"]) {
-        const isolated = await browser.newContext({
+        const isolated = await browser!.newContext({
           viewport: { width: 1440, height: 900 },
         });
-        context.after(() => isolated.close());
         await isolated.addInitScript(
           `sessionStorage.setItem("morphz:window", "fixture-window"); Object.defineProperty(crypto, "randomUUID", { value: () => "00000000-0000-4000-8000-000000000001" }); window.focusCalls = []; const original = HTMLElement.prototype.focus; HTMLElement.prototype.focus = function (options) { window.focusCalls.push({ id: this.id, label: this.getAttribute("aria-label"), options: options ?? null }); original.call(this, options); };`,
         );

@@ -6,8 +6,13 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import react from "@vitejs/plugin-react";
-import { chromium, type Page } from "@playwright/test";
-import { createServer, transformWithOxc } from "vite";
+import { chromium, type Browser, type Page } from "@playwright/test";
+import {
+  createLogger,
+  createServer,
+  transformWithOxc,
+  type ViteDevServer,
+} from "vite";
 import {
   viewportOriginalGit,
   viewportOriginalSha,
@@ -151,7 +156,18 @@ test(
       "mounted viewport requires the test-entry prepared browser",
     );
     const cache = await mkdtemp(resolve(tmpdir(), "morphz-viewport-vite-"));
-    context.after(() => rm(cache, { recursive: true, force: true }));
+    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    context.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          await rm(cache, { recursive: true, force: true });
+        }
+      }
+    });
     const historyId = resolve(
       "apps/web/src/__viewport_Git298_Conversation.tsx",
     );
@@ -159,10 +175,28 @@ test(
       "__VIEWPORT_HISTORY__",
       archived ? historyId : "/src/Conversation.tsx",
     );
-    const server = await createServer({
+    const compileErrors: string[] = [];
+    const logger = createLogger();
+    server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      customLogger: {
+        ...logger,
+        error(message, options) {
+          compileErrors.push(message);
+          logger.error(message, options);
+        },
+      },
+      optimizeDeps: {
+        entries: [resolve("apps/web/src/Conversation.tsx")],
+        include: [
+          "react",
+          "react-dom",
+          "react-dom/client",
+          "react/jsx-runtime",
+        ],
+      },
       plugins: [
         react(),
         {
@@ -192,15 +226,17 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
     await server.listen();
+    const client = server.environments.client!;
+    assert.ok(await client.transformRequest("/__viewport.tsx"));
+    await client.waitForRequestsIdle();
+    assert.deepEqual(compileErrors, [], "Viewport fixture compilation failed");
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
     const outputs = new Map<string, unknown[]>();
     for (const lane of archived ? ["current", "historical"] : ["current"]) {
       const browserContext = await browser.newContext({
@@ -217,7 +253,6 @@ test(
         )
           queries.push(request.url());
       });
-      context.after(() => browserContext.close());
       await page.goto(
         `http://127.0.0.1:${address.port}/__viewport?lane=${lane}`,
       );

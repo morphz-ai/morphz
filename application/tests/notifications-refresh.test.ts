@@ -1,10 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { createServer, transformWithOxc } from "vite";
+import {
+  createLogger,
+  createServer,
+  transformWithOxc,
+  type ViteDevServer,
+} from "vite";
 import react from "@vitejs/plugin-react";
-import { chromium, type Page } from "@playwright/test";
+import { chromium, type Browser, type Page } from "@playwright/test";
 
 // This mounts the actual React components and refresh-drain. The scoped RPC
 // authority below is a fixture, not real SQL/Host/SSE acceptance (covered by the
@@ -118,9 +125,48 @@ test(
         : false,
   },
   async (context) => {
-    const server = await createServer({
+    const cacheDir = await mkdtemp(
+      resolve(tmpdir(), "morphz-notification-refresh-"),
+    );
+    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    context.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          await rm(cacheDir, { recursive: true, force: true });
+        }
+      }
+    });
+    const compileErrors: string[] = [];
+    const logger = createLogger();
+    server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
+      cacheDir,
+      customLogger: {
+        ...logger,
+        error(message, options) {
+          compileErrors.push(message);
+          logger.error(message, options);
+        },
+      },
+      // The virtual module is not a filesystem scan entry. Discover its actual
+      // imports before serving it, independently of other mounted Vite tests.
+      optimizeDeps: {
+        entries: [
+          resolve("apps/web/src/Notifications.tsx"),
+          resolve("apps/web/src/client.ts"),
+        ],
+        include: [
+          "react",
+          "react-dom",
+          "react-dom/client",
+          "react/jsx-runtime",
+        ],
+      },
       plugins: [
         react(),
         {
@@ -153,17 +199,23 @@ test(
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
       logLevel: "error",
     });
-    context.after(() => server.close());
-    const browser = await chromium.launch({
+    await server.listen();
+    const client = server.environments.client!;
+    assert.ok(await client.transformRequest("/__notifications-refresh.tsx"));
+    await client.waitForRequestsIdle();
+    assert.deepEqual(
+      compileErrors,
+      [],
+      "Notification refresh fixture compilation failed",
+    );
+    const address = server.httpServer!.address();
+    assert.ok(address && typeof address !== "string");
+    browser = await chromium.launch({
       headless: true,
       executablePath: browserExecutable || undefined,
     });
-    context.after(() => browser.close());
-    await server.listen();
-    const address = server.httpServer!.address();
-    assert.ok(address && typeof address !== "string");
     async function open() {
-      const page = await browser.newPage();
+      const page = await browser!.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.clock.install();
