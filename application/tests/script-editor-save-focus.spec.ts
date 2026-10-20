@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import react from "@vitejs/plugin-react";
 import { createServer, transformWithOxc } from "vite";
 import { expect, test, type Page } from "@playwright/test";
@@ -20,7 +22,9 @@ original.text = '原始正文';
 const author = { principalId: 'human', actantId: 'human-actant' };
 const now = '2026-10-04T00:00:00.000Z';
 const boot = { centerId: 'save-focus-center', principalId: 'human', csrfToken: 'save-focus-identity', workspace: { actants: [], artifacts: [] } };
+let snapshot = boot;
 let revision = 1, submitted, resolveCommand, resolveVersion, rejectVersion, change, phase = 'initial', holdExactRead = false;
+const exactReads = [];
 const events = [], remembered = new Map();
 function item() { return {
   id: 'scene', kind: 'scene', revision, workflowRevision: 1, status: 'draft',
@@ -44,12 +48,12 @@ function version(at) { return {
 }; }
 const client = {
   boot, contentCatalog: [], contentCatalogVersion: 0,
-  getSnapshot: () => boot,
+  getSnapshot: () => snapshot,
   async readScriptEditor() { events.push('read-editor'); return { ...production(), activityRevision: 2 }; },
   readScriptVersion(_production, _item, exactRevision) {
     if (exactRevision === 2 && holdExactRead) {
       events.push('exact-base-held');
-      return new Promise(() => {});
+      return new Promise(resolve => exactReads.push(() => resolve(version(exactRevision))));
     }
     if (exactRevision !== undefined) return Promise.resolve(version(exactRevision));
     events.push('read-version-held'); phase = 'version';
@@ -58,6 +62,7 @@ const client = {
 };
 function Fixture() {
   const [busy, setBusy] = useState(false), [head, setHead] = useState(1), [mounted, setMounted] = useState(true);
+  const [toolbar, setToolbar] = useState(null);
   change = (name) => flushSync(() => name === 'head' ? setHead(revision) : setMounted(false));
   const run = async (command, options) => {
     if (options?.deferFocusReturn !== true) throw new Error('Editor must own whole-save focus return');
@@ -75,9 +80,11 @@ function Fixture() {
       events.push('focus-return-deferred');
     }
   };
-  return <main data-head={head}>
+  return <main data-head={head} className="script-studio">
     <button id="newer-focus">较新的操作</button>
-    {mounted && <ScriptItemEditor client={client} production={production()} item={item()} canWrite={!busy} run={run} onCompose={() => ({ accepted: true })}/>}
+    <input aria-label="较新的输入"/>
+    <header ref={setToolbar}/>
+    {mounted && toolbar && <ScriptItemEditor client={client} production={production()} item={item()} toolbarTarget={toolbar} canWrite={!busy} run={run} onCompose={() => ({ accepted: true })}/>}
   </main>;
 }
 Object.assign(window, { scriptSaveFocusFixture: {
@@ -89,6 +96,8 @@ Object.assign(window, { scriptSaveFocusFixture: {
     phase = 'settled';
   },
   unmount() { change('unmount'); },
+  retireIdentity() { snapshot = { ...boot, csrfToken: 'new-identity-generation' }; },
+  releaseExact() { holdExactRead = false; exactReads.splice(0).forEach(resolve => resolve()); },
   remember() { remembered.set('save', Array.from(document.querySelectorAll('button')).find(button => button.textContent.trim() === '保存文稿')); },
   report() { return {
     phase, events: [...events],
@@ -100,11 +109,24 @@ createRoot(document.getElementById('root')).render(<StrictMode><Fixture/></Stric
 `;
 
 let server: Awaited<ReturnType<typeof createServer>> | undefined;
+let cacheDir: string | undefined;
 let fixtureUrl: string;
 test.beforeAll(async () => {
+  cacheDir = await mkdtemp(resolve(tmpdir(), "morphz-script-save-focus-vite-"));
   server = await createServer({
     configFile: false,
     root: resolve("apps/web"),
+    cacheDir,
+    optimizeDeps: {
+      entries: [resolve("apps/web/src/ScriptStudioEditor.tsx")],
+      include: [
+        "react",
+        "react-dom",
+        "react-dom/client",
+        "react/jsx-runtime",
+        "react/jsx-dev-runtime",
+      ],
+    },
     plugins: [
       react(),
       {
@@ -140,7 +162,11 @@ test.beforeAll(async () => {
   fixtureUrl = `http://127.0.0.1:${address.port}/__script-save-focus`;
 });
 test.afterAll(async () => {
-  await server?.close();
+  try {
+    await server?.close();
+  } finally {
+    if (cacheDir) await rm(cacheDir, { recursive: true, force: true });
+  }
 });
 
 type Report = {
@@ -279,6 +305,10 @@ scenario("已确认的保存正文不因后台基准读取迟到重新变成脏�
   await expect(page.getByRole("status")).toContainText("已保存 v2");
   await expect(save).toBeDisabled();
   await expect(page.getByRole("status")).not.toContainText("本机未保存");
+  await expect(page.getByLabel("文稿标题", { exact: true })).toBeDisabled();
+  await frames(page);
+  await run(page, "releaseExact");
+  await expect(page.getByLabel("文稿标题", { exact: true })).toBeEnabled();
   await expect(
     page.locator(".script-editor [data-script-focus-anchor]"),
   ).toBeFocused();
@@ -296,4 +326,46 @@ scenario("保存后精确正文迟到不能覆盖用户继续输入的本机草�
   await expect(page.getByRole("status")).toContainText("本机新改动已保留");
   await expect(save).toBeEnabled();
   await expect(body).toBeFocused();
+});
+
+async function finishBeforeBackgroundRead(page: Page) {
+  await startSave(page);
+  await run(page, "finish", "success-delayed-base");
+  await expect(page.getByRole("status")).toContainText("已保存 v2");
+  await expect(page.getByLabel("文稿标题", { exact: true })).toBeDisabled();
+  await frames(page);
+}
+
+scenario("后台版本恢复可写后，不抢用户已开始的另一处输入", async (page) => {
+  await finishBeforeBackgroundRead(page);
+  const input = page.getByLabel("较新的输入", { exact: true });
+  await input.fill("保留用户的新输入");
+  await expect(input).toBeFocused();
+  await run(page, "releaseExact");
+  await expect(page.getByLabel("文稿标题", { exact: true })).toBeEnabled();
+  await frames(page);
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("保留用户的新输入");
+});
+
+scenario("保存完成但后台版本尚未返回时卸载，不留下晚到焦点", async (page) => {
+  await finishBeforeBackgroundRead(page);
+  await run(page, "unmount");
+  const newer = page.getByRole("button", { name: "较新的操作", exact: true });
+  await newer.click();
+  await run(page, "releaseExact");
+  await frames(page);
+  await expect(page.locator(".script-editor")).toHaveCount(0);
+  await expect(newer).toBeFocused();
+});
+
+scenario("同名主体的新身份代次不接收旧保存的延迟焦点", async (page) => {
+  await finishBeforeBackgroundRead(page);
+  await run(page, "retireIdentity");
+  await run(page, "releaseExact");
+  await expect(page.getByLabel("文稿标题", { exact: true })).toBeEnabled();
+  await frames(page);
+  await expect(
+    page.locator(".script-editor [data-script-focus-anchor]"),
+  ).not.toBeFocused();
 });

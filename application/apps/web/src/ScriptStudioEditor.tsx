@@ -154,6 +154,42 @@ function ScriptItemEditorView({
   const [confirmedBase, setConfirmedBase] = useState<DraftState>();
   const editEpoch = useRef(0);
   const saving = useRef(false);
+  const focusOwner = useRef<symbol | null>(null);
+  const pendingFocusReturn = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => {
+    focusOwner.current = Symbol();
+    return () => {
+      focusOwner.current = null;
+      pendingFocusReturn.current = null;
+    };
+  }, [boot.centerId, boot.principalId, boot.csrfToken, production.id, item.id]);
+  useLayoutEffect(() => {
+    // The command's exact read may finish before the outer version refresh.
+    // Wait for this same editor's real enabled state, not a guessed next frame.
+    if (savePending || restoring || !canWrite) return;
+    const restore = pendingFocusReturn.current;
+    pendingFocusReturn.current = null;
+    restore?.();
+  }, [canWrite, savePending, restoring]);
+  function captureFocusReturn() {
+    const owner = focusOwner.current;
+    return scriptFocusReturn(
+      (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
+        ".script-studio, .script-editor",
+      ) ?? null,
+      document.activeElement as HTMLElement | null,
+      () => {
+        const snapshot = client.getSnapshot();
+        return (
+          owner !== null &&
+          focusOwner.current === owner &&
+          snapshot?.centerId === boot.centerId &&
+          snapshot?.principalId === boot.principalId &&
+          snapshot?.csrfToken === boot.csrfToken
+        );
+      },
+    );
+  }
   const baseRead = useScriptEditorRead(
     `base:${boot.csrfToken}:${production.id}:${item.id}:${local.baseRevision}`,
     local.baseRevision,
@@ -324,11 +360,7 @@ function ScriptItemEditorView({
   async function save() {
     if (!editable || saving.current) return;
     const pinnedEditEpoch = editEpoch.current;
-    const restoreFocus = scriptFocusReturn(
-      (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
-        ".script-studio, .script-editor",
-      ) ?? null,
-    );
+    const restoreFocus = captureFocusReturn();
     saving.current = true;
     setSavePending(true);
     try {
@@ -367,20 +399,17 @@ function ScriptItemEditorView({
     } finally {
       saving.current = false;
       // This operation includes its exact-version reads, not only the command.
-      // Commit the final disabled/dirty state before returning focus once.
+      // The outer editor's exact-version read can still be pending. Its next
+      // enabled commit owns focus return, without polling or extra reads.
+      pendingFocusReturn.current = restoreFocus;
       flushSync(() => setSavePending(false));
-      restoreFocus();
     }
   }
   async function restoreVersion() {
     if (!editable || dirty || restoring || historyRevision >= item.revision)
       return;
     const pinnedEditEpoch = editEpoch.current;
-    const restoreFocus = scriptFocusReturn(
-      (document.activeElement as HTMLElement | null)?.closest<HTMLElement>(
-        ".script-studio, .script-editor",
-      ) ?? null,
-    );
+    const restoreFocus = captureFocusReturn();
     setRestoring(true);
     try {
       await run(
@@ -419,8 +448,8 @@ function ScriptItemEditorView({
       setNotice(`已回退为 v${restored.revision}`);
       setPane("edit");
     } finally {
+      pendingFocusReturn.current = restoreFocus;
       flushSync(() => setRestoring(false));
-      restoreFocus();
     }
   }
   const pinned = (ids: string[]) => {

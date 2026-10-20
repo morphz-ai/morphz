@@ -2,6 +2,7 @@
 export function scriptFocusReturn(
   scope: HTMLElement | null,
   origin = document.activeElement as HTMLElement | null,
+  isCurrent = () => true,
 ) {
   const usable = (element: HTMLElement | null): element is HTMLElement =>
     !!element?.isConnected &&
@@ -10,7 +11,7 @@ export function scriptFocusReturn(
     !element.closest("[inert]");
   return () =>
     requestAnimationFrame(() => {
-      if (!usable(scope)) return;
+      if (!isCurrent() || !usable(scope)) return;
       const modal = document.querySelector("dialog[open]");
       if (modal && !modal.contains(scope)) return;
       const active = document.activeElement as HTMLElement | null;

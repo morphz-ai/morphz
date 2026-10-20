@@ -110,6 +110,11 @@ export function ScriptStudioNavigation({
     const opening = open && !wasOpen.current;
     wasOpen.current = open;
     if (!opening) return;
+    // A hidden application's ResizeObserver also closes/reopens its directory.
+    // Only the focused directory trigger lends focus to an explicit opening;
+    // activation or responsive layout must not steal a newer composer/editor focus.
+    if (document.activeElement?.getAttribute("aria-controls") !== directoryId)
+      return;
     const current = nav.current?.querySelector<HTMLButtonElement>(
       '[aria-current="true"]',
     );
@@ -117,7 +122,7 @@ export function ScriptStudioNavigation({
       ? current
       : nav.current?.querySelector<HTMLButtonElement>(".script-overview-link");
     target?.focus();
-  }, [open]);
+  }, [open, directoryId]);
   useEffect(() => {
     if (!itemId) return;
     // A newly selected/created or reparented item must be reachable. Manual
