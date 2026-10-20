@@ -168,94 +168,99 @@ test("失败只显示一次：气泡不堆状态和废话，中文说明与可�
   });
 });
 
-for (const reason of [
-  undefined,
-  'schema_validation_failed: Schema validation failed at JSON pointer ""',
-]) {
-  test(`错误详情不占空位：${reason ? "单条实际原因直接可见" : "只有通用终止提示"}`, async ({
-    page,
-  }, testInfo) => {
-    const fixture = await mockPlatformConversation(page, () => ({
-      inputs,
-      runtime: {
-        ...disconnectedRuntime,
-        configured: true,
-        connected: true,
-        deliveries: inputs.map((input) => ({
-          inputId: input.id,
-          state: "failed" as const,
-          error: "TEST failed",
-          retryable: false,
-        })),
-        messages,
-      },
-    }));
-    const inputs: PlatformHistory["inputs"] = [
-      fixture.input(
-        "failure-detail",
-        "TEST 只读错误显示验收",
-        "2026-10-20T00:37:00Z",
-      ),
-    ];
-    const messages: PlatformHistory["runtime"]["messages"] = [
-      {
-        id: "terminal-only",
-        ...fixture.scope,
-        artifactId: null,
-        inputId: inputs[0]!.id,
-        rootId: "root",
-        threadId: "thread",
-        createdAt: "2026-10-20T00:37:01Z",
-        kind: "error",
-        text: "本次回复未能正确交付；已保留此前完成的工作。",
-        failure: {
-          kind: "response_protocol",
-          phase: "terminal",
-          attemptId: "attempt",
-          ...(reason
-            ? { diagnostics: [{ eventId: "actual-rejection", reason }] }
-            : {}),
+for (const text of [
+  "本次回复未能正确交付；已保留此前完成的工作。",
+  "The reply could not be delivered correctly; previously completed work was preserved.",
+  "The reply delivery format was invalid. The Objective is not complete; previously completed work was preserved.",
+])
+  for (const reason of [
+    undefined,
+    'schema_validation_failed: Schema validation failed at JSON pointer ""',
+  ]) {
+    test(`错误详情不占空位：${reason ? "单条实际原因直接可见" : "只有通用终止提示"} — ${text}`, async ({
+      page,
+    }, testInfo) => {
+      const fixture = await mockPlatformConversation(page, () => ({
+        inputs,
+        runtime: {
+          ...disconnectedRuntime,
+          configured: true,
+          connected: true,
+          deliveries: inputs.map((input) => ({
+            inputId: input.id,
+            state: "failed" as const,
+            error: "TEST failed",
+            retryable: false,
+          })),
+          messages,
         },
-      },
-    ];
-    await page.goto("/");
-    await page
-      .getByRole("navigation", { name: "主导航" })
-      .getByRole("button", { name: "对话", exact: true })
-      .click();
-    await openInput(page);
-    const error = page.locator(".runtime-message-error");
-    await expect(error).toHaveCount(1);
-    await expect(error.locator(":scope > p:first-child")).toHaveText(
-      "这次回复未能完成。",
-    );
-    await expect(error.locator("details")).toHaveCount(0);
-    await expect(error).not.toContainText("本次回复未能正确交付");
-    await expect(error.locator("pre")).toHaveCount(0);
-    const diagnostic = error.locator(".runtime-message-error-reason");
-    await expect(diagnostic).toHaveCount(reason ? 1 : 0);
-    if (reason) {
-      await expect(diagnostic).toHaveText(reason);
-      expect(
-        await diagnostic.evaluate((node) => getComputedStyle(node).fontSize),
-      ).toBe("12px");
-    }
-    for (const theme of ["light", "dark"] as const) {
-      await page.emulateMedia({ colorScheme: theme });
-      for (const width of [1440, 390]) {
-        await page.setViewportSize({ width, height: 960 });
+      }));
+      const inputs: PlatformHistory["inputs"] = [
+        fixture.input(
+          "failure-detail",
+          "TEST 只读错误显示验收",
+          "2026-10-20T00:37:00Z",
+        ),
+      ];
+      const messages: PlatformHistory["runtime"]["messages"] = [
+        {
+          id: "terminal-only",
+          ...fixture.scope,
+          artifactId: null,
+          inputId: inputs[0]!.id,
+          rootId: "root",
+          threadId: "thread",
+          createdAt: "2026-10-20T00:37:01Z",
+          kind: "error",
+          text,
+          failure: {
+            kind: "response_protocol",
+            phase: "terminal",
+            attemptId: "attempt",
+            ...(reason
+              ? { diagnostics: [{ eventId: "actual-rejection", reason }] }
+              : {}),
+          },
+        },
+      ];
+      await page.goto("/");
+      await page
+        .getByRole("navigation", { name: "主导航" })
+        .getByRole("button", { name: "对话", exact: true })
+        .click();
+      await openInput(page);
+      const error = page.locator(".runtime-message-error");
+      await expect(error).toHaveCount(1);
+      await expect(error.locator(":scope > p:first-child")).toHaveText(
+        "这次回复未能完成。",
+      );
+      await expect(error.locator("details")).toHaveCount(0);
+      await expect(error).not.toContainText(text);
+      await expect(error.locator("pre")).toHaveCount(0);
+      const diagnostic = error.locator(".runtime-message-error-reason");
+      await expect(diagnostic).toHaveCount(reason ? 1 : 0);
+      if (reason) {
+        await expect(diagnostic).toHaveText(reason);
         expect(
-          await error.evaluate(
-            (node) => node.scrollWidth <= node.clientWidth + 1,
-          ),
-        ).toBe(true);
-        await page.screenshot({
-          path: testInfo.outputPath(
-            `error-${reason ? "reason" : "notice"}-${theme}-${width}.png`,
-          ),
-          animations: "disabled",
-        });
+          await diagnostic.evaluate((node) => getComputedStyle(node).fontSize),
+        ).toBe("12px");
       }
-    }
-  });
-}
+      for (const theme of ["light", "dark"] as const) {
+        await page.emulateMedia({ colorScheme: theme });
+        for (const width of [1440, 390]) {
+          await page.setViewportSize({ width, height: 960 });
+          expect(
+            await error.evaluate(
+              (node) => node.scrollWidth <= node.clientWidth + 1,
+            ),
+          ).toBe(true);
+          await page.screenshot({
+            path: testInfo.outputPath(
+              `error-${reason ? "reason" : "notice"}-${theme}-${width}.png`,
+            ),
+            animations: "disabled",
+          });
+        }
+      }
+    });
+  }

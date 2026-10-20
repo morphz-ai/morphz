@@ -5,7 +5,11 @@ import {
   mockPlatformConversation,
   test,
 } from "./platform-conversation-fixture.js";
-import { openInput, composerAction } from "./interaction-helpers.js";
+import {
+  openInput,
+  composerAction,
+  openExchangeReading,
+} from "./interaction-helpers.js";
 
 const draft = "TEST 返回最新后仍能继续输入，不发送";
 
@@ -41,6 +45,7 @@ async function longHistory(page: Page, view = "事项") {
     .click();
   const input = await openInput(page);
   await input.fill(draft);
+  await openExchangeReading(page);
   await expect(page.locator(".conversation .human-message")).toHaveCount(24);
   return input;
 }
@@ -112,18 +117,17 @@ test("返回最新贴合可见阅读区底部，宽窄窗与换行 Dock 不重�
         await scrollBack(page, fraction);
         await expect(async () => {
           const button = (await latest(page).boundingBox())!;
-          const dock = (await page
-            .locator(".composer-floating-tools")
-            .boundingBox())!;
+          const dock = (await page.locator(".application-dock").boundingBox())!;
           const reading = (await scroll.boundingBox())!;
           const gap = dock.y - button.y - button.height;
+          const geometry = JSON.stringify({ button, dock, reading, gap });
           expect(
             gap,
-            `${width}/${mode}: avoid double bottom clearance`,
+            `${width}/${mode}: avoid double bottom clearance ${geometry}`,
           ).toBeGreaterThanOrEqual(4);
           expect(
             gap,
-            `${width}/${mode}: anchor beside input, not mid-message`,
+            `${width}/${mode}: anchor beside input, not mid-message ${geometry}`,
           ).toBeLessThanOrEqual(12);
           expect(button.y).toBeGreaterThanOrEqual(reading.y);
           expect(button.x).toBeGreaterThanOrEqual(reading.x);
@@ -132,6 +136,12 @@ test("返回最新贴合可见阅读区底部，宽窄窗与换行 Dock 不重�
           );
           expect(await scroll.evaluate((el) => el.scrollHeight)).toBe(height);
         }).toPass({ timeout: 1500 });
+        if (fraction === 0.5) {
+          await page.screenshot({
+            path: test.info().outputPath(`return-latest-${width}-${mode}.png`),
+            fullPage: true,
+          });
+        }
       }
       await latest(page).click();
       await expect(input).toBeVisible();
@@ -185,7 +195,7 @@ test("未固定消息复制的正常与兼容路径保留输入和按钮焦点",
     const copy = page
       .locator(".conversation .human-message")
       .last()
-      .locator(".message-copy");
+      .getByRole("button", { name: /^(复制消息|已复制消息)$/ });
     // This optional action is revealed by hovering its message first.
     const message = page.locator(".conversation .human-message").last();
     const box = (await message.boundingBox())!;

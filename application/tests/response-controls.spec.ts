@@ -1,5 +1,9 @@
 import { expect, type Page } from "@playwright/test";
-import { openInput, openExchangeReading } from "./interaction-helpers.js";
+import {
+  openInput,
+  openExchangeReading,
+  settleTransitions,
+} from "./interaction-helpers.js";
 import type { ConversationRuntime } from "../packages/core/src/conversation.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
@@ -153,6 +157,9 @@ test("本人气泡使用清透主题面色，四主题明暗可读且不增加�
         },
         { appearance, accent },
       );
+      // Theme changes transition the nested quote button independently of the
+      // bubble. Measure both at rest, not a dark-ink/light-surface midpoint.
+      await settleTransitions(page);
       const paint = await message.evaluate(async (element) => {
         await Promise.all(element.getAnimations().map((a) => a.finished));
         const canvas = document.createElement("canvas").getContext("2d")!;
@@ -419,7 +426,14 @@ test("分别停止并发回复，等待确认不冒充取消，失败可重试�
   await expect(
     page.getByRole("button", { name: "重试发送", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText("执行失败", { exact: true })).toBeVisible();
+  // This is a failed input delivery, not an executed Runtime response. Show
+  // its actual cause once, without adding an invented response failure.
+  await expect(
+    page.getByText("这次回复未能完成。", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("alert").filter({ hasText: "请求失败" }),
+  ).toHaveText("请求失败");
   await page
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "工作台", exact: true })

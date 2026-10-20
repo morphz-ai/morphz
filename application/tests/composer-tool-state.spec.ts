@@ -131,10 +131,11 @@ test("交流控制选中态独立于悬停和焦点，四主题明暗下可辨�
       );
       const selected = await paint(history);
       const normal = await paint(pin);
-      expect(selected.color).not.toBe(normal.color);
+      expect(selected.color).toBe(normal.color);
       expect(selected.background).not.toBe(normal.background);
       // These are panel-local 28px flat controls, not the media/application
-      // Dock's raised 32px surfaces. Selection is fill + stronger ink/stroke.
+      // Dock's raised 32px surfaces. Selection is fill + stronger stroke;
+      // both icon states retain the same legible foreground.
       expect(selected.shadow).toBe("none");
       expect(normal.shadow).toBe("none");
       expect(normal.background).toBe("rgba(0, 0, 0, 0)");
@@ -157,6 +158,10 @@ test("交流控制选中态独立于悬停和焦点，四主题明暗下可辨�
       // Space toggles without moving the target or borrowing the focus outline
       // as the only persistent indication of selection.
       await expand.focus();
+      await page.keyboard.press("Tab");
+      await expect(
+        tools.getByRole("button", { name: /^(取消)?固定交流记录$/ }),
+      ).toBeFocused();
       await page.keyboard.press("Tab");
       await expect(pin).toBeFocused();
       await expect(pin).toHaveCSS("outline-width", "2px");

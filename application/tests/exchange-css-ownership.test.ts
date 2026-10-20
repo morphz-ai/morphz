@@ -295,6 +295,35 @@ function frozenSignature(rule: FrozenRule): Signature {
   };
 }
 const archivedLayout = selectedFrameRules.map(frozenSignature);
+// Approved return-to-latest correction: the frozen archive double-counted a
+// 12px bottom gap on top of the measured Dock and the existing composer margin.
+// Keep the immutable tuples; authorize only these two exact padding deltas.
+const readingDockPadding = new Map([
+  [".exchange-panel>.conversation", "16px 20px"],
+  [".exchange-panel>.conversation:has(.conversation-empty)", "8px 16px"],
+]);
+function singleDockClearance(rule: Signature): Signature {
+  const inset = readingDockPadding.get(rule.selector);
+  if (!inset || rule.context.length) return rule;
+  const padding = rule.declarations.filter(
+    (item) => item.property === "padding",
+  );
+  assert.deepEqual(padding, [
+    {
+      property: "padding",
+      value: `${inset} calc(var(--composer-tools-height, 32px) + 12px)`,
+      important: false,
+    },
+  ]);
+  return {
+    ...rule,
+    declarations: rule.declarations.map((item) =>
+      item.property === "padding"
+        ? { ...item, value: `${inset} var(--composer-tools-height, 32px)` }
+        : item,
+    ),
+  };
+}
 // The independently fixed archive remains unchanged. The already shipped
 // 91171208 independent-pin correction added one control per reading state and
 // moved compact clearance to the container's consuming children. Keep those
@@ -339,6 +368,7 @@ const expectedLayout = archivedLayout
   })
   .map(insideReadingHeader)
   .map(searchReadingHeader)
+  .map(singleDockClearance)
   .flatMap((rule) => {
     // Reviewed direct-choice internals; not a new production-derived archive.
     const button = key(".exchange-scope .conversation-scope > button");
@@ -1387,7 +1417,7 @@ function changeDeclaration(
   sources.css.set(file, root.toString());
 }
 
-test("完整frame owner保留旧56规则144声明及独立固定、内部标题的精确修正", () => {
+test("完整frame owner保留旧56规则144声明及独立固定、内部标题和单次Dock间距的精确修正", () => {
   assert.equal(archivedLayout.length, 56);
   assert.equal(
     archivedLayout.reduce((sum, rule) => sum + rule.declarations.length, 0),
@@ -1400,6 +1430,20 @@ test("完整frame owner保留旧56规则144声明及独立固定、内部标题�
   );
   assert.deepEqual(expectedLayout.slice(-4), expectedResizeLayout);
   assert.equal(retainedFrameRules.length, 36);
+  for (const [selector, inset] of readingDockPadding) {
+    const before = archivedLayout.filter((rule) => rule.selector === selector);
+    assert.equal(before.length, 1, "the immutable archive owns one original");
+    assert.deepEqual(
+      expectedLayout.filter((rule) => rule.selector === selector),
+      before.map(singleDockClearance),
+    );
+    assert.equal(
+      before[0]!.declarations.find((item) => item.property === "padding")!
+        .value,
+      `${inset} calc(var(--composer-tools-height, 32px) + 12px)`,
+      "the approved delta must not rewrite the original archive",
+    );
+  }
   assert.deepEqual(violations(production), []);
   const allowed = cloneSources();
   allowed.css.set(
@@ -1432,6 +1476,35 @@ test("frame有限反例拒绝几何重归属、条件包裹、已知paint与竞�
     (sources: Sources) =>
       changeDeclaration(sources, file, selector, property, value, context);
   const fixtures: [string, (sources: Sources) => void, string][] = [
+    ...[...readingDockPadding].flatMap(
+      ([selector, inset]): [string, (sources: Sources) => void, string][] => [
+        [
+          `duplicate-dock-gap:${selector}`,
+          declaration(
+            layoutFile,
+            selector,
+            "padding",
+            `${inset} calc(var(--composer-tools-height, 32px) + 12px)`,
+          ),
+          "layout-exact-geometry",
+        ],
+        [
+          `missing-measured-dock-clearance:${selector}`,
+          declaration(layoutFile, selector, "padding", `${inset} 0`),
+          "layout-exact-geometry",
+        ],
+        [
+          `unapproved-reading-insets:${selector}`,
+          declaration(
+            layoutFile,
+            selector,
+            "padding",
+            "0 0 var(--composer-tools-height, 32px)",
+          ),
+          "layout-exact-geometry",
+        ],
+      ],
+    ),
     [
       "scope-choice-hit-size",
       declaration(

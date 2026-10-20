@@ -927,7 +927,7 @@ export function Conversation({
                               document.getSelection()?.isCollapsed === false ||
                               (event.target instanceof Element &&
                                 event.target.closest(
-                                  "button, a, input, textarea, select, summary, [role=button], [contenteditable=true], [data-quote-ui], [data-quote-ignore]",
+                                  "button, a, input, textarea, select, summary, [role=button], [contenteditable=true], [data-quote-ui], [data-quote-ignore], .sent-text-quotes",
                                 ))
                             )
                               return;

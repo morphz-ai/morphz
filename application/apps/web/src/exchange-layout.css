@@ -158,14 +158,15 @@
 .exchange-panel > .conversation {
   width: 100%;
   margin: 0;
-  /* Apply Dock clearance once here; the sticky return control uses bottom: 0. */
-  padding: 16px 20px calc(var(--composer-tools-height, 32px) + 12px);
+  /* Reserve the measured Dock once. The composer margin below already supplies
+     the reading-to-Dock gap; adding it here would lift the sticky return twice. */
+  padding: 16px 20px var(--composer-tools-height, 32px);
   flex: 0 1 auto;
   scrollbar-gutter: auto;
 }
 .exchange-panel > .conversation:has(.conversation-empty) {
   flex-basis: auto;
-  padding: 8px 16px calc(var(--composer-tools-height, 32px) + 12px);
+  padding: 8px 16px var(--composer-tools-height, 32px);
 }
 /* Reading owns the upper-right controls; text must not run under them. This
    clearance disappears with reading, never becoming an input-only header. */

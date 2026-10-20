@@ -56,37 +56,43 @@ test("one physical rejection has one visible error without losing either origina
     "presentation never mutates raw history",
   );
 });
-test("a generic terminal notice is not an error detail; persisted reasons survive without a live diagnostic message", () => {
-  const terminal = {
-    ...message("terminal", "terminal"),
-    text: "本次回复未能正确交付；已保留此前完成的工作。",
-  };
-  const empty = presentRuntimeErrors([terminal])[0]!;
-  assert.equal(runtimeErrorDetails(empty), "");
-  assert.equal(runtimeErrorDetails(terminal), "");
-  const reason =
-    'schema_validation_failed: Schema validation failed at JSON pointer ""';
-  const populated = presentRuntimeErrors([
-    {
-      ...terminal,
-      failure: {
-        ...terminal.failure!,
-        diagnostics: [{ eventId: "actual-rejection", reason }],
+for (const text of [
+  "The reply could not be delivered correctly; previously completed work was preserved.",
+  "The reply delivery format was invalid. The Objective is not complete; previously completed work was preserved.",
+  "本次回复未能正确交付；已保留此前完成的工作。",
+  "本次回复的交付格式不正确，目标尚未完成；已保留此前完成的工作。",
+])
+  test(`a generic terminal notice is not an error detail; persisted reasons survive: ${text}`, () => {
+    const terminal = {
+      ...message("terminal", "terminal"),
+      text,
+    };
+    const empty = presentRuntimeErrors([terminal])[0]!;
+    assert.equal(runtimeErrorDetails(empty), "");
+    assert.equal(runtimeErrorDetails(terminal), "");
+    const reason =
+      'schema_validation_failed: Schema validation failed at JSON pointer ""';
+    const populated = presentRuntimeErrors([
+      {
+        ...terminal,
+        failure: {
+          ...terminal.failure!,
+          diagnostics: [{ eventId: "actual-rejection", reason }],
+        },
       },
-    },
-  ])[0]!;
-  assert.equal(populated.errorDetails, reason);
-  assert.equal(
-    populated.text,
-    terminal.text,
-    "immutable terminal text is preserved",
-  );
-  assert.equal(
-    populated.representedMessages?.length,
-    1,
-    "diagnostics are not fabricated messages",
-  );
-});
+    ])[0]!;
+    assert.equal(populated.errorDetails, reason);
+    assert.equal(
+      populated.text,
+      terminal.text,
+      "immutable terminal text is preserved",
+    );
+    assert.equal(
+      populated.representedMessages?.length,
+      1,
+      "diagnostics are not fabricated messages",
+    );
+  });
 
 test("history diagnostics require exact persisted public rejection scope and never expose captures", () => {
   const payload = {

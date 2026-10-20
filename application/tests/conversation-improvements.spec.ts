@@ -356,6 +356,8 @@ test("右上角查找无关闭叉号：外部单击关闭但不穿透，内部�
   ).toBeVisible();
   await expect(trigger).toBeFocused();
   await workbench.click();
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "应用", exact: true })).toBeVisible();
   const draft = await openInput(page);
   await draft.fill("TEST 工作页未发送草稿");
   await page.getByRole("button", { name: "查看交流记录", exact: true }).click();
@@ -379,7 +381,7 @@ test("右上角查找无关闭叉号：外部单击关闭但不穿透，内部�
   await expect(records).toHaveAttribute("aria-pressed", "true");
   await expect(draft).toHaveValue("TEST 工作页未发送草稿");
   // Protecting the search interaction must not disable ordinary auto-hide.
-  await page.getByRole("heading", { name: "工作台", exact: true }).click();
+  await page.getByRole("heading", { name: "应用", exact: true }).click();
   await expect(page.locator(".conversation")).not.toBeVisible();
   await openInput(page);
   await expect(records).toHaveAttribute("aria-pressed", "true");

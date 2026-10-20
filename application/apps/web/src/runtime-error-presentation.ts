@@ -3,6 +3,9 @@ import type { LiveMessage } from "../../../packages/core/src/live-conversation.j
 // These are Runtime-owned terminal notices, not causes. Preserve raw history,
 // but do not make an expandable "detail" out of a second generic status line.
 const terminalNotices = new Set([
+  "The reply could not be delivered correctly; previously completed work was preserved.",
+  "The reply delivery format was invalid. The Objective is not complete; previously completed work was preserved.",
+  // Historical localized notices remain valid immutable history.
   "本次回复未能正确交付；已保留此前完成的工作。",
   "本次回复的交付格式不正确，目标尚未完成；已保留此前完成的工作。",
 ]);
