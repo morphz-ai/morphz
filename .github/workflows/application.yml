@@ -18,6 +18,8 @@ on:
       - "scripts/tests/application-cognitive-ci-setup.test.mjs"
       - "scripts/prune-orphan-test-sqlite.mjs"
       - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
+      - "scripts/observe-ci-resources.mjs"
+      - "scripts/tests/observe-ci-resources.test.mjs"
       - ".github/workflows/application.yml"
   pull_request:
     branches: [main]
@@ -36,6 +38,8 @@ on:
       - "scripts/tests/application-cognitive-ci-setup.test.mjs"
       - "scripts/prune-orphan-test-sqlite.mjs"
       - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
+      - "scripts/observe-ci-resources.mjs"
+      - "scripts/tests/observe-ci-resources.test.mjs"
       - ".github/workflows/application.yml"
   workflow_dispatch:
 
@@ -77,8 +81,15 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y postgresql lsof
       - name: Verify historical SQLite cleanup safety boundaries
         run: node --test ../scripts/tests/prune-orphan-test-sqlite.test.mjs
+      - name: Verify read-only CI resource diagnostics
+        run: node --test ../scripts/tests/observe-ci-resources.test.mjs
       - run: npx playwright install --with-deps chromium
-      - run: npm test
+      - name: Run complete Node inventory with resource diagnostics
+        run: |
+          node ../scripts/observe-ci-resources.mjs &
+          resource_observer=$!
+          trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
+          npm test
       - run: npx playwright install --with-deps chrome
       # Native macOS cases explicitly skip here and run in the Desktop job.
       - run: npm run test:e2e
@@ -145,7 +156,11 @@ jobs:
       - name: Require PostgreSQL and cloud conformance; audit every remaining skip
         env:
           MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres,s3
-        run: npm test
+        run: |
+          node ../scripts/observe-ci-resources.mjs &
+          resource_observer=$!
+          trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
+          npm test
 
   desktop:
     name: Embedded Desktop (macOS)
@@ -175,7 +190,11 @@ jobs:
       - run: brew install postgresql@16
       - run: npx playwright install chromium
       - name: Run tests with mandatory isolated PostgreSQL
-        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test
+        run: |
+          node ../scripts/observe-ci-resources.mjs &
+          resource_observer=$!
+          trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
+          MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test
       - run: npm run test:embedded
       - run: npm run test:platform-embedded-desktop
       - run: npm run test:platform-desktop

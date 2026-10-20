@@ -87,6 +87,66 @@ function coverage(lines: string[]) {
   return JSON.parse(lines[0]!.slice(prefix.length));
 }
 
+test("failures are emitted before later events and retain bounded real causes without reading attached state", async () => {
+  const cause = new Error("expected terminal reply");
+  Object.defineProperty(cause, "actual", { value: false });
+  Object.defineProperty(cause, "expected", { value: true });
+  Object.defineProperty(cause, "code", {
+    get() {
+      throw new Error("must not read getter");
+    },
+  });
+  Object.defineProperty(cause, "attachedPrivateState", { value: base });
+  const error = new Error("test failed", { cause });
+  const iterator = reportTestCoverage(
+    events([
+      {
+        type: "test:fail",
+        data: {
+          name: "specific failing test",
+          file: "fixture.test.ts",
+          line: 42,
+          column: 3,
+          details: { error },
+        },
+      },
+      summary({ ...counts, tests: 1, passed: 0, failed: 1, skipped: 0 }),
+    ]),
+    plan(),
+  );
+  const first = await iterator.next();
+  assert.equal(first.done, false);
+  assert(first.value!.startsWith("[test failure] "));
+  const diagnostic = JSON.parse(first.value!.slice("[test failure] ".length));
+  assert.equal(diagnostic.line, 42);
+  assert.equal(diagnostic.error.cause.message, "expected terminal reply");
+  assert.equal(diagnostic.error.cause.actual, false);
+  assert.equal(diagnostic.error.cause.expected, true);
+  assert.equal(first.value!.includes("dummy-secret"), false);
+  assert.equal(first.value!.includes("must not read getter"), false);
+  const second = await iterator.next();
+  assert.equal(coverage([second.value!]).counts.failed, 1);
+  assert.equal((await iterator.next()).done, true);
+});
+
+test("circular and oversized errors cannot make failure diagnostics unbounded", async () => {
+  const error = Object.assign(new Error("x".repeat(10000)), {
+    cause: null as unknown,
+  });
+  error.cause = error;
+  const lines = await consume(
+    events([
+      { type: "test:fail", data: { name: "bounded", details: { error } } },
+      summary({ ...counts, tests: 1, passed: 0, failed: 1, skipped: 0 }),
+    ]),
+  );
+  const record = JSON.parse(lines[0]!.slice("[test failure] ".length));
+  assert.equal(record.error.message.length, 3000);
+  assert.equal(record.error.cause, "[nested error omitted]");
+  assert(lines[0]!.length < 10000);
+  assert.equal(coverage(lines.slice(1)).counts.failed, 1);
+});
+
 test("reporter exposes exact declared omissions and final Node counts without credentials", async () => {
   const lines = await consume(
     events([
@@ -309,9 +369,67 @@ test("failing tests are reported faithfully and skipped-looking diagnostics are 
       summary(failed),
     ]),
   );
-  assert.deepEqual(coverage(lines).counts, failed);
-  assert.deepEqual(coverage(lines).optionalNotExecuted, []);
-  assert.deepEqual(coverage(lines).unexpectedSkips, []);
+  assert.equal(lines.length, 2);
+  assert.deepEqual(JSON.parse(lines[0]!.slice("[test failure] ".length)), {
+    file: "ordinary.test.ts",
+    name: "ordinary failure",
+    error: null,
+  });
+  assert.deepEqual(coverage(lines.slice(1)).counts, failed);
+  assert.deepEqual(coverage(lines.slice(1)).optionalNotExecuted, []);
+  assert.deepEqual(coverage(lines.slice(1)).unexpectedSkips, []);
+});
+
+test("a real failed Node child emits its precise cause and retains its nonzero exit", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "morphz-failure-entry-"));
+  const file = join(directory, "failure.test.mjs");
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    MORPHZ_APP_ENV_FILE: "",
+    MORPHZ_TEST_POSTGRES_URL: base.MORPHZ_TEST_POSTGRES_URL,
+    MORPHZ_TEST_REQUIRED_CAPABILITIES: "postgres",
+    MORPHZ_TEST_SELECTED_FILES: JSON.stringify([file]),
+  };
+  delete env.NODE_TEST_CONTEXT;
+  try {
+    await writeFile(
+      file,
+      'import test from "node:test"; test("precise fixture failure", () => { throw new Error("specific missing reply"); });\n',
+    );
+    await assert.rejects(
+      promisify(execFile)(
+        process.execPath,
+        [
+          "--test",
+          "--test-reporter=spec",
+          "--test-reporter-destination=stdout",
+          `--test-reporter=${fileURLToPath(new URL("../scripts/test-coverage-reporter.mjs", import.meta.url))}`,
+          "--test-reporter-destination=stdout",
+          file,
+        ],
+        { env, timeout: 15_000, maxBuffer: 1024 * 1024 },
+      ),
+      (error: any) => {
+        assert.equal(error.code, 1);
+        const lines = String(error.stdout).split("\n");
+        const failures = lines.filter((line) =>
+          line.startsWith("[test failure] "),
+        );
+        assert.equal(failures.length, 1);
+        const record = JSON.parse(failures[0]!.slice("[test failure] ".length));
+        assert.equal(record.name, "precise fixture failure");
+        assert.equal(record.error.cause.message, "specific missing reply");
+        assert.equal(
+          coverage(lines.filter((line) => line.startsWith("[test coverage] ")))
+            .counts.failed,
+          1,
+        );
+        return true;
+      },
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("source errors propagate rather than yielding a synthetic successful summary", async () => {
