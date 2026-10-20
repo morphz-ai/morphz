@@ -1,7 +1,8 @@
 //! Durable response-annotation protocol conformance. No model/provider calls.
 //!
-//! PostgreSQL runs only when MORPHZ_ANNOTATIONS_TEST_POSTGRES_URL is explicitly
-//! supplied, and only inside a freshly generated schema without a public fallback.
+//! PostgreSQL uses the explicitly supplied annotation connection, or the shared
+//! MORPHZ_TEST_POSTGRES_URL test connection, and only a freshly generated schema
+//! without a public fallback. CI cannot silently omit this conformance lane.
 use morphz::event::{Event, TYPE_INFER_REQUEST, TYPE_USER_MESSAGE};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
@@ -810,15 +811,24 @@ async fn native_companions_are_atomic_source_bound_and_idempotent<S: RuntimeStor
 ) -> Result<(), TestError> {
     use morphz::memory::EventAppend;
     use morphz::response_annotations::{
-        normalize_response, ExecutionScope, NormalizationContext, PersistedAnnotations, Producer,
-        BUNDLE_PAYLOAD_KEY,
+        normalize_delivery, AnnotationKind, ExecutionScope, NormalizationContext,
+        PersistedAnnotations, Producer, BUNDLE_PAYLOAD_KEY,
     };
+    use morphz::session_io::native::{self, Evidence};
     use morphz::session_io::response::{ReturnBinding, ANNOTATIONS_FORMAT};
     let route = create_route(store, "native-companions").await?;
     let owner = store
         .ensure_thread(thread(&route, "owner", ThreadKind::Execution, Protocol::On))
         .await?;
-    let source = |id: &str, enabled: bool| {
+    let business_tool = morphz::llm::ToolDefinition {
+        name: "synthetic_probe_read".into(),
+        description: "Read the explicitly requested synthetic file.".into(),
+        parameters: json!({
+            "type":"object","additionalProperties":false,"required":["path"],
+            "properties":{"path":{"type":"string"}}
+        }),
+    };
+    let source = |id: &str, enabled: bool, working: bool| {
         let evaluation = format!("{id}-evaluation");
         let model = format!("{id}-model");
         let scope = ExecutionScope {
@@ -826,12 +836,10 @@ async fn native_companions_are_atomic_source_bound_and_idempotent<S: RuntimeStor
             generation: owner.generation,
         };
         let context = NormalizationContext {
-            return_binding: Some(ReturnBinding::new(
-                &owner.id,
-                owner.generation,
-                &evaluation,
-                enabled,
-            )),
+            return_binding: Some(
+                ReturnBinding::new(&owner.id, owner.generation, &evaluation, enabled)
+                    .with_native_output(),
+            ),
             protocol: if enabled { Protocol::On } else { Protocol::Off },
             scope: Some(scope.clone()),
             producer: Some(Producer {
@@ -841,11 +849,71 @@ async fn native_companions_are_atomic_source_bound_and_idempotent<S: RuntimeStor
             }),
             ..Default::default()
         };
-        let raw=morphz::llm::Response{content:"synthetic body".into(),tool_calls:vec![morphz::llm::ToolCallRepr{
-            id:"actual-annotation-call".into(),r#type:"function".into(),func_name:"deliver_message".into(),
-            arguments:json!({"delivery_id":"synthetic-metadata","message":{"format":{"id":ANNOTATIONS_FORMAT,"version":"1"},"content":{"encoding":"json","value":{"execution":{"title":"合成执行","result":"合成检查完成"}}}}}).to_string()
-        }]};
-        let normalized = normalize_response(&raw, &context).unwrap();
+        let prepared = native::prepare(
+            context.return_binding.as_ref().unwrap(),
+            &[],
+            std::slice::from_ref(&business_tool),
+        )
+        .unwrap();
+        let raw = morphz::llm::Response {
+            content: if working { "" } else { "synthetic body" }.into(),
+            tool_calls: if working {
+                vec![morphz::llm::ToolCallRepr {
+                    id: "actual-read-call".into(),
+                    r#type: "function".into(),
+                    func_name: business_tool.name.clone(),
+                    // Deliberately supplied even when off: Runtime must strip
+                    // optional metadata without creating a fake IO receipt.
+                    arguments: json!({"path":"synthetic-review.txt","_morphz":{
+                        "execution":{"title":"合成执行","progress":"读取合成文件"},
+                        "intent":"读取已请求的合成文件"
+                    }})
+                    .to_string(),
+                }]
+            } else {
+                vec![]
+            },
+        };
+        let evidence = Evidence {
+            binding: prepared.binding,
+            messages: vec![],
+        };
+        let normalized = normalize_delivery(&raw, &context, Some(&evidence)).unwrap();
+        assert_eq!(
+            serde_json::to_value(&normalized.raw_response).unwrap(),
+            serde_json::to_value(&raw).unwrap()
+        );
+        assert_eq!(normalized.native_response.as_ref(), Some(&evidence));
+        if working {
+            assert_eq!(normalized.execution_response.tool_calls.len(), 1);
+            let call = &normalized.execution_response.tool_calls[0];
+            assert_eq!(call.id, "actual-read-call");
+            assert_eq!(call.func_name, business_tool.name);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&call.arguments).unwrap(),
+                json!({"path":"synthetic-review.txt"})
+            );
+        } else {
+            assert_eq!(normalized.execution_response.content, "synthetic body");
+            assert!(normalized.execution_response.tool_calls.is_empty());
+        }
+        assert!(normalized
+            .records
+            .iter()
+            .all(|record| record.kind != AnnotationKind::Result));
+        assert_eq!(
+            normalized
+                .records
+                .iter()
+                .filter(|record| record.kind == AnnotationKind::Intent)
+                .map(|record| record.call_id.as_deref())
+                .collect::<Vec<_>>(),
+            if enabled && working {
+                vec![Some("actual-read-call")]
+            } else {
+                vec![]
+            }
+        );
         Event::new(id.into(),"Synthetic-Model".into(),morphz::event::TYPE_AGENT_CALL.into(),"chat/assistant_call".into(),
             json!({"context_id":route.context,"session_id":route.session,"principal_id":route.principal,"root_turn_id":owner.root_turn_id,
                 "thread_id":owner.id,"thread_generation":owner.generation,"activation_id":evaluation,"attempt_id":evaluation,"model_attempt_id":model,
@@ -860,6 +928,7 @@ async fn native_companions_are_atomic_source_bound_and_idempotent<S: RuntimeStor
                 "native-source-off"
             },
             enabled,
+            true,
         );
         store.append(original.clone()).await?;
         store.append(original.clone()).await?;
@@ -881,19 +950,50 @@ async fn native_companions_are_atomic_source_bound_and_idempotent<S: RuntimeStor
             .collect::<Vec<_>>();
         assert_eq!(
             outputs.len(),
-            1,
+            usize::from(enabled),
             "source retry cannot duplicate native outputs"
         );
-        let output = outputs[0];
+        let stored_sources = all
+            .iter()
+            .filter(|event| event.id == original.id)
+            .collect::<Vec<_>>();
         assert_eq!(
-            output.topic,
-            if enabled {
-                "session/io_output"
-            } else {
-                "runtime/io_receipt"
-            }
+            stored_sources.len(),
+            1,
+            "the immutable source itself is also idempotent"
         );
-        assert_eq!(output.payload["tool_call_id"], "actual-annotation-call");
+        assert_eq!(
+            stored_sources[0].payload[BUNDLE_PAYLOAD_KEY],
+            original.payload[BUNDLE_PAYLOAD_KEY]
+        );
+        if !enabled {
+            continue;
+        }
+        let output = outputs[0];
+        assert_eq!(output.topic, "session/io_output");
+        assert!(
+            !output.payload.contains_key("tool_call_id"),
+            "a derived metadata publication is not a fabricated native call"
+        );
+        assert_eq!(
+            output.payload["io_message"]["format"]["id"],
+            ANNOTATIONS_FORMAT
+        );
+        let published: morphz::session_io::Message =
+            serde_json::from_value(output.payload["io_message"].clone())?;
+        assert_eq!(
+            output.payload["io_message"],
+            original.payload[BUNDLE_PAYLOAD_KEY]["annotation_messages"][0],
+            "the publication preserves the exact typed metadata source"
+        );
+        assert_eq!(
+            morphz::session_io::response::annotations_value(&published),
+            Some(json!({
+                "execution":{"title":"合成执行","progress":"读取合成文件"},
+                "calls":[{"index":0,"intent":"读取已请求的合成文件"}]
+            })),
+            "decode the lossless persisted Data representation before checking native-call association"
+        );
         for key in [
             "context_id",
             "session_id",
@@ -912,7 +1012,7 @@ async fn native_companions_are_atomic_source_bound_and_idempotent<S: RuntimeStor
             );
         }
         assert_eq!(output.payload["wake_policy"], "none");
-        assert_eq!(output.payload.contains_key("io_message"), enabled);
+        assert!(output.payload.contains_key("io_message"));
         assert!(!morphz::event::is_context_observation(output));
         assert!(!morphz::event::advances_cognitive_clock(output));
         assert_eq!(
@@ -920,8 +1020,8 @@ async fn native_companions_are_atomic_source_bound_and_idempotent<S: RuntimeStor
             original.payload[BUNDLE_PAYLOAD_KEY]["return_binding"]["delivery_id"]
         );
     }
-    let rollback = source("native-rollback-source", true);
-    let mut collision = source("native-source-on", true);
+    let rollback = source("native-rollback-source", true, true);
+    let mut collision = source("native-source-on", true, true);
     collision
         .payload
         .insert("text".into(), json!("different immutable payload"));
@@ -949,7 +1049,7 @@ async fn native_companions_are_atomic_source_bound_and_idempotent<S: RuntimeStor
                 == Some(rollback.id.as_str())),
         "source and companion must roll back together"
     );
-    let mut mismatched = source("native-mismatched-source", true);
+    let mut mismatched = source("native-mismatched-source", true, true);
     mismatched
         .payload
         .insert("thread_id".into(), json!("another-thread"));
@@ -965,6 +1065,37 @@ async fn native_companions_are_atomic_source_bound_and_idempotent<S: RuntimeStor
         .get("source_event_id")
         .and_then(serde_json::Value::as_str)
         == Some(mismatched.id.as_str())));
+    for enabled in [true, false] {
+        let terminal = source(
+            if enabled {
+                "native-final-on"
+            } else {
+                "native-final-off"
+            },
+            enabled,
+            false,
+        );
+        store.append(terminal.clone()).await?;
+        store.append(terminal.clone()).await?;
+        let all = store
+            .query(QueryFilter {
+                context_id: Some(route.context.clone()),
+                ..Default::default()
+            })
+            .await?;
+        assert_eq!(
+            all.iter().filter(|event| event.id == terminal.id).count(),
+            1
+        );
+        assert!(
+            !all.iter().any(|event| event
+                .payload
+                .get("source_event_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(terminal.id.as_str())),
+            "ordinary final text cannot manufacture annotation publications or extra receipts"
+        );
+    }
     Ok(())
 }
 
@@ -1136,8 +1267,14 @@ async fn sqlite_protocol_lifetime_and_batch_conformance() -> Result<(), TestErro
 
 #[tokio::test]
 async fn postgres_protocol_lifetime_and_batch_conformance() -> Result<(), TestError> {
-    let Ok(url) = std::env::var("MORPHZ_ANNOTATIONS_TEST_POSTGRES_URL") else {
-        eprintln!("SKIPPED real PostgreSQL: set MORPHZ_ANNOTATIONS_TEST_POSTGRES_URL to an explicitly approved test connection");
+    let Ok(url) = std::env::var("MORPHZ_ANNOTATIONS_TEST_POSTGRES_URL")
+        .or_else(|_| std::env::var("MORPHZ_TEST_POSTGRES_URL"))
+    else {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "CI requires MORPHZ_TEST_POSTGRES_URL or MORPHZ_ANNOTATIONS_TEST_POSTGRES_URL for real PostgreSQL annotation conformance"
+        );
+        eprintln!("SKIPPED real PostgreSQL: set MORPHZ_TEST_POSTGRES_URL or MORPHZ_ANNOTATIONS_TEST_POSTGRES_URL to an explicitly approved test connection");
         return Ok(());
     };
     let schema = format!(

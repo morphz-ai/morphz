@@ -44,6 +44,7 @@ use tempfile::{NamedTempFile, TempDir};
 struct MockClient {
     responses: Mutex<VecDeque<Response>>,
     tools_seen: Mutex<Vec<Vec<String>>>,
+    tool_schemas_seen: Mutex<Vec<serde_json::Value>>,
     messages_seen: Mutex<Vec<Vec<Message>>>,
     prompt_token_count: Mutex<Option<usize>>,
     delivery_calls: AtomicUsize,
@@ -1210,6 +1211,19 @@ impl Client for ProviderStateToolContinuationClient {
             let _ = stream.send(ModelStreamEvent::ProviderContinuation {
                 continuation: self.continuation.clone(),
             });
+            // Native adapters and the atomic Client fallback both publish the
+            // actual work before Completed. Keep this streaming test double
+            // faithful to that contract so the stream is not an empty reply.
+            let _ = stream.send(ModelStreamEvent::ToolCallStarted {
+                index: 0,
+                id: tool_call.id.clone(),
+                name: tool_call.func_name.clone(),
+            });
+            let _ = stream.send(ModelStreamEvent::ToolArgumentsDelta {
+                index: 0,
+                delta: tool_call.arguments.clone(),
+            });
+            let _ = stream.send(ModelStreamEvent::ToolCallCompleted { index: 0 });
             let _ = stream.send(ModelStreamEvent::Completed);
             return Ok(Response {
                 content: String::new(),
@@ -1281,6 +1295,7 @@ impl MockClient {
         Self {
             responses: Mutex::new(VecDeque::from(responses)),
             tools_seen: Mutex::new(Vec::new()),
+            tool_schemas_seen: Mutex::new(Vec::new()),
             messages_seen: Mutex::new(Vec::new()),
             prompt_token_count: Mutex::new(None),
             delivery_calls: AtomicUsize::new(0),
@@ -1289,6 +1304,15 @@ impl MockClient {
 
     fn tools_seen(&self) -> Vec<Vec<String>> {
         self.tools_seen.lock().unwrap().clone()
+    }
+
+    fn assert_stable_tool_schemas(&self) {
+        let snapshots = self.tool_schemas_seen.lock().unwrap();
+        assert!(snapshots.len() >= 2);
+        assert!(
+            snapshots.windows(2).all(|pair| pair[0] == pair[1]),
+            "Runtime admission changes must not rewrite Provider tool definitions"
+        );
     }
 
     fn messages_seen(&self) -> Vec<Vec<Message>> {
@@ -1390,6 +1414,10 @@ impl Client for MockClient {
             self.delivery_calls.fetch_add(1, Ordering::SeqCst);
             return Ok(response);
         }
+        self.tool_schemas_seen
+            .lock()
+            .map_err(|_| "mock tool schema mutex poisoned")?
+            .push(serde_json::to_value(&tools)?);
         let tool_names = tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
         self.tools_seen
             .lock()
@@ -3589,7 +3617,7 @@ async fn test_no_reply_wait_without_pending_runtime_fact_is_corrected() {
 }
 
 #[tokio::test]
-async fn invalid_response_retry_restores_provider_state_and_rejected_output() {
+async fn native_invalid_terminal_preserves_rejection_without_repair_or_opaque_leak() {
     let session_id = "attempt_invalid_response_continuation";
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("invalid-response-continuation.db");
@@ -3619,12 +3647,20 @@ async fn invalid_response_retry_restores_provider_state_and_rejected_output() {
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
     let errors = wait_for_topic(&store, "runtime/response_protocol_error", session_id).await;
 
-    assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
     assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].payload["terminal_kind"], "failed");
     assert_eq!(
-        replies[0].payload["text"],
-        "The response boundary is corrected."
+        replies[0].payload["runtime_failure_kind"],
+        "response_protocol"
     );
+    assert_eq!(
+        replies[0].payload["runtime_failure_stage"],
+        "response_normalization"
+    );
+    assert!(!serde_json::to_string(&replies[0].payload)
+        .unwrap()
+        .contains("opaque-protocol-state"));
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].payload["response_content_chars"], 39);
     assert_eq!(
@@ -3636,35 +3672,37 @@ async fn invalid_response_retry_restores_provider_state_and_rejected_output() {
         errors[0].payload["response_tool_calls"][0]["name"],
         "no_reply"
     );
-
-    let requests = client.messages_seen.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[1].iter().any(|message| {
-        matches!(
-            provider_continuation(message),
-            Some(ProviderContinuation::OpenaiResponses { reasoning_items })
-                if reasoning_items.iter().any(|item| item["id"] == "protocol-reasoning-1")
-        )
-    }));
-    assert!(requests[1].iter().any(|message| {
-        message.role == "user"
-            && message
-                .content
-                .contains("no_reply cannot be accompanied by ordinary text")
-            && message
-                .content
-                .contains("I will wait for the background process.")
-            && message
-                .content
-                .contains("None of its tool calls was executed")
-    }));
-    assert!(requests[1].iter().all(|message| {
-        message.role != "assistant" || message.content != "I will wait for the background process."
-    }));
+    assert_eq!(errors[0].payload["response_capture"]["state"], "complete");
+    assert_eq!(
+        errors[0].payload["response_capture"]["raw_response"]["tool_calls"][0]["id"],
+        "invalid-wait"
+    );
+    assert!(errors[0].payload["reason"]
+        .as_str()
+        .unwrap()
+        .contains("no_reply must be sole call with no ordinary content"));
+    assert_eq!(client.messages_seen.lock().unwrap().len(), 1);
+    let events = store
+        .query(QueryFilter {
+            session_id: Some(session_id.into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(events.iter().all(|event| !matches!(
+        event.topic.as_str(),
+        "chat/no_reply" | "chat/tool_output" | "runtime/reasoning_continuation"
+    )));
+    let fused = events
+        .iter()
+        .filter(|event| event.topic == "runtime/response_protocol_fused")
+        .collect::<Vec<_>>();
+    assert_eq!(fused.len(), 1);
+    assert_eq!(fused[0].payload["invalid_responses"], 1);
 }
 
 #[tokio::test]
-async fn test_response_protocol_fuses_after_two_failed_corrections() {
+async fn native_invalid_terminal_stops_once_without_consuming_repair_responses() {
     let session_id = "attempt_response_protocol_fuse";
     let responses = (0..3)
         .map(|_| Response {
@@ -3681,20 +3719,32 @@ async fn test_response_protocol_fuses_after_two_failed_corrections() {
 
     publish_user(&bus, session_id, "fail reply protocol").await;
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
-    let errors =
-        wait_for_topic_count(&store, "runtime/response_protocol_error", session_id, 3).await;
+    let errors = wait_for_topic(&store, "runtime/response_protocol_error", session_id).await;
     let fused = wait_for_topic(&store, "runtime/response_protocol_fused", session_id).await;
 
-    assert_eq!(client.messages_seen().len(), 3);
-    assert_eq!(errors.len(), 3);
+    assert_eq!(client.messages_seen().len(), 1);
+    assert_eq!(client.responses.lock().unwrap().len(), 2);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].payload["response_capture"]["state"], "complete");
+    assert_eq!(errors[0].payload["response_tool_call_count"], 1);
     assert_eq!(fused.len(), 1);
+    assert_eq!(fused[0].payload["invalid_responses"], 1);
     assert_eq!(replies.len(), 1);
-    assert!(replies[0]
-        .payload
-        .get("text")
-        .and_then(|value| value.as_str())
-        .unwrap()
-        .contains("safely stopped this turn"));
+    assert_eq!(replies[0].payload["terminal_kind"], "failed");
+    assert_eq!(
+        replies[0].payload["runtime_failure_kind"],
+        "response_protocol"
+    );
+    let events = store
+        .query(QueryFilter {
+            session_id: Some(session_id.into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(events
+        .iter()
+        .all(|event| !matches!(event.topic.as_str(), "chat/no_reply" | "chat/tool_output")));
 }
 
 #[tokio::test]
@@ -5084,6 +5134,7 @@ async fn test_context_only_call_commits_then_cooldown_forces_user_response() {
         tools_seen[1].contains(&"context_tx".to_string()),
         "cooldown must preserve the Provider schema while Runtime admission rejects context_tx"
     );
+    client.assert_stable_tool_schemas();
     let messages = client.messages_seen();
     assert_eq!(messages.len(), 2);
     assert_eq!(
@@ -5096,7 +5147,10 @@ async fn test_context_only_call_commits_then_cooldown_forces_user_response() {
     assert!(messages[1][1].content.contains("(id state)"));
     assert!(messages[1][1]
         .content
-        .contains("stable Function Calling schema remains visible"));
+        .contains("The Runtime will reject context_tx for this request"));
+    assert!(messages[1][1]
+        .content
+        .contains("stable tool schema remains visible"));
     let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
     assert_eq!(outputs.len(), 1);
     assert_eq!(
@@ -5261,7 +5315,13 @@ async fn model_native_prompt_count_drives_pressure_before_completion() {
     assert!(messages[0][1]
         .content
         .contains("(token-scope full-work-prompt)"));
-    assert_eq!(client.tools_seen()[0], vec!["context_tx", "no_reply"]);
+    assert_eq!(
+        client.tools_seen()[0],
+        vec!["context_tx", "eval", "read", "write", "no_reply"]
+    );
+    assert!(messages[0][1]
+        .content
+        .contains("physical work is not authorized in this phase"));
 
     let inspected = orchestrator
         .get_current_context_view(session_id)
@@ -5364,8 +5424,17 @@ async fn critical_maintenance_rejects_unoffered_physical_tool_with_same_call_id_
 
     let tools_seen = client.tools_seen();
     assert_eq!(tools_seen.len(), 2);
-    assert_eq!(tools_seen[0], vec!["context_tx", "no_reply"]);
-    assert_eq!(tools_seen[1], vec!["context_tx", "no_reply"]);
+    assert_eq!(
+        tools_seen[0],
+        vec!["context_tx", "eval", "read", "write", "no_reply"]
+    );
+    client.assert_stable_tool_schemas();
+    let rejection_details: serde_json::Value =
+        serde_json::from_str(rejection.payload["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        rejection_details["allowed_tools"],
+        json!(["context_tx", "no_reply"])
+    );
     let messages = client.messages_seen();
     assert_eq!(messages.len(), 2);
     assert!(messages[0]
@@ -5373,7 +5442,7 @@ async fn critical_maintenance_rejects_unoffered_physical_tool_with_same_call_id_
         .any(|message| message.content.contains("critical-maintenance")));
     assert!(messages[0].iter().any(|message| message
         .content
-        .contains("External physical tools are temporarily removed")));
+        .contains("physical work is not authorized in this phase")));
     // The next critical-maintenance request deliberately uses a bounded
     // Context projection instead of replaying an unbounded Function Calling
     // transcript. The same immutable receipt must still be visible, including
@@ -5479,10 +5548,17 @@ async fn adversarial_observation_cannot_expand_the_runtime_tool_boundary() {
     assert!(blocked_client.messages_seen()[0]
         .iter()
         .any(|message| message.content.contains(adversarial_text)));
-    assert!(!blocked_client.tools_seen()[0].contains(&"write".to_string()));
+    assert!(blocked_client.tools_seen()[0].contains(&"write".to_string()));
+    blocked_client.assert_stable_tool_schemas();
+    let rejected_details: serde_json::Value =
+        serde_json::from_str(rejection.payload["text"].as_str().unwrap()).unwrap();
+    assert!(!rejected_details["allowed_tools"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("write")));
 
     // Positive control: the same production tool and fake Provider response
-    // execute normally when the Runtime actually offers the capability.
+    // execute normally when Runtime admission allows the visible capability.
     let control_workspace = TempDir::new().unwrap();
     let control_path = control_workspace.path().join("authorized-control.txt");
     let control_database = temp_sqlite::TempSqliteDb::new().unwrap();
@@ -5592,7 +5668,11 @@ async fn test_critical_transaction_that_relieves_pressure_cools_down_next_attemp
     );
     let tools_seen = client.tools_seen();
     assert_eq!(tools_seen.len(), 2);
-    assert_eq!(tools_seen[0], vec!["context_tx", "no_reply"]);
+    assert_eq!(
+        tools_seen[0],
+        vec!["context_tx", "eval", "read", "write", "no_reply"]
+    );
+    client.assert_stable_tool_schemas();
     assert!(
         tools_seen[1].contains(&"context_tx".to_string()),
         "relieving critical pressure must enter admission cooldown without rewriting the Provider schema"
@@ -5638,8 +5718,17 @@ async fn test_critical_pressure_keeps_context_tool_available_for_semantic_correc
     );
     let tools_seen = client.tools_seen();
     assert_eq!(tools_seen.len(), 2);
-    assert_eq!(tools_seen[0], vec!["context_tx", "no_reply"]);
-    assert_eq!(tools_seen[1], vec!["context_tx", "no_reply"]);
+    assert_eq!(
+        tools_seen[0],
+        vec!["context_tx", "eval", "read", "write", "no_reply"]
+    );
+    client.assert_stable_tool_schemas();
+    assert!(client
+        .messages_seen()
+        .iter()
+        .all(|messages| messages.iter().any(|message| message
+            .content
+            .contains("physical work is not authorized in this phase"))));
 }
 
 #[tokio::test]
@@ -7754,7 +7843,21 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
     assert!(message_b_visible.contains("(pending-tools route_probe)"));
     assert!(message_b_visible.contains("do not repeat them from this Activation"));
     assert!(message_b_visible.contains("(evaluate"));
-    assert!(message_b_visible.contains("(thread (kind dialogue-turn) (id same-session-tool)"));
+    let encoded = parse(&message_b_visible[message_b_visible.find('(').unwrap()..]).unwrap();
+    assert_eq!(
+        encoded.get_path(&["evaluate", "thread", "kind"]),
+        Some(&SExpr::Atom("dialogue-turn".into()))
+    );
+    assert_eq!(
+        encoded.get_path(&["evaluate", "thread", "id"]),
+        Some(&SExpr::Atom(
+            message_b_reply.payload["thread_id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        )),
+        "the Context must name the actual owning Thread, not reuse its Session ID"
+    );
     assert!(message_b_visible.contains("(root-input \"message-b while tool runs\")"));
     assert!(message_b_visible.contains("(objective-binding none)"));
     assert!(
@@ -8911,6 +9014,130 @@ fn read_call_response(id: &str, path: &str) -> Response {
 }
 
 #[tokio::test]
+async fn inline_infer_keeps_typed_values_internal_and_parent_chat_unchanged() {
+    for (name, program, answer, expected_runtime_value) in [
+        (
+            "string",
+            r#"(eval (infer (returns String) "internal-string-value"))"#,
+            r#""internal-string-value""#,
+            r#""internal-string-value""#,
+        ),
+        ("bool", "(eval (infer (returns Bool) true))", "true", "true"),
+        (
+            "record",
+            r#"(eval
+              (types (record Decision (execute Bool) (reply String)))
+              (infer
+                (returns Decision)
+                (record Decision (execute false) (reply "internal-record-value"))))"#,
+            r#"{"execute":false,"reply":"internal-record-value"}"#,
+            r#"{"$yao":{"kind":"record","type":"Decision","fields":{"execute":false,"reply":"internal-record-value"}}}"#,
+        ),
+    ] {
+        let session_id = format!("inline_infer_typed_{name}");
+        let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
+            vec![
+                eval_response(program),
+                text_reply_response(answer),
+                text_reply_response("parent-chat-answer"),
+            ],
+            morphz::config::OrchestratorConfig::default(),
+        )
+        .await;
+        publish_user(&bus, &session_id, "执行已声明的类型化推理").await;
+        let replies = wait_for_topic(&store, "chat/reply", &session_id).await;
+        assert_eq!(replies.len(), 1, "{name}: {replies:#?}");
+        assert_eq!(replies[0].payload["text"], "parent-chat-answer", "{name}");
+        let turns = client.messages_seen();
+        assert_eq!(turns.len(), 3, "{name}: {replies:#?}");
+        let child_request = turns[1]
+            .iter()
+            .find(|message| message.role == "user")
+            .unwrap();
+        assert!(child_request.content.contains("morphz.data"), "{name}");
+        assert!(child_request.content.contains("(encoding json)"), "{name}");
+        assert!(!child_request.content.contains("morphz.chat"), "{name}");
+        let tool_sets = client.tools_seen();
+        assert!(tool_sets[1].is_empty(), "{name}: pure infer may not work");
+        assert_eq!(
+            tool_sets[0], tool_sets[2],
+            "{name}: parent directory changed"
+        );
+        let schemas = client.tool_schemas_seen.lock().unwrap().clone();
+        assert_eq!(
+            schemas[0], schemas[2],
+            "{name}: parent tools were reprojected"
+        );
+        let observations = wait_for_topic(&store, "chat/tool_output", &session_id).await;
+        let eval_output = observations
+            .iter()
+            .find(|event| event.payload["tool_name"] == "eval")
+            .unwrap();
+        let actual: serde_json::Value =
+            serde_json::from_str(eval_output.payload["text"].as_str().expect("typed result"))
+                .unwrap();
+        assert_eq!(
+            actual,
+            serde_json::from_str::<serde_json::Value>(expected_runtime_value).unwrap(),
+            "{name}: the original typed decoder owns Runtime value construction"
+        );
+        let internal = wait_for_topic(&store, "runtime/model_evaluation_output", &session_id).await;
+        assert_eq!(internal.len(), 1, "{name}: {internal:#?}");
+        assert_eq!(internal[0].payload["text"], answer, "{name}");
+        assert_eq!(internal[0].payload["model_output_visibility"], "internal");
+        let public = wait_for_topic(&store, "runtime/model_public_output", &session_id).await;
+        assert!(!public.is_empty(), "{name}");
+        assert!(
+            public
+                .iter()
+                .all(|event| event.payload["text"] == "parent-chat-answer"),
+            "{name}: private business data leaked into a public draft: {public:#?}"
+        );
+        assert!(
+            public
+                .iter()
+                .all(|event| event.payload["attempt_id"] != internal[0].payload["attempt_id"]),
+            "{name}: child reused a parent physical attempt identity"
+        );
+    }
+}
+
+#[tokio::test]
+async fn inline_infer_rejects_a_value_outside_its_declared_type() {
+    let session_id = "inline_infer_wrong_type";
+    let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            eval_response("(eval (infer (returns Bool) true))"),
+            text_reply_response(r#""not-a-bool""#),
+            text_reply_response("typed-infer-failed"),
+        ],
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .await;
+    publish_user(&bus, session_id, "执行已声明的布尔推理").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].payload["text"], "typed-infer-failed");
+    assert_eq!(client.messages_seen().len(), 3, "no format-repair request");
+    let observations = wait_for_topic(&store, "chat/tool_output", session_id).await;
+    let eval_output = observations
+        .iter()
+        .find(|event| event.payload["tool_name"] == "eval")
+        .unwrap();
+    assert_eq!(
+        eval_output.payload["tool_status"], "error",
+        "{eval_output:#?}"
+    );
+    assert!(
+        eval_output.payload["text"]
+            .as_str()
+            .unwrap()
+            .contains("schema_validation_failed"),
+        "{eval_output:#?}"
+    );
+}
+
+#[tokio::test]
 async fn infer_may_gather_evidence_but_is_never_offered_eval() {
     let session_id = "attempt_infer_tools";
     let probe = NamedTempFile::new().unwrap();
@@ -8944,10 +9171,11 @@ async fn infer_may_gather_evidence_but_is_never_offered_eval() {
 
     let turns = client.messages_seen();
     let tool_sets = client.tools_seen();
+    let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
     assert_eq!(
         turns.len(),
         4,
-        "submit, gather evidence, answer, then reply"
+        "submit, gather evidence, answer, then reply; replies={replies:#?}; outputs={outputs:#?}; tool_sets={tool_sets:#?}"
     );
 
     // The two middle turns are inside the infer. `eval` must not be on offer
@@ -8963,6 +9191,22 @@ async fn infer_may_gather_evidence_but_is_never_offered_eval() {
             "turn {index} should still allow evidence gathering: {offered:?}"
         );
     }
+    let schemas = client.tool_schemas_seen.lock().unwrap().clone();
+    assert_eq!(
+        schemas[1], schemas[2],
+        "child tools must stay frozen across work"
+    );
+    assert_eq!(
+        schemas[0], schemas[3],
+        "child must not change its parent's directory"
+    );
+    let read_schema = schemas[1]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "read")
+        .unwrap();
+    assert!(read_schema["parameters"]["properties"]["_morphz"].is_object());
 
     // The tool ran and its outcome came back to the model that asked for it.
     // The default permission profile deliberately allows read-only evidence
@@ -8979,7 +9223,6 @@ async fn infer_may_gather_evidence_but_is_never_offered_eval() {
         tool_result.content
     );
 
-    let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
     let eval_output = outputs
         .iter()
         .find(|event| event.payload.get("tool_name").and_then(|v| v.as_str()) == Some("eval"))

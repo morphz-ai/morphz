@@ -3,7 +3,10 @@ mod temp_sqlite;
 
 use morphz::config::AppConfig;
 use morphz::event::{Event, TYPE_INFER_REQUEST, TYPE_USER_MESSAGE};
-use morphz::llm::{Client, Message, Response, ToolCallRepr, ToolDefinition};
+use morphz::llm::{
+    Client, Message, ModelAttemptBinding, ModelRequestOptions, ModelStreamEvent, ModelStreamSender,
+    ModelToolChoice, PromptTokenCount, Response, ToolCallRepr, ToolDefinition,
+};
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     stable_thread_signal_id, ActivationStore as _, EventStore as _, NewAgent, NewCognitiveContext,
@@ -26,6 +29,54 @@ struct PlanInferClient {
 
 struct CancelledInferClient(AtomicUsize, AtomicBool);
 
+/// This scripted Provider implements the current native control boundary
+/// explicitly; the production Client default must not discard tool_choice.
+async fn scripted_completion_with_options(
+    client: &impl Client,
+    messages: Vec<Message>,
+    tools: Vec<ToolDefinition>,
+    stream: ModelStreamSender,
+    options: ModelRequestOptions,
+) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+    assert!(
+        options.output_encoding.is_none(),
+        "this fixture advertises no native JSON Schema capability"
+    );
+    let response = client.create_completion(messages, tools.clone()).await?;
+    if options.tool_choice == Some(ModelToolChoice::None) {
+        assert!(
+            response.tool_calls.is_empty(),
+            "the scripted Provider must honor a pure infer's native work prohibition"
+        );
+    }
+    for call in &response.tool_calls {
+        assert!(
+            tools.iter().any(|tool| tool.name == call.func_name),
+            "the scripted action must exist in the actual narrowed tool directory"
+        );
+    }
+    let _ = stream.send(ModelStreamEvent::Started);
+    if !response.content.is_empty() {
+        let _ = stream.send(ModelStreamEvent::TextDelta {
+            text: response.content.clone(),
+        });
+    }
+    for (index, call) in response.tool_calls.iter().enumerate() {
+        let _ = stream.send(ModelStreamEvent::ToolCallStarted {
+            index,
+            id: call.id.clone(),
+            name: call.func_name.clone(),
+        });
+        let _ = stream.send(ModelStreamEvent::ToolArgumentsDelta {
+            index,
+            delta: call.arguments.clone(),
+        });
+        let _ = stream.send(ModelStreamEvent::ToolCallCompleted { index });
+    }
+    let _ = stream.send(ModelStreamEvent::Completed);
+    Ok(response)
+}
+
 struct InferModelDrop<'a>(&'a AtomicBool);
 impl Drop for InferModelDrop<'_> {
     fn drop(&mut self) {
@@ -37,6 +88,18 @@ impl Drop for InferModelDrop<'_> {
 impl Client for CancelledInferClient {
     fn supports_async_cancellation(&self) -> bool {
         true
+    }
+
+    async fn create_completion_bound_stream_with_options(
+        &self,
+        _binding: &ModelAttemptBinding,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+        _measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+        options: ModelRequestOptions,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        scripted_completion_with_options(self, messages, tools, stream, options).await
     }
 
     async fn create_completion(
@@ -304,6 +367,18 @@ impl PlanInferClient {
 impl Client for PlanInferClient {
     fn supports_async_cancellation(&self) -> bool {
         true
+    }
+
+    async fn create_completion_bound_stream_with_options(
+        &self,
+        _binding: &ModelAttemptBinding,
+        messages: Vec<Message>,
+        tools: Vec<ToolDefinition>,
+        _measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+        options: ModelRequestOptions,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        scripted_completion_with_options(self, messages, tools, stream, options).await
     }
 
     async fn create_completion(

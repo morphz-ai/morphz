@@ -4,12 +4,40 @@
 use super::response::{Delivery, ResponseParts, ReturnBinding, ANNOTATIONS_FORMAT};
 use super::{Content, Data, Descriptor, Format, FormatBinding, IoError, IoResult, Limits, Message};
 use crate::llm::{Response, ToolCallRepr, ToolDefinition};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub const VERSION: &str = "2";
 /// Operator-verified capability of an exact routed physical endpoint. This is
 /// not guessed from a model name or merely from an OpenAI-compatible protocol.
 pub const NATIVE_SCHEMA_CAPABILITY: &str = "native-json-schema";
+
+/// Explicit receiving interpretation of a new request on a historical v2
+/// binding. Provider generation constraints never change that declared format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Transport {
+    EvaluationJson,
+}
+
+/// Prepare one new physical request. The selected options and receiving
+/// interpretation have one source; replay never calls this function.
+pub fn prepare_request(
+    binding: &ReturnBinding,
+    capabilities: &[String],
+    tools: &[ToolDefinition],
+) -> (
+    ReturnBinding,
+    Option<crate::llm::ModelOutputEncoding>,
+    Option<crate::llm::ModelToolChoice>,
+) {
+    let (encoding, choice) = request_options(binding, capabilities, tools);
+    let mut bound = binding.clone();
+    if selected(binding) {
+        bound.legacy_v2_transport = Some(Transport::EvaluationJson);
+    }
+    (bound, encoding, choice)
+}
 
 pub fn request_options(
     binding: &ReturnBinding,
@@ -35,9 +63,9 @@ pub fn request_options(
                 Some(crate::llm::ModelToolChoice::None),
             );
         }
-        // One semantic return contract on weaker transports too. No invented
-        // native capability or implicit JSON mode; legitimate native work and
-        // ordinary implicit replies remain compatible, without a companion.
+        // Context still declares the same Evaluation JSON value without an
+        // upstream constraint. Absence of native Schema support is not an
+        // ordinary-text contract or permission to sniff a different carrier.
         return (None, None);
     }
     (
@@ -234,7 +262,18 @@ pub fn decode(raw: &Response, binding: &ReturnBinding, attempt: &str) -> IoResul
         return Err(fail("No frozen unified Evaluation binding"));
     }
     check_native_deliveries(raw, binding)?;
+    match binding.legacy_v2_transport {
+        Some(Transport::EvaluationJson) if !raw.tool_calls.is_empty() => {
+            return Err(fail(
+                "The declared Evaluation JSON carrier disallows native calls",
+            ));
+        }
+        _ => {}
+    }
     if raw.content.trim().is_empty() {
+        if binding.legacy_v2_transport == Some(Transport::EvaluationJson) {
+            return Err(fail("The requested Evaluation JSON value is missing"));
+        }
         return implicit(raw, binding);
     }
     let parsed = match Data::parse(raw.content.as_bytes(), &Limits::default()) {
@@ -243,7 +282,8 @@ pub fn decode(raw: &Response, binding: &ReturnBinding, attempt: &str) -> IoResul
             // Ordinary native prose is the implicit form, never scanned for
             // embedded JSON, delimiters or annotation tags. A broken JSON value
             // in the bound structured channel must not leak as a JSON draft.
-            if binding.format.id == "morphz.chat"
+            if binding.legacy_v2_transport.is_none()
+                && binding.format.id == "morphz.chat"
                 && !raw.content.trim_start().starts_with(['{', '[', '"'])
             {
                 return implicit(raw, binding);
@@ -252,6 +292,9 @@ pub fn decode(raw: &Response, binding: &ReturnBinding, attempt: &str) -> IoResul
         }
     };
     let Data::Object(fields) = &parsed else {
+        if binding.legacy_v2_transport == Some(Transport::EvaluationJson) {
+            return Err(fail("The requested Evaluation JSON must be an object"));
+        }
         let mut implicit_raw = raw.clone();
         if binding.format.id == "morphz.chat" {
             if let Data::String(text) = parsed {
@@ -264,6 +307,11 @@ pub fn decode(raw: &Response, binding: &ReturnBinding, attempt: &str) -> IoResul
         .iter()
         .any(|name| fields.contains_key(*name))
     {
+        if binding.legacy_v2_transport == Some(Transport::EvaluationJson) {
+            return Err(fail(
+                "The requested Evaluation JSON has no body or work fields",
+            ));
+        }
         return implicit(raw, binding);
     }
     let mut notes = vec![];

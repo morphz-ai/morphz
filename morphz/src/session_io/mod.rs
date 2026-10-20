@@ -3,18 +3,18 @@
 pub mod data;
 pub mod evaluation;
 pub mod fence;
-pub mod native;
 pub(crate) mod file_lock;
+pub mod native;
 pub(crate) mod output;
 pub mod projection;
 pub mod resources;
 pub mod response;
-pub mod unified;
 pub(crate) mod response_stream;
 pub(crate) mod schema;
 pub(crate) mod stream;
 #[cfg(test)]
 mod tests;
+pub mod unified;
 #[cfg(test)]
 mod unified_tests;
 

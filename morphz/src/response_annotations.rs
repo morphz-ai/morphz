@@ -588,7 +588,10 @@ impl PersistedAnnotations {
         }
     }
 
-    pub fn replay(&self, context: &NormalizationContext) -> Result<NormalizedResponse, ProtocolError> {
+    pub fn replay(
+        &self,
+        context: &NormalizationContext,
+    ) -> Result<NormalizedResponse, ProtocolError> {
         normalize_delivery(&self.raw_response, context, self.native_response.as_ref())
     }
 }
@@ -621,13 +624,27 @@ pub fn annotations_from_authorized_event(
     let mut bundle: PersistedAnnotations = serde_json::from_value(value.clone())
         .map_err(|_| error("Malformed persisted annotation bundle"))?;
     match (&bundle.return_binding, &bundle.native_response) {
-        (Some(binding), Some(native)) if binding.is_native() && binding == &native.binding.caller => {
-            crate::session_io::native::decode_messages(&bundle.raw_response, &native.messages,
-                &native.binding, event.payload.get("model_attempt_id").and_then(Value::as_str).unwrap_or_default())
-                .map_err(|cause| error(&cause.to_string()))?;
+        (Some(binding), Some(native))
+            if binding.is_native() && binding == &native.binding.caller =>
+        {
+            crate::session_io::native::decode_messages(
+                &bundle.raw_response,
+                &native.messages,
+                &native.binding,
+                event
+                    .payload
+                    .get("model_attempt_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+            .map_err(|cause| error(&cause.to_string()))?;
         }
         (binding, None) if !binding.as_ref().is_some_and(|binding| binding.is_native()) => {}
-        _ => return Err(error("Persisted native evidence differs from the frozen return binding")),
+        _ => {
+            return Err(error(
+                "Persisted native evidence differs from the frozen return binding",
+            ))
+        }
     }
     if bundle.protocol.is_off()
         && event
@@ -659,7 +676,10 @@ pub fn annotations_from_authorized_event(
             .diagnostics
             .iter()
             .any(|d| d.path.chars().take(257).count() > 256)
-        || bundle.records.len() > persisted_work_calls(&bundle, event).len().saturating_add(19)
+        || bundle.records.len()
+            > persisted_work_calls(&bundle, event)
+                .len()
+                .saturating_add(19)
     {
         return Err(error(
             "Persisted annotation bundle exceeds bounded contract",
@@ -759,12 +779,15 @@ pub fn project_authorized_events(
     Ok(project_execution(fact, &records))
 }
 
-fn terminal(response: &Response) -> Result<Option<TerminalDecision>, ProtocolError> {
-    if response
-        .tool_calls
-        .iter()
-        .any(|c| c.func_name == "no_reply")
-    {
+fn terminal(
+    response: &Response,
+    native_arguments: bool,
+) -> Result<Option<TerminalDecision>, ProtocolError> {
+    if response.tool_calls.iter().any(|c| {
+        c.func_name == "no_reply"
+            && (!native_arguments
+                || crate::session_io::native::parse_tool_arguments(&c.arguments).is_ok())
+    }) {
         if response.tool_calls.len() != 1 || !response.content.trim().is_empty() {
             return Err(error("no_reply must be sole call with no ordinary content"));
         }
@@ -1077,6 +1100,7 @@ pub fn normalize_response(
             annotations_enabled: !context.protocol.is_off(),
             annotation_observation_refs: vec![],
             output: None,
+            legacy_v2_transport: None,
         }
     });
     let parts = crate::session_io::response::split_response_for_attempt(
@@ -1099,10 +1123,23 @@ pub fn normalize_delivery(
     context: &NormalizationContext,
     native: Option<&crate::session_io::native::Evidence>,
 ) -> Result<NormalizedResponse, ProtocolError> {
-    match (context.return_binding.as_ref().is_some_and(|binding| binding.is_native()), native) {
-        (true, Some(source)) => crate::session_io::native::normalize_messages(response, &source.messages, &source.binding, context),
+    match (
+        context
+            .return_binding
+            .as_ref()
+            .is_some_and(|binding| binding.is_native()),
+        native,
+    ) {
+        (true, Some(source)) => crate::session_io::native::normalize_messages(
+            response,
+            &source.messages,
+            &source.binding,
+            context,
+        ),
         (false, None) => normalize_response(response, context),
-        _ => Err(error("Return carrier and native evidence do not match the frozen binding")),
+        _ => Err(error(
+            "Return carrier and native evidence do not match the frozen binding",
+        )),
     }
 }
 
@@ -1114,7 +1151,13 @@ pub(crate) fn normalize_parts(
     parts: crate::session_io::response::ResponseParts,
 ) -> Result<NormalizedResponse, ProtocolError> {
     let execution_response = parts.response;
-    let terminal_decision = terminal(&execution_response)?;
+    let terminal_decision = terminal(
+        &execution_response,
+        context
+            .return_binding
+            .as_ref()
+            .is_some_and(|binding| binding.is_native()),
+    )?;
     let mut extraction = Extraction::new(context);
     for diagnostic in &parts.diagnostics {
         extraction.note("session_io.annotations", diagnostic);
@@ -1662,9 +1705,10 @@ mod tests {
     #[test]
     fn unified_work_receipts_and_publications_replay_the_frozen_decoder_and_actual_ids() {
         let mut ctx = context();
-        ctx.return_binding = Some(crate::session_io::response::ReturnBinding::new(
-            "execution-1", 3, "activation", true,
-        ).with_unified_output());
+        ctx.return_binding = Some(
+            crate::session_io::response::ReturnBinding::new("execution-1", 3, "activation", true)
+                .with_unified_output(),
+        );
         let raw = Response {
             content: json!({"body":null,"effects":[{"name":"exec","arguments":{"command":"safe"},"intent":"读取实际结果"}],"annotations":{"execution":{"title":"合成验证"},"observations_note":null}}).to_string(),
             tool_calls: vec![],
@@ -1679,17 +1723,31 @@ mod tests {
             json!({"response_annotations":"on","thread_id":"execution-1","thread_generation":3,"activation_id":"activation","model_attempt_id":"attempt",BUNDLE_PAYLOAD_KEY:bundle}).as_object().unwrap().clone(),
         );
         source.sequence = Some(9);
-        let receipt = receipt_from_authorized_event(&source, &scope, Protocol::On, "activation", "attempt").unwrap();
+        let receipt =
+            receipt_from_authorized_event(&source, &scope, Protocol::On, "activation", "attempt")
+                .unwrap();
         assert_eq!(receipt.state, ReceiptState::Accepted);
         assert!(!receipt.truncated);
-        assert!(receipt.accepted.iter().any(|field| field.kind == AnnotationKind::Intent && field.call_id.as_deref() == Some(expected_id.as_str())));
+        assert!(receipt
+            .accepted
+            .iter()
+            .any(|field| field.kind == AnnotationKind::Intent
+                && field.call_id.as_deref() == Some(expected_id.as_str())));
         let published = crate::session_io::response::evaluation_publications(&source);
         assert_eq!(published.len(), 1);
-        assert_eq!(published[0].payload["io_message"]["format"]["id"], ANNOTATIONS_FORMAT);
+        assert_eq!(
+            published[0].payload["io_message"]["format"]["id"],
+            ANNOTATIONS_FORMAT
+        );
         assert_eq!(published[0].payload["source_event_id"], source.id);
         assert_eq!(published[0].payload["wake_policy"], "none");
-        assert!(published[0].payload["io_message"]["content"]["value"].get("observations_note").is_none());
-        assert_eq!(crate::session_io::response::evaluation_publications(&source)[0].id, published[0].id);
+        assert!(published[0].payload["io_message"]["content"]["value"]
+            .get("observations_note")
+            .is_none());
+        assert_eq!(
+            crate::session_io::response::evaluation_publications(&source)[0].id,
+            published[0].id
+        );
     }
 
     #[test]
@@ -2387,17 +2445,36 @@ mod tests {
             (Some(json!({"execution":null})), true),
             (Some(json!({"execution":{"title":"整项工作"}})), false),
             (Some(json!({"execution":{"result":"完成"}})), false),
-            (Some(json!({"execution":{"title":" ","result":"完成"}})), true),
-            (Some(json!({"execution":{"title":"整项工作","result":null}})), true),
-            (Some(json!({"execution":{"title":"🧠".repeat(257),"result":"完成"}})), true),
-            (Some(json!({"execution":{"title":"整项工作","result":"🧠".repeat(513)}})), true),
+            (
+                Some(json!({"execution":{"title":" ","result":"完成"}})),
+                true,
+            ),
+            (
+                Some(json!({"execution":{"title":"整项工作","result":null}})),
+                true,
+            ),
+            (
+                Some(json!({"execution":{"title":"🧠".repeat(257),"result":"完成"}})),
+                true,
+            ),
+            (
+                Some(json!({"execution":{"title":"整项工作","result":"🧠".repeat(513)}})),
+                true,
+            ),
         ] {
             let missing = annotations.is_none();
             let mut args = json!({});
             if let Some(annotations) = annotations {
                 args["annotations"] = annotations;
             }
-            let raw = if missing { Response { content: "正文".into(), tool_calls:vec![] } }else { response(vec![call("r", ANNOTATIONS_FORMAT, args.clone())]) };
+            let raw = if missing {
+                Response {
+                    content: "正文".into(),
+                    tool_calls: vec![],
+                }
+            } else {
+                response(vec![call("r", ANNOTATIONS_FORMAT, args.clone())])
+            };
             let normalized = normalize_fixture_parts(&raw, &ctx).unwrap();
             assert_eq!(normalized.execution_response.content, "正文");
             assert!(normalized.execution_response.tool_calls.is_empty());
@@ -2467,7 +2544,8 @@ mod tests {
         assert!(CONTRACT.contains("SAME native call's _morphz"));
         assert!(CONTRACT.contains("actual work is needed, you MUST put applicable annotations"));
         assert!(CONTRACT.contains("Missing or invalid optional metadata is tolerated at reception"));
-        assert!(CONTRACT.contains("Never use deliver_message as a separate body or annotation companion"));
+        assert!(CONTRACT
+            .contains("Never use deliver_message as a separate body or annotation companion"));
         assert!(!CONTRACT.contains(":::"));
         let schema = annotation_schema();
         assert_eq!(schema["additionalProperties"], false);
@@ -2574,7 +2652,8 @@ mod tests {
     fn schema_bound_session_io_value_replays_without_model_or_side_effects() {
         let raw=Response {content:json!({"body":"原始中文正文\n第二行", "annotations":{"execution":{"title":"回放合成值","progress":"","result":"已返回原始正文"},"observations":[]},"effects":[]}).to_string(),tool_calls:vec![]};
         let mut ctx = context();
-        let mut frozen = crate::session_io::response::ReturnBinding::new("execution-1", 3, "attempt", true);
+        let mut frozen =
+            crate::session_io::response::ReturnBinding::new("execution-1", 3, "attempt", true);
         frozen.output = Some(crate::session_io::evaluation::binding());
         ctx.return_binding = Some(frozen);
         let normalized = normalize_response(&raw, &ctx).unwrap();

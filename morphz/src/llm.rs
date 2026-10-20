@@ -1299,8 +1299,10 @@ pub trait Client: Send + Sync {
         stream: ModelStreamSender,
         options: ModelRequestOptions,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
-        if matches!(options.output_encoding, Some(ModelOutputEncoding::JsonSchema { .. }))
-            || options.tool_choice.is_some()
+        if matches!(
+            options.output_encoding,
+            Some(ModelOutputEncoding::JsonSchema { .. })
+        ) || options.tool_choice.is_some()
         {
             let error = ModelFailure::new(
                 ModelFailureKind::InvalidModelOrRequest,

@@ -35,6 +35,158 @@ fn call(id: &str, arguments: &str) -> ToolCallRepr {
         arguments: arguments.into(),
     }
 }
+
+#[test]
+fn malformed_native_tool_arguments_survive_metadata_decoding_for_per_call_rejection() {
+    for enabled in [false, true] {
+        let binding = prepared(enabled, false).binding;
+        for arguments in [
+            // Same syntax defect as the real DeepSeek kill_task response:
+            // a bare object after the metadata field, without a property name.
+            r#"{"_morphz":{"execution":{"progress":"读取进度"}} , {"intent":"读取"},"path":"file"}"#,
+            r#"{"path":"first","path":"second"}"#,
+            r#"{"path": "#,
+            r#"["file"]"#,
+            "null",
+        ] {
+            assert!(parse_tool_arguments(arguments).is_err());
+            let response = Response {
+                content: "先检查这两个文件。".into(),
+                tool_calls: vec![
+                    call("bad", arguments),
+                    call(
+                        "good",
+                        r#"{"path":"ok","_morphz":{"intent":"读取已授权文件"}}"#,
+                    ),
+                ],
+            };
+            let result = normalize(&response, &binding, &context(&binding)).unwrap();
+            assert_eq!(result.raw_response.content, response.content);
+            assert_eq!(result.raw_response.tool_calls, response.tool_calls);
+            assert_eq!(result.execution_response.content, response.content);
+            assert_eq!(
+                result.execution_response.tool_calls[0],
+                response.tool_calls[0]
+            );
+            assert_eq!(
+                result.execution_response.tool_calls[1].arguments,
+                r#"{"path":"ok"}"#
+            );
+        }
+    }
+}
+
+#[test]
+fn malformed_argument_recovery_never_relaxes_native_call_identity() {
+    for enabled in [false, true] {
+        let binding = prepared(enabled, false).binding;
+        for ids in [["", "good"], ["same", "same"]] {
+            let response = Response {
+                content: "检查文件".into(),
+                tool_calls: vec![
+                    call(ids[0], r#"{"path":"broken""#),
+                    call(ids[1], r#"{"path":"ok","_morphz":{"intent":"读取文件"}}"#),
+                ],
+            };
+            let raw_calls = response.tool_calls.clone();
+            let scoped = [MessageItem {
+                index: 0,
+                id: Some("provider-message".into()),
+                phase: Some("commentary".into()),
+                text: response.content.clone(),
+            }];
+            for messages in [&[][..], &scoped[..]] {
+                let error = decode_messages(&response, messages, &binding, "actual-attempt")
+                    .expect_err("a malformed call ID must remain a fatal identity error");
+                assert_eq!(error.code, "invalid_delivery_contract");
+                assert_eq!(
+                    error.message,
+                    "Native call identities must be nonempty and unique"
+                );
+                assert_eq!(
+                    response.tool_calls, raw_calls,
+                    "never repair or mint call IDs"
+                );
+            }
+            assert!(normalize(&response, &binding, &context(&binding)).is_err());
+            let mut stream = Stream::new(binding.clone());
+            let mut events = Vec::new();
+            for (index, call) in response.tool_calls.iter().enumerate() {
+                events.extend(stream.push(ModelStreamEvent::ToolCallStarted {
+                    index,
+                    id: call.id.clone(),
+                    name: call.func_name.clone(),
+                }));
+                events.extend(stream.push(ModelStreamEvent::ToolArgumentsDelta {
+                    index,
+                    delta: call.arguments.clone(),
+                }));
+                events.extend(stream.push(ModelStreamEvent::ToolCallCompleted { index }));
+            }
+            events.extend(stream.push(ModelStreamEvent::Completed));
+            assert!(events
+                .iter()
+                .any(|event| matches!(event, ModelStreamEvent::Failed { .. })));
+            assert!(!events
+                .iter()
+                .any(|event| matches!(event, ModelStreamEvent::Completed)));
+        }
+    }
+}
+
+#[test]
+fn malformed_native_no_reply_is_work_to_reject_not_a_terminal_decision() {
+    for enabled in [false, true] {
+        let binding = prepared(enabled, false).binding;
+        for arguments in [
+            r#"{"mode":"#,
+            r#"{"mode":"wait","mode":"silent"}"#,
+            r#"["silent"]"#,
+        ] {
+            for mixed in [false, true] {
+                let mut response = Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        func_name: "no_reply".into(),
+                        ..call("malformed-control", arguments)
+                    }],
+                };
+                if mixed {
+                    response.tool_calls.push(call("good", r#"{"path":"ok"}"#));
+                }
+                let normalized = normalize(&response, &binding, &context(&binding)).unwrap();
+                assert_eq!(normalized.raw_response.tool_calls, response.tool_calls);
+                assert_eq!(
+                    normalized.execution_response.tool_calls,
+                    response.tool_calls
+                );
+                assert_eq!(normalized.terminal_decision, None);
+                let mut stream = Stream::new(binding.clone());
+                let mut events = vec![];
+                for (index, invocation) in response.tool_calls.iter().enumerate() {
+                    events.extend(stream.push(ModelStreamEvent::ToolCallStarted {
+                        index,
+                        id: invocation.id.clone(),
+                        name: invocation.func_name.clone(),
+                    }));
+                    events.extend(stream.push(ModelStreamEvent::ToolArgumentsDelta {
+                        index,
+                        delta: invocation.arguments.clone(),
+                    }));
+                    events.extend(stream.push(ModelStreamEvent::ToolCallCompleted { index }));
+                }
+                events.extend(stream.push(ModelStreamEvent::Completed));
+                assert!(!events
+                    .iter()
+                    .any(|event| matches!(event, ModelStreamEvent::Failed { .. })));
+                assert!(events
+                    .iter()
+                    .any(|event| matches!(event, ModelStreamEvent::Completed)));
+            }
+        }
+    }
+}
+
 fn context(binding: &Binding) -> NormalizationContext {
     NormalizationContext {
         return_binding: Some(binding.caller.clone()),
@@ -430,7 +582,7 @@ fn optional_metadata_preserves_body_and_strips_only_reserved_argument_field() {
             );
             let body = "完整正文";
             assert_eq!(
-                decode(&raw(&body), &binding, "a").unwrap().response.content,
+                decode(&raw(body), &binding, "a").unwrap().response.content,
                 "完整正文"
             );
         }

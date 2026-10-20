@@ -1399,6 +1399,19 @@ pub trait RuntimeInference: Send + Sync {
         request: &JsonMap<String, JsonValue>,
         tools: Option<&[String]>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// The admitted result type crosses the same ownership boundary as the
+    /// BODY. Hosts that bind structured output must use this exact contract,
+    /// not infer a return format from the parent's chat or reparse captures.
+    /// Existing embedding hosts retain their original `infer` implementation.
+    async fn infer_typed(
+        &self,
+        request: &JsonMap<String, JsonValue>,
+        tools: Option<&[String]>,
+        _result: &InferResultKind,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        self.infer(request, tools).await
+    }
 }
 
 /// Runtime-owned effect emitted by the deterministic plan machine.
@@ -2776,7 +2789,10 @@ async fn evaluate_machine(
                         tools,
                         result,
                         ..
-                    } => match host.infer(&request, tools.as_deref()).await {
+                    } => match host
+                        .infer_typed(&request, tools.as_deref(), &result)
+                        .await
+                    {
                         Ok(value) => decode_infer_result_with_admission(
                             result,
                             JsonValue::String(value),

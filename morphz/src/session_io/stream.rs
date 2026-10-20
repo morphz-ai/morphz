@@ -265,7 +265,10 @@ impl Streams {
             return;
         };
         let kind = stream["kind"].as_str().unwrap_or_default();
-        if !matches!(kind, "started" | "text_delta" | "text_snapshot" | "failed" | "incomplete") {
+        if !matches!(
+            kind,
+            "started" | "text_delta" | "text_snapshot" | "failed" | "incomplete"
+        ) {
             return;
         }
         if !state.drafts.contains_key(&output_id) {
@@ -291,7 +294,11 @@ impl Streams {
             "text_delta" | "text_snapshot" => {
                 let text = stream["text"].as_str().unwrap_or_default();
                 let replace = kind == "text_snapshot";
-                let current = if replace { "" } else { draft["text"].as_str().unwrap_or_default() };
+                let current = if replace {
+                    ""
+                } else {
+                    draft["text"].as_str().unwrap_or_default()
+                };
                 if current.len().saturating_add(text.len()) > MAX_DRAFT_BYTES {
                     draft["aborted"] = json!(true);
                     draft["text"] = json!("");
@@ -309,7 +316,11 @@ impl Streams {
                     draft["text"] = json!(prefix);
                     draft["delta_seq"] = json!(seq);
                     update["type"] = json!("output.delta");
-                    update["operation"] = json!(if replace { "text.replace" } else { "text.append" });
+                    update["operation"] = json!(if replace {
+                        "text.replace"
+                    } else {
+                        "text.append"
+                    });
                     if replace {
                         // Reuse the existing complete-prefix contract. Old
                         // consumers already replace snapshots atomically;

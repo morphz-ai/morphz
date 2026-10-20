@@ -2032,6 +2032,19 @@ struct ModelCompletion {
     response: crate::llm::Response,
     provider_continuation: Option<ProviderContinuation>,
     native_response: Option<crate::session_io::native::Evidence>,
+    legacy_v2_return: Option<crate::session_io::response::ReturnBinding>,
+}
+
+struct InternalInferReturn<'a> {
+    binding: &'a crate::session_io::response::ReturnBinding,
+    parent_attempt_id: &'a str,
+}
+
+struct ModelCompletionInput<'a> {
+    messages: Vec<Message>,
+    tools: Vec<crate::llm::ToolDefinition>,
+    prompt_measurement: Option<PromptTokenCount>,
+    internal_return: Option<InternalInferReturn<'a>>,
 }
 
 #[derive(Debug)]
@@ -2896,11 +2909,16 @@ fn no_reply_tool_definition() -> crate::llm::ToolDefinition {
 
 fn classify_terminal_response(
     response: &crate::llm::Response,
+    native_arguments: bool,
 ) -> Result<Option<TerminalDecision>, String> {
     let no_reply_calls = response
         .tool_calls
         .iter()
-        .filter(|call| call.func_name == NO_REPLY_TOOL_NAME)
+        .filter(|call| {
+            call.func_name == NO_REPLY_TOOL_NAME
+                && (!native_arguments
+                    || crate::session_io::native::parse_tool_arguments(&call.arguments).is_ok())
+        })
         .collect::<Vec<_>>();
     if no_reply_calls.is_empty() {
         if response.tool_calls.is_empty() {
@@ -3013,12 +3031,18 @@ fn validate_final_reply_response(
     }
 }
 
-fn completed_objective_update_call(response: &crate::llm::Response) -> bool {
+fn completed_objective_update_call(
+    response: &crate::llm::Response,
+    native_arguments: bool,
+) -> bool {
     if response.tool_calls.len() != 1 || !response.content.trim().is_empty() {
         return false;
     }
     let call = &response.tool_calls[0];
-    if call.func_name != "objective_update" {
+    if call.func_name != "objective_update"
+        || (native_arguments
+            && crate::session_io::native::parse_tool_arguments(&call.arguments).is_err())
+    {
         return false;
     }
     serde_json::from_str::<serde_json::Value>(&call.arguments)
@@ -3032,12 +3056,17 @@ fn completed_objective_update_call(response: &crate::llm::Response) -> bool {
         .unwrap_or(false)
 }
 
-fn validate_objective_completion_call(response: &crate::llm::Response) -> Result<(), String> {
+fn validate_objective_completion_call(
+    response: &crate::llm::Response,
+    native_arguments: bool,
+) -> Result<(), String> {
     let completion_calls = response
         .tool_calls
         .iter()
         .filter(|call| {
             call.func_name == "objective_update"
+                && (!native_arguments
+                    || crate::session_io::native::parse_tool_arguments(&call.arguments).is_ok())
                 && serde_json::from_str::<serde_json::Value>(&call.arguments)
                     .ok()
                     .and_then(|arguments| {
@@ -3052,18 +3081,25 @@ fn validate_objective_completion_call(response: &crate::llm::Response) -> Result
     if completion_calls == 0 {
         return Ok(());
     }
-    if completed_objective_update_call(response) {
+    if completed_objective_update_call(response, native_arguments) {
         Ok(())
     } else {
         Err("objective_update(status=completed) must be the only tool call in the response and cannot be accompanied by ordinary text; Runtime will provide a dedicated final-delivery Attempt in the same Activation".to_string())
     }
 }
 
-fn validate_schedule_tx_response(response: &crate::llm::Response) -> Result<(), String> {
+fn validate_schedule_tx_response(
+    response: &crate::llm::Response,
+    native_arguments: bool,
+) -> Result<(), String> {
     let schedule_calls = response
         .tool_calls
         .iter()
-        .filter(|call| call.func_name == "schedule_tx")
+        .filter(|call| {
+            call.func_name == "schedule_tx"
+                && (!native_arguments
+                    || crate::session_io::native::parse_tool_arguments(&call.arguments).is_ok())
+        })
         .count();
     if schedule_calls == 0 {
         return Ok(());
@@ -11011,8 +11047,10 @@ impl Orchestrator {
         Ok(Some((
             crate::session_io::response_stream::ReplyProjector::new(
                 proofs,
-                route.is_some_and(|route| route.return_binding.output.is_some()
-                    && !crate::session_io::unified::selected(&route.return_binding)),
+                route.is_some_and(|route| {
+                    route.return_binding.output.is_some()
+                        && !crate::session_io::unified::selected(&route.return_binding)
+                }),
             ),
             public_route,
         )))
@@ -11022,15 +11060,23 @@ impl Orchestrator {
         &self,
         session_id: &str,
         attempt_id: &str,
-        messages: Vec<Message>,
-        tools: Vec<crate::llm::ToolDefinition>,
-        prompt_measurement: Option<PromptTokenCount>,
+        input: ModelCompletionInput<'_>,
         request_policy: &EffectiveModelRequestPolicy,
     ) -> Result<ModelCompletion, ModelCompletionError> {
+        let ModelCompletionInput {
+            messages,
+            tools,
+            prompt_measurement,
+            internal_return,
+        } = input;
+        let trace_attempt_id = internal_return
+            .as_ref()
+            .map(|binding| binding.parent_attempt_id)
+            .unwrap_or(attempt_id);
         let stream_context_id = self
             .context_id_for_session(session_id)
             .map_err(ModelCompletionError::internal)?;
-        let trace_route = self.activation_route(attempt_id);
+        let trace_route = self.activation_route(trace_attempt_id);
         let trace_root_turn_id = trace_route.as_ref().map(|route| route.root_turn_id.clone());
         if let Some(root_turn_id) = trace_root_turn_id.as_deref() {
             self.observability
@@ -11054,13 +11100,14 @@ impl Orchestrator {
             "final model request (host policy)",
         )
         .map_err(ModelCompletionError::input)?;
-        let explicit_dialogue_attempt = self.activation_route(attempt_id).is_some_and(|route| {
-            route.thread_kind == "dialogue_turn"
-                && self
-                    .objective_evaluations
-                    .get_for_activation(&route.activation_id)
-                    .is_none()
-        });
+        let explicit_dialogue_attempt = internal_return.is_none()
+            && trace_route.as_ref().is_some_and(|route| {
+                route.thread_kind == "dialogue_turn"
+                    && self
+                        .objective_evaluations
+                        .get_for_activation(&route.activation_id)
+                        .is_none()
+            });
         let admission_resource = self
             .client
             .provider_resource_key_for_requested_model(Some(&request_policy.model_alias));
@@ -11117,13 +11164,20 @@ impl Orchestrator {
                 )
             });
         let client = Arc::clone(&self.client);
-        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel::<crate::llm::ModelStreamEvent>();
+        let (stream_tx, mut stream_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::llm::ModelStreamEvent>();
         let stream_bus = Arc::clone(&self.bus);
         let stream_session_id = session_id.to_string();
         let stream_attempt_id = attempt_id.to_string();
         let mut stream_route = Vec::new();
         stream_route.push(("model_attempt_id".to_string(), json!(attempt_id)));
-        self.append_activation_route(attempt_id, &mut stream_route);
+        self.append_activation_route(trace_attempt_id, &mut stream_route);
+        if internal_return.is_some() {
+            // Keep the real parent causal route, but never publish an infer
+            // business value as the parent's user-facing draft.
+            stream_route.retain(|(key, _)| key != "model_output_visibility");
+            stream_route.push(("model_output_visibility".into(), json!("internal")));
+        }
         let configured_reasoning_effort = request_policy.reasoning_effort.clone();
         let request_reasoning_effort = (configured_reasoning_effort != "provider_default")
             .then(|| crate::llm::ReasoningEffort::parse(&configured_reasoning_effort))
@@ -11288,9 +11342,14 @@ impl Orchestrator {
             .as_ref()
             .map(|route| route.response_annotations)
             .unwrap_or_default();
-        let trace_return_binding = trace_route
+        let mut trace_return_binding = internal_return
             .as_ref()
-            .map(|route| route.return_binding.clone())
+            .map(|binding| binding.binding.clone())
+            .or_else(|| {
+                trace_route
+                    .as_ref()
+                    .map(|route| route.return_binding.clone())
+            })
             .unwrap_or_else(|| {
                 crate::session_io::response::ReturnBinding::new(
                     "",
@@ -11300,31 +11359,60 @@ impl Orchestrator {
                 )
             });
         let prepared_native = if trace_return_binding.is_native() {
-            Some(crate::session_io::native::prepare_projected(
-                &trace_return_binding, &model_binding.capabilities, tools.clone(),
-            ).map_err(|error| ModelCompletionError::input(Box::new(error)))?)
-        } else { None };
-        let (output_encoding, tool_choice) = if let Some(native) = &prepared_native {
-            (native.options.output_encoding.clone(),
-             if trace_route.as_ref().is_some_and(|route| !route.native_calls_allowed) {
-                 Some(crate::llm::ModelToolChoice::None)
-             } else { native.options.tool_choice.clone() })
-        } else {
-            crate::session_io::unified::request_options(
-                &trace_return_binding, &model_binding.capabilities, &tools,
+            Some(
+                crate::session_io::native::prepare_projected(
+                    &trace_return_binding,
+                    &model_binding.capabilities,
+                    tools.clone(),
+                )
+                .map_err(|error| ModelCompletionError::input(Box::new(error)))?,
             )
+        } else {
+            None
         };
+        // The inline infer already has its own statically narrowed directory.
+        // Parent phase restrictions must not rewrite its independent binding;
+        // an empty child directory needs no provider-specific tool override.
+        let suppress_native_calls = internal_return.is_none()
+            && trace_route
+                .as_ref()
+                .is_some_and(|route| !route.native_calls_allowed);
+        let (output_encoding, tool_choice) = if let Some(native) = &prepared_native {
+            (
+                native.options.output_encoding.clone(),
+                if suppress_native_calls {
+                    Some(crate::llm::ModelToolChoice::None)
+                } else {
+                    native.options.tool_choice
+                },
+            )
+        } else {
+            let (bound, encoding, choice) = crate::session_io::unified::prepare_request(
+                &trace_return_binding,
+                &model_binding.capabilities,
+                &tools,
+            );
+            trace_return_binding = bound;
+            (encoding, choice)
+        };
+        // The declared v2 receiving format travels with this completion, not
+        // through a mutable route or later provider generation capabilities.
+        let legacy_v2_return = crate::session_io::unified::selected(&trace_return_binding)
+            .then(|| trace_return_binding.clone());
         let native_evidence = Arc::new(Mutex::new(None));
         let forward_native_evidence = Arc::clone(&native_evidence);
-        let projected = self
-            .projected_reply_stream(
+        let projected = if internal_return.is_some() {
+            None
+        } else {
+            self.projected_reply_stream(
                 &stream_context_id,
                 session_id,
                 trace_route.as_ref(),
                 &stream_route,
             )
             .await
-            .map_err(ModelCompletionError::internal)?;
+            .map_err(ModelCompletionError::internal)?
+        };
         let projected_accumulator =
             Arc::new(Mutex::new(ModelReasoningSummaryAccumulator::default()));
         let projected_route = projected.as_ref().map(|(_, route)| route.clone());
@@ -11333,16 +11421,16 @@ impl Orchestrator {
             let mut projected = projected;
             let mut projected_started = false;
             let mut projected_sequence = 0u64;
-            // V2 normalizes both the structured carrier and an admitted
-            // implicit typed value into the same original JSON value stream.
-            // Project only that value; assuming an outer body field here loses
-            // the proven reply leaf for a valid weaker-provider fallback.
+            // V2's own normalizer projects its declared body. Historical
+            // no-evidence replay also retains its old implicit-value behavior;
+            // neither path should receive a second outer-body projection.
             let project_raw_evaluation = trace_return_binding.output.is_some()
                 && !crate::session_io::unified::selected(&trace_return_binding);
             let mut normalizer = crate::session_io::response_stream::ModelStreamNormalizer::new(
                 trace_return_binding,
             );
-            let mut native_stream = prepared_native.map(|prepared| crate::session_io::native::Stream::new(prepared.binding));
+            let mut native_stream = prepared_native
+                .map(|prepared| crate::session_io::native::Stream::new(prepared.binding));
             let mut native_failure = None;
             let stream_started_at = tokio::time::Instant::now();
             let mut text_delta_count = 0u64;
@@ -11363,7 +11451,9 @@ impl Orchestrator {
                         }
                     }
                     events
-                } else { normalizer.push(stream_event.clone()) };
+                } else {
+                    normalizer.push(stream_event.clone())
+                };
                 let projection_events = if project_raw_evaluation {
                     vec![stream_event]
                 } else {
@@ -11376,12 +11466,15 @@ impl Orchestrator {
                             crate::llm::ModelStreamEvent::TextSnapshot { text } => (text, true),
                             _ => continue,
                         };
-                        if replace { projector.reset(); }
+                        if replace {
+                            projector.reset();
+                        }
                         match projector.push(text.as_str()) {
                             Ok(text) if replace || !text.is_empty() => {
                                 let now = Utc::now();
-                                if let (Some(proof), Some((_, source))) = (projector.proof(),
-                                    route.iter_mut().find(|(name, _)| name == "result_source")
+                                if let (Some(proof), Some((_, source))) = (
+                                    projector.proof(),
+                                    route.iter_mut().find(|(name, _)| name == "result_source"),
                                 ) {
                                     source["path"] = json!(proof.path);
                                 }
@@ -11391,15 +11484,21 @@ impl Orchestrator {
                                     projected_started = true;
                                 }
                                 events.push(if replace {
-                                    crate::llm::ModelStreamEvent::TextSnapshot { text: text.clone() }
+                                    crate::llm::ModelStreamEvent::TextSnapshot {
+                                        text: text.clone(),
+                                    }
                                 } else {
                                     crate::llm::ModelStreamEvent::TextDelta { text: text.clone() }
                                 });
                                 {
-                                    let mut accumulator = forward_projected_accumulator.lock().await;
+                                    let mut accumulator =
+                                        forward_projected_accumulator.lock().await;
                                     accumulator.public_text_started_at.get_or_insert(now);
-                                    if replace { accumulator.public_text = text; }
-                                    else { accumulator.public_text.push_str(&text); }
+                                    if replace {
+                                        accumulator.public_text = text;
+                                    } else {
+                                        accumulator.public_text.push_str(&text);
+                                    }
                                 }
                                 for stream in events {
                                     projected_sequence += 1;
@@ -11484,7 +11583,9 @@ impl Orchestrator {
                         crate::llm::ModelStreamEvent::TextSnapshot { text } => {
                             let mut summary = forward_reasoning_summary.lock().await;
                             summary.public_text = text.clone();
-                            summary.public_text_started_at.get_or_insert(stream_event_at);
+                            summary
+                                .public_text_started_at
+                                .get_or_insert(stream_event_at);
                         }
                         crate::llm::ModelStreamEvent::TextDelta { text } => {
                             text_delta_count = text_delta_count.saturating_add(1);
@@ -11667,8 +11768,10 @@ impl Orchestrator {
                 return Err(Box::new(response_annotations::ProtocolError(message)) as DynError);
             }
             if let Some(native) = &native_stream {
-                *forward_native_evidence.lock().await = Some(native.evidence()
-                    .map_err(|error| Box::new(response_annotations::ProtocolError(error.to_string())) as DynError)?);
+                *forward_native_evidence.lock().await =
+                    Some(native.evidence().map_err(|error| {
+                        Box::new(response_annotations::ProtocolError(error.to_string())) as DynError
+                    })?);
             }
             if let Some((_, route)) = projected.as_ref() {
                 persist_model_public_output(
@@ -12004,6 +12107,7 @@ impl Orchestrator {
                 response,
                 provider_continuation: reasoning_summary.lock().await.provider_continuation.clone(),
                 native_response: native_evidence.lock().await.clone(),
+                legacy_v2_return,
             }),
         }
         .map_err(|error| {
@@ -12698,7 +12802,9 @@ impl Orchestrator {
             .and_then(|value| value.as_bool())
             .unwrap_or(false)
         {
-            let decision = classify_terminal_response(&response)
+            // An already admitted terminal Event retains its historical
+            // interpretation. New native work rejections never enter here.
+            let decision = classify_terminal_response(&response, false)
                 .map_err(|error| -> DynError { error.into() })?
                 .ok_or_else(|| {
                     format!(
@@ -13523,10 +13629,14 @@ impl Orchestrator {
             {
                 return Err("infer caller format belongs to another effect".into());
             }
-            if let crate::sexpr_eval::InferResultKind::Json { ty, definitions, .. } = result {
+            if let crate::sexpr_eval::InferResultKind::Json {
+                ty, definitions, ..
+            } = result
+            {
                 return_binding.body_value_schema = Some(
-                    crate::yao::json::json_schema(ty, definitions)
-                        .map_err(|error| format!("invalid admitted infer generation schema: {error}"))?,
+                    crate::yao::json::json_schema(ty, definitions).map_err(|error| {
+                        format!("invalid admitted infer generation schema: {error}")
+                    })?,
                 );
             }
             if !matches!(
@@ -13555,22 +13665,37 @@ impl Orchestrator {
         // boundary adopts native v3. IDs/eligible observations remain Runtime-owned
         // and are refreshed for the current Evaluation, not copied from prose.
         if let Some(source) = persisted_assistant_call.as_ref().filter(|source| {
-            source.payload.get("thread_id").and_then(serde_json::Value::as_str)
+            source
+                .payload
+                .get("thread_id")
+                .and_then(serde_json::Value::as_str)
                 == Some(thread.id.as_str())
-                && source.payload.get("thread_generation").and_then(serde_json::Value::as_u64)
+                && source
+                    .payload
+                    .get("thread_generation")
+                    .and_then(serde_json::Value::as_u64)
                     == Some(thread.generation)
         }) {
             if let Some(value) = source.payload.get(response_annotations::BUNDLE_PAYLOAD_KEY) {
                 let bundle: PersistedAnnotations = serde_json::from_value(value.clone())?;
-                if bundle.scope != (ExecutionScope { execution_id: thread.id.clone(), generation: thread.generation })
+                if bundle.scope
+                    != (ExecutionScope {
+                        execution_id: thread.id.clone(),
+                        generation: thread.generation,
+                    })
                     || bundle.protocol != thread.response_annotations
-                    || crate::memory::response_annotations_from_payload(&source.payload)? != bundle.protocol
+                    || crate::memory::response_annotations_from_payload(&source.payload)?
+                        != bundle.protocol
                 {
-                    return Err("Frozen Session IO source differs from its Execution scope or mode".into());
+                    return Err(
+                        "Frozen Session IO source differs from its Execution scope or mode".into(),
+                    );
                 }
                 if let Some(frozen) = bundle.return_binding {
                     if frozen.annotations_enabled != !thread.response_annotations.is_off() {
-                        return Err("Frozen Session IO annotation choice differs from its Execution".into());
+                        return Err(
+                            "Frozen Session IO annotation choice differs from its Execution".into(),
+                        );
                     }
                     return_binding.format = frozen.format;
                     return_binding.caller = frozen.caller;
@@ -14904,11 +15029,14 @@ impl Orchestrator {
                 .request_model_completion_with_policy(
                     session_id,
                     &model_attempt_id,
-                    protocol_messages.clone(),
-                    tools.clone(),
-                    (request_index == 0)
-                        .then(|| request_prompt_measurement.clone())
-                        .flatten(),
+                    ModelCompletionInput {
+                        messages: protocol_messages.clone(),
+                        tools: tools.clone(),
+                        prompt_measurement: (request_index == 0)
+                            .then(|| request_prompt_measurement.clone())
+                            .flatten(),
+                        internal_return: None,
+                    },
                     &request_policy,
                 )
                 .await;
@@ -14937,10 +15065,14 @@ impl Orchestrator {
                     mut response,
                     provider_continuation,
                     native_response,
+                    legacy_v2_return,
                 }) => {
                     let annotation_bundle = {
-                            let bound = self.activation_route(&model_attempt_id)
-                                .ok_or("Response has no active return binding")?.return_binding;
+                            let bound = match legacy_v2_return {
+                                Some(bound) => bound,
+                                None => self.activation_route(&model_attempt_id)
+                                    .ok_or("Response has no active return binding")?.return_binding,
+                            };
                             let parts = if let Some(evidence) = &native_response {
                                 crate::session_io::native::decode_messages(&response, &evidence.messages, &evidence.binding, &model_attempt_id)
                             } else {
@@ -14963,7 +15095,7 @@ impl Orchestrator {
                                 .iter()
                                 .map(|item| item.id.clone())
                                 .chain(visible_routed_input_ids.iter().cloned());
-                            let annotation_context = Box::pin(self.response_annotation_context(
+                            let mut annotation_context = Box::pin(self.response_annotation_context(
                                 &thread,
                                 &request_context_view_manifest,
                                 provided_event_ids,
@@ -14975,6 +15107,7 @@ impl Orchestrator {
                                 None,
                             ))
                             .await?;
+                            annotation_context.return_binding = Some(bound);
                             let normalized = match response_annotations::normalize_delivery(
                                 &response,
                                 &annotation_context,
@@ -15595,9 +15728,12 @@ impl Orchestrator {
                 }
             };
 
-            let classification = validate_schedule_tx_response(&response)
-                .and_then(|_| validate_objective_completion_call(&response))
-                .and_then(|_| classify_terminal_response(&response))
+            let native_arguments = annotation_bundle
+                .as_ref()
+                .is_some_and(|bundle| bundle.native_response.is_some());
+            let classification = validate_schedule_tx_response(&response, native_arguments)
+                .and_then(|_| validate_objective_completion_call(&response, native_arguments))
+                .and_then(|_| classify_terminal_response(&response, native_arguments))
                 .and_then(|decision| {
                     validate_objective_closure_review_response(
                         initial_objective_closure_review && !completion_prepared,
@@ -15613,7 +15749,7 @@ impl Orchestrator {
                     )
                 });
             match classification {
-                Ok(None) if !completion_prepared && completed_objective_update_call(&response) => {
+                Ok(None) if !completion_prepared && completed_objective_update_call(&response, native_arguments) => {
                     let call = response.tool_calls[0].clone();
                     let protocol_call = crate::llm::ToolCall {
                         id: call.id.clone(),
@@ -16546,7 +16682,7 @@ impl Orchestrator {
                     attempt_id,
                     None,
                     if return_contract_failure {
-                        "本次回复的交付格式不正确，目标尚未完成；已保留此前完成的工作。".to_string()
+                        "The reply delivery format was invalid. The Objective is not complete; previously completed work was preserved.".to_string()
                     } else {
                         "The model failed to produce a valid Objective final report three consecutive times. This completion intent was revoked and the Objective was not marked complete; inspect model state before continuing.".to_string()
                     },
@@ -16571,7 +16707,7 @@ impl Orchestrator {
                     session_id,
                     attempt_id,
                     None,
-                    "本次回复未能正确交付；已保留此前完成的工作。".to_string(),
+                    "The reply could not be delivered correctly; previously completed work was preserved.".to_string(),
                     parent_session_id,
                     vec![
                         ("terminal_kind".to_string(), json!("failed")),
@@ -20797,6 +20933,30 @@ impl Orchestrator {
             .await?;
         let provider_continuation = options.provider_continuation.clone();
         let requested_tool_calls = response.tool_calls;
+        // Invalid arguments cannot establish semantic equivalence for
+        // context_tx/delegate coalescing. Keep every native call identity so
+        // each rejection has its own durable result. Apply only the frozen
+        // native carrier's existing limits, never new limits to historical
+        // bindings or internal Plan calls.
+        let native_binding = options
+            .response_annotation_bundle
+            .as_ref()
+            .and_then(|bundle| bundle.native_response.as_ref())
+            .map(|evidence| &evidence.binding);
+        let invalid_tool_arguments = requested_tool_calls
+            .iter()
+            .filter(|call| {
+                native_binding.is_some_and(|binding| {
+                    matches!(call.func_name.as_str(), "deliver_message" | "no_reply")
+                        || binding.metadata_tools.contains(&call.func_name)
+                })
+            })
+            .filter_map(|call| {
+                crate::session_io::native::parse_tool_arguments(&call.arguments)
+                    .err()
+                    .map(|error| (call.id.clone(), error))
+            })
+            .collect::<HashMap<_, _>>();
         let mapped_tool_calls = requested_tool_calls
             .iter()
             .map(|call| crate::llm::ToolCall {
@@ -20812,7 +20972,12 @@ impl Orchestrator {
         let mut context_tx_calls = Vec::new();
         let mut unavailable_tool_calls = Vec::new();
         for call in requested_tool_calls {
-            if call.func_name == "context_tx" {
+            if invalid_tool_arguments.contains_key(&call.id) {
+                // Syntax rejection cannot grant phase authority. It creates
+                // only this call's receipt, even when its visible schema is
+                // not currently executable; no tool/preflight is entered.
+                selected_tool_calls.push(call);
+            } else if call.func_name == "context_tx" {
                 context_tx_calls.push(call);
             } else if !options.allowed_tool_names.contains(&call.func_name) {
                 unavailable_tool_calls.push(call);
@@ -20880,7 +21045,7 @@ impl Orchestrator {
         }
         let mut seen_delegations = HashSet::new();
         selected_tool_calls.retain(|call| {
-            if call.func_name != "delegate" {
+            if call.func_name != "delegate" || invalid_tool_arguments.contains_key(&call.id) {
                 return true;
             }
             let key = normalized_delegate_key(&call.arguments)
@@ -20984,11 +21149,24 @@ impl Orchestrator {
             .iter()
             .map(|call| call.func_name.clone())
             .collect::<Vec<_>>();
-        let rejected_count = rejected_context_tx_ids.len() + unavailable_tool_calls.len();
-        let rejection_status = context_tx_batch_status.clone().or_else(|| {
-            (!unavailable_tool_calls.is_empty())
-                .then(|| "tool-not-available-in-current-phase".to_string())
-        });
+        let invalid_argument_call_ids = selected_tool_calls
+            .iter()
+            .filter(|call| invalid_tool_arguments.contains_key(&call.id))
+            .map(|call| call.id.clone())
+            .collect::<Vec<_>>();
+        let rejected_count = rejected_context_tx_ids.len()
+            + unavailable_tool_calls.len()
+            + invalid_argument_call_ids.len();
+        let rejection_status = context_tx_batch_status
+            .clone()
+            .or_else(|| {
+                (!unavailable_tool_calls.is_empty())
+                    .then(|| "tool-not-available-in-current-phase".to_string())
+            })
+            .or_else(|| {
+                (!invalid_argument_call_ids.is_empty())
+                    .then(|| "invalid-tool-arguments".to_string())
+            });
         let mut assistant_call_payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
@@ -21023,6 +21201,10 @@ impl Orchestrator {
             (
                 "unavailable_tool_names".to_string(),
                 json!(unavailable_call_names),
+            ),
+            (
+                "invalid_argument_tool_call_ids".to_string(),
+                json!(invalid_argument_call_ids),
             ),
         ];
         if let Some(bundle) = options.response_annotation_bundle.as_ref() {
@@ -21071,6 +21253,10 @@ impl Orchestrator {
             ),
             ("rejection_status".to_string(), json!(rejection_status)),
             (
+                "invalid_argument_tool_call_ids".to_string(),
+                json!(invalid_argument_call_ids),
+            ),
+            (
                 "action_group_wake_policy".to_string(),
                 json!(if options.wake_on_output {
                     "direct_signal"
@@ -21105,9 +21291,10 @@ impl Orchestrator {
         }
 
         let (objective_create_calls, ordinary_selected_calls): (Vec<_>, Vec<_>) =
-            selected_tool_calls
-                .into_iter()
-                .partition(|call| call.func_name == "objective_create");
+            selected_tool_calls.into_iter().partition(|call| {
+                call.func_name == "objective_create"
+                    && !invalid_tool_arguments.contains_key(&call.id)
+            });
         selected_tool_calls = ordinary_selected_calls;
         let ordinary_action_count = selected_tool_calls.len()
             + unavailable_tool_calls.len()
@@ -21338,6 +21525,55 @@ impl Orchestrator {
                 .await?
             {
                 outputs.push((existing, true));
+                continue;
+            }
+            if let Some(error) = invalid_tool_arguments.get(&call.id) {
+                // This is a failed native invocation, not a failed model
+                // response. Reject before tool code, approval, Job creation,
+                // or control-plane mutation, then use the existing durable
+                // tool-output/Action Group continuation.
+                let mut payload = vec![
+                    ("context_id".to_string(), json!(context_id)),
+                    ("session_id".to_string(), json!(session_id)),
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    ("tool_call_id".to_string(), json!(call.id)),
+                    ("caused_by".to_string(), json!(call.id)),
+                    ("tool_name".to_string(), json!(call.func_name)),
+                    ("tool_status".to_string(), json!("error")),
+                    ("executed".to_string(), json!(false)),
+                    (
+                        "rejection_code".to_string(),
+                        json!("INVALID_TOOL_ARGUMENTS"),
+                    ),
+                    ("error_code".to_string(), json!(error.code)),
+                    ("error".to_string(), json!(error.message)),
+                    ("retryable_unchanged".to_string(), json!(false)),
+                    (
+                        "text".to_string(),
+                        json!(format!(
+                            "Tool execution rejected: INVALID_TOOL_ARGUMENTS: {error}. \
+                         This call was not executed. Correct its arguments to a valid JSON object \
+                         matching the tool definition before calling it again. \
+                         Other calls have their own receipts; do not repeat successful work."
+                        )),
+                    ),
+                ];
+                self.append_activation_route(attempt_id, &mut payload);
+                let mut payload = payload.into_iter().collect();
+                self.stamp_objective_activation_route(attempt_id, &mut payload);
+                if let Some(group_id) = &action_group_id {
+                    payload.insert("action_group_id".to_string(), json!(group_id));
+                }
+                outputs.push((
+                    Event::new(
+                        output_id,
+                        "System-ToolArguments".to_string(),
+                        TYPE_TOOL_OUTPUT.to_string(),
+                        "chat/tool_output".to_string(),
+                        payload,
+                    ),
+                    false,
+                ));
                 continue;
             }
             let tool = self.registry.get(&call.func_name);
@@ -24165,8 +24401,17 @@ fn plan_from_resume(receipt: PlanResumeReceipt) -> PlanExecutionResult<PlanExecu
 impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
     async fn infer(
         &self,
+        _request: &serde_json::Map<String, serde_json::Value>,
+        _declared: Option<&[String]>,
+    ) -> Result<String, DynError> {
+        Err("Runtime inference requires the admitted PlanEffect result type".into())
+    }
+
+    async fn infer_typed(
+        &self,
         request: &serde_json::Map<String, serde_json::Value>,
         declared: Option<&[String]>,
+        result: &crate::sexpr_eval::InferResultKind,
     ) -> Result<String, DynError> {
         let orchestrator = self
             .orchestrator
@@ -24182,6 +24427,49 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             .get("program")
             .and_then(serde_json::Value::as_str)
             .ok_or("infer requires one complete Yao program")?;
+        static NEXT_INLINE_INFER: AtomicU64 = AtomicU64::new(0);
+        let infer_id = format!(
+            "{}_infer_{}",
+            self.attempt_id,
+            NEXT_INLINE_INFER.fetch_add(1, Ordering::Relaxed)
+        );
+        let parent_route = orchestrator.activation_route(&self.attempt_id);
+        let mut return_binding = crate::session_io::response::ReturnBinding::new(
+            parent_route
+                .as_ref()
+                .map(|route| route.thread_id.as_str())
+                .unwrap_or(&self.session_id),
+            parent_route
+                .as_ref()
+                .map(|route| route.thread_generation)
+                .unwrap_or(0),
+            &infer_id,
+            parent_route
+                .as_ref()
+                .is_some_and(|route| !route.response_annotations.is_off()),
+        )
+        .with_native_output();
+        let is_program = matches!(
+            result,
+            crate::sexpr_eval::InferResultKind::Yao {
+                ty: crate::yao::Type::Program { .. },
+                ..
+            }
+        );
+        return_binding.format = crate::session_io::OutputFormat {
+            id: "morphz.data".into(),
+            version: "1".into(),
+            encoding: if is_program { "utf8" } else { "json" }.into(),
+            schema_hash: None,
+            contract_hash: None,
+        };
+        if let crate::sexpr_eval::InferResultKind::Json {
+            ty, definitions, ..
+        } = result
+        {
+            return_binding.body_value_schema =
+                Some(crate::yao::json::json_schema(ty, definitions)?);
+        }
         let prompt = {
             let captures = request
                 .get("captures")
@@ -24208,13 +24496,22 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
                 captures, type_definitions, program
             )
         };
-        let mut messages = vec![Message {
-            role: "user".to_string(),
-            content: prompt,
-            name: None,
-            tool_call_id: None,
-            tool_calls: None,
-        }];
+        let mut messages = vec![
+            Message {
+                role: "system".into(),
+                content: crate::session_io::response::CONTRACT.into(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+            Message {
+                role: "user".to_string(),
+                content: format!("{prompt}\n{}", return_binding.expression()),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+        ];
         let context_id = orchestrator.context_id_for_session(&self.session_id)?;
         let stored = orchestrator
             .resolve_model_visible_attachment_metadata(
@@ -24247,32 +24544,51 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
         .into_iter()
         .filter(|name| declared.is_none_or(|list| list.iter().any(|tool| tool == name)))
         .collect::<Vec<_>>();
-        let tools = orchestrator
+        let original_tools = orchestrator
             .registry
             .definitions()
             .into_iter()
             .filter(|definition| callable.contains(&definition.name))
             .collect::<Vec<_>>();
+        // One stable, model-facing projection for this child. Business tools
+        // and their original validators are never replaced or widened.
+        let tools = crate::session_io::native::model_tools(&original_tools)?;
 
         for round in 0..crate::sexpr_eval::MAX_INFER_ROUNDS {
             let request_policy = orchestrator
                 .effective_model_request_policy(&self.session_id, &self.attempt_id)
                 .await?;
             let ModelCompletion {
-                response,
+                response: raw_response,
                 provider_continuation,
-                ..
+                native_response,
+                legacy_v2_return: _,
             } = orchestrator
                 .request_model_completion_with_policy(
                     &self.session_id,
-                    &self.attempt_id,
-                    messages.clone(),
-                    tools.clone(),
-                    None,
+                    &format!("{infer_id}_round_{round}"),
+                    ModelCompletionInput {
+                        messages: messages.clone(),
+                        tools: tools.clone(),
+                        prompt_measurement: None,
+                        internal_return: Some(InternalInferReturn {
+                            binding: &return_binding,
+                            parent_attempt_id: &self.attempt_id,
+                        }),
+                    },
                     &request_policy,
                 )
                 .await
                 .map_err(|error| -> DynError { Box::new(error) })?;
+            let evidence =
+                native_response.ok_or("Internal infer completion is missing its native binding")?;
+            let response = crate::session_io::native::decode_messages(
+                &raw_response,
+                &evidence.messages,
+                &evidence.binding,
+                &infer_id,
+            )?
+            .response;
             // Answering without calling a tool is what yields the value. The
             // `reply` contract is deliberately not reused: it means "send this
             // to the user", and what is waiting here is a program.
@@ -24291,11 +24607,11 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             }
             messages.push(Message {
                 role: "assistant".to_string(),
-                content: response.content.clone(),
+                content: raw_response.content.clone(),
                 name: None,
                 tool_call_id: None,
                 tool_calls: Some(
-                    response
+                    raw_response
                         .tool_calls
                         .iter()
                         .map(|call| crate::llm::ToolCall {
@@ -24314,6 +24630,11 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
                 // path checks. Anything outside the gate is refused rather than
                 // executed, exactly as a `call` node would be.
                 let outcome = match orchestrator.registry.get(&call.func_name) {
+                    Some(_) if crate::session_io::native::parse_tool_arguments(&call.arguments).is_err() => {
+                        crate::tool::ToolExecutionResult::text(
+                            "Tool execution rejected: INVALID_TOOL_ARGUMENTS. This call was not executed; supply a valid JSON object matching the original tool definition."
+                        )
+                    }
                     Some(tool) if callable.contains(&call.func_name) => tool
                         .execute_result(&call.arguments)
                         .await
@@ -28058,10 +28379,13 @@ mod tests {
             ));
             assert!(prompt.contains("Pure infer and empty (requires (tools)) prohibit work"));
             assert!(prompt.contains("actual work is needed, you MUST put applicable annotations"));
-            assert!(prompt.contains("Missing or invalid optional metadata is tolerated at reception"));
+            assert!(
+                prompt.contains("Missing or invalid optional metadata is tolerated at reception")
+            );
             assert!(prompt.contains("For historical bindings ONLY"));
             assert!(!prompt.contains("include TWO deliver_message calls"));
-            assert!(!prompt.contains("return one native JSON value containing body, annotations and effects"));
+            assert!(!prompt
+                .contains("return one native JSON value containing body, annotations and effects"));
         }
         let correction = super::response_protocol_correction_prompt("test", None, false);
         assert!(correction.contains("another work/control tool"));
@@ -28080,8 +28404,9 @@ mod tests {
         assert!(super::CRITICAL_MAINTENANCE_PROMPT.contains("physical-work admission"));
         assert!(super::CONTEXT_TX_COOLDOWN_PROMPT.contains("call no_reply alone"));
         assert!(super::CONTEXT_TX_COOLDOWN_PROMPT.contains("declared business type do not change"));
-        assert!(super::SAFETY_REFUSAL_RECOVERY_PROMPT
-            .contains("through the frozen Session IO carrier"));
+        assert!(
+            super::SAFETY_REFUSAL_RECOVERY_PROMPT.contains("through the frozen Session IO carrier")
+        );
         for prompt in [
             super::SAFETY_REFUSAL_RECOVERY_PROMPT,
             super::MAINTENANCE_BUDGET_EXHAUSTED_PROMPT,
@@ -28089,8 +28414,10 @@ mod tests {
             super::OBJECTIVE_FINALIZATION_PROMPT,
         ] {
             assert!(!prompt.contains("SAME value"));
-            assert!(prompt.contains("historical explicit outputs")
-                || prompt.contains("Historical explicit outputs"));
+            assert!(
+                prompt.contains("historical explicit outputs")
+                    || prompt.contains("Historical explicit outputs")
+            );
             assert!(prompt.contains("native_v3") || prompt.contains("Native_v3"));
         }
         assert!(super::OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR
@@ -28298,30 +28625,75 @@ mod tests {
     fn native_result_refs_replace_only_the_runtime_return_slot_in_both_context_transports() {
         let prefix = "Runtime Context:";
         let base = "(context (protocol (version 35)) (evaluation-profile none) (inbox (observation (ref @e1) (content original))) (observation-state) (mind) (session-directory) (kernel) (evaluation-environment) (evaluate (root-input test)))";
-        let mut binding = crate::session_io::response::ReturnBinding::new("actual-thread", 3, "actual-evaluation", true);
-        let original = compose_segmented_context_message(prefix,base,EvaluationContextOverlay {
-            return_binding:Some(&binding),runtime_directive:Some(("work","keep this actual directive")),..Default::default()
-        }).unwrap();
+        let mut binding = crate::session_io::response::ReturnBinding::new(
+            "actual-thread",
+            3,
+            "actual-evaluation",
+            true,
+        );
+        let original = compose_segmented_context_message(
+            prefix,
+            base,
+            EvaluationContextOverlay {
+                return_binding: Some(&binding),
+                runtime_directive: Some(("work", "keep this actual directive")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let seed = segmented_model_text(&original).unwrap();
         binding.annotation_observation_refs = vec!["@e42".into()];
-        let replaced = super::replace_context_return_binding(&original,prefix,&binding).unwrap();
+        let replaced = super::replace_context_return_binding(&original, prefix, &binding).unwrap();
         let current = segmented_model_text(&replaced).unwrap();
-        assert_eq!(&seed.parts[..seed.parts.len()-1],&current.parts[..current.parts.len()-1]);
-        assert_eq!(seed.prompt_cache_key,current.prompt_cache_key);
+        assert_eq!(
+            &seed.parts[..seed.parts.len() - 1],
+            &current.parts[..current.parts.len() - 1]
+        );
+        assert_eq!(seed.prompt_cache_key, current.prompt_cache_key);
         let visible = model_visible_message_text(&replaced);
-        let tree = crate::sexpr::parse(visible.strip_prefix(&format!("{prefix}\n")).unwrap()).unwrap();
-        assert_eq!(tree.get_path(&["evaluation-environment","session-io-return","annotation_observation_refs"]).unwrap().to_string(),"@e42");
+        let tree =
+            crate::sexpr::parse(visible.strip_prefix(&format!("{prefix}\n")).unwrap()).unwrap();
+        assert_eq!(
+            tree.get_path(&[
+                "evaluation-environment",
+                "session-io-return",
+                "annotation_observation_refs"
+            ])
+            .unwrap()
+            .to_string(),
+            "@e42"
+        );
         assert!(visible.contains("keep this actual directive"));
-        let delta = structured_context_delta_message(&original,&[PromptCacheStructuredDelta {
-            source_sequence:42,observation_id:"actual-result".into(),source_observation_id:None,text:"(context-delta (observation (ref @e42)))".into()
-        }]).unwrap();
-        let replaced = super::replace_context_return_binding(&delta,prefix,&binding).unwrap();
+        let delta = structured_context_delta_message(
+            &original,
+            &[PromptCacheStructuredDelta {
+                source_sequence: 42,
+                observation_id: "actual-result".into(),
+                source_observation_id: None,
+                text: "(context-delta (observation (ref @e42)))".into(),
+            }],
+        )
+        .unwrap();
+        let replaced = super::replace_context_return_binding(&delta, prefix, &binding).unwrap();
         let before = segmented_model_text(&delta).unwrap();
         let after = segmented_model_text(&replaced).unwrap();
-        assert_eq!(&before.parts[1..],&after.parts[1..]);
-        assert_eq!(before.prompt_cache_key,after.prompt_cache_key);
-        assert!(after.parts[0].text.contains("(annotation_observation_refs @e42)"));
-        assert!(super::replace_context_return_binding(&Message {role:"user".into(),content:"ordinary user data".into(),name:None,tool_calls:None,tool_call_id:None},prefix,&binding).is_err());
+        assert_eq!(&before.parts[1..], &after.parts[1..]);
+        assert_eq!(before.prompt_cache_key, after.prompt_cache_key);
+        assert!(after.parts[0]
+            .text
+            .contains("(annotation_observation_refs @e42)"));
+        assert!(super::replace_context_return_binding(
+            &Message {
+                role: "user".into(),
+                content: "ordinary user data".into(),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None
+            },
+            prefix,
+            &binding
+        )
+        .is_err());
     }
 
     #[test]
@@ -29130,7 +29502,7 @@ mod tests {
             tool_calls: Vec::new(),
         };
         assert_eq!(
-            classify_terminal_response(&plain),
+            classify_terminal_response(&plain, false),
             Ok(Some(TerminalDecision::Deliver("done".to_string())))
         );
 
@@ -29140,7 +29512,7 @@ mod tests {
                 tool_calls: Vec::new(),
             };
             assert_eq!(
-                classify_terminal_response(&bare_program),
+                classify_terminal_response(&bare_program, false),
                 Ok(Some(TerminalDecision::Deliver(source.to_string()))),
                 "bare Yao text must not be reinterpreted as an executable action"
             );
@@ -29156,7 +29528,7 @@ mod tests {
             }],
         };
         assert_eq!(
-            classify_terminal_response(&no_reply),
+            classify_terminal_response(&no_reply, false),
             Ok(Some(TerminalDecision::NoReply(NoReplyMode::Silent)))
         );
 
@@ -29164,7 +29536,7 @@ mod tests {
             content: "not silent".to_string(),
             tool_calls: no_reply.tool_calls,
         };
-        assert!(classify_terminal_response(&mixed).is_err());
+        assert!(classify_terminal_response(&mixed, false).is_err());
     }
 
     #[test]
@@ -29180,32 +29552,148 @@ mod tests {
         };
 
         assert_eq!(
-            classify_terminal_response(&wait(json!({"mode":"wait"}))),
+            classify_terminal_response(&wait(json!({"mode":"wait"})), false),
             Ok(Some(TerminalDecision::NoReply(NoReplyMode::Wait {
                 wait_secs: 60,
                 explicitly_requested: false,
             })))
         );
         assert_eq!(
-            classify_terminal_response(&wait(json!({
-                "mode":"wait",
-                "wait_secs": 86_400
-            }))),
+            classify_terminal_response(
+                &wait(json!({
+                    "mode":"wait",
+                    "wait_secs": 86_400
+                })),
+                false
+            ),
             Ok(Some(TerminalDecision::NoReply(NoReplyMode::Wait {
                 wait_secs: 86_400,
                 explicitly_requested: true,
             })))
         );
-        assert!(classify_terminal_response(&wait(json!({
-            "mode":"wait",
-            "wait_secs": 0
-        })))
+        assert!(classify_terminal_response(
+            &wait(json!({
+                "mode":"wait",
+                "wait_secs": 0
+            })),
+            false
+        )
         .is_err());
-        assert!(classify_terminal_response(&wait(json!({
-            "mode":"silent",
-            "wait_secs": 60
-        })))
+        assert!(classify_terminal_response(
+            &wait(json!({
+                "mode":"silent",
+                "wait_secs": 60
+            })),
+            false
+        )
         .is_err());
+    }
+
+    #[test]
+    fn native_malformed_controls_do_not_establish_terminal_or_batch_semantics() {
+        let call = |name: &str, arguments: &str| crate::llm::ToolCallRepr {
+            id: "bad-control".into(),
+            r#type: "function".into(),
+            func_name: name.into(),
+            arguments: arguments.into(),
+        };
+        for (name, arguments) in [
+            ("no_reply", r#"{"mode":"#),
+            ("no_reply", r#"{"mode":"wait","mode":"silent"}"#),
+            ("no_reply", r#"["silent"]"#),
+            ("schedule_tx", r#"{"ops":"#),
+            (
+                "objective_update",
+                r#"{"status":"completed","title":"x","title":"y"}"#,
+            ),
+        ] {
+            assert!(crate::session_io::native::parse_tool_arguments(arguments).is_err());
+            for mixed in [false, true] {
+                let mut response = crate::llm::Response {
+                    content: String::new(),
+                    tool_calls: vec![call(name, arguments)],
+                };
+                if mixed {
+                    response.tool_calls.push(crate::llm::ToolCallRepr {
+                        id: "valid-sibling".into(),
+                        ..call("read", r#"{"path":"synthetic"}"#)
+                    });
+                }
+                assert!(super::validate_schedule_tx_response(&response, true).is_ok());
+                assert!(validate_objective_completion_call(&response, true).is_ok());
+                assert!(!completed_objective_update_call(&response, true));
+                assert_eq!(classify_terminal_response(&response, true), Ok(None));
+            }
+        }
+    }
+
+    #[test]
+    fn native_argument_rejection_preserves_legal_control_exclusivity_and_wait_rules() {
+        let one = |name: &str, arguments: &str| crate::llm::Response {
+            content: String::new(),
+            tool_calls: vec![crate::llm::ToolCallRepr {
+                id: "valid-control".into(),
+                r#type: "function".into(),
+                func_name: name.into(),
+                arguments: arguments.into(),
+            }],
+        };
+        let silent = one("no_reply", r#"{"mode":"silent"}"#);
+        assert_eq!(
+            classify_terminal_response(&silent, true),
+            Ok(Some(TerminalDecision::NoReply(NoReplyMode::Silent)))
+        );
+        assert_eq!(
+            classify_terminal_response(&one("no_reply", r#"{"mode":"wait"}"#), true),
+            Ok(Some(TerminalDecision::NoReply(NoReplyMode::Wait {
+                wait_secs: 60,
+                explicitly_requested: false,
+            })))
+        );
+        for arguments in [
+            r#"{"mode":"wait","wait_secs":0}"#,
+            r#"{"mode":"silent","wait_secs":60}"#,
+            r#"{"mode":"silent","extra":true}"#,
+        ] {
+            assert!(classify_terminal_response(&one("no_reply", arguments), true).is_err());
+        }
+        for (name, arguments) in [
+            ("no_reply", r#"{"mode":"silent"}"#),
+            ("schedule_tx", r#"{"program":"synthetic"}"#),
+            ("objective_update", r#"{"status":"completed"}"#),
+        ] {
+            let valid = one(name, arguments);
+            match name {
+                "no_reply" => assert!(classify_terminal_response(&valid, true).is_ok()),
+                "schedule_tx" => {
+                    assert!(super::validate_schedule_tx_response(&valid, true).is_ok())
+                }
+                _ => assert!(completed_objective_update_call(&valid, true)),
+            }
+            // A well-formed exclusive control still cannot accompany another
+            // wire call, even a rejected one. Never execute the control to
+            // manufacture a result or conceal this independent batch error.
+            for other_arguments in [r#"{"path":"ok"}"#, r#"{"path":"#] {
+                let mut mixed = valid.clone();
+                mixed.tool_calls.push(crate::llm::ToolCallRepr {
+                    id: "sibling".into(),
+                    r#type: "function".into(),
+                    func_name: "read".into(),
+                    arguments: other_arguments.into(),
+                });
+                let rejected = match name {
+                    "no_reply" => classify_terminal_response(&mixed, true).is_err(),
+                    "schedule_tx" => super::validate_schedule_tx_response(&mixed, true).is_err(),
+                    _ => validate_objective_completion_call(&mixed, true).is_err(),
+                };
+                assert!(rejected);
+            }
+        }
+        // These independent admission gates are intentionally unchanged.
+        let work = one("read", r#"{"path":"synthetic"}"#);
+        for phase in ["final-reply", "objective-finalization", "schedule-receipt"] {
+            assert!(validate_final_reply_response(phase, false, &work, None).is_err());
+        }
     }
 
     #[tokio::test]
@@ -30081,11 +30569,11 @@ mod tests {
             Ok(None)
         );
 
-        assert!(completed_objective_update_call(&objective_update));
-        assert!(validate_objective_completion_call(&objective_update).is_ok());
+        assert!(completed_objective_update_call(&objective_update, false));
+        assert!(validate_objective_completion_call(&objective_update, false).is_ok());
         let mut mixed_completion = objective_update.clone();
         mixed_completion.content = "提前写出的最终报告".to_string();
-        assert!(validate_objective_completion_call(&mixed_completion).is_err());
+        assert!(validate_objective_completion_call(&mixed_completion, false).is_err());
 
         let final_text = Some(TerminalDecision::Deliver("完整最终报告".to_string()));
         assert_eq!(

@@ -45,22 +45,51 @@ fn no_annotation_records(event: &Event) -> bool {
     })
 }
 const ORIGINAL_TEXT: &str = "读取合成系统与架构，完成后报告结果。";
+const THREE_READS_TEXT: &str = "依次读取合成系统、架构与发行版，完成后报告结果。";
 const STEER_TEXT: &str = "请保留原检查，并将最终结果用中文概述，附加一句简短摘要。";
 const ORIGINAL_TITLE: &str = "检查合成系统与架构";
 const UPDATED_TITLE: &str = "检查合成环境并提供中文摘要";
 const STEP_TITLE: &str = "读取架构这个步骤不能覆盖整项工作的标题";
 const FINAL_TEXT: &str = "系统为 Linux，架构为 arm64。摘要：合成环境检查完成。";
+const THREE_READS_FINAL_TEXT: &str =
+    "系统为 Linux，架构为 arm64，发行版为 synthetic-test。摘要：合成环境检查完成。";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Scenario {
+    AlreadyDispatched,
     DirectTitle,
     DeferredTitle,
 }
 impl Scenario {
     fn request_count(self) -> usize {
         match self {
-            Self::DirectTitle => 2,
-            Self::DeferredTitle => 3,
+            Self::AlreadyDispatched => 2,
+            Self::DirectTitle => 3,
+            Self::DeferredTitle => 4,
+        }
+    }
+    fn parts(self) -> &'static [&'static str] {
+        match self {
+            Self::AlreadyDispatched | Self::DirectTitle => &["system", "architecture"],
+            Self::DeferredTitle => &["system", "architecture", "distribution"],
+        }
+    }
+    fn input(self) -> &'static str {
+        match self {
+            Self::AlreadyDispatched | Self::DirectTitle => ORIGINAL_TEXT,
+            Self::DeferredTitle => THREE_READS_TEXT,
+        }
+    }
+    fn final_text(self) -> &'static str {
+        match self {
+            Self::AlreadyDispatched | Self::DirectTitle => FINAL_TEXT,
+            Self::DeferredTitle => THREE_READS_FINAL_TEXT,
+        }
+    }
+    fn final_title(self) -> &'static str {
+        match self {
+            Self::AlreadyDispatched => ORIGINAL_TITLE,
+            Self::DirectTitle | Self::DeferredTitle => UPDATED_TITLE,
         }
     }
 }
@@ -70,13 +99,14 @@ struct ScriptClient {
     scenario: Scenario,
     calls: AtomicUsize,
     messages: Mutex<Vec<Vec<Message>>>,
+    directories: Mutex<Vec<Vec<ToolDefinition>>>,
 }
 
 impl ScriptClient {
     fn work(&self, id: &str, part: &str, title: &str) -> ToolCallRepr {
         let mut arguments = json!({"part":part});
         if !self.protocol.is_off() {
-            arguments["_annotations"] = json!({
+            arguments["_morphz"] = json!({
                 "execution":{"title":title,"progress":"读取合成环境"},
                 "intent":format!("读取{part}的合成事实")
             });
@@ -140,17 +170,24 @@ impl Client for ScriptClient {
             "no dedicated title request or repeated execution inference is allowed"
         );
         self.messages.lock().unwrap().push(messages.clone());
-        let mut response = match index {
+        self.directories.lock().unwrap().push(tools.clone());
+        let definition = tools
+            .iter()
+            .find(|tool| tool.name == "steer_probe")
+            .unwrap();
+        assert!(definition.parameters["properties"].get("_morphz").is_some());
+        assert_eq!(definition.parameters["required"], json!(["part"]));
+        let response = match index {
             0 => {
                 assert!(messages
                     .iter()
-                    .any(|message| message.content.contains(ORIGINAL_TEXT)));
+                    .any(|message| message.content.contains(self.scenario.input())));
                 assert!(messages
                     .iter()
                     .all(|message| !message.content.contains(STEER_TEXT)));
                 Response {
                     content: String::new(),
-                    tool_calls: if self.scenario == Scenario::DirectTitle {
+                    tool_calls: if self.scenario == Scenario::AlreadyDispatched {
                         vec![
                             self.work("steer-system-call", "system", ORIGINAL_TITLE),
                             self.work("steer-architecture-call", "architecture", STEP_TITLE),
@@ -166,7 +203,7 @@ impl Client for ScriptClient {
                 let mut call = self.work("steer-architecture-call", "architecture", STEP_TITLE);
                 if !self.protocol.is_off() {
                     let mut arguments: Value = serde_json::from_str(&call.arguments).unwrap();
-                    arguments["_annotations"]["execution"]
+                    arguments["_morphz"]["execution"]
                         .as_object_mut()
                         .unwrap()
                         .remove("title");
@@ -177,55 +214,35 @@ impl Client for ScriptClient {
                     tool_calls: vec![call],
                 }
             }
-            1 | 2 => {
+            1 if self.scenario == Scenario::DirectTitle => Response {
+                content: String::new(),
+                tool_calls: vec![self.work(
+                    "steer-architecture-call",
+                    "architecture",
+                    UPDATED_TITLE,
+                )],
+            },
+            2 if self.scenario == Scenario::DeferredTitle => Response {
+                content: String::new(),
+                tool_calls: vec![self.work(
+                    "steer-distribution-call",
+                    "distribution",
+                    UPDATED_TITLE,
+                )],
+            },
+            1..=3 => {
                 assert!(messages.iter().any(|message| message.content.contains(STEER_TEXT)),
                     "accepted steering text must be in the actual next model request, not just queued in SQL");
-                if !self.protocol.is_off() {
-                    assert!(tools.iter().any(|tool| tool.name == "deliver_message"));
-                    Response {content:FINAL_TEXT.into(),tool_calls:vec![ToolCallRepr{
-                        id:"steer-final-metadata".into(),r#type:"function".into(),func_name:"deliver_message".into(),
-                        arguments:json!({"delivery_id":"steer-final-metadata","message":{"format":{"id":"morphz.response.annotations","version":"1"},"content":{"encoding":"json","value":{"execution":{"title":UPDATED_TITLE,"result":"已读取合成系统与架构，并提供中文摘要"}}}}}).to_string(),
-                    }]}
-                } else {
-                    assert!(tools.iter().all(|tool| tool.name != "reply"));
-                    Response {
-                        content: FINAL_TEXT.into(),
-                        tool_calls: vec![],
-                    }
+                assert_eq!(index + 1, self.scenario.request_count());
+                Response {
+                    content: self.scenario.final_text().into(),
+                    tool_calls: vec![],
                 }
             }
             _ => unreachable!(),
         };
-        // Fixture-only authored metadata is encoded into the current native
-        // Session IO format before reaching any Runtime parser or Tool.
-        let mut metadata = serde_json::Map::new();
-        let mut intents = Vec::new();
-        for (index, call) in response.tool_calls.iter_mut().enumerate() {
-            if call.func_name == "deliver_message" {
-                continue;
-            }
-            let mut arguments: Value = serde_json::from_str(&call.arguments).unwrap();
-            if let Some(annotations) = arguments
-                .as_object_mut()
-                .and_then(|args| args.remove("_annotations"))
-            {
-                if let Some(execution) = annotations.get("execution") {
-                    metadata
-                        .entry("execution")
-                        .or_insert_with(|| execution.clone());
-                }
-                if let Some(intent) = annotations.get("intent") {
-                    intents.push(json!({"index":index,"intent":intent}));
-                }
-                call.arguments = arguments.to_string();
-            }
-        }
-        if !intents.is_empty() {
-            metadata.insert("calls".into(), json!(intents));
-        }
-        if !metadata.is_empty() {
-            response.tool_calls.push(ToolCallRepr{id:"steer-work-metadata".into(),r#type:"function".into(),func_name:"deliver_message".into(),arguments:json!({"delivery_id":"steer-work-metadata","message":{"format":{"id":"morphz.response.annotations","version":"1"},"content":{"encoding":"json","value":metadata}}}).to_string()});
-        }
+        // Actual v3 wire: display metadata belongs to each actual work call.
+        // A complete ordinary final body has no annotation-only companion.
         let _ = stream.send(ModelStreamEvent::Started);
         for character in response.content.chars() {
             let _ = stream.send(ModelStreamEvent::TextDelta {
@@ -266,10 +283,9 @@ impl Tool for ProbeTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().into(),
-            description: "Read synthetic system or architecture facts, with no external effects."
-                .into(),
+            description: "Read synthetic system, architecture or distribution facts, with no external effects.".into(),
             parameters: json!({"type":"object","additionalProperties":false,"required":["part"],
-                "properties":{"part":{"type":"string","enum":["system","architecture"]}}}),
+                "properties":{"part":{"type":"string","enum":["system","architecture","distribution"]}}}),
         }
     }
     async fn execute(&self, arguments: &str) -> Result<String, DynError> {
@@ -282,6 +298,7 @@ impl Tool for ProbeTool {
                 Ok("Linux".into())
             }
             Some("architecture") => Ok("arm64".into()),
+            Some("distribution") => Ok("synthetic-test".into()),
             _ => Err("unexpected synthetic part".into()),
         }
     }
@@ -313,6 +330,7 @@ impl Fixture {
             scenario,
             calls: AtomicUsize::new(0),
             messages: Mutex::new(vec![]),
+            directories: Mutex::new(vec![]),
         });
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
@@ -398,7 +416,7 @@ impl Fixture {
         let initial = self
             .session
             .send_io_as_principal(
-                Self::input("steer-root", ORIGINAL_TEXT),
+                Self::input("steer-root", self.client.scenario.input()),
                 &self.runtime.identity().principal_id,
             )
             .await
@@ -501,15 +519,15 @@ impl Fixture {
         let events = tokio::time::timeout(Duration::from_secs(25), async {
             loop {
                 let events = self.events(&initial.id).await;
-                if events
-                    .iter()
-                    .any(|event| event.topic == "chat/reply" && event.payload["text"] == FINAL_TEXT)
-                    && self
-                        .store
-                        .get_thread(&owner.id)
-                        .await
-                        .unwrap()
-                        .is_some_and(|thread| thread.lifecycle == ThreadLifecycle::Completed)
+                if events.iter().any(|event| {
+                    event.topic == "chat/reply"
+                        && event.payload["text"] == self.client.scenario.final_text()
+                }) && self
+                    .store
+                    .get_thread(&owner.id)
+                    .await
+                    .unwrap()
+                    .is_some_and(|thread| thread.lifecycle == ThreadLifecycle::Completed)
                 {
                     break events;
                 }
@@ -535,16 +553,24 @@ impl Fixture {
             .unwrap()
             .unwrap();
         if !protocol.is_off() {
-            assert_eq!(display.unwrap().title.as_deref(),Some(UPDATED_TITLE),
-                "the authorized Runtime read projection follows the real accepted steering input revision");
+            let display = display.unwrap();
+            assert_eq!(
+                display.title.as_deref(),
+                Some(self.client.scenario.final_title()),
+                "only actual work metadata under the accepted input revision may update the title"
+            );
+            assert!(
+                display.result.is_none(),
+                "ordinary final text is the result, not a separate summary annotation"
+            );
         } else {
             assert!(display.is_none());
         }
         let jobs = self.jobs().await;
         assert_eq!(
             jobs.len(),
-            2,
-            "the two real requested reads must each have exactly one durable Job"
+            self.client.scenario.parts().len(),
+            "each real requested read must have exactly one durable Job"
         );
         assert!(jobs
             .iter()
@@ -560,26 +586,16 @@ impl Fixture {
             let invocations = self.invocations.lock().unwrap();
             assert_eq!(
                 invocations.len(),
-                2,
+                self.client.scenario.parts().len(),
                 "accepted steering must not rerun a physical action"
             );
-            assert_eq!(
-                invocations
-                    .iter()
-                    .filter(|arguments| arguments["part"] == "system")
-                    .count(),
-                1
-            );
-            assert_eq!(
-                invocations
-                    .iter()
-                    .filter(|arguments| arguments["part"] == "architecture")
-                    .count(),
-                1
-            );
-            assert!(invocations
-                .iter()
-                .all(|arguments| arguments.get("_annotations").is_none()));
+            for part in self.client.scenario.parts() {
+                assert_eq!(
+                    invocations.iter().filter(|arguments| **arguments == json!({"part":part})).count(),
+                    1,
+                    "business arguments must reach the Tool exactly once, without _morphz or other fields"
+                );
+            }
         }
         let signals = self
             .store
@@ -607,6 +623,50 @@ impl Fixture {
             .iter()
             .any(|message| message.content.contains(STEER_TEXT))));
         drop(requests);
+        let directories = self.client.directories.lock().unwrap();
+        assert!(
+            directories.windows(2).all(|pair| {
+                serde_json::to_value(&pair[0]).unwrap() == serde_json::to_value(&pair[1]).unwrap()
+            }),
+            "the native tool directory must stay identical across receipts and steering"
+        );
+        drop(directories);
+        let mut work_call_count = 0;
+        for event in events
+            .iter()
+            .filter(|event| event.topic == "chat/assistant_call")
+        {
+            let bundle: PersistedAnnotations =
+                serde_json::from_value(event.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
+            let native = bundle
+                .native_response
+                .as_ref()
+                .expect("actual native carrier evidence");
+            assert!(native.binding.caller.is_native());
+            for call in &bundle.raw_response.tool_calls {
+                assert_eq!(
+                    call.func_name, "steer_probe",
+                    "no annotation-only or invented work call"
+                );
+                let arguments: Value = serde_json::from_str(&call.arguments).unwrap();
+                assert_eq!(arguments.get("_morphz").is_some(), !protocol.is_off());
+                if !protocol.is_off() {
+                    assert!(
+                        bundle.records.iter().any(|record| {
+                            record.kind == AnnotationKind::Intent
+                                && record.call_id.as_deref() == Some(call.id.as_str())
+                        }),
+                        "each intent must be bound to its real native call"
+                    );
+                }
+                work_call_count += 1;
+            }
+            assert!(bundle
+                .records
+                .iter()
+                .all(|record| record.kind != AnnotationKind::Result));
+        }
+        assert_eq!(work_call_count, self.client.scenario.parts().len());
         (initial, directed, current, events)
     }
 }
@@ -633,8 +693,8 @@ async fn first_steered_title_after_tool_receipt_uses_the_same_execution_input_re
     boundaries.sort_by_key(|(event, _)| event.sequence.unwrap());
     assert_eq!(
         boundaries.len(),
-        3,
-        "three normal model requests have three immutable boundaries"
+        4,
+        "three explicitly requested reads and the ordinary final response have four immutable boundaries"
     );
     assert!(boundaries[0].1.title_input_revision.is_none());
     assert!(
@@ -683,9 +743,17 @@ async fn first_steered_title_after_tool_receipt_uses_the_same_execution_input_re
     let off = Fixture::with_scenario(Protocol::Off, Scenario::DeferredTitle).await;
     let (_, _, _, off_events) = off.exercise(Protocol::Off).await;
     assert!(off_events.iter().all(no_annotation_records));
-    assert_eq!(enabled.client.calls.load(Ordering::SeqCst), 3);
-    assert_eq!(enabled.client.calls.load(Ordering::SeqCst), off.client.calls.load(Ordering::SeqCst),
-        "the title is supplied by the existing terminal request, never a dedicated naming inference");
+    assert_eq!(enabled.client.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(
+        enabled.client.calls.load(Ordering::SeqCst),
+        off.client.calls.load(Ordering::SeqCst),
+        "the title is supplied by the third requested read, never a dedicated naming inference"
+    );
+    assert_eq!(
+        serde_json::to_value(enabled.client.directories.lock().unwrap().first()).unwrap(),
+        serde_json::to_value(off.client.directories.lock().unwrap().first()).unwrap(),
+        "annotation enablement must not alter the native directory"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -736,12 +804,20 @@ async fn accepted_steer_updates_whole_task_title_without_extra_inference_or_repe
     assert!(events.iter().all(no_annotation_records));
     assert_eq!(enabled.client.calls.load(Ordering::SeqCst), off.client.calls.load(Ordering::SeqCst),
         "annotations and steer title updates must reuse ordinary requests, not add an inference round");
+    assert_eq!(enabled.client.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(
+        serde_json::to_value(enabled.client.directories.lock().unwrap().first()).unwrap(),
+        serde_json::to_value(off.client.directories.lock().unwrap().first()).unwrap()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn enabled_accepted_steer_keeps_generation_and_required_final_title_result_without_extra_calls(
-) {
-    for scenario in [Scenario::DirectTitle, Scenario::DeferredTitle] {
+async fn enabled_accepted_steer_keeps_generation_and_plain_final_body_without_extra_calls() {
+    for scenario in [
+        Scenario::AlreadyDispatched,
+        Scenario::DirectTitle,
+        Scenario::DeferredTitle,
+    ] {
         let fixture = Fixture::with_scenario(Protocol::On, scenario).await;
         let (_, directed, owner, events) = fixture.exercise(Protocol::On).await;
         let projection = fixture
@@ -753,11 +829,8 @@ async fn enabled_accepted_steer_keeps_generation_and_required_final_title_result
             .unwrap();
         assert_eq!(projection.protocol, Protocol::On);
         assert_eq!(projection.scope.generation, owner.generation);
-        assert_eq!(projection.title.as_deref(), Some(UPDATED_TITLE));
-        assert_eq!(
-            projection.result.as_deref(),
-            Some("已读取合成系统与架构，并提供中文摘要")
-        );
+        assert_eq!(projection.title.as_deref(), Some(scenario.final_title()));
+        assert!(projection.result.is_none());
         let bundle: PersistedAnnotations = events
             .iter()
             .find(|event| {
@@ -768,17 +841,37 @@ async fn enabled_accepted_steer_keeps_generation_and_required_final_title_result
             .unwrap();
         assert_eq!(bundle.protocol, Protocol::On);
         assert_eq!(bundle.title_input_revision.unwrap().event_id, directed.id);
-        assert!(bundle
-            .records
-            .iter()
-            .all(|record| record.protocol == Protocol::On));
-        for kind in [AnnotationKind::Title, AnnotationKind::Result] {
-            assert!(bundle.records.iter().any(|record| record.kind == kind));
+        assert_eq!(bundle.raw_response.content, scenario.final_text());
+        assert!(bundle.raw_response.tool_calls.is_empty());
+        assert!(
+            bundle.records.is_empty(),
+            "ordinary final body needs no metadata"
+        );
+        assert!(bundle.annotation_messages.is_empty());
+        if scenario == Scenario::AlreadyDispatched {
+            assert!(events.iter()
+                .filter_map(|event| event.payload.get(BUNDLE_PAYLOAD_KEY))
+                .map(|value| serde_json::from_value::<PersistedAnnotations>(value.clone()).unwrap())
+                .flat_map(|bundle| bundle.records)
+                .filter(|record| record.kind == AnnotationKind::Title)
+                .all(|record| record.value == ORIGINAL_TITLE && record.title_input_revision.is_none()),
+                "steering cannot retroactively rename already-dispatched work or fabricate final metadata");
         }
         assert_eq!(
             fixture.client.calls.load(Ordering::SeqCst),
             scenario.request_count()
         );
-        assert_eq!(fixture.jobs().await.len(), 2);
+        assert_eq!(fixture.jobs().await.len(), scenario.parts().len());
+        let off = Fixture::with_scenario(Protocol::Off, scenario).await;
+        let (_, _, _, events) = off.exercise(Protocol::Off).await;
+        assert!(events.iter().all(no_annotation_records));
+        assert_eq!(
+            off.client.calls.load(Ordering::SeqCst),
+            scenario.request_count()
+        );
+        assert_eq!(
+            serde_json::to_value(fixture.client.directories.lock().unwrap().first()).unwrap(),
+            serde_json::to_value(off.client.directories.lock().unwrap().first()).unwrap()
+        );
     }
 }

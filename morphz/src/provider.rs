@@ -25,12 +25,12 @@ pub mod auth;
 mod claude_oauth;
 pub mod control;
 pub(crate) mod gemini_schema;
-mod refresh_diagnostics;
-pub mod routing;
-#[cfg(test)]
-mod native_output_tests;
 #[cfg(test)]
 mod native_message_tests;
+#[cfg(test)]
+mod native_output_tests;
+mod refresh_diagnostics;
+pub mod routing;
 
 pub(crate) type ProviderError = Box<dyn std::error::Error + Send + Sync>;
 pub type ConfiguredClient = (Arc<dyn Client>, SelectedProvider);
@@ -2841,7 +2841,14 @@ impl Client for ProtocolClient {
             self.protocol_for_model(&model),
             &mut request,
             options.output_encoding,
-        ).and_then(|()| apply_tool_choice(self.protocol_for_model(&model), &mut request, options.tool_choice)) {
+        )
+        .and_then(|()| {
+            apply_tool_choice(
+                self.protocol_for_model(&model),
+                &mut request,
+                options.tool_choice,
+            )
+        }) {
             let _ = stream.send(ModelStreamEvent::Failed {
                 message: error.to_string(),
             });
@@ -3369,7 +3376,11 @@ impl StreamAccumulator {
                     index,
                     id: item.get("id").and_then(Value::as_str).map(str::to_owned),
                     phase: item.get("phase").and_then(Value::as_str).map(str::to_owned),
-                    text: authoritative.then(|| Self::openai_responses_message_text(index, item).into_values().collect()),
+                    text: authoritative.then(|| {
+                        Self::openai_responses_message_text(index, item)
+                            .into_values()
+                            .collect()
+                    }),
                 });
             }
             Some("function_call") => {
@@ -4280,12 +4291,20 @@ impl StreamAccumulator {
             messages.entry(index).or_default().push_str(&text);
         }
         for (index, text) in messages {
-            if self.responses_message_final.contains(&index) { continue; }
+            if self.responses_message_final.contains(&index) {
+                continue;
+            }
             let item = self.responses_message_items.get(&index);
             let _ = stream.send(ModelStreamEvent::ProviderMessageItem {
                 index,
-                id: item.and_then(|item| item.get("id")).and_then(Value::as_str).map(str::to_owned),
-                phase: item.and_then(|item| item.get("phase")).and_then(Value::as_str).map(str::to_owned),
+                id: item
+                    .and_then(|item| item.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                phase: item
+                    .and_then(|item| item.get("phase"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 text: Some(text),
             });
         }
@@ -6224,7 +6243,10 @@ mod tests {
     fn provider_retry_after_is_a_lower_bound_even_with_jitter() {
         let delay = provider_retry_delay(Duration::from_secs(1), Some(17), 3).unwrap();
         assert!(delay >= Duration::from_secs(17));
-        assert_eq!(provider_retry_delay(Duration::from_secs(1), Some(393_782), 1), None);
+        assert_eq!(
+            provider_retry_delay(Duration::from_secs(1), Some(393_782), 1),
+            None
+        );
     }
 
     #[test]
@@ -6621,8 +6643,12 @@ mod tests {
             for strict in [false, true] {
                 for choice in [None, Some(json!("auto")), Some(json!("none"))] {
                     let mut request = build_request(
-                        protocol, "test-model", Some(2048), Some(ReasoningEffort::Max),
-                        &messages(), &tools(),
+                        protocol,
+                        "test-model",
+                        Some(2048),
+                        Some(ReasoningEffort::Max),
+                        &messages(),
+                        &tools(),
                     );
                     if let Some(choice) = choice {
                         request["tool_choice"] = choice;
@@ -6631,11 +6657,16 @@ mod tests {
                         request["text"]["verbosity"] = json!("low");
                     }
                     let unchanged = request.clone();
-                    apply_output_encoding(protocol, &mut request, Some(
-                        crate::llm::ModelOutputEncoding::JsonSchema {
-                            name:"session_io_output".into(), schema:schema.clone(), strict,
-                        }
-                    )).unwrap();
+                    apply_output_encoding(
+                        protocol,
+                        &mut request,
+                        Some(crate::llm::ModelOutputEncoding::JsonSchema {
+                            name: "session_io_output".into(),
+                            schema: schema.clone(),
+                            strict,
+                        }),
+                    )
+                    .unwrap();
                     let format = match protocol {
                         ModelProtocol::OpenaiChat => {
                             assert_eq!(request["response_format"]["type"], "json_schema");
@@ -6651,8 +6682,17 @@ mod tests {
                     assert_eq!(format["schema"], schema);
                     assert_eq!(format["name"], "session_io_output");
                     assert_eq!(format["strict"], strict);
-                    for key in ["tools", "tool_choice", "parallel_tool_calls", "reasoning",
-                        "reasoning_effort", "max_tokens", "max_output_tokens", "input", "messages"] {
+                    for key in [
+                        "tools",
+                        "tool_choice",
+                        "parallel_tool_calls",
+                        "reasoning",
+                        "reasoning_effort",
+                        "max_tokens",
+                        "max_output_tokens",
+                        "input",
+                        "messages",
+                    ] {
                         assert_eq!(request.get(key), unchanged.get(key), "{protocol:?}: {key}");
                     }
                 }
@@ -6662,14 +6702,22 @@ mod tests {
 
     #[test]
     fn native_schema_does_not_downgrade_an_unsupported_adapter() {
-        for protocol in [ModelProtocol::GeminiContent, ModelProtocol::AnthropicMessages] {
+        for protocol in [
+            ModelProtocol::GeminiContent,
+            ModelProtocol::AnthropicMessages,
+        ] {
             let original = json!({"sentinel":true,"tools":[{"name":"unchanged"}]});
             let mut request = original.clone();
-            let error = apply_output_encoding(protocol, &mut request, Some(
-                crate::llm::ModelOutputEncoding::JsonSchema {
-                    name:"bound_output".into(), schema:json!({"type":"object"}), strict:true,
-                }
-            )).unwrap_err();
+            let error = apply_output_encoding(
+                protocol,
+                &mut request,
+                Some(crate::llm::ModelOutputEncoding::JsonSchema {
+                    name: "bound_output".into(),
+                    schema: json!({"type":"object"}),
+                    strict: true,
+                }),
+            )
+            .unwrap_err();
             assert!(error.to_string().contains("not silently downgraded"));
             assert_eq!(request, original);
         }

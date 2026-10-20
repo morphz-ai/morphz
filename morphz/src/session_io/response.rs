@@ -46,6 +46,12 @@ pub struct ReturnBinding {
     /// not upgraded during recovery; fresh admissions select native v3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<super::FormatBinding>,
+    /// Runtime evidence that a new physical request uses the old v2
+    /// Execution's explicitly declared JSON format, with or without an
+    /// upstream generation constraint. It does not change model instructions.
+    /// Absent historical evidence retains the historical replay decoder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub legacy_v2_transport: Option<super::unified::Transport>,
 }
 impl ReturnBinding {
     pub fn expression(&self) -> crate::sexpr::SExpr {
@@ -99,6 +105,7 @@ impl ReturnBinding {
             annotations_enabled: enabled,
             annotation_observation_refs: vec![],
             output: None,
+            legacy_v2_transport: None,
         }
     }
     pub fn with_formats(mut self, formats: &[super::FormatBinding]) -> Self {
@@ -190,7 +197,10 @@ pub fn split_response_for_attempt(
     model_attempt_id: &str,
 ) -> IoResult<ResponseParts> {
     if binding.is_native() {
-        return Err(IoError::new("invalid_delivery_contract", "Native return requires its frozen physical binding and message evidence"));
+        return Err(IoError::new(
+            "invalid_delivery_contract",
+            "Native return requires its frozen physical binding and message evidence",
+        ));
     }
     if super::unified::selected(binding) {
         return super::unified::decode(response, binding, model_attempt_id);
@@ -505,26 +515,55 @@ pub(crate) fn evaluation_publications(source: &crate::event::Event) -> Vec<crate
         return vec![];
     }
     if binding.is_native() {
-        let Some(native) = bundle.native_response.as_ref().filter(|native| &native.binding.caller == binding) else {
+        let Some(native) = bundle
+            .native_response
+            .as_ref()
+            .filter(|native| &native.binding.caller == binding)
+        else {
             return vec![];
         };
-        let Ok(parts) = super::native::decode_messages(&bundle.raw_response, &native.messages,
-            &native.binding, source.payload["model_attempt_id"].as_str().unwrap_or_default()) else {
+        let Ok(parts) = super::native::decode_messages(
+            &bundle.raw_response,
+            &native.messages,
+            &native.binding,
+            source.payload["model_attempt_id"]
+                .as_str()
+                .unwrap_or_default(),
+        ) else {
             return vec![];
         };
-        if parts.annotation_messages.iter().map(|delivery| &delivery.message).collect::<Vec<_>>()
-            != bundle.annotation_messages.iter().collect::<Vec<_>>() {
+        if parts
+            .annotation_messages
+            .iter()
+            .map(|delivery| &delivery.message)
+            .collect::<Vec<_>>()
+            != bundle.annotation_messages.iter().collect::<Vec<_>>()
+        {
             return vec![];
         }
-        return parts.annotation_messages.into_iter().filter_map(|delivery| {
-            let format = super::Registry::default().resolve(&delivery.message.format, "json", "registered").ok()?;
-            let digest = super::hash(&(&source.id, &delivery.delivery_id));
-            Some(publication(source, binding, delivery.message, format,
-                format!("io_annotations_{}", digest.trim_start_matches("sha256:"))))
-        }).collect();
+        return parts
+            .annotation_messages
+            .into_iter()
+            .filter_map(|delivery| {
+                let format = super::Registry::default()
+                    .resolve(&delivery.message.format, "json", "registered")
+                    .ok()?;
+                let digest = super::hash(&(&source.id, &delivery.delivery_id));
+                Some(publication(
+                    source,
+                    binding,
+                    delivery.message,
+                    format,
+                    format!("io_annotations_{}", digest.trim_start_matches("sha256:")),
+                ))
+            })
+            .collect();
     }
-    let (message, format, prefix) = if let Some(format) = binding.output.as_ref()
-        .filter(|_| !super::unified::selected(binding)) {
+    let (message, format, prefix) = if let Some(format) = binding
+        .output
+        .as_ref()
+        .filter(|_| !super::unified::selected(binding))
+    {
         // Frozen pre-cutover admissions retain their exact decoder. Never
         // infer an old output shape from new assistant content.
         if super::evaluation::decode(
@@ -549,8 +588,11 @@ pub(crate) fn evaluation_publications(source: &crate::event::Event) -> Vec<crate
             return vec![];
         }
         let Ok(parts) = split_response_for_attempt(
-            &bundle.raw_response, binding,
-            source.payload["model_attempt_id"].as_str().unwrap_or_default(),
+            &bundle.raw_response,
+            binding,
+            source.payload["model_attempt_id"]
+                .as_str()
+                .unwrap_or_default(),
         ) else {
             return vec![];
         };
@@ -574,8 +616,13 @@ pub(crate) fn evaluation_publications(source: &crate::event::Event) -> Vec<crate
     vec![publication(source, binding, message, format, id)]
 }
 
-fn publication(source: &crate::event::Event, binding: &ReturnBinding,
-    message: Message, format: super::FormatBinding, id: String) -> crate::event::Event {
+fn publication(
+    source: &crate::event::Event,
+    binding: &ReturnBinding,
+    message: Message,
+    format: super::FormatBinding,
+    id: String,
+) -> crate::event::Event {
     let mut payload = serde_json::Map::new();
     for key in [
         "context_id",
@@ -693,7 +740,8 @@ mod tests {
         assert!(split.diagnostics.is_empty());
         assert!(CONTRACT.contains("actual work is needed, you MUST put applicable annotations"));
         assert!(CONTRACT.contains("Missing or invalid optional metadata is tolerated at reception"));
-        assert!(CONTRACT.contains("no JSON answer wrapper or separately generated final result summary"));
+        assert!(CONTRACT
+            .contains("no JSON answer wrapper or separately generated final result summary"));
         assert!(CONTRACT.contains("For historical bindings ONLY"));
         assert!(!CONTRACT.contains("include TWO deliver_message calls"));
         assert!(!CONTRACT.contains("If useful"));
@@ -998,7 +1046,7 @@ mod tests {
             )
             .unwrap();
         for enabled in [false, true] {
-            let binding = optional_binding(enabled).with_formats(&[registered.clone()]);
+            let binding = optional_binding(enabled).with_formats(std::slice::from_ref(&registered));
             let mut raw = Response {
                 content: String::new(),
                 tool_calls: vec![call(

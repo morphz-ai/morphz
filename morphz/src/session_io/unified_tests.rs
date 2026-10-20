@@ -283,7 +283,7 @@ fn native_calls_without_metadata_remain_work_but_two_work_lists_are_rejected() {
         tool_calls: vec![call.clone()],
     };
     let parts = split_response_for_attempt(&native, &bound(true), "attempt").unwrap();
-    assert_eq!(parts.response.tool_calls, [call.clone()]);
+    assert_eq!(parts.response.tool_calls, std::slice::from_ref(&call));
     assert!(parts.annotation_messages.is_empty());
     let mixed = Response {
         content: json!({"body":null,"effects":[read(Value::Null)]}).to_string(),
@@ -380,6 +380,30 @@ fn caller_types_are_preserved_and_registered_business_schemas_are_checked() {
     assert!(
         split_response_for_attempt(&raw(json!({"answer": false})), &binding, "attempt").is_ok()
     );
+    for capabilities in [vec![], vec![NATIVE_SCHEMA_CAPABILITY.into()]] {
+        let (physical, _, _) = prepare_request(&binding, &capabilities, &[]);
+        for (value, valid) in [
+            (json!({"answer":false}), true),
+            (json!({"answer":"false"}), false),
+            (json!({"answer":false,"effects":[]}), false),
+        ] {
+            let wire = json!({"body":value,"effects":[]}).to_string();
+            let result = split_response_for_attempt(
+                &Response {
+                    content: wire.clone(),
+                    tool_calls: vec![],
+                },
+                &physical,
+                "attempt",
+            );
+            assert_eq!(result.is_ok(), valid);
+            let (visible, completed) = stream_value(&physical, &wire, 1);
+            assert_eq!(completed, valid);
+            if valid {
+                assert_eq!(visible, value.to_string());
+            }
+        }
+    }
 }
 
 #[test]
@@ -523,11 +547,10 @@ fn an_admitted_chat_definition_preserves_the_ordinary_implicit_string() {
     );
 }
 
-// These are explicit failing reproductions, not passing acceptance coverage.
-// Request-side wire selection currently cannot be supplied to the decoder or
-// stream normalizer. Changing that carrier boundary is still under review.
+// Originally committed as failing/ignored reproductions in e642b0fb. Preserve
+// their payloads and security assertions, with the explicitly declared output
+// format (not availability of provider constraints) owning interpretation.
 #[test]
-#[ignore = "Known original-window failure: the actual JSON carrier is not frozen into receiving interpretation"]
 fn known_transport_boundary_regression_fenced_proposal_is_not_a_completed_answer() {
     use super::response_stream::ModelStreamNormalizer;
     use crate::llm::{ModelOutputEncoding, ModelStreamEvent, ModelToolChoice};
@@ -538,9 +561,12 @@ fn known_transport_boundary_regression_fenced_proposal_is_not_a_completed_answer
         description: "List existing skills".into(),
         parameters: json!({"type":"object","properties":{}}),
     }];
-    let (encoding, choice) =
-        request_options(&binding, &[NATIVE_SCHEMA_CAPABILITY.into()], &tools);
-    assert!(matches!(encoding, Some(ModelOutputEncoding::JsonSchema { .. })));
+    let (binding, encoding, choice) =
+        prepare_request(&binding, &[NATIVE_SCHEMA_CAPABILITY.into()], &tools);
+    assert!(matches!(
+        encoding,
+        Some(ModelOutputEncoding::JsonSchema { .. })
+    ));
     assert_eq!(choice, Some(ModelToolChoice::None));
 
     // Same shape as the observed original-window response, with only a
@@ -551,15 +577,22 @@ fn known_transport_boundary_regression_fenced_proposal_is_not_a_completed_answer
         "\"intent\":\"确认现有阅读工具\"}],\"annotations\":{\"execution\":",
         "{\"title\":\"TEST 只读验收\"},\"observations\":[]}}\n```"
     );
-    let response = Response { content: content.into(), tool_calls: vec![] };
+    let response = Response {
+        content: content.into(),
+        tool_calls: vec![],
+    };
     let decoded = split_response_for_attempt(&response, &binding, "TEST-fenced-work");
     let mut stream = ModelStreamNormalizer::new(binding);
     let mut events = vec![];
     for character in content.chars() {
-        events.extend(stream.push(ModelStreamEvent::TextDelta { text: character.to_string() }));
+        events.extend(stream.push(ModelStreamEvent::TextDelta {
+            text: character.to_string(),
+        }));
     }
     events.extend(stream.push(ModelStreamEvent::Completed));
-    let publicly_completed = events.iter().any(|event| matches!(event, ModelStreamEvent::Completed));
+    let publicly_completed = events
+        .iter()
+        .any(|event| matches!(event, ModelStreamEvent::Completed));
 
     // Reject this malformed response in its requested JSON carrier. Never
     // strip the fence and execute it, nor call an unexecuted proposal success.
@@ -571,28 +604,249 @@ fn known_transport_boundary_regression_fenced_proposal_is_not_a_completed_answer
 }
 
 #[test]
-#[ignore = "Known converse boundary failure: ordinary native text is sniffed for Evaluation field names"]
 fn known_transport_boundary_regression_literal_json_does_not_propose_work() {
-    let binding = bound(true);
     let tools = vec![ToolDefinition {
         name: "read".into(),
         description: "Read an authorized file".into(),
         parameters: json!({"type":"object","required":["path"],"properties":{"path":{"type":"string"}}}),
     }];
-    // This physical transport did not request a structured message. A literal
-    // JSON example in ordinary text must not become a new source of actions.
-    assert_eq!(request_options(&binding, &[], &tools), (None, None));
+    // The original reproduction incorrectly selected a v2 Evaluation output
+    // while asserting ordinary-text semantics. Exercise the real native-text
+    // binding and retain the exact payload and non-execution/verbatim checks.
+    let caller = ReturnBinding::new("execution", 3, "activation", true).with_native_output();
+    let prepared = super::native::prepare(&caller, &[], &tools).unwrap();
+    assert!(prepared.options.output_encoding.is_none());
+    assert_eq!(
+        caller.expression().get_path(&["output"]),
+        Some(&crate::sexpr::SExpr::Atom("native_message".into()))
+    );
     let content = json!({
         "body":"这是协议示例，不是执行请求",
         "effects":[{"name":"read","arguments":{"path":"TEST-not-executed.txt"},"intent":null}],
         "annotations":null
-    }).to_string();
-    let response = Response { content: content.clone(), tool_calls: vec![] };
-    let decoded = split_response_for_attempt(&response, &binding, "TEST-literal-example").unwrap();
+    })
+    .to_string();
+    let response = Response {
+        content: content.clone(),
+        tool_calls: vec![],
+    };
+    let decoded =
+        super::native::decode(&response, &prepared.binding, "TEST-literal-example").unwrap();
     assert!(
         decoded.response.tool_calls.is_empty() && decoded.response.content == content,
         "ordinary text must stay data: synthesized work proposals={}, body preserved={}",
         decoded.response.tool_calls.len(),
         decoded.response.content == content
     );
+    use crate::llm::ModelStreamEvent;
+    let mut stream = super::native::Stream::new(prepared.binding);
+    let mut events = vec![];
+    for character in content.chars() {
+        events.extend(stream.push(ModelStreamEvent::TextDelta {
+            text: character.to_string(),
+        }));
+    }
+    events.extend(stream.push(ModelStreamEvent::Completed));
+    let visible: String = events
+        .iter()
+        .filter_map(|event| match event {
+            ModelStreamEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(visible, content);
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, ModelStreamEvent::Completed)));
+    assert!(!events
+        .iter()
+        .any(|event| matches!(event, ModelStreamEvent::Failed { .. })));
+
+    // Counterfactual: this identical value has explicitly executable effects
+    // under v2. No API constraint does not make that declared output prose.
+    for capabilities in [vec![], vec![NATIVE_SCHEMA_CAPABILITY.into()]] {
+        let admitted = bound(true);
+        let (binding, encoding, _) = prepare_request(&admitted, &capabilities, &tools);
+        assert_eq!(binding.expression(), admitted.expression());
+        assert_eq!(encoding.is_some(), !capabilities.is_empty());
+        assert_eq!(binding.legacy_v2_transport, Some(Transport::EvaluationJson));
+        let proposal = split_response_for_attempt(&response, &binding, "TEST-v2-proposal").unwrap();
+        assert_eq!(proposal.response.tool_calls.len(), 1);
+        assert_eq!(proposal.response.tool_calls[0].func_name, "read");
+        assert_eq!(
+            serde_json::from_str::<Value>(&proposal.response.tool_calls[0].arguments).unwrap(),
+            json!({"path":"TEST-not-executed.txt"})
+        );
+        // Decoding only: this test never dispatches the proposal.
+    }
+}
+
+fn stream_value(binding: &ReturnBinding, text: &str, chunk_size: usize) -> (String, bool) {
+    use crate::llm::ModelStreamEvent;
+    let mut stream = super::response_stream::ModelStreamNormalizer::new(binding.clone());
+    let mut events = vec![];
+    for chunk in text.chars().collect::<Vec<_>>().chunks(chunk_size) {
+        events.extend(stream.push(ModelStreamEvent::TextDelta {
+            text: chunk.iter().collect(),
+        }));
+    }
+    events.extend(stream.push(ModelStreamEvent::Completed));
+    let visible = events
+        .iter()
+        .filter_map(|event| match event {
+            ModelStreamEvent::TextDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let completed = events
+        .iter()
+        .any(|event| matches!(event, ModelStreamEvent::Completed));
+    (visible, completed)
+}
+
+#[test]
+fn physical_v2_request_binding_persists_and_replays_despite_provider_capability_changes() {
+    use crate::response_annotations::{
+        normalize_response, ExecutionScope, NormalizationContext, PersistedAnnotations, Producer,
+        Protocol,
+    };
+    let value = json!({
+        "body":"这是示例 🧠",
+        "effects":[{"name":"read","arguments":{"path":"fixture.txt"},"intent":"读取合成文件"}],
+        "annotations":{"execution":{"title":"测试载体"}}
+    });
+    let response = raw(value);
+    let tools = vec![ToolDefinition {
+        name: "read".into(),
+        description: "Read an authorized synthetic file".into(),
+        parameters: json!({"type":"object","required":["path"],"properties":{"path":{"type":"string"}}}),
+    }];
+    for enabled in [false, true] {
+        for structured in [false, true] {
+            let admitted = bound(enabled);
+            let capabilities = if structured {
+                vec![NATIVE_SCHEMA_CAPABILITY.into()]
+            } else {
+                vec![]
+            };
+            let (binding, encoding, _) = prepare_request(&admitted, &capabilities, &tools);
+            assert_eq!(encoding.is_some(), structured);
+            assert_eq!(binding.output, admitted.output);
+            assert_eq!(binding.format, admitted.format);
+            assert_eq!(
+                binding.expression(),
+                admitted.expression(),
+                "transport evidence must not add or change model instructions"
+            );
+            let context = NormalizationContext {
+                return_binding: Some(binding.clone()),
+                protocol: if enabled { Protocol::On } else { Protocol::Off },
+                scope: Some(ExecutionScope {
+                    execution_id: "execution".into(),
+                    generation: 3,
+                }),
+                producer: Some(Producer {
+                    event_id: "actual-response".into(),
+                    attempt_id: "actual-request".into(),
+                    sequence: Some(2),
+                }),
+                ..Default::default()
+            };
+            let normalized = normalize_response(&response, &context).unwrap();
+            assert_eq!(binding.legacy_v2_transport, Some(Transport::EvaluationJson));
+            assert_eq!(normalized.execution_response.tool_calls.len(), 1);
+            assert_eq!(normalized.execution_response.content, "这是示例 🧠");
+            let bundle =
+                PersistedAnnotations::from_normalized(context.scope.clone().unwrap(), &normalized);
+            let stored = serde_json::to_vec(&bundle).unwrap();
+            let restored: PersistedAnnotations = serde_json::from_slice(&stored).unwrap();
+            assert_eq!(restored.return_binding.as_ref(), Some(&binding));
+            let opposite_capabilities = if structured {
+                vec![]
+            } else {
+                vec![NATIVE_SCHEMA_CAPABILITY.into()]
+            };
+            let (next, _, _) = prepare_request(&binding, &opposite_capabilities, &tools);
+            assert_eq!(next.legacy_v2_transport, binding.legacy_v2_transport);
+            assert_eq!(next.output, binding.output);
+            let replay_context = NormalizationContext {
+                return_binding: restored.return_binding.clone(),
+                ..context
+            };
+            let replayed = restored.replay(&replay_context).unwrap();
+            assert_eq!(
+                serde_json::to_value(&replayed.execution_response).unwrap(),
+                serde_json::to_value(&normalized.execution_response).unwrap()
+            );
+            assert_eq!(replayed.records, normalized.records);
+            assert_eq!(serde_json::to_vec(&restored).unwrap(), stored);
+        }
+    }
+}
+
+#[test]
+fn historical_v2_without_physical_evidence_preserves_its_frozen_replay_semantics() {
+    let historical = bound(true);
+    let stored = serde_json::to_value(&historical).unwrap();
+    assert!(stored.get("legacy_v2_transport").is_none());
+    let restored: ReturnBinding = serde_json::from_value(stored.clone()).unwrap();
+    let response = raw(json!({
+        "body":null,
+        "effects":[{"name":"read","arguments":{"path":"already-admitted.txt"},"intent":null}],
+        "annotations":null
+    }));
+    let before = split_response_for_attempt(&response, &historical, "stored-attempt").unwrap();
+    // New provider choices cannot alter interpretation of an old committed
+    // response that never recorded a physical carrier.
+    for capabilities in [vec![], vec![NATIVE_SCHEMA_CAPABILITY.into()]] {
+        let _new_request = prepare_request(&restored, &capabilities, &[]);
+        let after = split_response_for_attempt(&response, &restored, "stored-attempt").unwrap();
+        assert_eq!(after.response.tool_calls.len(), 1);
+        assert_eq!(after.response.tool_calls, before.response.tool_calls);
+        assert_eq!(serde_json::to_value(&restored).unwrap(), stored);
+    }
+}
+
+#[test]
+fn physical_v2_keeps_its_declared_json_format_without_upstream_schema_constraints() {
+    let work = Response {
+        content: String::new(),
+        tool_calls: vec![ToolCallRepr {
+            id: "actual-native-call".into(),
+            r#type: "function".into(),
+            func_name: "read".into(),
+            arguments: r#"{"path":"fixture.txt"}"#.into(),
+        }],
+    };
+    for capabilities in [vec![], vec![NATIVE_SCHEMA_CAPABILITY.into()]] {
+        let admitted = bound(true);
+        let (binding, encoding, _) = prepare_request(&admitted, &capabilities, &[]);
+        assert_eq!(binding.expression(), admitted.expression());
+        assert_eq!(encoding.is_some(), !capabilities.is_empty());
+        for text in [
+            "```json\n{\"body\":\"不能当成成功\"}\n```",
+            "普通文本不是请求的 JSON",
+            r#""不能冒充 Evaluation 对象""#,
+            r#"{"unrelated":"没有返回值"}"#,
+            r#"{"body":"重复","body":"字段"}"#,
+        ] {
+            let response = Response {
+                content: text.into(),
+                tool_calls: vec![],
+            };
+            assert!(split_response_for_attempt(&response, &binding, "a").is_err());
+            assert!(!stream_value(&binding, text, 1).1);
+        }
+        let valid = r#"{"body":"真实正文 🧠\n下一行","effects":[],"annotations":null}"#;
+        for size in [1, 3, valid.chars().count()] {
+            assert_eq!(
+                stream_value(&binding, valid, size),
+                ("真实正文 🧠\n下一行".into(), true)
+            );
+        }
+        assert!(
+            split_response_for_attempt(&work, &binding, "a").is_err(),
+            "an explicit Evaluation output cannot gain an alternate native-call carrier"
+        );
+    }
 }

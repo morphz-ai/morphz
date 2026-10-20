@@ -99,7 +99,8 @@ async fn endpoint(State(state): State<Upstream>, Json(request): Json<Value>) -> 
 async fn schema_is_on_the_actual_wire_without_schema_repair_or_retry() {
     for protocol in [ModelProtocol::OpenaiResponses, ModelProtocol::OpenaiChat] {
         for (rejection, tool_choice) in [
-            (false, None), (true, None),
+            (false, None),
+            (true, None),
             (false, Some(crate::llm::ModelToolChoice::None)),
             (true, Some(crate::llm::ModelToolChoice::None)),
         ] {
@@ -149,11 +150,14 @@ async fn schema_is_on_the_actual_wire_without_schema_repair_or_retry() {
                     tools.clone(),
                     None,
                     stream,
-                    ModelRequestOptions { tool_choice, ..options() },
+                    ModelRequestOptions {
+                        tool_choice,
+                        ..options()
+                    },
                 )
                 .await;
             let events = std::iter::from_fn(|| receiver.try_recv().ok()).collect::<Vec<_>>();
-            let packets = requests.lock().unwrap();
+            let packets = requests.lock().unwrap().clone();
             assert_eq!(
                 packets.len(),
                 1,
@@ -227,7 +231,6 @@ async fn schema_is_on_the_actual_wire_without_schema_repair_or_retry() {
                     "5"
                 );
             }
-            drop(packets);
             server.abort();
             let _ = server.await;
         }

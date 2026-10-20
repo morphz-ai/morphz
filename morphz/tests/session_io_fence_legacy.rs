@@ -243,7 +243,9 @@ async fn live_old_servers_lose_write_authority_at_explicit_cutover_on_both_backe
             .kill_on_drop(true)
             .spawn()
             .unwrap();
-        let client = reqwest::Client::new();
+        // This fixture owns the loopback server; neither its readiness nor its
+        // write-authority assertions may pass through the host system proxy.
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let origin = format!("http://{address}");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {

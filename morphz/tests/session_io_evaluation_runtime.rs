@@ -72,28 +72,6 @@ fn captured_deepseek_extra_type_is_valid_json_but_rejected_by_the_retired_outer_
     }
 }
 
-fn observation(messages: &[Message], tool: &str) -> Option<String> {
-    use morphz::sexpr::SExpr;
-    fn visit(value: &SExpr, tool: &str) -> Option<String> {
-        if let SExpr::List(items) = value {
-            if matches!(items.first(),Some(SExpr::Atom(name)) if name=="observation")
-                && matches!(value.get_path(&["tool"]),Some(SExpr::Atom(name)) if name==tool)
-            {
-                if let Some(SExpr::Atom(reference)) = value.get_path(&["ref"]) {
-                    return Some(reference.clone());
-                }
-            }
-            return items.iter().find_map(|item| visit(item, tool));
-        }
-        None
-    }
-    messages.iter().rev().find_map(|message| {
-        let text = morphz::llm::model_visible_message_text(message);
-        let start = text.find("(context ")?;
-        visit(&morphz::sexpr::parse(&text[start..]).ok()?, tool)
-    })
-}
-
 struct Model {
     work: bool,
     infer: bool,
@@ -134,18 +112,42 @@ impl Client for Model {
             options.output_encoding, None,
             "this scripted client declares no verified native Schema capability"
         );
-        assert_eq!(options.tool_choice, None);
+        assert_eq!(
+            options.tool_choice,
+            self.infer.then_some(morphz::llm::ModelToolChoice::None)
+        );
         self.directory
             .lock()
             .unwrap()
             .push(serde_json::to_string(&tools)?);
         self.inputs.lock().unwrap().push(messages.clone());
-        let mut observations = vec![];
         if self.work && index == 1 {
-            assert!(!messages.iter().any(|message| message.role == "tool"),
-                "Evaluation effects produce Runtime observations, not forged native receipts");
-            assert!(messages.iter().any(|message| morphz::llm::model_visible_message_text(message).contains("PROBE_FACT_LINUX")),
-                "the continuation must contain the actual synthetic work result");
+            let receipts = messages
+                .iter()
+                .filter(|message| message.role == "tool")
+                .collect::<Vec<_>>();
+            assert_eq!(receipts.len(), 1, "one real native receipt, no companion");
+            assert_eq!(receipts[0].tool_call_id.as_deref(), Some("probe-read-1"));
+            let receipt: Value = serde_json::from_str(&receipts[0].content)?;
+            assert_eq!(receipt["status"], "success");
+            let calls = messages
+                .iter()
+                .flat_map(|message| message.tool_calls.iter().flatten())
+                .collect::<Vec<_>>();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].id, "probe-read-1");
+            assert_eq!(calls[0].function.name, "evaluation_probe");
+            let arguments: Value = serde_json::from_str(&calls[0].function.arguments)?;
+            assert_eq!(arguments["key"], "system");
+            assert_eq!(arguments["_annotations"], json!({"business":true}));
+            assert_eq!(arguments.get("_morphz").is_some(), self.metadata);
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| morphz::llm::model_visible_message_text(message)
+                        .contains("PROBE_FACT_LINUX")),
+                "the continuation must contain the actual synthetic work result"
+            );
             assert!(
                 messages
                     .iter()
@@ -153,33 +155,49 @@ impl Client for Model {
                     .all(|call| call.function.name != "deliver_message"),
                 "logical metadata never creates an unanswered function call in the continuation"
             );
-            let reference = observation(&messages, "evaluation_probe")
-                .expect("actual Runtime result must retain its real observation ref");
-            observations
-                .push(json!({"ref":reference,"result":"真实合成工具返回 PROBE_FACT_LINUX"}));
+            let reference = receipt["observation_ref"]
+                .as_str()
+                .expect("actual native receipt must retain its real observation ref");
+            assert!(reference.starts_with("@e"));
+            assert_eq!(receipt["tool_name"], "evaluation_probe");
+            assert_eq!(receipt["result"], "PROBE_FACT_LINUX");
         }
         let working = self.work && index == 0;
-        let mut value = json!({"execution":{"title":"核对合成环境","progress":if working {"读取合成工具"}else{""},"result":if working {""}else{"已返回完整结果"}},"observations":observations});
+        let mut value = json!({
+            "execution":{"title":"核对合成环境","progress":"读取合成工具"},
+            "intent":"读取真实合成工具以核对环境"
+        });
         if self.annotation_extras {
             value["observations_note"] = Value::Null;
             value["execution"]["progress"] = Value::Null;
             value["execution"]["unregistered"] = json!({"name":"not-a-proposal"});
-            if let Some(observation) = value["observations"].as_array_mut().unwrap().first_mut() {
-                observation["unregistered"] = json!(false);
-            }
         }
         let _actual_binding = ScriptBinding::from_messages(&messages);
-        let body = if working { Value::Null } else if self.infer {
-            json!("中文 🧠\n第二行")
-        } else { json!("核对完成。\n正文里的 `deliver_message` 和 {\"body\":1} 都只是文字。") };
-        let effects = if working {
-            json!([{"name":"evaluation_probe","arguments":{"key":"system","_annotations":{"business":true}},
-                "intent":if self.metadata { json!("读取真实合成工具以核对环境") } else { Value::Null }}])
-        } else { json!([]) };
-        let mut content = json!({"body":body,"effects":effects,
-            "annotations":if self.metadata { value } else { Value::Null }}).to_string();
-        if self.malformed { content.push('}'); }
-        let tool_calls: Vec<ToolCallRepr> = vec![];
+        let content = if working {
+            String::new()
+        } else if self.infer {
+            json!("中文 🧠\n第二行").to_string()
+        } else {
+            "核对完成。\n正文里的 `deliver_message` 和 {\"body\":1} 都只是文字。".into()
+        };
+        let tool_calls = if working {
+            let mut arguments = json!({"key":"system","_annotations":{"business":true}});
+            if self.metadata {
+                arguments["_morphz"] = value;
+            }
+            assert!(tools.iter().any(|tool| tool.name == "evaluation_probe"));
+            vec![ToolCallRepr {
+                // A missing physical identity cannot be safely correlated with
+                // a tool error receipt. Invalid JSON arguments are separately
+                // covered by attempt_loop's recoverable native-call matrix.
+                id: if self.malformed { "" } else { "probe-read-1" }.into(),
+                r#type: "function".into(),
+                func_name: "evaluation_probe".into(),
+                arguments: arguments.to_string(),
+            }]
+        } else {
+            vec![]
+        };
         stream.send(ModelStreamEvent::Started)?;
         for character in content.chars() {
             stream.send(ModelStreamEvent::TextDelta {
@@ -210,21 +228,26 @@ impl Client for Model {
 }
 struct ScriptBinding;
 impl ScriptBinding {
-    fn from_messages(messages: &[Message]) -> String {
+    fn context(messages: &[Message]) -> morphz::sexpr::SExpr {
         messages
             .iter()
             .rev()
             .find_map(|message| {
                 let text = morphz::llm::model_visible_message_text(message);
                 let start = text.find("(context ")?;
-                let tree = morphz::sexpr::parse(&text[start..]).ok()?;
-                match tree.get_path(&["evaluation-environment", "session-io-return", "delivery_id"])
-                {
-                    Some(morphz::sexpr::SExpr::Atom(id)) => Some(id.clone()),
-                    _ => None,
-                }
+                morphz::sexpr::parse(&text[start..]).ok()
             })
-            .expect("actual Runtime return binding")
+            .expect("actual Runtime Context")
+    }
+    fn from_messages(messages: &[Message]) -> String {
+        match Self::context(messages).get_path(&[
+            "evaluation-environment",
+            "session-io-return",
+            "delivery_id",
+        ]) {
+            Some(morphz::sexpr::SExpr::Atom(id)) => id.clone(),
+            _ => panic!("actual Runtime return binding"),
+        }
     }
 }
 struct Probe(Arc<Mutex<Vec<Value>>>);
@@ -375,11 +398,65 @@ async fn run_optional(
     })
     .await
     .expect("Runtime must reach a real terminal boundary");
+    if work && !malformed {
+        // Native continuations carry the real receipt once, not a second copy
+        // of its body in Context observations. Resolve its reference against
+        // the durable Job/Event, rather than accepting any nonempty marker.
+        let jobs = runtime
+            .list_execution_jobs(ExecutionJobFilter {
+                session_id: Some("evaluation-session".into()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        let events = runtime
+            .query_events(QueryFilter {
+                root_turn_id: Some(root.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let result_id = jobs[0]
+            .result_event_id
+            .as_ref()
+            .expect("durable Job result");
+        let result = events
+            .iter()
+            .find(|event| &event.id == result_id)
+            .expect("actual result Event");
+        assert_eq!(result.payload["text"], "PROBE_FACT_LINUX");
+        let expected = format!("@e{}", result.sequence.expect("persisted sequence"));
+        let inputs = model.inputs.lock().unwrap();
+        let continuation = &inputs[1];
+        let receipt: Value = serde_json::from_str(
+            &continuation
+                .iter()
+                .find(|message| message.tool_call_id.as_deref() == Some("probe-read-1"))
+                .unwrap()
+                .content,
+        )
+        .unwrap();
+        assert_eq!(receipt["observation_ref"], expected);
+        if !protocol.is_off() {
+            let context = ScriptBinding::context(continuation);
+            assert_eq!(
+                context.get_path(&[
+                    "evaluation-environment",
+                    "session-io-return",
+                    "annotation_observation_refs",
+                ]),
+                Some(&morphz::sexpr::SExpr::Atom(expected)),
+                "the one real Job result, and no foreign result, is eligible"
+            );
+        }
+    }
     (temp, runtime, model, arguments, root, reply)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn native_body_and_optional_metadata_publish_once_without_a_relay() {
+async fn native_plain_body_publishes_once_without_metadata_or_a_relay() {
     let (_temp, runtime, model, args, root, reply) = run(false, false, false).await;
     assert_eq!(reply.topic, "chat/reply", "{reply:?}");
     assert_eq!(model.requests.load(Ordering::SeqCst), 1);
@@ -403,15 +480,10 @@ async fn native_body_and_optional_metadata_publish_once_without_a_relay() {
     let bundle: PersistedAnnotations =
         serde_json::from_value(sources[0].payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
     assert!(bundle.raw_response.tool_calls.is_empty());
-    assert!(morphz::session_io::unified::selected(bundle.return_binding.as_ref().unwrap()));
-    assert!(bundle
-        .records
-        .iter()
-        .any(|record| record.kind == AnnotationKind::Title));
-    assert!(bundle
-        .records
-        .iter()
-        .any(|record| record.kind == AnnotationKind::Result));
+    assert!(bundle.return_binding.as_ref().unwrap().is_native());
+    assert_eq!(bundle.raw_response.content, reply.payload["text"]);
+    assert!(bundle.records.is_empty());
+    assert!(bundle.annotation_messages.is_empty());
     assert!(bundle.diagnostics.is_empty(), "{:?}", bundle.diagnostics);
     assert_eq!(
         events
@@ -419,12 +491,12 @@ async fn native_body_and_optional_metadata_publish_once_without_a_relay() {
             .filter(|event| event.topic == "session/io_output"
                 && event.payload["io_message"]["format"]["id"] == "morphz.response.annotations")
             .count(),
-        1
+        0
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn effects_keep_real_jobs_original_arguments_actual_refs_and_stable_tools() {
+async fn native_work_keeps_real_jobs_original_arguments_actual_refs_and_stable_tools() {
     let (_temp, runtime, model, args, root, reply) = run(true, false, false).await;
     assert_eq!(reply.topic, "chat/reply", "{reply:?}");
     assert_eq!(model.requests.load(Ordering::SeqCst), 2);
@@ -432,7 +504,7 @@ async fn effects_keep_real_jobs_original_arguments_actual_refs_and_stable_tools(
         args.lock().unwrap().as_slice(),
         &[json!({"key":"system","_annotations":{"business":true}})]
     );
-    let directory = model.directory.lock().unwrap();
+    let directory = model.directory.lock().unwrap().clone();
     assert_eq!(directory.len(), 2);
     assert_eq!(directory[0], directory[1]);
     let jobs = runtime
@@ -461,10 +533,15 @@ async fn effects_keep_real_jobs_original_arguments_actual_refs_and_stable_tools(
         .records
         .iter()
         .any(|record| record.kind == AnnotationKind::Intent)));
-    assert!(bundles.iter().any(|bundle| bundle
+    for kind in [AnnotationKind::Title, AnnotationKind::Progress] {
+        assert!(bundles
+            .iter()
+            .any(|bundle| bundle.records.iter().any(|record| record.kind == kind)));
+    }
+    assert!(!bundles.iter().any(|bundle| bundle
         .records
         .iter()
-        .any(|record| record.kind == AnnotationKind::ObservationResult)));
+        .any(|record| record.kind == AnnotationKind::Result)));
     assert!(bundles.iter().all(|bundle| bundle.diagnostics.is_empty()));
 }
 
@@ -485,8 +562,9 @@ async fn missing_metadata_and_off_mode_use_the_same_work_chat_and_infer_path() {
                 run_optional(work, infer, false, metadata, metadata, protocol).await;
             if !protocol.is_off() {
                 for messages in model.inputs.lock().unwrap().iter() {
-                    assert!(messages.iter().any(|message| message.role == "system"
-                        && message.content.contains("for actual work, you MUST provide applicable annotations")),
+                    assert!(messages.iter().any(|message|
+                        morphz::llm::model_visible_message_text(message)
+                            .contains("you MUST put applicable annotations in the SAME native call's _morphz")),
                         "generation still explicitly requests applicable work metadata even when the scripted model omits it");
                 }
             }
@@ -528,7 +606,7 @@ async fn missing_metadata_and_off_mode_use_the_same_work_chat_and_infer_path() {
                 let bundle: PersistedAnnotations = serde_json::from_value(value.clone()).unwrap();
                 assert!(bundle.records.is_empty() && bundle.diagnostics.is_empty());
                 assert!(bundle.annotation_messages.is_empty());
-                assert!(morphz::session_io::unified::selected(&bundle.return_binding.unwrap()));
+                assert!(bundle.return_binding.unwrap().is_native());
             }
             assert!(
                 !events.iter().any(|event| event.topic == "session/io_output"
@@ -553,7 +631,7 @@ async fn unregistered_annotations_are_diagnosed_without_blocking_work_or_streame
         args.lock().unwrap().as_slice(),
         &[json!({"key":"system","_annotations":{"business":true}})]
     );
-    let directory = model.directory.lock().unwrap();
+    let directory = model.directory.lock().unwrap().clone();
     assert_eq!(directory.len(), 2);
     assert_eq!(directory[0], directory[1]);
     let events = runtime
@@ -571,11 +649,22 @@ async fn unregistered_annotations_are_diagnosed_without_blocking_work_or_streame
         .filter(|event| event.topic == "chat/assistant_call")
         .collect::<Vec<_>>();
     assert_eq!(sources.len(), 2);
-    for source in sources {
+    for (index, source) in sources.into_iter().enumerate() {
         let bundle: PersistedAnnotations =
             serde_json::from_value(source.payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-        assert!(bundle.raw_response.content.contains("observations_note"));
-        assert!(bundle.raw_response.tool_calls.is_empty());
+        if index == 1 {
+            assert!(bundle.raw_response.tool_calls.is_empty());
+            assert_eq!(bundle.raw_response.content, reply.payload["text"]);
+            assert!(bundle.records.is_empty());
+            assert!(bundle.diagnostics.is_empty());
+            assert!(bundle.annotation_messages.is_empty());
+            continue;
+        }
+        assert!(bundle.raw_response.content.is_empty());
+        assert_eq!(bundle.raw_response.tool_calls.len(), 1);
+        assert!(bundle.raw_response.tool_calls[0]
+            .arguments
+            .contains("observations_note"));
         assert!(bundle.diagnostics.iter().any(|diagnostic| diagnostic
             .message
             .contains("/annotations/observations_note")));
@@ -624,15 +713,17 @@ async fn unregistered_annotations_are_diagnosed_without_blocking_work_or_streame
         .filter_map(|event| event.payload.get(BUNDLE_PAYLOAD_KEY))
         .map(|value| serde_json::from_value::<PersistedAnnotations>(value.clone()).unwrap())
         .collect::<Vec<_>>();
-    for kind in [
-        AnnotationKind::Intent,
-        AnnotationKind::ObservationResult,
-        AnnotationKind::Result,
-    ] {
+    for kind in [AnnotationKind::Intent, AnnotationKind::Title] {
         assert!(bundles
             .iter()
             .any(|bundle| bundle.records.iter().any(|record| record.kind == kind)));
     }
+    assert!(!bundles
+        .iter()
+        .any(|bundle| bundle.records.iter().any(|record| matches!(
+            record.kind,
+            AnnotationKind::Progress | AnnotationKind::Result
+        ))));
     assert_eq!(
         events
             .iter()
@@ -681,7 +772,7 @@ async fn single_infer_returns_the_declared_value_without_a_relay_or_annotation_r
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn invalid_carrier_never_executes_a_proposal_or_requests_a_repair() {
+async fn missing_native_call_identity_never_executes_work_or_requests_a_repair() {
     let (_temp, _runtime, model, args, _root, reply) = run(true, false, true).await;
     assert_eq!(reply.topic, "session/io_state");
     assert_eq!(model.requests.load(Ordering::SeqCst), 1);

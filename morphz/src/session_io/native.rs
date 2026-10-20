@@ -271,6 +271,17 @@ fn metadata_message(value: Data, caller: &ReturnBinding, identity: &str) -> Deli
     }
 }
 
+/// The same strict argument check is used at dispatch, before either logical
+/// control or physical work can run. Metadata extraction is not an execution
+/// boundary: an invalid call must receive its own ordinary tool-error receipt.
+pub(crate) fn parse_tool_arguments(
+    arguments: &str,
+) -> IoResult<std::collections::BTreeMap<String, Data>> {
+    Ok(Data::parse(arguments.as_bytes(), &Limits::default())?
+        .object()?
+        .clone())
+}
+
 pub fn decode(raw: &Response, binding: &Binding, attempt: &str) -> IoResult<ResponseParts> {
     let caller = &binding.caller;
     if raw.content.len() > Limits::default().max_bytes {
@@ -288,8 +299,32 @@ pub fn decode(raw: &Response, binding: &Binding, attempt: &str) -> IoResult<Resp
     let mut diagnostics = vec![];
     let mut annotation_messages = vec![];
     for (index, call) in response.tool_calls.iter_mut().enumerate() {
+        if !matches!(call.func_name.as_str(), "deliver_message" | "no_reply")
+            && !binding.metadata_tools.contains(&call.func_name)
+        {
+            continue;
+        }
+        let mut arguments = match parse_tool_arguments(&call.arguments) {
+            Ok(arguments) => arguments,
+            Err(error) => {
+                // Preserve the exact native identity and raw arguments for
+                // ordinary tool rejection/continuation. Never repair, execute
+                // or infer metadata from a partially parsed request.
+                diagnostics.push(format!(
+                    "Tool call '{}' requires argument rejection at dispatch: {error}",
+                    call.id
+                ));
+                continue;
+            }
+        };
+        // no_reply has no metadata projection, but its control arguments must
+        // pass the same strict syntax/object check before terminal semantics.
+        // Keep the exact original grammar and bytes; never strip extra keys.
+        if call.func_name == "no_reply" {
+            continue;
+        }
         if call.func_name == "deliver_message" {
-            let arguments = Data::parse(call.arguments.as_bytes(), &Limits::default())?;
+            let arguments = Data::Object(arguments);
             if arguments.get("delivery_id").and_then(Data::string)
                 == Some(caller.delivery_id.as_str())
                 || arguments
@@ -303,13 +338,8 @@ pub fn decode(raw: &Response, binding: &Binding, attempt: &str) -> IoResult<Resp
                     "Body and annotations cannot use a separate delivery call",
                 ));
             }
-        }
-        if !binding.metadata_tools.contains(&call.func_name) {
             continue;
         }
-        let mut arguments = Data::parse(call.arguments.as_bytes(), &Limits::default())?
-            .object()?
-            .clone();
         let Some(metadata) = arguments.remove(METADATA_KEY) else {
             continue;
         };

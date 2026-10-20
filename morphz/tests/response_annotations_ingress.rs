@@ -10,7 +10,7 @@ use morphz::{
         ToolCallRepr, ToolDefinition,
     },
     memory::{
-        sqlite::SqliteStore, DeliveryIngressStore, EventStore, ExecutionJobFilter,
+        sqlite::SqliteStore, ActivationStore, DeliveryIngressStore, EventStore, ExecutionJobFilter,
         ExecutionJobStore, NewAgent, NewCognitiveContext, NewSession, QueryFilter, RuntimeStore,
         SessionMountKind, ThreadLifecycle, ThreadStore,
     },
@@ -104,6 +104,9 @@ struct NativeClient {
     schema: BusinessSchema,
     calls: AtomicUsize,
     captured_tools: Mutex<Vec<Vec<ToolDefinition>>>,
+    captured_bind_requests: Mutex<Vec<Value>>,
+    captured_requests: Mutex<Vec<Value>>,
+    captured_responses: Mutex<Vec<Value>>,
 }
 
 impl NativeClient {
@@ -112,6 +115,9 @@ impl NativeClient {
             schema,
             calls: AtomicUsize::new(0),
             captured_tools: Mutex::new(Vec::new()),
+            captured_bind_requests: Mutex::new(Vec::new()),
+            captured_requests: Mutex::new(Vec::new()),
+            captured_responses: Mutex::new(Vec::new()),
         }
     }
 }
@@ -130,6 +136,10 @@ impl Client for NativeClient {
         &self,
         request: &ModelRequestContext,
     ) -> Result<ModelAttemptBinding, ModelAttemptBindingError> {
+        self.captured_bind_requests
+            .lock()
+            .unwrap()
+            .push(json!(request));
         Ok(ModelAttemptBinding {
             requested_alias: "annotations-ingress-fixture".into(),
             route_id: "synthetic-ingress-route".into(),
@@ -157,14 +167,25 @@ impl Client for NativeClient {
 
     async fn create_completion_bound_stream_with_options(
         &self,
-        _binding: &ModelAttemptBinding,
+        binding: &ModelAttemptBinding,
         messages: Vec<Message>,
         tools: Vec<ToolDefinition>,
         _measurement: Option<PromptTokenCount>,
         stream: ModelStreamSender,
-        _options: ModelRequestOptions,
+        options: ModelRequestOptions,
     ) -> Result<Response, DynError> {
         let index = self.calls.fetch_add(1, Ordering::SeqCst);
+        // Keep the original per-request causal input, including all native
+        // receipts. The restart case queues two roots in one Session, so a
+        // tools-only snapshot cannot explain which receipt drove a response.
+        // This fixture contains only synthetic data and synthetic credentials.
+        self.captured_requests.lock().unwrap().push(json!({
+            "index": index,
+            "binding": binding,
+            "options": format!("{options:?}"),
+            "messages": &messages,
+            "tools": &tools,
+        }));
         assert!(
             index < 4,
             "retry/preflight must not cause an extra model request"
@@ -174,7 +195,14 @@ impl Client for NativeClient {
             message.role == "tool"
                 && message.tool_call_id.as_deref() == Some("ingress-business-call")
         });
-        let response = if receipt.is_none() {
+        let response = if let Some(receipt) = receipt {
+            let receipt: Value = serde_json::from_str(&receipt.content).unwrap();
+            assert_eq!(receipt["status"], "success");
+            Response {
+                content: FINAL_TEXT.into(),
+                tool_calls: Vec::new(),
+            }
+        } else {
             Response {
                 content: String::new(),
                 tool_calls: vec![ToolCallRepr {
@@ -184,16 +212,13 @@ impl Client for NativeClient {
                     arguments: self.schema.arguments().to_string(),
                 }],
             }
-        } else {
-            let receipt =
-                receipt.expect("a real business Job receipt must precede the second request");
-            let receipt: Value = serde_json::from_str(&receipt.content).unwrap();
-            assert_eq!(receipt["status"], "success");
-            Response {
-                content: FINAL_TEXT.into(),
-                tool_calls: Vec::new(),
-            }
         };
+        self.captured_responses.lock().unwrap().push(json!({
+            "index": index,
+            "selected_receipt": receipt,
+            "content": &response.content,
+            "tool_calls": &response.tool_calls,
+        }));
         let _ = stream.send(ModelStreamEvent::Started);
         for (index, call) in response.tool_calls.iter().enumerate() {
             let _ = stream.send(ModelStreamEvent::ToolCallStarted {
@@ -227,6 +252,13 @@ struct Fixture {
 
 impl Fixture {
     async fn open(workspace: &Path, schema: BusinessSchema, default: Protocol) -> Self {
+        // Integration dependencies do not have the library's #[cfg(test)]
+        // failure print. Capture its real error when a durable generic failure
+        // reply alone cannot explain why an Activation stopped.
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter("morphz=warn")
+            .with_test_writer()
+            .try_init();
         let store = Arc::new(
             SqliteStore::new(workspace.join("ingress.db").to_str().unwrap())
                 .await
@@ -344,11 +376,74 @@ impl Fixture {
             .unwrap()
     }
 
+    async fn failure_diagnostics(&self, root: &str) -> Value {
+        fn observed<T: serde::Serialize>(result: Result<T, DynError>) -> Value {
+            match result {
+                Ok(value) => json!({"value": value}),
+                Err(error) => json!({"diagnostic_read_error": error.to_string()}),
+            }
+        }
+        // Read the complete private fixture Context, not just the failed root:
+        // a startup or storage error may have no root route. This Context has
+        // at most the bounded synthetic model requests above; no user store is
+        // connected. Preserve each read failure without replacing the original
+        // lifecycle assertion with a diagnostic unwrap panic.
+        let events = self
+            .store
+            .query(QueryFilter {
+                context_id: Some(CONTEXT.into()),
+                ..Default::default()
+            })
+            .await
+            .map(|mut events| {
+                events.sort_by_key(|event| event.sequence);
+                events
+            });
+        let threads = self
+            .store
+            .list_session_threads(CONTEXT, SESSION, true)
+            .await;
+        let activations = self
+            .store
+            .list_context_thread_activations(CONTEXT, true)
+            .await;
+        let jobs = self
+            .store
+            .list_execution_jobs(ExecutionJobFilter {
+                session_id: Some(SESSION.into()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await;
+        json!({
+            "failed_root": root,
+            "events": observed(events),
+            "threads": observed(threads),
+            "activations": observed(activations),
+            "jobs": observed(jobs),
+            "model_call_count": self.client.calls.load(Ordering::SeqCst),
+            "model_bind_requests": self.client.captured_bind_requests.lock().unwrap().clone(),
+            "model_requests": self.client.captured_requests.lock().unwrap().clone(),
+            "model_responses": self.client.captured_responses.lock().unwrap().clone(),
+            "business_arguments": self.arguments.lock().unwrap().clone(),
+        })
+    }
+
     async fn wait_completed(&self, root: &str) {
         tokio::time::timeout(Duration::from_secs(25), async {
             loop {
                 let thread = self.store.get_thread_by_root(root).await.unwrap().unwrap();
                 if thread.lifecycle.is_terminal() {
+                    if thread.lifecycle != ThreadLifecycle::Completed {
+                        eprintln!("Original durable ingress terminal state: {thread:#?}");
+                        let diagnostics = self.failure_diagnostics(root).await;
+                        assert_eq!(
+                            thread.lifecycle,
+                            ThreadLifecycle::Completed,
+                            "Synthetic ingress durable failure:\n{}",
+                            serde_json::to_string_pretty(&diagnostics).unwrap(),
+                        );
+                    }
                     assert_eq!(thread.lifecycle, ThreadLifecycle::Completed);
                     let replies = self.events(root, Some("chat/reply")).await;
                     assert_eq!(replies.len(), 1);
@@ -411,7 +506,7 @@ async fn annotation_mode_does_not_reserve_business_names_or_mutate_business_argu
                 let jobs = fixture.jobs().await;
                 assert_eq!(jobs.len(), 1);
                 assert_eq!(jobs[0].tool_name, schema.name());
-                let actual_tools = fixture.client.captured_tools.lock().unwrap();
+                let actual_tools = fixture.client.captured_tools.lock().unwrap().clone();
                 let bytes = serde_json::to_vec(&actual_tools[0]).unwrap();
                 assert_eq!(*baseline_bytes.get_or_insert(bytes.clone()), bytes);
                 assert_eq!(serde_json::to_vec(&actual_tools[1]).unwrap(), bytes);
@@ -424,11 +519,19 @@ async fn annotation_mode_does_not_reserve_business_names_or_mutate_business_argu
                     schema,
                     arguments: fixture.arguments.clone(),
                 }));
-                assert_eq!(
-                    actual.parameters,
-                    baseline.definitions().pop().unwrap().parameters
-                );
-                drop(actual_tools);
+                let original = baseline.definitions();
+                let projected = morphz::session_io::native::model_tools(&original).unwrap();
+                assert_eq!(actual.parameters, projected[0].parameters);
+                // Projection only adds the registered display field. The Job
+                // assertion above still checks the exact original arguments;
+                // the business schema and its required fields are unchanged.
+                let mut unwrapped = actual.parameters.clone();
+                assert!(unwrapped["properties"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(morphz::session_io::native::METADATA_KEY)
+                    .is_some());
+                assert_eq!(unwrapped, original[0].parameters);
                 let thread = fixture
                     .store
                     .get_thread_by_root(&accepted_id)
