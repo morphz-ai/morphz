@@ -7,6 +7,17 @@
   "old_runtime_pid": 71638,
   "new_runtime_pid": 33239,
   "electron_pid_unchanged": 44726,
+  "closing_shared_workspace_observation": {
+    "observed_at": "2026-10-20T04:37:00Z",
+    "separate_commit": "a1d42837",
+    "separate_commit_subject": "fix(runtime): avoid unbounded provider Retry-After waits",
+    "current_build_path_sha256": "b8ee08d79b3f233aa3e0291e78cd7afad707d6b59a936e4f9b6b6bc0d7f12b91",
+    "build_path_embedded_version": "70f59264af35",
+    "live_runtime_pid": 33239,
+    "live_status_commit": "70f59264af35",
+    "additional_restart_by_this_task": false,
+    "scope": "The shared build path changed after this deployment. The deployment hash above is the cutover artifact, not a claim about the later shared build file. Other work was preserved; subsequent restarts must independently verify that build."
+  },
   "configuration_unchanged": true,
   "database_backup_verified": true,
   "original_rows_preserved": true,
