@@ -84,11 +84,7 @@ async fn main() -> Result<(), DynError> {
         let mut caller = replay.return_binding.clone();
         caller.output = None;
         caller = caller.with_native_output();
-        let prepared = native::prepare(
-            &caller,
-            &binding.capabilities,
-            &replay.tools,
-        )?;
+        let prepared = native::prepare(&caller, &binding.capabilities, &replay.tools)?;
         output_encoding = prepared.options.output_encoding;
         tool_choice = prepared.options.tool_choice;
         replay.tools = prepared.tools;
@@ -154,7 +150,14 @@ async fn main() -> Result<(), DynError> {
                 }
             }
         }
-        (count, text, visible, completed, failures, projection.map(|projection| projection.messages()))
+        (
+            count,
+            text,
+            visible,
+            completed,
+            failures,
+            projection.map(|projection| projection.messages()),
+        )
     });
     let started = Instant::now();
     let response = tokio::time::timeout(
@@ -175,11 +178,17 @@ async fn main() -> Result<(), DynError> {
     .await
     .map_err(|error| Box::new(error) as DynError)
     .and_then(|result| result);
-    let (stream_events, partial_text, visible, completed, failures, native_messages) = collector.await?;
+    let (stream_events, partial_text, visible, completed, failures, native_messages) =
+        collector.await?;
     let native_messages = native_messages.transpose()?;
     let decoded = response.as_ref().ok().map(|response| {
         if let Some(binding) = &native_binding {
-            native::decode_messages(response, native_messages.as_deref().unwrap_or_default(), binding, &context.attempt_id)
+            native::decode_messages(
+                response,
+                native_messages.as_deref().unwrap_or_default(),
+                binding,
+                &context.attempt_id,
+            )
         } else {
             unified::decode(response, &replay.return_binding, &context.attempt_id)
         }

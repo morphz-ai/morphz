@@ -111,7 +111,7 @@ async fn main() -> Result<(), DynError> {
         let mut messages = vec![message("system", format!(
             "This isolated probe returns one value according to the native API output schema. The body is the complete answer; annotations are display-only data in that same value, never a separate tool call or prose tag. Use real work tools when needed, then answer without a relay or metadata-repair request. Do not guess file contents. annotations_enabled={annotations}. When enabled and actual work was performed, provide a short truthful title and result summary. For plain chat or disabled annotations, use null. Do not put annotations in function arguments."
         )), message("user", input.into())];
-        let mut reads = 0;
+        let mut read_call_ids = Vec::new();
         let mut completed = false;
         for turn in 0..=usize::from(work) {
             assert_eq!(directory, serde_json::to_string(&tools)?);
@@ -185,7 +185,7 @@ async fn main() -> Result<(), DynError> {
                 );
                 assert!(!answer.body.trim().is_empty());
                 assert_eq!(
-                    reads,
+                    read_call_ids.len(),
                     usize::from(work),
                     "do not invent a completed tool run"
                 );
@@ -208,7 +208,7 @@ async fn main() -> Result<(), DynError> {
                 }
                 println!(
                     "{}",
-                    json!({"case":case,"complete":true,"requests":turn+1,"reads":reads,
+                    json!({"case":case,"complete":true,"requests":turn+1,"reads":read_call_ids.len(),
                     "body":answer.body,"annotations_present":answer.annotations.is_some(),
                     "stable_tools":true,"provider_boundary_only":true})
                 );
@@ -225,7 +225,11 @@ async fn main() -> Result<(), DynError> {
             let arguments: Value = serde_json::from_str(&call.arguments)?;
             assert_eq!(arguments, json!({"path":"book.txt"}));
             let observed = std::fs::read_to_string(fixture.path().join("book.txt"))?;
-            reads += 1;
+            assert!(
+                !read_call_ids.contains(&call.id),
+                "the probe must not replay a completed read"
+            );
+            read_call_ids.push(call.id.clone());
             if let Some(continuation) = continuation {
                 messages.push(provider_continuation_message(continuation)?);
             }
