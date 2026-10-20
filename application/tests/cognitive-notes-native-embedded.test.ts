@@ -6,6 +6,7 @@ import { buildNotesProductionUi } from "./fixtures/cognitive-notes-production-ap
 import {
   buildNotesNativeProduction,
   notesNativeStatus,
+  openNotesNativeInput,
   type NotesNativeBuild,
 } from "./fixtures/cognitive-notes-native-production.js";
 import {
@@ -301,12 +302,7 @@ test(
         (await app.source()).view.state.object!.versionRef,
         firstVersion,
       );
-      const input = app.page.getByRole("textbox", {
-        name: "AI 输入内容",
-        exact: true,
-      });
-      if (!(await input.isVisible()))
-        await app.page.keyboard.press("Control+j");
+      const input = await openNotesNativeInput(app.page);
       await input.fill("原生 Local 本窗口未发送草稿\n不改原稿");
       const beforeCompose = await app.stored();
       await restored.guest.locator("#compose").click();
@@ -415,12 +411,7 @@ test(
       await guest.locator("#remember").click();
       await notesNativeStatus(guest, "已记住阅读位置");
       const before = await app.source();
-      const input = app.page.getByRole("textbox", {
-        name: "AI 输入内容",
-        exact: true,
-      });
-      if (!(await input.isVisible()))
-        await app.page.keyboard.press("Control+j");
+      const input = await openNotesNativeInput(app.page);
       await input.fill("许可循环未发送原稿");
       const originalDrafts = await app.stored();
       const originalRows = {

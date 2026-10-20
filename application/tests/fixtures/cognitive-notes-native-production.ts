@@ -21,6 +21,7 @@ import {
   expect,
   type ElectronApplication,
   type Frame,
+  type Page,
 } from "@playwright/test";
 import {
   applicationStoragePrefix,
@@ -415,4 +416,20 @@ export type NotesNativeProduction = Awaited<
 >;
 export async function notesNativeStatus(guest: Frame, value: string) {
   await expect(guest.locator("#status")).toContainText(value);
+}
+
+/** Business setup uses the real visible entry. A key sent while the opaque
+ * author owns focus belongs to that document, not the Host's shortcut handler.
+ * This helper does not assert global-shortcut support or bypass the UI. */
+export async function openNotesNativeInput(page: Page) {
+  const input = page.getByRole("textbox", {
+    name: "AI 输入内容",
+    exact: true,
+  });
+  if (!(await input.isVisible()))
+    await page
+      .getByRole("button", { name: "向 Morphz 输入", exact: true })
+      .click();
+  await expect(input).toBeVisible();
+  return input;
 }

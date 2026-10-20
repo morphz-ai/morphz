@@ -16,6 +16,7 @@ import {
   buildNotesNativeProduction,
   openNotesNativeProduction,
   notesNativeStatus,
+  openNotesNativeInput,
   type NotesNativeBuild,
 } from "./fixtures/cognitive-notes-native-production.js";
 
@@ -287,12 +288,7 @@ for (const backend of ["sqlite", "postgres"] as const)
           (await f.source()).view.state.object!.versionRef,
           firstVersion,
         );
-        const input = app.page.getByRole("textbox", {
-          name: "AI 输入内容",
-          exact: true,
-        });
-        if (!(await input.isVisible()))
-          await app.page.keyboard.press("Control+j");
+        const input = await openNotesNativeInput(app.page);
         await input.fill("原生本窗口未发送草稿\n保留原稿");
         const beforeCompose = await app.stored();
         await restored.guest.locator("#compose").click();
