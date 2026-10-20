@@ -1,0 +1,8 @@
+# Integrity-pinned upstream archives retain their exact original bytes (some
+# Windows packages publish CRLF or trailing blank lines). Do not normalize them.
+npm/*.txt -text whitespace=-blank-at-eol,-blank-at-eof
+
+# Existing reviewed supplements are LF source files on every checkout.
+LGPL-3.0.txt text eol=lf
+GPL-3.0.txt text eol=lf
+sharp-libvips-1.3.4/THIRD-PARTY-NOTICES.md text eol=lf

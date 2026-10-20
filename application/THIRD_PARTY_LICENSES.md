@@ -9,276 +9,276 @@ This bundle covers locked production npm dependencies and the Electron package u
 
 | Package | Declared license | Included texts |
 |---|---|---|
-| `@aws-sdk/checksums 3.1001.1` | `Apache-2.0` | L022 |
-| `@aws-sdk/client-s3 3.1141.0` | `Apache-2.0` | L091 |
-| `@aws-sdk/core 3.978.1` | `Apache-2.0` | L108 |
-| `@aws-sdk/credential-provider-env 3.972.72` | `Apache-2.0` | L091 |
-| `@aws-sdk/credential-provider-http 3.972.74` | `Apache-2.0` | L084 |
-| `@aws-sdk/credential-provider-ini 3.973.17` | `Apache-2.0` | L091 |
-| `@aws-sdk/credential-provider-login 3.972.79` | `Apache-2.0` | L084 |
-| `@aws-sdk/credential-provider-node 3.972.84` | `Apache-2.0` | L091 |
-| `@aws-sdk/credential-provider-process 3.972.72` | `Apache-2.0` | L022 |
-| `@aws-sdk/credential-provider-sso 3.973.16` | `Apache-2.0` | L022 |
-| `@aws-sdk/credential-provider-web-identity 3.972.78` | `Apache-2.0` | L022 |
-| `@aws-sdk/middleware-sdk-s3 3.972.77` | `Apache-2.0` | L022 |
-| `@aws-sdk/nested-clients 3.997.46` | `Apache-2.0` | L084 |
-| `@aws-sdk/signature-v4-multi-region 3.996.47` | `Apache-2.0` | L022 |
-| `@aws-sdk/token-providers 3.1138.0` | `Apache-2.0` | L091 |
-| `@aws-sdk/types 3.974.6` | `Apache-2.0` | L091 |
-| `@aws-sdk/xml-builder 3.972.41` | `Apache-2.0` | L091 |
-| `@aws/lambda-invoke-store 0.3.0` | `Apache-2.0` | L052 |
-| `@emnapi/runtime 1.11.3` | `MIT` | L099 |
-| `@img/colour 1.1.0` | `MIT` | L094 |
-| `@img/sharp-darwin-arm64 0.35.5` | `Apache-2.0` | L066 |
-| `@img/sharp-darwin-x64 0.35.5` | `Apache-2.0` | L084 |
-| `@img/sharp-freebsd-wasm32 0.35.5` | `Apache-2.0` | L084 |
-| `@img/sharp-libvips-darwin-arm64 1.3.4` | `LGPL-3.0-or-later` | L025, L075, L086 |
-| `@img/sharp-libvips-darwin-x64 1.3.4` | `LGPL-3.0-or-later` | L025, L075, L086 |
-| `@img/sharp-libvips-linux-arm 1.3.4` | `LGPL-3.0-or-later` | L025, L075, L086 |
-| `@img/sharp-libvips-linux-arm64 1.3.4` | `LGPL-3.0-or-later` | L025, L075, L086 |
-| `@img/sharp-libvips-linux-ppc64 1.3.4` | `LGPL-3.0-or-later` | L025, L075, L086 |
-| `@img/sharp-libvips-linux-riscv64 1.3.4` | `LGPL-3.0-or-later` | L025, L075, L086 |
-| `@img/sharp-libvips-linux-s390x 1.3.4` | `LGPL-3.0-or-later` | L025, L075, L086 |
-| `@img/sharp-libvips-linux-x64 1.3.4` | `LGPL-3.0-or-later` | L025, L075, L086 |
-| `@img/sharp-libvips-linuxmusl-arm64 1.3.4` | `LGPL-3.0-or-later` | L025, L075, L086 |
-| `@img/sharp-libvips-linuxmusl-x64 1.3.4` | `LGPL-3.0-or-later` | L025, L075, L086 |
-| `@img/sharp-linux-arm 0.35.5` | `Apache-2.0` | L084 |
-| `@img/sharp-linux-arm64 0.35.5` | `Apache-2.0` | L084 |
-| `@img/sharp-linux-ppc64 0.35.5` | `Apache-2.0` | L084 |
-| `@img/sharp-linux-riscv64 0.35.5` | `Apache-2.0` | L084 |
-| `@img/sharp-linux-s390x 0.35.5` | `Apache-2.0` | L084 |
-| `@img/sharp-linux-x64 0.35.5` | `Apache-2.0` | L084 |
-| `@img/sharp-linuxmusl-arm64 0.35.5` | `Apache-2.0` | L084 |
-| `@img/sharp-linuxmusl-x64 0.35.5` | `Apache-2.0` | L084 |
-| `@img/sharp-wasm32 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later AND MIT` | L084 |
-| `@img/sharp-webcontainers-wasm32 0.35.5` | `Apache-2.0` | L084 |
-| `@img/sharp-win32-arm64 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L084 |
-| `@img/sharp-win32-ia32 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L084 |
-| `@img/sharp-win32-x64 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L084 |
-| `@napi-rs/canvas 1.0.8` | `MIT` | L096 |
-| `@napi-rs/canvas-android-arm64 1.0.8` | `MIT` | L096 |
-| `@napi-rs/canvas-darwin-arm64 1.0.8` | `MIT` | L096 |
-| `@napi-rs/canvas-darwin-x64 1.0.8` | `MIT` | L096 |
-| `@napi-rs/canvas-linux-arm-gnueabihf 1.0.8` | `MIT` | L096 |
-| `@napi-rs/canvas-linux-arm64-gnu 1.0.8` | `MIT` | L096 |
-| `@napi-rs/canvas-linux-arm64-musl 1.0.8` | `MIT` | L096 |
-| `@napi-rs/canvas-linux-riscv64-gnu 1.0.8` | `MIT` | L096 |
-| `@napi-rs/canvas-linux-x64-gnu 1.0.8` | `MIT` | L096 |
-| `@napi-rs/canvas-linux-x64-musl 1.0.8` | `MIT` | L096 |
-| `@napi-rs/canvas-win32-arm64-msvc 1.0.8` | `MIT` | L096 |
-| `@napi-rs/canvas-win32-x64-msvc 1.0.8` | `MIT` | L096 |
-| `@paddleocr/paddleocr-js 0.4.2` | `Apache-2.0` | L088 |
-| `@protobufjs/aspromise 1.1.2` | `BSD-3-Clause` | L035 |
-| `@protobufjs/base64 1.1.2` | `BSD-3-Clause` | L035 |
-| `@protobufjs/codegen 2.0.5` | `BSD-3-Clause` | L035 |
-| `@protobufjs/eventemitter 1.1.1` | `BSD-3-Clause` | L035 |
-| `@protobufjs/fetch 1.1.1` | `BSD-3-Clause` | L035 |
-| `@protobufjs/float 1.0.2` | `BSD-3-Clause` | L035 |
-| `@protobufjs/path 1.1.2` | `BSD-3-Clause` | L035 |
-| `@protobufjs/pool 1.1.0` | `BSD-3-Clause` | L035 |
-| `@protobufjs/utf8 1.1.2` | `BSD-3-Clause` | L035 |
-| `@smithy/core 3.35.0` | `Apache-2.0` | L022 |
-| `@smithy/credential-provider-imds 4.5.2` | `Apache-2.0` | L091 |
-| `@smithy/fetch-http-handler 5.8.0` | `Apache-2.0` | L091 |
-| `@smithy/node-http-handler 4.12.1` | `Apache-2.0` | L091 |
-| `@smithy/signature-v4 5.7.4` | `Apache-2.0` | L091 |
-| `@smithy/types 4.19.0` | `Apache-2.0` | L022 |
-| `@techstark/opencv-js 4.10.0-release.1` | `Apache-2.0` | L017 |
-| `@types/debug 4.1.13` | `MIT` | L118 |
-| `@types/estree 1.0.9` | `MIT` | L118 |
-| `@types/estree-jsx 1.0.5` | `MIT` | L118 |
-| `@types/hast 3.0.5` | `MIT` | L118 |
-| `@types/mdast 4.0.4` | `MIT` | L118 |
-| `@types/ms 2.1.0` | `MIT` | L118 |
-| `@types/node 24.13.3` | `MIT` | L118 |
-| `@types/react 19.2.18` | `MIT` | L118 |
-| `@types/unist 2.0.11` | `MIT` | L118 |
-| `@types/unist 3.0.3` | `MIT` | L118 |
-| `@ungap/structured-clone 1.4.0` | `ISC` | L016 |
-| `@xmldom/xmldom 0.8.15` | `MIT` | L040 |
-| `@xmldom/xmldom 0.9.12` | `MIT` | L040 |
-| `@xterm/xterm 6.0.0` | `MIT` | L024 |
-| `Catppuccin palette snapshot-2026-10-16` | `MIT` | L090 |
-| `argparse 2.0.1` | `Python-2.0` | L056 |
-| `bail 2.0.2` | `MIT` | L081 |
-| `base64-js 1.5.1` | `MIT` | L083 |
-| `bluebird 3.4.7` | `MIT` | L097 |
+| `@aws-sdk/checksums 3.1001.1` | `Apache-2.0` | L023 |
+| `@aws-sdk/client-s3 3.1141.0` | `Apache-2.0` | L107 |
+| `@aws-sdk/core 3.978.1` | `Apache-2.0` | L125 |
+| `@aws-sdk/credential-provider-env 3.972.72` | `Apache-2.0` | L107 |
+| `@aws-sdk/credential-provider-http 3.972.74` | `Apache-2.0` | L099 |
+| `@aws-sdk/credential-provider-ini 3.973.17` | `Apache-2.0` | L107 |
+| `@aws-sdk/credential-provider-login 3.972.79` | `Apache-2.0` | L099 |
+| `@aws-sdk/credential-provider-node 3.972.84` | `Apache-2.0` | L107 |
+| `@aws-sdk/credential-provider-process 3.972.72` | `Apache-2.0` | L023 |
+| `@aws-sdk/credential-provider-sso 3.973.16` | `Apache-2.0` | L023 |
+| `@aws-sdk/credential-provider-web-identity 3.972.78` | `Apache-2.0` | L023 |
+| `@aws-sdk/middleware-sdk-s3 3.972.77` | `Apache-2.0` | L023 |
+| `@aws-sdk/nested-clients 3.997.46` | `Apache-2.0` | L099 |
+| `@aws-sdk/signature-v4-multi-region 3.996.47` | `Apache-2.0` | L023 |
+| `@aws-sdk/token-providers 3.1138.0` | `Apache-2.0` | L107 |
+| `@aws-sdk/types 3.974.6` | `Apache-2.0` | L107 |
+| `@aws-sdk/xml-builder 3.972.41` | `Apache-2.0` | L107 |
+| `@aws/lambda-invoke-store 0.3.0` | `Apache-2.0` | L060 |
+| `@emnapi/runtime 1.11.3` | `MIT` | L128 |
+| `@img/colour 1.1.0` | `MIT` | L110 |
+| `@img/sharp-darwin-arm64 0.35.5` | `Apache-2.0` | L070, L077 |
+| `@img/sharp-darwin-x64 0.35.5` | `Apache-2.0` | L077, L103 |
+| `@img/sharp-freebsd-wasm32 0.35.5` | `Apache-2.0` | L059, L077 |
+| `@img/sharp-libvips-darwin-arm64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
+| `@img/sharp-libvips-darwin-x64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
+| `@img/sharp-libvips-linux-arm 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
+| `@img/sharp-libvips-linux-arm64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
+| `@img/sharp-libvips-linux-ppc64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
+| `@img/sharp-libvips-linux-riscv64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
+| `@img/sharp-libvips-linux-s390x 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
+| `@img/sharp-libvips-linux-x64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
+| `@img/sharp-libvips-linuxmusl-arm64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
+| `@img/sharp-libvips-linuxmusl-x64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
+| `@img/sharp-linux-arm 0.35.5` | `Apache-2.0` | L046, L077 |
+| `@img/sharp-linux-arm64 0.35.5` | `Apache-2.0` | L077, L129 |
+| `@img/sharp-linux-ppc64 0.35.5` | `Apache-2.0` | L077, L120 |
+| `@img/sharp-linux-riscv64 0.35.5` | `Apache-2.0` | L052, L077 |
+| `@img/sharp-linux-s390x 0.35.5` | `Apache-2.0` | L033, L077 |
+| `@img/sharp-linux-x64 0.35.5` | `Apache-2.0` | L034, L077 |
+| `@img/sharp-linuxmusl-arm64 0.35.5` | `Apache-2.0` | L077, L094 |
+| `@img/sharp-linuxmusl-x64 0.35.5` | `Apache-2.0` | L077, L135 |
+| `@img/sharp-wasm32 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later AND MIT` | L014, L026, L038, L077, L084, L101 |
+| `@img/sharp-webcontainers-wasm32 0.35.5` | `Apache-2.0` | L076, L077 |
+| `@img/sharp-win32-arm64 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L026, L077, L097, L101 |
+| `@img/sharp-win32-ia32 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L026, L043, L077, L101 |
+| `@img/sharp-win32-x64 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L026, L064, L077, L101 |
+| `@napi-rs/canvas 1.0.8` | `MIT` | L112 |
+| `@napi-rs/canvas-android-arm64 1.0.8` | `MIT` | L112 |
+| `@napi-rs/canvas-darwin-arm64 1.0.8` | `MIT` | L112 |
+| `@napi-rs/canvas-darwin-x64 1.0.8` | `MIT` | L112 |
+| `@napi-rs/canvas-linux-arm-gnueabihf 1.0.8` | `MIT` | L112 |
+| `@napi-rs/canvas-linux-arm64-gnu 1.0.8` | `MIT` | L112 |
+| `@napi-rs/canvas-linux-arm64-musl 1.0.8` | `MIT` | L112 |
+| `@napi-rs/canvas-linux-riscv64-gnu 1.0.8` | `MIT` | L112 |
+| `@napi-rs/canvas-linux-x64-gnu 1.0.8` | `MIT` | L112 |
+| `@napi-rs/canvas-linux-x64-musl 1.0.8` | `MIT` | L112 |
+| `@napi-rs/canvas-win32-arm64-msvc 1.0.8` | `MIT` | L112 |
+| `@napi-rs/canvas-win32-x64-msvc 1.0.8` | `MIT` | L112 |
+| `@paddleocr/paddleocr-js 0.4.2` | `Apache-2.0` | L104 |
+| `@protobufjs/aspromise 1.1.2` | `BSD-3-Clause` | L039 |
+| `@protobufjs/base64 1.1.2` | `BSD-3-Clause` | L039 |
+| `@protobufjs/codegen 2.0.5` | `BSD-3-Clause` | L039 |
+| `@protobufjs/eventemitter 1.1.1` | `BSD-3-Clause` | L039 |
+| `@protobufjs/fetch 1.1.1` | `BSD-3-Clause` | L039 |
+| `@protobufjs/float 1.0.2` | `BSD-3-Clause` | L039 |
+| `@protobufjs/path 1.1.2` | `BSD-3-Clause` | L039 |
+| `@protobufjs/pool 1.1.0` | `BSD-3-Clause` | L039 |
+| `@protobufjs/utf8 1.1.2` | `BSD-3-Clause` | L039 |
+| `@smithy/core 3.35.0` | `Apache-2.0` | L023 |
+| `@smithy/credential-provider-imds 4.5.2` | `Apache-2.0` | L107 |
+| `@smithy/fetch-http-handler 5.8.0` | `Apache-2.0` | L107 |
+| `@smithy/node-http-handler 4.12.1` | `Apache-2.0` | L107 |
+| `@smithy/signature-v4 5.7.4` | `Apache-2.0` | L107 |
+| `@smithy/types 4.19.0` | `Apache-2.0` | L023 |
+| `@techstark/opencv-js 4.10.0-release.1` | `Apache-2.0` | L018 |
+| `@types/debug 4.1.13` | `MIT` | L138 |
+| `@types/estree 1.0.9` | `MIT` | L138 |
+| `@types/estree-jsx 1.0.5` | `MIT` | L138 |
+| `@types/hast 3.0.5` | `MIT` | L138 |
+| `@types/mdast 4.0.4` | `MIT` | L138 |
+| `@types/ms 2.1.0` | `MIT` | L138 |
+| `@types/node 24.13.3` | `MIT` | L138 |
+| `@types/react 19.2.18` | `MIT` | L138 |
+| `@types/unist 2.0.11` | `MIT` | L138 |
+| `@types/unist 3.0.3` | `MIT` | L138 |
+| `@ungap/structured-clone 1.4.0` | `ISC` | L017 |
+| `@xmldom/xmldom 0.8.15` | `MIT` | L045 |
+| `@xmldom/xmldom 0.9.12` | `MIT` | L045 |
+| `@xterm/xterm 6.0.0` | `MIT` | L025 |
+| `Catppuccin palette snapshot-2026-10-16` | `MIT` | L106 |
+| `argparse 2.0.1` | `Python-2.0` | L065 |
+| `bail 2.0.2` | `MIT` | L093 |
+| `base64-js 1.5.1` | `MIT` | L098 |
+| `bluebird 3.4.7` | `MIT` | L113 |
 | `bowser 2.14.1` | `MIT` | L001 |
-| `ccount 2.0.1` | `MIT` | L081 |
-| `character-entities 2.0.2` | `MIT` | L081 |
-| `character-entities-html4 2.1.0` | `MIT` | L081 |
-| `character-entities-legacy 3.0.0` | `MIT` | L081 |
-| `character-reference-invalid 2.0.1` | `MIT` | L081 |
-| `clipper-lib 6.4.2` | `BSL` | L021, L057 |
-| `comma-separated-tokens 2.0.3` | `MIT` | L092 |
-| `core-util-is 1.0.3` | `MIT` | L058 |
-| `csstype 3.2.3` | `MIT` | L041 |
+| `ccount 2.0.1` | `MIT` | L093 |
+| `character-entities 2.0.2` | `MIT` | L093 |
+| `character-entities-html4 2.1.0` | `MIT` | L093 |
+| `character-entities-legacy 3.0.0` | `MIT` | L093 |
+| `character-reference-invalid 2.0.1` | `MIT` | L093 |
+| `clipper-lib 6.4.2` | `BSL` | L022, L066 |
+| `comma-separated-tokens 2.0.3` | `MIT` | L108 |
+| `core-util-is 1.0.3` | `MIT` | L067 |
+| `csstype 3.2.3` | `MIT` | L047 |
 | `dayjs 1.11.23` | `MIT` | L009 |
-| `debug 4.4.3` | `MIT` | L093 |
-| `decode-named-character-reference 1.3.0` | `MIT` | L107 |
-| `deepmerge 4.3.1` | `MIT` | L074 |
-| `dequal 2.0.3` | `MIT` | L087 |
-| `detect-libc 2.1.2` | `Apache-2.0` | L043 |
+| `debug 4.4.3` | `MIT` | L109 |
+| `decode-named-character-reference 1.3.0` | `MIT` | L124 |
+| `deepmerge 4.3.1` | `MIT` | L086 |
+| `dequal 2.0.3` | `MIT` | L102 |
+| `detect-libc 2.1.2` | `Apache-2.0` | L049 |
 | `devlop 1.1.0` | `MIT` | L012 |
-| `dingbat-to-unicode 1.0.2` | `BSD-2-Clause` | L112 |
-| `dom-serializer 3.1.1` | `MIT` | L064 |
+| `dingbat-to-unicode 1.0.2` | `BSD-2-Clause` | L131 |
+| `dom-serializer 3.1.1` | `MIT` | L074 |
 | `domelementtype 3.0.0` | `BSD-2-Clause` | L004 |
 | `domhandler 6.0.1` | `BSD-2-Clause` | L004 |
 | `domutils 4.0.2` | `BSD-2-Clause` | L004 |
-| `duck 0.1.12` | `BSD` | L062 |
-| `electron 44.2.0` | `MIT` | L026 |
+| `duck 0.1.12` | `BSD` | L072 |
+| `electron 44.2.0` | `MIT` | L027 |
 | `entities 8.1.0` | `BSD-2-Clause` | L004 |
 | `escape-string-regexp 4.0.0` | `MIT` | L008 |
 | `escape-string-regexp 5.0.0` | `MIT` | L008 |
 | `estree-util-is-identifier-name 3.0.0` | `MIT` | L006 |
-| `extend 3.0.2` | `MIT` | L073 |
-| `flatbuffers 25.9.23` | `Apache-2.0` | L017 |
+| `extend 3.0.2` | `MIT` | L085 |
+| `flatbuffers 25.9.23` | `Apache-2.0` | L018 |
 | `get-east-asian-width 1.6.0` | `MIT` | L008 |
-| `guid-typescript 1.0.9` | `ISC` | L053 |
-| `hast-util-to-html 9.0.5` | `MIT` | L107 |
-| `hast-util-to-jsx-runtime 2.3.6` | `MIT` | L107 |
-| `hast-util-whitespace 3.0.0` | `MIT` | L092 |
-| `html-url-attributes 3.0.1` | `MIT` | L020 |
-| `html-void-elements 3.0.0` | `MIT` | L092 |
-| `htmlparser2 12.0.0` | `MIT` | L055 |
-| `immediate 3.0.6` | `MIT` | L111 |
-| `inherits 2.0.4` | `ISC` | L027 |
-| `inline-style-parser 0.2.7` | `MIT` | L065 |
-| `is-alphabetical 2.0.1` | `MIT` | L092 |
-| `is-alphanumerical 2.0.1` | `MIT` | L092 |
-| `is-decimal 2.0.1` | `MIT` | L092 |
-| `is-hexadecimal 2.0.1` | `MIT` | L092 |
+| `guid-typescript 1.0.9` | `ISC` | L061 |
+| `hast-util-to-html 9.0.5` | `MIT` | L124 |
+| `hast-util-to-jsx-runtime 2.3.6` | `MIT` | L124 |
+| `hast-util-whitespace 3.0.0` | `MIT` | L108 |
+| `html-url-attributes 3.0.1` | `MIT` | L021 |
+| `html-void-elements 3.0.0` | `MIT` | L108 |
+| `htmlparser2 12.0.0` | `MIT` | L063 |
+| `immediate 3.0.6` | `MIT` | L130 |
+| `inherits 2.0.4` | `ISC` | L028 |
+| `inline-style-parser 0.2.7` | `MIT` | L075 |
+| `is-alphabetical 2.0.1` | `MIT` | L108 |
+| `is-alphanumerical 2.0.1` | `MIT` | L108 |
+| `is-decimal 2.0.1` | `MIT` | L108 |
+| `is-hexadecimal 2.0.1` | `MIT` | L108 |
 | `is-plain-obj 4.1.0` | `MIT` | L008 |
 | `is-plain-object 5.1.0` | `MIT` | L007 |
-| `isarray 1.0.0` | `MIT` | L099 |
-| `js-yaml 4.3.2` | `MIT` | L078 |
-| `jszip 3.10.2` | `(MIT OR GPL-3.0-or-later)` | L039 |
-| `launder 1.7.1` | `MIT` | L099 |
+| `isarray 1.0.0` | `MIT` | L115 |
+| `js-yaml 4.3.2` | `MIT` | L090 |
+| `jszip 3.10.2` | `(MIT OR GPL-3.0-or-later)` | L044 |
+| `launder 1.7.2` | `MIT` | L096 |
 | `lie 3.3.0` | `MIT` | L002 |
-| `long 5.3.2` | `Apache-2.0` | L017 |
-| `longest-streak 3.1.0` | `MIT` | L032 |
-| `lop 0.4.2` | `BSD-2-Clause` | L062 |
-| `lucide-react 1.42.0` | `ISC` | L109 |
-| `mammoth 1.12.3` | `BSD-2-Clause` | L062 |
-| `markdown-table 3.0.4` | `MIT` | L107 |
-| `mdast-util-find-and-replace 3.0.2` | `MIT` | L107 |
-| `mdast-util-from-markdown 2.0.3` | `MIT` | L107 |
-| `mdast-util-gfm 3.1.0` | `MIT` | L107 |
+| `long 5.3.2` | `Apache-2.0` | L018 |
+| `longest-streak 3.1.0` | `MIT` | L035 |
+| `lop 0.4.2` | `BSD-2-Clause` | L072 |
+| `lucide-react 1.42.0` | `ISC` | L126 |
+| `mammoth 1.12.3` | `BSD-2-Clause` | L072 |
+| `markdown-table 3.0.4` | `MIT` | L124 |
+| `mdast-util-find-and-replace 3.0.2` | `MIT` | L124 |
+| `mdast-util-from-markdown 2.0.3` | `MIT` | L124 |
+| `mdast-util-gfm 3.1.0` | `MIT` | L124 |
 | `mdast-util-gfm-autolink-literal 2.0.1` | `MIT` | L006 |
-| `mdast-util-gfm-footnote 2.1.0` | `MIT` | L107 |
+| `mdast-util-gfm-footnote 2.1.0` | `MIT` | L124 |
 | `mdast-util-gfm-strikethrough 2.0.0` | `MIT` | L006 |
 | `mdast-util-gfm-table 2.0.0` | `MIT` | L006 |
 | `mdast-util-gfm-task-list-item 2.0.0` | `MIT` | L006 |
 | `mdast-util-mdx-expression 2.0.1` | `MIT` | L006 |
 | `mdast-util-mdx-jsx 3.2.0` | `MIT` | L006 |
 | `mdast-util-mdxjs-esm 2.0.1` | `MIT` | L006 |
-| `mdast-util-phrasing 4.1.0` | `MIT` | L100 |
-| `mdast-util-to-hast 13.2.1` | `MIT` | L092 |
-| `mdast-util-to-markdown 2.1.2` | `MIT` | L107 |
-| `mdast-util-to-markdown-cjk-friendly 1.0.0` | `MIT` | L070 |
-| `mdast-util-to-string 4.0.0` | `MIT` | L081 |
-| `micromark 4.0.2` | `MIT` | L107 |
-| `micromark-core-commonmark 2.0.3` | `MIT` | L107 |
-| `micromark-extension-cjk-friendly 2.0.1` | `MIT` | L080 |
-| `micromark-extension-cjk-friendly-util 3.0.1` | `MIT` | L031 |
+| `mdast-util-phrasing 4.1.0` | `MIT` | L116 |
+| `mdast-util-to-hast 13.2.1` | `MIT` | L108 |
+| `mdast-util-to-markdown 2.1.2` | `MIT` | L124 |
+| `mdast-util-to-markdown-cjk-friendly 1.0.0` | `MIT` | L081 |
+| `mdast-util-to-string 4.0.0` | `MIT` | L093 |
+| `micromark 4.0.2` | `MIT` | L124 |
+| `micromark-core-commonmark 2.0.3` | `MIT` | L124 |
+| `micromark-extension-cjk-friendly 2.0.1` | `MIT` | L092 |
+| `micromark-extension-cjk-friendly-util 3.0.1` | `MIT` | L032 |
 | `micromark-extension-gfm 3.0.0` | `MIT` | L006 |
 | `micromark-extension-gfm-autolink-literal 2.1.0` | `MIT` | L006 |
-| `micromark-extension-gfm-footnote 2.1.0` | `MIT` | L036 |
+| `micromark-extension-gfm-footnote 2.1.0` | `MIT` | L040 |
 | `micromark-extension-gfm-strikethrough 2.1.0` | `MIT` | L006 |
-| `micromark-extension-gfm-table 2.1.1` | `MIT` | L107 |
+| `micromark-extension-gfm-table 2.1.1` | `MIT` | L124 |
 | `micromark-extension-gfm-tagfilter 2.0.0` | `MIT` | L006 |
 | `micromark-extension-gfm-task-list-item 2.1.0` | `MIT` | L006 |
-| `micromark-factory-destination 2.0.1` | `MIT` | L107 |
-| `micromark-factory-label 2.0.1` | `MIT` | L107 |
-| `micromark-factory-space 2.0.1` | `MIT` | L107 |
-| `micromark-factory-title 2.0.1` | `MIT` | L107 |
-| `micromark-factory-whitespace 2.0.1` | `MIT` | L107 |
-| `micromark-util-character 2.1.1` | `MIT` | L107 |
-| `micromark-util-chunked 2.0.1` | `MIT` | L107 |
-| `micromark-util-classify-character 2.0.1` | `MIT` | L107 |
-| `micromark-util-combine-extensions 2.0.1` | `MIT` | L107 |
-| `micromark-util-decode-numeric-character-reference 2.0.2` | `MIT` | L107 |
-| `micromark-util-decode-string 2.0.1` | `MIT` | L107 |
-| `micromark-util-encode 2.0.1` | `MIT` | L107 |
-| `micromark-util-html-tag-name 2.0.1` | `MIT` | L107 |
-| `micromark-util-normalize-identifier 2.0.1` | `MIT` | L107 |
-| `micromark-util-resolve-all 2.0.1` | `MIT` | L107 |
-| `micromark-util-sanitize-uri 2.0.1` | `MIT` | L107 |
-| `micromark-util-subtokenize 2.1.0` | `MIT` | L107 |
-| `micromark-util-symbol 2.0.1` | `MIT` | L107 |
-| `micromark-util-types 2.0.2` | `MIT` | L107 |
-| `ms 2.1.3` | `MIT` | L104 |
-| `nanoid 3.3.18` | `MIT` | L023 |
-| `onnxruntime-common 1.30.0` | `MIT` | L105 |
-| `onnxruntime-web 1.30.0` | `MIT` | L077, L105 |
-| `option 0.2.4` | `BSD-2-Clause` | L062 |
-| `pako 1.0.11` | `(MIT AND Zlib)` | L063 |
-| `parse-entities 4.0.2` | `MIT` | L082 |
-| `parse-srcset 1.0.2` | `MIT` | L059 |
-| `parse5 8.0.1` | `MIT` | L019 |
-| `path-is-absolute 1.0.1` | `MIT` | L018 |
-| `pdfjs-dist 6.3.289` | `Apache-2.0` | L010, L011, L028, L030, L033, L037, L047, L061, L067, L089, L103 |
-| `pend 1.2.0` | `MIT` | L060 |
-| `pg 8.23.0` | `MIT` | L071 |
-| `pg-cloudflare 1.4.0` | `MIT` | L071 |
-| `pg-connection-string 2.14.0` | `MIT` | L015 |
+| `micromark-factory-destination 2.0.1` | `MIT` | L124 |
+| `micromark-factory-label 2.0.1` | `MIT` | L124 |
+| `micromark-factory-space 2.0.1` | `MIT` | L124 |
+| `micromark-factory-title 2.0.1` | `MIT` | L124 |
+| `micromark-factory-whitespace 2.0.1` | `MIT` | L124 |
+| `micromark-util-character 2.1.1` | `MIT` | L124 |
+| `micromark-util-chunked 2.0.1` | `MIT` | L124 |
+| `micromark-util-classify-character 2.0.1` | `MIT` | L124 |
+| `micromark-util-combine-extensions 2.0.1` | `MIT` | L124 |
+| `micromark-util-decode-numeric-character-reference 2.0.2` | `MIT` | L124 |
+| `micromark-util-decode-string 2.0.1` | `MIT` | L124 |
+| `micromark-util-encode 2.0.1` | `MIT` | L124 |
+| `micromark-util-html-tag-name 2.0.1` | `MIT` | L124 |
+| `micromark-util-normalize-identifier 2.0.1` | `MIT` | L124 |
+| `micromark-util-resolve-all 2.0.1` | `MIT` | L124 |
+| `micromark-util-sanitize-uri 2.0.1` | `MIT` | L124 |
+| `micromark-util-subtokenize 2.1.0` | `MIT` | L124 |
+| `micromark-util-symbol 2.0.1` | `MIT` | L124 |
+| `micromark-util-types 2.0.2` | `MIT` | L124 |
+| `ms 2.1.3` | `MIT` | L121 |
+| `nanoid 3.3.18` | `MIT` | L024 |
+| `onnxruntime-common 1.30.0` | `MIT` | L122 |
+| `onnxruntime-web 1.30.0` | `MIT` | L089, L122 |
+| `option 0.2.4` | `BSD-2-Clause` | L072 |
+| `pako 1.0.11` | `(MIT AND Zlib)` | L073 |
+| `parse-entities 4.0.2` | `MIT` | L095 |
+| `parse-srcset 1.0.2` | `MIT` | L068 |
+| `parse5 8.0.1` | `MIT` | L020 |
+| `path-is-absolute 1.0.1` | `MIT` | L019 |
+| `pdfjs-dist 6.3.289` | `Apache-2.0` | L010, L011, L029, L031, L036, L041, L054, L071, L078, L105, L119 |
+| `pend 1.2.0` | `MIT` | L069 |
+| `pg 8.23.0` | `MIT` | L082 |
+| `pg-cloudflare 1.4.0` | `MIT` | L082 |
+| `pg-connection-string 2.14.0` | `MIT` | L016 |
 | `pg-int8 1.0.1` | `ISC` | L013 |
-| `pg-pool 3.14.0` | `MIT` | L044 |
-| `pg-protocol 1.16.0` | `MIT` | L071 |
-| `pg-types 2.2.0` | `MIT` | L099 |
-| `pgpass 1.0.5` | `MIT` | L099 |
-| `picocolors 1.1.1` | `ISC` | L115 |
-| `platform 1.3.6` | `MIT` | L046 |
-| `postcss 8.5.28` | `MIT` | L069 |
-| `postgres-array 2.0.0` | `MIT` | L048 |
-| `postgres-bytea 1.0.1` | `MIT` | L048 |
-| `postgres-date 1.0.7` | `MIT` | L048 |
-| `postgres-interval 1.2.0` | `MIT` | L048 |
-| `process-nextick-args 2.0.1` | `MIT` | L110 |
-| `property-information 7.2.0` | `MIT` | L082 |
-| `protobufjs 7.6.6` | `BSD-3-Clause` | L049 |
-| `react 19.2.8` | `MIT` | L085 |
-| `react-dom 19.2.8` | `MIT` | L085 |
-| `react-markdown 10.1.0` | `MIT` | L076 |
-| `readable-stream 2.3.8` | `MIT` | L034 |
-| `remark-cjk-friendly 2.3.1` | `MIT` | L070 |
-| `remark-gfm 4.0.1` | `MIT` | L107 |
-| `remark-parse 11.0.0` | `MIT` | L114 |
-| `remark-rehype 11.1.2` | `MIT` | L107 |
-| `remark-stringify 11.0.0` | `MIT` | L114 |
-| `safe-buffer 5.1.2` | `MIT` | L098 |
-| `sanitize-html 2.17.7` | `MIT` | L054 |
-| `scheduler 0.27.0` | `MIT` | L085 |
+| `pg-pool 3.14.0` | `MIT` | L050 |
+| `pg-protocol 1.16.0` | `MIT` | L082 |
+| `pg-types 2.2.0` | `MIT` | L115 |
+| `pgpass 1.0.5` | `MIT` | L115 |
+| `picocolors 1.1.1` | `ISC` | L134 |
+| `platform 1.3.6` | `MIT` | L053 |
+| `postcss 8.5.28` | `MIT` | L080 |
+| `postgres-array 2.0.0` | `MIT` | L055 |
+| `postgres-bytea 1.0.1` | `MIT` | L055 |
+| `postgres-date 1.0.7` | `MIT` | L055 |
+| `postgres-interval 1.2.0` | `MIT` | L055 |
+| `process-nextick-args 2.0.1` | `MIT` | L127 |
+| `property-information 7.2.0` | `MIT` | L095 |
+| `protobufjs 7.6.6` | `BSD-3-Clause` | L056 |
+| `react 19.2.8` | `MIT` | L100 |
+| `react-dom 19.2.8` | `MIT` | L100 |
+| `react-markdown 10.1.0` | `MIT` | L088 |
+| `readable-stream 2.3.8` | `MIT` | L037 |
+| `remark-cjk-friendly 2.3.1` | `MIT` | L081 |
+| `remark-gfm 4.0.1` | `MIT` | L124 |
+| `remark-parse 11.0.0` | `MIT` | L133 |
+| `remark-rehype 11.1.2` | `MIT` | L124 |
+| `remark-stringify 11.0.0` | `MIT` | L133 |
+| `safe-buffer 5.1.2` | `MIT` | L114 |
+| `sanitize-html 2.18.0` | `MIT` | L062 |
+| `scheduler 0.27.0` | `MIT` | L100 |
 | `semver 7.8.5` | `ISC` | L003 |
-| `setimmediate 1.0.5` | `MIT` | L106 |
-| `sharp 0.35.5` | `Apache-2.0` | L066 |
-| `source-map-js 1.2.2` | `BSD-3-Clause` | L045 |
-| `space-separated-tokens 2.0.2` | `MIT` | L092 |
-| `split2 4.2.0` | `ISC` | L072 |
-| `string_decoder 1.1.1` | `MIT` | L034 |
-| `stringify-entities 4.0.4` | `MIT` | L032 |
-| `style-to-js 1.1.21` | `MIT` | L079 |
-| `style-to-object 1.0.14` | `MIT` | L014 |
-| `trim-lines 3.0.1` | `MIT` | L032 |
-| `trough 2.2.0` | `MIT` | L101 |
-| `tslib 2.8.1` | `0BSD` | L005, L050 |
-| `underscore 1.13.8` | `MIT` | L029 |
-| `undici-types 7.18.2` | `MIT` | L116 |
-| `unified 11.0.5` | `MIT` | L102 |
-| `unist-util-is 6.0.1` | `MIT` | L068 |
-| `unist-util-position 5.0.0` | `MIT` | L081 |
-| `unist-util-stringify-position 4.0.0` | `MIT` | L092 |
-| `unist-util-visit 5.1.0` | `MIT` | L081 |
-| `unist-util-visit-parents 6.0.2` | `MIT` | L092 |
-| `util-deprecate 1.0.2` | `MIT` | L117 |
-| `vfile 6.0.3` | `MIT` | L102 |
-| `vfile-message 4.0.3` | `MIT` | L107 |
-| `ws 8.21.3` | `MIT` | L051 |
-| `xmlbuilder 10.1.1` | `MIT` | L042 |
-| `xtend 4.0.2` | `MIT` | L038 |
-| `yauzl 3.4.0` | `MIT` | L095 |
-| `zod 4.5.4` | `MIT` | L113 |
-| `zwitch 2.0.4` | `MIT` | L092 |
+| `setimmediate 1.0.5` | `MIT` | L123 |
+| `sharp 0.35.5` | `Apache-2.0` | L077 |
+| `source-map-js 1.2.2` | `BSD-3-Clause` | L051 |
+| `space-separated-tokens 2.0.2` | `MIT` | L108 |
+| `split2 4.2.0` | `ISC` | L083 |
+| `string_decoder 1.1.1` | `MIT` | L037 |
+| `stringify-entities 4.0.4` | `MIT` | L035 |
+| `style-to-js 1.1.21` | `MIT` | L091 |
+| `style-to-object 1.0.14` | `MIT` | L015 |
+| `trim-lines 3.0.1` | `MIT` | L035 |
+| `trough 2.2.0` | `MIT` | L117 |
+| `tslib 2.8.1` | `0BSD` | L005, L057 |
+| `underscore 1.13.8` | `MIT` | L030 |
+| `undici-types 7.18.2` | `MIT` | L136 |
+| `unified 11.0.5` | `MIT` | L118 |
+| `unist-util-is 6.0.1` | `MIT` | L079 |
+| `unist-util-position 5.0.0` | `MIT` | L093 |
+| `unist-util-stringify-position 4.0.0` | `MIT` | L108 |
+| `unist-util-visit 5.1.0` | `MIT` | L093 |
+| `unist-util-visit-parents 6.0.2` | `MIT` | L108 |
+| `util-deprecate 1.0.2` | `MIT` | L137 |
+| `vfile 6.0.3` | `MIT` | L118 |
+| `vfile-message 4.0.3` | `MIT` | L124 |
+| `ws 8.21.3` | `MIT` | L058 |
+| `xmlbuilder 10.1.1` | `MIT` | L048 |
+| `xtend 4.0.2` | `MIT` | L042 |
+| `yauzl 3.4.0` | `MIT` | L111 |
+| `zod 4.5.4` | `MIT` | L132 |
+| `zwitch 2.0.4` | `MIT` | L108 |
 
 ## License texts
 
@@ -607,6 +607,621 @@ PERFORMANCE OF THIS SOFTWARE.
 
 ### L014
 
+Applies to: `@img/sharp-wasm32 0.35.5`
+
+~~~~text
+Contributors to Emscripten may optionally add themselves to this list of
+authors if they choose to do so. This is optional because the git history is
+good enough for that purpose, and in fact most projects do not maintain such a
+manual list.
+
+While the file is not necessary, to preserve the history of the project we are
+not removing it.
+
+(Authors keep copyright of their contributions, of course; they just grant
+a license to everyone to use it as detailed in LICENSE.)
+
+* Alon Zakai <alonzakai@gmail.com> (copyright owned by Mozilla Foundation and Google, Inc.)
+* Tim Dawborn <tim.dawborn@gmail.com>
+* Max Shawabkeh <max99x@gmail.com>
+* Sigmund Vik <sigmund_vik@yahoo.com>
+* Jeff Terrace <jterrace@gmail.com>
+* Benoit Tremblay <trembl.ben@gmail.com>
+* Andreas Bergmeier <abergmeier@gmx.net>
+* Ben Schwartz <bens@alum.mit.edu>
+* David Claughton <dave@eclecticdave.com>
+* David Yip <yipdw@member.fsf.org>
+* Julien Hamaide <julien.hamaide@gmail.com>
+* Ehsan Akhgari <ehsan.akhgari@gmail.com> (copyright owned by Mozilla Foundation)
+* Adrian Taylor <adrian@macrobug.com>
+* Richard Assar <richard.assar@gmail.com>
+* Nathan Hammond <emscripten@nathanhammond.com>
+* Behdad Esfahbod <behdad@behdad.org>
+* David Benjamin <davidben@mit.edu>
+* Pierre Renaux <pierre@talansoft.com>
+* Brian Anderson <banderson@mozilla.com>
+* Jon Bardin <diclophis@gmail.com>
+* Jukka Jylänki <jujjyl@gmail.com>
+* Aleksander Guryanov <caiiiycuk@gmail.com>
+* Chad Austin <chad@chadaustin.me> (copyright owned by IMVU)
+* nandhp <nandhp@gmail.com>
+* YeZhongWen <linghuye2.0@gmail.com>
+* Xingxing Pan <forandom@gmail.com>
+* Justin Kerk <dopefishjustin@gmail.com>
+* Andrea Bedini <andrea.bedini@gmail.com>
+* James Pike <totoro.friend@chilon.net>
+* Mokhtar Naamani <mokhtar.naamani@gmail.com>
+* Benjamin Stover <benjamin.stover@gmail.com>
+* Riccardo Magliocchetti <riccardo.magliocchetti@gmail.com>
+* Janus Troelsen <janus.troelsen@stud.tu-darmstadt.de>
+* Lars Schneider <lars.schneider@autodesk.com> (copyright owned by Autodesk, Inc.)
+* Joel Martin <github@martintribe.org>
+* Manuel Wellmann <manuel.wellmann@autodesk.com> (copyright owned by Autodesk, Inc.)
+* Xuejie Xiao <xxuejie@gmail.com>
+* Dominic Wong <dom@slowbunyip.org>
+* Alan Kligman <alan.kligman@gmail.com> (copyright owned by Mozilla Foundation)
+* Anthony Liot <wolfviking0@yahoo.com>
+* Michael Riss <Michael.Riss@gmx.de>
+* Jasper St. Pierre <jstpierre@mecheye.net>
+* Manuel Schölling <manuel.schoelling@gmx.de>
+* Bruce Mitchener, Jr. <bruce.mitchener@gmail.com>
+* Michael Bishop <mbtyke@gmail.com>
+* Roger Braun <roger@rogerbraun.net>
+* Vladimir Vukicevic <vladimir@pobox.com> (copyright owned by Mozilla Foundation)
+* Lorant Pinter <lorant.pinter@prezi.com>
+* Tobias Doerffel <tobias.doerffel@gmail.com>
+* Martin von Gagern <martin@von-gagern.net>
+* Ting-Yuan Huang <thuang@mozilla.com>
+* Joshua Granick <jgranick@blackberry.com>
+* Felix H. Dahlke <fhd@ubercode.de>
+* Éloi Rivard <azmeuk@gmail.com>
+* Alexander Gladysh <ag@logiceditor.com>
+* Arlo Breault <arlolra@gmail.com>
+* Jacob Lee <artdent@gmail.com> (copyright owned by Google, Inc.)
+* Joe Lee <jlee@imvu.com> (copyright owned by IMVU)
+* Andy Friesen <andy@imvu.com> (copyright owned by IMVU)
+* Bill Welden <bwelden@imvu.com> (copyright owned by IMVU)
+* Michael Ey <mey@imvu.com> (copyright owned by IMVU)
+* Llorens Marti Garcia <lgarcia@imvu.com> (copyright owned by IMVU)
+* Jinsuck Kim <jkim@imvu.com> (copyright owned by IMVU)
+* Todd Lee <tlee@imvu.com> (copyright owned by IMVU)
+* Anthony Pesch <inolen@gmail.com>
+* Robert Bragg <robert.bragg@intel.com> (copyright owned by Intel Corporation)
+* Sylvestre Ledru <sylvestre@debian.org>
+* Tom Fairfield <fairfield@cs.xu.edu>
+* Anthony J. Thibault <ajt@hyperlogic.org>
+* John Allwine <jallwine86@gmail.com>
+* Martin Gerhardy <martin.gerhardy@gmail.com>
+* James Gregory <jgregory@zynga.com> (copyright owned by Zynga, Inc.)
+* Dan Gohman <sunfish@google.com> (copyright owned by Google, Inc.)
+* Jeff Gilbert <jgilbert@mozilla.com> (copyright owned by Mozilla Foundation)
+* Frits Talbot <frits@metapathy.com>
+* Onno Jongbloed <hey@onnoj.net>
+* Jez Ng <me@jezng.com>
+* Marc Feeley <mfeeley@mozilla.com> (copyright owned by Mozilla Foundation)
+* Ludovic Perrine <jazzzz@gmail.com>
+* David Barksdale <david.barksdale@adcedosolutions.com>
+* Manfred Manik Nerurkar <nerurkar*at*made-apps.biz> (copyright owned by MADE, GmbH)
+* Joseph Gentle <me@josephg.com>
+* Douglas T. Crosher <dtc-moz@scieneer.com> (copyright owned by Mozilla Foundation)
+* Douglas T. Crosher <info@jsstats.com> (copyright owned by Scieneer Pty Ltd.)
+* Soeren Balko <soeren.balko@gmail.com> (copyright owned by Clipchamp Pty Ltd.)
+* Ryan Kelly (ryan@rfk.id.au)
+* Michael Lelli <toadking@toadking.com>
+* Yu Kobayashi <yukoba@accelart.jp>
+* Pin Zhang <zhangpin04@gmail.com>
+* Nick Bray <ncbray@chromium.org> (copyright owned by Google, Inc.)
+* Aidan Hobson Sayers <aidanhs@cantab.net>
+* Charlie Birks <admin@daftgames.net>
+* Ranger Harke <ranger.harke@autodesk.com> (copyright owned by Autodesk, Inc.)
+* Tobias Vrinssen <tobias@vrinssen.de>
+* Patrick R. Martin <patrick.martin.r@gmail.com>
+* Richard Quirk <richard.quirk@gmail.com>
+* Marcos Scriven <marcos@scriven.org>
+* Antoine Lambert <antoine.lambert33@gmail.com>
+* Daniel Aquino <mr.danielaquino@gmail.com>
+* Remi Papillie <remi.papillie@gmail.com>
+* Fraser Adams <fraser.adams@blueyonder.co.uk>
+* Michael Tirado <icetooth333@gmail.com>
+* Ben Noordhuis <info@bnoordhuis.nl>
+* Bob Roberts <bobroberts177@gmail.com>
+* John Vilk <jvilk@cs.umass.edu>
+* Daniel Baulig <dbaulig@fb.com> (copyright owned by Facebook, Inc.)
+* Lu Wang <coolwanglu@gmail.com>
+* Heidi Pan <heidi.pan@intel.com> (copyright owned by Intel)
+* Vasilis Kalintiris <ehostunreach@gmail.com>
+* Adam C. Clifton <adam@hulkamaniac.com>
+* Volo Zyko <volo.zyko@gmail.com>
+* Andre Weissflog <floooh@gmail.com>
+* Alexandre Perrot <alexandre.perrot@gmail.com>
+* Emerson José Silveira da Costa <emerson.costa@gmail.com>
+* Jari Vetoniemi <mailroxas@gmail.com>
+* Sindre Sorhus <sindresorhus@gmail.com>
+* James S Urquhart <jamesu@gmail.com>
+* Boris Gjenero <boris.gjenero@gmail.com>
+* jonas echterhoff <jonas@unity3d.com>
+* Sami Vaarala <sami.vaarala@iki.fi>
+* Jack A. Arrington <jack@epicpineapple.com>
+* Richard Janicek <r@janicek.co>
+* Joel Croteau <jcroteau@gmail.com>
+* Haneef Mubarak <haneef503@gmail.com>
+* Nicolas Peri <nicox@shivaengine.com> (copyright owned by ShiVa Technologies, SAS)
+* Bernhard Fey <e-male@web.de>
+* Dave Nicponski <dave.nicponski@gmail.com>
+* Jonathan Jarri <noxalus@gmail.com>
+* Daniele Di Proietto <daniele.di.proietto@gmail.com>
+* Dan Dascalescu <dNOSPAMdascalescu@gmail.com>
+* Thomas Borsos <thomasborsos@gmail.com>
+* Ori Avtalion <ori@avtalion.name>
+* Guillaume Blanc <guillaumeblanc.sc@gmail.com>
+* Usagi Ito <usagi@WonderRabbitProject.net>
+* Camilo Polymeris <cpolymeris@gmail.com>
+* Markus Henschel <markus.henschel@yager.de>
+* Ophir Lojkine <ophir.lojkine@eleves.ec-nantes.fr>
+* Ryan Sturgell <ryan.sturgell@gmail.com> (copyright owned by Google, Inc.)
+* Jason Green <jason@transgaming.com> (copyright owned by TransGaming, Inc.)
+* Ningxin Hu <ningxin.hu@intel.com> (copyright owned by Intel)
+* Nicolas Guillemot <nlguillemot@gmail.com>
+* Sathyanarayanan Gunasekaran <gsathya.ceg@gmail.com> (copyright owned by Mozilla Foundation)
+* Nikolay Vorobyov <nik.vorobyov@gmail.com>
+* Jonas Platte <mail@jonasplatte.de>
+* Sebastien Ronsse <sronsse@gmail.com>
+* Glenn R. Wichman <gwichman@zynga.com>
+* Hamish Willee <hamishwillee@gmail.com> (copyright owned by Mozilla Foundation)
+* Sylvain Chevalier <sylvain.chevalier@gmail.com>
+* Nathan Ross <nross.se@gmail.com>
+* Zachary Pomerantz <zmp@umich.edu>
+* Boris Tsarev <boristsarev@gmail.com>
+* Mark Logan <mark@artillery.com> (copyright owned by Artillery Games, Inc.)
+* Коренберг Марк <socketpair@gmail.com>
+* Gauthier Billot <gogoprog@gmail.com>
+* Árpád Goretity <h2co3@h2co3.org>
+* Nicholas Wilson <nicholas@nicholaswilson.me.uk>
+* Aaron Mandle <aaronmandle@gmail.com>
+* Bailey Hayes <Bailey.Hayes@sas.com> (copyright owned by SAS Institute Inc.)
+* Paul Holland <pholland@adobe.com>
+* James Long <longster@gmail.com>
+* David Anderson <danderson@mozilla.com> (copyright owned by Mozilla Foundation)
+* Eric Rannaud <e@nanocritical.com> (copyright owned by Nanocritical Corp.)
+* William Furr <wfurr@google.com> (copyright owned by Google, Inc.)
+* Dan Glastonbury <dglastonbury@mozilla.com> (copyright owned by Mozilla Foundation)
+* Warren Seine <warren.seine@aerys.in> (copyright owned by Aerys SAS)
+* Petr Babicka <babcca@gmail.com>
+* Akira Takahashi <faithandbrave@gmail.com>
+* Victor Costan <costan@gmail.com>
+* Pepijn Van Eeckhoudt <pepijn.vaneeckhoudt@luciad.com> (copyright owned by Luciad NV)
+* Stevie Trujillo <stevie.trujillo@gmail.com>
+* Edward Rudd <urkle@outoforder.cc>
+* Rene Eichhorn <rene.eichhorn1@gmail.com>
+* Nick Desaulniers <nick@mozilla.com> (copyright owned by Mozilla Foundation)
+* Luke Wagner <luke@mozilla.com> (copyright owned by Mozilla Foundation)
+* Matt McCormick <matt.mccormick@kitware.com>
+* Thaddée Tyl <thaddee.tyl@gmail.com>
+* Philipp Wiesemann <philipp.wiesemann@arcor.de>
+* Jan Jongboom <janjongboom@gmail.com> (copyright owned by Telenor Digital AS)
+* Tiago Quelhas <tiagoq@gmail.com>
+* Reinier de Blois <rddeblois@gmail.com>
+* Yuichi Nishiwaki <yuichi.nishiwaki@gmail.com>
+* Jérôme Bernard <jerome.bernard@ercom.fr> (copyright owned by Ercom)
+* Chanhwi Choi <ccwpc@hanmail.net>
+* Fábio Santos <fabiosantosart@gmail.com>
+* Thibaut Despoulain <thibaut@artillery.com> (copyright owned by Artillery Games, Inc.)
+* Wei Tjong Yao <weitjong@gmail.com>
+* Tim Guan-tin Chien <timdream@gmail.com>
+* Krzysztof Jakubowski <nadult@fastmail.fm>
+* Vladimír Vondruš <mosra@centrum.cz>
+* Brion Vibber <brion@pobox.com>
+* Philip Lafleur <sendsbeak@gmail.com>
+* Javier Meseguer de Paz <j.meseguer@gmail.com>
+* Michael A. Balazs <michael.balazs@gmail.com>
+* Andreas Blixt <me@blixt.nyc>
+* Haofeng Zhang <h.z@duke.edu>
+* Cody Welsh <codyw@protonmail.com>
+* Hoong Ern Ng <hoongern@gmail.com>
+* Kagami Hiiragi <kagami@genshiken.org>
+* Jan Bölsche <jan@lagomorph.de>
+* Sebastian Matthes <sebastianmatthes@outlook.com> (copyright owned by Volkswagen AG)
+* Robert Goulet <robert.goulet@autodesk.com> (copyright owned by Autodesk, Inc.)
+* Juha Järvi <befunge@gmail.com>
+* Louis Lagrange <lagrange.louis@gmail.com>
+* Ying-Ruei Liang <thumbd03803@gmail.com>
+* Stuart Geipel <lapimlu@gmail.com>
+* Yeonjun Lim <yjroot@gmail.com>
+* Andrew Karpushin <reven86@gmail.com>
+* Felix Zimmermann <fzimmermann89@gmail.com>
+* Sven-Hendrik Haase <svenstaro@gmail.com>
+* Simon Sandström <simon@nikanor.nu>
+* Khaled Sami <k.sami.mohammed@gmail.com>
+* Omar El-Mohandes <omar.elmohandes90@gmail.com>
+* Florian Rival <florian.rival@gmail.com>
+* Mark Achée <mark@achee.com>
+* Piotr Paczkowski <kontakt@trzeci.eu>
+* Braden MacDonald <braden@bradenmacdonald.com>
+* Kevin Cheung <kevin.cheung@autodesk.com> (copyright owned by Autodesk, Inc.)
+* Josh Peterson <petersonjm1@gmail.com>
+* eska <eska@eska.me>
+* Nate Burr <nate.oo@gmail.com>
+* Paul "TBBle" Hampson <Paul.Hampson@Pobox.com>
+* Andreas Plesch <andreasplesch@gmail.com>
+* Brian Armstrong <brian.armstrong.ece+github@gmail.com>
+* Vincenzo Chianese <vincenz.chianese@icloud.com>
+* Noam T.Cohen <noam@ecb.co.il>
+* Nick Shin <nick.shin@gmail.com>
+* Gregg Tavares <github@greggman.com>
+* Tanner Rogalsky <tanner@tannerrogalsky.com>
+* Richard Cook <rcook@tableau.com> (copyright owned by Tableau Software, Inc.)
+* Arnab Choudhury <achoudhury@tableau.com> (copyright owned by Tableau Software, Inc.)
+* Charles Vaughn <cvaughn@tableau.com> (copyright owned by Tableau Software, Inc.)
+* Pierre Krieger <pierre.krieger1708@gmail.com>
+* Jakob Stoklund Olesen <stoklund@2pi.dk>
+* Jérémy Anger <angerj.dev@gmail.com>
+* Derek Schuff <dschuff@chromium.org> (copyright owned by Google, Inc.)
+* Ashley Sommer <flubba86@gmail.com>
+* Dave Fletcher <graveyhead@gmail.com>
+* Lars-Magnus Skog <ralphtheninja@riseup.net>
+* Pieter Vantorre <pietervantorre@gmail.com>
+* Maher Sallam <maher@sallam.me>
+* Andrey Burov <burik666@gmail.com>
+* Holland Schutte <hgschutte1@gmail.com>
+* Kerby Geffrard <kerby.geffrard@gmail.com>
+* cynecx <me@cynecx.net>
+* Chris Gibson <cgibson@mrvoxel.com>
+* Harald Reingruber <code*at*h-reingruber.at>
+* Aiden Koss <madd0131@umn.edu>
+* Dustin VanLerberghe <good_ol_dv@hotmail.com>
+* Philip Bielby <pmb45-github@srcf.ucam.org> (copyright owned by Jagex Ltd.)
+* Régis Fénéon <regis.feneon@gmail.com>
+* Dominic Chen <d.c.ddcc@gmail.com> (copyright owned by Google, Inc.)
+* Junji Hashimoto <junji.hashimoto@gmail.com>
+* Heejin Ahn <aheejin@gmail.com> (copyright owned by Google, Inc.)
+* Andras Kucsma <andras.kucsma@gmail.com>
+* Mateusz Borycki <mateuszborycki@gmail.com>
+* Franklin Ta <fta2012@gmail.com>
+* Jacob Gravelle <jgravelle@google.com> (copyright owned by Google, Inc.)
+* Kagami Sascha Rosylight <saschanaz@outlook.com>
+* Benny Jacobs <benny@gmx.it>
+* Ray Brown <code@liquibits.com>
+* Christopher Serr <christopher.serr@gmail.com>
+* Aaron Ruß <aaron.russ@dfki.de> (copyright owned by DFKI GmbH)
+* Vilibald Wanča <vilibald@wvi.cz>
+* Alex Hixon <alex@alexhixon.com>
+* Vladimir Davidovich <thy.ringo@gmail.com>
+* Yuriy Levchenko <irov13@mail.ru>
+* Dmitry Tolmachov <dmitolm@gmail.com>
+* Dylan McKay <me@dylanmckay.io>
+* Christophe Gragnic <cgragnic@netc.fr>
+* Murphy McCauley <murphy.mccauley@gmail.com>
+* Anatoly Trosinenko <anatoly.trosinenko@gmail.com>
+* Brad Grantham <grantham@plunk.org>
+* Sam Clegg <sbc@chromium.org> (copyright owned by Google, Inc.)
+* Joshua Lind <joshualind007@hotmail.com>
+* Hiroaki GOTO as "GORRY" <gorry@hauN.org>
+* Mikhail Kremnyov <mkremnyov@gmail.com> (copyright owned by XCDS International)
+* Tasuku SUENAGA a.k.a. gunyarakun <tasuku-s-github@titech.ac>
+* Vitorio Miguel Prieto Cilia <vdrbandeiras@gmail.com>
+* Evan Wallace <evan.exe@gmail.com>
+* Henning Pohl <henning@still-hidden.de>
+* Tim Neumann <mail@timnn.me>
+* Ondrej Stava <ondrej.stava@gmail.com> (copyright owned by Google, Inc.)
+* Jakub Jirutka <jakub@jirutka.cz>
+* Loo Rong Jie <loorongjie@gmail.com>
+* Jean-François Geyelin <jfgeyelin@gmail.com>
+* Matthew Collins <thethinkofdeath@gmail.com>
+* Satoshi N. M <snmatsutake@yahoo.co.jp>
+* Ryan Speets <ryan@speets.ca>
+* Fumiya Chiba <fumiya.chiba@nifty.com>
+* Ryan C. Gordon <icculus@icculus.org>
+* Inseok Lee <dlunch@gmail.com>
+* Yair Levinson (copyright owned by Autodesk, Inc.)
+* Matjaž Drolc <mdrolc@gmail.com>
+* James Swift <james@3dengineer.com> (copyright owned by PSPDFKit GmbH)
+* Ryan Lester <ryan@cyph.com> (copyright owned by Cyph, Inc.)
+* Nikolay Zapolnov <zapolnov@gmail.com>
+* Nazar Mokrynskyi <nazar@mokrynskyi.com>
+* Yury Delendik <ydelendik@mozilla.com> (copyright owned by Mozilla Foundation)
+* Kenneth Perry <thothonegan@gmail.com>
+* Jim Mussared <jim.mussared@gmail.com>
+* Dirk Vanden Boer <dirk.vdb@gmail.com>
+* Mitchell Foley <mitchfoley@google.com> (copyright owned by Google, Inc.)
+* Oleksandr Chekhovskyi <oleksandr.chekhovskyi@gmail.com>
+* Michael Siebert <michael.siebert2k@gmail.com>
+* Jonathan Hale <squareys@googlemail.com>
+* Etienne Brateau <etienne.brateau@gmail.com>
+* Zhiming Wang <zmwangx@gmail.com>
+* Jameson Ernst <jameson@jpernst.com>
+* Yoan Lecoq <yoanlecoq.io@gmail.com>
+* Jiajie Hu <jiajie.hu@intel.com> (copyright owned by Intel Corporation)
+* Kamil Klimek <naresh@tlen.pl>
+* José Carlos Pujol <josecpujol(at)gmail.com>
+* Dannii Willis <curiousdannii@gmail.com>
+* Erik Dubbelboer <erik@dubbelboer.com>
+* Sergey Tsatsulin <tsatsulin@gmail.com>
+* varkor <github@varkor.com>
+* Stuart Knightley <website@stuartk.com>
+* Amadeus Guo <gliheng@foxmail.com>
+* Nathan Froyd <froydnj@gmail.com> (copyright owned by Mozilla Foundation)
+* Daniel Wirtz <dcode@dcode.io>
+* Kibeom Kim <kk1674@nyu.edu>
+* Marcel Klammer <m.klammer@tastenkunst.com>
+* Axel Forsman <axelsfor@gmail.com>
+* Ebrahim Byagowi <ebrahim@gnu.org>
+* Thorsten Möller <thorsten.moeller@sbi.ch>
+* Michael Droettboom <mdroettboom@mozilla.com>
+* Nicolas Bouquet <hgy01@hieroglyphe.net>
+* Miguel Saldivar <miguel.saldivar22@hotmail.com>
+* Gert Van Hoey <gert.vanhoey@gmail.com>
+* Valtteri Heikkilä <rnd@nic.fi>
+* Daniel McNab <daniel.mcnab6+emcc(at)gmail.com>
+* Tyler Limkemann <tslimkemann42 gmail.com>
+* Ben Smith <binji@google.com> (copyright owned by Google, Inc.)
+* Sylvain Beucler <beuc@beuc.net>
+* Patrik Weiskircher <patrik@weiskircher.name>
+* Tobias Widlund <widlundtobias(at)gmail.com>
+* Rob Fors <mail@robfors.com>
+* Mike Frysinger <vapier@chromium.org> (copyright owned by Google, Inc.)
+* Sébasiten Crozet <developer@crozet.re>
+* Andrey Nagikh <andrey@nagih.ru>
+* Dzmitry Malyshau <dmalyshau@mozilla.com> (copyright owned by Mozilla Foundation)
+* Bjorn Swenson <tie.372@gmail.com>
+* Ryhor Spivak <grisha@rusteddreams.net>
+* Jan Schär <jscissr@gmail.com>
+* Ryhor Spivak <grisha@rusteddreams.net>
+* Alexander Bich <quyse0@gmail.com>
+* Ashleigh Thomas <ashleighbcthomas@gmail.com>
+* Veniamin Petrenko <bjpbjpbjp10@gmail.com>
+* Ian Henderson <ian@ianhenderson.org>
+* Siim Kallas <siimkallas@gmail.com>
+* Carl Woffenden <cwoffenden@gmail.com> (copyright owned by Numfum GmbH)
+* Patrick Berger <patrick.berger@xmail.net> (copyright owned by Compusoft Group)
+* Alexander Frank Lehmann <alexander.frank.lehmann@compusoftgroup.com> (copyright owned by Compusoft Group)
+* Tommy Nguyen <tn0502@gmail.com>
+* Thomas Schander <info@thomasschander.com> (copyright owned by Enscape GmbH)
+* Benjamin S. Rodgers <acdimalev@gmail.com>
+* Paul Shapiro <paul@mymonero.com>
+* Elmo Todurov <elmo.todurov@eesti.ee>
+* Zoltán Žarkov <zeko@freecivweb.org>
+* Roman Yurchak <rth.yurchak@pm.me>
+* Hampton Maxwell <me@hamptonmaxwell.com>
+* Eric Fiselier <ericwf@google.com> (copyright owned by Google, Inc.)
+* Sirapop Wongstapornpat <sirapop.wongstapornpat@student.oulu.fi>
+* Matt Kane <m@mk.gg>
+* Altan Özlü <altanozlu7@gmail.com>
+* Mary S <ipadlover8322@gmail.com>
+* Martin Birks <mbirks@gmail.com>
+* Kirill Smelkov <kirr@nexedi.com> (copyright owned by Nexedi)
+* Lutz Hören <laitch383@gmail.com>
+* Pedro K Custodio <git@pedrokcustodio.com>
+* Nicolas Allemand <contact@nicolasallemand.com>
+* Gabriel Cuvillier <contact@gabrielcuvillier.pro>
+* Thomas Lively <tlively@google.com> (copyright owned by Google, Inc.)
+* Brandon Surmanski <b.surmanski@gmail.com>
+* Rian Hunter <rian@alum.mit.edu>
+* Kai Ninomiya <kainino@chromium.org> (copyright owned by Google, Inc.)
+* Mickaël Schoentgen <contact@tiger-222.fr>
+* Renaud Leroy <capitnflam@gmail.com>
+* Florian Stellbrink <florian@stellbr.ink>
+* Shane Peelar <lookatyouhacker@gmail.com>
+* Alessandro Pignotti <alessandro@leaningtech.com>
+* Zheng Tao Lee <zhengtao.lee@autodesk.com> (copyright owned by Autodesk, Inc.)
+* Martina Kraus <kraus.martina.m@googlemail.com>
+* Jacob Adelgren <jake@eevo.com>
+* Ingvar Stepanyan <me@rreverser.com>
+* Ben Trapani <ben.trapani1995@gmail.com> (copyright owned by Microsoft, Inc.)
+* Tim Lander <tim57282＠hotmail.com>
+* Jacob Greenfield <jacob@jacobgreenfield.me>
+* Joseph Kogut <joseph.kogut@gmail.com>
+* Yi Zhang <milizhang@gmail.com>
+* Marc Abramowitz <msabramo@gmail.com>
+* Daniel Ruf <daniel@daniel-ruf.de>
+* Timothy Trindle <titrindl@microsoft.com> (copyright owned by Microsoft, Inc.)
+* Matthew Andres Moreno <m.more500@gmail.com>
+* Eric Mandel <eric@cfa.harvard.edu>
+* Anthony Catel <paraboul@gmail.com>
+* Simon Cooper <simon.d.cooper@hotmail.co.uk>
+* Amir Rasouli <arasouli91@gmail.com>
+* Nico Weber <thakis@chromium.org>
+* Bas Doorn <code@keyn.app> (copyright owned by Keyn B.V.)
+* Adam Bujalski <a.bujalski@samsung.com> (copyright owned by Samsung Electronics)
+* Guanzhong Chen <gzchen@google.com> (copyright owned by Google, Inc.)
+* Denis Serebro <densilver3000@gmail.com>
+* Lucas Ramage <ramage.lucas@protonmail.com>
+* Andy Wingo <wingo@igalia.com> (copyright owned by Igalia)
+* Philipp Gloor <philipp.gloor@pdf-tools.com> (copyright owned by PDF Tools AG)
+* Jasmine Minter <jasmine@minteronline.com> (copyright owned by Clipchamp Pty Ltd.)
+* Ferris Kwaijtaal <ferrispc@hotmail.com>
+* Konstantin Podsvirov <konstantin@podsvirov.pro>
+* Eduardo Bart <edub4rt@gmail.com>
+* Zoltan Varga <vargaz@gmail.com> (copyright owned by Microsoft, Inc.)
+* Fernando Serboncini <fserb@google.com>
+* Christian Clauss <cclauss@me.com> (copyright owned by IBM)
+* Henry Kleynhans <hkleynhans@bloomberg.net> (copyright owned by Bloomberg L.P.)
+* FUJI Goro <g.psy.va@gmail.com>
+* Egor Suvorov <esuvorov@think-cell.com> (copyright owned by think-cell Software GmbH)
+* James Kuszmaul <jabukuszmaul@gmail.com>
+* Wei Mingzhi <whistler_wmz@users.sourceforge.net>
+* Sergey karchevsky <sergey.ext@gmail.com>
+* Ajay Patel <patel.ajay285@gmail.com>
+* Adrien Devresse <adev@adev.name>
+* Petr Penzin <petr.penzin@intel.com> (copyright owned by Intel Corporation)
+* Tayeb Al Karim <tay@google.com> (copyright owned by Google, Inc.)
+* Andrei Alexeyev <akari@taisei-project.org>
+* Cesar Guirao Robles <cesar@no2.es>
+* Ricky Claven <ricksterhd123@gmail.com>
+* Mehdi Sabwat <mehdisabwat@gmail.com>
+* MinganMuon <mingan-muon@outlook.com>
+* Jonathan Feinberg <feinberg@google.com>
+* Osman Turan <osman@osmanturan.com>
+* Jaikanth J <jaikanthjay46@gmail.com>
+* Gernot Lassnig <gernot.lassnig@gmail.com>
+* Christian Boos <cboos@bct-technology.com>
+* Erik Scholz <greenNO@SPAMg-s.xyz>
+* Michael de Lang <kingoipo@gmail.com>
+* Gergely Nagy <ngg@tresorit.com>
+* Jan Habermann <jan@habermann.io>
+* John Granström <granstrom.john@gmail.com>
+* Clemens Backes <clemensb@google.com> (copyright owned by Google, Inc.)
+* Tibor Klajnscek <tiborkl@numfum.com>
+* Benjamin Golinvaux <benjamin@golinvaux.com>
+* Peter Salomonsen <pjsalomonsen@gmail.com>
+* Niklas Fiekas <niklas.fiekas@backscattering.de>
+* Martín Lucas Golini <spartanj@gmail.com>
+* Bumsik Kim <k.bumsik@gmail.com>
+* Corentin Wallez <cwallez@chromium.org> (copyright owned by Google, Inc.)
+* Austin Eng <enga@chromium.org> (copyright owned by Google, Inc.)
+* Hugo Amiard <hugo.amiard@laposte.net>
+* Diego Casorran <dcasorran@gmail.com>
+* sssooonnnggg <sssooonnnggg111@gmail.com>
+* Guillaume Racicot <gufideg@gmail.com>
+* SK Min <oranke@gmail.com>
+* Fabio Alessandrelli <fabio.alessandrelli@gmail.com>
+* Kirill Gavrilov <kirill@sview.ru>
+* Karl Semich <0xloem@gmail.com>
+* Louis DeScioli <descioli@google.com> (copyright owned by Google, LLC)
+* Kleis Auke Wolthuizen <info@kleisauke.nl>
+* Michael Potthoff <michael@potthoff.eu>
+* Abigail Bunyan <abigail@bold.claims> (copyright owned by Microsoft Corporation)
+* David García Paredes <davidgparedes@gmail.com>
+* Dan Field <dfield@gmail.com> (copyright owned by Google, Inc.)
+* Mike Swierczek <mike@swierczek.io>
+* Vasily <just.one.man@yandex.ru>
+* Jānis Rūcis <parasti@gmail.com>
+* rssqian <rssqian@gmail.com>
+* Shachar Langbeheim <nihohit@gmail.com>
+* Laurin Agostini <thevolut@gmail.com>
+* David Carlier <devnexen@gmail.com>
+* Paul Du <du.paul136@gmail.com> (copyright owned by ARSKAN)
+* Piotr Doan <doanpiotr@gmail.com>
+* Stuart Schechter <stuart.schechter@gmail.com>
+* Brett Paterson <brett@fmod.com>
+* Robert Aboukhalil <robert.aboukhalil@gmail.com>
+* Jonathan Poelen <jonathan.poelen@gmail.com>
+* Ashley Hauck <github@khyperia.com>
+* Junyue Cao <junyuecao@gmail.com>
+* Elías Serrano <feserr3@gmail.com>
+* Philip Pfaffe <pfaffe@google.com> (copyright owned by Google, LLC)
+* Troy Tae <tjy970721@gmail.com>
+* Sky Wang <sky-wang@qq.com>
+* popomen <nz_nuaa@163.com>
+* Artyom Lebedev <vagran.ast@gmail.com>
+* Sebastián Gurin (cancerberoSgx) <sebastigurin@gmail.com>
+* Benedikt Meurer <bmeurer@google.com> (copyright owned by Google, LLC)
+* Jiulong Wang <jiulongw@gmail.com>
+* pudinha <rogi@skylittlesystem.org>
+* Nicholas Phillips <nwp2@illinois.edu>
+* Colin Guyon <colin.guyon@insimo.fr> (copyright owned by InSimo, SAS)
+* Mathias Westerdahl <mwesterdahl76@gmail.com>
+* Philip Rideout <prideout@google.com> (copyright owned by Google, LLC)
+* Shrek Shao (shrekshao@google.com) (copyright owned by Google, LLC)
+* Arran Ireland <ion92@protonmail.com>
+* Jia Yuan Lo <jylo06g@gmail.com>
+* Philip Lassen <philiplassen@gmail.com>
+* Antoine du Hamel <duhamelantoine1995@gmail.com>
+* Alexander Köplinger <alex.koeplinger@outlook.com> (copyright owned by Microsoft, Inc.)
+* Kenneth Pouncey <kepounce@microsoft.com> (copyright owned by Microsoft, Inc.)
+* Mitchell Hwang <mihw@microsoft.com> (copyright owned by Microsoft, Inc.)
+* Sean Maher <seanptmaher@gmail.com> (copyright owned by Google, LLC)
+* Paul Peny <pmpp.pub@gmail.com>
+* Prashanth Nethi <prashant@adobe.com>
+* Max Weisel <max@maxweisel.com>
+* Georg Rottensteiner <georg@georg-rottensteiner.de>
+* Tristan Griffin <tristan.griffin@hcl.com> (Copyright owned by HCL)
+* Julien Jorge <julien.jorge@gmx.fr>
+* Benjamin Lee <bnllee@ucdavis.edu>
+* Attila Oláh <atl@google.com> (copyright owned by Google, LLC)
+* Marat Dukhan <maratek@google.com> (copyright owned by Google, LLC)
+* Raphael Siegel <siegel.raphael@gmail.com>
+* Stephan Reiter <reste@google.com> (copyright owned by Google, LLC)
+* kamenokonyokonyoko <kamenokonokotan@gmail.com>
+* Lectem <lectem@gmail.com>
+* Henrik Algestam <henrik@algestam.se>
+* Rocco Musolino <roccomusolino92@gmail.com>
+* Pawel Czarnecki <pawel@8thwall.com> (copyright owned by 8th Wall, Inc.)
+* Dhairya Bahl < dhairyabahl5@gmail.com >
+* Sam Gao <gaoshan274@gmail.com>
+* Sebastian Mayr <me@sam.st>
+* Vladimir Gamalyan <vladimir.gamalyan@gmail.com>
+* Jean-Sébastien Nadeau <mundusnine@gmail.com> (copyright owned by Foundry Interactive Inc.)
+* Wouter van Oortmerssen <wvo@google.com> (copyright owned by Google, LLC)
+* Alexey Sokolov <sokolov@google.com> (copyright owned by Google, LLC)
+* Lukas Rieger <rieger@progress-psd.com>
+* Ivan Romanovski <ivan.romanovski@gmail.com>
+* Max Brunsfeld <maxbrunsfeld@gmail.com>
+* Basil Fierz <basil.fierz@hotmail.com>
+* Rod Hyde <rod@badlydrawngames.com>
+* Aleksey Kliger <aleksey@lambdageek.org> (copyright owned by Microsoft, Inc.)
+* Nicolas Ollinger <nopid@free.fr>
+* Michael R. Crusoe <crusoe@debian.org>
+* Dexter Chua <dec41@srcf.net>
+* Thomas Ballinger <thomasballinger@gmail.com>
+* Mehdi Sadeghi <mehdi@mehdix.org>
+* Amin Yahyaabadi <aminyahyaabadi74@gmail.com>
+* Adam Leskis <leskis@gmail.com>
+* Raffaele Pertile <raffarti@zoho.com>
+* Patric Stout <github@truebrain.nl>
+* Jinoh Kang <jinoh.kang.kr@gmail.com>
+* Jorge Prendes <jorge.prendes@gmail.com>
+* Alexey Shamrin <shamrin@gmail.com>
+* Wirtos <wirtos.new@gmail.com>
+* Ben den Hollander <bdenhollander@dynascape.com> (copyright owned by DynaScape Software Inc.)
+* Akul Penugonda <akulvp@gmail.com>
+* Jan Wolff <contact@jancc.de>
+* Pawel Czarnecki <pawel@8thwall.com> (copyright owned by 8th Wall, Inc.)
+* Camil Staps <info@camilstaps.nl>
+* Michael Kircher <michael.kircher.github@gmail.com>
+* Sharad Saxena <sharad.saxena@autodesk.com> (copyright owned by Autodesk, Inc.)
+* Vasili Skurydzin <vasili.skurydzin@ibm.com>
+* Jakub Nowakowski <jn925+emcc@o2.pl>
+* Michael Taylor <mitaylor@adobe.com>
+* Andrew Brown <andrew.brown@intel.com> (copyright owned by Intel Corporation)
+* Benjamin Puzycki <bpuzycki@umich.edu>
+* Marco Buono <marcobuono@invisionapp.com> (copyright owned by InVisionApp, Inc.)
+* Philip Gossweiler <philip.gossweiler@outlook.com>
+* Rafael Brune <mail@rbrune.de>
+* Aleksi Sapon <aleksi.sapon@faro.com> (copyright owned by FARO Technologies, Inc.)
+* Radek Doulik <radek.doulik@gmail.com> (copyright owned by Microsoft, Inc.)
+* Érico Porto <ericoporto2008@gmail.com>
+* Albert Vaca Cintora <albertvaka@gmail.com>
+* Zhi An Ng <zhin@google.com> (copyright owned by Google, Inc.)
+* Ian Jackson <ijackson@chiark.greenend.org.uk>
+* Brian Gontowski <brian@gontowski.com>
+* Bobbie Chen <bobbie.chen75@gmail.com>
+* Nicholas Hollander <nhollander98@gmail.com>
+* Camillo Lugaresi <camillol@google.com> (copyright owned by Google LLC)
+* Chris Craig <emscripten@goldwave.com>
+* Le Yao <le.yao@intel.com> (copyright owned by Intel Corporation)
+* José Cadete <crudelios@gmail.com>
+* Cynthia K. Rey <cynthia@cynthia.dev>
+* Andrew Shaitorov <andrew.shaitorov@gmail.com>
+* on-keyday <rokenboo47803@gmail.com>
+* Matthew Balch <matt5sean3@gmail.com>
+* James Price <jrprice@google.com> (copyright owned by Google, Inc.)
+* Nathan Rugg <nmrugg@gmail.com> (copyright owned by Chess.com, LLC)
+* Alexander O'Mara <me@alexomara.com>
+* Kamaron Peterson <kamaron.peterson@gmail.com>
+* Márton Marczell <mmarczell.graphisoft@gmail.com> (copyright owned by GRAPHISOFT SE)
+* Alexander Vestin <alex.vestin@gmail.com>
+* Xiaobing Yang <yangxiaobing@jwzg.com>
+* Alexandra Cherdantseva <neluhus.vagus@gmail.com>
+* Michael Schmuki <michael@schmuki.io>
+* Skye Gibney <skyejgibney@gmail.com>
+* Piotr Wierciński <laminowany@gmail.com>
+* 郑苏波 (Super Zheng) <superzheng@tencent.com>
+* James Hu <jameshu2022@gmail.com>
+* Jerry Zhuang <jerry.zhuang@jwzg.com>
+* Taisei Kon <kinsei0916@gmail.com>
+* YAMAMOTO Takashi <yamamoto@midokura.com>
+* Artur Gatin <agatin@teladochealth.com> (copyright owned by Teladoc Health, Inc.)
+* Christian Lloyd <clloyd@teladochealth.com> (copyright owned by Teladoc Health, Inc.)
+* Sean Morris <sean@seanmorr.is>
+* Mitchell Wills <mwills@google.com> (copyright owned by Google, Inc.)
+* Han Jiang <jhcarl0814@gmail.com>
+* Abdelrahman Teima <abdelrahmanteima@gmail.com>
+* Jaap Aarts <jaap.aarts1@gmail.com>
+* Dimokritos Kolitsos <dkolitsos@protonmail.com>
+~~~~
+
+### L015
+
 Applies to: `style-to-object 1.0.14`
 
 ~~~~text
@@ -634,7 +1249,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L015
+### L016
 
 Applies to: `pg-connection-string 2.14.0`
 
@@ -662,7 +1277,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L016
+### L017
 
 Applies to: `@ungap/structured-clone 1.4.0`
 
@@ -684,7 +1299,7 @@ OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L017
+### L018
 
 Applies to: `@techstark/opencv-js 4.10.0-release.1`, `flatbuffers 25.9.23`, `long 5.3.2`
 
@@ -892,7 +1507,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L018
+### L019
 
 Applies to: `path-is-absolute 1.0.1`
 
@@ -920,7 +1535,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L019
+### L020
 
 Applies to: `parse5 8.0.1`
 
@@ -946,7 +1561,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L020
+### L021
 
 Applies to: `html-url-attributes 3.0.1`
 
@@ -974,7 +1589,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L021
+### L022
 
 Applies to: `clipper-lib 6.4.2`
 
@@ -1025,7 +1640,7 @@ Tom Wu
 tjw@cs.Stanford.EDU
 ~~~~
 
-### L022
+### L023
 
 Applies to: `@aws-sdk/checksums 3.1001.1`, `@aws-sdk/credential-provider-process 3.972.72`, `@aws-sdk/credential-provider-sso 3.973.16`, `@aws-sdk/credential-provider-web-identity 3.972.78`, `@aws-sdk/middleware-sdk-s3 3.972.77`, `@aws-sdk/signature-v4-multi-region 3.996.47`, `@smithy/core 3.35.0`, `@smithy/types 4.19.0`
 
@@ -1233,7 +1848,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L023
+### L024
 
 Applies to: `nanoid 3.3.18`
 
@@ -1260,7 +1875,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L024
+### L025
 
 Applies to: `@xterm/xterm 6.0.0`
 
@@ -1288,9 +1903,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L025
+### L026
 
-Applies to: `@img/sharp-libvips-darwin-arm64 1.3.4`, `@img/sharp-libvips-darwin-x64 1.3.4`, `@img/sharp-libvips-linux-arm 1.3.4`, `@img/sharp-libvips-linux-arm64 1.3.4`, `@img/sharp-libvips-linux-ppc64 1.3.4`, `@img/sharp-libvips-linux-riscv64 1.3.4`, `@img/sharp-libvips-linux-s390x 1.3.4`, `@img/sharp-libvips-linux-x64 1.3.4`, `@img/sharp-libvips-linuxmusl-arm64 1.3.4`, `@img/sharp-libvips-linuxmusl-x64 1.3.4`
+Applies to: `@img/sharp-libvips-darwin-arm64 1.3.4`, `@img/sharp-libvips-darwin-x64 1.3.4`, `@img/sharp-libvips-linux-arm 1.3.4`, `@img/sharp-libvips-linux-arm64 1.3.4`, `@img/sharp-libvips-linux-ppc64 1.3.4`, `@img/sharp-libvips-linux-riscv64 1.3.4`, `@img/sharp-libvips-linux-s390x 1.3.4`, `@img/sharp-libvips-linux-x64 1.3.4`, `@img/sharp-libvips-linuxmusl-arm64 1.3.4`, `@img/sharp-libvips-linuxmusl-x64 1.3.4`, `@img/sharp-wasm32 0.35.5`, `@img/sharp-win32-arm64 0.35.5`, `@img/sharp-win32-ia32 0.35.5`, `@img/sharp-win32-x64 0.35.5`
 
 ~~~~text
 GNU GENERAL PUBLIC LICENSE
@@ -1969,7 +2584,7 @@ Public License instead of this License.  But first, please read
 <https://www.gnu.org/licenses/why-not-lgpl.html>.
 ~~~~
 
-### L026
+### L027
 
 Applies to: `electron 44.2.0`
 
@@ -1997,7 +2612,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L027
+### L028
 
 Applies to: `inherits 2.0.4`
 
@@ -2019,7 +2634,7 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L028
+### L029
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -2053,7 +2668,7 @@ Applies to: `pdfjs-dist 6.3.289`
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L029
+### L030
 
 Applies to: `underscore 1.13.8`
 
@@ -2082,7 +2697,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L030
+### L031
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -2205,7 +2820,7 @@ For more information, please see
 http://creativecommons.org/publicdomain/zero/1.0/
 ~~~~
 
-### L031
+### L032
 
 Applies to: `micromark-extension-cjk-friendly-util 3.0.1`
 
@@ -2240,7 +2855,57 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L032
+### L033
+
+Applies to: `@img/sharp-linux-s390x 0.35.5`
+
+~~~~text
+# `@img/sharp-linux-s390x`
+
+Prebuilt sharp for use with Linux (glibc) s390x.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L034
+
+Applies to: `@img/sharp-linux-x64 0.35.5`
+
+~~~~text
+# `@img/sharp-linux-x64`
+
+Prebuilt sharp for use with Linux (glibc) x64.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L035
 
 Applies to: `longest-streak 3.1.0`, `stringify-entities 4.0.4`, `trim-lines 3.0.1`
 
@@ -2269,7 +2934,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L033
+### L036
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -2452,7 +3117,7 @@ Apache License
    END OF TERMS AND CONDITIONS
 ~~~~
 
-### L034
+### L037
 
 Applies to: `readable-stream 2.3.8`, `string_decoder 1.1.1`
 
@@ -2506,7 +3171,115 @@ IN THE SOFTWARE.
 """
 ~~~~
 
-### L035
+### L038
+
+Applies to: `@img/sharp-wasm32 0.35.5`
+
+~~~~text
+Emscripten is available under 2 licenses, the MIT license and the
+University of Illinois/NCSA Open Source License.
+
+Both are permissive open source licenses, with little if any
+practical difference between them.
+
+The reason for offering both is that (1) the MIT license is
+well-known, while (2) the University of Illinois/NCSA Open Source
+License allows Emscripten's code to be integrated upstream into
+LLVM, which uses that license, should the opportunity arise.
+
+The full text of both licenses follows.
+
+==============================================================================
+
+Copyright (c) 2010-2014 Emscripten authors, see AUTHORS file.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+==============================================================================
+
+Copyright (c) 2010-2014 Emscripten authors, see AUTHORS file.
+All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the
+"Software"), to deal with the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+    Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimers.
+
+    Redistributions in binary form must reproduce the above
+    copyright notice, this list of conditions and the following disclaimers
+    in the documentation and/or other materials provided with the
+    distribution.
+
+    Neither the names of Mozilla,
+    nor the names of its contributors may be used to endorse
+    or promote products derived from this Software without specific prior
+    written permission.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE CONTRIBUTORS OR COPYRIGHT HOLDERS BE LIABLE FOR
+ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS WITH THE SOFTWARE.
+
+==============================================================================
+
+This program uses portions of Node.js source code located in src/library_path.js,
+in accordance with the terms of the MIT license. Node's license follows:
+
+    """
+        Copyright Joyent, Inc. and other Node contributors. All rights reserved.
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to
+        deal in the Software without restriction, including without limitation the
+        rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+        sell copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+
+        The above copyright notice and this permission notice shall be included in
+        all copies or substantial portions of the Software.
+
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+        FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+        IN THE SOFTWARE.
+    """
+
+The musl libc project is bundled in this repo, and it has the MIT license, see
+system/lib/libc/musl/COPYRIGHT
+
+The third_party/ subdirectory contains code with other licenses. None of it is
+used by default, but certain options use it (e.g., the optional closure compiler
+flag will run closure compiler from third_party/).
+~~~~
+
+### L039
 
 Applies to: `@protobufjs/aspromise 1.1.2`, `@protobufjs/base64 1.1.2`, `@protobufjs/codegen 2.0.5`, `@protobufjs/eventemitter 1.1.1`, `@protobufjs/fetch 1.1.1`, `@protobufjs/float 1.0.2`, `@protobufjs/path 1.1.2`, `@protobufjs/pool 1.1.0`, `@protobufjs/utf8 1.1.2`
 
@@ -2539,7 +3312,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L036
+### L040
 
 Applies to: `micromark-extension-gfm-footnote 2.1.0`
 
@@ -2568,7 +3341,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L037
+### L041
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -2597,7 +3370,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L038
+### L042
 
 Applies to: `xtend 4.0.2`
 
@@ -2624,7 +3397,73 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L039
+### L043
+
+Applies to: `@img/sharp-win32-ia32 0.35.5`
+
+~~~~text
+# `@img/sharp-win32-ia32`
+
+Prebuilt sharp for use with Windows x86 (deprecated).
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+This software contains third-party libraries
+used under the terms of the following licenses:
+
+| Library       | Used under the terms of                                                                                   |
+|---------------|-----------------------------------------------------------------------------------------------------------|
+| aom           | BSD 2-Clause + [Alliance for Open Media Patent License 1.0](https://aomedia.org/license/patent-license/)  |
+| cairo         | Mozilla Public License 1.1                                                                                |
+| cgif          | MIT License                                                                                               |
+| expat         | MIT License                                                                                               |
+| fontconfig    | [fontconfig License](https://gitlab.freedesktop.org/fontconfig/fontconfig/blob/main/COPYING) (BSD-like)   |
+| freetype      | [freetype License](https://git.savannah.gnu.org/cgit/freetype/freetype2.git/tree/docs/FTL.TXT) (BSD-like) |
+| fribidi       | LGPLv3                                                                                                    |
+| glib          | LGPLv3                                                                                                    |
+| harfbuzz      | MIT License                                                                                               |
+| highway       | BSD 3-Clause                                                                                              |
+| lcms          | MIT License                                                                                               |
+| libarchive    | BSD 2-Clause                                                                                              |
+| libexif       | LGPLv3                                                                                                    |
+| libffi        | MIT License                                                                                               |
+| libheif       | LGPLv3                                                                                                    |
+| libimagequant | [BSD 2-Clause](https://github.com/lovell/libimagequant/blob/main/COPYRIGHT)                               |
+| libnsgif      | MIT License                                                                                               |
+| libpng        | [libpng License](https://github.com/pnggroup/libpng/blob/master/LICENSE)                                  |
+| librsvg       | LGPLv3                                                                                                    |
+| libtiff       | [libtiff License](https://gitlab.com/libtiff/libtiff/blob/master/LICENSE.md) (BSD-like)                   |
+| libultrahdr   | MIT License                                                                                               |
+| libvips       | LGPLv3                                                                                                    |
+| libwebp       | New BSD License                                                                                           |
+| libxml2       | MIT License                                                                                               |
+| mozjpeg       | [zlib License, IJG License, BSD 3-Clause](https://github.com/mozilla/mozjpeg/blob/master/LICENSE.md)      |
+| pango         | LGPLv3                                                                                                    |
+| pixman        | MIT License                                                                                               |
+| proxy-libintl | LGPLv3                                                                                                    |
+| zlib-ng       | [zlib License](https://github.com/zlib-ng/zlib-ng/blob/develop/LICENSE.md)                                |
+
+Use of libraries under the terms of the LGPLv3 is via the
+"any later version" clause of the LGPLv2 or LGPLv2.1.
+
+Please report any errors or omissions via
+https://github.com/lovell/sharp-libvips/issues/new
+~~~~
+
+### L044
 
 Applies to: `jszip 3.10.2`
 
@@ -3282,7 +4121,7 @@ copy of the Program in return for a fee.
                      END OF TERMS AND CONDITIONS
 ~~~~
 
-### L040
+### L045
 
 Applies to: `@xmldom/xmldom 0.8.15`, `@xmldom/xmldom 0.9.12`
 
@@ -3297,7 +4136,32 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L041
+### L046
+
+Applies to: `@img/sharp-linux-arm 0.35.5`
+
+~~~~text
+# `@img/sharp-linux-arm`
+
+Prebuilt sharp for use with Linux (glibc) ARM (32-bit).
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L047
 
 Applies to: `csstype 3.2.3`
 
@@ -3323,7 +4187,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L042
+### L048
 
 Applies to: `xmlbuilder 10.1.1`
 
@@ -3351,7 +4215,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L043
+### L049
 
 Applies to: `detect-libc 2.1.2`
 
@@ -3559,7 +4423,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L044
+### L050
 
 Applies to: `pg-pool 3.14.0`
 
@@ -3587,7 +4451,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L045
+### L051
 
 Applies to: `source-map-js 1.2.2`
 
@@ -3621,7 +4485,32 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L046
+### L052
+
+Applies to: `@img/sharp-linux-riscv64 0.35.5`
+
+~~~~text
+# `@img/sharp-linux-riscv64`
+
+Prebuilt sharp for use with Linux (glibc) RISC-V 64-bit.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L053
 
 Applies to: `platform 1.3.6`
 
@@ -3649,7 +4538,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L047
+### L054
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -3695,7 +4584,7 @@ Applies to: `pdfjs-dist 6.3.289`
  */
 ~~~~
 
-### L048
+### L055
 
 Applies to: `postgres-array 2.0.0`, `postgres-bytea 1.0.1`, `postgres-date 1.0.7`, `postgres-interval 1.2.0`
 
@@ -3723,7 +4612,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L049
+### L056
 
 Applies to: `protobufjs 7.6.6`
 
@@ -3769,7 +4658,7 @@ standalone and requires a support library to be linked with it. This
 support library is itself covered by the above license.
 ~~~~
 
-### L050
+### L057
 
 Applies to: `tslib 2.8.1`
 
@@ -3790,7 +4679,7 @@ PERFORMANCE OF THIS SOFTWARE.
 ***************************************************************************** */
 ~~~~
 
-### L051
+### L058
 
 Applies to: `ws 8.21.3`
 
@@ -3817,7 +4706,32 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L052
+### L059
+
+Applies to: `@img/sharp-freebsd-wasm32 0.35.5`
+
+~~~~text
+# `@img/sharp-freebsd-wasm32`
+
+Prebuilt sharp for use with FreeBSD (WebAssembly).
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L060
 
 Applies to: `@aws/lambda-invoke-store 0.3.0`
 
@@ -3998,7 +4912,7 @@ Apache License
       of your accepting any such warranty or additional liability.
 ~~~~
 
-### L053
+### L061
 
 Applies to: `guid-typescript 1.0.9`
 
@@ -4030,9 +4944,9 @@ OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L054
+### L062
 
-Applies to: `sanitize-html 2.17.7`
+Applies to: `sanitize-html 2.18.0`
 
 ~~~~text
 Copyright (c) 2013, 2014, 2015 P'unk Avenue LLC
@@ -4044,7 +4958,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L055
+### L063
 
 Applies to: `htmlparser2 12.0.0`
 
@@ -4069,7 +4983,73 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 IN THE SOFTWARE.
 ~~~~
 
-### L056
+### L064
+
+Applies to: `@img/sharp-win32-x64 0.35.5`
+
+~~~~text
+# `@img/sharp-win32-x64`
+
+Prebuilt sharp for use with Windows x64.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+This software contains third-party libraries
+used under the terms of the following licenses:
+
+| Library       | Used under the terms of                                                                                   |
+|---------------|-----------------------------------------------------------------------------------------------------------|
+| aom           | BSD 2-Clause + [Alliance for Open Media Patent License 1.0](https://aomedia.org/license/patent-license/)  |
+| cairo         | Mozilla Public License 1.1                                                                                |
+| cgif          | MIT License                                                                                               |
+| expat         | MIT License                                                                                               |
+| fontconfig    | [fontconfig License](https://gitlab.freedesktop.org/fontconfig/fontconfig/blob/main/COPYING) (BSD-like)   |
+| freetype      | [freetype License](https://git.savannah.gnu.org/cgit/freetype/freetype2.git/tree/docs/FTL.TXT) (BSD-like) |
+| fribidi       | LGPLv3                                                                                                    |
+| glib          | LGPLv3                                                                                                    |
+| harfbuzz      | MIT License                                                                                               |
+| highway       | BSD 3-Clause                                                                                              |
+| lcms          | MIT License                                                                                               |
+| libarchive    | BSD 2-Clause                                                                                              |
+| libexif       | LGPLv3                                                                                                    |
+| libffi        | MIT License                                                                                               |
+| libheif       | LGPLv3                                                                                                    |
+| libimagequant | [BSD 2-Clause](https://github.com/lovell/libimagequant/blob/main/COPYRIGHT)                               |
+| libnsgif      | MIT License                                                                                               |
+| libpng        | [libpng License](https://github.com/pnggroup/libpng/blob/master/LICENSE)                                  |
+| librsvg       | LGPLv3                                                                                                    |
+| libtiff       | [libtiff License](https://gitlab.com/libtiff/libtiff/blob/master/LICENSE.md) (BSD-like)                   |
+| libultrahdr   | MIT License                                                                                               |
+| libvips       | LGPLv3                                                                                                    |
+| libwebp       | New BSD License                                                                                           |
+| libxml2       | MIT License                                                                                               |
+| mozjpeg       | [zlib License, IJG License, BSD 3-Clause](https://github.com/mozilla/mozjpeg/blob/master/LICENSE.md)      |
+| pango         | LGPLv3                                                                                                    |
+| pixman        | MIT License                                                                                               |
+| proxy-libintl | LGPLv3                                                                                                    |
+| zlib-ng       | [zlib License](https://github.com/zlib-ng/zlib-ng/blob/develop/LICENSE.md)                                |
+
+Use of libraries under the terms of the LGPLv3 is via the
+"any later version" clause of the LGPLv2 or LGPLv2.1.
+
+Please report any errors or omissions via
+https://github.com/lovell/sharp-libvips/issues/new
+~~~~
+
+### L065
 
 Applies to: `argparse 2.0.1`
 
@@ -4330,7 +5310,7 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
 OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L057
+### L066
 
 Applies to: `clipper-lib 6.4.2`
 
@@ -4360,7 +5340,7 @@ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L058
+### L067
 
 Applies to: `core-util-is 1.0.3`
 
@@ -4386,7 +5366,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 IN THE SOFTWARE.
 ~~~~
 
-### L059
+### L068
 
 Applies to: `parse-srcset 1.0.2`
 
@@ -4414,7 +5394,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L060
+### L069
 
 Applies to: `pend 1.2.0`
 
@@ -4444,7 +5424,32 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L061
+### L070
+
+Applies to: `@img/sharp-darwin-arm64 0.35.5`
+
+~~~~text
+# `@img/sharp-darwin-arm64`
+
+Prebuilt sharp for use with macOS 64-bit ARM.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L071
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -4487,7 +5492,7 @@ Applies to: `pdfjs-dist 6.3.289`
 %%Copyright: -----------------------------------------------------------
 ~~~~
 
-### L062
+### L072
 
 Applies to: `duck 0.1.12`, `lop 0.4.2`, `mammoth 1.12.3`, `option 0.2.4`
 
@@ -4516,7 +5521,7 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L063
+### L073
 
 Applies to: `pako 1.0.11`
 
@@ -4544,7 +5549,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L064
+### L074
 
 Applies to: `dom-serializer 3.1.1`
 
@@ -4558,7 +5563,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L065
+### L075
 
 Applies to: `inline-style-parser 0.2.7`
 
@@ -4574,9 +5579,34 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L066
+### L076
 
-Applies to: `@img/sharp-darwin-arm64 0.35.5`, `sharp 0.35.5`
+Applies to: `@img/sharp-webcontainers-wasm32 0.35.5`
+
+~~~~text
+# `@img/sharp-webcontainers-wasm32`
+
+Prebuilt sharp for use with WebContainers (WebAssembly).
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L077
+
+Applies to: `@img/sharp-darwin-arm64 0.35.5`, `@img/sharp-darwin-x64 0.35.5`, `@img/sharp-freebsd-wasm32 0.35.5`, `@img/sharp-linux-arm 0.35.5`, `@img/sharp-linux-arm64 0.35.5`, `@img/sharp-linux-ppc64 0.35.5`, `@img/sharp-linux-riscv64 0.35.5`, `@img/sharp-linux-s390x 0.35.5`, `@img/sharp-linux-x64 0.35.5`, `@img/sharp-linuxmusl-arm64 0.35.5`, `@img/sharp-linuxmusl-x64 0.35.5`, `@img/sharp-wasm32 0.35.5`, `@img/sharp-webcontainers-wasm32 0.35.5`, `@img/sharp-win32-arm64 0.35.5`, `@img/sharp-win32-ia32 0.35.5`, `@img/sharp-win32-x64 0.35.5`, `sharp 0.35.5`
 
 ~~~~text
 Apache License
@@ -4772,7 +5802,7 @@ third-party archives.
    limitations under the License.
 ~~~~
 
-### L067
+### L078
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -4975,7 +6005,7 @@ Applies to: `pdfjs-dist 6.3.289`
    limitations under the License.
 ~~~~
 
-### L068
+### L079
 
 Applies to: `unist-util-is 6.0.1`
 
@@ -5004,7 +6034,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L069
+### L080
 
 Applies to: `postcss 8.5.28`
 
@@ -5031,7 +6061,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L070
+### L081
 
 Applies to: `mdast-util-to-markdown-cjk-friendly 1.0.0`, `remark-cjk-friendly 2.3.1`
 
@@ -5066,7 +6096,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L071
+### L082
 
 Applies to: `pg 8.23.0`, `pg-cloudflare 1.4.0`, `pg-protocol 1.16.0`
 
@@ -5094,7 +6124,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L072
+### L083
 
 Applies to: `split2 4.2.0`
 
@@ -5114,7 +6144,64 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR
 IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L073
+### L084
+
+Applies to: `@img/sharp-wasm32 0.35.5`
+
+~~~~text
+# `@img/sharp-wasm32`
+
+Prebuilt sharp for use with WebAssembly.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+This software contains third-party libraries
+used under the terms of the following licenses:
+
+| Library       | Used under the terms of                                                                                  |
+|---------------|----------------------------------------------------------------------------------------------------------|
+| aom           | BSD 2-Clause + [Alliance for Open Media Patent License 1.0](https://aomedia.org/license/patent-license/) |
+| cgif          | MIT License                                                                                              |
+| emscripten    | [MIT License](https://github.com/emscripten-core/emscripten/blob/main/LICENSE)                           |
+| expat         | MIT License                                                                                              |
+| glib          | LGPLv3                                                                                                   |
+| highway       | BSD 3-Clause                                                                                             |
+| lcms          | MIT License                                                                                              |
+| libexif       | LGPLv3                                                                                                   |
+| libffi        | MIT License                                                                                              |
+| libheif       | LGPLv3                                                                                                   |
+| libimagequant | [BSD 2-Clause](https://github.com/lovell/libimagequant/blob/main/COPYRIGHT)                              |
+| libnsgif      | MIT License                                                                                              |
+| libpng        | [libpng License](https://github.com/pnggroup/libpng/blob/master/LICENSE)                                 |
+| libtiff       | [libtiff License](https://gitlab.com/libtiff/libtiff/blob/master/LICENSE.md) (BSD-like)                  |
+| libultrahdr   | MIT License                                                                                              |
+| libvips       | LGPLv3                                                                                                   |
+| libwebp       | New BSD License                                                                                          |
+| mozjpeg       | [zlib License, IJG License, BSD 3-Clause](https://github.com/mozilla/mozjpeg/blob/master/LICENSE.md)     |
+| resvg         | MIT License                                                                                              |
+| zlib-ng       | [zlib License](https://github.com/zlib-ng/zlib-ng/blob/develop/LICENSE.md)                               |
+
+Use of libraries under the terms of the LGPLv3 is via the
+"any later version" clause of the LGPLv2 or LGPLv2.1.
+
+Please report any errors or omissions via
+https://github.com/lovell/sharp-libvips/issues/new
+~~~~
+
+### L085
 
 Applies to: `extend 3.0.2`
 
@@ -5143,7 +6230,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L074
+### L086
 
 Applies to: `deepmerge 4.3.1`
 
@@ -5171,7 +6258,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L075
+### L087
 
 Applies to: `@img/sharp-libvips-darwin-arm64 1.3.4`, `@img/sharp-libvips-darwin-x64 1.3.4`, `@img/sharp-libvips-linux-arm 1.3.4`, `@img/sharp-libvips-linux-arm64 1.3.4`, `@img/sharp-libvips-linux-ppc64 1.3.4`, `@img/sharp-libvips-linux-riscv64 1.3.4`, `@img/sharp-libvips-linux-s390x 1.3.4`, `@img/sharp-libvips-linux-x64 1.3.4`, `@img/sharp-libvips-linuxmusl-arm64 1.3.4`, `@img/sharp-libvips-linuxmusl-x64 1.3.4`
 
@@ -5220,7 +6307,7 @@ Please report any errors or omissions via
 https://github.com/lovell/sharp-libvips/issues/new
 ~~~~
 
-### L076
+### L088
 
 Applies to: `react-markdown 10.1.0`
 
@@ -5248,7 +6335,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L077
+### L089
 
 Applies to: `onnxruntime-web 1.30.0`
 
@@ -11624,7 +12711,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L078
+### L090
 
 Applies to: `js-yaml 4.3.2`
 
@@ -11652,7 +12739,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L079
+### L091
 
 Applies to: `style-to-js 1.1.21`
 
@@ -11681,7 +12768,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L080
+### L092
 
 Applies to: `micromark-extension-cjk-friendly 2.0.1`
 
@@ -11716,7 +12803,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L081
+### L093
 
 Applies to: `bail 2.0.2`, `ccount 2.0.1`, `character-entities 2.0.2`, `character-entities-html4 2.1.0`, `character-entities-legacy 3.0.0`, `character-reference-invalid 2.0.1`, `mdast-util-to-string 4.0.0`, `unist-util-position 5.0.0`, `unist-util-visit 5.1.0`
 
@@ -11745,7 +12832,32 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L082
+### L094
+
+Applies to: `@img/sharp-linuxmusl-arm64 0.35.5`
+
+~~~~text
+# `@img/sharp-linuxmusl-arm64`
+
+Prebuilt sharp for use with Linux (musl) 64-bit ARM.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L095
 
 Applies to: `parse-entities 4.0.2`, `property-information 7.2.0`
 
@@ -11774,7 +12886,87 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L083
+### L096
+
+Applies to: `launder 1.7.2`
+
+~~~~text
+Copyright (c) 2021 Apostrophe Technologies, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+~~~~
+
+### L097
+
+Applies to: `@img/sharp-win32-arm64 0.35.5`
+
+~~~~text
+# `@img/sharp-win32-arm64`
+
+Prebuilt sharp for use with Windows 64-bit ARM.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+This software contains third-party libraries
+used under the terms of the following licenses:
+
+| Library       | Used under the terms of                                                                                   |
+|---------------|-----------------------------------------------------------------------------------------------------------|
+| aom           | BSD 2-Clause + [Alliance for Open Media Patent License 1.0](https://aomedia.org/license/patent-license/)  |
+| cairo         | Mozilla Public License 1.1                                                                                |
+| cgif          | MIT License                                                                                               |
+| expat         | MIT License                                                                                               |
+| fontconfig    | [fontconfig License](https://gitlab.freedesktop.org/fontconfig/fontconfig/blob/main/COPYING) (BSD-like)   |
+| freetype      | [freetype License](https://git.savannah.gnu.org/cgit/freetype/freetype2.git/tree/docs/FTL.TXT) (BSD-like) |
+| fribidi       | LGPLv3                                                                                                    |
+| glib          | LGPLv3                                                                                                    |
+| harfbuzz      | MIT License                                                                                               |
+| highway       | BSD 3-Clause                                                                                              |
+| lcms          | MIT License                                                                                               |
+| libarchive    | BSD 2-Clause                                                                                              |
+| libexif       | LGPLv3                                                                                                    |
+| libffi        | MIT License                                                                                               |
+| libheif       | LGPLv3                                                                                                    |
+| libimagequant | [BSD 2-Clause](https://github.com/lovell/libimagequant/blob/main/COPYRIGHT)                               |
+| libnsgif      | MIT License                                                                                               |
+| libpng        | [libpng License](https://github.com/pnggroup/libpng/blob/master/LICENSE)                                  |
+| librsvg       | LGPLv3                                                                                                    |
+| libtiff       | [libtiff License](https://gitlab.com/libtiff/libtiff/blob/master/LICENSE.md) (BSD-like)                   |
+| libultrahdr   | MIT License                                                                                               |
+| libvips       | LGPLv3                                                                                                    |
+| libwebp       | New BSD License                                                                                           |
+| libxml2       | MIT License                                                                                               |
+| mozjpeg       | [zlib License, IJG License, BSD 3-Clause](https://github.com/mozilla/mozjpeg/blob/master/LICENSE.md)      |
+| pango         | LGPLv3                                                                                                    |
+| pixman        | MIT License                                                                                               |
+| proxy-libintl | LGPLv3                                                                                                    |
+| zlib-ng       | [zlib License](https://github.com/zlib-ng/zlib-ng/blob/develop/LICENSE.md)                                |
+
+Use of libraries under the terms of the LGPLv3 is via the
+"any later version" clause of the LGPLv2 or LGPLv2.1.
+
+Please report any errors or omissions via
+https://github.com/lovell/sharp-libvips/issues/new
+~~~~
+
+### L098
 
 Applies to: `base64-js 1.5.1`
 
@@ -11802,9 +12994,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L084
+### L099
 
-Applies to: `@aws-sdk/credential-provider-http 3.972.74`, `@aws-sdk/credential-provider-login 3.972.79`, `@aws-sdk/nested-clients 3.997.46`, `@img/sharp-darwin-x64 0.35.5`, `@img/sharp-freebsd-wasm32 0.35.5`, `@img/sharp-linux-arm 0.35.5`, `@img/sharp-linux-arm64 0.35.5`, `@img/sharp-linux-ppc64 0.35.5`, `@img/sharp-linux-riscv64 0.35.5`, `@img/sharp-linux-s390x 0.35.5`, `@img/sharp-linux-x64 0.35.5`, `@img/sharp-linuxmusl-arm64 0.35.5`, `@img/sharp-linuxmusl-x64 0.35.5`, `@img/sharp-wasm32 0.35.5`, `@img/sharp-webcontainers-wasm32 0.35.5`, `@img/sharp-win32-arm64 0.35.5`, `@img/sharp-win32-ia32 0.35.5`, `@img/sharp-win32-x64 0.35.5`
+Applies to: `@aws-sdk/credential-provider-http 3.972.74`, `@aws-sdk/credential-provider-login 3.972.79`, `@aws-sdk/nested-clients 3.997.46`
 
 ~~~~text
 Apache License
@@ -12010,7 +13202,7 @@ APPENDIX: How to apply the Apache License to your work.
    limitations under the License.
 ~~~~
 
-### L085
+### L100
 
 Applies to: `react 19.2.8`, `react-dom 19.2.8`, `scheduler 0.27.0`
 
@@ -12038,9 +13230,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L086
+### L101
 
-Applies to: `@img/sharp-libvips-darwin-arm64 1.3.4`, `@img/sharp-libvips-darwin-x64 1.3.4`, `@img/sharp-libvips-linux-arm 1.3.4`, `@img/sharp-libvips-linux-arm64 1.3.4`, `@img/sharp-libvips-linux-ppc64 1.3.4`, `@img/sharp-libvips-linux-riscv64 1.3.4`, `@img/sharp-libvips-linux-s390x 1.3.4`, `@img/sharp-libvips-linux-x64 1.3.4`, `@img/sharp-libvips-linuxmusl-arm64 1.3.4`, `@img/sharp-libvips-linuxmusl-x64 1.3.4`
+Applies to: `@img/sharp-libvips-darwin-arm64 1.3.4`, `@img/sharp-libvips-darwin-x64 1.3.4`, `@img/sharp-libvips-linux-arm 1.3.4`, `@img/sharp-libvips-linux-arm64 1.3.4`, `@img/sharp-libvips-linux-ppc64 1.3.4`, `@img/sharp-libvips-linux-riscv64 1.3.4`, `@img/sharp-libvips-linux-s390x 1.3.4`, `@img/sharp-libvips-linux-x64 1.3.4`, `@img/sharp-libvips-linuxmusl-arm64 1.3.4`, `@img/sharp-libvips-linuxmusl-x64 1.3.4`, `@img/sharp-wasm32 0.35.5`, `@img/sharp-win32-arm64 0.35.5`, `@img/sharp-win32-ia32 0.35.5`, `@img/sharp-win32-x64 0.35.5`
 
 ~~~~text
 GNU LESSER GENERAL PUBLIC LICENSE
@@ -12210,7 +13402,7 @@ permanent authorization for you to choose that version for the
 Library.
 ~~~~
 
-### L087
+### L102
 
 Applies to: `dequal 2.0.3`
 
@@ -12238,7 +13430,32 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L088
+### L103
+
+Applies to: `@img/sharp-darwin-x64 0.35.5`
+
+~~~~text
+# `@img/sharp-darwin-x64`
+
+Prebuilt sharp for use with macOS x64.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L104
 
 Applies to: `@paddleocr/paddleocr-js 0.4.2`
 
@@ -12446,7 +13663,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L089
+### L105
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -12816,7 +14033,7 @@ library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.
 ~~~~
 
-### L090
+### L106
 
 Applies to: `Catppuccin palette snapshot-2026-10-16`
 
@@ -12844,7 +14061,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L091
+### L107
 
 Applies to: `@aws-sdk/client-s3 3.1141.0`, `@aws-sdk/credential-provider-env 3.972.72`, `@aws-sdk/credential-provider-ini 3.973.17`, `@aws-sdk/credential-provider-node 3.972.84`, `@aws-sdk/token-providers 3.1138.0`, `@aws-sdk/types 3.974.6`, `@aws-sdk/xml-builder 3.972.41`, `@smithy/credential-provider-imds 4.5.2`, `@smithy/fetch-http-handler 5.8.0`, `@smithy/node-http-handler 4.12.1`, `@smithy/signature-v4 5.7.4`
 
@@ -13052,7 +14269,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L092
+### L108
 
 Applies to: `comma-separated-tokens 2.0.3`, `hast-util-whitespace 3.0.0`, `html-void-elements 3.0.0`, `is-alphabetical 2.0.1`, `is-alphanumerical 2.0.1`, `is-decimal 2.0.1`, `is-hexadecimal 2.0.1`, `mdast-util-to-hast 13.2.1`, `space-separated-tokens 2.0.2`, `unist-util-stringify-position 4.0.0`, `unist-util-visit-parents 6.0.2`, `zwitch 2.0.4`
 
@@ -13081,7 +14298,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L093
+### L109
 
 Applies to: `debug 4.4.3`
 
@@ -13107,7 +14324,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN 
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L094
+### L110
 
 Applies to: `@img/colour 1.1.0`
 
@@ -13196,7 +14413,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L095
+### L111
 
 Applies to: `yauzl 3.4.0`
 
@@ -13224,7 +14441,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L096
+### L112
 
 Applies to: `@napi-rs/canvas 1.0.8`, `@napi-rs/canvas-android-arm64 1.0.8`, `@napi-rs/canvas-darwin-arm64 1.0.8`, `@napi-rs/canvas-darwin-x64 1.0.8`, `@napi-rs/canvas-linux-arm-gnueabihf 1.0.8`, `@napi-rs/canvas-linux-arm64-gnu 1.0.8`, `@napi-rs/canvas-linux-arm64-musl 1.0.8`, `@napi-rs/canvas-linux-riscv64-gnu 1.0.8`, `@napi-rs/canvas-linux-x64-gnu 1.0.8`, `@napi-rs/canvas-linux-x64-musl 1.0.8`, `@napi-rs/canvas-win32-arm64-msvc 1.0.8`, `@napi-rs/canvas-win32-x64-msvc 1.0.8`
 
@@ -13252,7 +14469,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L097
+### L113
 
 Applies to: `bluebird 3.4.7`
 
@@ -13280,7 +14497,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L098
+### L114
 
 Applies to: `safe-buffer 5.1.2`
 
@@ -13308,9 +14525,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L099
+### L115
 
-Applies to: `@emnapi/runtime 1.11.3`, `isarray 1.0.0`, `launder 1.7.1`, `pg-types 2.2.0`, `pgpass 1.0.5`
+Applies to: `isarray 1.0.0`, `pg-types 2.2.0`, `pgpass 1.0.5`
 
 ~~~~text
 MIT License
@@ -13336,7 +14553,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L100
+### L116
 
 Applies to: `mdast-util-phrasing 4.1.0`
 
@@ -13366,7 +14583,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L101
+### L117
 
 Applies to: `trough 2.2.0`
 
@@ -13394,7 +14611,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L102
+### L118
 
 Applies to: `unified 11.0.5`, `vfile 6.0.3`
 
@@ -13422,7 +14639,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L103
+### L119
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -13442,7 +14659,32 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L104
+### L120
+
+Applies to: `@img/sharp-linux-ppc64 0.35.5`
+
+~~~~text
+# `@img/sharp-linux-ppc64`
+
+Prebuilt sharp for use with Linux (glibc) ppc64.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L121
 
 Applies to: `ms 2.1.3`
 
@@ -13470,7 +14712,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L105
+### L122
 
 Applies to: `onnxruntime-common 1.30.0`, `onnxruntime-web 1.30.0`
 
@@ -13498,7 +14740,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L106
+### L123
 
 Applies to: `setimmediate 1.0.5`
 
@@ -13525,7 +14767,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L107
+### L124
 
 Applies to: `decode-named-character-reference 1.3.0`, `hast-util-to-html 9.0.5`, `hast-util-to-jsx-runtime 2.3.6`, `markdown-table 3.0.4`, `mdast-util-find-and-replace 3.0.2`, `mdast-util-from-markdown 2.0.3`, `mdast-util-gfm 3.1.0`, `mdast-util-gfm-footnote 2.1.0`, `mdast-util-to-markdown 2.1.2`, `micromark 4.0.2`, `micromark-core-commonmark 2.0.3`, `micromark-extension-gfm-table 2.1.1`, `micromark-factory-destination 2.0.1`, `micromark-factory-label 2.0.1`, `micromark-factory-space 2.0.1`, `micromark-factory-title 2.0.1`, `micromark-factory-whitespace 2.0.1`, `micromark-util-character 2.1.1`, `micromark-util-chunked 2.0.1`, `micromark-util-classify-character 2.0.1`, `micromark-util-combine-extensions 2.0.1`, `micromark-util-decode-numeric-character-reference 2.0.2`, `micromark-util-decode-string 2.0.1`, `micromark-util-encode 2.0.1`, `micromark-util-html-tag-name 2.0.1`, `micromark-util-normalize-identifier 2.0.1`, `micromark-util-resolve-all 2.0.1`, `micromark-util-sanitize-uri 2.0.1`, `micromark-util-subtokenize 2.1.0`, `micromark-util-symbol 2.0.1`, `micromark-util-types 2.0.2`, `remark-gfm 4.0.1`, `remark-rehype 11.1.2`, `vfile-message 4.0.3`
 
@@ -13554,7 +14796,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L108
+### L125
 
 Applies to: `@aws-sdk/core 3.978.1`
 
@@ -13762,7 +15004,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L109
+### L126
 
 Applies to: `lucide-react 1.42.0`
 
@@ -13812,7 +15054,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L110
+### L127
 
 Applies to: `process-nextick-args 2.0.1`
 
@@ -13838,7 +15080,60 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.**
 ~~~~
 
-### L111
+### L128
+
+Applies to: `@emnapi/runtime 1.11.3`
+
+~~~~text
+MIT License
+
+Copyright (c) 2021-present Toyobayashi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+~~~~
+
+### L129
+
+Applies to: `@img/sharp-linux-arm64 0.35.5`
+
+~~~~text
+# `@img/sharp-linux-arm64`
+
+Prebuilt sharp for use with Linux (glibc) 64-bit ARM.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L130
 
 Applies to: `immediate 3.0.6`
 
@@ -13865,7 +15160,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L112
+### L131
 
 Applies to: `dingbat-to-unicode 1.0.2`
 
@@ -13894,7 +15189,7 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L113
+### L132
 
 Applies to: `zod 4.5.4`
 
@@ -13922,7 +15217,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L114
+### L133
 
 Applies to: `remark-parse 11.0.0`, `remark-stringify 11.0.0`
 
@@ -13950,7 +15245,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L115
+### L134
 
 Applies to: `picocolors 1.1.1`
 
@@ -13972,7 +15267,32 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L116
+### L135
+
+Applies to: `@img/sharp-linuxmusl-x64 0.35.5`
+
+~~~~text
+# `@img/sharp-linuxmusl-x64`
+
+Prebuilt sharp for use with Linux (musl) x64.
+
+## Licensing
+
+Copyright 2013 Lovell Fuller and others.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+[https://www.apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+~~~~
+
+### L136
 
 Applies to: `undici-types 7.18.2`
 
@@ -14000,7 +15320,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L117
+### L137
 
 Applies to: `util-deprecate 1.0.2`
 
@@ -14031,7 +15351,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L118
+### L138
 
 Applies to: `@types/debug 4.1.13`, `@types/estree 1.0.9`, `@types/estree-jsx 1.0.5`, `@types/hast 3.0.5`, `@types/mdast 4.0.4`, `@types/ms 2.1.0`, `@types/node 24.13.3`, `@types/react 19.2.18`, `@types/unist 2.0.11`, `@types/unist 3.0.3`
 

@@ -15,6 +15,7 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 LICENSE_PREFIXES = ("license", "licence", "copying", "notice", "copyright")
 MAX_LICENSE_BYTES = 1_048_576
+NPM_LICENSE_RECORDS = "third_party/licenses/npm/manifest.json"
 FALLBACK_LICENSES = {
     "Apache-2.0": REPOSITORY_ROOT / "LICENSE",
     "MIT": REPOSITORY_ROOT / "third_party" / "licenses" / "MIT.txt",
@@ -194,9 +195,62 @@ def npm_package_name(lock_path: str) -> str:
     return "/".join(parts[:2]) if parts[0].startswith("@") else parts[0]
 
 
+def npm_identity(lock_path: str, package: dict) -> dict:
+    return {
+        "name": package.get("name") or npm_package_name(lock_path),
+        **{key: package[key] for key in ("version", "license", "resolved", "integrity")},
+    }
+
+
+def npm_optional_license_files(directory: str, lock: dict) -> dict[str, list[Path]]:
+    """Use reviewed, integrity-pinned texts, never the host's optional install set."""
+    expected = {
+        path: package for path, package in lock["packages"].items()
+        if path.startswith("node_modules/") and package.get("optional")
+        and not package.get("dev", False)
+    }
+    if not expected:
+        return {}
+    manifest = json.loads((REPOSITORY_ROOT / NPM_LICENSE_RECORDS).read_text(encoding="utf-8"))
+    if manifest.get("format") != 1:
+        raise RuntimeError("unsupported npm license-record format")
+    records = manifest["packages"].get(directory, {})
+    if records.keys() != expected.keys():
+        raise RuntimeError(f"{directory}: optional npm license records do not match lockfile; refresh records")
+    result = {}
+    for lock_path, package in expected.items():
+        record = records[lock_path]
+        if record["package"] != npm_identity(lock_path, package):
+            raise RuntimeError(f"{lock_path}: npm license record differs from locked identity/integrity")
+        paths = []
+        for source_id in [record["source"], *record.get("supplement_sources", [])]:
+            source = manifest["sources"][source_id]
+            if source["kind"] == "npm-archive":
+                source_path = source["lock_path"]
+                if source["package"] != npm_identity(source_path, lock["packages"][source_path]):
+                    raise RuntimeError(f"{lock_path}: npm license source differs from lockfile")
+            elif source["kind"] != "reviewed-upstream-notices":
+                raise RuntimeError(f"{lock_path}: unsupported npm license source")
+            for entry in source["files"]:
+                path = REPOSITORY_ROOT / entry["path"]
+                licenses = (REPOSITORY_ROOT / "third_party/licenses").resolve()
+                if path.is_symlink() or not path.resolve().is_relative_to(licenses):
+                    raise RuntimeError(f"{lock_path}: unsafe npm license-record path")
+                if not path.is_file() or path.stat().st_size > MAX_LICENSE_BYTES:
+                    raise RuntimeError(f"{lock_path}: missing/oversized npm license text")
+                if hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
+                    raise RuntimeError(f"{lock_path}: npm license text checksum mismatch")
+                paths.append(path)
+        if not paths:
+            raise RuntimeError(f"{lock_path}: npm license source has no texts")
+        result[lock_path] = paths
+    return result
+
+
 def npm_packages(directory: str) -> list[tuple[str, str, str, list[Path]]]:
     package_root = REPOSITORY_ROOT / directory
     lock = json.loads((package_root / "package-lock.json").read_text(encoding="utf-8"))
+    optional_paths = npm_optional_license_files(directory, lock)
     packages = []
     for lock_path, package in lock["packages"].items():
         # Electron is a development dependency in npm but the Desktop runtime
@@ -207,7 +261,11 @@ def npm_packages(directory: str) -> list[tuple[str, str, str, list[Path]]]:
         ):
             continue
         package_directory = package_root / lock_path
-        paths = license_files(package_directory)
+        # Missing optional native packages are normal on every platform. Their
+        # installed presence must never select different texts or a template.
+        paths = optional_paths.get(lock_path)
+        if paths is None:
+            paths = license_files(package_directory)
         if directory == "application":
             # Some OCR packages omit their notices from npm's files list.
             # Version-specific records preserve actual upstream attribution.
@@ -224,30 +282,10 @@ def npm_packages(directory: str) -> list[tuple[str, str, str, list[Path]]]:
                 ("guid-typescript", "1.0.9"): [notices / "guid-typescript-1.0.9.txt"],
             }
             paths.extend(supplements.get(key, []))
-            if (key[0].startswith("@img/sharp-libvips-") and
-                    key[1] == "1.3.4" and package.get("license") == "LGPL-3.0-or-later"):
-                # The locked optional binaries omit all LICENSE files. Preserve
-                # their release's real notices and LGPL/GPL text, not an MIT
-                # fallback. This remains a source inventory, not a binary audit.
-                paths.extend([
-                    notices / "sharp-libvips-1.3.4" / "THIRD-PARTY-NOTICES.md",
-                    notices / "LGPL-3.0.txt", notices / "GPL-3.0.txt",
-                ])
         if directory == "application" and lock_path == "node_modules/pdfjs-dist":
             # PDF.js ships fonts, character maps and WASM with their own notices.
             for asset_directory in ("cmaps", "standard_fonts", "wasm", "iccs"):
                 paths.extend(license_files(package_directory / asset_directory))
-        if (
-            directory == "application"
-            and not paths
-            and lock_path.startswith("node_modules/@napi-rs/canvas-")
-            and package.get("license") == "MIT"
-            and package.get("version")
-            == lock["packages"].get("node_modules/@napi-rs/canvas", {}).get("version")
-        ):
-            # Optional platform binaries omit the license file; keep the matching
-            # canvas package's actual copyright notice, not an MIT template.
-            paths = license_files(package_root / "node_modules/@napi-rs/canvas")
         if not paths:
             paths = fallback_license_files(package["license"])
         packages.append(
