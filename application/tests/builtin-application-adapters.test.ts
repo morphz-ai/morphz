@@ -13,8 +13,7 @@ import test from "node:test";
 import react from "@vitejs/plugin-react";
 import { chromium, expect, type Page } from "@playwright/test";
 import { createServer, transformWithOxc } from "vite";
-import { API } from "typescript/unstable/sync";
-import { createVirtualFileSystem } from "typescript/unstable/fs";
+import { virtualTypeScriptSnapshot } from "./fixtures/virtual-typescript.js";
 import * as ts from "typescript/unstable/ast";
 import type { ReactElement } from "react";
 import type { BuiltinApplicationOptions } from "../apps/web/src/host/builtin-application-adapters.js";
@@ -112,18 +111,18 @@ function currentCSS() {
     }
     const name = "/builtin/source" + (file.endsWith(".tsx") ? ".tsx" : ".ts"),
       config = "/builtin/tsconfig.json";
-    const api = new API({
-      cwd: "/builtin",
-      fs: createVirtualFileSystem({
+    const snapshot = virtualTypeScriptSnapshot(
+      "/builtin",
+      {
         [name]: readFileSync(file, "utf8"),
         [config]: JSON.stringify({
           compilerOptions: { noLib: true, noResolve: true, jsx: "preserve" },
           files: [name],
         }),
-      }),
-    });
+      },
+      config,
+    );
     const dependencies: string[] = [];
-    const snapshot = api.updateSnapshot({ openProjects: [config] });
     try {
       const program = snapshot.getProject(config)!.program;
       assert.deepEqual(
@@ -168,7 +167,6 @@ function currentCSS() {
       }
     } finally {
       snapshot.dispose();
-      api.close();
     }
     dependencies.forEach(visit);
   }

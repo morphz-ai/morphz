@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { API } from "typescript/unstable/sync";
-import { createVirtualFileSystem } from "typescript/unstable/fs";
+import { virtualTypeScriptSnapshot } from "./virtual-typescript.js";
 import {
   NodeFlags,
   SyntaxKind,
@@ -37,17 +36,17 @@ const ownerPath = "./host/exchange-submission-commands.js";
 export function parseSubmission(text: string) {
   const file = "/submission/App.tsx",
     config = "/submission/tsconfig.json";
-  const api = new API({
-    cwd: "/submission",
-    fs: createVirtualFileSystem({
+  const snapshot = virtualTypeScriptSnapshot(
+    "/submission",
+    {
       [file]: text,
       [config]: JSON.stringify({
         compilerOptions: { noLib: true, noResolve: true, jsx: "preserve" },
         files: ["App.tsx"],
       }),
-    }),
-  });
-  const snapshot = api.updateSnapshot({ openProjects: [config] });
+    },
+    config,
+  );
   try {
     const project = snapshot.getProject(config)!;
     assert.equal(
@@ -74,7 +73,6 @@ export function parseSubmission(text: string) {
     };
   } finally {
     snapshot.dispose();
-    api.close();
   }
 }
 export function submissionSyntax(node: Node): unknown {

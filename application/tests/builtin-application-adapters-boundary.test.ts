@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { API } from "typescript/unstable/sync";
-import { createVirtualFileSystem } from "typescript/unstable/fs";
+import { virtualTypeScriptSnapshot } from "./fixtures/virtual-typescript.js";
 import * as ts from "typescript/unstable/ast";
 import { fixedBuiltinModuleSource } from "./fixtures/builtin-application-integration.js";
 
@@ -37,8 +36,7 @@ function parse(values: Record<string, string>) {
     compilerOptions: { noLib: true, noResolve: true, jsx: "preserve" },
     files: Object.keys(values).map((name) => name + ".tsx"),
   });
-  const api = new API({ cwd: root, fs: createVirtualFileSystem(files) }),
-    snapshot = api.updateSnapshot({ openProjects: [config] });
+  const snapshot = virtualTypeScriptSnapshot(root, files, config);
   try {
     const project = snapshot.getProject(config)!;
     assert.deepEqual(
@@ -122,7 +120,6 @@ function parse(values: Record<string, string>) {
     );
   } finally {
     snapshot.dispose();
-    api.close();
   }
 }
 function one<T>(values: T[], rule: string) {

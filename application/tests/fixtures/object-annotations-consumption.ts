@@ -6,8 +6,7 @@ import {
   readObjectInteractionOwner,
   verifyObjectInteractionConsumption,
 } from "./object-interactions-consumption.js";
-import { API } from "typescript/unstable/sync";
-import { createVirtualFileSystem } from "typescript/unstable/fs";
+import { virtualTypeScriptSnapshot } from "./virtual-typescript.js";
 import {
   NodeFlags,
   SyntaxKind,
@@ -293,8 +292,7 @@ function parse(contents: Record<string, string>) {
     compilerOptions: { noLib: true, noResolve: true, jsx: "preserve" },
     files: Object.keys(contents).map(filename),
   });
-  const api = new API({ cwd: directory, fs: createVirtualFileSystem(files) });
-  const snapshot = api.updateSnapshot({ openProjects: [config] });
+  const snapshot = virtualTypeScriptSnapshot(directory, files, config);
   try {
     const project = snapshot.getProject(config)!;
     assert.deepEqual(
@@ -325,7 +323,6 @@ function parse(contents: Record<string, string>) {
     );
   } finally {
     snapshot.dispose();
-    api.close();
   }
 }
 type Parsed = ReturnType<typeof parse> extends Map<string, infer P> ? P : never;

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { API } from "typescript/unstable/sync";
-import { createVirtualFileSystem } from "typescript/unstable/fs";
+import { virtualTypeScriptSnapshot } from "./virtual-typescript.js";
 import {
   NodeFlags,
   isBinaryExpression,
@@ -357,8 +356,7 @@ export function parseReferencePreparation(contents: Record<string, string>) {
     compilerOptions: { noLib: true, noResolve: true, jsx: "preserve" },
     files: Object.keys(contents).map(path),
   });
-  const api = new API({ cwd: root, fs: createVirtualFileSystem(files) });
-  const snapshot = api.updateSnapshot({ openProjects: [config] });
+  const snapshot = virtualTypeScriptSnapshot(root, files, config);
   try {
     const project = snapshot.getProject(config)!;
     assert.deepEqual(
@@ -389,7 +387,6 @@ export function parseReferencePreparation(contents: Record<string, string>) {
     );
   } finally {
     snapshot.dispose();
-    api.close();
   }
 }
 type Parsed =

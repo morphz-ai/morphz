@@ -13,8 +13,7 @@ import {
   expandSubmissionConsumption,
 } from "./fixtures/exchange-submission-contract.js";
 import { verifyCurrentWorkspaceContentOpeningConsumption } from "./fixtures/workspace-content-opening-consumption.js";
-import { API } from "typescript/unstable/sync";
-import { createVirtualFileSystem } from "typescript/unstable/fs";
+import { virtualTypeScriptSnapshot } from "./fixtures/virtual-typescript.js";
 import {
   SyntaxKind,
   NodeFlags,
@@ -303,8 +302,7 @@ function parse(contents: Record<string, string>) {
     compilerOptions: { noLib: true, noResolve: true, jsx: "preserve" },
     files: Object.keys(contents).map((name) => `${name}.tsx`),
   });
-  const api = new API({ cwd: directory, fs: createVirtualFileSystem(files) });
-  const snapshot = api.updateSnapshot({ openProjects: [config] });
+  const snapshot = virtualTypeScriptSnapshot(directory, files, config);
   try {
     const project = snapshot.getProject(config)!;
     assert.deepEqual(
@@ -366,7 +364,6 @@ function parse(contents: Record<string, string>) {
     );
   } finally {
     snapshot.dispose();
-    api.close();
   }
 }
 function syntax(
@@ -4300,9 +4297,12 @@ nodeTest(
       parse(sources);
       assert.throws(
         () => currentConsumption(sources),
-        (error) =>
-          error instanceof assert.AssertionError &&
-          error.message.startsWith("navigation-current-consumption: " + rule),
+        (error) => {
+          if (!(error instanceof assert.AssertionError)) throw error;
+          return error.message.startsWith(
+            "navigation-current-consumption: " + rule,
+          );
+        },
       );
     }
   },
@@ -4363,9 +4363,12 @@ nodeTest(
       parse(sources);
       assert.throws(
         () => currentConsumption(sources),
-        (error) =>
-          error instanceof assert.AssertionError &&
-          error.message.startsWith("navigation-current-consumption: " + rule),
+        (error) => {
+          if (!(error instanceof assert.AssertionError)) throw error;
+          return error.message.startsWith(
+            "navigation-current-consumption: " + rule,
+          );
+        },
       );
     }
   },
