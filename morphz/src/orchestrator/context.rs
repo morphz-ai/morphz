@@ -14873,7 +14873,12 @@ mod tests {
                 execution_id: thread.id.clone(),
                 generation: thread.generation,
             };
-            let mut frozen = crate::session_io::response::ReturnBinding::new(&thread.id, thread.generation, &prior.id, true);
+            let mut frozen = crate::session_io::response::ReturnBinding::new(
+                &thread.id,
+                thread.generation,
+                &prior.id,
+                true,
+            );
             frozen.output = Some(crate::session_io::evaluation::binding());
             let normalized = response_annotations::normalize_response(&crate::llm::Response {
                 content:json!({"body":null,"annotations":{"execution":{"title":"Inspect source","progress":"inspect","result":""},"observations":[]},"effects":[{"name":"read","arguments":{"path":"safe"},"intent":"read"}]}).to_string(),tool_calls:vec![],
@@ -17743,7 +17748,9 @@ mod tests {
         ));
         assert!(!rendered.contains(":::morphz-reply"));
         assert!(!rendered.contains("return non-empty ordinary assistant text with no tool calls"));
-        assert!(rendered.contains("native_v3 uses native calls with exact original business arguments"));
+        assert!(
+            rendered.contains("native_v3 uses native calls with exact original business arguments")
+        );
         assert!(!rendered.contains("never an Evaluation wrapper"));
         assert!(rendered.contains("(skill-discovery-contract"));
         assert!(rendered.contains("(fallback"));
@@ -18120,13 +18127,15 @@ mod tests {
                 .to_string();
         assert!(directive.contains("(mode internal-infer)"));
         assert!(directive.contains("Propose only permitted work through that same frozen carrier"));
-        assert!(directive.contains("Native_v3 returns the original JSON value or UTF-8 source directly"));
+        assert!(directive
+            .contains("Native_v3 returns the original JSON value or UTF-8 source directly"));
         assert!(!directive.contains("not merely a prose field or an Evaluation wrapper"));
         assert!(directive.contains("missing annotations are valid"));
         assert!(directive.contains("Do not add work or a model request solely"));
         evaluation.root_kind = "chat/user_message".into();
         evaluation.thread_kind = "dialogue_turn".into();
-        let dialogue = render_evaluation_directive(&evaluation, &[], &ContextReferences::default()).to_string();
+        let dialogue = render_evaluation_directive(&evaluation, &[], &ContextReferences::default())
+            .to_string();
         assert!(dialogue.contains("each actual work call's intent and truthful progress on that SAME native call's _morphz field"));
         assert!(dialogue.contains("no separately generated result summary"));
         assert!(!dialogue.contains("execution result WITH the final answer"));

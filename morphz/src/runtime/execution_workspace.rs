@@ -237,9 +237,11 @@ impl MorphzRuntime {
 mod tests {
     use super::*;
     fn profile(root: &Path) -> PermissionProfile {
-        let mut config = crate::permission::PermissionConfig::default();
-        config.workspace_root = root.to_string_lossy().into_owned();
-        config.read_only_outside_workspace = false;
+        let config = crate::permission::PermissionConfig {
+            workspace_root: root.to_string_lossy().into_owned(),
+            read_only_outside_workspace: false,
+            ..Default::default()
+        };
         PermissionProfile::from_config(&config).unwrap()
     }
     #[test]

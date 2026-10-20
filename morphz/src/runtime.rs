@@ -7367,7 +7367,7 @@ impl MorphzRuntime {
         let Some(context_id) = context_id else {
             return Ok(None);
         };
-        let Some(thread) = self.inner.store.get_thread_by_root(&root).await? else {
+        let Some(thread) = self.inner.store.get_thread_by_root(root).await? else {
             return Ok(None);
         };
         if thread.context_id != context_id
@@ -14364,22 +14364,50 @@ mod tests {
         stream: crate::llm::ModelStreamSender,
         options: crate::llm::ModelRequestOptions,
     ) -> Result<Response, RuntimeError> {
-        assert!(options.output_encoding.is_none(), "fixture advertises no native Schema capability");
+        assert!(
+            options.output_encoding.is_none(),
+            "fixture advertises no native Schema capability"
+        );
         let no_work = options.tool_choice == Some(crate::llm::ModelToolChoice::None);
-        if no_work { assert!(tools.is_empty(), "pure infer must have empty admitted tool scope"); }
-        let response = client.create_completion_bound_stream(binding, messages, tools, measurement, stream).await?;
-        if no_work { assert!(response.tool_calls.is_empty(), "fixture must honor tool_choice=none"); }
+        if no_work {
+            assert!(
+                tools.is_empty(),
+                "pure infer must have empty admitted tool scope"
+            );
+        }
+        let response = client
+            .create_completion_bound_stream(binding, messages, tools, measurement, stream)
+            .await?;
+        if no_work {
+            assert!(
+                response.tool_calls.is_empty(),
+                "fixture must honor tool_choice=none"
+            );
+        }
         Ok(response)
     }
 
     #[async_trait::async_trait]
     impl Client for TypedHarnessStringClient {
         async fn create_completion_bound_stream_with_options(
-            &self, binding: &crate::llm::ModelAttemptBinding, messages: Vec<Message>,
-            tools: Vec<ToolDefinition>, measurement: Option<crate::llm::PromptTokenCount>,
-            stream: crate::llm::ModelStreamSender, options: crate::llm::ModelRequestOptions,
+            &self,
+            binding: &crate::llm::ModelAttemptBinding,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+            measurement: Option<crate::llm::PromptTokenCount>,
+            stream: crate::llm::ModelStreamSender,
+            options: crate::llm::ModelRequestOptions,
         ) -> Result<Response, RuntimeError> {
-            complete_scripted_with_options(self, binding, messages, tools, measurement, stream, options).await
+            complete_scripted_with_options(
+                self,
+                binding,
+                messages,
+                tools,
+                measurement,
+                stream,
+                options,
+            )
+            .await
         }
 
         async fn create_completion(
@@ -14401,11 +14429,24 @@ mod tests {
     #[async_trait::async_trait]
     impl Client for SingleHarnessReplyClient {
         async fn create_completion_bound_stream_with_options(
-            &self, binding: &crate::llm::ModelAttemptBinding, messages: Vec<Message>,
-            tools: Vec<ToolDefinition>, measurement: Option<crate::llm::PromptTokenCount>,
-            stream: crate::llm::ModelStreamSender, options: crate::llm::ModelRequestOptions,
+            &self,
+            binding: &crate::llm::ModelAttemptBinding,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+            measurement: Option<crate::llm::PromptTokenCount>,
+            stream: crate::llm::ModelStreamSender,
+            options: crate::llm::ModelRequestOptions,
         ) -> Result<Response, RuntimeError> {
-            complete_scripted_with_options(self, binding, messages, tools, measurement, stream, options).await
+            complete_scripted_with_options(
+                self,
+                binding,
+                messages,
+                tools,
+                measurement,
+                stream,
+                options,
+            )
+            .await
         }
 
         async fn create_completion(
@@ -17482,11 +17523,24 @@ mod tests {
     #[async_trait::async_trait]
     impl Client for HarnessDiscoveryClient {
         async fn create_completion_bound_stream_with_options(
-            &self, binding: &crate::llm::ModelAttemptBinding, messages: Vec<Message>,
-            tools: Vec<ToolDefinition>, measurement: Option<crate::llm::PromptTokenCount>,
-            stream: crate::llm::ModelStreamSender, options: crate::llm::ModelRequestOptions,
+            &self,
+            binding: &crate::llm::ModelAttemptBinding,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+            measurement: Option<crate::llm::PromptTokenCount>,
+            stream: crate::llm::ModelStreamSender,
+            options: crate::llm::ModelRequestOptions,
         ) -> Result<Response, RuntimeError> {
-            complete_scripted_with_options(self, binding, messages, tools, measurement, stream, options).await
+            complete_scripted_with_options(
+                self,
+                binding,
+                messages,
+                tools,
+                measurement,
+                stream,
+                options,
+            )
+            .await
         }
 
         async fn create_completion(

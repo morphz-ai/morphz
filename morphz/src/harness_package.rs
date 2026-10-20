@@ -1121,7 +1121,7 @@ fn parse_manifest(form: &SExpr) -> Result<HarnessManifest, HarnessPackageError> 
         .iter()
         .filter(|item| {
             !matches!(
-                root_name(item).ok().as_deref(),
+                root_name(item).ok(),
                 Some("id" | "version" | "title" | "entry" | "capabilities")
             )
         })
