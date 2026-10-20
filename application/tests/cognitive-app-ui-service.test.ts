@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
@@ -64,6 +64,7 @@ function input(html = "<!doctype html><h1>真实界面 😀</h1>") {
   return { definition, manifest };
 }
 type Fixture = {
+  root: string;
   platform: PlatformStore;
   service: UiPackageService;
   q: SqlQuery;
@@ -161,6 +162,7 @@ async function isolated(
       q = sqliteQuery(database);
     }
     const f: Fixture = {
+      root,
       platform,
       service,
       q,
@@ -197,6 +199,39 @@ async function noImplicitAuthority(f: Fixture) {
   ])
     assert.equal((await f.q.all(`SELECT * FROM ${relation}`)).length, 0);
 }
+
+async function assertInstalledCognitiveBytes(
+  f: Fixture,
+  submission: ReturnType<typeof input>,
+) {
+  // Installation is not consent to launch a window. The current legacy entry
+  // must reject cognitive packages; exact bound-window reads have their own
+  // real SQLite/PostgreSQL gate in cognitive-app-ui-view-service.test.ts.
+  await assert.rejects(
+    f.service.read(access, submission.manifest.id, submission.manifest.version),
+    (error: unknown) =>
+      error instanceof Error && Reflect.get(error, "code") === "forbidden",
+  );
+  const entry = await f.platform.uiPackage(
+    access,
+    submission.manifest.id,
+    submission.manifest.version,
+  );
+  assert.ok(entry.cognitive);
+  assert.equal(entry.installedByPrincipalId, "alice");
+  const bytes = readFileSync(
+    join(f.root, "ui-bytes", "blobs", entry.sha256.slice(0, 2), entry.sha256),
+  );
+  assert.equal(bytes.byteLength, entry.byteLength);
+  assert.equal(createHash("sha256").update(bytes).digest("hex"), entry.sha256);
+  assert.deepEqual(
+    {
+      ...entry.header,
+      ui: { ...entry.header.ui, html: bytes.toString("utf8") },
+    },
+    submission.manifest,
+  );
+}
 for (const backend of ["sqlite", "postgres"] as const) {
   test(`real UI Service installs exact Managed Store bytes then registry definition, survives cold restart on ${backend}`, async () =>
     isolated(backend, async (f) => {
@@ -211,14 +246,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
         version.definition.ui!.sha256,
         submission.definition.ui.sha256,
       );
-      assert.deepEqual(
-        await f.service.read(
-          access,
-          submission.manifest.id,
-          submission.manifest.version,
-        ),
-        submission.manifest,
-      );
+      await assertInstalledCognitiveBytes(f, submission);
       const packageRows = await f.q.all("SELECT * FROM app_ui_packages");
       const definitionRows = await f.q.all(
         "SELECT * FROM cognitive_app_versions",
@@ -249,14 +277,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
         packageRows,
       );
       await f.reopen();
-      assert.deepEqual(
-        await f.service.read(
-          access,
-          submission.manifest.id,
-          submission.manifest.version,
-        ),
-        submission.manifest,
-      );
+      await assertInstalledCognitiveBytes(f, submission);
       assert.deepEqual(
         await f.service.installCognitive(access, commandId, submission),
         version,
@@ -353,14 +374,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
       await assert.rejects(
         f.service.installCognitive(access, commandId, changed),
       );
-      assert.deepEqual(
-        await f.service.read(
-          access,
-          submission.manifest.id,
-          submission.manifest.version,
-        ),
-        submission.manifest,
-      );
+      await assertInstalledCognitiveBytes(f, submission);
     }));
   test(`real UI Service snapshots submitted bytes, metadata and ingress credential before actual asynchronous identity SQL on ${backend}`, async () =>
     isolated(backend, async (f) => {
@@ -387,14 +401,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
       assert.ok(mutated);
       assert.deepEqual(version.definition, original.definition);
       assert.equal(version.installedByPrincipalId, "alice");
-      assert.deepEqual(
-        await f.service.read(
-          access,
-          original.manifest.id,
-          original.manifest.version,
-        ),
-        original.manifest,
-      );
+      await assertInstalledCognitiveBytes(f, original);
       await noImplicitAuthority(f);
     }));
 }

@@ -325,6 +325,36 @@ function attribute(
 }
 function verify(values: typeof sources) {
   const expected = fixedBuiltinModuleSource()
+    // Oct 18 approved Agent reading navigation: consume the persisted exact
+    // location once, then acknowledge with the same instance revision.
+    // This explicit current delta does not rewrite the original archive.
+    .replace(
+      "import {Reader}",
+      "import {readerViewStateSchema} from '../../../../packages/core/src/applications.js';\nimport {Reader}",
+    )
+    .replace(
+      "return view==='browser'?",
+      `const readingState = view === "reader" ? readerViewStateSchema.safeParse(instance.state) : null;
+      const navigation = readingState?.success ? readingState.data : null;
+      const windowTarget = navigation?.artifactId && navigation.revision && navigation.location
+        ? { artifactId: navigation.artifactId, revision: navigation.revision, location: navigation.location,
+            requestId: navigation.navigationId ?? \`\${instance.id}:\${instance.revision}\` } : null;
+      return view==='browser'?`,
+    )
+    .replace(
+      "revision={readingRevision}",
+      "revision={navigation?.revision ?? readingRevision}",
+    )
+    .replace("target={readingTarget}", "target={windowTarget ?? readingTarget}")
+    .replace(
+      "onTargetConsumed={onReadingTargetConsumed}",
+      `onTargetConsumed={windowTarget ? (requestId) => {
+      if (requestId !== windowTarget.requestId) return;
+      if (readingTarget?.requestId) onReadingTargetConsumed(readingTarget.requestId);
+      void client.execute({type:"set-application-state",instanceId:instance.id,expectedRevision:instance.revision,
+        state:{artifactId:windowTarget.artifactId,revision:windowTarget.revision}}).catch((error)=>onNotice(error.message));
+    } : onReadingTargetConsumed}`,
+    )
     // Terminal is an explicitly added fourth builtin. Keep every original
     // Browser/Reader/Script/recent recipe byte-derived from the independent
     // archive; add this reviewed new branch, not a copy of the current owner.
@@ -680,8 +710,15 @@ test("finite owner recipe/source counterfactuals reject their specified rules", 
     [
       "fresh CAS revision",
       "Owner",
-      "expectedRevision: instance.revision",
-      "expectedRevision: client.boot.workspace.revision",
+      "expectedRevision: instance.revision,\n                state: { ...instance.state, url: page.url }",
+      "expectedRevision: client.boot.workspace.revision,\n                state: { ...instance.state, url: page.url }",
+      /builtin-complete-render-recipes/,
+    ],
+    [
+      "Reader consumes only the matching persisted navigation request",
+      "Owner",
+      "if (requestId !== windowTarget.requestId) return;",
+      "if (requestId === windowTarget.requestId) return;",
       /builtin-complete-render-recipes/,
     ],
     [

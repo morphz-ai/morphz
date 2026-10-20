@@ -259,6 +259,27 @@ test("真实收藏 Host 每次核验 Agent 原始输入与当前 Human 权限", 
     bindMessageAttachments: () => {},
     bindPlatformAgentScope: () => {},
     inputEvidenceReader: () => ({
+      async readThreadInputSource(
+        sessionId: string,
+        threadId: string,
+        principalId: string,
+      ) {
+        assert.equal(sessionId, route.session_id);
+        assert.equal(threadId, route.thread_id);
+        if (principalId !== route.principal_id)
+          return {
+            thread: (await this.readThread()).snapshot.thread,
+            source: null,
+          };
+        return {
+          thread: (await this.readThread()).snapshot.thread,
+          source: {
+            kind: "input",
+            root_thread_id: route.thread_id,
+            input_event: await this.readSessionEvent(),
+          },
+        };
+      },
       async readThread() {
         return {
           snapshot: {

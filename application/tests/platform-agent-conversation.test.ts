@@ -40,7 +40,7 @@ test("正式 Agent 当前理解只发布 Runtime 已提交帧并读取 Platform 
       ) =>
         action(
           { credential: "verified-agent" },
-          { projectId: "project-one", inputId: "input-one" },
+          { kind: "input", projectId: "project-one", inputId: "input-one" },
           {
             tenantId: "tenant-one",
             principalId: "human",

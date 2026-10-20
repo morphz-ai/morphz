@@ -456,7 +456,7 @@ test("按输入停止：排队不发送、并发 root 隔离、丢回执后重�
         entry.revision++;
         return send(500, { error: "lost reply" });
       }
-      return send(200, entry);
+      return send(200, { ...entry, input_handoff: null });
     }
     if (path.endsWith("/events")) return send(200, { events: [] });
     if (req.method === "PATCH") {

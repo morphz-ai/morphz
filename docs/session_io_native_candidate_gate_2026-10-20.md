@@ -56,6 +56,65 @@ TEST Session 的原 Runtime HTTP 验收，不冒充窗口操作。
 [原应用交付证据](session_io_native_deployment_evidence_2026-10-20.json)。全应用旧失败
 仍未全部归因；Qwen／Kimi／GLM 未测，不声称跨模型保证。
 
+## 全应用回归审计：测试契约修正，尚未全量通过
+
+本节记录后续全应用失败调查，不把前述 51 项或本轮定向通过称为全量验收。
+对照代码为 `e642b0fb`（原生交付提交 `70f59264` 的直接父提交），放在独立
+临时目录；没有切换当前工作目录、回滚用户改动或使用原业务数据库。
+
+首先澄清“SSR 创建客户端”：这是旧 Node 测试用 `renderToString` 取出
+`useWorkspace` 方法的做法，不是 Desktop 的产品架构。SSR 不运行挂载 effect，
+而生产端自 `115e63524`（10 月 5 日）起明确禁止未挂载 owner 开始刷新。
+旧收藏测试源自 10 月 4 日；其五项在对照代码中同样失败，早于本次交付改动。
+本轮将收藏业务测试改为真实 Chromium `createRoot` 挂载，经过实际 HTTP、
+cookie、浏览器存储及私有 SQLite。SSR 只保留“纯构造不发请求”的独立断言，
+不再承担登录或业务读写。生产生命周期、身份切换和撤权保护没有放宽。
+
+已查明并修正的其他测试接线问题：
+
+- 旧 Headless Harness 直接返回 Host 数据对象，却等待隐式模型解释；
+  `b56a2f05`（10 月 16 日）的已批准根返回规则早已移除这一隐式步骤。
+  测试现明确声明一次带真实输入与命令回执 captures 的 `infer (returns String)`，
+  验证两个根各一个子推理、共两次模型请求、四次原 Host 工作、两份原件；
+  补充和重放不会重做工作，最终正文与两个子结果分别相同。
+- 嵌套 Thread 夹具仍使用 `_annotations`／`reply`；改为当前同调用 `_morphz`
+  及原生正文，四份步骤注解不串线，没有恢复伴随元数据调用。
+- 若干受控 Runtime 替身缺失现行 `readThreadInputSource` 来源证明、
+  `input_handoff:null` 或注解设置响应；补齐明确的 input／schedule 来源，
+  保留真实 Platform/作者服务的权限、CAS、幂等和撤权断言。
+- 旧迁移测试由当前 SQL 反推 v2—v6 时漏剔除了 v8 的 `submission_mode`。
+  只修正隔离测试的历史构造和当前版本断言，原 v2/v3/v4 哈希不变；
+  SQLite 与 PostgreSQL 均验证原稿/回执保留、冷重开和坏结构拒绝。
+- 旧 UI 安装测试绕过已批准的认知应用窗口授权入口；现验证遗留入口拒绝，
+  同时校验实际保存字节/哈希，合法窗口读取及撤权由现有独立 SQL 测试覆盖。
+- Reader 的已批准精确定位／清空阅读状态、退役 Host 名称、Terminal 输入格式、
+  CSS 在纯 Node 渲染测试中的载入、无来源执行保留为只读事实等旧断言已按现行
+  边界对齐。历史固定夹具未覆盖写，反例测试继续保留。
+
+归因对照：业务／权限／迁移的 12 文件批次，在当前代码和 `e642b0fb` 上均是
+97 项、47 失败、50 通过；修正后对应三组为 46/46、33/33、18/18。
+收藏、导航和认知 UI 失败也单独在对照代码复现。Runtime 二进制使用冻结的本次
+已验收候选，因此旧 Headless 的二进制归因来自实际错误与 `b56a2f05` 历史，
+不把“旧应用夹具＋新 Runtime”冒充完整旧版本运行对照。
+
+尚未关闭的范围：其他 SSR 业务夹具（对象、读者、剧本等）、若干完整组件挂载／
+交互超时，以及静态 UI 所有权/结构断言。全量尝试包含未跟踪的 sandbox 原型，
+随后因挂起退出，不能从失败标记行数计算完整测试总数；该原型属于其他在途工作，
+未擅自修改或将它标记通过。以上仅是分组修正，**没有完成全应用门禁及其原窗口
+验收，不作全量交付声明**。本轮暂未改动产品代码、重启 Runtime 或替换原应用。
+
+合并复测：受管 `npm test` 选择上述修正及共用设施的 30 个文件，启用独立
+PostgreSQL 和冻结 Runtime，**236 通过、0 失败、0 跳过**；类型检查和
+`git diff --check` 通过。该批使用受控模型响应，不计为新的真实 DeepSeek 样本，
+更不计为全应用或原窗口业务验收。
+
+隔离日志目录：`/tmp/morphz-full-app-regressions-20261020.OxfoEB`。主要文件为
+`bookmarks-before-session-io.log`、`navigation-before-session-io.log`、
+`secondary-baseline.log`、`business-baseline.log`、`business-regressions.log`、
+`source-proof-fixed.log`、`lifecycle-schema-fixed.log`、`remaining-business-fixed.log`、
+`final-fixture-gate.log`、`runtime-helper-regressions2.log`、
+`repaired-scope-final.log`、`typecheck-repaired-scope.log`。
+
 ## 后续批准：Chat 保持原生正文
 
 用户在本轮补充批准：工作后的 Chat 也返回普通正文，工具中的标题、意图、进度

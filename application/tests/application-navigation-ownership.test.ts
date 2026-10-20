@@ -460,11 +460,25 @@ type Fixture = ReturnType<typeof fixture>;
 async function compare(
   run: (f: Fixture) => Promise<unknown>,
   scenario: Scenario = {},
+  readerClear = false,
 ) {
   const results: unknown[] = [];
   for (const mode of ["fixed", "production"] as const) {
     const f = fixture(mode, scenario);
     results.push({ result: await run(f), ...f.snapshot() });
+  }
+  // Oct 18 Reader navigation deliberately clears the closed state object,
+  // including stale revision/location/navigationId, when returning to library.
+  // Keep the historical fixture intact and compare every other event unchanged.
+  if (readerClear) {
+    const old = results[0] as { events: unknown[][] };
+    old.events = old.events.map((event) => {
+      const operation = event[1] as Operation;
+      return event[0] === "execute" &&
+        operation.type === "set-application-state"
+        ? [event[0], { ...operation, state: { artifactId: "" } }]
+        : event;
+    });
   }
   assert.deepEqual(results[1], results[0]);
 }
@@ -663,7 +677,7 @@ test("reader library without an active Reader only clears its original preferenc
     );
 });
 
-test("Reader library preserves exact instance/revision/state spread and activates only after acknowledged clearing", async () => {
+test("Reader library preserves exact instance/revision, clears stale reading state and activates only after acknowledgement", async () => {
   const active = instance("reader", readerApplication.id, 13);
   await compare(
     async (f) => {
@@ -675,7 +689,10 @@ test("Reader library preserves exact instance/revision/state spread and activate
           type: "set-application-state",
           instanceId: "reader",
           expectedRevision: 13,
-          state: { ...active.state, artifactId: "" },
+          state:
+            f.mode === "fixed"
+              ? { ...active.state, artifactId: "" }
+              : { artifactId: "" },
         },
       ]);
       assert.equal(patches(f).length, 0);
@@ -686,7 +703,7 @@ test("Reader library preserves exact instance/revision/state spread and activate
             { type: "set-application-state" }
           >
         ).state.panel,
-        active.state.panel,
+        f.mode === "fixed" ? active.state.panel : undefined,
       );
       pending.resolve(receipt());
       await action;
@@ -698,6 +715,7 @@ test("Reader library preserves exact instance/revision/state spread and activate
       );
     },
     { active },
+    true,
   );
 });
 
@@ -720,6 +738,7 @@ test("Reader library retains default-current activation and ungated late error r
         );
       },
       { active: instance("reader", readerApplication.id) },
+      true,
     );
 });
 

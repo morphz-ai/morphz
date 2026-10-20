@@ -9,7 +9,7 @@ import { workInputRequest } from "../packages/application/src/session-io.js";
 import { receivedWorkflowText } from "../scripts/script-studio-quality-evidence.js";
 import { workToolDefinitions } from "../packages/application/src/agent-tools.js";
 
-test("两种 Host 工具说明都符合真实 Runtime 的 16000 字节上限", () => {
+test("唯一 Host 工具说明符合真实 Runtime 的 16000 字节上限", () => {
   for (const definition of workToolDefinitions) {
     assert.ok(Buffer.byteLength(definition.description, "utf8") <= 16000);
     assert.match(definition.description, /restore old versions as new heads/);
@@ -18,7 +18,9 @@ test("两种 Host 工具说明都符合真实 Runtime 的 16000 字节上限", (
   }
 });
 
-test("Host 模型工具契约保持稳定：项目读取只扩充返回数据，不改工具名称、schema 或说明", () => {
+test("当前 Host 模型工具契约保持稳定：已批准的阅读器操作说明不随业务读取变化", () => {
+  // Pinned after the explicit reader discovery/selector fixes in 558c07d8 and
+  // 18f8b4b8. Business calls and annotation settings must not mutate it.
   assert.deepEqual(
     workToolDefinitions.map((definition) => ({
       name: definition.name,
@@ -30,7 +32,7 @@ test("Host 模型工具契约保持稳定：项目读取只扩充返回数据，
       {
         name: "host_morphz",
         sha256:
-          "c9d2f16259949f5124d2d45992ce9672b55fcc966036f8eb451ff1e55a8e5fef",
+          "dc7f044897f0ce30bbd6c27bd957e773e72f4c55cf83654dbf68f8a27e870211",
       },
     ],
   );

@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { SafeMarkdown } from "../apps/web/src/SafeMarkdown.js";
 import { ResponseWaiting } from "../apps/web/src/ResponseWaiting.js";
 import { ExecutionProgress } from "../apps/web/src/ExecutionProgress.js";
 import {
@@ -12,6 +12,22 @@ import {
 } from "../apps/web/src/conversation-presentation.js";
 import type { LiveMessage } from "../packages/core/src/live-conversation.js";
 import type { Workspace } from "../packages/core/src/model.js";
+
+// These static-markup assertions cover content, not CSS or browser geometry.
+// Keep the real component; only make its stylesheet inert in this Node import.
+const styles = registerHooks({
+  load(url, context, nextLoad) {
+    return url.endsWith(".css")
+      ? { format: "module", source: "export {};", shortCircuit: true }
+      : nextLoad(url, context);
+  },
+});
+let SafeMarkdown: typeof import("../apps/web/src/SafeMarkdown.js").SafeMarkdown;
+try {
+  ({ SafeMarkdown } = await import("../apps/web/src/SafeMarkdown.js"));
+} finally {
+  styles.deregister();
+}
 
 const render = (children: string) =>
   renderToStaticMarkup(

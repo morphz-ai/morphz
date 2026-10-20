@@ -677,9 +677,12 @@ test("对话查找每个窗口和返回前检查授权，撤权不泄露已积�
       personalDefault: false,
       projectIds: ++checks === 1 ? ["project"] : [],
     }));
-    assert.deepEqual(
-      (await bridge.searchPlatformConversation(request, localAccess)).hits,
-      [],
+    await assert.rejects(
+      bridge.searchPlatformConversation(request, localAccess),
+      (error: unknown) =>
+        error instanceof Error &&
+        Reflect.get(error, "code") === "forbidden" &&
+        /授权已变化/.test(error.message),
     );
     const reads = metrics().fetches;
     bridge.bindPlatformReadAuthority(async () => {

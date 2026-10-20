@@ -483,6 +483,28 @@ async function fixture(backend: "sqlite" | "postgres") {
     },
     async assertPlatformInputActive() {},
     inputEvidenceReader: () => ({
+      async readThreadInputSource(sessionId: string, threadId: string) {
+        const { snapshot } = await this.readThread(sessionId, threadId);
+        const root = roots.get(threadId)!;
+        return {
+          thread: snapshot.thread,
+          source: root.schedule
+            ? {
+                kind: "schedule",
+                root_thread_id: threadId,
+                schedule_id: root.schedule.id,
+                source_turn_id: root.schedule.root,
+              }
+            : {
+                kind: "input",
+                root_thread_id: threadId,
+                input_event: await this.readSessionEvent(
+                  sessionId,
+                  root.input.input_id,
+                ),
+              },
+        };
+      },
       async readThread(sessionId: string, threadId: string) {
         const root = roots.get(threadId);
         if (!root || root.route.session_id !== sessionId)

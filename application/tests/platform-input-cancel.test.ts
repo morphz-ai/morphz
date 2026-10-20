@@ -157,6 +157,7 @@ test("Platform cancellation rechecks author and scope, then controls only the ex
           root_turn_id: "root-one",
           revision: postCount + 1,
           lifecycle: postCount ? "cancelled" : "open",
+          input_handoff: null,
         }),
       );
     }

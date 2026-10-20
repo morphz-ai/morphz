@@ -15,6 +15,10 @@ const taskRunColumn =
   "  task_run_event_id TEXT CHECK (task_run_event_id IS NULL OR length(task_run_event_id) BETWEEN 1 AND 100),\n";
 const versionSixSql = scriptStudioSchemaSql
   .replace(
+    "  submission_mode TEXT NOT NULL DEFAULT 'candidate' CHECK (submission_mode IN ('candidate','current')),\n",
+    "",
+  )
+  .replace(
     "  task_request TEXT NOT NULL DEFAULT '' CHECK (length(task_request) <= 12000),\n",
     "",
   )
@@ -142,6 +146,9 @@ for (const backend of ["sqlite", "postgres"] as const) {
             await admin.query(
               `ALTER TABLE "${schema}".script_preparations DROP COLUMN task_request`,
             );
+            await admin.query(
+              `ALTER TABLE "${schema}".script_preparations DROP COLUMN submission_mode`,
+            );
             for (const name of [
               "script_editor_items",
               "script_editor_candidates",
@@ -165,7 +172,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
             const db = new DatabaseSync(filename);
             try {
               db.exec(
-                "DROP INDEX script_preparations_by_input_target; DROP INDEX script_preparations_by_input_order; ALTER TABLE script_preparations DROP COLUMN task_request;",
+                "DROP INDEX script_preparations_by_input_target; DROP INDEX script_preparations_by_input_order; ALTER TABLE script_preparations DROP COLUMN task_request; ALTER TABLE script_preparations DROP COLUMN submission_mode;",
               );
               for (const name of [
                 "script_editor_items",
@@ -210,7 +217,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
                   )
                 ).rows[0].version,
               ),
-              7,
+              8,
             );
             assert.equal(
               Number(
@@ -238,7 +245,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
               assert.equal(
                 db.prepare("SELECT version FROM script_schema_version").get()
                   ?.version,
-                7,
+                8,
               );
               assert.equal(
                 db
@@ -295,7 +302,7 @@ test("SQLite 剧本私库 v3 补交付索引与审阅命令来源", async () => 
       assert.equal(
         upgraded.prepare("SELECT version FROM script_schema_version").get()
           ?.version,
-        7,
+        8,
       );
       assert.equal(
         upgraded.prepare("SELECT command_id FROM script_command_receipts").get()
@@ -358,7 +365,7 @@ test(
       const version = await admin.query(
         `SELECT version FROM "${schema}".script_schema_version`,
       );
-      assert.equal(Number(version.rows[0]?.version), 7);
+      assert.equal(Number(version.rows[0]?.version), 8);
       const receipt = await admin.query(
         `SELECT command_id FROM "${schema}".script_command_receipts`,
       );
@@ -406,7 +413,7 @@ test("SQLite 剧本私库 v2 升级领域结构，原回执和重复启动保持
       const version = upgraded
         .prepare("SELECT version,schema_sha256 FROM script_schema_version")
         .get();
-      assert.equal(version?.version, 7);
+      assert.equal(version?.version, 8);
       assert.equal(version?.schema_sha256, schemaHash(scriptStudioSchemaSql));
       assert.deepEqual(
         upgraded
@@ -511,7 +518,7 @@ test(
       const version = await admin.query(
         `SELECT version,schema_sha256 FROM "${schema}".script_schema_version`,
       );
-      assert.equal(Number(version.rows[0]?.version), 7);
+      assert.equal(Number(version.rows[0]?.version), 8);
       assert.equal(
         version.rows[0]?.schema_sha256,
         schemaHash(scriptStudioSchemaSql),

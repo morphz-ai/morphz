@@ -194,9 +194,14 @@ test("only cognitive inputs select IO10 and their whole exact locator is require
   );
 });
 
-test("all pre-existing registered descriptors remain byte-for-byte unchanged", () => {
+test("pre-existing canonical descriptors retain exact bytes; retired names remain unregistered", () => {
+  assert.ok(
+    workInputFormats.every(
+      (format) => format.id === "morphz.application.input",
+    ),
+  );
   const old = workInputFormats
-    .filter((f) => !["10", "11", "12"].includes(f.version))
+    .filter((f) => Number(f.version) < 10)
     .map((f) => [
       f.id,
       f.version,
@@ -237,16 +242,6 @@ test("all pre-existing registered descriptors remain byte-for-byte unchanged", (
       "morphz.application.input",
       "1",
       "759f21fc3df45a0ae98f2e40813e63817616cbbe0a559601a5c43b1af9cc4873",
-    ],
-    [
-      "morphzwork.input",
-      "2",
-      "7119aede3e278014ad0c19ebb31efbd21984412281ccd4968e01bd572837c026",
-    ],
-    [
-      "morphzwork.input",
-      "1",
-      "9fbf6b9715556bfae62dc01373e3d4af884b6a5d02fcbc22573115f3e691635b",
     ],
   ]);
 });

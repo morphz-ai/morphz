@@ -4,7 +4,10 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { profileActualTransportFixture } from "./profile-actual-transport-fixture.js";
+import {
+  profileActualTransportFixture,
+  profileFixtureObservationResult,
+} from "./profile-actual-transport-fixture.js";
 import {
   packCognitiveAuthor,
   startPackedAuthor,
@@ -20,10 +23,7 @@ import {
   parseCognitiveAppCommandResult,
   parseCognitiveAppDescription,
 } from "../packages/core/src/cognitive-app-api.js";
-import {
-  parseCognitiveAppDefinition,
-  parseProtocolValue,
-} from "../packages/cognitive-app-sdk/src/protocol.js";
+import { parseCognitiveAppDefinition } from "../packages/cognitive-app-sdk/src/protocol.js";
 import {
   parseDomainActor,
   parseObjectReadResponse,
@@ -40,15 +40,17 @@ const harnessSource = `
   (authority "Use the original Host input source; model text is not permission."))
 (eval (requires (tools host_morphz))
   (seq
-    (call host_morphz (action "read-input"))
-    (call host_morphz (action "cognitive")
+    (bind input (call host_morphz (action "read-input")))
+    (bind created (call host_morphz (action "cognitive")
       (cognitive (json-object (action "invoke") (mode "command")
         (appId "example.notes") (version "1.0.0")
         (connectionId "application-notes-connection")
         (operationId "notes.create")
         (parameters (json-object (title "ACTUAL headless Harness original")
           (markdown "ACTUAL_HNS_ORIGINAL_V1_原件")))
-        (resources (list)))))))
+        (resources (list))))))
+    (infer (captures input created) (returns String)
+      "Explain the actual captured command receipt. Do not perform any further work.")))
 `;
 const definition = parseCognitiveAppDefinition({
   ...JSON.parse(
@@ -88,24 +90,6 @@ function decoded(value: unknown): unknown {
       decoded(item),
     ]),
   );
-}
-function physicalResult(messages: Array<{ role: string; content: unknown }>) {
-  const latest = messages.filter((message) => message.role === "tool").at(-1);
-  assert.ok(latest && typeof latest.content === "string");
-  const envelope = record(parseProtocolValue(JSON.parse(latest.content)));
-  assert.equal(envelope.output_state, "content");
-  assert.match(String(envelope.observation_ref), /^@e\d+$/);
-  assert.equal(typeof envelope.result, "string");
-  const result = record(
-    parseProtocolValue(JSON.parse(envelope.result as string)),
-  );
-  assert.equal(
-    result.ok,
-    true,
-    "Latest actual physical Host result rejected: " +
-      String(envelope.result).slice(0, 1000),
-  );
-  return result;
 }
 type RootThread = {
   id: string;
@@ -401,7 +385,7 @@ async function accepted(
     1,
     "Exactly one real runtime-owned entry Plan per Evaluation",
   );
-  assert.equal(plans[0]!.status, "succeeded");
+  assert.equal(plans[0]!.status, "waiting");
   assert.equal(plans[0]!.source_artifact_hash, f.installedHarness.artifactHash);
   const jobs = f.host.sql<{ status: string; request_json: string }>(
     "SELECT status,request_json FROM execution_jobs WHERE thread_id=? AND tool_name=?",
@@ -465,7 +449,10 @@ test(
         f.host.options,
       );
       let pending = await f.host.waitRequest(marker);
-      const entry = physicalResult(pending.messages);
+      const entry = record(
+        profileFixtureObservationResult(pending, objectToolName),
+      );
+      assert.equal(entry.ok, true);
       assert.ok(
         JSON.stringify(pending.messages).includes(
           "ACTUAL_INSTALLED_COGNITIVE_HARNESS_ENTRY",
@@ -504,7 +491,10 @@ test(
       const source = record(f.delivery(inputId).platformSource);
       assert.deepEqual(source.cognitiveApplication, f.target);
       assert.equal(source.cognitiveObject, undefined);
-      f.host.release(marker);
+      f.host.releaseRawValue(
+        marker,
+        JSON.stringify("TEST actual headless receipt explained"),
+      );
       await completed(f, firstRoot);
 
       // This second independent input explicitly chooses the same application
@@ -547,7 +537,10 @@ test(
         f.host.options,
       );
       pending = await f.host.waitRequest(marker12, since);
-      const secondEntry = physicalResult(pending.messages);
+      const secondEntry = record(
+        profileFixtureObservationResult(pending, objectToolName),
+      );
+      assert.equal(secondEntry.ok, true);
       const secondCreated = parseCognitiveAppCommandResult(secondEntry.result);
       assert.equal(secondCreated.command.state, "committed");
       assert.equal(secondCreated.command.projectionState, "projected");
@@ -699,12 +692,29 @@ test(
       assert.ok(projected);
       assert.deepEqual(projected.cognitiveApplication, f.target);
       assert.deepEqual(projected.cognitiveObject, locator);
-      assert.equal(f.host.sql("SELECT id FROM threads").length, 2);
+      assert.equal(
+        f.host.sql("SELECT id FROM threads WHERE parent_thread_id IS NULL")
+          .length,
+        2,
+      );
+      assert.equal(
+        f.host.sql("SELECT id FROM threads WHERE parent_thread_id IS NOT NULL")
+          .length,
+        2,
+      );
       assert.equal(rows(f.authorDb, "SELECT * FROM notes").length, 2);
       assert.equal(rows(f.authorDb, "SELECT * FROM author_commands").length, 2);
-      f.host.release(marker12);
+      f.host.releaseRawValue(
+        marker12,
+        JSON.stringify("TEST actual exact object receipt explained"),
+      );
       await completed(f, secondRoot);
       const modelRequests = f.host.requests.length;
+      assert.equal(
+        modelRequests,
+        2,
+        "One explicit infer per root; no implicit rewrite request",
+      );
       assert.deepEqual(
         await f.host.client.call(
           "platform.message",
@@ -719,7 +729,39 @@ test(
       );
       assert.equal(f.host.requests.length, modelRequests);
       assert.equal(f.host.realCalls, 0);
-      assert.equal(f.host.sql("SELECT id FROM threads").length, 2);
+      assert.equal(f.host.sql("SELECT id FROM threads").length, 4);
+      const children = f.host.sql<{
+        parent_thread_id: string;
+        executor_kind: string;
+        status: string;
+      }>(
+        "SELECT parent_thread_id,executor_kind,status FROM threads WHERE parent_thread_id IS NOT NULL",
+      );
+      assert.deepEqual(
+        children.map((child) => child.parent_thread_id).sort(),
+        [firstRoot.id, secondRoot.id].sort(),
+      );
+      assert.ok(
+        children.every(
+          (child) =>
+            child.executor_kind === "plan_infer" &&
+            child.status === "completed",
+        ),
+      );
+      assert.equal(
+        f.host.sql<{ result_text: string }>(
+          "SELECT result_text FROM threads WHERE id=?",
+          firstRoot.id,
+        )[0]!.result_text,
+        "TEST actual headless receipt explained",
+      );
+      assert.equal(
+        f.host.sql<{ result_text: string }>(
+          "SELECT result_text FROM threads WHERE id=?",
+          secondRoot.id,
+        )[0]!.result_text,
+        "TEST actual exact object receipt explained",
+      );
       const finalPlans = f.host.sql<{ status: string }>(
         "SELECT status FROM plan_executions WHERE tool_call_id LIKE 'harness_entry_%'",
       );

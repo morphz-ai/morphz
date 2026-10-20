@@ -86,7 +86,7 @@ const declarations = [
   },
   {
     file: "response-annotations-runtime.test.ts",
-    name: "actual Runtime + Platform HTTP: native metadata never wraps or invalidates normal reply content",
+    name: "actual Runtime + Platform HTTP: native bodies preserve protocol examples verbatim without repair",
     capability: "runtime",
     flag: "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
   },

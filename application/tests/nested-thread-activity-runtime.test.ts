@@ -81,7 +81,7 @@ test(
             return choose(objectToolName, {
               action: "profile",
               profile: { action: "read" },
-              _annotations: {
+              _morphz: {
                 execution: annotation,
                 intent: title + "：读取资料",
               },
@@ -116,7 +116,7 @@ test(
                       },
                     ],
               group: { policy: "all" },
-              _annotations: {
+              _morphz: {
                 execution: { title, progress: "TEST 已分派子任务" },
                 intent: "TEST 分派真实子Thread",
               },
@@ -127,45 +127,13 @@ test(
           );
           if (children.some((child) => child.status === "open"))
             return choose("no_reply", { mode: "wait", wait_secs: 3600 });
-          const refs = request.messages.flatMap((message) => {
-            if (message.role !== "tool" || typeof message.content !== "string")
-              return [];
-            try {
-              const receipt = JSON.parse(message.content);
-              return typeof receipt.observation_ref === "string"
-                ? [receipt.observation_ref]
-                : [];
-            } catch {
-              return [];
-            }
-          });
-          return choose("reply", {
-            content: title + "已完成",
-            annotations: {
-              execution: { title, result: title + "：已读取资料并完成" },
-              ...(refs.length
-                ? {
-                    observations: [
-                      { ref: refs.at(-1), result: title + "：资料读取完成" },
-                    ],
-                  }
-                : {}),
-            },
-          });
+          // Chat completes with its native body, not an annotation-only or
+          // legacy reply tool. Work metadata stays on the actual work calls.
+          choices.push({ threadId: current.id, name: "native-body" });
+          return { text: title + "已完成" };
         } catch (error) {
           errors.push(error instanceof Error ? error.message : String(error));
-          return {
-            name: "reply",
-            arguments: {
-              content: "TEST fixture failed",
-              annotations: {
-                execution: {
-                  title: "TEST fixture failed",
-                  result: "TEST fixture failed",
-                },
-              },
-            },
-          };
+          return { text: "TEST fixture failed" };
         }
       },
     });
@@ -263,7 +231,7 @@ test(
       assert.equal(
         detail.jobs.length,
         4,
-        "Logical spawn/no_reply/reply must not become fake physical Job cards",
+        "Logical spawn/wait and native bodies must not become fake physical Job cards",
       );
       for (const thread of threads) {
         const selected = executionSnapshotSchema.parse(
@@ -295,7 +263,12 @@ test(
           own[0]!.annotation?.intent,
           titles.get(thread.id) + "：读取资料",
         );
-        assert.ok(thread.summary?.includes(titles.get(thread.id)!));
+        assert.equal(
+          thread.summary,
+          undefined,
+          "No separately generated final annotation",
+        );
+        assert.equal(thread.outcome?.summary, titles.get(thread.id) + "已完成");
         assert.equal(thread.annotationProtocol, "on");
         assert.ok(own[0]!.result_event_id);
       }
@@ -330,12 +303,12 @@ test(
         2,
       );
       assert.equal(
-        choices.filter((choice) => choice.name === "reply").length,
+        choices.filter((choice) => choice.name === "native-body").length,
         4,
       );
       assert.ok(
         choices.every((choice) =>
-          [objectToolName, "schedule_tx", "no_reply", "reply"].includes(
+          [objectToolName, "schedule_tx", "no_reply", "native-body"].includes(
             choice.name,
           ),
         ),
@@ -359,10 +332,12 @@ test(
           realProviderCalls: f.realCalls,
           requests: f.requests.length,
           normalTools: Object.fromEntries(
-            [objectToolName, "schedule_tx", "no_reply", "reply"].map((name) => [
-              name,
-              choices.filter((choice) => choice.name === name).length,
-            ]),
+            [objectToolName, "schedule_tx", "no_reply", "native-body"].map(
+              (name) => [
+                name,
+                choices.filter((choice) => choice.name === name).length,
+              ],
+            ),
           ),
           threadCount: detail.threads!.length,
           distinctRoots: new Set(detail.threads!.map((thread) => thread.rootId))

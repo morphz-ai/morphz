@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { registerHooks } from "node:module";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { agentDomainFixture } from "./agent-domain-fixture.js";
@@ -9,11 +10,22 @@ import {
   createDocument,
   reviseDocument,
 } from "../packages/application/src/document-service.js";
-import {
-  SafeMarkdown,
-  webURL,
-  objectLink,
-} from "../apps/web/src/SafeMarkdown.js";
+// Node checks static markup and delivery receipts, not rendered CSS. The
+// stylesheet remains owned by the real browser component in production.
+const styles = registerHooks({
+  load(url, context, nextLoad) {
+    return url.endsWith(".css")
+      ? { format: "module", source: "export {};", shortCircuit: true }
+      : nextLoad(url, context);
+  },
+});
+let markdown: typeof import("../apps/web/src/SafeMarkdown.js");
+try {
+  markdown = await import("../apps/web/src/SafeMarkdown.js");
+} finally {
+  styles.deregister();
+}
+const { SafeMarkdown, webURL, objectLink } = markdown;
 
 test("交付回执与对象原子保存，幂等、跨输入隔离、失败回滚且重启可见", async () => {
   const fixture = await agentDomainFixture();

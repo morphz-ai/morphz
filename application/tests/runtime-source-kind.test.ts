@@ -173,6 +173,19 @@ for (const backend of ["sqlite", "postgres"] as const) {
             resolveScope = resolve;
           },
           inputEvidenceReader: () => ({
+            async readThreadInputSource(sessionId: string, threadId: string) {
+              assert.equal(sessionId, route.session_id);
+              assert.equal(threadId, route.thread_id);
+              return {
+                thread: (await this.readThread()).snapshot.thread,
+                source: {
+                  kind: "schedule",
+                  root_thread_id: route.thread_id,
+                  schedule_id: admission.request.id,
+                  source_turn_id: rootId,
+                },
+              };
+            },
             readThread: async () => ({
               snapshot: {
                 thread: {

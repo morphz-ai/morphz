@@ -6,12 +6,10 @@ import { agentDomainFixture } from "./agent-domain-fixture.js";
 import { reviseInteractive } from "../packages/application/src/document-service.js";
 import { emptyInteractive } from "../packages/core/src/interactive.js";
 
-test("两种 Host 名称具有相同的交付边界；报告默认文档，表格统计不冒充分析或文件", () => {
-  assert.equal(workToolDefinitions.length, 2);
-  assert.ok(
-    workToolDefinitions[1]!.description.endsWith(
-      workToolDefinitions[0]!.description,
-    ),
+test("唯一当前 Host 保持交付边界；报告默认文档，表格统计不冒充分析或文件", () => {
+  assert.deepEqual(
+    workToolDefinitions.map(({ name }) => name),
+    ["host_morphz"],
   );
   for (const { description } of workToolDefinitions) {
     assert.match(

@@ -7,6 +7,7 @@ import {
   type WorkspaceClient,
 } from "../../apps/web/src/client.js";
 import { readSavedInputs } from "../../apps/web/src/local-saved-inputs.js";
+import { draftKey } from "../../apps/web/src/local-preferences.js";
 
 // This is a mounted Client, not a fake transport or a production App. All API
 // replies/cookies/storage are real. The sole seam holds an already received
@@ -15,10 +16,12 @@ const nativeFetch = window.fetch.bind(window);
 const requests: Array<{
   url: string;
   path: string;
+  query: string;
   method: string;
   status: number;
   headers: Array<[string, string]>;
   body: unknown;
+  response: unknown;
 }> = [];
 const holds = new Map<
   string,
@@ -32,6 +35,14 @@ const holds = new Map<
   }
 >();
 let armed: string | null = null;
+let lostResponsePath: string | null = null;
+let failStorageClear = false;
+const nativeSetItem = Storage.prototype.setItem;
+Storage.prototype.setItem = function (key, value) {
+  if (this === localStorage && failStorageClear && value === "null")
+    throw Error("TEST success clear storage failure");
+  return nativeSetItem.call(this, key, value);
+};
 window.fetch = async (input, init) => {
   const url = new URL(
     typeof input === "string"
@@ -47,11 +58,21 @@ window.fetch = async (input, init) => {
   requests.push({
     url: url.href,
     path: url.pathname,
+    query: url.search,
     method: init?.method ?? "GET",
     status: response.status,
     headers: [...new Headers(init?.headers)],
     body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    response: url.pathname.startsWith("/api/bookmarks")
+      ? await response.clone().json()
+      : undefined,
   });
+  if (lostResponsePath === url.pathname) {
+    lostResponsePath = null;
+    if (response.status !== 200)
+      throw Error("TEST loss requires a committed 200 receipt");
+    throw Error("TEST lost authorized bookmark receipt");
+  }
   const active = armed ? holds.get(armed) : undefined;
   if (active && active.path === url.pathname) {
     armed = null;
@@ -121,6 +142,8 @@ const allowed = new Set([
   "cancelInput",
   "controlExecution",
   "approvalSubmitted",
+  "bookmarkCommand",
+  "bookmarkList",
 ]);
 const api = {
   construction,
@@ -198,6 +221,20 @@ const api = {
     return Object.fromEntries(
       Object.keys(localStorage).map((key) => [key, localStorage.getItem(key)]),
     );
+  },
+  bookmarkKey(digest: string) {
+    const identity = client.getSnapshot()!;
+    return (
+      `morphz:${identity.centerId}:${identity.principalId}:${identity.actantId}:` +
+      draftKey("pending:bookmark:" + digest)
+    );
+  },
+  failStorageClear(enabled: boolean) {
+    failStorageClear = enabled;
+  },
+  loseNext(path: string) {
+    if (lostResponsePath) throw Error("A response loss is already armed");
+    lostResponsePath = path;
   },
   reads() {
     return requests;

@@ -45,6 +45,20 @@ test("正式 Host 对旧 Session 工具回调在读取旧工作区之前拒绝",
       { url: endpoint, token: "test-token", namespace },
       undefined,
       false,
+      {
+        request: async (url, init) => {
+          assert.equal(
+            new URL(String(url)).pathname,
+            "/api/sessions/platform-session/principal",
+          );
+          assert.equal(init?.method, "GET");
+          return Response.json({
+            session_id: "platform-session",
+            context_id: `mw-context-${namespace}`,
+            principal_id: "morphz-service",
+          });
+        },
+      },
     );
     await assert.rejects(
       async () =>
@@ -61,7 +75,7 @@ test("正式 Host 对旧 Session 工具回调在读取旧工作区之前拒绝",
       (error: unknown) =>
         error instanceof DomainError &&
         error.code === "forbidden" &&
-        /未绑定到已授权/.test(error.message),
+        /来源校验不可用/.test(error.message),
     );
     bridge.bindPlatformAgentScope(async () => ({
       platform: true,

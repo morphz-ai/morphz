@@ -663,7 +663,19 @@ function subjectContract(
       sameRecipe(
         subject,
         oneFunction(subject, name),
-        historicalNavigationSource("subjectOwner"),
+        // Current activity inspection accepts the bounded Runtime read scope;
+        // the archived migration still governs its original ExecutionScope.
+        name === "useSubjectInspectionState"
+          ? `import { useState } from "react";
+            export function useSubjectInspectionState() {
+              const [executions, setExecutions] = useState<ExecutionReadScope | null>(null);
+              const [understandingOpen, setUnderstandingOpen] = useState(false);
+              return { executions, setExecutions, understandingOpen, setUnderstandingOpen };
+            }`
+          : historicalNavigationSource("subjectOwner").replaceAll(
+              "ExecutionScope",
+              "ExecutionReadScope",
+            ),
         name,
         "subject-current: original registration recipe " + name,
       );
@@ -4086,8 +4098,8 @@ nodeTest(
       ],
       82: [
         {
-          from: "const [executions, setExecutions] = useState<ExecutionScope | null>(null);",
-          to: "useLayoutEffect(() => {}, []);\nconst [executions, setExecutions] = useState<ExecutionScope | null>(null);",
+          from: "const [executions, setExecutions] = useState<ExecutionReadScope | null>(null);",
+          to: "useLayoutEffect(() => {}, []);\nconst [executions, setExecutions] = useState<ExecutionReadScope | null>(null);",
         },
       ],
     };

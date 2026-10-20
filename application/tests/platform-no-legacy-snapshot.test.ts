@@ -103,6 +103,13 @@ test("纯 Platform Runtime 轮询投影不解析旧工作区快照", async () =>
       return {
         threads: [
           {
+            source: {
+              event_id: rootId,
+              context_id: decodeURIComponent(path.split("/")[3]!),
+              session_id: delivery.sessionId,
+              root_turn_id: rootId,
+              activation_id: null,
+            },
             intent: "正式执行",
             phase: "running",
             thread: {
@@ -135,9 +142,21 @@ test("纯 Platform Runtime 轮询投影不解析旧工作区快照", async () =>
     assert.equal(internals.state.activity?.available, true);
     assert.equal(
       internals.state.activity?.threads.length,
-      0,
-      "A transport Session is not authority to infer an unknown root's project",
+      1,
+      "Unknown provenance does not erase an actual execution",
     );
+    const unowned = internals.state.activity!.threads[0] as Record<
+      string,
+      unknown
+    >;
+    assert.equal(
+      unowned.projectId,
+      null,
+      "A shared Session never supplies project authority",
+    );
+    assert.equal(unowned.inputId, null);
+    assert.equal(unowned.conversationId, null);
+    assert.equal(unowned.continuation, undefined);
     assert.equal(unknownRoots, 1);
     assert.equal(snapshot.calls(), 0);
   } finally {

@@ -61,11 +61,13 @@ test("Runtime reads, connection checks, model settings and Profile use the injec
           }
         : path === "/api/runtime/inference"
           ? { model: "fixture", models: ["fixture"] }
-          : path === "/api/runtime/providers/oauth/services"
-            ? { services: [] }
-            : path === "/api/runtime/providers"
-              ? { auth_accounts: {} }
-              : {},
+          : path === "/api/runtime/response-annotations"
+            ? { mode: "on" }
+            : path === "/api/runtime/providers/oauth/services"
+              ? { services: [] }
+              : path === "/api/runtime/providers"
+                ? { auth_accounts: {} }
+                : {},
       { status: path.includes("profile") ? 404 : 200 },
     );
   };
@@ -79,10 +81,15 @@ test("Runtime reads, connection checks, model settings and Profile use the injec
   try {
     assert.equal((await runtime.models(false)).current, "fixture");
     assert.equal((await runtime.inspectConnection()).state, "connected");
-    await runtime.modelSettings.read(AbortSignal.timeout(5000), () => {});
+    const settings = await runtime.modelSettings.read(
+      AbortSignal.timeout(5000),
+      () => {},
+    );
+    assert.equal(settings.responseAnnotations, "on");
     await runtime.profiles.identity({ principalId: "fixture" });
     assert.ok(calls.filter((path) => path === "/api/status").length >= 2);
     assert.ok(calls.includes("/api/runtime/providers"));
+    assert.ok(calls.includes("/api/runtime/response-annotations"));
   } finally {
     await runtime.stop();
     store.close();

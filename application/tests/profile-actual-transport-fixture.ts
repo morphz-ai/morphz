@@ -259,7 +259,7 @@ export async function profileActualTransportFixture(
      * Never consulted for realProvider; existing default replies stay intact. */
     deterministicTool?: (
       request: CapturedRequest,
-    ) => { name: string; arguments: unknown } | undefined;
+    ) => { name: string; arguments: unknown } | { text: string } | undefined;
     realProvider?: {
       model: string;
       baseUrl: string;
@@ -337,12 +337,24 @@ export async function profileActualTransportFixture(
     providedText?: string,
     rawValue?: string,
   ) => {
-    const selectedTool =
+    const selectedResponse =
       providedTool ??
       (transaction === undefined && providedText === undefined
         ? (options.deterministicTool?.(request) ??
           profileFixtureAnnotationsMessage(request))
         : undefined);
+    const nativeText =
+      selectedResponse &&
+      !Array.isArray(selectedResponse) &&
+      "text" in selectedResponse
+        ? selectedResponse.text
+        : undefined;
+    const selectedTool =
+      selectedResponse &&
+      !Array.isArray(selectedResponse) &&
+      "text" in selectedResponse
+        ? undefined
+        : selectedResponse;
     const selected = Array.isArray(selectedTool)
       ? selectedTool
       : selectedTool
@@ -381,6 +393,7 @@ export async function profileActualTransportFixture(
       role: "assistant",
       content:
         providedText ??
+        nativeText ??
         (!call || metadataOnly
           ? "TEST deterministic provider: request accepted."
           : ""),
@@ -923,7 +936,24 @@ export async function profileActualTransportFixture(
           if (found) return found;
           await pause(100);
         }
-        assert.fail("Actual Runtime model request was not captured: " + marker);
+        assert.fail(
+          "Actual Runtime model request was not captured: " +
+            marker +
+            " " +
+            JSON.stringify({
+              capturedRequests: requests.length,
+              runtimeLogTail: options.realProvider ? undefined : logs,
+              threads: sql(
+                "SELECT id,status,root_turn_id,result_text FROM threads ORDER BY rowid DESC LIMIT 8",
+              ),
+              plans: sql(
+                "SELECT status FROM plan_executions ORDER BY rowid DESC LIMIT 8",
+              ),
+              failures: sql(
+                "SELECT topic,substr(payload,1,3000) AS payload FROM events WHERE topic LIKE '%error%' OR topic LIKE '%failed%' OR payload LIKE '%\"error\"%' ORDER BY rowid DESC LIMIT 8",
+              ),
+            }),
+        );
       },
       close,
     };
