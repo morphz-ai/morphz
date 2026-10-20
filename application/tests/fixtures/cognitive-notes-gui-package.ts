@@ -22,6 +22,7 @@ import {
   packCognitiveAuthor,
   stopPackedAuthor,
 } from "./cognitive-app-packed-author.js";
+import { writePackedNotesAuthorLock } from "./cognitive-packed-dependencies.js";
 
 const source = fileURLToPath(
   new URL("../../examples/cognitive-notes/", import.meta.url),
@@ -41,7 +42,9 @@ export function packCognitiveNotesGui() {
       env: {
         ...environment,
         npm_config_offline: "true",
-        npm_config_cache: join(homedir(), ".npm"),
+        npm_config_cache:
+          process.env.MORPHZ_TEST_COGNITIVE_NPM_CACHE ??
+          join(homedir(), ".npm"),
         npm_config_userconfig: join(packed.directory, "npm-user.cfg"),
         npm_config_globalconfig: join(packed.directory, "npm-global.cfg"),
         npm_config_audit: "false",
@@ -78,13 +81,16 @@ export function packCognitiveNotesGui() {
       "-C",
       consumer,
     ]);
+    writePackedNotesAuthorLock(
+      consumer,
+      join(packed.directory, "sdk", "morphz-cognitive-app-sdk-0.3.0.tgz"),
+    );
     npm(consumer, [
-      "install",
+      "ci",
       "--offline",
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
-      join(packed.directory, "sdk", "morphz-cognitive-app-sdk-0.3.0.tgz"),
     ]);
     return {
       ...packed,

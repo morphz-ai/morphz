@@ -26,6 +26,7 @@ import {
   cognitiveDocumentBootstrapProtocol,
 } from "../../packages/application/src/cognitive-document-bootstrap.js";
 import { appContentSecurityPolicy } from "../../packages/core/src/resource-policy.js";
+import { writePackedSdkConsumerLock } from "./cognitive-packed-dependencies.js";
 
 const authorSource = String.raw`
 import {connectMorphz} from '@morphz/cognitive-app-sdk/browser';
@@ -149,6 +150,7 @@ export async function openDocumentSdkFixture() {
     );
     for (const path of [
       "package.json",
+      "package-lock.json",
       "tsconfig.build.json",
       "README.md",
       "LICENSE",
@@ -165,7 +167,8 @@ export async function openDocumentSdkFixture() {
     for (const key of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT"])
       if (process.env[key] !== undefined) env[key] = process.env[key];
     Object.assign(env, {
-      npm_config_cache: join(homedir(), ".npm"),
+      npm_config_cache:
+        process.env.MORPHZ_TEST_COGNITIVE_NPM_CACHE ?? join(homedir(), ".npm"),
       npm_config_userconfig: userConfig,
       npm_config_globalconfig: globalConfig,
       npm_config_offline: "true",
@@ -175,18 +178,19 @@ export async function openDocumentSdkFixture() {
       npm_config_update_notifier: "false",
     });
     const execute = promisify(execFile);
+    const cli = process.env.npm_execpath;
+    assert.ok(cli, "The formal npm test entry supplies the actual npm CLI");
     const npm = (args: string[], cwd: string) =>
-      execute("npm", args, {
+      execute(process.execPath, [cli, ...args], {
         cwd,
         env,
         timeout: 60000,
         maxBuffer: 1024 * 1024,
       });
     const install = [
-      "install",
+      "ci",
       "--offline",
       "--ignore-scripts",
-      "--package-lock=false",
       "--no-audit",
       "--no-fund",
     ];
@@ -203,7 +207,8 @@ export async function openDocumentSdkFixture() {
         type: "module",
       }),
     );
-    await npm([...install, join(author, packed[0]!.filename)], consumer);
+    writePackedSdkConsumerLock(consumer, join(author, packed[0]!.filename));
+    await npm(install, consumer);
     const built = await build({
       stdin: {
         contents: authorSource,
@@ -365,10 +370,23 @@ wrapper.src='/document';
           );
           throw error;
         }
-        const guest = page
-          .frames()
-          .find((frame) => frame.url() === "about:srcdoc");
+        const carrierElement = await page.locator("#wrapper").elementHandle();
+        assert.ok(carrierElement);
+        const carrier = await carrierElement.contentFrame();
+        assert.ok(carrier);
+        // Identify the exact owner Document, not Chromium's internal URL
+        // reporting for an opaque srcdoc Frame (empty in some variants).
+        const authorElement = await carrier.locator("iframe").elementHandle();
+        assert.ok(authorElement);
+        assert.equal(
+          await authorElement.getAttribute("sandbox"),
+          "allow-scripts",
+        );
+        assert.ok(await authorElement.getAttribute("srcdoc"));
+        const guest = await authorElement.contentFrame();
         assert.ok(guest);
+        assert.equal(guest.parentFrame(), carrier);
+        assert.equal(await guest.evaluate(() => globalThis.origin), "null");
         if (!holdInit)
           await guest.waitForFunction(
             () =>

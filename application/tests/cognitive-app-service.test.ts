@@ -1,19 +1,11 @@
+import { packCognitiveAuthor } from "./fixtures/cognitive-app-packed-author.js";
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import {
-  readFileSync,
-  writeFileSync,
-  copyFileSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-} from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { createServer as createPortProbe } from "node:net";
 import { once } from "node:events";
@@ -1434,11 +1426,10 @@ test("UNIT: exact observed commit becomes actual durable pending projection, ret
   assert.equal(result.contentIds, undefined);
 });
 
-// Actual integration fixture is copied from the committed e0ff6355 Gateway
-// fixture (not its test module), with the same safe child env/real packed SDK,
+// Actual integration fixture uses the shared independent packing helper
+// (not a test module), with the same safe child env/real packed SDK,
 // independent author DB and actual Store. It does not verify real Runtime
 // credentials, shared Application registration, GUI or original App acceptance.
-const repoApplication = fileURLToPath(new URL("../", import.meta.url));
 const integrationCredential =
   "isolated_gateway_author_credential_abcdefghijklmnopqrstuvwxyz";
 let packedDirectory: string | undefined;
@@ -1451,83 +1442,9 @@ function safeChildEnvironment(): NodeJS.ProcessEnv {
 }
 function preparePackedAuthor(): Promise<string> {
   return (packedAuthor ??= Promise.resolve().then(() => {
-    packedDirectory = mkdtempSync(join(tmpdir(), "morphz-gateway-packed-"));
-    const sdkRoot = join(packedDirectory, "sdk"),
-      authorRoot = join(packedDirectory, "author");
-    mkdirSync(join(sdkRoot, "src"), { recursive: true });
-    mkdirSync(authorRoot);
-    for (const file of [
-      "package.json",
-      "tsconfig.build.json",
-      "README.md",
-      "LICENSE",
-    ])
-      copyFileSync(
-        join(repoApplication, "packages/cognitive-app-sdk", file),
-        join(sdkRoot, file),
-      );
-    const sdkSource = join(repoApplication, "packages/cognitive-app-sdk/src");
-    for (const file of readdirSync(sdkSource, { withFileTypes: true }))
-      if (file.isFile() && file.name.endsWith(".ts"))
-        copyFileSync(
-          join(sdkSource, file.name),
-          join(sdkRoot, "src", file.name),
-        );
-    for (const file of [
-      "package.json",
-      "service.mjs",
-      "definition.json",
-      "README.md",
-      "MODEL.md",
-    ])
-      copyFileSync(
-        join(repoApplication, "examples/cognitive-notes", file),
-        join(authorRoot, file),
-      );
-    const userConfig = join(packedDirectory, "npm-user.cfg"),
-      globalConfig = join(packedDirectory, "npm-global.cfg");
-    writeFileSync(userConfig, "");
-    writeFileSync(globalConfig, "");
-    const cli = process.env.npm_execpath;
-    assert.ok(cli, "formal npm test supplies the installed npm CLI");
-    const npm = (cwd: string, args: string[]) =>
-      execFileSync(process.execPath, [cli, ...args], {
-        cwd,
-        encoding: "utf8",
-        timeout: 60000,
-        env: {
-          ...safeChildEnvironment(),
-          npm_config_cache: join(homedir(), ".npm"),
-          npm_config_userconfig: userConfig,
-          npm_config_globalconfig: globalConfig,
-          npm_config_registry: "https://registry.npmjs.org/",
-          npm_config_offline: "true",
-          npm_config_audit: "false",
-          npm_config_fund: "false",
-          npm_config_update_notifier: "false",
-        },
-      });
-    npm(sdkRoot, [
-      "install",
-      "--offline",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-    ]);
-    const packed: unknown = JSON.parse(
-      npm(sdkRoot, ["pack", "--offline", "--json", "--silent"]),
-    );
-    assert.ok(Array.isArray(packed) && packed.length === 1);
-    const filename: unknown = Reflect.get(packed[0] as object, "filename");
-    assert.equal(filename, "morphz-cognitive-app-sdk-0.3.0.tgz");
-    npm(authorRoot, [
-      "install",
-      "--offline",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      join(sdkRoot, String(filename)),
-    ]);
+    const fixture = packCognitiveAuthor();
+    packedDirectory = fixture.directory;
+    const authorRoot = fixture.root;
     const serviceSource = readFileSync(join(authorRoot, "service.mjs"), "utf8");
     assert.ok(serviceSource.includes('from "@morphz/cognitive-app-sdk"'));
     assert.equal(

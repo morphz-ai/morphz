@@ -110,6 +110,8 @@ test("cognitive CI isolates environment and requires all four groups without dat
     PATH: "/fixture/bin",
     HOME: "/fixture/home",
     npm_execpath: "/fixture/npm-cli.js",
+    MORPHZ_TEST_COGNITIVE_NPM_CACHE: "/fixture/locked-dependency-cache",
+    npm_config_registry: "https://private-registry.example",
     NODE_OPTIONS: "--import=private-loader",
     OPENAI_API_KEY: "private-provider-key",
     HTTPS_PROXY: "https://private-proxy.example",
@@ -126,10 +128,15 @@ test("cognitive CI isolates environment and requires all four groups without dat
     "HTTPS_PROXY",
     "NODE_OPTIONS",
     "MORPHZ_TEST_POSTGRES_URL",
+    "npm_config_registry",
   ])
     assert.equal(prepared[name], undefined);
   assert.equal(prepared.MORPHZ_APP_ENV_FILE, "");
   assert.equal(prepared.npm_execpath, source.npm_execpath);
+  assert.equal(
+    prepared.MORPHZ_TEST_COGNITIVE_NPM_CACHE,
+    source.MORPHZ_TEST_COGNITIVE_NPM_CACHE,
+  );
   assert.equal(source.MORPHZ_COGNITIVE_RUNTIME_E2E, "0");
 });
 

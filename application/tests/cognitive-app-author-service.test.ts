@@ -1,23 +1,15 @@
+import { packCognitiveAuthor } from "./fixtures/cognitive-app-packed-author.js";
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import {
-  readFileSync,
-  writeFileSync,
-  copyFileSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-} from "node:fs";
-import { tmpdir, homedir } from "node:os";
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 
-const root = fileURLToPath(new URL("../", import.meta.url));
 const credential = "isolated_author_test_credential_abcdefghijklmnopqrstuvwxyz";
 const credentialHash = createHash("sha256").update(credential).digest("hex");
 const actor = {
@@ -39,76 +31,9 @@ function isolatedProcessEnvironment(source: NodeJS.ProcessEnv = process.env) {
   return env;
 }
 before(() => {
-  fixtureRoot = mkdtempSync(join(tmpdir(), "morphz-packed-author-notes-"));
-  const sdkRoot = join(fixtureRoot, "sdk");
-  mkdirSync(join(sdkRoot, "src"), { recursive: true });
-  for (const file of [
-    "package.json",
-    "tsconfig.build.json",
-    "README.md",
-    "LICENSE",
-    "src/index.ts",
-    "src/protocol.ts",
-    "src/domain-wire.ts",
-  ])
-    copyFileSync(
-      join(root, "packages/cognitive-app-sdk", file),
-      join(sdkRoot, file),
-    );
-  const userConfig = join(fixtureRoot, "npm-user.cfg"),
-    globalConfig = join(fixtureRoot, "npm-global.cfg");
-  writeFileSync(userConfig, "");
-  writeFileSync(globalConfig, "");
-  const npmCli = process.env.npm_execpath;
-  assert.ok(npmCli, "formal npm test supplies its actual npm CLI");
-  const npm = (cwd: string, args: string[]) =>
-    execFileSync(process.execPath, [npmCli, ...args], {
-      cwd,
-      encoding: "utf8",
-      timeout: 60000,
-      env: {
-        ...isolatedProcessEnvironment(),
-        npm_config_cache: join(homedir(), ".npm"),
-        npm_config_userconfig: userConfig,
-        npm_config_globalconfig: globalConfig,
-        npm_config_registry: "https://registry.npmjs.org/",
-        npm_config_offline: "true",
-        npm_config_audit: "false",
-        npm_config_fund: "false",
-        npm_config_update_notifier: "false",
-      },
-    });
-  npm(sdkRoot, [
-    "install",
-    "--offline",
-    "--ignore-scripts",
-    "--no-audit",
-    "--no-fund",
-  ]);
-  const packed = JSON.parse(
-    npm(sdkRoot, ["pack", "--offline", "--json", "--silent"]),
-  );
-  authorRoot = join(fixtureRoot, "author");
-  mkdirSync(authorRoot);
-  for (const file of [
-    "package.json",
-    "service.mjs",
-    "definition.json",
-    "README.md",
-    "MODEL.md",
-  ])
-    copyFileSync(
-      join(root, "examples/cognitive-notes", file),
-      join(authorRoot, file),
-    );
-  npm(authorRoot, [
-    "install",
-    "--offline",
-    "--ignore-scripts",
-    "--no-audit",
-    "--no-fund",
-    join(sdkRoot, packed[0].filename),
-  ]);
+  const packed = packCognitiveAuthor();
+  fixtureRoot = packed.directory;
+  authorRoot = packed.root;
   const entry = join(authorRoot, "public-consumer.mjs");
   writeFileSync(entry, 'export * from "@morphz/cognitive-app-sdk";\n');
   return import(pathToFileURL(entry).href).then((module) => {

@@ -30,6 +30,7 @@ export function cognitiveRuntimeEnvironment(environment = process.env) {
     "GITHUB_ACTIONS",
     "npm_execpath",
     "MORPHZ_APP_RUNTIME_BINARY",
+    "MORPHZ_TEST_COGNITIVE_NPM_CACHE",
     "MORPHZ_TEST_POSTGRES_BIN_DIR",
     "MORPHZ_TEST_PG_DUMP",
     "MORPHZ_TEST_PG_RESTORE",

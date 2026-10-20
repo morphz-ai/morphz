@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 import { createServer } from "node:http";
 import { chromium } from "@playwright/test";
 import { build } from "vite";
@@ -31,6 +32,7 @@ import {
 import type { CognitiveAppCommandState } from "../packages/platform/src/cognitive-app-commands.js";
 import { parseBrowserNavigationState } from "../packages/cognitive-app-sdk/src/browser.js";
 import { createSdkDocumentBrowserFixture } from "./fixtures/cognitive-app-sdk-document-browser.js";
+import { writePackedSdkConsumerLock } from "./fixtures/cognitive-packed-dependencies.js";
 
 const opaque = { objectId: "原件/ 😀\n", versionRef: "v:opaque/first" };
 const contextValue = () => ({
@@ -461,6 +463,7 @@ test(
     );
     for (const path of [
       "package.json",
+      "package-lock.json",
       "tsconfig.build.json",
       "README.md",
       "LICENSE",
@@ -477,7 +480,8 @@ test(
     for (const key of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT"])
       if (process.env[key] !== undefined) env[key] = process.env[key];
     Object.assign(env, {
-      npm_config_cache: join(homedir(), ".npm"),
+      npm_config_cache:
+        process.env.MORPHZ_TEST_COGNITIVE_NPM_CACHE ?? join(homedir(), ".npm"),
       npm_config_userconfig: userConfig,
       npm_config_globalconfig: globalConfig,
       npm_config_offline: "true",
@@ -488,8 +492,10 @@ test(
     });
     const execute = promisify(execFile);
     const npm = async (args: string[], cwd: string) => {
+      const cli = process.env.npm_execpath;
+      assert.ok(cli, "The formal npm test entry supplies the actual npm CLI");
       try {
-        return await execute("npm", args, {
+        return await execute(process.execPath, [cli, ...args], {
           cwd,
           env,
           timeout: 60_000,
@@ -502,10 +508,9 @@ test(
       }
     };
     const install = [
-      "install",
+      "ci",
       "--offline",
       "--ignore-scripts",
-      "--package-lock=false",
       "--no-audit",
       "--no-fund",
     ];
@@ -522,7 +527,8 @@ test(
         type: "module",
       }),
     );
-    await npm([...install, join(author, packed[0]!.filename)], consumer);
+    writePackedSdkConsumerLock(consumer, join(author, packed[0]!.filename));
+    await npm(install, consumer);
     const source = `
 import {connectMorphz,parseBrowserNavigationState} from '@morphz/cognitive-app-sdk/browser';
 let client;const outcomes={},running={},notifications=[],windowMessages=[];let stopObserver;
@@ -625,17 +631,23 @@ setTimeout(()=>handle('connect',connectMorphz().then(value=>{client=value;return
         .frameLocator("iframe")
         .locator("body")
         .waitFor({ state: "attached" });
-      const frame = page
-        .frames()
-        .find(
-          (frame) =>
-            frame.url() === "about:srcdoc" &&
-            frame.parentFrame()?.url().includes("/guest"),
-        );
-      assert.ok(
-        frame,
-        "the actual shared prefix owns the opaque author Document",
+      const carrierElement = await page.locator("#guest").elementHandle();
+      assert.ok(carrierElement);
+      const carrier = await carrierElement.contentFrame();
+      assert.ok(carrier);
+      // Chromium variants can report an empty URL for an opaque srcdoc
+      // Frame. Follow the actual owner element instead of guessing by URL.
+      const authorElement = await carrier.locator("iframe").elementHandle();
+      assert.ok(authorElement);
+      assert.equal(
+        await authorElement.getAttribute("sandbox"),
+        "allow-scripts",
       );
+      assert.ok(await authorElement.getAttribute("srcdoc"));
+      const frame = await authorElement.contentFrame();
+      assert.ok(frame, "the actual shared prefix owns the author Document");
+      assert.equal(frame.parentFrame(), carrier);
+      assert.equal(await frame.evaluate(() => globalThis.origin), "null");
       await frame.waitForFunction(
         () => Reflect.get(window, "fixture")?.outcomes.connect?.ok === true,
       );
@@ -1094,8 +1106,9 @@ setTimeout(()=>handle('connect',connectMorphz().then(value=>{client=value;return
       "timeout",
     );
     await guest.evaluate(() => Reflect.get(window, "fixture").resetClock());
-    // Browser virtual timers prove a silent Host does not retain permits forever.
-    await page.clock.install();
+    // Use the actual native deadline: Playwright's page clock does not advance
+    // opaque out-of-process frames in every supported Chromium variant.
+    // Keep the SDK's 30-second deadline and this test's 180-second budget.
     const beforeTimer = await seen();
     await guest.evaluate(() => {
       const fixture = Reflect.get(window, "fixture");
@@ -1106,7 +1119,7 @@ setTimeout(()=>handle('connect',connectMorphz().then(value=>{client=value;return
         Reflect.get(window, "hostFixture").records.length === count + 16,
       beforeTimer,
     );
-    await page.clock.fastForward(30_000);
+    await delay(30_000);
     await guest.waitForFunction(
       () => Reflect.get(window, "fixture").outcomes.timer15 !== undefined,
     );
@@ -1275,7 +1288,7 @@ setTimeout(()=>handle('connect',connectMorphz().then(value=>{client=value;return
     assert.deepEqual(errors, []);
     assert.deepEqual(writes, []);
     console.log(
-      `[browser SDK fixture] ${JSON.stringify({ sdkVersion: "0.3.0", packedIntegrity: packed[0]!.integrity, outsideRepository: true, selfContainedHtml: true, opaqueSandbox: true, fixedDocumentFacadeAndNativePort: true, sourceAndChannel: true, windowForgeryPositiveControl: true, sameDocumentReclaimRejected: true, genuineNewDocumentReconnect: true, pending: 16, absoluteDeadlineMs: 30000, clockControlledDeadline: true, retiredChannel: true, noBusinessRequests: true, hostAuthorization: "not implemented by this fixture" })}`,
+      `[browser SDK fixture] ${JSON.stringify({ sdkVersion: "0.3.0", packedIntegrity: packed[0]!.integrity, outsideRepository: true, selfContainedHtml: true, opaqueSandbox: true, fixedDocumentFacadeAndNativePort: true, sourceAndChannel: true, windowForgeryPositiveControl: true, sameDocumentReclaimRejected: true, genuineNewDocumentReconnect: true, pending: 16, absoluteDeadlineMs: 30000, clockControlledDeadline: true, nativeSilentHostDeadline: true, retiredChannel: true, noBusinessRequests: true, hostAuthorization: "not implemented by this fixture" })}`,
     );
   },
 );

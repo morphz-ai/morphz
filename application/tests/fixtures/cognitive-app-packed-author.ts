@@ -1,6 +1,8 @@
+import { writePackedNotesAuthorLock } from "./cognitive-packed-dependencies.js";
 /** Independently installed public SDK + author process, with its own actual
  * SQLite originals. This test helper never imports a .test module or exposes
- * Host/Platform code to the author. No real credentials or registry access. */
+ * Host/Platform code to the author. Tests use no real credentials or registry
+ * access; the separately invoked preparation entry may fill the locked cache. */
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -33,7 +35,23 @@ export type PackedAuthorReady = {
 
 /** The caller owns the returned temporary directory and must close it after
  * all children have stopped. The normal npm entry supplies its actual CLI. */
-export function packCognitiveAuthor() {
+export function packCognitiveAuthor(options: { cacheDirectory?: string } = {}) {
+  return installPackedCognitiveAuthor({ ...options, offline: true });
+}
+
+/** Explicit dependency preparation is separate from all test execution. It
+ * may fetch only the frozen npm lock graphs; tests never retry online. */
+export function prepareCognitiveAuthorDependencies(
+  options: { cacheDirectory?: string } = {},
+) {
+  const packed = installPackedCognitiveAuthor({ ...options, offline: false });
+  packed.close();
+}
+
+function installPackedCognitiveAuthor(options: {
+  cacheDirectory?: string;
+  offline: boolean;
+}) {
   const directory = mkdtempSync(
     join(tmpdir(), "morphz-packed-runtime-author-"),
   );
@@ -44,6 +62,7 @@ export function packCognitiveAuthor() {
   try {
     for (const file of [
       "package.json",
+      "package-lock.json",
       "tsconfig.build.json",
       "README.md",
       "LICENSE",
@@ -84,18 +103,21 @@ export function packCognitiveAuthor() {
         timeout: 60_000,
         env: {
           ...childEnvironment(),
-          npm_config_cache: join(homedir(), ".npm"),
+          npm_config_cache:
+            options.cacheDirectory ??
+            process.env.MORPHZ_TEST_COGNITIVE_NPM_CACHE ??
+            join(homedir(), ".npm"),
           npm_config_userconfig: userConfig,
           npm_config_globalconfig: globalConfig,
-          npm_config_offline: "true",
+          npm_config_offline: String(options.offline),
           npm_config_audit: "false",
           npm_config_fund: "false",
           npm_config_update_notifier: "false",
         },
       });
     npm(sdk, [
-      "install",
-      "--offline",
+      "ci",
+      ...(options.offline ? ["--offline"] : []),
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
@@ -105,14 +127,21 @@ export function packCognitiveAuthor() {
     );
     assert.ok(Array.isArray(packed) && packed.length === 1);
     const filename: unknown = Reflect.get(packed[0] as object, "filename");
+    const declared = JSON.parse(
+      readFileSync(join(sdk, "package.json"), "utf8"),
+    );
+    assert.equal(declared.name, "@morphz/cognitive-app-sdk");
+    assert.equal(Reflect.get(packed[0] as object, "name"), declared.name);
+    assert.equal(Reflect.get(packed[0] as object, "version"), declared.version);
+    assert.equal(filename, `morphz-cognitive-app-sdk-${declared.version}.tgz`);
     assert.equal(filename, "morphz-cognitive-app-sdk-0.3.0.tgz");
+    writePackedNotesAuthorLock(author, join(sdk, String(filename)));
     npm(author, [
-      "install",
-      "--offline",
+      "ci",
+      ...(options.offline ? ["--offline"] : []),
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
-      join(sdk, String(filename)),
     ]);
     assert.doesNotMatch(
       readFileSync(join(author, "service.mjs"), "utf8"),

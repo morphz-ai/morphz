@@ -13,6 +13,7 @@ import { isAbsolute, join, relative } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { writePackedSdkConsumerLock } from "./fixtures/cognitive-packed-dependencies.js";
 
 const packageRoot = fileURLToPath(
   new URL("../packages/cognitive-app-sdk/", import.meta.url),
@@ -70,7 +71,8 @@ test(
     for (const key of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT"])
       if (process.env[key] !== undefined) env[key] = process.env[key];
     Object.assign(env, {
-      npm_config_cache: join(homedir(), ".npm"),
+      npm_config_cache:
+        process.env.MORPHZ_TEST_COGNITIVE_NPM_CACHE ?? join(homedir(), ".npm"),
       npm_config_userconfig: userConfig,
       npm_config_globalconfig: globalConfig,
       npm_config_registry: "https://registry.npmjs.org/",
@@ -111,15 +113,16 @@ test(
       }
     }
     async function npm(phase: string, args: string[], cwd: string) {
-      return child(phase, "npm", args, cwd);
+      const cli = process.env.npm_execpath;
+      assert.ok(cli, "The formal npm test entry supplies the actual npm CLI");
+      return child(phase, process.execPath, [cli, ...args], cwd);
     }
     const installArgs = [
-      "install",
+      "ci",
       "--offline",
       "--ignore-scripts",
       "--no-audit",
       "--no-fund",
-      "--package-lock=false",
     ];
     try {
       assert.ok(relative(packageRoot, directory).startsWith(".."));
@@ -127,6 +130,7 @@ test(
       mkdirSync(consumer);
       for (const filename of [
         "package.json",
+        "package-lock.json",
         "tsconfig.build.json",
         "README.md",
         "LICENSE",
@@ -207,11 +211,8 @@ test(
           devDependencies: { typescript: "7.0.2" },
         }),
       );
-      await npm(
-        "consumer tarball installation",
-        [...installArgs, join(author, archive.filename)],
-        consumer,
-      );
+      writePackedSdkConsumerLock(consumer, join(author, archive.filename));
+      await npm("consumer tarball installation", installArgs, consumer);
       const installed = join(
         consumer,
         "node_modules",

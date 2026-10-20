@@ -1,9 +1,8 @@
+import { packCognitiveAuthor } from "./fixtures/cognitive-app-packed-author.js";
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  copyFileSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -11,9 +10,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { tmpdir, homedir } from "node:os";
-import { fileURLToPath } from "node:url";
-import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { tmpdir } from "node:os";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createServer, request, type Server } from "node:http";
 import { DatabaseSync } from "node:sqlite";
@@ -47,7 +45,6 @@ const definition = parseCognitiveAppDefinition(
 const actor = { credential: "alice" };
 const integrationCredential =
   "isolated_lifecycle_author_credential_abcdefghijklmnopqrstuvwxyz";
-const applicationRoot = fileURLToPath(new URL("../", import.meta.url));
 function childEnvironment(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { NODE_NO_WARNINGS: "1" };
   for (const name of ["PATH", "HOME", "TMPDIR", "SYSTEMROOT"])
@@ -57,83 +54,9 @@ function childEnvironment(): NodeJS.ProcessEnv {
 let packedRoot: string | undefined, packed: Promise<string> | undefined;
 function packedAuthor() {
   return (packed ??= Promise.resolve().then(() => {
-    packedRoot = mkdtempSync(join(tmpdir(), "morphz-host-packed-"));
-    const sdk = join(packedRoot, "sdk"),
-      author = join(packedRoot, "author");
-    mkdirSync(join(sdk, "src"), { recursive: true });
-    mkdirSync(author);
-    for (const file of [
-      "package.json",
-      "tsconfig.build.json",
-      "README.md",
-      "LICENSE",
-    ])
-      copyFileSync(
-        join(applicationRoot, "packages/cognitive-app-sdk", file),
-        join(sdk, file),
-      );
-    for (const file of readdirSync(
-      join(applicationRoot, "packages/cognitive-app-sdk/src"),
-    ))
-      if (file.endsWith(".ts"))
-        copyFileSync(
-          join(applicationRoot, "packages/cognitive-app-sdk/src", file),
-          join(sdk, "src", file),
-        );
-    for (const file of [
-      "package.json",
-      "service.mjs",
-      "definition.json",
-      "README.md",
-      "MODEL.md",
-    ])
-      copyFileSync(
-        join(applicationRoot, "examples/cognitive-notes", file),
-        join(author, file),
-      );
-    const user = join(packedRoot, "npm-user.cfg"),
-      global = join(packedRoot, "npm-global.cfg");
-    writeFileSync(user, "");
-    writeFileSync(global, "");
-    const cli = process.env.npm_execpath;
-    assert.ok(cli, "formal npm test supplies npm");
-    const npm = (cwd: string, args: string[]) =>
-      execFileSync(process.execPath, [cli, ...args], {
-        cwd,
-        encoding: "utf8",
-        timeout: 60000,
-        env: {
-          ...childEnvironment(),
-          npm_config_cache: join(homedir(), ".npm"),
-          npm_config_userconfig: user,
-          npm_config_globalconfig: global,
-          npm_config_offline: "true",
-          npm_config_audit: "false",
-          npm_config_fund: "false",
-          npm_config_update_notifier: "false",
-        },
-      });
-    npm(sdk, [
-      "install",
-      "--offline",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-    ]);
-    const result: unknown = JSON.parse(
-      npm(sdk, ["pack", "--offline", "--json", "--silent"]),
-    );
-    assert.ok(Array.isArray(result) && result.length === 1);
-    const filename: unknown = Reflect.get(result[0] as object, "filename");
-    assert.equal(filename, "morphz-cognitive-app-sdk-0.3.0.tgz");
-    npm(author, [
-      "install",
-      "--offline",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      join(sdk, String(filename)),
-    ]);
+    const fixture = packCognitiveAuthor();
+    packedRoot = fixture.directory;
+    const author = fixture.root;
     assert.doesNotMatch(
       readFileSync(join(author, "service.mjs"), "utf8"),
       /packages\/(application|platform)|\.\.\//,
