@@ -7,10 +7,11 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import pty
 import re
 import select
+import shlex
 import shutil
 import signal
 import subprocess
@@ -44,6 +45,34 @@ def interrupt_succeeded(result):
         result["received_sigint"]
         and result["returncode"] == -signal.SIGINT
         and 0 <= result["elapsed"] < 5
+    )
+
+
+def foreground_job_isolated(event, tasks, foreground, wrapper_pid):
+    monitor = next((task for task in tasks if task["pid"] == wrapper_pid), None)
+    worker, child, shell = event["worker"], event["child"], event["shell"]
+    if monitor is None or foreground is None or foreground <= 0:
+        return False
+    translated = []
+    for inside in (worker, child, shell):
+        matches = [
+            task for task in tasks
+            if len(task["namespace_ids"].get("NSpid", [])) > 1
+            and task["namespace_ids"]["NSpid"][-1] == inside["pid"]
+        ]
+        if len(matches) != 1:
+            return False
+        translated.append(matches[0])
+    host_worker, host_child, host_shell = translated
+    return (
+        worker["pgrp"] > 0
+        and child["pgrp"] == worker["pgrp"] == worker["tpgid"]
+        and child["tpgid"] == worker["pgrp"]
+        and shell["pgrp"] != worker["pgrp"]
+        and shell["tpgid"] == worker["pgrp"]
+        and host_worker["pgrp"] == host_child["pgrp"] == foreground
+        and host_shell["pgrp"] != foreground
+        and monitor["pgrp"] != foreground
     )
 
 
@@ -85,6 +114,19 @@ def profile_source(name):
         f'  audit deny "/tmp/probe/work/{path}/**" rwklmx,'
         for path in POLICY_PATHS
     )
+    ancestors = sorted({
+        str(parent)
+        for path in POLICY_PATHS
+        for parent in PurePosixPath(path).parents
+        if str(parent) != "."
+    })
+    # Exact directories only: child-file writes remain permitted. This has an
+    # explicit compatibility cost: the ancestor itself cannot be created,
+    # removed, renamed, or replaced by the confined payload.
+    denial += "\n" + "\n".join(
+        f'  audit deny "/tmp/probe/work/{ancestor}/" w,'
+        for ancestor in ancestors
+    )
     body = f"""
   / r,
   /** mrwlkix,
@@ -105,6 +147,49 @@ profile {name}_enforced flags=(mediate_deleted) {{
 profile {name}_complain flags=(complain,mediate_deleted) {{
 {body}}}
 """
+
+
+def payload_command(profile, mode, lane, expect_label):
+    worker = [
+        "/usr/bin/python3", "-B", "/tmp/probe/code/worker.py",
+        "--expect-label", expect_label or f"{profile}_{lane} (enforce)",
+    ]
+    inner = worker
+    if mode == "pty":
+        # Like the production Terminal, keep an actual interactive Bash with
+        # job control. Do not exec-replace it with Python: that recreates the
+        # failed third-run monitor/worker shared-foreground-group topology.
+        script = (
+            shlex.join(worker)
+            + "; probe_worker_status=$?; "
+            + "printf 'MORPHZ_PROBE_JSON "
+            + "{\"kind\":\"worker_exit\",\"returncode\":%s}\\n' \"$probe_worker_status\"; "
+            + 'if [ "$probe_worker_status" -ne 0 ]; then exit "$probe_worker_status"; fi; '
+            + "/usr/bin/printf '%s\\n' "
+            + shlex.quote('MORPHZ_PROBE_JSON {"kind":"shell_continued"}')
+            + "; exit 0"
+        )
+        inner = ["/bin/bash", "--noprofile", "--norc", "-i", "-c", script]
+    if lane != "baseline":
+        inner = ["/usr/bin/aa-exec", "-p", f"{profile}_{lane}", "--", *inner]
+    return inner
+
+
+def process_topology(pid):
+    """Only inspect identity/group fields, never command lines or environment."""
+    proc = Path("/proc") / str(pid)
+    fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+    status = (proc / "status").read_text().splitlines()
+    return {
+        "pid": pid, "ppid": int(fields[1]), "pgrp": int(fields[2]),
+        "session": int(fields[3]), "tpgid": int(fields[5]),
+        "namespace_ids": {
+            key: [int(value) for value in line.split(":", 1)[1].split()]
+            for line in status
+            for key in ("NSpid", "NSpgid", "NSsid")
+            if line.startswith(key + ":")
+        },
+    }
 
 
 class Evidence:
@@ -158,13 +243,7 @@ class Worker:
             bwrap += ["--new-session"]
         if mask_existing:
             bwrap += ["--ro-bind", "/dev/null", "/tmp/probe/work/.env"]
-        inner = [
-            "/usr/bin/python3", "-B", "/tmp/probe/code/worker.py",
-            "--expect-label",
-            expect_label or f"{profile}_{lane} (enforce)",
-        ]
-        if lane != "baseline":
-            inner = ["/usr/bin/aa-exec", "-p", f"{profile}_{lane}", "--", *inner]
+        inner = payload_command(profile, mode, lane, expect_label)
         argv = [
             "/usr/bin/aa-exec", "-p", f"{profile}_bootstrap", "--",
             *bwrap, "--", *inner,
@@ -205,6 +284,31 @@ class Worker:
             )
             self.reader = self.process.stdout.fileno()
             self.writer = self.process.stdin.fileno()
+
+    def record_topology(self, point):
+        tasks = []
+        pending = [self.process.pid]
+        visited = set()
+        while pending:
+            pid = pending.pop(0)
+            if pid in visited:
+                continue
+            visited.add(pid)
+            if len(visited) > 64:
+                raise RuntimeError("unexpectedly large probe-owned process tree")
+            try:
+                tasks.append(process_topology(pid))
+                children = Path(f"/proc/{pid}/task/{pid}/children").read_text()
+                pending.extend(int(value) for value in children.split())
+            except (FileNotFoundError, ProcessLookupError):
+                self.evidence.record("topology_task_exited", point=point, pid=pid)
+        foreground = os.tcgetpgrp(self.master) if self.master is not None else None
+        self.evidence.record(
+            "process_topology", mode=self.mode, lane=self.lane, point=point,
+            wrapper_pid=self.process.pid, terminal_foreground_pgrp=foreground,
+            tasks=tasks,
+        )
+        return tasks, foreground
 
     def next_event(self, timeout=12):
         deadline = time.monotonic() + timeout
@@ -257,8 +361,14 @@ class Worker:
                 "pty interrupt starts a real foreground child",
                 event["kind"] == "interrupt_ready" and event["id"] == self.index,
             )
+            tasks, foreground = self.record_topology("before_ctrl_c")
+            self.evidence.check(
+                "foreground job group excludes shell and Bubblewrap monitor",
+                foreground_job_isolated(event, tasks, foreground, self.process.pid),
+            )
             os.write(self.writer, b"\x03")
             event = self.next_event()
+            self.record_topology("after_ctrl_c")
         self.evidence.check(
             f"{self.mode}/{self.lane}/{op} returned correlated receipt",
             event["kind"] == "result" and event["id"] == self.index,
@@ -279,6 +389,17 @@ class Worker:
                 os.write(self.writer, b'{"op":"exit"}\n')
                 event = self.next_event(timeout=3)
                 self.evidence.check("admitted worker acknowledges shutdown", event["kind"] == "bye")
+                if self.mode == "pty":
+                    event = self.next_event(timeout=3)
+                    self.evidence.check(
+                        "interactive shell observes worker exit zero",
+                        event["kind"] == "worker_exit" and event["returncode"] == 0,
+                    )
+                    event = self.next_event(timeout=3)
+                    self.evidence.check(
+                        "interactive shell continues a fixed command after worker",
+                        event["kind"] == "shell_continued",
+                    )
                 self.process.wait(timeout=3)
                 self.evidence.check("admitted worker exits successfully", self.process.returncode == 0)
             except Exception as error:
@@ -339,6 +460,7 @@ def ready(evidence, worker):
         event["isatty"] == (worker.mode == "pty")
         and event["controlling_tty"] == (worker.mode == "pty"),
     )
+    worker.record_topology("ready")
     return event
 
 
@@ -386,6 +508,12 @@ def run_mode(evidence, profile, code, root, mode):
     with Worker(evidence, profile, code, workspace, mode) as child:
         ready(evidence, child)
         evidence.check("candidate starts with absent .env", not (workspace / ".env").exists())
+        result = child.request("mkdir", path=".morphz")
+        evidence.check(
+            "explicit ancestor policy cost: absent protected parent cannot be created by child",
+            not result["ok"] and result["errno"] in DENIED_ERRNOS
+            and not (workspace / ".morphz").exists(),
+        )
         (workspace / ".env").write_text(marker)
         denied_read(evidence, child, ".env", f"{mode}: create after start is denied")
         result = child.request("write", path=".env", text="must_not_write")
@@ -408,6 +536,39 @@ def run_mode(evidence, profile, code, root, mode):
             destination.parent.mkdir(exist_ok=True)
             destination.write_text(marker + "_LATE_PARENT")
             denied_read(evidence, child, relative, f"{mode}: late parent {relative} denied")
+
+        for content in ("CHILD_CREATE", "CHILD_EDIT"):
+            result = child.request("write", path=".morphz/ordinary.txt", text=content)
+            evidence.check(
+                "exact ancestor denial preserves ordinary child-file creation and editing",
+                result["ok"] and (workspace / ".morphz/ordinary.txt").read_text() == content,
+            )
+            result = child.request("read", path=".morphz/ordinary.txt")
+            evidence.check(
+                "ordinary file inside protected ancestor remains readable",
+                result["ok"] and result["bytes_hex"] == content.encode().hex(),
+            )
+        result = child.request(
+            "rename", source=".morphz/ordinary.txt", target=".morphz/ordinary-renamed.txt"
+        )
+        evidence.check(
+            "exact ancestor denial preserves ordinary child-file rename",
+            result["ok"] and not (workspace / ".morphz/ordinary.txt").exists()
+            and (workspace / ".morphz/ordinary-renamed.txt").read_text() == "CHILD_EDIT",
+        )
+        result = child.request("mkdir", path="ordinary-dir")
+        evidence.check("unrelated directory creation remains allowed", result["ok"])
+        result = child.request("rename", source="ordinary-dir", target="ordinary-dir-renamed")
+        evidence.check(
+            "unrelated directory rename remains allowed",
+            result["ok"] and not (workspace / "ordinary-dir").exists()
+            and (workspace / "ordinary-dir-renamed").is_dir(),
+        )
+        result = child.request("rmdir", path="ordinary-dir-renamed")
+        evidence.check(
+            "unrelated directory removal remains allowed",
+            result["ok"] and not (workspace / "ordinary-dir-renamed").exists(),
+        )
 
         (workspace / "ordinary.txt").write_text("HOST_ONE")
         result = child.request("read", path="ordinary.txt")
@@ -452,6 +613,11 @@ def run_mode(evidence, profile, code, root, mode):
                 interrupt_succeeded(result),
             )
             denied_read(evidence, child, ".env", "PTY remains confined after Ctrl-C")
+            result = child.request("write", path="after-interrupt.txt", text="STILL_ALIVE")
+            evidence.check(
+                "PTY worker still performs allowed actions after Ctrl-C",
+                result["ok"] and (workspace / "after-interrupt.txt").read_text() == "STILL_ALIVE",
+            )
 
     # Fresh exec/PTY sees the same denial, not only the long-lived process.
     with Worker(evidence, profile, code, workspace, mode) as child:
@@ -483,23 +649,52 @@ def run_mode(evidence, profile, code, root, mode):
             event is None and child.process.returncode != 0,
         )
 
-    # Do not assume path-based denial survives a rename of an allowed ancestor.
-    # This is deliberately last: a disclosure here is retained as a feasibility
-    # failure, after the other cases have produced their independent receipts.
-    # Denying writes to the whole parent would be a broader policy, not a free fix.
+    # The third run proved the old exact-leaf policy leaks after ancestor rename.
+    # This candidate deliberately adds exact ancestor-directory write denial.
+    # Keep these strict checks last; earlier independent receipts are retained.
     with Worker(evidence, profile, code, workspace, mode) as child:
         ready(evidence, child)
         result = child.request("rename", source=".morphz", target="moved-parent")
+        # Preserve byte evidence if the newly claimed protection still fails.
         if result["ok"]:
-            denied_read(
-                evidence, child, "moved-parent/config.toml",
-                f"{mode}: renaming allowed ancestor cannot disclose protected child",
-            )
-        else:
-            evidence.check(
-                f"{mode}: ancestor rename rejected with a real permission error",
-                result["errno"] in DENIED_ERRNOS,
-            )
+            child.request("read", path="moved-parent/config.toml")
+        evidence.check(
+            f"{mode}: protected ancestor source rename denied and contents preserved",
+            not result["ok"] and result.get("errno") in DENIED_ERRNOS
+            and not (workspace / "moved-parent").exists()
+            and (workspace / ".morphz/config.toml").read_text() == marker + "_LATE_PARENT",
+        )
+        (workspace / "incoming-parent").mkdir()
+        (workspace / "incoming-parent/ordinary.txt").write_text("ORDINARY_PARENT")
+        result = child.request(
+            "rename_exchange", source="incoming-parent", target=".morphz"
+        )
+        if result["ok"]:
+            child.request("read", path="incoming-parent/config.toml")
+        evidence.check(
+            f"{mode}: protected ancestor target exchange denied and both directories preserved",
+            not result["ok"] and result.get("errno") in DENIED_ERRNOS
+            and (workspace / ".morphz/config.toml").read_text() == marker + "_LATE_PARENT"
+            and (workspace / "incoming-parent/ordinary.txt").read_text() == "ORDINARY_PARENT",
+        )
+        denied_read(evidence, child, ".morphz/config.toml", "ancestor attacks do not expose the secret")
+        # The same exact-directory rule has a real compatibility cost. Use an
+        # empty directory so ENOTEMPTY cannot stand in for permission denial.
+        (workspace / ".morphz/config.toml").unlink()
+        (workspace / ".morphz/ordinary-renamed.txt").unlink()
+        result = child.request("rmdir", path=".morphz")
+        evidence.check(
+            "explicit ancestor policy cost: even empty protected parent cannot be removed",
+            not result["ok"] and result["errno"] in DENIED_ERRNOS
+            and (workspace / ".morphz").is_dir(),
+        )
+        result = child.request("rename", source="incoming-parent", target=".morphz")
+        evidence.check(
+            "explicit ancestor policy cost: empty protected parent cannot be replaced",
+            not result["ok"] and result["errno"] in DENIED_ERRNOS
+            and (workspace / ".morphz").is_dir()
+            and (workspace / "incoming-parent/ordinary.txt").read_text() == "ORDINARY_PARENT",
+        )
 
 
 def run(output):
@@ -571,6 +766,7 @@ def run(output):
             "limitations": [
                 "isolated feasibility only; no production Runtime integration",
                 "broad test profile is not a reviewed production policy",
+                "exact ancestor denial additionally prevents ancestor mkdir/rmdir/rename/replacement",
                 "no claim about pre-existing hardlink aliases or inherited protected descriptors",
                 "no claim about broker authentication, policy lifecycle or crash recovery",
                 "probe emulates existing mount/session shape; it is not the real Rust test",

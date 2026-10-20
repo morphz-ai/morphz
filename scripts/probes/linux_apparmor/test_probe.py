@@ -2,7 +2,7 @@
 
 import ast
 import importlib.util
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import signal
 import subprocess
@@ -20,7 +20,10 @@ def module():
         node for node in source.body
         if isinstance(node, ast.FunctionDef) and node.name == "profile_source"
     ]
-    namespace = {"re": re, "POLICY_PATHS": (".env", ".ssh", ".morphz/config.toml")}
+    namespace = {
+        "re": re, "PurePosixPath": PurePosixPath,
+        "POLICY_PATHS": (".env", ".ssh", ".morphz/config.toml"),
+    }
     exec(compile(ast.Module(body=selected, type_ignores=[]), "profile_source", "exec"), namespace)
     return namespace["profile_source"]
 
@@ -50,6 +53,17 @@ class ProbeHarnessTests(unittest.TestCase):
         self.assertNotIn("capability", enforced)
         self.assertNotIn("userns", enforced)
         self.assertNotIn("attach_disconnected", profile)
+        self.assertEqual(profile.count('audit deny "/tmp/probe/work/.morphz/" w,'), 2)
+        self.assertNotIn('audit deny "/tmp/probe/work/.morphz/**" w,', profile)
+
+    def test_every_renameable_ancestor_is_fixed_but_children_are_not_recursively_denied(self):
+        probe = load_probe()
+        with patch.object(probe, "POLICY_PATHS", ("a/b/c/secret",)):
+            profile = probe.profile_source("morphz_probe_" + "a" * 20)
+        for ancestor in ("a", "a/b", "a/b/c"):
+            self.assertEqual(profile.count(f'audit deny "/tmp/probe/work/{ancestor}/" w,'), 2)
+            self.assertNotIn(f'audit deny "/tmp/probe/work/{ancestor}/**" w,', profile)
+        self.assertNotIn('audit deny "/tmp/probe/work/" w,', profile)
 
     def test_profile_name_cannot_inject_policy(self):
         for name in ("foo", "morphz_probe_../../x", 'morphz_probe_"\nallow all,'):
@@ -91,6 +105,53 @@ class ProbeHarnessTests(unittest.TestCase):
         self.assertFalse(probe.interrupt_succeeded({
             "received_sigint": True, "returncode": -signal.SIGINT, "elapsed": 8,
         }))
+
+    def test_pty_runs_actual_interactive_shell_under_profile_not_unconfined_bootstrap(self):
+        probe = load_probe()
+        profile = "morphz_probe_" + "a" * 20
+        argv = probe.payload_command(profile, "pty", "enforced", None)
+        self.assertEqual(
+            argv[:9],
+            ["/usr/bin/aa-exec", "-p", profile + "_enforced", "--",
+             "/bin/bash", "--noprofile", "--norc", "-i", "-c"],
+        )
+        script = argv[9]
+        self.assertIn("/usr/bin/python3 -B /tmp/probe/code/worker.py", script)
+        self.assertIn('probe_worker_status=$?', script)
+        self.assertIn('"kind":"worker_exit"', script)
+        self.assertIn("/usr/bin/printf", script)
+        self.assertIn('"kind":"shell_continued"', script)
+        self.assertIn('exit "$probe_worker_status"', script)
+        self.assertNotIn("exec /usr/bin/python3", script)
+        self.assertNotIn("trap ", script)
+        self.assertNotIn("set +m", script)
+        ordinary = probe.payload_command(profile, "exec", "enforced", None)
+        self.assertEqual(ordinary[4], "/usr/bin/python3")
+        self.assertNotIn("/bin/bash", ordinary)
+
+    def test_foreground_proof_rejects_the_failed_shared_monitor_group(self):
+        probe = load_probe()
+        event = {
+            "worker": {"pid": 3, "pgrp": 3, "tpgid": 3},
+            "child": {"pid": 8, "pgrp": 3, "tpgid": 3},
+            "shell": {"pid": 2, "pgrp": 2, "tpgid": 3},
+        }
+        tasks = [
+            {"pid": 100, "pgrp": 100, "namespace_ids": {"NSpid": [100]}},
+            {"pid": 102, "pgrp": 102, "namespace_ids": {"NSpid": [102, 2]}},
+            {"pid": 103, "pgrp": 103, "namespace_ids": {"NSpid": [103, 3]}},
+            {"pid": 108, "pgrp": 103, "namespace_ids": {"NSpid": [108, 8]}},
+        ]
+        self.assertTrue(probe.foreground_job_isolated(event, tasks, 103, 100))
+        shared_monitor = [{**task, "pgrp": 103} if task["pid"] == 100 else task for task in tasks]
+        self.assertFalse(probe.foreground_job_isolated(event, shared_monitor, 103, 100))
+        self.assertFalse(probe.foreground_job_isolated(event, tasks, 100, 100))
+        self.assertFalse(probe.foreground_job_isolated(event, tasks, None, 100))
+        self.assertFalse(probe.foreground_job_isolated(event, tasks[:-1], 103, 100))
+        self.assertFalse(probe.foreground_job_isolated(event, tasks + [tasks[-1]], 103, 100))
+        self.assertFalse(probe.foreground_job_isolated(
+            {**event, "worker": {"pid": 3, "pgrp": 0, "tpgid": 0}}, tasks, 103, 100,
+        ))
 
     def test_mask_requires_null_device_and_nodev_readonly_mount(self):
         probe = load_probe()
@@ -184,6 +245,30 @@ class ProbeHarnessTests(unittest.TestCase):
             worker = self.fake_worker(probe, {"kind": "result"})
             kill.side_effect = lambda *_: setattr(worker.process, "returncode", -signal.SIGKILL)
             self.assertIsNotNone(worker.close())
+
+    def test_pty_close_requires_worker_zero_then_real_shell_continuation(self):
+        probe = load_probe()
+        with patch.object(probe.os, "write"), patch.object(probe.os, "killpg") as kill:
+            worker = self.fake_worker(probe, None)
+            worker.mode = "pty"
+            events = iter([
+                {"kind": "bye"}, {"kind": "worker_exit", "returncode": 0},
+                {"kind": "shell_continued"},
+            ])
+            worker.next_event = lambda timeout: next(events)
+            self.assertIsNone(worker.close())
+            kill.assert_not_called()
+            for invalid in (
+                [{"kind": "bye"}, {"kind": "worker_exit", "returncode": 7}],
+                [{"kind": "bye"}, {"kind": "shell_continued"}],
+                [{"kind": "bye"}, {"kind": "worker_exit", "returncode": 0}, {"kind": "bye"}],
+            ):
+                worker = self.fake_worker(probe, None)
+                worker.mode = "pty"
+                events = iter(invalid)
+                worker.next_event = lambda timeout: next(events)
+                kill.side_effect = lambda *_: setattr(worker.process, "returncode", -signal.SIGKILL)
+                self.assertIsNotNone(worker.close())
 
     def test_forced_cleanup_never_passes_and_preserves_original_failure(self):
         probe = load_probe()

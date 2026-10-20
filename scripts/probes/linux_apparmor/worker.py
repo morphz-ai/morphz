@@ -35,6 +35,14 @@ def status():
     }
 
 
+def process_topology(pid):
+    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    return {
+        "pid": pid, "ppid": int(fields[1]), "pgrp": int(fields[2]),
+        "session": int(fields[3]), "tpgid": int(fields[5]),
+    }
+
+
 def read_file(path):
     try:
         return {"ok": True, "bytes_hex": path.read_bytes().hex()}
@@ -73,6 +81,25 @@ def do_action(action):
             return {"ok": True}
         except OSError as error:
             return {"ok": False, "errno": error.errno, "error": str(error)}
+    if operation in ("mkdir", "rmdir"):
+        try:
+            path = WORK / action["path"]
+            path.mkdir() if operation == "mkdir" else path.rmdir()
+            return {"ok": True}
+        except OSError as error:
+            return {"ok": False, "errno": error.errno, "error": str(error)}
+    if operation == "rename_exchange":
+        library = ctypes.CDLL(None, use_errno=True)
+        library.renameat2.argtypes = [
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint
+        ]
+        library.renameat2.restype = ctypes.c_int
+        ctypes.set_errno(0)
+        result = library.renameat2(
+            -100, os.fsencode(WORK / action["source"]),
+            -100, os.fsencode(WORK / action["target"]), 2,
+        )
+        return {"ok": result == 0, "returncode": result, "errno": ctypes.get_errno()}
     if operation == "hardlink":
         try:
             os.link(WORK / action["source"], WORK / action["target"])
@@ -112,7 +139,12 @@ def do_action(action):
         started = time.monotonic()
         try:
             child = subprocess.Popen(["/bin/sleep", "30"])
-            emit("interrupt_ready", id=action["id"], child_pid=child.pid)
+            emit(
+                "interrupt_ready", id=action["id"], child_pid=child.pid,
+                worker=process_topology(os.getpid()),
+                child=process_topology(child.pid),
+                shell=process_topology(os.getppid()),
+            )
             try:
                 code = child.wait(timeout=8)
             finally:
