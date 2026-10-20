@@ -1,0 +1,237 @@
+{
+  "date": "2026-10-20",
+  "scope": "Original installed Morphz application, original profile/center. Synthetic TEST content; production Runtime and actual models.",
+  "implementation_commit": "70f59264af35",
+  "runtime_binary_sha256": "8d6ed9c600a5c994fb98649fb5e4004cbb5e7c979ac42c72ecdb8948e5024cf0",
+  "deployed_at": "2026-10-20T04:19:43.558Z",
+  "old_runtime_pid": 71638,
+  "new_runtime_pid": 33239,
+  "electron_pid_unchanged": 44726,
+  "configuration_unchanged": true,
+  "database_backup_verified": true,
+  "original_rows_preserved": true,
+  "original_rows": [
+    {
+      "table": "events",
+      "rows": 40052,
+      "missing": 0,
+      "changed": 0
+    },
+    {
+      "table": "sessions",
+      "rows": 33,
+      "missing": 0,
+      "changed": 0
+    },
+    {
+      "table": "threads",
+      "rows": 798,
+      "missing": 0,
+      "changed": 0
+    },
+    {
+      "table": "thread_activations",
+      "rows": 4294,
+      "missing": 0,
+      "changed": 0
+    },
+    {
+      "table": "execution_jobs",
+      "rows": 4429,
+      "missing": 0,
+      "changed": 0
+    },
+    {
+      "table": "plan_executions",
+      "rows": 49,
+      "missing": 0,
+      "changed": 0
+    },
+    {
+      "table": "runtime_timers",
+      "rows": 4410,
+      "missing": 0,
+      "changed": 0
+    },
+    {
+      "table": "objectives",
+      "rows": 5,
+      "missing": 0,
+      "changed": 0
+    }
+  ],
+  "application_content_unchanged": true,
+  "audited_session_cursor_advance": {
+    "from": 40052,
+    "to": 40054,
+    "reason": "Two waiting-objective recovery observations; no evaluation lease and no work replay"
+  },
+  "live": {
+    "cases": 5,
+    "completed": 5,
+    "deepseek_requests": 10,
+    "gpt_requests": 1,
+    "automatic_format_repair_requests": 0,
+    "annotation_companion_calls": 0,
+    "parent_rewrite_requests": 0
+  },
+  "cases": [
+    {
+      "case": "plain",
+      "passed": true,
+      "receipt": "window-plain.json",
+      "receipt_sha256": "ca4b5485a387579c7269b2c6c4a0ebb5b7d2e0394b90cebb1b3d7e792bf7e486",
+      "model_requests": 1,
+      "physical_jobs": 0,
+      "body_commits": 1,
+      "stream_matches_final": true,
+      "pre_commit_delta": true,
+      "annotation_kinds": [],
+      "tools_sha256": "sha256:77537dd05ebd1cb48629eff981b9f074c5c315de18e935cad9f15e81dfdb5da6"
+    },
+    {
+      "case": "work",
+      "passed": true,
+      "receipt": "window-work.json",
+      "receipt_sha256": "564255d72c7d1de9e1f04add38239535c7c3f87c3a90fe41b17ba8b03fe0b53f",
+      "model_requests": 3,
+      "physical_jobs": 2,
+      "body_commits": 1,
+      "stream_matches_final": true,
+      "pre_commit_delta": true,
+      "annotation_kinds": [
+        "execution.progress",
+        "execution.title",
+        "intent",
+        "execution.progress",
+        "execution.title",
+        "intent"
+      ],
+      "tools_sha256": "sha256:77537dd05ebd1cb48629eff981b9f074c5c315de18e935cad9f15e81dfdb5da6"
+    },
+    {
+      "case": "off",
+      "passed": true,
+      "receipt": "window-off.json",
+      "receipt_sha256": "f62ad9e1ca0be7792b0e10d5f4fc88e4aba3769f76d4b074598189d7fe281a57",
+      "model_requests": 2,
+      "physical_jobs": 1,
+      "body_commits": 1,
+      "stream_matches_final": true,
+      "pre_commit_delta": true,
+      "annotation_kinds": [],
+      "tools_sha256": "sha256:77537dd05ebd1cb48629eff981b9f074c5c315de18e935cad9f15e81dfdb5da6"
+    },
+    {
+      "case": "gpt",
+      "passed": true,
+      "receipt": "window-gpt.json",
+      "receipt_sha256": "25e38e944dfecd3d9c83b0ea1a47545869ac902ab0c6a8d1b472c3bac65efa02",
+      "model_requests": 1,
+      "physical_jobs": 0,
+      "body_commits": 1,
+      "stream_matches_final": true,
+      "pre_commit_delta": true,
+      "annotation_kinds": [],
+      "tools_sha256": "sha256:77537dd05ebd1cb48629eff981b9f074c5c315de18e935cad9f15e81dfdb5da6"
+    },
+    {
+      "case": "discuss-script",
+      "passed": true,
+      "receipt": "window-discuss.json",
+      "receipt_sha256": "8897c80e0a106a6247b02343297b04175e34adb5dca29316bcf4e307b5923d26",
+      "model_requests": 4,
+      "physical_jobs": 5,
+      "body_commits": 1,
+      "stream_matches_final": true,
+      "pre_commit_delta": true,
+      "annotation_kinds": [
+        "execution.progress",
+        "execution.title",
+        "intent",
+        "intent",
+        "execution.progress",
+        "execution.title",
+        "intent",
+        "execution.progress",
+        "execution.title",
+        "intent"
+      ],
+      "tools_sha256": "sha256:dc90e82a5e16da1fee619b259c7d60091c60a79e7a2cab4f2a4829e08d5b42d6",
+      "model": "deepseek-flash",
+      "reasoning_effort": "max",
+      "harness": "morphz.script-studio@2.3.0",
+      "child_model_requests": 4,
+      "parent_rewrite_requests": 0,
+      "business_parameter_rejections": 1,
+      "successful_reads": 4,
+      "business_rejection": "read-production limit=12000 exceeded maximum 50; original Host rejected it, model corrected limit to 20 through normal tool feedback. Business validator not weakened; not a Session IO/schema/annotation error.",
+      "typed_value_fields": [
+        "execute",
+        "reply",
+        "task"
+      ],
+      "reply_projection": [
+        "reply"
+      ]
+    }
+  ],
+  "ui_acceptance": {
+    "manual_ui_submissions": [
+      "plain",
+      "work",
+      "discuss-script"
+    ],
+    "original_runtime_http_submissions": [
+      "off",
+      "gpt"
+    ],
+    "test_conversation": "TEST 原生正文与工具注解 1020",
+    "observed": [
+      "Plain JSON/XML example was preserved, not parsed as control",
+      "Live title/progress changed with actual reads",
+      "Inspector showed concrete intent and actual file for each step",
+      "Final discussion was visible before completion and settled once without wrapper"
+    ],
+    "ui_source_changed": false,
+    "electron_restarted": false
+  },
+  "observer_corrections": [
+    "The first work collector ignored output.started with snapshot:true. This is an existing complete-prefix transport message; the unchanged original stream restores the exact body at seq 74. Verified every subsequent delta and final equality, without another model call.",
+    "Original discussion collector followed only the top-level root. Authoritative parent_thread_id/Plan inference_source proved the child requests. Existing public stream was exact; no model rerun."
+  ],
+  "gates": {
+    "rust_library": {
+      "passed": 1645,
+      "failed": 0,
+      "ignored": 16
+    },
+    "runtime_annotations_integration": {
+      "passed": 28,
+      "failed": 0
+    },
+    "session_io_postgres": {
+      "passed": 2,
+      "failed": 0
+    },
+    "failed_sse_replay": {
+      "passed": 1,
+      "failed": 0
+    },
+    "application_related": {
+      "passed": 51,
+      "failed": 0,
+      "skipped": 0,
+      "files": 10
+    },
+    "application_typecheck": "passed",
+    "full_application_suite": "Not green; earlier failures not fully classified, not claimed as passed"
+  },
+  "limits": [
+    "Finite DeepSeek sample, not arbitrary-model reliability",
+    "Qwen/Kimi/GLM deferred by user",
+    "One ordinary read-production pagination mistake was rejected and corrected through tool feedback; no Session IO transport/schema failure",
+    "Historical explicit return bindings keep their frozen decoder to preserve existing work"
+  ],
+  "private_evidence_directory": "native-session-io-deploy-20261020.IT2oAm"
+}

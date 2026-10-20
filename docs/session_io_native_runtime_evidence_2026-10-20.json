@@ -1,6 +1,7 @@
 {
   "date": "2026-10-20",
   "scope": "Full isolated MorphzRuntime, disposable SQLite, complete production Context and real DeepSeek Responses. Synthetic files/Host only; not original Desktop acceptance.",
+  "subsequent_original_application_evidence": "session_io_native_deployment_evidence_2026-10-20.json",
   "model": "deepseek-flash",
   "reasoning_effort": "max",
   "automatic_retries": 0,
