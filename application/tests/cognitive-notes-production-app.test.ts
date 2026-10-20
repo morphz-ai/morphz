@@ -251,6 +251,15 @@ for (const backend of ["sqlite", "postgres"] as const) {
         );
         await app.page.reload();
         await outerElement.waitFor();
+        // Restore can retire the first shell Document after its real async
+        // authorization read. Wait on the live DOM locator before capturing a
+        // Frame, as openGui already does; never poll a retired WindowProxy.
+        await outerElement
+          .contentFrame()
+          .frameLocator("iframe")
+          .locator("#connection")
+          .filter({ hasText: /^工作区已连接$/ })
+          .waitFor();
         const outer =
           await (await outerElement.elementHandle())!.contentFrame();
         assert.ok(outer);
@@ -283,7 +292,10 @@ for (const backend of ["sqlite", "postgres"] as const) {
           exact: true,
         });
         if (!(await input.isVisible()))
-          await app.page.keyboard.press("Control+j");
+          await app.page
+            .getByRole("button", { name: "向 Morphz 输入", exact: true })
+            .click();
+        await input.waitFor({ state: "visible" });
         await input.fill("真实本窗口未发送草稿\n保留这一行");
         const beforeCompose = await app.stored();
         await history.locator("#compose").click();
@@ -620,7 +632,10 @@ for (const backend of ["sqlite", "postgres"] as const) {
           exact: true,
         });
         if (!(await input.isVisible()))
-          await app.page.keyboard.press("Control+j");
+          await app.page
+            .getByRole("button", { name: "向 Morphz 输入", exact: true })
+            .click();
+        await input.waitFor({ state: "visible" });
         const oldBody = `原应用旧范围草稿 ${backend}\n原内容不可改。`;
         await input.fill(oldBody);
         const before = await app.stored();
@@ -698,7 +713,10 @@ for (const backend of ["sqlite", "postgres"] as const) {
         const afterLocation = (await app.preferences()).cognitiveLocation;
         assert.equal(afterLocation, null);
         if (!(await input.isVisible()))
-          await app.page.keyboard.press("Control+j");
+          await app.page
+            .getByRole("button", { name: "向 Morphz 输入", exact: true })
+            .click();
+        await input.waitFor({ state: "visible" });
         const newBody = `正常导航新范围草稿 ${backend}\n不得追加旧应用的文字。`;
         await input.fill(newBody);
         const afterNavigation = await app.stored();
