@@ -422,6 +422,8 @@ async fn run_episode(
                 stream_sender,
                 ModelRequestOptions {
                     reasoning_effort: Some(Some(reasoning_effort)),
+                    output_encoding: None,
+                    tool_choice: None,
                 },
             )
             .await;

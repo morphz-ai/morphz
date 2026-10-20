@@ -457,6 +457,8 @@ impl ModelCaller<'_> {
                 sender,
                 ModelRequestOptions {
                     reasoning_effort: Some(Some(self.reasoning)),
+                    output_encoding: None,
+                    tool_choice: None,
                 },
             ),
         )
