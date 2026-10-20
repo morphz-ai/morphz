@@ -154,6 +154,42 @@ static void bind_mount(const char *flag, const char *path) { arg(flag); arg(path
 static void join(char *out, size_t count, const char *root, const char *suffix) {
     if (snprintf(out, count, "%s/%s", root, suffix) >= (int)count) fail("path length");
 }
+static void startup_diagnostic(void) {
+    /* Read-only evidence for pre-admission startup failures; no state changes. */
+    struct json_object *record = json_object_new_object();
+    json_object_object_add(record, "phase", json_object_new_string("before_fixed_bwrap"));
+    json_object_object_add(record, "uid", json_object_new_int64(getuid()));
+    json_object_object_add(record, "euid", json_object_new_int64(geteuid()));
+    json_object_object_add(record, "gid", json_object_new_int64(getgid()));
+    json_object_object_add(record, "dumpable", json_object_new_int(prctl(PR_GET_DUMPABLE, 0, 0, 0, 0)));
+    struct stat metadata;
+    if (stat("/proc/self/uid_map", &metadata) == 0) {
+        json_object_object_add(record, "uid_map_owner", json_object_new_int64(metadata.st_uid));
+        json_object_object_add(record, "uid_map_mode", json_object_new_int(metadata.st_mode & 07777));
+    } else {
+        json_object_object_add(record, "uid_map_stat_errno", json_object_new_int(errno));
+    }
+    FILE *stream = fopen("/proc/self/status", "r");
+    char line[512];
+    if (stream) {
+        while (fgets(line, sizeof(line), stream)) {
+            if (!strncmp(line, "Cap", 3) || !strncmp(line, "NoNewPrivs:", 11) ||
+                !strncmp(line, "Uid:", 4) || !strncmp(line, "Gid:", 4)) {
+                char *value = strchr(line, ':');
+                if (value) {
+                    *value++ = 0;
+                    value += strspn(value, " \t");
+                    value[strcspn(value, "\n")] = 0;
+                    json_object_object_add(record, line, json_object_new_string(value));
+                }
+            }
+        }
+        fclose(stream);
+    }
+    fprintf(stderr, "DYNAMIC_ENTRY_DIAGNOSTIC %s\n",
+            json_object_to_json_string_ext(record, JSON_C_TO_STRING_PLAIN));
+    json_object_put(record);
+}
 static void outer(struct json_object *obj, const char *file) {
     exact_label(text(obj, "bootstrap"));
     verify_roots(obj, 1);
@@ -184,6 +220,7 @@ static void outer(struct json_object *obj, const char *file) {
     pair("--chdir", text(obj, "cwd"));
     if (!strcmp(text(obj, "mode"), "exec")) arg("--new-session");
     arg("--"); arg(text(obj, "entry")); arg("--inner"); arg(file);
+    startup_diagnostic();
     execv(argv_buf[0], argv_buf);
     fail("fixed bwrap exec");
 }

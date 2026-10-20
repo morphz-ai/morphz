@@ -357,6 +357,7 @@ class Campaign:
         self.records, self.lanes, self.manifests = [], [], []
         self.uid, self.gid = os.getuid(), os.getgid()
         self.kernel_before = kernel_settings()
+        self.started_at = int(time.time())
 
     def record(self, name, passed, **data):
         item = {"name": name, "passed": passed, **data}
@@ -565,6 +566,16 @@ class Campaign:
     def finish(self, error):
         if error is not None:
             self.record("campaign_error", False, error=repr(error))
+        # Only read audit lines for this synthetic profile family. This does not
+        # alter audit/sysctl settings, capabilities, policy or launch behavior.
+        try:
+            audit = privileged("/usr/bin/journalctl", "-k", "--since", f"@{self.started_at}",
+                               "--no-pager", "--output=short-unix", "--lines=2000")
+            audit["stdout"] = "\n".join(line for line in audit["stdout"].splitlines()
+                                       if "morphz_dynamic_" + self.run_id + "_" in line)
+            self.record("kernel_audit_diagnostic", audit["code"] == 0, evidence=audit)
+        except Exception as audit_error:
+            self.record("kernel_audit_diagnostic", False, error=repr(audit_error))
         for lane in self.lanes:
             if not lane.closed:
                 try:

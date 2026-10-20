@@ -100,6 +100,30 @@ Local result: **22/22** unit/source tests pass, prepare-only prints no execution
 The three added checks cover exact rule syntax/scope, failure-source retention,
 and strict Unix negative-control verdicts. They do not prove kernel enforcement.
 
+## Isolated run 2: syntax accepted, bwrap UID-map startup refused
+
+Commit `631d23c5e8710274a28a3a83c0f0aab0373551ae`; run
+<https://github.com/morphz-ai/morphz/actions/runs/39433007290>.
+22 unit/source tests and C compilation passed. Exact policy add and remove
+both succeeded. The child stopped with
+`bwrap: setting up uid map: Permission denied`; admission timed out and no worker
+or Unix negative-control lane ran. The final summary correctly failed.
+
+Raw generated source, manifest, stderr, transcript and receipts are preserved at
+`/tmp/morphz-dynamic-ci-39433007290.pi6g79/isolated-linux-dynamic-39433007290-1`.
+Kernel settings remained unchanged. The runner kernel was `6.17.0-1022-azure`
+(different from run 1 despite the same fixed Ubuntu runner label).
+
+### Diagnostic-only delta for run 3
+
+No policy rule changes. Fixed entry records UID, dumpability, uid_map ownership
+and capabilities immediately before its existing bwrap exec. The controller
+reads the runner's bounded kernel journal only for this generated profile family.
+It does not set dumpability, add capabilities, modify sysctl or change profiles.
+The purpose is to distinguish a DAC/proc-ownership issue from an AppArmor denial;
+it is not a claim that UID-map failure has been repaired. A new unit/source check
+guards this read-only scope. Root explicitly authorized this diagnostic pass.
+
 ## Required next review / still unproven
 
 Read the entire `STACKED_BOUNDARY_REVIEW.md`, compiler, loader and C entry before

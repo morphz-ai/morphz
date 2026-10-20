@@ -231,6 +231,19 @@ class StaticLaunchBoundary(unittest.TestCase):
         acquire = source.split("def acquire(", 1)[1].split("def deny_read", 1)[0]
         self.assertLess(acquire.index("shutil.copyfile("), acquire.index("must(result)"))
 
+    def test_startup_diagnostics_are_read_only_and_audit_is_run_scoped(self):
+        source = (HERE / "entry.c").read_text()
+        diagnostic = source.split("static void startup_diagnostic", 1)[1].split("static void outer", 1)[0]
+        self.assertIn("PR_GET_DUMPABLE", diagnostic)
+        self.assertNotIn("PR_SET_DUMPABLE", diagnostic)
+        self.assertNotIn("setuid", diagnostic)
+        self.assertNotIn("capset", diagnostic)
+        self.assertIn('stat("/proc/self/uid_map"', diagnostic)
+        source = (HERE / "controller.py").read_text()
+        self.assertIn('"morphz_dynamic_" + self.run_id + "_" in line', source)
+        self.assertIn('"--since", f"@{self.started_at}"', source)
+        self.assertIn('"--lines=2000"', source)
+
 
 class AdmissionAndCleanup(unittest.TestCase):
     def test_unix_boundary_requires_real_permission_refusal_for_both_channels(self):

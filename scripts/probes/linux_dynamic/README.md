@@ -1,8 +1,8 @@
 # Dynamic Linux policy prototype — review bundle only
 
-**Status: first isolated Ubuntu run compiled successfully but stopped at policy
-parser refusal before any payload; the pathname-socket correction is not yet
-kernel-validated.** Read
+**Status: second isolated Ubuntu run accepted the corrected policy but bwrap
+stopped at UID-map setup before any payload. The next revision only records
+startup diagnostics; it does not relax policy.** Read
 [KERNEL_REVIEW.md](KERNEL_REVIEW.md) for the rejected initial transition and
 [STACKED_BOUNDARY_REVIEW.md](STACKED_BOUNDARY_REVIEW.md) for the reviewed revision.
 
@@ -48,12 +48,13 @@ python3 -B -m unittest -v test_contract.py
 python3 -B controller.py
 ```
 
-The first check currently contains 22 pure unit/source tests; the second prints
+The first check currently contains 23 pure unit/source tests; the second prints
 `prepare_only`. Neither is a Linux/AppArmor, compiled-entry, or runtime acceptance
-test. The first isolated Ubuntu run passed the previous 19 checks and C
-compilation, then failed at AppArmor parsing. See `REVIEW_DELTA.md`.
+test. Run 1 passed the previous 19 checks and C compilation, then failed at
+AppArmor parsing. Run 2 passed 22 checks, C compilation, policy add and remove,
+but failed bwrap UID-map startup. See `REVIEW_DELTA.md`.
 
-## Planned dynamic campaign, not yet reached after the parser blocker
+## Planned dynamic campaign, not yet reached after the startup blocker
 
 1. Create workspace A, load its policy, admit a worker in a child cwd.
 2. After a real ready barrier, host creates `.env`, `.ssh/key`,
@@ -119,9 +120,10 @@ authorization token.
   yet. The explicit wrong-ACK and disconnect lanes are written but not run.
   Do not count static assertions as those scenarios passing.
 - Restrictive bootstrap permissions, namespace/mount mediation and kernel NNP
-  transition semantics still need real isolated kernel validation. Availability
-  of the C library/headers and the warning-clean compilation were established
-  by the first run; the pathname Unix rule was rejected before any launch.
+  transition semantics still need real isolated kernel validation. C libraries
+  and warning-clean compilation passed both runs; corrected policy syntax passed
+  run 2. UID-map startup remains unresolved. Diagnostic run 3 reads only
+  dumpability/UID/proc ownership and this profile family's bounded kernel audit.
 
 Any production adoption still requires review of installation privilege,
 authorization and cleanup boundaries, then Rust exec/PTY integration and the
