@@ -10,6 +10,7 @@ import socket
 import stat
 import subprocess
 import sys
+import traceback
 
 PREFIX = "DYNAMIC_JSON "
 
@@ -199,7 +200,13 @@ def main():
             value = operations(request, arguments.profile)
             emit(event="result", id=request["id"], value=value)
         except Exception as error:
-            emit(event="operation_error", id=request.get("id"), error=repr(error))
+            emit(event="operation_error", id=request.get("id"), error=repr(error),
+                 diagnostic={
+                     "type": type(error).__name__, "errno": getattr(error, "errno", None),
+                     "filename": getattr(error, "filename", None),
+                     "filename2": getattr(error, "filename2", None),
+                     "traceback": "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+                 })
     raise RuntimeError("unexpected input EOF before explicit exit")
 
 

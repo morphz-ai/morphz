@@ -1,7 +1,9 @@
 """Local unit/mock checks; no Linux confinement, policies or privileged work."""
 
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stdout
 import errno
+import io
+import json
 import os
 from pathlib import Path
 import socket
@@ -271,6 +273,80 @@ class ExceptionDiagnostics(unittest.TestCase):
                         start.index("rows = fd_table(peer_pid)"))
         self.assertNotIn("except FileNotFoundError", start)
         self.assertNotIn("except OSError", start)
+
+
+class WorkerExceptionDiagnostics(unittest.TestCase):
+    def run_worker(self, request):
+        profile = "synthetic_boot//&synthetic_work"
+        source = "\n".join(json.dumps(item) for item in (
+            request, {"op": "exit", "id": 2},
+        )) + "\n"
+        output = io.StringIO()
+        with patch.object(worker.sys, "argv", ["worker.py", "--profile", profile]), \
+             patch.object(worker.sys, "stdin", io.StringIO(source)), \
+             patch.object(worker, "identity", return_value={"label": profile + " (enforce)"}), \
+             patch.object(worker.Path, "write_text"), redirect_stdout(output):
+            self.assertEqual(worker.main(), 0)
+        records = [json.loads(line.removeprefix(worker.PREFIX))
+                   for line in output.getvalue().splitlines()]
+        self.assertEqual([item["event"] for item in records], ["ready", "operation_error", "bye"])
+        self.assertEqual(records[1]["id"], 1)
+        self.assertEqual(records[2]["id"], 2)
+        return records[1]
+
+    def test_fd_scan_errors_keep_original_repr_paths_errno_and_worker_callsite(self):
+        request = {"op": "inherited_fd", "id": 1, "target": TARGET, "nonce": NONCE}
+        entries = [SimpleNamespace(name="64", path="/proc/self/fd/64")]
+        for operation in ("scandir", "stat"):
+            original = PermissionError(errno.EACCES, "synthetic denied",
+                                       "/proc/self/fd/64", None, "/synthetic/second")
+            with self.subTest(operation=operation), \
+                 patch.object(worker, "os", wraps=os) as worker_os:
+                worker_os.scandir.return_value = nullcontext(entries)
+                failing = worker_os.scandir if operation == "scandir" else worker_os.stat
+                failing.side_effect = original
+                record = self.run_worker(request)
+                failing.assert_called_once()
+                worker_os.dup.assert_not_called()
+            self.assertEqual(record["error"], repr(original))
+            detail = record["diagnostic"]
+            self.assertEqual(detail["type"], "PermissionError")
+            self.assertEqual(detail["errno"], errno.EACCES)
+            self.assertEqual(detail["filename"], "/proc/self/fd/64")
+            self.assertEqual(detail["filename2"], "/synthetic/second")
+            self.assertIn("inherited_fd_check", detail["traceback"])
+            self.assertIn("worker.py", detail["traceback"])
+            self.assertIn("os." + operation, detail["traceback"])
+            self.assertIn("PermissionError", detail["traceback"])
+            self.assertFalse(controller.inherited_fd_closed(
+                True, True, None, {"eof": True, "received_hex": "", "error": None}))
+
+    def test_validation_error_diagnostics_have_null_oserror_fields(self):
+        with patch.object(worker.os, "scandir") as scan:
+            record = self.run_worker({
+                "op": "inherited_fd", "id": 1, "target": TARGET, "nonce": "not-synthetic",
+            })
+            scan.assert_not_called()
+        self.assertEqual(record["error"], repr(ValueError("invalid synthetic inherited-socket target")))
+        self.assertEqual(record["diagnostic"]["type"], "ValueError")
+        for field in ("errno", "filename", "filename2"):
+            self.assertIsNone(record["diagnostic"][field])
+        self.assertIn("inherited_fd_check", record["diagnostic"]["traceback"])
+
+    def test_controller_still_raises_for_operation_error_with_diagnostics(self):
+        record = self.run_worker({"op": "invalid-synthetic-op", "id": 1})
+        lane = object.__new__(controller.Lane)
+        lane.master = 123  # A supplied complete line must fail before any FD read.
+        lane.pending = bytearray((worker.PREFIX + json.dumps(record) + "\n").encode())
+        lane.transcript = []
+        with patch.object(controller.select, "select") as select_call, \
+             patch.object(controller.os, "read") as read_call:
+            with self.assertRaises(RuntimeError) as failure:
+                lane.wait("result", 1)
+            select_call.assert_not_called()
+            read_call.assert_not_called()
+        self.assertEqual(json.loads(str(failure.exception)), record)
+        self.assertEqual(len(lane.transcript), 1)
 
 
 if __name__ == "__main__":
