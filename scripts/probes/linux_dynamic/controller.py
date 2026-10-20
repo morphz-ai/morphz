@@ -19,6 +19,7 @@ import subprocess
 import sys
 import termios
 import time
+import traceback
 import uuid
 
 from policy_contract import ABI, PROBE_EXECUTABLES, decode, stack_labels, validate_request
@@ -47,6 +48,16 @@ def kernel_settings():
 
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def exception_diagnostic(error, phase):
+    """Preserve the original failure; diagnostics never affect its verdict."""
+    return {
+        "phase": phase, "type": type(error).__name__, "errno": getattr(error, "errno", None),
+        "filename": getattr(error, "filename", None),
+        "filename2": getattr(error, "filename2", None),
+        "traceback": "".join(traceback.format_exception(type(error), error, error.__traceback__)),
+    }
 
 
 def command(argv, *, input_data=None, timeout=20):
@@ -356,6 +367,7 @@ class Lane:
         return Path(self.manifest["cwd"]) / (".dynamic-worker-started-" + self.manifest["profile"])
 
     def start(self):
+        self.campaign.phase = "lane_before_host"
         if self.sentinel.exists():
             raise RuntimeError("fresh per-launch sentinel already exists")
         control = Path(self.manifest["control"])
@@ -445,13 +457,16 @@ class Lane:
                 self.socket_path.unlink()
                 verify_outer_sender()
                 connection.sendall(b"HOST\n")
+            self.campaign.phase = "inner_receive_startup"
             inner_record, (peer_pid, peer_uid, peer_gid) = receive_startup(connection)
             if (peer_pid == connected_peer[0] or peer_gid != self.campaign.gid
                     or inner_record != expected_startup(self.manifest, "inner", expected_manifest)):
                 raise RuntimeError("inner sender or inherited manifest FD mismatch")
             core_record = {key: inner_record[key] for key in
                            ("run_id", "launch_id", "policy_hash", "profile", "uid")}
+            self.campaign.phase = "inner_pin_sender"
             with stable_sender(peer_pid) as (inner_identity, verify_inner_sender):
+                self.campaign.phase = "inner_verify_admission"
                 evidence = verify_admission(
                     peer_pid, peer_uid, self.process.pid, core_record, self.manifest,
                 )
@@ -459,11 +474,13 @@ class Lane:
                     raise RuntimeError("inner identity changed while inspecting namespace")
                 # Original FD and sender pidfd remain held through the reply.
                 # Namespace owner numbers are never accepted as overflow root.
+                self.campaign.phase = "inner_verify_host_manifest"
                 if manifest_fd_identity(self.manifest_file) != expected_manifest:
                     raise RuntimeError("host manifest changed during startup")
                 evidence["manifest_fd"] = inner_record["manifest_fd"]
                 evidence["outer"] = outer_evidence["peer"]
                 if self.extra_fd_probe:
+                    self.campaign.phase = "inner_full_fd_table"
                     rows = fd_table(peer_pid)
                     matching = matching_socket_fds(rows, self.extra_target)
                     self.extra_inner_absent = not matching and not self.sentinel.exists()
@@ -475,12 +492,14 @@ class Lane:
                         matching_fds=matching, pidfd_held=True,
                         sentinel_absent=not self.sentinel.exists(),
                     )
+                self.campaign.phase = "inner_revalidate_and_reply"
                 verify_inner_sender()
                 if self.admission == "allow":
                     connection.sendall(b"GO\n")
                 elif self.admission == "reject":
                     connection.sendall(b"NO\n")
             # disconnect deliberately sends no acknowledgement; context closes.
+        self.campaign.phase = "after_inner_reply"
         self.campaign.record("admission", True, launch=self.manifest["launch_id"], evidence=evidence)
         if self.admission != "allow":
             code = self.process.wait(timeout=5)
@@ -671,6 +690,7 @@ class Campaign:
         self.output.mkdir(parents=True, exist_ok=False)
         self.records, self.lanes, self.manifests = [], [], []
         self.uid, self.gid = os.getuid(), os.getgid()
+        self.phase = "campaign_start"
         self.kernel_before = kernel_settings()
         self.started_at = int(time.time())
 
@@ -885,7 +905,8 @@ class Campaign:
 
     def finish(self, error):
         if error is not None:
-            self.record("campaign_error", False, error=repr(error))
+            self.record("campaign_error", False, error=repr(error),
+                        diagnostic=exception_diagnostic(error, self.phase))
         # Only read audit lines for this synthetic profile family. This does not
         # alter audit/sysctl settings, capabilities, policy or launch behavior.
         try:

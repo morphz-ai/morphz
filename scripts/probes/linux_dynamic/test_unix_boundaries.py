@@ -233,5 +233,45 @@ class AbstractListenerPositive(unittest.TestCase):
         self.assertNotIn("unix_lifecycle_does_not_allow", source)
 
 
+class ExceptionDiagnostics(unittest.TestCase):
+    def test_oserror_preserves_original_paths_errno_and_callsite(self):
+        original = FileNotFoundError(errno.ENOENT, "synthetic missing",
+                                     "/proc/123/fd/64", None, "/synthetic/second")
+        try:
+            raise original
+        except FileNotFoundError as error:
+            result = controller.exception_diagnostic(error, "inner_full_fd_table")
+        self.assertEqual(result["phase"], "inner_full_fd_table")
+        self.assertEqual(result["errno"], errno.ENOENT)
+        self.assertEqual(result["filename"], "/proc/123/fd/64")
+        self.assertEqual(result["filename2"], "/synthetic/second")
+        self.assertEqual(result["type"], "FileNotFoundError")
+        self.assertIn("raise original", result["traceback"])
+        self.assertIn("FileNotFoundError", result["traceback"])
+        self.assertEqual(original.errno, errno.ENOENT)
+
+    def test_non_oserror_and_signal_do_not_require_errno_fields(self):
+        for error in (RuntimeError("original"), KeyboardInterrupt("signal")):
+            with self.subTest(error=error):
+                result = controller.exception_diagnostic(error, "inner_pin_sender")
+                self.assertIsNone(result["errno"])
+                self.assertIsNone(result["filename"])
+                self.assertIsNone(result["filename2"])
+                self.assertIn(str(error), result["traceback"])
+
+    def test_receipt_stays_false_and_existing_checks_are_not_caught_or_retried(self):
+        source = (HERE / "controller.py").read_text()
+        finish = source.split("def finish(self, error):", 1)[1].split("def main", 1)[0]
+        self.assertIn('self.record("campaign_error", False, error=repr(error),', finish)
+        self.assertIn("diagnostic=exception_diagnostic(error, self.phase)", finish)
+        start = source.split("def start(self):", 1)[1].split("def send", 1)[0]
+        self.assertLess(start.index('self.campaign.phase = "inner_verify_admission"'),
+                        start.index("evidence = verify_admission("))
+        self.assertLess(start.index('self.campaign.phase = "inner_full_fd_table"'),
+                        start.index("rows = fd_table(peer_pid)"))
+        self.assertNotIn("except FileNotFoundError", start)
+        self.assertNotIn("except OSError", start)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
