@@ -123,7 +123,8 @@ npm run test:runtime-identity
 
 `npm test` 的 Node 测试默认必须执行 PostgreSQL 分支：显式设置
 `MORPHZ_TEST_POSTGRES_URL` 时先验证该测试连接；未设置时使用已安装的
-PostgreSQL 工具创建随机端口、独立临时目录和数据库，结束或失败后关闭并清理
+PostgreSQL 工具创建随机端口、独立临时目录和数据库；使用与 CI 一致的 SCRAM
+认证及每次随机的私有密码，不读取个人数据库凭据。结束或失败后关闭并清理
 它自己创建的实例。不会自动连接 5432、猜测用户库或读取生产 `.env`。
 缺少工具、空配置、连接失败和未知跳过均使命令失败，不降级为 SQLite-only。
 可用 `MORPHZ_TEST_POSTGRES_BIN_DIR` 指定完整工具目录；无需每次手动传临时 URL。

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import {
   access,
@@ -8,6 +9,7 @@ import {
   readdir,
   rm,
   stat,
+  writeFile,
 } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -103,7 +105,7 @@ async function query(connectionString, sql, signal) {
     query_timeout: 3000,
   });
   // Never discover credentials in the user's .pgpass. Only the supplied URL
-  // supplies the password; trust-authenticated owned clusters need none.
+  // supplies the password, including the random password of owned clusters.
   client.password = () => decodeURIComponent(url.password);
   const abort = () => void client.end().catch(() => {});
   signal?.addEventListener("abort", abort, { once: true });
@@ -188,13 +190,17 @@ export async function prepareTestPostgres({ env = process.env, signal } = {}) {
   try {
     await chmod(directory, 0o700);
     const port = await freePort();
+    const password = randomBytes(32).toString("hex");
+    const passwordFile = join(directory, "password");
+    await writeFile(passwordFile, `${password}\n`, { flag: "wx", mode: 0o600 });
     await execute(
       found.initdb,
       [
         "-D",
         data,
         "--username=morphz_test",
-        "--auth=trust",
+        "--auth=scram-sha-256",
+        `--pwfile=${passwordFile}`,
         "--encoding=UTF8",
         "--locale=C",
         "--no-instructions",
@@ -210,7 +216,7 @@ export async function prepareTestPostgres({ env = process.env, signal } = {}) {
       ["-D", data, "-l", log, "-w", "-t", "15", "start"],
       { env: childEnv, signal, timeout: 20_000 },
     );
-    const base = `postgresql://morphz_test@127.0.0.1:${port}/`;
+    const base = `postgresql://morphz_test:${password}@127.0.0.1:${port}/`;
     const rows = await query(
       `${base}postgres?sslmode=disable`,
       "SELECT current_setting('data_directory') AS directory, current_user AS role",

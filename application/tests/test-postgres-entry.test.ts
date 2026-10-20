@@ -112,7 +112,10 @@ test("safe test selection preserves original default inventory and cannot replac
   });
   for (const count of [1, 2, 3, 4]) {
     assert.deepEqual(
-      await testSelection([`--test-concurrency=${count}`, "tests/platform-storage.test.ts"]),
+      await testSelection([
+        `--test-concurrency=${count}`,
+        "tests/platform-storage.test.ts",
+      ]),
       {
         files: ["tests/platform-storage.test.ts"],
         options: [`--test-concurrency=${count}`],
@@ -168,6 +171,26 @@ test(
           assert.equal((await stat(directory)).mode & 0o777, 0o700);
           assert.equal(new URL(url).hostname, "127.0.0.1");
           assert.notEqual(new URL(url).port, "5432");
+          assert.match(new URL(url).password, /^[a-f0-9]{64}$/);
+          if (process.platform !== "win32")
+            assert.equal(
+              (await stat(join(directory, "password"))).mode & 0o777,
+              0o600,
+            );
+          const authentication = await sql(
+            url,
+            "SELECT auth_method FROM pg_hba_file_rules WHERE error IS NULL",
+          );
+          assert.ok(authentication.length > 0);
+          assert.ok(
+            authentication.every((row) => row.auth_method === "scram-sha-256"),
+          );
+          const wrongPassword = new URL(url);
+          wrongPassword.password = "not-the-owned-cluster-password";
+          await assert.rejects(
+            sql(wrongPassword.toString(), "SELECT 1"),
+            (error: Error & { code?: string }) => error.code === "28P01",
+          );
           assert.equal(dirname(prepared.env.MORPHZ_TEST_PG_RESTORE!), bin);
           const rows = await sql(
             url,

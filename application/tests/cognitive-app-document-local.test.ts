@@ -30,8 +30,9 @@ async function launch(f: Fixture) {
   };
 }
 
-function digestHold(t: TestContext, author: Uint8Array) {
+function digestHold(t: TestContext, author: Uint8Array, expectedCalls = 1) {
   const actual = crypto.subtle.digest.bind(crypto.subtle);
+  const expectedBytes = Buffer.from(author);
   let enter!: () => void,
     release!: () => void,
     calls = 0;
@@ -41,14 +42,23 @@ function digestHold(t: TestContext, author: Uint8Array) {
     crypto.subtle,
     "digest",
     async (...args: Parameters<typeof crypto.subtle.digest>) => {
+      const [algorithm, data] = args;
+      const name = typeof algorithm === "string" ? algorithm : algorithm.name;
+      const bytes = ArrayBuffer.isView(data)
+        ? Buffer.from(data.buffer, data.byteOffset, data.byteLength)
+        : Buffer.from(data);
+      const isAuthor =
+        name.toUpperCase() === "SHA-256" && bytes.equals(expectedBytes);
       // Compute real native SHA first; only its actual returned result is held.
       const result = await actual(...args);
+      // This process also hashes PostgreSQL SCRAM authentication messages.
+      // Those and every non-document digest must retain their real behavior.
+      if (!isAuthor) return result;
       assert.equal(
         Buffer.from(result).toString("hex"),
-        createHash("sha256").update(author).digest("hex"),
+        createHash("sha256").update(expectedBytes).digest("hex"),
       );
-      calls++;
-      enter();
+      if (++calls === expectedCalls) enter();
       await hold;
       return result;
     },
@@ -60,6 +70,47 @@ function digestHold(t: TestContext, author: Uint8Array) {
     restore: () => digest.mock.restore(),
   };
 }
+
+test(
+  "document digest hold leaves authentication bytes and other algorithms untouched",
+  { timeout: 5000 },
+  async (t) => {
+    const author = new TextEncoder().encode("<p>isolated document</p>");
+    const hold = digestHold(t, author);
+    const padded = Buffer.concat([
+      Buffer.from("prefix"),
+      author,
+      Buffer.from("suffix"),
+    ]);
+    const target = crypto.subtle.digest(
+      "SHA-256",
+      padded.subarray(6, 6 + author.length),
+    );
+    try {
+      await hold.entered;
+      for (const [algorithm, bytes] of [
+        ["SHA-256", new TextEncoder().encode("synthetic SCRAM client key")],
+        ["SHA-384", author],
+      ] as const) {
+        const result = await crypto.subtle.digest(algorithm, bytes);
+        assert.equal(
+          Buffer.from(result).toString("hex"),
+          createHash(algorithm.replace("-", "").toLowerCase())
+            .update(bytes)
+            .digest("hex"),
+        );
+      }
+      assert.equal(hold.calls(), 1);
+    } finally {
+      hold.release();
+      hold.restore();
+    }
+    assert.equal(
+      Buffer.from(await target).toString("hex"),
+      createHash("sha256").update(author).digest("hex"),
+    );
+  },
+);
 function denied(error: unknown, status: number) {
   assert.ok(error instanceof ApplicationRequestError);
   assert.equal(error.status, status);
@@ -429,8 +480,11 @@ for (const backend of ["sqlite", "postgres"] as const) {
                     stage: "held-document-resource-failure",
                     backend,
                     name: error instanceof Error ? error.name : typeof error,
-                    detail: error instanceof DomainError || error instanceof PlatformStorageError
-                      ? error.message.slice(0,250) : null,
+                    detail:
+                      error instanceof DomainError ||
+                      error instanceof PlatformStorageError
+                        ? error.message.slice(0, 250)
+                        : null,
                     code:
                       error && typeof error === "object" && "code" in error
                         ? String(error.code).slice(0, 80)
@@ -443,26 +497,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
           },
         );
         const author = new TextEncoder().encode(f.input.manifest.ui.html);
-        const digest = crypto.subtle.digest.bind(crypto.subtle);
-        let release!: () => void,
-          enter!: () => void,
-          calls = 0;
-        const hold = new Promise<void>((resolve) => (release = resolve)),
-          entered = new Promise<void>((resolve) => (enter = resolve));
-        const patched = t.mock.method(
-          crypto.subtle,
-          "digest",
-          async (...args: Parameters<typeof crypto.subtle.digest>) => {
-            const result = await digest(...args);
-            assert.equal(
-              Buffer.from(result).toString("hex"),
-              createHash("sha256").update(author).digest("hex"),
-            );
-            if (++calls === 64) enter();
-            await hold;
-            return result;
-          },
-        );
+        const hold = digestHold(t, author, 64);
         const outcomes = Array.from({ length: 64 }, () =>
           f.local.cognitiveAppDocumentResource(request, abort.signal).then(
             () => ({ ok: true }) as const,
@@ -471,7 +506,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
         );
         try {
           await Promise.race([
-            entered,
+            hold.entered,
             ...outcomes.map((outcome) =>
               outcome.then((result) => {
                 if (result.ok)
@@ -480,6 +515,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
               }),
             ),
           ]);
+          assert.equal(hold.calls(), 64);
           assert.equal(Reflect.get(f.local, "requests").size, 64);
           assert.equal(Reflect.get(f.human, "issued").size, 64);
           assert.equal(Reflect.get(f.ui, "scopes").size, 64);
@@ -503,8 +539,8 @@ for (const backend of ["sqlite", "postgres"] as const) {
           assert.equal(Reflect.get(f.local, "requests").size, 64);
           abort.abort();
         } finally {
-          release();
-          patched.mock.restore();
+          hold.release();
+          hold.restore();
         }
         for (const result of await Promise.all(outcomes)) {
           assert.equal(result.ok, false);
