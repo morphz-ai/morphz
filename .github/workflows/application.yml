@@ -17,6 +17,7 @@ on:
       - "scripts/tests/test_npm_license_records.py"
       - "scripts/tests/application-cognitive-ci-setup.test.mjs"
       - "scripts/tests/application-electron-ci-setup.test.mjs"
+      - "scripts/tests/application-runtime-ci-coverage.test.mjs"
       - "scripts/prune-orphan-test-sqlite.mjs"
       - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
       - "scripts/observe-ci-resources.mjs"
@@ -38,6 +39,7 @@ on:
       - "scripts/tests/test_npm_license_records.py"
       - "scripts/tests/application-cognitive-ci-setup.test.mjs"
       - "scripts/tests/application-electron-ci-setup.test.mjs"
+      - "scripts/tests/application-runtime-ci-coverage.test.mjs"
       - "scripts/prune-orphan-test-sqlite.mjs"
       - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
       - "scripts/observe-ci-resources.mjs"
@@ -72,7 +74,7 @@ jobs:
         run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
       - name: Verify independent SDK cache preparation in every full-test job
-        run: node --test ../scripts/tests/application-cognitive-ci-setup.test.mjs ../scripts/tests/application-electron-ci-setup.test.mjs
+        run: node --test ../scripts/tests/application-cognitive-ci-setup.test.mjs ../scripts/tests/application-electron-ci-setup.test.mjs ../scripts/tests/application-runtime-ci-coverage.test.mjs
       - name: Prepare pinned Electron before parallel test imports
         run: node node_modules/electron/install.js
       - name: Prepare exact independent SDK and author dependencies
@@ -201,6 +203,11 @@ jobs:
           resource_observer=$!
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
           MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test
+      - name: Require actual browser foreground and background receipt behavior
+        env:
+          MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres,native-focus
+          MORPHZ_TEST_NATIVE_FOCUS: "1"
+        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- tests/exchange-read-receipts-mounted.test.ts
       - run: npm run test:embedded
       - run: npm run test:platform-embedded-desktop
       - run: npm run test:platform-desktop
@@ -318,12 +325,16 @@ jobs:
           MORPHZ_PROFILE_RUNTIME_E2E: "1"
           MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E: "1"
           MORPHZ_WORKSPACE_RUNTIME_E2E: "1"
+          MORPHZ_READER_IMPORT_RUNTIME_E2E: "1"
         run: >-
           npm --prefix application test --
           tests/nested-thread-activity-runtime.test.ts
           tests/profile-agent-update.test.ts
           tests/response-annotations-runtime.test.ts
           tests/workspace-changes-actual-runtime.test.ts
+          tests/host-tool-current-runtime.test.ts
+          tests/infer-model-controls-runtime.test.ts
+          tests/agent-reader-import-runtime.test.ts
       # Real Runtime, local synthetic provider, isolated databases; no user secrets.
       - name: Actual Runtime IPC with bounded failure diagnostics
         env:
