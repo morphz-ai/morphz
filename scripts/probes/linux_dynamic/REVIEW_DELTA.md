@@ -216,3 +216,17 @@ permission problem without allowing a fallback map write or adding privileges.
 Source-identity checking proves removal of diagnostic additions restores the
 exact original two C files. One added static test checks the new reads, errno
 preservation, unchanged map operation and absence of mutating additions.
+
+## Fixed bootstrap-path counterfactual
+
+The following independent driver compares the original frozen policy with
+exactly one bootstrap declaration flag, using the same diagnostic binary on
+one disposable runner. It does not edit the original policy file or worker
+profile. The original failed control must reproduce exactly and prove resource
+cleanup before a generated, hash-checked candidate bundle may start.
+
+All old campaign failures remain failures, even if the candidate passes.
+The aggregate job cannot become green by treating expected control failure as
+success. The original bwrap private-backup/finally/always restoration paths are
+retained. See `BOOTSTRAP_PATH_COUNTERFACTUAL_REVIEW.md` for the official aliasing
+warning, exact scope, unchanged negative controls and still-unproven coverage.

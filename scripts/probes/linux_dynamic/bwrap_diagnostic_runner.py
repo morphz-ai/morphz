@@ -320,8 +320,9 @@ def stop_owned(process):
         return True
 
 
-def campaign(name, output):
+def campaign(name, output, *, controller_directory=None):
     prefix = output / name
+    controller = (HERE if controller_directory is None else Path(controller_directory)) / "controller.py"
     env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": os.environ["HOME"],
            "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1",
            "MORPHZ_ISOLATED_DYNAMIC_PROBE": "1"}
@@ -329,7 +330,7 @@ def campaign(name, output):
     with (output / (name + ".stdout")).open("w") as stdout, \
             (output / (name + ".stderr")).open("w") as stderr:
         process = subprocess.Popen(
-            [sys.executable, "-B", str(HERE / "controller.py"), "--execute", "--output", str(prefix)],
+            [sys.executable, "-B", str(controller), "--execute", "--output", str(prefix)],
             env=env, stdout=stdout, stderr=stderr, start_new_session=True)
         try:
             result["exit_code"] = process.wait(timeout=210)
