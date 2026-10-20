@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import react from "@vitejs/plugin-react";
-import { chromium } from "@playwright/test";
-import { createServer } from "vite";
+import { chromium, type Browser } from "@playwright/test";
+import { createServer, type ViteDevServer } from "vite";
 import type { CognitiveAppApplicationTarget } from "../packages/core/src/cognitive-app-application-target.js";
 
 test(
@@ -19,14 +19,31 @@ test(
     const cacheDir = await mkdtemp(
       resolve(tmpdir(), "morphz-application-choices-vite-"),
     );
-    t.after(() => rm(cacheDir, { recursive: true, force: true }));
+    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    // Node after-hooks run in registration order. Close the browser first:
+    // otherwise Vite can wait forever for its live HMR websocket.
+    t.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          await rm(cacheDir, { recursive: true, force: true });
+        }
+      }
+    });
     const fixture = resolve(
       "tests/fixtures/cognitive-application-choices-mounted.tsx",
     );
-    const server = await createServer({
+    server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
+      optimizeDeps: {
+        entries: [fixture],
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {
@@ -47,19 +64,18 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    t.after(() => server.close());
     await server.listen();
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable,
     });
-    t.after(() => browser.close());
     const page = await browser.newPage({
       viewport: { width: 1120, height: 800 },
     });
     page.setDefaultTimeout(5000);
+    page.setDefaultNavigationTimeout(60000);
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => {

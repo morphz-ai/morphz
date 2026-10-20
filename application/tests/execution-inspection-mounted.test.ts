@@ -112,11 +112,14 @@ test(
     const cache = mkdtempSync(
       join(tmpdir(), "morphz-inspection-mounted-cache-"),
     );
-    context.after(() => rmSync(cache, { recursive: true, force: true }));
     const server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      optimizeDeps: {
+        noDiscovery: true,
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {
@@ -144,18 +147,22 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    context.after(async () => {
+      await browser?.close();
+      await server.close();
+      rmSync(cache, { recursive: true, force: true });
+    });
     await server.listen();
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
     const url = `http://127.0.0.1:${address.port}/__inspection`,
       errors: string[] = [],
       businessReads: string[] = [];
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
     let phase = "initial";
     context.after(() =>
       context.diagnostic(
@@ -180,12 +187,13 @@ test(
       options.surface !== "renderer"
         ? ["fixed", "actual"]
         : ["actual"]) {
-        const isolated = await browser.newContext({
+        const isolated = await browser!.newContext({
           viewport: { width: 1440, height: 900 },
         });
         contexts.push(isolated);
         const page = await isolated.newPage();
         page.setDefaultTimeout(10000);
+        page.setDefaultNavigationTimeout(60_000);
         page.on("pageerror", (error) => errors.push(error.message));
         page.on("request", (request) => {
           if (

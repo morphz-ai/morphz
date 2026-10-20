@@ -211,9 +211,12 @@ test(
   "actual builtin factory preserves finite original element/command contracts",
   { timeout: 60000 },
   async (context) => {
+    const cache = mkdtempSync(join(tmpdir(), "morphz-builtin-elements-"));
     const server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
+      cacheDir: cache,
+      optimizeDeps: { noDiscovery: true },
       plugins: [
         react(),
         {
@@ -233,7 +236,10 @@ test(
       logLevel: "error",
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
+    context.after(async () => {
+      await server.close();
+      rmSync(cache, { recursive: true, force: true });
+    });
     await server.listen();
     const actual = (
       await server.ssrLoadModule("/src/host/builtin-application-adapters.tsx")
@@ -583,11 +589,14 @@ test(
     );
     const cache = mkdtempSync(join(tmpdir(), "morphz-builtin-mounted-")),
       css = currentCSS();
-    context.after(() => rmSync(cache, { recursive: true, force: true }));
     const server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      optimizeDeps: {
+        noDiscovery: true,
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       logLevel: "error",
       plugins: [
         react(),
@@ -639,6 +648,7 @@ test(
       // sockets alive while the earlier FIFO after-hook waits for the server.
       await browser?.close();
       await server.close();
+      rmSync(cache, { recursive: true, force: true });
     });
     await server.listen();
     const address = server.httpServer!.address();
@@ -660,7 +670,7 @@ test(
       page.setDefaultTimeout(5000);
       // Cold Vite compilation is fixture setup, not the interaction deadline.
       // Preserve the 5s behavioral assertions while allowing bounded startup.
-      page.setDefaultNavigationTimeout(30_000);
+      page.setDefaultNavigationTimeout(60_000);
       page.on("pageerror", (error) => errors.push(lane + ":" + error.message));
       page.on("request", (req) => {
         if (

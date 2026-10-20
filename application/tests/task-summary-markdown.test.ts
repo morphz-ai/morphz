@@ -1,16 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { registerHooks } from "node:module";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { parseFragment, serialize, type DefaultTreeAdapterTypes } from "parse5";
-import { TaskSummary } from "../apps/web/src/TaskSummary.js";
-import { SafeMarkdown } from "../apps/web/src/SafeMarkdown.js";
-import { MarkdownTable } from "../apps/web/src/MarkdownTable.js";
 import {
   artifactSchema,
   initialWorkspace,
   taskContentSchema,
 } from "../packages/core/src/model.js";
+
+// This Node lane checks real SSR markup and content, not browser paint. Keep
+// component-owned styles inert only while importing those actual components.
+const styles = registerHooks({
+  load(url, context, nextLoad) {
+    return url.endsWith(".css")
+      ? { format: "module", source: "export {};", shortCircuit: true }
+      : nextLoad(url, context);
+  },
+});
+const [{ TaskSummary }, { SafeMarkdown }, { MarkdownTable }] =
+  await (async () => {
+    try {
+      return await Promise.all([
+        import("../apps/web/src/TaskSummary.js"),
+        import("../apps/web/src/SafeMarkdown.js"),
+        import("../apps/web/src/MarkdownTable.js"),
+      ]);
+    } finally {
+      styles.deregister();
+    }
+  })();
 
 const now = "2026-10-03T00:00:00.000Z";
 

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import react from "@vitejs/plugin-react";
-import { chromium, type Page } from "@playwright/test";
-import { createServer } from "vite";
+import { chromium, type Browser, type Page } from "@playwright/test";
+import { createLogger, createServer, type ViteDevServer } from "vite";
 
 async function report(page: Page): Promise<any> {
   await page.evaluate(
@@ -43,14 +43,38 @@ test(
     const cacheDir = await mkdtemp(
       resolve(tmpdir(), "morphz-choice-app-vite-"),
     );
-    t.after(() => rm(cacheDir, { recursive: true, force: true }));
+    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    t.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          await rm(cacheDir, { recursive: true, force: true });
+        }
+      }
+    });
     const fixture = resolve(
       "tests/fixtures/cognitive-application-choice-app-mounted.tsx",
     );
-    const server = await createServer({
+    const compileErrors: string[] = [];
+    const logger = createLogger();
+    server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
+      customLogger: {
+        ...logger,
+        error(message, options) {
+          compileErrors.push(message);
+          logger.error(message, options);
+        },
+      },
+      optimizeDeps: {
+        entries: [fixture],
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {
@@ -71,16 +95,21 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    t.after(() => server.close());
     await server.listen();
+    // App is dynamically imported only after this fixture installs transport.
+    // Compile that graph without executing it before measuring real UI boot.
+    const client = server.environments.client!;
+    assert.ok(await client.transformRequest(`/@fs/${fixture}`));
+    assert.ok(await client.transformRequest("/src/App.tsx"));
+    await client.waitForRequestsIdle();
+    assert.deepEqual(compileErrors, [], "Choice App compilation failed");
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
     const serverUrl = `http://127.0.0.1:${address.port}/__choice-app`;
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    t.after(() => browser.close());
     const page = await browser.newPage({
       viewport: { width: 1440, height: 1000 },
     });
@@ -97,7 +126,8 @@ test(
     page.on("pageerror", (error) => errors.push(error.message));
     async function load(mode = "fresh") {
       authorResources.length = 0;
-      await page.goto(`${serverUrl}?mode=${mode}`);
+      // Cold compilation of the full App is not a five-second UI action.
+      await page.goto(`${serverUrl}?mode=${mode}`, { timeout: 60_000 });
       await page.waitForFunction(
         () => !!Reflect.get(window, "cognitiveChoiceAppFixture"),
       );
@@ -221,6 +251,7 @@ test(
           "desk:desk:desk": {
             ...before.drafts["desk:desk:desk"],
             cognitiveApplication: expected,
+            detachedAssociation: false,
           },
         });
         assert.equal(after.textarea.value, before.textarea.value);
@@ -307,6 +338,9 @@ test(
         after = await report(page);
         const originalDraft = { ...before.drafts["desk:desk:desk"] };
         delete originalDraft.cognitiveApplication;
+        // Explicit removal returns to the current surface association (the
+        // approved detached-association owner), without clearing any content.
+        originalDraft.detachedAssociation = false;
         assert.deepEqual(after.drafts, {
           ...before.drafts,
           "desk:desk:desk": originalDraft,
@@ -813,48 +847,31 @@ test(
           { name: "narrow", width: 760, height: 540, dark: false, zoom: 1 },
           { name: "css-200", width: 1440, height: 1000, dark: false, zoom: 2 },
         ]) {
-          await page.setViewportSize({
-            width: scenario.width,
-            height: scenario.height,
-          });
-          await page.emulateMedia({
-            colorScheme: scenario.dark ? "dark" : "light",
-          });
-          const before = await load("selected");
-          if (scenario.zoom !== 1)
-            await page.locator(".app").evaluate((element) => {
-              (element as HTMLElement).style.zoom = "2";
+          let phase = "prepare viewport";
+          try {
+            await page.setViewportSize({
+              width: scenario.width,
+              height: scenario.height,
             });
-          const menu = await scopeMenu();
-          await menu
-            .getByRole("button", { name: "更改本次输入应用", exact: true })
-            .click();
-          await picker().waitFor();
-          const geometry = await picker().evaluate((element) => {
-            const box = element.getBoundingClientRect();
-            return {
-              left: box.left,
-              top: box.top,
-              right: box.right,
-              bottom: box.bottom,
-              width: innerWidth,
-              height: innerHeight,
-            };
-          });
-          assert.ok(
-            geometry.left >= -1 &&
-              geometry.top >= -1 &&
-              geometry.right <= geometry.width + 1 &&
-              geometry.bottom <= geometry.height + 1,
-            scenario.name + ": " + JSON.stringify(geometry),
-          );
-          for (let step = 0; step < 15; step++) {
-            await page.keyboard.press("Tab");
-            const focused = await page.evaluate(() => {
-              const active = document.activeElement as HTMLElement;
-              const box = active.getBoundingClientRect();
+            await page.emulateMedia({
+              colorScheme: scenario.dark ? "dark" : "light",
+            });
+            const before = await load("selected");
+            phase = "apply CSS zoom";
+            if (scenario.zoom !== 1)
+              await page.locator(".app").evaluate((element) => {
+                (element as HTMLElement).style.zoom = "2";
+              });
+            const menu = await scopeMenu();
+            phase = "open application picker";
+            await menu
+              .getByRole("button", { name: "更改本次输入应用", exact: true })
+              .click();
+            await picker().waitFor();
+            phase = "initial dialog geometry";
+            const geometry = await picker().evaluate((element) => {
+              const box = element.getBoundingClientRect();
               return {
-                inDialog: !!active.closest("dialog"),
                 left: box.left,
                 top: box.top,
                 right: box.right,
@@ -863,59 +880,223 @@ test(
                 height: innerHeight,
               };
             });
-            assert.equal(focused.inDialog, true, scenario.name);
             assert.ok(
-              focused.left >= -1 &&
-                focused.top >= -1 &&
-                focused.right <= focused.width + 1 &&
-                focused.bottom <= focused.height + 1,
-              scenario.name + ": " + JSON.stringify(focused),
+              geometry.left >= -1 &&
+                geometry.top >= -1 &&
+                geometry.right <= geometry.width + 1 &&
+                geometry.bottom <= geometry.height + 1,
+              scenario.name + ": " + JSON.stringify(geometry),
             );
-          }
-          await picker().evaluate(async (element) => {
-            await Promise.all(
-              element.getAnimations().map((animation) => animation.finished),
+            for (let step = 0; step < 15; step++) {
+              phase = `Tab ${step + 1}: focused control geometry`;
+              await page.keyboard.press("Tab");
+              const focused = await page.evaluate(() => {
+                const active = document.activeElement as HTMLElement;
+                const box = active.getBoundingClientRect();
+                return {
+                  inDialog: !!active.closest("dialog"),
+                  left: box.left,
+                  top: box.top,
+                  right: box.right,
+                  bottom: box.bottom,
+                  width: innerWidth,
+                  height: innerHeight,
+                };
+              });
+              assert.equal(focused.inDialog, true, scenario.name);
+              assert.ok(
+                focused.left >= -1 &&
+                  focused.top >= -1 &&
+                  focused.right <= focused.width + 1 &&
+                  focused.bottom <= focused.height + 1,
+                scenario.name + ": " + JSON.stringify(focused),
+              );
+            }
+            phase = "settled modal material";
+            await picker().evaluate(async (element) => {
+              await Promise.all(
+                element.getAnimations().map((animation) => animation.finished),
+              );
+              await new Promise<void>((done) =>
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => done()),
+                ),
+              );
+            });
+            const material = await picker().evaluate((element) => {
+              const computed = getComputedStyle(element);
+              const header = element.querySelector(
+                ".cognitive-application-choices header",
+              )!;
+              const title = header.querySelector("div")!;
+              const headerBox = header.getBoundingClientRect(),
+                titleBox = title.getBoundingClientRect();
+              return {
+                background: computed.backgroundColor,
+                opacity: computed.opacity,
+                backdropFilter: computed.backdropFilter,
+                animations: element
+                  .getAnimations()
+                  .map((animation) => animation.playState),
+                headerJustify: getComputedStyle(header).justifyContent,
+                headerMargin: getComputedStyle(header).margin,
+                titleLeft: titleBox.left,
+                headerLeft: headerBox.left,
+              };
+            });
+            console.log(
+              scenario.name +
+                " actual modal material: " +
+                JSON.stringify(material),
             );
-            await new Promise<void>((done) =>
-              requestAnimationFrame(() => requestAnimationFrame(() => done())),
-            );
-          });
-          const material = await picker().evaluate((element) => {
-            const computed = getComputedStyle(element);
-            const header = element.querySelector(
-              ".cognitive-application-choices header",
-            )!;
-            const title = header.querySelector("div")!;
-            const headerBox = header.getBoundingClientRect(),
-              titleBox = title.getBoundingClientRect();
-            return {
-              background: computed.backgroundColor,
-              opacity: computed.opacity,
-              backdropFilter: computed.backdropFilter,
-              animations: element
-                .getAnimations()
-                .map((animation) => animation.playState),
-              headerJustify: getComputedStyle(header).justifyContent,
-              headerMargin: getComputedStyle(header).margin,
-              titleLeft: titleBox.left,
-              headerLeft: headerBox.left,
+            assert.equal(material.opacity, "1", scenario.name);
+            assert.equal(material.headerJustify, "flex-start", scenario.name);
+            assert.equal(material.headerMargin, "0px", scenario.name);
+            await page.screenshot({
+              path: resolve(screenshots, scenario.name + ".png"),
+            });
+            phase = "Escape and original draft preservation";
+            await page.keyboard.press("Escape");
+            await picker().waitFor({ state: "detached" });
+            assert.deepEqual((await report(page)).drafts, before.drafts);
+            assert.deepEqual(selectionIo(await report(page)), []);
+          } catch (error) {
+            // Capture only after the original assertion failed. Diagnostics
+            // must not pre-settle animation/layout or replace its failure.
+            const diagnostic: Record<string, unknown> = {
+              scenario,
+              phase,
+              error: String(error),
+              stack: error instanceof Error ? error.stack : undefined,
+              pageErrors: errors,
             };
-          });
-          console.log(
-            scenario.name +
-              " actual modal material: " +
-              JSON.stringify(material),
-          );
-          assert.equal(material.opacity, "1", scenario.name);
-          assert.equal(material.headerJustify, "flex-start", scenario.name);
-          assert.equal(material.headerMargin, "0px", scenario.name);
-          await page.screenshot({
-            path: resolve(screenshots, scenario.name + ".png"),
-          });
-          await page.keyboard.press("Escape");
-          await picker().waitFor({ state: "detached" });
-          assert.deepEqual((await report(page)).drafts, before.drafts);
-          assert.deepEqual(selectionIo(await report(page)), []);
+            try {
+              diagnostic.page = await page.evaluate(() => {
+                const describe = (element: Element | null): unknown => {
+                  if (!element) return null;
+                  const style = getComputedStyle(element);
+                  return {
+                    tag: element.tagName,
+                    id: element.id,
+                    class: element.getAttribute("class"),
+                    rect: element.getBoundingClientRect().toJSON(),
+                    currentCSSZoom: Reflect.get(element, "currentCSSZoom"),
+                    scrollTop: element.scrollTop,
+                    scrollLeft: element.scrollLeft,
+                    clientWidth: element.clientWidth,
+                    clientHeight: element.clientHeight,
+                    scrollWidth: element.scrollWidth,
+                    scrollHeight: element.scrollHeight,
+                    style: Object.fromEntries(
+                      [
+                        "display",
+                        "position",
+                        "left",
+                        "top",
+                        "width",
+                        "height",
+                        "max-width",
+                        "max-height",
+                        "min-width",
+                        "zoom",
+                        "transform",
+                        "opacity",
+                        "overflow",
+                        "overflow-y",
+                        "--modal-center",
+                        "--modal-max-width",
+                        "--modal-max-height",
+                        "--modal-viewport-width",
+                        "--modal-viewport-height",
+                      ].map((name) => [name, style.getPropertyValue(name)]),
+                    ),
+                  };
+                };
+                const dialog = document.querySelector(
+                  ".cognitive-application-picker",
+                );
+                const ancestors: unknown[] = [];
+                for (let node = dialog; node; node = node.parentElement)
+                  ancestors.push(describe(node));
+                return {
+                  viewport: {
+                    width: innerWidth,
+                    height: innerHeight,
+                    scrollX,
+                    scrollY,
+                    visual: visualViewport && {
+                      width: visualViewport.width,
+                      height: visualViewport.height,
+                      scale: visualViewport.scale,
+                      offsetLeft: visualViewport.offsetLeft,
+                      offsetTop: visualViewport.offsetTop,
+                    },
+                  },
+                  app: describe(document.querySelector(".app")),
+                  workspace: describe(document.querySelector(".workspace")),
+                  primaryPanel: describe(
+                    document.querySelector(".primary-panel"),
+                  ),
+                  dialog: describe(dialog),
+                  body: describe(
+                    document.querySelector(
+                      ".cognitive-application-picker-body",
+                    ),
+                  ),
+                  active: describe(document.activeElement),
+                  activeHTML: document.activeElement?.outerHTML.slice(0, 2000),
+                  ancestors,
+                  controls: [
+                    ...(dialog?.querySelectorAll("button,[tabindex]") ?? []),
+                  ].map((element) => ({
+                    element: describe(element),
+                    label: element.getAttribute("aria-label"),
+                    active: element === document.activeElement,
+                    disabled: element.matches(":disabled"),
+                  })),
+                  animations: document.getAnimations().map((animation) => ({
+                    playState: animation.playState,
+                    currentTime: animation.currentTime,
+                    timing: animation.effect?.getComputedTiming(),
+                    target:
+                      animation.effect instanceof KeyframeEffect
+                        ? describe(animation.effect.target)
+                        : null,
+                  })),
+                };
+              });
+            } catch (captureError) {
+              diagnostic.captureError = String(captureError);
+            }
+            const diagnosticPath = resolve(
+              screenshots,
+              `${scenario.name}-failure.json`,
+            );
+            try {
+              await page.screenshot({
+                path: resolve(screenshots, `${scenario.name}-failure.png`),
+              });
+            } catch (captureError) {
+              diagnostic.screenshotError = String(captureError);
+            }
+            try {
+              await writeFile(
+                diagnosticPath,
+                JSON.stringify(diagnostic, null, 2),
+                { mode: 0o600 },
+              );
+              console.error(
+                `Choice App failure diagnostics: ${diagnosticPath}`,
+              );
+            } catch (captureError) {
+              console.error(
+                "Choice App failure capture could not be saved:",
+                captureError,
+                diagnostic,
+              );
+            }
+            throw error;
+          }
         }
         await page.setViewportSize({ width: 1440, height: 1000 });
         await page.emulateMedia({ colorScheme: "light" });

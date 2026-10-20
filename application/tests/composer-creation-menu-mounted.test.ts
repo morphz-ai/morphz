@@ -23,7 +23,6 @@ test(
     const evidenceDir = await mkdtemp(
       resolve(tmpdir(), "morphz-creation-menu-evidence-"),
     );
-    t.after(() => rm(cacheDir, { recursive: true, force: true }));
     const fixture = resolve(
       "tests/fixtures/cognitive-application-choice-app-mounted.tsx",
     );
@@ -31,6 +30,10 @@ test(
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
+      optimizeDeps: {
+        entries: [fixture],
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {
@@ -51,7 +54,6 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    t.after(() => server.close());
     await server.listen();
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
@@ -60,11 +62,22 @@ test(
       headless: true,
       executablePath: executable || undefined,
     });
-    t.after(() => browser.close());
+    t.after(async () => {
+      try {
+        await browser.close();
+      } finally {
+        try {
+          await server.close();
+        } finally {
+          await rm(cacheDir, { recursive: true, force: true });
+        }
+      }
+    });
     const page = await browser.newPage({
       viewport: { width: 1440, height: 1000 },
     });
     page.setDefaultTimeout(5_000);
+    page.setDefaultNavigationTimeout(60_000);
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const input = () =>

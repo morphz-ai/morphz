@@ -74,12 +74,12 @@ test(
     const cacheDir = await mkdtemp(
       resolve(tmpdir(), "morphz-view-owner-vite-"),
     );
-    t.after(() => rm(cacheDir, { recursive: true, force: true }));
     const fixture = resolve("tests/fixtures/cognitive-view-owner-mounted.tsx");
     const server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
+      optimizeDeps: { entries: [fixture] },
       plugins: [
         react(),
         {
@@ -100,7 +100,6 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    t.after(() => server.close());
     await server.listen();
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
@@ -108,8 +107,20 @@ test(
       headless: true,
       executablePath: executable || undefined,
     });
-    t.after(() => browser.close());
+    t.after(async () => {
+      try {
+        await browser.close();
+      } finally {
+        try {
+          await server.close();
+        } finally {
+          await rm(cacheDir, { recursive: true, force: true });
+        }
+      }
+    });
     const page = await browser.newPage();
+    page.setDefaultTimeout(5_000);
+    page.setDefaultNavigationTimeout(60_000);
     const errors: string[] = [],
       forbiddenRequests: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));

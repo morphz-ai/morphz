@@ -185,7 +185,6 @@ test(
     const cacheDir = await mkdtemp(
       resolve(tmpdir(), "morphz-cognitive-management-owner-"),
     );
-    t.after(() => rm(cacheDir, { recursive: true, force: true }));
     const fixture = resolve(
       "tests/fixtures/cognitive-catalog-owner-mounted.tsx",
     );
@@ -193,6 +192,10 @@ test(
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
+      optimizeDeps: {
+        entries: [fixture],
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {
@@ -215,14 +218,19 @@ test(
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
       logLevel: "error",
     });
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    t.after(async () => {
+      await browser?.close();
+      await server.close();
+      await rm(cacheDir, { recursive: true, force: true });
+    });
     await server.listen();
-    t.after(() => server.close());
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
     const url = `http://127.0.0.1:${address.port}/__management-owner?mode=ready`;
-    const browser = await chromium.launch({ headless: true, executablePath });
-    t.after(() => browser.close());
+    browser = await chromium.launch({ headless: true, executablePath });
     const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(60_000);
     const errors: string[] = [],
       external: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));

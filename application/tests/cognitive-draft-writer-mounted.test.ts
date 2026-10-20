@@ -37,6 +37,12 @@ test(
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      // This fixture owns the draft writer only. Do not cold-scan the unrelated
+      // production App entry before the first test can even start.
+      optimizeDeps: {
+        noDiscovery: true,
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {
@@ -78,6 +84,8 @@ test(
           const page = await isolated.newPage(),
             errors: string[] = [],
             business: string[] = [];
+          page.setDefaultTimeout(5_000);
+          page.setDefaultNavigationTimeout(60_000);
           page.on("pageerror", (error) => errors.push(error.message));
           page.on("request", (request) => {
             if (request.url().includes("/api/")) business.push(request.url());

@@ -64,7 +64,6 @@ test(
     const cache = await mkdtemp(
       resolve(tmpdir(), "morphz-script-shared-vite-"),
     );
-    context.after(() => rm(cache, { recursive: true, force: true }));
     const css = [
       ...readFileSync("apps/web/src/main.tsx", "utf8").matchAll(
         /import\s+["'](\.\/[^"']+\.css)["'];/g,
@@ -103,6 +102,10 @@ window.scriptSharedFixture={inspect,update:value=>flushSync(()=>change(old=>({..
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      optimizeDeps: {
+        entries: [resolve("apps/web/src/ScriptStudio.tsx")],
+        include: ["react-dom", "react-dom/client"],
+      },
       plugins: [
         react(),
         {
@@ -135,7 +138,6 @@ window.scriptSharedFixture={inspect,update:value=>flushSync(()=>change(old=>({..
       },
       logLevel: "error",
     });
-    context.after(() => server.close());
     await server.listen();
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
@@ -143,11 +145,22 @@ window.scriptSharedFixture={inspect,update:value=>flushSync(()=>change(old=>({..
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
+    context.after(async () => {
+      try {
+        await browser.close();
+      } finally {
+        try {
+          await server.close();
+        } finally {
+          await rm(cache, { recursive: true, force: true });
+        }
+      }
+    });
     const page = await browser.newPage({
       viewport: { width: 1024, height: 768 },
     });
     page.setDefaultTimeout(4000);
+    page.setDefaultNavigationTimeout(60_000);
     const errors: string[] = [],
       unexpectedRequests: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));

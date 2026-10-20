@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { createServer, transformWithOxc } from "vite";
 import react from "@vitejs/plugin-react";
 import { expect, test, type Page } from "@playwright/test";
@@ -121,10 +123,18 @@ let fixtureUrl: string;
 
 // Browser provisioning is the normal runner's responsibility. This document
 // listens on an OS-selected ephemeral port, not the application Host's port.
+let fixtureCache: string | undefined;
 test.beforeAll(async () => {
+  test.setTimeout(60000);
+  fixtureCache = await mkdtemp(resolve(tmpdir(), "morphz-control-icons-"));
   server = await createServer({
     configFile: false,
     root: resolve("apps/web"),
+    cacheDir: fixtureCache,
+    optimizeDeps: {
+      noDiscovery: true,
+      include: ["react", "react-dom/client", "react/jsx-runtime"],
+    },
     plugins: [
       react(),
       {
@@ -160,6 +170,7 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => {
   await server?.close();
+  if (fixtureCache) await rm(fixtureCache, { recursive: true, force: true });
 });
 
 function scenario(name: string, check: (page: Page) => Promise<void>) {

@@ -176,6 +176,10 @@ test(
       root: resolve("apps/web"),
       cacheDir: cache,
       logLevel: "error",
+      optimizeDeps: {
+        entries: [],
+        include: ["react", "react-dom", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         {
           name: "actual-control-role-components",
@@ -433,8 +437,11 @@ test(
           assert.equal(part(document, "新文档正文").tag, "TEXTAREA");
           assert.equal(part(document, "取消").type, "button");
           await configure(page, { mode: "editor" });
+          // The shared selection action is transient now, not a permanent
+          // "围绕选中文本输入" toolbar button. Exercise the actual secondary
+          // control whose paint/focus behavior this lane owns.
           await page
-            .getByRole("button", { name: "围绕选中文本输入", exact: true })
+            .getByRole("button", { name: "版本历史", exact: true })
             .waitFor();
           await page
             .getByRole("button", { name: "版本历史", exact: true })

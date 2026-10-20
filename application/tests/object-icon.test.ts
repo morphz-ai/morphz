@@ -134,7 +134,6 @@ test(
       "npm test prepares installed browser",
     );
     const cache = await mkdtemp(resolve(tmpdir(), "morphz-object-icon-vite-"));
-    context.after(() => rm(cache, { recursive: true, force: true }));
     const css = [
       ...readFileSync("apps/web/src/main.tsx", "utf8").matchAll(
         /import\s+["'](\.\/[^"']+\.css)["'];/g,
@@ -166,6 +165,10 @@ window.objectIconFixture={configure:(appearance,accent)=>{document.documentEleme
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      optimizeDeps: {
+        entries: [resolve("apps/web/src/ui/ObjectIcon.tsx")],
+        include: ["react-dom", "react-dom/client"],
+      },
       plugins: [
         react(),
         {
@@ -198,7 +201,6 @@ window.objectIconFixture={configure:(appearance,accent)=>{document.documentEleme
       },
       logLevel: "error",
     });
-    context.after(() => server.close());
     await server.listen();
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
@@ -206,7 +208,17 @@ window.objectIconFixture={configure:(appearance,accent)=>{document.documentEleme
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
+    context.after(async () => {
+      try {
+        await browser.close();
+      } finally {
+        try {
+          await server.close();
+        } finally {
+          await rm(cache, { recursive: true, force: true });
+        }
+      }
+    });
     const errors: string[] = [],
       unexpected: string[] = [],
       ledgers: Record<string, Observation[]> = {};
@@ -215,6 +227,7 @@ window.objectIconFixture={configure:(appearance,accent)=>{document.documentEleme
         viewport: { width: 1024, height: 900 },
       });
       page.setDefaultTimeout(4000);
+      page.setDefaultNavigationTimeout(60_000);
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("request", (request) => {
         if (

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import react from "@vitejs/plugin-react";
@@ -66,9 +67,36 @@ test(
   "actual Conversation replaces cached public output across final publication, reconnect, refresh and remount",
   { skip: !installed, timeout: 30000 },
   async (context) => {
-    const server = await createServer({
+    const cache = mkdtempSync(resolve(tmpdir(), "morphz-publications-vite-"));
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    context.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          rmSync(cache, { recursive: true, force: true });
+        }
+      }
+    });
+    server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
+      cacheDir: cache,
+      optimizeDeps: {
+        // Discover the real component's dependencies before the virtual
+        // fixture executes, rather than re-optimizing React after it mounts.
+        entries: [resolve("apps/web/src/Conversation.tsx")],
+        include: [
+          "react",
+          "react-dom",
+          "react-dom/client",
+          "react/jsx-runtime",
+          "react/jsx-dev-runtime",
+        ],
+      },
       plugins: [
         react(),
         {
@@ -96,12 +124,10 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
     await server.listen();
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");

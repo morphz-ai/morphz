@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type Browser } from "@playwright/test";
 import react from "@vitejs/plugin-react";
-import { createServer } from "vite";
+import { createLogger, createServer } from "vite";
 import type { InputDraft } from "../apps/web/src/host/exchange-drafts.js";
 import {
   composeLocator,
@@ -38,10 +38,23 @@ test(
       join(tmpdir(), "morphz-cognitive-compose-cache-"),
     );
     const fixturePath = resolve("tests/fixtures/cognitive-compose-mounted.tsx");
+    const compileErrors: string[] = [];
+    const logger = createLogger();
     const server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      customLogger: {
+        ...logger,
+        error(message, options) {
+          compileErrors.push(message);
+          logger.error(message, options);
+        },
+      },
+      optimizeDeps: {
+        entries: [fixturePath],
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {
@@ -67,6 +80,10 @@ test(
     let browser: Browser | undefined;
     try {
       await server.listen();
+      const client = server.environments.client!;
+      assert.ok(await client.transformRequest(`/@fs/${fixturePath}`));
+      await client.waitForRequestsIdle();
+      assert.deepEqual(compileErrors, [], "Compose fixture compilation failed");
       const address = server.httpServer!.address();
       assert.ok(address && typeof address !== "string");
       const port = address.port;
@@ -208,9 +225,15 @@ test(
         },
       );
     } finally {
-      await browser?.close();
-      await server.close();
-      rmSync(cache, { recursive: true, force: true });
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server.close();
+        } finally {
+          rmSync(cache, { recursive: true, force: true });
+        }
+      }
     }
   },
 );

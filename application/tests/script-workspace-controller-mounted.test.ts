@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import react from "@vitejs/plugin-react";
-import { chromium, expect, type Page } from "@playwright/test";
-import { createServer } from "vite";
+import { chromium, expect, type Browser, type Page } from "@playwright/test";
+import { createServer, type ViteDevServer } from "vite";
 import { selectScriptOption } from "./script-studio-ui-helpers.js";
 import {
   emptyScriptBrief,
@@ -84,8 +84,19 @@ test(
     const cache = await mkdtemp(
       resolve(tmpdir(), "morphz-script-workspace-vite-"),
     );
-    context.after(() => rm(cache, { recursive: true, force: true }));
-    const server = await createServer({
+    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    context.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          await rm(cache, { recursive: true, force: true });
+        }
+      }
+    });
+    server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
@@ -127,20 +138,13 @@ test(
       },
       logLevel: "error",
     });
-    context.after(async () => {
-      const httpServer = server.httpServer;
-      if (httpServer && "closeAllConnections" in httpServer)
-        httpServer.closeAllConnections();
-      await server.close();
-    });
     await server.listen();
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
     const pages: Page[] = [],
       errors: string[] = [],
       requests: string[] = [],
@@ -161,7 +165,6 @@ test(
       const session = await browser.newContext({
         viewport: { width: 1440, height: 960 },
       });
-      context.after(() => session.close());
       // Fix only the test-owned draft-window identity; useId/DOM/ARIA are not
       // normalized or removed to obtain equality between the independent pages.
       await session.addInitScript(() =>
@@ -184,6 +187,7 @@ test(
       await page.clock.pauseAt(new Date("2026-10-04T00:00:00Z"));
       await page.goto(
         `http://127.0.0.1:${address.port}/__script_workspace?lane=${lane}`,
+        { timeout: 60_000 },
       );
       // Initialization must not depend on the rAF clock we deliberately froze.
       // Poll from Node without advancing any application timer or weakening
@@ -379,7 +383,7 @@ test(
         await each((page) =>
           expect(
             page.getByRole("button", {
-              name: "TEST 雨夜第一集 草稿",
+              name: migration ? "TEST 雨夜第一集 草稿" : "TEST 雨夜第一集",
               exact: true,
             }),
           ).toBeFocused(),

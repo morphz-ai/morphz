@@ -25,6 +25,10 @@ test(
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      optimizeDeps: {
+        entries: [fixture],
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       logLevel: "error",
       plugins: [
         react(),
@@ -46,16 +50,18 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
     context.after(async () => {
+      await browser?.close();
       await server.close();
       rmSync(cache, { recursive: true, force: true });
     });
     await server.listen();
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
-    const browser = await chromium.launch({ headless: true, executablePath });
-    context.after(() => browser.close());
+    browser = await chromium.launch({ headless: true, executablePath });
     const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(60000);
     const errors: string[] = [],
       business: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));

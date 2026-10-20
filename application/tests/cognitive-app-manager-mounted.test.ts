@@ -133,7 +133,6 @@ test(
     const cacheDir = await mkdtemp(
       resolve(tmpdir(), "morphz-manager-mounted-cache-"),
     );
-    t.after(() => rm(cacheDir, { recursive: true, force: true }));
     const screenshots = await mkdtemp(
       resolve(tmpdir(), "morphz-manager-mounted-screens-"),
     );
@@ -142,6 +141,10 @@ test(
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
+      optimizeDeps: {
+        entries: [fixture],
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {
@@ -165,12 +168,16 @@ test(
       logLevel: "error",
     });
     await server.listen();
-    t.after(() => server.close());
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    t.after(async () => {
+      await browser?.close();
+      await server.close();
+      await rm(cacheDir, { recursive: true, force: true });
+    });
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
     const url = `http://127.0.0.1:${address.port}/__cognitive-manager`;
-    const browser = await chromium.launch({ headless: true, executablePath });
-    t.after(() => browser.close());
+    browser = await chromium.launch({ headless: true, executablePath });
     const definition = JSON.parse(
       await readFile(
         resolve("examples/cognitive-notes/definition.json"),
@@ -200,7 +207,7 @@ test(
       ui: { type: "sandbox", html },
     };
     async function load() {
-      const page = await browser.newPage({
+      const page = await browser!.newPage({
         viewport: { width: 1120, height: 800 },
       });
       const errors: string[] = [],
@@ -228,7 +235,7 @@ test(
         if (new URL(request.url()).pathname.startsWith("/api/"))
           external.push(request.url());
       });
-      await page.goto(url);
+      await page.goto(url, { timeout: 60000 });
       await page.waitForFunction(
         () => !!Reflect.get(window, "cognitiveAppManagerFixture"),
       );

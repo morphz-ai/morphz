@@ -43,7 +43,7 @@ function Frame(){
 }
 const root=createRoot(document.getElementById('root'));flushSync(()=>root.render(<StrictMode><Frame/></StrictMode>));
 async function settle(){await Promise.resolve();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));await Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));}
-function snapshot(){const active=document.activeElement;return{facts:last.facts,scope:last.scope,events:[...events],requests:requests.map(r=>({kind:r.kind,index:r.index,args:r.args,settled:r.settled,aborted:r.signal?.aborted??false})),tools:[...document.querySelectorAll('article[data-message-id]')].map(n=>({html:n.outerHTML,id:nodeId(n),detailsId:nodeId(n.querySelector('details')),open:n.querySelector('details')?.open??false})),jobs:[...document.querySelectorAll('.execution-job')].map(n=>({html:n.outerHTML,id:nodeId(n),detailsId:nodeId(n.querySelector('details')),open:n.querySelector('details')?.open??false})),execution:document.querySelector('.execution-details,.execution-dialog')?.outerHTML??null,active:{id:active?.id??'',text:active?.textContent??'',tag:active?.tagName??''},notice:document.querySelector('.execution-notice')?.textContent??null,error:document.querySelector('[role=alert]')?.textContent??null,modal:document.querySelector('dialog')?.matches(':modal')??false,unmounted};}
+function snapshot(){const active=document.activeElement;return{facts:last.facts,scope:last.scope,events:[...events],requests:requests.map(r=>({kind:r.kind,index:r.index,args:r.args,settled:r.settled,aborted:r.signal?.aborted??false})),tools:[...document.querySelectorAll('article[data-message-id]')].map(n=>({html:n.outerHTML,id:nodeId(n),detailsId:nodeId(n.querySelector('details')),open:n.querySelector('details')?.open??false})),jobs:[...document.querySelectorAll('.execution-job')].map(n=>({html:n.outerHTML,id:nodeId(n),detailsId:nodeId(n.querySelector(fixed?'details':'.execution-technical')),open:fixed?(n.querySelector('details')?.open??false):!!n.querySelector('.execution-technical')})),execution:document.querySelector('.execution-details,.execution-dialog')?.outerHTML??null,active:{id:active?.id??'',text:active?.textContent??'',tag:active?.tagName??''},notice:document.querySelector('.execution-notice')?.textContent??null,error:document.querySelector('[role=alert]')?.textContent??null,modal:document.querySelector('dialog')?.matches(':modal')??false,unmounted};}
 Reflect.set(window,'jobFixture',{snapshot,settle,makeSnapshot,async run(action,value){flushSync(()=>{if(action==='set')api.set(value);else if(action==='tool')api.tool(value);else if(action==='swap')api.swap();else if(action==='resolveSnapshots'){for(const r of requests.filter(r=>r.kind==='snapshot'&&!r.settled)){r.settled=true;r.resolve(value);}}else if(action==='settleRequest'){const r=requests[value.index];r.settled=true;if(value.error)r.reject(new Error(value.error));else r.resolve(value.value);}else if(action==='unmount'){root.unmount();unmounted=true;}});await settle();return snapshot();}});
 `;
 type Snapshot = {
@@ -330,11 +330,17 @@ test(
           })),
         );
         const before = await p.click(
-          '[data-job-id="job-running"] details summary',
+          migration
+            ? '[data-job-id="job-running"] details summary'
+            : '[data-job-id="job-running"] button[aria-label="技术详情"]',
         );
         for (const page of p.pages)
           await page
-            .locator('[data-job-id="job-running"] details summary')
+            .locator(
+              migration
+                ? '[data-job-id="job-running"] details summary'
+                : '[data-job-id="job-running"] button[aria-label="技术详情"]',
+            )
             .focus();
         for (const page of p.pages) {
           assert.equal(await page.locator(".execution-job").count(), 7);
@@ -369,7 +375,7 @@ test(
         )!;
         assert.equal(after.jobs[0]?.detailsId, previous.detailsId);
         assert.equal(after.jobs[0]?.open, true);
-        assert.equal(after.active.tag, "SUMMARY");
+        assert.equal(after.active.tag, migration ? "SUMMARY" : "BUTTON");
         assert.ok(after.jobs[0]?.html.includes("原确认回执"));
         await p.close();
       },
@@ -383,7 +389,7 @@ test(
           { status: "succeeded", result_event_id: "receipt-original" },
         ]);
         let current = await p.click(
-          '.execution-job button:has-text("查看结果")',
+          '.execution-job button[aria-label="查看结果"]',
         );
         current = await p.run("settleRequest", {
           index: pending(current, "result").index,
@@ -395,13 +401,50 @@ test(
         });
         assert.ok(current.execution?.includes("原冲突"));
         assert.ok(current.execution?.includes("64,000"));
-        current = await p.click('.execution-job button:has-text("查看结果")');
+        if (!migration) {
+          const requestCount = current.requests.length;
+          current = await p.click(
+            '.execution-job button[aria-label="查看结果"]',
+          );
+          assert.ok(
+            !current.execution?.includes("原冲突"),
+            "collapse the exact result locally",
+          );
+          current = await p.click(
+            '.execution-job button[aria-label="查看结果"]',
+          );
+          assert.ok(current.execution?.includes("原冲突"));
+          assert.equal(
+            current.requests.length,
+            requestCount,
+            "a confirmed receipt is not fetched twice",
+          );
+          await p.run("set", { revision: 1 });
+          await p.jobs([
+            {
+              id: "job-unavailable",
+              status: "succeeded",
+              result_event_id: "receipt-unavailable",
+            },
+          ]);
+        }
+        current = await p.click('.execution-job button[aria-label="查看结果"]');
         current = await p.run("settleRequest", {
           index: pending(current, "result").index,
           value: { text: "", available: false, truncated: false },
         });
         assert.ok(current.execution?.includes("尚无最终结果。"));
-        current = await p.click('.execution-job button:has-text("查看结果")');
+        if (!migration) {
+          await p.run("set", { revision: 2 });
+          await p.jobs([
+            {
+              id: "job-produced",
+              status: "succeeded",
+              result_event_id: "receipt-produced",
+            },
+          ]);
+        }
+        current = await p.click('.execution-job button[aria-label="查看结果"]');
         current = await p.run("settleRequest", {
           index: pending(current, "result").index,
           value: {
@@ -426,7 +469,7 @@ test(
         const p = await pair();
         await p.jobs([{ result_event_id: "receipt-original" }]);
         let current = await p.click(
-          '.execution-job button:has-text("查看结果")',
+          '.execution-job button[aria-label="查看结果"]',
         );
         const result = pending(current, "result");
         current = await p.run("set", { scope: "next", csrf: "csrf-next" });
@@ -444,7 +487,7 @@ test(
           false,
         );
         current = await p.click(
-          '.execution-job button:has-text("停止此项执行")',
+          '.execution-job button[aria-label="停止此项执行"]',
         );
         const control = pending(current, "control");
         await p.run("set", { scope: "third" });
@@ -489,7 +532,7 @@ test(
         for (const page of p.pages)
           assert.equal(
             await page
-              .locator('.execution-job button:has-text("停止此项执行")')
+              .locator('.execution-job button[aria-label="停止此项执行"]')
               .isDisabled(),
             true,
           );

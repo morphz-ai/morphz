@@ -213,6 +213,7 @@ test(
         });
         await page.goto(
           `http://127.0.0.1:${address.port}/__schedules?lane=${lane}`,
+          { timeout: 60_000 },
         );
         await page.waitForFunction(() => !!(window as any).scheduleFixture);
         await page.evaluate(() => (window as any).scheduleFixture.settle());

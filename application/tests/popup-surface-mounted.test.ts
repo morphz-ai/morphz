@@ -163,13 +163,13 @@ test(
   },
   async (context) => {
     const cache = mkdtempSync(join(tmpdir(), "morphz-popup-mounted-cache-"));
-    context.after(() => rmSync(cache, { recursive: true, force: true }));
     const entry = (lane: string) =>
       `import '/__popup-${lane}.css';import {mountPopupSurfaceFixture} from '/@fs/${fixture}';mountPopupSurfaceFixture(new URL(location.href).searchParams.has('compatibility'));`;
     const server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      optimizeDeps: { entries: [fixture] },
       plugins: [
         {
           name: "complete-popup-css-lanes",
@@ -207,7 +207,6 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
     await server.listen();
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
@@ -216,7 +215,17 @@ test(
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
+    context.after(async () => {
+      try {
+        await browser.close();
+      } finally {
+        try {
+          await server.close();
+        } finally {
+          rmSync(cache, { recursive: true, force: true });
+        }
+      }
+    });
     const errors: string[] = [],
       businessReads: string[] = [];
     const coverage: unknown[] = [];
@@ -252,6 +261,7 @@ test(
         );
         const page = await isolated.newPage();
         page.setDefaultTimeout(10000);
+        page.setDefaultNavigationTimeout(60_000);
         page.on("pageerror", (error) => errors.push(error.message));
         page.on("request", (request) => {
           if (

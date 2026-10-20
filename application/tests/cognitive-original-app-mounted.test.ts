@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import react from "@vitejs/plugin-react";
-import { chromium, type Page } from "@playwright/test";
-import { createServer } from "vite";
+import { chromium, type Browser, type Page } from "@playwright/test";
+import { createLogger, createServer, type ViteDevServer } from "vite";
 
 async function report(page: Page): Promise<any> {
   await page.evaluate(
@@ -37,14 +37,38 @@ test(
     const cacheDir = await mkdtemp(
       resolve(tmpdir(), "morphz-original-app-vite-"),
     );
-    t.after(() => rm(cacheDir, { recursive: true, force: true }));
+    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    t.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          await rm(cacheDir, { recursive: true, force: true });
+        }
+      }
+    });
     const fixture = resolve(
       "tests/fixtures/cognitive-original-app-mounted.tsx",
     );
-    const server = await createServer({
+    const compileErrors: string[] = [];
+    const logger = createLogger();
+    server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
+      customLogger: {
+        ...logger,
+        error(message, options) {
+          compileErrors.push(message);
+          logger.error(message, options);
+        },
+      },
+      optimizeDeps: {
+        entries: [fixture],
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {
@@ -66,20 +90,32 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    t.after(() => server.close());
     await server.listen();
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
     const serverUrl = `http://127.0.0.1:${address.port}/__original-app`;
-    const browser = await chromium.launch({
+    // The fixture installs its controlled transport before a dynamic App
+    // import. Browser load does not wait for that import's cold transformations.
+    // Compile its actual graph in setup; do not spend the 5s UI deadline doing
+    // dev-server work or execute App/Host effects ahead of the mounted test.
+    const client = server.environments.client!;
+    assert.ok(await client.transformRequest(`/@fs/${fixture}`));
+    assert.ok(await client.transformRequest("/src/App.tsx"));
+    await client.waitForRequestsIdle();
+    assert.deepEqual(
+      compileErrors,
+      [],
+      "Actual fixture/App compilation failed",
+    );
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    t.after(() => browser.close());
     const page = await browser.newPage({
       viewport: { width: 1440, height: 1000 },
     });
     page.setDefaultTimeout(5_000);
+    page.setDefaultNavigationTimeout(60_000);
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     async function load(mode = "fresh") {

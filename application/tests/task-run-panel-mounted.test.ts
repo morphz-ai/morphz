@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
 import react from "@vitejs/plugin-react";
-import { chromium, type Page } from "@playwright/test";
-import { createServer, transformWithOxc } from "vite";
+import { chromium, expect, type Browser, type Page } from "@playwright/test";
+import { createServer, transformWithOxc, type ViteDevServer } from "vite";
 import {
   panelRuntime,
   panelResponses,
@@ -151,13 +151,24 @@ test(
       "mounted TaskRunPanel requires the test-entry prepared browser",
     );
     const cache = await mkdtemp(resolve(tmpdir(), "morphz-task-panel-vite-"));
-    context.after(() => rm(cache, { recursive: true, force: true }));
+    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    context.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          await rm(cache, { recursive: true, force: true });
+        }
+      }
+    });
     const historyId = resolve("apps/web/src/__task_panel_Git_d93326c0.tsx");
     const source = browserFixture.replace(
       "__TASK_PANEL_HISTORY__",
       archived ? historyId : "/src/TaskRunPanel.tsx",
     );
-    const server = await createServer({
+    server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
@@ -190,15 +201,13 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
     await server.listen();
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
     const pages: Page[] = [],
       errors: string[] = [],
       business: string[] = [];
@@ -212,7 +221,6 @@ test(
       const session = await browser.newContext({
         viewport: { width: 1440, height: 900 },
       });
-      context.after(() => session.close());
       const page = await session.newPage();
       page.setDefaultTimeout(5000);
       page.on("pageerror", (e) => errors.push(e.message));
@@ -227,10 +235,16 @@ test(
       await page.clock.pauseAt(new Date("2026-10-04T00:00:00Z"));
       await page.goto(
         `http://127.0.0.1:${address.port}/__task_panel?lane=${lane}`,
+        { timeout: 60_000 },
       );
-      await page.waitForFunction(
-        () => !!Reflect.get(window, "taskPanelFixture"),
-      );
+      // Browser rAF is deliberately frozen; observe readiness from Node
+      // without advancing the component's timers or changing its deadline.
+      await expect
+        .poll(
+          () => page.evaluate(() => !!Reflect.get(window, "taskPanelFixture")),
+          { timeout: 5000 },
+        )
+        .toBe(true);
       pages.push(page);
     }
     async function read() {
