@@ -92,6 +92,7 @@ export function ComposerSessionPermissions({
   const [confirmFull, setConfirmFull] = useState(false);
   const approvalTrigger = useRef<HTMLButtonElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
+  const confirmation = useRef<HTMLDivElement>(null);
   const mutation = useRef(false);
   const readSequence = useRef(0);
   const mounted = useRef(false);
@@ -112,8 +113,21 @@ export function ComposerSessionPermissions({
     setConfirmFull(false);
   }, [key, open, continuation]);
   useLayoutEffect(() => {
-    if (confirmFull) cancel.current?.focus({ preventScroll: true });
-  }, [confirmFull]);
+    if (!confirmFull) return;
+    cancel.current?.focus({ preventScroll: true });
+    const panel = confirmation.current;
+    // ComposerOptions owns a native bubbling Escape listener. React's
+    // delegated handler runs after it, so handle the nested confirmation
+    // locally before the enclosing settings popover can dismiss.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!current?.saving) cancelFullAccess();
+    };
+    panel?.addEventListener("keydown", escape);
+    return () => panel?.removeEventListener("keydown", escape);
+  }, [confirmFull, current?.saving]);
 
   useEffect(() => {
     // Read once for the visible composer even before its menu opens. Otherwise
@@ -379,16 +393,10 @@ export function ComposerSessionPermissions({
       )}
       {confirmFull && (
         <div
+          ref={confirmation}
           className="composer-permission-confirm"
           role="group"
           aria-label="确认完全访问"
-          onKeyDown={(event) => {
-            if (event.key === "Escape" && !current?.saving) {
-              event.preventDefault();
-              event.stopPropagation();
-              cancelFullAccess();
-            }
-          }}
         >
           <p>
             工具不再询问批准，执行沙盒切为完全访问。

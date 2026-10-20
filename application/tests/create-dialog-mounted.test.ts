@@ -11,6 +11,7 @@ import react from "@vitejs/plugin-react";
 import { chromium, type Page } from "@playwright/test";
 import { createServer, transformWithOxc } from "vite";
 import { currentAppCSSImports } from "./fixtures/current-app-css.js";
+import { beforeReviewedModalChanges } from "./fixtures/modal-keyboard-boundary.js";
 import {
   fixedCreationConsumerSha,
   fixedCreationConsumers,
@@ -55,7 +56,7 @@ function component(text: string, name: string) {
     api.close();
   }
 }
-test("complete fixed Git778e creation function and consumers retain raw bytes; candidate differs only by export and approved execute-only client type", () => {
+test("complete fixed Git778e creation function and consumers retain raw bytes; approved shared owner evolution stays explicit", () => {
   const fixed = component(
     readFileSync(resolve("tests/fixtures/create-dialog-778e6b93.tsx"), "utf8"),
     "FixedCreateDialog",
@@ -79,16 +80,33 @@ test("complete fixed Git778e creation function and consumers retain raw bytes; c
       sha(fixedCreationConsumers[kind]),
       fixedCreationConsumerSha[kind],
     );
+  // Keep the original migration archive immutable. These shared owners have
+  // independently reviewed changes since it: 28eacb29 modal anchoring,
+  // 5aee0792 retry-record ownership, af01bac4 topbar conversation search.
+  assert.deepEqual(fixedCreationDependencySha, {
+    useModal:
+      "f9f45b71766ac08a3ae47ff3a5b4300a61193f2fef17e76f99ab63924781cac4",
+    storage: "505dff560588587948f1b0f067af97c2c41967c4dec414250a3a335e2d13963f",
+    topbar: "dbbbc54997a508feebefeff532ab3f2953ec859ba5f4ed881c0ce247f5e750e7",
+  });
+  const currentDependencySha = {
+    useModal:
+      "8ceb55250ffa2f6130837b3f7d9cf7d401821ed08ae991d8f5d938b99e513592",
+    storage: "6f09efcb7293367e366d12a791c9d3fa78c4fdf4e6415e6e21906ec5fbc3bf70",
+    topbar: "09a92c7878dd1e32d925e193637843136f8b91c8796ffbf1c3d7afd7c8ca46dd",
+  };
   for (const [key, path] of [
     ["useModal", "apps/web/src/useModal.ts"],
     ["storage", "apps/web/src/local-preferences.ts"],
     ["topbar", "apps/web/src/shell/WorkspaceTopbar.tsx"],
-  ] as const)
+  ] as const) {
+    const source = readFileSync(resolve(path), "utf8");
     assert.equal(
-      sha(readFileSync(resolve(path), "utf8")),
-      fixedCreationDependencySha[key],
-      key + ": unchanged original owner",
+      sha(key === "useModal" ? beforeReviewedModalChanges(source) : source),
+      currentDependencySha[key],
+      key + ": explicitly reviewed current owner",
     );
+  }
 });
 
 const source = `

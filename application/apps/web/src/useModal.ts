@@ -91,20 +91,29 @@ export function useModal(
     const observer = new ResizeObserver(position);
     if (main) observer.observe(main);
     window.addEventListener("resize", position);
-    position();
     element.showModal();
+    // Hidden dialogs report currentCSSZoom=1 even inside a zoomed canvas.
+    // Measure after showModal exposes the real scale, synchronously before paint;
+    // the initial position must not depend on a later ResizeObserver delivery.
+    position();
     // Chromium can move Tab from the last native-dialog control to browser
     // chrome (and leave activeElement on body). Keep this task's keyboard loop
     // explicit, including compact headers/footers whose DOM order has changed.
     const keepFocus = (event: KeyboardEvent) => {
-      // A cancel handler may synchronously unmount the dialog before the
-      // window shortcut sees this key. Escape still belongs to this modal,
-      // never to the inspector/composer underneath it. Keep native cancel.
+      // React controls handle IME, Escape and Tab before this native boundary.
+      // Escape still belongs to the modal even if that handler unmounted it.
+      // Do not prevent the browser's cancel action for an unhandled Escape.
       if (event.key === "Escape") {
         event.stopPropagation();
         return;
       }
-      if (event.key !== "Tab" || event.defaultPrevented) return;
+      if (
+        event.key !== "Tab" ||
+        event.defaultPrevented ||
+        !element.isConnected ||
+        !element.open
+      )
+        return;
       const controls = [
         ...element.querySelectorAll<HTMLElement>(
           "a[href],button,input,select,textarea,summary,[tabindex],[contenteditable=true]",
@@ -129,7 +138,34 @@ export function useModal(
         (event.shiftKey ? last : first)?.focus();
       }
     };
-    element.addEventListener("keydown", keepFocus);
+    const scopeKeyboardEvent = (event: KeyboardEvent) => {
+      if (
+        (event.key !== "Escape" && event.key !== "Tab") ||
+        event
+          .composedPath()
+          .find((node) => node instanceof HTMLDialogElement) !== element
+      )
+        return;
+      // A dialog-level bubble listener runs before React's delegated handlers.
+      // Capture ownership now, then finish after those handlers at document.
+      // This event-scoped listener intentionally survives synchronous cleanup:
+      // removing the dialog must not expose this same Escape to window shortcuts.
+      const finish = (candidate: KeyboardEvent) => {
+        if (candidate !== event) return;
+        document.removeEventListener("keydown", finish);
+        window.clearTimeout(cleanup);
+        keepFocus(event);
+      };
+      document.addEventListener("keydown", finish);
+      // A child may stop propagation, so document may never receive this key.
+      // Native input dispatch may run microtasks between listeners; retain the
+      // guard through the whole event task, not just the capture callback.
+      const cleanup = window.setTimeout(
+        () => document.removeEventListener("keydown", finish),
+        0,
+      );
+    };
+    element.addEventListener("keydown", scopeKeyboardEvent, true);
     (
       initialFocus?.current ??
       element.querySelector<HTMLElement>("[autofocus]") ??
@@ -138,7 +174,7 @@ export function useModal(
     )?.focus();
     return () => {
       observer.disconnect();
-      element.removeEventListener("keydown", keepFocus);
+      element.removeEventListener("keydown", scopeKeyboardEvent, true);
       window.removeEventListener("resize", position);
       element.close();
       if (origin?.isConnected && !document.querySelector("dialog[open]")) {

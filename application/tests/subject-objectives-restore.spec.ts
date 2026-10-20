@@ -799,7 +799,7 @@ for (const colorScheme of ["light", "dark"] as const)
     expect(clipped).toBe(true);
     const before = await heading.boundingBox();
     await heading.hover();
-    const preview = page.getByRole("tooltip");
+    const preview = page.locator(".subject-objective-preview[role=tooltip]");
     await expect(preview).toBeVisible();
     await expect(preview).toHaveText(full);
     expect(await heading.boundingBox()).toEqual(before);
@@ -1552,7 +1552,7 @@ test.describe("目标入口触控", () => {
   });
   test("目标及关联执行有完整触控命中高度，不创建或控制工作", async ({
     page,
-  }) => {
+  }, info) => {
     const f = await prepare(page);
     const goal = f.panel.locator('[data-objective-id="TEST-related-goal"]');
     const heading = goal.locator(".subject-objective-heading");
@@ -1560,15 +1560,44 @@ test.describe("目标入口触控", () => {
     const hit = await view.boundingBox();
     expect(hit!.width).toBeGreaterThanOrEqual(44);
     expect(hit!.height).toBeGreaterThanOrEqual(44);
+    await expect(heading).toHaveAttribute("aria-expanded", "false");
     await view.tap();
     await expect(
       page.getByRole("dialog", { name: "目标", exact: true }),
     ).toBeVisible();
     const dialog = page.getByRole("dialog", { name: "目标", exact: true });
+    await dialog.evaluate((element) => {
+      const events: string[] = [];
+      Reflect.set(window, "__objectiveBackdropClicks", events);
+      for (const type of ["mousedown", "mouseup", "click"]) {
+        document.addEventListener(
+          type,
+          (event) => {
+            if (!element.contains(event.target as Node)) events.push(type);
+          },
+          true,
+        );
+      }
+    });
+    await page.screenshot({
+      path: info.outputPath("goal-touch-before.png"),
+      animations: "disabled",
+    });
     const frame = (await dialog.boundingBox())!;
     await page.touchscreen.tap(frame.x + frame.width / 2, frame.y - 8);
     await expect(dialog).toHaveCount(0);
+    expect(
+      await page.evaluate(() =>
+        Reflect.get(window, "__objectiveBackdropClicks"),
+      ),
+      "the dismissing touch must not synthesize a click on the underlying work surface",
+    ).toEqual([]);
+    await page.screenshot({
+      path: info.outputPath("goal-touch-after.png"),
+      animations: "disabled",
+    });
     await expect(view).toBeFocused();
+    await expect(heading).toHaveAttribute("aria-expanded", "false");
     await view.tap();
     await (await goalOption(dialog, "编辑目标")).tap();
     await expect(

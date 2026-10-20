@@ -78,6 +78,15 @@ export function InspectorPanel({
       aria-label={label}
       data-inspector-mode={layout.mode}
       onKeyDown={(event) => {
+        // A portaled modal is still a React descendant of this inspector.
+        // Its child handlers run first; even synchronous unmount must not make
+        // that modal's Escape close the inspector as the event bubbles here.
+        if (
+          event.nativeEvent
+            .composedPath()
+            .some((node) => node instanceof HTMLDialogElement)
+        )
+          return;
         if (event.key === "Escape" && !event.defaultPrevented) {
           event.preventDefault();
           event.stopPropagation();

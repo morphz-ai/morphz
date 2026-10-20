@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { beforeReviewedInspectorKeyboardChange } from "./fixtures/modal-keyboard-boundary.js";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,8 +18,13 @@ import {
 } from "typescript/unstable/ast";
 import { format } from "prettier";
 import react from "@vitejs/plugin-react";
-import { chromium, type Page } from "@playwright/test";
-import { createServer, transformWithOxc } from "vite";
+import { chromium, type Browser, type Page } from "@playwright/test";
+import {
+  createLogger,
+  createServer,
+  transformWithOxc,
+  type ViteDevServer,
+} from "vite";
 import { currentAppCSSImports } from "./fixtures/current-app-css.js";
 import { fixedObjectAnnotationBaseline as fixed } from "./fixtures/object-annotations-9c6b8dd1.js";
 import {
@@ -226,12 +232,18 @@ test("actual Git9c6 complete state/effect/projection/panel/query/receipt provena
       ).getText(),
       fixed.spans.PlatformQuery.raw,
     );
-    for (const path of ["InspectorPanel.tsx", "inspector-layout.ts"] as const)
+    for (const path of ["InspectorPanel.tsx", "inspector-layout.ts"] as const) {
+      const source = readFileSync(resolve("apps/web/src/" + path), "utf8");
       assert.equal(
-        sha(readFileSync(resolve("apps/web/src/" + path), "utf8")),
+        sha(
+          path === "InspectorPanel.tsx"
+            ? beforeReviewedInspectorKeyboardChange(source)
+            : source,
+        ),
         fixed.originalFiles[path].sha256,
-        "unchanged real " + path,
+        "unchanged real owner except reviewed modal keyboard boundary: " + path,
       );
+    }
   } finally {
     old.close();
     actual.close();
@@ -404,11 +416,45 @@ test(
     const cache = mkdtempSync(
       join(tmpdir(), "morphz-object-annotation-cache-"),
     );
-    context.after(() => rmSync(cache, { recursive: true, force: true }));
-    const server = await createServer({
+    let server: ViteDevServer | undefined, browser: Browser | undefined;
+    context.after(async () => {
+      try {
+        await browser?.close();
+      } finally {
+        try {
+          await server?.close();
+        } finally {
+          rmSync(cache, { recursive: true, force: true });
+        }
+      }
+    });
+    const compileErrors: string[] = [];
+    const logger = createLogger();
+    server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      customLogger: {
+        ...logger,
+        error(message, options) {
+          compileErrors.push(message);
+          logger.error(message, options);
+        },
+      },
+      optimizeDeps: {
+        entries: [
+          resolve("apps/web/src/features/content/ObjectAnnotations.tsx"),
+          resolve("apps/web/src/InspectorPanel.tsx"),
+          resolve("apps/web/src/client.ts"),
+          resolve("tests/fixtures/object-annotations-9c6b8dd1.tsx"),
+        ],
+        include: [
+          "react",
+          "react-dom",
+          "react-dom/client",
+          "react/jsx-runtime",
+        ],
+      },
       plugins: [
         react(),
         {
@@ -437,16 +483,22 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
     await server.listen();
+    const client = server.environments.client!;
+    assert.ok(await client.transformRequest("/__annotations.tsx"));
+    await client.waitForRequestsIdle();
+    assert.deepEqual(
+      compileErrors,
+      [],
+      "Object annotations fixture compilation failed",
+    );
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
     const url = `http://127.0.0.1:${address.port}/__annotations`;
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
     const errors: string[] = [],
       businessReads: string[] = [];
     let phase = "initial";
@@ -456,10 +508,9 @@ test(
     async function pair(options: Partial<Snapshot["facts"]> = {}) {
       const pages: Page[] = [];
       for (const lane of ["fixed", "actual"]) {
-        const isolated = await browser.newContext({
+        const isolated = await browser!.newContext({
           viewport: { width: 1440, height: 900 },
         });
-        context.after(() => isolated.close());
         await isolated.addInitScript(
           (options) => Reflect.set(window, "annotationOptions", options),
           options,

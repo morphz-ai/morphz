@@ -76,6 +76,34 @@ export function SubjectObjectiveDialog({
     };
   }, []);
   useEffect(() => {
+    const element = dialog.current;
+    if (!element || view !== "reading" || busy) return;
+    const preventBackdropCompatibilityClick = (event: TouchEvent) => {
+      if (event.target !== element || event.touches.length !== 1) return;
+      const touch = event.touches[0]!;
+      const bounds = element.getBoundingClientRect();
+      if (
+        touch.clientX < bounds.left ||
+        touch.clientX > bounds.right ||
+        touch.clientY < bounds.top ||
+        touch.clientY > bounds.bottom
+      ) {
+        // Native light-dismiss can close the dialog before this touch's
+        // compatibility mouse events. Cancel only those synthesized events,
+        // so the same tap cannot activate the work surface underneath.
+        event.preventDefault();
+      }
+    };
+    element.addEventListener("touchstart", preventBackdropCompatibilityClick, {
+      passive: false,
+    });
+    return () =>
+      element.removeEventListener(
+        "touchstart",
+        preventBackdropCompatibilityClick,
+      );
+  }, [view, busy]);
+  useEffect(() => {
     if (view === "edit") editor.current?.focus();
     else if (view === "delete") cancel.current?.focus();
     else if (view === "records") body.current?.focus();
@@ -235,13 +263,15 @@ export function SubjectObjectiveDialog({
       aria-busy={!!busy}
       closedby={view === "reading" && !busy ? "any" : "closerequest"}
       onCancel={(event) => {
-        event.preventDefault();
         event.stopPropagation();
-        if (!pending.current) {
-          if (view !== "reading") changeView("reading");
-          else onClose();
+        if (pending.current || view !== "reading") {
+          event.preventDefault();
+          if (!pending.current) changeView("reading");
         }
+        // Let native light-dismiss complete before React removes the dialog.
+        // Backdrop touchstart separately suppresses compatibility mouse events.
       }}
+      onClose={onClose}
     >
       <header>
         <div className="subject-objective-dialog-heading">
