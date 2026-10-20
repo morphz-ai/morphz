@@ -180,6 +180,18 @@ def privileged(*argv, input_data=None):
     return command(["/usr/bin/sudo", "-n", *map(str, argv)], input_data=input_data)
 
 
+def scoped_kernel_ring(run_id):
+    """Read, never clear, the kernel ring; retain only this synthetic family."""
+    if (len(run_id) != 32 or
+            any(character not in "0123456789abcdef" for character in run_id)):
+        raise ValueError("exact synthetic run identifier required")
+    result = privileged("/usr/bin/dmesg", "--color=never")
+    prefix = "morphz_dynamic_" + run_id + "_"
+    result["stdout"] = "\n".join(line for line in result["stdout"].splitlines()
+                                if prefix in line)
+    return result
+
+
 def proc_identity(pid):
     raw = Path(f"/proc/{pid}/stat").read_text()
     tail = raw.rsplit(")", 1)[1].split()
@@ -920,6 +932,13 @@ class Campaign:
             self.record("kernel_audit_diagnostic", audit["code"] == 0, evidence=audit)
         except Exception as audit_error:
             self.record("kernel_audit_diagnostic", False, error=repr(audit_error))
+        # The ring read is independent of journald delivery. Preserve the same
+        # launch failure even if both sources contain no denial record.
+        try:
+            ring = scoped_kernel_ring(self.run_id)
+            self.record("kernel_ring_diagnostic", ring["code"] == 0, evidence=ring)
+        except Exception as ring_error:
+            self.record("kernel_ring_diagnostic", False, error=repr(ring_error))
         for lane in self.lanes:
             if not lane.closed:
                 try:

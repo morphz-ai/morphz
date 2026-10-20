@@ -265,6 +265,22 @@ static void expect_reply(int fd, const char *expected, size_t size, const char *
             int read_errno = errno;
             fprintf(stderr, "DYNAMIC_ENTRY_READ_FAILURE fd=%d why=%s n=%zd errno=%d eof=%d\n",
                     fd, why, n, read_errno, n == 0);
+            /* Failure-only observation: determine whether the inherited handle
+             * is still a socket. Never retry read, replace it with recv, or
+             * allow these diagnostic calls to change the original refusal. */
+            struct stat metadata = {0};
+            int stat_code = fstat(fd, &metadata);
+            int stat_errno = stat_code < 0 ? errno : 0;
+            int socket_type = 0;
+            socklen_t socket_size = sizeof(socket_type);
+            int socket_code = getsockopt(fd, SOL_SOCKET, SO_TYPE, &socket_type, &socket_size);
+            int socket_errno = socket_code < 0 ? errno : 0;
+            fprintf(stderr,
+                    "DYNAMIC_ENTRY_FAILED_FD fd=%d fstat=%d stat_errno=%d mode=%o "
+                    "is_socket=%d getsockopt=%d socket_errno=%d socket_type=%d socket_size=%u\n",
+                    fd, stat_code, stat_errno, (unsigned int)metadata.st_mode,
+                    stat_code == 0 && S_ISSOCK(metadata.st_mode), socket_code, socket_errno,
+                    socket_type, (unsigned int)socket_size);
             errno = read_errno;
             fail(why);
         }

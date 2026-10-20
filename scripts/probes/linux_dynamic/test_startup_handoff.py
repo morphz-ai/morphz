@@ -291,13 +291,16 @@ class EntryReadFailureDiagnostics(unittest.TestCase):
         function = "static void expect_reply" + source.split(
             "static void expect_reply", 1)[1].split("static int connect_host", 1)[0]
         prefix = r"""
+#define _DEFAULT_SOURCE
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
-static int selected_result, diagnostic_fails, calls;
+static int selected_result, diagnostic_fails, calls, stat_calls, socket_calls;
 static size_t last_count;
 static ssize_t mock_read(int fd, void *buffer, size_t count) {
     if (fd != 4 || count != 3) exit(90);
@@ -315,12 +318,31 @@ static int mock_fprintf(FILE *stream, const char *format, ...) {
     errno = EIO; /* Even successful diagnostic formatting may disturb errno. */
     return result;
 }
+static int mock_fstat(int fd, struct stat *metadata) {
+    if (fd != 4) exit(92);
+    stat_calls++;
+    if (diagnostic_fails) { errno = EBADF; return -1; }
+    metadata->st_mode = S_IFSOCK | 0600;
+    errno = ENOENT; /* Success may also leave stale errno. */
+    return 0;
+}
+static int mock_getsockopt(int fd, int level, int option, void *value, socklen_t *size) {
+    if (fd != 4 || level != SOL_SOCKET || option != SO_TYPE || *size != sizeof(int)) exit(93);
+    socket_calls++;
+    if (diagnostic_fails) { errno = ENOTSOCK; return -1; }
+    *(int *)value = SOCK_STREAM;
+    errno = EINVAL;
+    return 0;
+}
 static void fail(const char *why) {
     printf("FAIL errno=%d why=%s calls=%d count=%zu\n", errno, why, calls, last_count);
+    printf("DIAGNOSTIC_CALLS stat=%d socket=%d\n", stat_calls, socket_calls);
     exit(78);
 }
 #define read mock_read
 #define fprintf mock_fprintf
+#define fstat mock_fstat
+#define getsockopt mock_getsockopt
 """
         suffix = r"""
 int main(int argc, char **argv) {
@@ -328,6 +350,7 @@ int main(int argc, char **argv) {
     selected_result = atoi(argv[1]); diagnostic_fails = atoi(argv[2]);
     expect_reply(4, "GO\n", 3, "admission acknowledgement");
     printf("RETURN calls=%d count=%zu\n", calls, last_count);
+    printf("DIAGNOSTIC_CALLS stat=%d socket=%d\n", stat_calls, socket_calls);
     return 0;
 }
 """
@@ -364,10 +387,13 @@ int main(int argc, char **argv) {
                 result = self.invoke(returned)
                 self.assertEqual(result.returncode, 78)
                 self.assertEqual(result.stdout,
-                                 "FAIL errno=13 why=admission acknowledgement calls=1 count=3\n")
+                                 "FAIL errno=13 why=admission acknowledgement calls=1 count=3\n"
+                                 "DIAGNOSTIC_CALLS stat=1 socket=1\n")
                 self.assertEqual(result.stderr,
                                  "DYNAMIC_ENTRY_READ_FAILURE fd=4 why=admission acknowledgement "
-                                 f"n={returned} errno=13 eof={eof}\n")
+                                 f"n={returned} errno=13 eof={eof}\n"
+                                 "DYNAMIC_ENTRY_FAILED_FD fd=4 fstat=0 stat_errno=0 mode=140600 "
+                                 "is_socket=1 getsockopt=0 socket_errno=0 socket_type=1 socket_size=4\n")
 
     def test_diagnostic_write_failure_still_preserves_original_refusal(self):
         for returned in (-1, 0):
@@ -375,13 +401,15 @@ int main(int argc, char **argv) {
                 result = self.invoke(returned, diagnostic_fails=True)
                 self.assertEqual(result.returncode, 78)
                 self.assertEqual(result.stdout,
-                                 "FAIL errno=13 why=admission acknowledgement calls=1 count=3\n")
+                                 "FAIL errno=13 why=admission acknowledgement calls=1 count=3\n"
+                                 "DIAGNOSTIC_CALLS stat=1 socket=1\n")
                 self.assertEqual(result.stderr, "")
 
     def test_successful_reply_does_not_emit_failure_diagnostic(self):
         result = self.invoke(3)
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "RETURN calls=1 count=3\n")
+        self.assertEqual(result.stdout, "RETURN calls=1 count=3\n"
+                                      "DIAGNOSTIC_CALLS stat=0 socket=0\n")
         self.assertEqual(result.stderr, "")
 
 

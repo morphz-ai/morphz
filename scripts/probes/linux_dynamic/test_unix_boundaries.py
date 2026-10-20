@@ -235,6 +235,42 @@ class AbstractListenerPositive(unittest.TestCase):
         self.assertNotIn("unix_lifecycle_does_not_allow", source)
 
 
+class KernelRingDiagnostics(unittest.TestCase):
+    def test_ring_read_does_not_clear_or_reconfigure_and_filters_exact_family(self):
+        run = "0123456789abcdef" * 2
+        other = "fedcba9876543210" * 2
+        wanted = f'audit: profile="morphz_dynamic_{run}_launch_work" denied'
+        result = {"argv": [], "code": 0, "stdout": "\n".join((
+            "unrelated kernel message",
+            f'audit: profile="morphz_dynamic_{other}_launch_work" denied',
+            wanted,
+        )), "stderr": ""}
+        with patch.object(controller, "privileged", return_value=result) as read:
+            actual = controller.scoped_kernel_ring(run)
+        read.assert_called_once_with("/usr/bin/dmesg", "--color=never")
+        self.assertEqual(actual["stdout"], wanted)
+        self.assertEqual(actual["code"], 0)
+
+    def test_ring_failure_is_not_hidden_and_invalid_run_never_executes(self):
+        result = {"code": 1, "stdout": "", "stderr": "synthetic failure"}
+        with patch.object(controller, "privileged", return_value=result) as read:
+            self.assertEqual(controller.scoped_kernel_ring("a" * 32), result)
+            for invalid in ("", "a" * 31, "a" * 33, "G" * 32, "--clear"):
+                with self.subTest(run=invalid), self.assertRaises(ValueError):
+                    controller.scoped_kernel_ring(invalid)
+        read.assert_called_once_with("/usr/bin/dmesg", "--color=never")
+
+    def test_ring_and_journal_are_independent_before_unmodified_collection(self):
+        source = (HERE / "controller.py").read_text()
+        finish = source.split("def finish(self, error):", 1)[1].split("def main", 1)[0]
+        self.assertLess(finish.index('self.record("campaign_error", False'),
+                        finish.index('self.record("kernel_audit_diagnostic"'))
+        self.assertLess(finish.index('except Exception as audit_error:'),
+                        finish.index('ring = scoped_kernel_ring(self.run_id)'))
+        self.assertLess(finish.index('except Exception as ring_error:'),
+                        finish.index('for lane in self.lanes:'))
+
+
 class ExceptionDiagnostics(unittest.TestCase):
     def test_oserror_preserves_original_paths_errno_and_callsite(self):
         original = FileNotFoundError(errno.ENOENT, "synthetic missing",
