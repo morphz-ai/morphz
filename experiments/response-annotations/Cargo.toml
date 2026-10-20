@@ -11,6 +11,9 @@ path = "src/main.rs"
 # This is an isolated experiment, not another production Runtime member.
 [workspace]
 
+[patch.crates-io]
+sqlx-core = { path = "../../third_party/sqlx-core-0.8.6" }
+
 # Cargo patches apply only at the workspace root. This isolated experiment
 # must preserve Morphz's audited Windows protocol-only boundary too; otherwise
 # its lockfile resolves Codex's unused proxy, DNS and telemetry implementations.

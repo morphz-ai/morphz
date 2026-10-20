@@ -12,6 +12,7 @@ stored beside that source:
 - `third_party/codex-utils-pty/`
 - `third_party/morphz-windows-sandbox/`
 - `third_party/codex-otel-stub/`
+- `third_party/sqlx-core-0.8.6/`
 
 Redistributions must preserve each applicable `LICENSE`, `NOTICE`, and `UPSTREAM.md` file. The Codex
 derived components identify their pinned upstream revision in those local records.

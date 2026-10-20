@@ -16,6 +16,7 @@ exclude = [
     "third_party/codex-otel-stub",
     "third_party/codex-utils-absolute-path",
     "third_party/codex-utils-pty",
+    "third_party/sqlx-core-0.8.6",
 ]
 default-members = ["morphz"]
 
@@ -45,6 +46,9 @@ incremental = true
 # Keep Candle's tested tensor/model APIs unchanged while moving its PyTorch
 # archive reader off zip <9 (RUSTSEC-2026-0367/0368/0369).
 candle-core = { path = "third_party/candle-core-0.10.2" }
+# Keep SQLx's tested 0.8 storage APIs while selecting the current Mozilla roots
+# directly, instead of the obsolete 0.26 compatibility wrapper (RUSTSEC-2026-0381).
+sqlx-core = { path = "third_party/sqlx-core-0.8.6" }
 
 [patch."https://github.com/openai/codex"]
 # The Windows sandbox crate uses Codex OTEL only for optional setup metrics.

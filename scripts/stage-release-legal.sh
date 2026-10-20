@@ -15,7 +15,10 @@ for source in \
   third_party/codex-utils-pty/UPSTREAM.md \
   third_party/morphz-windows-sandbox/LICENSE \
   third_party/morphz-windows-sandbox/NOTICE \
-  third_party/morphz-windows-sandbox/UPSTREAM.md
+  third_party/morphz-windows-sandbox/UPSTREAM.md \
+  third_party/sqlx-core-0.8.6/LICENSE-APACHE \
+  third_party/sqlx-core-0.8.6/LICENSE-MIT \
+  third_party/sqlx-core-0.8.6/UPSTREAM.md
 do
   target="$destination/$(dirname "$source")"
   mkdir -p "$target"

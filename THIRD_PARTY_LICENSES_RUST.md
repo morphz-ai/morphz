@@ -419,7 +419,7 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `rustls 0.23.46` | `Apache-2.0 OR ISC OR MIT` | L211, L234, L247 |
 | `rustls-native-certs 0.8.4` | `Apache-2.0 OR ISC OR MIT` | L058, L211, L234, L247 |
 | `rustls-pki-types 1.14.1` | `MIT OR Apache-2.0` | L093, L278 |
-| `rustls-webpki 0.103.15` | `ISC` | L084 |
+| `rustls-webpki 0.103.16` | `ISC` | L084 |
 | `rustversion 1.0.22` | `MIT OR Apache-2.0` | L068, L190 |
 | `rustyline 14.0.0` | `MIT` | L235 |
 | `ryu 1.0.23` | `Apache-2.0 OR BSL-1.0` | L190, L199 |
@@ -471,7 +471,6 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `spin 0.9.8` | `MIT` | L146 |
 | `spki 0.7.3` | `Apache-2.0 OR MIT` | L011, L325 |
 | `sqlx 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
-| `sqlx-core 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
 | `sqlx-macros 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
 | `sqlx-macros-core 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
 | `sqlx-mysql 0.8.6` | `MIT OR Apache-2.0` | L218, L255 |
@@ -593,8 +592,7 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `wasm-streams 0.4.2` | `MIT OR Apache-2.0` | L068, L190 |
 | `web-sys 0.3.102` | `MIT OR Apache-2.0` | L188, L211 |
 | `web-time 1.1.0` | `MIT OR Apache-2.0` | L072, L259 |
-| `webpki-roots 0.26.11` | `CDLA-Permissive-2.0` | L302 |
-| `webpki-roots 1.0.6` | `CDLA-Permissive-2.0` | L302 |
+| `webpki-roots 1.0.10` | `CDLA-Permissive-2.0` | L302 |
 | `weezl 0.1.12` | `MIT OR Apache-2.0` | L131, L211 |
 | `whoami 1.6.1` | `Apache-2.0 OR BSL-1.0 OR MIT` | L027, L190, L199 |
 | `wildcard 0.3.0` | `Apache-2.0` | L055 |
@@ -4695,7 +4693,7 @@ SOFTWARE.
 
 ### L084
 
-Applies to: `rustls-webpki 0.103.15`
+Applies to: `rustls-webpki 0.103.16`
 
 ~~~~text
 Except as otherwise noted, this project is licensed under the following
@@ -13403,7 +13401,7 @@ SOFTWARE.
 
 ### L218
 
-Applies to: `sqlx 0.8.6`, `sqlx-core 0.8.6`, `sqlx-macros 0.8.6`, `sqlx-macros-core 0.8.6`, `sqlx-mysql 0.8.6`, `sqlx-postgres 0.8.6`, `sqlx-sqlite 0.8.6`
+Applies to: `sqlx 0.8.6`, `sqlx-macros 0.8.6`, `sqlx-macros-core 0.8.6`, `sqlx-mysql 0.8.6`, `sqlx-postgres 0.8.6`, `sqlx-sqlite 0.8.6`
 
 ~~~~text
 Apache License
@@ -15326,7 +15324,7 @@ Apache License
 
 ### L255
 
-Applies to: `sqlx 0.8.6`, `sqlx-core 0.8.6`, `sqlx-macros 0.8.6`, `sqlx-macros-core 0.8.6`, `sqlx-mysql 0.8.6`, `sqlx-postgres 0.8.6`, `sqlx-sqlite 0.8.6`
+Applies to: `sqlx 0.8.6`, `sqlx-macros 0.8.6`, `sqlx-macros-core 0.8.6`, `sqlx-mysql 0.8.6`, `sqlx-postgres 0.8.6`, `sqlx-sqlite 0.8.6`
 
 ~~~~text
 Copyright (c) 2020 LaunchBadge, LLC
@@ -18536,7 +18534,7 @@ limitations under the License.
 
 ### L302
 
-Applies to: `webpki-roots 0.26.11`, `webpki-roots 1.0.6`
+Applies to: `webpki-roots 1.0.10`
 
 ~~~~text
 # Community Data License Agreement - Permissive - Version 2.0
