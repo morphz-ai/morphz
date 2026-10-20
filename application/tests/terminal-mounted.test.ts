@@ -147,6 +147,12 @@ test("mounted Terminal uses one Agent composer, compact stable copy feedback and
         Reflect.get(window, "terminalFixture").set({ appearance }),
       appearance,
     );
+    // A setState call is not a committed/painted theme. Wait for the real
+    // terminal surface to consume the host appearance before reading geometry.
+    await expect(page.locator(".terminal-app")).toHaveCSS(
+      "background-color",
+      appearance === "dark" ? "rgb(25, 25, 27)" : "rgb(255, 255, 255)",
+    );
     for (const width of [1100, 420]) {
       await page.setViewportSize({ width, height: 700 });
       const geometry = await page.locator(".terminal-app").evaluate((el) => ({

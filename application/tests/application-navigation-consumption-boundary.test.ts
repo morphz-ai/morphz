@@ -1441,7 +1441,11 @@ function exchangeReadContract(
     }
     const [state, ack, commit] = calls;
     assert.ok(state && ack && commit);
-    assert.equal(oneVariable(app, "readReceiptState").initializer, state);
+    assertSyntaxIdentity(
+      oneVariable(app, "readReceiptState").initializer,
+      state,
+      "readReceiptState: the state registration is the direct initializer",
+    );
     const seen = bindingVariable(app, "seenReplies");
     assert.equal(seen.initializer?.getText(), "readReceiptState");
     assert.equal(state.arguments.length, 1);
@@ -1449,7 +1453,11 @@ function exchangeReadContract(
       scalarSyntax(state.arguments[0]!),
       scalarSyntax(oneVariable(adapter, "stateArguments").initializer!),
     );
-    assert.equal(oneVariable(app, "readReplies").initializer, ack);
+    assertSyntaxIdentity(
+      oneVariable(app, "readReplies").initializer,
+      ack,
+      "readReplies: the acknowledgement registration is the direct initializer",
+    );
     assert.equal(ack.arguments.length, 1);
     assert.deepEqual(
       scalarSyntax(ack.arguments[0]!),
@@ -1590,12 +1598,12 @@ function exchangeInputToolContract(
       const call = oneImportedCall(name);
       if (binding) {
         const declaration = oneVariable(app, binding);
-        assert.equal(
+        assertSyntaxIdentity(
           declaration.initializer,
           call,
           `${name}: directly borrowed state, no mirror`,
         );
-        assert.equal(
+        assertSyntaxIdentity(
           declaration.parent.parent.parent,
           workspace.body,
           `${name}: direct unconditional original Host registration`,
@@ -1681,8 +1689,12 @@ function exchangeInputToolContract(
     ] as const) {
       const call = oneImportedCall(name);
       const declaration = oneVariable(app, binding);
-      assert.equal(declaration.initializer, call);
-      assert.equal(
+      assertSyntaxIdentity(
+        declaration.initializer,
+        call,
+        `${name}: the command factory is the direct initializer`,
+      );
+      assertSyntaxIdentity(
         declaration.parent.parent.parent,
         workspace.body,
         `${binding}: direct original Host constructor phase`,
