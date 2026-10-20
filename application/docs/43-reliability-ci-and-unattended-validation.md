@@ -36,6 +36,37 @@ Platform 的输入和命令回执、认知应用的确切原件版本。测试�
 本地六项真实 Rust/独立 packed 作者链已通过（Node 25.8.1、合成 Provider）。
 CI 固定 Node 24.13.0；未推送前不声称托管 CI 已通过。
 
+### 2026-10-20：独立作者打包的离线依赖边界
+
+10 月 17 日 `39017759744` 的认知契约任务中，六项测试在启动 Runtime 前均
+因 `ENOTCACHED` 失败：旧 fixture 运行无 lock 的 `npm install --offline`，
+即使应用安装已缓存 TypeScript tarball，仍需 npm registry 的包元数据。
+这是测试依赖准备缺口，不是六个 Runtime 契约都发生了业务故障。
+
+SDK 现在提交自己的精确 lock；notes 作者的独立测试 lock 同样冻结 esbuild、
+SDK 依赖和所有发行平台的 optional 包。测试在仓库外重新构建并 `npm pack`
+SDK，用本次实际 tarball 的完整性摘要绑定作者，再执行 `npm ci --offline`。
+不复用工作区 `node_modules`，不退回在线安装，不更新第三方依赖版本。
+只有本次本地 SDK archive 的路径与摘要随构建确定；第三方 URL、版本和
+完整性始终来自已提交的 lock。
+
+Web 全量、PostgreSQL 全量、Desktop 与认知契约四个 CI job 都使用独立缓存目录，
+在安装应用依赖后、执行独立消费者测试前显式执行
+`npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts`。
+这个准备入口允许下载锁定的第三方 tarball；之后的正式测试仍严格离线。
+`MORPHZ_TEST_COGNITIVE_NPM_CACHE` 只选择缓存目录，不承载 registry 凭据；
+Runner 的环境白名单仍拒绝生产 registry、Provider、Node preload 和业务库配置。
+未准备的空缓存必须明确失败，不能用网络重试把它掩盖。
+
+缓存路径通过 step 的 `$RUNNER_TEMP` 写入 `$GITHUB_ENV`，不在 job-level env
+使用不可用的 `runner` 表达式上下文。工作流配置测试同时验证四个 job 的准备
+顺序和缺失/晚准备反例，actionlint 检查表达式合法性。当前独立 lock 的第三方
+依赖也存在于应用 lock，因此不能把另外三个 job 的隐式共享缓存直接说成必现
+失败；明确准备消除了这条隐式依赖，旧认知契约 `ENOTCACHED` 仍以原日志为准。
+
+Linux/macOS 的真实 CI 结果须等新提交执行后确认；lock 包含 Windows 等发行平台
+并不等于已经在这些平台完成实测。
+
 ### 已核实的原失败，逐项处理
 
 | 来源 | 证据与结论 | 处理状态 |

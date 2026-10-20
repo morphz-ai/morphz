@@ -1,10 +1,174 @@
 # 原生工作与 Session IO：隔离候选门禁
 
-日期：2026-10-20。**已提交 `70f59264`，原应用 Runtime 已更新，原窗口与真实模型验收完成。**
-普通正文路径的完整 Runtime 隔离门禁及 51 项相关应用集成通过；全应用测试仍有
-未通过项，不能冒充全量绿色。下面保留各阶段失败和验证边界。
+更新：2026-10-21。**原应用 Runtime 已切换到下述 full7 固定产物；当前轮原窗口与
+真实 DeepSeek 验收受锁屏／Keychain 阻塞，尚未完成。全平台与 GitHub CI 未全绿。**
+`70f59264` 的 17:26、20:55 真实失败暴露了工具参数错误被提前升级为整轮失败的回归。
+下述较早验收仅代表当时通过的有限场景，不是所有场景可靠的保证。
+下面保留各阶段失败和验证边界。
 
-## 最新交付：原应用更新与验收（12:31）
+## 10 月 21 日最新状态：固定产物已切换，验收与未完成项分开
+
+原应用同一 profile 的部署记录 `runtime/backups/full7-cutover-20261021.bXo3Ur/`
+确认正常重开及 readiness，Runtime 使用 `morphz-da3fda3589ec-f8935b179035`，
+完整 SHA-256 为
+`f8935b17903571f083d7345d96cb1660ee4ddb74d674e3a8d85ef481e9a9dfe2`。
+构建包含当时未提交修复，不能只凭内嵌 Git 字符串推断内容；相应 native 修复
+现已归入本地提交 `8fa481f8`。原配置、profile、既有计划和定时器身份保留，
+不是创建第二个应用或新业务数据环境。
+
+原应用的 TEST Session 已接受本轮普通正文请求，但读 Provider Keychain
+超时后尚未得到模型输出。`original-full7-deepseek-o2PyOr/run.json` 的
+验收结论仍为 `accepted: false`；不能把提交回执的 `accepted: true`
+误算成真实模型通过。后续工具错误续接／注解关闭两例没有重复发送。
+旧 21:19 的真实 DeepSeek 通过记录不替代本轮固定产物的复验。
+
+同一证据目录中已完成的本地门禁：
+
+- `rust-workspace-final7-MYaOep/summary.json`：91 个目标，2,217 通过、
+  0 失败、32 个原有显式忽略；不能把忽略项算成功。
+- `rust-pg-capabilities-full7-P5rcvv/summary.json`：25 个上述 PostgreSQL
+  忽略项及 6 个补充/重复案例单独通过，共 31；不可与全量数字直接累加。
+  其余人工 auth、SSE、PTY/TUI 门槛仍独立列示。
+- `clippy-all-full7-jIJlLo/run.json`：all-targets / all-features 严格 Clippy
+  通过；真实 workerd 的 10 个父案例通过，均不替代 Linux 沙箱。
+- `full-node-sanitizer.log`：应用 521 文件，4,471 通过、0 失败、24 个
+  原有显式能力补验项；源码不变且 PostgreSQL/子进程清理确认。
+  Runtime、S3 等补验另有回执，仍不能用普通 Node 总数覆盖全部能力。
+- `browser-final9-rev2-run-oFRXwE/run.json`：868 通过、2 个 native focus
+  失败、20 个原有显式跳过；锁屏期间不能证明焦点可操作，尚不能报全绿。
+
+Linux 启动后新建受保护文件是旧沙箱缺口，与本次 Session IO 回归分开。
+隔离候选 run `39486396678` 的 80 项检查通过，未改系统 Bubblewrap 或安全
+设置；正式策略服务、Runtime 接线和原失败测试仍未完成，生产组件正在 review。
+它不是主分支全 CI 通过证据。
+
+sanitizer 后续依赖更新已通过应用全量测试，但仍须在原窗口确认最终载入。
+主分支尚未推送；本地提交、固定产物切换、模型验收、原窗口与 CI 是五个不同
+状态，任何一个完成都不能代表其余四项完成。
+
+## 10 月 21 日早期记录：控制调用坏参数补齐
+
+本节保留修复时“本地验证、尚未部署”的历史状态；后续固定产物切换见上节。
+
+21:14 固定产物之后的审计发现，`no_reply` 的损坏参数还可能在终止判断中提前
+触发整轮失败；`schedule_tx` 和完成目标的调用也有先于严格参数检查的批次分类。
+这与已部署的普通工具恢复路径分开处理，不声称这些新修复已在原应用生效。
+
+先加入回归并在未修复的实现上验证失败：`native-control-normalization-red1.log`
+记录 `Malformed no_reply control JSON`；`native-control-runtime-red1.log` 记录
+参数为 `{"mode":` 的真实 Runtime 测试轨迹被终止于 `response_normalization`，
+未得到预期正文。它们是受控模型替身返回的反例，不是本轮自然 DeepSeek 输出。
+
+修复沿用同一 native binding 与原调用 ID：损坏 JSON、重复键或非对象参数不能
+先建立终止／排他控制语义，仍须进入原调用的参数拒绝回执；不执行控制操作、
+不进入审批或 Job，不修补参数，不重放同批成功调用。合法控制的独占规则、
+阶段权限与历史已准入终止记录的解释保持不变，工具定义未改变。
+
+修复后的证据位于同一 `/tmp/morphz-full-app-regressions-20261020.OxfoEB/`：
+
+- `native-control-runtime-green1.log`：14 类参数 × 注解开／关 × 单独／混合调用，
+  共 56 个受控组合通过。每组验证原 ID 错误回执、修正续接、正常调用仅执行一次，
+  没有额外格式修复请求；审批记录没有增加。
+- `native-control-normalization-green1.log`、
+  `native-control-classification-green1.log`、
+  `native-control-exclusivity-green1.log`：三项新增单元测试通过。
+- `harness-retention-full-lib-diagnostic1.log`：相同 workspace 特性编译的完整
+  Morphz 库测试 1665 通过、0 失败、14 忽略；不等同于全 workspace、PG 专项、
+  Desktop 或原应用验收，忽略项也不算通过。
+
+当前补丁只处理上述参数语法／对象边界。有效 JSON 内的无效控制字段、合法排他
+控制与其他调用混用，以及最终交付等阶段的独立违规，不属于这批 56 组合的恢复
+证明。原应用实际版本仍以上述固定产物的部署记录为准。
+
+## 21:14 热修复交付：原应用已生效
+
+原 profile、center 和 Electron 窗口保持不变。Runtime 正常重启，从 PID 33239
+切到 PID 61048，运行固定产物 `morphz-d4f84acac5f5-643a3aed2248`，SHA-256 为
+`643a3aed22484ac6d01369e482056def2e794e85254b49c87667170a0aa46e8a`。
+该构建含当时未提交的已验证热修复，不能只用嵌入的 Git 版本判断内容。
+切换前已保存数据库备份并通过完整性检查；配置、权限、原记录及计划保留。
+实际切换时没有活动工作，故本次切换不作为运行中任务恢复的证明。
+
+21:19–21:22，在原窗口 `TEST 原生正文与工具注解 1020` 对话使用
+`deepseek-flash · max`、注解开启，先读取明确不存在的合成文件：
+真实工具错误进入 `chat/tool_output` 后，模型继续读取另一份合成文件并正常完成，
+正文准确返回未知校验码、页码和段号。三次因果激活均完成，原窗口显示最终正文
+及已结束活动；没有协议熔断。验收后返回原对话入口，未修改用户业务内容。
+
+这一原窗口验收证明**普通工具失败后的续接和最终正文交付**，不声称本轮模型
+自然生成过坏 JSON。20:55 的 byte-218 原始坏参数另由离线重放验证；相关专项
+回归共 36 种组合通过。错误参数仍被严格拒绝，不修补 JSON、不执行部分参数，
+通过原调用 ID 的工具错误回执交回 Agent 纠正。
+
+本机证据位于 `/tmp/morphz-full-app-regressions-20261020.OxfoEB/` 的
+`original-app-hotfix-acceptance-2119.md`、`failure-2055-review.md` 和
+`recovery-2055-focused.log`。部署与备份记录位于原 profile 的
+`runtime/backups/tool-error-recovery-20261020.cRTAum/deployment.json`。
+后续全量回归发现的修复与该固定产物分开记录，不能自动视为已上线。
+
+## 17:26 真实失败：工具参数错误被提前升级为整轮失败
+
+Runtime 在 Provider 适配器输出、注解归一化之前捕获的完整响应中，`kill_task`
+参数在 `_morphz` 属性之后多出一个没有属性名的裸对象。这确实是不合法的 JSON，
+不是普通正文被误识别为协议，也不能从中推断工具已经执行。捕获摘要为
+`5dc5bc573a565fae807b511dbb03a89cb354b78e99b4acecf0260536c50eb7a1`。
+用户看到的错误是 `invalid_content_syntax: Invalid JSON at byte 142`。
+
+使这一可纠正错误中断 Agent 的 Runtime 回归来自 `70f59264`：
+`native::decode` 在提取工具同调用注解时先严格解析参数，并用 `?` 将参数错误
+抛成整份模型响应的错误。它发生在普通工具分发之前，故未产生原调用 ID 的
+`role=tool` 失败回执，Agent 无机会按既有工具续接机制纠正参数。
+普通工具内部返回失败的原机制并没有被全部删掉；本次错误绕过了它。
+
+修复边界：
+
+- 注解提取遇到损坏的原生参数，只保留原始调用 ID、名称和参数，并记录诊断；
+  不补括号、不猜字段、不从残缺对象中执行任何内容。
+- 仅对本次冻结的 native binding，在工具分发、审批、Job 和控制面副作用之前
+  拒绝坏参数，持久化该调用的 `INVALID_TOOL_ARGUMENTS` 错误回执。
+  Agent 通过原工具结果续接自行纠正，不增加独立的格式修复机制。
+- 错误 `context_tx`／`delegate` 不被去重，错误 `objective_create` 不进入前置
+  创建流程；每个原 ID 都有自己的结果。同批已成功调用不重放。
+- 业务参数、权限、类型化结果继续严格检查。空或重复原生调用 ID 仍拒绝，因为
+  无法安全关联结果；注解开关和续接不改变工具定义，也不要求普通正文套 JSON。
+
+已完成的隔离回归：`malformed_` 专项 16 个库测试通过；Runtime 集成测试覆盖
+8 类坏参数 × 注解开／关 × 单独／混合正常调用，共 32 种组合全部通过。
+每组只有初始请求、错误结果续接、修正调用结果续接共 3 次受控模型请求；坏调用
+没有进入工具函数、没有创建 Job，各坏 ID 恰好一份回执，正常调用恰好执行一次。
+这批不是实际 DeepSeek 请求，更不是原应用交付。
+
+本段记录时原 Runtime 仍为 PID 33239、`70f59264af35`；之后的实际更新见上方 21:14 记录。
+初次 28 组合日志为 `native-tool-error-receipts-4.log`。后续将重复字段的
+`deliver_message` 纳入相同恢复矩阵，保留有效 JSON 请求违规第二交付时的一次拒绝
+断言；不是从损坏参数猜测交付意图。`native-runtime-focused6.log` 中
+`attempt_loop` 81 项、`response_annotations_runtime` 29 项全部通过，后者包含
+32 组合。日志均在 `/tmp/morphz-full-app-regressions-20261020.OxfoEB/`。
+
+### 真实 DeepSeek 复验：明确区分自然响应与故障注入
+
+使用现有 `deepseek-flash` 路由、真实上游、独立临时数据库和合成文件，不读取业务
+书籍、不重启原应用。自动重试为零，每项按预先边界执行一次，失败保留。
+
+- 普通聊天开／关、读取后答复开／关、带注解读取、进度读取，六项自然响应通过；
+  正文流重建与最终正文相等，开启时工具实际返回标题／意图注解，
+  关闭时不投影注解，开关与续接中的工具定义摘要相同。
+- 一项显式故障注入通过：只在首个真实合法读取调用的参数中注入与原失败同类的
+  裸对象语法错误，保持原 ID 和流／完整响应一致。坏调用零 Job；第二次真实
+  DeepSeek 请求包含该 ID 和具体错误，模型修正后只实际读取一次；第三次请求
+  交付含文件未知校验码的正文。此项证明真实模型收到失败后的恢复，
+  **不声称错误本身由本轮 DeepSeek 自然生成**。
+- 首轮 `discuss-script` 超出探针两次请求上限，保留为失败。补齐失败证据后的
+  第二轮诊断看到：`list` 成功后模型合法请求 `read`，但合成 Host 只实现目录
+  读取，因而准备正常错误续接。探针新输入从“基于目录摘要讨论”扩大为“读取
+  故事再讨论”，却没同步实现正文读取，是探针新增的语义冲突。生产实现不因
+  此放宽；目录限定用例修正后需另行验收，真实全文路径仍需原应用验证。
+
+首轮证据：`native-v3-live-recovery-1/summary.json`，8 项中 7 通过、1 失败。
+诊断证据：`native-v3-discuss-diagnostic-2/discuss-script-on.json`。两者都在上述
+日志目录，不覆盖失败批次、不将限定目录探针称为完整剧本工作室验收。
+
+## 历史交付：原应用更新与验收（12:31）
 
 原应用仍是用户现有 Morphz、原 profile 和 center。Runtime 从 `1fa0771821f5`
 切到 `70f59264af35`，新 PID 33239；Electron PID 44726 未重启。切换前没有活动
