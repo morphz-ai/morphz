@@ -5,14 +5,19 @@ use crate::memory::terminal::{
     TerminalCommandRecord, TerminalSessionFilter, TerminalSessionRecord, TerminalStatus,
 };
 use crate::memory::{ExecutionJobStatus, RuntimeStore};
-use crate::permission::{PermissionBroker, PermissionProfile, SandboxMode, ShellEnvironmentPolicy};
+use crate::permission::{PermissionBroker, PermissionProfile};
+#[cfg(unix)]
+use crate::permission::{SandboxMode, ShellEnvironmentPolicy};
+#[cfg(unix)]
 use crate::sandbox::{NativeSandbox, NetworkPolicy, SandboxPolicy, ShellRequest};
 use crate::tool::{Tool, ToolExecutionJobContext, CURRENT_EXECUTION_JOB};
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::io::{Read, Write};
+#[cfg(unix)]
+use std::io::Read;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
@@ -26,6 +31,7 @@ pub(crate) type TerminalSourceResolver = Arc<
         + Send
         + Sync,
 >;
+#[cfg(unix)]
 const MAX_LIVE: usize = 8;
 const SCROLLBACK: usize = 500;
 
@@ -54,12 +60,18 @@ struct TerminalCreator {
     session_id: String,
     context_id: String,
     principal_id: String,
+    #[cfg(unix)]
     target_id: String,
+    #[cfg(unix)]
     root_turn_id: Option<String>,
+    #[cfg(unix)]
     source_job_id: Option<String>,
+    #[cfg(unix)]
     scope_ref: Option<String>,
+    #[cfg(unix)]
     creation_command_id: Option<String>,
     creation_request_hash: Option<String>,
+    #[cfg(unix)]
     agent: bool,
 }
 
@@ -142,6 +154,7 @@ struct ScreenState {
     parser: vt100::Parser,
     sequence: u64,
     eof: bool,
+    #[cfg(unix)]
     error: Option<String>,
 }
 
@@ -155,7 +168,9 @@ struct LiveTerminal {
     stopped: Arc<AtomicBool>,
 }
 
+#[cfg(unix)]
 struct StartingChild(Option<Box<dyn Child + Send + Sync>>);
+#[cfg(unix)]
 impl Drop for StartingChild {
     fn drop(&mut self) {
         if let Some(child) = self.0.as_mut() {
@@ -431,12 +446,18 @@ impl TerminalManager {
                 session_id: session.into(),
                 context_id: context.into(),
                 principal_id: principal.into(),
+                #[cfg(unix)]
                 target_id: target.into(),
+                #[cfg(unix)]
                 root_turn_id: None,
+                #[cfg(unix)]
                 source_job_id: None,
+                #[cfg(unix)]
                 scope_ref: Some(request.scope_ref),
+                #[cfg(unix)]
                 creation_command_id: Some(request.command_id),
                 creation_request_hash: Some(hash),
+                #[cfg(unix)]
                 agent: false,
             },
             "终端".into(),
@@ -755,7 +776,7 @@ impl TerminalManager {
             .initiating_principal_id
             .clone()
             .ok_or("missing Principal")?;
-        let root = self
+        let _root = self
             .source
             .get()
             .ok_or("terminal input provenance resolver is unavailable")?(
@@ -768,12 +789,18 @@ impl TerminalManager {
                 session_id: caller.session_id.clone(),
                 context_id: caller.context_id.clone(),
                 principal_id: principal,
+                #[cfg(unix)]
                 target_id: caller.target_id.clone(),
-                root_turn_id: Some(root),
+                #[cfg(unix)]
+                root_turn_id: Some(_root),
+                #[cfg(unix)]
                 source_job_id: Some(caller.parent_job_id.clone()),
+                #[cfg(unix)]
                 scope_ref: None,
+                #[cfg(unix)]
                 creation_command_id: None,
                 creation_request_hash: None,
+                #[cfg(unix)]
                 agent: true,
             },
             title,
@@ -815,7 +842,13 @@ impl TerminalManager {
         }
         let pty_size = size(rows, cols)?;
         #[cfg(not(unix))]
-        return Err("sandboxed interactive PTY startup is not implemented on this platform".into());
+        {
+            // Keep authorization, retry identity and size validation above on
+            // every platform. Creation-only values have no consumer until a
+            // sandboxed PTY backend is implemented here.
+            let _ = (title, cwd, pty_size);
+            Err("sandboxed interactive PTY startup is not implemented on this platform".into())
+        }
         #[cfg(unix)]
         {
             if title.trim().is_empty() || title.chars().count() > 80 {
@@ -883,17 +916,17 @@ impl TerminalManager {
                 for pattern in profile.sandbox_protected_patterns(&policy.read_roots) {
                     policy.deny_pattern(pattern);
                 }
-                sandbox.prepare_shell(&ShellRequest {
-                    command: shell_command.into(),
-                    cwd: cwd.clone(),
-                    policy,
-                })?
+                sandbox.prepare_pty_shell(
+                    &ShellRequest {
+                        command: shell_command.into(),
+                        cwd: cwd.clone(),
+                        policy,
+                    },
+                    pty_size,
+                )?
             } else {
-                sandbox.prepare_unconfined_shell(shell_command)
+                sandbox.prepare_unconfined_pty_shell(shell_command, pty_size)?
             };
-            if prepared.startup_stdin.is_some() {
-                return Err("this native sandbox requires a separate trusted startup pipe; PTY startup is not supported, refusing fallback".into());
-            }
             let principal = caller.principal_id.clone();
             let id = caller.id.clone();
             let title = if caller.agent {
@@ -970,30 +1003,30 @@ impl TerminalManager {
             let profile_environment = profile.shell_environment_policy;
             let spawned =
                 tokio::task::spawn_blocking(move || -> Result<Arc<LiveTerminal>, Error> {
-                    let pair = native_pty_system().openpty(pty_size)?;
-                    let mut command = CommandBuilder::new(prepared.program);
-                    command.args(prepared.arguments);
-                    command.cwd(cwd);
-                    if profile_environment == ShellEnvironmentPolicy::RemoveSensitive {
-                        for (name, _) in std::env::vars_os() {
-                            if crate::tool::is_sensitive_environment_name(&name.to_string_lossy()) {
-                                command.env_remove(name);
+                    let (master, child) = prepared.spawn(|command| {
+                        command.cwd(cwd);
+                        if profile_environment == ShellEnvironmentPolicy::RemoveSensitive {
+                            for (name, _) in std::env::vars_os() {
+                                if crate::tool::is_sensitive_environment_name(
+                                    &name.to_string_lossy(),
+                                ) {
+                                    command.env_remove(name);
+                                }
                             }
                         }
-                    }
-                    command.env("TERM", "xterm-256color");
-                    command.env("COLORTERM", "truecolor");
-                    command.env("TERM_PROGRAM", "Morphz");
-                    command.env("MORPHZ_EMBEDDED_TERMINAL", "1");
-                    // The sandbox wrapper /bin/sh resets PS1. Zsh's PROMPT
-                    // survives that wrapper; bash receives its PS1 at exec above.
-                    // No user startup files, plugins or command substitutions.
-                    command.env("PROMPT", "%F{blue}%2~%f %F{green}%#%f ");
-                    command.env("PROMPT_DIRTRIM", "2");
-                    command.env("CLICOLOR", "1");
-                    command.env("LSCOLORS", "exfxcxdxbxegedabagacad");
-                    let mut child = StartingChild(Some(pair.slave.spawn_command(command)?));
-                    drop(pair.slave);
+                        command.env("TERM", "xterm-256color");
+                        command.env("COLORTERM", "truecolor");
+                        command.env("TERM_PROGRAM", "Morphz");
+                        command.env("MORPHZ_EMBEDDED_TERMINAL", "1");
+                        // The sandbox wrapper /bin/sh resets PS1. Zsh's PROMPT
+                        // survives that wrapper; bash receives its PS1 at exec above.
+                        // No user startup files, plugins or command substitutions.
+                        command.env("PROMPT", "%F{blue}%2~%f %F{green}%#%f ");
+                        command.env("PROMPT_DIRTRIM", "2");
+                        command.env("CLICOLOR", "1");
+                        command.env("LSCOLORS", "exfxcxdxbxegedabagacad");
+                    })?;
+                    let mut child = StartingChild(Some(child));
                     let process_id = child
                         .0
                         .as_ref()
@@ -1002,11 +1035,10 @@ impl TerminalManager {
                         .and_then(|id| i32::try_from(id).ok())
                         .filter(|id| *id > 0)
                         .ok_or("terminal child has no process identity")?;
-                    let mut reader = pair.master.try_clone_reader()?;
-                    let writer = pair.master.take_writer()?;
+                    let mut reader = master.try_clone_reader()?;
+                    let writer = master.take_writer()?;
                     use std::os::fd::{AsFd, BorrowedFd};
-                    let fd = pair
-                        .master
+                    let fd = master
                         .as_raw_fd()
                         .ok_or("terminal master does not expose a pollable descriptor")?;
                     // Own a duplicate for poll, so a closing/reused master descriptor
@@ -1022,7 +1054,7 @@ impl TerminalManager {
                     let live = Arc::new(LiveTerminal {
                         control: tokio::sync::Mutex::new(()),
                         screen: screen.clone(),
-                        master: Mutex::new(pair.master),
+                        master: Mutex::new(master),
                         writer: Mutex::new(writer),
                         child: Mutex::new(child.0.take().unwrap()),
                         process_id,
@@ -1116,6 +1148,7 @@ impl TerminalManager {
         }
     }
 
+    #[cfg(unix)]
     async fn checkpoint(&self, id: &str, live: &Arc<LiveTerminal>) -> Result<(), Error> {
         let _control = live.control.lock().await;
         let Some(mut record) = self.store.terminal(id).await? else {
@@ -2102,12 +2135,15 @@ mod tests {
                     command_id: "human-ctrl-c".into(),
                     expected_revision: f.store.terminal(&r.id).await.unwrap().unwrap().revision,
                     action: TerminalHumanAction::Input {
-                        data: "sleep 10\r".into(),
+                        data: "/bin/sh -c 'printf \"\\n__HUMAN_FOREGROUND_READY__\\n\"; exec sleep 30'\r".into(),
                     },
                 },
             )
             .await
             .unwrap();
+        // A receipt acknowledges input, not command execution. Wait for output
+        // from the foreground child before testing the real terminal signal.
+        f.wait_line(&r.id, "__HUMAN_FOREGROUND_READY__").await;
         let revision = f.store.terminal(&r.id).await.unwrap().unwrap().revision;
         f.manager
             .human_control(
@@ -2245,8 +2281,13 @@ mod tests {
     async fn terminal_interrupt_keeps_shell_and_resize_is_real() {
         let fixture = Fixture::new().await;
         let record = fixture.open().await;
-        fixture.write(&record.id, "sleep 30").await;
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        fixture
+            .write(
+                &record.id,
+                "/bin/sh -c 'printf \"\\n__FOREGROUND_READY__\\n\"; exec sleep 30'",
+            )
+            .await;
+        fixture.wait_line(&record.id, "__FOREGROUND_READY__").await;
         let mut record = fixture.store.terminal(&record.id).await.unwrap().unwrap();
         fixture.invoke(json!({"action":"interrupt","terminal_id":record.id,"expected_revision":record.revision})).await.unwrap();
         record = fixture.store.terminal(&record.id).await.unwrap().unwrap();

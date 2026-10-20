@@ -157,6 +157,61 @@ impl PreparedCommand {
     }
 }
 
+/// A command bound to a newly allocated, private terminal. The prepared command
+/// is deliberately not exposed: a backend may preserve this terminal's session
+/// only because spawning it is inseparable from portable-pty's setsid/TIOCSCTTY.
+#[cfg(unix)]
+pub struct PreparedPty {
+    pair: portable_pty::PtyPair,
+    command: PreparedCommand,
+}
+
+#[cfg(unix)]
+pub(crate) type SpawnedPty = (
+    Box<dyn portable_pty::MasterPty + Send>,
+    Box<dyn portable_pty::Child + Send + Sync>,
+);
+
+#[cfg(unix)]
+impl PreparedPty {
+    fn new(
+        size: portable_pty::PtySize,
+        prepare: impl FnOnce() -> Result<PreparedCommand, SandboxError>,
+    ) -> Result<Self, SandboxError> {
+        let pair = portable_pty::native_pty_system()
+            .openpty(size)
+            .map_err(|error| {
+                SandboxError::new(format!("failed to allocate private PTY: {error}"))
+            })?;
+        let command = prepare()?;
+        if command.startup_stdin.is_some() {
+            return Err(SandboxError::new(
+                "this native sandbox requires a separate trusted startup pipe; PTY startup is not supported, refusing fallback",
+            ));
+        }
+        Ok(Self { pair, command })
+    }
+
+    pub(crate) fn spawn(
+        self,
+        configure: impl FnOnce(&mut portable_pty::CommandBuilder),
+    ) -> Result<SpawnedPty, SandboxError> {
+        let mut command = portable_pty::CommandBuilder::new(self.command.program);
+        command.args(self.command.arguments);
+        configure(&mut command);
+        // portable-pty's Unix slave spawn establishes a fresh session and makes
+        // this slave its controlling terminal before exec. Always require that
+        // invariant here; callers cannot opt out while retaining PTY preparation.
+        command.set_controlling_tty(true);
+        let child =
+            self.pair.slave.spawn_command(command).map_err(|error| {
+                SandboxError::new(format!("failed to spawn private PTY: {error}"))
+            })?;
+        drop(self.pair.slave);
+        Ok((self.pair.master, child))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxError {
     message: String,
@@ -182,6 +237,15 @@ pub trait SandboxBackend: Send + Sync {
     fn report(&self) -> BackendReport;
 
     fn prepare_shell(&self, request: &ShellRequest) -> Result<PreparedCommand, SandboxError>;
+
+    #[cfg(unix)]
+    fn prepare_pty_shell(
+        &self,
+        request: &ShellRequest,
+        size: portable_pty::PtySize,
+    ) -> Result<PreparedPty, SandboxError> {
+        PreparedPty::new(size, || self.prepare_shell(request))
+    }
 }
 
 #[derive(Clone)]
@@ -221,6 +285,24 @@ impl NativeSandbox {
 
     pub fn prepare_shell(&self, request: &ShellRequest) -> Result<PreparedCommand, SandboxError> {
         self.backend.prepare_shell(request)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn prepare_pty_shell(
+        &self,
+        request: &ShellRequest,
+        size: portable_pty::PtySize,
+    ) -> Result<PreparedPty, SandboxError> {
+        self.backend.prepare_pty_shell(request, size)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn prepare_unconfined_pty_shell(
+        &self,
+        command: &str,
+        size: portable_pty::PtySize,
+    ) -> Result<PreparedPty, SandboxError> {
+        PreparedPty::new(size, || Ok(self.prepare_unconfined_shell(command)))
     }
 
     pub fn prepare_unconfined_shell(&self, command: &str) -> PreparedCommand {
@@ -698,6 +780,13 @@ mod linux {
 
     pub struct LinuxBubblewrapBackend;
 
+    enum SessionIsolation {
+        NewSession,
+        // Only selected inside PreparedPty::new, which binds the resulting
+        // command to an allocated slave and forces controlling-terminal setup.
+        PrivatePty,
+    }
+
     impl SandboxBackend for LinuxBubblewrapBackend {
         fn report(&self) -> BackendReport {
             match find_bwrap(None) {
@@ -713,6 +802,26 @@ mod linux {
         }
 
         fn prepare_shell(&self, request: &ShellRequest) -> Result<PreparedCommand, SandboxError> {
+            self.prepare_command(request, SessionIsolation::NewSession)
+        }
+
+        fn prepare_pty_shell(
+            &self,
+            request: &ShellRequest,
+            size: portable_pty::PtySize,
+        ) -> Result<PreparedPty, SandboxError> {
+            PreparedPty::new(size, || {
+                self.prepare_command(request, SessionIsolation::PrivatePty)
+            })
+        }
+    }
+
+    impl LinuxBubblewrapBackend {
+        fn prepare_command(
+            &self,
+            request: &ShellRequest,
+            session: SessionIsolation,
+        ) -> Result<PreparedCommand, SandboxError> {
             let Some(bwrap) = find_bwrap(Some(&request.cwd)) else {
                 if request.policy.fail_closed {
                     return Err(SandboxError::new(
@@ -726,7 +835,7 @@ mod linux {
                     report: self.report(),
                 });
             };
-            let arguments = build_bwrap_arguments(request)?;
+            let arguments = build_bwrap_arguments_for_session(request, session)?;
             Ok(PreparedCommand {
                 program: bwrap.into_os_string(),
                 arguments,
@@ -790,7 +899,15 @@ mod linux {
             .is_ok_and(|status| status.success())
     }
 
+    #[cfg(test)]
     fn build_bwrap_arguments(request: &ShellRequest) -> Result<Vec<OsString>, SandboxError> {
+        build_bwrap_arguments_for_session(request, SessionIsolation::NewSession)
+    }
+
+    fn build_bwrap_arguments_for_session(
+        request: &ShellRequest,
+        session: SessionIsolation,
+    ) -> Result<Vec<OsString>, SandboxError> {
         let cwd = std::fs::canonicalize(&request.cwd).map_err(|error| {
             SandboxError::new(format!(
                 "failed to resolve Linux sandbox cwd '{}': {error}",
@@ -840,8 +957,15 @@ mod linux {
         }
         let temp_dir = std::fs::canonicalize(std::env::temp_dir()).ok();
 
-        let mut arguments = vec![
-            os("--new-session"),
+        let mut arguments = Vec::new();
+        if matches!(session, SessionIsolation::NewSession) {
+            // Ordinary exec may inherit a caller's terminal. Never share that
+            // session with untrusted work. A private PTY already has its own
+            // session; repeating setsid there would detach its controlling tty
+            // and break shell job control, including foreground Ctrl-C.
+            arguments.push(os("--new-session"));
+        }
+        arguments.extend([
             os("--die-with-parent"),
             os("--ro-bind"),
             os("/"),
@@ -851,7 +975,7 @@ mod linux {
             os("--unshare-user"),
             os("--unshare-pid"),
             os("--unshare-ipc"),
-        ];
+        ]);
         if request.policy.network == NetworkPolicy::Deny {
             arguments.push(os("--unshare-net"));
         }
@@ -969,7 +1093,7 @@ mod linux {
                 return Err(SandboxError::new(format!(
                     "failed to inspect Linux sandbox protected path '{}': {error}",
                     path.display()
-                )))
+                )));
             }
         };
         if metadata.is_dir() {
@@ -1018,6 +1142,66 @@ mod linux {
                 .into_iter()
                 .map(|value| value.to_string_lossy().into_owned())
                 .collect()
+        }
+
+        #[test]
+        fn private_pty_preserves_its_session_without_changing_other_isolation() {
+            let workspace = tempfile::TempDir::new().unwrap();
+            let request = ShellRequest {
+                command: "exec /bin/sh -i".into(),
+                cwd: workspace.path().into(),
+                policy: SandboxPolicy::workspace(workspace.path()),
+            };
+            let ordinary = build_bwrap_arguments(&request).unwrap();
+            assert_eq!(ordinary[0], os("--new-session"));
+            let private_pty =
+                build_bwrap_arguments_for_session(&request, SessionIsolation::PrivatePty).unwrap();
+            assert!(!private_pty.contains(&os("--new-session")));
+            assert_eq!(
+                &ordinary[1..],
+                private_pty,
+                "PTY job control must not weaken mounts, namespaces, capabilities or network isolation"
+            );
+        }
+
+        #[test]
+        fn native_bubblewrap_only_private_pty_retains_controlling_terminal() {
+            if find_bwrap(None).is_none() {
+                assert!(
+                    std::env::var_os("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST").is_none(),
+                    "Bubblewrap is unavailable, but the native Linux sandbox test is required"
+                );
+                return;
+            }
+            let workspace = tempfile::TempDir::new().unwrap();
+            let size = portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            };
+            let sandbox = NativeSandbox::for_current_platform();
+            let mut request = ShellRequest {
+                command: "if (exec 3</dev/tty) 2>/dev/null; then exit 7; fi".into(),
+                cwd: workspace.path().into(),
+                policy: SandboxPolicy::workspace(workspace.path()),
+            };
+            // Give ordinary exec a controlling terminal before Bubblewrap runs:
+            // it must detach, rather than simply inheriting the Runtime's tty.
+            let ordinary = PreparedPty::new(size, || sandbox.prepare_shell(&request)).unwrap();
+            let (_master, mut child) = ordinary.spawn(|_| {}).unwrap();
+            assert!(
+                child.wait().unwrap().success(),
+                "ordinary exec must not inherit a caller's controlling terminal"
+            );
+
+            request.command = "(exec 3</dev/tty)".into();
+            let private_pty = sandbox.prepare_pty_shell(&request, size).unwrap();
+            let (_master, mut child) = private_pty.spawn(|_| {}).unwrap();
+            assert!(
+                child.wait().unwrap().success(),
+                "the allocated PTY must remain the sandbox shell's controlling terminal"
+            );
         }
 
         #[test]
@@ -1105,8 +1289,12 @@ mod linux {
             assert!(arguments
                 .windows(2)
                 .any(|items| { items[0] == "--tmpfs" && items[1] == protected.to_string_lossy() }));
-            assert!(!arguments.iter().any(|item| item == database.to_string_lossy().as_ref()),
-                "a sealed empty parent already hides the database; a descendant mount cannot create a target there");
+            assert!(
+                !arguments
+                    .iter()
+                    .any(|item| item == database.to_string_lossy().as_ref()),
+                "a sealed empty parent already hides the database; a descendant mount cannot create a target there"
+            );
             assert!(
                 arguments.windows(3).any(|items| {
                     items[0] == "--ro-bind"
@@ -2067,6 +2255,55 @@ mod tests {
                 report: self.report(),
             })
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_pty_always_establishes_a_private_controlling_terminal() {
+        let sandbox = NativeSandbox::for_current_platform();
+        let prepared = sandbox
+            .prepare_unconfined_pty_shell(
+                "test -t 0 && test -t 1 && test -t 2 && (exec 3</dev/tty)",
+                portable_pty::PtySize {
+                    rows: 24,
+                    cols: 80,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                },
+            )
+            .unwrap();
+        let (_master, mut child) = prepared
+            .spawn(|command| command.set_controlling_tty(false))
+            .unwrap();
+        assert!(
+            child.wait().unwrap().success(),
+            "the private PTY path must force controlling-terminal setup even if a caller disables it"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_pty_refuses_wrappers_that_need_private_startup_stdin() {
+        let result = PreparedPty::new(
+            portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            || {
+                Ok(PreparedCommand {
+                    program: "must-not-run".into(),
+                    arguments: vec![],
+                    startup_stdin: Some(b"private policy".to_vec()),
+                    report: RecordingBackend.report(),
+                })
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(error) if error.to_string().contains("refusing fallback")
+        ));
     }
 
     #[test]
