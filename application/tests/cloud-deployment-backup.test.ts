@@ -52,6 +52,10 @@ test(
     const targetUrl = new URL(sourceConnection);
     targetUrl.pathname = `/${targetDatabase}`;
     const targetConnection = targetUrl.toString();
+    const targetObjectsDatabase = `morphz_restore_objects_${suffix}`;
+    const targetObjectsUrl = new URL(sourceConnection);
+    targetObjectsUrl.pathname = `/${targetObjectsDatabase}`;
+    const targetObjectsConnection = targetObjectsUrl.toString();
     const schemas = {
       platform: `p_${suffix}`,
       objects: `o_${suffix}`,
@@ -94,12 +98,15 @@ test(
     let hostB:
       Awaited<ReturnType<typeof openApplicationDomainsHost>> | undefined;
     let targetCreated = false;
+    let targetObjectsCreated = false;
     let bucketCreated = false;
     try {
       for (const schema of Object.values(schemas))
         await admin.query(`CREATE SCHEMA "${schema}"`);
       await admin.query(`CREATE DATABASE "${targetDatabase}"`);
       targetCreated = true;
+      await admin.query(`CREATE DATABASE "${targetObjectsDatabase}"`);
+      targetObjectsCreated = true;
       await s3.send(new CreateBucketCommand({ Bucket: bucket }));
       bucketCreated = true;
       workspaceA = new WorkspaceStore(join(directoryA, "workspace.sqlite"));
@@ -145,6 +152,9 @@ test(
       });
       const source = location(sourceConnection, `source-${suffix}`);
       const target = location(targetConnection, `restored-${suffix}`);
+      // Restore Objects into a separate database: preparing Platform's DB
+      // must not accidentally satisfy the Objects extension prerequisite.
+      target.applications.connectionStrings.objects = targetObjectsConnection;
       const hostOptions = (
         storage: CloudApplicationStorage,
         stagingRoot: string,
@@ -175,7 +185,6 @@ test(
               ),
             ),
             operation,
-            tenantId,
             directory,
             "--stopped",
           ],
@@ -183,6 +192,7 @@ test(
             encoding: "utf8",
             env: {
               ...process.env,
+              MORPHZ_APP_TENANT_ID: storage.tenantId,
               AWS_ACCESS_KEY_ID:
                 process.env.MORPHZ_TEST_S3_ACCESS_KEY ?? "test",
               AWS_SECRET_ACCESS_KEY:
@@ -381,13 +391,25 @@ test(
         /字节缺失或长度损坏/,
       );
       const emptyTarget = new Pool({ connectionString: targetConnection });
+      const emptyObjectsTarget = new Pool({
+        connectionString: targetObjectsConnection,
+      });
       try {
         const found = await emptyTarget.query(
           "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname=$1",
           [schemas.platform],
         );
         assert.equal(found.rowCount, 0, "损坏备份不能先创建目标 schema");
+        const extension = await emptyObjectsTarget.query(
+          "SELECT 1 FROM pg_catalog.pg_extension WHERE extname='pg_trgm'",
+        );
+        assert.equal(
+          extension.rowCount,
+          0,
+          "恢复目标保持全新；无效备份不得先安装数据库级依赖",
+        );
       } finally {
+        await emptyObjectsTarget.end();
         await emptyTarget.end();
       }
       const corruptedReference = await admin.query(
@@ -446,10 +468,72 @@ test(
         /长度损坏|摘要损坏/,
       );
 
+      const dependencyTarget = new Pool({
+        connectionString: targetObjectsConnection,
+      });
+      const platformTarget = new Pool({ connectionString: targetConnection });
+      const extensionSchema = `ext_${suffix}`;
+      try {
+        await dependencyTarget.query(`CREATE SCHEMA "${extensionSchema}"`);
+        await dependencyTarget.query(
+          `CREATE EXTENSION pg_trgm WITH SCHEMA "${extensionSchema}"`,
+        );
+        await assert.rejects(
+          restoreCloudApplicationStorage({
+            location: target,
+            backupDirectory: backup.destination,
+            stagingRoot: targetStaging,
+            writersStopped: true,
+            pgRestorePath: process.env.MORPHZ_TEST_PG_RESTORE!,
+          }),
+          /pg_trgm.*public/,
+        );
+        assert.equal(
+          (
+            await platformTarget.query(
+              "SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname=$1",
+              [schemas.platform],
+            )
+          ).rowCount,
+          0,
+          "依赖位置不符必须在恢复任何关系域之前拒绝",
+        );
+        const existing = await dependencyTarget.query(
+          `SELECT n.nspname FROM pg_catalog.pg_extension e
+           JOIN pg_catalog.pg_namespace n ON n.oid=e.extnamespace
+           WHERE e.extname='pg_trgm'`,
+        );
+        assert.deepEqual(existing.rows, [{ nspname: extensionSchema }]);
+        // Only this fresh synthetic restore database owns these test objects.
+        await dependencyTarget.query("DROP EXTENSION pg_trgm");
+        await dependencyTarget.query(`DROP SCHEMA "${extensionSchema}"`);
+      } finally {
+        await platformTarget.end();
+        await dependencyTarget.end();
+      }
       assert.match(
         runCloudCommand("restore", target, backup.destination, targetStaging),
         /云应用存储恢复并校验/,
       );
+      const restoredTarget = new Pool({
+        connectionString: targetObjectsConnection,
+      });
+      try {
+        const extension = await restoredTarget.query(
+          `SELECT n.nspname FROM pg_catalog.pg_extension e
+           JOIN pg_catalog.pg_namespace n ON n.oid=e.extnamespace
+           WHERE e.extname='pg_trgm'`,
+        );
+        assert.deepEqual(extension.rows, [{ nspname: "public" }]);
+        const indexes = await restoredTarget.query(
+          `SELECT indexname FROM pg_catalog.pg_indexes
+           WHERE schemaname=$1 AND indexname='object_search_trigram'`,
+          [schemas.objects],
+        );
+        assert.deepEqual(indexes.rows, [{ indexname: "object_search_trigram" }]);
+      } finally {
+        await restoredTarget.end();
+      }
       workspaceB = new WorkspaceStore(join(directoryB, "workspace.sqlite"), {
         tenantId,
       });
@@ -508,6 +592,10 @@ test(
         await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
       if (targetCreated)
         await admin.query(`DROP DATABASE "${targetDatabase}" WITH (FORCE)`);
+      if (targetObjectsCreated)
+        await admin.query(
+          `DROP DATABASE "${targetObjectsDatabase}" WITH (FORCE)`,
+        );
       await admin.end();
       if (bucketCreated) {
         let continuation: string | undefined;

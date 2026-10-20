@@ -25,6 +25,8 @@ import {
   type PostgresApplicationDomains,
 } from "./application-domains-host.js";
 import { profileAvatarArtifactId } from "./profile-avatar-service.js";
+import { initializeObjectsPostgresDependencies } from "../../objects/src/postgres-dependencies.js";
+import { postgresQuery } from "../../storage/src/sql.js";
 
 const schemaPattern = /^[a-z][a-z0-9_]{0,62}$/;
 const digestPattern = /^[a-f0-9]{64}$/;
@@ -731,6 +733,28 @@ export async function restoreCloudApplicationStorage(options: {
     }
   } finally {
     if (ownsClient) s3.destroy();
+  }
+  // pg_dump --schema deliberately excludes database-wide extensions. Prepare
+  // the same Objects dependency as normal initialization, after all overwrite
+  // and archive checks but before restoring any relations/indexes.
+  const dependencyPool = new Pool({
+    connectionString: options.location.applications.connectionStrings.objects,
+    max: 1,
+  });
+  try {
+    const client = await dependencyPool.connect();
+    try {
+      await client.query("BEGIN");
+      await initializeObjectsPostgresDependencies(postgresQuery(client));
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  } finally {
+    await dependencyPool.end();
   }
   for (const entry of manifest.relations) {
     const target = relation(options.location, entry.name);

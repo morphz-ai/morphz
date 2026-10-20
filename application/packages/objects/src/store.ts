@@ -63,6 +63,7 @@ import {
   type SqlChangeSource,
 } from "../../storage/src/commit-notifications.js";
 import { objectsSchemaSql } from "./schema.js";
+import { initializeObjectsPostgresDependencies } from "./postgres-dependencies.js";
 
 const imageDigestIndexSql =
   "CREATE INDEX object_version_bytes_by_digest ON object_version_bytes(tenant_id, sha256, store_id, object_id, object_revision);";
@@ -629,11 +630,8 @@ export class ObjectsStore {
       // FTS5 trigram index. Extensions are database-wide, while Objects
       // schemas can be initialized concurrently by separate Hosts. Serialize
       // first installation across schemas before checking IF NOT EXISTS.
-      await q.all(
-        "SELECT pg_advisory_xact_lock(hashtextextended('morphz:objects:pg_trgm', 0)) AS locked",
-      );
+      await initializeObjectsPostgresDependencies(q);
       await q.exec(`
-        CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
         CREATE INDEX object_search_trigram ON object_search_documents
           USING gin (search_fold public.gin_trgm_ops);
       `);
