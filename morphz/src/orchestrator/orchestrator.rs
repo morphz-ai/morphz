@@ -22914,31 +22914,36 @@ impl Orchestrator {
         gate.release(root_turn_id)
     }
 
-    /// Cancel only the Activation(s) bound to one persistent Objective
-    /// Evaluation. This deliberately does not mutate Session cancellation
-    /// state and therefore cannot suppress dialogue or sibling Objectives.
+    /// Fence the exact Evaluation's owners, then close its committed infer
+    /// children, including those not yet admitted to an Activation. Session
+    /// cancellation and independently owned work remain untouched.
     pub async fn cancel_objective_evaluation(
-        &self,
+        self: &Arc<Self>,
         objective_id: &str,
         evaluation_id: &str,
+        objective_generation: Option<u64>,
     ) -> Result<bool, DynError> {
         let reason = format!(
             "Objective '{objective_id}' Evaluation '{evaluation_id}' was paused or cancelled"
         );
+        let supervisor = self
+            .objective_supervisor
+            .as_ref()
+            .ok_or("Objective cancellation requires its durable Supervisor")?;
+        let objective = supervisor
+            .get(objective_id)
+            .await?
+            .ok_or("Objective cancellation lost its durable owner")?;
         let mut activation_ids = self
             .objective_evaluations
             .activation_ids_for_evaluation(objective_id, evaluation_id)
             .into_iter()
             .collect::<HashSet<_>>();
-        if let Some(supervisor) = self.objective_supervisor.as_ref() {
-            if let Some(objective) = supervisor.get(objective_id).await? {
-                activation_ids.extend(
-                    supervisor
-                        .evaluation_activation_ids(&objective, evaluation_id)
-                        .await?,
-                );
-            }
-        }
+        activation_ids.extend(
+            supervisor
+                .evaluation_activation_ids(&objective, evaluation_id)
+                .await?,
+        );
         // The physical cancellation intent is durable before the in-memory
         // signal drops the model/Activation future. This ordering prevents a
         // fast cancellation from orphaning already-materialized Actions.
@@ -22981,7 +22986,173 @@ impl Orchestrator {
                 }
             }
         }
+        // Owner terminalization above atomically cancels its active Plans.
+        // Read children only after that handoff fence has committed: a late
+        // infer either committed before it, or loses the Plan revision/token.
+        self.cancel_objective_infer_children(
+            &objective,
+            evaluation_id,
+            objective_generation,
+            &reason,
+        )
+        .await?;
         Ok(was_running)
+    }
+
+    async fn cancel_objective_infer_children(
+        self: &Arc<Self>,
+        objective: &crate::memory::ObjectiveRecord,
+        evaluation_id: &str,
+        objective_generation: Option<u64>,
+        reason: &str,
+    ) -> Result<(), DynError> {
+        let store = self
+            .plan_store
+            .as_ref()
+            .ok_or("Infer cancellation requires RuntimeStore")?;
+        let owned = |thread: &ThreadRecord| {
+            thread.agent_id == objective.agent_id
+                && thread.context_id == objective.context_id
+                && thread.session_id == objective.coordinator_session_id
+                && thread.kind == ThreadKind::Execution
+                && thread.executor_kind == "plan_infer"
+                && thread.supervision.supervisor_kind == ThreadSupervisorKind::Objective
+                && thread.supervision.supervisor_id.as_deref() == Some(objective.id.as_str())
+                && thread.supervision.origin_evaluation_id.as_deref() == Some(evaluation_id)
+                && objective_generation
+                    .is_none_or(|generation| thread.supervision.generation == generation)
+        };
+        // If explicit user control changes a selected child's generation or
+        // ownership while we cancel, do not adopt that replacement authority.
+        let mut replacements = HashSet::new();
+        loop {
+            let mut pending = Vec::new();
+            for thread in store
+                .list_session_threads(
+                    &objective.context_id,
+                    &objective.coordinator_session_id,
+                    false,
+                )
+                .await?
+                .into_iter()
+                .filter(|thread| owned(thread) && !replacements.contains(&thread.id))
+            {
+                let plan_id = thread
+                    .executor_id
+                    .as_deref()
+                    .ok_or("Owned infer Thread has no executor Plan")?;
+                let plan = store
+                    .get_plan_execution(plan_id)
+                    .await?
+                    .ok_or("Owned infer Thread lost its executor Plan")?;
+                let event = self
+                    .context_engine
+                    .find_event(&objective.context_id, &thread.root_turn_id)
+                    .await?
+                    .ok_or("Owned infer Thread lost its immutable request Event")?;
+                let field = |key: &str| event.payload.get(key).and_then(|value| value.as_str());
+                if plan.agent_id != thread.agent_id
+                    || plan.context_id != thread.context_id
+                    || plan.session_id != thread.session_id
+                    || plan.objective_id.as_deref() != Some(objective.id.as_str())
+                    || plan.objective_evaluation_id.as_deref() != Some(evaluation_id)
+                    || thread.supervision.parent_thread_id.as_deref()
+                        != Some(plan.thread_id.as_str())
+                    || event.event_type != TYPE_INFER_REQUEST
+                    || field("objective_id") != Some(objective.id.as_str())
+                    || field("objective_evaluation_id") != Some(evaluation_id)
+                    || field("plan_execution_id") != Some(plan.id.as_str())
+                    || field("parent_activation_id") != Some(plan.activation_id.as_str())
+                {
+                    return Err(format!(
+                        "Infer Thread '{}' has conflicting durable Evaluation ownership",
+                        thread.id
+                    )
+                    .into());
+                }
+                pending.push((thread, plan));
+            }
+            if pending.is_empty() {
+                return Ok(());
+            }
+            let pending_ids = pending
+                .iter()
+                .map(|(thread, _)| thread.id.clone())
+                .collect::<HashSet<_>>();
+            let mut progressed = false;
+            for (selected, owner_plan) in pending {
+                if !owner_plan.status.is_terminal() {
+                    if pending_ids.contains(&owner_plan.thread_id) {
+                        // Nested infer: close its parent Thread (and all its
+                        // Plans) before reading the resulting child frontier.
+                        continue;
+                    }
+                    return Err(format!(
+                        "Cannot close infer Thread '{}': parent Plan '{}' is not fenced ({})",
+                        selected.id,
+                        owner_plan.id,
+                        owner_plan.status.as_str()
+                    )
+                    .into());
+                }
+                let mut current = selected.clone();
+                let mut settled = false;
+                for _ in 0..8 {
+                    if current.generation != selected.generation
+                        || current.supervision != selected.supervision
+                        || current.executor_kind != selected.executor_kind
+                        || current.executor_id != selected.executor_id
+                        || !owned(&current)
+                    {
+                        replacements.insert(selected.id.clone());
+                        settled = true;
+                        break;
+                    }
+                    if current.lifecycle.is_terminal() {
+                        // A real outcome won the race. Never replace it with
+                        // a manufactured cancellation or replay its work.
+                        settled = true;
+                        break;
+                    }
+                    match self
+                        .control_thread(
+                            &objective.context_id,
+                            &current.id,
+                            current.revision,
+                            ThreadControlAction::Cancel,
+                            reason,
+                            "ObjectiveControl",
+                        )
+                        .await?
+                    {
+                        ThreadMutation::Updated(_) => {
+                            settled = true;
+                            break;
+                        }
+                        ThreadMutation::Conflict { current: changed } => current = changed,
+                        ThreadMutation::NotFound => {
+                            return Err("Owned infer Thread disappeared during cancellation".into());
+                        }
+                    }
+                }
+                if !settled {
+                    return Err(format!(
+                        "Infer Thread '{}' could not be fenced after concurrent revisions",
+                        selected.id
+                    )
+                    .into());
+                }
+                progressed = true;
+            }
+            if !progressed {
+                return Err(
+                    "Infer cancellation found an unfenced or cyclic parent frontier".into(),
+                );
+            }
+            // Every closed parent now prevents new Plan enrollment/handoff.
+            // Children committed before that fence are included by the next
+            // read; this is not a time-based retry or a new model request.
+        }
     }
 
     /// Cancel every non-terminal Activation belonging to one exact logical

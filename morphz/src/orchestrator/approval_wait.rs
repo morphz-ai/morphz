@@ -40,7 +40,9 @@ impl Orchestrator {
     /// cancellation. Recover its exact immutable Evaluation binding before
     /// redispatch. The checkpoint, not Session membership or the presence of a
     /// pending approval, supplies ownership; admission remains unchanged.
-    pub(super) async fn reconcile_revoked_objective_approval_waits(&self) -> Result<(), DynError> {
+    pub(super) async fn reconcile_revoked_objective_approval_waits(
+        self: &Arc<Self>,
+    ) -> Result<(), DynError> {
         let (Some(store), Some(supervisor)) = (
             self.context_engine.session_store(),
             self.objective_supervisor.as_ref(),
@@ -109,7 +111,12 @@ impl Orchestrator {
                 if !reconciled.insert((route.objective_id.clone(), route.evaluation_id.clone())) {
                     continue;
                 }
-                self.cancel_objective_evaluation(&route.objective_id, &route.evaluation_id)
+                // A restarted Runtime may already see a newer Objective
+                // lifetime. The immutable checkpoint's Evaluation token is
+                // never reused; do not borrow the latest generation to filter
+                // its old infer children. Each selected Thread keeps its own
+                // exact generation/revision fence throughout cancellation.
+                self.cancel_objective_evaluation(&route.objective_id, &route.evaluation_id, None)
                     .await?;
                 tracing::info!(
                     objective_id = %route.objective_id,

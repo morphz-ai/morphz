@@ -9,6 +9,944 @@ use morphz::plan_execution::{
 use serde_json::json;
 use std::sync::Arc;
 
+// Exercise public Objective cancellation with no running reconciler or model
+// Future. The coordinator, not this fixture, creates each infer child.
+mod cold_objective_infer_cancel {
+    use super::*;
+    use morphz::config::AppConfig;
+    use morphz::llm::{Client, Message, Response, ToolDefinition};
+    use morphz::permission::{PermissionMode, ReviewerKind};
+    use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
+    use morphz::secret_store::{HostEnvFileSecretBackend, SecretStore};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FixtureScope {
+        id: String,
+        agent: String,
+        context: String,
+        session: String,
+    }
+
+    impl FixtureScope {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let id = format!(
+                "cold-{}-{}-{}",
+                std::process::id(),
+                Utc::now().timestamp_nanos_opt().unwrap(),
+                NEXT.fetch_add(1, Ordering::SeqCst),
+            );
+            Self {
+                agent: format!("agent-{id}"),
+                context: format!("context-{id}"),
+                session: format!("session-{id}"),
+                id,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum CommitOrder {
+        HandoffFirst { admitted: bool },
+        CancellationFirst,
+        HistoricalCancelledChild,
+        NestedHandoffFirst,
+    }
+
+    #[derive(Default)]
+    struct NoModelCalls(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl Client for NoModelCalls {
+        async fn create_completion(
+            &self,
+            _: Vec<Message>,
+            _: Vec<ToolDefinition>,
+        ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err("cold cancellation must not call a model".into())
+        }
+    }
+
+    async fn admit(
+        store: &dyn RuntimeStore,
+        thread: &ThreadRecord,
+        event: &Event,
+        activation_id: &str,
+    ) -> ThreadActivationRecord {
+        // Use the committed Signal rather than fabricating its sequence or
+        // parent route. Both primary and child admission use the normal CAS.
+        let signal = store
+            .thread_signal_for_event(&thread.context_id, &event.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(signal.thread_id, thread.id);
+        assert_eq!(signal.status, ThreadSignalStatus::Pending);
+        let queued = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: signal.id,
+                    thread_id: signal.thread_id,
+                    thread_generation: signal.thread_generation,
+                    event_id: signal.event_id,
+                    principal_id: signal.principal_id,
+                    sequence: signal.sequence,
+                    kind: signal.kind,
+                    parent_activation_id: signal.parent_activation_id.clone(),
+                },
+                NewThreadActivation {
+                    id: activation_id.into(),
+                    agent_id: thread.agent_id.clone(),
+                    context_id: thread.context_id.clone(),
+                    session_id: thread.session_id.clone(),
+                    initiating_principal_id: None,
+                    trigger_event_id: event.id.clone(),
+                    trigger_sequence: signal.sequence,
+                    trigger_kind: event.topic.clone(),
+                    parent_activation_id: signal.parent_activation_id,
+                    root_turn_id: thread.root_turn_id.clone(),
+                },
+                1,
+            )
+            .await
+            .unwrap()
+            .expect("the real pending Signal must admit exactly one Activation");
+        match store
+            .update_thread_activation(
+                &queued.id,
+                queued.revision,
+                ThreadActivationStatus::Running,
+                Some("cold-fixture"),
+                Some(Utc::now() + Duration::hours(1)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(running) => running,
+            other => panic!("Activation admission lost its CAS: {other:?}"),
+        }
+    }
+
+    async fn primary(
+        store: &dyn RuntimeStore,
+        scope: &FixtureScope,
+        label: &str,
+    ) -> (ObjectiveRecord, ThreadRecord, ThreadActivationRecord) {
+        let label = format!("{}-{label}", scope.id);
+        let source = Event::new(
+            format!("source-{label}"),
+            "Test".into(),
+            "input".into(),
+            "chat/user".into(),
+            json!({"context_id": scope.context, "session_id": scope.session, "content": label})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        store.append(source.clone()).await.unwrap();
+        let objective = store
+            .create_objective(NewObjective {
+                model_alias: None,
+                reasoning_effort: None,
+                id: format!("objective-{label}"),
+                agent_id: scope.agent.clone(),
+                context_id: scope.context.clone(),
+                coordinator_session_id: scope.session.clone(),
+                delivery_session_id: scope.session.clone(),
+                parent_objective_id: None,
+                source_event_id: source.id,
+                initiating_principal_id: None,
+                stated_objective: format!("Synthetic cold cancellation: {label}"),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let thread = morphz::steering::objective_thread(&objective);
+        let evaluation_id = format!("evaluation-{label}");
+        let event = Event::new(
+            format!("continue-{label}"),
+            "ObjectiveSupervisor".into(),
+            "tool_output".into(),
+            "chat/tool_output".into(),
+            json!({
+                "context_id": scope.context, "session_id": scope.session,
+                "root_turn_id": thread.root_turn_id,
+                "objective_id": objective.id,
+                "objective_evaluation_id": evaluation_id,
+                "tool_name": "objective_supervisor",
+                "content": "Continue the synthetic Objective",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let claimed = match store
+            .claim_objective_evaluation_with_signal(
+                &objective.id,
+                objective.revision,
+                &evaluation_id,
+                Utc::now() + Duration::hours(1),
+                &event,
+                &thread,
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(claimed) => claimed,
+            other => panic!("Objective continuation was not committed: {other:?}"),
+        };
+        let thread = store.get_thread(&thread.id).await.unwrap().unwrap();
+        let activation = admit(store, &thread, &event, &format!("activation-{label}")).await;
+        (claimed, thread, activation)
+    }
+
+    fn route(
+        objective: &ObjectiveRecord,
+        thread: &ThreadRecord,
+        activation: &ThreadActivationRecord,
+    ) -> PlanExecutionRoute {
+        PlanExecutionRoute {
+            activation_id: activation.id.clone(),
+            thread_id: thread.id.clone(),
+            agent_id: thread.agent_id.clone(),
+            context_id: thread.context_id.clone(),
+            session_id: thread.session_id.clone(),
+            initiating_principal_id: None,
+            tool_call_id: format!("eval-{}", objective.id),
+            objective_id: Some(objective.id.clone()),
+            objective_evaluation_id: objective.active_evaluation_id.clone(),
+        }
+    }
+
+    async fn snapshot(
+        store: &dyn RuntimeStore,
+        objective: &ObjectiveRecord,
+        thread: &ThreadRecord,
+        activation: &ThreadActivationRecord,
+        plan: &PlanExecutionRecord,
+    ) -> serde_json::Value {
+        json!({
+            "objective": store.get_objective(&objective.id).await.unwrap(),
+            "thread": store.get_thread(&thread.id).await.unwrap(),
+            "activation": store.get_thread_activation(&activation.id).await.unwrap(),
+            "plan": store.get_plan_execution(&plan.id).await.unwrap(),
+            "outcome": store.get_thread_outcome(&thread.id).await.unwrap(),
+            "signals": store.list_context_thread_signals(&thread.context_id, None).await.unwrap()
+                .into_iter().filter(|signal| signal.thread_id == thread.id).collect::<Vec<_>>(),
+        })
+    }
+
+    async fn contract(store: Arc<dyn RuntimeStore>, tmp: tempfile::TempDir, order: CommitOrder) {
+        let scope = FixtureScope::new();
+        std::fs::create_dir(tmp.path().join("workspace")).unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: scope.agent.clone(),
+                    title: "Cold cancellation".into(),
+                    root_context_id: scope.context.clone(),
+                },
+                NewCognitiveContext {
+                    id: scope.context.clone(),
+                    agent_id: scope.agent.clone(),
+                    title: "Cold cancellation".into(),
+                },
+                NewSession {
+                    id: scope.session.clone(),
+                    agent_id: scope.agent.clone(),
+                    context_id: scope.context.clone(),
+                    parent_session_id: None,
+                    title: "Shared synthetic Session".into(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::User;
+        config.permissions.workspace_root = tmp.path().join("workspace").to_string_lossy().into();
+        config.background_task.artifact_dir = tmp.path().join("artifacts").to_string_lossy().into();
+        let model = Arc::new(NoModelCalls::default());
+        let runtime = MorphzRuntime::builder(config, model.clone())
+            .store("cold-objective-infer-test", store.clone())
+            .identity(RuntimeIdentity {
+                agent_id: scope.agent.clone(),
+                context_id: scope.context.clone(),
+                principal_id: format!("principal-{}", scope.id),
+            })
+            .secret_store(Arc::new(
+                SecretStore::new(
+                    tmp.path().join("secrets.json"),
+                    Arc::new(HostEnvFileSecretBackend::new(tmp.path().join("test.env"))),
+                )
+                .unwrap(),
+            ))
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: false,
+            })
+            .build()
+            .await
+            .unwrap();
+        // Deliberately do not start Runtime: no scheduler, model Future,
+        // process-local Objective registry binding or repair poll can help.
+        let (objective, parent, parent_activation) = primary(store.as_ref(), &scope, "owned").await;
+        let (sibling, sibling_thread, sibling_activation) =
+            primary(store.as_ref(), &scope, "unrelated").await;
+        let registry = Arc::new(morphz::tool::Registry::new());
+        let program = morphz::sexpr_eval::validate(
+            "(eval (infer (returns String) \"synthetic infer\"))",
+            &registry,
+            &morphz::sexpr_eval::AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let coordinator = PlanExecutionCoordinator::new(store.clone(), registry.clone());
+        let queued = coordinator
+            .ensure(
+                route(&objective, &parent, &parent_activation),
+                &program,
+                PlanArtifactBinding::default(),
+            )
+            .await
+            .unwrap();
+        let sibling_plan = coordinator
+            .ensure(
+                route(&sibling, &sibling_thread, &sibling_activation),
+                &program,
+                PlanArtifactBinding::default(),
+            )
+            .await
+            .unwrap();
+        if matches!(order, CommitOrder::CancellationFirst) {
+            cancellation_before_handoff(
+                store.as_ref(),
+                &runtime,
+                &model,
+                &registry,
+                (&objective, &parent, &parent_activation, &queued),
+                (
+                    &sibling,
+                    &sibling_thread,
+                    &sibling_activation,
+                    &sibling_plan,
+                ),
+            )
+            .await;
+            return;
+        }
+        let admitted = match order {
+            CommitOrder::HandoffFirst { admitted } => admitted,
+            CommitOrder::HistoricalCancelledChild | CommitOrder::NestedHandoffFirst => true,
+            CommitOrder::CancellationFirst => unreachable!(),
+        };
+        let (waiting, event, child_activation_id) = match coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "cold-fixture",
+                "infer-handoff",
+                Utc::now() + Duration::hours(1),
+                &NoPhysicalCalls,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForEvaluation {
+                plan,
+                request_event,
+                activation_id,
+                ..
+            } => (plan, request_event, activation_id),
+            other => panic!("real infer hand-off did not suspend the parent: {other:?}"),
+        };
+        let child = store.get_thread_by_root(&event.id).await.unwrap().unwrap();
+        assert_eq!(child.lifecycle, ThreadLifecycle::Open);
+        assert_eq!(child.executor_kind, "plan_infer");
+        assert_eq!(
+            child.supervision.origin_evaluation_id,
+            objective.active_evaluation_id
+        );
+        assert_eq!(
+            child.supervision.parent_thread_id.as_deref(),
+            Some(parent.id.as_str())
+        );
+        assert!(store
+            .get_thread_activation(&child_activation_id)
+            .await
+            .unwrap()
+            .is_none());
+        if admitted {
+            admit(store.as_ref(), &child, &event, &child_activation_id).await;
+        }
+        let nested = if matches!(order, CommitOrder::NestedHandoffFirst) {
+            let child_activation = store
+                .get_thread_activation(&child_activation_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let nested_queued = coordinator
+                .ensure(
+                    route(&objective, &child, &child_activation),
+                    &program,
+                    PlanArtifactBinding::default(),
+                )
+                .await
+                .unwrap();
+            let (nested_waiting, nested_event, nested_activation_id) = match coordinator
+                .drive_once(
+                    &nested_queued.id,
+                    nested_queued.revision,
+                    "cold-nested-fixture",
+                    "nested-infer-handoff",
+                    Utc::now() + Duration::hours(1),
+                    &NoPhysicalCalls,
+                )
+                .await
+                .unwrap()
+            {
+                PlanDriveReceipt::WaitingForEvaluation {
+                    plan,
+                    request_event,
+                    activation_id,
+                    ..
+                } => (plan, request_event, activation_id),
+                other => panic!("second real infer handoff must suspend its parent: {other:?}"),
+            };
+            let grandchild = store
+                .get_thread_by_root(&nested_event.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(grandchild.lifecycle, ThreadLifecycle::Open);
+            assert_eq!(grandchild.executor_kind, "plan_infer");
+            assert_eq!(
+                grandchild.executor_id.as_deref(),
+                Some(nested_waiting.id.as_str())
+            );
+            assert_eq!(
+                grandchild.supervision.parent_thread_id.as_deref(),
+                Some(child.id.as_str())
+            );
+            assert_eq!(
+                grandchild.supervision.origin_evaluation_id,
+                objective.active_evaluation_id
+            );
+            assert!(store
+                .get_thread_activation(&nested_activation_id)
+                .await
+                .unwrap()
+                .is_none());
+            // Unlike the first child, this second-level child stays unadmitted.
+            // Both links came from actual coordinator handoff transactions.
+            Some((nested_waiting, grandchild, nested_activation_id))
+        } else {
+            None
+        };
+        let history_before = if matches!(order, CommitOrder::HistoricalCancelledChild) {
+            // Establish genuine terminal history through the same atomic Store
+            // control operation, not a fabricated Outcome or terminal projection.
+            let current_child = store.get_thread(&child.id).await.unwrap().unwrap();
+            assert!(matches!(
+                store
+                    .control_thread(
+                        &current_child.id,
+                        current_child.revision,
+                        ThreadControlAction::Cancel,
+                        Some("The child independently stopped before its Objective"),
+                        Some("ColdHistoryTest"),
+                    )
+                    .await
+                    .unwrap(),
+                ThreadMutation::Updated(_)
+            ));
+            Some(infer_history(store.as_ref(), &child).await)
+        } else {
+            None
+        };
+        let sibling_before = snapshot(
+            store.as_ref(),
+            &sibling,
+            &sibling_thread,
+            &sibling_activation,
+            &sibling_plan,
+        )
+        .await;
+        let current = store.get_objective(&objective.id).await.unwrap().unwrap();
+        let cancelled = match runtime
+            .cancel_objective(
+                &current.id,
+                current.revision,
+                "Cancel the cold synthetic infer owner",
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(cancelled) => cancelled,
+            other => panic!("cancellation must commit, not silently accept a conflict: {other:?}"),
+        };
+        let child_after = store.get_thread(&child.id).await.unwrap().unwrap();
+        let child_activation_after = store
+            .get_thread_activation(&child_activation_id)
+            .await
+            .unwrap();
+        let child_outcome = store.get_thread_outcome(&child.id).await.unwrap();
+        let child_signals = store
+            .list_context_thread_signals(&scope.context, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|signal| signal.thread_id == child.id)
+            .collect::<Vec<_>>();
+        let sibling_after = snapshot(
+            store.as_ref(),
+            &sibling,
+            &sibling_thread,
+            &sibling_activation,
+            &sibling_plan,
+        )
+        .await;
+        let history_after = if history_before.is_some() {
+            Some(infer_history(store.as_ref(), &child).await)
+        } else {
+            None
+        };
+        // Capture all durable facts before the first assertion, so a failed
+        // Thread projection does not hide Activation/Signal/sibling evidence.
+        eprintln!(
+            "cold_objective_infer_cancel={}",
+            json!({
+                "admitted": admitted, "cancellation": cancelled,
+                "parent": snapshot(store.as_ref(), &objective, &parent, &parent_activation, &waiting).await,
+                "child": child_after, "child_activation": child_activation_after,
+                "child_outcome": child_outcome, "child_signals": child_signals,
+                "history_before": history_before, "history_after": history_after,
+                "sibling_before": sibling_before, "sibling_after": sibling_after,
+                "model_calls": model.0.load(Ordering::SeqCst),
+            })
+        );
+        assert_eq!(
+            history_after, history_before,
+            "Objective cancellation must preserve every already-terminal child fact"
+        );
+        assert_eq!(cancelled.status, ObjectiveStatus::Cancelled);
+        assert!(cancelled.active_evaluation_id.is_none());
+        assert!(cancelled.evaluation_lease_expires_at.is_none());
+        assert_eq!(model.0.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            sibling_after, sibling_before,
+            "another Objective in the same Session must be untouched"
+        );
+        assert_eq!(
+            store
+                .get_thread_activation(&parent_activation.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ThreadActivationStatus::Cancelled
+        );
+        assert_eq!(
+            store
+                .get_plan_execution(&waiting.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            PlanExecutionStatus::Cancelled
+        );
+        assert_eq!(
+            child_after.lifecycle,
+            ThreadLifecycle::Cancelled,
+            "cancelling the owner must not leave a cold infer Thread open"
+        );
+        if admitted {
+            assert_eq!(
+                child_activation_after.unwrap().status,
+                ThreadActivationStatus::Cancelled
+            );
+        } else {
+            assert!(
+                child_activation_after.is_none(),
+                "cancellation must not dispatch an unadmitted infer"
+            );
+        }
+        let outcome =
+            child_outcome.expect("a terminal child needs the real durable cancellation Outcome");
+        assert_eq!(outcome.thread_id, child.id);
+        assert_eq!(outcome.thread_generation, child.generation);
+        assert_eq!(outcome.root_turn_id, child.root_turn_id);
+        assert_eq!(outcome.terminal_kind, ThreadLifecycle::Cancelled);
+        assert_eq!(
+            child_after.result_event_id.as_deref(),
+            Some(outcome.result_event_id.as_str())
+        );
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(outcome.result_event_id),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "the Outcome must reference a real immutable Event"
+        );
+        assert!(!child_signals.is_empty());
+        assert!(
+            child_signals
+                .iter()
+                .all(|signal| signal.status == ThreadSignalStatus::Acknowledged),
+            "owned infer Signals must not remain executable"
+        );
+        if let Some((nested_plan, grandchild, nested_activation_id)) = nested {
+            let grandchild_after = store.get_thread(&grandchild.id).await.unwrap().unwrap();
+            let nested_plan_after = store
+                .get_plan_execution(&nested_plan.id)
+                .await
+                .unwrap()
+                .unwrap();
+            let nested_activation_after = store
+                .get_thread_activation(&nested_activation_id)
+                .await
+                .unwrap();
+            let grandchild_outcome = store.get_thread_outcome(&grandchild.id).await.unwrap();
+            let grandchild_signals = store
+                .list_context_thread_signals(&scope.context, None)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|signal| signal.thread_id == grandchild.id)
+                .collect::<Vec<_>>();
+            eprintln!(
+                "cold_objective_nested_infer_cancel={}",
+                json!({
+                    "child_after": child_after, "grandchild_after": grandchild_after,
+                    "nested_plan": nested_plan_after,
+                    "nested_activation": nested_activation_after,
+                    "grandchild_outcome": grandchild_outcome,
+                    "grandchild_signals": grandchild_signals,
+                    "model_calls": model.0.load(Ordering::SeqCst),
+                })
+            );
+            assert_eq!(nested_plan_after.status, PlanExecutionStatus::Cancelled);
+            assert!(nested_plan_after.pending_id.is_none());
+            assert!(nested_plan_after.pending_kind.is_none());
+            assert!(nested_plan_after.claim_token.is_none());
+            assert!(nested_plan_after.claimed_by.is_none());
+            assert!(nested_plan_after.lease_expires_at.is_none());
+            assert_eq!(grandchild_after.lifecycle, ThreadLifecycle::Cancelled);
+            assert_eq!(grandchild_after.generation, grandchild.generation + 1);
+            assert!(nested_activation_after.is_none());
+            let outcome = grandchild_outcome
+                .expect("the second-level infer must have its own real cancellation Outcome");
+            assert_eq!(outcome.thread_id, grandchild.id);
+            assert_eq!(outcome.thread_generation, grandchild.generation);
+            assert_eq!(outcome.root_turn_id, grandchild.root_turn_id);
+            assert_eq!(outcome.terminal_kind, ThreadLifecycle::Cancelled);
+            assert_eq!(
+                grandchild_after.result_event_id.as_deref(),
+                Some(outcome.result_event_id.as_str())
+            );
+            assert_eq!(
+                store
+                    .query(QueryFilter {
+                        event_id: Some(outcome.result_event_id),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap()
+                    .len(),
+                1,
+                "the second-level Outcome must reference its own immutable Event"
+            );
+            assert!(!grandchild_signals.is_empty());
+            assert!(grandchild_signals
+                .iter()
+                .all(|signal| signal.status == ThreadSignalStatus::Acknowledged));
+            assert_eq!(model.0.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    async fn infer_history(store: &dyn RuntimeStore, child: &ThreadRecord) -> serde_json::Value {
+        let outcome = store
+            .get_thread_outcome(&child.id)
+            .await
+            .unwrap()
+            .expect("the child must already have a real terminal Outcome");
+        let events = store
+            .query(QueryFilter {
+                event_id: Some(outcome.result_event_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        json!({
+            "thread": store.get_thread(&child.id).await.unwrap().unwrap(),
+            "outcome": outcome,
+            "event": events,
+            "activations": store.list_context_thread_activations(&child.context_id, true)
+                .await.unwrap().into_iter()
+                .filter(|activation| activation.root_turn_id == child.root_turn_id)
+                .collect::<Vec<_>>(),
+            "signals": store.list_context_thread_signals(&child.context_id, None)
+                .await.unwrap().into_iter()
+                .filter(|signal| signal.thread_id == child.id)
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    async fn cancellation_before_handoff(
+        store: &dyn RuntimeStore,
+        runtime: &MorphzRuntime,
+        model: &NoModelCalls,
+        registry: &morphz::tool::Registry,
+        owned: (
+            &ObjectiveRecord,
+            &ThreadRecord,
+            &ThreadActivationRecord,
+            &PlanExecutionRecord,
+        ),
+        sibling: (
+            &ObjectiveRecord,
+            &ThreadRecord,
+            &ThreadActivationRecord,
+            &PlanExecutionRecord,
+        ),
+    ) {
+        let (objective, parent, parent_activation, queued) = owned;
+        let (sibling, sibling_thread, sibling_activation, sibling_plan) = sibling;
+        // Capture a real running claim before cancellation. Calling drive_once
+        // after cancellation would stop early and not exercise late Store commit.
+        let running = updated(
+            store
+                .claim_plan_execution(
+                    &queued.id,
+                    queued.revision,
+                    "cold-fixture",
+                    "late-infer-handoff",
+                    Utc::now() + Duration::hours(1),
+                )
+                .await
+                .unwrap(),
+        );
+        assert_eq!(running.status, PlanExecutionStatus::Running);
+        assert_eq!(running.claim_token.as_deref(), Some("late-infer-handoff"));
+        let mut machine: morphz::sexpr_eval::PlanMachine =
+            serde_json::from_value(running.state_json.clone()).unwrap();
+        let sequence = match machine.advance(registry) {
+            morphz::sexpr_eval::PlanAdvance::Suspended(morphz::sexpr_eval::PlanEffect::Infer {
+                sequence,
+                ..
+            }) => sequence,
+            _ => panic!("the same validated program must yield its first infer"),
+        };
+        let request_id =
+            morphz::plan_execution::deterministic_infer_request_id(&running.id, sequence).unwrap();
+        let child_activation_id =
+            morphz::plan_execution::deterministic_infer_activation_id(&request_id).unwrap();
+        let state = serde_json::to_value(&machine).unwrap();
+        let budget = machine.budget_json().unwrap();
+        // This in-memory shape only lets the public producer reconstruct the
+        // exact request bytes. It is NEVER written as a waiting Plan or Outcome.
+        // The actual handoff below must atomically admit or reject all records.
+        let mut pending_shape = running.clone();
+        pending_shape.status = PlanExecutionStatus::Waiting;
+        pending_shape.pending_kind = Some(PlanExecutionWaitKind::Evaluation);
+        pending_shape.pending_id = Some(child_activation_id.clone());
+        pending_shape.state_json = state.clone();
+        pending_shape.budget_json = budget.clone();
+        let request = morphz::plan_execution::pending_infer_request_event(
+            &pending_shape,
+            parent.response_annotations,
+        )
+        .unwrap();
+        assert_eq!(request.id, request_id);
+        assert_eq!(request.timestamp, running.updated_at);
+        assert_eq!(request.payload["plan_execution_id"], json!(running.id));
+        assert_eq!(
+            request.payload["parent_activation_id"],
+            json!(parent_activation.id)
+        );
+        assert!(store
+            .get_thread_by_root(&request.id)
+            .await
+            .unwrap()
+            .is_none());
+        let sibling_before = snapshot(
+            store,
+            sibling,
+            sibling_thread,
+            sibling_activation,
+            sibling_plan,
+        )
+        .await;
+        let current = store.get_objective(&objective.id).await.unwrap().unwrap();
+        let cancelled = match runtime
+            .cancel_objective(
+                &current.id,
+                current.revision,
+                "Cancel before the cold infer handoff commits",
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(cancelled) => cancelled,
+            other => panic!("cancellation must commit before late handoff: {other:?}"),
+        };
+        assert_eq!(cancelled.status, ObjectiveStatus::Cancelled);
+        assert!(cancelled.active_evaluation_id.is_none());
+        assert!(cancelled.evaluation_lease_expires_at.is_none());
+        let closed = store
+            .get_plan_execution(&running.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(closed.status, PlanExecutionStatus::Cancelled);
+        assert!(closed.revision > running.revision);
+        assert!(closed.pending_kind.is_none() && closed.pending_id.is_none());
+        assert!(closed.claimed_by.is_none() && closed.claim_token.is_none());
+        assert!(closed.lease_expires_at.is_none() && closed.finished_at.is_some());
+        assert_eq!(
+            store
+                .get_thread_activation(&parent_activation.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ThreadActivationStatus::Cancelled
+        );
+        let owner_after_cancel =
+            snapshot(store, objective, parent, parent_activation, &closed).await;
+        let handoff = store
+            .create_evaluation_and_suspend_plan(
+                &running.id,
+                running.revision,
+                "late-infer-handoff",
+                &state,
+                &budget,
+                &request,
+                &child_activation_id,
+            )
+            .await;
+        let owner_after_handoff =
+            snapshot(store, objective, parent, parent_activation, &closed).await;
+        let sibling_after = snapshot(
+            store,
+            sibling,
+            sibling_thread,
+            sibling_activation,
+            sibling_plan,
+        )
+        .await;
+        let events = store
+            .query(QueryFilter {
+                event_id: Some(request.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let child = store.get_thread_by_root(&request.id).await.unwrap();
+        let child_activation = store
+            .get_thread_activation(&child_activation_id)
+            .await
+            .unwrap();
+        let signal = store
+            .thread_signal_for_event(&parent.context_id, &request.id)
+            .await
+            .unwrap();
+        let child_outcome = store
+            .get_thread_outcome(&stable_thread_id(&request.id))
+            .await
+            .unwrap();
+        eprintln!(
+            "cold_objective_cancel_before_handoff={}",
+            json!({
+                "handoff_error": handoff.as_ref().err().map(ToString::to_string),
+                "cancelled": cancelled, "owner_after_cancel": owner_after_cancel,
+                "owner_after_handoff": owner_after_handoff, "events": events,
+                "child": child, "child_activation": child_activation, "signal": signal,
+                "child_outcome": child_outcome,
+                "sibling_before": sibling_before, "sibling_after": sibling_after,
+                "model_calls": model.0.load(Ordering::SeqCst),
+            })
+        );
+        assert!(
+            handoff.is_err(),
+            "a revoked running fence must not create an infer"
+        );
+        assert_eq!(owner_after_handoff, owner_after_cancel);
+        assert_eq!(sibling_after, sibling_before);
+        assert!(
+            events.is_empty(),
+            "rejected handoff must not append its request"
+        );
+        assert!(child.is_none() && child_activation.is_none());
+        assert!(signal.is_none() && child_outcome.is_none());
+        assert_eq!(model.0.load(Ordering::SeqCst), 0);
+    }
+
+    async fn sqlite_contract(order: CommitOrder) {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("store.sqlite").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        contract(store, tmp, order).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_objective_cancel_closes_unadmitted_cold_infer_without_touching_sibling() {
+        sqlite_contract(CommitOrder::HandoffFirst { admitted: false }).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_objective_cancel_closes_admitted_cold_infer_without_touching_sibling() {
+        sqlite_contract(CommitOrder::HandoffFirst { admitted: true }).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_objective_cancel_rejects_late_cold_infer_handoff() {
+        sqlite_contract(CommitOrder::CancellationFirst).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_objective_cancel_preserves_terminal_infer_history() {
+        sqlite_contract(CommitOrder::HistoricalCancelledChild).await;
+    }
+
+    #[tokio::test]
+    async fn sqlite_objective_cancel_closes_both_levels_of_nested_cold_infer() {
+        sqlite_contract(CommitOrder::NestedHandoffFirst).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires MORPHZ_TEST_POSTGRES_URL pointing to an isolated disposable database"]
+    async fn postgres_objective_cancel_covers_both_cold_infer_commit_orders() {
+        let url = std::env::var("MORPHZ_TEST_POSTGRES_URL")
+            .expect("explicit disposable PostgreSQL URL required");
+        let store: Arc<dyn RuntimeStore> = Arc::new(
+            morphz::memory::postgres::PostgresStore::new(&url, 4)
+                .await
+                .unwrap(),
+        );
+        for order in [
+            CommitOrder::HandoffFirst { admitted: false },
+            CommitOrder::HandoffFirst { admitted: true },
+            CommitOrder::CancellationFirst,
+            CommitOrder::HistoricalCancelledChild,
+            CommitOrder::NestedHandoffFirst,
+        ] {
+            contract(store.clone(), tempfile::tempdir().unwrap(), order).await;
+        }
+    }
+}
+
 struct NoPhysicalCalls;
 
 #[async_trait::async_trait]

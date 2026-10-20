@@ -6982,7 +6982,11 @@ impl MorphzRuntime {
                 cancellation_error = self
                     .inner
                     .orchestrator
-                    .cancel_objective_evaluation(&current.id, &evaluation_id)
+                    .cancel_objective_evaluation(
+                        &current.id,
+                        &evaluation_id,
+                        Some(current.generation),
+                    )
                     .await
                     .err();
             }
@@ -7043,7 +7047,11 @@ impl MorphzRuntime {
                 cancellation_error = self
                     .inner
                     .orchestrator
-                    .cancel_objective_evaluation(&current.id, &evaluation_id)
+                    .cancel_objective_evaluation(
+                        &current.id,
+                        &evaluation_id,
+                        Some(current.generation),
+                    )
                     .await
                     .err();
             }
