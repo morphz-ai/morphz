@@ -327,3 +327,150 @@ fn strict_model_json_rejects_duplicates_fences_and_trailing_values() {
         json!({"ok":true,"lines":[1,"中文",null]})
     );
 }
+
+#[test]
+fn strict_model_json_preserves_numeric_tokens_and_literal_private_markers() {
+    use yao_lang::json::parse_strict_json;
+    for text in ["1", "1.5", "-1.5", "1e3", "-0", "18446744073709551616"] {
+        let expected = Value::Number(text.parse().unwrap());
+        assert_eq!(parse_strict_json(text).unwrap(), expected, "{text}");
+        assert_eq!(
+            parse_strict_json(&format!(r#"{{"nested":[{text}]}}"#)).unwrap(),
+            json!({"nested": [expected]}),
+            "{text}"
+        );
+    }
+    for key in [
+        "$serde_json::private::Number",
+        "$serde_json::private::RawValue",
+        "$yao",
+    ] {
+        for literal in [
+            json!("1.5"),
+            json!("not a number"),
+            json!("{\"x\":1}"),
+            Value::Null,
+            json!(1.5),
+            json!([1.5, true]),
+        ] {
+            // Construct the oracle directly: Value deserialization itself can
+            // interpret private serde_json keys under the unified features.
+            let expected = Value::Object(
+                [(key.to_owned(), literal.clone())].into_iter().collect(),
+            );
+            let text = format!(
+                "{{{}:{}}}",
+                serde_json::to_string(key).unwrap(),
+                serde_json::to_string(&literal).unwrap()
+            );
+            assert_eq!(parse_strict_json(&text).unwrap(), expected, "{text}");
+            let nested = format!(r#"[{text},{{"other":true}}]"#);
+            assert_eq!(
+                parse_strict_json(&nested).unwrap(),
+                Value::Array(vec![expected.clone(), json!({"other": true})]),
+                "{nested}"
+            );
+            let with_sibling = format!(
+                "{{{}:{},\"other\":true}}",
+                serde_json::to_string(key).unwrap(),
+                serde_json::to_string(&literal).unwrap()
+            );
+            let mut expected_fields = expected.as_object().unwrap().clone();
+            expected_fields.insert("other".to_owned(), Value::Bool(true));
+            assert_eq!(
+                parse_strict_json(&with_sibling).unwrap(),
+                Value::Object(expected_fields),
+                "{with_sibling}"
+            );
+        }
+    }
+}
+
+#[test]
+fn strict_model_json_keeps_grammar_duplicate_and_scalar_boundaries() {
+    use yao_lang::json::parse_strict_json;
+    for text in [
+        r#"{"a":1,"\u0061":2}"#,
+        r#"{"nested":[{"x":1.5,"x":2}]}"#,
+        r#"{"$serde_json::private::Number":"1","$serde_json::private::Number":"2"}"#,
+        r#"{"$serde_json::private::RawValue":"1","$serde_json::private::RawValue":"2"}"#,
+        r#""\ud800""#,
+        r#""\x41""#,
+        "[1,]",
+        r#"{"a":1,}"#,
+        "01",
+        "1.",
+        "1e",
+        "NaN",
+        "Infinity",
+        "\u{a0}1",
+        "1\u{a0}",
+        "1 2",
+        "```json\n1.5\n```",
+    ] {
+        assert!(parse_strict_json(text).is_err(), "{text:?}");
+    }
+    for (text, expected) in [
+        (r#""1.5""#, json!("1.5")),
+        (r#""true""#, json!("true")),
+        (r#""中文\n\uD83D\uDE00""#, json!("中文\n😀")),
+        ("true", Value::Bool(true)),
+        ("false", Value::Bool(false)),
+        ("null", Value::Null),
+        (" \r\n\t1.5 \r\n\t", json!(1.5)),
+    ] {
+        assert_eq!(parse_strict_json(text).unwrap(), expected, "{text}");
+    }
+}
+
+#[test]
+fn strict_model_json_retains_the_127_container_recursion_boundary() {
+    use yao_lang::json::parse_strict_json;
+    for mixed in [false, true] {
+        for object_only in [false, true] {
+            for leaf in ["0", "[]", "{}"] {
+                let leaf_depth = usize::from(leaf != "0");
+                let mut text = leaf.to_owned();
+                for index in 0..(127 - leaf_depth) {
+                    text = if object_only || (mixed && index % 2 == 0) {
+                        format!(r#"{{"child":{text}}}"#)
+                    } else {
+                        format!("[{text}]")
+                    };
+                }
+                assert!(parse_strict_json(&text).is_ok(), "127 containers");
+                assert!(
+                    parse_strict_json(&format!("[{text}]")).is_err(),
+                    "128 containers"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn strict_model_json_numeric_transport_still_obeys_typed_conversion() {
+    let p = program("(eval 1)");
+    let number = yao_lang::json::parse_strict_json("1.5").unwrap();
+    assert_eq!(
+        yao_lang::json::from_json(&Type::Float, number.clone(), &p.types, p.body.span)
+            .unwrap(),
+        number
+    );
+    let literal = yao_lang::json::parse_strict_json(
+        r#"{"$serde_json::private::Number":"1.5"}"#,
+    )
+    .unwrap();
+    assert!(yao_lang::json::from_json(
+        &Type::Float,
+        literal.clone(),
+        &p.types,
+        p.body.span,
+    )
+    .is_err());
+    assert_eq!(
+        yao_lang::json::from_json(&Type::Json, literal.clone(), &p.types, p.body.span)
+            .unwrap(),
+        literal
+    );
+}

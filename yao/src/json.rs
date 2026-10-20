@@ -15,62 +15,72 @@ type Definitions = BTreeMap<String, TypeDefinition>;
 /// Reject duplicate object keys instead of silently accepting the last value.
 /// Used for model result text; ordinary Value adapters cannot recover discarded keys.
 pub fn parse_strict_json(text: &str) -> Result<Value, serde_json::Error> {
-    use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
-    struct Strict(Value);
-    struct StrictVisitor;
-    impl<'de> Deserialize<'de> for Strict {
-        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-            d.deserialize_any(StrictVisitor)
-        }
+    use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
+    use serde_json::value::RawValue;
+
+    // serde_json's default budget rejects entry into the 128th container.
+    // RawValue scans iteratively without that budget; fresh child deserializers
+    // must therefore share this explicit limit instead of resetting it.
+    const MAX_CONTAINER_DEPTH: usize = 127;
+    struct ContainerVisitor {
+        depth: usize,
     }
-    impl<'de> Visitor<'de> for StrictVisitor {
-        type Value = Strict;
+    impl<'de> Visitor<'de> for ContainerVisitor {
+        type Value = Value;
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("one strict JSON value")
+            f.write_str("one strict JSON container")
         }
-        fn visit_unit<E: de::Error>(self) -> Result<Strict, E> {
-            Ok(Strict(Value::Null))
-        }
-        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Strict, E> {
-            Ok(Strict(v.into()))
-        }
-        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Strict, E> {
-            Ok(Strict(v.into()))
-        }
-        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Strict, E> {
-            Ok(Strict(v.into()))
-        }
-        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Strict, E> {
-            serde_json::Number::from_f64(v)
-                .map(|n| Strict(Value::Number(n)))
-                .ok_or_else(|| E::custom("nonfinite JSON number"))
-        }
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<Strict, E> {
-            Ok(Strict(v.into()))
-        }
-        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Strict, A::Error> {
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
             let mut values = Vec::new();
-            while let Some(Strict(value)) = seq.next_element()? {
-                values.push(value);
+            while let Some(raw) = seq.next_element::<&RawValue>()? {
+                values.push(materialize(raw, self.depth).map_err(de::Error::custom)?);
             }
-            Ok(Strict(Value::Array(values)))
+            Ok(Value::Array(values))
         }
-        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Strict, A::Error> {
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
             let mut values = Map::new();
             while let Some(key) = map.next_key::<String>()? {
                 if values.contains_key(&key) {
                     return Err(de::Error::custom(format!("duplicate JSON field {key:?}")));
                 }
-                let Strict(value) = map.next_value()?;
-                values.insert(key, value);
+                let raw = map.next_value::<&RawValue>()?;
+                values.insert(key, materialize(raw, self.depth).map_err(de::Error::custom)?);
             }
-            Ok(Strict(Value::Object(values)))
+            Ok(Value::Object(values))
         }
     }
-    let mut decoder = serde_json::Deserializer::from_str(text);
-    let Strict(value) = Strict::deserialize(&mut decoder)?;
-    decoder.end()?;
-    Ok(value)
+
+    fn materialize(raw: &RawValue, depth: usize) -> Result<Value, serde_json::Error> {
+        let text = raw.get();
+        match text.as_bytes().first() {
+            Some(b'{' | b'[') => {
+                if depth >= MAX_CONTAINER_DEPTH {
+                    return Err(de::Error::custom("recursion limit exceeded"));
+                }
+                let mut decoder = serde_json::Deserializer::from_str(text);
+                let visitor = ContainerVisitor { depth: depth + 1 };
+                let value = if text.starts_with('{') {
+                    decoder.deserialize_map(visitor)?
+                } else {
+                    decoder.deserialize_seq(visitor)?
+                };
+                decoder.end()?;
+                Ok(value)
+            }
+            Some(b'-' | b'0'..=b'9') => text.parse().map(Value::Number),
+            Some(b'"') => serde_json::from_str(text).map(Value::String),
+            Some(b't' | b'f') => serde_json::from_str(text).map(Value::Bool),
+            Some(b'n') => serde_json::from_str::<()>(text).map(|()| Value::Null),
+            _ => Err(de::Error::custom("expected a JSON value")),
+        }
+    }
+
+    // Select semantics by the original JSON token, never deserialize_any's
+    // synthetic map representation for arbitrary-precision numbers. Literal
+    // private Number/RawValue marker keys remain ordinary object fields.
+    // Borrowed subtrees avoid copies; rescanning is bounded by the depth above.
+    let raw = serde_json::from_str::<&RawValue>(text)?;
+    materialize(raw, 0)
 }
 
 /// Reject authority-bearing types, including those nested inside declared data types.
