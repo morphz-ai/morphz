@@ -13,6 +13,11 @@ on:
       - "LICENSE"
       - "rust-toolchain.toml"
       - "scripts/generate-third-party-licenses.py"
+      - "scripts/update-npm-license-records.py"
+      - "scripts/tests/test_npm_license_records.py"
+      - "scripts/tests/application-cognitive-ci-setup.test.mjs"
+      - "scripts/prune-orphan-test-sqlite.mjs"
+      - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
       - ".github/workflows/application.yml"
   pull_request:
     branches: [main]
@@ -26,6 +31,11 @@ on:
       - "LICENSE"
       - "rust-toolchain.toml"
       - "scripts/generate-third-party-licenses.py"
+      - "scripts/update-npm-license-records.py"
+      - "scripts/tests/test_npm_license_records.py"
+      - "scripts/tests/application-cognitive-ci-setup.test.mjs"
+      - "scripts/prune-orphan-test-sqlite.mjs"
+      - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
       - ".github/workflows/application.yml"
   workflow_dispatch:
 
@@ -36,7 +46,10 @@ jobs:
   web:
     name: Shared application and Web
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # This job includes the complete Node/PostgreSQL and browser inventories.
+    # Local full runs already exceed 30 minutes; keep every gate and allow
+    # installation/build time rather than cancelling the later regressions.
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: application
@@ -49,11 +62,21 @@ jobs:
           node-version: 24.13.0
           cache: npm
           cache-dependency-path: application/package-lock.json
+      - name: Select isolated cognitive dependency cache
+        run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Verify independent SDK cache preparation in every full-test job
+        run: node --test ../scripts/tests/application-cognitive-ci-setup.test.mjs
+      - name: Prepare exact independent SDK and author dependencies
+        run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
       - run: npm audit --omit=dev --audit-level=low
+      - name: Verify platform-independent npm license records
+        run: python3 -m unittest discover -s ../scripts/tests -p test_npm_license_records.py -v
       - run: python3 ../scripts/generate-third-party-licenses.py application --check
       - run: npm run build
-      - run: sudo apt-get update && sudo apt-get install -y postgresql
+      - run: sudo apt-get update && sudo apt-get install -y postgresql lsof
+      - name: Verify historical SQLite cleanup safety boundaries
+        run: node --test ../scripts/tests/prune-orphan-test-sqlite.test.mjs
       - run: npx playwright install --with-deps chromium
       - run: npm test
       - run: npx playwright install --with-deps chrome
@@ -69,7 +92,8 @@ jobs:
   storage-postgres:
     name: Application storage (PostgreSQL)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The managed entry runs the full inventory, not only the storage files.
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: application
@@ -110,7 +134,11 @@ jobs:
           node-version: 24.13.0
           cache: npm
           cache-dependency-path: application/package-lock.json
+      - name: Select isolated cognitive dependency cache
+        run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Prepare exact independent SDK and author dependencies
+        run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
       - run: sudo apt-get update && sudo apt-get install -y postgresql-16 postgresql-client-16
       - run: npx playwright install --with-deps chromium
       - run: npm run build
@@ -122,7 +150,8 @@ jobs:
   desktop:
     name: Embedded Desktop (macOS)
     runs-on: macos-latest
-    timeout-minutes: 30
+    # Full Node tests precede real Electron and local OCR acceptance.
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: application
@@ -135,7 +164,11 @@ jobs:
           node-version: 24.13.0
           cache: npm
           cache-dependency-path: application/package-lock.json
+      - name: Select isolated cognitive dependency cache
+        run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Prepare exact independent SDK and author dependencies
+        run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
       # Download the pinned runtime before timed UI tests, not on first launch.
       - run: node node_modules/electron/install.js
       - run: npm run build
@@ -196,11 +229,15 @@ jobs:
           cache: npm
           cache-dependency-path: application/package-lock.json
       - run: ../scripts/cargo-dev.sh build --locked --manifest-path ../Cargo.toml -p morphz --bin morphz
+      - name: Select isolated cognitive dependency cache
+        run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run build
       - run: sudo apt-get update && sudo apt-get install -y postgresql
       - name: Verify cognitive CI completion, omission and redaction gates
         run: npm test -- tests/ci-cognitive-runtime.test.ts
+      - name: Prepare exact independent SDK and author dependencies
+        run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
       - name: Require all four actual cognitive Runtime groups without omissions
         env:
           MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres,runtime

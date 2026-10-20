@@ -61,9 +61,26 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: morphz
+          POSTGRES_PASSWORD: morphz
+          POSTGRES_DB: morphz_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U morphz -d morphz_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       # Bound linker concurrency; dev/test debug settings live in Cargo.toml.
       CARGO_BUILD_JOBS: 2
+      # The full workspace includes PostgreSQL lifecycle conformance. Give it
+      # an owned job-local database instead of skipping it or borrowing state.
+      MORPHZ_TEST_POSTGRES_URL: postgres://morphz:morphz@127.0.0.1:5432/morphz_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
