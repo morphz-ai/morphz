@@ -15,6 +15,9 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  application-source-resources:
+    uses: ./.github/workflows/application-source-resources.yml
+
   session-io:
     uses: ./.github/workflows/session-io.yml
 
