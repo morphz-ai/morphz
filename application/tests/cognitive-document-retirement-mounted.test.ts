@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   authorDocument,
+  documentBootstrapFrame,
   documentBootstrapReport,
   prepareDocumentBootstrapBrowser,
   withDocumentBootstrap,
@@ -39,10 +40,7 @@ for (const synchronous of [true, false])
                 (item: any) => item.type === "retirement-subscriber-claimed",
               ),
           );
-          const frame = page
-            .frames()
-            .find((candidate) => candidate.url() === "about:srcdoc");
-          assert.ok(frame);
+          const frame = await documentBootstrapFrame(page);
           const result = await frame.evaluate(async (synchronous) => {
             const harness = Reflect.get(window, "retirementHarness");
             const root = document.documentElement,
@@ -118,10 +116,7 @@ test("ACTUAL Chromium: full native window returns a captured readonly busy code 
               (item: any) => item.type === "retirement-subscriber-claimed",
             ),
         );
-        const frame = page
-          .frames()
-          .find((candidate) => candidate.url() === "about:srcdoc");
-        assert.ok(frame);
+        const frame = await documentBootstrapFrame(page);
         const result = await frame.evaluate(() => {
           const harness = Reflect.get(window, "retirementHarness");
           for (let index = 0; index < 16; index++)

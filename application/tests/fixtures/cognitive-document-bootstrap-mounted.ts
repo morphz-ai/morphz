@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createServer } from "node:http";
-import { chromium, type Browser, type Page } from "@playwright/test";
+import {
+  chromium,
+  type Browser,
+  type Frame,
+  type Page,
+} from "@playwright/test";
 import {
   createCognitiveDocumentBootstrap,
   cognitiveDocumentBootstrapProtocol,
@@ -143,6 +148,111 @@ export async function prepareDocumentBootstrapBrowser(): Promise<Browser> {
     "Actual Chromium required; no skip/download.",
   );
   return chromium.launch({ headless: true, executablePath: executable });
+}
+
+type DocumentFixtureWrapper = "bootstrap" | "paired";
+type DocumentFixtureIsolation =
+  | { kind: "opaque" }
+  | {
+      kind: "controlled-sandbox-mutant";
+      sandbox: null | "allow-scripts allow-same-origin";
+    };
+
+/** Resolve the owned DOM frame, not Playwright's possibly empty cached CDP URL. */
+export async function documentBootstrapWrapper(
+  page: Page,
+  kind: DocumentFixtureWrapper = "bootstrap",
+): Promise<Frame> {
+  const id = kind === "bootstrap" ? "trusted-wrapper" : "paired-wrapper";
+  const path = kind === "bootstrap" ? "/trusted-wrapper" : "/paired-wrapper";
+  const locator = page.locator(`iframe#${id}`);
+  assert.equal(await locator.count(), 1, "Exactly one owned outer iframe.");
+  assert.equal(await locator.getAttribute("src"), path);
+  const element = await locator.elementHandle();
+  assert.ok(element);
+  try {
+    const frame = await element.contentFrame();
+    assert.ok(frame, "The owned outer iframe has its actual Frame.");
+    assert.equal(frame.parentFrame(), page.mainFrame());
+    assert.equal(
+      await frame.evaluate(() => location.href),
+      new URL(path, page.url()).href,
+      "The outer document is the exact fixture route.",
+    );
+    return frame;
+  } finally {
+    await element.dispose();
+  }
+}
+
+export async function documentBootstrapFrame(
+  page: Page,
+  options: {
+    wrapper?: DocumentFixtureWrapper;
+    isolation?: DocumentFixtureIsolation;
+  } = {},
+): Promise<Frame> {
+  const wrapper = await documentBootstrapWrapper(page, options.wrapper);
+  const locator = wrapper.locator("iframe");
+  assert.equal(await locator.count(), 1, "Exactly one original inner iframe.");
+  const isolation = options.isolation ?? { kind: "opaque" };
+  let expectedSandbox: string | null = "allow-scripts";
+  let expectedParentAccess = false;
+  if (isolation.kind === "controlled-sandbox-mutant") {
+    assert.ok(
+      isolation.sandbox === null ||
+        isolation.sandbox === "allow-scripts allow-same-origin",
+      "Only the two explicit sandbox positive controls may weaken isolation.",
+    );
+    expectedSandbox = isolation.sandbox;
+    expectedParentAccess = true;
+  } else {
+    assert.equal(
+      isolation.kind,
+      "opaque",
+      "Unknown isolation mode is rejected.",
+    );
+  }
+  assert.equal(
+    await locator.getAttribute("sandbox"),
+    expectedSandbox,
+    "Only the declared sandbox mode is accepted.",
+  );
+  assert.equal(await locator.getAttribute("src"), null);
+  assert.ok(
+    await locator.getAttribute("srcdoc"),
+    "Original srcdoc bytes exist.",
+  );
+  const element = await locator.elementHandle();
+  assert.ok(element);
+  try {
+    const frame = await element.contentFrame();
+    assert.ok(frame, "The original inner iframe has its actual Frame.");
+    assert.equal(
+      frame.parentFrame(),
+      wrapper,
+      "Never select an unrelated frame.",
+    );
+    const state = await frame.evaluate(() => ({
+      href: location.href,
+      documentUrl: document.URL,
+      origin: location.origin,
+      parentAccess: (() => {
+        try {
+          return !!parent.document;
+        } catch {
+          return false;
+        }
+      })(),
+    }));
+    assert.equal(state.href, "about:srcdoc");
+    assert.equal(state.documentUrl, "about:srcdoc");
+    if (isolation.kind === "opaque") assert.equal(state.origin, "null");
+    assert.equal(state.parentAccess, expectedParentAccess);
+    return frame;
+  } finally {
+    await element.dispose();
+  }
 }
 
 export async function withDocumentBootstrap(

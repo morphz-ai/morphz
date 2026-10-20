@@ -6,14 +6,17 @@ import { buildSync } from "esbuild";
 import {
   chromium,
   type Browser,
+  type BrowserContext,
   type Frame,
   type Page,
 } from "@playwright/test";
 import {
   createCognitiveDocumentBootstrap,
   cognitiveDocumentBootstrapProtocol,
+  type CognitiveDocumentBootstrap,
 } from "../../packages/application/src/cognitive-document-bootstrap.js";
 import { appContentSecurityPolicy } from "../../packages/core/src/resource-policy.js";
+import { documentBootstrapFrame } from "./cognitive-document-bootstrap-mounted.js";
 
 const productionHostCode = buildSync({
   stdin: {
@@ -47,10 +50,14 @@ const author = `<!doctype html><html><head><meta charset="utf-8"><title>Paired n
 
 const parentCode = String.raw`(() => {
  const protocol=__PROTOCOL__,proof=__PROOF__;
- const hostWires=[],hostPosts=[];let peer=null,bridge=null,ready=0,retired=0,peers=0;
+ const hostWires=[],hostPosts=[],hostFrames=[];let peer=null,bridge=null,ready=0,retired=0,peers=0;
  const wrapper=document.createElement("iframe");wrapper.id="paired-wrapper";wrapper.src="/paired-wrapper";
  function attach(){
   if(!peer||bridge)throw Error("Missing/unexpected actual native peer");
+  // Transparent receipt observation on the original transferred peer. Do not
+  // start, block, replace or forward its native delivery; the production helper
+  // below alone starts this endpoint and generates its actual credits.
+  peer.addEventListener("message",event=>hostFrames.push(structuredClone(event.data)));
   const originalPost=peer.postMessage;
   peer.postMessage=function(...args){const result=Reflect.apply(originalPost,this,args);hostPosts.push(structuredClone(args[0]));return result;};
   bridge=pairedPortProduction.createCognitiveDocumentPort(peer,{
@@ -67,40 +74,20 @@ const parentCode = String.raw`(() => {
   releasePeer(){attach();},
   send(text){if(!bridge)throw Error("Actual peer not attached");bridge.send(text);},
   dispose(){bridge?.dispose();},
-  report(){return{hostWires:[...hostWires],hostPosts:structuredClone(hostPosts),ready,retired,peers,attached:bridge!==null};}
+  report(){return{hostWires:[...hostWires],hostPosts:structuredClone(hostPosts),hostFrames:structuredClone(hostFrames),ready,retired,peers,attached:bridge!==null};}
  };
  document.body.append(wrapper);
 })();`;
 
-/** CONTROLLED native receive-start gate, installed in only the opaque srcdoc
- * realm before the production prefix captures native methods. The actual port
- * is lexical here, never exposed to author code. No message is fabricated,
- * manually acknowledged or delivered: release invokes Chromium's saved start.
- * This instrumentation is not a production scheduling/lifecycle mechanism. */
-const documentGate = String.raw`(() => {
- if(location.href!=="about:srcdoc")return;
- const nativeStart=MessagePort.prototype.start,nativePost=MessagePort.prototype.postMessage;
- const apply=Reflect.apply,clone=structuredClone.bind(window);
- let held=__HOLD_DOC__,target=null,heldStarts=0;
- const posts=[];
- MessagePort.prototype.start=function(...args){
-  if(target===null)target=this;
-  if(this===target&&held){heldStarts++;return;}
-  return apply(nativeStart,this,args);
- };
- MessagePort.prototype.postMessage=function(...args){
-  const result=apply(nativePost,this,args);
-  posts.push(clone(args[0]));return result;
- };
- window.pairedNativeGate={
-  release(){if(!target||!held)throw Error("Missing/unexpected native receive-start hold");held=false;MessagePort.prototype.start=nativeStart;apply(nativeStart,target,[]);},
-  report(){return{held,heldStarts,posts:clone(posts)};}
- };
-})();`;
-
+export type NativePacket = {
+  kind: string;
+  text?: string;
+  sequence?: number;
+};
 export type PairedHostReport = {
   hostWires: string[];
-  hostPosts: Array<{ kind: string; text?: string; sequence?: number }>;
+  hostPosts: NativePacket[];
+  hostFrames: NativePacket[];
   ready: number;
   retired: number;
   peers: number;
@@ -109,9 +96,6 @@ export type PairedHostReport = {
 export type PairedDocumentReport = {
   received: string[];
   callbackRetired: boolean;
-  held: boolean;
-  heldStarts: number;
-  posts: Array<{ kind: string; text?: string; sequence?: number }>;
 };
 export async function pairedBrowser(): Promise<Browser> {
   const executablePath =
@@ -128,19 +112,46 @@ export async function hostReport(page: Page): Promise<PairedHostReport> {
 export async function documentReport(
   frame: Frame,
 ): Promise<PairedDocumentReport> {
-  return frame.evaluate(() => ({
-    ...Reflect.get(window, "pairedAuthor").report(),
-    ...Reflect.get(window, "pairedNativeGate").report(),
-  }));
+  return frame.evaluate(() => Reflect.get(window, "pairedAuthor").report());
 }
+type PairedWork = (page: Page, frame: Frame) => Promise<void>;
+
+/** Production fixed-wrapper end-to-end path. There is no pre-script injection,
+ * wrapper rewrite, native child hook or synthetic transport acknowledgement. */
 export async function withPairedDocument(
   browser: Browser,
-  options: { holdHost?: boolean; holdDocument?: boolean },
-  work: (page: Page, frame: Frame) => Promise<void>,
+  options: { holdHost?: boolean },
+  work: PairedWork,
+) {
+  return mountPairedDocument(browser, options, work);
+}
+
+/** Explicit separate test boundary. Only the CONTROLLED prefix fixture may
+ * supply a rewritten resource; this does not claim unmodified-wrapper E2E. */
+export async function withControlledPairedResource(
+  browser: Browser,
+  options: { holdHost?: boolean },
+  rewrite: (original: CognitiveDocumentBootstrap) => Uint8Array,
+  work: PairedWork,
+) {
+  return mountPairedDocument(browser, options, work, rewrite);
+}
+
+async function mountPairedDocument(
+  browser: Browser,
+  options: { holdHost?: boolean },
+  work: PairedWork,
+  rewrite?: (original: CognitiveDocumentBootstrap) => Uint8Array,
 ) {
   const proof = randomUUID();
   const resource = await createCognitiveDocumentBootstrap(author, proof);
-  const wrapperBytes = new Uint8Array(resource.bytes);
+  const originalWrapperBytes = new Uint8Array(resource.bytes);
+  const wrapperBytes = rewrite ? rewrite(resource) : originalWrapperBytes;
+  assert.equal(
+    Buffer.from(wrapperBytes).equals(Buffer.from(originalWrapperBytes)),
+    !rewrite,
+    "Only the explicitly CONTROLLED prefix harness may alter wrapper bytes.",
+  );
   assert.deepEqual(resource.authorBytes, new TextEncoder().encode(author));
   assert.equal(
     resource.authorSha256,
@@ -194,28 +205,33 @@ export async function withPairedDocument(
   });
   const address = server.address();
   assert.ok(address && typeof address !== "string");
-  const context = await browser.newContext();
-  await context.addInitScript(
-    documentGate.replace(
-      "__HOLD_DOC__",
-      JSON.stringify(options.holdDocument ?? false),
-    ),
-  );
-  const page = await context.newPage();
-  page.setDefaultTimeout(5000);
-  const errors: string[] = [];
-  page.on("pageerror", (error) => errors.push(String(error)));
-  const actualWrapper = page.waitForResponse((response) =>
-    response.url().endsWith("/paired-wrapper"),
-  );
+  let context: BrowserContext | undefined;
+  const failures: unknown[] = [];
   try {
+    context = await browser.newContext();
+    const page = await context.newPage();
+    page.setDefaultTimeout(5000);
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(String(error)));
+    const actualWrapper = page.waitForResponse((response) =>
+      response.url().endsWith("/paired-wrapper"),
+    );
+    // Retain the original wait for the assertion below while preventing an
+    // unrelated navigation failure from producing an unhandled rejection.
+    void actualWrapper.catch(() => {});
     await page.goto(`http://127.0.0.1:${address.port}/`);
     const response = await actualWrapper;
     assert.equal(response.status(), 200);
     assert.deepEqual(
       new Uint8Array(await response.body()),
       wrapperBytes,
-      "The actually loaded fixed wrapper bytes were not mutated by the fixture.",
+      rewrite
+        ? "The CONTROLLED resource loaded exactly the explicitly composed test bytes."
+        : "The actually loaded fixed wrapper bytes were not mutated by the fixture.",
+    );
+    assert.equal(
+      response.headers()["permissions-policy"],
+      resource.permissionsPolicy,
     );
     assert.equal(
       response.headers()["content-security-policy"],
@@ -224,24 +240,33 @@ export async function withPairedDocument(
     await page.waitForFunction(
       () => Reflect.get(window, "pairedHost")?.report().peers === 1,
     );
-    const frame = page
-      .frames()
-      .find((candidate) => candidate.url() === "about:srcdoc");
-    assert.ok(frame);
+    const frame = await documentBootstrapFrame(page, { wrapper: "paired" });
     await frame.waitForFunction(
       () =>
         document.readyState === "complete" &&
-        !!Reflect.get(window, "pairedAuthor") &&
-        !!Reflect.get(window, "pairedNativeGate"),
+        !!Reflect.get(window, "pairedAuthor"),
     );
     await work(page, frame);
     assert.equal(servedWrapper, 1);
     assert.deepEqual(errors, []);
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await context.close();
-    server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    try {
+      await context?.close();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    } catch (error) {
+      failures.push(error);
+    }
   }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "Paired assertions and cleanup failed.");
 }

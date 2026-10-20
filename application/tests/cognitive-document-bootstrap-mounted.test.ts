@@ -8,7 +8,9 @@ import {
 import { parseWireJson } from "../packages/cognitive-app-sdk/src/protocol.js";
 import {
   authorDocument,
+  documentBootstrapFrame,
   documentBootstrapReport,
+  documentBootstrapWrapper,
   prepareDocumentBootstrapBrowser,
   withDocumentBootstrap,
 } from "./fixtures/cognitive-document-bootstrap-mounted.js";
@@ -22,9 +24,7 @@ async function original(page: Page): Promise<Frame> {
           value.type === "delivered" && value.kind === "init",
       ),
   );
-  const frame = page.frames().find((item) => item.url() === "about:srcdoc");
-  assert.ok(frame, "Actual opaque srcdoc exists.");
-  return frame;
+  return documentBootstrapFrame(page);
 }
 async function host(page: Page, method: string, parameter?: unknown) {
   await page.evaluate(
@@ -247,10 +247,7 @@ test(
               await frame.locator("#original").textContent(),
               "原作者 😀",
             );
-            const wrapper = page
-              .frames()
-              .find((frame) => frame.url().endsWith("/trusted-wrapper"));
-            assert.ok(wrapper);
+            const wrapper = await documentBootstrapWrapper(page);
             const decoded = await wrapper.evaluate(async () => {
               const script = document.querySelector("script")!.textContent!;
               const payload = /atob\("([A-Za-z0-9+/=]+)"\)/.exec(script)![1]!;
@@ -563,15 +560,14 @@ test(
               },
             },
             async (page, evidence) => {
-              const wrapper = page
-                .frames()
-                .find((frame) => frame.url().endsWith("/trusted-wrapper"));
-              assert.ok(wrapper);
-              await wrapper.locator("iframe").waitFor();
-              const frame = wrapper
-                .childFrames()
-                .find((item) => item.url() === "about:srcdoc");
-              assert.ok(frame);
+              await assert.rejects(
+                documentBootstrapFrame(page),
+                /Only the declared sandbox mode is accepted/,
+                "The default locator must reject this deliberate isolation mutant.",
+              );
+              const frame = await documentBootstrapFrame(page, {
+                isolation: { kind: "controlled-sandbox-mutant", sandbox },
+              });
               await frame.locator("#javascript-rewrite-link").click();
               await page.waitForFunction(
                 () =>

@@ -3,6 +3,7 @@ import test from "node:test";
 import type { Page } from "@playwright/test";
 import {
   authorDocument,
+  documentBootstrapFrame,
   documentBootstrapReport,
   prepareDocumentBootstrapBrowser,
   withDocumentBootstrap,
@@ -14,11 +15,7 @@ async function authorFrame(page: Page) {
       .report()
       .observations.some((item: any) => item.type === "stub-claimed"),
   );
-  const frame = page
-    .frames()
-    .find((candidate) => candidate.url() === "about:srcdoc");
-  assert.ok(frame);
-  return frame;
+  return documentBootstrapFrame(page);
 }
 
 async function deliveredBarrier(page: Page, id: string) {
@@ -50,10 +47,7 @@ test("ACTUAL Chromium: native wire egress is bounded even when author bypasses S
             .report()
             .observations.some((item: any) => item.type === "stub-claimed"),
         );
-        const frame = page
-          .frames()
-          .find((candidate) => candidate.url() === "about:srcdoc");
-        assert.ok(frame);
+        const frame = await documentBootstrapFrame(page);
         const burst = await frame.evaluate(() => {
           const stub = Reflect.get(window, "documentSdkStub");
           let sent = 0,
@@ -284,10 +278,7 @@ for (const mutant of [false, true])
                 .length === 1,
           );
           assert.deepEqual((await documentBootstrapReport(page)).credits, [1]);
-          const frame = page
-            .frames()
-            .find((candidate) => candidate.url() === "about:srcdoc");
-          assert.ok(frame);
+          const frame = await documentBootstrapFrame(page);
           await page.evaluate(() => {
             const host = Reflect.get(window, "documentBootstrapHost");
             host.emit({
