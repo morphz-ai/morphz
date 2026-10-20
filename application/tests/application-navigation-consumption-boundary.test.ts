@@ -2426,8 +2426,14 @@ function currentConsumptionCore(
     owner = parsed.get("Owner")!,
     adapter = parsed.get("Adapter")!;
   withRule("navigation-host-owner-seams", () => {
+    // The browser port now reads the post-launch, identity-bound projection.
+    // Keep the historical archive intact; adapt only this renamed port in
+    // the current contract. Its actual consumer is checked below.
     const original = parse({
-      Original: historicalNavigationSource("owner"),
+      Original: historicalNavigationSource("owner").replace(
+        "readCapturedInstance",
+        "readCurrentInstance",
+      ),
     }).get("Original")!;
     for (const name of [
       "canStart",
@@ -2455,7 +2461,7 @@ function currentConsumptionCore(
     assert.deepEqual(
       currentRecipe(owner, factory.parameters[0]!),
       currentRecipe(original, oldFactory.parameters[0]!),
-      "actual captured navigation parameters",
+      "actual navigation parameters with the current instance port",
     );
     const captures = factory.body!.statements.filter(
       (node) =>

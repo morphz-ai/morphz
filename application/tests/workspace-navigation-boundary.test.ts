@@ -1107,11 +1107,20 @@ function ownership(
       application.get("historyVisible")?.getText() === "historyVisible" &&
       application.get("personalDesk")?.getText().replace(/\s+/g, "") ===
         '()=>personalSpace("desk")' &&
-      application.get("readCapturedInstance")?.getText().replace(/\s+/g, "") ===
-        "(id)=>client.boot?.workspace.applicationInstances.find((i)=>i.id===id)" &&
+      (current
+        ? application
+            .get("readCurrentInstance")
+            ?.getText()
+            .replace(/\s+/g, "") ===
+          "(id)=>client.getSnapshot()?.workspace.applicationInstances.find((i)=>i.id===id)"
+        : application
+            .get("readCapturedInstance")
+            ?.getText()
+            .replace(/\s+/g, "") ===
+          "(id)=>client.boot?.workspace.applicationInstances.find((i)=>i.id===id)") &&
       application.get("selectAllContent")?.getText().replace(/\s+/g, "") ===
         '()=>setContentScope("all")',
-    "application-actions-use-explicit-captured-facts-not-latest-snapshots",
+    "application-actions-use-identity-bound-post-command-snapshot",
   );
   for (const name of [
     "readingLibrary",
@@ -1766,8 +1775,12 @@ test("navigation gate rejects constructor work, extra writer, setter bag and bro
     app + '\nwriteLocal("preferences", {});',
     changed(
       app,
-      "(id) =>\n        client.boot?.workspace.applicationInstances.find((i) => i.id === id)",
-      "(id) => client.getSnapshot().workspace.applicationInstances.find((i) => i.id === id)",
+      lane === "historical"
+        ? "(id) =>\n        client.boot?.workspace.applicationInstances.find((i) => i.id === id)"
+        : "(id) =>\n        client\n          .getSnapshot()\n          ?.workspace.applicationInstances.find((i) => i.id === id)",
+      lane === "historical"
+        ? "(id) => client.getSnapshot().workspace.applicationInstances.find((i) => i.id === id)"
+        : "(id) => client.boot?.workspace.applicationInstances.find((i) => i.id === id)",
     ),
     changed(
       app,
@@ -2038,7 +2051,7 @@ nodeTest(
       captureCommit: host.captureCommit, prefer: continueNavigation,
       writePreferences: host.writePreferences, recordContentVisit: host.recordContentVisit },
     application: { historyVisible, personalDesk: () => personalSpace("desk"),
-      readCapturedInstance: (id) => client.boot?.workspace.applicationInstances.find((i) => i.id === id),
+      readCurrentInstance: (id) => client.getSnapshot()?.workspace.applicationInstances.find((i) => i.id === id),
       selectAllContent: () => setContentScope("all") }
   }} /><WorkspaceTopbar`;
     const secondImport = changed(

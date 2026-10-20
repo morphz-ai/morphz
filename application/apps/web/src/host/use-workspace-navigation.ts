@@ -332,7 +332,7 @@ export function createWorkspaceNavigationCommands<
   application: {
     historyVisible: boolean;
     personalDesk(): Workspace["projects"][number] | undefined;
-    readCapturedInstance(id: string): ApplicationInstance | undefined;
+    readCurrentInstance(id: string): ApplicationInstance | undefined;
     selectAllContent(): void;
   };
   continuation: Continuation<P>;
@@ -984,9 +984,10 @@ export function createWorkspaceNavigationCommands<
         );
       if (!permitted(intent, destination)) return;
       if (url) {
-        // The port retains App's captured client.boot lookup. It is not a
-        // refreshed Client snapshot or a second authorization read.
-        const instance = application.readCapturedInstance(result.entityId);
+        // execute() has refreshed the identity-bound projection. A React
+        // render's captured boot still has the pre-launch revision, which
+        // would make this immediate CAS fail even without a competing write.
+        const instance = application.readCurrentInstance(result.entityId);
         if (instance) {
           if (
             instance.workspaceId !== project.id ||

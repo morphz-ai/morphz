@@ -905,8 +905,10 @@ function WorkspaceApp({
     application: {
       historyVisible,
       personalDesk: () => personalSpace("desk"),
-      readCapturedInstance: (id) =>
-        client.boot?.workspace.applicationInstances.find((i) => i.id === id),
+      readCurrentInstance: (id) =>
+        client
+          .getSnapshot()
+          ?.workspace.applicationInstances.find((i) => i.id === id),
       selectAllContent: () => setContentScope("all"),
     },
   });

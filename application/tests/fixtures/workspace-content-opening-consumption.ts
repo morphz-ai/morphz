@@ -89,7 +89,7 @@ const { travel, openObject, openUser, openReading, openScriptLocation,
     captureCommit: host.captureCommit, prefer: continueNavigation,
     writePreferences: host.writePreferences, recordContentVisit: host.recordContentVisit },
   application: { historyVisible, personalDesk: () => personalSpace("desk"),
-    readCapturedInstance: (id) => client.boot?.workspace.applicationInstances.find((i) => i.id === id),
+    readCurrentInstance: (id) => client.getSnapshot()?.workspace.applicationInstances.find((i) => i.id === id),
     selectAllContent: () => setContentScope("all") }
 });
 `;

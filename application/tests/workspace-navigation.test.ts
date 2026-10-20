@@ -272,7 +272,7 @@ function fixture(change: Partial<NavigationPreferences> = {}) {
     application: {
       historyVisible: false,
       personalDesk: () => undefined,
-      readCapturedInstance: () => undefined,
+      readCurrentInstance: () => undefined,
       selectAllContent() {
         events.push(["all-content"]);
       },

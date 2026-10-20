@@ -282,11 +282,14 @@ test(
     const cacheDir = mkdtempSync(
       join(tmpdir(), "morphz-navigation-hook-cache-"),
     );
-    context.after(() => rmSync(cacheDir, { recursive: true, force: true }));
     const server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
+      optimizeDeps: {
+        noDiscovery: true,
+        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      },
       plugins: [
         react(),
         {
@@ -314,12 +317,16 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
-    const browser = await chromium.launch({
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    context.after(async () => {
+      await browser?.close();
+      await server.close();
+      rmSync(cacheDir, { recursive: true, force: true });
+    });
+    browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
     await server.listen();
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
@@ -330,9 +337,10 @@ test(
         report: () => Promise<Report>,
       ) => Promise<void>,
     ) {
-      const page = await browser.newPage(),
+      const page = await browser!.newPage(),
         errors: string[] = [],
         queries: string[] = [];
+      page.setDefaultNavigationTimeout(60_000);
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
         if (message.type() === "error") errors.push(message.text());

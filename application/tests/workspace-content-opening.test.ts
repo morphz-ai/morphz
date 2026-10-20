@@ -253,7 +253,7 @@ function fixture(
       personalDesk() {
         return undefined;
       },
-      readCapturedInstance() {
+      readCurrentInstance() {
         return undefined;
       },
       selectAllContent() {},

@@ -341,7 +341,7 @@ function fixture(mode: Mode, scenario: Scenario = {}) {
       application: {
         historyVisible: scenario.historyVisible ?? true,
         personalDesk,
-        readCapturedInstance: (id) =>
+        readCurrentInstance: (id) =>
           client.boot?.workspace.applicationInstances.find((i) => i.id === id),
         selectAllContent,
       },

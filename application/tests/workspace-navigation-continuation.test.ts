@@ -238,7 +238,7 @@ function fixture(active?: "reader" | "browser") {
       historyVisible: true,
       personalDesk: () =>
         workspace.projects.find((value) => value.id === "desk-A"),
-      readCapturedInstance: (id) =>
+      readCurrentInstance: (id) =>
         workspace.applicationInstances.find((value) => value.id === id),
       selectAllContent() {
         events.push("all-content");
@@ -523,7 +523,9 @@ test("Reader preserves original default-current completion and exact captured CA
         type: "set-application-state",
         instanceId: "reader-A",
         expectedRevision: 3,
-        state: { retained: "original", artifactId: "" },
+        // b091cd84 clears the previous book/location when returning to the
+        // library; unrelated stale Reader state must not survive that reset.
+        state: { artifactId: "" },
       },
     ]);
     f.raw.beginIntent();
