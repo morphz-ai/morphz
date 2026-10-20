@@ -170,6 +170,8 @@ class InheritedObjectEvidence(unittest.TestCase):
             with self.subTest(error=failure), \
                  patch.object(worker.os, "scandir", return_value=nullcontext(entries)), \
                  patch.object(worker.os, "fstat", side_effect=[first, failure]) as inspect, \
+                 patch.object(worker, "socket_type_evidence", return_value={
+                     "result": -1, "errno": errno.EACCES, "socket_type": None}), \
                  patch.object(worker.os, "dup") as duplicate, \
                  self.assertRaises(OSError):
                 worker.inherited_fd_check(TARGET, NONCE)
@@ -181,6 +183,85 @@ class InheritedObjectEvidence(unittest.TestCase):
              self.assertRaisesRegex(RuntimeError, "unexpected proc FD entry"):
             worker.inherited_fd_check(TARGET, NONCE)
         inspect.assert_not_called()
+
+    def test_denied_file_metadata_requires_positive_not_socket_evidence(self):
+        entries = [SimpleNamespace(name="2"), SimpleNamespace(name="64")]
+        absent = SimpleNamespace(st_dev=9, st_ino=1000, st_mode=stat.S_IFSOCK)
+        evidence = {"result": -1, "errno": errno.ENOTSOCK, "socket_type": None}
+        with patch.object(worker.os, "scandir", return_value=nullcontext(entries)), \
+             patch.object(worker.os, "fstat", side_effect=[
+                 PermissionError(errno.EACCES, "file metadata denied"), absent]), \
+             patch.object(worker, "socket_type_evidence", return_value=evidence) as inspect, \
+             patch.object(worker.os, "dup") as duplicate:
+            result = worker.inherited_fd_check(TARGET, NONCE)
+        inspect.assert_called_once_with(2)
+        duplicate.assert_not_called()
+        self.assertTrue(result["fds"][0]["proven_not_socket"])
+        self.assertEqual(result["fds"][0]["inspection"]["fstat_errno"], errno.EACCES)
+        self.assertEqual(result["fds"][0]["inspection"]["so_type"], evidence)
+        self.assertEqual(result["matching_fds"], [])
+        self.assertEqual([row["fd"] for row in result["fds"]], [2, 64])
+
+    def test_denied_socket_identity_or_unavailable_probe_still_aborts(self):
+        for evidence in (
+            {"result": 0, "errno": 0, "socket_type": socket.SOCK_STREAM},
+            {"result": -1, "errno": errno.EACCES, "socket_type": None},
+            {"result": -1, "errno": errno.EBADF, "socket_type": None},
+            {"result": -1, "errno": errno.EPERM, "socket_type": None},
+            RuntimeError("probe unavailable"),
+        ):
+            failure = PermissionError(errno.EACCES, "identity denied")
+            with self.subTest(evidence=evidence), \
+                 patch.object(worker.os, "fstat", side_effect=failure), \
+                 patch.object(worker, "socket_type_evidence",
+                     side_effect=evidence if isinstance(evidence, Exception) else None,
+                     return_value=evidence), self.assertRaises(PermissionError) as caught:
+                worker.descriptor_identity(64)
+            self.assertIs(caught.exception, failure)
+            self.assertEqual(failure.fd_inspection["fd"], 64)
+            self.assertEqual(failure.fd_inspection["fstat_errno"], errno.EACCES)
+
+    def test_real_non_socket_is_proved_without_closing_or_duplicating_fd(self):
+        with tempfile.TemporaryFile() as stream:
+            fd = stream.fileno()
+            evidence = worker.socket_type_evidence(fd)
+            self.assertEqual(evidence, {"result": -1, "errno": errno.ENOTSOCK, "socket_type": None})
+            with patch.object(worker.os, "fstat", side_effect=PermissionError(errno.EACCES, "synthetic")), \
+                 patch.object(worker.os, "dup") as duplicate:
+                row = worker.descriptor_identity(fd)
+            duplicate.assert_not_called()
+            self.assertTrue(row["proven_not_socket"])
+            stream.write(b"still open")
+
+    def test_real_socket_cannot_hide_behind_metadata_denial(self):
+        host, endpoint = socket.socketpair()
+        try:
+            self.assertEqual(worker.socket_type_evidence(endpoint.fileno()),
+                             {"result": 0, "errno": 0, "socket_type": socket.SOCK_STREAM})
+            with patch.object(worker.os, "fstat", side_effect=PermissionError(errno.EACCES, "synthetic")), \
+                 self.assertRaises(PermissionError):
+                worker.descriptor_identity(endpoint.fileno())
+            endpoint.sendall(b"still open")
+            self.assertEqual(host.recv(10), b"still open")
+        finally:
+            endpoint.close()
+            host.close()
+
+    def test_real_closed_descriptor_is_not_positive_non_socket_evidence(self):
+        stream = tempfile.TemporaryFile()
+        fd = stream.fileno()
+        stream.close()
+        self.assertEqual(worker.socket_type_evidence(fd),
+                         {"result": -1, "errno": errno.EBADF, "socket_type": None})
+
+    def test_no_descriptor_class_or_number_is_unconditionally_exempted(self):
+        for fd in (0, 1, 2, 3, 64, 999):
+            failure = PermissionError(errno.EACCES, "cannot inspect")
+            with self.subTest(fd=fd), patch.object(worker.os, "fstat", side_effect=failure), \
+                 patch.object(worker, "socket_type_evidence", return_value={
+                     "result": -1, "errno": errno.EACCES, "socket_type": None}), \
+                 self.assertRaises(PermissionError):
+                worker.descriptor_identity(fd)
 
     def test_source_places_snapshots_inside_real_barriers_and_eof_after_exit(self):
         source = (HERE / "controller.py").read_text()
@@ -373,7 +454,9 @@ class WorkerExceptionDiagnostics(unittest.TestCase):
             original = PermissionError(errno.EACCES, "synthetic denied",
                                        "/proc/self/fd/64", None, "/synthetic/second")
             with self.subTest(operation=operation), \
-                 patch.object(worker, "os", wraps=os) as worker_os:
+                 patch.object(worker, "os", wraps=os) as worker_os, \
+                 patch.object(worker, "socket_type_evidence", return_value={
+                     "result": -1, "errno": errno.EACCES, "socket_type": None}):
                 worker_os.scandir.return_value = nullcontext(entries)
                 failing = worker_os.scandir if operation == "scandir" else worker_os.fstat
                 failing.side_effect = original
@@ -390,6 +473,9 @@ class WorkerExceptionDiagnostics(unittest.TestCase):
             self.assertIn("worker.py", detail["traceback"])
             self.assertIn("os." + operation, detail["traceback"])
             self.assertIn("PermissionError", detail["traceback"])
+            if operation == "fstat":
+                self.assertEqual(detail["fd_inspection"]["fd"], 64)
+                self.assertEqual(detail["fd_inspection"]["fstat_errno"], errno.EACCES)
             self.assertFalse(controller.inherited_fd_closed(
                 True, True, None, {"eof": True, "received_hex": "", "error": None}))
 

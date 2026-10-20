@@ -2,6 +2,7 @@
 
 import argparse
 import ctypes
+import errno
 import json
 import os
 from pathlib import Path
@@ -82,6 +83,48 @@ def unix_boundary(name):
     return {"abstract": abstract, "anonymous": anonymous}
 
 
+def socket_type_evidence(fd):
+    """Inspect the existing descriptor without opening, duplicating or closing it."""
+    library = ctypes.CDLL(None, use_errno=True)
+    operation = library.getsockopt
+    operation.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                          ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
+    operation.restype = ctypes.c_int
+    value = ctypes.c_int(-1)
+    length = ctypes.c_uint(ctypes.sizeof(value))
+    ctypes.set_errno(0)
+    result = operation(fd, socket.SOL_SOCKET, socket.SO_TYPE,
+                       ctypes.byref(value), ctypes.byref(length))
+    error = ctypes.get_errno() if result != 0 else 0
+    if result == 0 and length.value != ctypes.sizeof(value):
+        raise RuntimeError("unexpected SO_TYPE result size")
+    return {"result": result, "errno": error, "socket_type": value.value if result == 0 else None}
+
+
+def descriptor_identity(fd):
+    try:
+        info = os.fstat(fd)
+        return {"fd": fd, "dev": info.st_dev,
+                "ino": info.st_ino, "kind": stat.S_IFMT(info.st_mode)}
+    except OSError as error:
+        diagnostic = {"fd": fd, "fstat_errno": error.errno}
+        # A denied metadata read is not proof of absence. Only an independent
+        # ENOTSOCK result excludes this descriptor from an injected SOCKET
+        # target. A real socket with unreadable identity must still fail.
+        if error.errno == errno.EACCES:
+            try:
+                evidence = socket_type_evidence(fd)
+                diagnostic["so_type"] = evidence
+            except Exception as inspection_error:
+                evidence = None
+                diagnostic["so_type_error"] = repr(inspection_error)
+            if evidence == {"result": -1, "errno": errno.ENOTSOCK, "socket_type": None}:
+                return {"fd": fd, "kind": None, "proven_not_socket": True,
+                        "inspection": diagnostic}
+        error.fd_inspection = diagnostic
+        raise
+
+
 def inherited_fd_check(target, nonce):
     """Finite synthetic leak attempt, never a general FD write operation."""
     if (not isinstance(target, dict) or set(target) != {"dev", "ino"}
@@ -98,13 +141,11 @@ def inherited_fd_check(target, nonce):
             if not entry.name.isdecimal():
                 raise RuntimeError("unexpected proc FD entry")
             fd = int(entry.name)
-            # Inspect this already-open object, not the pathname reached by a
-            # proc magic link. Every metadata error still aborts the whole scan.
-            info = os.fstat(fd)
-            row = {"fd": fd, "dev": info.st_dev,
-                   "ino": info.st_ino, "kind": stat.S_IFMT(info.st_mode)}
+            # Inspect the object, not its proc magic-link pathname. Keep denied
+            # metadata diagnostics and require positive non-socket evidence.
+            row = descriptor_identity(fd)
             rows.append(row)
-            if (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)) == (
+            if (row.get("dev"), row.get("ino"), row["kind"]) == (
                     target["dev"], target["ino"], stat.S_IFSOCK):
                 matching.append(row["fd"])
     for fd in matching:
@@ -210,6 +251,7 @@ def main():
                      "type": type(error).__name__, "errno": getattr(error, "errno", None),
                      "filename": getattr(error, "filename", None),
                      "filename2": getattr(error, "filename2", None),
+                     "fd_inspection": getattr(error, "fd_inspection", None),
                      "traceback": "".join(traceback.format_exception(type(error), error, error.__traceback__)),
                  })
     raise RuntimeError("unexpected input EOF before explicit exit")
