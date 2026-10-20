@@ -16786,22 +16786,338 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_builder_selects_postgres_only_when_explicitly_configured() {
-        let Ok(_) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+        isolated_storage_builder_case(
+            "runtime::tests::runtime_builder_selects_postgres_only_when_explicitly_configured",
+            "postgres-context-db",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_selects_explicit_legacy_postgres_without_changing_default() {
+        isolated_storage_builder_case(
+            "runtime::tests::runtime_builder_selects_explicit_legacy_postgres_without_changing_default",
+            "postgres-legacy",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_keeps_sqlite_when_only_postgres_url_is_present() {
+        isolated_storage_builder_case(
+            "runtime::tests::runtime_builder_keeps_sqlite_when_only_postgres_url_is_present",
+            "sqlite",
+        )
+        .await;
+    }
+
+    // The public builder deliberately reads a named environment credential.
+    // Exercise that path in a private process instead of mutating the global
+    // environment of concurrent tests or injecting a Store that bypasses it.
+    async fn isolated_storage_builder_case(test_name: &str, scenario: &str) {
+        const CHILD_ENV: &str = "MORPHZ_STORAGE_BUILDER_TEST_CHILD";
+        if std::env::var(CHILD_ENV).as_deref() == Ok(test_name) {
+            let directory = tempfile::tempdir().unwrap();
+            let mut config = AppConfig::default();
+            config.permissions.workspace_root = directory.path().to_string_lossy().into_owned();
+            config.background_task.artifact_dir = directory
+                .path()
+                .join("artifacts")
+                .to_string_lossy()
+                .into_owned();
+            let database = directory.path().join("runtime.sqlite");
+            config.storage.sqlite.path = database.to_string_lossy().into_owned();
+            config.storage.postgres.url_env = "MORPHZ_TEST_POSTGRES_URL".into();
+            config.storage.postgres.max_connections = 4;
+            assert!(std::env::var("MORPHZ_TEST_POSTGRES_URL").is_ok());
+            match scenario {
+                "postgres-context-db" => config.storage.backend = StorageBackend::Postgres,
+                "postgres-legacy" => {
+                    config.storage.backend = StorageBackend::Postgres;
+                    config.storage.cognitive_store = crate::config::CognitiveStoreBackend::Legacy;
+                }
+                "sqlite" => assert_eq!(config.storage.backend, StorageBackend::Sqlite),
+                _ => panic!("unknown isolated storage scenario"),
+            }
+            let secrets = Arc::new(
+                SecretStore::new(
+                    directory.path().join("secrets.json"),
+                    Arc::new(crate::secret_store::HostEnvFileSecretBackend::new(
+                        directory.path().join("secrets.env"),
+                    )),
+                )
+                .unwrap(),
+            );
+            let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+                .secret_store(secrets)
+                .build()
+                .await
+                .unwrap();
+            match scenario {
+                "postgres-context-db" => {
+                    assert_eq!(
+                        runtime.storage_label(),
+                        "postgres:env:MORPHZ_TEST_POSTGRES_URL:context_db"
+                    );
+                    assert_eq!(runtime.sqlite_database_path(), None);
+                    assert!(!database.exists(), "PostgreSQL must not open a SQLite file");
+                }
+                "postgres-legacy" => {
+                    assert_eq!(
+                        runtime.storage_label(),
+                        "postgres:env:MORPHZ_TEST_POSTGRES_URL:legacy"
+                    );
+                    assert_eq!(runtime.sqlite_database_path(), None);
+                    assert!(!database.exists(), "PostgreSQL must not open a SQLite file");
+                }
+                "sqlite" => {
+                    assert_eq!(
+                        runtime.storage_label(),
+                        format!("sqlite:{}:context_db", database.display())
+                    );
+                    assert_eq!(runtime.sqlite_database_path(), database.to_str());
+                    assert!(database.is_file());
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                AppConfig::default().storage.cognitive_store,
+                crate::config::CognitiveStoreBackend::ContextDb
+            );
             return;
+        }
+
+        let original_url = if scenario == "sqlite" {
+            // A URL being present must not trigger a PostgreSQL connection.
+            // Port zero is deliberately unusable; no external server is needed.
+            "postgres://unused:unused@127.0.0.1:0/morphz_test_not_selected".to_string()
+        } else {
+            let Ok(url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+                let required = std::env::var("MORPHZ_TEST_REQUIRED_CAPABILITIES")
+                    .is_ok_and(|value| value.split(',').any(|item| item.trim() == "postgres"));
+                assert!(
+                    !required,
+                    "managed PostgreSQL verification requires its isolated URL"
+                );
+                eprintln!("{test_name}: PostgreSQL capability not configured; not exercised");
+                return;
+            };
+            url
         };
-        let mut config = AppConfig::default();
-        config.storage.backend = StorageBackend::Postgres;
-        config.storage.postgres.url_env = "MORPHZ_TEST_POSTGRES_URL".to_string();
-        config.storage.postgres.max_connections = 4;
-        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
-            .build()
-            .await
-            .unwrap();
-        assert_eq!(
-            runtime.storage_label(),
-            "postgres:env:MORPHZ_TEST_POSTGRES_URL"
+        // Prepare local resources before creating a PostgreSQL schema. A local
+        // setup failure must not strand a schema, and no credential is logged.
+        let directory = tempfile::tempdir().unwrap();
+        let output_path = directory.path().join("child.log");
+        let output = std::fs::File::create(&output_path).unwrap();
+        let stdout = output.try_clone().unwrap();
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+            .env_clear()
+            .env(CHILD_ENV, test_name)
+            .env("MORPHZ_TEST_REQUIRED_CAPABILITIES", "postgres")
+            .env("HOME", directory.path())
+            .env("USERPROFILE", directory.path())
+            .env("XDG_CONFIG_HOME", directory.path().join("config"))
+            .env("MORPHZ_HOME", directory.path().join("host"))
+            .env("TMPDIR", directory.path())
+            .env("TEMP", directory.path())
+            .env("TMP", directory.path())
+            .current_dir(directory.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(stdout)
+            .stderr(output)
+            .kill_on_drop(true);
+        for name in ["PATH", "SystemRoot", "LANG"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        let mut owned_schema = None;
+        let mut credential_urls = vec![original_url.clone()];
+        let database_url: Result<String, String> = async {
+            if scenario == "sqlite" {
+                return Ok(original_url);
+            }
+            let mut scoped = reqwest::Url::parse(&original_url)
+                .map_err(|error| format!("PostgreSQL URL setup failed: {error}"))?;
+            let admin = sqlx::PgPool::connect(&original_url)
+                .await
+                .map_err(|error| format!("PostgreSQL setup connection failed: {error}"))?;
+            let schema = format!(
+                "builder_{}_{}",
+                std::process::id(),
+                chrono::Utc::now()
+                    .timestamp_nanos_opt()
+                    .unwrap()
+                    .unsigned_abs()
+            );
+            let creation = sqlx::query(&format!("CREATE SCHEMA {schema}"))
+                .execute(&admin)
+                .await;
+            if let Err(error) = creation {
+                admin.close().await;
+                return Err(format!("PostgreSQL schema setup failed: {error}"));
+            }
+            // Register ownership immediately after CREATE succeeds. Everything
+            // that follows reports through the same cleanup/redaction boundary.
+            owned_schema = Some((admin, schema.clone()));
+            scoped
+                .query_pairs_mut()
+                .append_pair("options", &format!("-csearch_path={schema}"));
+            Ok(scoped.to_string())
+        }
+        .await;
+        let child = match database_url {
+            Ok(url) => {
+                credential_urls.push(url.clone());
+                command
+                    .env("MORPHZ_TEST_POSTGRES_URL", url)
+                    .spawn()
+                    .map_err(|error| format!("isolated storage builder could not start: {error}"))
+            }
+            Err(error) => Err(error),
+        };
+        drop(command);
+        let (result, child_exited, termination) = match child {
+            Ok(mut child) => {
+                let execution =
+                    tokio::time::timeout(std::time::Duration::from_secs(90), child.wait()).await;
+                if let Ok(Ok(status)) = execution {
+                    (Ok(status), true, Vec::new())
+                } else {
+                    let error = match execution {
+                        Ok(Err(error)) => format!("isolated storage builder wait failed: {error}"),
+                        Err(_) => "isolated storage builder timed out".to_string(),
+                        Ok(Ok(_)) => unreachable!(),
+                    };
+                    let mut termination = Vec::new();
+                    if let Err(error) = child.start_kill() {
+                        termination.push(format!("child kill request failed: {error}"));
+                    }
+                    let exited = match tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        child.wait(),
+                    )
+                    .await
+                    {
+                        Ok(Ok(status)) => {
+                            termination.push(format!("child exit confirmed: {status}"));
+                            true
+                        }
+                        Ok(Err(error)) => {
+                            termination.push(format!("child reap failed: {error}"));
+                            false
+                        }
+                        Err(_) => {
+                            termination.push("child reap timed out; exit not confirmed".into());
+                            false
+                        }
+                    };
+                    (Err(error), exited, termination)
+                }
+            }
+            Err(error) => (Err(error), true, Vec::new()),
+        };
+        // Only a confirmed child exit permits touching this one owned schema.
+        // Never drop shared public tables, even when an assertion failed.
+        let cleanup = if let Some((admin, schema)) = owned_schema {
+            let result = if child_exited {
+                sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+                    .execute(&admin)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            } else {
+                Err(format!(
+                    "retained owned schema {schema}: child exit is unconfirmed"
+                ))
+            };
+            admin.close().await;
+            result
+        } else {
+            Ok(())
+        };
+        let output = std::fs::read_to_string(output_path);
+        let mut diagnostics = format!(
+            "execution: {result:?}\ntermination: {termination:?}\ncleanup: {cleanup:?}\n{}",
+            output
+                .as_deref()
+                .unwrap_or("child output could not be read")
         );
-        assert_eq!(runtime.sqlite_database_path(), None);
+        if let Err(error) = &output {
+            diagnostics.push_str(&format!("\nchild log read error: {error}"));
+        }
+        if !child_exited {
+            let retained = directory.keep();
+            diagnostics.push_str(&format!(
+                "\nretained child directory because exit is unconfirmed: {}",
+                retained.display()
+            ));
+        }
+        let diagnostics = redact_storage_builder_diagnostics(diagnostics, &credential_urls);
+        assert!(
+            child_exited
+                && result.as_ref().is_ok_and(|status| status.success())
+                && cleanup.is_ok()
+                && output.is_ok(),
+            "{test_name}: {diagnostics}"
+        );
+    }
+
+    fn redact_storage_builder_diagnostics(mut diagnostics: String, urls: &[String]) -> String {
+        let mut secrets = urls.to_vec();
+        for value in urls {
+            let Ok(url) = reqwest::Url::parse(value) else {
+                continue;
+            };
+            secrets.push(url.to_string());
+            for value in [Some(url.username()), url.password()].into_iter().flatten() {
+                secrets.push(value.to_string());
+                // Userinfo uses percent encoding, not query '+'-as-space rules.
+                let mut decoder = url.clone();
+                decoder.set_query(Some(&format!("value={}", value.replace('+', "%2B"))));
+                secrets.extend(decoder.query_pairs().map(|(_, value)| value.into_owned()));
+            }
+            for pair in url.query().unwrap_or_default().split('&') {
+                let mut decoder = url.clone();
+                decoder.set_query(Some(pair));
+                for (name, value) in decoder.query_pairs() {
+                    if matches!(
+                        name.to_ascii_lowercase().as_str(),
+                        "password" | "pass" | "sslpassword"
+                    ) {
+                        secrets.push(value.into_owned());
+                        if let Some((_, encoded)) = pair.split_once('=') {
+                            secrets.push(encoded.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        secrets.retain(|value| !value.is_empty());
+        secrets.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        secrets.dedup();
+        for secret in secrets {
+            diagnostics = diagnostics.replace(&secret, "<redacted PostgreSQL credential>");
+        }
+        diagnostics
+    }
+
+    #[test]
+    fn storage_builder_diagnostics_redact_encoded_credentials() {
+        let original = "postgres://user%2Bname:secret%2Bwith%40sign@127.0.0.1/db?password=query%2Bsecret%40value".to_string();
+        let scoped = format!("{original}&options=-csearch_path%3Dbuilder_123");
+        let diagnostics = format!(
+            "execution: {original}; cleanup: {scoped}; user%2Bname user+name \
+             secret%2Bwith%40sign secret+with@sign query%2Bsecret%40value query+secret@value"
+        );
+        let redacted = redact_storage_builder_diagnostics(diagnostics, &[original, scoped]);
+        for secret in ["user", "secret", "postgres://", "search_path"] {
+            assert!(!redacted.contains(secret), "{redacted}");
+        }
+        assert!(redacted.contains("execution:"));
+        assert!(redacted.contains("cleanup:"));
     }
 
     #[async_trait::async_trait]
