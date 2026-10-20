@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { randomUUID } from "node:crypto";
+import { selectScriptOption } from "../script-studio-ui-helpers.js";
 
 test("剧本设置项目沿 Platform 目录移动同一应用原件，刷新后仍能打开", async ({
   page,
@@ -38,13 +39,15 @@ test("剧本设置项目沿 Platform 目录移动同一应用原件，刷新后�
   );
   expect(before).toBeDefined();
 
-  await page.getByRole("button", { name: "设置项目", exact: true }).click();
+  await selectScriptOption(page, "设置项目");
   const move = page.getByRole("dialog", { name: "设置项目", exact: true });
   await move.getByLabel("目标项目").selectOption("new");
   await move.getByLabel("新项目名称").fill(projectTitle);
   await move.getByRole("button", { name: "保存", exact: true }).click();
   await expect(move).not.toBeVisible();
-  await expect(page.locator(".script-project")).toHaveText(projectTitle);
+  await expect(page.getByLabel("当前剧本")).toHaveAttribute(
+    "title", `${title} · 归属项目：${projectTitle}`,
+  );
 
   const after = (await entries()).filter((entry) => entry.id === before!.id);
   expect(after).toHaveLength(1);
@@ -65,7 +68,9 @@ test("剧本设置项目沿 Platform 目录移动同一应用原件，刷新后�
   );
   await continued.click();
   await expect(page.getByLabel("当前剧本")).toContainText(title);
-  await expect(page.locator(".script-project")).toHaveText(projectTitle);
+  await expect(page.getByLabel("当前剧本")).toHaveAttribute(
+    "title", `${title} · 归属项目：${projectTitle}`,
+  );
   await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   await page
     .getByRole("region", { name: "应用", exact: true })
@@ -73,5 +78,7 @@ test("剧本设置项目沿 Platform 目录移动同一应用原件，刷新后�
     .click();
   await page.getByRole("button", { name: `打开剧本：${title}` }).click();
   await expect(page.getByLabel("当前剧本")).toContainText(title);
-  await expect(page.locator(".script-project")).toHaveText(projectTitle);
+  await expect(page.getByLabel("当前剧本")).toHaveAttribute(
+    "title", `${title} · 归属项目：${projectTitle}`,
+  );
 });

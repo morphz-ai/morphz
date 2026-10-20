@@ -25,6 +25,7 @@ function Fixture() {
   patch = (next) =>
     flushSync(() => setScenario((previous) => ({ ...previous, ...next })));
   const speechRecording = scenario.recording,
+    cognitiveInputBlocked = false,
     sending = scenario.sending,
     draft = { pendingSupplement: undefined },
     client = { online: true },
@@ -71,7 +72,8 @@ function Fixture() {
                     data-recording={speechRecording || undefined}
                     title={speechRecording ? "停止听写" : "开始听写"}
                     disabled={
-                      (sending ||
+                      (cognitiveInputBlocked ||
+                        sending ||
                         !!draft.pendingSupplement ||
                         !client.online) &&
                       !speechRecording

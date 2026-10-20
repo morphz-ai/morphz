@@ -163,6 +163,10 @@ test("工作页面板键盘与外部点击边界正确，窄窗和空记录不�
     .getByRole("navigation", { name: "主导航" })
     .getByRole("button", { name: "工作台", exact: true })
     .click();
+  // Workbench restores its last app. This case exercises the unassociated
+  // launcher, not whichever Script/Reader a preceding test left open.
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
+  await expect(page.getByRole("region", { name: "应用", exact: true })).toBeVisible();
   const input = await openInput(page);
   await input.fill("TEST 键盘与窄窗，不发送");
   const controls = page.getByRole("group", {

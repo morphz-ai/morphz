@@ -91,7 +91,7 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   await expect(page.locator(".topbar .input-toggle")).toHaveCount(0);
   await expect(page.locator(".library-collection h1")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "设置", exact: true }),
+    page.getByRole("button", { name: "用户菜单", exact: true }),
   ).toBeVisible();
   await expect(
     page.locator(".sidebar-header").getByRole("button", { name: /^通知/ }),
@@ -115,14 +115,22 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   const projectId = (await source.allProjects()).find(
     (project) => project.title === "紧凑工作空间验收",
   )!.id;
-  for (let i = 0; i < 25; i++) {
-    await source.importDocument({
-      commandId: randomUUID(),
-      objectId: randomUUID(),
-      projectId,
-      relativePath: `资料-${i}.md`,
-      text: `第 ${i} 份本地测试资料。`,
-    });
+  const documents = Array.from({ length: 25 }, (_, i) => ({
+    commandId: randomUUID(),
+    objectId: randomUUID(),
+    projectId,
+    relativePath: `资料-${i}.md`,
+    text: `第 ${i} 份本地测试资料。`,
+  }));
+  // Independent fixture objects keep their own durable command identities.
+  // Bound concurrency so setup does not serialize 25 unrelated HTTP writes
+  // into the layout test's unchanged 30-second interaction budget.
+  for (let offset = 0; offset < documents.length; offset += 3) {
+    await Promise.all(
+      documents
+        .slice(offset, offset + 3)
+        .map((document) => source.importDocument(document)),
+    );
   }
   await page.reload();
   await expect(page.locator(".artifact-card")).toHaveCount(25);
@@ -140,7 +148,7 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   expect((await appearance.boundingBox())!.x).toBeGreaterThanOrEqual(0);
   await page.keyboard.press("Escape");
   await expect(
-    page.getByRole("button", { name: "设置", exact: true }),
+    page.getByRole("button", { name: "用户菜单", exact: true }),
   ).toBeFocused();
   await page.locator(".sidebar-header .notification-trigger").click();
   await expect(
@@ -191,7 +199,7 @@ test("单行应用标签、固定资料工具区与侧栏全局操作", async ({
   ).toBe(false);
   await page.getByLabel("显示侧边栏", { exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "设置", exact: true }),
+    page.getByRole("button", { name: "用户菜单", exact: true }),
   ).toBeVisible();
   await tabs.getByRole("tab", { name: "内容", exact: true }).click();
   await page.locator(".composer-reopen").click();

@@ -42,7 +42,8 @@ test("从内容继续交流只切换输入上下文，不发送消息或覆盖�
   const objectInput = page.getByRole("textbox", { name: "AI 输入内容" });
   await expect(objectInput).toBeFocused();
   await expect(objectInput).toHaveValue("");
-  await expect(page.locator(".composer .context-chip")).toContainText(title);
+  await expect(page.getByRole("region", { name: "AI 输入", exact: true })
+    .getByLabel(`输入关联：${title} · v1`, { exact: true })).toContainText(title);
   await objectInput.fill(`对象未发送草稿 ${suffix}`);
 
   await page

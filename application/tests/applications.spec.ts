@@ -235,6 +235,7 @@ test("多应用启动、对象协作及状态恢复；创建项目不转换工�
     }),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await openExchangeReading(page);
   await expect(
     page
       .locator(".human-message")
@@ -256,6 +257,9 @@ test("多应用启动、对象协作及状态恢复；创建项目不转换工�
   const originalFrame = await page
     .locator('iframe[title="工作便笺应用界面"]')
     .elementHandle();
+  const originalViews = await (
+    await page.request.get("/api/platform/app-views")
+  ).json();
   const beforeOrganization = await (
     await page.request.get("/api/platform/content?limit=100")
   ).json();
@@ -285,9 +289,18 @@ test("多应用启动、对象协作及状态恢复；创建项目不转换工�
   await expect(
     page.getByRole("button", { name: "认知应用验收", exact: true }),
   ).toBeVisible({ timeout: 10_000 });
-  expect(await originalFrame!.evaluate((element) => element.isConnected)).toBe(
-    true,
+  // Creating a project changes the authorized project set. The Host must
+  // retire its private projection and reauthorize, including the iframe.
+  // The durable application identity, workspace and author state stay intact.
+  await expect
+    .poll(() => originalFrame!.evaluate((element) => element.isConnected))
+    .toBe(false);
+  await expect(app.locator("#note")).toHaveValue(
+    "我的应用状态：保留这段文字。",
   );
+  expect(
+    await (await page.request.get("/api/platform/app-views")).json(),
+  ).toEqual(originalViews);
   const deniedCrossProjectWrite = await app
     .locator("body")
     .evaluate(async (_body, projectId) => {

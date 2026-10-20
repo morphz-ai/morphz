@@ -53,7 +53,11 @@ async function preserveReadOnlyState(page: Page, client: PlatformClient) {
     if (
       !["GET", "HEAD"].includes(request.method()) &&
       path.startsWith("/api/") &&
-      path !== "/api/platform/spaces/ensure"
+      path !== "/api/platform/spaces/ensure" &&
+      !(
+        request.method() === "POST" &&
+        ["/api/platform/scripts/editor/head", "/api/platform/cognitive-apps/list"].includes(path)
+      )
     )
       writes.push(request.method() + " " + path);
   });

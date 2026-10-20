@@ -1,10 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { openLibrary } from "./application-helpers.js";
-import { openInput } from "./interaction-helpers.js";
+import { openInput, openComposerMedia, openExecutionPanel } from "./interaction-helpers.js";
 import { seedLibraryArtifact } from "./artifact-fixtures.js";
 import { emptyInteractive } from "../packages/core/src/interactive.js";
 
-test("当前理解非模态核对，更新只准备统一草稿，不发送技术指令", async ({
+test("已撤下的当前理解入口不重现，查看活动保留统一草稿且不发送技术指令", async ({
   page,
 }) => {
   const submissions: string[] = [];
@@ -18,32 +18,27 @@ test("当前理解非模态核对，更新只准备统一草稿，不发送技�
   await page.goto("/");
   const input = await openInput(page);
   await input.fill("保留我的工作草稿。");
-  await page.getByLabel("工作空间选项", { exact: true }).click();
-  await page.getByRole("button", { name: "当前理解", exact: true }).click();
+  // 36975394 removed the workspace menu; acf76a53 explicitly withdrew the
+  // final Understanding entry rather than relocating it. Keep that decision.
+  await expect(page.getByLabel("工作空间选项", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "当前理解", exact: true })).toHaveCount(0);
   const panel = page.getByRole("complementary", {
     name: "当前理解",
     exact: true,
   });
-  await expect(panel).toBeVisible();
+  await expect(panel).toHaveCount(0);
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(panel.locator("textarea")).toHaveCount(0);
-  await expect(panel.locator(".understanding-empty")).toBeInViewport();
-  await expect(panel.getByRole("heading", { name: "当前理解" })).toBeFocused();
-  await panel.getByRole("button", { name: "梳理理解", exact: true }).click();
+  await openExecutionPanel(page);
+  await openInput(page);
   await expect(input).toBeFocused();
-  await expect(input).toHaveValue(
-    "保留我的工作草稿。\n\n请梳理当前工作空间的公开理解，包括目标、约束和已确认的事实。",
-  );
+  await expect(input).toHaveValue("保留我的工作草稿。");
   expect(submissions).toHaveLength(0);
   expect(await input.inputValue()).not.toMatch(
     /context_tx|host_morphz(?:_work)?|mw-public|Session/,
   );
-  await panel.screenshot({ path: "test-results/experience-understanding.png" });
-  await page.getByRole("button", { name: "工作空间选项", exact: true }).click();
-  await page.getByRole("button", { name: "执行记录", exact: true }).click();
   await expect(panel).toHaveCount(0);
   await expect(
-    page.getByRole("complementary", { name: "执行面板" }),
+    page.getByRole("complementary", { name: "Morphz 信息", exact: true }),
   ).toBeVisible();
 });
 
@@ -80,13 +75,16 @@ test("表格筛选空态能恢复；新增记录清除旧筛选并定位新行",
   await save.click();
   await expect(page.locator(".interactive-table")).toContainText("新增记录");
   await openInput(page);
+  await openComposerMedia(page);
   await expect(
     page.getByRole("button", { name: "附加文件", exact: true }),
   ).toHaveCount(1);
+  await page.keyboard.press("Escape");
   await page
     .getByRole("button", { name: "收起 AI 输入框", exact: true })
     .click();
   await openInput(page);
+  await openComposerMedia(page);
   await expect(
     page.getByRole("button", { name: "附加文件", exact: true }),
   ).toHaveCount(1);
@@ -141,8 +139,10 @@ test("旧同步桥不再触发后台读取，也不重新暴露同步入口", as
     });
   });
   await page.goto("/");
-  await page.getByLabel("工作空间选项", { exact: true }).click();
-  await expect(page.getByRole("group", { name: "工作空间操作" })).toBeVisible();
+  await expect(page.locator(".app")).toBeVisible();
+  await page.getByRole("button", { name: "用户菜单", exact: true }).click();
+  await expect(page.getByRole("button", { name: "设置", exact: true })).toBeVisible();
+  await expect(page.getByRole("group", { name: "工作空间操作" })).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "资料导入与来源", exact: true }),
   ).toHaveCount(0);

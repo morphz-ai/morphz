@@ -93,7 +93,7 @@ test("执行详情健康idle无周期请求；状态通知与前台恢复读取�
   state.job.status = "failed";
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(status).toHaveText("失败");
-  await expect(page.getByLabel("AI 输入内容")).toHaveValue(
+  await expect(await openInput(page)).toHaveValue(
     "TEST 事件读取不得更改草稿",
   );
 });
@@ -167,7 +167,10 @@ test("执行详情读取中再次收到状态变化，会补读最后状态而�
     expect(reads).toBe(2);
     expect(
       await page.evaluate(() => Reflect.get(window, "observedJobStatuses")),
-    ).not.toContain("失败");
+    ).toEqual(["失败", "已完成"]);
+    // Ordinary same-authority hints coalesce one trailing read; the in-flight
+    // authorized snapshot is still published. Scope retirement, unlike this
+    // status hint, remains an immediate abort and has separate coverage.
   } finally {
     release();
   }

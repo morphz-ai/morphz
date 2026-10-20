@@ -188,6 +188,8 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
       .toBe(true);
     const input = await openInput(page);
     await input.fill("Electron 截图隔离回归：保留草稿");
+    const add = page.getByRole("button", { name: "新建或添加", exact: true });
+    await add.click();
     const trigger = page.getByRole("button", { name: "截图输入", exact: true });
     await trigger.click({ modifiers: ["Alt"] });
     const firstPicker = await picker(app);
@@ -264,8 +266,9 @@ test("真实 Electron：Option 截图仅隐藏主窗口，选完、取消、失�
     await expect(dialog.getByAltText("待确认的截图")).toBeVisible();
     await dialog.getByRole("button", { name: "关闭截图输入" }).click();
     await expect(input).toHaveValue("Electron 截图隔离回归：保留草稿");
-    await expect(trigger).toBeFocused();
+    await expect(add).toBeFocused();
 
+    await add.click();
     await trigger.click({ modifiers: ["Alt"] });
     await picker(app);
     await recordState("before-intentional-main-close");

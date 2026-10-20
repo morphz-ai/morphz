@@ -169,7 +169,7 @@ test("首次许可明确服务，之后单击即听写；同一按钮停止、�
   await expect(input).toHaveValue("保留草稿\n合成听写");
 });
 
-test("从听写切换独立转写会停采，不让旧识别队列串入另一种界面", async ({
+test("听写关闭会停采，已撤下的独立转写入口不会重新暴露或启动另一份采集", async ({
   page,
 }) => {
   await syntheticMicrophone(page);
@@ -185,19 +185,15 @@ test("从听写切换独立转写会停采，不让旧识别队列串入另一�
   await expect(
     page.getByRole("region", { name: "听写", exact: true }),
   ).toHaveAttribute("data-recording", "true");
-  await page.getByRole("button", { name: "工作空间选项", exact: true }).click();
-  await page
-    .getByRole("group", { name: "工作空间操作", exact: true })
-    .screenshot();
-  await page.getByRole("button", { name: "录音转文字", exact: true }).click();
+  await expect(page.getByRole("button", { name: "工作空间选项", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "录音转文字", exact: true })).toHaveCount(0);
+  await page.getByRole("region", { name: "听写", exact: true })
+    .getByRole("button", { name: "关闭听写", exact: true }).click();
   await stopped(page);
   const dialog = page.getByRole("dialog", { name: "录音转文字", exact: true });
-  await expect(dialog).toBeVisible();
-  await expect(
-    dialog.getByRole("button", { name: "开始录音", exact: true }),
-  ).toBeEnabled();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "听写", exact: true })).toHaveCount(0);
   expect(await page.evaluate(() => Reflect.get(window, "micCalls"))).toBe(1);
-  await dialog.getByRole("button", { name: "取消", exact: true }).click();
 });
 
 test("可撤销授权，服务变更重新确认；拒绝或读取配置时关闭不会采集", async ({

@@ -245,6 +245,9 @@ test("对话位于输入框上方的主区域，切换不丢编辑，窄屏也�
   await (await openInput(page)).fill("请围绕这个对象继续讨论。");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
   await expect(page.getByLabel("文档正文", { exact: true })).toBeVisible();
+  // Saving input preserves the Human's input-only selection. Open the actual
+  // reading surface before asserting message placement; receipts cannot open it.
+  await openExchangeReading(page);
   await expect(
     page.locator(".primary-panel").getByRole("log", { name: "对话消息" }),
   ).toContainText("请围绕这个对象继续讨论。");

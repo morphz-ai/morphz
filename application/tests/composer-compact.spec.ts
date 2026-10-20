@@ -7,6 +7,9 @@ test("底栏仅一行；普通范围不弹空菜单，执行设置与媒体菜�
   await page.goto("/");
   const nav = page.getByRole("navigation", { name: "主导航" });
   await nav.getByRole("button", { name: "工作台", exact: true }).click();
+  // A previously open document is a real association. Exercise the implicit
+  // desk here, not whichever document another integration test left active.
+  await page.getByRole("button", { name: "应用启动台", exact: true }).click();
   const input = await openInput(page);
   await input.fill("TEST 单底栏草稿，不发送");
   const row = page.locator(".composer-action-bar");
@@ -29,7 +32,9 @@ test("底栏仅一行；普通范围不弹空菜单，执行设置与媒体菜�
   await expect(
     settings.getByLabel("本次输入模型", { exact: true }),
   ).toBeVisible();
-  await expect(settings.getByText("工作目录", { exact: true })).toBeVisible();
+  await expect(
+    settings.locator(".composer-directory-settings > summary"),
+  ).toBeVisible();
   await expect(input).toBeVisible();
   await expect(input).toHaveValue("TEST 单底栏草稿，不发送");
   await page.keyboard.press("Escape");

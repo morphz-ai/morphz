@@ -265,14 +265,12 @@ test("最新进展完整显示、历史默认收起且倒序；错误独立可�
   expect(reply1).toBeGreaterThanOrEqual(0);
   expect(reply2).toBeGreaterThanOrEqual(0);
   expect(reply1).toBeLessThan(reply2);
-  expect(
-    texts.some(
-      (value) =>
-        value.includes("TEST 最新进展") ||
-        value.includes(first.text) ||
-        value.includes(second.text),
-    ),
-  ).toBe(false);
+  // Committed public progress remains in the exchange after its streamed
+  // prefix (the approved publication handoff). It is not hidden reasoning,
+  // and opening the inspector must not withdraw words already published.
+  for (const text of ["TEST 最新进展", first.text, second.text])
+    expect(texts.some((value) => value.includes(text))).toBe(true);
+  expect(texts.some((value) => value.includes("原顺序步骤"))).toBe(false);
   await history.locator("summary").press("Enter");
   await expect(history).not.toHaveAttribute("open");
   await history.locator("summary").press("Space");

@@ -36,9 +36,12 @@ test("工作台与项目拥有独立空间；白净画布、应用恢复、对�
     await page.getByRole("button", { name: "保存输入", exact: true }).click();
     await expect(page.locator(".conversation-heading")).toHaveCount(0);
     await expect(
-      page
-        .getByRole("region", { name: "AI 输入", exact: true })
-        .getByLabel(`输入关联：${label}文档`, { exact: true }),
+      page.getByRole("region", { name: "AI 输入", exact: true }).getByLabel(
+        // After saving, the fresh draft follows the live object. The
+        // persisted message below must still retain its exact v1 reference.
+        `输入关联：${label}文档 · 应用：内容 · morphz.objects@1.0.0`,
+        { exact: true },
+      ),
     ).toContainText(label + "文档");
     await expect(
       page.getByRole("log", { name: "对话消息" }).getByRole("button", {

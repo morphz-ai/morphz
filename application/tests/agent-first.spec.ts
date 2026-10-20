@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { openLibrary } from "./application-helpers.js";
-import { openInput } from "./interaction-helpers.js";
+import { openExchangeReading, openInput } from "./interaction-helpers.js";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 
@@ -87,25 +87,26 @@ test("创建入口共用输入框：保留草稿、无需填表、未提交不�
     await page.getByRole("button", { name: button, exact: true }).click();
     await expect(input).toBeFocused();
     await expect(input).toHaveValue("这段草稿不能被入口覆盖");
-    await expect(page.locator(".composer-intent")).toContainText(intent);
+    const association = page.locator(".composer-scope-association");
+    await expect(association).toContainText(intent);
     for (const width of [1440, 760]) {
       await page.setViewportSize({ width, height: 900 });
-      const chip = (await page.locator(".composer-intent").boundingBox())!;
-      expect(
-        (await page.locator(".composer-meta").boundingBox())!.height,
-      ).toBeLessThanOrEqual(24);
-      const context = (await page
-        .locator(".composer-meta .context-chip")
+      // Current input association is one compact visible row. Its expanded
+      // technical scope is not a second permanently visible context chip.
+      const chip = (await association
+        .getByRole("button", { name: "输入关联", exact: true })
         .boundingBox())!;
+      const remove = (await association
+        .getByRole("button", { name: `取消${intent}`, exact: true })
+        .boundingBox())!;
+      expect((await association.boundingBox())!.height).toBeLessThanOrEqual(32);
       expect(
-        Math.abs(chip.y + chip.height / 2 - context.y - context.height / 2),
+        Math.abs(chip.y + chip.height / 2 - remove.y - remove.height / 2),
       ).toBeLessThan(1);
-      expect(chip.x - context.x - context.width).toBeGreaterThanOrEqual(0);
-      expect(chip.x - context.x - context.width).toBeLessThanOrEqual(10);
+      expect(remove.x - chip.x - chip.width).toBeGreaterThanOrEqual(0);
+      expect(remove.x - chip.x - chip.width).toBeLessThanOrEqual(10);
       expect(
-        await page
-          .locator(".composer-meta")
-          .evaluate((el) => el.scrollWidth <= el.clientWidth),
+        await association.evaluate((el) => el.scrollWidth <= el.clientWidth),
       ).toBe(true);
     }
     await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -114,12 +115,14 @@ test("创建入口共用输入框：保留草稿、无需填表、未提交不�
   await page.reload();
   await openInput(page);
   await expect(input).toHaveValue("这段草稿不能被入口覆盖");
-  await expect(page.locator(".composer-intent")).toContainText("起草文档");
+  await expect(page.locator(".composer-scope-association")).toContainText(
+    "起草文档",
+  );
   await page.locator(".composer").screenshot({
     path: "test-results/composer-inline-intent.png",
     animations: "disabled",
   });
-  await page.getByLabel("移除输入意图").click();
+  await page.getByRole("button", { name: "取消起草文档", exact: true }).click();
   await expect(input).toBeFocused();
   await expect(input).toHaveValue("这段草稿不能被入口覆盖");
   await expect(page.locator(".composer-intent")).toHaveCount(0);
@@ -190,6 +193,7 @@ test("事项意图按空间保存；本机保存失败留草稿，未连接不�
   await expect(page.locator(".composer-error")).toHaveCount(0);
   await expect(page.locator(".statusbar")).toHaveCount(0);
   await expect(page.locator(".workspace-notice")).toHaveCount(0);
+  await openExchangeReading(page);
   await expect(
     page.locator(".human-message").filter({ hasText: body }),
   ).toContainText("未发送");
@@ -280,9 +284,11 @@ test("关联跟随当前视图和事项，只作用于新输入，不切换持�
       })
       .click();
     await openInput(page);
-    await expect(page.locator(".composer .context-chip")).toHaveText(
-      "未归项目",
-    );
+    await expect(
+      page.locator(
+        ".composer-scope-label, .composer-scope-association, .composer-scope-trigger",
+      ),
+    ).toHaveCount(0);
     await saveInput(`在${label}保存的关联测试 ${suffix}`, spaces.deskId);
   }
   await nav.getByRole("button", { name: /^事项/ }).click();
@@ -291,7 +297,10 @@ test("关联跟随当前视图和事项，只作用于新输入，不切换持�
     .filter({ has: page.getByRole("heading", { name: title, exact: true }) })
     .click();
   await openInput(page);
-  await expect(page.locator(".composer .context-chip")).toHaveText(title);
+  await expect(page.locator(".composer-scope-label")).toContainText(title);
+  await expect(
+    page.getByRole("button", { name: "移除本次输入关联", exact: true }),
+  ).toBeVisible();
   await expect(
     page
       .getByRole("banner", { name: "事项工具栏" })
@@ -303,6 +312,10 @@ test("关联跟随当前视图和事项，只作用于新输入，不切换持�
     .screenshot({ path: "test-results/task-input-association.png" });
   await nav.getByRole("button", { name: /^事项/ }).click();
   await openInput(page);
-  await expect(page.locator(".composer .context-chip")).toHaveText("未归项目");
+  await expect(
+    page.locator(
+      ".composer-scope-label, .composer-scope-association, .composer-scope-trigger",
+    ),
+  ).toHaveCount(0);
   await saveInput(`回到事项列表后不沿用对象 ${suffix}`, spaces.deskId);
 });

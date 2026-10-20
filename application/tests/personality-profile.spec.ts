@@ -4008,6 +4008,7 @@ test("真实 Team 登录切换后丢弃 mock 旧资料迟到响应与旧草稿�
     uiPackages: domains.uiPackages,
     notifications: domains.notifications,
     platformTaskRuns: domains.taskRuns(),
+    cognitiveApps: domains.cognitiveApps,
     profiles: domains.profiles,
   });
   await new Promise<void>((done) => server.listen(port, "127.0.0.1", done));

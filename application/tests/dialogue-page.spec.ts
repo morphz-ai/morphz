@@ -103,9 +103,10 @@ test("日期分隔与回到最新独立于未读；新回复不抢旧消息阅�
           ).toISOString(),
           text:
             i === 23
-              ? "截图里**「截图输入」挡住了 PDF**，这是实际格式。\n\n| 名称 | 状态 |\n| --- | --- |\n| " +
-                "long-column-".repeat(35) +
-                " | 完成 |"
+              ? "截图里**「截图输入」挡住了 PDF**，这是实际格式。\n\n" +
+                "| 名称 | 状态 | 来源 | 版本 | 日期 | 负责人 | 数量 | 备注 |\n" +
+                "| --- | --- | --- | --- | --- | --- | --- | --- |\n" +
+                "| 多列数据 | 完成 | 原文 | v2 | 9 月 | TEST | 12 | 保留横向阅读 |"
               : `第 ${i} 轮回复。\n\n` +
                 "这是一段用于验证长期阅读位置的合成正文。".repeat(8),
         })),
@@ -294,7 +295,7 @@ test("历史引用显示并打开当时标题与版本，Platform 交付回执�
   await page.goto("/");
   await dialogue(page).click();
   const historicalLink = page.getByRole("button", {
-    name: "历史引用第一版 · v1",
+    name: "打开关联资源：历史引用第一版 · v1",
     exact: true,
   });
   await expect(historicalLink).toBeVisible();

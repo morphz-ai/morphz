@@ -100,7 +100,10 @@ test("模型列表按实际目录选择；失败气泡保留冻结模型与推�
   const effort = page.getByLabel("本次输入推理强度");
   await expect(effort).toBeEnabled();
   await chooseReasoning(effort, "high");
-  await expect(select).toHaveAttribute("title", /仅用于下一次发送/);
+  await expect(select).toHaveAttribute(
+    "title",
+    /明确指定，用于后续新输入，不改变已提交工作/,
+  );
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "发送消息", exact: true }).click();
   await expect.poll(() => submitted?.operation?.model).toBe("model-b");
@@ -115,16 +118,16 @@ test("模型列表按实际目录选择；失败气泡保留冻结模型与推�
   await expect(bubble).toHaveAttribute("data-submission-state", "failed");
   await expect(retry).toBeVisible();
   await expect(retry).toHaveAttribute("title", /^发送失败：/);
-  // The staged input consumed its own draft and settings. Its immutable
-  // failed submission, not the next-input controls, owns the retry payload.
+  // Sending consumes the draft, not the persistent model/effort preference.
+  // The immutable failed submission still owns its independent retry payload.
   await expect(input).toHaveValue("");
   await page.reload();
   await openInput(page);
   await openComposerSettings(page);
   await expect(retry).toBeVisible();
   expect(submissions).toHaveLength(1); // Reload must not silently resend.
-  await expect(effort).toHaveAttribute("aria-valuetext", "默认");
-  await expect(select).toHaveValue("");
+  await expect(effort).toHaveAttribute("aria-valuetext", "high");
+  await expect(select).toHaveValue("model-b");
   await expect(input).toHaveValue("");
   await page.keyboard.press("Escape");
   const nextDraft = "TEST 后续草稿和选择不参与失败消息重试";
@@ -134,7 +137,7 @@ test("模型列表按实际目录选择；失败气泡保留冻结模型与推�
   await chooseReasoning(effort, "high");
   await select.selectOption("model-c");
   await expect(effort).toBeDisabled();
-  await expect(effort).toHaveAttribute("aria-valuetext", "深入 · 不支持");
+  await expect(effort).toHaveAttribute("aria-valuetext", "high · 不支持");
   await expect(
     page.getByText("请重新选择推理强度", { exact: true }),
   ).toBeVisible();
@@ -142,9 +145,7 @@ test("模型列表按实际目录选择；失败气泡保留冻结模型与推�
     .getByRole("button", { name: "恢复默认推理强度", exact: true })
     .click();
   await expect(effort).toBeDisabled();
-  await expect(page.locator(".composer-reasoning-value")).toHaveText(
-    "模型自动",
-  );
+  await expect(page.locator(".composer-reasoning-value")).toHaveText("default");
   await page.keyboard.press("Escape");
   await retry.click();
   await expect.poll(() => submissions.length).toBe(2);
@@ -160,7 +161,7 @@ test("模型列表按实际目录选择；失败气泡保留冻结模型与推�
   await expect(input).toHaveValue(nextDraft);
   await openComposerSettings(page);
   await expect(select).toHaveValue("model-c");
-  await expect(effort).toHaveAttribute("aria-valuetext", "模型自动");
+  await expect(effort).toHaveAttribute("aria-valuetext", "default");
   await page.screenshot({ path: "test-results/audit-model-picker.png" });
 });
 
@@ -533,7 +534,20 @@ test("交付回执直接打开准确版本；没有回执时不猜测产物", as
   delivered = true;
   await page.reload();
   await page.getByLabel("打开交付：交付入口测试").click();
-  await expect(page.locator(".object-paper > h1")).toHaveText("交付入口测试");
+  await expect(page.locator(".object-paper > h1"))
+    .toHaveText("交付入口测试")
+    .catch(async (error) => {
+      const navigation = await page.evaluate(() =>
+        Object.fromEntries(
+          Object.keys(localStorage)
+            .filter((key) => key.endsWith(":preferences"))
+            .map((key) => [key, JSON.parse(localStorage.getItem(key)!)]),
+        ),
+      );
+      throw new Error(
+        `${String(error)}\nDelivery navigation: ${JSON.stringify(navigation)}`,
+      );
+    });
   await expect(page.getByLabel("查看版本")).toHaveValue("1");
   await page.screenshot({ path: "test-results/audit-delivery.png" });
 });
@@ -665,7 +679,7 @@ test("推理设置区分加载、读取失败和旧服务缺少能力，不误�
     await expect(effort).toBeEnabled();
     await expect(hint).toHaveAttribute(
       "title",
-      "仅用于下一次发送；默认沿用模型设置。实际支持以所选模型为准。",
+      "用于后续新输入，不改变已提交工作；默认沿用模型设置。实际支持以所选模型为准。",
     );
     await expect(input).toHaveValue("模型设置异常时保留草稿");
   } finally {

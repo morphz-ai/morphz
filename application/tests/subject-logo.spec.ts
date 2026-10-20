@@ -159,8 +159,14 @@ test("Logo真实状态更新不抢导航与焦点，点击只打开活动或授�
     tabs.getByRole("tab", { name: "活动", exact: true }),
   ).toHaveAttribute("aria-selected", "true");
   await expect(
-    panel.getByRole("button", { name: "全部工作", exact: true }),
-  ).toHaveAttribute("aria-pressed", "true");
+    panel.getByRole("tabpanel", { name: "活动", exact: true }),
+  ).toBeVisible();
+  // The October 11 activity contract removed the current/all scope switch.
+  // Opening via the Logo must retain the shared overview, not restore it.
+  for (const name of ["全部工作", "当前工作"])
+    await expect(
+      panel.getByRole("button", { name, exact: true, includeHidden: true }),
+    ).toHaveCount(0);
   await expect(page).toHaveTitle(title);
   await expect(
     nav.getByRole("button", { name: "对话", exact: true }),

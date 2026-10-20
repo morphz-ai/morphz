@@ -138,6 +138,7 @@ test("真实投影的恢复记录按输入显示状态；并发、断线、刷�
   const wait = event("chat/progress", "a", {
     attempt_id: "a",
     disposition: "provider_wait",
+    runtime_failure_kind: "transient_network",
     text: "等待模型服务恢复",
   });
   projection.consume(wait);

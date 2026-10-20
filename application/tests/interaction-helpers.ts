@@ -147,11 +147,3 @@ export async function openComposerSettings(page: Page) {
   await expect(menu).toBeVisible();
   return menu;
 }
-
-/** Standalone transcription is a content tool, not a second composer mic. */
-export async function openTranscription(page: Page) {
-  await page.getByRole("button", { name: "工作空间选项", exact: true }).click();
-  const menu = page.getByRole("group", { name: "工作空间操作", exact: true });
-  await menu.screenshot();
-  await menu.getByRole("button", { name: "录音转文字", exact: true }).click();
-}

@@ -33,6 +33,7 @@ for (const legacy of [false, true])
       uiPackages: domains.uiPackages,
       notifications: domains.notifications,
       platformTaskRuns: domains.taskRuns(),
+      cognitiveApps: domains.cognitiveApps,
     });
     await new Promise<void>((done) => server.listen(port, "127.0.0.1", done));
     const origin = `http://127.0.0.1:${port}`;

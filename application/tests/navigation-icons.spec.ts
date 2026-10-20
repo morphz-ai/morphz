@@ -153,15 +153,14 @@ test("五个原导航使用独立图形，工作台三卡和项目文件夹在�
           await expectInheritedColor(other, "muted");
       }
 
-      const more = page
+      // The compact sidebar uses the same named profile entry, not the
+      // withdrawn generic More menu.
+      const profile = page
         .getByRole("complementary", { name: "工作空间导航", exact: true })
-        .getByRole("button", { name: "更多", exact: true });
-      if (compact) {
-        await expect(more).toBeInViewport();
-        await expect(more.locator("svg")).toHaveCSS("width", "20px");
-        await expect(more.locator("svg")).toHaveCSS("height", "20px");
-        await expect(more.locator(".navigation-icon")).toHaveCount(0);
-      } else await expect(more).toBeHidden();
+        .getByRole("button", { name: "用户菜单", exact: true });
+      await expect(profile).toBeInViewport();
+      await expect(profile.locator(".navigation-icon")).toHaveCount(0);
+      await expect(nav.getByRole("button", { name: "更多", exact: true })).toHaveCount(0);
     }
   }
   await nav.getByRole("button", { name: "对话", exact: true }).click();

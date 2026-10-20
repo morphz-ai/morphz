@@ -207,7 +207,15 @@ test("查看右栏活动不是固定：未固定交流点击画布收起，执�
     path: info.outputPath("activity-open-exchange-collapsed.png"),
   });
   expect(f.activity.phase).toBe("running");
-  expect(f.writes).toEqual([]);
+  // The selected application may finish an authorized read during navigation.
+  // Only these typed read endpoints use POST; business/control writes remain
+  // forbidden while merely inspecting activity.
+  expect(
+    f.writes.filter((path) => ![
+      "/api/platform/scripts/editor/head",
+      "/api/platform/cognitive-apps/list",
+    ].includes(path)),
+  ).toEqual([]);
 });
 
 test("结构化结果直接阅读内容与说明，引用可展开，Raw 保留确切原文且切换不重读", async ({

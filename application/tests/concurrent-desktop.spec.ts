@@ -1,5 +1,9 @@
 import { expect } from "@playwright/test";
-import { openInput, openExecutionPanel } from "./interaction-helpers.js";
+import {
+  openInput,
+  openExecutionPanel,
+  openExchangeReading,
+} from "./interaction-helpers.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
 import type { ConversationRuntime } from "../packages/core/src/conversation.js";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
@@ -8,7 +12,7 @@ import {
   test,
 } from "./platform-conversation-fixture.js";
 
-test("并发交付按时间追加，运行入口打开精确详情，固定与调宽不改变会话", async ({
+test("并发交付按时间追加，运行入口打开精确线程详情，调宽不改会话且导航清除选择", async ({
   page,
 }) => {
   let finished = false;
@@ -45,20 +49,20 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
             ? "2099-01-01T10:00:02.000Z"
             : "2099-01-01T10:00:01.000Z",
         });
-      if (a && backgroundRunning)
+      if (a && (!finished || backgroundRunning))
         runtime.activity = {
           available: true,
           truncated: false,
           threads: [
             {
-              id: "background-thread",
+              id: backgroundRunning ? "background-thread" : "primary-thread",
               kind: "execution",
               inputId: input.id,
               rootId: "root-a",
               sessionId: "session-a",
               projectId: input.projectId,
               conversationId: input.conversationId,
-              title: "核对剩余材料",
+              title: backgroundRunning ? "核对剩余材料" : inputA,
               phase: "running",
               lifecycle: "open",
               revision: 7,
@@ -92,9 +96,11 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
       json: { commandId: command.commandId, entityId: command.commandId },
     });
   });
-  await page.route("**/api/executions?*", (route) =>
-    route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } }),
-  );
+  const queries: URLSearchParams[] = [];
+  await page.route("**/api/executions?*", (route) => {
+    queries.push(new URL(route.request().url()).searchParams);
+    return route.fulfill({ json: { jobs: [], approvals: [], limit: 100 } });
+  });
   await page.goto("/");
   await page
     .getByRole("navigation", { name: "主导航" })
@@ -113,23 +119,28 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
   });
   await expect(marker).toHaveCount(0);
   await openExecutionPanel(page);
-  await page.locator(".execution-work-row").filter({ hasText: inputA }).click();
-  const panel = page.getByRole("complementary", { name: "执行面板" });
-  await expect(panel.getByText(inputA, { exact: true })).toBeVisible();
+  await page
+    .locator('.execution-activity-row[data-thread-id="primary-thread"]')
+    .click();
+  const panel = page.getByRole("complementary", {
+    name: "Morphz 信息",
+    exact: true,
+  });
+  await expect(panel.locator(".execution-origin-title")).toHaveText(inputA);
   await expect(
-    panel.getByRole("button", { name: "停止这次处理", exact: true }),
+    panel.getByRole("button", { name: "停止", exact: true }),
   ).toBeVisible();
   await expect(page.getByLabel("AI 输入内容")).toHaveValue("");
-  const requests: string[] = [];
-  page.on("request", (r) => {
-    if (r.url().includes("/api/executions?")) requests.push(r.url());
-  });
   await expect
-    .poll(() => requests.some((u) => new URL(u).searchParams.has("inputId")))
-    .toBe(true);
-  await panel
-    .getByRole("button", { name: "固定执行面板", exact: true })
-    .click();
+    .poll(() => queries.at(-1)?.get("threadId"))
+    .toBe("primary-thread");
+  expect(queries.at(-1)?.get("inputId")).toBe(inputs[0]!.id);
+  expect(queries.at(-1)?.get("conversationId")).toBe(
+    fixture.scope.conversationId,
+  );
+  await expect(
+    panel.getByRole("button", { name: "固定执行面板", exact: true }),
+  ).toHaveCount(0);
   const resize = panel.getByRole("separator");
   await resize.focus();
   await resize.press("ArrowLeft");
@@ -138,8 +149,14 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
   backgroundRunning = true;
   await fixture.refresh();
   await expect(page.getByText("材料已创建完成", { exact: true })).toBeVisible();
-  await expect(marker).toBeVisible();
-  await panel.getByRole("button", { name: /核对剩余材料/ }).click();
+  await expect(marker).toHaveCount(0);
+  await panel
+    .getByRole("button", { name: "返回活动列表", exact: true })
+    .click();
+  await panel.locator('[data-thread-id="background-thread"]').click();
+  await expect
+    .poll(() => queries.at(-1)?.get("threadId"))
+    .toBe("background-thread");
   const controls: unknown[] = [];
   await page.route("**/api/executions/control", (route) => {
     controls.push(route.request().postDataJSON());
@@ -147,8 +164,9 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
   });
   await panel.getByRole("button", { name: "停止", exact: true }).click();
   await expect(
-    panel.getByRole("button", { name: "停止请求已发送" }),
+    panel.getByRole("button", { name: "停止", exact: true }),
   ).toBeDisabled();
+  await expect(panel.getByRole("status")).toHaveText("停止请求已发送");
   expect(controls[0]).toMatchObject({
     scope: { threadId: "background-thread" },
     action: {
@@ -159,10 +177,17 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
   });
   backgroundRunning = false;
   await fixture.refresh();
+  // A missing snapshot is not evidence of completion. Retain the exact
+  // inspected branch, but remove control and mark its current state unknown.
+  await expect(panel.locator(".execution-origin-status")).toHaveText(
+    "状态待核对",
+  );
   await expect(
-    panel.getByText("此分支已不在进行中", { exact: true }),
-  ).toBeVisible();
-  await panel.getByRole("button", { name: "返回执行概览" }).click();
+    panel.getByRole("button", { name: "停止", exact: true }),
+  ).toHaveCount(0);
+  await panel
+    .getByRole("button", { name: "返回活动列表", exact: true })
+    .click();
   const texts = await page
     .locator(".conversation-message > p, .conversation-message .reply-content")
     .allTextContents();
@@ -174,7 +199,10 @@ test("并发交付按时间追加，运行入口打开精确详情，固定与�
     .getByRole("button", { name: /^事项/ })
     .click();
   await expect(panel).toBeVisible();
-  await openInput(page);
+  await expect(
+    panel.getByRole("button", { name: "返回活动列表", exact: true }),
+  ).toHaveCount(0);
+  await openExchangeReading(page);
   await expect(page.getByText("材料已创建完成", { exact: true })).toBeVisible();
   await page.screenshot({
     path: "test-results/concurrent-execution-light.png",

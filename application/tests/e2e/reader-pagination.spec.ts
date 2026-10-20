@@ -790,6 +790,7 @@ test("迟到标注页：同 CSRF 撤权后不回填旧书，重新授权的新�
     messageAttachments: domains.messageAttachments,
     images: domains.images,
     uiPackages: domains.uiPackages,
+    cognitiveApps: domains.cognitiveApps,
     notifications: domains.notifications,
     platformTaskRuns: domains.taskRuns(),
   };

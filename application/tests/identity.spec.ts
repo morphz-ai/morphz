@@ -60,6 +60,8 @@ test("同一桌面切换身份：登录、草稿隔离、重开恢复及撤销�
     uiPackages: domains.uiPackages,
     notifications: domains.notifications,
     platformTaskRuns: domains.taskRuns(),
+    cognitiveApps: domains.cognitiveApps,
+    workspaceChanges: domains.workspaceChanges,
   });
   await new Promise<void>((r) => server.listen(port, "127.0.0.1", r));
   try {

@@ -8,7 +8,7 @@ import {
 import { openLibrary } from "./application-helpers.js";
 import { libraryDestination } from "./artifact-fixtures.js";
 import { test, expect, type Page } from "@playwright/test";
-import { openTranscription } from "./interaction-helpers.js";
+import { openRetainedTranscription } from "./retained-transcription-fixture.js";
 import { readSpeechWav, wavFromPCM } from "../packages/core/src/audio.js";
 
 async function syntheticMicrophone(page: Page) {
@@ -31,7 +31,7 @@ async function syntheticMicrophone(page: Page) {
     }),
   );
 }
-test("持续说话超过一分钟仍在采集，自动分段有序识别，停止后保留尾段", async ({
+test("保留转写组件：持续说话超过一分钟仍在采集，自动分段有序识别，停止后保留尾段", async ({
   page,
 }) => {
   test.setTimeout(100000);
@@ -49,7 +49,7 @@ test("持续说话超过一分钟仍在采集，自动分段有序识别，停�
     new HttpApplicationClient("http://127.0.0.1:65421"),
   );
   const before = await platformInputState(page, source);
-  await openTranscription(page);
+  await openRetainedTranscription(page);
   const dialog = page.getByRole("dialog", { name: "录音转文字", exact: true });
   expect(uploads).toBe(0);
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
@@ -171,7 +171,7 @@ test("百万字 TXT 导入原件可连续朗读、暂停不预取、章节跳转
   expect(calls.at(-1)).toBe("第二章 尾声\n这是全书最后一句。");
 });
 
-test("长转写不被输入框截断，可完整保存为文档", async ({ page }) => {
+test("保留转写组件：接收方拒绝长文字时不截断，可通过实际 Client 完整保存文档", async ({ page }) => {
   await syntheticMicrophone(page);
   let uploads = 0;
   await page.route("**/api/speech/transcribe", (route) => {
@@ -183,7 +183,7 @@ test("长转写不被输入框截断，可完整保存为文档", async ({ page 
     new HttpApplicationClient("http://127.0.0.1:65421"),
   );
   const before = await platformContentState(source);
-  await openTranscription(page);
+  await openRetainedTranscription(page);
   const dialog = page.getByRole("dialog", { name: "录音转文字", exact: true });
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
   await expect(dialog.getByText("正在录音", { exact: true })).toBeVisible();

@@ -3,8 +3,8 @@ import { test, expect, type Locator, type Page } from "@playwright/test";
 import {
   openComposerMedia,
   openInput,
-  openTranscription,
 } from "./interaction-helpers.js";
+import { openRetainedTranscription } from "./retained-transcription-fixture.js";
 
 async function syntheticImage(page: Page, width: number, height: number) {
   return page.evaluate(
@@ -249,7 +249,7 @@ test("截图弹窗按图片比例利用空间，标题动作同行，窄窗确�
   );
 });
 
-test("公共弹窗按用途定宽，短确认不膨胀，转写与连接不堆空白操作行", async ({
+test("公共弹窗按用途定宽，短确认与连接不堆空白操作行，撤下的转写入口不复活", async ({
   page,
 }) => {
   await page.goto("/");
@@ -278,7 +278,13 @@ test("公共弹窗按用途定宽，短确认不膨胀，转写与连接不堆�
   await assertContained(connection);
   await page.keyboard.press("Escape");
 
-  await openTranscription(page);
+  await expect(page.getByRole("button", { name: "工作空间选项", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "录音转文字", exact: true })).toHaveCount(0);
+});
+
+test("保留转写组件自身的弹窗宽度、操作行与窄窗布局", async ({ page }) => {
+  await page.goto("/");
+  await openRetainedTranscription(page);
   const speech = page.getByRole("dialog", { name: "录音转文字", exact: true });
   await expect(speech).toBeVisible();
   expect((await speech.boundingBox())!.width).toBeGreaterThanOrEqual(600);
@@ -290,12 +296,4 @@ test("公共弹窗按用途定宽，短确认不膨胀，转写与连接不堆�
   await assertContained(speech);
   await speech.getByRole("button", { name: "关闭录音转文字" }).click();
 
-  await page.setViewportSize({ width: 1440, height: 960 });
-  await page.getByRole("button", { name: "工作空间选项", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "资料导入与来源", exact: true }),
-  ).toHaveCount(0);
-  await assertContained(
-    page.getByRole("group", { name: "工作空间操作", exact: true }),
-  );
 });

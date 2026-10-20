@@ -114,15 +114,29 @@ test("真实 Electron 外观桥接与原生材质只作用于受信主窗口", a
           return header.x + header.width <= controls.x;
         })
         .toBe(true);
-      await page.getByRole("button", { name: "切换右栏内容" }).click();
-      const menu = page.getByRole("group", { name: "右栏内容" });
-      const regions = await menu.evaluate((element) => [
-        getComputedStyle(element).getPropertyValue("-webkit-app-region"),
-        getComputedStyle(element, "::backdrop").getPropertyValue(
-          "-webkit-app-region",
+      // The confirmed Subject sidebar has direct category tabs, not the
+      // retired mixed-inspector menu. Every current control remains outside
+      // the native drag region and changes only the inspected category.
+      const categories = page.getByRole("tablist", {
+        name: "Morphz 信息分类",
+        exact: true,
+      });
+      await expect(categories.getByRole("tab")).toHaveCount(4);
+      expect(
+        await categories.evaluate((element) =>
+          getComputedStyle(element).getPropertyValue("-webkit-app-region"),
         ),
-      ]);
-      expect(regions).toEqual(["no-drag", "no-drag"]);
+      ).toBe("no-drag");
+      for (const name of ["活动", "授权", "定时任务", "设定"]) {
+        const tab = categories.getByRole("tab", { name, exact: true });
+        await tab.click();
+        await expect(tab).toHaveAttribute("aria-selected", "true");
+        expect(
+          await tab.evaluate((element) =>
+            getComputedStyle(element).getPropertyValue("-webkit-app-region"),
+          ),
+        ).toBe("no-drag");
+      }
       await toggle.click();
       await expect(page.locator(".workspace-inspector")).toHaveCount(0);
     }

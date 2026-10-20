@@ -148,22 +148,17 @@ for (const document of [false, true]) {
       expect(state.smallestColumn).toBeGreaterThan(0.2);
       await expect(root.locator("tbody td").nth(1)).toHaveText(description);
       await expect(root.locator("tbody code")).toHaveText(longToken);
-      // Table wrapping cannot alter code bytes or the consumers' existing
-      // policies: chat scrolls code; documents already wrap code visually.
+      // Both consumers now share markdown-text-block.css. Visual wrapping
+      // must preserve the exact code bytes, not reintroduce the retired scroll policy.
       await expect(root.locator("pre code")).toHaveText(longToken + "\n");
-      if (document) {
-        expect(
-          await root
-            .locator("pre")
-            .evaluate((e) => getComputedStyle(e).whiteSpace),
-        ).toBe("pre-wrap");
-      } else {
-        expect(
-          await root
-            .locator("pre")
-            .evaluate((e) => e.scrollWidth > e.clientWidth),
-        ).toBe(true);
-      }
+      expect(
+        await root
+          .locator("pre")
+          .evaluate((e) => getComputedStyle(e).whiteSpace),
+      ).toBe("pre-wrap");
+      expect(
+        await root.locator("pre").evaluate((e) => e.scrollWidth - e.clientWidth),
+      ).toBeLessThanOrEqual(1);
       await table.screenshot({
         path: info.outputPath(`${width}-${zoom}-table.png`),
       });

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
-import { openTranscription, openInput } from "./interaction-helpers.js";
+import { openInput } from "./interaction-helpers.js";
+import { openRetainedTranscription } from "./retained-transcription-fixture.js";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { platformInputState } from "./platform-input-state-fixture.js";
@@ -13,6 +14,13 @@ async function syntheticMicrophone(page: Page) {
       oscillator.connect(destination);
       await context.resume();
       oscillator.start();
+      for (const track of destination.stream.getTracks()) {
+        const stop = track.stop.bind(track);
+        track.stop = () => {
+          stop();
+          void context.close();
+        };
+      }
       Reflect.set(window, "feedbackAudio", context);
       Reflect.set(window, "feedbackStream", destination.stream);
       return destination.stream;
@@ -108,6 +116,9 @@ test("流式听写空结果有反馈且不覆盖草稿，失败后可重新开�
         .getByRole("button", { name: "开始听写", exact: true })
         .click();
     await expect(empty).toHaveCount(0);
+    // A restart is asynchronous. Waiting on the previous synthetic context's
+    // already-advanced clock can stop the new capture before it has any audio.
+    await expect(voice).toHaveAttribute("data-recording", "true");
     await waitForSamples(page);
     await voice.getByRole("button", { name: "停止听写", exact: true }).click();
     await expect
@@ -137,10 +148,10 @@ test("流式听写空结果有反馈且不覆盖草稿，失败后可重新开�
         "语音服务暂时不可用",
       );
       await expect(empty).toHaveCount(0);
-      await page.evaluate(() => Reflect.get(window, "feedbackAudio").close());
       await voice
         .getByRole("button", { name: "开始听写", exact: true })
         .click();
+      await expect(voice).toHaveAttribute("data-recording", "true");
       await waitForSamples(page);
       await expect(input).toHaveValue(
         "保留已有草稿\n合成识别结果\n合成识别结果",
@@ -151,7 +162,6 @@ test("流式听写空结果有反馈且不覆盖草稿，失败后可重新开�
         .click();
       await expect(voice).toContainText("听写已停止");
     }
-    await page.evaluate(() => Reflect.get(window, "feedbackAudio").close());
   }
   await voice.getByRole("button", { name: "关闭听写", exact: true }).click();
   await expect(input).toHaveValue("保留已有草稿\n合成识别结果\n合成识别结果");
@@ -159,14 +169,14 @@ test("流式听写空结果有反馈且不覆盖草稿，失败后可重新开�
   expect(uploads).toBe(4);
 });
 
-test("长录音空结果在现有状态位置说明，不启用空文字保存", async ({ page }) => {
+test("保留转写组件：长录音空结果在状态位置说明，不启用空文字保存", async ({ page }) => {
   await syntheticMicrophone(page);
   await page.route("**/api/speech/transcribe", (route) =>
     route.fulfill({ json: { text: "" } }),
   );
   await page.goto("/");
   await openInput(page);
-  await openTranscription(page);
+  await openRetainedTranscription(page);
   const dialog = page.getByRole("dialog", { name: "录音转文字", exact: true });
   await dialog.getByRole("button", { name: "开始录音", exact: true }).click();
   await waitForSamples(page);
@@ -179,5 +189,8 @@ test("长录音空结果在现有状态位置说明，不启用空文字保存",
     dialog.getByRole("button", { name: "放入输入框", exact: true }),
   ).toBeDisabled();
   await dialog.getByRole("button", { name: "取消", exact: true }).click();
-  await page.evaluate(() => Reflect.get(window, "feedbackAudio").close());
+  // The synthetic microphone closes its AudioContext when capture stops.
+  await expect.poll(() =>
+    page.evaluate(() => Reflect.get(window, "feedbackAudio").state),
+  ).toBe("closed");
 });

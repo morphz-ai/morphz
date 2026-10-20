@@ -550,9 +550,25 @@ async function saveText(page: Page, text: string) {
     throw error;
   }
   await expect(page.locator(".workspace-notice")).toHaveCount(0);
-  await expect(
-    page.locator(".script-studio [data-script-focus-anchor]").first(),
-  ).toBeFocused();
+  try {
+    await expect(
+      page.locator(".script-studio [data-script-focus-anchor]").first(),
+    ).toBeFocused();
+  } catch (error) {
+    console.log(
+      "script-save-focus-failure",
+      await page.evaluate(() => ({
+        active: document.activeElement?.outerHTML.slice(0, 1200),
+        anchors: Array.from(
+          document.querySelectorAll(".script-studio [data-script-focus-anchor]"),
+        ).map((element) => element.outerHTML.slice(0, 500)),
+        dialogs: Array.from(document.querySelectorAll("dialog[open]")).map(
+          (element) => element.getAttribute("aria-label"),
+        ),
+      })),
+    );
+    throw error;
+  }
 }
 async function approveAndLock(page: Page) {
   await selectScriptOption(page, /^审阅/);
@@ -1261,6 +1277,9 @@ test("创作目录按集场组织：上下文新增、折叠、键盘和刷新�
   await expect(editor(page)).toHaveValue(dirty);
   await page.reload();
   await expect(nav).toBeHidden();
+  // The local visibility preference restores before the paged editor read.
+  // Wait for the actual selected item, then opening can focus that item.
+  await expect(editor(page)).toHaveValue(dirty);
   await wideToggle.click();
   await expect(sceneRow).toBeFocused();
   await expect(editor(page)).toHaveValue(dirty);
@@ -2202,7 +2221,7 @@ test("隔离内嵌 Electron：四主题明暗、真实 200% 缩放与编辑恢�
       .toBeLessThan(widthBefore * 0.6);
     // Returning from overview remounts the editor: the save toast is transient,
     // but the persisted revision, exact text and clean state must all survive.
-    await expect(page.locator(".script-edit-status")).toHaveText("草稿 · v2");
+    await expect(page.locator(".script-edit-status")).toHaveText("v2");
     await expect(editor(page)).toHaveValue(savedText);
     await expect(button(page, "保存文稿")).toBeDisabled();
     await expect(page.locator(".workspace-notice")).toHaveCount(0);

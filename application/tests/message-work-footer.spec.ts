@@ -458,9 +458,10 @@ test("等待/暂停/未知不冒称运行，断线与结束保留记录，旧类
   const draft = "断线和已结束消息仍不能改变这份草稿";
   await f.composer.fill(draft);
   for (const [phase, text] of [
-    ["waiting", "等待中"],
+    ["waiting", "等待中（未提供具体原因）"],
     ["runnable", "待执行"],
-    ["idle", "等待唤醒"],
+    // Idle without a Runtime wait reason does not prove what will wake it.
+    ["idle", "等待中（未提供具体原因）"],
     ["future_phase", "状态待核对"],
   ]) {
     await f.update({ phase });
@@ -468,6 +469,12 @@ test("等待/暂停/未知不冒称运行，断线与结束保留记录，旧类
     await expect(f.status).not.toHaveText("执行中");
   }
   await f.update({ phase: "running", controlState: "paused" });
+  // Pausing future work does not stop the step already running.
+  await expect(f.activity).toHaveAccessibleName(
+    "查看执行活动：执行中 · 后续已暂停",
+  );
+  await expect(f.activity).toHaveAttribute("data-status", "running");
+  await f.update({ phase: "waiting" });
   await expect(f.status).toHaveText("已暂停");
   await expect(f.status).toHaveAttribute("data-status", "paused");
   await f.update({ connected: false });

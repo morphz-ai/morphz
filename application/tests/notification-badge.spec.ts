@@ -28,6 +28,15 @@ test("通知角标固定高度、数字居中、零隐藏、大数封顶且不�
     await page.keyboard.press("Escape");
     for (const count of [1, 12, 1000, 0]) {
       unread = count;
+      // Notification reads are event-driven, not polled. A changed fixture
+      // value alone is not a server invalidation or a foreground transition.
+      const reconciled = page.waitForResponse(
+        (response) =>
+          response.url().endsWith("/api/notifications") &&
+          response.request().method() === "GET",
+      );
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await reconciled;
       await expect(
         page.getByRole("button", {
           name: count ? `通知，${count} 项未读` : "通知",

@@ -74,6 +74,7 @@ test("文档实际授权响应迟到，同一登录撤权后不能回填原件�
     uiPackages: domains.uiPackages,
     notifications: domains.notifications,
     platformTaskRuns: domains.taskRuns(),
+    cognitiveApps: domains.cognitiveApps,
   };
   const app = new Application(store, options);
   const ownerCall = (method: ApplicationMethod, params: unknown) =>

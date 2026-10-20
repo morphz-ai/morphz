@@ -52,10 +52,30 @@ test("常用操作用图标与短标签区分正文，完整语义及未发送�
     "版本",
   );
   await action(page.getByRole("button", { name: "编辑", exact: true }), "编辑");
-  await action(
+  // Document comments share the selection-driven entry with other surfaces;
+  // the old permanent toolbar button has been retired.
+  await expect(
     page.getByRole("button", { name: "围绕选中文本输入", exact: true }),
-    "评论选文",
-  );
+  ).toHaveCount(0);
+  await page
+    .locator(".document-body p")
+    .filter({ hasText: "正文、辅助信息与操作不应混为一谈。" })
+    .click({ clickCount: 3 });
+  const comment = page.getByRole("button", {
+    name: "评论选中文字",
+    exact: true,
+  });
+  await action(comment, "评论");
+  await comment.click();
+  await expect(
+    page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(
+    page
+      .getByRole("group", { name: "选文与评论", exact: true })
+      .getByRole("button", { name: "编辑引用 1 的评论", exact: true }),
+  ).toHaveAttribute("title", /正文、辅助信息与操作不应混为一谈。/);
 
   for (const appearance of ["亮色", "暗色"]) {
     await openSettings(page, "外观");

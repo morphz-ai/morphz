@@ -111,7 +111,9 @@ async function setup(page: Page, artifactId: string | null = null) {
   };
 }
 const badge = (page: Page) =>
-  page.locator(".composer-reopen .unread-label, .composer-unread");
+  page.locator(
+    '.composer-reopen[data-state="unread"], .composer-entry-unread, .composer-unread',
+  );
 async function hide(page: Page) {
   await composerAction(page, "收起 AI 输入框");
   await expect(page.locator(".composer-reopen")).toBeVisible();
@@ -379,6 +381,10 @@ test("回复不闪退：内部 infer 不进入主消息，工具切换、断线�
     await emit(topic, {
       ...root,
       text: "TEST 工具处理中",
+      // A provider wait is a transient status. Root chat/progress without this
+      // disposition is the committed public text for this attempt and replaces
+      // its prefix; it is not an unrelated tool-state notification.
+      ...(topic === "chat/progress" ? { disposition: "provider_wait" } : {}),
       tool_calls: [{ id: "call", name: "read", arguments: "{}" }],
     });
     await expect(reply).toContainText("TEST 已经显示的正文不能消失。");

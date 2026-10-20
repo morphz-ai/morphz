@@ -124,6 +124,18 @@ test("half-open history has a translucent boundary without dimming text or resiz
     await page.getByRole("button", { name: appearance, exact: true }).click();
     await page.keyboard.press("Escape");
     await openInput(page);
+    // Another browser scenario may leave a persisted Reader in the shared
+    // workspace. This case measures the ordinary composer, not its deliberately
+    // compact 48px reading-reference variant. Establish that state via the
+    // actual remove action instead of changing the ordinary 60px requirement.
+    const removeReading = page.getByRole("button", {
+      name: "移除阅读引用",
+      exact: true,
+    });
+    if (await removeReading.isVisible()) await removeReading.click();
+    await expect(
+      page.getByRole("group", { name: "阅读引用", exact: true }),
+    ).toHaveCount(0);
     const history = page.locator(".exchange-panel > .conversation");
     const surface = page.locator(".exchange-panel");
     if (await history.isVisible()) await composerAction(page, "收起交流记录");

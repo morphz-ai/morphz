@@ -22,6 +22,7 @@ test("认知应用的交流面板悬浮，不改变画布尺寸；固定和收�
   await page
     .getByRole("button", { name: "剧本工作室 1.0.0", exact: true })
     .click();
+  await expect(page.getByLabel("查找剧本", { exact: true })).toBeVisible();
   await openInput(page);
   await page
     .getByRole("button", { name: "收起 AI 输入框", exact: true })
@@ -223,6 +224,17 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
       .poll(async () => (await siteState())?.form)
       .toBe("TEST 网页未提交表单");
     // Real guest mouse selection, host-owned comment UI, no page preload/IPC.
+    await page.evaluate(() => {
+      (
+        window as unknown as { receivedQuoteSelection?: string }
+      ).receivedQuoteSelection = undefined;
+      window.morphzDesktop!.browser!.onSelection!((selected) => {
+        if (selected)
+          (
+            window as unknown as { receivedQuoteSelection?: string }
+          ).receivedQuoteSelection = selected.text;
+      });
+    });
     const selectionRect = await desktop.evaluate(async ({ webContents }) => {
       const site = webContents
         .getAllWebContents()
@@ -231,18 +243,37 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
         "(()=>{const r=document.createRange();r.selectNodeContents(document.querySelector('header p'));const b=r.getBoundingClientRect();return {x:b.x,y:b.y,width:b.width,height:b.height}})()",
       );
     });
-    const selectionSlot = (await page.locator(".browser-slot").boundingBox())!;
-    await page.mouse.move(
-      selectionSlot.x + selectionRect.x,
-      selectionSlot.y + selectionRect.y + selectionRect.height / 2,
-    );
-    await page.mouse.down();
-    await page.mouse.move(
-      selectionSlot.x + selectionRect.x + selectionRect.width,
-      selectionSlot.y + selectionRect.y + selectionRect.height / 2,
-      { steps: 10 },
-    );
-    await page.mouse.up();
+    await desktop.evaluate(({ webContents }, rect) => {
+      const site = webContents.getAllWebContents().find(
+        (content) => content.getURL() === "https://browser-overlay.invalid/",
+      )!;
+      // Native guest input, in its own CSS coordinates. Do not depend on
+      // another OS window staying frontmost during the full test run.
+      site.focus();
+      const x = Math.floor(rect.x), y = Math.round(rect.y + rect.height / 2);
+      site.sendInputEvent({ type: "mouseMove", x, y });
+      site.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, x, y });
+      for (let step = 1; step <= 10; step++)
+        site.sendInputEvent({
+          type: "mouseMove", button: "left",
+          x: Math.ceil(rect.x + rect.width * step / 10), y,
+        });
+      site.sendInputEvent({
+        type: "mouseUp", button: "left", clickCount: 1,
+        x: Math.ceil(rect.x + rect.width), y,
+      });
+    }, selectionRect);
+    // A drag emits intermediate selections too. Wait for the actual final
+    // guest selection to cross the native bridge before opening its comment.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as unknown as { receivedQuoteSelection?: string })
+              .receivedQuoteSelection,
+        ),
+      )
+      .toBe("TEST 网页画布");
     await page.getByRole("button", { name: "评论选中文字" }).click();
     await expect(page.getByLabel("引用 1 的评论（可选）")).toBeFocused();
     await page.getByLabel("引用 1 的评论（可选）").fill("TEST 网页选文评论");
@@ -1288,6 +1319,10 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
         .find((c) => c.getURL() === "https://browser-overlay.invalid/")!;
       await site.executeJavaScript("getSelection().removeAllRanges()");
     });
+    const revealCalls: unknown[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") revealCalls.push(message.text());
+    });
     await page
       .getByRole("group", { name: "选文与评论" })
       .getByRole("button", { name: "查看引用 1 的原文", exact: true })
@@ -1301,7 +1336,29 @@ test("真实 Electron 网页上叠放交流：视口与表单不变、入口可�
           return site.executeJavaScript("getSelection().toString().trim()");
         }),
       )
-      .toBe("TEST 网页画布，TEST 可见尾句\nTEST 第二行");
+      .toBe("TEST 网页画布，TEST 可见尾句\nTEST 第二行")
+      .catch(async (error) => {
+        const guest = await desktop.evaluate(async ({ webContents }) => {
+          const site = webContents
+            .getAllWebContents()
+            .find((c) => c.getURL() === "https://browser-overlay.invalid/");
+          return site
+            ? site.executeJavaScript(
+                "({text:document.querySelector('header p')?.textContent,selection:getSelection().toString(),url:location.href})",
+              )
+            : null;
+        });
+        throw new Error(
+          `${String(error)}\nQuote reveal diagnostic: ${JSON.stringify({
+            guest,
+            errors: revealCalls,
+            alerts: await page.getByRole("alert").allTextContents(),
+            browserErrors: await page
+              .locator(".browser-error")
+              .allTextContents(),
+          })}`,
+        );
+      });
     await openInput(page);
     await expectDraft(
       "native 200 percent quote original reveal and input reopen",

@@ -174,7 +174,7 @@ test("正式剧本工作室保存资料说明、保留旧字段并从同一原�
   await unlock.getByRole("button", { name: "确认", exact: true }).click();
   await expect(
     page.getByRole("region", { name: "人工审阅与锁稿" }),
-  ).toContainText("草稿");
+  ).toContainText("未送审");
   await page.getByLabel("审阅引用").fill("导出稿");
   await page.getByLabel("审阅意见").fill("核对开场节奏");
   await page.getByRole("button", { name: "添加意见" }).click();

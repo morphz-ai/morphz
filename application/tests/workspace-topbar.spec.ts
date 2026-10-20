@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { createServer } from "vite";
+import { createLogger, createServer } from "vite";
 import react from "@vitejs/plugin-react";
 import { expect, test, type Page } from "@playwright/test";
 import {
@@ -10,11 +12,31 @@ import {
 
 // Source-only React + frozen original chrome, no App/client/Host/Runtime/API.
 // Actual stable slot refs, portals and CSS are not established by SSR alone.
-let server: Awaited<ReturnType<typeof createServer>>, url: string;
+let server: Awaited<ReturnType<typeof createServer>>,
+  url: string,
+  cacheDir: string;
 test.beforeAll(async () => {
+  cacheDir = await mkdtemp(resolve(tmpdir(), "morphz-workspace-topbar-vite-"));
+  const fixture = resolve("tests/fixtures/workspace-topbar.tsx");
+  const compileErrors: string[] = [];
+  const logger = createLogger();
   server = await createServer({
     configFile: false,
     root: resolve("apps/web"),
+    cacheDir,
+    customLogger: {
+      ...logger,
+      error(message, options) {
+        compileErrors.push(message);
+        logger.error(message, options);
+      },
+    },
+    // Scan this fixture, not the unrelated full-App index.html; all React
+    // consumers must share the same optimized module identity on first load.
+    optimizeDeps: {
+      entries: [fixture],
+      include: ["react", "react-dom/client", "react/jsx-runtime"],
+    },
     plugins: [
       react(),
       {
@@ -27,7 +49,7 @@ test.beforeAll(async () => {
             response.end(
               await vite.transformIndexHtml(
                 request.url,
-                `<!doctype html><html><body><div id="root"></div><script type="module" src="/@fs/${resolve("tests/fixtures/workspace-topbar.tsx")}"></script></body></html>`,
+                `<!doctype html><html><body><div id="root"></div><script type="module" src="/@fs/${fixture}"></script></body></html>`,
               ),
             );
           });
@@ -38,12 +60,22 @@ test.beforeAll(async () => {
     logLevel: "error",
   });
   await server.listen();
+  // Cold Vite transforms belong to fixture setup, not to a portal interaction's
+  // navigation deadline. This compiles the genuine imports without mounting it.
+  const client = server.environments.client!;
+  assert.ok(await client.transformRequest(`/@fs/${fixture}`));
+  await client.waitForRequestsIdle();
+  assert.deepEqual(compileErrors, [], "Topbar fixture compilation failed");
   const address = server.httpServer!.address();
   assert.ok(address && typeof address !== "string");
   url = `http://127.0.0.1:${address.port}/__workspace-topbar`;
 });
 test.afterAll(async () => {
-  await server?.close();
+  try {
+    await server?.close();
+  } finally {
+    if (cacheDir) await rm(cacheDir, { recursive: true, force: true });
+  }
 });
 type Report = {
   events: string[];

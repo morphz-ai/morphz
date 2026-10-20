@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import react from "@vitejs/plugin-react";
 import { createServer, transformWithOxc } from "vite";
 import { expect, test, type Page } from "@playwright/test";
@@ -52,12 +54,28 @@ createRoot(document.getElementById('root')).render(<StrictMode><div className="a
 
 let server: Awaited<ReturnType<typeof createServer>>;
 let fixtureUrl: string;
+let cacheDir: string | undefined;
 const businessRequests = new WeakMap<Page, string[]>();
 const pageErrors = new WeakMap<Page, string[]>();
 test.beforeAll(async () => {
+  cacheDir = await mkdtemp(resolve(tmpdir(), "morphz-script-visual-vite-"));
   server = await createServer({
     configFile: false,
     root: resolve("apps/web"),
+    cacheDir,
+    optimizeDeps: {
+      // The virtual entry cannot be discovered from index.html. Scan the
+      // component graph before ReactDOM starts, including both JSX runtimes,
+      // so a later dependency discovery cannot load a second React instance.
+      entries: [resolve("apps/web/src/ScriptStudio.tsx")],
+      include: [
+        "react",
+        "react-dom",
+        "react-dom/client",
+        "react/jsx-runtime",
+        "react/jsx-dev-runtime",
+      ],
+    },
     plugins: [
       react(),
       {
@@ -108,12 +126,26 @@ test.beforeAll(async () => {
     },
   });
   await server.listen();
+  // This fixture owns a cold Vite graph, not a built application. Prepare both
+  // the virtual entry and its dynamic Studio import before timing interactions;
+  // `page.goto`'s load event does not wait for that dynamic module graph.
+  // Keep the real component, visibility deadline and all UI assertions intact.
+  const client = server.environments.client;
+  expect(await client.transformRequest("/__studio-visual.tsx")).not.toBeNull();
+  expect(await client.transformRequest("/src/ScriptStudio.tsx")).not.toBeNull();
+  await client.waitForRequestsIdle();
   const address = server.httpServer!.address();
   if (!address || typeof address === "string")
     throw Error("Missing isolated fixture address");
   fixtureUrl = `http://127.0.0.1:${address.port}/__studio-visual`;
 });
-test.afterAll(async () => server?.close());
+test.afterAll(async () => {
+  try {
+    await server?.close();
+  } finally {
+    if (cacheDir) await rm(cacheDir, { recursive: true, force: true });
+  }
+});
 test.beforeEach(async ({ page }) => {
   const requests: string[] = [];
   const errors: string[] = [];

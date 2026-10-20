@@ -846,7 +846,24 @@ test("窄宽与 CSS 200% 下悬浮两组不碰撞，更多菜单和 Launcher 持
     await launcher
       .getByRole("button", { name: "在工作台管理应用", exact: true })
       .focus();
-    await page.getByRole("heading", { name: "应用", exact: true }).hover();
+    // At CSS 200% the open launcher may legitimately cover the workspace
+    // heading. This checks leaving the launcher while its control has focus,
+    // not pointer access through a top-layer popover to that covered heading.
+    const launcherBounds = await launcher.boundingBox();
+    expect(launcherBounds).not.toBeNull();
+    expect(
+      launcherBounds!.x <= 1 &&
+        launcherBounds!.x + launcherBounds!.width >= 1 &&
+        launcherBounds!.y <= 1 &&
+        launcherBounds!.y + launcherBounds!.height >= 1,
+    ).toBe(false);
+    await page.mouse.move(1, 1);
+    await expect(
+      launcher.getByRole("button", {
+        name: "在工作台管理应用",
+        exact: true,
+      }),
+    ).toBeFocused();
     await expect(launcher).toBeVisible();
     await expect(input).toHaveValue(draft);
     await page.keyboard.press("Escape");

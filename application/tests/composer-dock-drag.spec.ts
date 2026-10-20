@@ -87,10 +87,17 @@ async function unchangedDomain(page: Page) {
       writes.push(`${request.method()} ${new URL(request.url()).pathname}`);
   });
   return async (reloaded = false) => {
-    // A normal reload idempotently ensures the existing personal spaces. It is
-    // not a drag command; enforce zero writes before reload, and no other write
-    // afterward (in particular no launch, Input or Session operation).
-    expect(writes).toEqual(reloaded ? ["POST /api/platform/spaces/ensure"] : []);
+    // Boot ensures the existing personal spaces and queries the application
+    // catalog via its read-only POST. Neither is a drag write. Keep the exact
+    // request count and durable snapshot assertion; no launch/Input/Session.
+    expect(writes.toSorted()).toEqual(
+      reloaded
+        ? [
+            "POST /api/platform/cognitive-apps/list",
+            "POST /api/platform/spaces/ensure",
+          ]
+        : [],
+    );
     expect(await snapshot()).toEqual(before);
   };
 }

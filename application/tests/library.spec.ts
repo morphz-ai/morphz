@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { openLibrary } from "./application-helpers.js";
+import { openExchangeReading } from "./interaction-helpers.js";
 
 test("导入副本可阅读、引用和打开历史版本，但不进入 Agent 成果全文搜索", async ({
   page,
@@ -40,7 +41,7 @@ test("导入副本可阅读、引用和打开历史版本，但不进入 Agent �
     .filter({ hasText: "蝴蝶资料检索" })
     .click({ clickCount: 3 });
   await page
-    .getByRole("button", { name: "围绕选中文本输入", exact: true })
+    .getByRole("button", { name: "评论选中文字", exact: true })
     .click();
   await expect(
     page.getByRole("dialog", { name: "引用 1 的评论", exact: true }),
@@ -53,6 +54,7 @@ test("导入副本可阅读、引用和打开历史版本，但不进入 Agent �
   ).toHaveAttribute("title", /蝴蝶资料检索/);
   await page.getByLabel("AI 输入内容").fill("请解释这段资料");
   await page.getByRole("button", { name: "保存输入", exact: true }).click();
+  await openExchangeReading(page);
   const saved = page
     .locator(".human-message")
     .filter({ hasText: "请解释这段资料" });
@@ -64,6 +66,7 @@ test("导入副本可阅读、引用和打开历史版本，但不进入 Agent �
     projectId,
   );
   await page.reload();
+  await openExchangeReading(page);
   await expect(saved.locator(".sent-text-quotes")).toContainText(
     "蝴蝶资料检索",
   );
