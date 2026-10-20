@@ -10,12 +10,11 @@ import {
   buildNotesProductionUi,
   openNotesProductionApp,
 } from "./fixtures/cognitive-notes-production-app.js";
-import type { Frame } from "@playwright/test";
+import { expect, type Frame } from "@playwright/test";
 import {
   parseCognitiveAppCommandResult,
   parseCognitiveAppGrant,
 } from "../packages/core/src/cognitive-app-api.js";
-import { parseCognitiveAppViewResponse } from "../packages/core/src/cognitive-app-view-api.js";
 
 /** Production main/App/useWorkspace/navigation/input writer/consumer and real
  * HTTP, HPA, dual Platform SQL, independent packed author SQLite. Only setup
@@ -464,6 +463,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
         assert.equal(guest.isDetached(), true);
         assert.equal(f.authorCalls.length, authorBefore);
         assert.deepEqual(await app.stored(), storedBefore);
+        const readUiStart = app.readUiSources.length;
         const catalogResponse = app.page.waitForResponse(async (response) => {
           if (
             new URL(response.url()).pathname !==
@@ -533,53 +533,23 @@ for (const backend of ["sqlite", "postgres"] as const) {
         // real opener captures grant3 and checks the fresh readUi response.
         // Persistent authorized views may independently restore a NEW owner;
         // this does not permit continuation of the detached old Document.
-        let observedReopen:
-          | ReturnType<typeof parseCognitiveAppViewResponse<"readUi">>
-          | undefined;
-        const reopenedSource = app.page.waitForResponse(async (response) => {
-          if (
-            new URL(response.url()).pathname !==
-              "/api/platform/cognitive-app-views/read-ui" ||
-            response.status() !== 200
-          )
-            return false;
-          let body: unknown;
-          try {
-            body = await response.json();
-          } catch (error) {
-            // Chromium may discard a retired Document's response body while
-            // another legitimate readUi is in flight. This observer cannot
-            // rescue it or trigger a read: require an actually readable later
-            // response plus the new connected Document below. Schema failures
-            // and every other observation failure still reject this test.
-            if (
-              !(error instanceof Error) ||
-              !error.message.includes("Network.getResponseBody") ||
-              !error.message.includes("No data found for resource")
-            )
-              throw error;
-            app.trace.push({
-              at: Date.now(),
-              event: "observer-retired-response-body-unavailable",
-              path: "/api/platform/cognitive-app-views/read-ui",
-              value: error.message,
-            });
-            return false;
-          }
-          const source = parseCognitiveAppViewResponse("readUi", body);
-          const matches =
-            source.grantRevision === 3 &&
-            source.view.workspaceId === f.projectId &&
-            source.binding.connectionId === f.target.connectionId &&
-            source.definition.id === f.target.appId &&
-            source.definition.version === f.target.version;
-          if (matches) observedReopen = source;
-          return matches;
-        });
-        void reopenedSource.catch(() => undefined);
         const reopened = await app.openGui();
-        await reopenedSource;
-        const source = observedReopen;
+        // Observe the already completed physical HTTP response in our durable
+        // Chromium ledger, not another read/retry or the retired renderer's
+        // response cache. This poll only inspects in-memory test observations.
+        const observedReopen = () =>
+          app.readUiSources
+            .slice(readUiStart)
+            .find(
+              (source) =>
+                source.grantRevision === 3 &&
+                source.view.workspaceId === f.projectId &&
+                source.binding.connectionId === f.target.connectionId &&
+                source.definition.id === f.target.appId &&
+                source.definition.version === f.target.version,
+            );
+        await expect.poll(observedReopen, { timeout: 12_000 }).toBeDefined();
+        const source = observedReopen();
         assert.ok(
           source,
           "fresh readUi exact grant3 facts were actually observed",
@@ -588,6 +558,7 @@ for (const backend of ["sqlite", "postgres"] as const) {
         assert.equal(source.connectionRevision, 1);
         assert.equal(source.view.workspaceId, f.projectId);
         assert.equal(source.binding.connectionId, f.target.connectionId);
+        assert.deepEqual(app.errors, []);
         assert.notEqual(reopened.guest, guest);
         assert.equal(guest.isDetached(), true);
         assert.equal(reopened.guest.isDetached(), false);

@@ -27,6 +27,8 @@ import {
 } from "../../packages/core/src/application-names.js";
 import type { InputDraft } from "../../apps/web/src/host/exchange-drafts.js";
 import { platformContentSchema } from "../../apps/web/src/platform-client.js";
+import { parseCognitiveAppViewResponse } from "../../packages/core/src/cognitive-app-view-api.js";
+import { retainCognitiveNetworkResponses } from "./cognitive-network-observer.js";
 
 /** Public automatic-fixture login configuration. The frozen transport fixture
  * initializes its real IdentityCenter member from SHA256 of this synthetic
@@ -377,6 +379,78 @@ export async function openNotesProductionApp(
     // Read-only actual Chromium wire observation. No request interception,
     // response fixture, EventSource replacement or browser API monkey patch.
     network = await context.newCDPSession(page);
+    const responseReads = new Set<Promise<void>>();
+    const readUiSources: Omit<
+      ReturnType<typeof parseCognitiveAppViewResponse<"readUi">>,
+      "manifest"
+    >[] = [];
+    const readUiRequests = new Set<string>();
+    network.on("Network.responseReceived", (event) => {
+      if (
+        new URL(event.response.url).pathname ===
+          "/api/platform/cognitive-app-views/read-ui" &&
+        event.response.status === 200
+      ) {
+        readUiRequests.add(event.requestId);
+        trace.push({
+          at: Date.now(),
+          event: "wire-read-ui-response",
+          path: "/api/platform/cognitive-app-views/read-ui",
+          value: { requestId: event.requestId, frameId: event.frameId },
+        });
+      }
+    });
+    network.on("Network.loadingFailed", (event) => {
+      if (readUiRequests.delete(event.requestId))
+        trace.push({
+          at: Date.now(),
+          event: "wire-read-ui-failed",
+          path: "/api/platform/cognitive-app-views/read-ui",
+          value: { requestId: event.requestId, error: event.errorText },
+        });
+    });
+    network.on("Network.loadingFinished", (event) => {
+      if (!readUiRequests.delete(event.requestId)) return;
+      const read = (async () => {
+        let body;
+        try {
+          body = await network!.send("Network.getResponseBody", {
+            requestId: event.requestId,
+          });
+        } catch (error) {
+          trace.push({
+            at: Date.now(),
+            event: "wire-read-ui-body-unavailable",
+            path: "/api/platform/cognitive-app-views/read-ui",
+            value: String(error),
+          });
+          return;
+        }
+        try {
+          const text = body.base64Encoded
+            ? Buffer.from(body.body, "base64").toString("utf8")
+            : body.body;
+          const { manifest: _manifest, ...source } =
+            parseCognitiveAppViewResponse("readUi", JSON.parse(text));
+          // Validate the complete real response, then retain only metadata.
+          // The immutable author bundle is already verified by the Host.
+          readUiSources.push(source);
+          trace.push({
+            at: Date.now(),
+            event: "wire-read-ui-parsed",
+            path: "/api/platform/cognitive-app-views/read-ui",
+            value: {
+              requestId: event.requestId,
+              grantRevision: source.grantRevision,
+            },
+          });
+        } catch (error) {
+          errors.push(`Invalid actual read-ui response: ${String(error)}`);
+        }
+      })();
+      responseReads.add(read);
+      void read.finally(() => responseReads.delete(read));
+    });
     const streams = new Set<string>();
     const resolutions = new Set<string>();
     const streamPath = "/api/platform/workspace/stream";
@@ -455,8 +529,10 @@ export async function openNotesProductionApp(
         value: event.requestId,
       });
     });
-    await network.send("Network.enable");
-    const responseReads = new Set<Promise<void>>();
+    // Keep this observer's bounded response bodies outside retired renderers.
+    // Playwright's independent response.json() session may lose them during
+    // the exact real Document replacement that this fixture must exercise.
+    await retainCognitiveNetworkResponses(network);
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
@@ -550,6 +626,7 @@ export async function openNotesProductionApp(
       responses,
       versions,
       trace,
+      readUiSources,
       holdNextResolution: resolutionHolds.next,
       close,
       async diagnostics(label: string, failure?: unknown) {
@@ -573,6 +650,14 @@ export async function openNotesProductionApp(
             errors,
             responses,
             versions,
+            readUiSources: readUiSources.map((source) => ({
+              grantRevision: source.grantRevision,
+              workspaceId: source.view.workspaceId,
+              connectionId: source.binding.connectionId,
+              appId: source.definition.id,
+              version: source.definition.version,
+            })),
+            pendingReadUiRequests: [...readUiRequests],
             trace,
             // Exact isolated SQL facts disambiguate a lost projection/hint
             // from an uncommitted grant. Never query a user's business store.
