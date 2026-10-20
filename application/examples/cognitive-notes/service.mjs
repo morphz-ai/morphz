@@ -678,7 +678,9 @@ async function readJson(request, check) {
     deny(413, "too_large");
   const chunks = [];
   let bytes = 0;
-  for await (const chunk of request) {
+  // A refusal is an HTTP response, not a transport failure. The default async
+  // iterator destroys IncomingMessage on early return/throw, losing that reply.
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
     check();
     bytes += chunk.length;
     if (bytes > 512 * 1024) deny(413, "too_large");
@@ -690,6 +692,18 @@ async function readJson(request, check) {
       new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)),
     ),
   );
+}
+async function drainRejectedRequest(request, check) {
+  // Finish a bounded rejected upload before closing its socket. Otherwise a
+  // normal over-budget request can race our 413 and receive only EPIPE. Never
+  // buffer discarded bytes, accept them as JSON, or wait past the same deadline.
+  if (request.complete || request.destroyed) return;
+  let discarded = 0;
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+    check();
+    discarded += chunk.length;
+    if (discarded > 1024 * 1024) return;
+  }
 }
 const server = createServer(
   { maxHeaderSize: 8192 },
@@ -727,6 +741,12 @@ const server = createServer(
       });
       response.end(body);
     } catch (error) {
+      try {
+        await drainRejectedRequest(request, check);
+      } catch {
+        // An aborted or stalled peer cannot receive a reliable HTTP response.
+        // The original refusal remains authoritative; no business retry occurs.
+      }
       if (!response.destroyed && !response.headersSent) {
         // Never echo cause, body, identities, bearer, SQL or paths. In particular,
         // a failed response after COMMIT is not a new authoritative rejection.

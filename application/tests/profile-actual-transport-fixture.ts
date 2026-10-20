@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -308,7 +309,11 @@ export async function profileActualTransportFixture(
   const { runtimeBinaryPath } = (await import(
     pathToFileURL(resolve("scripts/runtime-path.mjs")).href
   )) as { runtimeBinaryPath(): string };
-  const directory = mkdtempSync(join(tmpdir(), "morphz-profile-actual-"));
+  // Use the actual filesystem path on macOS too (/var can alias /private/var).
+  // An alias must not make a fixture appear authorized on one OS but not Linux.
+  const directory = realpathSync(
+    mkdtempSync(join(tmpdir(), "morphz-profile-actual-")),
+  );
   const runtimeRoot = join(directory, "runtime");
   mkdirSync(runtimeRoot, { mode: 0o700 });
   for (const [name, bytes] of Object.entries(options.workspaceFiles ?? {})) {
@@ -320,7 +325,12 @@ export async function profileActualTransportFixture(
   const runtimePort = await port(),
     hostPort = await port();
   const namespace = randomUUID();
-  const manifest = prepareHostTools(directory, hostPort, namespace);
+  // Runtime protects the Host credential manifest's entire parent directory.
+  // Keep control material outside the separately authorized workspace, just
+  // as the installed application does; never relax the permission checker.
+  const hostControlRoot = join(directory, "host-control");
+  mkdirSync(hostControlRoot, { mode: 0o700 });
+  const manifest = prepareHostTools(hostControlRoot, hostPort, namespace);
   if (inputFormats !== undefined) {
     const value = JSON.parse(readFileSync(manifest.path, "utf8"));
     value.formats = inputFormats;

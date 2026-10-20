@@ -131,6 +131,8 @@ charset、额外参数或 Content-Encoding。宿主的实际 UTF-8 请求头已�
 该作者业务规则确知未提交；403、断连、过期和 not_seen 不等于 rejected。
 限制为 512KiB wire、8KiB headers、10s绝对处理 deadline；不压缩、不重定向，
 正文使用 fatal UTF-8 解码，安全错误不回显 SQL、请求、token 或配置。
+拒绝超限请求时，在同一 deadline 内至多丢弃 1MiB 剩余上传后返回错误，
+避免正常在途上传只收到 socket 断开；丢弃内容不缓存、不解析、不进入业务。
 
 [数据模型](./MODEL.md)说明所有权、FK、事务、版本与 ACL。停止服务后备份完整
 作者数据库；在线备份须采用 SQLite 一致性备份工具，不能只复制正在写的主文件

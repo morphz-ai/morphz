@@ -384,6 +384,20 @@ export async function openNotesProductionApp(
       ReturnType<typeof parseCognitiveAppViewResponse<"readUi">>,
       "manifest"
     >[] = [];
+    const observedSources = new Set<string>();
+    const observeReadUi = (value: unknown) => {
+      // Both observers read the same physical response, never another fetch.
+      // Playwright can retain a complete body even when a later abort produces
+      // loadingFailed on our CDP session; CDP retains it across renderer disposal.
+      const { manifest: _manifest, ...source } =
+        parseCognitiveAppViewResponse("readUi", value);
+      const key = JSON.stringify(source);
+      if (!observedSources.has(key)) {
+        observedSources.add(key);
+        readUiSources.push(source);
+      }
+      return source;
+    };
     const readUiRequests = new Set<string>();
     network.on("Network.responseReceived", (event) => {
       if (
@@ -430,11 +444,9 @@ export async function openNotesProductionApp(
           const text = body.base64Encoded
             ? Buffer.from(body.body, "base64").toString("utf8")
             : body.body;
-          const { manifest: _manifest, ...source } =
-            parseCognitiveAppViewResponse("readUi", JSON.parse(text));
+          const source = observeReadUi(JSON.parse(text));
           // Validate the complete real response, then retain only metadata.
           // The immutable author bundle is already verified by the Host.
-          readUiSources.push(source);
           trace.push({
             at: Date.now(),
             event: "wire-read-ui-parsed",
@@ -561,6 +573,16 @@ export async function openNotesProductionApp(
       if (path.includes("/cognitive-app")) {
         const read = response.json().then(
           (value: unknown) => {
+            if (
+              path === "/api/platform/cognitive-app-views/read-ui" &&
+              response.status() === 200
+            ) {
+              try {
+                observeReadUi(value);
+              } catch (error) {
+                errors.push(`Invalid actual read-ui response: ${String(error)}`);
+              }
+            }
             trace.push({
               at: Date.now(),
               event: `response:${response.status()}`,

@@ -779,6 +779,45 @@ test("author real post-COMMIT lost response and process restart recover exactly 
   });
 });
 
+test("author oversized declared and chunked uploads return an actual 413 without socket failure or business effects", async () => {
+  await isolated(async (c) => {
+    for (const declared of [true, false]) {
+      const result = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const request = httpRequest(`${c.origin}/invoke`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${credential}`,
+            "Content-Type": "application/json",
+            ...(declared ? { "Content-Length": 512 * 1024 + 1 } : {}),
+          },
+        }, (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.on("error", reject);
+          response.on("end", () => resolve({
+            status: response.statusCode!, body: Buffer.concat(chunks).toString("utf8"),
+          }));
+        });
+        request.on("error", reject);
+        request.setTimeout(15_000, () => request.destroy(new Error("bounded upload timeout")));
+        void (async () => {
+          // Deliver real separate TCP writes, including a trailing over-budget
+          // byte. Early header rejection must not cut off a normal in-flight upload.
+          for (let i = 0; i < 8; i++) {
+            if (!request.write(Buffer.alloc(64 * 1024, 0x61))) await once(request, "drain");
+            await new Promise<void>((done) => setTimeout(done, 2));
+          }
+          request.end(Buffer.from("a"));
+        })().catch(reject);
+      });
+      assert.equal(result.status, 413);
+      assert.deepEqual(JSON.parse(result.body), { error: "too_large" });
+      assert.equal(c.rows("SELECT count(*) AS n FROM notes")[0].n, 0);
+      assert.equal(c.rows("SELECT count(*) AS n FROM author_commands")[0].n, 0);
+    }
+  });
+});
+
 test("author fatal UTF-8, body budgets and strict schemas produce safe errors with zero business effects", async () => {
   await isolated(async (c) => {
     for (const body of [
