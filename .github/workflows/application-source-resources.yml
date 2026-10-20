@@ -1,0 +1,36 @@
+name: Application source resource diagnosis
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-contracts:
+    name: Isolated native compiler and source contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - run: npm ci
+      - name: Run the exact synchronous source audits with resource observations
+        run: |
+          node ../scripts/observe-ci-resources.mjs 5000 &
+          resource_observer=$!
+          trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
+          node --import tsx --test --test-concurrency=4 \
+            tests/virtual-typescript.test.ts \
+            tests/application-navigation-consumption-boundary.test.ts \
+            tests/application-navigation-ownership.test.ts \
+            tests/builtin-application-adapters-boundary.test.ts

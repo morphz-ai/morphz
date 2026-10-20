@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   linuxCounters,
+  linuxProcessMemory,
   parseCounters,
   sample,
   unifiedCgroupPath,
@@ -116,8 +117,26 @@ test("real sampling is read-only and emits no process arguments or environment",
       "memoryBytes",
       "platform",
       "processCount",
+      "processMemory",
     ].sort(),
   );
+});
+
+test("process memory is aggregated without exposing process names or reading arguments", () => {
+  const paths = [];
+  const result = linuxProcessMemory((path) => {
+    paths.push(path);
+    if (path === "/proc/1/status") return "Name:\ttsc\nVmRSS:\t100 kB\n";
+    if (path === "/proc/2/status") return "Name:\ttsc\nVmRSS:\t200 kB\n";
+    if (path === "/proc/3/status") return "Name:\tprivate-name\nVmRSS:\t40 kB\n";
+    throw new Error("process exited");
+  }, () => ["self", "1", "2", "3", "4", "../bad"]);
+  assert.deepEqual(result, { observed: 3, groups: {
+    tsc: { processes: 2, residentKiB: 300, largestKiB: 200 },
+    other: { processes: 1, residentKiB: 40, largestKiB: 40 },
+  } });
+  assert.deepEqual(paths, ["/proc/1/status", "/proc/2/status", "/proc/3/status", "/proc/4/status"]);
+  assert.equal(linuxProcessMemory(() => "", () => { throw new Error("unavailable"); }), null);
 });
 
 test(

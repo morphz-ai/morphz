@@ -86,6 +86,37 @@ export function linuxCounters(read = readFileSync) {
   };
 }
 
+// Aggregate resident memory by a fixed executable category, never by an
+// argument, path, user-supplied process name or environment value.
+export function linuxProcessMemory(read = readFileSync, list = readdirSync) {
+  let entries;
+  try {
+    entries = list("/proc");
+  } catch {
+    return null;
+  }
+  const groups = new Map();
+  let observed = 0;
+  for (const id of entries.filter((name) => /^\d+$/.test(name))) {
+    const status = optional(read, `/proc/${id}/status`);
+    if (status === null) continue;
+    const name = /^Name:\s*(\S+)/m.exec(status)?.[1];
+    const kind = ["node", "tsc", "postgres", "chrome", "chromium"].includes(name)
+      ? name
+      : "other";
+    const counters = parseCounters(status);
+    const rss = counters.VmRSS;
+    if (rss === undefined) continue;
+    observed++;
+    const group = groups.get(kind) ?? { processes: 0, residentKiB: 0, largestKiB: 0 };
+    group.processes++;
+    group.residentKiB += rss;
+    group.largestKiB = Math.max(group.largestKiB, rss);
+    groups.set(kind, group);
+  }
+  return { observed, groups: Object.fromEntries(groups) };
+}
+
 export function sample() {
   let filesystem = null,
     processCount = null;
@@ -110,6 +141,7 @@ export function sample() {
     load: loadavg(),
     filesystem,
     processCount,
+    processMemory: process.platform === "linux" ? linuxProcessMemory() : null,
     linux: process.platform === "linux" ? linuxCounters() : null,
   };
 }
