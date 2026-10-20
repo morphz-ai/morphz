@@ -100,3 +100,10 @@ test("Runtime's reusable source diagnostics never select an Electron lane from t
   assert.ok(job.indexOf("node node_modules/electron/install.js") < job.indexOf("xvfb-run -a npm test"));
   assert.doesNotMatch(job, /continue-on-error|\|\|\s*true/);
 });
+
+test("small macOS runner bounds file workers without narrowing the full test inventory", () => {
+  const workflow = readFileSync(new URL("../../.github/workflows/application.yml", import.meta.url), "utf8");
+  const desktop = jobSource(workflow, "desktop");
+  assert.match(desktop, /npm test -- --test-concurrency=1\s*\n/);
+  assert.doesNotMatch(desktop, /npm test -- --test-concurrency=1.*\.test\.ts/);
+});

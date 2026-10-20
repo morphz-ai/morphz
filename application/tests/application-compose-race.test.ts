@@ -167,12 +167,17 @@ test(
           "[compose fixture readiness]",
           JSON.stringify({
             errors,
-            frames: page
+            frames: await Promise.all(page
               .frames()
-              .map((frame) => ({
+              .map(async (frame) => ({
                 url: frame.url(),
                 detached: frame.isDetached(),
-              })),
+                state: await frame.evaluate(() => ({
+                  readyState: document.readyState,
+                  ready: (window as any).ready === true,
+                  handshake: (window as any).handshake ?? null,
+                })).catch(() => null),
+              }))),
             host: await page
               .evaluate(() => ({
                 readyState: document.readyState,

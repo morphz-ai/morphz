@@ -61,3 +61,26 @@ jobs:
             tests/task-run-panel-mounted.test.ts \
             tests/execution-inspection-mounted.test.ts \
             tests/cognitive-app-document-local.test.ts
+
+  macos-compose-regressions:
+    name: Isolated macOS iframe initialization diagnosis
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - run: brew install postgresql@16
+      - run: npx playwright install chromium
+      - name: Check the actual unchanged opaque iframe with bounded diagnosis
+        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/application-compose-race.test.ts

@@ -202,7 +202,10 @@ jobs:
           node ../scripts/observe-ci-resources.mjs &
           resource_observer=$!
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
-          MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test
+          # The macOS runner has 7 GiB RAM. Four simultaneous browser/TypeScript
+          # workers caused memory pressure and load averages above 70. Retain
+          # every case and its internal concurrency; bound file scheduling only.
+          MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1
       - name: Require actual browser foreground and background receipt behavior
         env:
           MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres,native-focus
