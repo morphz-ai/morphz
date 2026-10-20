@@ -12,6 +12,7 @@ members = [
     "yao",
 ]
 exclude = [
+    "third_party/candle-core-0.10.2",
     "third_party/codex-otel-stub",
     "third_party/codex-utils-absolute-path",
     "third_party/codex-utils-pty",
@@ -39,6 +40,11 @@ incremental = true
 [profile.test]
 debug = "line-tables-only"
 incremental = true
+
+[patch.crates-io]
+# Keep Candle's tested tensor/model APIs unchanged while moving its PyTorch
+# archive reader off zip <9 (RUSTSEC-2026-0367/0368/0369).
+candle-core = { path = "third_party/candle-core-0.10.2" }
 
 [patch."https://github.com/openai/codex"]
 # The Windows sandbox crate uses Codex OTEL only for optional setup metrics.

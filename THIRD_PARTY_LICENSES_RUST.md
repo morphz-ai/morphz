@@ -380,7 +380,7 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `quick-xml 0.41.0` | `MIT` | L022 |
 | `quickcheck 1.1.0` | `Unlicense OR MIT` | L025, L138 |
 | `quinn 0.11.11` | `MIT OR Apache-2.0` | L007, L055 |
-| `quinn-proto 0.11.17` | `MIT OR Apache-2.0` | L007, L055 |
+| `quinn-proto 0.11.18` | `MIT OR Apache-2.0` | L007, L055 |
 | `quinn-udp 0.5.15` | `MIT OR Apache-2.0` | L007, L055 |
 | `quote 1.0.46` | `MIT OR Apache-2.0` | L068, L190 |
 | `r-efi 5.3.0` | `MIT OR Apache-2.0 OR LGPL-2.1-or-later` | L297 |
@@ -416,7 +416,7 @@ This bundle covers non-development Cargo dependencies reachable from the Morphz 
 | `rustc-hash 2.1.3` | `Apache-2.0 OR MIT` | L068, L190 |
 | `rustc_version 0.4.1` | `MIT OR Apache-2.0` | L198, L211 |
 | `rustix 1.1.4` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | L064, L068, L211, L349 |
-| `rustls 0.23.45` | `Apache-2.0 OR ISC OR MIT` | L211, L234, L247 |
+| `rustls 0.23.46` | `Apache-2.0 OR ISC OR MIT` | L211, L234, L247 |
 | `rustls-native-certs 0.8.4` | `Apache-2.0 OR ISC OR MIT` | L058, L211, L234, L247 |
 | `rustls-pki-types 1.14.1` | `MIT OR Apache-2.0` | L093, L278 |
 | `rustls-webpki 0.103.15` | `ISC` | L084 |
@@ -1029,7 +1029,7 @@ THE SOFTWARE.
 
 ### L007
 
-Applies to: `quinn 0.11.11`, `quinn-proto 0.11.17`, `quinn-udp 0.5.15`
+Applies to: `quinn 0.11.11`, `quinn-proto 0.11.18`, `quinn-udp 0.5.15`
 
 ~~~~text
 Copyright (c) 2018 The quinn Developers
@@ -3109,7 +3109,7 @@ limitations under the License.
 
 ### L055
 
-Applies to: `annotate-snippets 0.9.2`, `approx 0.5.1`, `chardetng 0.1.17`, `cmp_any 0.8.1`, `dupe 0.9.1`, `dupe_derive 0.9.1`, `encoding_rs 0.8.35`, `flume 0.11.1`, `lru-slab 0.1.2`, `quinn 0.11.11`, `quinn-proto 0.11.17`, `quinn-udp 0.5.15`, `seccompiler 0.5.0`, `static_assertions 1.1.0`, `sys-locale 0.3.2`, `tinyvec 1.11.0`, `utf8_iter 1.0.4`, `wildcard 0.3.0`, `zeroize 1.9.0`, `zune-core 0.5.3`, `zune-jpeg 0.5.15`
+Applies to: `annotate-snippets 0.9.2`, `approx 0.5.1`, `chardetng 0.1.17`, `cmp_any 0.8.1`, `dupe 0.9.1`, `dupe_derive 0.9.1`, `encoding_rs 0.8.35`, `flume 0.11.1`, `lru-slab 0.1.2`, `quinn 0.11.11`, `quinn-proto 0.11.18`, `quinn-udp 0.5.15`, `seccompiler 0.5.0`, `static_assertions 1.1.0`, `sys-locale 0.3.2`, `tinyvec 1.11.0`, `utf8_iter 1.0.4`, `wildcard 0.3.0`, `zeroize 1.9.0`, `zune-core 0.5.3`, `zune-jpeg 0.5.15`
 
 ~~~~text
 Apache License
@@ -12841,7 +12841,7 @@ DEALINGS IN THE SOFTWARE.
 
 ### L211
 
-Applies to: `arrayvec 0.7.8`, `async-channel 2.5.0`, `async-compression 0.4.42`, `async-executor 1.14.0`, `async-io 2.6.0`, `async-lock 3.4.2`, `async-process 2.5.0`, `async-recursion 1.1.1`, `async-signal 0.2.14`, `async-task 4.7.1`, `atomic 0.5.3`, `atomic-polyfill 1.0.3`, `atomic-waker 1.1.2`, `autocfg 1.5.1`, `base64 0.22.1`, `bitflags 1.3.2`, `bitflags 2.13.0`, `blocking 1.6.2`, `bs58 0.5.1`, `bstr 1.13.1`, `bumpalo 3.20.3`, `by_address 1.2.1`, `cc 1.2.65`, `cfg-if 1.0.4`, `cmake 0.1.58`, `compression-codecs 0.4.38`, `compression-core 0.4.32`, `concurrent-queue 2.5.0`, `core-foundation 0.10.1`, `core-foundation 0.9.4`, `core-foundation-sys 0.8.7`, `critical-section 1.2.0`, `crossbeam-channel 0.5.16`, `crossbeam-deque 0.8.6`, `crossbeam-epoch 0.9.20`, `crossbeam-queue 0.3.12`, `crossbeam-utils 0.8.21`, `derivative 2.2.0`, `displaydoc 0.2.6`, `either 1.16.0`, `embedded-io 0.4.0`, `embedded-io 0.6.1`, `equivalent 1.0.2`, `errno 0.3.14`, `event-listener 5.4.2`, `event-listener-strategy 0.5.4`, `fastrand 2.4.1`, `filetime 0.2.29`, `find-msvc-tools 0.1.9`, `flate2 1.1.9`, `fnv 1.0.7`, `form_urlencoded 1.2.2`, `futures-lite 2.6.1`, `gif 0.14.2`, `glob 0.3.3`, `hash32 0.2.1`, `hashbrown 0.12.3`, `hashbrown 0.14.5`, `hashbrown 0.15.5`, `hashbrown 0.16.1`, `hashbrown 0.17.1`, `heapless 0.7.17`, `heck 0.5.0`, `hermit-abi 0.5.2`, `httparse 1.10.1`, `hyper-rustls 0.27.9`, `hyper-tls 0.6.0`, `idna 1.1.0`, `idna_adapter 1.2.2`, `indexmap 1.9.3`, `indexmap 2.14.0`, `itertools 0.14.0`, `jobserver 0.1.35`, `js-sys 0.3.102`, `lazy_static 1.5.0`, `linux-raw-sys 0.12.1`, `lock_api 0.4.14`, `log 0.4.33`, `maplit 1.0.2`, `mime 0.3.17`, `multimap 0.10.1`, `num 0.4.3`, `num-bigint 0.4.8`, `num-bigint-dig 0.8.6`, `num-complex 0.4.6`, `num-integer 0.1.46`, `num-iter 0.1.45`, `num-rational 0.4.2`, `num-traits 0.2.19`, `once_cell 1.21.4`, `openssl-probe 0.2.1`, `ordered-stream 0.2.0`, `palette 0.7.6`, `palette_derive 0.7.6`, `parking 2.2.1`, `parking_lot 0.12.5`, `parking_lot_core 0.9.12`, `percent-encoding 2.3.2`, `piper 0.2.5`, `pkg-config 0.3.33`, `plain 0.2.3`, `png 0.18.1`, `polling 3.11.0`, `postcard 1.1.3`, `psl-types 2.0.11`, `publicsuffix 2.3.0`, `rayon 1.12.0`, `rayon-core 1.13.0`, `regex 1.12.4`, `regex-automata 0.4.14`, `regex-lite 0.1.9`, `regex-syntax 0.8.11`, `rsa 0.9.10`, `rustc_version 0.4.1`, `rustix 1.1.4`, `rustls 0.23.45`, `rustls-native-certs 0.8.4`, `scopeguard 1.2.0`, `secret-service 5.1.0`, `security-framework 3.7.0`, `security-framework-sys 2.17.0`, `serde_with 3.22.0`, `serde_with_macros 3.22.0`, `signal-hook 0.3.18`, `signal-hook-mio 0.2.5`, `signal-hook-registry 1.4.8`, `smallvec 1.15.2`, `smol_str 0.3.6`, `socket2 0.6.4`, `stable_deref_trait 1.2.1`, `symlink 0.1.0`, `syn 1.0.109`, `system-configuration 0.7.0`, `system-configuration-sys 0.6.0`, `tar 0.4.46`, `tempfile 3.27.0`, `thread_local 1.1.9`, `tungstenite 0.24.0`, `unicase 2.9.0`, `unicode-bidi 0.3.18`, `unicode-normalization 0.1.25`, `unicode-properties 0.1.4`, `unicode-segmentation 1.13.3`, `unicode-truncate 2.0.1`, `unicode-width 0.1.14`, `unicode-width 0.2.2`, `unicode-xid 0.2.6`, `url 2.5.8`, `uuid 1.23.5`, `vcpkg 0.2.15`, `version_check 0.9.5`, `wasi 0.11.1+wasi-snapshot-preview1`, `wasip2 1.0.4+wasi-0.2.12`, `wasm-bindgen 0.2.125`, `wasm-bindgen-futures 0.4.75`, `wasm-bindgen-macro 0.2.125`, `wasm-bindgen-macro-support 0.2.125`, `wasm-bindgen-shared 0.2.125`, `web-sys 0.3.102`, `weezl 0.1.12`, `wit-bindgen 0.57.1`, `xattr 1.6.1`
+Applies to: `arrayvec 0.7.8`, `async-channel 2.5.0`, `async-compression 0.4.42`, `async-executor 1.14.0`, `async-io 2.6.0`, `async-lock 3.4.2`, `async-process 2.5.0`, `async-recursion 1.1.1`, `async-signal 0.2.14`, `async-task 4.7.1`, `atomic 0.5.3`, `atomic-polyfill 1.0.3`, `atomic-waker 1.1.2`, `autocfg 1.5.1`, `base64 0.22.1`, `bitflags 1.3.2`, `bitflags 2.13.0`, `blocking 1.6.2`, `bs58 0.5.1`, `bstr 1.13.1`, `bumpalo 3.20.3`, `by_address 1.2.1`, `cc 1.2.65`, `cfg-if 1.0.4`, `cmake 0.1.58`, `compression-codecs 0.4.38`, `compression-core 0.4.32`, `concurrent-queue 2.5.0`, `core-foundation 0.10.1`, `core-foundation 0.9.4`, `core-foundation-sys 0.8.7`, `critical-section 1.2.0`, `crossbeam-channel 0.5.16`, `crossbeam-deque 0.8.6`, `crossbeam-epoch 0.9.20`, `crossbeam-queue 0.3.12`, `crossbeam-utils 0.8.21`, `derivative 2.2.0`, `displaydoc 0.2.6`, `either 1.16.0`, `embedded-io 0.4.0`, `embedded-io 0.6.1`, `equivalent 1.0.2`, `errno 0.3.14`, `event-listener 5.4.2`, `event-listener-strategy 0.5.4`, `fastrand 2.4.1`, `filetime 0.2.29`, `find-msvc-tools 0.1.9`, `flate2 1.1.9`, `fnv 1.0.7`, `form_urlencoded 1.2.2`, `futures-lite 2.6.1`, `gif 0.14.2`, `glob 0.3.3`, `hash32 0.2.1`, `hashbrown 0.12.3`, `hashbrown 0.14.5`, `hashbrown 0.15.5`, `hashbrown 0.16.1`, `hashbrown 0.17.1`, `heapless 0.7.17`, `heck 0.5.0`, `hermit-abi 0.5.2`, `httparse 1.10.1`, `hyper-rustls 0.27.9`, `hyper-tls 0.6.0`, `idna 1.1.0`, `idna_adapter 1.2.2`, `indexmap 1.9.3`, `indexmap 2.14.0`, `itertools 0.14.0`, `jobserver 0.1.35`, `js-sys 0.3.102`, `lazy_static 1.5.0`, `linux-raw-sys 0.12.1`, `lock_api 0.4.14`, `log 0.4.33`, `maplit 1.0.2`, `mime 0.3.17`, `multimap 0.10.1`, `num 0.4.3`, `num-bigint 0.4.8`, `num-bigint-dig 0.8.6`, `num-complex 0.4.6`, `num-integer 0.1.46`, `num-iter 0.1.45`, `num-rational 0.4.2`, `num-traits 0.2.19`, `once_cell 1.21.4`, `openssl-probe 0.2.1`, `ordered-stream 0.2.0`, `palette 0.7.6`, `palette_derive 0.7.6`, `parking 2.2.1`, `parking_lot 0.12.5`, `parking_lot_core 0.9.12`, `percent-encoding 2.3.2`, `piper 0.2.5`, `pkg-config 0.3.33`, `plain 0.2.3`, `png 0.18.1`, `polling 3.11.0`, `postcard 1.1.3`, `psl-types 2.0.11`, `publicsuffix 2.3.0`, `rayon 1.12.0`, `rayon-core 1.13.0`, `regex 1.12.4`, `regex-automata 0.4.14`, `regex-lite 0.1.9`, `regex-syntax 0.8.11`, `rsa 0.9.10`, `rustc_version 0.4.1`, `rustix 1.1.4`, `rustls 0.23.46`, `rustls-native-certs 0.8.4`, `scopeguard 1.2.0`, `secret-service 5.1.0`, `security-framework 3.7.0`, `security-framework-sys 2.17.0`, `serde_with 3.22.0`, `serde_with_macros 3.22.0`, `signal-hook 0.3.18`, `signal-hook-mio 0.2.5`, `signal-hook-registry 1.4.8`, `smallvec 1.15.2`, `smol_str 0.3.6`, `socket2 0.6.4`, `stable_deref_trait 1.2.1`, `symlink 0.1.0`, `syn 1.0.109`, `system-configuration 0.7.0`, `system-configuration-sys 0.6.0`, `tar 0.4.46`, `tempfile 3.27.0`, `thread_local 1.1.9`, `tungstenite 0.24.0`, `unicase 2.9.0`, `unicode-bidi 0.3.18`, `unicode-normalization 0.1.25`, `unicode-properties 0.1.4`, `unicode-segmentation 1.13.3`, `unicode-truncate 2.0.1`, `unicode-width 0.1.14`, `unicode-width 0.2.2`, `unicode-xid 0.2.6`, `url 2.5.8`, `uuid 1.23.5`, `vcpkg 0.2.15`, `version_check 0.9.5`, `wasi 0.11.1+wasi-snapshot-preview1`, `wasip2 1.0.4+wasi-0.2.12`, `wasm-bindgen 0.2.125`, `wasm-bindgen-futures 0.4.75`, `wasm-bindgen-macro 0.2.125`, `wasm-bindgen-macro-support 0.2.125`, `wasm-bindgen-shared 0.2.125`, `web-sys 0.3.102`, `weezl 0.1.12`, `wit-bindgen 0.57.1`, `xattr 1.6.1`
 
 ~~~~text
 Apache License
@@ -14193,7 +14193,7 @@ Copyright (c) 2014 Chris Morgan and the Teepee project developers
 
 ### L234
 
-Applies to: `hyper-rustls 0.27.9`, `rustls 0.23.45`, `rustls-native-certs 0.8.4`
+Applies to: `hyper-rustls 0.27.9`, `rustls 0.23.46`, `rustls-native-certs 0.8.4`
 
 ~~~~text
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
@@ -14916,7 +14916,7 @@ SOFTWARE.
 
 ### L247
 
-Applies to: `hyper-rustls 0.27.9`, `rustls 0.23.45`, `rustls-native-certs 0.8.4`
+Applies to: `hyper-rustls 0.27.9`, `rustls 0.23.46`, `rustls-native-certs 0.8.4`
 
 ~~~~text
 ISC License (ISC)
