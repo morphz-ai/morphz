@@ -162,7 +162,29 @@ async fn assert_later_request_receipts(
         assert_eq!(job.tool_name, "recall");
         assert_eq!(job.status, ExecutionJobStatus::Succeeded);
         assert!(job.result_event_id.is_some());
-        assert!(!job.request.to_string().contains("_annotations"));
+        assert!(
+            job.request.get("_morphz").is_none(),
+            "native display metadata must not enter a business Job"
+        );
+        // Runtime routing fields deliberately share the _morphz prefix; they
+        // are not model display metadata. Validate them and compare the entire
+        // remaining business request, rather than searching serialized text.
+        let route = morphz::execution_target::route_snapshot_from_job(job).unwrap();
+        assert_eq!(route.target_id, job.target_id);
+        let mut business_request = job.request.clone();
+        let fields = business_request.as_object_mut().unwrap();
+        assert_eq!(
+            fields.remove(morphz::execution_target::EXECUTION_ROUTE_REQUEST_KEY),
+            Some(serde_json::to_value(route).unwrap())
+        );
+        assert!(fields
+            .remove("_morphz_wake_thread")
+            .is_some_and(|value| value.is_boolean()));
+        assert_eq!(
+            business_request,
+            json!({"query":"GROUP_WAIT_PARENT","limit":128}),
+            "only exact original Recall arguments may remain after Runtime routing"
+        );
     }
 
     for request in requests
@@ -186,13 +208,31 @@ async fn assert_later_request_receipts(
             })
             .await
             .unwrap();
-        let final_source = raw_call_source(&events, &format!("group-{}-4", request.role));
-        let manifest: ContextViewManifest =
-            serde_json::from_value(final_source.payload["context_view_manifest"].clone()).unwrap();
-        assert_eq!(manifest.context_id, thread.context_id);
         let context = request_context(request);
         let current_activation = context.get_path(&["evaluate", "activation"]).unwrap();
         let current_activation_id = atom_field(current_activation, "id");
+        // A final native body has no fabricated reply call ID. Bind its one
+        // durable source to the actual terminal Activation instead.
+        let final_sources = events
+            .iter()
+            .filter(|event| {
+                event.payload["activation_id"] == current_activation_id
+                    && event.payload.get("terminal_outcome") == Some(&json!(true))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(final_sources.len(), 1);
+        let final_source = final_sources[0];
+        assert_eq!(
+            final_source.payload[BUNDLE_PAYLOAD_KEY]["raw_response"]["content"],
+            format!("Group {} complete", request.role)
+        );
+        assert_eq!(
+            final_source.payload[BUNDLE_PAYLOAD_KEY]["raw_response"]["tool_calls"],
+            json!([])
+        );
+        let manifest: ContextViewManifest =
+            serde_json::from_value(final_source.payload["context_view_manifest"].clone()).unwrap();
+        assert_eq!(manifest.context_id, thread.context_id);
         assert_eq!(final_source.payload["activation_id"], current_activation_id);
         let final_activation = store
             .get_thread_activation(current_activation_id)
@@ -291,7 +331,7 @@ async fn assert_later_request_receipts(
             }
             let raw = &bundle.raw_response.tool_calls[0];
             let raw_arguments: serde_json::Value = serde_json::from_str(&raw.arguments).unwrap();
-            assert!(raw_arguments.get("_annotations").is_some());
+            assert!(raw_arguments.get("_morphz").is_some());
             assert_eq!(
                 source.payload["continuation_tool_calls"][0]["function"]["arguments"],
                 raw.arguments
@@ -303,10 +343,7 @@ async fn assert_later_request_receipts(
             )
             .unwrap();
             let mut expected_business = raw_arguments;
-            expected_business
-                .as_object_mut()
-                .unwrap()
-                .remove("_annotations");
+            expected_business.as_object_mut().unwrap().remove("_morphz");
             assert_eq!(
                 business, expected_business,
                 "metadata must not reach either business tool"
@@ -466,7 +503,7 @@ impl Client for GroupWaitClient {
         let (name, arguments) = if owner && self.read_before_spawn && count == 1 {
             (
                 "recall",
-                json!({"query":"GROUP_WAIT_PARENT","limit":128,"_annotations":{
+                json!({"query":"GROUP_WAIT_PARENT","limit":128,"_morphz":{
                     "execution":{"title":format!("Group {role}"),
                         "progress":"Read the persisted synthetic task before dispatch",
                         "result":"This work result is a candidate, not a completed execution"},
@@ -481,11 +518,11 @@ impl Client for GroupWaitClient {
             };
             let mut arguments = json!({"operations":children.into_iter().map(|(id,intent)|json!({
                 "op":"spawn","client_id":id,"intent":intent,"lifetime":"attached"
-            })).collect::<Vec<_>>(),"_annotations":{"execution":{
+            })).collect::<Vec<_>>(),"_morphz":{"execution":{
                 "title":format!("Group {role}"),"progress":"Start the actual attached children"
             }}});
             if self.read_before_spawn {
-                arguments["_annotations"]["intent"] =
+                arguments["_morphz"]["intent"] =
                     json!("Dispatch the actual attached children into their owned Group");
             }
             ("schedule_tx", arguments)
@@ -499,12 +536,11 @@ impl Client for GroupWaitClient {
                 // or pending-work fact is injected.
                 self.leaves.acquire().await.unwrap().forget();
             }
-            (
-                "reply",
-                json!({"annotations":{
-                    "execution":{"title":format!("Group {role}"),"result":format!("Group {role} complete")}
-                }}),
-            )
+            assert!(!tools.iter().any(|tool| tool.name == "reply"));
+            return Ok(Response {
+                content: format!("Group {role} complete"),
+                tool_calls: vec![],
+            });
         };
         assert!(
             tools.iter().any(|tool| tool.name == name),
@@ -517,11 +553,7 @@ impl Client for GroupWaitClient {
                 .collect::<Vec<_>>()
         );
         Ok(Response {
-            content: if name == "reply" {
-                format!("Group {role} complete")
-            } else {
-                String::new()
-            },
+            content: String::new(),
             tool_calls: vec![ToolCallRepr {
                 id: format!("group-{role}-{count}"),
                 r#type: "function".into(),

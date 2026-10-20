@@ -11632,12 +11632,13 @@ mod tests {
             .unwrap();
         runtime.start().await.unwrap();
         let paused = runtime.get_objective(&objective.id).await.unwrap().unwrap();
-        runtime
+        let cancellation = runtime
             .cancel_objective(&paused.id, paused.revision, "TEST complete")
             .await
             .unwrap();
+        let after_cancellation = runtime.get_objective(&objective.id).await;
         // Exercise automatic maintenance, not a manual collection call.
-        tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        let collected = tokio::time::timeout(std::time::Duration::from_secs(12), async {
             loop {
                 if state.sdk.retained_harnesses().is_empty() {
                     break;
@@ -11645,8 +11646,80 @@ mod tests {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
+        if collected.is_err() {
+            // Failure-only diagnostics for this isolated synthetic database.
+            // Do not collect manually, stop workers, or mutate the facts that
+            // determine retention. One read-only SQL statement captures all
+            // relations from one SQLite snapshot, not mixed-time API reads.
+            use sqlx::Connection;
+            let snapshot = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                let options = sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(directory.path().join("store.sqlite"))
+                    .create_if_missing(false)
+                    .read_only(true)
+                    .busy_timeout(std::time::Duration::from_secs(1));
+                let mut connection = sqlx::SqliteConnection::connect_with(&options).await?;
+                let result = sqlx::query_scalar::<_, String>(
+                    r#"
+                        SELECT json_object(
+                          'objectives', (SELECT json_group_array(json_object(
+                            'id', id, 'revision', revision, 'generation', generation,
+                            'status', status, 'reason', status_reason,
+                            'active_evaluation_id', active_evaluation_id,
+                            'lease', evaluation_lease_expires_at, 'updated_at', updated_at
+                          )) FROM objectives),
+                          'threads', (SELECT json_group_array(json_object(
+                            'id', id, 'root', root_turn_id, 'revision', revision,
+                            'generation', generation, 'status', status,
+                            'control', control_state, 'executor', executor_kind,
+                            'executor_id', executor_id, 'supervisor', supervisor_kind,
+                            'supervisor_id', supervisor_id,
+                            'supervision_generation', supervision_generation,
+                            'origin_evaluation_id', origin_evaluation_id,
+                            'parent', parent_thread_id, 'result_event', result_event_id,
+                            'updated_at', updated_at
+                          )) FROM threads),
+                          'activations', (SELECT json_group_array(json_object(
+                            'id', id, 'root', root_turn_id, 'revision', revision,
+                            'generation', generation, 'status', status,
+                            'trigger', trigger_event_id, 'parent', parent_activation_id,
+                            'claimed_by', claimed_by, 'lease', lease_expires_at,
+                            'updated_at', updated_at
+                          )) FROM thread_activations),
+                          'plans', (SELECT json_group_array(json_object(
+                            'id', id, 'revision', revision, 'status', status,
+                            'activation', activation_id, 'thread', thread_id,
+                            'objective_id', objective_id,
+                            'objective_evaluation_id', objective_evaluation_id,
+                            'harness_id', harness_id, 'harness_version', harness_version,
+                            'pending_kind', pending_kind, 'pending_id', pending_id,
+                            'error', error, 'updated_at', updated_at
+                          )) FROM plan_executions),
+                          'schedules', (SELECT json_group_array(json_object(
+                            'id', id, 'thread', thread_id, 'source', source_turn_id,
+                            'status', status, 'updated_at', updated_at
+                          )) FROM schedules),
+                          'event_count', (SELECT count(*) FROM events),
+                          'events_latest_256', (SELECT json_group_array(json_object(
+                            'sequence', rowid, 'id', id, 'topic', topic,
+                            'timestamp', timestamp, 'payload', json(payload)
+                          )) FROM (SELECT rowid, * FROM events ORDER BY rowid DESC LIMIT 256))
+                        )
+                    "#,
+                )
+                .fetch_one(&mut connection)
+                .await;
+                let closed = connection.close().await;
+                Ok::<_, sqlx::Error>((result, closed))
+            })
+            .await;
+            eprintln!(
+                "HARNESS_RETENTION_TIMEOUT before_cancel={paused:?} cancellation={cancellation:?} after_cancel={after_cancellation:?} retained={:?} snapshot={snapshot:?}",
+                state.sdk.retained_harnesses(),
+            );
+        }
+        collected.unwrap();
         assert_eq!(
             runtime
                 .objective_harness_binding(&objective.id)

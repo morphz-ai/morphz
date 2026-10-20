@@ -945,6 +945,160 @@ async fn sqlite_exact_thread_origins_survive_cold_reopen_and_reject_foreign_or_a
     assert_http_boundary(reopened).await;
 }
 
+#[tokio::test]
+async fn sqlite_http_boundary_ignores_inherited_proxy_in_an_isolated_process() -> Result<(), Error>
+{
+    use std::{
+        process::Stdio,
+        sync::atomic::{AtomicUsize, Ordering},
+        time::Duration,
+    };
+
+    const ORIGINAL_TEST: &str =
+        "sqlite_exact_thread_origins_survive_cold_reopen_and_reject_foreign_or_ambiguous_proof";
+    let directory = tempfile::tempdir()?;
+    let log_path = directory.path().join("child.log");
+    let stdout = std::fs::File::create(&log_path)?;
+    let stderr = stdout.try_clone()?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let proxy_url = format!("http://{}", listener.local_addr()?);
+    let hits = Arc::new(AtomicUsize::new(0));
+    let proxy_hits = Arc::clone(&hits);
+    let router = axum::Router::new().fallback(move || {
+        proxy_hits.fetch_add(1, Ordering::SeqCst);
+        async {
+            (
+                axum::http::StatusCode::BAD_GATEWAY,
+                "Controlled test proxy: forwarding is forbidden",
+            )
+        }
+    });
+    let (shutdown, stopped) = tokio::sync::oneshot::channel::<()>();
+    let mut proxy = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+    });
+
+    // Never mutate this test runner's environment. The exact original test is
+    // the child entry point, so it runs the full persisted-data/auth contract
+    // without recursively launching this proxy regression.
+    let mut child_exited = true;
+    let child_result: Result<std::process::ExitStatus, Error> = async {
+        // Prove the owned proxy is listening and returns 502 before measuring
+        // the child's zero hits. It never connects to the request destination.
+        let control = reqwest::Client::builder()
+            .no_proxy()
+            .proxy(reqwest::Proxy::all(&proxy_url)?)
+            .timeout(Duration::from_secs(5))
+            .build()?
+            .get("http://127.0.0.1:1/controlled-proxy-check")
+            .send()
+            .await?;
+        if control.status() != reqwest::StatusCode::BAD_GATEWAY
+            || hits.load(Ordering::SeqCst) != 1
+        {
+            return Err("The controlled 502 proxy was not reached exactly once".into());
+        }
+        let mut command = tokio::process::Command::new(std::env::current_exe()?);
+        command
+            .args(["--exact", ORIGINAL_TEST, "--nocapture", "--test-threads=1"])
+            .env_clear()
+            .current_dir(directory.path())
+            .stdin(Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
+            .kill_on_drop(true);
+        for name in ["PATH", "SystemRoot", "LANG", "LC_ALL"] {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+        for name in [
+            "HOME",
+            "USERPROFILE",
+            "XDG_CONFIG_HOME",
+            "MORPHZ_HOME",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+        ] {
+            command.env(name, directory.path());
+        }
+        for name in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
+            command.env(name, &proxy_url);
+        }
+        // An empty bypass list is intentional. In particular, do not depend
+        // on '*' matching numeric loopback hosts in the upstream proxy crate.
+        command.env("NO_PROXY", "").env("no_proxy", "");
+        let mut child = command.spawn()?;
+        child_exited = false;
+        let wait = tokio::time::timeout(Duration::from_secs(90), child.wait()).await;
+        match wait {
+            Ok(Ok(status)) => {
+                child_exited = true;
+                Ok(status)
+            }
+            failure => {
+                let kill = child.start_kill();
+                let reap = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
+                child_exited = matches!(&reap, Ok(Ok(_)));
+                Err(format!(
+                    "Proxy-isolated child did not finish: {failure:?}; kill: {kill:?}; reap: {reap:?}"
+                )
+                .into())
+            }
+        }
+    }
+    .await;
+
+    // Attempt bounded shutdown before asserting and preserve all diagnostics.
+    // An unconfirmed child exit must retain its directory, not delete live
+    // SQLite/WAL/log files while relying on kill_on_drop's best-effort signal.
+    let _ = shutdown.send(());
+    let proxy_result = match tokio::time::timeout(Duration::from_secs(5), &mut proxy).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(result) => Err(format!("Controlled proxy shutdown failed: {result:?}")),
+        Err(error) => {
+            proxy.abort();
+            let joined = proxy.await;
+            Err(format!(
+                "Controlled proxy shutdown timed out: {error}; join: {joined:?}"
+            ))
+        }
+    };
+    let log = std::fs::read_to_string(&log_path)
+        .unwrap_or_else(|error| format!("Could not read child diagnostics: {error}"));
+    let retained_directory = if child_exited {
+        None
+    } else {
+        Some(directory.keep())
+    };
+    let requests = hits.load(Ordering::SeqCst);
+    assert!(
+        child_exited
+            && child_result.as_ref().is_ok_and(|status| status.success())
+            && proxy_result.is_ok()
+            && requests == 1
+            && log.contains(&format!("test {ORIGINAL_TEST} ... ok"))
+            && log.contains("1 passed; 0 failed"),
+        "The original SQLite contract must pass with zero child proxy requests \
+         (one explicit control request only).\n\
+         child: {child_result:?}; exited: {child_exited}; retained directory: {retained_directory:?}; \
+         proxy: {proxy_result:?}; total requests: {requests}\n{log}"
+    );
+    Ok(())
+}
+
 async fn assert_http_boundary(runtime: MorphzRuntime) {
     use morphz::web::{Server, ServerDefaults};
     use std::time::Duration;
@@ -965,11 +1119,18 @@ async fn assert_http_boundary(runtime: MorphzRuntime) {
             .await
             .unwrap();
     });
-    let client = reqwest::Client::new();
+    // This client talks only to the owned loopback server. A system proxy can
+    // return 502 before that server binds; it is not the authentication boundary.
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
     let path = format!("{url}/api/sessions/{SESSION}/threads/spawned-child/input-source");
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if client.get(&path).send().await.is_ok() {
+            if client
+                .get(&path)
+                .send()
+                .await
+                .is_ok_and(|response| response.status() == reqwest::StatusCode::UNAUTHORIZED)
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;

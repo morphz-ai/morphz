@@ -340,7 +340,27 @@ async fn actual_model_requests_mount_scoped_custom_and_record_immutable_attempt_
         .contains("canonical_authoring_state"));
     assert!(text.find("(protocol ").unwrap() < text.find("(custom ").unwrap());
     assert!(text.find("(custom ").unwrap() < text.find("(evaluation-profile ").unwrap());
-    assert!(configured[0].content.starts_with(&baseline[0].content));
+    let inspection =
+        morphz::orchestrator::orchestrator::production_system_prompt_inspection().unwrap();
+    let expected_system = if inspection.profile
+        == morphz::orchestrator::orchestrator::SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE
+    {
+        use morphz::sexpr::SExpr;
+        let SExpr::List(mut root) = morphz::sexpr::parse(&baseline[0].content).unwrap() else {
+            panic!("the baseline semantic System must be one complete expression")
+        };
+        root.push(SExpr::List(vec![
+            SExpr::Atom("custom-rule".into()),
+            SExpr::Atom(CUSTOM_SYSTEM_RULE.into()),
+        ]));
+        SExpr::List(root).to_string()
+    } else {
+        format!("{}\n\n{CUSTOM_SYSTEM_RULE}", baseline[0].content)
+    };
+    assert_eq!(
+        configured[0].content, expected_system,
+        "Custom adds exactly its scoped rule without changing the baseline System"
+    );
     assert!(configured[0].content.contains(CUSTOM_SYSTEM_RULE));
     assert!(
         !tools

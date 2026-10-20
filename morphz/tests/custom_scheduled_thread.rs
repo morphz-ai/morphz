@@ -110,7 +110,7 @@ impl Client for ScheduledCustomClient {
             self.requests.lock().unwrap().len() <= 8,
             "bounded model transport"
         );
-        let (name, arguments) = if first && (role == "parent" || role == "A") {
+        if first && (role == "parent" || role == "A") {
             assert!(tools.iter().any(|tool| tool.name == "schedule_tx"));
             let children = if role == "parent" {
                 vec![("A", "CUSTOM_CHILD_A"), ("B", "CUSTOM_CHILD_B")]
@@ -125,34 +125,25 @@ impl Client for ScheduledCustomClient {
                     })
                 })
                 .collect::<Vec<_>>();
-            (
-                "schedule_tx",
-                json!({"operations":operations,"_annotations":{
-                    "execution":{"title":format!("Custom {role}"),"progress":"Create the actual attached children"}
-                }}),
-            )
+            Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: format!("custom-{role}-schedule_tx"),
+                    r#type: "function".into(),
+                    func_name: "schedule_tx".into(),
+                    arguments: json!({"operations":operations,"_morphz":{
+                        "intent":"Create the actual attached children",
+                        "execution":{"title":format!("Custom {role}"),"progress":"Create the actual attached children"}
+                    }}).to_string(),
+                }],
+            })
         } else {
-            assert!(tools.iter().any(|tool| tool.name == "reply"));
-            (
-                "reply",
-                json!({"annotations":{
-                    "execution":{"title":format!("Custom {role}"),"result":format!("Custom {role} complete")}
-                }}),
-            )
-        };
-        Ok(Response {
-            content: if name == "reply" {
-                format!("Custom {role} complete")
-            } else {
-                String::new()
-            },
-            tool_calls: vec![ToolCallRepr {
-                id: format!("custom-{role}-{name}"),
-                r#type: "function".into(),
-                func_name: name.into(),
-                arguments: arguments.to_string(),
-            }],
-        })
+            assert!(!tools.iter().any(|tool| tool.name == "reply"));
+            Ok(Response {
+                content: format!("Custom {role} complete"),
+                tool_calls: vec![],
+            })
+        }
     }
 }
 
