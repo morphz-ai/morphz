@@ -1,0 +1,49 @@
+# Review draft only. Not installed under main/.github/workflows.
+# On publication, source bundle is expected at scripts/probes/linux_dynamic.
+name: Isolated dynamic AppArmor startup candidate
+
+on:
+  push:
+    branches:
+      - "probe/linux-dynamic-apparmor-20261020"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: isolated-linux-dynamic-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Dynamic typed policy and retained stack (not production)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install official isolated dependencies, no sysctl edits
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap apparmor apparmor-utils libapparmor-dev libjson-c-dev gcc pkg-config
+      - name: Pure unit and source checks
+        run: python3 -B -m unittest discover -s scripts/probes/linux_dynamic -p 'test_contract.py' -v
+      - name: Build fixed non-setuid entry with system parsers
+        working-directory: scripts/probes/linux_dynamic
+        run: cc -std=c11 -Wall -Wextra -Werror -O2 entry.c -o entry -ljson-c -lapparmor
+      - name: Run finite synthetic isolation campaign
+        env:
+          MORPHZ_ISOLATED_DYNAMIC_PROBE: "1"
+        run: |
+          python3 -B scripts/probes/linux_dynamic/controller.py --execute \
+            --output "${{ runner.temp }}/morphz-dynamic-evidence"
+      - name: Preserve failures as well as successes
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: isolated-linux-dynamic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/morphz-dynamic-evidence
+          if-no-files-found: warn
+          retention-days: 7
