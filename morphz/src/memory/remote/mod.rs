@@ -14,6 +14,10 @@ mod timing;
 pub(crate) use timing::{observe_attempt, Record as OperationTimingRecord};
 pub use timing::{TurnStoreOperation, TurnStoreProfile};
 
+use super::terminal::{
+    TerminalCommandRecord, TerminalSessionFilter, TerminalSessionRecord, TerminalStore,
+    TerminalStoreError,
+};
 use super::*;
 use crate::event::Event;
 use crate::scheduler::*;
@@ -404,3 +408,34 @@ impl RemoteRuntimeStore {
 }
 
 include!(concat!(env!("OUT_DIR"), "/remote_store_impls.rs"));
+
+#[cfg(test)]
+mod generated_terminal_contract_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_store_is_part_of_the_complete_remote_trait_graph() {
+        fn assert_store<T: RuntimeStore + TerminalStore>() {}
+        assert_store::<RemoteRuntimeStore>();
+        let actual = REMOTE_STORE_OPERATION_NAMES
+            .iter()
+            .copied()
+            .filter(|name| name.starts_with("TerminalStore::"))
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = [
+            "TerminalStore::terminal_count",
+            "TerminalStore::terminal_command",
+            "TerminalStore::reserve_terminal_command",
+            "TerminalStore::finish_terminal_command",
+            "TerminalStore::create_terminal",
+            "TerminalStore::terminal",
+            "TerminalStore::terminals",
+            "TerminalStore::compare_terminal",
+            "TerminalStore::terminal_checkpoint",
+            "TerminalStore::save_terminal_checkpoint",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(actual, expected);
+    }
+}

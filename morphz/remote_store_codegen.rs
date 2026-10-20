@@ -6,7 +6,11 @@ use syn::{FnArg, Item, Pat, TraitItem, TypeParamBound};
 
 pub fn generate() {
     let mut traits = BTreeMap::new();
-    for path in ["src/memory/mod.rs", "src/scheduler/store.rs"] {
+    for path in [
+        "src/memory/mod.rs",
+        "src/memory/terminal.rs",
+        "src/scheduler/store.rs",
+    ] {
         println!("cargo:rerun-if-changed={path}");
         let source = std::fs::read_to_string(path).expect("read RuntimeStore traits");
         for item in syn::parse_file(&source)
@@ -28,7 +32,7 @@ pub fn generate() {
         }
         let item = traits
             .get(&name)
-            .expect("RuntimeStore supertrait is declared");
+            .unwrap_or_else(|| panic!("RuntimeStore supertrait '{name}' has no registered source"));
         for bound in &item.supertraits {
             if let TypeParamBound::Trait(bound) = bound {
                 let name = bound.path.segments.last().unwrap().ident.to_string();
