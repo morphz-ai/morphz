@@ -130,7 +130,9 @@ test("process memory is aggregated without exposing process names or reading arg
     if (path === "/proc/2/status") return "Name:\ttsc\nVmRSS:\t200 kB\n";
     if (path === "/proc/3/status") return "Name:\tprivate-name\nVmRSS:\t40 kB\n";
     throw new Error("process exited");
-  }, () => ["self", "1", "2", "3", "4", "../bad"]);
+  }, () => ["self", "1", "2", "3", "4", "../bad"], () => {
+    throw new Error("executable unavailable");
+  });
   assert.deepEqual(result, { observed: 3, groups: {
     tsc: { processes: 2, residentKiB: 300, largestKiB: 200 },
     other: { processes: 1, residentKiB: 40, largestKiB: 40 },
@@ -179,3 +181,16 @@ test(
     }
   },
 );
+
+test("renamed Node main threads are classified without exposing executable paths", () => {
+  const result = linuxProcessMemory(
+    () => "Name:\tMainThread\nVmRSS:\t120 kB\n",
+    () => ["1"],
+    () => "/private/test-only/path/node",
+  );
+  assert.deepEqual(result, {
+    observed: 1,
+    groups: { node: { processes: 1, residentKiB: 120, largestKiB: 120 } },
+  });
+  assert(!JSON.stringify(result).includes("private"));
+});

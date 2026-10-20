@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import nodeTest from "node:test";
+import { assertSyntaxIdentity } from "./fixtures/assert-syntax-identity.js";
 import {
   historicalNavigationSource,
   navigationGovernanceArchive,
@@ -623,7 +624,11 @@ function subjectContract(
     assert.ok(isCallExpression(call));
     assert.equal(call.typeArguments?.length ?? 0, 0);
     if (local) {
-      assert.equal(oneVariable(app, local).initializer, call);
+      assertSyntaxIdentity(
+        oneVariable(app, local).initializer,
+        call,
+        `${name}: the registered call is the direct initializer`,
+      );
       assert.equal(call.arguments.length, 0);
       assert.ok(bindingVariable(app, before).end < call.pos);
       assert.ok(call.end < bindingVariable(app, after).pos);
@@ -703,7 +708,11 @@ function subjectContract(
     );
   assert.equal(commandCalls.length, 1, "one actual subject command factory");
   const declaration = oneVariable(app, "subjectInspector");
-  assert.equal(declaration.initializer, commandCalls[0]);
+  assertSyntaxIdentity(
+    declaration.initializer,
+    commandCalls[0],
+    "subjectInspector: the command factory is the direct initializer",
+  );
   const commands = app.symbols.get(declaration.name);
   assert.ok(commands !== undefined);
   for (const [tag, path, attr, member, original] of [

@@ -1,6 +1,6 @@
-import { readFileSync, readdirSync, statfsSync } from "node:fs";
+import { readFileSync, readdirSync, readlinkSync, statfsSync } from "node:fs";
 import { freemem, loadavg, totalmem } from "node:os";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Read-only diagnostics for disposable CI workers. Never inspect process
@@ -88,7 +88,11 @@ export function linuxCounters(read = readFileSync) {
 
 // Aggregate resident memory by a fixed executable category, never by an
 // argument, path, user-supplied process name or environment value.
-export function linuxProcessMemory(read = readFileSync, list = readdirSync) {
+export function linuxProcessMemory(
+  read = readFileSync,
+  list = readdirSync,
+  link = readlinkSync,
+) {
   let entries;
   try {
     entries = list("/proc");
@@ -100,7 +104,12 @@ export function linuxProcessMemory(read = readFileSync, list = readdirSync) {
   for (const id of entries.filter((name) => /^\d+$/.test(name))) {
     const status = optional(read, `/proc/${id}/status`);
     if (status === null) continue;
-    const name = /^Name:\s*(\S+)/m.exec(status)?.[1];
+    let name = /^Name:\s*(\S+)/m.exec(status)?.[1];
+    try {
+      // Node 24 may rename its main thread to MainThread. Classify by the
+      // executable when available, but emit only the fixed category below.
+      name = basename(link(`/proc/${id}/exe`).replace(/ \(deleted\)$/, ""));
+    } catch {}
     const kind = ["node", "tsc", "postgres", "chrome", "chromium"].includes(name)
       ? name
       : "other";

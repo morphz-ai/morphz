@@ -31,6 +31,7 @@ jobs:
           resource_observer=$!
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
           node --import tsx --test --test-concurrency=4 \
+            tests/assert-syntax-identity.test.ts \
             tests/virtual-typescript.test.ts \
             tests/application-navigation-consumption-boundary.test.ts \
             tests/application-navigation-ownership.test.ts \
