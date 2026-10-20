@@ -1,5 +1,89 @@
 # Bootstrap pathname counterfactual — isolated, not production
 
+## Run 10 draft: exact stacking permission, three retained lanes
+
+Status: local draft and pure tests only; not pushed or run. This revision
+supersedes the original two-lane execution description below, which is kept
+as history. Root approved preparation of this exact three-lane comparison;
+publication/execution still requires review of the completed diff.
+
+Run 9 is retained at commit `c7fc9d9bb190f501ae61037b6a352e4832b0cd06`,
+<https://github.com/morphz-ai/morphz/actions/runs/39454837932>.
+Its artifact remains at
+`/tmp/morphz-dynamic-ci-39454837932.rPuu7U/isolated-linux-dynamic-39454837932-1`.
+The attach-only baseline completed both UID/GID mapping rounds and authenticated
+the outer process, then reported
+`dynamic entry refused: stack exact work profile (errno=13)`.
+It did not send inner admission or reach worker readiness. The receiver's
+generic credential/EOF message is not the causal error.
+
+The [AppArmor 4.0 stack API documentation](https://apparmor.net/man/4.0/aa_stack_profile/)
+and exact Ubuntu 4.0.1 source regression use `&target` for the stacking
+transition. The current bootstrap already allows `/proc/** rw`; this draft
+adds no proc rule, capability, ptrace grant, exec rule, socket grant or NNP
+change. It does not attribute the API's errno to an unobserved open/write
+syscall. Source evidence and hashes are in
+`/tmp/morphz-full-app-regressions-20261020.OxfoEB/linux-dynamic-run9-stack-rule-review.md`.
+
+| Lane | Fixed inputs | Required before proceeding |
+|---|---|---|
+| A `control` | Original frozen policy and launch chain | Exact original pre-write UID-map open EACCES, independent resource cleanup |
+| B `bootstrap_attach_disconnected` | Generated A copy; only bootstrap declaration gets `attach_disconnected` | Both mapping rounds succeeded, one exact outer authentication, exact final stack API EACCES, no admission/ready, independent cleanup |
+| C `bootstrap_attach_disconnected_stack` | Generated B copy; only exact work target gains `&` | Run the unchanged full dynamic controller; record actual outcome and cleanup |
+
+C changes precisely one source line relative to B:
+
+```diff
+-  change_profile -> {manifest["profile"]},
++  change_profile -> &{manifest["profile"]},
+```
+
+No ordinary replacement target is retained beside the stacking target, and
+there is no wildcard profile target. The generator refuses an altered B source.
+Original `policy_contract.py`, `entry.c`, controller, loader, worker, diagnostic
+patch/runner and workflow remain byte-identical to run 9. Both generated bundles
+contain only the five existing runtime inputs. All non-policy bytes, including
+the same compiled entry, are identical across the three lanes.
+
+The diagnostic bwrap is installed once and used by all lanes. Actual binary
+identity, frozen sources and exact generated bundles are checked around each
+campaign. Each campaign must pass the existing independent profile collection,
+no-live-user and unchanged-kernel resource gate. B's failure stage is checked
+only after this gate; any missing evidence, different errno/stage, premature
+admission, forced kill or cleanup error prevents C.
+
+Both baseline campaign failures stay failures. The aggregate remains failed
+even if C passes; the driver explicitly evaluates all three campaign outcomes
+instead of calling the original diagnostic runner's two-variant aggregator.
+The original finally restoration and independent workflow always-restoration
+remain unchanged. C has no shortened assertion set and no new retry path.
+
+Local verification:
+
+- `python3 -B -m unittest discover -s . -p 'test_*.py' -v`: 68/68 pure tests.
+  Five additional tests cover exact B-to-C bytes/worker identity, wrong
+  candidate input, exact B evidence and negative variants, and refusal to
+  start C after B's cleanup or failure-stage mismatch.
+- Both new stage matching and unchanged resource gates were applied read-only
+  to run 9's real A/B receipts and stderr; both matched while preserving
+  `campaign_passed: false`. This is historical evidence parsing, not a new
+  Linux execution or security pass.
+- Default invocation remains inert. No local policy installation, sudo,
+  network request, C build, remote push or GitHub run was performed.
+
+The workflow's existing step display name still describes the preceding
+pathname comparison; its actual driver is now the explicitly recorded A/B/C
+comparison. No workflow behavior or permission changed.
+
+Remaining boundaries: `attach_disconnected` alias risk is not resolved for
+production. Dynamic sandbox admission, live authorization/revocation, future
+protected paths and PTY have not passed this candidate yet. Pre-existing
+hardlinks, delegated FDs, arbitrary production commands, trusted component
+installation and production authorization remain outside demonstrated proof.
+This draft and any future isolated pass do not authorize production adoption.
+
+## Historical two-lane review (retained, superseded above)
+
 The preceding diagnostic is retained at commit
 `7c72e933b474808e12adedf26c340b2015eda0fe`,
 <https://github.com/morphz-ai/morphz/actions/runs/39443043724>.
