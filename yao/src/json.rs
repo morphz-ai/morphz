@@ -44,7 +44,10 @@ pub fn parse_strict_json(text: &str) -> Result<Value, serde_json::Error> {
                     return Err(de::Error::custom(format!("duplicate JSON field {key:?}")));
                 }
                 let raw = map.next_value::<&RawValue>()?;
-                values.insert(key, materialize(raw, self.depth).map_err(de::Error::custom)?);
+                values.insert(
+                    key,
+                    materialize(raw, self.depth).map_err(de::Error::custom)?,
+                );
             }
             Ok(Value::Object(values))
         }

@@ -355,9 +355,7 @@ fn strict_model_json_preserves_numeric_tokens_and_literal_private_markers() {
         ] {
             // Construct the oracle directly: Value deserialization itself can
             // interpret private serde_json keys under the unified features.
-            let expected = Value::Object(
-                [(key.to_owned(), literal.clone())].into_iter().collect(),
-            );
+            let expected = Value::Object([(key.to_owned(), literal.clone())].into_iter().collect());
             let text = format!(
                 "{{{}:{}}}",
                 serde_json::to_string(key).unwrap(),
@@ -453,24 +451,16 @@ fn strict_model_json_numeric_transport_still_obeys_typed_conversion() {
     let p = program("(eval 1)");
     let number = yao_lang::json::parse_strict_json("1.5").unwrap();
     assert_eq!(
-        yao_lang::json::from_json(&Type::Float, number.clone(), &p.types, p.body.span)
-            .unwrap(),
+        yao_lang::json::from_json(&Type::Float, number.clone(), &p.types, p.body.span).unwrap(),
         number
     );
-    let literal = yao_lang::json::parse_strict_json(
-        r#"{"$serde_json::private::Number":"1.5"}"#,
-    )
-    .unwrap();
-    assert!(yao_lang::json::from_json(
-        &Type::Float,
-        literal.clone(),
-        &p.types,
-        p.body.span,
-    )
-    .is_err());
+    let literal =
+        yao_lang::json::parse_strict_json(r#"{"$serde_json::private::Number":"1.5"}"#).unwrap();
+    assert!(
+        yao_lang::json::from_json(&Type::Float, literal.clone(), &p.types, p.body.span,).is_err()
+    );
     assert_eq!(
-        yao_lang::json::from_json(&Type::Json, literal.clone(), &p.types, p.body.span)
-            .unwrap(),
+        yao_lang::json::from_json(&Type::Json, literal.clone(), &p.types, p.body.span).unwrap(),
         literal
     );
 }
