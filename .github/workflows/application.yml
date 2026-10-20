@@ -16,6 +16,7 @@ on:
       - "scripts/update-npm-license-records.py"
       - "scripts/tests/test_npm_license_records.py"
       - "scripts/tests/application-cognitive-ci-setup.test.mjs"
+      - "scripts/tests/application-electron-ci-setup.test.mjs"
       - "scripts/prune-orphan-test-sqlite.mjs"
       - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
       - "scripts/observe-ci-resources.mjs"
@@ -36,6 +37,7 @@ on:
       - "scripts/update-npm-license-records.py"
       - "scripts/tests/test_npm_license_records.py"
       - "scripts/tests/application-cognitive-ci-setup.test.mjs"
+      - "scripts/tests/application-electron-ci-setup.test.mjs"
       - "scripts/prune-orphan-test-sqlite.mjs"
       - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
       - "scripts/observe-ci-resources.mjs"
@@ -70,7 +72,9 @@ jobs:
         run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
       - name: Verify independent SDK cache preparation in every full-test job
-        run: node --test ../scripts/tests/application-cognitive-ci-setup.test.mjs
+        run: node --test ../scripts/tests/application-cognitive-ci-setup.test.mjs ../scripts/tests/application-electron-ci-setup.test.mjs
+      - name: Prepare pinned Electron before parallel test imports
+        run: node node_modules/electron/install.js
       - name: Prepare exact independent SDK and author dependencies
         run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
       - run: npm audit --omit=dev --audit-level=low
@@ -78,7 +82,7 @@ jobs:
         run: python3 -m unittest discover -s ../scripts/tests -p test_npm_license_records.py -v
       - run: python3 ../scripts/generate-third-party-licenses.py application --check
       - run: npm run build
-      - run: sudo apt-get update && sudo apt-get install -y postgresql lsof
+      - run: sudo apt-get update && sudo apt-get install -y postgresql lsof xvfb xauth
       - name: Verify historical SQLite cleanup safety boundaries
         run: node --test ../scripts/tests/prune-orphan-test-sqlite.test.mjs
       - name: Verify read-only CI resource diagnostics
@@ -89,7 +93,7 @@ jobs:
           node ../scripts/observe-ci-resources.mjs &
           resource_observer=$!
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
-          npm test
+          xvfb-run -a npm test
       - run: npx playwright install --with-deps chrome
       # Native macOS cases explicitly skip here and run in the Desktop job.
       - run: npm run test:e2e
@@ -148,9 +152,11 @@ jobs:
       - name: Select isolated cognitive dependency cache
         run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Prepare pinned Electron before parallel test imports
+        run: node node_modules/electron/install.js
       - name: Prepare exact independent SDK and author dependencies
         run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
-      - run: sudo apt-get update && sudo apt-get install -y postgresql-16 postgresql-client-16
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-16 postgresql-client-16 xvfb xauth
       - run: npx playwright install --with-deps chromium
       - run: npm run build
       - name: Require PostgreSQL and cloud conformance; audit every remaining skip
@@ -160,7 +166,7 @@ jobs:
           node ../scripts/observe-ci-resources.mjs &
           resource_observer=$!
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
-          npm test
+          xvfb-run -a npm test
 
   desktop:
     name: Embedded Desktop (macOS)
@@ -251,6 +257,8 @@ jobs:
       - name: Select isolated cognitive dependency cache
         run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Prepare pinned Electron before the managed Node test entry
+        run: node node_modules/electron/install.js
       - run: npm run build
       - run: sudo apt-get update && sudo apt-get install -y postgresql
       - name: Verify cognitive CI completion, omission and redaction gates
@@ -299,6 +307,8 @@ jobs:
           cache-dependency-path: application/package-lock.json
       - run: ./scripts/cargo-dev.sh build --locked -p morphz --bin morphz
       - run: npm ci --prefix application
+      - name: Prepare pinned Electron before the managed Node test entry
+        run: node application/node_modules/electron/install.js
       - run: npm --prefix application run build
       - run: sudo apt-get update && sudo apt-get install -y postgresql
       - name: Run the actual Runtime annotation, nested-thread, Profile and notification contracts

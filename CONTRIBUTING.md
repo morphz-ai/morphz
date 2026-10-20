@@ -52,6 +52,13 @@ Runtime-only builds must not require Electron or mobile SDKs.
 Use Node.js 24.13 or newer for the application, even though the Dashboard has its own toolchain.
 From the repository root, use `npm ci --prefix application`,
 `npm --prefix application run build`, and `npm --prefix application test`.
+After a cold application dependency install, prepare its pinned Electron binary once with
+`node application/node_modules/electron/install.js` before running tests. Electron 44 otherwise
+downloads on first import, which is unsafe in parallel test workers. The test entry verifies
+the installed binary without importing, downloading or launching Electron; the full-test CI
+jobs perform this dependency preparation explicitly, including on Linux.
+The Linux full-inventory jobs use Xvfb for Electron's real native-window tests;
+headless Chromium alone does not provide a display for those cases.
 The application workflow checks Web, macOS Desktop, and actual Runtime contracts separately.
 Changes spanning an application contract and Runtime must include both sides and their tests in
 one pull request. No application or mobile release is implied by a Runtime release tag.

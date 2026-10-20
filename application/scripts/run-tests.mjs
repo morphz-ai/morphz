@@ -3,6 +3,7 @@ import { readdir, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { prepareTestPostgres } from "./test-postgres.mjs";
+import { verifyTestElectron } from "./test-electron.mjs";
 import {
   automaticTestBrowser,
   testCapabilityPlan,
@@ -28,12 +29,13 @@ export async function testSelection(args = []) {
         !/^--test-concurrency=[1-4]$/.test(value) ||
         options.some((option) => option.startsWith("--test-concurrency="))
       )
-        throw new Error("Test selection: concurrency must be specified once, from 1 to 4");
+        throw new Error(
+          "Test selection: concurrency must be specified once, from 1 to 4",
+        );
       // Reducing local resource use changes scheduling, never selection or
       // capability requirements. Keep the default upper bound unchanged.
       options.push(value);
-    }
-    else {
+    } else {
       if (value.startsWith("-") || !value.endsWith(".test.ts"))
         throw new Error(
           "Test selection: only .test.ts files and --test-name-pattern are allowed",
@@ -66,6 +68,7 @@ export async function runTests({
   stdio = "inherit",
 } = {}) {
   const { files, options } = await testSelection(args);
+  verifyTestElectron();
   const prepared = await prepareTestPostgres({ env, signal });
   let groupStopped = true;
   try {
