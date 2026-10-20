@@ -82,3 +82,21 @@ for (const name of ["web", "storage-postgres"]) {
       assert.throws(() => verify(workflow.replace(job, changed)));
   });
 }
+
+test("Runtime's reusable source diagnostics never select an Electron lane from the caller event", () => {
+  const source = readFileSync(new URL("../../.github/workflows/application-source-resources.yml", import.meta.url), "utf8");
+  const native = readFileSync(new URL("../../.github/workflows/application-native-regressions.yml", import.meta.url), "utf8");
+  function verifyIsolation(candidate) {
+    assert.match(candidate, /  workflow_call:/);
+    assert.doesNotMatch(candidate, /native_probes|github\.event_name|github\.ref|electron\/install|xvfb|linux-native-regressions/);
+    assert.doesNotMatch(jobSource(candidate, "source-contracts"), /^    if:/m);
+  }
+  verifyIsolation(source);
+  assert.throws(() => verifyIsolation(source.replace("  source-contracts:", "  source-contracts:\n    if: github.event_name == 'push'")));
+  assert.throws(() => verifyIsolation(source + "\n  linux-native-regressions:\n    steps: []\n"));
+  assert.doesNotMatch(native, /workflow_call/);
+  assert.match(native, /branches: \[fix\/full-application-regressions-20261021\]/);
+  const job = jobSource(native, "linux-native-regressions");
+  assert.ok(job.indexOf("node node_modules/electron/install.js") < job.indexOf("xvfb-run -a npm test"));
+  assert.doesNotMatch(job, /continue-on-error|\|\|\s*true/);
+});

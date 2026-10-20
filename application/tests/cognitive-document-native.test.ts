@@ -60,8 +60,9 @@ test(
       },
       timeout: 30000,
     });
+    const nativeProcess = electron.process();
     let startupStderr = "";
-    electron.process().stderr?.on("data", (chunk: Buffer) => {
+    nativeProcess.stderr?.on("data", (chunk: Buffer) => {
       startupStderr = (startupStderr + chunk.toString("utf8")).slice(-4000);
     });
     // The real main may first create an inert hidden legacy-preference reader.
@@ -87,8 +88,8 @@ test(
               )?.ready(),
             )
             .catch(() => "main process unavailable"),
-          exitCode: electron.process().exitCode,
-          signalCode: electron.process().signalCode,
+          exitCode: nativeProcess.exitCode,
+          signalCode: nativeProcess.signalCode,
           stderr: startupStderr,
         }),
       );

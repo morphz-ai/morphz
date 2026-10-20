@@ -1,0 +1,60 @@
+name: Application native regression diagnosis
+
+on:
+  # Keep isolated Electron diagnostics separate from Runtime's reusable,
+  # source-only workflow. Reusable workflows inherit their caller's event.
+  push:
+    branches: [fix/full-application-regressions-20261021]
+    paths:
+      - .github/workflows/application-native-regressions.yml
+      - application/apps/desktop/main.cjs
+      - application/apps/desktop/preferences.cjs
+      - application/tests/cognitive-document-native.test.ts
+      - application/tests/fixtures/cognitive-document-native-entry.cjs
+      - application/tests/fixtures/native-test-environment.ts
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-native-regressions:
+    name: Isolated Linux native and timing regression diagnosis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - name: Select isolated cognitive dependency cache
+        run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-16 postgresql-client-16 xvfb xauth
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - name: Keep original assertions and real native display authorization
+        env:
+          MORPHZ_TEST_REQUIRED_CAPABILITIES: postgres
+        run: |
+          xvfb-run -a npm test -- \
+            tests/native-test-environment.test.ts \
+            tests/browser-clock-boundary.test.ts \
+            tests/cognitive-document-native.test.ts \
+            tests/cognitive-notes-native-embedded.test.ts \
+            tests/cognitive-notes-native-production.test.ts \
+            tests/composer-creation-native.test.ts \
+            tests/markdown-text-block-mounted.test.ts \
+            tests/script-workspace-controller-mounted.test.ts \
+            tests/task-run-panel-mounted.test.ts \
+            tests/execution-inspection-mounted.test.ts \
+            tests/cognitive-app-document-local.test.ts

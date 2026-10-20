@@ -12,6 +12,16 @@ const documentReads = [];
 let rawReads = 0;
 let legacyReads = 0;
 let tcpAttempts = 0;
+// Record the actual production startup lifecycle even if the main process
+// exits before Playwright can inspect it. This fixture owns no quit policy.
+const { app, BrowserWindow } = require("electron");
+for (const event of ["window-all-closed", "before-quit", "will-quit", "quit"])
+  app.on(event, () => console.error(JSON.stringify({
+    stage: "native-document-startup-lifecycle",
+    event,
+    connectionReady: !!connection,
+    windows: BrowserWindow.getAllWindows().map(window => window.webContents.getURL()),
+  })));
 bridge.registerApplicationBridge = function (ipcMain, value, ...options) {
   if (connection) throw new Error("Native document fixture has one connection");
   connection = value;
