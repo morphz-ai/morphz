@@ -60,17 +60,40 @@ test(
       },
       timeout: 30000,
     });
+    let startupStderr = "";
+    electron.process().stderr?.on("data", (chunk: Buffer) => {
+      startupStderr = (startupStderr + chunk.toString("utf8")).slice(-4000);
+    });
     // The real main may first create an inert hidden legacy-preference reader.
     // It is not the owning window and closes normally after the read attempt.
-    await expect
-      .poll(
-        () =>
-          electron!.windows().some((page) => page.url() === "morphz://app/"),
-        {
-          timeout: 30000,
-        },
-      )
-      .toBe(true);
+    try {
+      await expect
+        .poll(
+          () =>
+            electron!.windows().some((page) => page.url() === "morphz://app/"),
+          { timeout: 30000 },
+        )
+        .toBe(true);
+    } catch (error) {
+      console.error(
+        "[native document startup]",
+        JSON.stringify({
+          windows: electron.windows().map((page) => page.url()),
+          connectionReady: await electron
+            .evaluate(() =>
+              Reflect.get(
+                globalThis,
+                "__cognitiveDocumentNativeFixture",
+              )?.ready(),
+            )
+            .catch(() => "main process unavailable"),
+          exitCode: electron.process().exitCode,
+          signalCode: electron.process().signalCode,
+          stderr: startupStderr,
+        }),
+      );
+      throw error;
+    }
     const owner = electron
       .windows()
       .find((page) => page.url() === "morphz://app/")!;
