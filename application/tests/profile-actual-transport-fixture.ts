@@ -328,6 +328,7 @@ export async function profileActualTransportFixture(
   }
   const runtimeUrl = `http://127.0.0.1:${runtimePort}`;
   const origin = `http://127.0.0.1:${hostPort}`;
+  const workspaceReadFailures: Array<{ status: number; error: unknown }> = [];
   const requests: CapturedRequest[] = [];
   const modelReplies: string[] = [];
   let liveCalls = 0;
@@ -688,6 +689,18 @@ export async function profileActualTransportFixture(
       url: runtimeUrl,
       token: operator,
       namespace,
+    }, undefined, true, {
+      request: async (url, init) => {
+        const response = await fetch(url, init);
+        if (!options.realProvider && options.workspaceFiles && !response.ok &&
+            new URL(String(url)).pathname.endsWith("/workspace-file")) {
+          // Observe the original synthetic request only. No retry, alternate
+          // workspace, credentials or file bytes are exposed by this record.
+          const payload = await response.clone().json().catch(() => null);
+          workspaceReadFailures.push({ status: response.status, error: payload?.error ?? null });
+        }
+        return response;
+      },
     });
     const cognitiveApps = await options.cognitiveHost?.({
       directory,
@@ -737,6 +750,7 @@ export async function profileActualTransportFixture(
       origin,
       requests,
       modelReplies,
+      workspaceReadFailures,
       harnessInstallations,
       get realCalls() {
         return liveCalls;

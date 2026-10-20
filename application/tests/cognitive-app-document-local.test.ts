@@ -9,6 +9,8 @@ import {
 import { parseCognitiveAppDocumentResourceRequest } from "../packages/core/src/cognitive-app-document-resource.js";
 import { withViewTransport } from "./fixtures/cognitive-app-view-transport-fixture.js";
 import { createCognitiveDocumentBootstrapFromBytes } from "../packages/application/src/cognitive-document-bootstrap.js";
+import { DomainError } from "../packages/core/src/model.js";
+import { PlatformStorageError } from "../packages/platform/src/store.js";
 
 const proof = "document_local_proof_0123456789";
 type Fixture = Parameters<Parameters<typeof withViewTransport>[1]>[0];
@@ -418,8 +420,8 @@ for (const backend of ["sqlite", "postgres"] as const) {
               return await readDocument(...args);
             } catch (error) {
               // Public carriers intentionally redact storage errors. Preserve
-              // only their code in this synthetic concurrency fixture, never
-              // SQL text, connection strings, credentials or document bytes.
+              // the typed domain rejection before redaction in this synthetic
+              // fixture, never raw SQL/connection errors or document bytes.
               if (!abort.signal.aborted && !reportedFailure) {
                 reportedFailure = true;
                 t.diagnostic(
@@ -427,6 +429,8 @@ for (const backend of ["sqlite", "postgres"] as const) {
                     stage: "held-document-resource-failure",
                     backend,
                     name: error instanceof Error ? error.name : typeof error,
+                    detail: error instanceof DomainError || error instanceof PlatformStorageError
+                      ? error.message.slice(0,250) : null,
                     code:
                       error && typeof error === "object" && "code" in error
                         ? String(error.code).slice(0, 80)

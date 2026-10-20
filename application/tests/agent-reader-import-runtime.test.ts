@@ -116,7 +116,7 @@ for (const [sourceKind, annotations] of [
         assert.equal(jobs.length, 2);
         assert.ok(
           jobs.every((job) => job.status === "succeeded"),
-          JSON.stringify(outputs),
+          JSON.stringify({ outputs, workspaceReadFailures: f.workspaceReadFailures }),
         );
         const results = outputs.map((output) => JSON.parse(output.text));
         assert.ok(
