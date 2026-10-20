@@ -570,6 +570,8 @@ async fn complete_native_bound(
             stream,
             ModelRequestOptions {
                 reasoning_effort: Some(Some(ReasoningEffort::Low)),
+                output_encoding: None,
+                tool_choice: None,
             },
         )
         .await
