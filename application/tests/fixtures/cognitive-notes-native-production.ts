@@ -389,12 +389,23 @@ export async function openNotesNativeProduction(
             exact: true,
           })
           .click();
-        await page
-          .getByRole("button", {
-            name: "打开界面：独立笔记 1.1.0",
-            exact: true,
-          })
-          .click();
+        const launcher = page.getByRole("button", {
+          name: "打开界面：独立笔记 1.1.0",
+          exact: true,
+        });
+        await expect(launcher).toBeVisible();
+        // The real exchange overlays the canvas by design. Use its Human
+        // collapse control before selecting the tile underneath; never force
+        // a pointer through it or mutate the production DOM/preferences.
+        const collapse = page.getByRole("button", {
+          name: "收起 AI 输入框",
+          exact: true,
+        });
+        if (await collapse.isVisible()) {
+          await collapse.click();
+          await expect(collapse).toBeHidden();
+        }
+        await launcher.click();
         await page
           .getByRole("dialog", { name: "打开应用界面", exact: true })
           .getByRole("button", {

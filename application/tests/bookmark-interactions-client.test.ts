@@ -67,6 +67,13 @@ test(
         ]),
         [target],
       );
+      // Unrelated reads can interleave with the two URL lookups (including
+      // authority revalidation after a bookmark change). Exercise that order
+      // explicitly rather than assuming these are the last two HTTP receipts.
+      assert.equal(
+        (await context.client.call("bookmarkList", [{ limit: 1 }])).length,
+        1,
+      );
       assert.deepEqual(
         await context.client.call("bookmarkList", [
           {
@@ -76,9 +83,14 @@ test(
         ]),
         [],
       );
-      assert.equal(
-        new URLSearchParams((await reads()).at(-2)!.query).get("url"),
-        target.url,
+      assert.deepEqual(
+        (await reads())
+          .filter(
+            (read) => read.method === "GET" && read.path === "/api/bookmarks",
+          )
+          .map((read) => new URLSearchParams(read.query).get("url"))
+          .filter((url) => url !== null),
+        [target.url, "https://example.com/not-saved"],
       );
       await assert.rejects(
         context.client.call("bookmarkList", [{ url: "not-a-url", limit: 1 }]),
