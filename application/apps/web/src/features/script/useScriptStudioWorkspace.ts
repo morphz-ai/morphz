@@ -34,6 +34,7 @@ import type { ScriptEditorProduction } from "../../script-editor-reader.js";
 import { scopedStorage } from "../../local-preferences.js";
 import { scriptFocusReturn } from "../../script-studio-focus.js";
 import { useScriptEditorRead } from "../../useScriptEditorRead.js";
+import { createScriptLocationWriter } from "./script-location-writer.js";
 
 type ScriptStudioClient = Pick<
   WorkspaceClient,
@@ -274,6 +275,40 @@ export function useScriptStudioWorkspace({
       alive.current = false;
     };
   }, []);
+  const locationContext = useRef({ client, instance });
+  locationContext.current = { client, instance };
+  const locationLease = useRef(0);
+  useLayoutEffect(() => {
+    locationLease.current++;
+    return () => { locationLease.current++; };
+  }, [
+    activeView, instance.id, instance.workspaceId,
+    boot.centerId, boot.principalId, boot.actantId, boot.csrfToken,
+  ]);
+  const locationWriter = useRef<ReturnType<typeof createScriptLocationWriter> | null>(null);
+  if (!locationWriter.current)
+    locationWriter.current = createScriptLocationWriter({
+      current() {
+        const { client, instance } = locationContext.current;
+        const current = client.getSnapshot();
+        if (!alive.current || !activeViewRef.current || !client.online || !current)
+          return null;
+        return {
+          owner: JSON.stringify([
+            locationLease.current, current.centerId, current.principalId,
+            current.actantId, current.csrfToken, instance.workspaceId,
+            instance.applicationId, instance.applicationVersion,
+          ]),
+          instanceId: instance.id,
+          revision: instance.revision,
+        };
+      },
+      save(instanceId, expectedRevision, state) {
+        return locationContext.current.client.execute({
+          type: "set-application-state", instanceId, expectedRevision, state,
+        });
+      },
+    });
   const catalogEntry = boot.scriptLibrary.find(
     (entry) =>
       entry.id === productionId && entry.projectId === instance.workspaceId,
@@ -393,16 +428,10 @@ export function useScriptStudioWorkspace({
       onNotice("定位暂时无法保存；文稿未受影响。");
     }
     // Only view location enters application state, never text or a generation request.
-    void client
-      .execute({
-        type: "set-application-state",
-        instanceId: instance.id,
-        expectedRevision: instance.revision,
-        state: {
-          productionId: nextProduction,
-          itemId: nextItem,
-          view: nextView,
-        },
+    void locationWriter.current!({
+        productionId: nextProduction,
+        itemId: nextItem,
+        view: nextView,
       })
       .catch((e) => onNotice(`定位同步失败：${e.message}；本机定位已保留。`));
   };
