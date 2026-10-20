@@ -195,8 +195,11 @@ def stable_sender(pid):
     try:
         poller = select.poll()
         poller.register(handle, select.POLLIN)
-        if poller.poll(0):
-            raise RuntimeError("sender already exited")
+        events = poller.poll(0)
+        if events:
+            failure = RuntimeError("sender already exited")
+            failure.add_note("DYNAMIC_PIDFD_POLL " + json.dumps({"pid": pid, "events": events}))
+            raise failure
         identity = proc_identity(pid)
 
         def verify_current():

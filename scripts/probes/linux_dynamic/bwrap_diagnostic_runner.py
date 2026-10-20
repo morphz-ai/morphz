@@ -37,8 +37,8 @@ ARCHIVES = {
 }
 FROZEN = {
     "policy_contract.py": "6c846527d61d3b0a1ee71250d0d561af9d4d02cf8248c0cc3db663fff0c68531",
-    "entry.c": "141686e23ec3dde3722952fdab683dc72e945e6d65a8b01f1d1a4bd5de89396f",
-    "controller.py": "a9a5c33b2bfe56b85671b64ef699de5461cde4094f835bda056dc02fb4262bd1",
+    "entry.c": "5d72c4a9c8cb736fc887b00a570954e21b89f216f955a3bdcaf3c1273597aa32",
+    "controller.py": "531b685b890059ff592ed47d20b6cea040dcae2abd96e0e85af7a3d4aec269fb",
     "loader.py": "b5b419e91b67e17276051ab444c7963377d0207ac874f61dd86d7f9a060d372d",
     "worker.py": "0d9a34ee7c17e3b8170759e82083526801c8af7b3a42a2b91c59b0547d21b814",
     "bwrap-ubuntu-map-diagnostic.patch":

@@ -261,7 +261,13 @@ static void expect_reply(int fd, const char *expected, size_t size, const char *
     if (size > sizeof(reply)) fail("fixed reply bound");
     while (have < size) {
         ssize_t n = read(fd, reply + have, size - have);
-        if (n <= 0) fail(why);
+        if (n <= 0) {
+            int read_errno = errno;
+            fprintf(stderr, "DYNAMIC_ENTRY_READ_FAILURE fd=%d why=%s n=%zd errno=%d eof=%d\n",
+                    fd, why, n, read_errno, n == 0);
+            errno = read_errno;
+            fail(why);
+        }
         have += (size_t)n;
     }
     if (memcmp(reply, expected, size)) fail("admission refused");

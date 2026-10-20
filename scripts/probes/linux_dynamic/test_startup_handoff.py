@@ -7,6 +7,10 @@ from pathlib import Path
 import socket
 import stat
 import struct
+import subprocess
+import sys
+import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -146,6 +150,32 @@ class HostIdentity(unittest.TestCase):
                         self.fail("unexpected admission")
             opener.assert_not_called()
 
+    def test_initial_nonempty_poll_keeps_original_error_and_exact_events(self):
+        for events in ([(321, 1)], [(321, 8)], [(321, 16)], [(321, 17)], [(321, 32)]):
+            with self.subTest(events=events), \
+                 patch.object(controller.os, "pidfd_open", return_value=321, create=True) as opener, \
+                 patch.object(controller.os, "close") as close, \
+                 patch.object(controller.select, "POLLIN", 1, create=True), \
+                 patch.object(controller.select, "poll", create=True) as create_poll, \
+                 patch.object(controller, "proc_identity") as identity:
+                poller = create_poll.return_value
+                poller.poll.return_value = events
+                with self.assertRaises(RuntimeError) as raised:
+                    with controller.stable_sender(12):
+                        self.fail("nonempty poll must not enter admission")
+                opener.assert_called_once_with(12, 0)
+                poller.register.assert_called_once_with(321, 1)
+                poller.poll.assert_called_once_with(0)
+                close.assert_called_once_with(321)
+                identity.assert_not_called()
+            failure = raised.exception
+            self.assertEqual(repr(failure), "RuntimeError('sender already exited')")
+            self.assertEqual(len(failure.__notes__), 1)
+            note = failure.__notes__[0].removeprefix("DYNAMIC_PIDFD_POLL ")
+            self.assertEqual(json.loads(note), {"pid": 12, "events": [list(item) for item in events]})
+            diagnostic = controller.exception_diagnostic(failure, "inner_pin_sender")
+            self.assertIn(failure.__notes__[0], diagnostic["traceback"])
+
     def test_outer_requires_exact_original_child_executable_namespace_and_label(self):
         manifest = {
             "run_id": "a", "launch_id": "b", "policy_hash": "c", "profile": "work",
@@ -247,6 +277,112 @@ class FixedHandoffSource(unittest.TestCase):
                     and isinstance(value.value, bytes)] for item in pinned]
         self.assertIn([b"HOST\n"], replies)
         self.assertIn([b"GO\n", b"NO\n"], replies)
+
+
+class EntryReadFailureDiagnostics(unittest.TestCase):
+    """Compile only the exact expect_reply function with synthetic syscall mocks."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temporary = tempfile.TemporaryDirectory(prefix="morphz-read-diagnostic-unit-", dir="/tmp")
+        cls.addClassCleanup(cls.temporary.cleanup)
+        directory = Path(cls.temporary.name)
+        source = (HERE / "entry.c").read_text()
+        function = "static void expect_reply" + source.split(
+            "static void expect_reply", 1)[1].split("static int connect_host", 1)[0]
+        prefix = r"""
+#include <errno.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+static int selected_result, diagnostic_fails, calls;
+static size_t last_count;
+static ssize_t mock_read(int fd, void *buffer, size_t count) {
+    if (fd != 4 || count != 3) exit(90);
+    calls++; last_count = count;
+    errno = EACCES; /* Also deliberately stale for EOF and success. */
+    if (selected_result == 3) memcpy(buffer, "GO\n", 3);
+    return selected_result;
+}
+static int mock_fprintf(FILE *stream, const char *format, ...) {
+    int result = -1;
+    va_list arguments;
+    va_start(arguments, format);
+    if (!diagnostic_fails) result = vfprintf(stream, format, arguments);
+    va_end(arguments);
+    errno = EIO; /* Even successful diagnostic formatting may disturb errno. */
+    return result;
+}
+static void fail(const char *why) {
+    printf("FAIL errno=%d why=%s calls=%d count=%zu\n", errno, why, calls, last_count);
+    exit(78);
+}
+#define read mock_read
+#define fprintf mock_fprintf
+"""
+        suffix = r"""
+int main(int argc, char **argv) {
+    if (argc != 3) return 91;
+    selected_result = atoi(argv[1]); diagnostic_fails = atoi(argv[2]);
+    expect_reply(4, "GO\n", 3, "admission acknowledgement");
+    printf("RETURN calls=%d count=%zu\n", calls, last_count);
+    return 0;
+}
+"""
+        path = directory / "expect_reply.c"
+        path.write_text(prefix + function + suffix)
+        cls.binary = directory / "expect_reply"
+        built = subprocess.run(
+            ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", str(path), "-o", str(cls.binary)],
+            text=True, capture_output=True, timeout=30, check=False,
+        )
+        if built.returncode:
+            raise RuntimeError("mocked expect_reply compilation failed: " + built.stderr)
+
+    def invoke(self, result, diagnostic_fails=False):
+        started, completed = time.monotonic(), None
+        try:
+            # Protect this new local mock process, including OS executable load.
+            # This is not an admission deadline or a business latency assertion.
+            completed = subprocess.run(
+                [str(self.binary), str(result), str(int(diagnostic_fails))],
+                text=True, capture_output=True, timeout=60, check=False,
+            )
+            return completed
+        finally:
+            print("C_MOCK_CASE " + json.dumps({
+                "read_result": result, "diagnostic_fails": diagnostic_fails,
+                "elapsed_seconds": round(time.monotonic() - started, 6),
+                "returncode": None if completed is None else completed.returncode,
+            }), file=sys.stderr)
+
+    def test_read_error_and_eof_are_distinct_without_retry_or_errno_change(self):
+        for returned, eof in ((-1, 0), (0, 1)):
+            with self.subTest(returned=returned):
+                result = self.invoke(returned)
+                self.assertEqual(result.returncode, 78)
+                self.assertEqual(result.stdout,
+                                 "FAIL errno=13 why=admission acknowledgement calls=1 count=3\n")
+                self.assertEqual(result.stderr,
+                                 "DYNAMIC_ENTRY_READ_FAILURE fd=4 why=admission acknowledgement "
+                                 f"n={returned} errno=13 eof={eof}\n")
+
+    def test_diagnostic_write_failure_still_preserves_original_refusal(self):
+        for returned in (-1, 0):
+            with self.subTest(returned=returned):
+                result = self.invoke(returned, diagnostic_fails=True)
+                self.assertEqual(result.returncode, 78)
+                self.assertEqual(result.stdout,
+                                 "FAIL errno=13 why=admission acknowledgement calls=1 count=3\n")
+                self.assertEqual(result.stderr, "")
+
+    def test_successful_reply_does_not_emit_failure_diagnostic(self):
+        result = self.invoke(3)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "RETURN calls=1 count=3\n")
+        self.assertEqual(result.stderr, "")
 
 
 if __name__ == "__main__":
