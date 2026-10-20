@@ -4,8 +4,39 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { build } from "esbuild";
 import { chromium, type Browser, type Page } from "@playwright/test";
-import type { Boot } from "../../apps/web/src/client.js";
+import type { Boot, WorkspaceClient } from "../../apps/web/src/client.js";
+import { HttpApplicationClient } from "../../packages/core/src/http-application-client.js";
 
+type ClientMethodName = {
+  [K in keyof WorkspaceClient]: WorkspaceClient[K] extends (
+    ...args: any[]
+  ) => unknown
+    ? K
+    : never;
+}[keyof WorkspaceClient];
+type ClientMethod<K extends ClientMethodName> = Extract<
+  WorkspaceClient[K],
+  (...args: any[]) => unknown
+>;
+
+// Independent server authorization probe using this private browser's genuine
+// session cookie. It cannot manufacture a principal or access generation.
+export function authenticatedHttp(client: ActualMountedClient) {
+  const origin = new URL(client.page.url()).origin;
+  return new HttpApplicationClient(origin, async (input, init) => {
+    const url = new URL(String(input), origin);
+    assert.equal(url.origin, origin);
+    const headers = new Headers(init?.headers);
+    headers.set(
+      "Cookie",
+      (await client.page.context().cookies(origin))
+        .map((c) => `${c.name}=${c.value}`)
+        .join("; "),
+    );
+    if (init?.method === "POST") headers.set("Origin", origin);
+    return fetch(url, { ...init, headers });
+  });
+}
 export async function mountedClientWebRoot() {
   const directory = mkdtempSync(
     join(tmpdir(), "morphz-actual-client-mounted-"),
@@ -50,6 +81,7 @@ function unwrap(value: Reply) {
   throw error;
 }
 export class ActualMountedClient {
+  private holdSequence = 0;
   private constructor(
     readonly browser: Browser,
     readonly page: Page,
@@ -103,8 +135,56 @@ export class ActualMountedClient {
       { name, args },
     );
   }
+  call<K extends ClientMethodName>(
+    name: K,
+    args?: Parameters<ClientMethod<K>>,
+    slot?: string,
+  ): Promise<Awaited<ReturnType<ClientMethod<K>>>>;
   async call(name: string, args: unknown[] = [], slot?: string): Promise<any> {
-    return unwrap(await this.control("call", name, args, slot));
+    const cleanups: Array<() => Promise<unknown>> = [];
+    try {
+      const serialize = async (value: unknown): Promise<unknown> => {
+        if (value instanceof File)
+          return {
+            __fixtureFile: true,
+            bytes: [...new Uint8Array(await value.arrayBuffer())],
+            name: value.name,
+            type: value.type,
+            lastModified: value.lastModified,
+          };
+        if (value instanceof AbortSignal) {
+          const id: string = await this.control(
+            "abortController",
+            value.aborted,
+          );
+          const abort = () => {
+            void this.control("abort", id);
+          };
+          value.addEventListener("abort", abort, { once: true });
+          if (value.aborted) await this.control("abort", id);
+          cleanups.push(async () => {
+            value.removeEventListener("abort", abort);
+            await this.control("forgetAbort", id);
+          });
+          return { __fixtureAbort: id };
+        }
+        if (Array.isArray(value)) return Promise.all(value.map(serialize));
+        if (value && Object.getPrototypeOf(value) === Object.prototype)
+          return Object.fromEntries(
+            await Promise.all(
+              Object.entries(value).map(async ([key, item]) => [
+                key,
+                await serialize(item),
+              ]),
+            ),
+          );
+        return value;
+      };
+      const serialized = await Promise.all(args.map(serialize));
+      return unwrap(await this.control("call", name, serialized, slot));
+    } finally {
+      for (const cleanup of cleanups) await cleanup();
+    }
   }
   start(name: string, args: unknown[] = [], slot?: string): Promise<string> {
     return this.control("start", name, args, slot);
@@ -122,6 +202,19 @@ export class ActualMountedClient {
           Reflect.get(window, "actualMountedClient").report().snapshot
             ?.principalId === principal,
         principalId,
+        { timeout: 8000 },
+      );
+      // Mount/login effects must finish before a test clears its request
+      // ledger. EventSource remains live; this waits only for native fetch.
+      await this.page.waitForFunction(
+        () => {
+          const report = Reflect.get(window, "actualMountedClient").report();
+          return (
+            report.networkPending === 0 &&
+            Date.now() - report.networkSettledAt >= 50
+          );
+        },
+        undefined,
         { timeout: 8000 },
       );
     } catch (error) {
@@ -147,6 +240,29 @@ export class ActualMountedClient {
   }
   async hold(path: string) {
     const id: string = await this.control("hold", path);
+    return this.heldResponse(id);
+  }
+  async holdWhere(
+    match: (url: URL) => boolean,
+    verify: (value: unknown) => void,
+  ) {
+    const name = "fixtureHoldMatch" + ++this.holdSequence;
+    await this.page.exposeFunction(
+      name,
+      (response: { url: string; status: number; value: unknown }) => {
+        if (!match(new URL(response.url))) return false;
+        assert.equal(
+          response.status,
+          200,
+          "hold only a genuine authorized response",
+        );
+        verify(response.value);
+        return true;
+      },
+    );
+    return this.heldResponse(await this.control("hold", "", name));
+  }
+  private heldResponse(id: string) {
     return {
       id,
       reached: async () => {

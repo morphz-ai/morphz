@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RequestError } from "../apps/web/src/application-transport.js";
+import type { ActualMountedClient } from "./fixtures/actual-mounted-client-test.js";
+const isRequestError = (error: unknown): error is Error & { status: number } =>
+  error instanceof Error && typeof Reflect.get(error, "status") === "number";
 import { applicationTokenHeader } from "../packages/core/src/application-names.js";
 import type { ReaderCommand } from "../packages/core/src/reader.js";
-import type {
-  ApplicationInvocation,
-  ApplicationReply,
-} from "../packages/core/src/application-api.js";
 import {
   readerActor,
   otherReader,
@@ -23,19 +21,26 @@ test(
         "TEST-reader-import.md",
         { type: "text/markdown" },
       );
-      reads.length = 0;
-      loseNext("/api/import/reading");
+      await client.control("clearReads");
+      await loseNext("/api/import/reading");
       await assert.rejects(
-        client.importReading(file, "agent-test-project"),
+        client.call("importReading", [file, "agent-test-project"]),
         /lost authorized receipt/,
       );
-      const lost = reads.find((r) => r.path === "/api/import/reading")!;
+      const lost = (await reads()).find(
+        (r) => r.path === "/api/import/reading",
+      )!;
       assert.equal(lost.status, 201);
       const id = (lost.response as { entityId: string }).entityId;
-      const beforeRetry = reads.length;
-      const imported = await client.importReading(file, "agent-test-project");
+      const beforeRetry = (await reads()).length;
+      const imported = await client.call("importReading", [
+        file,
+        "agent-test-project",
+      ]);
       assert.equal(imported.entityId, id);
-      const imports = reads.filter((r) => r.path === "/api/import/reading");
+      const imports = (await reads()).filter(
+        (r) => r.path === "/api/import/reading",
+      );
       assert.equal(
         imports[1]!.headers.get("X-Command-Id"),
         imports[0]!.headers.get("X-Command-Id"),
@@ -50,19 +55,25 @@ test(
       );
       assert.equal(
         imports[1]!.headers.get(applicationTokenHeader),
-        client.getSnapshot()!.csrfToken,
+        (await client.snapshot())!.csrfToken,
       );
       assert(
-        reads
+        (await reads())
           .slice(beforeRetry)
           .some((r) => r.path.includes("runtime-navigation")),
         "successful import confirms real current catalog",
       );
-      const contents = await client.readingContents(id, 1);
-      const section = await client.readReading(id, 1, contents[0]!.id);
+      const contents = await client.call("readingContents", [id, 1]);
+      const section = await client.call("readReading", [
+        id,
+        1,
+        contents[0]!.id,
+      ]);
       assert.match(section.text, /真实导入文字/);
-      await client.importReading(file, "agent-test-project");
-      const all = reads.filter((r) => r.path === "/api/import/reading");
+      await client.call("importReading", [file, "agent-test-project"]);
+      const all = (await reads()).filter(
+        (r) => r.path === "/api/import/reading",
+      );
       assert.notEqual(
         all[2]!.headers.get("X-Command-Id"),
         all[1]!.headers.get("X-Command-Id"),
@@ -96,65 +107,90 @@ test(
           color: "green",
           note: "真实独立Reader标注",
         };
-        reads.length = 0;
-        loseNext("/api/reader/commands");
+        await client.control("clearReads");
+        await loseNext("/api/reader/commands");
         await assert.rejects(
-          client.readerCommand(contentId, 1, add),
+          client.call("readerCommand", [contentId, 1, add]),
           /lost authorized receipt/,
         );
-        const original = reads.at(-1)!;
+        const original = (await reads())
+          .filter((row) => row.path === "/api/reader/commands")
+          .at(-1)!;
         assert.equal(original.status, 200);
         const originalReceipt = original.response as {
           id: string;
           revision: number;
         };
-        const retry = await client.readerCommand(contentId, 1, add);
+        const retry = await client.call("readerCommand", [contentId, 1, add]);
         assert.deepEqual(retry, originalReceipt);
-        const commands = reads.filter((r) => r.path === "/api/reader/commands");
+        const commands = (await reads()).filter(
+          (r) => r.path === "/api/reader/commands",
+        );
         assert.equal(
           (commands[0]!.body as { commandId: string }).commandId,
           (commands[1]!.body as { commandId: string }).commandId,
         );
         assert.equal(
-          reads.length,
+          commands.length,
           2,
-          "reading command never adds Client refresh",
+          "one exact command and its retry; mounted workspace notifications may independently refresh",
         );
-        let marks = await client.readingMarks({
-          artifactId: contentId,
-          revision: 1,
-        });
+        assert.deepEqual(
+          (await reads())
+            .filter((row) => row.method === "POST")
+            .map((row) => row.path),
+          ["/api/reader/commands", "/api/reader/commands"],
+          "no additional business mutation is dispatched",
+        );
+        let marks = await client.call("readingMarks", [
+          {
+            artifactId: contentId,
+            revision: 1,
+          },
+        ]);
         assert.equal(marks.marks.length, 1);
         assert.equal(marks.marks[0]!.ownerPrincipalId, readerActor.principalId);
         assert.equal(marks.marks[0]!.note, add.note);
-        const updated = await client.readerCommand(contentId, 1, {
-          action: "mark-update",
-          markId: retry.id,
-          expectedRevision: retry.revision,
-          note: "持久修订",
-          color: "blue",
-        });
-        assert.equal(updated.revision, 2);
-        await assert.rejects(
-          client.readerCommand(contentId, 1, {
+        const updated = await client.call("readerCommand", [
+          contentId,
+          1,
+          {
             action: "mark-update",
             markId: retry.id,
-            expectedRevision: 1,
-            note: "过期CAS",
-            color: "pink",
-          }),
-          (e) => e instanceof RequestError && e.status === 409,
+            expectedRevision: retry.revision,
+            note: "持久修订",
+            color: "blue",
+          },
+        ]);
+        assert.equal(updated.revision, 2);
+        await assert.rejects(
+          client.call("readerCommand", [
+            contentId,
+            1,
+            {
+              action: "mark-update",
+              markId: retry.id,
+              expectedRevision: 1,
+              note: "过期CAS",
+              color: "pink",
+            },
+          ]),
+          (e) => isRequestError(e) && e.status === 409,
         );
-        const saved = await client.readerCommand(contentId, 1, {
-          action: "save-position",
-          artifactId: contentId,
-          artifactRevision: 1,
-          location,
-          preferences: { fontSize: 23, font: "serif", theme: "night" },
-          expectedRevision: 0,
-        });
+        const saved = await client.call("readerCommand", [
+          contentId,
+          1,
+          {
+            action: "save-position",
+            artifactId: contentId,
+            artifactRevision: 1,
+            location,
+            preferences: { fontSize: 23, font: "serif", theme: "night" },
+            expectedRevision: 0,
+          },
+        ]);
         assert.equal(saved.revision, 1);
-        const position = await client.readingState(contentId, 1);
+        const position = await client.call("readingState", [contentId, 1]);
         assert.equal(
           position.position?.ownerPrincipalId,
           readerActor.principalId,
@@ -163,43 +199,66 @@ test(
         assert.equal(position.position?.preferences.fontSize, 23);
         await login(true);
         assert.equal(
-          client.getSnapshot()!.principalId,
+          (await client.snapshot())!.principalId,
           otherReader.principalId,
         );
         assert.equal(
-          (await client.readingMarks({ artifactId: contentId, revision: 1 }))
-            .marks.length,
+          (
+            await client.call("readingMarks", [
+              { artifactId: contentId, revision: 1 },
+            ])
+          ).marks.length,
           0,
         );
-        assert.equal((await client.readingState(contentId, 1)).position, null);
+        assert.equal(
+          (await client.call("readingState", [contentId, 1])).position,
+          null,
+        );
         await login();
-        marks = await client.readingMarks({
-          artifactId: contentId,
-          revision: 1,
-        });
+        marks = await client.call("readingMarks", [
+          {
+            artifactId: contentId,
+            revision: 1,
+          },
+        ]);
         assert.equal(marks.marks[0]!.note, "持久修订");
         assert.equal(
-          (await client.readingState(contentId, 1)).position?.revision,
+          (await client.call("readingState", [contentId, 1])).position
+            ?.revision,
           1,
         );
-        const removed = await client.readerCommand(contentId, 1, {
-          action: "mark-remove",
-          markId: retry.id,
-          expectedRevision: 2,
-        });
+        const removed = await client.call("readerCommand", [
+          contentId,
+          1,
+          {
+            action: "mark-remove",
+            markId: retry.id,
+            expectedRevision: 2,
+          },
+        ]);
         assert.equal(
-          (await client.readingMarks({ artifactId: contentId, revision: 1 }))
-            .marks.length,
+          (
+            await client.call("readingMarks", [
+              { artifactId: contentId, revision: 1 },
+            ])
+          ).marks.length,
           0,
         );
-        await client.readerCommand(contentId, 1, {
-          action: "mark-restore",
-          markId: retry.id,
-          expectedRevision: removed.revision,
-        });
+        await client.call("readerCommand", [
+          contentId,
+          1,
+          {
+            action: "mark-restore",
+            markId: retry.id,
+            expectedRevision: removed.revision,
+          },
+        ]);
         assert.equal(
-          (await client.readingMarks({ artifactId: contentId, revision: 1 }))
-            .marks.length,
+          (
+            await client.call("readingMarks", [
+              { artifactId: contentId, revision: 1 },
+            ])
+          ).marks.length,
           1,
         );
       },
@@ -230,17 +289,19 @@ test(
           note: "",
         };
         await access(false);
-        await client.refresh();
-        reads.length = 0;
+        await client.call("refresh", []);
+        await client.control("clearReads");
         for (let i = 0; i < 2; i++)
           await assert.rejects(
-            client.readerCommand(contentId, 1, command),
+            client.call("readerCommand", [contentId, 1, command]),
             (e) =>
-              e instanceof RequestError &&
+              isRequestError(e) &&
               e.status === 404 &&
               e.message === "内容不存在或无权访问。",
           );
-        const denied = reads.filter((r) => r.path === "/api/reader/commands");
+        const denied = (await reads()).filter(
+          (r) => r.path === "/api/reader/commands",
+        );
         assert.deepEqual(
           denied.map((r) => r.status),
           [404, 404],
@@ -251,16 +312,22 @@ test(
           "definitive 4xx clears old command retry",
         );
         await access(true);
-        await client.refresh();
+        await client.call("refresh", []);
         assert.equal(
-          (await client.readingMarks({ artifactId: contentId, revision: 1 }))
-            .marks.length,
+          (
+            await client.call("readingMarks", [
+              { artifactId: contentId, revision: 1 },
+            ])
+          ).marks.length,
           0,
         );
-        await client.readerCommand(contentId, 1, command);
+        await client.call("readerCommand", [contentId, 1, command]);
         assert.equal(
-          (await client.readingMarks({ artifactId: contentId, revision: 1 }))
-            .marks.length,
+          (
+            await client.call("readingMarks", [
+              { artifactId: contentId, revision: 1 },
+            ])
+          ).marks.length,
           1,
         );
       },
@@ -272,66 +339,78 @@ test(
   "actual Client discards held HTTP import/command receipts after identity change and safely retries the original private pending command",
   { timeout: 30000 },
   async () => {
-    const pendingIds = (identity: {
-      centerId: string;
-      principalId: string;
-    }) => {
+    const pendingIds = async (
+      client: ActualMountedClient,
+      identity: { centerId: string; principalId: string },
+    ) => {
       const ids: string[] = [];
-      for (let index = 0; index < localStorage.length; index++) {
-        const key = localStorage.key(index)!;
+      for (const [key, text] of Object.entries(
+        (await client.control("storage")) as Record<string, string>,
+      )) {
         if (
           key.includes(`${identity.centerId}:${identity.principalId}:`) &&
           (key.includes("pending:file-import:") ||
             key.includes("pending:reader:"))
         ) {
-          const value = JSON.parse(localStorage.getItem(key)!);
+          const value = JSON.parse(text);
           if (value?.commandId) ids.push(value.commandId);
         }
       }
       return ids;
     };
     const retiredReceipt = (error: unknown) => {
-      assert(error instanceof RequestError);
+      assert(isRequestError(error));
       assert.equal(error.status, 408);
       assert.equal(error.message, "身份已切换，旧响应已丢弃。");
     };
     await withReaderInteractions(
       async ({ client, reads, holdNext, login, receiptCount }) => {
-        const originalIdentity = client.getSnapshot()!;
+        const originalIdentity = (await client.snapshot())!;
         const file = new File(
           ["# TEST held import\n\n延迟回执原件。"],
           "TEST-held-import.md",
           { type: "text/markdown" },
         );
-        const hold = holdNext("/api/import/reading");
-        const pending = client.importReading(file, "agent-test-project").then(
-          (value) => ({ value, error: undefined }),
-          (error) => ({ value: undefined, error }),
-        );
+        const hold = await holdNext("/api/import/reading");
+        const pending = client
+          .call("importReading", [file, "agent-test-project"])
+          .then(
+            (value) => ({ value, error: undefined }),
+            (error) => ({ value: undefined, error }),
+          );
         try {
-          await hold.reached;
-          const first = reads.find((r) => r.path === "/api/import/reading")!;
+          await hold.reached();
+          const first = (await reads()).find(
+            (r) => r.path === "/api/import/reading",
+          )!;
           assert.equal(first.status, 201);
           const commandId = first.headers.get("X-Command-Id")!;
           const originalReceipt = first.response as { entityId: string };
           assert.equal(receiptCount("import", commandId), 1);
-          assert.deepEqual(pendingIds(originalIdentity), [commandId]);
+          assert.deepEqual(await pendingIds(client, originalIdentity), [
+            commandId,
+          ]);
           await login(true);
-          const newSnapshot = client.getSnapshot();
+          const newSnapshot = await client.snapshot("newIdentity");
           assert.equal(newSnapshot!.principalId, otherReader.principalId);
-          assert.deepEqual(pendingIds(newSnapshot!), []);
-          hold.release();
+          assert.deepEqual(await pendingIds(client, newSnapshot!), []);
+          await hold.release();
           retiredReceipt((await pending).error);
           assert.equal(
-            client.getSnapshot(),
-            newSnapshot,
+            await client.control("sameSnapshot", "newIdentity"),
+            true,
             "late import cannot publish or refresh the newer identity",
           );
-          assert.deepEqual(pendingIds(originalIdentity), [commandId]);
+          assert.deepEqual(await pendingIds(client, originalIdentity), [
+            commandId,
+          ]);
           await login();
-          const retry = await client.importReading(file, "agent-test-project");
+          const retry = await client.call("importReading", [
+            file,
+            "agent-test-project",
+          ]);
           assert.deepEqual(retry, originalReceipt);
-          const replay = reads
+          const replay = (await reads())
             .filter((r) => r.path === "/api/import/reading")
             .at(-1)!;
           assert.equal(replay.headers.get("X-Command-Id"), commandId);
@@ -340,14 +419,23 @@ test(
             1,
             "one real SQLite import event after replay",
           );
-          assert.deepEqual(pendingIds(originalIdentity), []);
-          const contents = await client.readingContents(retry.entityId, 1);
+          assert.deepEqual(await pendingIds(client, originalIdentity), []);
+          const contents = await client.call("readingContents", [
+            retry.entityId,
+            1,
+          ]);
           assert.match(
-            (await client.readReading(retry.entityId, 1, contents[0]!.id)).text,
+            (
+              await client.call("readReading", [
+                retry.entityId,
+                1,
+                contents[0]!.id,
+              ])
+            ).text,
             /延迟回执原件/,
           );
         } finally {
-          hold.release();
+          await hold.release();
           await pending;
         }
       },
@@ -362,7 +450,7 @@ test(
         login,
         receiptCount,
       }) => {
-        const originalIdentity = client.getSnapshot()!;
+        const originalIdentity = (await client.snapshot())!;
         const command: ReaderCommand = {
           action: "mark-add",
           artifactId: contentId,
@@ -378,14 +466,18 @@ test(
           color: "yellow",
           note: "TEST held private mark",
         };
-        const hold = holdNext("/api/reader/commands");
-        const pending = client.readerCommand(contentId, 1, command).then(
-          (value) => ({ value, error: undefined }),
-          (error) => ({ value: undefined, error }),
-        );
+        const hold = await holdNext("/api/reader/commands");
+        const pending = client
+          .call("readerCommand", [contentId, 1, command])
+          .then(
+            (value) => ({ value, error: undefined }),
+            (error) => ({ value: undefined, error }),
+          );
         try {
-          await hold.reached;
-          const first = reads.find((r) => r.path === "/api/reader/commands")!;
+          await hold.reached();
+          const first = (await reads()).find(
+            (r) => r.path === "/api/reader/commands",
+          )!;
           assert.equal(first.status, 200);
           const commandId = (first.body as { commandId: string }).commandId;
           const originalReceipt = first.response as {
@@ -394,25 +486,34 @@ test(
           };
           assert.equal(receiptCount("command", commandId), 1);
           await login(true);
-          const newSnapshot = client.getSnapshot();
+          const newSnapshot = await client.snapshot("newIdentity");
           assert.equal(
-            (await client.readingMarks({ artifactId: contentId, revision: 1 }))
-              .marks.length,
+            (
+              await client.call("readingMarks", [
+                { artifactId: contentId, revision: 1 },
+              ])
+            ).marks.length,
             0,
           );
-          assert.deepEqual(pendingIds(newSnapshot!), []);
-          hold.release();
+          assert.deepEqual(await pendingIds(client, newSnapshot!), []);
+          await hold.release();
           retiredReceipt((await pending).error);
           assert.equal(
-            client.getSnapshot(),
-            newSnapshot,
+            await client.control("sameSnapshot", "newIdentity"),
+            true,
             "late command does not replace the newer snapshot",
           );
-          assert.deepEqual(pendingIds(originalIdentity), [commandId]);
+          assert.deepEqual(await pendingIds(client, originalIdentity), [
+            commandId,
+          ]);
           await login();
-          const retry = await client.readerCommand(contentId, 1, command);
+          const retry = await client.call("readerCommand", [
+            contentId,
+            1,
+            command,
+          ]);
           assert.deepEqual(retry, originalReceipt);
-          const replay = reads
+          const replay = (await reads())
             .filter((r) => r.path === "/api/reader/commands")
             .at(-1)!;
           assert.equal(
@@ -424,19 +525,21 @@ test(
             1,
             "one real SQLite command receipt after replay",
           );
-          const marks = await client.readingMarks({
-            artifactId: contentId,
-            revision: 1,
-          });
+          const marks = await client.call("readingMarks", [
+            {
+              artifactId: contentId,
+              revision: 1,
+            },
+          ]);
           assert.equal(marks.marks.length, 1);
           assert.equal(marks.marks[0]!.id, retry.id);
           assert.equal(
             marks.marks[0]!.ownerPrincipalId,
             readerActor.principalId,
           );
-          assert.deepEqual(pendingIds(originalIdentity), []);
+          assert.deepEqual(await pendingIds(client, originalIdentity), []);
         } finally {
-          hold.release();
+          await hold.release();
           await pending;
         }
       },
@@ -449,107 +552,88 @@ test(
   { timeout: 30000 },
   async () => {
     await withReaderInteractions(async ({ client, contentId, login }) => {
-      const nativeWindow = window,
-        requests: ApplicationInvocation[] = [],
-        cancelled: string[] = [];
-      let accept!: (reply: ApplicationReply) => void;
-      const status = {
-        available: true,
-        installed: false,
-        downloadBytes: 0,
-        state: "idle" as const,
-      };
-      let held = false;
-      const bridge = {
-        invoke: async (
-          request: ApplicationInvocation,
-        ): Promise<ApplicationReply> => {
-          assert.equal(
-            request.method,
-            "reader.ocr",
-            "no provider, model, other business operation on controlled bridge",
-          );
-          requests.push(request);
-          if (held)
-            return new Promise((done) => {
-              accept = done;
-            });
-          return { ok: true, value: status };
-        },
-        cancel(id: string) {
-          cancelled.push(id);
-        },
-      };
-      const setBridge = (enabled: boolean) => {
-        Object.defineProperty(globalThis, "window", {
-          configurable: true,
-          value: enabled
-            ? { morphzDesktop: { application: bridge } }
-            : nativeWindow,
-        });
-      };
+      const waitRequests = async (count: number) =>
+        client.page.waitForFunction(
+          (n) =>
+            Reflect.get(window, "actualMountedClient").ocrReport().requests
+              .length === n,
+          count,
+        );
       try {
-        setBridge(true);
+        await client.control("ocrInstall", true);
         const request = {
           operation: "status" as const,
           artifactId: contentId,
           revision: 1,
           page: 1,
         };
-        const generation = client.getSnapshot()!.csrfToken;
-        assert.equal(
-          await client.readingOcr(request, undefined, generation),
-          status,
+        const generation = (await client.snapshot())!.csrfToken;
+        await client.call(
+          "readingOcr",
+          [request, undefined, generation],
+          "ocr-result",
         );
-        assert.equal(requests[0]!.identityGeneration, generation);
-        assert.deepEqual(requests[0]!.params, request);
+        assert.equal(
+          await client.control("sameResult", "ocr-status", "ocr-result"),
+          true,
+        );
+        let report = await client.control("ocrReport");
+        assert.equal(report.requests[0].identityGeneration, generation);
+        assert.deepEqual(report.requests[0].params, request);
         await assert.rejects(
-          client.readingOcr(request, undefined, "obsolete"),
+          client.call("readingOcr", [request, undefined, "obsolete"]),
           /阅读权限已变化/,
         );
-        assert.equal(requests.length, 1);
+        assert.equal((await client.control("ocrReport")).requests.length, 1);
         const already = new AbortController();
         already.abort();
         await assert.rejects(
-          client.readingOcr(request, already.signal),
+          client.call("readingOcr", [request, already.signal]),
           (e) => e instanceof Error && e.name === "AbortError",
         );
-        assert.equal(requests.length, 1);
-        held = true;
+        assert.equal((await client.control("ocrReport")).requests.length, 1);
+        await client.control("ocrInstall", true, true);
         const abort = new AbortController();
-        const pending = client.readingOcr(request, abort.signal).then(
+        const pending = client.call("readingOcr", [request, abort.signal]).then(
           (value) => ({ value, error: undefined }),
           (error) => ({ value: undefined, error }),
         );
-        await Promise.resolve();
-        assert.equal(requests.length, 2);
+        await waitRequests(2);
         abort.abort();
-        accept({ ok: true, value: status });
-        const cancelledResult = await pending;
-        assert(
-          cancelledResult.error instanceof Error &&
-            cancelledResult.error.name === "AbortError",
+        await client.page.waitForFunction(
+          () =>
+            Reflect.get(window, "actualMountedClient").ocrReport().cancelled
+              .length === 1,
         );
-        assert.deepEqual(cancelled, [requests[1]!.id]);
-        const old = client.readingOcr(request).then(
+        await client.control("ocrResolve");
+        const cancelled = await pending;
+        assert(
+          cancelled.error instanceof Error &&
+            cancelled.error.name === "AbortError",
+        );
+        report = await client.control("ocrReport");
+        assert.deepEqual(report.cancelled, [report.requests[1].id]);
+        const old = client.call("readingOcr", [request]).then(
           (value) => ({ value, error: undefined }),
           (error) => ({ value: undefined, error }),
         );
-        await Promise.resolve();
-        assert.equal(requests.length, 3);
-        setBridge(false);
+        await waitRequests(3);
+        await client.control("ocrInstall", false);
         await login(true);
-        const snapshot = client.getSnapshot();
-        setBridge(true);
-        accept({ ok: true, value: status });
+        const snapshot = await client.snapshot("afterOcrIdentity");
+        await client.control("ocrInstall", true, true);
+        await client.control("ocrResolve");
         const retired = await old;
         assert(
           retired.error instanceof Error && retired.error.name === "AbortError",
         );
-        assert.equal(client.getSnapshot(), snapshot);
+        assert.equal(
+          await client.control("sameSnapshot", "afterOcrIdentity"),
+          true,
+        );
         assert.equal(snapshot!.principalId, otherReader.principalId);
       } finally {
-        setBridge(false);
+        await client.control("ocrInstall", false);
       }
     });
   },

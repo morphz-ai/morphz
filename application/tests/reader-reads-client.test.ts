@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer as portProbe } from "node:http";
 import test from "node:test";
-import { createElement } from "react";
-import { renderToString } from "react-dom/server";
-import { useWorkspace, type WorkspaceClient } from "../apps/web/src/client.js";
+import {
+  ActualMountedClient,
+  mountedClientWebRoot,
+} from "./fixtures/actual-mounted-client-test.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import {
   Application,
@@ -24,57 +25,26 @@ const tokenFor = (human: { principalId: string }) =>
   createHash("sha256")
     .update("reader-query-" + human.principalId)
     .digest("hex");
-function memoryStorage(): Storage {
-  const values = new Map<string, string>();
-  return {
-    get length() {
-      return values.size;
-    },
-    clear() {
-      values.clear();
-    },
-    getItem(key) {
-      return values.get(key) ?? null;
-    },
-    key(index) {
-      return [...values.keys()][index] ?? null;
-    },
-    removeItem(key) {
-      values.delete(key);
-    },
-    setItem(key, value) {
-      values.set(key, value);
-    },
-  };
-}
-function actualClient() {
-  let client: WorkspaceClient | undefined;
-  function Probe() {
-    client = useWorkspace();
-    return createElement("span");
-  }
-  // Actual Client refs/functions, not a fake Client. SSR does not run effects;
-  // this proves HTTP/SQLite reads, not mounted UI, Electron or model behavior.
-  renderToString(createElement(Probe));
-  assert.ok(client);
-  return client;
-}
-type Hold = { reached: Promise<void>; release(): void };
+type Hold = Awaited<ReturnType<ActualMountedClient["hold"]>>;
 type Read = { url: URL; method: string; status: number; headers: Headers };
 async function withActualReader(
   run: (context: {
-    client: WorkspaceClient;
+    client: ActualMountedClient;
     contentId: string;
     section: ReadingSection;
     markId: string;
-    reads: Read[];
-    hold(path: string): Hold;
+    reads(): Promise<Read[]>;
+    hold(path: string): Promise<Hold>;
     access(enabled: boolean): Promise<void>;
   }) => Promise<void>,
 ) {
+  const web = await mountedClientWebRoot();
   const fixture = await agentDomainFixture({
     additionalHumans: [reader],
     loginTokenForHuman: tokenFor,
+  }).catch((error) => {
+    web.close();
+    throw error;
   });
   const options = {
     identity: fixture.identity,
@@ -86,6 +56,8 @@ async function withActualReader(
     messageAttachments: fixture.domains.messageAttachments,
     uiPackages: fixture.domains.uiPackages,
     notifications: fixture.domains.notifications,
+    cognitiveApps: fixture.domains.cognitiveApps,
+    workspaceChanges: fixture.domains.workspaceChanges,
   };
   const app = new Application(fixture.transport, options);
   const call = (
@@ -100,14 +72,7 @@ async function withActualReader(
       "reader-query-test-human",
       new AbortController().signal,
     );
-  const nativeFetch = globalThis.fetch;
-  const globals = new Map(
-    ["window", "location", "localStorage", "sessionStorage"].map(
-      (name) =>
-        [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const,
-    ),
-  );
-  const holds: Hold[] = [];
+  let client: ActualMountedClient | undefined;
   let server: ReturnType<typeof createAppServer> | undefined;
   try {
     const created = (await call(localAccess, "documents.create", {
@@ -186,70 +151,26 @@ async function withActualReader(
     server = createAppServer(fixture.transport, {
       ...options,
       port,
-      webRoot: "/nonexistent",
+      webRoot: web.directory,
     });
     await new Promise<void>((done) => server!.listen(port, "127.0.0.1", done));
-    const reads: Read[] = [];
-    let cookies = "",
-      interception:
-        { path: string; reached(): void; pending: Promise<void> } | undefined;
-    globalThis.fetch = async (input, init) => {
-      assert.equal(typeof input, "string");
-      const url = new URL(input as string, origin);
-      assert.equal(
-        url.origin,
-        origin,
-        "only isolated real HTTP/SQLite host, never Runtime/model or remote service",
+    client = await ActualMountedClient.open(origin);
+    const reads = async (): Promise<Read[]> =>
+      (await client!.control("reads")).map(
+        (row: {
+          url: string;
+          method: string;
+          status: number;
+          headers: Array<[string, string]>;
+        }) => ({
+          ...row,
+          url: new URL(row.url),
+          headers: new Headers(row.headers),
+        }),
       );
-      const headers = new Headers(init?.headers);
-      if (cookies) headers.set("Cookie", cookies);
-      if (init?.method === "POST") headers.set("Origin", origin);
-      const response = await nativeFetch(url, { ...init, headers });
-      const cookie = response.headers.get("set-cookie");
-      if (cookie) cookies = cookie.split(";")[0]!;
-      reads.push({
-        url,
-        method: init?.method ?? "GET",
-        status: response.status,
-        headers,
-      });
-      if (interception?.path === url.pathname) {
-        const held = interception;
-        interception = undefined;
-        assert.equal(
-          response.status,
-          200,
-          "hold an actually authorized read, not a fabricated response",
-        );
-        held.reached();
-        await held.pending;
-      }
-      return response;
-    };
-    for (const [name, value] of Object.entries({
-      window: {},
-      location: { origin },
-      localStorage: memoryStorage(),
-      sessionStorage: memoryStorage(),
-    }))
-      Object.defineProperty(globalThis, name, { configurable: true, value });
-    const client = actualClient();
-    assert.equal(reads.length, 0, "Client/family construction is inert");
-    await client.login(tokenFor(reader));
-    const hold = (path: string): Hold => {
-      assert.equal(interception, undefined);
-      let reached!: () => void, release!: () => void;
-      const reachedPromise = new Promise<void>((done) => {
-        reached = done;
-      });
-      const pending = new Promise<void>((done) => {
-        release = done;
-      });
-      interception = { path, reached, pending };
-      const held = { reached: reachedPromise, release };
-      holds.push(held);
-      return held;
-    };
+    await client.call("login", [tokenFor(reader)]);
+    await client.waitReady(reader.principalId);
+    const hold = (path: string) => client!.hold(path);
     await run({
       client,
       contentId,
@@ -261,38 +182,51 @@ async function withActualReader(
     });
     fixture.assertNoLegacyData();
   } finally {
-    for (const hold of holds) hold.release();
-    globalThis.fetch = nativeFetch;
-    for (const [name, descriptor] of globals) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else Reflect.deleteProperty(globalThis, name);
+    try {
+      await client?.close();
+    } finally {
+      try {
+        if (server) {
+          server.closeAllConnections();
+          await new Promise<void>((done) => server!.close(() => done()));
+        }
+      } finally {
+        try {
+          await fixture.close();
+        } finally {
+          web.close();
+        }
+      }
     }
-    if (server) {
-      server.closeIdleConnections();
-      await new Promise<void>((done, reject) =>
-        server!.close((error) => (error ? reject(error) : done())),
-      );
-    }
-    await fixture.close();
   }
 }
+
 test("actual Client four Reader methods reach original authorized HTTP routes and normalize exact-version private facts", async () => {
   await withActualReader(
     async ({ client, contentId, section, markId, reads }) => {
-      reads.length = 0;
-      const before = client.getSnapshot(),
+      await client.control("clearReads");
+      const before = await client.snapshot("before"),
         signal = new AbortController().signal;
       assert.ok(before);
-      const contents = await client.readingContents(contentId, 1, signal);
+      const contents = await client.call("readingContents", [
+        contentId,
+        1,
+        signal,
+      ]);
       assert.equal(contents[0]!.id, section.id);
-      const actual = await client.readReading(contentId, 1, section.id, signal);
+      const actual = await client.call("readReading", [
+        contentId,
+        1,
+        section.id,
+        signal,
+      ]);
       assert.equal(actual.text, section.text);
-      const state = await client.readingState(contentId, 1, signal);
+      const state = await client.call("readingState", [contentId, 1, signal]);
       assert.equal(state.position?.ownerPrincipalId, reader.principalId);
       assert.equal(state.position?.artifactId, contentId);
       assert.equal(state.position?.artifactRevision, 1);
       assert.equal(state.position?.preferences.fontSize, 22);
-      const marks = await client.readingMarks(
+      const marks = await client.call("readingMarks", [
         {
           artifactId: contentId,
           revision: 1,
@@ -302,7 +236,7 @@ test("actual Client four Reader methods reach original authorized HTTP routes an
           limit: 50,
         },
         signal,
-      );
+      ]);
       assert.deepEqual(
         marks.marks.map((mark) => [
           mark.id,
@@ -314,7 +248,11 @@ test("actual Client four Reader methods reach original authorized HTTP routes an
       );
       assert.deepEqual([marks.nextCursor, marks.hasMore], [null, false]);
       assert.deepEqual(
-        reads.map((read) => [read.method, read.url.pathname, read.status]),
+        (await reads()).map((read) => [
+          read.method,
+          read.url.pathname,
+          read.status,
+        ]),
         [
           ["GET", "/api/reader/contents", 200],
           ["GET", "/api/reader/section", 200],
@@ -322,7 +260,7 @@ test("actual Client four Reader methods reach original authorized HTTP routes an
           ["GET", "/api/reader/marks", 200],
         ],
       );
-      for (const read of reads) {
+      for (const read of await reads()) {
         assert.equal(read.url.searchParams.get("artifactId"), contentId);
         assert.equal(read.url.searchParams.get("revision"), "1");
         assert.equal(
@@ -331,8 +269,8 @@ test("actual Client four Reader methods reach original authorized HTTP routes an
         );
       }
       assert.equal(
-        client.getSnapshot(),
-        before,
+        await client.control("sameSnapshot", "before"),
+        true,
         "none of the four queries publishes Boot/current",
       );
     },
@@ -344,25 +282,30 @@ test("actual shared transport cancels all four Reader methods before dispatch an
       const methods = [
         [
           "/api/reader/contents",
-          (signal: AbortSignal) => client.readingContents(contentId, 1, signal),
+          (signal: AbortSignal) =>
+            client.call("readingContents", [contentId, 1, signal]),
         ],
         [
           "/api/reader/section",
           (signal: AbortSignal) =>
-            client.readReading(contentId, 1, section.id, signal),
+            client.call("readReading", [contentId, 1, section.id, signal]),
         ],
         [
           "/api/reader/state",
-          (signal: AbortSignal) => client.readingState(contentId, 1, signal),
+          (signal: AbortSignal) =>
+            client.call("readingState", [contentId, 1, signal]),
         ],
         [
           "/api/reader/marks",
           (signal: AbortSignal) =>
-            client.readingMarks({ artifactId: contentId, revision: 1 }, signal),
+            client.call("readingMarks", [
+              { artifactId: contentId, revision: 1 },
+              signal,
+            ]),
         ],
       ] as const;
       for (const [path, invoke] of methods) {
-        reads.length = 0;
+        await client.control("clearReads");
         const alreadyAborted = new AbortController();
         alreadyAborted.abort();
         await assert.rejects(
@@ -370,16 +313,16 @@ test("actual shared transport cancels all four Reader methods before dispatch an
           (error: unknown) =>
             error instanceof Error && error.name === "AbortError",
         );
-        assert.equal(reads.length, 0);
+        assert.equal((await reads()).length, 0);
         const abort = new AbortController(),
-          held = hold(path),
-          snapshot = client.getSnapshot();
+          held = await hold(path);
+        await client.snapshot("snapshot");
         const outcome = invoke(abort.signal).then(
           (value) => ({ value, error: undefined }),
           (error: unknown) => ({ value: undefined, error }),
         );
         await Promise.race([
-          held.reached,
+          held.reached(),
           outcome.then((value) => {
             throw new Error("authorized read did not reach hold", {
               cause: value.error,
@@ -387,15 +330,15 @@ test("actual shared transport cancels all four Reader methods before dispatch an
           }),
         ]);
         abort.abort();
-        held.release();
+        await held.release();
         const result = await outcome;
         assert.equal(result.value, undefined);
         assert.ok(
           result.error instanceof Error && result.error.name === "AbortError",
         );
-        assert.equal(client.getSnapshot(), snapshot);
+        assert.equal(await client.control("sameSnapshot", "snapshot"), true);
         assert.deepEqual(
-          reads.map((read) => [read.url.pathname, read.status]),
+          (await reads()).map((read) => [read.url.pathname, read.status]),
           [[path, 200]],
         );
       }
@@ -408,18 +351,21 @@ test("actual Client section/state reads reject same-CSRF revoke/regrant completi
       for (const [path, invoke] of [
         [
           "/api/reader/section",
-          () => client.readReading(contentId, 1, section.id),
+          () => client.call("readReading", [contentId, 1, section.id]),
         ],
-        ["/api/reader/state", () => client.readingState(contentId, 1)],
+        [
+          "/api/reader/state",
+          () => client.call("readingState", [contentId, 1]),
+        ],
       ] as const) {
-        const csrf = client.getSnapshot()!.csrfToken,
-          held = hold(path);
+        const csrf = (await client.snapshot())!.csrfToken,
+          held = await hold(path);
         const outcome = invoke().then(
           (value) => ({ value, error: undefined }),
           (error: unknown) => ({ value: undefined, error }),
         );
         await Promise.race([
-          held.reached,
+          held.reached(),
           outcome.then((value) => {
             throw new Error("authorized read did not reach hold", {
               cause: value.error,
@@ -427,18 +373,18 @@ test("actual Client section/state reads reject same-CSRF revoke/regrant completi
           }),
         ]);
         await access(false);
-        assert.equal(await client.refresh(), true);
-        assert.equal(client.getSnapshot()!.csrfToken, csrf);
+        assert.equal(await client.call("refresh", []), true);
+        assert.equal((await client.snapshot())!.csrfToken, csrf);
         await access(true);
-        assert.equal(await client.refresh(), true);
-        const snapshot = client.getSnapshot();
-        held.release();
+        assert.equal(await client.call("refresh", []), true);
+        await client.snapshot("snapshot");
+        await held.release();
         const result = await outcome;
         assert.equal(result.value, undefined);
         assert.ok(result.error instanceof Error);
         assert.match(result.error.message, /阅读权限已变化/);
-        assert.equal(client.getSnapshot(), snapshot);
-        assert.equal(client.getSnapshot()!.csrfToken, csrf);
+        assert.equal(await client.control("sameSnapshot", "snapshot"), true);
+        assert.equal((await client.snapshot())!.csrfToken, csrf);
       }
     },
   );

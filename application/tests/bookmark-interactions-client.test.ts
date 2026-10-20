@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
-import type { ActualMountedClient } from "./fixtures/actual-mounted-client-test.js";
+import {
+  authenticatedHttp,
+  type ActualMountedClient,
+} from "./fixtures/actual-mounted-client-test.js";
 import type { BookmarkOperation } from "../packages/core/src/bookmarks.js";
 import type { BookmarkCommandReceipt } from "../packages/browser/src/store.js";
 import {
@@ -287,14 +290,42 @@ test(
       const firstRows = await context.client.call("bookmarkList", []);
       assert.equal(firstRows.length, 1);
       assert.equal(firstRows[0]!.id, first.bookmarkId);
+      const csrfToken = (await context.client.snapshot())!.csrfToken;
+      const remote = authenticatedHttp(context.client);
       await context.revoke();
+      // Revocation now closes the live subscription and clears Client's
+      // protected projection. Prove server ACL independently of which refresh
+      // finishes first; do not require the renderer to keep a revoked identity.
       await assert.rejects(
-        context.client.call("bookmarkList", []),
+        remote.call("bookmarks.list", {}, { identityGeneration: csrfToken }),
         status(401),
       );
       await assert.rejects(
-        context.client.call("bookmarkCommand", [add("撤销后禁止")]),
+        remote.call(
+          "bookmarks.command",
+          { commandId: randomUUID(), operation: add("撤销后禁止") },
+          { identityGeneration: csrfToken },
+        ),
         status(401),
+      );
+      await context.client.page.waitForFunction(
+        () =>
+          Reflect.get(window, "actualMountedClient").report().snapshot === null,
+        undefined,
+        { timeout: 8000 },
+      );
+      const requestsBefore = (await context.reads()).length;
+      for (const operation of [
+        () => context.client.call("bookmarkList", []),
+        () => context.client.call("bookmarkCommand", [add("本地撤销后禁止")]),
+      ])
+        await assert.rejects(operation(), {
+          message: "应用尚未就绪，请稍后重试。",
+        });
+      assert.equal(
+        (await context.reads()).length,
+        requestsBefore,
+        "cleared mounted Client must not dispatch reads or writes with revoked credentials",
       );
       assert.equal(context.sql().bookmarks.length, 2);
       assert.equal(context.sql().receipts.length, 2);

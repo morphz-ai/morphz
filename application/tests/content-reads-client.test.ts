@@ -147,6 +147,52 @@ async function withClient(
   }
 }
 
+test("actual mounted Client reads history metadata without hydrating old bodies, then loads one exact selected revision", async () => {
+  await withClient(async ({ client, contentId, objectId, reads }) => {
+    await client.control("clearReads");
+    const page = await client.call("readArtifactVersionPage", [contentId]);
+    assert.equal(page.contentId, contentId);
+    assert.equal(page.objectId, objectId);
+    assert.deepEqual(
+      page.versions.map((version) => version.revision),
+      [3, 2, 1],
+    );
+    assert.equal(page.nextCursor, null);
+    assert.ok(page.versions.every((version) => !("content" in version)));
+    assert.equal(
+      (await client.snapshot())!.workspace.artifacts.some(
+        (artifact) => artifact.id === contentId,
+      ),
+      false,
+      "opening the history directory must not hydrate any version body",
+    );
+    const metadataReads = await reads();
+    assert.equal(
+      metadataReads.some(
+        (read) => read.url.pathname === `/api/platform/objects/${contentId}`,
+      ),
+      false,
+    );
+    const selected = await client.call("resolveArtifact", [contentId, 1]);
+    assert.ok(selected);
+    assert.equal(selected.revision, 3, "the live head remains v3");
+    assert.deepEqual(
+      selected.versions.map((version) => version.revision).sort(),
+      [1, 3],
+      "only the head and explicitly selected historical body are loaded",
+    );
+    assert.equal(
+      selected.versions.find((version) => version.revision === 1)?.content
+        .kind === "document" &&
+        (
+          selected.versions.find((version) => version.revision === 1)!
+            .content as { markdown: string }
+        ).markdown,
+      "原件第一版正文",
+    );
+  });
+});
+
 test("actual mounted Client HTTP/SQLite keeps head and exact historic bytes, version union and live-directory-only fast reuse", async () => {
   await withClient(async ({ client, contentId, objectId, reads }) => {
     await client.control("clearReads");

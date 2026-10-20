@@ -1,12 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { PlatformClient } from "../apps/web/src/platform-client.js";
-import {
-  applicationCall,
-  RequestError,
-} from "../apps/web/src/application-transport.js";
-import { UnsentOperationError } from "../apps/web/src/data/operation-delivery.js";
 import {
   taskContentSchema,
   type Operation,
@@ -17,6 +11,23 @@ import {
   operationHuman,
   otherOperationHuman,
 } from "./fixtures/operation-delivery-http.js";
+const isRequestError = (error: unknown): error is Error & { status: number } =>
+  error instanceof Error && typeof Reflect.get(error, "status") === "number";
+const isUnsentOperation = (error: unknown): error is Error =>
+  error instanceof Error && Reflect.get(error, "unsentOperation") === true;
+const storedCommand = (
+  text: string,
+): {
+  commandId?: string;
+  operation?: Operation;
+  applicationInstanceId?: string;
+} | null => {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
 type Context = Parameters<Parameters<typeof withOperationHttp>[1]>[0];
 const document = (
   projectId: string,
@@ -45,13 +56,9 @@ const task = (
     resultIds: [],
   }),
 });
-const pending = (context: Context, operation: Operation) => {
-  const found = [...context.rows].flatMap(([key, text]) => {
-    const value = JSON.parse(text) as {
-      commandId?: string;
-      operation?: Operation;
-      applicationInstanceId?: string;
-    } | null;
+const pending = async (context: Context, operation: Operation) => {
+  const found = Object.entries(await context.rows()).flatMap(([key, text]) => {
+    const value = storedCommand(text);
     return value?.operation &&
       JSON.stringify(value.operation) === JSON.stringify(operation)
       ? [{ key, command: value }]
@@ -75,20 +82,20 @@ test(
   async () => {
     await withOperationHttp("crud-cas", async (context) => {
       const projectCommand = randomUUID(),
-        project = await context.client.execute(
+        project = await context.client.call("execute", [
           { type: "create-project", title: "TEST durable project" },
           false,
           undefined,
           projectCommand,
-        );
+        ]);
       assert.equal(project.entityId, projectCommand);
       const objectId = randomUUID(),
-        created = await context.client.execute(
+        created = await context.client.call("execute", [
           document(project.entityId),
           false,
           undefined,
           objectId,
-        );
+        ]);
       assert.equal(
         context.sql().objects.find((row) => row.object_id === objectId)!
           .head_revision,
@@ -100,7 +107,10 @@ test(
           .objectReceipts.filter((row) => row.command_id === objectId).length,
         1,
       );
-      const source = await PlatformClient.connect({ call: applicationCall });
+      const source = {
+        createDocument: (value: unknown) =>
+          context.client.control("platform", "createDocument", [value]),
+      };
       for (let n = 0; n < 52; n++)
         await source.createDocument({
           commandId: randomUUID(),
@@ -109,22 +119,26 @@ test(
           title: "TEST newer " + n,
           markdown: "newer head",
         });
-      await context.client.refresh();
+      await context.client.call("refresh", []);
       assert.equal(
-        context.client
-          .getSnapshot()!
-          .workspace.artifacts.some((row) => row.id === created.entityId),
+        (await context.client.snapshot())!.workspace.artifacts.some(
+          (row) => row.id === created.entityId,
+        ),
         false,
         "off-head object is not replaced by current limited Boot publication",
       );
-      await context.client.execute({
-        type: "revise-artifact",
-        artifactId: created.entityId,
-        expectedRevision: 1,
-        title: "第二版",
-        content: { kind: "document", markdown: "第二版确切原文" },
-      });
-      const reread = await context.client.resolveArtifact(created.entityId);
+      await context.client.call("execute", [
+        {
+          type: "revise-artifact",
+          artifactId: created.entityId,
+          expectedRevision: 1,
+          title: "第二版",
+          content: { kind: "document", markdown: "第二版确切原文" },
+        },
+      ]);
+      const reread = await context.client.call("resolveArtifact", [
+        created.entityId,
+      ]);
       assert.equal(reread?.revision, 2);
       assert.equal(reread?.content.kind, "document");
       assert.equal(
@@ -133,7 +147,7 @@ test(
         2,
       );
       const tableId = randomUUID(),
-        table = await context.client.execute(
+        table = await context.client.call("execute", [
           {
             type: "create-artifact",
             projectId: project.entityId,
@@ -143,31 +157,35 @@ test(
           false,
           undefined,
           tableId,
-        );
-      const tableRead = await context.client.resolveArtifact(table.entityId);
+        ]);
+      const tableRead = await context.client.call("resolveArtifact", [
+        table.entityId,
+      ]);
       assert.equal(tableRead?.content.kind, "interactive");
-      await context.client.execute({
-        type: "revise-artifact",
-        artifactId: table.entityId,
-        expectedRevision: 1,
-        title: "TEST table",
-        content: {
-          ...emptyInteractive,
-          rows: [{ id: "first", cells: { name: "真实记录" } }],
+      await context.client.call("execute", [
+        {
+          type: "revise-artifact",
+          artifactId: table.entityId,
+          expectedRevision: 1,
+          title: "TEST table",
+          content: {
+            ...emptyInteractive,
+            rows: [{ id: "first", cells: { name: "真实记录" } }],
+          },
         },
-      });
+      ]);
       assert.equal(
         context.sql().objects.find((row) => row.object_id === tableId)!
           .head_revision,
         2,
       );
       const taskId = randomUUID(),
-        createdTask = await context.client.execute(
+        createdTask = await context.client.call("execute", [
           task(project.entityId),
           false,
           undefined,
           taskId,
-        );
+        ]);
       assert.equal(createdTask.entityId, taskId);
       assert.equal(
         context.sql().tasks.find((row) => row.task_id === taskId)!.revision,
@@ -177,14 +195,14 @@ test(
       assert.equal(invalid.content.kind, "task");
       const unsentId = randomUUID();
       await assert.rejects(
-        context.client.execute(
+        context.client.call("execute", [
           { ...invalid, content: { ...invalid.content, priority: "high" } },
           false,
           undefined,
           unsentId,
-        ),
+        ]),
         (error) =>
-          error instanceof UnsentOperationError &&
+          isUnsentOperation(error) &&
           error.message === "此事项包含尚未接通的初始状态或关联；未创建事项。",
       );
       assert.equal(
@@ -210,22 +228,29 @@ test(
   { timeout: 90000 },
   async () => {
     await withOperationHttp("lost-receipts", async (context) => {
-      const project = await context.client.execute({
-        type: "create-project",
-        title: "TEST lost replies",
-      });
+      const project = await context.client.call("execute", [
+        {
+          type: "create-project",
+          title: "TEST lost replies",
+        },
+      ]);
       const operation = document(project.entityId),
         externalId = randomUUID(),
         instanceId = "existing-caller-instance";
-      context.interceptNext("/api/platform/documents", 500);
+      await context.interceptNext("/api/platform/documents", 500);
       await assert.rejects(
-        context.client.execute(operation, true, instanceId, externalId),
+        context.client.call("execute", [
+          operation,
+          true,
+          instanceId,
+          externalId,
+        ]),
         (error) =>
-          error instanceof RequestError &&
+          isRequestError(error) &&
           error.status === 500 &&
           error.message === "TEST controlled reply after real commit",
       );
-      const saved = pending(context, operation);
+      const saved = await pending(context, operation);
       assert.deepEqual(saved.command, {
         commandId: externalId,
         operation,
@@ -243,24 +268,26 @@ test(
         1,
       );
       await context.remount();
-      const receipt = await context.client.execute(
+      const receipt = await context.client.call("execute", [
         operation,
         true,
         instanceId,
         externalId,
-      );
+      ]);
       assert.equal(receipt.commandId, externalId);
-      assert.equal(context.rows.get(saved.key), "null");
-      const requests = context.reads.filter(
+      assert.equal((await context.rows())[saved.key], "null");
+      const requests = (await context.reads()).filter(
         (row) =>
           row.path === "/api/platform/documents" && row.method === "POST",
       );
       assert.equal(requests.length, 2);
       assert.deepEqual(requests[0]!.body, requests[1]!.body);
-      const next = await context.client.execute({
-        ...operation,
-        title: "TEST different new action",
-      });
+      const next = await context.client.call("execute", [
+        {
+          ...operation,
+          title: "TEST different new action",
+        },
+      ]);
       assert.notEqual(next.commandId, externalId);
       const script: Operation = {
           type: "script-command",
@@ -271,12 +298,12 @@ test(
           },
         },
         scriptId = randomUUID();
-      context.interceptNext("/api/platform/scripts", 409);
+      await context.interceptNext("/api/platform/scripts", 409);
       await assert.rejects(
-        context.client.execute(script, false, undefined, scriptId),
-        (error) => error instanceof RequestError && error.status === 409,
+        context.client.call("execute", [script, false, undefined, scriptId]),
+        (error) => isRequestError(error) && error.status === 409,
       );
-      const savedScript = pending(context, script);
+      const savedScript = await pending(context, script);
       assert.equal(savedScript.command.commandId, scriptId);
       assert.equal(
         context
@@ -285,11 +312,17 @@ test(
         1,
       );
       assert.equal(
-        (await context.client.execute(script, false, undefined, scriptId))
-          .entityId,
+        (
+          await context.client.call("execute", [
+            script,
+            false,
+            undefined,
+            scriptId,
+          ])
+        ).entityId,
         scriptId,
       );
-      assert.equal(context.rows.get(savedScript.key), "null");
+      assert.equal((await context.rows())[savedScript.key], "null");
       assert.equal(
         context
           .sql()
@@ -298,21 +331,23 @@ test(
       );
       // Real wrong-app qualification uses the same class passed from the retained
       // dispatcher into Object's leaf, not an error message classifier.
-      const entry = context.client
-        .getSnapshot()!
-        .scriptLibrary.find((value) => value.id === scriptId);
+      const entry = (await context.client.snapshot())!.scriptLibrary.find(
+        (value) => value.id === scriptId,
+      );
       assert(entry);
       const before = context.sql().objectReceipts.length;
       await assert.rejects(
-        context.client.execute({
-          type: "annotate",
-          artifactId: entry.contentId,
-          artifactRevision: 1,
-          quote: "",
-          body: "wrong app",
-        }),
+        context.client.call("execute", [
+          {
+            type: "annotate",
+            artifactId: entry.contentId,
+            artifactRevision: 1,
+            quote: "",
+            body: "wrong app",
+          },
+        ]),
         (error) =>
-          error instanceof UnsentOperationError &&
+          isUnsentOperation(error) &&
           error.message === "所选内容不是可批注的原件，未保存批注。",
       );
       assert.equal(context.sql().objectReceipts.length, before);
@@ -325,11 +360,15 @@ test(
   { timeout: 90000 },
   async () => {
     await withOperationHttp("definitive-and-storage", async (context) => {
-      const project = await context.client.execute({
-          type: "create-project",
-          title: "TEST definitive",
-        }),
-        createdTask = await context.client.execute(task(project.entityId));
+      const project = await context.client.call("execute", [
+          {
+            type: "create-project",
+            title: "TEST definitive",
+          },
+        ]),
+        createdTask = await context.client.call("execute", [
+          task(project.entityId),
+        ]);
       const stale: Operation = {
           type: "arrange-task",
           taskId: createdTask.entityId,
@@ -338,8 +377,8 @@ test(
         },
         staleId = randomUUID();
       await assert.rejects(
-        context.client.execute(stale, false, undefined, staleId),
-        (error) => error instanceof RequestError && error.status === 409,
+        context.client.call("execute", [stale, false, undefined, staleId]),
+        (error) => isRequestError(error) && error.status === 409,
       );
       assert.equal(
         context.sql().tasks.find((row) => row.task_id === createdTask.entityId)!
@@ -353,8 +392,8 @@ test(
         false,
       );
       assert.equal(
-        [...context.rows.values()].some((text) => {
-          const value = JSON.parse(text);
+        Object.values(await context.rows()).some((text) => {
+          const value = storedCommand(text);
           return value?.commandId === staleId;
         }),
         false,
@@ -363,16 +402,21 @@ test(
       const forbidden = task(project.entityId),
         forbiddenId = randomUUID();
       await assert.rejects(
-        context.client.execute(forbidden, false, undefined, forbiddenId),
-        (error) => error instanceof RequestError && error.status === 403,
+        context.client.call("execute", [
+          forbidden,
+          false,
+          undefined,
+          forbiddenId,
+        ]),
+        (error) => isRequestError(error) && error.status === 403,
       );
       assert.equal(
         context.sql().tasks.some((row) => row.task_id === forbiddenId),
         false,
       );
       assert.equal(
-        [...context.rows.values()].some((text) => {
-          const value = JSON.parse(text);
+        Object.values(await context.rows()).some((text) => {
+          const value = storedCommand(text);
           return value?.commandId === forbiddenId;
         }),
         false,
@@ -380,41 +424,46 @@ test(
       await context.login();
       const operation = document(project.entityId, "TEST storage failed"),
         external = randomUUID();
-      context.failNextClear();
+      await context.failNextClear();
       await assert.rejects(
-        context.client.execute(operation, false, undefined, external),
+        context.client.call("execute", [operation, false, undefined, external]),
         { message: "TEST committed pending clear failed" },
       );
-      const saved = pending(context, operation);
+      const saved = await pending(context, operation);
       assert.equal(saved.command.commandId, external);
       assert.equal(
         context.sql().objects.filter((row) => row.object_id === external)
           .length,
         1,
       );
-      await context.client.execute(operation, false, undefined, external);
+      await context.client.call("execute", [
+        operation,
+        false,
+        undefined,
+        external,
+      ]);
       assert.equal(
         context
           .sql()
           .objectReceipts.filter((row) => row.command_id === external).length,
         1,
       );
-      assert.equal(context.rows.get(saved.key), "null");
+      assert.equal((await context.rows())[saved.key], "null");
       const refreshId = randomUUID();
-      context.interceptNext("/api/platform/runtime-navigation", 500);
-      const committed = await context.client.execute(
+      await context.interceptNext("/api/platform/runtime-navigation", 500);
+      const committed = await context.client.call("execute", [
         document(project.entityId, "TEST refresh false"),
         false,
         undefined,
         refreshId,
-      );
+      ]);
       assert.equal(
         committed.commandId,
         refreshId,
         "actual Client refresh false does not convert receipt into failure",
       );
       assert.equal(
-        context.reads.some(
+        (await context.reads()).some(
           (row) =>
             row.path === "/api/platform/runtime-navigation" &&
             row.returnedStatus === 500,
@@ -428,7 +477,7 @@ test(
           .objectReceipts.filter((row) => row.command_id === refreshId).length,
         1,
       );
-      await context.client.refresh();
+      await context.client.call("refresh", []);
     });
   },
 );
@@ -438,72 +487,81 @@ test(
   { timeout: 90000 },
   async () => {
     await withOperationHttp("late-epoch-refresh", async (context) => {
-      const project = await context.client.execute({
-          type: "create-project",
-          title: "TEST late epoch",
-        }),
+      const project = await context.client.call("execute", [
+          {
+            type: "create-project",
+            title: "TEST late epoch",
+          },
+        ]),
         operation = document(project.entityId),
         external = randomUUID(),
         instance = "caller-instance";
-      const held = context.holdNext("/api/platform/documents"),
-        request = context.client.execute(operation, true, instance, external);
+      const held = await context.holdNext("/api/platform/documents"),
+        request = context.client.call("execute", [
+          operation,
+          true,
+          instance,
+          external,
+        ]);
       const rejected = assert.rejects(
         request,
         (error) =>
-          error instanceof RequestError &&
+          isRequestError(error) &&
           error.status === 408 &&
           error.message === "身份已切换，旧响应已丢弃。",
       );
       try {
-        await held.reached;
+        await held.reached();
         assert.equal(
           context.sql().objects.filter((row) => row.object_id === external)
             .length,
           1,
         );
-        const saved = pending(context, operation);
+        const saved = await pending(context, operation);
         await context.login(true);
-        held.release();
+        await held.release();
         await rejected;
         assert.equal(
-          context.client.getSnapshot()!.principalId,
+          (await context.client.snapshot())!.principalId,
           otherOperationHuman.principalId,
         );
-        assert.notEqual(context.rows.get(saved.key), "null");
+        assert.notEqual((await context.rows())[saved.key], "null");
         assert.ok(saved.key.includes(":" + operationHuman.principalId + ":"));
         await context.login();
-        const receipt = await context.client.execute(
+        const receipt = await context.client.call("execute", [
           operation,
           true,
           instance,
           external,
-        );
+        ]);
         assert.equal(receipt.commandId, external);
-        assert.equal(context.rows.get(saved.key), "null");
+        assert.equal((await context.rows())[saved.key], "null");
         assert.equal(
           context
             .sql()
             .objectReceipts.filter((row) => row.command_id === external).length,
           1,
         );
-        const posts = context.reads.filter(
+        const posts = (await context.reads()).filter(
           (row) =>
             row.path === "/api/platform/documents" && row.method === "POST",
         );
         assert.deepEqual(posts[0]!.body, posts[1]!.body);
         assert.equal(commandId(posts[0]!.body), external);
       } finally {
-        held.release();
+        await held.release();
         await rejected;
       }
-      const readHold = context.holdNext("/api/platform/runtime-navigation"),
-        refresh = context.client.refresh();
+      const readHold = await context.holdNext(
+          "/api/platform/runtime-navigation",
+        ),
+        refresh = context.client.call("refresh", []);
       try {
-        await readHold.reached;
+        await readHold.reached();
         let settled = false;
         const nextId = randomUUID(),
           mutation = context.client
-            .execute(
+            .call("execute", [
               {
                 type: "create-project",
                 title: "TEST waits for existing refresh",
@@ -511,7 +569,7 @@ test(
               false,
               undefined,
               nextId,
-            )
+            ])
             .finally(() => {
               settled = true;
             });
@@ -526,15 +584,15 @@ test(
           await new Promise<void>((done) => setTimeout(done, 5));
         }
         assert.equal(settled, false);
-        readHold.release();
+        await readHold.release();
         await refresh;
         assert.equal((await mutation).commandId, nextId);
         assert.equal(
-          context.client.getSnapshot()!.principalId,
+          (await context.client.snapshot())!.principalId,
           operationHuman.principalId,
         );
       } finally {
-        readHold.release();
+        await readHold.release();
         await refresh;
       }
     });

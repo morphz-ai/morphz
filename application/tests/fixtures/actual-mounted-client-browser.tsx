@@ -8,6 +8,13 @@ import {
 } from "../../apps/web/src/client.js";
 import { readSavedInputs } from "../../apps/web/src/local-saved-inputs.js";
 import { draftKey } from "../../apps/web/src/local-preferences.js";
+import { PlatformClient } from "../../apps/web/src/platform-client.js";
+import { applicationCall } from "../../apps/web/src/application-transport.js";
+import { UnsentOperationError } from "../../apps/web/src/data/operation-delivery.js";
+import type {
+  ApplicationInvocation,
+  ApplicationReply,
+} from "../../packages/core/src/application-api.js";
 
 // This is a mounted Client, not a fake transport or a production App. All API
 // replies/cookies/storage are real. The sole seam holds an already received
@@ -22,11 +29,13 @@ const requests: Array<{
   headers: Array<[string, string]>;
   body: unknown;
   response: unknown;
+  returnedStatus?: number;
 }> = [];
 const holds = new Map<
   string,
   {
     path: string;
+    matcherName?: string;
     reached: boolean;
     value: unknown;
     status?: number;
@@ -36,56 +45,141 @@ const holds = new Map<
 >();
 let armed: string | null = null;
 let lostResponsePath: string | null = null;
+let lostResponseMessage = "TEST lost authorized bookmark receipt";
 let failStorageClear = false;
+let failStorageClearOnce = false;
+let storageFailureMessage = "TEST success clear storage failure";
+let replacedResponse: { path: string; status: number } | null = null;
+let networkPending = 0,
+  networkSettledAt = Date.now();
 const nativeSetItem = Storage.prototype.setItem;
 Storage.prototype.setItem = function (key, value) {
-  if (this === localStorage && failStorageClear && value === "null")
-    throw Error("TEST success clear storage failure");
+  if (this === localStorage && failStorageClear && value === "null") {
+    if (failStorageClearOnce) failStorageClear = false;
+    throw Error(storageFailureMessage);
+  }
   return nativeSetItem.call(this, key, value);
 };
 window.fetch = async (input, init) => {
-  const url = new URL(
-    typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.href
-        : input.url,
-    location.origin,
-  );
-  if (url.origin !== location.origin)
-    throw new Error("Only this isolated actual HTTP Host is in scope");
-  const response = await nativeFetch(input, init);
-  requests.push({
-    url: url.href,
-    path: url.pathname,
-    query: url.search,
-    method: init?.method ?? "GET",
-    status: response.status,
-    headers: [...new Headers(init?.headers)],
-    body: init?.body ? JSON.parse(String(init.body)) : undefined,
-    response: url.pathname.startsWith("/api/bookmarks")
-      ? await response.clone().json()
-      : undefined,
-  });
-  if (lostResponsePath === url.pathname) {
-    lostResponsePath = null;
-    if (response.status !== 200)
-      throw Error("TEST loss requires a committed 200 receipt");
-    throw Error("TEST lost authorized bookmark receipt");
+  networkPending++;
+  let networkFinished = false;
+  const finishNetwork = () => {
+    if (networkFinished) return;
+    networkFinished = true;
+    networkPending--;
+    networkSettledAt = Date.now();
+  };
+  try {
+    const url = new URL(
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url,
+      location.origin,
+    );
+    if (url.origin !== location.origin)
+      throw new Error("Only this isolated actual HTTP Host is in scope");
+    const response = await nativeFetch(input, init);
+    let requestBody: unknown;
+    if (typeof init?.body === "string") {
+      try {
+        requestBody = JSON.parse(init.body);
+      } catch {
+        requestBody = init.body;
+      }
+    } else if (
+      init?.body instanceof ArrayBuffer ||
+      ArrayBuffer.isView(init?.body)
+    ) {
+      const bytes =
+        init.body instanceof ArrayBuffer
+          ? new Uint8Array(init.body)
+          : new Uint8Array(
+              init.body.buffer,
+              init.body.byteOffset,
+              init.body.byteLength,
+            );
+      requestBody = { bytes: [...bytes] };
+    }
+    requests.push({
+      url: url.href,
+      path: url.pathname,
+      query: url.search,
+      method: init?.method ?? "GET",
+      status: response.status,
+      headers: [...new Headers(init?.headers)],
+      body: requestBody,
+      response: response.headers
+        .get("content-type")
+        ?.includes("application/json")
+        ? await response.clone().json()
+        : undefined,
+    });
+    finishNetwork();
+    if (lostResponsePath === url.pathname) {
+      lostResponsePath = null;
+      if (
+        response.status !== (url.pathname === "/api/import/reading" ? 201 : 200)
+      )
+        throw Error("TEST loss requires a committed endpoint receipt");
+      throw Error(lostResponseMessage);
+    }
+    const active = armed ? holds.get(armed) : undefined;
+    if (
+      active &&
+      (active.matcherName
+        ? await Reflect.get(
+            window,
+            active.matcherName,
+          )({
+            url: url.href,
+            status: response.status,
+            value: requests.at(-1)?.response,
+          })
+        : active.path === url.pathname)
+    ) {
+      armed = null;
+      active.status = response.status;
+      active.value = await response.clone().json();
+      active.reached = true;
+      await active.pending;
+    }
+    if (replacedResponse?.path === url.pathname) {
+      const { status } = replacedResponse;
+      replacedResponse = null;
+      if (response.status !== 200)
+        throw Error(
+          "TEST replacement requires a real authorized success/commit",
+        );
+      requests.at(-1)!.returnedStatus = status;
+      return new Response(
+        JSON.stringify({
+          message: "TEST controlled reply after real commit",
+          code: "test_after_commit",
+        }),
+        { status, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return response;
+  } finally {
+    finishNetwork();
   }
-  const active = armed ? holds.get(armed) : undefined;
-  if (active && active.path === url.pathname) {
-    armed = null;
-    active.status = response.status;
-    active.value = await response.clone().json();
-    active.reached = true;
-    await active.pending;
-  }
-  return response;
 };
 let client!: WorkspaceClient;
 const slots = new Map<string, unknown>();
 const pending = new Map<string, Promise<unknown>>();
+const abortControllers = new Map<string, AbortController>();
+const ocrStatus = {
+  available: true,
+  installed: false,
+  downloadBytes: 0,
+  state: "idle",
+};
+const ocrRequests: ApplicationInvocation[] = [],
+  ocrCancelled: string[] = [];
+let holdOcr = false,
+  acceptOcr: ((reply: ApplicationReply) => void) | undefined;
 let sequence = 0;
 let ssrCaptured = false;
 const beforeConstruction = requests.length;
@@ -127,13 +221,20 @@ function errorValue(error: unknown) {
     message: error instanceof Error ? error.message : String(error),
     status: (error as { status?: number })?.status,
     code: (error as { code?: string })?.code,
+    // Checked against the actual class in its own browser realm, not inferred
+    // from translated text or reconstructed by the Node test.
+    unsentOperation: error instanceof UnsentOperationError,
   };
 }
 const allowed = new Set([
+  "verifyArtifact",
+  "taskRuntime",
+  "taskResponses",
   "login",
   "logout",
   "refresh",
   "resolveArtifact",
+  "readArtifactVersionPage",
   "resolveCatalogContent",
   "execute",
   "dispatchInput",
@@ -144,6 +245,21 @@ const allowed = new Set([
   "approvalSubmitted",
   "bookmarkCommand",
   "bookmarkList",
+  "listObjectAnnotations",
+  "workRelationsFor",
+  "readingContents",
+  "readReading",
+  "readingMarks",
+  "readingState",
+  "readingOcr",
+  "readerCommand",
+  "importReading",
+  "getScriptEditor",
+  "readScriptEditor",
+  "readScriptVersion",
+  "readScriptVersionTitle",
+  "scriptVersionTitle",
+  "resolveScriptLocation",
 ]);
 const api = {
   construction,
@@ -151,17 +267,56 @@ const api = {
     if (!allowed.has(name)) throw new Error("Unexpected Client method");
     try {
       const fn = Reflect.get(client, name) as (...values: unknown[]) => unknown;
-      const value = await fn(...args);
+      const deserialize = (value: unknown): unknown => {
+        if (value && typeof value === "object" && "__fixtureFile" in value) {
+          const file = value as {
+            bytes: number[];
+            name: string;
+            type: string;
+            lastModified: number;
+          };
+          return new File([new Uint8Array(file.bytes)], file.name, {
+            type: file.type,
+            lastModified: file.lastModified,
+          });
+        }
+        if (value && typeof value === "object" && "__fixtureAbort" in value)
+          return abortControllers.get(String(value.__fixtureAbort))!.signal;
+        // Resolve cross-realm leaf handles without cloning the browser's
+        // caller-owned containers: mutation-after-await tests must mutate the
+        // exact object passed into the real Client, not a detached fixture copy.
+        if (value && typeof value === "object") {
+          for (const [key, item] of Object.entries(value))
+            Reflect.set(value, key, deserialize(item));
+        }
+        return value;
+      };
+      const values = args.map(deserialize);
+      const value = await fn(...values);
       if (slot) slots.set(slot, value);
       return { ok: true, value };
     } catch (error) {
       return { ok: false, error: errorValue(error) };
     }
   },
+  async platform(name: string, args: unknown[]) {
+    if (!["reviseDocument", "createDocument", "annotateObject"].includes(name))
+      throw new Error("Unexpected fixture Platform method");
+    const platform = await PlatformClient.connect({ call: applicationCall });
+    return Reflect.apply(Reflect.get(platform, name), platform, args);
+  },
   start(name: string, args: unknown[], slot?: string) {
     const id = "pending-" + ++sequence;
     pending.set(id, api.call(name, args, slot));
     return id;
+  },
+  startWithArgs(name: string, args: unknown[], argumentSlot: string) {
+    slots.set(argumentSlot, args);
+    return api.start(name, args);
+  },
+  mutateArgument(slot: string, index: number, key: string, value: unknown) {
+    const args = slots.get(slot) as object[];
+    Reflect.set(args[index]!, key, value);
   },
   async finish(id: string) {
     const result = pending.get(id);
@@ -178,6 +333,16 @@ const api = {
   },
   sameResult(left: string, right: string) {
     return slots.get(left) === slots.get(right);
+  },
+  sameNestedResult(left: string, key: string, right: string) {
+    return Reflect.get(slots.get(left) as object, key) === slots.get(right);
+  },
+  editorMatches(productionId: string, slot: string, field?: string) {
+    const expected = slots.get(slot);
+    return (
+      client.getScriptEditor(productionId) ===
+      (field ? Reflect.get(expected as object, field) : expected)
+    );
   },
   sameContent(left: string, right: string) {
     return (
@@ -214,6 +379,60 @@ const api = {
   staged(key: string) {
     return slots.get(key);
   },
+  abortController(aborted: boolean) {
+    const id = "abort-" + ++sequence;
+    const controller = new AbortController();
+    if (aborted) controller.abort();
+    abortControllers.set(id, controller);
+    return id;
+  },
+  abort(id: string) {
+    abortControllers.get(id)?.abort();
+  },
+  forgetAbort(id: string) {
+    abortControllers.delete(id);
+  },
+  ocrInstall(enabled: boolean, hold = false) {
+    holdOcr = hold;
+    slots.set("ocr-status", ocrStatus);
+    if (!enabled) {
+      Reflect.deleteProperty(window, "morphzDesktop");
+      return;
+    }
+    Reflect.set(window, "morphzDesktop", {
+      application: {
+        async invoke(
+          request: ApplicationInvocation,
+        ): Promise<ApplicationReply> {
+          if (request.method !== "reader.ocr")
+            throw Error(
+              "Only controlled OCR is allowed on this fixture bridge",
+            );
+          ocrRequests.push(request);
+          if (holdOcr)
+            return new Promise((resolve) => {
+              acceptOcr = resolve;
+            });
+          return { ok: true, value: ocrStatus };
+        },
+        cancel(id: string) {
+          ocrCancelled.push(id);
+        },
+      },
+    });
+  },
+  ocrReport() {
+    return {
+      requests: ocrRequests,
+      cancelled: ocrCancelled,
+      status: ocrStatus,
+    };
+  },
+  ocrResolve() {
+    if (!acceptOcr) throw Error("No pending controlled OCR request");
+    acceptOcr({ ok: true, value: ocrStatus });
+    acceptOcr = undefined;
+  },
   saved(scope: string) {
     return readSavedInputs(localStorage, scope);
   },
@@ -231,10 +450,23 @@ const api = {
   },
   failStorageClear(enabled: boolean) {
     failStorageClear = enabled;
+    failStorageClearOnce = false;
+    storageFailureMessage = "TEST success clear storage failure";
   },
-  loseNext(path: string) {
+  failNextClear() {
+    failStorageClear = true;
+    failStorageClearOnce = true;
+    storageFailureMessage = "TEST committed pending clear failed";
+  },
+  interceptNext(path: string, status = 500) {
+    if (replacedResponse)
+      throw Error("A response replacement is already armed");
+    replacedResponse = { path, status };
+  },
+  loseNext(path: string, message = "TEST lost authorized bookmark receipt") {
     if (lostResponsePath) throw Error("A response loss is already armed");
     lostResponsePath = path;
+    lostResponseMessage = message;
   },
   reads() {
     return requests;
@@ -242,7 +474,7 @@ const api = {
   clearReads() {
     requests.length = 0;
   },
-  hold(path: string) {
+  hold(path: string, matcherName?: string) {
     if (armed) throw new Error("A preceding response hold was not reached");
     const id = "hold-" + ++sequence;
     let release!: () => void;
@@ -251,6 +483,7 @@ const api = {
     });
     holds.set(id, {
       path,
+      matcherName,
       reached: false,
       value: undefined,
       pending: wait,
@@ -279,6 +512,8 @@ const api = {
       error: client.error,
       publications,
       mounted: !!root,
+      networkPending,
+      networkSettledAt,
     };
   },
   cleanup() {

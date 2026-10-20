@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { PlatformClient } from "../apps/web/src/platform-client.js";
-import {
-  applicationCall,
-  RequestError,
-} from "../apps/web/src/application-transport.js";
+import type { PlatformClient } from "../apps/web/src/platform-client.js";
 import type { Operation } from "../packages/core/src/model.js";
 import {
   withObjectHttp,
@@ -13,6 +9,22 @@ import {
   otherObjectHuman,
   type ObjectHttpRead,
 } from "./fixtures/object-interactions-http.js";
+import { authenticatedHttp } from "./fixtures/actual-mounted-client-test.js";
+const isRequestError = (error: unknown): error is Error & { status: number } =>
+  error instanceof Error && typeof Reflect.get(error, "status") === "number";
+const platform = (
+  context: Context,
+): Pick<
+  PlatformClient,
+  "reviseDocument" | "createDocument" | "annotateObject"
+> => ({
+  reviseDocument: (value) =>
+    context.client.control("platform", "reviseDocument", [value]),
+  createDocument: (value) =>
+    context.client.control("platform", "createDocument", [value]),
+  annotateObject: (value) =>
+    context.client.control("platform", "annotateObject", [value]),
+});
 type Context = Parameters<Parameters<typeof withObjectHttp>[1]>[0];
 type ObjectOperation = Extract<
   Operation,
@@ -22,8 +34,8 @@ const writes = (reads: ObjectHttpRead[], path: string) =>
   reads.filter((value) => value.path === path && value.method === "POST");
 const notePath = "/api/platform/objects/annotate",
   relationPath = "/api/platform/work/relations";
-const saved = (context: Context, operation: ObjectOperation) => {
-  const found = [...context.rows].flatMap(([key, value]) => {
+const saved = async (context: Context, operation: ObjectOperation) => {
+  const found = Object.entries(await context.rows()).flatMap(([key, value]) => {
     try {
       const command = JSON.parse(value) as {
         commandId?: string;
@@ -41,12 +53,14 @@ const saved = (context: Context, operation: ObjectOperation) => {
   return found[0]!;
 };
 async function document(context: Context, title = "TEST 原件") {
-  const project = await context.client.execute({
-    type: "create-project",
-    title: "TEST 私有对象",
-  });
+  const project = await context.client.call("execute", [
+    {
+      type: "create-project",
+      title: "TEST 私有对象",
+    },
+  ]);
   const objectId = randomUUID();
-  const receipt = await context.client.execute(
+  const receipt = await context.client.call("execute", [
     {
       type: "create-artifact",
       projectId: project.entityId,
@@ -56,7 +70,7 @@ async function document(context: Context, title = "TEST 原件") {
     false,
     undefined,
     objectId,
-  );
+  ]);
   return { projectId: project.entityId, contentId: receipt.entityId, objectId };
 }
 const annotation = (
@@ -75,7 +89,7 @@ test(
   async () => {
     await withObjectHttp("off-head-pages", async (context) => {
       const original = await document(context),
-        source = await PlatformClient.connect({ call: applicationCall });
+        source = platform(context);
       await source.reviseDocument({
         commandId: randomUUID(),
         contentId: original.contentId,
@@ -91,17 +105,17 @@ test(
           title: "TEST 新目录 " + n,
           markdown: "后创建的原件",
         });
-      await context.client.refresh();
+      await context.client.call("refresh", []);
       assert.equal(
-        context.client
-          .getSnapshot()!
-          .workspace.artifacts.some((value) => value.id === original.contentId),
+        (await context.client.snapshot())!.workspace.artifacts.some(
+          (value) => value.id === original.contentId,
+        ),
         false,
         "target absent from current limited publication, never a cache authority",
       );
-      const first = await context.client.execute(
+      const first = await context.client.call("execute", [
         annotation(original.contentId),
-      );
+      ]);
       for (let n = 1; n <= 100; n++)
         await source.annotateObject({
           commandId: randomUUID(),
@@ -110,16 +124,16 @@ test(
           quote: "第一版确切原文",
           body: "真实分页批注 " + n,
         });
-      context.reads.length = 0;
-      const notes = await context.client.listObjectAnnotations(
+      await context.client.control("clearReads");
+      const notes = await context.client.call("listObjectAnnotations", [
         original.contentId,
-      );
+      ]);
       assert.equal(notes.length, 101);
       assert.equal(notes[0]!.id, first.entityId);
       assert.equal(notes[0]!.artifactId, original.objectId);
       assert.notEqual(notes[0]!.artifactId, original.contentId);
       assert.ok(notes.every((note) => note.artifactRevision === 1));
-      const pages = context.reads.filter((value) =>
+      const pages = (await context.reads()).filter((value) =>
         value.path.endsWith("/annotations"),
       );
       assert.equal(pages.length, 2);
@@ -135,35 +149,41 @@ test(
         ],
       );
       const pdf = await context.existingPdf(original.projectId);
-      const pdfArtifact = await context.client.resolveArtifact(pdf.contentId);
+      const pdfArtifact = await context.client.call("resolveArtifact", [
+        pdf.contentId,
+      ]);
       assert(pdfArtifact && pdfArtifact.content.kind === "pdf");
       const quote = pdfArtifact.content.pages[0]!;
       assert.equal(quote, pdf.quote);
-      const pdfReceipt = await context.client.execute({
-        type: "annotate",
-        artifactId: pdf.contentId,
-        artifactRevision: 1,
-        quote,
-        page: 1,
-        body: "精确PDF页",
-      });
-      const pdfNotes = await context.client.listObjectAnnotations(
-        pdf.contentId,
-      );
-      assert.equal(pdfNotes[0]!.id, pdfReceipt.entityId);
-      assert.equal(pdfNotes[0]!.page, 1);
-      assert.equal(pdfNotes[0]!.quote, quote);
-      await assert.rejects(
-        context.client.execute({
+      const pdfReceipt = await context.client.call("execute", [
+        {
           type: "annotate",
           artifactId: pdf.contentId,
           artifactRevision: 1,
           quote,
-          page: 999,
-          body: "错误页禁止",
-        }),
+          page: 1,
+          body: "精确PDF页",
+        },
+      ]);
+      const pdfNotes = await context.client.call("listObjectAnnotations", [
+        pdf.contentId,
+      ]);
+      assert.equal(pdfNotes[0]!.id, pdfReceipt.entityId);
+      assert.equal(pdfNotes[0]!.page, 1);
+      assert.equal(pdfNotes[0]!.quote, quote);
+      await assert.rejects(
+        context.client.call("execute", [
+          {
+            type: "annotate",
+            artifactId: pdf.contentId,
+            artifactRevision: 1,
+            quote,
+            page: 999,
+            body: "错误页禁止",
+          },
+        ]),
         (error) =>
-          error instanceof RequestError &&
+          isRequestError(error) &&
           error.status === 500 &&
           error.message === "保存失败。内容尚未确认写入，请保留草稿后重试。",
       );
@@ -172,15 +192,17 @@ test(
         102,
         "invalid page adds no note",
       );
-      const linked = await context.client.execute({
-        type: "link-artifacts",
-        fromId: original.contentId,
-        toId: pdf.contentId,
-        relation: "references",
-      });
-      const relations = await context.client.workRelationsFor(
+      const linked = await context.client.call("execute", [
+        {
+          type: "link-artifacts",
+          fromId: original.contentId,
+          toId: pdf.contentId,
+          relation: "references",
+        },
+      ]);
+      const relations = await context.client.call("workRelationsFor", [
         original.contentId,
-      );
+      ]);
       assert.equal(relations.length, 1);
       assert.equal(relations[0]!.id, linked.entityId);
       assert.equal(relations[0]!.fromId, original.contentId);
@@ -196,7 +218,7 @@ test(
   async () => {
     await withObjectHttp("durable-retry", async (context) => {
       const original = await document(context),
-        source = await PlatformClient.connect({ call: applicationCall }),
+        source = platform(context),
         other = (await source.createDocument({
           commandId: randomUUID(),
           objectId: randomUUID(),
@@ -217,37 +239,40 @@ test(
         ],
       ];
       for (const [operation, path] of operations) {
-        context.loseNext(path);
+        await context.loseNext(path);
         await assert.rejects(
-          context.client.execute(operation),
+          context.client.call("execute", [operation]),
           /TEST lost authorized object receipt/,
         );
-        const initial = writes(context.reads, path).at(-1)!;
+        const initial = writes(await context.reads(), path).at(-1)!;
         assert.equal(initial.status, 200);
-        const pending = saved(context, operation);
+        const pending = await saved(context, operation);
         assert.deepEqual(pending.command.operation, operation);
         assert.equal(
           pending.command.commandId,
           (initial.body as { commandId: string }).commandId,
         );
-        const boot = context.client.getSnapshot()!;
+        const boot = (await context.client.snapshot())!;
         assert.ok(
           pending.key.startsWith(
             `morphz:${boot.centerId}:${boot.principalId}:`,
           ),
         );
         await context.remount();
-        assert.equal(saved(context, operation).key, pending.key);
-        assert.deepEqual(saved(context, operation).command, pending.command);
-        const receipt = await context.client.execute(operation);
+        assert.equal((await saved(context, operation)).key, pending.key);
+        assert.deepEqual(
+          (await saved(context, operation)).command,
+          pending.command,
+        );
+        const receipt = await context.client.call("execute", [operation]);
         assert.equal(receipt.commandId, pending.command.commandId);
-        const retry = writes(context.reads, path).at(-1)!;
+        const retry = writes(await context.reads(), path).at(-1)!;
         assert.deepEqual(
           retry.body,
           initial.body,
           "exact original request is replayed, not a regenerated payload",
         );
-        assert.equal(context.rows.get(pending.key), "null");
+        assert.equal((await context.rows())[pending.key], "null");
         const sql = context.sql(),
           receipts = path === notePath ? sql.objectReceipts : sql.workReceipts;
         assert.equal(
@@ -267,48 +292,84 @@ test(
   async () => {
     await withObjectHttp("authority", async (context) => {
       const original = await document(context);
-      await context.client.execute(annotation(original.contentId));
+      await context.client.call("execute", [annotation(original.contentId)]);
       await context.login(true);
       assert.equal(
-        context.client.getSnapshot()!.principalId,
+        (await context.client.snapshot())!.principalId,
         otherObjectHuman.principalId,
       );
       await assert.rejects(
-        context.client.listObjectAnnotations(original.contentId),
+        context.client.call("listObjectAnnotations", [original.contentId]),
         (error) =>
-          error instanceof RequestError &&
+          isRequestError(error) &&
           error.status === 404 &&
           error.message === "内容不存在或无权访问。",
       );
       await assert.rejects(
-        context.client.workRelationsFor(original.contentId),
+        context.client.call("workRelationsFor", [original.contentId]),
         (error) =>
-          error instanceof RequestError &&
+          isRequestError(error) &&
           error.status === 403 &&
           error.message === "无权访问这个项目。",
       );
       await assert.rejects(
-        context.client.execute(annotation(original.contentId)),
+        context.client.call("execute", [annotation(original.contentId)]),
         (error) =>
-          error instanceof RequestError &&
+          isRequestError(error) &&
           error.status === 404 &&
           error.message === "内容不存在或无权访问。",
       );
       await context.login();
       assert.equal(
-        context.client.getSnapshot()!.principalId,
+        (await context.client.snapshot())!.principalId,
         objectHuman.principalId,
       );
-      const oldToken = context.client.getSnapshot()!.csrfToken;
+      const oldToken = (await context.client.snapshot())!.csrfToken;
+      const remote = authenticatedHttp(context.client);
       await context.revoke();
-      assert.equal(context.client.getSnapshot()!.csrfToken, oldToken);
+      // The live subscription clears Client's protected identity on revocation.
+      // Server ACL probes must not depend on retaining that revoked projection.
       await assert.rejects(
-        context.client.listObjectAnnotations(original.contentId),
-        (error) => error instanceof RequestError && error.status === 401,
+        remote.call(
+          "objects.annotations",
+          { contentId: original.contentId },
+          { identityGeneration: oldToken },
+        ),
+        (error) => isRequestError(error) && error.status === 401,
       );
       await assert.rejects(
-        context.client.execute(annotation(original.contentId)),
-        (error) => error instanceof RequestError && error.status === 401,
+        remote.call(
+          "objects.annotate",
+          {
+            commandId: randomUUID(),
+            contentId: original.contentId,
+            revision: 1,
+            quote: "第一版确切原文",
+            body: "撤销后禁止",
+          },
+          { identityGeneration: oldToken },
+        ),
+        (error) => isRequestError(error) && error.status === 401,
+      );
+      await context.client.page.waitForFunction(
+        () =>
+          Reflect.get(window, "actualMountedClient").report().snapshot === null,
+        undefined,
+        { timeout: 8000 },
+      );
+      const requestsBefore = (await context.reads()).length;
+      await assert.rejects(
+        context.client.call("listObjectAnnotations", [original.contentId]),
+        { message: "身份已变化，批注未读取。" },
+      );
+      await assert.rejects(
+        context.client.call("execute", [annotation(original.contentId)]),
+        { message: "应用尚未就绪，请稍后重试。" },
+      );
+      assert.equal(
+        (await context.reads()).length,
+        requestsBefore,
+        "cleared mounted Client must not dispatch reads or writes with revoked credentials",
       );
       assert.equal(context.sql().notes.length, 1);
       assert.equal(context.sql().objectReceipts.length, 1);
@@ -322,53 +383,58 @@ test(
     await withObjectHttp("late-epoch", async (context) => {
       const original = await document(context),
         readPath = `/api/platform/objects/${original.contentId}/annotations`;
-      const holdRead = context.holdNext(readPath),
-        pendingRead = context.client.listObjectAnnotations(original.contentId);
+      const holdRead = await context.holdNext(readPath),
+        pendingRead = context.client.call("listObjectAnnotations", [
+          original.contentId,
+        ]);
       const rejectedRead = assert.rejects(
         pendingRead,
         (error) =>
-          error instanceof RequestError &&
+          isRequestError(error) &&
           error.status === 408 &&
           error.message === "身份已切换，旧响应已丢弃。",
       );
       try {
-        await holdRead.reached;
+        await holdRead.reached();
         await context.login(true);
-        const switched = context.client.getSnapshot();
-        holdRead.release();
+        await context.client.snapshot("switched");
+        await holdRead.release();
         await rejectedRead;
-        assert.equal(context.client.getSnapshot(), switched);
+        assert.equal(
+          await context.client.control("sameSnapshot", "switched"),
+          true,
+        );
       } finally {
-        holdRead.release();
+        await holdRead.release();
         await rejectedRead;
       }
       await context.login();
       const operation = annotation(original.contentId),
-        holdWrite = context.holdNext(notePath),
-        pendingWrite = context.client.execute(operation);
+        holdWrite = await context.holdNext(notePath),
+        pendingWrite = context.client.call("execute", [operation]);
       const rejectedWrite = assert.rejects(
         pendingWrite,
         (error) =>
-          error instanceof RequestError &&
+          isRequestError(error) &&
           error.status === 408 &&
           error.message === "身份已切换，旧响应已丢弃。",
       );
       try {
-        await holdWrite.reached;
+        await holdWrite.reached();
         assert.equal(context.sql().notes.length, 1);
-        const command = saved(context, operation);
+        const command = await saved(context, operation);
         await context.login(true);
-        holdWrite.release();
+        await holdWrite.release();
         await rejectedWrite;
         assert.equal(
-          context.client.getSnapshot()!.principalId,
+          (await context.client.snapshot())!.principalId,
           otherObjectHuman.principalId,
         );
-        assert.notEqual(context.rows.get(command.key), "null");
+        assert.notEqual((await context.rows())[command.key], "null");
         await context.login();
-        const receipt = await context.client.execute(operation);
+        const receipt = await context.client.call("execute", [operation]);
         assert.equal(receipt.commandId, command.command.commandId);
-        assert.equal(context.rows.get(command.key), "null");
+        assert.equal((await context.rows())[command.key], "null");
         assert.equal(context.sql().notes.length, 1);
         assert.equal(
           context
@@ -383,7 +449,7 @@ test(
           objectHuman.principalId,
         );
       } finally {
-        holdWrite.release();
+        await holdWrite.release();
         await rejectedWrite;
       }
     });

@@ -4,10 +4,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { createElement } from "react";
-import { renderToString } from "react-dom/server";
-import { useWorkspace, type WorkspaceClient } from "../apps/web/src/client.js";
+import { join } from "node:path";
+import {
+  ActualMountedClient,
+  mountedClientWebRoot,
+  authenticatedHttp,
+} from "./fixtures/actual-mounted-client-test.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { WorkspaceStore } from "../packages/application/src/store.js";
 import { IdentityCenter } from "../packages/application/src/identity.js";
@@ -16,48 +18,8 @@ import {
   Application,
   invokeApplication,
 } from "../packages/application/src/application.js";
-import {
-  HttpApplicationClient,
-  ApplicationRequestError,
-} from "../packages/core/src/http-application-client.js";
+import { ApplicationRequestError } from "../packages/core/src/http-application-client.js";
 import type { ApplicationMethod } from "../packages/core/src/application-api.js";
-
-function memoryPreferences(): Storage {
-  const values = new Map<string, string>();
-  return {
-    get length() {
-      return values.size;
-    },
-    clear() {
-      values.clear();
-    },
-    getItem(key) {
-      return values.get(key) ?? null;
-    },
-    key(index) {
-      return [...values.keys()][index] ?? null;
-    },
-    removeItem(key) {
-      values.delete(key);
-    },
-    setItem(key, value) {
-      values.set(key, value);
-    },
-  };
-}
-
-function actualWorkspaceClient(): WorkspaceClient {
-  let client: WorkspaceClient | undefined;
-  function Probe() {
-    client = useWorkspace();
-    return createElement("span");
-  }
-  // React's real server renderer creates the actual hook's refs and methods.
-  // Effects do not run, so no polling, DOM facade or test-only client is used.
-  renderToString(createElement(Probe));
-  assert.ok(client);
-  return client;
-}
 
 for (const releaseAfterRegrant of [false, true]) {
   test(`真实 Client 同 CSRF 撤权：旧正文释放${releaseAfterRegrant ? "晚于新授权正文" : "时仍未重新授权"}不能写回 current`, async () => {
@@ -111,6 +73,8 @@ for (const releaseAfterRegrant of [false, true]) {
       uiPackages: domains.uiPackages,
       notifications: domains.notifications,
       platformTaskRuns: domains.taskRuns(),
+      cognitiveApps: domains.cognitiveApps,
+      workspaceChanges: domains.workspaceChanges,
     };
     const app = new Application(store, options);
     const ownerCall = (method: ApplicationMethod, params: unknown) =>
@@ -149,78 +113,29 @@ for (const releaseAfterRegrant of [false, true]) {
     const port = (probe.address() as { port: number }).port;
     await new Promise<void>((done) => probe.close(() => done()));
     const origin = `http://127.0.0.1:${port}`;
+    const web = await mountedClientWebRoot();
     const server = createAppServer(store, {
       ...options,
       port,
-      webRoot: resolve("dist/web"),
+      webRoot: web.directory,
     });
     await new Promise<void>((done) => server.listen(port, "127.0.0.1", done));
-    const nativeFetch = globalThis.fetch;
-    const originalGlobals = new Map(
-      ["window", "location", "localStorage", "sessionStorage"].map((name) => [
-        name,
-        Object.getOwnPropertyDescriptor(globalThis, name),
-      ]),
-    );
-    let cookies = "";
-    let reached!: () => void;
-    const started = new Promise<void>((done) => {
-      reached = done;
+    const client = await ActualMountedClient.open(origin);
+    const remote = authenticatedHttp(client);
+    const gate = await client.hold(`/api/platform/objects/${contentIds[0]}`);
+    const started = gate.reached().then((report) => {
+      assert.equal(report.status, 200, "hold a real authorized response");
+      assert.equal(report.value.revision, 1);
+      assert.equal(report.value.content.markdown, markdowns[0]);
     });
-    let release!: () => void;
-    const held = new Promise<void>((done) => {
-      release = done;
-    });
-    let heldRead = false;
-    const objectPath = `/api/platform/objects/${contentIds[0]}`;
-    const browserFetch: typeof fetch = async (input, init) => {
-      assert.equal(typeof input, "string");
-      const url = new URL(input as string, origin);
-      assert.equal(url.origin, origin, "no model or external service is used");
-      const headers = new Headers(init?.headers);
-      if (cookies) headers.set("Cookie", cookies);
-      if (init?.method === "POST") headers.set("Origin", origin);
-      const response = await nativeFetch(url, { ...init, headers });
-      const setCookie = response.headers.get("set-cookie");
-      if (setCookie) cookies = setCookie.split(";")[0]!;
-      if (url.pathname === objectPath && !heldRead && response.ok) {
-        heldRead = true;
-        const original = (await response.clone().json()) as {
-          revision: number;
-          content: { markdown: string };
-        };
-        assert.equal(original.revision, 1);
-        assert.equal(original.content.markdown, markdowns[0]);
-        reached();
-        await held;
-      }
-      return response;
-    };
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: {},
-    });
-    Object.defineProperty(globalThis, "location", {
-      configurable: true,
-      value: { origin },
-    });
-    Object.defineProperty(globalThis, "localStorage", {
-      configurable: true,
-      value: memoryPreferences(),
-    });
-    Object.defineProperty(globalThis, "sessionStorage", {
-      configurable: true,
-      value: memoryPreferences(),
-    });
-    globalThis.fetch = browserFetch;
-    const client = actualWorkspaceClient();
-    const remote = new HttpApplicationClient(origin);
+    const release = () => gate.release();
     try {
-      await client.login(token);
-      const csrfToken = client.getSnapshot()?.csrfToken;
+      await client.call("login", [token]);
+      await client.waitReady(reader.principalId);
+      const csrfToken = (await client.snapshot())?.csrfToken;
       assert.ok(csrfToken);
-      assert.deepEqual(client.getSnapshot()?.workspace.artifacts, []);
-      const oldRead = client.resolveArtifact(contentIds[0]!).then(
+      assert.deepEqual((await client.snapshot())?.workspace.artifacts, []);
+      const oldRead = client.call("resolveArtifact", [contentIds[0]!]).then(
         (value) => ({ value, error: undefined }),
         (error: unknown) => ({ value: undefined, error }),
       );
@@ -245,23 +160,21 @@ for (const releaseAfterRegrant of [false, true]) {
         (error: unknown) =>
           error instanceof ApplicationRequestError && error.status === 404,
       );
-      assert.equal(await client.refresh(), true);
-      assert.equal(client.getSnapshot()?.csrfToken, csrfToken);
+      assert.equal(await client.call("refresh", []), true);
+      assert.equal((await client.snapshot())?.csrfToken, csrfToken);
       assert.equal(
-        client
-          .getSnapshot()
-          ?.workspace.projects.some((project) => project.id === projectIds[0]),
+        (await client.snapshot())?.workspace.projects.some(
+          (project) => project.id === projectIds[0],
+        ),
         false,
       );
       assert.equal(
-        client
-          .getSnapshot()
-          ?.workspace.artifacts.some(
-            (artifact) => artifact.id === contentIds[0],
-          ),
+        (await client.snapshot())?.workspace.artifacts.some(
+          (artifact) => artifact.id === contentIds[0],
+        ),
         false,
       );
-      const allowed = await client.resolveArtifact(contentIds[1]!);
+      const allowed = await client.call("resolveArtifact", [contentIds[1]!]);
       assert.equal(allowed?.content.kind, "document");
       assert.equal(
         allowed?.content.kind === "document" && allowed.content.markdown,
@@ -279,26 +192,26 @@ for (const releaseAfterRegrant of [false, true]) {
           title: "TEST 重新授权后的第二版",
           markdown: "重新授权后实际保存的新正文",
         });
-        assert.equal(await client.refresh(), true);
-        assert.equal(client.getSnapshot()?.csrfToken, csrfToken);
-        const fresh = await client.resolveArtifact(contentIds[0]!);
+        assert.equal(await client.call("refresh", []), true);
+        assert.equal((await client.snapshot())?.csrfToken, csrfToken);
+        const fresh = await client.call("resolveArtifact", [contentIds[0]!]);
         assert.equal(fresh?.revision, 2);
         assert.equal(
           fresh?.content.kind === "document" && fresh.content.markdown,
           "重新授权后实际保存的新正文",
         );
-        await client.resolveArtifact(contentIds[1]!);
+        await client.call("resolveArtifact", [contentIds[1]!]);
       }
-      const beforeRelease = client.getSnapshot();
+      const beforeRelease = await client.snapshot("beforeRelease");
       assert.ok(beforeRelease);
-      release();
+      await release();
       const stale = await oldRead;
       assert.equal(stale.value, undefined);
       assert.match(String(stale.error), /身份或访问范围已变化/);
       // Inspect the actual private current ref through the production
       // getSnapshot method, before any regrant or refresh could clear it.
-      assert.equal(client.getSnapshot(), beforeRelease);
-      const originals = client.getSnapshot()!.workspace.artifacts;
+      assert.equal(await client.control("sameSnapshot", "beforeRelease"), true);
+      const originals = (await client.snapshot())!.workspace.artifacts;
       assert.equal(
         originals.some(
           (artifact) =>
@@ -327,12 +240,9 @@ for (const releaseAfterRegrant of [false, true]) {
           false,
         );
     } finally {
-      release();
-      globalThis.fetch = nativeFetch;
-      for (const [name, descriptor] of originalGlobals) {
-        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-        else Reflect.deleteProperty(globalThis, name);
-      }
+      await release();
+      await client.close();
+      web.close();
       server.closeStreams();
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));

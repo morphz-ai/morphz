@@ -25,6 +25,7 @@ import { TaskSummary } from "./TaskSummary.js";
 import { BrowserHost } from "./BrowserHost.js";
 import { InteractiveArtifact } from "./InteractiveArtifact.js";
 import type { PlatformContent } from "./platform-client.js";
+import type { ArtifactVersionMetadata } from "./data/artifact-version-reads.js";
 import { interactiveDraftSchema } from "../../../packages/core/src/interactive.js";
 import { ReadAloudDialog } from "./SpeechDialog.js";
 import { contentText } from "../../../packages/core/src/retrieval.js";
@@ -88,6 +89,110 @@ export function ArtifactEditor({
     revision: number;
     title: string;
   } | null>(null);
+  const [versionPage, setVersionPage] = useState<{
+    versions: ArtifactVersionMetadata[];
+    nextCursor: number | null;
+  }>({ versions: [], nextCursor: null });
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+  const historyRequest = useRef(0);
+  const historyAbort = useRef<AbortController | null>(null);
+  const currentClient = useRef(client);
+  currentClient.current = client;
+  const historyOpen = history !== null;
+  // Tasks and Reader publications retain their own version authorities.
+  const objectHistory =
+    artifact.content.kind !== "task" && artifact.content.kind !== "publication";
+  async function loadVersionPage(beforeRevision?: number) {
+    historyAbort.current?.abort();
+    const controller = new AbortController();
+    historyAbort.current = controller;
+    const request = ++historyRequest.current;
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const page = await currentClient.current.readArtifactVersionPage(
+        artifact.id,
+        beforeRevision,
+        controller.signal,
+      );
+      if (request !== historyRequest.current) return;
+      setVersionPage((previous) => ({
+        versions: [
+          ...new Map(
+            [
+              ...(beforeRevision ? previous.versions : []),
+              ...page.versions,
+            ].map((version) => [version.revision, version]),
+          ).values(),
+        ],
+        nextCursor: page.nextCursor,
+      }));
+    } catch (error) {
+      if (request !== historyRequest.current) return;
+      setHistoryError(
+        error instanceof Error ? error.message : "版本目录读取失败。",
+      );
+    } finally {
+      if (request === historyRequest.current) setHistoryLoading(false);
+    }
+  }
+  useEffect(() => {
+    setVersionPage({ versions: [], nextCursor: null });
+    setHistoryError("");
+    setHistoryLoading(false);
+    if (historyOpen && objectHistory) void loadVersionPage();
+    return () => {
+      historyRequest.current++;
+      historyAbort.current?.abort();
+    };
+  }, [
+    artifact.id,
+    artifact.revision,
+    historyOpen,
+    objectHistory,
+    client.contentAccessGeneration,
+    client.boot?.csrfToken,
+  ]);
+  async function selectVersion(revision: number) {
+    if (!objectHistory) {
+      setHistory(revision);
+      return;
+    }
+    const request = ++historyRequest.current;
+    historyAbort.current?.abort();
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const resolved = await currentClient.current.resolveArtifact(
+        artifact.id,
+        revision,
+      );
+      if (request !== historyRequest.current) return;
+      if (
+        !resolved ||
+        (resolved.revision !== revision &&
+          !resolved.versions.some((version) => version.revision === revision))
+      )
+        throw new Error("指定版本暂时不可用，请稍后重试。");
+      setHistory(revision);
+    } catch (error) {
+      if (request !== historyRequest.current) return;
+      setHistoryError(
+        error instanceof Error ? error.message : "指定版本读取失败。",
+      );
+    } finally {
+      if (request === historyRequest.current) setHistoryLoading(false);
+    }
+  }
+  const historyVersions = [
+    ...new Map(
+      [...artifact.versions, ...versionPage.versions].map((version) => [
+        version.revision,
+        version,
+      ]),
+    ).values(),
+  ].sort((a, b) => b.revision - a.revision);
   const old =
     history && history < artifact.revision
       ? artifact.versions.find((v) => v.revision === history)
@@ -239,7 +344,7 @@ export function ArtifactEditor({
         {!draft && history === null && (
           <button
             className="secondary-action"
-            onClick={() => setHistory(history ? null : artifact.revision)}
+            onClick={() => setHistory(artifact.revision)}
             aria-label="版本历史"
             title="版本历史"
             aria-expanded={history !== null}
@@ -253,14 +358,32 @@ export function ArtifactEditor({
             <select
               aria-label="查看版本"
               value={history}
-              onChange={(e) => setHistory(Number(e.target.value))}
+              disabled={historyLoading}
+              onChange={(e) => void selectVersion(Number(e.target.value))}
             >
-              {[...artifact.versions].reverse().map((v) => (
+              {historyVersions.map((v) => (
                 <option key={v.revision} value={v.revision}>
                   v{v.revision} · {actorName(state, v.author.actantId)}
                 </option>
               ))}
             </select>
+            {objectHistory &&
+              (historyLoading || historyError || versionPage.nextCursor) && (
+                <button
+                  className="secondary-action"
+                  disabled={historyLoading}
+                  title={historyError || undefined}
+                  onClick={() =>
+                    void loadVersionPage(versionPage.nextCursor ?? undefined)
+                  }
+                >
+                  {historyLoading
+                    ? "读取中…"
+                    : historyError
+                      ? "重试读取版本"
+                      : "更早版本"}
+                </button>
+              )}
             <button
               className="icon-button"
               aria-label="回到当前版本"
@@ -358,6 +481,11 @@ export function ArtifactEditor({
       {error && (
         <div role="alert" className="error-banner">
           {error}
+        </div>
+      )}
+      {historyOpen && historyError && (
+        <div role="alert" className="error-banner">
+          {historyError}
         </div>
       )}
       {conflict && (

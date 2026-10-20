@@ -52,6 +52,7 @@ import type { ScriptDraft } from "../../../packages/core/src/script-studio.js";
 import type { ScriptEditorProduction } from "./script-editor-reader.js";
 import { createScriptEditorReads } from "./data/script-editor-reads.js";
 import { createContentReads } from "./data/content-reads.js";
+import { readArtifactVersionPage } from "./data/artifact-version-reads.js";
 import { createReaderReads } from "./data/reader-reads.js";
 import { createReaderInteractions } from "./data/reader-interactions.js";
 import { createBookmarkInteractions } from "./data/bookmark-interactions.js";
@@ -1468,6 +1469,7 @@ export function useWorkspace() {
       );
     };
     setWorkspaceConnection("connecting");
+    let reconciledDisconnection = false;
     return subscribeWorkspaceChanges(
       (change) => {
         if (!owned()) return;
@@ -1485,6 +1487,7 @@ export function useWorkspace() {
       {
         onConnected: () => {
           if (!owned()) return;
+          reconciledDisconnection = false;
           setWorkspaceConnection("connected");
         },
         onClosed: () => {
@@ -1493,6 +1496,14 @@ export function useWorkspace() {
           // is unavailable. Keep drafts and usable commands available while
           // the transport reconnects and requests its resync snapshot.
           setWorkspaceConnection("reconnecting");
+          // EventSource hides the HTTP status of a revoked subscription. One
+          // authoritative read distinguishes that from a lost hint channel,
+          // so an idle revoked window cannot keep displaying protected data.
+          // Repeated reconnect errors do not create a new polling loop.
+          if (!reconciledDisconnection) {
+            reconciledDisconnection = true;
+            void refresh();
+          }
         },
       },
     );
@@ -1737,6 +1748,17 @@ export function useWorkspace() {
     },
     olderHistoryCursor: conversationHistory.olderCursor,
     resolveArtifact: contentReads.resolveArtifact,
+    readArtifactVersionPage: (
+      contentId: string,
+      beforeRevision?: number,
+      signal?: AbortSignal,
+    ) =>
+      readArtifactVersionPage(
+        { platform, current, protectedReadGeneration },
+        contentId,
+        beforeRevision,
+        signal,
+      ),
     resolveScriptLocation: scriptEditorReads.resolveScriptLocation,
     readScriptEditor: scriptEditorReads.readScriptEditor,
     getScriptEditor: scriptEditorReads.getScriptEditor,

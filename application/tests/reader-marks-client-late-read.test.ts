@@ -4,10 +4,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { createElement } from "react";
-import { renderToString } from "react-dom/server";
-import { useWorkspace, type WorkspaceClient } from "../apps/web/src/client.js";
+import { join } from "node:path";
+import {
+  ActualMountedClient,
+  mountedClientWebRoot,
+  authenticatedHttp,
+} from "./fixtures/actual-mounted-client-test.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { WorkspaceStore } from "../packages/application/src/store.js";
 import { IdentityCenter } from "../packages/application/src/identity.js";
@@ -16,51 +18,12 @@ import {
   Application,
   invokeApplication,
 } from "../packages/application/src/application.js";
-import {
-  HttpApplicationClient,
-  ApplicationRequestError,
-} from "../packages/core/src/http-application-client.js";
+import { ApplicationRequestError } from "../packages/core/src/http-application-client.js";
 import type { ApplicationMethod } from "../packages/core/src/application-api.js";
 import type {
   ReadingSection,
   ReaderMarksRead,
 } from "../packages/core/src/reader.js";
-
-function memoryPreferences(): Storage {
-  const values = new Map<string, string>();
-  return {
-    get length() {
-      return values.size;
-    },
-    clear() {
-      values.clear();
-    },
-    getItem(key) {
-      return values.get(key) ?? null;
-    },
-    key(index) {
-      return [...values.keys()][index] ?? null;
-    },
-    removeItem(key) {
-      values.delete(key);
-    },
-    setItem(key, value) {
-      values.set(key, value);
-    },
-  };
-}
-
-function actualWorkspaceClient(): WorkspaceClient {
-  let client: WorkspaceClient | undefined;
-  function Probe() {
-    client = useWorkspace();
-    return createElement("span");
-  }
-  // Real hook refs and production methods, without effects, polling or a fake Client.
-  renderToString(createElement(Probe));
-  assert.ok(client);
-  return client;
-}
 
 for (const regrantBeforeRelease of [false, true]) {
   test(`真实 Reader Client 同 CSRF 撤权：已授权旧标注页${regrantBeforeRelease ? "晚于重新授权的新标注" : "在权限仍撤销时"}到达不能返回或污染 current`, async () => {
@@ -111,6 +74,8 @@ for (const regrantBeforeRelease of [false, true]) {
       uiPackages: domains.uiPackages,
       notifications: domains.notifications,
       platformTaskRuns: domains.taskRuns(),
+      cognitiveApps: domains.cognitiveApps,
+      workspaceChanges: domains.workspaceChanges,
     };
     const app = new Application(store, options);
     const call = (
@@ -187,90 +152,47 @@ for (const regrantBeforeRelease of [false, true]) {
     const port = (probe.address() as { port: number }).port;
     await new Promise<void>((done) => probe.close(() => done()));
     const origin = `http://127.0.0.1:${port}`;
+    const web = await mountedClientWebRoot();
     const server = createAppServer(store, {
       ...options,
       port,
-      webRoot: resolve("dist/web"),
+      webRoot: web.directory,
     });
     await new Promise<void>((done) => server.listen(port, "127.0.0.1", done));
-    const nativeFetch = globalThis.fetch;
-    const originalGlobals = new Map(
-      ["window", "location", "localStorage", "sessionStorage"].map((name) => [
-        name,
-        Object.getOwnPropertyDescriptor(globalThis, name),
-      ]),
-    );
-    let cookies = "";
-    let reached!: () => void;
-    const started = new Promise<void>((done) => {
-      reached = done;
-    });
-    let release!: () => void;
-    const held = new Promise<void>((done) => {
-      release = done;
-    });
-    let heldRead = false;
-    globalThis.fetch = async (input, init) => {
-      assert.equal(typeof input, "string");
-      const url = new URL(input as string, origin);
-      assert.equal(
-        url.origin,
-        origin,
-        "only the actual isolated Host is accessed",
+    const client = await ActualMountedClient.open(origin);
+    const remote = authenticatedHttp(client);
+    const gate = await client.hold("/api/reader/marks");
+    const started = gate.reached().then((report) => {
+      assert.equal(report.status, 200, "hold a real authorized response");
+      assert.deepEqual(
+        report.value.marks.map(
+          (mark: { id: string; note: string; revision: number }) => [
+            mark.id,
+            mark.note,
+            mark.revision,
+          ],
+        ),
+        [[markIds[0], "已授权真实批注 0", 1]],
       );
-      const headers = new Headers(init?.headers);
-      if (cookies) headers.set("Cookie", cookies);
-      if (init?.method === "POST") headers.set("Origin", origin);
-      const response = await nativeFetch(url, { ...init, headers });
-      const setCookie = response.headers.get("set-cookie");
-      if (setCookie) cookies = setCookie.split(";")[0]!;
-      if (
-        url.pathname === "/api/reader/marks" &&
-        url.searchParams.get("artifactId") === contentIds[0] &&
-        !heldRead &&
-        response.ok
-      ) {
-        heldRead = true;
-        const actual = (await response.clone().json()) as {
-          marks: Array<{ id: string; note: string; revision: number }>;
-        };
-        assert.deepEqual(
-          actual.marks.map((mark) => [mark.id, mark.note, mark.revision]),
-          [[markIds[0], "已授权真实批注 0", 1]],
-        );
-        reached();
-        await held;
-      }
-      return response;
-    };
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: {},
     });
-    Object.defineProperty(globalThis, "location", {
-      configurable: true,
-      value: { origin },
-    });
-    Object.defineProperty(globalThis, "localStorage", {
-      configurable: true,
-      value: memoryPreferences(),
-    });
-    Object.defineProperty(globalThis, "sessionStorage", {
-      configurable: true,
-      value: memoryPreferences(),
-    });
-    const client = actualWorkspaceClient();
-    const remote = new HttpApplicationClient(origin);
+    const release = () => gate.release();
     try {
-      await client.login(token);
-      const csrf = client.getSnapshot()?.csrfToken;
+      await client.call("login", [token]);
+      await client.waitReady(reader.principalId);
+      const csrf = (await client.snapshot())?.csrfToken;
       assert.ok(csrf);
       const query: ReaderMarksRead = {
         artifactId: contentIds[0]!,
         revision: 1,
         limit: 50,
       };
-      const staleRead = client.readingMarks(query).then(
+      const pendingId = await client.control(
+        "startWithArgs",
+        "readingMarks",
+        [query],
+        "mutable-query",
+      );
+      const staleRead = client.finish(pendingId).then(
         (value) => ({ value, error: undefined }),
         (error: unknown) => ({ value: undefined, error }),
       );
@@ -283,7 +205,13 @@ for (const regrantBeforeRelease of [false, true]) {
         }),
       ]);
       // An in-flight caller cannot mutate the query and rebind returned marks to another book.
-      query.artifactId = contentIds[1]!;
+      await client.control(
+        "mutateArgument",
+        "mutable-query",
+        0,
+        "artifactId",
+        contentIds[1]!,
+      );
       await domains.content.platform.reconcileOperatorMembers(
         store.identity(),
         [grants[0]!, { ...grants[1]!, projectIds: [projectIds[1]!] }],
@@ -297,13 +225,15 @@ for (const regrantBeforeRelease of [false, true]) {
         (error: unknown) =>
           error instanceof ApplicationRequestError && error.status === 404,
       );
-      assert.equal(await client.refresh(), true);
-      assert.equal(client.getSnapshot()?.csrfToken, csrf);
-      const allowed = await client.readingMarks({
-        artifactId: contentIds[1]!,
-        revision: 1,
-        limit: 50,
-      });
+      assert.equal(await client.call("refresh", []), true);
+      assert.equal((await client.snapshot())?.csrfToken, csrf);
+      const allowed = await client.call("readingMarks", [
+        {
+          artifactId: contentIds[1]!,
+          revision: 1,
+          limit: 50,
+        },
+      ]);
       assert.deepEqual(
         allowed.marks.map((mark) => [
           mark.id,
@@ -313,7 +243,7 @@ for (const regrantBeforeRelease of [false, true]) {
         ]),
         [[markIds[1], "已授权真实批注 1", contentIds[1], reader.principalId]],
       );
-      await client.resolveArtifact(contentIds[1]!);
+      await client.call("resolveArtifact", [contentIds[1]!]);
       if (regrantBeforeRelease) {
         await domains.content.platform.reconcileOperatorMembers(
           store.identity(),
@@ -331,20 +261,22 @@ for (const regrantBeforeRelease of [false, true]) {
             note: "重新授权后的真实新批注",
           },
         });
-        assert.equal(await client.refresh(), true);
-        const fresh = await client.readingMarks({
-          artifactId: contentIds[0]!,
-          revision: 1,
-          limit: 50,
-        });
+        assert.equal(await client.call("refresh", []), true);
+        const fresh = await client.call("readingMarks", [
+          {
+            artifactId: contentIds[0]!,
+            revision: 1,
+            limit: 50,
+          },
+        ]);
         assert.deepEqual(
           fresh.marks.map((mark) => [mark.id, mark.note, mark.revision]),
           [[markIds[0], "重新授权后的真实新批注", 2]],
         );
-        await client.resolveArtifact(contentIds[1]!);
+        await client.call("resolveArtifact", [contentIds[1]!]);
       }
-      const beforeRelease = client.getSnapshot();
-      release();
+      await client.snapshot("beforeRelease");
+      await release();
       const stale = await staleRead;
       assert.equal(
         stale.value,
@@ -353,45 +285,46 @@ for (const regrantBeforeRelease of [false, true]) {
       );
       assert.match(String(stale.error), /阅读权限已变化/);
       assert.equal(
-        client.getSnapshot(),
-        beforeRelease,
+        await client.control("sameSnapshot", "beforeRelease"),
+        true,
         "the protected current ref is unchanged by the obsolete page",
       );
-      assert.equal(client.getSnapshot()?.csrfToken, csrf);
+      assert.equal((await client.snapshot())?.csrfToken, csrf);
       assert.equal(
-        client
-          .getSnapshot()
-          ?.workspace.artifacts.some((item) => item.id === contentIds[0]),
+        (await client.snapshot())?.workspace.artifacts.some(
+          (item) => item.id === contentIds[0],
+        ),
         false,
       );
       assert.equal(
-        client
-          .getSnapshot()
-          ?.workspace.artifacts.some((item) => item.id === contentIds[1]),
+        (await client.snapshot())?.workspace.artifacts.some(
+          (item) => item.id === contentIds[1],
+        ),
         true,
       );
-      const remaining = await client.readingMarks({
-        artifactId: contentIds[1]!,
-        revision: 1,
-        limit: 50,
-      });
-      assert.deepEqual(remaining.marks, allowed.marks);
-      if (regrantBeforeRelease) {
-        const fresh = await client.readingMarks({
-          artifactId: contentIds[0]!,
+      const remaining = await client.call("readingMarks", [
+        {
+          artifactId: contentIds[1]!,
           revision: 1,
           limit: 50,
-        });
+        },
+      ]);
+      assert.deepEqual(remaining.marks, allowed.marks);
+      if (regrantBeforeRelease) {
+        const fresh = await client.call("readingMarks", [
+          {
+            artifactId: contentIds[0]!,
+            revision: 1,
+            limit: 50,
+          },
+        ]);
         assert.equal(fresh.marks[0]?.note, "重新授权后的真实新批注");
         assert.equal(fresh.marks[0]?.revision, 2);
       }
     } finally {
-      release();
-      globalThis.fetch = nativeFetch;
-      for (const [name, descriptor] of originalGlobals) {
-        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-        else Reflect.deleteProperty(globalThis, name);
-      }
+      await release();
+      await client.close();
+      web.close();
       server.closeStreams();
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));
