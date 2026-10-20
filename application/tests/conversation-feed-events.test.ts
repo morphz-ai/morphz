@@ -460,3 +460,63 @@ test("IO 序列缺口只从完整快照恢复，重复增量与 WS 后缀不能�
     await f.close();
   }
 });
+
+test("原生消息阶段更正使用同一 IO 完整前缀，提交后晚到快照不得覆盖正文", async () => {
+  const f = await fixture();
+  const draft = {
+    type: "output.started",
+    snapshot: true,
+    output_id: "io_text_native",
+    session_id: "owned",
+    root_turn_id: "root",
+    thread_id: "thread",
+    activation_id: "native",
+    model_attempt_id: "native",
+    model_output_visibility: "public",
+    timestamp: "2026-10-20T00:00:00Z",
+    delta_seq: 1,
+    text: "暂定正文",
+  };
+  try {
+    f.ioSend(draft);
+    await wait(() => f.snapshot().messages.some((m) => m.text === draft.text));
+    f.ioSend({
+      ...draft,
+      type: "output.delta",
+      operation: "text.replace",
+      delta_seq: 2,
+      text: "",
+    });
+    await wait(() => !f.snapshot().messages.some((m) => m.text === draft.text));
+    f.ioSend({
+      ...draft,
+      type: "output.delta",
+      operation: "text.append",
+      snapshot: false,
+      delta_seq: 3,
+      text: "真正正文",
+    });
+    await wait(() => f.snapshot().messages.some((m) => m.text === "真正正文"));
+    const committed = {
+      ...reply("native-result", 1),
+      payload: {
+        session_id: "owned",
+        root_turn_id: "root",
+        activation_id: "native",
+        model_attempt_id: "native",
+        text: "真正正文",
+      },
+    };
+    f.durable.push(committed);
+    await f.feed.sync();
+    await wait(() => f.snapshot().messages.some((m) => m.text === "真正正文" && !m.streaming));
+    f.ioSend({ ...draft, type: "output.delta", delta_seq: 4, text: "过期更正" });
+    await pause(80);
+    assert.deepEqual(
+      f.snapshot().messages.filter((m) => m.kind !== "tool").map((m) => m.text),
+      ["真正正文"],
+    );
+  } finally {
+    await f.close();
+  }
+});

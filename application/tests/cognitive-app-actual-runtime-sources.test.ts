@@ -5,10 +5,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
-import {
-  profileActualTransportFixture,
-  profileFixtureAnnotationsMessage,
-} from "./profile-actual-transport-fixture.js";
+import { profileActualTransportFixture } from "./profile-actual-transport-fixture.js";
 import {
   packCognitiveAuthor,
   startPackedAuthor,
@@ -381,18 +378,8 @@ test(
               const created = parseCognitiveAppCommandResult(value.result);
               assert.equal(created.command.state, "committed");
               inferCommandId = created.commandId;
-              // The typed String is the implicit return; annotations are a
-              // separate native Session IO message in the same response.
-              const reply = profileFixtureAnnotationsMessage(request);
-              assert.ok(
-                reply,
-                "Enabled infer must admit its registered annotations message",
-              );
-              return choose(
-                reply.name,
-                reply.arguments,
-                JSON.stringify(inferMarker),
-              );
+              // The original typed String is the native return. No companion.
+              return { content: JSON.stringify(inferMarker) };
             } else if (thread.root_turn_id.startsWith("client-schedule-")) {
               scheduledThreadId = thread.id;
               assert.ok(text.includes(scheduleMarker));
@@ -449,12 +436,7 @@ test(
               assert.ok("state" in value && value.state === "queued");
               startedEventId = value.eventId;
             }
-            const reply = profileFixtureAnnotationsMessage(request);
-            assert.ok(
-              reply,
-              "Ordinary execution must admit its registered annotations message",
-            );
-            return choose(reply.name, reply.arguments, "合成来源验证已完成。");
+            return { content: "合成来源验证已完成。" };
           } catch (error) {
             errors.push(
               error instanceof Error

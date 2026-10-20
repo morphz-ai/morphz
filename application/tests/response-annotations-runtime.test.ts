@@ -35,6 +35,18 @@ test("metadata follows frozen Runtime binding; tool definitions never select ann
       assert.ok(args.message.content.value.execution.result);
       assert.equal("content" in args, false);
     }
+    const nativeMessages = messages.map((message) => ({
+      ...message,
+      content: message.content.replace(
+        "(session-io-return",
+        "(session-io-return (carrier native_v3)",
+      ),
+    }));
+    assert.equal(
+      profileFixtureAnnotationsMessage({ messages: nativeMessages, tools }),
+      undefined,
+      "A fresh ordinary native reply never synthesizes a companion",
+    );
   }
   assert.equal(
     profileFixtureAnnotationsMessage({ messages: [], tools }),
@@ -116,7 +128,10 @@ test(
       );
       assert.equal(events.length, 1);
       const reason = JSON.parse(events[0]!.payload).reason;
-      assert.match(reason, /Annotations alone are not an answer/);
+      assert.match(
+        reason,
+        /Body and annotations cannot use a separate delivery call/,
+      );
       for (let refresh = 0; refresh < 2; refresh++) {
         const history: any = await f.client.call(
           "conversations.history",
@@ -281,14 +296,7 @@ test(
         1,
         "The producing Activation must still be running while its body is visible",
       );
-      producing.finish([
-        fixtureAnnotationsMessage({
-          execution: {
-            title: "TEST 迟订阅流式返回",
-            result: "完整前缀和实时后缀已显示",
-          },
-        }),
-      ]);
+      producing.finish();
       await eventually(
         () =>
           f.sql<{ status: string }>(
@@ -428,15 +436,7 @@ test(
         )[0]!.response_annotations,
         "on",
       );
-      f.releaseWithMessages(
-        marker,
-        [
-          fixtureAnnotationsMessage({
-            execution: { title: "TEST 原执行仍开启", result: "原设置未被改变" },
-          }),
-        ],
-        "TEST ON BODY",
-      );
+      f.releaseWithText(marker, "TEST ON BODY");
       await settle(active.id);
       const nextMarker = "TEST_SETTING_NEW_OFF_" + randomUUID();
       const nextRequest = await send(nextMarker);
@@ -599,7 +599,7 @@ test(
       const first = await f.waitRequest(marker);
       assert.ok(
         JSON.stringify(first).includes(
-          "Session IO: one Evaluation return with optional display annotations:",
+          "Session IO: the frozen evaluation-environment.session-io-return binding owns interpretation",
         ),
       );
       const toolDefinitions = first.tools as Array<{
@@ -608,10 +608,9 @@ test(
           parameters: { properties?: Record<string, unknown> };
         };
       }>;
-      assert.equal(
+      assert.ok(
         toolDefinitions.find((tool) => tool.function.name === objectToolName)
-          ?.function.parameters.properties?._annotations,
-        undefined,
+          ?.function.parameters.properties?._morphz,
       );
       assert.ok(
         toolDefinitions.some(
@@ -624,12 +623,15 @@ test(
       f.releaseWithMessages(marker, [
         {
           name: objectToolName,
-          arguments: { action: "profile", profile: { action: "read" } },
+          arguments: {
+            action: "profile",
+            profile: { action: "read" },
+            _morphz: {
+              execution: { title: "检查资料与输入", progress: "正在读取资料" },
+              intent: "读取当前 Agent 资料",
+            },
+          },
         },
-        fixtureAnnotationsMessage({
-          execution: { title: "检查资料与输入", progress: "正在读取资料" },
-          calls: [{ index: 0, intent: "读取当前 Agent 资料" }],
-        }),
       ]);
       const second = await f.waitRequest(marker, secondIndex);
       const firstRef = receiptRef(second);
@@ -645,15 +647,22 @@ test(
       const thirdIndex = f.requests.length;
       f.hold(marker);
       f.releaseWithMessages(marker, [
-        { name: objectToolName, arguments: { action: "read-input" } },
-        fixtureAnnotationsMessage({
-          execution: {
-            title: "同一输入的后续步骤不应改名",
-            progress: "资料已读取，正在核对输入",
+        {
+          name: objectToolName,
+          arguments: {
+            action: "read-input",
+            _morphz: {
+              execution: {
+                title: "同一输入的后续步骤不应改名",
+                progress: "资料已读取，正在核对输入",
+              },
+              intent: "核对本次输入",
+              observations: [
+                { ref: firstRef, result: "已读取当前 Agent 资料" },
+              ],
+            },
           },
-          calls: [{ index: 0, intent: "核对本次输入" }],
-          observations: [{ ref: firstRef, result: "已读取当前 Agent 资料" }],
-        }),
+        },
       ]);
       const third = await f.waitRequest(marker, thirdIndex);
       const secondRef = receiptRef(third);
@@ -664,19 +673,10 @@ test(
       );
       assert.equal(continued[0]!.title, "检查资料与输入");
       assert.equal(continued[0]!.id, threadId);
-      f.releaseWithMessages(
-        marker,
-        [
-          fixtureAnnotationsMessage({
-            execution: {
-              title: "检查资料与输入",
-              result: "资料与输入检查完成，未修改任何参数",
-            },
-            observations: [{ ref: secondRef, result: "已核对本次输入" }],
-          }),
-        ],
-        "TEST：两次只读检查完成，没有修改资料。",
-      );
+      assert.deepEqual(first.tools, second.tools);
+      assert.deepEqual(second.tools, third.tools);
+      const finalBody = "TEST：两次只读检查完成，没有修改资料。";
+      f.releaseWithText(marker, finalBody);
       const terminal = await eventually(
         activity,
         (threads) => threads[0]?.lifecycle === "completed",
@@ -684,7 +684,16 @@ test(
       assert.equal(terminal.length, 1);
       assert.equal(terminal[0]!.id, threadId);
       assert.equal(terminal[0]!.title, "检查资料与输入");
-      assert.equal(terminal[0]!.summary, "资料与输入检查完成，未修改任何参数");
+      assert.equal(
+        terminal[0]!.summary,
+        undefined,
+        "No separately generated final annotation",
+      );
+      assert.equal(
+        terminal[0]!.outcome?.summary,
+        finalBody,
+        "The original committed body is retained",
+      );
       assert.equal(terminal[0]!.annotationProtocol, "on");
       assert.equal(terminal[0]!.annotationsTruncated, false);
 
@@ -706,14 +715,14 @@ test(
       );
       assert.deepEqual(
         new Set(detail.jobs.map((job) => job.annotation?.result)),
-        new Set(["已读取当前 Agent 资料", "已核对本次输入"]),
+        new Set(["已读取当前 Agent 资料", undefined]),
       );
       for (const job of detail.jobs) {
         assert.equal(job.thread_id, threadId);
         assert.equal(job.status, "succeeded");
         assert.ok(job.result_event_id);
         assert.ok(
-          !JSON.stringify(job.request).includes("_annotations"),
+          !JSON.stringify(job.request).includes('"_morphz":'),
           "Annotations must never enter the Host business request",
         );
         const receipt = f.sql<{ id: string }>(
@@ -745,7 +754,7 @@ test(
 );
 
 test(
-  "actual Runtime + Platform HTTP: native bodies preserve protocol examples and partial optional metadata without repair",
+  "actual Runtime + Platform HTTP: native bodies preserve protocol examples verbatim without repair",
   {
     skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1",
     timeout: 120_000,
@@ -840,39 +849,10 @@ test(
             "SELECT payload FROM events WHERE thread_id = ? AND topic = 'runtime/response_protocol_error'",
             terminal.id,
           );
-          if (name === "invalid JSON") {
-            assert.equal(
-              terminal.lifecycle,
-              "failed",
-              "malformed bound structural data must not be published as prose",
-            );
-            assert.equal(errors.length, 1);
-            assert.equal(
-              replies.length,
-              0,
-              "failure is a terminal IO state, never a fabricated answer",
-            );
-            assert.ok(
-              JSON.parse(errors[0]!.payload).reason.length > 0,
-              "preserve the actual parsing cause",
-            );
-            assert.equal(
-              f.requests.length,
-              1,
-              "no repair inference for invalid data",
-            );
-            assert.equal(
-              f.sql<{ count: number }>(
-                "SELECT count(*) AS count FROM execution_jobs",
-              )[0]!.count,
-              0,
-            );
-            return;
-          }
           assert.equal(terminal.lifecycle, "completed");
           assert.equal(errors.length, 0);
           assert.equal(replies.length, 1);
-          const expectedBody = body;
+          const expectedBody = raw;
           assert.equal(
             JSON.parse(replies[0]!.payload).text,
             expectedBody,
@@ -891,12 +871,9 @@ test(
             raw,
             "retain actual provider bytes independently of the projected body",
           );
-          assert.equal(
-            bundle.return_binding.output.format.id,
-            "morphz.evaluation",
-          );
-          assert.equal(bundle.return_binding.output.format.version, "2");
-          const plain = ["plain text", "missing annotations"].includes(name);
+          assert.equal(bundle.return_binding.carrier, "native_v3");
+          assert.equal(bundle.return_binding.output, undefined);
+          assert.equal(bundle.native_response.binding.message_encoding, "text");
           assert.equal(
             bundle.raw_response.tool_calls.length,
             0,
@@ -904,12 +881,11 @@ test(
           );
           assert.equal(
             bundle.records.length,
-            plain ? 0 : name === "valid" ? 2 : 1,
-            "valid partial fields are accepted without fabricating missing ones",
+            0,
+            "Protocol-looking text is ordinary body, not display metadata",
           );
-          assert.equal(bundle.diagnostics.length > 0, name === "empty result");
-          if (name === "valid")
-            assert.equal(terminal.title, valid.annotations.execution.title);
+          assert.equal(bundle.diagnostics.length, 0);
+          assert.notEqual(terminal.title, valid.annotations.execution.title);
           assert.equal(
             f.requests.length,
             1,

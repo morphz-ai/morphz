@@ -3102,7 +3102,7 @@ fn infer_request_event(
         )
     };
     if !response_annotations.is_off() {
-        evaluation_text.push_str("\n\nReturn the exact complete typed terminal value in the body of the frozen Session IO return. When annotations_enabled=true and actual work is performed, provide applicable execution and step annotations in that SAME Evaluation value as required by its generation contract. Runtime tolerates missing annotations, but that is not permission to omit applicable work annotations; their presence or absence never changes the business value. Put permitted work proposals in effects and display metadata in annotations, never inside body or business arguments. Do not add a text delimiter, separate annotation call or another model request solely to fill annotations or relay a return. A String remains its complete original String, Bool stays a boolean, and a record retains all fields, not only reply. Runtime performs the business value's JSON transport encoding. A Program source remains complete UTF-8 source. This returns to the actual parent Plan, not a separate user chat or completion of parent work.");
+        evaluation_text.push_str("\n\nReturn the exact complete typed terminal value through the frozen Session IO carrier. For native_v3 the original JSON business value or complete UTF-8 Program is the native message, not a body/annotations wrapper. Actual work uses native calls, with applicable execution title/progress and intent in that SAME call's advertised _morphz field when enabled. You MUST provide applicable work annotations; receiver tolerance is not permission to omit them. Historical explicit outputs retain their frozen fields. Never insert metadata into business values or original arguments; Runtime strips only its advertised metadata field before original validation. Do not add a text delimiter, annotation companion or model request solely to fill annotations or relay the result. A String keeps its complete value, Bool remains a boolean, a record retains all fields, and Program source remains UTF-8. This returns to the actual parent Plan, not another user chat or completion of parent work.");
     }
     let mut payload = serde_json::Map::from_iter([
         (
@@ -5584,11 +5584,9 @@ mod tests {
             infer_request_event(&parent, &infer, crate::response_annotations::Protocol::On)
                 .unwrap();
         let annotated_instruction = annotated_request.payload["text"].as_str().unwrap();
-        assert!(annotated_instruction
-            .contains("provide applicable execution and step annotations"));
-        assert!(annotated_instruction
-            .contains("Runtime tolerates missing annotations, but that is not permission to omit"));
-        assert!(annotated_instruction.contains("Put permitted work proposals in effects"));
+        assert!(annotated_instruction.contains("You MUST provide applicable work annotations"));
+        assert!(annotated_instruction.contains("receiver tolerance is not permission to omit"));
+        assert!(annotated_instruction.contains("Actual work uses native calls"));
         assert!(!annotated_instruction.contains("Do not wrap it in an Evaluation object"));
         assert!(!instruction.contains("SAME output schema to EVERY response"));
         let runtime_store: Arc<dyn RuntimeStore> = store.clone();

@@ -3,10 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { scriptStudioApplication } from "../packages/core/src/applications.js";
-import {
-  fixtureAnnotationsMessage,
-  profileActualTransportFixture,
-} from "./profile-actual-transport-fixture.js";
+import { profileActualTransportFixture } from "./profile-actual-transport-fixture.js";
 
 /** Real input admission, installed HNS, durable infer hand-off and outbound
  * provider HTTP. Controlled model replies do not replace the routing logic. */
@@ -109,23 +106,24 @@ test(
         if (effort !== undefined) assert.equal(parent.reasoning_effort, effort);
         f.hold(marker);
         f.releaseWithMessages(marker, [
-          { name: "host_morphz", arguments: { action: "list", limit: 20 } },
-          fixtureAnnotationsMessage({
-            execution: { title: "TEST 讨论创意", progress: "核对项目目录" },
-            calls: [{ index: 0, intent: "核对本项目目录" }],
-          }),
+          {
+            name: "host_morphz",
+            arguments: {
+              action: "list",
+              limit: 20,
+              _morphz: {
+                execution: { title: "TEST 讨论创意", progress: "核对项目目录" },
+                intent: "核对本项目目录",
+              },
+            },
+          },
         ]);
         const second = await f.waitRequest(marker, start + 1);
         assert.equal(second.model, "profile-actual");
         assert.equal(second.reasoning_effort, effort ?? "low");
         assert.deepEqual(second.tools, definitions);
-        f.releaseWithMessages(
+        f.releaseWithText(
           marker,
-          [
-            fixtureAnnotationsMessage({
-              execution: { title: "TEST 讨论创意", result: "仅讨论，未保存" },
-            }),
-          ],
           JSON.stringify({
             execute: false,
             reply: "TEST 创意讨论完成。",

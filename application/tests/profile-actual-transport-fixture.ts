@@ -119,6 +119,7 @@ export function profileFixtureReturnBinding(request: CapturedRequest) {
     "format",
   );
   return {
+    carrier: fixtureValue(binding, "carrier") as string | undefined,
     delivery_id: fixtureValue(binding, "delivery_id") as string,
     format: {
       id: fixtureValue(format, "id") as string,
@@ -162,7 +163,10 @@ export function profileFixtureObservationResult(
 export function profileFixtureAnnotationsMessage(
   request: CapturedRequest,
 ): { name: string; arguments: unknown } | undefined {
-  return profileFixtureReturnBinding(request)?.annotations_enabled
+  const binding = profileFixtureReturnBinding(request);
+  // Native Chat needs only its ordinary body. Tests of actual work explicitly
+  // attach _morphz to that call; never synthesize a metadata companion.
+  return binding?.annotations_enabled && binding.carrier !== "native_v3"
     ? fixtureAnnotationsMessage(
         {
           execution: {
@@ -178,8 +182,8 @@ export function fixtureAnnotationsMessage(
   metadata: unknown,
   deliveryId = "fixture-metadata",
 ) {
-  // Historical test-authoring shape only. For a current frozen v2 binding,
-  // respond() builds one Evaluation value; this is never a companion wire call.
+  // Historical v2 test-authoring shape and explicitly invalid-native fixture.
+  // Fresh native tests attach _morphz to work, never use this for valid replies.
   return {
     name: "deliver_message",
     arguments: {

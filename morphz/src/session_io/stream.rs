@@ -20,6 +20,27 @@ mod tests {
             serde_json::from_value(json!({"session_id":"s","root_turn_id":root,"model_attempt_id":attempt,"stream":{"kind":kind,"text":text}})).unwrap())
     }
     #[test]
+    fn provisional_reclassification_replaces_only_the_live_prefix_and_keeps_sequence() {
+        let streams = Streams::default();
+        streams.observe(&mut event("r", "m", "text_delta", "临时进度"));
+        let mut replacement = event("r", "m", "text_snapshot", "");
+        streams.observe(&mut replacement);
+        let update = &replacement.payload["session_io_stream"];
+        assert_eq!(update["delta_seq"], 2);
+        assert_eq!(update["snapshot"], true);
+        assert_eq!(update["operation"], "text.replace");
+        assert_eq!(streams.snapshots("s")[0]["text"], "");
+        streams.observe(&mut event("r", "m", "text_delta", "真实正文"));
+        assert_eq!(streams.snapshots("s")[0]["text"], "真实正文");
+        assert_eq!(streams.snapshots("s")[0]["delta_seq"], 3);
+        let mut terminal = event("r", "m", "completed", "");
+        terminal.topic = "session/io_state".into();
+        streams.observe(&mut terminal);
+        let mut late = event("r", "m", "text_snapshot", "不能覆盖已提交答案");
+        streams.observe(&mut late);
+        assert!(!late.payload.contains_key("session_io_stream"));
+    }
+    #[test]
     fn drafts_are_sequenced_bounded_and_terminal_fenced() {
         let stream = Streams::default();
         let mut first = event("r", "m", "started", "");
@@ -244,7 +265,7 @@ impl Streams {
             return;
         };
         let kind = stream["kind"].as_str().unwrap_or_default();
-        if !matches!(kind, "started" | "text_delta" | "failed" | "incomplete") {
+        if !matches!(kind, "started" | "text_delta" | "text_snapshot" | "failed" | "incomplete") {
             return;
         }
         if !state.drafts.contains_key(&output_id) {
@@ -267,9 +288,10 @@ impl Streams {
             "started" => {
                 update["type"] = json!("output.started");
             }
-            "text_delta" => {
+            "text_delta" | "text_snapshot" => {
                 let text = stream["text"].as_str().unwrap_or_default();
-                let current = draft["text"].as_str().unwrap_or_default();
+                let replace = kind == "text_snapshot";
+                let current = if replace { "" } else { draft["text"].as_str().unwrap_or_default() };
                 if current.len().saturating_add(text.len()) > MAX_DRAFT_BYTES {
                     draft["aborted"] = json!(true);
                     draft["text"] = json!("");
@@ -287,7 +309,13 @@ impl Streams {
                     draft["text"] = json!(prefix);
                     draft["delta_seq"] = json!(seq);
                     update["type"] = json!("output.delta");
-                    update["operation"] = json!("text.append");
+                    update["operation"] = json!(if replace { "text.replace" } else { "text.append" });
+                    if replace {
+                        // Reuse the existing complete-prefix contract. Old
+                        // consumers already replace snapshots atomically;
+                        // they must not append a corrected provisional leaf.
+                        update["snapshot"] = json!(true);
+                    }
                     update["text"] = json!(text);
                     update["delta_seq"] = json!(seq);
                 }

@@ -40,7 +40,7 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
     (operator call
       (form (call tool argument...))
       (description
-        "Propose the exact tool name and original business arguments through the frozen Session IO return carrier. A structured Evaluation uses effects with enabled step intent in the same proposal; a historical native binding keeps native calls;
+        "Propose the exact tool name and original business arguments through the frozen Session IO return carrier. Native_v3 uses actual native calls and applicable enabled _morphz metadata on that same call; only historical explicit Evaluation outputs use effects;
          wait for the tool result and treat it as the current expression's Observation."))
 
     (operator fallback
@@ -68,7 +68,7 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
       (description
         "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
          To evaluate it, return content itself through Session IO to this Evaluation's actual caller: its active Session or parent Plan.
-         The business body and applicable enabled annotations occupy their own fields of the SAME returned value, never companion calls or metadata inside the business value;
+         The frozen carrier owns encoding: native_v3 returns original text/typed values in the native message, with applicable work metadata on the same actual native call; historical explicit outputs keep their own fields. Never add companion calls or metadata inside business values;
          never send the (reply ...) parentheses or operator name as a response envelope.
          End the current Evaluation when no required process remains; returning a child value does not complete parent work."))))"#;
 
@@ -94,7 +94,7 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
     (operator call
       (form (call tool argument...))
       (description
-        "Propose the exact tool name and original business arguments through the frozen Session IO return carrier. A structured Evaluation uses effects with enabled step intent in the same proposal; a historical native binding keeps native calls;
+        "Propose the exact tool name and original business arguments through the frozen Session IO return carrier. Native_v3 uses actual native calls and applicable enabled _morphz metadata on that same call; only historical explicit Evaluation outputs use effects;
          wait for the tool result and treat it as the current expression's Observation."))
 
     (operator fallback
@@ -122,7 +122,7 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
       (description
         "(reply content) is semantic notation inside a process definition, not a model-response format or a tool.
          To evaluate it, return content itself through Session IO to this Evaluation's actual caller: its active Session or parent Plan.
-         The business body and applicable enabled annotations occupy their own fields of the SAME returned value, never companion calls or metadata inside the business value;
+         The frozen carrier owns encoding: native_v3 returns original text/typed values in the native message, with applicable work metadata on the same actual native call; historical explicit outputs keep their own fields. Never add companion calls or metadata inside business values;
          never send the (reply ...) parentheses or operator name as a response envelope.
          End the current Evaluation when no required work remains. Maintain Mind only for an accurate state change worth retaining;
          maintenance is not a mandatory closing step and Runtime finalizing/maintenance-budget limits take precedence.

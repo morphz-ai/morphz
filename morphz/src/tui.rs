@@ -1873,6 +1873,11 @@ impl UiState {
                     attempt.text.push_str(&text);
                 }
             }
+            ModelStreamEvent::TextSnapshot { text } => {
+                if let Some(attempt) = self.live_attempts.get_mut(attempt_id) {
+                    attempt.text = text;
+                }
+            }
             // This is the provider-authored, presentation-safe summary channel,
             // not hidden chain-of-thought. Deltas drive the live preview; the
             // Runtime later commits one durable model_reasoning_summary fact.
@@ -1892,7 +1897,9 @@ impl UiState {
             // Consumed inside the Orchestrator before presentation events are
             // broadcast. Keep this defensive arm so a future transport bug
             // still cannot expose opaque reasoning continuation state.
-            ModelStreamEvent::ProviderContinuation { .. } => {}
+            ModelStreamEvent::ProviderContinuation { .. }
+            | ModelStreamEvent::ProviderMessageItem { .. }
+            | ModelStreamEvent::ProviderMessageDelta { .. } => {}
             ModelStreamEvent::ToolCallStarted { index, name, .. } => {
                 if let Some(attempt) = self.live_attempts.get_mut(attempt_id) {
                     attempt.tools.entry(index).or_default().name = name.clone();

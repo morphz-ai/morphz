@@ -29,6 +29,8 @@ mod refresh_diagnostics;
 pub mod routing;
 #[cfg(test)]
 mod native_output_tests;
+#[cfg(test)]
+mod native_message_tests;
 
 pub(crate) type ProviderError = Box<dyn std::error::Error + Send + Sync>;
 pub type ConfiguredClient = (Arc<dyn Client>, SelectedProvider);
@@ -3177,6 +3179,7 @@ struct StreamAccumulator {
     chat_reasoning_content: String,
     responses_reasoning_items: BTreeMap<usize, Value>,
     responses_message_items: BTreeMap<usize, Value>,
+    responses_message_final: HashSet<usize>,
     responses_text_deltas: BTreeMap<(usize, usize), String>,
     responses_text_final: BTreeMap<(usize, usize), String>,
     responses_unindexed_text: bool,
@@ -3317,12 +3320,19 @@ impl StreamAccumulator {
                 // can recover that text without duplicating streamed deltas.
                 self.responses_message_items.insert(index, item.clone());
                 if authoritative {
+                    self.responses_message_final.insert(index);
                     let parts = Self::openai_responses_message_text(index, item);
                     self.validate_openai_responses_text_snapshot(&parts, Some(index))?;
                     for (part, text) in parts {
                         self.remember_openai_responses_text(part, &text)?;
                     }
                 }
+                let _ = stream.send(ModelStreamEvent::ProviderMessageItem {
+                    index,
+                    id: item.get("id").and_then(Value::as_str).map(str::to_owned),
+                    phase: item.get("phase").and_then(Value::as_str).map(str::to_owned),
+                    text: authoritative.then(|| Self::openai_responses_message_text(index, item).into_values().collect()),
+                });
             }
             Some("function_call") => {
                 self.tool(
@@ -3822,6 +3832,11 @@ impl StreamAccumulator {
                                 "text delta conflicts with its authoritative output/content part",
                             ));
                         }
+                        let _ = stream.send(ModelStreamEvent::ProviderMessageDelta {
+                            index: output_index as usize,
+                            content_index: content_index as usize,
+                            text: delta.to_string(),
+                        });
                     } else {
                         self.responses_unindexed_text = true;
                     }
@@ -4215,6 +4230,26 @@ impl StreamAccumulator {
                 ModelProtocol::OpenaiResponses,
                 "response.completed reported output_tokens=0 without text, tool calls, or resumable reasoning state",
             ));
+        }
+        // Some compatible endpoints send indexed deltas/text.done but omit
+        // message items. The native response terminal still closes those exact
+        // indexed text parts. Preserve the last supplied phase, never infer it
+        // from prose/JSON syntax; do not synthesize a native item identity.
+        let mut message_parts = self.responses_text_deltas.clone();
+        message_parts.extend(self.responses_text_final.clone());
+        let mut messages = BTreeMap::<usize, String>::new();
+        for ((index, _), text) in message_parts {
+            messages.entry(index).or_default().push_str(&text);
+        }
+        for (index, text) in messages {
+            if self.responses_message_final.contains(&index) { continue; }
+            let item = self.responses_message_items.get(&index);
+            let _ = stream.send(ModelStreamEvent::ProviderMessageItem {
+                index,
+                id: item.and_then(|item| item.get("id")).and_then(Value::as_str).map(str::to_owned),
+                phase: item.and_then(|item| item.get("phase")).and_then(Value::as_str).map(str::to_owned),
+                text: Some(text),
+            });
         }
         let indices = self.tools.keys().copied().collect::<Vec<_>>();
         for index in indices {

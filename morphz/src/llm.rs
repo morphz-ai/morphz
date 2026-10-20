@@ -744,6 +744,28 @@ pub enum ModelStreamEvent {
     TextDelta {
         text: String,
     },
+    /// A provisional display replacement, not a committed answer. A native
+    /// message's phase can change at its authoritative terminal. Consumers
+    /// must replace this attempt's draft rather than append a second answer.
+    TextSnapshot {
+        text: String,
+    },
+    /// Native message identity/phase, kept separate from the legacy flattened
+    /// text stream. `text` is supplied only by an authoritative item terminal.
+    /// Internal transport metadata: never broadcast it as presentation text.
+    ProviderMessageItem {
+        index: usize,
+        id: Option<String>,
+        phase: Option<String>,
+        text: Option<String>,
+    },
+    /// Indexed companion to TextDelta for consumers with an explicit native
+    /// message binding. It does not add another copy to Response.content.
+    ProviderMessageDelta {
+        index: usize,
+        content_index: usize,
+        text: String,
+    },
     /// A provider-authored summary of its reasoning process. This is a
     /// transient presentation channel: callers must not merge it into the
     /// assistant reply or persist it as conversation content.

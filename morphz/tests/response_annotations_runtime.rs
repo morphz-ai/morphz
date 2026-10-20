@@ -57,6 +57,20 @@ const RAW_LIFECYCLE_WORK: &str = r#"{"key":"system","_annotations":{"execution":
 // Test-only semantic comparison view of the actual native response. This is
 // not a provider wire value, production codec or protocol parser.
 fn evaluation_value(bundle: &PersistedAnnotations) -> Value {
+    if let Some(native) = &bundle.native_response {
+        let parts = morphz::session_io::native::decode_messages(&bundle.raw_response,
+            &native.messages, &native.binding, "fixture-view").unwrap();
+        let effects = parts.response.tool_calls.iter().zip(&bundle.raw_response.tool_calls)
+            .map(|(business, raw)| json!({"name":business.func_name,
+                "arguments":serde_json::from_str::<Value>(&business.arguments).unwrap(),
+                "intent":serde_json::from_str::<Value>(&raw.arguments).unwrap()["_morphz"]["intent"]}))
+            .collect::<Vec<_>>();
+        let body = if parts.response.content.is_empty() { Value::Null }
+            else if native.binding.message_encoding == morphz::session_io::native::MessageEncoding::CallerJson {
+                serde_json::from_str(&parts.response.content).unwrap()
+            } else { json!(parts.response.content) };
+        return json!({"body":body,"effects":effects,"annotations":parts.annotation_messages.first().and_then(|a| morphz::session_io::response::annotations_value(&a.message)).unwrap_or_else(|| json!({}))});
+    }
     if bundle.return_binding.as_ref().is_some_and(morphz::session_io::unified::selected) {
         return serde_json::from_str(&bundle.raw_response.content).unwrap();
     }
@@ -106,6 +120,7 @@ enum Scenario {
     StrictWorkReply,
     StrictBadFinal(u8),
     ImplicitBadFinal(u8),
+    MalformedWorkMetadata(u8),
 }
 
 fn infer_root_case(case: u8) -> (&'static str, &'static str) {
@@ -266,6 +281,8 @@ impl ScriptClient {
                 _ => panic!("missing actual return binding field"),
             };
             return morphz::session_io::response::ReturnBinding {
+                carrier: (field(&["carrier"]) == "native_v3")
+                    .then_some(morphz::session_io::response::ReturnCarrier::NativeV3),
                 delivery_id: field(&["delivery_id"]),
                 format: morphz::session_io::OutputFormat {
                     id: field(&["caller_format", "id"]),
@@ -291,7 +308,7 @@ impl ScriptClient {
                     _ => vec![],
                 },
                 output: match binding.get_path(&["output"]) {
-                    Some(SExpr::Atom(value)) if value == "text" => None,
+                    Some(SExpr::Atom(value)) if value == "text" || value == "native_message" => None,
                     Some(_) => Some(morphz::session_io::unified::binding()),
                     None => panic!("missing frozen output definition"),
                 },
@@ -310,6 +327,32 @@ impl ScriptClient {
         mut response: Response,
         binding: &morphz::session_io::response::ReturnBinding,
     ) -> Response {
+        if binding.is_native() {
+            // Fixture semantic descriptions are encoded into the actual new
+            // wire, not an extra provider delivery or an output wrapper.
+            let mut annotations = Self::annotations(&response).unwrap_or_else(|| json!({}));
+            let intents = annotations.as_object_mut().and_then(|fields| fields.remove("calls"));
+            response.tool_calls.retain(|call| !(call.func_name == "deliver_message"
+                && serde_json::from_str::<Value>(&call.arguments).ok()
+                    .is_some_and(|value| value["message"]["format"]["id"] == "morphz.response.annotations")));
+            for (index, call) in response.tool_calls.iter_mut().enumerate() {
+                if !binding.annotations_enabled || matches!(call.func_name.as_str(), "no_reply" | "deliver_message") {
+                    continue;
+                }
+                let mut fields = annotations.clone();
+                if let Some(intent) = intents.as_ref().and_then(Value::as_array)
+                    .and_then(|items| items.iter().find(|item| item["index"].as_u64() == Some(index as u64)))
+                    .and_then(|item| item.get("intent")) {
+                    fields["intent"] = intent.clone();
+                }
+                if fields.as_object().is_some_and(|fields| !fields.is_empty()) {
+                    let mut args: Value = serde_json::from_str(&call.arguments).unwrap();
+                    args["_morphz"] = fields;
+                    call.arguments = args.to_string();
+                }
+            }
+            return response;
+        }
         if morphz::session_io::unified::selected(binding) {
             let mut annotations = Self::annotations(&response).unwrap_or(Value::Null);
             let intents = annotations.as_object_mut().and_then(|fields| fields.remove("calls"));
@@ -419,7 +462,7 @@ impl ScriptClient {
         assert_eq!(
             call.tool_calls.as_ref().unwrap()[0].function.arguments,
             if annotated {
-                Self::work(RAW_LIFECYCLE_WORK).tool_calls[0]
+                Self::encode_for_binding(Self::work(RAW_LIFECYCLE_WORK), &Self::return_binding(messages)).tool_calls[0]
                     .arguments
                     .clone()
             } else {
@@ -504,6 +547,8 @@ impl Client for ScriptClient {
                 1
             } else if matches!(self.scenario, Scenario::Infer) {
                 4
+            } else if matches!(self.scenario, Scenario::InvalidObservation) {
+                3
             } else if matches!(
                 self.scenario,
                 Scenario::Recovery | Scenario::BadMixedReply | Scenario::BadDuplicateReply
@@ -721,6 +766,24 @@ impl Client for ScriptClient {
                 content: FINAL_TEXT.into(),
                 tool_calls: vec![],
             },
+            (Scenario::MalformedWorkMetadata(case), 0) => {
+                let metadata = match case {
+                    0 => Value::Null,
+                    1 => json!("not metadata"),
+                    2 => json!({"execution":{"title":27},"intent":"真实步骤"}),
+                    3 => json!({"execution":{"title":"真实标题"},"intent":false}),
+                    4 => json!({"execution":{"title":"真实标题"},"observations_note":null}),
+                    5 => json!({"execution":{"title":"真实标题"},"observations":[{"ref":"@e9999999","result":"不得显示"}]}),
+                    _ => json!({"execution":{"title":"真实标题"},"intent":"意".repeat(2048)}),
+                };
+                Response { content:String::new(),tool_calls:vec![ToolCallRepr {
+                    id:"synthetic-work-call".into(),r#type:"function".into(),func_name:"annotation_probe".into(),
+                    arguments:json!({"key":"system","_morphz":metadata}).to_string(),
+                }] }
+            }
+            (Scenario::MalformedWorkMetadata(_), 1) | (Scenario::InvalidObservation, 2) => Response {
+                content: FINAL_TEXT.into(), tool_calls:vec![],
+            },
             (Scenario::OffBusiness, 0) => Self::work(RAW_BUSINESS),
             (Scenario::OffBusiness, 1) => Response {
                 content: FINAL_TEXT.into(),
@@ -783,7 +846,7 @@ impl Client for ScriptClient {
                     messages[raw].tool_calls.as_ref().unwrap()[0]
                         .function
                         .arguments,
-                    Self::work(RAW_WORK).tool_calls[0].arguments
+                    Self::encode_for_binding(Self::work(RAW_WORK), &Self::return_binding(&messages)).tool_calls[0].arguments
                 );
                 assert!(messages.iter().flat_map(|message|message.tool_calls.iter().flatten()).all(|call|call.function.name!="deliver_message"),"optional communication must not leave an unanswered function call in native history");
                 let receipt = messages
@@ -822,7 +885,14 @@ impl Client for ScriptClient {
                 if matches!(self.scenario, Scenario::StrictWorkReply) {
                     args["annotations"]["execution"]["title"] = json!("检查合成环境");
                 }
-                Self::reply(args)
+                if matches!(self.scenario, Scenario::InvalidObservation) {
+                    // A second real fixture action may explain its already
+                    // supplied predecessor. No metadata-only call is emitted.
+                    let mut work = Self::work(r#"{"key":"system"}"#);
+                    work.tool_calls[0].id = "synthetic-second-work-call".into();
+                    work.tool_calls.push(Self::metadata(args["annotations"].clone()));
+                    work
+                } else { Self::reply(args) }
             }
             _ => panic!("unexpected scripted completion"),
         };
@@ -1167,7 +1237,7 @@ async fn default_and_explicit_off_preserve_complete_system_and_tool_schema_bytes
     );
     assert!(!a.tools.iter().any(|t| t.name == "reply"));
     assert!(systems(&a).iter().any(|s| String::from_utf8_lossy(s)
-        .contains("Session IO: one Evaluation return with optional display annotations:")));
+        .contains("Session IO: the frozen evaluation-environment.session-io-return binding owns interpretation")));
     assert_eq!(a.binding.protocol, "openai-responses");
     assert_eq!(a.options, b.options);
     for (fixture, root) in [(&default, root), (&explicit, other_root)] {
@@ -1224,7 +1294,7 @@ async fn off_keeps_reserved_looking_business_arguments_untouched() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn enabled_uses_unified_work_actual_observations_and_durable_annotations() {
+async fn enabled_uses_native_work_original_handshake_and_durable_annotations() {
     let fixture = Fixture::new(Scenario::WorkReply, Protocol::Off).await;
     let mut stream = fixture.runtime.subscribe("runtime/model_stream", 512);
     let (accepted, reply) = fixture.submit(Some(Protocol::On)).await;
@@ -1259,14 +1329,11 @@ async fn enabled_uses_unified_work_actual_observations_and_durable_annotations()
         projected.progress.is_none(),
         "terminal facts hide stage text"
     );
-    assert_eq!(projected.result.as_deref(), Some("已确认合成系统为 Linux"));
+    assert!(projected.result.is_none(), "final ordinary body does not require a second summary");
     assert_eq!(projected.steps.len(), 1);
     assert_eq!(projected.steps[0].job_id, jobs[0].id);
     assert_eq!(projected.steps[0].intent.as_deref(), Some("读取合成系统"));
-    assert_eq!(
-        projected.steps[0].result.as_deref(),
-        Some("合成系统为 Linux")
-    );
+    assert!(projected.steps[0].result.is_none());
     assert_eq!(projected.source_count, 2);
     assert!(!projected.truncated);
     let public_projection = serde_json::to_value(&projected).unwrap();
@@ -1353,8 +1420,8 @@ async fn enabled_uses_unified_work_actual_observations_and_durable_annotations()
             .as_array()
             .unwrap()
             .len(),
-        0,
-        "a value effect is not a native call and must not forge a handshake"
+        1,
+        "the real native call retains its original handshake identity"
     );
     assert_eq!(bundle.scope, scope);
     assert!(bundle.records.iter().all(|r| r.source.sequence.is_none()));
@@ -1368,16 +1435,8 @@ async fn enabled_uses_unified_work_actual_observations_and_durable_annotations()
     assert!(records
         .iter()
         .any(|r| r.kind == AnnotationKind::Intent && r.value == "读取合成系统"));
-    assert!(
-        records
-            .iter()
-            .any(|r| r.kind == AnnotationKind::ObservationResult
-                && r.observation_ref == *fixture.client.receipt_ref.lock().unwrap()
-                && r.observation_event_id.is_some()),
-        "calls={calls:#?}, outputs={:#?}",
-        fixture.events(&accepted.id, Some("chat/tool_output")).await
-    );
-    assert!(records.iter().any(|r| r.kind == AnnotationKind::Result));
+    assert!(!records.iter().any(|r| matches!(r.kind, AnnotationKind::ObservationResult | AnnotationKind::Result)),
+        "no final-only display data is manufactured after the last work call");
     assert!(records.iter().all(|r| r.source.sequence.is_some()));
     let wrong = ExecutionScope {
         generation: scope.generation + 1,
@@ -1457,10 +1516,7 @@ async fn reply_is_terminal_response_not_a_work_job() {
     let bundle: PersistedAnnotations =
         serde_json::from_value(calls[0].payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
     assert_eq!(evaluation_value(&bundle)["body"], FINAL_TEXT);
-    assert!(bundle
-        .records
-        .iter()
-        .any(|r| r.kind == AnnotationKind::Result));
+    assert!(bundle.records.is_empty(), "ordinary no-work replies have no annotations");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1495,8 +1551,8 @@ async fn unknown_observation_ref_is_rejected_without_repair_or_extra_execution()
     }
     let (root, reply) = fixture.submit(Some(Protocol::On)).await;
     assert_eq!(reply.payload["text"], FINAL_TEXT);
-    assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(fixture.arguments.lock().unwrap().len(), 1);
+    assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 3);
+    assert_eq!(fixture.arguments.lock().unwrap().len(), 2);
     let calls = fixture.events(&root.id, Some("chat/assistant_call")).await;
     let bundles: Vec<PersistedAnnotations> = calls
         .iter()
@@ -1518,7 +1574,7 @@ async fn unknown_observation_ref_is_rejected_without_repair_or_extra_execution()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn single_infer_harness_keeps_required_annotations_typed_values_and_streaming_in_one_request()
+async fn single_pure_infer_keeps_original_type_streaming_and_empty_authority_in_one_request()
 {
     let mut stable_tools = None;
     let mut baseline_values = std::collections::HashMap::new();
@@ -1616,17 +1672,15 @@ async fn single_infer_harness_keeps_required_annotations_typed_values_and_stream
                 assert_eq!(captured.len(), 1);
                 if protocol.is_off() {
                     assert!(annotations.is_none());
-                    assert_eq!(captured[0].tools.len(), 1);
-                    assert_eq!(captured[0].tools[0].name, "deliver_message");
+                    assert!(captured[0].tools.is_empty());
                     assert!(
                         !ScriptClient::return_binding(&captured[0].messages).annotations_enabled
                     );
                 } else {
                     let annotations = annotations.unwrap();
-                    assert_eq!(annotations.title.as_deref(), Some("核对合成返回值"));
-                    assert_eq!(annotations.result.as_deref(), Some("合成求值已返回"));
-                    assert_eq!(captured[0].tools.len(), 1);
-                    assert_eq!(captured[0].tools[0].name, "deliver_message");
+                    assert!(annotations.title.is_none());
+                    assert!(annotations.result.is_none());
+                    assert!(captured[0].tools.is_empty());
                     if protocol == Protocol::On {
                         let encoded = serde_json::to_vec(&captured[0].tools).unwrap();
                         assert_eq!(
@@ -1636,6 +1690,7 @@ async fn single_infer_harness_keeps_required_annotations_typed_values_and_stream
                         );
                     }
                 }
+                assert_eq!(captured[0].options.tool_choice, Some(morphz::llm::ModelToolChoice::None));
                 drop(captured);
                 let mut text = String::new();
                 let mut public = String::new();
@@ -1727,24 +1782,34 @@ async fn invalid_infer_business_value_still_fails_without_repair_or_a_model_rela
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restart_replays_seeded_enabled_plan_once_without_reasking_or_rewriting_annotations() {
-    assert_restart_replays_seeded_plan_once(None, false, Protocol::On).await;
+    assert_restart_replays_seeded_plan_once(None, FrozenTestCarrier::Historical, Protocol::On).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restart_replays_imported_enabled_plan_using_actual_nonstable_thread_identity() {
-    assert_restart_replays_seeded_plan_once(Some("imported-annotations-thread"), false, Protocol::On).await;
+    assert_restart_replays_seeded_plan_once(Some("imported-annotations-thread"), FrozenTestCarrier::Historical, Protocol::On).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restart_preserves_unified_carrier_in_both_annotation_modes() {
     for protocol in [Protocol::On, Protocol::Off] {
-        assert_restart_replays_seeded_plan_once(None, true, protocol).await;
+        assert_restart_replays_seeded_plan_once(None, FrozenTestCarrier::Unified, protocol).await;
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restart_replays_frozen_native_work_once_in_both_annotation_modes() {
+    for protocol in [Protocol::On, Protocol::Off] {
+        assert_restart_replays_seeded_plan_once(None, FrozenTestCarrier::Native, protocol).await;
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FrozenTestCarrier { Historical, Unified, Native }
+
 async fn assert_restart_replays_seeded_plan_once(
     legacy_thread_id: Option<&str>,
-    unified: bool,
+    carrier: FrozenTestCarrier,
     protocol: Protocol,
 ) {
     use morphz::memory::{
@@ -1933,9 +1998,11 @@ async fn assert_restart_replays_seeded_plan_once(
         &activation.id,
         !protocol.is_off(),
     );
-    if unified {
-        return_binding = return_binding.with_unified_output();
-    }
+    return_binding = match carrier {
+        FrozenTestCarrier::Historical => return_binding,
+        FrozenTestCarrier::Unified => return_binding.with_unified_output(),
+        FrozenTestCarrier::Native => return_binding.with_native_output(),
+    };
     let context = NormalizationContext {
         protocol,
         return_binding: Some(return_binding.clone()),
@@ -1947,14 +2014,15 @@ async fn assert_restart_replays_seeded_plan_once(
         }),
         ..Default::default()
     };
-    let normalized = normalize_response(
-        &ScriptClient::encode_for_binding(
-            ScriptClient::work(RAW_WORK),
-            context.return_binding.as_ref().unwrap(),
-        ),
-        &context,
-    )
-    .unwrap();
+    let raw = ScriptClient::encode_for_binding(ScriptClient::work(RAW_WORK), &return_binding);
+    let normalized = if matches!(carrier, FrozenTestCarrier::Native) {
+        let prepared = morphz::session_io::native::prepare(&return_binding, &[], &[
+            ProbeTool { arguments: fixture.arguments.clone(), business_reserved: false }.definition(),
+        ]).unwrap();
+        morphz::session_io::native::normalize_messages(&raw, &[], &prepared.binding, &context).unwrap()
+    } else {
+        normalize_response(&raw, &context).unwrap()
+    };
     let bundle = PersistedAnnotations::from_normalized(scope.clone(), &normalized);
     let stored_calls = |response: &Response| {
         response.tool_calls.iter().map(|c|json!({"id":c.id,"type":c.r#type,"function":{"name":c.func_name,"arguments":c.arguments}})).collect::<Vec<_>>()
@@ -2078,6 +2146,7 @@ async fn assert_restart_replays_seeded_plan_once(
     let recovered_binding = ScriptClient::return_binding(&captured[0].messages);
     assert_eq!(recovered_binding.output, return_binding.output,
         "recovery must preserve the exact frozen output carrier, not upgrade an old continuation");
+    assert_eq!(recovered_binding.carrier, return_binding.carrier);
     assert_eq!(recovered_binding.format, return_binding.format);
     assert_eq!(recovered_binding.annotations_enabled, return_binding.annotations_enabled);
     drop(captured);
@@ -2220,7 +2289,7 @@ async fn invalid_reply_stream_fails_once_without_tool_dispatch_or_repair_inferen
         let mut public = String::new();
         while let Ok(event) = stream.try_recv() {
             let event_text = event.payload["stream"].to_string();
-            assert!(!event_text.contains("annotations"));
+            assert!(!event_text.contains("_morphz") && !event_text.contains("SYNTHETIC_NATIVE_SIGNATURE"));
             assert!(!event_text.contains("MUST_NOT_APPLY"));
             if event.payload["stream"]["kind"] == "text_delta" {
                 public.push_str(event.payload["stream"]["text"].as_str().unwrap());
@@ -2885,14 +2954,7 @@ async fn interactive_delivery_with_a_future_schedule_preserves_off_outcome_and_e
                 generation: thread.generation,
             };
             let records = records_from_authorized_event(final_source, &scope).unwrap();
-            let result = records
-                .iter()
-                .find(|record| record.kind == AnnotationKind::Result)
-                .unwrap();
-            assert!(result.effective);
-            assert_eq!(result.value, "已确认合成系统为 Linux；后续任务保持排队");
-            assert_eq!(result.source.event_id, final_source.id);
-            assert_eq!(result.source.sequence, final_source.sequence);
+            assert!(records.is_empty(), "final ordinary text does not fabricate result metadata");
             let projection = project_authorized_events(
                 &ExecutionFact {
                     scope,
@@ -2903,10 +2965,7 @@ async fn interactive_delivery_with_a_future_schedule_preserves_off_outcome_and_e
                 &events,
             )
             .unwrap();
-            assert_eq!(
-                projection.result.as_deref(),
-                Some("已确认合成系统为 Linux；后续任务保持排队")
-            );
+            assert!(projection.result.is_none());
         } else {
             assert!(events.iter().all(has_no_annotation_records));
         }
@@ -3016,15 +3075,8 @@ async fn rejected_objective_completion_then_reply_has_distinct_enabled_boundarie
             .unwrap()
             .iter()
             .all(|record| record.kind != AnnotationKind::Result || !record.effective));
-        let result = records_from_authorized_event(final_event, &final_bundle.scope)
-            .unwrap()
-            .into_iter()
-            .find(|record| record.kind == AnnotationKind::Result)
-            .unwrap();
-        assert_eq!(result.value, "未绑定目标，关闭请求被拒绝");
-        assert!(result.effective);
-        assert_eq!(result.source.event_id, final_event.id);
-        assert_eq!(result.source.sequence, final_event.sequence);
+        assert!(records_from_authorized_event(final_event, &final_bundle.scope).unwrap().is_empty());
+        assert_eq!(final_event.payload["text"], "目标未绑定，因此未执行关闭。");
         assert_eq!(fixture.client.captured.lock().unwrap().len(), 2);
     }
 }
@@ -3044,7 +3096,7 @@ fn assert_lifecycle_work_result_rejected(
         json!({"key":"system"}),
         "rejection must retain the model's exact original candidate for audit"
     );
-    let original = ScriptClient::annotations(&bundle.raw_response).unwrap();
+    let original = value["annotations"].clone();
     assert_eq!(
         original["execution"]["result"],
         "LIFECYCLE_CANDIDATE_MUST_NOT_FINALIZE"
@@ -3800,22 +3852,9 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
     let original = evaluation_value(&bundle);
     assert_eq!(original["body"], FINAL_TEXT);
     assert!(original["effects"].as_array().unwrap().is_empty());
-    assert_eq!(
-        original["annotations"]["execution"]["result"],
-        "已确认合成系统为 Linux；后续任务保持排队"
-    );
+    assert_eq!(original["annotations"], json!({}));
     let records = records_from_authorized_event(&waiting, &scope).unwrap();
-    let result = records
-        .iter()
-        .find(|record| record.kind == AnnotationKind::Result)
-        .unwrap();
-    assert_eq!(result.value, "已确认合成系统为 Linux；后续任务保持排队");
-    assert!(
-        !result.effective,
-        "normal yield must not establish a terminal model result"
-    );
-    assert_eq!(result.source.event_id, waiting.id);
-    assert_eq!(result.source.sequence, waiting.sequence);
+    assert!(records.is_empty(), "normal yield preserves the real body, not a fabricated terminal summary");
     let timer = fixture
         .store
         .get_runtime_timer(waiting.payload["wait_timer_id"].as_str().unwrap())
@@ -3889,7 +3928,7 @@ async fn genuine_scheduled_delivery_yields_without_an_interactive_root_or_extra_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn enabled_final_reply_persists_required_metadata_in_original_requests_and_native_stream() {
+async fn enabled_final_reply_is_ordinary_text_and_work_metadata_stays_on_actual_calls() {
     for (scenario, expected_calls, expected_jobs) in [
         (Scenario::ReplyOnly, 1, 0),
         (Scenario::TextReply, 1, 0),
@@ -3921,8 +3960,8 @@ async fn enabled_final_reply_persists_required_metadata_in_original_requests_and
             .unwrap()
             .unwrap();
         assert_eq!(projection.protocol, Protocol::On);
-        assert_eq!(projection.title.as_deref(), Some("检查合成环境"));
-        assert!(projection.result.is_some());
+        assert_eq!(projection.title.as_deref(), (expected_jobs > 0).then_some("检查合成环境"));
+        assert!(projection.result.is_none());
         let events = fixture
             .events(&accepted.id, Some("chat/assistant_call"))
             .await;
@@ -3942,19 +3981,10 @@ async fn enabled_final_reply_persists_required_metadata_in_original_requests_and
             .records
             .iter()
             .all(|record| record.protocol == Protocol::On));
-        assert!(bundle
-            .records
-            .iter()
-            .any(|record| record.kind == AnnotationKind::Title));
-        assert!(bundle
-            .records
-            .iter()
-            .any(|record| record.kind == AnnotationKind::Result));
+        assert!(bundle.records.is_empty());
         assert_eq!(evaluation_value(&bundle)["body"], FINAL_TEXT);
-        let metadata = ScriptClient::annotations(&bundle.raw_response)
-            .expect("separate typed metadata message");
-        assert!(metadata["execution"]["title"].as_str().is_some());
-        assert!(metadata["execution"]["result"].as_str().is_some());
+        assert!(bundle.raw_response.tool_calls.is_empty());
+        assert!(bundle.native_response.is_some());
         assert!(records_from_authorized_event(final_source, &scope)
             .unwrap()
             .iter()
@@ -3966,7 +3996,7 @@ async fn enabled_final_reply_persists_required_metadata_in_original_requests_and
                 .any(|message| message.role == "system"
                     && message
                         .content
-                        .contains("Session IO: one Evaluation return with optional display annotations:")));
+                        .contains("Session IO: the frozen evaluation-environment.session-io-return binding owns interpretation")));
             let schema = &request
                 .tools
                 .iter()
@@ -4022,7 +4052,7 @@ async fn enabled_final_reply_persists_required_metadata_in_original_requests_and
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn invalid_display_metadata_is_rejected_without_destroying_an_independent_body_or_requesting_repair(
+async fn ordinary_final_body_is_not_wrapped_or_given_an_annotation_companion(
 ) {
     for scenario in std::iter::once(Scenario::Plain)
         .chain((0..=6).map(Scenario::StrictBadFinal))
@@ -4053,25 +4083,8 @@ async fn invalid_display_metadata_is_rejected_without_destroying_an_independent_
         let sources = fixture.events(&root.id, Some("chat/assistant_call")).await;
         let bundle: PersistedAnnotations =
             serde_json::from_value(sources[0].payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
-        let partial = matches!(
-            scenario,
-            Scenario::StrictBadFinal(3..=6) | Scenario::ImplicitBadFinal(3..=6)
-        );
-        assert_eq!(
-            bundle.records.len(),
-            usize::from(partial),
-            "accept only the actually provided valid field"
-        );
-        let invalid = matches!(
-            scenario,
-            Scenario::StrictBadFinal(2 | 4 | 5 | 6)
-                | Scenario::ImplicitBadFinal(2 | 4 | 5 | 6)
-        );
-        assert_eq!(
-            !bundle.diagnostics.is_empty(),
-            invalid,
-            "{scenario:?}: omitted/null annotations are valid; invalid supplied fields remain diagnostics: {:?}", bundle.diagnostics
-        );
+        assert!(bundle.records.is_empty());
+        assert!(bundle.diagnostics.is_empty(), "ordinary bodies do not enter annotation validation");
         assert_eq!(
             fixture
                 .events(&root.id, Some("session/io_output"))
@@ -4084,6 +4097,29 @@ async fn invalid_display_metadata_is_rejected_without_destroying_an_independent_
         );
     }
 }
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn invalid_optional_native_work_metadata_preserves_strict_original_work_and_body() {
+    for case in 0..=6 {
+        let fixture = Fixture::new(Scenario::MalformedWorkMetadata(case), Protocol::On).await;
+        let (root, reply) = fixture.submit(Some(Protocol::On)).await;
+        assert_eq!(reply.payload["text"], FINAL_TEXT);
+        assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.arguments.lock().unwrap().as_slice(), &[json!({"key":"system"})]);
+        assert_eq!(fixture.jobs().await.len(), 1);
+        assert!(fixture.events(&root.id, Some("runtime/response_protocol_error")).await.is_empty());
+        let events = fixture.events(&root.id, Some("chat/assistant_call")).await;
+        let work: PersistedAnnotations = serde_json::from_value(events.iter()
+            .find(|event| event.payload["tool_calls"].as_array().is_some_and(|calls| !calls.is_empty()))
+            .unwrap().payload[BUNDLE_PAYLOAD_KEY].clone()).unwrap();
+        assert!(work.native_response.is_some());
+        if case != 0 { assert!(!work.diagnostics.is_empty(), "case {case}: invalid supplied metadata remains diagnostic"); }
+        assert!(work.records.iter().all(|record| record.value != "不得显示"));
+        let captured = fixture.client.captured.lock().unwrap();
+        assert_eq!(serde_json::to_vec(&captured[0].tools).unwrap(), serde_json::to_vec(&captured[1].tools).unwrap());
+        assert!(captured.iter().all(|request| request.options.output_encoding.is_none()));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn infer_preserves_the_business_value_but_never_masquerades_as_annotation_compliant() {
     for scenario in [Scenario::InferRoot(4), Scenario::TextInferRoot(4)] {
@@ -4124,10 +4160,7 @@ async fn every_new_infer_has_scoped_metadata_and_stable_tools_without_extra_requ
     assert_eq!(fixture.client.calls.load(Ordering::SeqCst), 4);
     let captured = fixture.client.captured.lock().unwrap().clone();
     for request in &captured[1..3] {
-        assert!(request
-            .tools
-            .iter()
-            .any(|tool| tool.name == "deliver_message"));
+        assert!(!request.tools.iter().any(|tool| tool.name == "deliver_message"));
         assert!(request
             .tools
             .iter()
@@ -4138,7 +4171,7 @@ async fn every_new_infer_has_scoped_metadata_and_stable_tools_without_extra_requ
             .filter(|message| message.role == "system")
             .any(|message| message
                 .content
-                .contains("Session IO: one Evaluation return with optional display annotations:")));
+                .contains("Session IO: the frozen evaluation-environment.session-io-return binding owns interpretation")));
     }
     assert_eq!(
         serde_json::to_vec(&captured[1].tools).unwrap(),
@@ -4172,7 +4205,7 @@ async fn every_new_infer_has_scoped_metadata_and_stable_tools_without_extra_requ
         .unwrap()
         .unwrap();
     assert_eq!(projected.title.as_deref(), Some("读取合成系统"));
-    assert_eq!(projected.result.as_deref(), Some("系统名称为 Linux"));
+    assert!(projected.result.is_none());
     assert_eq!(projected.steps.len(), 1);
     assert_eq!(projected.steps[0].intent.as_deref(), Some("核对系统名称"));
     assert!(fixture

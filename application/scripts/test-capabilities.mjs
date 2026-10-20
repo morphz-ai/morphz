@@ -109,7 +109,7 @@ const optionalTests = [
   ],
   [
     "response-annotations-runtime.test.ts",
-    "actual Runtime + Platform HTTP: native metadata never wraps or invalidates normal reply content",
+    "actual Runtime + Platform HTTP: native bodies preserve protocol examples verbatim without repair",
     "runtime",
     "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
   ],
@@ -119,6 +119,15 @@ const optionalTests = [
     "runtime",
     "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
   ],
+  ...[
+    "actual Runtime + Host history: terminal failure restores its exact cause without response captures or another infer",
+    "actual Runtime + Host IO: late subscription restores the complete prefix, streams before completion and settles once",
+  ].map((name) => [
+    "response-annotations-runtime.test.ts",
+    name,
+    "runtime",
+    "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
+  ]),
   [
     "workspace-changes-actual-runtime.test.ts",
     "actual Rust Job commit wakes authorized Host SSE without the Host reconciliation ticker",

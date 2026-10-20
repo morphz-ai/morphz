@@ -1,0 +1,2524 @@
+{
+  "date": "2026-10-20",
+  "scope": "Isolated native provider/Session IO adapter and synthetic actual-read executor, not production Runtime/Desktop",
+  "all_gates_pass": false,
+  "production_admission_changed": false,
+  "model": "deepseek-flash",
+  "reasoning_effort": "max",
+  "automatic_retries": 0,
+  "approved_plain_chat": {
+    "body_format": "Native text before, during and after work; chosen by binding, never guessed from prose",
+    "annotations": "Strong requirement on actual native tool calls; optional at reception",
+    "final_result": "No separately generated final Chat result annotation; show original body",
+    "typed_values": "Original caller Schema unchanged"
+  },
+  "phase_fix_previous_runs": [
+    {
+      "artifact": "native-candidate-1792463673563-report.json",
+      "sha256": "2f6a0f26490b9e4fd936197da34c6aa37573018a0d154b377ceb2243a1e38a6a",
+      "wire_artifact": "native-candidate-1792463673563-wire.json",
+      "wire_sha256": "271d0140db5ee049a0a25edabcf2c3d8d6feaaf7119a3c62fc995efd39d06b57",
+      "actual_http_requests": 7,
+      "wire_tools_sha256": [
+        "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+      ],
+      "all_pass": true,
+      "cases": [
+        {
+          "case": "read-on",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 50,
+              "first_body_delta_ms": 1456,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.result",
+                "execution.title",
+                "observation.result"
+              ],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 125,
+              "first_body_delta_ms": 2142,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.result",
+                "execution.title",
+                "observation.result",
+                "observation.result"
+              ],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 30,
+              "first_body_delta_ms": 1448,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "native-candidate-1792463717566-report.json",
+      "sha256": "ddd267e21a1670ff1c05a0b1267b8cdf5a0fa25445c11e3842f0c70216e35161",
+      "wire_artifact": "native-candidate-1792463717566-wire.json",
+      "wire_sha256": "887d2c053572399f574fee7c0dab0e21bc6f42006da0fd2a32d48cb5129e320a",
+      "actual_http_requests": 16,
+      "wire_tools_sha256": [
+        "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+      ],
+      "all_pass": true,
+      "cases": [
+        {
+          "case": "chat",
+          "pass": true,
+          "errors": [],
+          "requests": 1,
+          "actual_isolated_reads": 0,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 25,
+              "first_body_delta_ms": 2077,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "literal-protocol",
+          "pass": true,
+          "errors": [],
+          "requests": 1,
+          "actual_isolated_reads": 0,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 234,
+              "first_body_delta_ms": 1751,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "read-on",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 39,
+              "first_body_delta_ms": 1134,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.result",
+                "execution.title",
+                "observation.result"
+              ],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "read-off",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 55,
+              "first_body_delta_ms": 1031,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "read-no-schema",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 30,
+              "first_body_delta_ms": 1168,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 39,
+              "first_body_delta_ms": 2413,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.result",
+                "execution.title",
+                "observation.result",
+                "observation.result"
+              ],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-infer",
+          "pass": true,
+          "errors": [],
+          "requests": 1,
+          "actual_isolated_reads": 0,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 19,
+              "first_body_delta_ms": 1409,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 47,
+              "first_body_delta_ms": 1284,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read-strict",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": true,
+              "body_deltas": 37,
+              "first_body_delta_ms": 1136,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "native-candidate-1792463815791-report.json",
+      "sha256": "f44212fc6a30abd167b7bf9a7e4d63c06a6d6b7e5f4ba930b27623ee6de1b9e6",
+      "wire_artifact": "native-candidate-1792463815791-wire.json",
+      "wire_sha256": "29f61befad942d392d2fe16258ea89ecb6bf86e9e35875650ceafedfe2955350",
+      "actual_http_requests": 9,
+      "wire_tools_sha256": [
+        "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+      ],
+      "all_pass": false,
+      "cases": [
+        {
+          "case": "read-on",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 36,
+              "first_body_delta_ms": 1436,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.result",
+                "execution.title",
+                "observation.result"
+              ],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads",
+          "pass": false,
+          "errors": [
+            "Unexpected extra work; no repair call is allowed",
+            "No complete business answer within necessary request count"
+          ],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 30,
+              "first_body_delta_ms": 1223,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read-strict",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": true,
+              "body_deltas": 48,
+              "first_body_delta_ms": 1427,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "phase_fix_note": "Exact native SSE with final_answer at item.added and commentary at item.done/completed now retains actual progress and real call; no JSON sniffing or repair model request",
+  "schema_continuation_diagnostics": [
+    {
+      "artifact": "native-continuation-ab-1792464036964-report.json",
+      "sha256": "d34eb3671366ab3a0038b398297569455efba6f1ed75348290179feff84aefb7",
+      "scope": "Single-request diagnostic; no tools executed, not full Runtime acceptance",
+      "source": "native-candidate-1792463815791-5-request.json",
+      "executed_tools": 0,
+      "variants": [
+        {
+          "variant": "captured",
+          "requests": 4,
+          "valid_final": 4,
+          "with_native_calls": 0,
+          "tools_sha256": [
+            "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+          ],
+          "request_sha256": [
+            "a7f02c266f4d4c54bf5a3d5b2265e2f69453360721c1f1914f65d30a675d270f",
+            "a7f02c266f4d4c54bf5a3d5b2265e2f69453360721c1f1914f65d30a675d270f",
+            "a7f02c266f4d4c54bf5a3d5b2265e2f69453360721c1f1914f65d30a675d270f",
+            "a7f02c266f4d4c54bf5a3d5b2265e2f69453360721c1f1914f65d30a675d270f"
+          ],
+          "response_sha256": [
+            "7ddc606c133736a6f4094620b73a648e173c730a985d893d538b66a88ed209c4",
+            "42d42b9bedfccc9c78784048a50e56d9974be1affbb478728e70f45dfcd6bc86",
+            "240b6e02656d245f12173dd4e87ac69b876ac04c3fdbe16a4a0246e5c5d069b2",
+            "eefea1fdf625855213b7d7d45e6b2176395e12b9f5c00677c1f46257b36c2675"
+          ]
+        },
+        {
+          "variant": "explicit-auto",
+          "requests": 4,
+          "valid_final": 3,
+          "with_native_calls": 1,
+          "tools_sha256": [
+            "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+          ],
+          "request_sha256": [
+            "7e816dcd5036414446d77f7ea0c54bee8e8de1f612147a2f0a08c8c76216ba5a",
+            "7e816dcd5036414446d77f7ea0c54bee8e8de1f612147a2f0a08c8c76216ba5a",
+            "7e816dcd5036414446d77f7ea0c54bee8e8de1f612147a2f0a08c8c76216ba5a",
+            "7e816dcd5036414446d77f7ea0c54bee8e8de1f612147a2f0a08c8c76216ba5a"
+          ],
+          "response_sha256": [
+            "1de49e1661b5756037523277a61d0862f0bfc1cfc0a6a1ceaa3ca259946851fd",
+            "754919aa9a33bd7fa482de616fe67155cd616f18667708ebcb12bf5fc90a4e4b",
+            "b2b6cf50d598ab15dca5c2527c682a50c16e33a5a014071cb3e7200917157a6a",
+            "352b3fa327534fe318855e4435e6c4bf4e43c34556d3704f7fb6948552bab07e"
+          ]
+        },
+        {
+          "variant": "compact",
+          "requests": 4,
+          "valid_final": 2,
+          "with_native_calls": 2,
+          "tools_sha256": [
+            "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+          ],
+          "request_sha256": [
+            "19164eeb0fae05ec389515c6c1da7dfd58e4d464ac70c21d24ea767de3a6fb56",
+            "19164eeb0fae05ec389515c6c1da7dfd58e4d464ac70c21d24ea767de3a6fb56",
+            "19164eeb0fae05ec389515c6c1da7dfd58e4d464ac70c21d24ea767de3a6fb56",
+            "19164eeb0fae05ec389515c6c1da7dfd58e4d464ac70c21d24ea767de3a6fb56"
+          ],
+          "response_sha256": [
+            "4ce6d30e42b985718f71e00775f0f28d55a347836d6eb190c95912bc3d5e175e",
+            "76669c00b38376c6bd5defe4754a1e6e4dae49c5fecbbd240f0414f12f124106",
+            "59134ea6a8e291cbdb2508d64436f67510356cbe9e496700ad92b1c475e7ba0c",
+            "92855b92257899257662bda57cb497795a3bbd3b98144dbe20d227cc006fc21d"
+          ]
+        },
+        {
+          "variant": "work-semantics",
+          "requests": 4,
+          "valid_final": 3,
+          "with_native_calls": 1,
+          "tools_sha256": [
+            "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+          ],
+          "request_sha256": [
+            "e15db6b8fa14dcf11fd2cfd5f4855bc7762111a8f6faf317a7de66dd9132f304",
+            "e15db6b8fa14dcf11fd2cfd5f4855bc7762111a8f6faf317a7de66dd9132f304",
+            "e15db6b8fa14dcf11fd2cfd5f4855bc7762111a8f6faf317a7de66dd9132f304",
+            "e15db6b8fa14dcf11fd2cfd5f4855bc7762111a8f6faf317a7de66dd9132f304"
+          ],
+          "response_sha256": [
+            "badf8b199ba131837c3eb9aa436c00856726cda7d27bcf5e062e996628c28ffd",
+            "c6ab35df5775709bc3327402a6d4011edae2813f07d77a6a589b139a5899cffe",
+            "dcac66aab6814506640c58dca3472661bc3ce400b533d55595615a884aa1ea82",
+            "da16fff5ef1f99da3937d2c4e949b402e740559d46c3cec447a4f223f93c282d"
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "native-continuation-ab-1792464222344-report.json",
+      "sha256": "4388a937c24e8afa38071c0fadfd909fa174330368fd405270c9350d9bfabe91",
+      "scope": "Single-request diagnostic; no tools executed, not full Runtime acceptance",
+      "source": "native-candidate-1792463815791-5-request.json",
+      "executed_tools": 0,
+      "variants": [
+        {
+          "variant": "captured",
+          "requests": 4,
+          "valid_final": 3,
+          "with_native_calls": 1,
+          "tools_sha256": [
+            "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+          ],
+          "request_sha256": [
+            "a7f02c266f4d4c54bf5a3d5b2265e2f69453360721c1f1914f65d30a675d270f",
+            "a7f02c266f4d4c54bf5a3d5b2265e2f69453360721c1f1914f65d30a675d270f",
+            "a7f02c266f4d4c54bf5a3d5b2265e2f69453360721c1f1914f65d30a675d270f",
+            "a7f02c266f4d4c54bf5a3d5b2265e2f69453360721c1f1914f65d30a675d270f"
+          ],
+          "response_sha256": [
+            "62da389fbda8b46709b6a048c5dec4dcfa47d75812efe07d4a8f3fb0cf2bd3bd",
+            "20f0791187aa0285b3a06f33f4a04bc67e0a096649d0a8e32830649f83f868c5",
+            "d6042c40be7100edaf91fe6be216c1ff5b0c51317169edcdb39a88616ba0e6d6",
+            "9d3d01654a5722e8a9b65f03f7dccda46c460af98ff37275288cb4541450fc77"
+          ]
+        },
+        {
+          "variant": "prompt-schema-only",
+          "requests": 4,
+          "valid_final": 0,
+          "with_native_calls": 3,
+          "tools_sha256": [
+            "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+          ],
+          "request_sha256": [
+            "2909cf99a842d102fcd6929c1a9d5145ad289c8d1018bd19a53702ecd8f4e35b",
+            "2909cf99a842d102fcd6929c1a9d5145ad289c8d1018bd19a53702ecd8f4e35b",
+            "2909cf99a842d102fcd6929c1a9d5145ad289c8d1018bd19a53702ecd8f4e35b",
+            "2909cf99a842d102fcd6929c1a9d5145ad289c8d1018bd19a53702ecd8f4e35b"
+          ],
+          "response_sha256": [
+            "da9c4e5e1cbd4523f8d5ea97e3485ed943c8d9d114d1187535cd243fa0bf77fe",
+            "25e38ea2834262bebc4886a34dba56ecf96dd8a1d185579836b2f6a0415c3c2f",
+            "2658e021f728e275f63b2812289bc2a62938bea1b2b902e69f71b3208be9516b",
+            "7969a6c749114dca99093f9c2fc327b4991d34e1ce2523f32a35ed4b54786e24"
+          ]
+        },
+        {
+          "variant": "plain-chat",
+          "requests": 4,
+          "valid_final": 4,
+          "with_native_calls": 0,
+          "tools_sha256": [
+            "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+          ],
+          "request_sha256": [
+            "9780345ca25b51635709eb44c48d21a3fa18c789516a776dbe4419efd46aa307",
+            "9780345ca25b51635709eb44c48d21a3fa18c789516a776dbe4419efd46aa307",
+            "9780345ca25b51635709eb44c48d21a3fa18c789516a776dbe4419efd46aa307",
+            "9780345ca25b51635709eb44c48d21a3fa18c789516a776dbe4419efd46aa307"
+          ],
+          "response_sha256": [
+            "df9c4c088399fdeb795577db95912ea3ade82ae021794ea275f2a42d50e22cce",
+            "e96f03800df64e85b12b6847c05188bf54de0954a55a7bb8eea5f7a54c830148",
+            "3410a1adcc5ab31e05e5e100dfe269abbf90e840456663c640a690460e1254a5",
+            "d52bef253d6807aac6669af3a9b31a23f0dda69aca5796dc61455333ea001956"
+          ]
+        }
+      ]
+    }
+  ],
+  "plain_chat_runs": [
+    {
+      "artifact": "native-plain-1792464722371-report.json",
+      "sha256": "ae45418b00e1ac67cfa173af1b8ed644a456d1790b18545dcb6f4a5a3f61dd9b",
+      "wire_artifact": "native-plain-1792464722371-wire.json",
+      "wire_sha256": "0f6a7b91108bdebc51e399e95565f275b39dd3836bff3e1ff0235f0efb5a6e1b",
+      "actual_http_requests": 25,
+      "wire_tools_sha256": [
+        "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+      ],
+      "all_pass": false,
+      "cases": [
+        {
+          "case": "chat",
+          "pass": true,
+          "errors": [],
+          "requests": 1,
+          "actual_isolated_reads": 0,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 13,
+              "first_body_delta_ms": 1835,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "literal-protocol",
+          "pass": true,
+          "errors": [],
+          "requests": 1,
+          "actual_isolated_reads": 0,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 163,
+              "first_body_delta_ms": 1242,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "read-on",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 53,
+              "first_body_delta_ms": 801,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "read-off",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 42,
+              "first_body_delta_ms": 1058,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "read-no-schema",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 52,
+              "first_body_delta_ms": 928,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 108,
+              "first_body_delta_ms": 1513,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads-off",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 57,
+              "first_body_delta_ms": 1031,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads-no-schema",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 211,
+              "first_body_delta_ms": 732,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-infer",
+          "pass": false,
+          "errors": [
+            "Unexpected extra work; no repair call is allowed",
+            "No complete business answer within necessary request count"
+          ],
+          "requests": 1,
+          "actual_isolated_reads": 0,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 52,
+              "first_body_delta_ms": 1099,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read-strict",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": true,
+              "body_deltas": 42,
+              "first_body_delta_ms": 1209,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-two-reads",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 42,
+              "first_body_delta_ms": 1065,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "native-plain-1792464788991-report.json",
+      "sha256": "a92fcbe9151774247c7a9ac662bb103e7feb84a238670a6c13b8acc63048ffa9",
+      "wire_artifact": "native-plain-1792464788991-wire.json",
+      "wire_sha256": "e755050266f7c1f890ad73f1ec2292834fd445fb5ebf8b0de39ad4ba9b60119b",
+      "actual_http_requests": 15,
+      "wire_tools_sha256": [
+        "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+      ],
+      "all_pass": true,
+      "cases": [
+        {
+          "case": "read-on",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 58,
+              "first_body_delta_ms": 1256,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 103,
+              "first_body_delta_ms": 828,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads-off",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 116,
+              "first_body_delta_ms": 1210,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads-no-schema",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 136,
+              "first_body_delta_ms": 1214,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-infer",
+          "pass": true,
+          "errors": [],
+          "requests": 1,
+          "actual_isolated_reads": 0,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 23,
+              "first_body_delta_ms": 1007,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-two-reads",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 46,
+              "first_body_delta_ms": 1283,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "native-plain-1792464809691-report.json",
+      "sha256": "628c8993b114ea8e4abad42a97553811c0a7a190640fe68a9703e84012d5e3ad",
+      "wire_artifact": "native-plain-1792464809691-wire.json",
+      "wire_sha256": "5d8976abc26c5c4a7a4785413d9d06a36c2768ba277673d1867945c04e4d5eea",
+      "actual_http_requests": 15,
+      "wire_tools_sha256": [
+        "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+      ],
+      "all_pass": true,
+      "cases": [
+        {
+          "case": "read-on",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 55,
+              "first_body_delta_ms": 756,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 130,
+              "first_body_delta_ms": 1197,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads-off",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 121,
+              "first_body_delta_ms": 889,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads-no-schema",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 5,
+              "first_body_delta_ms": 851,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [
+                "commentary"
+              ],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 10,
+              "first_body_delta_ms": 827,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [
+                "commentary"
+              ],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 97,
+              "first_body_delta_ms": 944,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-infer",
+          "pass": true,
+          "errors": [],
+          "requests": 1,
+          "actual_isolated_reads": 0,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 23,
+              "first_body_delta_ms": 943,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-two-reads",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 42,
+              "first_body_delta_ms": 882,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "native-plain-1792464828289-report.json",
+      "sha256": "99725d53d52fc8c6a143682e34e81bf130e5970f539ce2b79dc1e25ec7b52101",
+      "wire_artifact": "native-plain-1792464828289-wire.json",
+      "wire_sha256": "b0ecada46c0e1cf1786d0bbb00a8e9b1dbb66a47caad0bf3e4b28dc496b081e0",
+      "actual_http_requests": 15,
+      "wire_tools_sha256": [
+        "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+      ],
+      "all_pass": true,
+      "cases": [
+        {
+          "case": "read-on",
+          "pass": true,
+          "errors": [],
+          "requests": 2,
+          "actual_isolated_reads": 1,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 56,
+              "first_body_delta_ms": 1037,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 107,
+              "first_body_delta_ms": 874,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads-off",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 84,
+              "first_body_delta_ms": 1136,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads-no-schema",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 42,
+              "first_body_delta_ms": 1587,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-infer",
+          "pass": true,
+          "errors": [],
+          "requests": 1,
+          "actual_isolated_reads": 0,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 19,
+              "first_body_delta_ms": 1281,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-two-reads",
+          "pass": true,
+          "errors": [],
+          "requests": 3,
+          "actual_isolated_reads": 2,
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "observation.result",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ],
+              "native_message_phases": [],
+              "diagnostics": []
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 49,
+              "first_body_delta_ms": 1819,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [],
+              "native_message_phases": [
+                "final_answer"
+              ],
+              "diagnostics": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "plain_chat_summary": {
+    "cases": 20,
+    "passed": 20,
+    "failed": 0,
+    "requests": 50,
+    "actual_reads": 30
+  },
+  "typed_summary": {
+    "cases": 10,
+    "passed": 9,
+    "failed": 1,
+    "requests": 20,
+    "actual_reads": 10
+  },
+  "typed_diagnostic": {
+    "artifact": "native-typed-ab-1792464843012-report.json",
+    "sha256": "df0512dc80721a8a3aeca40f5367f1cd85737e435d8577a61f5758e4d8da870c",
+    "scope": "Single-request diagnostic; no tools executed, not full Runtime acceptance",
+    "source": "native-plain-1792464722371-18-request.json",
+    "executed_tools": 0,
+    "variants": [
+      {
+        "variant": "captured",
+        "requests": 4,
+        "valid_final": 4,
+        "with_native_calls": 0,
+        "tools_sha256": [
+          "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+        ],
+        "request_sha256": [
+          "5f01241c81c53922ea22a58d7372dd7726725e542342928b7a11c814430ba478",
+          "5f01241c81c53922ea22a58d7372dd7726725e542342928b7a11c814430ba478",
+          "5f01241c81c53922ea22a58d7372dd7726725e542342928b7a11c814430ba478",
+          "5f01241c81c53922ea22a58d7372dd7726725e542342928b7a11c814430ba478"
+        ],
+        "response_sha256": [
+          "e3dfddf64377bca67986c1f89a560713ecbb1bf021867754a14fadb1d2e5a538",
+          "96a0e1c2ccac7b791fe748e941f94aea98a0a2f338dfc1e90b07c88aeabfc86b",
+          "75d5bf7d100b4d99bde74d64892d6bb7091bbec9b52636da0c0ce2ae687efd77",
+          "c4e5f8c22ccbe29e8b8bb6d5f50ae435185211f739988f20e9990afb06bfaf3f"
+        ]
+      },
+      {
+        "variant": "explicit-auto",
+        "requests": 4,
+        "valid_final": 4,
+        "with_native_calls": 0,
+        "tools_sha256": [
+          "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+        ],
+        "request_sha256": [
+          "e07b4c23f2b022a72c158ce2edb151f003a88ad66ebb32e57f74f049fc3902e9",
+          "e07b4c23f2b022a72c158ce2edb151f003a88ad66ebb32e57f74f049fc3902e9",
+          "e07b4c23f2b022a72c158ce2edb151f003a88ad66ebb32e57f74f049fc3902e9",
+          "e07b4c23f2b022a72c158ce2edb151f003a88ad66ebb32e57f74f049fc3902e9"
+        ],
+        "response_sha256": [
+          "55bab0050687af15e449564cc25d0b0456a45e560768640b1e2c0c088315c57a",
+          "8f1696a8db945627c77fc224cfec768bb8dc82dd6fdca44d16379b4097e23782",
+          "fe71fc35b2b348e5e3652dfc4d927f1435cbfb32f73bf0b43537617d2f0e0fdb",
+          "517e97c41c3f1e4e1fba694e4f6b634adb206e8608cae99c77da0a0efc457967"
+        ]
+      },
+      {
+        "variant": "strict",
+        "requests": 4,
+        "valid_final": 4,
+        "with_native_calls": 0,
+        "tools_sha256": [
+          "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+        ],
+        "request_sha256": [
+          "e07c7ced8184a56b93cc775ac6bef851da67fa0948d959b954fd44bd823f59b5",
+          "e07c7ced8184a56b93cc775ac6bef851da67fa0948d959b954fd44bd823f59b5",
+          "e07c7ced8184a56b93cc775ac6bef851da67fa0948d959b954fd44bd823f59b5",
+          "e07c7ced8184a56b93cc775ac6bef851da67fa0948d959b954fd44bd823f59b5"
+        ],
+        "response_sha256": [
+          "e9a9d8364372cbe8b51c576e32a52144cdd9b8867483e88f483709663aed9f2a",
+          "10e21a34405f4ec0fc59ccff44430ba53a0e696c43dd795eabb743004a0c9570",
+          "675f604c77804136dc8d3abfc19be140a567d67c7ff590f4785d72ea3671d33a",
+          "c5c60181a03f03e7df3f1b80b627cae2194e4be706d56c6354fc9f61d588bbd4"
+        ]
+      },
+      {
+        "variant": "pure-scope",
+        "requests": 4,
+        "valid_final": 4,
+        "with_native_calls": 0,
+        "tools_sha256": [
+          "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+        ],
+        "request_sha256": [
+          "393c107fb4f46f56d9fdfb49ec04c1ab62d06323307720b85b8ce1c2e0766f48",
+          "393c107fb4f46f56d9fdfb49ec04c1ab62d06323307720b85b8ce1c2e0766f48",
+          "393c107fb4f46f56d9fdfb49ec04c1ab62d06323307720b85b8ce1c2e0766f48",
+          "393c107fb4f46f56d9fdfb49ec04c1ab62d06323307720b85b8ce1c2e0766f48"
+        ],
+        "response_sha256": [
+          "fd4ed600abf78fc701023ce107c8bdb2d772b490f7cb48616d02540ad1715652",
+          "30d60f9d83cd3e49ba70472df4eec97c39fcfcc03f8da1f5674227bb11505e05",
+          "c260bbd20e31134ee9cbd4731cb0e034c07afb4d1562b5a950a2cdd62ab490f6",
+          "4631d687f8163b6e890d7628596fda0e680d939e832187ac5dcfb363ac21ff77"
+        ]
+      },
+      {
+        "variant": "pure-scope-choice-none",
+        "requests": 4,
+        "valid_final": 4,
+        "with_native_calls": 0,
+        "tools_sha256": [
+          "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f"
+        ],
+        "request_sha256": [
+          "8f806a42fe466c392c4f93860d3de258b33cfa987b5fb2884d6b7bf750715aa7",
+          "8f806a42fe466c392c4f93860d3de258b33cfa987b5fb2884d6b7bf750715aa7",
+          "8f806a42fe466c392c4f93860d3de258b33cfa987b5fb2884d6b7bf750715aa7",
+          "8f806a42fe466c392c4f93860d3de258b33cfa987b5fb2884d6b7bf750715aa7"
+        ],
+        "response_sha256": [
+          "50de9e991eed312bd9b2aa8e68d314c1858aa85a6f6f394e442766ba1df44a04",
+          "d4069c5b7122df0a6b364416c6dcf1511a1a1aea0a78a165bac4539bd2fbf94b",
+          "ff07271ffd87e0c0300b3db24f0296fef90dea30bd37e8fd4bc59d2d9de4131e",
+          "f6fae5c215feb4b7ef8a8200e3e3f30927358c22e2fc44b59a260ecc548496a3"
+        ]
+      }
+    ]
+  },
+  "open_failure": {
+    "artifact": "native-plain-1792464722371-18-response.sse",
+    "request_sha256": "5f01241c81c53922ea22a58d7372dd7726725e542342928b7a11c814430ba478",
+    "response_sha256": "ffd2117f0e6ed39598a0e4d4d71901e648d6437321f9d87003678d2cbceb0810",
+    "description": "A no-work typed request returned an actual read(review.txt) instead of a business value. Blocked before tool execution. Later successful repeated requests do not resolve this counterexample."
+  },
+  "local_tests": {
+    "session_io": {
+      "passed": 95,
+      "failed": 0,
+      "ignored": 4,
+      "ignored_note": "Two isolated PostgreSQL cases unavailable; two historical production v2 decoder regressions remain explicitly ignored, not passed"
+    },
+    "provider": {
+      "passed": 191,
+      "failed": 0,
+      "ignored": 4,
+      "ignored_note": "Three live OAuth cases not run; exact SSE replay ignored in batch but passed explicitly"
+    },
+    "native_candidate": {
+      "passed": 14,
+      "failed": 0
+    },
+    "response_annotations": {
+      "passed": 39,
+      "failed": 0
+    },
+    "exact_sse_replay": {
+      "passed": 1,
+      "failed": 0
+    }
+  },
+  "pure_plan_verification": {
+    "scope": "Actual admitted pure Yao Plan, original generated Schema and decoder, serialized Plan restoration; not full Runtime/DB/Host/desktop",
+    "cases": 4,
+    "passed": 4,
+    "runs": [
+      {
+        "artifact": "native-plain-1792465191233-report.json",
+        "sha256": "0521d6e7c06c4a73cb39363afe17fc2bffb8b94639d1c1eca8b4a04896c21efa",
+        "wire_artifact": "native-plain-1792465191233-wire.json",
+        "wire_sha256": "800235902f1dd5d63a7673030f30a5c0ed6598b6db7db2846b84bd7da5ce1628",
+        "pass": true,
+        "requests": 1,
+        "actual_reads": 0,
+        "format": "caller_json",
+        "generation_schema_sha256": "eaceeb666460a5214d5c39ae583a3ac61385e3bb40a019f9f12da6b2bc91bd4a",
+        "tool_choice": "none",
+        "tools_sha256": "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f",
+        "body_deltas": 19,
+        "first_body_delta_ms": 1769,
+        "stream_completed": 1,
+        "parent_plan": {
+          "complete_without_another_infer": true,
+          "empty_authorized_tool_scope": true,
+          "reply_deltas": 2,
+          "restored_from_serialized_state": true,
+          "streamed_reply": "已完结"
+        }
+      },
+      {
+        "artifact": "native-plain-1792465196674-report.json",
+        "sha256": "56549fe933c7b990997950b0f77aa8a7c0f9a74b0e7f5744803e1caf98dd88c4",
+        "wire_artifact": "native-plain-1792465196674-wire.json",
+        "wire_sha256": "b9170f407ec348fe2390787163265e92f9e8402a7ca2a1c53df2da64040fb0b5",
+        "pass": true,
+        "requests": 1,
+        "actual_reads": 0,
+        "format": "caller_json",
+        "generation_schema_sha256": "eaceeb666460a5214d5c39ae583a3ac61385e3bb40a019f9f12da6b2bc91bd4a",
+        "tool_choice": "none",
+        "tools_sha256": "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f",
+        "body_deltas": 23,
+        "first_body_delta_ms": 1386,
+        "stream_completed": 1,
+        "parent_plan": {
+          "complete_without_another_infer": true,
+          "empty_authorized_tool_scope": true,
+          "reply_deltas": 2,
+          "restored_from_serialized_state": true,
+          "streamed_reply": "已完结"
+        }
+      },
+      {
+        "artifact": "native-plain-1792465198322-report.json",
+        "sha256": "06c08a6bfbcae1c488b018f95c3426ef50aac024e60bbad1523c293953bc2fca",
+        "wire_artifact": "native-plain-1792465198322-wire.json",
+        "wire_sha256": "834cb9f1b501561e3b521f6e869ce89349b01c3a6cc13eba22a26df9fc99a6ed",
+        "pass": true,
+        "requests": 1,
+        "actual_reads": 0,
+        "format": "caller_json",
+        "generation_schema_sha256": "eaceeb666460a5214d5c39ae583a3ac61385e3bb40a019f9f12da6b2bc91bd4a",
+        "tool_choice": "none",
+        "tools_sha256": "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f",
+        "body_deltas": 19,
+        "first_body_delta_ms": 1171,
+        "stream_completed": 1,
+        "parent_plan": {
+          "complete_without_another_infer": true,
+          "empty_authorized_tool_scope": true,
+          "reply_deltas": 2,
+          "restored_from_serialized_state": true,
+          "streamed_reply": "已完结"
+        }
+      },
+      {
+        "artifact": "native-plain-1792465199686-report.json",
+        "sha256": "45fdbdfd7736c7c716916f0092fea1d9af62bf44e96d34346de83dc636831942",
+        "wire_artifact": "native-plain-1792465199686-wire.json",
+        "wire_sha256": "d926549e02c64cde00b4a910a0dec1f845a7226a0b5beaf680f2fbe224d4ab0d",
+        "pass": true,
+        "requests": 1,
+        "actual_reads": 0,
+        "format": "caller_json",
+        "generation_schema_sha256": "eaceeb666460a5214d5c39ae583a3ac61385e3bb40a019f9f12da6b2bc91bd4a",
+        "tool_choice": "none",
+        "tools_sha256": "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f",
+        "body_deltas": 19,
+        "first_body_delta_ms": 1462,
+        "stream_completed": 1,
+        "parent_plan": {
+          "complete_without_another_infer": true,
+          "empty_authorized_tool_scope": true,
+          "reply_deltas": 2,
+          "restored_from_serialized_state": true,
+          "streamed_reply": "已完结"
+        }
+      }
+    ]
+  },
+  "unverified": [
+    "Full isolated Runtime admission and Context compilation",
+    "Production carrier persistence/recovery and original task compatibility",
+    "Actual typed infer/discuss-script end-to-end return and one-pass termination",
+    "Original app streaming and final state",
+    "Qwen/Kimi/GLM deferred"
+  ]
+}

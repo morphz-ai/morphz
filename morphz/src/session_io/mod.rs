@@ -3,6 +3,7 @@
 pub mod data;
 pub mod evaluation;
 pub mod fence;
+pub mod native;
 pub(crate) mod file_lock;
 pub(crate) mod output;
 pub mod projection;

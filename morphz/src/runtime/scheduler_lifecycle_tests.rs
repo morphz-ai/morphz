@@ -100,6 +100,14 @@ struct ScriptedInterruptClient {
 }
 #[async_trait::async_trait]
 impl Client for ScriptedInterruptClient {
+    async fn create_completion_bound_stream_with_options(
+        &self, binding: &crate::llm::ModelAttemptBinding, messages: Vec<Message>,
+        tools: Vec<ToolDefinition>, measurement: Option<crate::llm::PromptTokenCount>,
+        stream: crate::llm::ModelStreamSender, options: crate::llm::ModelRequestOptions,
+    ) -> Result<Response, RuntimeError> {
+        super::tests::complete_scripted_with_options(self, binding, messages, tools, measurement, stream, options).await
+    }
+
     async fn create_completion(
         &self,
         _messages: Vec<Message>,

@@ -365,6 +365,182 @@ pub struct ModelStreamNormalizer {
     unified: Option<UnifiedStream>,
 }
 
+/// Isolated v3 candidate. Interpretation is supplied by a frozen wire binding,
+/// never selected from a content prefix. Tool arguments are buffered until the
+/// actual native call is complete, so reserved metadata is not public body or
+/// business argument data. Raw provider output remains separately preserved.
+pub struct NativeStream {
+    binding: super::native::Binding,
+    raw: String,
+    emitted: String,
+    calls: std::collections::BTreeMap<usize, crate::llm::ToolCallRepr>,
+    completed_calls: HashSet<usize>,
+    messages: std::collections::BTreeMap<usize, NativeMessageDraft>,
+    ended: bool,
+}
+
+struct NativeMessageDraft {
+    item: super::native::MessageItem,
+    complete: bool,
+    phase_final: bool,
+    parts: std::collections::BTreeMap<usize, String>,
+}
+
+impl NativeMessageDraft {
+    fn new(index: usize) -> Self {
+        Self {
+            item: super::native::MessageItem { index, id: None, phase: None, text: String::new() },
+            complete: false, phase_final: false, parts: Default::default(),
+        }
+    }
+
+    fn render(&self, binding: &super::native::Binding) -> String {
+        if self.item.phase.as_deref() == Some("commentary") {
+            return if binding.caller.format.id == "morphz.chat" { self.item.text.clone() } else { String::new() };
+        }
+        self.item.text.clone()
+    }
+}
+impl NativeStream {
+    pub fn new(binding: super::native::Binding) -> Self {
+        Self { binding, raw: String::new(), emitted: String::new(), calls: Default::default(), completed_calls: HashSet::new(), messages: Default::default(), ended: false }
+    }
+    /// Only completed native items may enter the final decoder. A message's
+    /// initial phase is a provisional display hint, never final authority.
+    pub fn messages(&self) -> super::IoResult<Vec<super::native::MessageItem>> {
+        if self.messages.values().any(|message| !message.complete) {
+            return Err(super::IoError::new("invalid_delivery_contract", "Native message has no authoritative terminal"));
+        }
+        Ok(self.messages.values().map(|message| message.item.clone()).collect())
+    }
+    pub fn evidence(&self) -> super::IoResult<super::native::Evidence> {
+        Ok(super::native::Evidence { binding: self.binding.clone(), messages: self.messages()? })
+    }
+    fn publish_snapshot(&mut self, text: String) -> Vec<ModelStreamEvent> {
+        if text == self.emitted { return vec![]; }
+        let event = if let Some(tail) = text.strip_prefix(&self.emitted) {
+            ModelStreamEvent::TextDelta { text: tail.to_string() }
+        } else { ModelStreamEvent::TextSnapshot { text: text.clone() } };
+        self.emitted = text;
+        vec![event]
+    }
+    fn render_messages(&mut self) -> Vec<ModelStreamEvent> {
+        let text = self.messages.values().map(|message| message.render(&self.binding)).collect();
+        self.publish_snapshot(text)
+    }
+    fn fail(&mut self, message: impl Into<String>) -> Vec<ModelStreamEvent> {
+        self.ended = true;
+        vec![ModelStreamEvent::Failed { message: message.into() }]
+    }
+    fn finish_call(&mut self, index: usize) -> Vec<ModelStreamEvent> {
+        if self.completed_calls.contains(&index) { return vec![]; }
+        let Some(call) = self.calls.get(&index) else { return self.fail("Native call completion has no identity"); };
+        let raw = crate::llm::Response { content: String::new(), tool_calls: vec![call.clone()] };
+        match super::native::decode(&raw, &self.binding, "stream-call-validation") {
+            Ok(parts) => {
+                self.completed_calls.insert(index);
+                vec![ModelStreamEvent::ToolArgumentsDelta { index, delta: parts.response.tool_calls[0].arguments.clone() }, ModelStreamEvent::ToolCallCompleted { index }]
+            },
+            Err(error) => self.fail(error.to_string()),
+        }
+    }
+    pub fn push(&mut self, event: ModelStreamEvent) -> Vec<ModelStreamEvent> {
+        if self.ended { return vec![]; }
+        match event {
+            ModelStreamEvent::ProviderMessageItem { index, id, phase, text } => {
+                if self.messages.len() >= 64 && !self.messages.contains_key(&index) { return self.fail("Excessive native message identities"); }
+                if !matches!(phase.as_deref(), None | Some("commentary" | "final_answer")) { return self.fail("Unsupported native message phase"); }
+                let message = self.messages.entry(index).or_insert_with(|| NativeMessageDraft::new(index));
+                if message.item.id.as_ref().zip(id.as_ref()).is_some_and(|(old, new)| old != new)
+                    || (message.complete && (text.as_ref().is_some_and(|text| text != &message.item.text)
+                        || (message.phase_final && phase.as_ref().is_some_and(|phase| Some(phase) != message.item.phase.as_ref())))) {
+                    return self.fail("Authoritative native message identity, phase or text changed");
+                }
+                if let Some(id) = id { message.item.id = Some(id); }
+                // Omitted metadata does not erase a phase supplied earlier.
+                if let Some(phase) = phase {
+                    message.item.phase = Some(phase);
+                    if text.is_some() { message.phase_final = true; }
+                }
+                if let Some(text) = text {
+                    if !text.starts_with(&message.item.text) { return self.fail("Authoritative native message rewrites its streamed text"); }
+                    message.item.text = text;
+                    message.complete = true;
+                }
+                if self.messages.values().map(|message| message.item.text.len()).sum::<usize>() > Limits::default().max_bytes { return self.fail("Native messages exceed the frozen byte budget"); }
+                self.render_messages()
+            },
+            ModelStreamEvent::ProviderMessageDelta { index, content_index, text } => {
+                if self.messages.len() >= 64 && !self.messages.contains_key(&index) { return self.fail("Excessive native message identities"); }
+                let message = self.messages.entry(index).or_insert_with(|| NativeMessageDraft::new(index));
+                if message.complete { return self.fail("Text arrived after native message completion"); }
+                message.parts.entry(content_index).or_default().push_str(&text);
+                message.item.text = message.parts.values().cloned().collect();
+                if self.messages.values().map(|message| message.item.text.len()).sum::<usize>() > Limits::default().max_bytes { return self.fail("Native messages exceed the frozen byte budget"); }
+                self.render_messages()
+            },
+            ModelStreamEvent::TextDelta { text } => {
+                if self.raw.len().saturating_add(text.len()) > Limits::default().max_bytes { return self.fail("Message exceeds the frozen byte budget"); }
+                self.raw.push_str(&text);
+                if !self.messages.is_empty() { return vec![]; }
+                if text.is_empty() { return vec![]; }
+                self.emitted.push_str(&text);
+                vec![ModelStreamEvent::TextDelta { text }]
+            },
+            ModelStreamEvent::ToolCallStarted { index, id, name } => {
+                if self.calls.contains_key(&index) || self.calls.len() >= 64 { return self.fail("Duplicate or excessive native call identity"); }
+                self.calls.insert(index, crate::llm::ToolCallRepr { id: id.clone(), r#type: "function".into(), func_name: name.clone(), arguments: String::new() });
+                vec![ModelStreamEvent::ToolCallStarted { index, id, name }]
+            },
+            ModelStreamEvent::ToolArgumentsDelta { index, delta } => {
+                if self.completed_calls.contains(&index) { return self.fail("Arguments arrived after call completion"); }
+                let Some(call) = self.calls.get_mut(&index) else { return self.fail("Native arguments have no actual identity"); };
+                if call.arguments.len().saturating_add(delta.len()) > Limits::default().max_bytes { return self.fail("Native arguments exceed byte budget"); }
+                call.arguments.push_str(&delta);
+                vec![]
+            },
+            ModelStreamEvent::ToolCallCompleted { index } => self.finish_call(index),
+            ModelStreamEvent::Completed => {
+                let raw = crate::llm::Response { content: self.raw.clone(), tool_calls: self.calls.values().cloned().collect() };
+                let messages = match self.messages() {
+                    Ok(messages) => messages,
+                    Err(error) => return self.fail(error.to_string()),
+                };
+                let parts = match super::native::decode_messages(&raw, &messages, &self.binding, "stream-final-validation") {
+                    Ok(parts) => parts,
+                    Err(error) => return self.fail(error.to_string()),
+                };
+                let mut events = vec![];
+                for index in self.calls.keys().copied().collect::<Vec<_>>() {
+                    events.extend(self.finish_call(index));
+                    if self.ended { return events; }
+                }
+                let typed = self.binding.caller.format.id != "morphz.chat" && self.binding.caller.format.encoding == "json";
+                if !messages.is_empty() {
+                    // Native commentary may have been shown provisionally, but
+                    // only the bound final body (or actual work progress) is
+                    // allowed to survive final classification.
+                    events.extend(self.publish_snapshot(parts.response.content.clone()));
+                } else if typed && !self.emitted.is_empty() {
+                    if super::Data::parse(self.emitted.as_bytes(), &Limits::default()).ok()
+                        != super::Data::parse(parts.response.content.as_bytes(), &Limits::default()).ok() {
+                        return self.fail("Provisional typed value differs from final caller value");
+                    }
+                } else {
+                    if !parts.response.content.starts_with(&self.emitted) { return self.fail("Provisional body differs from final body"); }
+                    let tail = parts.response.content[self.emitted.len()..].to_string();
+                    if !tail.is_empty() { events.push(ModelStreamEvent::TextDelta { text: tail }); }
+                }
+                self.ended = true;
+                events.push(ModelStreamEvent::Completed);
+                events
+            },
+            ModelStreamEvent::Failed { message } => self.fail(message),
+            _ => vec![event],
+        }
+    }
+}
+
 #[derive(Default)]
 struct UnifiedStream {
     raw: String,
@@ -491,6 +667,12 @@ pub struct ReplyProjector {
     evaluation: bool,
 }
 impl ReplyProjector {
+    /// Re-evaluate only the same Runtime-proven leaves after a provisional
+    /// native item is reclassified. This does not admit a second final value.
+    pub fn reset(&mut self) {
+        let proofs = self.candidates.iter().map(|(proof, _)| proof.clone()).collect();
+        *self = Self::new(proofs, self.evaluation);
+    }
     pub fn new(projections: Vec<crate::sexpr_eval::ReplyProjection>, evaluation: bool) -> Self {
         Self {
             candidates: projections
@@ -581,6 +763,11 @@ impl ModelStreamNormalizer {
         }
     }
     pub fn push(&mut self, event: ModelStreamEvent) -> Vec<ModelStreamEvent> {
+        // Old admitted bindings keep their original flattened decoder. Native
+        // item metadata must not leak through its default pass-through arm.
+        if matches!(event, ModelStreamEvent::ProviderMessageItem { .. } | ModelStreamEvent::ProviderMessageDelta { .. }) {
+            return vec![];
+        }
         if let Some(unified) = &mut self.unified {
             return unified.push(event, &self.binding);
         }

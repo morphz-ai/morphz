@@ -8,7 +8,7 @@ use morphz::{
         ReasoningEffort, ToolDefinition,
     },
     provider::build_configured_client,
-    session_io::{response::ReturnBinding, unified},
+    session_io::{native, response::ReturnBinding, unified},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -47,6 +47,8 @@ async fn main() -> Result<(), DynError> {
         "json-object",
         "serialization",
         "native-baseline",
+        "native-candidate-start",
+        "native-candidate-after-work",
     ]
     .contains(&variant.as_str())
     {
@@ -77,6 +79,29 @@ async fn main() -> Result<(), DynError> {
         .await?;
     let (mut output_encoding, mut tool_choice) =
         unified::request_options(&replay.return_binding, &binding.capabilities, &replay.tools);
+    let mut native_binding = None;
+    if variant.starts_with("native-candidate-") {
+        let mut caller = replay.return_binding.clone();
+        caller.output = None;
+        caller = caller.with_native_output();
+        let prepared = native::prepare(
+            &caller,
+            &binding.capabilities,
+            &replay.tools,
+        )?;
+        output_encoding = prepared.options.output_encoding;
+        tool_choice = prepared.options.tool_choice;
+        replay.tools = prepared.tools;
+        // Deliberate isolated A/B override: all original Context and tool
+        // observations remain byte-for-byte. This is not a substitute for
+        // integrating the new binding into the production Context compiler.
+        replay.messages.push(Message {
+            role: "system".into(),
+            content: format!("For this isolated candidate request, the following physical binding replaces only previous return serialization rules. Preserve the original task, authorization, evidence and business parameter definitions. No proposed action will be executed by this one-request diagnostic. {}", prepared.binding.instruction()),
+            name: None, tool_call_id: None, tool_calls: None,
+        });
+        native_binding = Some(prepared.binding);
+    }
     if variant == "native-work" {
         tool_choice = None;
     }
@@ -105,16 +130,31 @@ async fn main() -> Result<(), DynError> {
         });
     }
     let (stream, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut projection = native_binding.clone().map(native::Stream::new);
     let collector = tokio::spawn(async move {
         let mut count = 0usize;
         let mut text = String::new();
+        let mut visible = String::new();
+        let mut completed = 0usize;
+        let mut failures = vec![];
         while let Some(event) = receiver.recv().await {
             count += 1;
-            if let ModelStreamEvent::TextDelta { text: delta } = event {
-                text.push_str(&delta);
+            if let ModelStreamEvent::TextDelta { text: delta } = &event {
+                text.push_str(delta);
+            }
+            if let Some(projection) = &mut projection {
+                for event in projection.push(event) {
+                    match event {
+                        ModelStreamEvent::TextDelta { text: delta } => visible.push_str(&delta),
+                        ModelStreamEvent::TextSnapshot { text } => visible = text,
+                        ModelStreamEvent::Completed => completed += 1,
+                        ModelStreamEvent::Failed { message } => failures.push(message),
+                        _ => {}
+                    }
+                }
             }
         }
-        (count, text)
+        (count, text, visible, completed, failures, projection.map(|projection| projection.messages()))
     });
     let started = Instant::now();
     let response = tokio::time::timeout(
@@ -135,14 +175,19 @@ async fn main() -> Result<(), DynError> {
     .await
     .map_err(|error| Box::new(error) as DynError)
     .and_then(|result| result);
-    let (stream_events, partial_text) = collector.await?;
-    let decoded = response
-        .as_ref()
-        .ok()
-        .map(|response| unified::decode(response, &replay.return_binding, &context.attempt_id));
+    let (stream_events, partial_text, visible, completed, failures, native_messages) = collector.await?;
+    let native_messages = native_messages.transpose()?;
+    let decoded = response.as_ref().ok().map(|response| {
+        if let Some(binding) = &native_binding {
+            native::decode_messages(response, native_messages.as_deref().unwrap_or_default(), binding, &context.attempt_id)
+        } else {
+            unified::decode(response, &replay.return_binding, &context.attempt_id)
+        }
+    });
     let report = json!({"variant":variant,"captured_request_sha256":request_hash,"elapsed_ms":started.elapsed().as_millis(),"stream_events":stream_events,
         "raw":response.as_ref().ok(),"partial_text":partial_text,"provider_error":response.as_ref().err().map(ToString::to_string),
-        "decoded":decoded.as_ref().and_then(|result| result.as_ref().ok()).map(|parts| json!({"body":parts.response.content,"calls":parts.response.tool_calls,"diagnostics":parts.diagnostics})),
+        "native_candidate":native_binding,"native_messages":native_messages,"projected_stream":{"body":visible,"completed":completed,"failures":failures},
+        "decoded":decoded.as_ref().and_then(|result| result.as_ref().ok()).map(|parts| json!({"body":parts.response.content,"calls":parts.response.tool_calls,"diagnostics":parts.diagnostics,"annotations":parts.annotation_messages.iter().map(|delivery| &delivery.message).collect::<Vec<_>>()})),
         "decode_error":decoded.as_ref().and_then(|result| result.as_ref().err()).map(ToString::to_string)});
     let mut file = OpenOptions::new();
     file.write(true).create_new(true);
@@ -157,7 +202,7 @@ async fn main() -> Result<(), DynError> {
         "{}",
         json!({"variant":variant,"elapsed_ms":started.elapsed().as_millis(),"stream_events":stream_events,
         "raw_bytes":response.as_ref().ok().map(|r| r.content.len()),"native_work_calls":response.as_ref().ok().map(|r| r.tool_calls.len()),
-        "decoded_work_calls":decoded.as_ref().and_then(|r| r.as_ref().ok()).map(|parts| parts.response.tool_calls.len()),"decode_ok":decoded.as_ref().is_some_and(Result::is_ok),"provider_ok":response.is_ok()})
+        "decoded_work_calls":decoded.as_ref().and_then(|r| r.as_ref().ok()).map(|parts| parts.response.tool_calls.len()),"annotations":decoded.as_ref().and_then(|r| r.as_ref().ok()).map(|parts| parts.annotation_messages.len()),"stream_completed":completed,"stream_failures":failures.len(),"decode_ok":decoded.as_ref().is_some_and(Result::is_ok),"provider_ok":response.is_ok()})
     );
     Ok(())
 }

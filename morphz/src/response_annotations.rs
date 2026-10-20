@@ -531,6 +531,7 @@ pub enum TerminalDecision {
 }
 #[derive(Clone, Debug)]
 pub struct NormalizedResponse {
+    pub native_response: Option<crate::session_io::native::Evidence>,
     pub return_binding: Option<crate::session_io::response::ReturnBinding>,
     pub annotation_messages: Vec<crate::session_io::Message>,
     pub raw_response: Response,
@@ -553,6 +554,8 @@ pub struct NormalizedResponse {
 #[serde(deny_unknown_fields)]
 pub struct PersistedAnnotations {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_response: Option<crate::session_io::native::Evidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_binding: Option<crate::session_io::response::ReturnBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotation_messages: Vec<crate::session_io::Message>,
@@ -572,6 +575,7 @@ pub struct PersistedAnnotations {
 impl PersistedAnnotations {
     pub fn from_normalized(scope: ExecutionScope, normalized: &NormalizedResponse) -> Self {
         Self {
+            native_response: normalized.native_response.clone(),
             protocol: normalized.protocol,
             return_binding: normalized.return_binding.clone(),
             annotation_messages: normalized.annotation_messages.clone(),
@@ -582,6 +586,10 @@ impl PersistedAnnotations {
             omitted_diagnostics: normalized.omitted_diagnostics,
             title_input_revision: normalized.title_input_revision.clone(),
         }
+    }
+
+    pub fn replay(&self, context: &NormalizationContext) -> Result<NormalizedResponse, ProtocolError> {
+        normalize_delivery(&self.raw_response, context, self.native_response.as_ref())
     }
 }
 
@@ -612,6 +620,15 @@ pub fn annotations_from_authorized_event(
         .ok_or_else(|| error("Annotation source Event is not persisted"))?;
     let mut bundle: PersistedAnnotations = serde_json::from_value(value.clone())
         .map_err(|_| error("Malformed persisted annotation bundle"))?;
+    match (&bundle.return_binding, &bundle.native_response) {
+        (Some(binding), Some(native)) if binding.is_native() && binding == &native.binding.caller => {
+            crate::session_io::native::decode_messages(&bundle.raw_response, &native.messages,
+                &native.binding, event.payload.get("model_attempt_id").and_then(Value::as_str).unwrap_or_default())
+                .map_err(|cause| error(&cause.to_string()))?;
+        }
+        (binding, None) if !binding.as_ref().is_some_and(|binding| binding.is_native()) => {}
+        _ => return Err(error("Persisted native evidence differs from the frozen return binding")),
+    }
     if bundle.protocol.is_off()
         && event
             .payload
@@ -1052,6 +1069,7 @@ pub fn normalize_response(
     // a route may still inspect metadata but cannot recognize an explicit return.
     let binding = context.return_binding.clone().unwrap_or_else(|| {
         crate::session_io::response::ReturnBinding {
+            carrier: None,
             delivery_id: String::new(),
             format: crate::session_io::OutputFormat::chat(),
             caller: None,
@@ -1074,9 +1092,23 @@ pub fn normalize_response(
     normalize_parts(response, context, parts)
 }
 
+/// One ingress for live and persisted returns. A native binding cannot lose
+/// its carrier evidence and fall through to a historical content decoder.
+pub fn normalize_delivery(
+    response: &Response,
+    context: &NormalizationContext,
+    native: Option<&crate::session_io::native::Evidence>,
+) -> Result<NormalizedResponse, ProtocolError> {
+    match (context.return_binding.as_ref().is_some_and(|binding| binding.is_native()), native) {
+        (true, Some(source)) => crate::session_io::native::normalize_messages(response, &source.messages, &source.binding, context),
+        (false, None) => normalize_response(response, context),
+        _ => Err(error("Return carrier and native evidence do not match the frozen binding")),
+    }
+}
+
 /// Metadata extraction is deliberately independent from the model transport
 /// decoder. Inputs here are Runtime-built parts of an admitted IO value.
-fn normalize_parts(
+pub(crate) fn normalize_parts(
     response: &Response,
     context: &NormalizationContext,
     parts: crate::session_io::response::ResponseParts,
@@ -1135,6 +1167,7 @@ fn normalize_parts(
         Some(&fact.scope) == context.scope.as_ref() && fact.status == "cancelled"
     });
     Ok(NormalizedResponse {
+        native_response: None,
         raw_response: response.clone(),
         execution_response,
         protocol: context.protocol,
@@ -1503,7 +1536,7 @@ mod tests {
         .diagnostics
         .is_empty());
         assert!(crate::session_io::response::CONTRACT
-            .contains("for actual work, you MUST provide applicable annotations"));
+            .contains("actual work is needed, you MUST put applicable annotations"));
     }
     fn persisted_event(sequence: u64, execution: Value, terminal: bool) -> Event {
         persisted_event_with_revision(sequence, execution, terminal, None)
@@ -2040,8 +2073,8 @@ mod tests {
         assert_eq!(Protocol::Off.contract(), None);
         assert_eq!(Protocol::On.contract(), Some(CONTRACT));
         assert!(serde_json::from_value::<Protocol>(json!(true)).is_err());
-        assert!(CONTRACT.contains("At the start supply execution.title"));
-        assert!(CONTRACT.contains("or call the model again to repair metadata"));
+        assert!(CONTRACT.contains("execution.title names the task at its start"));
+        assert!(CONTRACT.contains("do not create an extra call or request for a final summary"));
         assert_ne!(BUNDLE_PAYLOAD_KEY, "response_annotations");
     }
     #[test]
@@ -2430,10 +2463,10 @@ mod tests {
     }
 
     #[test]
-    fn metadata_contract_requires_one_value_and_tolerates_missing_display_fields() {
-        assert!(CONTRACT.contains("return ONE value with body, effects and annotations"));
-        assert!(CONTRACT.contains("for actual work, you MUST provide applicable annotations"));
-        assert!(CONTRACT.contains("Missing or invalid display fields are tolerated at reception"));
+    fn metadata_contract_requires_same_call_fields_but_tolerates_missing_display_fields() {
+        assert!(CONTRACT.contains("SAME native call's _morphz"));
+        assert!(CONTRACT.contains("actual work is needed, you MUST put applicable annotations"));
+        assert!(CONTRACT.contains("Missing or invalid optional metadata is tolerated at reception"));
         assert!(CONTRACT.contains("Never use deliver_message as a separate body or annotation companion"));
         assert!(!CONTRACT.contains(":::"));
         let schema = annotation_schema();

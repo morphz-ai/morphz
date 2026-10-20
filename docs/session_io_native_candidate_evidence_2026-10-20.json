@@ -1,0 +1,985 @@
+{
+  "date": "2026-10-20",
+  "scope": "Isolated real DeepSeek provider/native Session IO adapter experiment, not Runtime/Desktop acceptance",
+  "all_gates_pass": false,
+  "production_admission_changed": false,
+  "provider": "DeepSeek Responses",
+  "model": "deepseek-flash",
+  "reasoning_effort": "max",
+  "automatic_retries": 0,
+  "prototype_runs": [
+    {
+      "artifact": "native-candidate-1792461355538-report.json",
+      "sha256": "e0918cb1cbf9b51f6c4784706df969327515840ed477835f8c2ce7a5bd463f58",
+      "variant": "test-harness continuation ordering defect; not a provider completion failure",
+      "all_pass": false,
+      "actual_http_requests": 7,
+      "wire_tools_stable": true,
+      "wire_tools_sha256": "7b12aa893e53262f7bad84d66f5b2ecbef703196ae2a4adead80aa479ebf836d",
+      "cases": [
+        {
+          "case": "chat",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 15,
+              "first_body_delta_ms": 2070,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "literal-protocol",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 104,
+              "first_body_delta_ms": 1094,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "read-on",
+          "pass": false,
+          "requests": 1,
+          "reads": 1,
+          "errors": [
+            "provider failure: Ok(Err(\"Runtime cannot assemble an OpenAI tool continuation: missing results for [\\\"call_00_vn90bKNa7YnwHFv87wzL3690\\\"]\"))",
+            "No complete business answer within necessary request count"
+          ],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            }
+          ]
+        },
+        {
+          "case": "read-off",
+          "pass": false,
+          "requests": 1,
+          "reads": 1,
+          "errors": [
+            "provider failure: Ok(Err(\"Runtime cannot assemble an OpenAI tool continuation: missing results for [\\\"call_00_3rf5I1HzmCIWnoAsJTZJ2306\\\"]\"))",
+            "No complete business answer within necessary request count"
+          ],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ]
+            }
+          ]
+        },
+        {
+          "case": "read-no-schema",
+          "pass": false,
+          "requests": 1,
+          "reads": 1,
+          "errors": [
+            "provider failure: Ok(Err(\"Runtime cannot assemble an OpenAI tool continuation: missing results for [\\\"call_00_KphtdVVbHEuh2U1RnuN32407\\\"]\"))",
+            "No complete business answer within necessary request count"
+          ],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            }
+          ]
+        },
+        {
+          "case": "typed-infer",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 19,
+              "first_body_delta_ms": 1458,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read",
+          "pass": false,
+          "requests": 1,
+          "reads": 1,
+          "errors": [
+            "provider failure: Ok(Err(\"Runtime cannot assemble an OpenAI tool continuation: missing results for [\\\"call_00_0RS3Pprho5vzxiup3kkd6660\\\"]\"))",
+            "No complete business answer within necessary request count"
+          ],
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "native-candidate-1792461523044-report.json",
+      "sha256": "129e73484b16bb38261bdd7369b0c2859b1135179681ed81e52805be79eeb270",
+      "variant": "typed result rewrapped after work",
+      "all_pass": false,
+      "actual_http_requests": 11,
+      "wire_tools_stable": true,
+      "wire_tools_sha256": "7b12aa893e53262f7bad84d66f5b2ecbef703196ae2a4adead80aa479ebf836d",
+      "cases": [
+        {
+          "case": "chat",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 16,
+              "first_body_delta_ms": 1980,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "literal-protocol",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 146,
+              "first_body_delta_ms": 1207,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "read-on",
+          "pass": true,
+          "requests": 2,
+          "reads": 1,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 16,
+              "first_body_delta_ms": 1298,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.result",
+                "execution.title",
+                "observation.result"
+              ],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "read-off",
+          "pass": true,
+          "requests": 2,
+          "reads": 1,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 31,
+              "first_body_delta_ms": 867,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "read-no-schema",
+          "pass": true,
+          "requests": 2,
+          "reads": 1,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 54,
+              "first_body_delta_ms": 1148,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "typed-infer",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 23,
+              "first_body_delta_ms": 1268,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read",
+          "pass": false,
+          "requests": 2,
+          "reads": 1,
+          "errors": [
+            "Unexpected extra work; no repair call is allowed",
+            "No complete business answer within necessary request count"
+          ],
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "native-candidate-1792461747697-report.json",
+      "sha256": "fd24d7a7dedece44f6cd1cd283fa363f4359a829fea8cf7d0615b5f6a60b9e55",
+      "variant": "explicit physical binding plus strict typed A/B",
+      "all_pass": false,
+      "actual_http_requests": 13,
+      "wire_tools_stable": true,
+      "wire_tools_sha256": "7b12aa893e53262f7bad84d66f5b2ecbef703196ae2a4adead80aa479ebf836d",
+      "cases": [
+        {
+          "case": "chat",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 15,
+              "first_body_delta_ms": 1445,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "literal-protocol",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 160,
+              "first_body_delta_ms": 1184,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "read-on",
+          "pass": true,
+          "requests": 2,
+          "reads": 1,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 58,
+              "first_body_delta_ms": 1128,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.result",
+                "execution.title",
+                "observation.result"
+              ],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "read-off",
+          "pass": true,
+          "requests": 2,
+          "reads": 1,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 15,
+              "first_body_delta_ms": 893,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "read-no-schema",
+          "pass": true,
+          "requests": 2,
+          "reads": 1,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 55,
+              "first_body_delta_ms": 988,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "typed-infer",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 19,
+              "first_body_delta_ms": 1105,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read",
+          "pass": true,
+          "requests": 2,
+          "reads": 1,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": false,
+              "body_deltas": 57,
+              "first_body_delta_ms": 1016,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.result",
+                "execution.title",
+                "observation.result"
+              ],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read-strict",
+          "pass": false,
+          "requests": 2,
+          "reads": 1,
+          "errors": [
+            "Unexpected extra work; no repair call is allowed",
+            "No complete business answer within necessary request count"
+          ],
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "artifact": "native-candidate-1792462012800-report.json",
+      "sha256": "9bdce2420a5fc22ee46da5fb0d0cb73b196cbb419027812f2ce1fef2c4f5149b",
+      "variant": "typed caller schema stable; multi-step work added",
+      "all_pass": false,
+      "actual_http_requests": 15,
+      "wire_tools_stable": true,
+      "wire_tools_sha256": "fef165c7676749a6eeccb3665ef31409d8a091681ee436ffb767664cbb27899f",
+      "cases": [
+        {
+          "case": "chat",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 17,
+              "first_body_delta_ms": 2229,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "literal-protocol",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 97,
+              "first_body_delta_ms": 1230,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "read-on",
+          "pass": false,
+          "requests": 2,
+          "reads": 1,
+          "errors": [
+            "Unexpected extra work; no repair call is allowed",
+            "No complete business answer within necessary request count"
+          ],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            }
+          ]
+        },
+        {
+          "case": "read-off",
+          "pass": true,
+          "requests": 2,
+          "reads": 1,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 38,
+              "first_body_delta_ms": 767,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "read-no-schema",
+          "pass": true,
+          "requests": 2,
+          "reads": 1,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 35,
+              "first_body_delta_ms": 1098,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "two-reads",
+          "pass": false,
+          "requests": 2,
+          "reads": 1,
+          "errors": [
+            "stream completed=0, failures=[\"invalid_content_syntax: Invalid JSON at byte 0\"]",
+            "invalid_content_syntax: Invalid JSON at byte 0",
+            "No complete business answer within necessary request count"
+          ],
+          "rounds": [
+            {
+              "encoding": "text",
+              "strict": false,
+              "body_deltas": 5,
+              "first_body_delta_ms": 843,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "annotated_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 0,
+              "annotation_kinds": [],
+              "native_calls": [
+                "read"
+              ]
+            }
+          ]
+        },
+        {
+          "case": "typed-infer",
+          "pass": true,
+          "requests": 1,
+          "reads": 0,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 23,
+              "first_body_delta_ms": 1017,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read",
+          "pass": true,
+          "requests": 2,
+          "reads": 1,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "caller_json",
+              "strict": false,
+              "body_deltas": 49,
+              "first_body_delta_ms": 886,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        },
+        {
+          "case": "typed-after-read-strict",
+          "pass": true,
+          "requests": 2,
+          "reads": 1,
+          "errors": [],
+          "rounds": [
+            {
+              "encoding": "caller_json",
+              "strict": true,
+              "body_deltas": 0,
+              "first_body_delta_ms": null,
+              "stream_completed": 1,
+              "annotation_kinds": [
+                "execution.progress",
+                "execution.title",
+                "intent"
+              ],
+              "native_calls": [
+                "read"
+              ]
+            },
+            {
+              "encoding": "caller_json",
+              "strict": true,
+              "body_deltas": 55,
+              "first_body_delta_ms": 1311,
+              "stream_completed": 1,
+              "annotation_kinds": [],
+              "native_calls": []
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "phase_counterexample": [
+    {
+      "event": "response.output_item.added",
+      "output_index": 1,
+      "id": "1d54c99d-4123-412e-a3ba-cd410201906c",
+      "phase": "final_answer"
+    },
+    {
+      "event": "response.output_item.done",
+      "output_index": 1,
+      "id": "1d54c99d-4123-412e-a3ba-cd410201906c",
+      "phase": "commentary",
+      "text": "review.txt 已读取，现在读取 progress.txt。"
+    }
+  ],
+  "original_context_replays": {
+    "scope": "One-request provider/adapter replay; no original Host action executed; not Runtime/Desktop acceptance",
+    "cases": [
+      {
+        "artifact": "captured-native-candidate-after-work-1792461562086.json",
+        "sha256": "fc260db6633e984f826662df52f79eb6f3f52b0f6136b37a7f52fd07115c674a",
+        "variant": "native-candidate-after-work",
+        "elapsed_ms": 41006,
+        "provider_ok": true,
+        "decode_ok": true,
+        "calls": [
+          {
+            "name": "host_morphz",
+            "original_business_validation": true
+          }
+        ],
+        "annotation_messages": 1,
+        "stream_completed": 1,
+        "stream_failures": [],
+        "original_call_executed": false,
+        "tools_sha256": "sha256:75998a8da58d301514a8e7efb604fd4e66c61e88e6f663124a1f7f62e3562f2b"
+      },
+      {
+        "artifact": "captured-native-candidate-start-1792461679894.json",
+        "sha256": "7dfec47fa9ec5768a37c4c35fc9e6725ee2b203df5c1aac0da22ec5c0db599b6",
+        "variant": "native-candidate-start",
+        "elapsed_ms": 15630,
+        "provider_ok": true,
+        "decode_ok": true,
+        "calls": [
+          {
+            "name": "host_morphz",
+            "original_business_validation": true
+          }
+        ],
+        "annotation_messages": 1,
+        "stream_completed": 1,
+        "stream_failures": [],
+        "original_call_executed": false,
+        "tools_sha256": "sha256:75998a8da58d301514a8e7efb604fd4e66c61e88e6f663124a1f7f62e3562f2b"
+      }
+    ]
+  },
+  "tests": {
+    "session_io": {
+      "passed": 90,
+      "failed": 0,
+      "ignored": 4,
+      "ignored_scope": "2 dedicated PostgreSQL gates not run here; 2 known old-production decoder regressions remain ignored, not fixed"
+    },
+    "annotation_normalization": {
+      "passed": 37,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "remaining_gates": [
+    "Preserve authoritative native message phase through provider conversion and keep progress distinct from the final-schema body",
+    "Handle tentative phase changes without misinterpreting literal protocol text or prematurely committing a draft",
+    "Investigate unnecessary extra work proposals without hiding them via retries or loosening business checks",
+    "Full isolated Runtime, typed infer/discuss-script, persistence and restart validation",
+    "Original application acceptance and safe rollout only after gates"
+  ]
+}

@@ -575,7 +575,7 @@ Each Session has a durable Dialogue Lane that orders initial evaluation of ordin
 You decide what the current objective warrants retaining, summarizing, revising, protecting, restoring, or forgetting. The Runtime does not automatically summarize history, trim old messages, or turn retrieval results into facts.
 
 Every response must explicitly choose one primary mode from `protocol.response-contract`:
-- reply: return the original business value in the body of the frozen Session IO return, independently of annotation mode. Supply applicable enabled display annotations in their own field of that SAME value; receiving-side tolerance is not permission to omit them. Runtime constructs the caller Message and all causal identities. Never put protocol markers or control structures inside the business body. Only the Runtime's return boundary ends this Evaluation; other business publications are nonterminal. Bare `(eval ...)` or `(infer ...)` inside body remains data.
+- reply: return the exact original business value through the frozen Session IO carrier, independently of annotation mode. For native_v3, Chat/UTF-8 is ordinary native text, typed JSON is the original business value, and applicable enabled work annotations belong to the SAME actual native call's _morphz field, never an answer wrapper. Historical explicit outputs retain their frozen fields. Receiving-side tolerance is not permission to omit applicable work metadata. Runtime constructs the caller Message and causal identities. No text markers or companion calls. Only the Runtime's return boundary ends this Evaluation; other business publications are nonterminal. Bare `(eval ...)` or `(infer ...)` inside ordinary text remains data.
 - no-reply: call no_reply as the only work/control call and choose a mode; enabled annotation fields are not work effects. mode=silent intentionally sends no message to the active Session. mode=wait is valid only while the Runtime can verify a background task, queued schedule, or pending event. It is always finite: pass wait_secs to choose the fallback wake time, or omit it for 60 seconds. A physical event wakes the Thread immediately and cancels the remaining timer; if no event arrives, the timer wakes the Thread to reassess. Permanent blocking is not supported. Once a completion or failure arrives, process the latest facts and reply, act, or use silent only when intentional. no_reply neither completes an Objective nor cancels background work.
 - act: call physical tools only when new external results are truly required. You may include one independent context_tx that does not depend on those new results. Any accompanying text is visible progress, and the Runtime will call you again after tools finish.
 - maintain: call context_tx alone when the Mind must change first, without final content. After success the Runtime calls you again and, outside critical pressure, temporarily rejects another context_tx even though the stable Function Calling schema remains visible for Prompt Cache continuity. maintain is not a user-turn endpoint; the next response must reply, no-reply, or act.
@@ -1560,11 +1560,11 @@ const SAFETY_REFUSAL_RECOVERY_PROMPT: &str = r#"The previous physical model requ
 - The reduced Projection persists across Activations while the known failing historical evidence prefix is unchanged. A new message alone does not restore the full Inbox. After a context_tx retires at least one stale Observation from that prefix (normally after deriving its still-needed conclusion into Mind), Runtime submits one full-Context canary; only a valid canary clears recovery.
 - Address only the current root input. Do not repeat an older action merely because it appears in historical state, and do not reconstruct omitted sensitive details from memory.
 - If the current request is safe and answerable from Mind and the visible evidence, finish it normally. Use recall only for a narrow, necessary fact whose exact source is known.
-- Return one valid work/return boundary through the frozen Session IO value: the complete business body, required work proposals, or exactly one no_reply proposal. Supply applicable enabled annotations in the same value, never a separate work/control boundary."#;
+- Return one valid work/return boundary through the frozen Session IO carrier: the complete native business body, actual required native work calls, or exactly one no_reply call. For native_v3, applicable enabled work annotations belong on the same real call's _morphz, never the body or an extra call; final Chat text needs no result annotation. Historical explicit outputs retain their frozen fields."#;
 
-const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"The Context is critical and this turn's ordinary context_tx allowance is exhausted. To prevent an impossible maintenance loop, this Evaluation is forced into final-reply. Return the original answer and applicable enabled annotations in the SAME Session IO value, honestly describing completed status, latest reliable verification, and remaining work; propose no_reply as the only work/control action when no message is needed. For a bound active Objective, objective_update is the only additional control tool: submit completed first when evidence is sufficient to enter finalizing in this Activation; otherwise preserve the true state and let the Supervisor continue. Tool definitions remain visible, but Runtime phase admission still rejects unauthorized work."#;
+const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"The Context is critical and this turn's ordinary context_tx allowance is exhausted. To prevent an impossible maintenance loop, this Evaluation is forced into final-reply. Return the original answer through the frozen carrier, honestly describing completed status, latest reliable verification, and remaining work. Native_v3 Chat is ordinary text without a result annotation; historical explicit outputs retain their fields. Use no_reply as the only work/control action when no message is needed. For a bound active Objective, objective_update is the only additional control tool: submit completed first when evidence is sufficient to enter finalizing in this Activation; otherwise preserve the true state and let the Supervisor continue. Applicable enabled work metadata stays on that actual native call. Tool definitions remain visible, but Runtime phase admission still rejects unauthorized work."#;
 
-const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime will reject context_tx for this request to stop consecutive housekeeping, although its stable tool schema remains visible for prompt-cache continuity. End the Evaluation with its complete business body and applicable enabled annotations in the SAME frozen Session IO value; alternatively propose no_reply as the only work/control action, or perform only physical actions truly required by the current task. The actual caller and declared business type do not change during cooldown. context_tx becomes callable again after a new user or tool observation."#;
+const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"The previous standalone context_tx committed successfully and pressure is no longer critical. The Runtime will reject context_tx for this request to stop consecutive housekeeping, although its stable tool schema remains visible for prompt-cache continuity. End the Evaluation with its complete business body through the frozen carrier; native_v3 Chat is ordinary text without a separately generated result annotation. Alternatively call no_reply alone, or perform only truly required physical actions with applicable enabled _morphz on each actual native work call. Historical explicit outputs retain their fields. The actual caller and declared business type do not change during cooldown. context_tx becomes callable again after a new user or tool observation."#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
 const DEFAULT_NO_REPLY_WAIT_SECS: u64 = 60;
 const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
@@ -1583,7 +1583,7 @@ const EMPTY_RESPONSE_DETAIL: &str =
     "Model response contained neither non-empty text nor a tool call";
 const OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR: &str = "Objective closure-review protocol error: the Runtime reports only that all direct child objectives are terminal; it does not decide whether the parent is complete. This evaluation cannot end with an implicit or native bound return or no_reply while leaving closure unresolved. Persist one decision: objective_update to completed, blocked, or an exact wait; perform real work; or create a necessary child objective. Independent enabled Session IO annotations do not resolve closure or create work authority.";
 const OBJECTIVE_FINALIZATION_PROMPT: &str = r#"The Runtime persisted your Objective completion decision but has not ended the Objective. You are still in the same Activation. Produce the user-facing final delivery from the complete evidence you just audited:
-- Return a complete normal reply using the active response encoding and its enabled annotations, without work tool calls. An implicit reply and an offered explicit reply are equivalent. Do not shorten or omit the final report because you explained parts earlier.
+- Return a complete normal reply through the frozen carrier, without work tool calls. Native_v3 Chat uses ordinary native text with no separately generated result annotation; historical explicit outputs retain their original fields. Do not shorten or omit the final report because you explained parts earlier.
 - If there is truly nothing to send, call no_reply(mode=silent) as the only work/control call; enabled annotation fields are not work.
 - After the final response commits, the Runtime atomically completes the Objective, Activation, Thread, and ThreadOutcome. Until then, the Objective remains active and its lease continues."#;
 const REASONING_ONLY_RESPONSE_REASON: &str =
@@ -1672,6 +1672,7 @@ struct ToolExecutionOptions {
 
 fn annotation_raw_tool_calls(bundle: &PersistedAnnotations) -> Vec<crate::llm::ToolCall> {
     match bundle.return_binding.as_ref() {
+        Some(binding) if binding.is_native() => response_tool_calls(&bundle.raw_response),
         Some(binding) if crate::session_io::unified::selected(binding) => {
             // Weak-transport native-only fallback really did call these native
             // functions. Evaluation effects, in contrast, have no native calls.
@@ -1966,6 +1967,9 @@ async fn active_objective_scope_id(
 #[derive(Debug, Clone)]
 struct ActivationRoute {
     return_binding: crate::session_io::response::ReturnBinding,
+    /// Current deterministic admission, not the model-visible directory. This
+    /// is frozen immediately before each physical request.
+    native_calls_allowed: bool,
     thread_id: String,
     thread_generation: u64,
     response_annotations: ResponseAnnotationProtocol,
@@ -2027,6 +2031,7 @@ struct ModelReasoningSummaryAccumulator {
 struct ModelCompletion {
     response: crate::llm::Response,
     provider_continuation: Option<ProviderContinuation>,
+    native_response: Option<crate::session_io::native::Evidence>,
 }
 
 #[derive(Debug)]
@@ -4029,7 +4034,7 @@ fn response_protocol_correction_prompt(
         "No independently replayable Provider-native reasoning continuation is available for this retry."
     };
     format!(
-        "The previous model output was rejected by the Runtime response protocol. None of its work calls was executed and none of its ordinary content was committed as a final reply; any streamed text remained provisional.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action and frozen Session IO output definition. Choose exactly one valid work/return form:\n1. To reply: return the complete original body without work proposals.\n2. To act: propose the required work tool(s) in the frozen carrier, without no_reply.\n3. To send nothing: propose no_reply exactly once with mode=\"silent\" and no body.\n4. To yield for a Runtime-verifiable nonterminal event: propose no_reply exactly once with mode=\"wait\" and optional finite wait_secs (default 60), with no body.\nNever combine no_reply with ordinary text or another work/control tool; an unbounded wait is not supported. Applicable enabled annotations belong to the SAME return value, never to an independent companion call or body text. Missing display metadata does not require a retry."
+        "The previous model output was rejected by the Runtime response protocol. None of its work calls was executed and none of its ordinary content was committed as a final reply; any streamed text remained provisional.\n\n<rejection_reason>\n{reason}\n</rejection_reason>\n\n<rejected_model_output>\n{rejected_output}\n</rejected_model_output>\n\n{continuation}\nCorrect only the response boundary while preserving the intended action and frozen Session IO output definition. Choose exactly one valid work/return form:\n1. To reply: return the complete original body without work proposals.\n2. To act: propose the required work tool(s) in the frozen carrier, without no_reply.\n3. To send nothing: propose no_reply exactly once with mode=\"silent\" and no body.\n4. To yield for a Runtime-verifiable nonterminal event: propose no_reply exactly once with mode=\"wait\" and optional finite wait_secs (default 60), with no body.\nNever combine no_reply with ordinary text or another work/control tool; an unbounded wait is not supported. Native_v3 annotations belong to the SAME actual native work call; the original text/typed body is the native message, never an answer wrapper or companion call. Historical explicit outputs keep their frozen fields. Missing display metadata does not require a retry."
     )
 }
 
@@ -4064,7 +4069,7 @@ fn append_response_protocol_correction_input(
 }
 
 fn interrupted_text_continuation_prompt() -> &'static str {
-    "The previous assistant content was only partially transmitted when the Provider stream was interrupted. The Runtime preserved that fragment and supplied it as the immediately preceding assistant message. Continue the same response from the interruption point without restarting or repeating content already provided. Return only the remaining body when ordinary output is admitted; Runtime assembles it with the saved prefix. If the admitted output is ordinary text, return that body suffix normally. A frozen structured business output must instead return its complete declared value. Applicable annotations stay in their field of that SAME value, never in the body suffix or a companion call, and never cause another model request."
+    "The previous assistant content was only partially transmitted when the Provider stream was interrupted. The Runtime preserved that fragment and supplied it as the immediately preceding assistant message. Continue the same response from the interruption point without restarting or repeating content already provided. Return only the remaining body when ordinary output is admitted; Runtime assembles it with the saved prefix. If the admitted output is ordinary text, return that body suffix normally. A frozen structured business output must instead return its complete declared value. Native work annotations stay on the actual work call, not in the body suffix or a companion call. Historical explicit outputs retain their frozen fields. Missing annotations never cause another model request."
 }
 
 impl Orchestrator {
@@ -11294,9 +11299,23 @@ impl Orchestrator {
                     !response_annotations.is_off(),
                 )
             });
-        let (output_encoding, tool_choice) = crate::session_io::unified::request_options(
-            &trace_return_binding, &model_binding.capabilities, &tools,
-        );
+        let prepared_native = if trace_return_binding.is_native() {
+            Some(crate::session_io::native::prepare_projected(
+                &trace_return_binding, &model_binding.capabilities, tools.clone(),
+            ).map_err(|error| ModelCompletionError::input(Box::new(error)))?)
+        } else { None };
+        let (output_encoding, tool_choice) = if let Some(native) = &prepared_native {
+            (native.options.output_encoding.clone(),
+             if trace_route.as_ref().is_some_and(|route| !route.native_calls_allowed) {
+                 Some(crate::llm::ModelToolChoice::None)
+             } else { native.options.tool_choice.clone() })
+        } else {
+            crate::session_io::unified::request_options(
+                &trace_return_binding, &model_binding.capabilities, &tools,
+            )
+        };
+        let native_evidence = Arc::new(Mutex::new(None));
+        let forward_native_evidence = Arc::clone(&native_evidence);
         let projected = self
             .projected_reply_stream(
                 &stream_context_id,
@@ -11323,6 +11342,8 @@ impl Orchestrator {
             let mut normalizer = crate::session_io::response_stream::ModelStreamNormalizer::new(
                 trace_return_binding,
             );
+            let mut native_stream = prepared_native.map(|prepared| crate::session_io::native::Stream::new(prepared.binding));
+            let mut native_failure = None;
             let stream_started_at = tokio::time::Instant::now();
             let mut text_delta_count = 0u64;
             let mut text_chars = 0usize;
@@ -11332,25 +11353,36 @@ impl Orchestrator {
             let mut provider_started_recorded = false;
             let mut first_output_recorded = false;
             while let Some(stream_event) = stream_rx.recv().await {
-                let normalized = normalizer.push(stream_event.clone());
+                let normalized = if let Some(native) = &mut native_stream {
+                    let events = native.push(stream_event.clone());
+                    if !matches!(stream_event, crate::llm::ModelStreamEvent::Failed { .. }) {
+                        for event in &events {
+                            if let crate::llm::ModelStreamEvent::Failed { message } = event {
+                                native_failure = Some(message.clone());
+                            }
+                        }
+                    }
+                    events
+                } else { normalizer.push(stream_event.clone()) };
                 let projection_events = if project_raw_evaluation {
                     vec![stream_event]
                 } else {
                     normalized.clone()
                 };
                 for projection_event in &projection_events {
-                    if let (
-                        Some((projector, route)),
-                        crate::llm::ModelStreamEvent::TextDelta { text },
-                    ) = (&mut projected, projection_event)
-                    {
+                    if let Some((projector, route)) = &mut projected {
+                        let (text, replace) = match projection_event {
+                            crate::llm::ModelStreamEvent::TextDelta { text } => (text, false),
+                            crate::llm::ModelStreamEvent::TextSnapshot { text } => (text, true),
+                            _ => continue,
+                        };
+                        if replace { projector.reset(); }
                         match projector.push(text.as_str()) {
-                            Ok(text) if !text.is_empty() => {
+                            Ok(text) if replace || !text.is_empty() => {
                                 let now = Utc::now();
-                                let proof = projector.proof().expect("projection selected");
-                                if let Some((_, source)) =
+                                if let (Some(proof), Some((_, source))) = (projector.proof(),
                                     route.iter_mut().find(|(name, _)| name == "result_source")
-                                {
+                                ) {
                                     source["path"] = json!(proof.path);
                                 }
                                 let mut events = Vec::new();
@@ -11358,13 +11390,16 @@ impl Orchestrator {
                                     events.push(crate::llm::ModelStreamEvent::Started);
                                     projected_started = true;
                                 }
-                                events.push(crate::llm::ModelStreamEvent::TextDelta {
-                                    text: text.clone(),
+                                events.push(if replace {
+                                    crate::llm::ModelStreamEvent::TextSnapshot { text: text.clone() }
+                                } else {
+                                    crate::llm::ModelStreamEvent::TextDelta { text: text.clone() }
                                 });
                                 {
                                     let mut accumulator = forward_projected_accumulator.lock().await;
                                     accumulator.public_text_started_at.get_or_insert(now);
-                                    accumulator.public_text.push_str(&text);
+                                    if replace { accumulator.public_text = text; }
+                                    else { accumulator.public_text.push_str(&text); }
                                 }
                                 for stream in events {
                                     projected_sequence += 1;
@@ -11446,6 +11481,11 @@ impl Orchestrator {
                         }
                     }
                     match &stream_event {
+                        crate::llm::ModelStreamEvent::TextSnapshot { text } => {
+                            let mut summary = forward_reasoning_summary.lock().await;
+                            summary.public_text = text.clone();
+                            summary.public_text_started_at.get_or_insert(stream_event_at);
+                        }
                         crate::llm::ModelStreamEvent::TextDelta { text } => {
                             text_delta_count = text_delta_count.saturating_add(1);
                             text_chars = text_chars.saturating_add(text.chars().count());
@@ -11622,6 +11662,13 @@ impl Orchestrator {
                         tracing::debug!(event_code = "orchestrator.model_stream.ephemeral_event_publish_failed", %error, "Failed to publish an ephemeral model-stream Event");
                     }
                 }
+            }
+            if let Some(message) = native_failure {
+                return Err(Box::new(response_annotations::ProtocolError(message)) as DynError);
+            }
+            if let Some(native) = &native_stream {
+                *forward_native_evidence.lock().await = Some(native.evidence()
+                    .map_err(|error| Box::new(response_annotations::ProtocolError(error.to_string())) as DynError)?);
             }
             if let Some((_, route)) = projected.as_ref() {
                 persist_model_public_output(
@@ -11956,6 +12003,7 @@ impl Orchestrator {
             (Ok(response), Ok(Ok(()))) => Ok(ModelCompletion {
                 response,
                 provider_continuation: reasoning_summary.lock().await.provider_continuation.clone(),
+                native_response: native_evidence.lock().await.clone(),
             }),
         }
         .map_err(|error| {
@@ -12572,8 +12620,7 @@ impl Orchestrator {
                     .and_then(serde_json::Value::as_bool)
                     == Some(true);
             }
-            let normalized =
-                response_annotations::normalize_response(&bundle.raw_response, &context)?;
+            let normalized = bundle.replay(&context)?;
             if serde_json::to_value(&normalized.execution_response.tool_calls)?
                 != serde_json::to_value(&response.tool_calls)?
             {
@@ -13505,7 +13552,7 @@ impl Orchestrator {
         }
         // A recovered/continuing Execution must keep its frozen carrier,
         // including historical native output. Only an actually new return
-        // boundary adopts v2. IDs/eligible observations remain Runtime-owned
+        // boundary adopts native v3. IDs/eligible observations remain Runtime-owned
         // and are refreshed for the current Evaluation, not copied from prose.
         if let Some(source) = persisted_assistant_call.as_ref().filter(|source| {
             source.payload.get("thread_id").and_then(serde_json::Value::as_str)
@@ -13529,15 +13576,17 @@ impl Orchestrator {
                     return_binding.caller = frozen.caller;
                     return_binding.body_value_schema = frozen.body_value_schema;
                     return_binding.output = frozen.output;
+                    return_binding.carrier = frozen.carrier;
                 }
             }
         } else {
-            return_binding = return_binding.with_unified_output();
+            return_binding = return_binding.with_native_output();
         }
         self.activation_routes.insert(
             attempt_id.clone(),
             ActivationRoute {
                 return_binding,
+                native_calls_allowed: false,
                 thread_id: thread.id.clone(),
                 thread_generation: thread.generation,
                 response_annotations: thread.response_annotations,
@@ -13929,6 +13978,14 @@ impl Orchestrator {
         restrict_tools_to_scope(&mut stable_work_tools, model_harness_tool_scope.as_ref());
         if thread.executor_kind != "plan_infer" {
             stable_work_tools.push(no_reply_tool_definition());
+        }
+        if self.activation_route(&attempt_id).is_some_and(|route| route.return_binding.is_native()) {
+            // Pure infer's actual requires scope excludes every action,
+            // including independent publication. No text heuristic is used.
+            if let Some(scope) = plan_infer_tools.as_ref() {
+                stable_work_tools.retain(|tool| scope.contains(&tool.name));
+            }
+            stable_work_tools = crate::session_io::native::model_tools(&stable_work_tools)?;
         }
         // Pressure measurement and Provider requests use the same stable route
         // contract. Critical/final phases narrow execution admission below,
@@ -14840,6 +14897,9 @@ impl Orchestrator {
                 "ok",
                 None,
             );
+            if let Some(mut route) = self.activation_routes.get_mut(&model_attempt_id) {
+                route.native_calls_allowed = !allowed_tool_names.is_empty();
+            }
             let completion = self
                 .request_model_completion_with_policy(
                     session_id,
@@ -14876,11 +14936,17 @@ impl Orchestrator {
                 Ok(ModelCompletion {
                     mut response,
                     provider_continuation,
+                    native_response,
                 }) => {
                     let annotation_bundle = {
                             let bound = self.activation_route(&model_attempt_id)
                                 .ok_or("Response has no active return binding")?.return_binding;
-                            let terminal_carrier = crate::session_io::response::split_response(&response, &bound)
+                            let parts = if let Some(evidence) = &native_response {
+                                crate::session_io::native::decode_messages(&response, &evidence.messages, &evidence.binding, &model_attempt_id)
+                            } else {
+                                crate::session_io::response::split_response(&response, &bound)
+                            };
+                            let terminal_carrier = parts
                                 .is_ok_and(|parts| parts.response.tool_calls.is_empty()
                                     || parts.response.tool_calls.iter().any(|call| call.func_name == "no_reply"));
                             let event_id = if terminal_carrier {
@@ -14909,9 +14975,10 @@ impl Orchestrator {
                                 None,
                             ))
                             .await?;
-                            let normalized = match response_annotations::normalize_response(
+                            let normalized = match response_annotations::normalize_delivery(
                                 &response,
                                 &annotation_context,
+                                native_response.as_ref(),
                             ) {
                                 Ok(normalized) => normalized,
                                 Err(error) => {
@@ -14976,6 +15043,18 @@ impl Orchestrator {
                     )
                     .await?;
                     (response, provider_continuation, annotation_bundle)
+                }
+                Err(error) if error.source.is::<response_annotations::ProtocolError>() => {
+                    self.record_model_attempt_terminal_state(
+                        session_id, &model_attempt_id, "protocol_invalid", Some(&error.to_string()),
+                    ).await?;
+                    self.record_response_protocol_error(
+                        session_id, &model_attempt_id, 1, "session_io_return",
+                        &error.to_string(), error.rejected_response.as_ref(),
+                    ).await?;
+                    return Box::pin(self.publish_response_return_protocol_failure(
+                        session_id, &model_attempt_id, context.parent_session_id.as_deref(),
+                    )).await;
                 }
                 Err(error) if error.is_runtime_failure() => {
                     let failure_origin = match error.origin {
@@ -24011,6 +24090,7 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             let ModelCompletion {
                 response,
                 provider_continuation,
+                ..
             } = orchestrator
                 .request_model_completion_with_policy(
                     &self.session_id,
@@ -27803,18 +27883,18 @@ mod tests {
             semantic_sexpr_vm_system_prompt(),
         ] {
             assert!(prompt.contains(
-                "return the original business value in the body of the frozen Session IO return"
+                "return the exact original business value through the frozen Session IO carrier"
             ));
             assert!(prompt.contains("Pure infer and empty (requires (tools)) prohibit work"));
-            assert!(prompt.contains("for actual work, you MUST provide applicable annotations"));
-            assert!(prompt.contains("Missing or invalid display fields are tolerated at reception"));
-            assert!(prompt.contains("return ONE value with body, effects and annotations"));
+            assert!(prompt.contains("actual work is needed, you MUST put applicable annotations"));
+            assert!(prompt.contains("Missing or invalid optional metadata is tolerated at reception"));
+            assert!(prompt.contains("For historical bindings ONLY"));
             assert!(!prompt.contains("include TWO deliver_message calls"));
             assert!(!prompt.contains("return one native JSON value containing body, annotations and effects"));
         }
         let correction = super::response_protocol_correction_prompt("test", None, false);
         assert!(correction.contains("another work/control tool"));
-        assert!(correction.contains("annotations belong to the SAME return value"));
+        assert!(correction.contains("annotations belong to the SAME actual native work call"));
         assert!(!correction.contains("ordinary text or another tool;"));
         let interrupted = super::interrupted_text_continuation_prompt();
         assert!(interrupted.contains("Runtime assembles it with the saved prefix"));
@@ -27827,10 +27907,21 @@ mod tests {
             assert!(!kernel.contains("when no tool or maintenance process remains"));
         }
         assert!(super::CRITICAL_MAINTENANCE_PROMPT.contains("physical-work admission"));
-        assert!(super::CONTEXT_TX_COOLDOWN_PROMPT.contains("only work/control action"));
+        assert!(super::CONTEXT_TX_COOLDOWN_PROMPT.contains("call no_reply alone"));
         assert!(super::CONTEXT_TX_COOLDOWN_PROMPT.contains("declared business type do not change"));
         assert!(super::SAFETY_REFUSAL_RECOVERY_PROMPT
-            .contains("through the frozen Session IO value"));
+            .contains("through the frozen Session IO carrier"));
+        for prompt in [
+            super::SAFETY_REFUSAL_RECOVERY_PROMPT,
+            super::MAINTENANCE_BUDGET_EXHAUSTED_PROMPT,
+            super::CONTEXT_TX_COOLDOWN_PROMPT,
+            super::OBJECTIVE_FINALIZATION_PROMPT,
+        ] {
+            assert!(!prompt.contains("SAME value"));
+            assert!(prompt.contains("historical explicit outputs")
+                || prompt.contains("Historical explicit outputs"));
+            assert!(prompt.contains("native_v3") || prompt.contains("Native_v3"));
+        }
         assert!(super::OBJECTIVE_CLOSURE_REVIEW_PROTOCOL_ERROR
             .contains("implicit or native bound return"));
         assert!(super::OBJECTIVE_FINALIZATION_PROMPT.contains("only work/control call"));
@@ -28803,7 +28894,7 @@ mod tests {
         for marker in [
             "(model-role",
             "sole Yao Language Card in Context Encoding",
-            "frozen output definition",
+            "frozen Session IO carrier",
             "no_reply",
             "runtime-contracts",
             "reality-contract-v1",
@@ -29646,6 +29737,7 @@ mod tests {
             orchestrator.activation_routes.insert(
                 activation.id.clone(),
                 super::ActivationRoute {
+                    native_calls_allowed: false,
                     return_binding: crate::session_io::response::ReturnBinding::new(
                         &thread.id,
                         thread.generation,

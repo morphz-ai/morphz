@@ -6,10 +6,7 @@ import { objectToolName } from "../packages/core/src/application-names.js";
 import { executionSnapshotSchema } from "../packages/core/src/execution.js";
 import { localAccess } from "../packages/core/src/model.js";
 import type { WorkspaceChange } from "../packages/core/src/workspace-changes.js";
-import {
-  fixtureAnnotationsMessage,
-  profileActualTransportFixture,
-} from "./profile-actual-transport-fixture.js";
+import { profileActualTransportFixture } from "./profile-actual-transport-fixture.js";
 
 test(
   "actual Rust Job commit wakes authorized Host SSE without the Host reconciliation ticker",
@@ -138,15 +135,7 @@ test(
       );
       assert.equal(detail.jobs[0]?.status, "succeeded");
       const finishFrames = frames.length;
-      f.releaseWithMessages(
-        marker,
-        [
-          fixtureAnnotationsMessage({
-            execution: { title: "验证事件更新", result: "只读资料完成" },
-          }),
-        ],
-        "TEST：只读资料完成，没有修改资料。",
-      );
+      f.releaseWithText(marker, "TEST：只读资料完成，没有修改资料。");
       await until(() => frames.length > finishFrames);
       await until(
         () =>
