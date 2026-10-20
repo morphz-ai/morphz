@@ -92,6 +92,46 @@ class ProbeHarnessTests(unittest.TestCase):
             "received_sigint": True, "returncode": -signal.SIGINT, "elapsed": 8,
         }))
 
+    def test_mask_requires_null_device_and_nodev_readonly_mount(self):
+        probe = load_probe()
+        good = {
+            "is_character_device": True, "device_major": 1, "device_minor": 3,
+            "mounts": [{"options": ["ro", "nosuid", "nodev"]}],
+        }
+        self.assertTrue(probe.is_nodev_null_mask(good))
+        for change in (
+            {"is_character_device": False},
+            {"device_major": 2},
+            {"device_minor": 5},
+            {"mounts": []},
+            {"mounts": [{"options": ["ro"]}]},
+            {"mounts": [{"options": ["rw", "nodev"]}]},
+        ):
+            self.assertFalse(probe.is_nodev_null_mask({**good, **change}))
+
+    def test_denied_read_requires_errno_and_nonzero_empty_cat(self):
+        probe = load_probe()
+
+        class Evidence:
+            def check(self, name, passed, **_):
+                if not passed:
+                    raise AssertionError(name)
+
+        good_read = {"ok": False, "errno": probe.errno.EACCES}
+        good_cat = {"returncode": 1, "stdout_hex": ""}
+        child = MagicMock()
+        child.request.side_effect = [good_read, good_cat]
+        probe.denied_read(Evidence(), child, ".env", "synthetic")
+        for read, cat in (
+            ({"ok": True, "bytes_hex": ""}, good_cat),
+            ({"ok": False, "errno": probe.errno.ENOENT}, good_cat),
+            (good_read, {"returncode": 0, "stdout_hex": ""}),
+            (good_read, {"returncode": 1, "stdout_hex": "534543524554"}),
+        ):
+            child.request.side_effect = [read, cat]
+            with self.assertRaises(AssertionError):
+                probe.denied_read(Evidence(), child, ".env", "synthetic")
+
     def fake_worker(self, probe, event, final_code=0, timeout=False):
         class Process:
             pid = 314159

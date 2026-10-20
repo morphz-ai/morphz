@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -45,6 +46,21 @@ def do_action(action):
     operation = action["op"]
     if operation == "read":
         return read_file(WORK / action["path"])
+    if operation == "inspect_mask":
+        path = WORK / action["path"]
+        metadata = path.stat()
+        mounts = []
+        for line in Path("/proc/self/mountinfo").read_text().splitlines():
+            fields = line.split()
+            if fields[4] == str(path):
+                mounts.append({"raw": line, "options": fields[5].split(",")})
+        return {
+            "is_character_device": stat.S_ISCHR(metadata.st_mode),
+            "device_major": os.major(metadata.st_rdev),
+            "device_minor": os.minor(metadata.st_rdev),
+            "mode": oct(metadata.st_mode),
+            "mounts": mounts,
+        }
     if operation == "write":
         try:
             (WORK / action["path"]).write_text(action["text"])

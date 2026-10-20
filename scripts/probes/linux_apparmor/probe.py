@@ -47,6 +47,17 @@ def interrupt_succeeded(result):
     )
 
 
+def is_nodev_null_mask(result):
+    return (
+        result["is_character_device"]
+        and result["device_major"] == 1
+        and result["device_minor"] == 3
+        and len(result["mounts"]) == 1
+        and "nodev" in result["mounts"][0]["options"]
+        and "ro" in result["mounts"][0]["options"]
+    )
+
+
 def owned_profile_processes(profile):
     matches = []
     for process in Path("/proc").iterdir():
@@ -364,11 +375,12 @@ def run_mode(evidence, profile, code, root, mode):
         expect_label=f"{profile}_bootstrap (unconfined)", mask_existing=True,
     ) as child:
         ready(evidence, child)
-        result = child.request("cat", path=".env")
+        inspection = child.request("inspect_mask", path=".env")
         evidence.check(
-            f"{mode} baseline dev-null mask reproduces success-with-empty-content",
-            result["returncode"] == 0 and result["stdout_hex"] == "",
+            f"{mode} baseline mask is the real null character device on a nodev read-only bind",
+            is_nodev_null_mask(inspection),
         )
+        denied_read(evidence, child, ".env", f"{mode} baseline existing-file nodev mask denies reading")
     (workspace / ".env").unlink()
 
     with Worker(evidence, profile, code, workspace, mode) as child:

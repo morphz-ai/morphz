@@ -43,8 +43,14 @@ controlling terminal, without bwrap's second setsid) exercises:
 1. Bwrap-only missing-leaf baseline: the child signals readiness while `.env`
    does not exist; the controller then creates it; the child reads and returns
    the **exact synthetic bytes**. This verifies the old hole, not a real secret.
-2. Bwrap `/dev/null` existing-file baseline: `cat .env` succeeds with zero bytes.
-   This records why absence of leaked bytes alone does not prove denial.
+2. Bwrap `/dev/null` existing-file baseline: record `stat` and the exact
+   `/proc/self/mountinfo` entry. Bubblewrap's ordinary read-only bind adds
+   `nodev`, so the mask must be character device `1:3` on a read-only nodev
+   mount; direct reads must return EACCES/EPERM and real `cat` must exit
+   nonzero with no bytes. The second experiment disproved the original
+   assumption that this behaved like a normally readable `/dev/null`.
+   That failed run is retained; existing-leaf denial does not repair the
+   separate future-leaf disclosure.
 3. Candidate future `.env`, host unlink/replace, and late `.ssh` /
    `.morphz/config.toml` parent creation. Direct reads must get EACCES/EPERM;
    real `/bin/cat` must exit nonzero and return zero content.
