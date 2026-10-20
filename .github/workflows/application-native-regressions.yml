@@ -49,6 +49,9 @@ jobs:
           xvfb-run -a npm test -- \
             tests/native-test-environment.test.ts \
             tests/browser-clock-boundary.test.ts \
+            tests/desktop-window-startup.test.ts \
+            tests/desktop-shutdown.test.ts \
+            tests/desktop-preferences.test.ts \
             tests/cognitive-document-native.test.ts \
             tests/cognitive-notes-native-embedded.test.ts \
             tests/cognitive-notes-native-production.test.ts \

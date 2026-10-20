@@ -80,6 +80,7 @@ else {
   let window;
   let windowStartup;
   let windowReady = false;
+  let applicationWindowCreated = false;
   let startupFailure = "";
   let browser;
   let appearance;
@@ -142,6 +143,7 @@ else {
       },
     });
     const createdWindow = window;
+    applicationWindowCreated = true;
     const isCurrent = () =>
       window === createdWindow && !createdWindow.isDestroyed();
     windowReady = false;
@@ -617,7 +619,10 @@ else {
   app.on("activate", reopenMainWindow);
   app.on("second-instance", reopenMainWindow);
   app.on("window-all-closed", () => {
-    if (process.platform !== "darwin") app.quit();
+    // Startup's hidden preference reader is not the application window. Its
+    // destruction must not initiate shutdown while the Host is still opening.
+    // Once a main window has existed, retain the normal non-macOS close policy.
+    if (process.platform !== "darwin" && applicationWindowCreated) app.quit();
   });
   registerDesktopShutdown({
     app,

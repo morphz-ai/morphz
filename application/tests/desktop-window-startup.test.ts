@@ -90,6 +90,7 @@ type Dialog = {
   options: { type: string; title: string; message: string; detail: string };
 };
 type FixtureOptions = {
+  platform?: "darwin" | "linux" | "win32";
   hot?: boolean;
   uiURL?: string;
   preferences?: boolean;
@@ -106,6 +107,7 @@ type StartupState = Context & {
 };
 
 function fixture({
+  platform = "darwin",
   hot = false,
   uiURL = "morphz://app",
   preferences = true,
@@ -123,6 +125,8 @@ function fixture({
     windows: Window[] = [],
     dialogs: Dialog[] = [],
     fileWrites: FileWrite[] = [];
+  let allClosed: (() => void) | undefined;
+  let quits = 0;
   const guestHistory = { clears: 0 },
     storageErases: unknown[][] = [];
   let restores = 0,
@@ -239,12 +243,13 @@ function fixture({
     window: undefined,
     windowStartup: undefined,
     windowReady: false,
+    applicationWindowCreated: false,
     startupFailure: "",
     browser: undefined,
     appearance: undefined,
     windowAppearanceOptions: () => ({}),
     nativeTheme: {},
-    process: { platform: "darwin" },
+    process: { platform },
     webPreferences: {},
     __dirname: desktopDirectory,
     appPartition: "fixture-only",
@@ -284,7 +289,14 @@ function fixture({
     },
     writeFileSync: (path: string, body: string, options: unknown) =>
       fileWrites.push([path, body, options]),
-    app: { getPath: () => "/fixture-only-not-created" },
+    app: {
+      getPath: () => "/fixture-only-not-created",
+      quit: () => { quits++; },
+      on: (name: string, handler: () => void) => {
+        assert.equal(name, "window-all-closed");
+        allClosed = handler;
+      },
+    },
     dialog: {
       showMessageBox: async (window: Window, options: Dialog["options"]) => {
         dialogs.push({ window, options });
@@ -317,7 +329,10 @@ function fixture({
       "\nglobalThis.api = { createWindow, reopenMainWindow };",
     context,
   );
+  runInContext(sourceSection(mainSource, /  app\.on\("window-all-closed", \(\) => \{/, "  registerDesktopShutdown({"), context);
   return {
+    allClosed: () => { assert.ok(allClosed); allClosed(); },
+    quits: () => quits,
     context,
     windows,
     events,
@@ -331,6 +346,20 @@ function fixture({
     ...context.api,
   };
 }
+
+for (const platform of ["darwin", "linux", "win32"] as const)
+  test(`${platform}: closing startup-only readers preserves startup; closing the actual main retains platform quit policy`, async () => {
+    const f = fixture({ platform });
+    f.allClosed();
+    f.allClosed();
+    assert.equal(f.quits(), 0, "hidden migration readers cannot end startup");
+    await f.createWindow();
+    assert.equal(f.windows[0]!.url, mainURL);
+    f.windows[0]!.close();
+    f.allClosed();
+    assert.equal(f.quits(), platform === "darwin" ? 0 : 1);
+    assert.equal(f.storageErases.length, 0);
+  });
 
 async function tick() {
   for (let turn = 0; turn < 12; turn++) await Promise.resolve();
