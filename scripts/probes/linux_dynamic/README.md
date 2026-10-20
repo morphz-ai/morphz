@@ -1,13 +1,16 @@
 # Dynamic Linux policy prototype — review bundle only
 
-**Status: retained-stack candidate implemented for local review only; no Linux
-compilation or privileged/remote execution yet.** Read
+**Status: first isolated Ubuntu run compiled successfully but stopped at policy
+parser refusal before any payload; the pathname-socket correction is not yet
+kernel-validated.** Read
 [KERNEL_REVIEW.md](KERNEL_REVIEW.md) for the rejected initial transition and
 [STACKED_BOUNDARY_REVIEW.md](STACKED_BOUNDARY_REVIEW.md) for the reviewed revision.
 
 This directory is independent of Morphz's source tree and existing CI. Nothing
-here has been installed on the developer machine, added to main, pushed, or run
-with privilege. The default controller invocation is prepare-only.
+here has been installed on the developer machine or added to main. The candidate
+has been pushed only to `probe/linux-dynamic-apparmor-20261020` and run with
+explicit privileges on its disposable GitHub runner. The default controller
+invocation remains prepare-only.
 
 ## What is implemented
 
@@ -45,11 +48,12 @@ python3 -B -m unittest -v test_contract.py
 python3 -B controller.py
 ```
 
-The first check currently contains 19 pure unit/source tests; the second prints
+The first check currently contains 22 pure unit/source tests; the second prints
 `prepare_only`. Neither is a Linux/AppArmor, compiled-entry, or runtime acceptance
-test. C compilation is deliberately deferred to a reviewed isolated Ubuntu job.
+test. The first isolated Ubuntu run passed the previous 19 checks and C
+compilation, then failed at AppArmor parsing. See `REVIEW_DELTA.md`.
 
-## Planned dynamic campaign, currently not executed
+## Planned dynamic campaign, not yet reached after the parser blocker
 
 1. Create workspace A, load its policy, admit a worker in a child cwd.
 2. After a real ready barrier, host creates `.env`, `.ssh/key`,
@@ -65,6 +69,9 @@ test. C compilation is deliberately deferred to a reviewed isolated Ubuntu job.
 5. Launch B again without the extra root; the previous grant must not persist.
 6. Compare frozen network deny and allow against a real bound host loopback
    listener. Allow must connect and deliver a fixed synthetic greeting.
+   In the shared-network allow lane, a real abstract Unix listener must still
+   reject connection, and anonymous socketpair communication must be denied;
+   both require EACCES/EPERM rather than a missing listener or timeout.
 7. Graceful close and exact policy collection; unexpected fallback kill is a
    failed cleanup, never a success.
 
@@ -81,7 +88,7 @@ record installed versions, kernel, AppArmor state, source hashes, and unchanged
 sysctl values. No privileged Docker, host-directory mount, developer-machine
 installation, or sysctl edit is permitted.
 
-Build invocation (not yet run):
+Build invocation (passed on the first isolated Ubuntu run):
 
 ```sh
 cc -std=c11 -Wall -Wextra -Werror -O2 entry.c -o entry -ljson-c -lapparmor
@@ -111,9 +118,10 @@ authorization token.
   incomplete parser load, and all inherited-FD lanes are not dynamically covered
   yet. The explicit wrong-ACK and disconnect lanes are written but not run.
   Do not count static assertions as those scenarios passing.
-- Namespace/mount mediation syntax, restrictive bootstrap permissions, kernel
-  NNP transition semantics and distro library/header availability need real
-  isolated compilation and kernel validation after the blocker is redesigned.
+- Restrictive bootstrap permissions, namespace/mount mediation and kernel NNP
+  transition semantics still need real isolated kernel validation. Availability
+  of the C library/headers and the warning-clean compilation were established
+  by the first run; the pathname Unix rule was rejected before any launch.
 
 Any production adoption still requires review of installation privilege,
 authorization and cleanup boundaries, then Rust exec/PTY integration and the

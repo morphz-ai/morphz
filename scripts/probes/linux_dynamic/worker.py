@@ -48,6 +48,38 @@ def read_check(path):
             "cat_stdout": cat.stdout, "cat_stderr": cat.stderr}
 
 
+def unix_boundary(name):
+    if not isinstance(name, str) or not name.startswith("morphz-dynamic-") or not name.replace("-", "").isalnum():
+        raise ValueError("only generated synthetic abstract socket names")
+    phase = "create"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
+            peer.settimeout(2)
+            phase = "connect"
+            peer.connect("\0" + name)
+            phase = "send"
+            peer.sendall(b"DYNAMIC_UNIX_SYNTHETIC\n")
+        abstract = {"ok": True, "phase": phase}
+    except OSError as error:
+        abstract = {"ok": False, "phase": phase, "errno": error.errno, "error": str(error)}
+    phase, pair = "socketpair", None
+    try:
+        pair = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        phase = "send"
+        pair[0].send(b"DYNAMIC_ANONYMOUS_SYNTHETIC\n")
+        phase = "receive"
+        pair[1].settimeout(2)
+        value = pair[1].recv(64)
+        anonymous = {"ok": True, "phase": phase, "received": value.decode()}
+    except OSError as error:
+        anonymous = {"ok": False, "phase": phase, "errno": error.errno, "error": str(error)}
+    finally:
+        if pair is not None:
+            for peer in pair:
+                peer.close()
+    return {"abstract": abstract, "anonymous": anonymous}
+
+
 def operations(request, profile):
     op = request["op"]
     if op == "read":
@@ -70,6 +102,8 @@ def operations(request, profile):
                 sock.sendall(b"DYNAMIC_SYNTHETIC\n")
                 return "sent-to-live-loopback-listener"
         return outcome(connect)
+    if op == "unix_boundary":
+        return unix_boundary(request["name"])
     if op == "escape":
         library = ctypes.CDLL("libapparmor.so.1", use_errno=True)
         library.aa_change_profile.argtypes = [ctypes.c_char_p]

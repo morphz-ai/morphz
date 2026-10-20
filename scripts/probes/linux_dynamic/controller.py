@@ -66,6 +66,13 @@ def ungranted_root_unreadable(result):
             and result["cat_stdout"] == "")
 
 
+def unix_communication_denied(result):
+    return all(result[kind].get("ok") is False
+               and result[kind].get("errno") in (errno.EACCES, errno.EPERM)
+               and not result[kind].get("received")
+               for kind in ("abstract", "anonymous"))
+
+
 def privileged(*argv, input_data=None):
     return command(["/usr/bin/sudo", "-n", *map(str, argv)], input_data=input_data)
 
@@ -423,14 +430,16 @@ class Campaign:
         self.manifests.append(manifest)
         result = self.loader("acquire", request=request)
         self.record("loader_acquire_result", result["code"] == 0, request=request, evidence=result)
+        # Preserve generated sources even when the parser refuses the profile.
+        for suffix in (".json", ".apparmor"):
+            source = Path(manifest["manifest"]).with_suffix(suffix)
+            if source.is_file():
+                shutil.copyfile(source, self.output / source.name)
         must(result)
         actual = decode(Path(manifest["manifest"]).read_bytes())
         if actual != manifest:
             raise RuntimeError("loader did not freeze the exact approved request")
         self.record("acquired", True, request=request, manifest=manifest, loader=result)
-        shutil.copyfile(manifest["manifest"], self.output / (manifest["launch_id"] + ".json"))
-        shutil.copyfile(Path(manifest["manifest"]).with_suffix(".apparmor"),
-                        self.output / (manifest["launch_id"] + ".apparmor"))
         return manifest
 
     def deny_read(self, lane, path, name):
@@ -529,6 +538,25 @@ class Campaign:
             self.record("network_explicit_allow_control",
                         positive.get("ok") is True and greeting == b"DYNAMIC_SYNTHETIC\n",
                         evidence=positive, greeting=greeting.decode(errors="replace"))
+            # Same network namespace as the real abstract listener: ENOENT or
+            # ECONNREFUSED cannot masquerade as an AppArmor denial.
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as abstract_listener:
+                abstract_name = "morphz-dynamic-" + uuid.uuid4().hex
+                abstract_listener.bind("\0" + abstract_name)
+                abstract_listener.listen(1)
+                abstract_listener.setblocking(False)
+                unix_result = allowed.ask("unix_boundary", name=abstract_name)["value"]
+                unexpected_connection = False
+                try:
+                    connection, _ = abstract_listener.accept()
+                except BlockingIOError:
+                    pass
+                else:
+                    unexpected_connection = True
+                    connection.close()
+                self.record("unix_lifecycle_does_not_allow_abstract_or_anonymous_communication",
+                            unix_communication_denied(unix_result) and not unexpected_connection,
+                            evidence=unix_result, listener_accepted=unexpected_connection)
             allowed.close()
         self.record("unique_immutable_profiles",
                     len({item["profile"] for item in self.manifests}) == len(self.manifests)

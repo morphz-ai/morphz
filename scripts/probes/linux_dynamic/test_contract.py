@@ -145,6 +145,16 @@ class PolicyContract(unittest.TestCase):
             self.assertIn("admit.sock", source)
             self.assertNotIn("admission.sock", source)
 
+    def test_pathname_socket_uses_file_rule_and_only_stream_lifecycle(self):
+        manifest = self.validate()
+        source = contract.profile_source(manifest)
+        socket_rule = f'"{manifest["control"]}/admit.sock" rw,'
+        self.assertEqual(source.count(socket_rule), 2)
+        unix_rules = [line.strip() for line in source.splitlines()
+                      if line.strip().startswith("unix ")]
+        self.assertEqual(unix_rules, ["unix (create, setopt, getopt) type=stream,"] * 2)
+        self.assertNotIn("peer=(addr=", source)
+
     def test_loader_rejects_nonroot_before_parser_or_files(self):
         with patch.object(loader.os, "geteuid", return_value=1000), \
              patch.object(loader, "parser") as parser:
@@ -216,8 +226,24 @@ class StaticLaunchBoundary(unittest.TestCase):
             campaign.assert_not_called()
             privileged.assert_not_called()
 
+    def test_failed_acquire_preserves_policy_source_before_raising(self):
+        source = (HERE / "controller.py").read_text()
+        acquire = source.split("def acquire(", 1)[1].split("def deny_read", 1)[0]
+        self.assertLess(acquire.index("shutil.copyfile("), acquire.index("must(result)"))
+
 
 class AdmissionAndCleanup(unittest.TestCase):
+    def test_unix_boundary_requires_real_permission_refusal_for_both_channels(self):
+        denied = {"abstract": {"ok": False, "phase": "connect", "errno": errno.EACCES},
+                  "anonymous": {"ok": False, "phase": "socketpair", "errno": errno.EPERM}}
+        self.assertTrue(controller.unix_communication_denied(denied))
+        for kind in denied:
+            for value in ({"ok": True}, {"ok": False, "errno": errno.ENOENT},
+                          {"ok": False, "errno": errno.ECONNREFUSED},
+                          {"ok": False, "errno": errno.EACCES, "received": "LEAK"}):
+                with self.subTest(kind=kind, value=value):
+                    self.assertFalse(controller.unix_communication_denied({**denied, kind: value}))
+
     def test_ungranted_root_requires_open_refusal_cat_failure_and_empty_output(self):
         denied = {"open": {"ok": False, "errno": errno.ENOENT},
                   "cat_code": 1, "cat_stdout": ""}

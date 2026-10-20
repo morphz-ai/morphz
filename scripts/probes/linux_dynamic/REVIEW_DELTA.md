@@ -1,8 +1,8 @@
 # Local candidate delta and evidence index
 
-Scope: independent `/tmp/morphz-linux-dynamic-probe.uUkbhj` only. No production
-file, main workflow, repository index, running Runtime, host privilege setting,
-kernel policy or remote branch was modified.
+Scope: independent `/tmp/morphz-linux-dynamic-probe.uUkbhj` plus the explicitly
+authorized isolated probe branch only. No production file, main workflow,
+repository index, running Runtime or developer-machine policy was modified.
 
 ## Changes from the initially blocked draft
 
@@ -59,9 +59,46 @@ assertion. The final helper additionally requires `cat_code != 0`; its unit test
 rejects a fake-success exit, leaked output and a successful direct read. This is
 stronger independent command evidence, not a correction of reversed logic.
 
-No Linux C compilation, AppArmor parser invocation, privileged installation,
-bwrap launch, dynamic payload, Docker, Cargo, remote CI or original-app test was
-performed for this candidate.
+The above was the pre-publication local result. The first isolated Linux run
+below supersedes only the "not run" status, not the failed or unverified gates.
+
+## Isolated run 1: parser refusal, not a dynamic-security result
+
+Commit `49486bdf94a241547e0edb2dd2c34641a9b665a1`; run
+<https://github.com/morphz-ai/morphz/actions/runs/39431642758>.
+The 19 source/unit checks and `-Wall -Wextra -Werror` C compilation passed.
+AppArmor 4.0.1 refused line 23: `unix rule: invalid value for addr='/tmp/.../admit.sock'`.
+No bwrap/payload/admission lane was reached. Collection also failed because the
+same invalid source could not be parsed; the summary remained failed. Kernel
+settings were unchanged.
+
+Original artifacts remain at
+`/tmp/morphz-dynamic-ci-39431642758.llgnpX/isolated-linux-dynamic-39431642758-1`.
+The original commit and run remain available. The generated sources were not
+uploaded after failed acquire; the next revision preserves them before raising.
+
+### Correction for run 2
+
+- Official [AppArmor 4.0.1 manual](https://gitlab.com/apparmor/apparmor/-/blob/v4.0.1/parser/apparmor.d.pod)
+  specifies file rules for filesystem Unix socket paths. Fine-grained `addr=`
+  uses abstract/anonymous addresses, not `/path`.
+- Replace both invalid peer-address rules with exact `admit.sock` `rw` rules.
+  Add only stream `create,setopt,getopt` lifecycle permissions. The
+  [Linux create check](https://github.com/torvalds/linux/blob/v6.17/security/apparmor/af_unix.c#L195-L221)
+  happens before the pathname is known; entry explicitly sets I/O timeouts.
+  No generic Unix connect/send/receive/bind/listen rule is added.
+- Existing broad file permissions are unchanged; the exact rule does not claim
+  to exclude all other writable filesystem sockets. Admission identity and GO
+  remain independently authenticated; this is not a production socket policy.
+- Add a live abstract listener in the same network namespace as the allow lane,
+  and an anonymous socketpair negative control. Require EACCES/EPERM with no
+  communication; ENOENT, ECONNREFUSED, timeout or a leaked byte fails the check.
+- Copy immutable manifest and generated source to evidence before propagating
+  a failed loader result. Do not hide parser or cleanup errors.
+
+Local result: **22/22** unit/source tests pass, prepare-only prints no execution.
+The three added checks cover exact rule syntax/scope, failure-source retention,
+and strict Unix negative-control verdicts. They do not prove kernel enforcement.
 
 ## Required next review / still unproven
 
