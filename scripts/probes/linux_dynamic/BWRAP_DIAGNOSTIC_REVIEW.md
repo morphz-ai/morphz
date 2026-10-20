@@ -92,3 +92,24 @@ review document, frozen manifest and isolated workflow. Keep previous commits,
 runs and raw evidence. No main checkout/index change and no production CI change.
 The workflow uses pinned Ubuntu dependencies, compiles the unchanged entry, and
 runs the pair followed by mandatory independent restoration and artifact upload.
+
+## Read-only path attribution follow-up
+
+Run 39440492956 (da48b18b) executed both builds and proved the child failed
+opening uid_map, before any mapping write. The descriptor-relative fstat also
+failed, so its zero-initialized owner/mode fields are not observations. Both
+restoration checks and independent profile collection succeeded.
+
+The next diagnostic adds realtime/NSpid/label, directory descriptor stat/link/
+fdinfo, proc mountinfo, and same-leaf absolute `/proc/self/uid_map` stat plus
+`O_RDONLY` open/fstat. It does not read user data, perform a mapping write via
+that path, replace the actual openat, or alter its errno/fatal handling.
+The extra reads may affect timing and audit; the unchanged same-source baseline
+is still mandatory. Only fixed proc metadata paths are used.
+
+The inherited-proc-mount explanation remains a candidate, not a conclusion.
+Existing parent read/readby audit may correspond to non-fatal namespace ID
+inspection rather than the child failure. No ptrace permission, capability,
+profile flag, sysctl, workflow, loader, entry, or policy change accompanies this
+diagnostic. Upstream v6.17 code is reference evidence, not a substitute for the
+runner's exact Ubuntu kernel implementation.

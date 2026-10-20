@@ -26,21 +26,24 @@
  
 --- a/utils.c
 +++ b/utils.c
-@@ -23,6 +23,7 @@
+@@ -23,6 +23,8 @@
  #include <stdint.h>
  #include <sys/syscall.h>
  #include <sys/socket.h>
 +#include <sys/prctl.h>
++#include <time.h>
  #ifdef HAVE_SELINUX
  #include <selinux/selinux.h>
  #endif
-@@ -442,6 +443,61 @@
-   return 0;
- }
+@@ -440,6 +442,169 @@
+     }
  
+   return 0;
++}
++
 +/* Isolated Morphz probe diagnostic only: read metadata, preserve caller errno.
 + * Never set dumpability, credentials, capabilities, namespace or policy.
-+ * Emit no file contents or environment; only the three fixed ID-map paths.
++ * Emit only fixed proc metadata, never payload contents or environment.
 + */
 +static void
 +morphz_map_diagnostic (int         dirfd,
@@ -56,25 +59,33 @@
 +  int stat_errno;
 +  FILE *status;
 +  char line[512];
++  struct timespec observed_at = { 0 };
++  int clock_result;
++  int clock_errno;
 +
 +  if (strcmp (path, "uid_map") != 0 &&
 +      strcmp (path, "gid_map") != 0 &&
 +      strcmp (path, "setgroups") != 0)
 +    return;
 +
++  clock_result = clock_gettime (CLOCK_REALTIME, &observed_at);
++  clock_errno = clock_result < 0 ? errno : 0;
 +  stat_result = fstatat (dirfd, path, &metadata, 0);
 +  stat_errno = stat_result < 0 ? errno : 0;
 +  fprintf (stderr,
 +           "DYNAMIC_BWRAP_MAP phase=%s path=%s pid=%ld ppid=%ld "
 +           "uid=%ld euid=%ld gid=%ld egid=%ld dumpable=%d "
 +           "dirfd=%d fd=%d result=%d operation_errno=%d "
-+           "stat_result=%d stat_errno=%d owner=%ld group=%ld mode=%lo\n",
++           "stat_result=%d stat_errno=%d owner=%ld group=%ld mode=%lo "
++           "clock_result=%d clock_errno=%d realtime=%lld.%09ld\n",
 +           phase, path, (long) getpid (), (long) getppid (),
 +           (long) getuid (), (long) geteuid (), (long) getgid (), (long) getegid (),
 +           prctl (PR_GET_DUMPABLE, 0, 0, 0, 0),
 +           dirfd, fd, result, operation_errno, stat_result, stat_errno,
 +           (long) metadata.st_uid, (long) metadata.st_gid,
-+           (unsigned long) (metadata.st_mode & 07777));
++           (unsigned long) (metadata.st_mode & 07777),
++           clock_result, clock_errno,
++           (long long) observed_at.tv_sec, observed_at.tv_nsec);
 +  status = fopen ("/proc/self/status", "r");
 +  if (status != NULL)
 +    {
@@ -82,6 +93,7 @@
 +        if (strncmp (line, "Cap", 3) == 0 ||
 +            strncmp (line, "Uid:", 4) == 0 ||
 +            strncmp (line, "Gid:", 4) == 0 ||
++            strncmp (line, "NSpid:", 6) == 0 ||
 +            strncmp (line, "NoNewPrivs:", 11) == 0)
 +          fprintf (stderr, "DYNAMIC_BWRAP_MAP_STATE phase=%s path=%s %s",
 +                   phase, path, line);
@@ -90,13 +102,110 @@
 +  else
 +    fprintf (stderr, "DYNAMIC_BWRAP_MAP_STATE phase=%s path=%s status_errno=%d\n",
 +             phase, path, errno);
-+  errno = saved_errno;
-+}
 +
++  /* A same-leaf absolute-path comparison is diagnostic only. It must never
++   * replace the original descriptor-relative open or write. All added opens
++   * below are read-only and bounded to fixed proc metadata paths.
++   */
++  if (strcmp (path, "uid_map") == 0 && strcmp (phase, "before_open") == 0)
++    {
++      struct stat dir_metadata = { 0 };
++      struct stat absolute_metadata = { 0 };
++      struct stat absolute_fd_metadata = { 0 };
++      char descriptor_path[80];
++      char descriptor_target[512];
++      int dir_result = fstat (dirfd, &dir_metadata);
++      int dir_errno = dir_result < 0 ? errno : 0;
++      int absolute_result = stat ("/proc/self/uid_map", &absolute_metadata);
++      int absolute_errno = absolute_result < 0 ? errno : 0;
++      int absolute_fd = open ("/proc/self/uid_map", O_RDONLY | O_CLOEXEC);
++      int absolute_open_errno = absolute_fd < 0 ? errno : 0;
++      int absolute_fd_result = -1;
++      int absolute_fd_errno = 0;
++      ssize_t target_size;
++      int target_errno;
++
++      if (absolute_fd >= 0)
++        {
++          absolute_fd_result = fstat (absolute_fd, &absolute_fd_metadata);
++          absolute_fd_errno = absolute_fd_result < 0 ? errno : 0;
++          close (absolute_fd);
++        }
++      fprintf (stderr,
++               "DYNAMIC_BWRAP_PATH_COMPARE dirfd=%d "
++               "dir_result=%d dir_errno=%d dir_owner=%ld dir_group=%ld "
++               "dir_mode=%lo dir_dev=%llu dir_ino=%llu "
++               "absolute_stat=%d absolute_stat_errno=%d "
++               "absolute_owner=%ld absolute_group=%ld absolute_mode=%lo "
++               "absolute_dev=%llu absolute_ino=%llu "
++               "absolute_open=%d absolute_open_errno=%d "
++               "absolute_fd_stat=%d absolute_fd_stat_errno=%d "
++               "absolute_fd_owner=%ld absolute_fd_group=%ld absolute_fd_mode=%lo\n",
++               dirfd, dir_result, dir_errno,
++               (long) dir_metadata.st_uid, (long) dir_metadata.st_gid,
++               (unsigned long) (dir_metadata.st_mode & 07777),
++               (unsigned long long) dir_metadata.st_dev,
++               (unsigned long long) dir_metadata.st_ino,
++               absolute_result, absolute_errno,
++               (long) absolute_metadata.st_uid, (long) absolute_metadata.st_gid,
++               (unsigned long) (absolute_metadata.st_mode & 07777),
++               (unsigned long long) absolute_metadata.st_dev,
++               (unsigned long long) absolute_metadata.st_ino,
++               absolute_fd, absolute_open_errno, absolute_fd_result, absolute_fd_errno,
++               (long) absolute_fd_metadata.st_uid, (long) absolute_fd_metadata.st_gid,
++               (unsigned long) (absolute_fd_metadata.st_mode & 07777));
++
++      snprintf (descriptor_path, sizeof (descriptor_path), "/proc/self/fd/%d", dirfd);
++      target_size = readlink (descriptor_path, descriptor_target, sizeof (descriptor_target) - 1);
++      target_errno = target_size < 0 ? errno : 0;
++      if (target_size >= 0)
++        descriptor_target[target_size] = '\0';
++      fprintf (stderr, "DYNAMIC_BWRAP_DIRFD_LINK result=%ld errno=%d target=%s\n",
++               (long) target_size, target_errno,
++               target_size >= 0 ? descriptor_target : "<unavailable>");
++
++      snprintf (descriptor_path, sizeof (descriptor_path), "/proc/self/fdinfo/%d", dirfd);
++      status = fopen (descriptor_path, "r");
++      if (status != NULL)
++        {
++          while (fgets (line, sizeof (line), status) != NULL)
++            if (strncmp (line, "mnt_id:", 7) == 0 ||
++                strncmp (line, "ino:", 4) == 0 ||
++                strncmp (line, "flags:", 6) == 0)
++              fprintf (stderr, "DYNAMIC_BWRAP_DIRFD_INFO %s", line);
++          fclose (status);
++        }
++      else
++        fprintf (stderr, "DYNAMIC_BWRAP_DIRFD_INFO open_errno=%d\n", errno);
++
++      status = fopen ("/proc/self/mountinfo", "r");
++      if (status != NULL)
++        {
++          while (fgets (line, sizeof (line), status) != NULL)
++            if (strstr (line, " - proc ") != NULL)
++              fprintf (stderr, "DYNAMIC_BWRAP_PROC_MOUNT %s", line);
++          fclose (status);
++        }
++      else
++        fprintf (stderr, "DYNAMIC_BWRAP_PROC_MOUNT open_errno=%d\n", errno);
++
++      status = fopen ("/proc/self/attr/current", "r");
++      if (status != NULL)
++        {
++          if (fgets (line, sizeof (line), status) != NULL)
++            fprintf (stderr, "DYNAMIC_BWRAP_CURRENT_LABEL %s", line);
++          else
++            fprintf (stderr, "DYNAMIC_BWRAP_CURRENT_LABEL read_errno=%d\n", errno);
++          fclose (status);
++        }
++      else
++        fprintf (stderr, "DYNAMIC_BWRAP_CURRENT_LABEL open_errno=%d\n", errno);
++    }
++  errno = saved_errno;
+ }
+ 
  /* Sets errno on error (!= 0), ENOSPC on short write */
- int
- write_file_at (int         dirfd,
-@@ -452,13 +508,16 @@
+@@ -452,13 +617,16 @@
    bool res;
    int errsv;
  

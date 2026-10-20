@@ -294,6 +294,28 @@ class DiagnosticRunner(unittest.TestCase):
         self.assertEqual([line for line in source.splitlines() if line.startswith("--- ")],
                          ["--- a/bubblewrap.c", "--- a/utils.c"])
 
+    def test_path_comparison_additions_are_read_only_and_keep_real_operation(self):
+        source = (runner.HERE / "bwrap-ubuntu-map-diagnostic.patch").read_text()
+        additions = "\n".join(line[1:] for line in source.splitlines()
+                              if line.startswith("+") and not line.startswith("+++"))
+        for required in ('open ("/proc/self/uid_map", O_RDONLY | O_CLOEXEC)',
+                         'stat ("/proc/self/uid_map", &absolute_metadata)',
+                         'fstat (dirfd, &dir_metadata)',
+                         'strncmp (line, "NSpid:", 6)',
+                         '"/proc/self/attr/current"',
+                         '"/proc/self/fdinfo/%d"',
+                         '"/proc/self/mountinfo"',
+                         'clock_gettime (CLOCK_REALTIME, &observed_at)',
+                         'errno = saved_errno;'):
+            self.assertIn(required, additions)
+        for forbidden in ("O_RDWR", "O_WRONLY", "PR_SET_", "setuid (",
+                          "capset (", "ptrace (", "unshare (", "write (",
+                          "aa_change_profile", "attach_disconnected"):
+            self.assertNotIn(forbidden, additions)
+        self.assertIn('   fd = openat (dirfd, path, O_RDWR | O_CLOEXEC, 0);', source)
+        self.assertIn('     res = write_to_fd (fd, content, strlen (content));', source)
+        self.assertNotIn("\n-", source.split("+++ b/utils.c", 1)[1])
+
     def test_workflow_restores_even_after_failure_and_uses_same_source_pair(self):
         source = (runner.HERE / "workflow.yml").read_text()
         self.assertIn("bwrap_diagnostic_runner.py --execute", source)

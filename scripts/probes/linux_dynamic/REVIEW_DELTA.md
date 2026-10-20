@@ -198,3 +198,21 @@ Four added unit tests exercise missing/extra/duplicate receipts, wrong labels,
 collection refusal, failed remove, unknown argv, other cleanup error, kernel
 change and forced kill. The unchanged real baseline receipts pass only the
 resource gate, not the campaign verdict.
+
+## Same-leaf path attribution, without a policy change
+
+Run <https://github.com/morphz-ai/morphz/actions/runs/39440492956> preserved both
+baseline and diagnostic failures. The new diagnostic reached the decisive
+`openat(dirfd, "uid_map", O_RDWR|O_CLOEXEC) = -1 / EACCES` before writing. Its
+adjacent stat also failed; reported zero owner/group/mode cannot establish
+ownership. Existing audit shows only parent bwrap read/readby permission
+checks, not a proven causal child mapping denial.
+
+The follow-up leaves actual map operations and all security rules unchanged.
+Read-only diagnostics add NSpid/current label/realtime, directory-FD and proc
+mount identity, and a same-leaf absolute-path stat/O_RDONLY comparison. This
+distinguishes an inherited mount/path issue from a file-wide credentials or
+permission problem without allowing a fallback map write or adding privileges.
+Source-identity checking proves removal of diagnostic additions restores the
+exact original two C files. One added static test checks the new reads, errno
+preservation, unchanged map operation and absence of mutating additions.

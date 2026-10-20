@@ -42,7 +42,7 @@ FROZEN = {
     "loader.py": "b5b419e91b67e17276051ab444c7963377d0207ac874f61dd86d7f9a060d372d",
     "worker.py": "e2dd42ac2050b7221f7ddf8a4fb85159f0c7fcb3c192bf32837dac745fc3a730",
     "bwrap-ubuntu-map-diagnostic.patch":
-        "c6e0260b0f663584acf4975f0dbc5ac9b6fdd495e04fa2cf898d8184183e9b7c",
+        "3ce3d2bfe666aa57011bcfd323a15aebec18cdcb458947db53c0c87db567e03b",
 }
 SOURCE_HASHES = {
     "baseline": {
@@ -51,7 +51,7 @@ SOURCE_HASHES = {
     },
     "diagnostic": {
         "bubblewrap.c": "705387d72921dc338372cef36659a4c76eae66195d51c4aca6f7408fd82e6d55",
-        "utils.c": "477601953186ddb6ac3f816273df9ff23f2f3f1e1b46f6fbf95d6d8e2b79d357",
+        "utils.c": "7085b8634cc3b79593c22aaacb685f7f598d494f88cc522954c2ba2a4c08a82b",
     },
 }
 DEBIAN_PATCHES = {
