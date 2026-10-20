@@ -42,9 +42,12 @@ GitHub Actions and the exact independent probe branch. Default mode is inert.
    staged file, then atomically move it over the target. Refuse to overwrite a
    current target whose hash is neither original nor an owned variant.
 5. Run each unmodified controller with a fresh evidence directory. Preserve
-   both exits/stdout/stderr/receipts even when the baseline fails. A cleanup
-   failure prevents starting the second campaign; normal assertions may fail
-   while the diagnostic control still runs.
+   both exits/stdout/stderr/receipts even when the baseline fails. A resource
+   cleanup failure prevents starting the second campaign. An exact failed
+   startup-readiness assertion may remain failed only if every owned manifest
+   has independent root no-live-users/exact-profile-removal receipts, no other
+   cleanup error, unchanged kernel settings, and no wrapper intervention.
+   That resource gate cannot change the baseline or overall failed verdict.
 6. In `finally`, restore the original bytes and metadata using the same staged
    process, then verify hash/size/owner/mode/capabilities. The private backup is
    retained until the disposable runner is destroyed.

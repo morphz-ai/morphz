@@ -356,6 +356,90 @@ def overall_passed(results, error, restoration):
                     for item in results))
 
 
+def resource_cleanup_gate(result, records):
+    """Permit the next diagnostic, NOT a passing verdict for this campaign.
+
+    A not-ready assertion remains failed. Only independently verified removal
+    of every owned profile after root's no-live-user scan proves resources safe.
+    """
+    summary = result.get("summary") or {}
+    if (result.get("forced_kill") is not False or result.get("error") is not None
+            or result.get("exit_code") not in (0, 1)):
+        raise ValueError("controller did not finish without wrapper intervention")
+    run_id = summary.get("run_id", "")
+    if not re.fullmatch("[a-f0-9]{32}", run_id):
+        raise ValueError("missing exact campaign identity")
+    stage = "/tmp/morphz-dynamic-" + run_id
+    if summary.get("stage") != stage:
+        raise ValueError("campaign stage mismatch")
+    acquired = [item for item in records if item.get("name") == "acquired"]
+    cleanups = [item for item in records if item.get("name") == "lane_cleanup"]
+    collections = [item for item in records if item.get("name") == "profile_collection"]
+    kernels = [item for item in records if item.get("name") == "kernel_settings_unchanged"]
+    if not acquired or len(cleanups) != len(acquired) or len(collections) != len(acquired):
+        raise ValueError("missing, duplicate or extra cleanup/collection receipt")
+    if (len(kernels) != 1 or kernels[0].get("passed") is not True
+            or not kernels[0].get("before") or kernels[0]["before"] != kernels[0].get("after")):
+        raise ValueError("kernel restoration not independently verified")
+    for item in records:
+        if (item.get("passed") is not True
+                and any(word in item.get("name", "") for word in ("cleanup", "collection"))
+                and item.get("name") != "lane_cleanup"):
+            raise ValueError("other resource cleanup failed")
+    manifests = {}
+    for item in acquired:
+        manifest = item["manifest"]
+        launch_id = manifest.get("launch_id", "")
+        if (item.get("passed") is not True or not re.fullmatch("[a-f0-9]{32}", launch_id)
+                or launch_id in manifests or manifest.get("stage") != stage
+                or manifest.get("run_id") != run_id
+                or type(manifest.get("uid")) is not int or manifest["uid"] <= 0):
+            raise ValueError("invalid/duplicate acquired identity")
+        names = [f"morphz_dynamic_{run_id}_{launch_id}_{kind}" for kind in ("boot", "work")]
+        if [manifest.get("bootstrap"), manifest.get("profile")] != names:
+            raise ValueError("unexpected acquired profile labels")
+        manifests[launch_id] = manifest
+    not_ready = ["RuntimeError('startup did not reach verified worker readiness')"]
+    seen_cleanup, seen_collection, readiness = set(), set(), []
+    for item in cleanups:
+        launch_id = item.get("launch")
+        if launch_id not in manifests or launch_id in seen_cleanup:
+            raise ValueError("unknown/duplicate lane cleanup")
+        seen_cleanup.add(launch_id)
+        if item.get("passed") is True and item.get("errors") == []:
+            continue
+        if item.get("passed") is False and item.get("errors") == not_ready:
+            readiness.append(launch_id)
+            continue
+        raise ValueError("lane has other cleanup errors")
+    for item in collections:
+        evidence = item.get("evidence") or {}
+        argv = evidence.get("argv") or []
+        launch_id = argv[-1] if argv else None
+        if launch_id not in manifests or launch_id in seen_collection:
+            raise ValueError("unknown/duplicate profile collection")
+        manifest = manifests[launch_id]
+        expected_argv = [
+            "/usr/bin/sudo", "-n", "/usr/bin/env", "-i",
+            "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8", "MORPHZ_ISOLATED_DYNAMIC_PROBE=1",
+            "/usr/bin/python3", "-I", "-B", stage + "/trusted/loader.py", "collect",
+            "--stage", stage, "--uid", str(manifest["uid"]), "--launch-id", launch_id,
+        ]
+        if (item.get("passed") is not True or evidence.get("code") != 0
+                or evidence.get("stderr") != "" or argv != expected_argv):
+            raise ValueError("root collection did not succeed at exact owned target")
+        lines = [json.loads(line) for line in evidence.get("stdout", "").splitlines()]
+        if lines != [
+            {"kind": "parser", "operation": "--remove", "code": 0, "stdout": "", "stderr": ""},
+            {"kind": "collected", "profiles": [manifest["bootstrap"], manifest["profile"]]},
+        ]:
+            raise ValueError("root parser removal/exact label evidence missing")
+        seen_collection.add(launch_id)
+    return {"permitted": True, "collected_launch_ids": sorted(manifests),
+            "readiness_failures_retained": sorted(readiness),
+            "campaign_passed": summary.get("passed") is True}
+
+
 def execute(output):
     require_runner()
     output.mkdir(parents=True, exist_ok=False)
@@ -378,15 +462,17 @@ def execute(output):
             dump(output / (name + "-installed.json"), installed)
             results.append(campaign(name, output))
             frozen()
-            # Failure of an ordinary assertion is evidence, not a reason to
-            # skip the diagnostic control. Failed cleanup DOES stop the pair.
-            summary = results[-1].get("summary") or {}
-            cleanup_names = ("cleanup", "collection", "kernel_settings")
-            if (results[-1]["forced_kill"] or results[-1]["error"] is not None
-                    or not summary
-                    or any(any(word in str(item.get("name", "")) for word in cleanup_names)
-                           for item in summary.get("failures", []))):
-                raise RuntimeError("campaign cleanup incomplete; refusing next variant")
+            # Root's exact no-live-users/removal receipts are a resource gate,
+            # separate from (and unable to erase) a failed readiness assertion.
+            try:
+                records = [json.loads(line) for line in
+                           (output / name / "receipts.jsonl").read_text().splitlines()]
+                gate = resource_cleanup_gate(results[-1], records)
+            except Exception as gate_error:
+                dump(output / (name + "-resource-gate.json"),
+                     {"permitted": False, "error": repr(gate_error)})
+                raise RuntimeError("campaign cleanup not verified; refusing next variant") from gate_error
+            dump(output / (name + "-resource-gate.json"), gate)
     except BaseException as failure:
         error = repr(failure)
     finally:

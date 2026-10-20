@@ -25,6 +25,33 @@ def passing(name):
             "summary": {"passed": True, "failures": []}}
 
 
+def startup_failure_receipts():
+    run_id, launch_id = "a" * 32, "b" * 32
+    stage = "/tmp/morphz-dynamic-" + run_id
+    names = [f"morphz_dynamic_{run_id}_{launch_id}_{kind}" for kind in ("boot", "work")]
+    result = {"exit_code": 1, "forced_kill": False, "error": None,
+              "summary": {"passed": False, "run_id": run_id, "stage": stage}}
+    records = [
+        {"name": "acquired", "passed": True, "manifest": {
+            "run_id": run_id, "launch_id": launch_id, "stage": stage, "uid": 1001,
+            "bootstrap": names[0], "profile": names[1]}},
+        {"name": "lane_cleanup", "passed": False, "launch": launch_id,
+         "errors": ["RuntimeError('startup did not reach verified worker readiness')"]},
+        {"name": "profile_collection", "passed": True, "evidence": {
+            "argv": ["/usr/bin/sudo", "-n", "/usr/bin/env", "-i",
+                     "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C.UTF-8",
+                     "MORPHZ_ISOLATED_DYNAMIC_PROBE=1", "/usr/bin/python3", "-I", "-B",
+                     stage + "/trusted/loader.py", "collect", "--stage", stage,
+                     "--uid", "1001", "--launch-id", launch_id],
+            "code": 0, "stderr": "", "stdout": "\n".join(map(json.dumps, [
+                {"kind": "parser", "operation": "--remove", "code": 0, "stdout": "", "stderr": ""},
+                {"kind": "collected", "profiles": names}]))}},
+        {"name": "kernel_settings_unchanged", "passed": True,
+         "before": {"setting": "1"}, "after": {"setting": "1"}},
+    ]
+    return result, records
+
+
 class DiagnosticRunner(unittest.TestCase):
     def test_default_is_inert(self):
         with patch.object(runner.subprocess, "run") as process, \
@@ -105,6 +132,65 @@ class DiagnosticRunner(unittest.TestCase):
         self.assertFalse(runner.overall_passed(good, None, {"passed": False}))
         self.assertFalse(runner.overall_passed(good, "prior failure", {"passed": True}))
         self.assertFalse(runner.overall_passed(good[:1], None, {"passed": True}))
+
+    def test_cleanup_gate_retains_baseline_failure_and_requires_real_collection(self):
+        result, records = startup_failure_receipts()
+        original = copy.deepcopy(result)
+        gate = runner.resource_cleanup_gate(result, records)
+        self.assertTrue(gate["permitted"])
+        self.assertEqual(gate["readiness_failures_retained"], ["b" * 32])
+        self.assertFalse(gate["campaign_passed"])
+        self.assertEqual(result, original)
+        self.assertFalse(runner.overall_passed([result, passing("diagnostic")], None, {"passed": True}))
+        records[1].update(passed=True, errors=[])
+        self.assertEqual(runner.resource_cleanup_gate(result, records)["readiness_failures_retained"], [])
+
+    def test_cleanup_gate_rejects_missing_duplicate_and_extra_receipts(self):
+        result, records = startup_failure_receipts()
+        for index in range(len(records)):
+            with self.subTest(missing=index), self.assertRaises(ValueError):
+                runner.resource_cleanup_gate(result, records[:index] + records[index + 1:])
+            with self.subTest(duplicate=index), self.assertRaises(ValueError):
+                runner.resource_cleanup_gate(result, records + [records[index]])
+        extra = copy.deepcopy(records[2])
+        extra["evidence"]["argv"][-1] = "c" * 32
+        with self.assertRaises(ValueError):
+            runner.resource_cleanup_gate(result, records + [extra])
+
+    def test_cleanup_gate_rejects_wrong_labels_refusal_bad_argv_and_other_errors(self):
+        result, records = startup_failure_receipts()
+        for variation in ("wrong_labels", "refused", "remove_failed", "extra_line",
+                          "nonzero", "wrong_argv", "other_cleanup", "cleanup_exception", "changed_kernel"):
+            mutated = copy.deepcopy(records)
+            evidence = mutated[2]["evidence"]
+            messages = [json.loads(line) for line in evidence["stdout"].splitlines()]
+            if variation == "wrong_labels":
+                messages[1]["profiles"][1] += "_other"
+            elif variation == "refused":
+                messages[1] = {"kind": "collection_refused", "live_pids": [100]}
+            elif variation == "remove_failed":
+                messages[0]["code"] = 1
+            elif variation == "extra_line":
+                messages.append({"kind": "unknown"})
+            elif variation == "nonzero":
+                evidence["code"] = 75
+            elif variation == "wrong_argv":
+                evidence["argv"][-1] = "c" * 32
+            elif variation == "other_cleanup":
+                mutated[1]["errors"].append("TimeoutError('child remained alive')")
+            elif variation == "cleanup_exception":
+                mutated.append({"name": "lane_cleanup_exception", "passed": False})
+            elif variation == "changed_kernel":
+                mutated[3]["after"]["setting"] = "0"
+            evidence["stdout"] = "\n".join(map(json.dumps, messages))
+            with self.subTest(variation=variation), self.assertRaises(ValueError):
+                runner.resource_cleanup_gate(result, mutated)
+
+    def test_cleanup_gate_rejects_forced_kill_or_controller_exception(self):
+        result, records = startup_failure_receipts()
+        for field, value in (("forced_kill", True), ("error", "timed out"), ("exit_code", -9)):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                runner.resource_cleanup_gate(dict(result, **{field: value}), records)
 
     def test_owned_process_cleanup_is_bounded_and_forced_kill_visible(self):
         process = Mock(pid=43210)

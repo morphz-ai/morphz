@@ -172,3 +172,29 @@ hardlinks/devices/traversal/unreviewed links and Python's data extraction filter
 An added positive/negative unit test accepts that exact relative link but rejects
 changed targets. No policy, privileges, build inputs or campaign assertions
 change. This failure is a probe preparation defect, not Linux sandbox evidence.
+
+## Run 5: same-source baseline reproduced; resource gate refined
+
+Commit `48e129f77211a6bf3e1ec7f7b47bb8ab40bee3a6`, run
+<https://github.com/morphz-ai/morphz/actions/runs/39439397618>:
+both exact-source C variants compiled, and the unmodified Ubuntu-source baseline
+reproduced `setting up uid map: Permission denied`. Original binary restoration
+succeeded in both finally and always-step, verified by hash/owner/mode/caps.
+
+The diagnostic variant was not run: the wrapper treated the deliberate failed
+`startup did not reach verified worker readiness` assertion as proof of resource
+leak. The original controller actually retained that semantic failure while
+polling/stopping its owned process, then the root loader proved no live
+boot/work profile users and removed both profiles; kernel settings were unchanged.
+
+The next runner-only delta separates permission to run a second diagnostic from
+the campaign verdict. It requires exactly one acquired manifest, cleanup and
+root collection per launch (or the corresponding exact one-per-launch set for
+multiple launches); exact parser removal/collected label pairs; unchanged kernel
+settings; no wrapper kill/error or other cleanup error. Only the exact readiness
+failure may remain alongside that independent resource evidence. The original
+exit 1, failed readiness assertion and overall failed verdict remain unchanged.
+Four added unit tests exercise missing/extra/duplicate receipts, wrong labels,
+collection refusal, failed remove, unknown argv, other cleanup error, kernel
+change and forced kill. The unchanged real baseline receipts pass only the
+resource gate, not the campaign verdict.
