@@ -1,0 +1,115 @@
+--- a/bubblewrap.c
++++ b/bubblewrap.c
+@@ -989,6 +989,23 @@
+   if (is_privileged)
+     old_fsuid = setfsuid (0);
+ 
++  /* Read-only isolated diagnostic: identify the actual child mapping request.
++   * Preserve errno and leave the original open/write and error path unchanged.
++   */
++  {
++    int diagnostic_errno = errno;
++    fprintf (stderr,
++             "DYNAMIC_BWRAP_MAP_REQUEST pid=%ld target_pid=%ld "
++             "sandbox_uid=%ld parent_uid=%ld sandbox_gid=%ld parent_gid=%ld "
++             "privileged=%d map_root=%d deny_groups=%d dumpable=%d\n",
++             (long) getpid (), (long) pid,
++             (long) sandbox_uid, (long) parent_uid,
++             (long) sandbox_gid, (long) parent_gid,
++             is_privileged, map_root, deny_groups,
++             prctl (PR_GET_DUMPABLE, 0, 0, 0, 0));
++    errno = diagnostic_errno;
++  }
++
+   if (write_file_at (dir_fd, "uid_map", uid_map) != 0)
+     die_with_error ("setting up uid map");
+ 
+--- a/utils.c
++++ b/utils.c
+@@ -23,6 +23,7 @@
+ #include <stdint.h>
+ #include <sys/syscall.h>
+ #include <sys/socket.h>
++#include <sys/prctl.h>
+ #ifdef HAVE_SELINUX
+ #include <selinux/selinux.h>
+ #endif
+@@ -442,6 +443,61 @@
+   return 0;
+ }
+ 
++/* Isolated Morphz probe diagnostic only: read metadata, preserve caller errno.
++ * Never set dumpability, credentials, capabilities, namespace or policy.
++ * Emit no file contents or environment; only the three fixed ID-map paths.
++ */
++static void
++morphz_map_diagnostic (int         dirfd,
++                      const char *path,
++                      const char *phase,
++                      int         fd,
++                      int         result,
++                      int         operation_errno)
++{
++  int saved_errno = errno;
++  struct stat metadata = { 0 };
++  int stat_result;
++  int stat_errno;
++  FILE *status;
++  char line[512];
++
++  if (strcmp (path, "uid_map") != 0 &&
++      strcmp (path, "gid_map") != 0 &&
++      strcmp (path, "setgroups") != 0)
++    return;
++
++  stat_result = fstatat (dirfd, path, &metadata, 0);
++  stat_errno = stat_result < 0 ? errno : 0;
++  fprintf (stderr,
++           "DYNAMIC_BWRAP_MAP phase=%s path=%s pid=%ld ppid=%ld "
++           "uid=%ld euid=%ld gid=%ld egid=%ld dumpable=%d "
++           "dirfd=%d fd=%d result=%d operation_errno=%d "
++           "stat_result=%d stat_errno=%d owner=%ld group=%ld mode=%lo\n",
++           phase, path, (long) getpid (), (long) getppid (),
++           (long) getuid (), (long) geteuid (), (long) getgid (), (long) getegid (),
++           prctl (PR_GET_DUMPABLE, 0, 0, 0, 0),
++           dirfd, fd, result, operation_errno, stat_result, stat_errno,
++           (long) metadata.st_uid, (long) metadata.st_gid,
++           (unsigned long) (metadata.st_mode & 07777));
++  status = fopen ("/proc/self/status", "r");
++  if (status != NULL)
++    {
++      while (fgets (line, sizeof (line), status) != NULL)
++        if (strncmp (line, "Cap", 3) == 0 ||
++            strncmp (line, "Uid:", 4) == 0 ||
++            strncmp (line, "Gid:", 4) == 0 ||
++            strncmp (line, "NoNewPrivs:", 11) == 0)
++          fprintf (stderr, "DYNAMIC_BWRAP_MAP_STATE phase=%s path=%s %s",
++                   phase, path, line);
++      fclose (status);
++    }
++  else
++    fprintf (stderr, "DYNAMIC_BWRAP_MAP_STATE phase=%s path=%s status_errno=%d\n",
++             phase, path, errno);
++  errno = saved_errno;
++}
++
+ /* Sets errno on error (!= 0), ENOSPC on short write */
+ int
+ write_file_at (int         dirfd,
+@@ -452,13 +508,16 @@
+   bool res;
+   int errsv;
+ 
++  morphz_map_diagnostic (dirfd, path, "before_open", -1, 0, 0);
+   fd = openat (dirfd, path, O_RDWR | O_CLOEXEC, 0);
++  morphz_map_diagnostic (dirfd, path, "after_open", fd, fd, fd < 0 ? errno : 0);
+   if (fd == -1)
+     return -1;
+ 
+   res = 0;
+   if (content)
+     res = write_to_fd (fd, content, strlen (content));
++  morphz_map_diagnostic (dirfd, path, "after_write", fd, res, res ? errno : 0);
+ 
+   errsv = errno;
+   close (fd);

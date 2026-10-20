@@ -136,3 +136,22 @@ rules. Production arbitrary exec, Unicode/globs, real dynamic approval
 integration, pre-existing hardlinks, inherited/delegated FD adversaries,
 multi-client lease collection and the original strict Runtime Linux test remain
 unverified. The ancestor-directory restriction remains a real product cost.
+
+## Run 3 retained; same-source syscall diagnostic prepared
+
+Commit `e4bf3b2c1bbe29eb85c8d8777fea279a0dbce614`, run
+<https://github.com/morphz-ai/morphz/actions/runs/39434084185> failed at the same
+UID-map startup boundary. The 23 source checks, C build and policy add/remove
+passed. Outer entry was dumpable with zero effective capabilities. Audit
+boot-to-boot ptrace read denials are not by themselves proof of the fatal
+syscall: bwrap also ignores failures during namespace identity lookups.
+No ptrace/capability permission has been added.
+
+The next prepared change is `bwrap_diagnostic_runner.py`, a pinned Ubuntu
+`0.9.0-1ubuntu0.3` source baseline and diagnostic pair, with exact root-private
+backup/staged replacement/restoration at `/usr/bin/bwrap` on the disposable
+runner only. `BWRAP_DIAGNOSTIC_REVIEW.md` is the complete implementation review.
+The existing policy, controller, loader, entry and worker hashes are unchanged.
+Local pure/source tests are 37/37; Linux build and real syscall results are
+pending. Preserve all three earlier failed runs; this preparation does not turn
+them into passing security evidence.

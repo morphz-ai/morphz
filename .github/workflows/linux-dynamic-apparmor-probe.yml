@@ -19,7 +19,7 @@ jobs:
   probe:
     name: Dynamic typed policy and retained stack (not production)
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,17 +27,26 @@ jobs:
       - name: Install official isolated dependencies, no sysctl edits
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap apparmor apparmor-utils libapparmor-dev libjson-c-dev gcc pkg-config
+          sudo apt-get install --yes bubblewrap=0.9.0-1ubuntu0.3 apparmor apparmor-utils \
+            libapparmor-dev libjson-c-dev gcc pkg-config meson ninja-build libcap-dev \
+            libcap2-bin libselinux1-dev dpkg-dev patch
       - name: Pure unit and source checks
-        run: python3 -B -m unittest discover -s scripts/probes/linux_dynamic -p 'test_contract.py' -v
+        run: python3 -B -m unittest discover -s scripts/probes/linux_dynamic -p 'test_*.py' -v
       - name: Build fixed non-setuid entry with system parsers
         working-directory: scripts/probes/linux_dynamic
         run: cc -std=c11 -Wall -Wextra -Werror -O2 entry.c -o entry -ljson-c -lapparmor
-      - name: Run finite synthetic isolation campaign
+      - name: Build same Ubuntu source pair and retain both diagnostic campaigns
         env:
           MORPHZ_ISOLATED_DYNAMIC_PROBE: "1"
         run: |
-          python3 -B scripts/probes/linux_dynamic/controller.py --execute \
+          python3 -B scripts/probes/linux_dynamic/bwrap_diagnostic_runner.py --execute \
+            --output "${{ runner.temp }}/morphz-dynamic-evidence"
+      - name: Independently verify original binary restoration
+        if: always()
+        env:
+          MORPHZ_ISOLATED_DYNAMIC_PROBE: "1"
+        run: |
+          python3 -B scripts/probes/linux_dynamic/bwrap_diagnostic_runner.py --restore-only \
             --output "${{ runner.temp }}/morphz-dynamic-evidence"
       - name: Preserve failures as well as successes
         if: always()
