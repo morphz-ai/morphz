@@ -1552,20 +1552,40 @@ test(
     await t.test(
       "actual Vite fixture entry replacement disposes its previous React root without clearing real same-window retry bytes",
       async () => {
+        const started = performance.now();
+        const checkpoint = (phase: string, page?: Page) => {
+          if (process.env.MORPHZ_TEST_DIAGNOSE_MANAGER_REPLACEMENT === "1")
+            t.diagnostic(
+              "Manager Vite replacement phase: " +
+                JSON.stringify({
+                  phase,
+                  elapsedMs: Math.round(performance.now() - started),
+                  browserConnected: browser?.isConnected(),
+                  pageClosed: page?.isClosed(),
+                  hostRssBytes: process.memoryUsage().rss,
+                }),
+            );
+        };
+        checkpoint("before-load");
         const { page, errors, external } = await load();
+        checkpoint("loaded", page);
         try {
           await unknownConnect(page);
+          checkpoint("unknown-connection-recorded", page);
           const stored = (await report(page)).connectionRetryRecords;
           const module = server.moduleGraph.getModuleById(fixture);
           assert.ok(
             module,
             "the actual mounted TSX entry is in Vite's module graph",
           );
+          checkpoint("before-module-reload", page);
           await server.reloadModule(module);
+          checkpoint("after-module-reload", page);
           const replaced = await wait(
             page,
             (r) => r.entryEvidence.length === 2,
           );
+          checkpoint("replacement-observed", page);
           assert.equal(
             replaced.entryEvidence[1]?.existingChildren,
             0,
@@ -1580,8 +1600,11 @@ test(
             "cognitive-apps.describe",
             "cognitive-apps.connect",
           ]);
+          checkpoint("assertions-complete", page);
         } finally {
+          checkpoint("before-page-close", page);
           await page.close();
+          checkpoint("after-page-close", page);
         }
       },
     );

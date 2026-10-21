@@ -14,6 +14,7 @@ on:
       - application/packages/core/src/evaluation-result.ts
       - application/tests/conversation-performance.spec.ts
       - application/tests/application-compose-race.test.ts
+      - application/tests/cognitive-app-manager-mounted.test.ts
       - application/tests/cognitive-document-native.test.ts
       - application/tests/storage-commit-notifications.test.ts
       - application/tests/fixtures/cognitive-document-native-entry.cjs
@@ -83,7 +84,7 @@ jobs:
           if-no-files-found: ignore
 
   macos-compose-regressions:
-    name: Isolated macOS iframe initialization diagnosis
+    name: Isolated macOS iframe and manager lifecycle diagnosis
     runs-on: macos-latest
     timeout-minutes: 20
     defaults:
@@ -103,4 +104,6 @@ jobs:
       - run: brew install postgresql@16
       - run: npx playwright install chromium
       - name: Check the actual opaque iframe with bounded diagnosis
-        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/application-compose-race.test.ts tests/task-run-panel-mounted.test.ts
+        env:
+          MORPHZ_TEST_DIAGNOSE_MANAGER_REPLACEMENT: "1"
+        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/application-compose-race.test.ts tests/task-run-panel-mounted.test.ts tests/cognitive-app-manager-mounted.test.ts
