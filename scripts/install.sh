@@ -62,15 +62,10 @@ if [ "$platform" = "macos" ]; then
   esac
   [ "$macos_major" -ge 11 ] || fail "Morphz requires macOS 11 or newer"
 elif [ "$platform" = "linux" ]; then
-  if ! command -v bwrap >/dev/null 2>&1; then
-    printf '%s\n' \
-      "Warning: Bubblewrap is not installed; Morphz local command execution will stay unavailable." \
-      "Install your distribution's bubblewrap package, then run: morphz doctor" >&2
-  elif ! bwrap --ro-bind / / --dev /dev --unshare-user --unshare-pid --proc /proc -- /bin/true >/dev/null 2>&1; then
-    printf '%s\n' \
-      "Warning: Bubblewrap cannot create an unprivileged sandbox on this system." \
-      "Ask the system administrator to enable unprivileged user namespaces, then run: morphz doctor" >&2
-  fi
+  printf '%s\n' \
+    "Linux sandboxed commands require the administrator-installed Morphz sandbox service and a trusted native Runtime image." \
+    "This user-level installer does not install or authorize privileged sandbox components." \
+    "See linux-sandbox/INSTALL.md in the verified release archive; Bubblewrap alone is not sufficient." >&2
 fi
 
 asset="morphz-$platform-$architecture.tar.gz"

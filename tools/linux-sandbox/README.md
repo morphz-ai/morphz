@@ -32,7 +32,12 @@ stage instead of assuming a 600 ms tool or including database initialization in
 the handler's non-blocking deadline. The complete local `attempt_loop` inventory
 then passed 81/81 with zero ignored under default parallel execution. This is
 test synchronization, not a change to Runtime batching or execution semantics;
-full CI at the new commit remains a separate result.
+the complete Runtime CI at `e1b8a7a5` then passed in
+[run 39578427800](https://github.com/morphz-ai/morphz/actions/runs/39578427800).
+Its full workspace test job, Linux/macOS/Windows native boundaries, PostgreSQL,
+Session IO, lint and release build all passed. This does not turn the remaining
+default-ignored provider/private/manual cases into passes, or establish complete
+Application and release-installation acceptance.
 
 Historical false-green result: `39568698033` passed the library and PostgreSQL
 cases but its new namespace-handle native case still failed;
@@ -83,6 +88,17 @@ the separate native namespace-case failure was corrected and verified above.
 No data-filesystem allowlist or relaxed write check was added.
 Full CI, upgrade/uninstall and release
 integration remain separate acceptance gates.
+
+Linux Runtime and Edge archives now stage the exact inert `linux-sandbox/`
+installation sources and `INSTALL.md`, without native test executables or a
+trusted general interpreter. A new required release job downloads those actual
+archives, installs their root-owned native images and packaged service in fresh
+Ubuntu 24.04 x86_64/ARM64 runners, and exercises the packaged Runtime's public
+terminal API. It requires post-admission `.env` read denial, outside-write denial
+and an allowed live write, with no model call. Merely staging these sources or
+adding the gate is not proof that it has passed; record its native result before
+claiming release installation works. The regular user installer does not auto-
+elevate, change global namespace settings or authorize its user-writable image.
 
 The service accepts only the Runtime's typed, already-approved `SandboxPolicy`.
 It never accepts shell commands, arbitrary AppArmor source, or requested profile

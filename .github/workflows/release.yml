@@ -155,18 +155,20 @@ jobs:
           mkdir -p dist/morphz-bundle
           cp "target/${{ matrix.target }}/release/morphz" dist/morphz-bundle/
           sh scripts/stage-release-legal.sh dist/morphz-bundle
+          python3 tools/linux-sandbox/package.py dist/morphz-bundle
           archive="${{ matrix.asset }}.tar.gz"
           tar -czf "dist/$archive" -C dist/morphz-bundle \
             morphz LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES_RUST.md \
-            dashboard third_party
+            dashboard third_party linux-sandbox
           edge_asset="${{ matrix.asset }}"
           edge_asset="morphz-edge-${edge_asset#morphz-}.tar.gz"
           mkdir -p dist/morphz-edge-bundle
           cp "target/${{ matrix.target }}/release/morphz-edge" dist/morphz-edge-bundle/
           sh scripts/stage-release-legal.sh dist/morphz-edge-bundle
+          python3 tools/linux-sandbox/package.py dist/morphz-edge-bundle
           tar -czf "dist/$edge_asset" -C dist/morphz-edge-bundle \
             morphz-edge LICENSE NOTICE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES_RUST.md \
-            dashboard third_party
+            dashboard third_party linux-sandbox
           if command -v sha256sum >/dev/null 2>&1; then
             (cd dist && sha256sum "$archive" > "$archive.sha256")
             (cd dist && sha256sum "$edge_asset" > "$edge_asset.sha256")
@@ -213,6 +215,64 @@ jobs:
             dist/morphz-edge-*.tar.gz
             dist/morphz-edge-*.tar.gz.sha256
           if-no-files-found: error
+
+  linux-bundle-sandbox:
+    name: Installed release sandbox (${{ matrix.architecture }})
+    needs: linux-bundles
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            architecture: x86_64
+          - os: ubuntu-24.04-arm
+            architecture: aarch64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: morphz-linux-${{ matrix.architecture }}
+          path: dist
+      - name: Install distribution dependencies without changing global security settings
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes apparmor apparmor-utils libapparmor-dev libjson-c-dev bubblewrap gcc libc6-dev binutils
+      - name: Install exact packaged Runtime and source components in this isolated runner
+        shell: bash
+        env:
+          ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          set -euo pipefail
+          runtime_image="/usr/local/libexec/morphz-release-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          edge_image="/usr/local/libexec/morphz-edge-release-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          test ! -e "$runtime_image"
+          test ! -e "$edge_image"
+          (cd dist && sha256sum -c "morphz-linux-$ARCHITECTURE.tar.gz.sha256")
+          (cd dist && sha256sum -c "morphz-edge-linux-$ARCHITECTURE.tar.gz.sha256")
+          sudo install -d -m 0755 "$runtime_image" "$edge_image"
+          sudo tar --no-same-owner -xzf "dist/morphz-linux-$ARCHITECTURE.tar.gz" -C "$runtime_image"
+          sudo tar --no-same-owner -xzf "dist/morphz-edge-linux-$ARCHITECTURE.tar.gz" -C "$edge_image"
+          diff -r "$runtime_image/linux-sandbox" "$edge_image/linux-sandbox"
+          sudo /usr/bin/python3 -I -B "$runtime_image/linux-sandbox/install.py" \
+            --runtime "$runtime_image/morphz" --runtime "$edge_image/morphz-edge"
+          sudo systemctl daemon-reload
+          sudo systemctl start morphz-sandbox.service
+          echo "MORPHZ_PACKAGED_RUNTIME=$runtime_image/morphz" >> "$GITHUB_ENV"
+          for attempt in $(seq 1 100); do
+            if [ -S /run/morphz-sandbox/control.sock ]; then break; fi
+            sleep 0.1
+          done
+          test -S /run/morphz-sandbox/control.sock
+          "$edge_image/morphz-edge" --version
+      - name: Verify packaged public Runtime admission and late-file protection without a model
+        run: python3 scripts/test-session-io-release.py "$MORPHZ_PACKAGED_RUNTIME" --native-linux-sandbox
+      - name: Preserve actual packaged service diagnostics
+        if: always()
+        run: sudo journalctl -u morphz-sandbox.service --no-pager
 
   macos-bundles:
     name: ${{ matrix.asset }}
@@ -435,7 +495,7 @@ jobs:
   publish:
     name: Publish GitHub Release
     if: github.event_name == 'push'
-    needs: [release-readiness, session-io, linux-sandbox, linux-bundles, macos-bundles, windows-bundle]
+    needs: [release-readiness, session-io, linux-sandbox, linux-bundles, linux-bundle-sandbox, macos-bundles, windows-bundle]
     runs-on: ubuntu-latest
     permissions:
       contents: write
