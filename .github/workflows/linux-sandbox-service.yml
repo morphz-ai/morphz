@@ -65,7 +65,7 @@ jobs:
           mkdir -p "${{ runner.temp }}/linux-sandbox-evidence"
           for component in linux-sandbox-compiler-kernel linux-sandbox-peer-kernel linux-sandbox-roots-kernel linux-sandbox-mount-kernel linux-sandbox-lifecycle-kernel; do
             if [ -d "${{ runner.temp }}/$component" ]; then
-              tar -czf "${{ runner.temp }}/linux-sandbox-evidence/$component.tar.gz" \
+              sudo tar -czf "${{ runner.temp }}/linux-sandbox-evidence/$component.tar.gz" \
                 -C "${{ runner.temp }}" "$component"
             fi
           done

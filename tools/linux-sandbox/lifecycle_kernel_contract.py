@@ -203,6 +203,13 @@ def execute(args):
         (installed / "config.json").write_text(json.dumps(config))
         os.chmod(installed / "config.json", 0o444)
         start_service()
+        duplicate = subprocess.run(["/usr/bin/python3", "-I", "-B", str(installed / "lifecycle_kernel_contract.py"),
+                                    "--service", str(installed / "config.json")],
+                                   capture_output=True, timeout=5,
+                                   env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C.UTF-8",
+                                        "MORPHZ_LINUX_SANDBOX_TEST": "1"})
+        check("a second service cannot overwrite or race the active state owner",
+              duplicate.returncode != 0 and b"BlockingIOError" in duplicate.stderr and service.poll() is None)
 
         rogue, _, _ = start_peer("rogue", "rogue")
         check("same UID and same binary bytes do not authorize an unregistered executable object",
@@ -216,6 +223,8 @@ def execute(args):
         child = ready["pid"]
         child_fd = os.pidfd_open(child)
         background.append(child_fd)
+        check("kernel places the actual background child in exactly its lease cgroup",
+              Path(f"/proc/{child}/cgroup").read_text().strip() == f"0::/{unique}/{launch}")
         check("launcher and Runtime can both exit while descendant remains", peer.wait(timeout=5) == 0)
         check("owner exit closes new admission without unloading descendant protection",
               wait_until(lambda: launch_record(launch)["phase"] == "closing") and enforcing(launch)
@@ -229,6 +238,15 @@ def execute(args):
               result.get("protected_denied") and result.get("allowed_write") and result.get("escape_denied")
               and result.get("extra_fds") == 0 and ordinary.read_text() == "host\nworker\n", result)
 
+        newer, _, newer_protected = start_peer("background-newer")
+        newer_launch = receive(newer.stdout)["registered"]
+        newer_ready = receive(newer.stdout)
+        background.append(os.pidfd_open(newer_ready["pid"]))
+        check("concurrent generations keep different immutable profiles and cgroups",
+              newer_ready.get("ready") and newer_launch != launch and newer.wait(timeout=5) == 0
+              and enforcing(launch) and enforcing(newer_launch))
+        host_file(newer_protected, "second-synthetic-secret")
+
         service.kill()  # actual SIGKILL, no service finally/cleanup runs
         service.wait(timeout=5)
         check("service crash leaves real kernel protection installed", enforcing(launch))
@@ -239,12 +257,22 @@ def execute(args):
               and result.get("allowed_write") and result.get("escape_denied"), result)
         start_service()
         check("restart preserves live generation and never revives admission",
-              enforcing(launch) and launch_record(launch)["phase"] == "closing")
+              enforcing(launch) and enforcing(newer_launch) and
+              launch_record(launch)["phase"] == launch_record(newer_launch)["phase"] == "closing")
         peer.stdin.write(b"exit\n")
         peer.stdin.flush()
         check("only last descendant exit permits cgroup removal then policy unload",
               wait_until(lambda: launch_record(launch)["phase"] == "removed") and not enforcing(launch)
               and not (group_root / launch).exists())
+        newer.stdin.write(b"probe\n")
+        newer.stdin.flush()
+        result = receive(newer.stdout)
+        check("collecting one generation never weakens the concurrent live generation",
+              enforcing(newer_launch) and result.get("protected_denied") and result.get("allowed_write"), result)
+        newer.stdin.write(b"exit\n")
+        newer.stdin.flush()
+        check("independent final descendant exit reclaims the second generation",
+              wait_until(lambda: launch_record(newer_launch)["phase"] == "removed") and not enforcing(newer_launch))
 
         held, _, _ = start_peer("held")
         held_launch = receive(held.stdout)["registered"]
@@ -261,6 +289,22 @@ def execute(args):
         result = receive(held.stdout)
         check("a stale join capability cannot enter or resurrect the removed group",
               result.get("stale_join_refused") is True, result)
+
+        held_restart, _, _ = start_peer("held-restart")
+        restarting_launch = receive(held_restart.stdout)["registered"]
+        restarting_ready = receive(held_restart.stdout)
+        background.append(os.pidfd_open(restarting_ready["pid"]))
+        service.kill()
+        service.wait(timeout=5)
+        start_service()
+        check("restart closes even a live owner's unadmitted claim instead of trusting saved PIDs",
+              held_restart.poll() is None and launch_record(restarting_launch)["phase"] == "removed"
+              and not enforcing(restarting_launch))
+        held_restart.stdin.write(b"G")
+        held_restart.stdin.flush()
+        result = receive(held_restart.stdout)
+        check("issued pre-crash capability cannot bypass recovery closure",
+              result.get("stale_join_refused") is True and held_restart.wait(timeout=5) == 0, result)
         record["ok"] = True
     except BaseException as error:
         record.update(ok=False, error=repr(error))

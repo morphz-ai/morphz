@@ -121,7 +121,7 @@ int main(int argc, char **argv) {
     int descriptor;
     struct json_object *reply = exchange(argv[1], request("claim", argv[2]), &descriptor);
     if (!succeeded(reply) || descriptor < 0) fail("one-use claim");
-    if (!strcmp(argv[3], "held")) {
+    if (!strcmp(argv[3], "held") || !strcmp(argv[3], "held-restart")) {
         printf("{\"held\":true,\"pid\":%ld}\n", (long)getpid());
         fflush(stdout);
         if (getchar() != 'G') fail("held-capability barrier");
