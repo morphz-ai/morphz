@@ -66,7 +66,7 @@ class PeerFrame:
         self.close()
 
 
-def receive_frame(connection):
+def receive_frame(connection, *, inherited_from=None):
     require_linux()
     if connection.family != socket.AF_UNIX or connection.getsockopt(
             socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
@@ -101,9 +101,15 @@ def receive_frame(connection):
             raise PeerError("expected exactly one kernel credential and pidfd record, no passed rights")
         if not 0 < len(body) <= MAX_REQUEST_BYTES:
             raise PeerError("empty or oversized control frame")
-        if credentials[0] != peer:
-            raise PeerError("control connection was inherited or passed to another process")
-        pid, uid, gid = peer
+        if inherited_from is None:
+            if credentials[0] != peer:
+                raise PeerError("control connection was inherited or passed to another process")
+        elif peer != inherited_from or credentials[0][1:] != peer[1:]:
+            # Only the private admission endpoint may name its already-bound
+            # outer launcher. The inner process still authenticates using the
+            # kernel's per-message sender pidfd, executable, cgroup and label.
+            raise PeerError("private channel does not belong to the exact registered outer launcher")
+        pid, uid, gid = credentials[0]
         if pid <= 1 or uid <= 0 or gid < 0:
             raise PeerError("policy caller must be a real non-root process")
         descriptor = pidfds[0]

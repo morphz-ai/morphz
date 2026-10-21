@@ -7,6 +7,7 @@
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <sys/wait.h>
 #include <dirent.h>
@@ -26,7 +27,7 @@ static const char *string(struct json_object *object, const char *key) {
     if (!json_object_object_get_ex(object, key, &value) || !json_object_is_type(value, json_type_string)) fail(key);
     return json_object_get_string(value);
 }
-static struct json_object *exchange(const char *path, struct json_object *request, int *received) {
+static int connect_service(const char *path) {
     int connection = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
     struct sockaddr_un address = {.sun_family = AF_UNIX};
     if (connection < 0 || strlen(path) >= sizeof(address.sun_path)) fail("control address");
@@ -35,6 +36,9 @@ static struct json_object *exchange(const char *path, struct json_object *reques
     struct ucred server;
     socklen_t size = sizeof(server);
     if (getsockopt(connection, SOL_SOCKET, SO_PEERCRED, &server, &size) || server.uid != 0) fail("service identity");
+    return connection;
+}
+static struct json_object *exchange_connection(int connection, struct json_object *request, int *received) {
     const char *raw = json_object_to_json_string_ext(request, JSON_C_TO_STRING_PLAIN);
     if (send(connection, raw, strlen(raw), MSG_NOSIGNAL) != (ssize_t)strlen(raw)) fail("request");
     char buffer[262145], ancillary[CMSG_SPACE(sizeof(int) * 4)];
@@ -54,6 +58,9 @@ static struct json_object *exchange(const char *path, struct json_object *reques
     struct json_object *result = json_tokener_parse(buffer), *ok = NULL;
     if (!result || !json_object_object_get_ex(result, "ok", &ok)) fail("reply syntax");
     return result;
+}
+static struct json_object *exchange(const char *path, struct json_object *request, int *received) {
+    return exchange_connection(connect_service(path), request, received);
 }
 static struct json_object *request(const char *operation, const char *launch) {
     struct json_object *value = json_object_new_object();
@@ -144,12 +151,18 @@ static void mounted_outer(char **argv, struct json_object *claim) {
     int unexpected;
     struct json_object *bound = exchange(argv[1], bind, &unexpected);
     if (!succeeded(bound) || unexpected != -1) fail("service object binding");
+    // Authenticate root before entering the single-UID user namespace, where
+    // the host's root UID is intentionally unmapped. Only the trusted inner
+    // executable inherits this exact channel; the server checks its real
+    // per-message pidfd, not the outer connection PID as the work identity.
+    int admission = connect_service(string(claim, "admission_socket"));
     struct json_object *manifest = json_object_new_object();
     json_object_object_add(manifest, "roots", json_object_get(field(bound, "roots", json_type_array)));
     json_object_object_add(manifest, "bootstrap", json_object_get(field(claim, "bootstrap", json_type_string)));
     json_object_object_add(manifest, "work", json_object_get(field(claim, "work", json_type_string)));
     json_object_object_add(manifest, "cwd", json_object_get(field(policy, "cwd", json_type_string)));
     json_object_object_add(manifest, "mode", json_object_new_string(argv[3]));
+    json_object_object_add(manifest, "admission_fd", json_object_new_int(admission));
     int source = memfd_create("morphz-admission-contract", MFD_CLOEXEC | MFD_ALLOW_SEALING);
     const char *raw = json_object_to_json_string_ext(manifest, JSON_C_TO_STRING_PLAIN);
     if (source < 0 || write(source, raw, strlen(raw)) != (ssize_t)strlen(raw) ||
@@ -169,12 +182,14 @@ static void mounted_outer(char **argv, struct json_object *claim) {
             if (morphz_arg(&arguments, inner[i])) fail("fixed inner entry");
         for (size_t i = 0; i < mounts.count; ++i)
             if (fcntl(mounts.roots[i].fd, F_SETFD, 0)) fail("root handoff");
-        if (fcntl(source, F_SETFD, 0) || aa_change_profile(string(claim, "bootstrap")) ||
+        if (fcntl(source, F_SETFD, 0) || fcntl(admission, F_SETFD, 0) ||
+            aa_change_profile(string(claim, "bootstrap")) ||
             prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) fail("trusted setup boundary");
         execv(arguments.values[0], arguments.values);
         fail("distribution bwrap");
     }
     close(source);
+    close(admission);
     int status;
     if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) fail("mounted entry exit");
     morphz_close_roots(&mounts);
@@ -205,11 +220,13 @@ static struct json_object *mounted_inner(char **argv) {
             .inode = (ino_t)json_object_get_uint64(field(root, "inode", json_type_int))};
     }
     const char *mode = string(manifest, "mode");
+    int admission = json_object_get_int(field(manifest, "admission_fd", json_type_int));
+    if (admission < 3 || admission == source) fail("private admission handoff");
     if (morphz_verify_mounted_roots(&mounts)) fail("inner actual object identity");
     if (strcmp(mode, "mounted-no-stack") && aa_stack_profile(string(manifest, "work"))) fail("work stacking");
-    if (morphz_close_extra_fds(!strcmp(mode, "mounted-leak") ? (int)source : -1)) fail("inner closure");
+    if (strcmp(mode, "mounted-leak") && morphz_close_extra_fds(admission)) fail("inner closure");
     int descriptor;
-    struct json_object *reply = exchange(argv[1], request("admit", argv[2]), &descriptor);
+    struct json_object *reply = exchange_connection(admission, request("admit", argv[2]), &descriptor);
     if (!succeeded(reply)) {
         fprintf(stderr, "admission result: %s\n", json_object_to_json_string_ext(reply, JSON_C_TO_STRING_PLAIN));
         puts("{\"admission_rejected\":true}");

@@ -120,7 +120,11 @@ class ServiceLoop:
             launch, _ = self.connections[endpoint]
             descriptor = None
             try:
-                with receive_frame(endpoint) as frame:
+                inherited_from = None
+                if launch is not None:
+                    _owner, (_outer, identity) = self.registration.admission.outer(launch)
+                    inherited_from = (identity.pid, identity.uid, identity.gid)
+                with receive_frame(endpoint, inherited_from=inherited_from) as frame:
                     if launch is None:
                         reply, descriptor = self.registration.handle(frame)
                         if decode_request(frame.body).get("op") == "register":
