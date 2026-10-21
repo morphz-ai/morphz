@@ -27,7 +27,7 @@ jobs:
       - name: Install distribution AppArmor without changing global security settings
         run: |
           sudo apt-get update
-          sudo apt-get install --yes apparmor apparmor-utils libapparmor1
+          sudo apt-get install --yes apparmor apparmor-utils libapparmor-dev gcc
       - name: Verify strict typed policy and deterministic compilation
         run: python3 -B -m unittest discover -s tools/linux-sandbox -p 'test_*.py' -v
       - name: Verify generated policy against real enforcing kernel paths

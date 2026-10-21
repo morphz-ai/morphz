@@ -22,17 +22,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from policy import ABI, Policy, compile_profiles  # noqa: E402
 
 
-def worker(bootstrap, work, in_process_counterfactual=False):
+def worker(bootstrap, work, in_process_counterfactual=False, already_stacked=False):
     if os.getuid() == 0 or os.geteuid() == 0:
         raise PermissionError("kernel worker must never run as root")
     apparmor = ctypes.CDLL("libapparmor.so.1", use_errno=True)
     libc = ctypes.CDLL(None, use_errno=True)
     libc.prctl.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong)
     libc.prctl.restype = ctypes.c_int
-    transitions = [("aa_stack_profile", work)]
+    transitions = [] if already_stacked else [("aa_stack_profile", work)]
     if in_process_counterfactual:
         transitions.insert(0, ("aa_change_profile", bootstrap))
-    elif Path("/proc/self/attr/current").read_text().strip() != f"{bootstrap} (enforce)":
+    elif not already_stacked and Path("/proc/self/attr/current").read_text().strip() != f"{bootstrap} (enforce)":
         raise PermissionError("worker must be exec-entered into the exact bootstrap profile")
     if libc.prctl(38, 1, 0, 0, 0):  # PR_SET_NO_NEW_PRIVS before final stack, as in bwrap
         raise OSError(ctypes.get_errno(), "NoNewPrivs")
@@ -118,6 +118,10 @@ def execute(args):
     for name in ("kernel_contract.py", "policy.py"):
         shutil.copyfile(Path(__file__).parent / name, trusted / name)
         os.chmod(trusted / name, 0o444)
+    subprocess.run(["/usr/bin/cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",
+                    str(Path(__file__).parent / "kernel_entry.c"), "-o", str(trusted / "entry"),
+                    "-lapparmor"], check=True, timeout=30)
+    os.chmod(trusted / "entry", 0o755)
     record = {"scope": "compiler-and-kernel-only", "assertions": [], "cleanup": False}
     process = None
     loaded = False
@@ -213,11 +217,17 @@ def execute(args):
                                   env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
         record["in_process_counterfactual"] = {"code": baseline.returncode, "stdout": baseline.stdout,
                                               "stderr": baseline.stderr}
+        python_entry = subprocess.run(identity + ["/usr/bin/aa-exec", "-p", compiled.bootstrap, "--"] +
+                                      fixed_worker, text=True, input="", capture_output=True, timeout=8,
+                                      cwd=workspace, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
+        record["python_entry_counterfactual"] = {"code": python_entry.returncode,
+                                                 "stdout": python_entry.stdout, "stderr": python_entry.stderr}
         save()
         # Use the already-reviewed exec entry, not an in-process label change
         # followed by manually restoring dumpability or weakening proc access.
-        process = subprocess.Popen(identity + ["/usr/bin/aa-exec", "-p", compiled.bootstrap, "--"] +
-                                   fixed_worker,
+        process = subprocess.Popen(identity + ["/usr/bin/aa-exec", "-p", compiled.bootstrap, "--",
+                                               str(trusted / "entry"), compiled.bootstrap, compiled.work,
+                                               str(trusted / "kernel_contract.py")],
             text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, bufsize=1,
             cwd=workspace, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
         ready = receive()
@@ -296,12 +306,13 @@ if __name__ == "__main__":
     cli.add_argument("--bootstrap")
     cli.add_argument("--work")
     cli.add_argument("--in-process-counterfactual", action="store_true")
+    cli.add_argument("--already-stacked", action="store_true")
     cli.add_argument("--uid", type=int, default=0)
     cli.add_argument("--gid", type=int, default=0)
     cli.add_argument("--output", type=Path)
     arguments = cli.parse_args()
     if arguments.worker:
-        worker(arguments.bootstrap, arguments.work, arguments.in_process_counterfactual)
+        worker(arguments.bootstrap, arguments.work, arguments.in_process_counterfactual, arguments.already_stacked)
     elif arguments.output is not None:
         execute(arguments)
     else:
