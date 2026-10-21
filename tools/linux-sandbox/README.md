@@ -35,6 +35,18 @@ worker and artifacts contain only synthetic data. This is a compiler/kernel
 gate, not a substitute for the service, mount handoff, PTY or Runtime tests.
 Neither this workflow nor the compiler changes global sysctl settings.
 
+`peer.py` is the caller-authentication building block. Each bounded seqpacket
+must carry matching connection and per-message kernel credentials plus a live
+kernel pidfd; inherited connections and passed descriptor capabilities are
+rejected. The actual process must retain matching IDs, namespace, exact role
+label, no tracer/capabilities and an administrator-installed executable object.
+Allowed executable objects and their ancestors must be root-owned and not user
+writable; names, request JSON and the UID alone confer no authority. Registration
+must retain the pidfd and revalidate again before admission. The separate kernel
+fixture uses Python only as a **test** executable; a production registry must
+contain the installed Runtime/launcher, not a general interpreter. This component
+does not yet implement registration, mount identity or lifecycle management.
+
 Mandatory next gates: real AppArmor 4.0 parser and adversarial literal-path tests;
 authenticated service; pinned-object mount handoff; exact enforcing-stack/UID/
 capability/NoNewPrivs confirmation before command execution; inherited-FD closure;
