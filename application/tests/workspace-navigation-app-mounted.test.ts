@@ -12,7 +12,7 @@ import {
 } from "typescript/unstable/ast";
 import { chromium } from "@playwright/test";
 import react from "@vitejs/plugin-react";
-import { createServer, transformWithOxc } from "vite";
+import { build, transformWithOxc } from "vite";
 import { verifyCurrentPrivateProjectConversationScopeConsumption } from "./fixtures/private-project-conversation-scope-consumption.js";
 import { verifyCurrentHumanCreationConsumption } from "./fixtures/human-creation-consumption.js";
 
@@ -116,7 +116,7 @@ import React, {StrictMode, Suspense, startTransition, useEffect, useLayoutEffect
 import {createRoot} from 'react-dom/client';
 import {createPortal, flushSync} from 'react-dom';
 import {X} from 'lucide-react';
-import {spaceKind, initialWorkspace} from '/@fs/${resolve("packages/core/src/model.ts")}';
+import {spaceKind, initialWorkspace} from '${resolve("packages/core/src/model.ts")}';
 import {scopedStorage, storageScope, draftKey} from '/src/local-preferences.ts';
 import {useModal} from '/src/useModal.ts';
 import {BrandMark} from '/src/BrandMark.tsx';
@@ -251,13 +251,30 @@ test(
     const cacheDir = mkdtempSync(
       join(tmpdir(), "morphz-navigation-app-cache-"),
     );
-    const server = await createServer({
+    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+    context.after(async () => {
+      await browser?.close();
+      rmSync(cacheDir, { recursive: true, force: true });
+    });
+    // This is an actual-component mounting test, not a TCP/HMR test. Compile
+    // the same production imports and finite App functions once, then serve
+    // those exact bytes through Playwright while the browser is offline.
+    // An OS network-change notification must not decide whether the identity
+    // and navigation assertions below get a chance to execute.
+    const built = await build({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
-      optimizeDeps: {
-        noDiscovery: true,
-        include: ["react", "react-dom/client", "react/jsx-runtime"],
+      mode: "development",
+      define: { "process.env.NODE_ENV": JSON.stringify("development") },
+      build: {
+        write: false,
+        minify: false,
+        lib: {
+          entry: "/__actual-navigation.tsx",
+          name: "ActualNavigationFixture",
+          formats: ["iife"],
+        },
       },
       plugins: [
         react(),
@@ -270,36 +287,27 @@ test(
             if (id === "\0/__actual-navigation.tsx")
               return transformWithOxc(source, "actual-navigation.tsx");
           },
-          configureServer(vite) {
-            vite.middlewares.use(async (request, response, next) => {
-              if (request.url !== "/__actual-navigation") return next();
-              response.setHeader("Content-Type", "text/html");
-              response.end(
-                await vite.transformIndexHtml(
-                  request.url,
-                  '<!doctype html><html><head><link rel="icon" href="data:,"></head><body><div id="root"></div><script type="module" src="/__actual-navigation.tsx"></script></body></html>',
-                ),
-              );
-            });
-          },
         },
       ],
-      server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
-    context.after(async () => {
-      await browser?.close();
-      await server.close();
-      rmSync(cacheDir, { recursive: true, force: true });
-    });
+    const builds = Array.isArray(built) ? built : [built];
+    assert.equal(builds.length, 1, "one finite fixture build");
+    const result = builds[0]!;
+    assert.ok("output" in result);
+    const chunks = result.output.filter((item) => item.type === "chunk");
+    assert.equal(
+      chunks.length,
+      1,
+      "one actual compiled fixture, no remote modules",
+    );
+    const code = chunks[0]!.code;
     browser = await chromium.launch({
       headless: true,
       executablePath: executable,
     });
-    await server.listen();
-    const address = server.httpServer!.address();
-    assert.ok(address && typeof address !== "string");
-    const url = `http://127.0.0.1:${address.port}/__actual-navigation`;
+    // Retain the original trustworthy loopback origin (Web Crypto/localStorage),
+    // without opening a listening socket or relaxing any browser security flag.
+    const url = "http://127.0.0.1/__actual-navigation";
     async function scene(
       run: (
         action: (name: string, value?: unknown) => Promise<Report>,
@@ -307,11 +315,33 @@ test(
         submit: () => Promise<void>,
       ) => Promise<void>,
     ) {
-      const page = await browser!.newPage(),
+      const page = await browser!.newPage({ offline: true }),
         errors: string[] = [],
         queries: string[] = [],
-        failedRequests: string[] = [];
+        failedRequests: string[] = [],
+        unexpectedRequests: string[] = [],
+        served: string[] = [];
+      await page.route("**/*", async (route) => {
+        const requested = route.request().url();
+        if (requested === url || requested === url + ".js") {
+          served.push(requested);
+          await route.fulfill({
+            contentType:
+              requested === url
+                ? "text/html; charset=utf-8"
+                : "text/javascript; charset=utf-8",
+            body:
+              requested === url
+                ? '<!doctype html><html><head><meta charset="utf-8"><link rel="icon" href="data:,"></head><body><div id="root"></div><script src="/__actual-navigation.js"></script></body></html>'
+                : code,
+          });
+        } else {
+          unexpectedRequests.push(requested);
+          await route.abort();
+        }
+      });
       page.setDefaultNavigationTimeout(60_000);
+      page.setDefaultTimeout(5000);
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
         if (message.type() === "error") errors.push(message.text());
@@ -332,6 +362,7 @@ test(
       try {
         await page.goto(url);
         await page.waitForSelector("#private");
+        assert.deepEqual(served, [url, url + ".js"]);
         const report = () =>
           page.evaluate(() =>
             Reflect.get(window, "appNavigationFixture").report(),
@@ -361,16 +392,23 @@ test(
         await run(action, report, submit);
         assert.deepEqual(errors, []);
         assert.deepEqual(queries, []);
+        assert.deepEqual(failedRequests, []);
+        assert.deepEqual(unexpectedRequests, []);
       } catch (cause) {
         // A failed mount previously discarded its console/module-load cause
         // and reported only '#private' timing out. Keep the original failure
         // and the synthetic page diagnostics; never retry or relax assertions.
         throw new Error(
           `App navigation mount failed: ${JSON.stringify({
-            errors,
-            failedRequests,
-            queries,
+            errorCount: errors.length,
+            errors: errors.slice(0, 3),
+            failedRequestCount: failedRequests.length,
+            failedRequests: failedRequests.slice(0, 3),
+            queries: queries.slice(0, 3),
+            unexpectedRequests: unexpectedRequests.slice(0, 3),
+            served,
             url: page.url(),
+            visibleText: (await page.locator("body").innerText()).slice(0, 500),
           })}`,
           { cause },
         );
