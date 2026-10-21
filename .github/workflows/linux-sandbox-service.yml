@@ -19,7 +19,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: linux-sandbox-service-${{ github.ref }}
+  # Reusable release gates must not compete with this workflow's push runs.
+  group: linux-sandbox-service-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

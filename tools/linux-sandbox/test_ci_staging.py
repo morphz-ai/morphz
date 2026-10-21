@@ -23,7 +23,9 @@ class CiStagingTests(unittest.TestCase):
         release = (workflows / "release.yml").read_text()
         self.assertNotIn("sysctl -w", release)
         self.assertIn("    uses: ./.github/workflows/linux-sandbox-service.yml", release)
-        self.assertIn("  workflow_call:\n", (workflows / "linux-sandbox-service.yml").read_text())
+        sandbox = (workflows / "linux-sandbox-service.yml").read_text()
+        self.assertIn("  workflow_call:\n", sandbox)
+        self.assertIn("group: linux-sandbox-service-${{ github.workflow }}-${{ github.ref }}", sandbox)
         self.assertIn("needs: [release-readiness, session-io, linux-sandbox,", release)
         readiness = release.split("\n  release-readiness:\n", 1)[1].split("\n  linux-bundles:\n", 1)[0]
         self.assertIn("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: \"1\"", readiness)
