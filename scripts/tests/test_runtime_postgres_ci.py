@@ -16,13 +16,13 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
 
-def postgres_source_cases():
+def postgres_source_cases(directory="morphz/src"):
     found = {}
     pattern = re.compile(
         r'#\[ignore\s*=\s*"([^"]+)"\]\s*(?:#\[[^\]]+\]\s*)*'
         r'(?:async\s+)?fn\s+(\w+)\s*\('
     )
-    for source in (ROOT / "morphz/src").rglob("*.rs"):
+    for source in (ROOT / directory).rglob("*.rs"):
         for reason, name in pattern.findall(source.read_text()):
             if "postgres" in reason.lower():
                 if name in found:
@@ -74,6 +74,48 @@ class PostgresCiTests(unittest.TestCase):
 
     def test_every_explicitly_ignored_postgres_case_has_a_required_owner(self):
         verify_coverage(self.cases, self.workflow, self.io_workflow)
+
+    def test_ignored_integration_inventory_has_required_ci_owners(self):
+        cases = postgres_source_cases("morphz/tests")
+        other_owners = {name for name, source in cases.items() if source in {
+            "morphz/tests/session_io.rs", "morphz/tests/session_io_fence_legacy.rs",
+            "morphz/tests/typed_io_interrupt.rs",
+        }}
+        owned = {case.rsplit("::", 1)[-1] for _target, case in runner.INTEGRATION_CASES}
+        self.assertEqual(set(cases), owned | other_owners)
+        self.assertEqual(len(owned), len(runner.INTEGRATION_CASES))
+        self.assertGreaterEqual(len(owned), 13)
+        for target, case in runner.INTEGRATION_CASES:
+            self.assertTrue(cases[case.rsplit("::", 1)[-1]].startswith(
+                f"morphz/tests/{target}.rs") or cases[case.rsplit("::", 1)[-1]].startswith(
+                    f"morphz/tests/{target}/"))
+        job = job_source(self.workflow, "postgres-conformance")
+        steps = [step for step in job.split("\n      - ")
+                 if "python3 scripts/test_runtime_postgres_lib.py --integration" in step]
+        self.assertEqual(len(steps), 1)
+        self.assertIn("if: ${{ !cancelled() }}", steps[0])
+        self.assertNotRegex(steps[0], r"continue-on-error|\|\|\s*true")
+        self.assertIn("--test typed_io_interrupt -- --include-ignored", job)
+        self.assertIn("--test session_io -- --include-ignored", self.io_workflow)
+        self.assertIn("--test session_io_fence_legacy -- --include-ignored", self.io_workflow)
+
+    def test_integration_runner_keeps_exact_targets_and_collects_every_failure(self):
+        calls = []
+        environment = {"MORPHZ_TEST_POSTGRES_URL": "postgresql://catalog.invalid/not-connected",
+                       "MORPHZ_TEST_RUNTIME_LIB": "/installed/library-must-not-run-integrations"}
+        def controlled_run(args, **kwargs):
+            calls.append(args)
+            self.assertIs(kwargs["env"], environment)
+            output = "test result: ok. 1 passed; 0 failed; 0 ignored;\n"
+            return subprocess.CompletedProcess(args, 7 if len(calls) == 1 else 0, output)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(runner.run_tests(controlled_run, environment, integration=True), 1)
+        self.assertEqual(len(calls), len(runner.INTEGRATION_CASES))
+        for args, (target, name) in zip(calls, runner.INTEGRATION_CASES):
+            self.assertEqual(args[1:], [
+                "test", "--locked", "-p", "morphz", "--test", target, name,
+                "--", "--exact", "--ignored", "--test-threads=1", "--nocapture",
+            ])
 
     def test_missing_case_or_new_unowned_case_is_rejected(self):
         for changed in [
