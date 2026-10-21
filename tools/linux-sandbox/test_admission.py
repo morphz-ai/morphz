@@ -63,6 +63,9 @@ class AdmissionInputTests(unittest.TestCase):
         ])
         verify_mount_boundaries(table, policy)
         for bad in (table.replace("/ / ro", "/ / rw"),
+                    table.replace("/ / ro -", "/ / ro master:1 -"),
+                    table.replace("/ / ro -", "/ / ro shared:1 -"),
+                    table.replace("/ / ro -", "/ / ro propagate_from:1 -"),
                     table.replace("/tmp ro - tmpfs", "/tmp ro - ext4"),
                     table.replace("/home/example ro", "/home/example rw"),
                     table + "\n7 1 8:1 /elsewhere /elsewhere rw - ext4 /dev/x rw",

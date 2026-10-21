@@ -21,7 +21,18 @@ kernel `NS_GET_NSTYPE` proof for that case, not a Docker path allowlist. Unknown
 filesystems, writable regular files and missing proofs still fail. A new actual
 Runtime contract opens a host network namespace handle and must reject writable
 access, `setns` and new user namespaces; full CI supplies a real isolated bind
-mount. Its Linux result is still pending. Full CI, upgrade/uninstall and release
+mount. The next run `39566260132` then identified a genuinely writable Docker
+`overlay` mount beneath an inaccessible ancestor. Bubblewrap 0.9's per-path
+recursive remount skips EACCES paths. The trusted inner launcher now creates a
+private mount namespace, seals the entire tree with recursive `mount_setattr`,
+and restores only pinned, previously writable mounts within positive grants.
+Existing read-only children stay read-only, including inside a writable grant;
+host mount propagation is disabled. Only the static bootstrap temporarily keeps
+namespace-local SYS_ADMIN/SETPCAP; every capability set, including the bounding
+set, is zero before work-profile admission. The service verifies the resulting
+mount table, not a claimed setup result. Linux validation of this correction is
+pending; no data-filesystem allowlist or relaxed write check was added.
+Full CI, upgrade/uninstall and release
 integration remain separate acceptance gates.
 
 The service accepts only the Runtime's typed, already-approved `SandboxPolicy`.

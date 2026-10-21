@@ -191,7 +191,7 @@ fn exchange(value: Value) -> Result<(Value, Option<OwnedFd>), SandboxError> {
                     break;
                 }
                 let size = (*item).cmsg_len - base;
-                if size % size_of::<libc::c_int>() != 0 {
+                if !size.is_multiple_of(size_of::<libc::c_int>()) {
                     invalid = true;
                 }
                 for index in 0..size / size_of::<libc::c_int>() {

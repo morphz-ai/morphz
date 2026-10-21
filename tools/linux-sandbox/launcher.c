@@ -132,6 +132,12 @@ static void inner(const char *number, const char *launch) {
             .inode = (ino_t)json_object_get_uint64(field(root, "inode", json_type_int))};
     }
     int admission = json_object_get_int(field(manifest, "admission_fd", json_type_int));
+    char *label = NULL, *mode = NULL, expected[256];
+    if (snprintf(expected, sizeof(expected), "%s", string(manifest, "bootstrap")) >= (int)sizeof(expected) ||
+        aa_getcon(&label, &mode) < 0 || !label || strcmp(label, expected) || !mode || strcmp(mode, "enforce"))
+        fail("exact inner bootstrap");
+    free(label);
+    if (morphz_finalize_mounts(&mounts)) fail("recursive read-only mount boundary");
     if (admission < 3 || admission == source || morphz_verify_mounted_roots(&mounts))
         fail("mounted object boundary");
     if (aa_stack_profile(string(manifest, "work"))) fail("work stack");
@@ -160,8 +166,8 @@ static void inner(const char *number, const char *launch) {
 }
 
 int main(int argc, char **argv) {
-    if (morphz_unprivileged()) fail("launcher must remain unprivileged");
     if (argc == 4 && !strcmp(argv[1], "--inner")) inner(argv[2], argv[3]);
+    if (morphz_unprivileged()) fail("launcher must remain unprivileged");
     if (argc != 4 || strcmp(argv[1], "--launch") || strlen(argv[2]) != 32 ||
         strspn(argv[2], "0123456789abcdef") != 32) fail("launch arguments");
     char executable[PATH_MAX];

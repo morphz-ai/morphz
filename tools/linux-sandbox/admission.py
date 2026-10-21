@@ -112,6 +112,8 @@ def verify_mount_boundaries(raw, policy, *, namespace_verifier=None):
             literal_path(path)
             flags = set(fields[5].split(","))
             filesystem = fields[separator + 1]
+            if any(item.startswith(("shared:", "master:", "propagate_from:")) for item in fields[6:separator]):
+                raise ValueError("mount still receives host propagation")
             if not ({"ro", "rw"} & flags) or {"ro", "rw"}.issubset(flags):
                 raise ValueError("ambiguous mount access")
         except (ValueError, IndexError) as error:
@@ -243,7 +245,10 @@ class Admission:
             namespaces = {name: namespace_key(directory, name) for name in names}
             if any(value == namespace_key(source, name) for name, value in namespaces.items()):
                 raise PeerError("required work namespace was not isolated")
-            groups, _ = parse_security_state(read_bounded_at(directory, "status"), owner.uid, owner.gid)
+            security = read_bounded_at(directory, "status")
+            groups, _ = parse_security_state(security, owner.uid, owner.gid)
+            if not re.search(r"^CapBnd:\s+0+$", security, re.MULTILINE):
+                raise PeerError("work entry retains a capability bounding set")
             original_groups, _ = parse_security_state(read_bounded_at(source, "status"), owner.uid, owner.gid)
             if not set(groups).issubset(original_groups):
                 raise PeerError("work entry gained supplementary groups")

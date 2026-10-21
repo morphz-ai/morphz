@@ -44,6 +44,9 @@ def worker():
                 fd = os.open("/dev/tty", os.O_RDONLY | os.O_CLOEXEC)
                 os.close(fd)
                 value = True
+            elif command["op"] == "boundary":
+                value = {name: Path("/proc/self/" + name).read_text()
+                         for name in ("status", "mountinfo")}
             else:
                 raise ValueError("unknown fixed worker operation")
             result = {"ok": True, "value": value}
@@ -87,7 +90,7 @@ def execute(args):
         os.chmod(path, 0o600)
         os.chown(path, args.uid, args.gid)
 
-    def launch(name, wrong_identity=False, replace_after_pin=False):
+    def launch(name, wrong_identity=False, replace_after_pin=False, mount_regression=False):
         stage = output / name
         stage.mkdir(mode=0o755)
         workspace, reference = stage / "workspace", stage / "reference"
@@ -123,6 +126,7 @@ def execute(args):
         record["launches"].append(observation)
         process = None
         loaded = False
+        test_mounts = []
         host, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         # Manifest always occupies slot 3 in the fixed native test driver.
         if child.fileno() < 4:
@@ -130,6 +134,21 @@ def execute(args):
         host.settimeout(12)
         stderr = (stage / "stderr.log").open("w")
         try:
+            if mount_regression:
+                # A real read-only submount inside a writable grant must stay
+                # read-only. An inaccessible rw host submount must be sealed,
+                # not excused because per-path remount traversal gets EACCES.
+                nested = workspace / "readonly-child"
+                nested.mkdir()
+                subprocess.run(["/usr/bin/mount", "--bind", str(reference), str(nested)], check=True)
+                test_mounts.append(nested)
+                subprocess.run(["/usr/bin/mount", "-o", "remount,bind,ro", str(nested)], check=True)
+                opaque = stage / "root-only"
+                opaque.mkdir(mode=0o700)
+                inaccessible = opaque / "data"
+                inaccessible.mkdir()
+                subprocess.run(["/usr/bin/mount", "-t", "tmpfs", "tmpfs", str(inaccessible)], check=True)
+                test_mounts.append(inaccessible)
             parser = subprocess.run(["/usr/sbin/apparmor_parser", "--add", "--skip-cache", str(source)],
                                     text=True, capture_output=True, check=False, timeout=20)
             observation["parser"] = {"code": parser.returncode, "stderr": parser.stderr}
@@ -177,6 +196,18 @@ def execute(args):
 
             check(name + ": protected file absent when work becomes ready", receive().get("ready") and not protected.exists())
             check(name + ": no root, manifest or control descriptors reach work", action("fds") == {"ok": True, "value": []})
+            boundary = action("boundary")
+            check(name + ": work can inspect its own kernel boundary", boundary.get("ok") is True)
+            security = dict(line.split(":", 1) for line in boundary["value"]["status"].splitlines() if ":" in line)
+            check(name + ": no setup capability survives in any set", all(int(security[key], 16) == 0
+                  for key in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")))
+            table = boundary["value"]["mountinfo"]
+            check(name + ": all mounts are private", not any(tag in table for tag in ("shared:", "master:", "propagate_from:")))
+            if mount_regression:
+                denied = action("write", nested / "ordinary")
+                check(name + ": existing readonly child is never reopened writable", denied.get("ok") is False and denied.get("errno") == errno.EROFS, denied)
+                entries = [line.split() for line in table.splitlines() if line.split()[4] == str(inaccessible)]
+                check(name + ": inaccessible host data submount is sealed readonly", len(entries) == 1 and "ro" in entries[0][5].split(","), entries)
             check(name + ": original pinned directory, never same-name replacement", action("read", workspace / "ordinary") == {"ok": True, "value": "host-written"})
             host_file(original / "future.env")
             denied = action("read", protected)
@@ -198,6 +229,8 @@ def execute(args):
                 process.terminate()
                 process.wait(timeout=8)
             stderr.close()
+            for path in reversed(test_mounts):
+                subprocess.run(["/usr/bin/umount", str(path)], check=True, timeout=10)
             if loaded:
                 # The fixed worker never forks; bwrap's PID namespace dies with
                 # this fixed process. Production lifetime uses a separate gate.
@@ -213,6 +246,7 @@ def execute(args):
         record["kernel"] = os.uname().release
         record["bwrap"] = subprocess.run(["/usr/bin/bwrap", "--version"], text=True, capture_output=True, check=True).stdout.strip()
         launch("normal")
+        launch("nested-readonly-and-inaccessible-submounts", mount_regression=True)
         launch("root-replaced-after-pin", replace_after_pin=True)
         launch("wrong-mounted-identity", wrong_identity=True)
         record["ok"] = True

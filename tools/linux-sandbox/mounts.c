@@ -4,16 +4,21 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <linux/capability.h>
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
+#include <sys/mount.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 static int refuse(void) { errno = EPERM; return -1; }
 
-int morphz_unprivileged(void) {
+static int credentials(unsigned long long expected_caps) {
     uid_t ruid, euid, suid;
     gid_t rgid, egid, sgid;
     if (getresuid(&ruid, &euid, &suid) || getresgid(&rgid, &egid, &sgid) ||
@@ -40,7 +45,7 @@ int morphz_unprivileged(void) {
             if (!strncmp(line, keys[i], strlen(keys[i])) &&
                 sscanf(line + strlen(keys[i]), "%llx", &bits) == 1) {
                 flags |= 4u << i;
-                invalid |= bits != 0;
+                invalid |= bits != expected_caps;
             }
         }
     }
@@ -48,6 +53,8 @@ int morphz_unprivileged(void) {
     fclose(stream);
     return read_error || invalid || flags != 63 ? refuse() : 0;
 }
+
+int morphz_unprivileged(void) { return credentials(0); }
 
 int morphz_literal_path(const char *path) {
     if (!path || path[0] != '/' || strlen(path) >= PATH_MAX) return refuse();
@@ -183,7 +190,8 @@ int morphz_build_bwrap(const struct morphz_mounts *mounts,
         morphz_unprivileged()) return refuse();
     const char *fixed[] = {"/usr/bin/bwrap", "--die-with-parent", "--ro-bind", "/", "/",
         "--dev", "/dev", "--unshare-user", "--unshare-pid", "--unshare-ipc",
-        "--proc", "/proc", "--cap-drop", "ALL"};
+        "--proc", "/proc", "--cap-drop", "ALL", "--cap-add", "CAP_SYS_ADMIN",
+        "--cap-add", "CAP_SETPCAP"};
     for (size_t i = 0; i < sizeof(fixed) / sizeof(fixed[0]); ++i)
         if (morphz_arg(args, fixed[i])) goto failed;
     if ((!private_pty && morphz_arg(args, "--new-session")) ||
@@ -221,6 +229,129 @@ int morphz_build_bwrap(const struct morphz_mounts *mounts,
     return 0;
 failed:
     morphz_free_argv(args);
+    return -1;
+}
+
+static int mount_path(char *output, const char *encoded) {
+    size_t count = 0;
+    while (*encoded) {
+        unsigned char value = (unsigned char)*encoded++;
+        if (value == '\\') {
+            if (strlen(encoded) < 3 || encoded[0] < '0' || encoded[0] > '7' ||
+                encoded[1] < '0' || encoded[1] > '7' || encoded[2] < '0' || encoded[2] > '7')
+                return refuse();
+            unsigned decoded = (encoded[0] - '0') * 64 + (encoded[1] - '0') * 8 + encoded[2] - '0';
+            if (!decoded || decoded > 255) return refuse();
+            value = (unsigned char)decoded;
+            encoded += 3;
+        }
+        if (count + 1 >= PATH_MAX) return refuse();
+        output[count++] = (char)value;
+    }
+    output[count] = 0;
+    return morphz_literal_path(output);
+}
+
+static int descriptor_mount_id(int descriptor, unsigned long *result) {
+    char path[64], line[256];
+    snprintf(path, sizeof(path), "/proc/self/fdinfo/%d", descriptor);
+    FILE *stream = fopen(path, "re");
+    if (!stream) return -1;
+    int found = 0;
+    while (fgets(line, sizeof(line), stream))
+        if (sscanf(line, "mnt_id: %lu", result) == 1) found = 1;
+    int failure = ferror(stream);
+    fclose(stream);
+    return !found || failure ? refuse() : 0;
+}
+
+static int drop_setup_capabilities(void) {
+    if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0)) return -1;
+    for (int capability = 0; ; ++capability) {
+        int present = prctl(PR_CAPBSET_READ, capability, 0, 0, 0);
+        if (present < 0) {
+            if (errno == EINVAL) break;
+            return -1;
+        }
+        if (present && prctl(PR_CAPBSET_DROP, capability, 0, 0, 0)) return -1;
+    }
+    struct __user_cap_header_struct header = {_LINUX_CAPABILITY_VERSION_3, 0};
+    struct __user_cap_data_struct data[2] = {{0}};
+    if (syscall(SYS_capset, &header, data) || morphz_unprivileged()) return -1;
+    for (int capability = 0; ; ++capability) {
+        int present = prctl(PR_CAPBSET_READ, capability, 0, 0, 0);
+        if (present < 0 && errno == EINVAL) return 0;
+        if (present != 0) return refuse();
+    }
+}
+
+int morphz_finalize_mounts(const struct morphz_mounts *mounts) {
+    /* Only the static trusted entry runs with these two namespace-local setup
+     * capabilities. General work never inherits them, even in the bounding set.
+     * bwrap's devpts setup uses a parent user namespace; take a mount namespace
+     * owned by the final user namespace before changing its mount attributes. */
+    const unsigned long long setup = (1ULL << CAP_SYS_ADMIN) | (1ULL << CAP_SETPCAP);
+    if (!mounts || !mounts->count || mounts->count > MORPHZ_MAX_ROOTS || credentials(setup) ||
+        prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1) return refuse();
+    FILE *mapping = fopen("/proc/self/uid_map", "re");
+    unsigned long inside, outside, length;
+    char extra;
+    if (!mapping) return -1;
+    int fields = fscanf(mapping, "%lu %lu %lu %c", &inside, &outside, &length, &extra);
+    fclose(mapping);
+    if (fields != 3 || inside != getuid() || length != 1) return refuse();
+    if (unshare(CLONE_NEWNS) || mount(NULL, "/", NULL, MS_PRIVATE | MS_REC, NULL)) return -1;
+
+    /* Pin only visible, already-writable mounts within the positive grants.
+     * Saving these before the recursive seal preserves nested host read-only
+     * mounts and exact-file grants. Never make an entire grant recursively rw. */
+    enum { MAX_WRITABLE_MOUNTS = 4096, MAX_MOUNT_RECORDS = 65536 };
+    int descriptors[MAX_WRITABLE_MOUNTS];
+    size_t count = 0, records = 0, capacity = 0;
+    char *line = NULL;
+    FILE *table = fopen("/proc/self/mountinfo", "re");
+    if (!table) return -1;
+    ssize_t size;
+    while ((size = getline(&line, &capacity, table)) >= 0) {
+        if (size > 262144 || ++records > MAX_MOUNT_RECORDS) goto failed;
+        char *state, *parts[6];
+        parts[0] = strtok_r(line, " ", &state);
+        for (size_t i = 1; i < 6; ++i) parts[i] = strtok_r(NULL, " ", &state);
+        if (!parts[5]) goto failed;
+        if (strcmp(parts[5], "rw") && strncmp(parts[5], "rw,", 3)) continue;
+        char path[PATH_MAX];
+        if (mount_path(path, parts[4])) goto failed;
+        int allowed = contains("/dev", path) || contains("/proc", path);
+        for (size_t i = 0; i < mounts->count; ++i)
+            allowed |= mounts->roots[i].writable && contains(mounts->roots[i].path, path);
+        if (!allowed) continue;
+        char *end;
+        unsigned long expected = strtoul(parts[0], &end, 10), actual;
+        if (*end || !expected || count == MAX_WRITABLE_MOUNTS) goto failed;
+        int descriptor = morphz_open_object(path);
+        if (descriptor < 0) goto failed;
+        if (descriptor_mount_id(descriptor, &actual)) { close(descriptor); goto failed; }
+        // A covered underlying mount must remain sealed, not restored via the
+        // different mount currently visible at that pathname.
+        if (actual != expected) { close(descriptor); continue; }
+        descriptors[count++] = descriptor;
+    }
+    if (ferror(table) || !records) goto failed;
+    struct mount_attr readonly = {.attr_set = MOUNT_ATTR_RDONLY};
+    if (mount_setattr(AT_FDCWD, "/", AT_RECURSIVE, &readonly, sizeof(readonly))) goto failed;
+    struct mount_attr writable = {.attr_clr = MOUNT_ATTR_RDONLY};
+    for (size_t i = 0; i < count; ++i)
+        if (mount_setattr(descriptors[i], "", AT_EMPTY_PATH, &writable, sizeof(writable))) goto failed;
+    for (size_t i = 0; i < count; ++i) close(descriptors[i]);
+    free(line);
+    fclose(table);
+    return drop_setup_capabilities();
+failed:
+    { int failure = errno;
+      for (size_t i = 0; i < count; ++i) close(descriptors[i]);
+      free(line);
+      fclose(table);
+      errno = failure ? failure : EPERM; }
     return -1;
 }
 

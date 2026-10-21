@@ -55,7 +55,7 @@ static void wait_host(int control) {
 int main(int argc, char **argv) {
     int outer = argc == 4 && !strcmp(argv[1], "--outer");
     int inner = argc == 3 && !strcmp(argv[1], "--inner");
-    if ((!outer && !inner) || morphz_unprivileged()) fail("fixed non-root entry");
+    if ((!outer && !inner) || (outer && morphz_unprivileged())) fail("fixed non-root entry");
     char *end;
     long control_number = strtol(argv[2], &end, 10);
     if (!*argv[2] || *end || control_number < 4 || control_number > 1024) fail("fixed control descriptor");
@@ -124,6 +124,7 @@ int main(int argc, char **argv) {
         execv(arguments.values[0], arguments.values);
         fail("distribution bwrap exec");
     }
+    if (morphz_finalize_mounts(&mounts)) fail("recursive read-only mount boundary");
     if (prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1 || morphz_verify_mounted_roots(&mounts))
         fail("actual mounted directory identity or access");
     if (aa_stack_profile(work)) fail("retained work stack");

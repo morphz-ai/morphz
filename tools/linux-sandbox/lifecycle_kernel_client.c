@@ -237,6 +237,7 @@ static struct json_object *mounted_inner(char **argv) {
     const char *mode = string(manifest, "mode");
     int admission = json_object_get_int(field(manifest, "admission_fd", json_type_int));
     if (admission < 3 || admission == source) fail("private admission handoff");
+    if (morphz_finalize_mounts(&mounts)) fail("recursive read-only mount boundary");
     if (morphz_verify_mounted_roots(&mounts)) fail("inner actual object identity");
     if (strcmp(mode, "mounted-no-stack") && aa_stack_profile(string(manifest, "work"))) fail("work stacking");
     if (strcmp(mode, "mounted-leak") && morphz_close_extra_fds(admission)) fail("inner closure");
@@ -255,7 +256,7 @@ static struct json_object *mounted_inner(char **argv) {
     return manifest;
 }
 int main(int argc, char **argv) {
-    if (argc != 7 || morphz_unprivileged()) fail("fixed launcher arguments");
+    if (argc != 7) fail("fixed launcher arguments");
     int descriptor;
     int mounted = !strcmp(argv[3], "mounted-inner");
     struct json_object *reply;
@@ -263,6 +264,7 @@ int main(int argc, char **argv) {
         reply = mounted_inner(argv);
         goto admitted;
     }
+    if (morphz_unprivileged()) fail("fixed unprivileged outer launcher");
     reply = exchange(argv[1], request("claim", argv[2]), &descriptor);
     if (!succeeded(reply) || descriptor < 0) fail("one-use claim");
     if (!strcmp(argv[3], "held") || !strcmp(argv[3], "held-restart")) {

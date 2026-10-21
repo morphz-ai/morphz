@@ -25,7 +25,11 @@ fd = os.open(path, os.O_RDONLY)
 assert fcntl.ioctl(fd, 0xb703) == 0x40000000
 assert stat.S_IMODE(os.fstat(fd).st_mode) == 0o444
 if {}:
-    assert os.fstat(fd).st_ino != os.stat('/proc/self/ns/net').st_ino
+    assert original.startswith('net:[')
+    assert original != f'net:[{{os.fstat(fd).st_ino}}]'
+security = dict(line.split(':', 1) for line in open('/proc/self/status') if ':' in line)
+assert all(int(security[key], 16) == 0 for key in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'))
+assert int(security['NoNewPrivs']) == 1
 try:
     writable = os.open(path, os.O_WRONLY)
 except OSError as failure:
