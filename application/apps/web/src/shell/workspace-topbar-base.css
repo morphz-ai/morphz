@@ -62,8 +62,7 @@
   }
 }
 @media (max-width: 850px) {
-  .breadcrumb > svg,
-  .breadcrumb:has(strong) > span {
+  .breadcrumb > svg {
     display: none;
   }
   .top-actions {

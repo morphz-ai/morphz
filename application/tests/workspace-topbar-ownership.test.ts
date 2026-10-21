@@ -289,6 +289,25 @@ test("Topbar original inventory is 65/172; 64/171 move while mixed counts retain
 
 test("Topbar actual full carriers reject missing/duplicate/value/important/list/context/order or extra writers without a source projection", () => {
   requireCurrent();
+  for (const [id, phase] of [
+    ["B11", "base"],
+    ["L05", "packing"],
+  ] as const) {
+    reject(
+      "broad history invalidation " + id,
+      "topbar:complete-" + phase,
+      (s) => {
+        const original = recipe(id);
+        const current = topbarMovedRecipes.find((row) => row.id === id)!;
+        replace(
+          s,
+          topbarCarriers[phase],
+          current.raw.trim(),
+          original.raw.trim(),
+        );
+      },
+    );
+  }
   for (const id of ["B01", "C19", "L06"]) {
     const row = recipe(id),
       diagnostic = "topbar:complete-" + row.phase;

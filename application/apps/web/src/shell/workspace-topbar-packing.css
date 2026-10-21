@@ -11,7 +11,10 @@
   .app .topbar:has(.pdf-toolbar-slot) .application-strip {
     overflow-x: auto;
   }
-  .app .topbar:has(.pdf-toolbar-slot) .navigation-history button:last-child {
+  .app
+    .topbar:has(.pdf-toolbar-slot)
+    .navigation-history
+    .icon-button:last-child {
     display: none;
   }
   .app .topbar:has(.pdf-toolbar-slot) .object-toolbar {

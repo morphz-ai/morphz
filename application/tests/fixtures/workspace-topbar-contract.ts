@@ -720,9 +720,31 @@ export const topbarRecipes = [
 // C11 is a mixed domain/count rule. Keep it at its original UI position before
 // the retained display:block filter refinement, rather than moving it across
 // that writer or allowing the compiler to coalesce it with C12/C13.
-export const topbarMovedRecipes = topbarRecipes.filter(
-  (row) => row.id !== "C11",
-);
+export const topbarMovedRecipes = topbarRecipes
+  .filter((row) => row.id !== "C11")
+  .map((row) => ({
+    ...row,
+    // 2026-10-21 measured invalidation repair. Keep the historical inventory
+    // above unchanged. The current breadcrumb has no direct span children;
+    // both navigation controls already use icon-button. Geometry is unchanged.
+    raw:
+      row.id === "B11"
+        ? row.raw.replace(
+            ".breadcrumb > svg,\n  .breadcrumb:has(strong) > span",
+            ".breadcrumb > svg",
+          )
+        : row.id === "L05"
+          ? row.raw
+              .replace(
+                ".navigation-history button:last-child",
+                ".navigation-history .icon-button:last-child",
+              )
+              .replace(
+                ".app .topbar:has(.pdf-toolbar-slot) .navigation-history .icon-button:last-child",
+                ".app\n    .topbar:has(.pdf-toolbar-slot)\n    .navigation-history\n    .icon-button:last-child",
+              )
+          : row.raw,
+  }));
 export const topbarBorrowedFamilies = [
   {
     id: "R01",
