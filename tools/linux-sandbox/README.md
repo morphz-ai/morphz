@@ -47,8 +47,18 @@ fixture uses Python only as a **test** executable; a production registry must
 contain the installed Runtime/launcher, not a general interpreter. This component
 does not yet implement registration, mount identity or lifecycle management.
 
-Mandatory next gates: real AppArmor 4.0 parser and adversarial literal-path tests;
-authenticated service; pinned-object mount handoff; exact enforcing-stack/UID/
+`roots.py` pins actual directory objects under the caller's non-root identity,
+with no capabilities and without following root or ancestor symlinks. It retains
+close-on-exec descriptors and kernel mount/inode identity, rejects observed
+source replacement, and preserves read-first/write-last grant ordering. A
+pathname check alone is never claimed to prevent a later rename: the launcher
+must mount from these retained descriptors and verify destination identity
+before admission. The separate unprivileged kernel gate tests live changes,
+replacement, literal paths and descriptor cleanup. This component is not yet
+connected to Bubblewrap or a production registration service.
+
+Mandatory next gates: authenticated service; pinned-object mount handoff;
+exact enforcing-stack/UID/
 capability/NoNewPrivs confirmation before command execution; inherited-FD closure;
 real exec and private PTY; background descendants and crash recovery; unchanged
 Runtime terminal test and full CI. Installation only in isolated Linux/CI until

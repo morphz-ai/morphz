@@ -41,11 +41,17 @@ jobs:
           sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B \
             tools/linux-sandbox/peer_kernel_contract.py --uid "$(id -u)" --gid "$(id -g)" \
             --output "${{ runner.temp }}/linux-sandbox-peer-kernel"
+      - name: Verify directory object pins without privileged filesystem access
+        if: ${{ !cancelled() }}
+        run: |
+          env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B \
+            tools/linux-sandbox/roots_kernel_contract.py \
+            --output "${{ runner.temp }}/linux-sandbox-roots-kernel"
       - name: Archive literal filenames without removing boundary cases
         if: always()
         run: |
           mkdir -p "${{ runner.temp }}/linux-sandbox-evidence"
-          for component in linux-sandbox-compiler-kernel linux-sandbox-peer-kernel; do
+          for component in linux-sandbox-compiler-kernel linux-sandbox-peer-kernel linux-sandbox-roots-kernel; do
             if [ -d "${{ runner.temp }}/$component" ]; then
               tar -czf "${{ runner.temp }}/linux-sandbox-evidence/$component.tar.gz" \
                 -C "${{ runner.temp }}" "$component"
