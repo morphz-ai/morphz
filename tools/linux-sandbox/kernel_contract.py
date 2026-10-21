@@ -31,7 +31,11 @@ def worker(bootstrap, work):
         function.argtypes = (ctypes.c_char_p,)
         function.restype = ctypes.c_int
         if function(label.encode()) != 0:
-            raise OSError(ctypes.get_errno(), name)
+            failure_errno = ctypes.get_errno()
+            print(json.dumps({"failed_transition": name, "target": label,
+                              "current_label": Path("/proc/self/attr/current").read_text().strip()}),
+                  file=sys.stderr, flush=True)
+            raise OSError(failure_errno, name)
     libc = ctypes.CDLL(None, use_errno=True)
     libc.prctl.argtypes = (ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong)
     libc.prctl.restype = ctypes.c_int
@@ -235,6 +239,10 @@ def execute(args):
             process.wait(timeout=8)
         if stderr is not None:
             stderr.close()
+        logs = subprocess.run(["/usr/bin/journalctl", "--dmesg", "--since=-5min", "--no-pager"],
+                              text=True, capture_output=True, check=False, timeout=15)
+        record["kernel_denials"] = [line for line in logs.stdout.splitlines()
+                                    if "apparmor=" in line and "morphz_sbox_v1_" in line]
         # This fixed worker never forks. This is not the production service's
         # cgroup-based lifetime proof and cannot be substituted for that gate.
         if loaded and (process is None or process.poll() is not None):
