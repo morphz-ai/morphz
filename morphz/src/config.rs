@@ -364,13 +364,14 @@ pub struct OrchestratorConfig {
     /// Optional absolute wall-clock limit for one physical model request. `None` disables the hard
     /// deadline; provider idle-timeout detection still catches stalled streams.
     pub model_attempt_hard_timeout_secs: Option<u64>,
-    /// Safety circuit-breaker limit for reasoning-only continuations.
+    /// Safety circuit-breaker limit for incomplete-response continuations.
     ///
     /// This is not a normal scheduling budget. It only prevents unbounded consumption when a
     /// provider or model misbehaves. `None` disables count-based breaking; healthy reasoning that
     /// continues to make progress is not throttled.
     pub reasoning_continuation_safety_limit: Option<usize>,
-    /// Number of identical consecutive reasoning summaries that constitutes a stall; 0 disables it.
+    /// Number of identical consecutive progress states (summary, native reasoning, and public
+    /// text) that constitutes a stall; 0 disables it.
     pub max_stalled_reasoning_continuations: usize,
     /// A new message from the same Principal replaces an in-flight
     /// DialogueTurn until that turn crosses the durable Execution boundary.

@@ -1,5 +1,35 @@
 # Provider 子系统测试矩阵
 
+## 2026-10-21：输出上限恢复验证
+
+此项对应当前修复工作树，不代表原应用已经更新，也不是所有模型或全应用测试通过。
+
+- 确定性回归经过本地 HTTP/SSE、实际 Provider 编码器、Orchestrator 和独立 SQLite：
+  reasoning + 不完整工具参数、仅不完整工具参数、普通正文前缀、连续无进展四种情况。
+  断言未完成工具不执行、完成调用只执行一次、正文不丢前缀、用量保留、没有健康探测或
+  Provider backoff，并验证持久 checkpoint 重建和无进展熔断。
+- 真实 `deepseek-flash` 的 Chat 与 Responses 各一次隔离截断场景均通过：
+  第一次物理请求限制 32 输出 token，后续恢复到 8192；实际分别收到 `length` 和
+  `max_output_tokens`。两条路径均为 3 次模型请求、1 次合成文件读取、1 个最终回答，
+  工作注解存在、正文流与最终回答一致，没有 Provider wait，也没有重复工具执行。
+- Chat 场景另外发现尚未解决的编码缺口：通用编码器写 `max_completion_tokens`，
+  DeepSeek Chat 实际使用 `max_tokens`。未经测试网关修正参数的负例返回 217 token、
+  `tool_calls`，没有遵守注入的 32 token 限制。正例只在隔离网关改成官方字段以
+  触发真实截断；它证明截断后的恢复，**不证明生产参数适配已经修复**。Responses
+  使用原生 `max_output_tokens`，不需要此参数名修正。
+- 自动化入口为 `chat_length_is_a_drained_output_boundary_not_a_provider_failure`、
+  `chat_output_limit_*`、`output_limit_checkpoint_*`。真实 Provider 入口为
+  `session_io_native_runtime_probe <config> <model> <report> read-on --expect-output-limit`，
+  必须显式配置隔离 Provider 与额度边界，不能用生产资料或普通 CI 自动消耗真实额度。
+- 本地串行 `cargo test --locked -p morphz --lib --test attempt_loop --no-fail-fast -- --test-threads=1`：
+  库 1672 通过、0 失败、14 项专门环境用例未执行；Attempt Loop 85 通过、0 失败。
+  相关 lib、attempt_loop、真实模型探针的 Clippy（warnings=deny）和 workspace 格式检查通过。
+  这是该命令的覆盖，不等于全部 workspace、全应用或跨平台检查通过。
+- Qwen 原始失败 wire 尚未重放；更广的模型矩阵、原应用部署验证，以及上面的 Chat
+  输出参数适配缺口仍未完成，不能用这两个样本推断跨模型可靠性。
+
+参数依据：[DeepSeek Chat API](https://api-docs.deepseek.com/api/create-chat-completion/)。
+
 ## 目的与边界
 
 Provider 子系统不是单一 HTTP 客户端，而是一条跨层链路：

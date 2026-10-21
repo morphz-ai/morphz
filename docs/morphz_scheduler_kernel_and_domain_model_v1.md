@@ -1460,7 +1460,9 @@ queued → streaming → waiting_final_output → settling → terminal
 - `settling` 表示 Provider 流已经完成、Runtime 正在校验并提交结果；`completed / continued / protocol_invalid / failed` 为终态；
 - 状态转换使用不可变 `runtime/model_attempt_state` Event，delta 仍走非持久 `runtime/model_stream`。WebSocket 先订阅 live stream，再查询并发送 active-attempt snapshot，关闭重连时遗漏 `started` 的竞态；
 - Provider queue timeout、connect timeout、可重置 stream idle timeout 和可选 hard deadline 是四个不同概念。只要收到任何 SSE chunk，idle timer 就重新计时；默认不设置 hard deadline，不用墙钟上限打断仍持续输出的长 reasoning；
-- reasoning-only 截断可以继续求值。`reasoning_continuation_safety_limit` 默认 `64`，设为 `None` 可关闭次数熔断；正常有进展的 continuation 不做指数退避。连续相同摘要达到 `max_stalled_reasoning_continuations`（默认 `3`）才按停滞空转提前熔断。该限制是事故保险，不是正常任务预算。
+- Chat Completions 的 `finish_reason=length` 与 Responses 的输出额度不足都属于 `OutputLimit`：物理请求结束，但当前回答未完成，不是 Provider outage。Chat 接收端先保留同一结束帧的最后增量和随后的 usage，再关闭该物理请求；这个不完整响应中的工具调用一律不执行，不用部分 JSON 猜测完整参数。
+- 普通正文保留已交付前缀，后续物理请求只补剩余内容；未完成的工具调用必须重新生成完整名称与参数。可重放的原生推理放回对应 Provider 字段，不改写为可见正文，不重复执行此前已完成的工具。持久 continuation checkpoint 保存正文前缀、原生状态、模型身份与已消耗续接次数，重启后仍使用同一边界。声明了结构化业务返回类型时，不把部分 JSON 当普通正文拼接或放宽其校验。
+- reasoning-only、普通正文及尚无完整内容的 `OutputLimit` 均进入有界续接。`reasoning_continuation_safety_limit` 默认 `64`，设为 `None` 可关闭次数熔断；正常有进展的 continuation 不做 Provider 指数退避。按摘要、原生状态和本段正文共同判断进展，连续相同状态达到 `max_stalled_reasoning_continuations`（默认 `3`）时提前熔断，空响应也不能绕过此检查。该限制是事故保险，不是正常任务预算；它不自动降低用户选择的推理强度。
 
 #### 已验证边界
 

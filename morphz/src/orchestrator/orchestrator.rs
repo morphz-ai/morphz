@@ -2063,15 +2063,17 @@ struct ModelCompletionError {
 
 #[derive(Debug, Default)]
 struct DurableReasoningContinuationState {
-    /// Number of already committed physical reasoning-only boundaries for the
+    /// Number of already committed physical continuation boundaries for the
     /// Activation. It keeps retry Attempt IDs monotonic after process restart.
     physical_continuations: usize,
     continuation_count: usize,
     stalled_count: usize,
     summaries: Vec<String>,
     provider_continuations: Vec<ProviderContinuation>,
+    public_text: String,
+    last_progress_key: Option<String>,
     /// Whether every boundary in the current reasoning generation has a
-    /// replayable OpenAI Responses output item. A partial native chain must
+    /// replayable native reasoning item. A partial native chain must
     /// never be mixed with portable summaries: doing so both loses ordering
     /// and presents the same reasoning twice.
     provider_continuation_chain_complete: bool,
@@ -2087,6 +2089,26 @@ struct ReasoningContinuationCheckpoint<'a> {
     provider_error: &'a str,
     provider_continuation: Option<&'a ProviderContinuation>,
     model_alias: &'a str,
+    partial_text: &'a str,
+    boundary_kind: ModelFailureKind,
+}
+
+fn continuation_progress_key(
+    summary: &str,
+    native: Option<&ProviderContinuation>,
+    text: &str,
+) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(json!([summary, native, text]).to_string())
+    )
+}
+
+fn replayable_reasoning(continuation: &ProviderContinuation) -> bool {
+    matches!(
+        continuation,
+        ProviderContinuation::OpenaiResponses { .. } | ProviderContinuation::OpenaiChat { .. }
+    )
 }
 
 fn durable_reasoning_continuation_state_from_events(
@@ -2139,6 +2161,8 @@ fn durable_reasoning_continuation_state_from_events(
             restored.stalled_count = 0;
             restored.summaries.clear();
             restored.provider_continuations.clear();
+            restored.public_text.clear();
+            restored.last_progress_key = None;
             restored.provider_continuation_chain_complete = true;
             restored.last_model_alias = None;
         } else if continuation_count <= restored.continuation_count {
@@ -2160,19 +2184,37 @@ fn durable_reasoning_continuation_state_from_events(
                 })
             })
             .transpose()?;
-        if summary.is_none() && provider_continuation.is_none() {
+        let partial_text = event
+            .payload
+            .get("partial_text")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let output_limited = event.payload.get("provider_boundary_kind")
+            == Some(&json!(ModelFailureKind::OutputLimit));
+        if summary.is_none()
+            && provider_continuation.is_none()
+            && partial_text.is_empty()
+            && !output_limited
+        {
             return Err(format!(
                 "Activation '{activation_id}' reasoning continuation '{}' lacks a recoverable summary or Provider state",
                 event.id
             )
             .into());
         }
+        let progress_key = continuation_progress_key(
+            summary.as_deref().unwrap_or_default(),
+            provider_continuation.as_ref(),
+            partial_text,
+        );
+        if restored.last_progress_key.as_ref() == Some(&progress_key) {
+            restored.stalled_count = restored.stalled_count.saturating_add(1);
+        } else {
+            restored.stalled_count = 0;
+        }
+        restored.last_progress_key = Some(progress_key);
+        restored.public_text.push_str(partial_text);
         if let Some(summary) = summary {
-            if restored.summaries.last() == Some(&summary) {
-                restored.stalled_count = restored.stalled_count.saturating_add(1);
-            } else {
-                restored.stalled_count = 0;
-            }
             restored.summaries.push(summary);
         }
         let model_alias = event
@@ -2187,14 +2229,11 @@ fn durable_reasoning_continuation_state_from_events(
             restored.provider_continuations.clear();
             restored.provider_continuation_chain_complete = false;
         }
-        // Responses manual-history mode requires every prior response output
-        // item. Keep the native chain only while it is complete. Once one
-        // boundary lacks a replayable Responses item, portable summaries are
-        // the sole authoritative representation for the whole generation;
-        // later native items cannot repair the missing middle of the chain.
+        // Keep only a complete native chain. A missing native reasoning item
+        // cannot be repaired by a later one; use portable progress instead.
         if restored.provider_continuation_chain_complete {
             match provider_continuation {
-                Some(continuation @ ProviderContinuation::OpenaiResponses { .. }) => {
+                Some(continuation) if replayable_reasoning(&continuation) => {
                     restored.provider_continuations.push(continuation);
                 }
                 _ => {
@@ -3971,6 +4010,9 @@ async fn persist_model_usage(
 }
 
 fn reasoning_continuation_prompt(summaries: &[String], has_provider_continuation: bool) -> String {
+    if summaries.is_empty() && !has_provider_continuation {
+        return "The previous physical model request ended before a complete response was available. No tool calls from that incomplete request were executed. Continue the same task using the current Context. If a tool call is needed, generate its complete name and arguments again; never assume partial tool parameters were executed. Otherwise produce the final answer using the active response format. Do not repeat completed work from earlier requests.".to_string();
+    }
     let reasoning = summaries
         .iter()
         .enumerate()
@@ -3998,27 +4040,61 @@ fn append_reasoning_continuation_input(
     provider_continuations: &[ProviderContinuation],
     provider_continuation_chain_complete: bool,
     reasoning_history: &[String],
+    public_text: &str,
 ) -> Result<(), DynError> {
     // In manually managed Responses history, every prior response output item
     // must be replayed. The complete available portable-summary history is
     // the fallback for a chain with a missing item or a model switch, but must
     // not be sent beside a complete native chain because that double-encodes
     // the same reasoning.
-    // OpenAI Chat reasoning_content is only legal on the assistant tool-call
-    // message it owns, so reasoning-only Chat boundaries always use summaries.
+    // Chat-compatible reasoning belongs on an assistant message even when no
+    // tool completed. Do not replay truncated tool calls or invent tool results.
+    // This preserves native reasoning without putting it in visible content.
+    let chat = provider_continuations
+        .iter()
+        .all(|continuation| matches!(continuation, ProviderContinuation::OpenaiChat { .. }));
+    let responses = provider_continuations
+        .iter()
+        .all(|continuation| matches!(continuation, ProviderContinuation::OpenaiResponses { .. }));
     let use_provider_continuations = provider_continuation_chain_complete
         && !provider_continuations.is_empty()
-        && provider_continuations.iter().all(|continuation| {
-            matches!(continuation, ProviderContinuation::OpenaiResponses { .. })
-        });
+        && (chat || responses);
+    let chat = use_provider_continuations && chat;
     if use_provider_continuations {
-        for continuation in provider_continuations {
+        for (index, continuation) in provider_continuations.iter().enumerate() {
             messages.push(provider_continuation_message(continuation.clone())?);
+            if chat {
+                messages.push(Message {
+                    role: "assistant".into(),
+                    content: if index + 1 == provider_continuations.len() {
+                        public_text.into()
+                    } else {
+                        String::new()
+                    },
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                });
+            }
         }
+    }
+    if !chat && !public_text.is_empty() {
+        messages.push(Message {
+            role: "assistant".into(),
+            content: public_text.into(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        });
+    }
+    let mut prompt = reasoning_continuation_prompt(reasoning_history, use_provider_continuations);
+    if !public_text.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(interrupted_text_continuation_prompt());
     }
     messages.push(Message {
         role: "user".to_string(),
-        content: reasoning_continuation_prompt(reasoning_history, use_provider_continuations),
+        content: prompt,
         name: None,
         tool_call_id: None,
         tool_calls: None,
@@ -14757,6 +14833,7 @@ impl Orchestrator {
                 &restored_provider_continuations,
                 reasoning_provider_continuation_chain_complete,
                 &restored_reasoning.summaries,
+                &restored_reasoning.public_text,
             )?;
             // The restored protocol envelope is part of the next physical
             // request. Re-measure it instead of reporting the pre-restart base
@@ -14812,7 +14889,7 @@ impl Orchestrator {
         let mut model_request_index = restored_reasoning.physical_continuations;
         let mut reasoning_continuations = restored_reasoning.continuation_count;
         let mut stalled_reasoning_continuations = restored_reasoning.stalled_count;
-        let mut previous_reasoning_summary = restored_reasoning.summaries.last().cloned();
+        let mut previous_reasoning_summary = restored_reasoning.last_progress_key;
         let mut reasoning_history = restored_reasoning.summaries;
         let mut reasoning_provider_continuations = restored_provider_continuations;
         let mut last_request_model_alias = restored_reasoning
@@ -14824,7 +14901,7 @@ impl Orchestrator {
         // iteration cannot observe an intervening Runtime action and used to
         // add one redundant remote round trip to every Evaluation.
         let mut first_request_policy = Some(initial_request_policy.clone());
-        let mut interrupted_public_text = String::new();
+        let mut interrupted_public_text = restored_reasoning.public_text;
         let mut pending_input_draft = String::new();
         let mut last_model_attempt_id = attempt_id.clone();
         let mut completion_prepared = recovering_completion_intent;
@@ -14888,6 +14965,7 @@ impl Orchestrator {
                     &reasoning_provider_continuations,
                     reasoning_provider_continuation_chain_complete,
                     &reasoning_history,
+                    &interrupted_public_text,
                 )?;
                 tracing::info!(
                     session_id,
@@ -15401,41 +15479,10 @@ impl Orchestrator {
                     continue;
                 }
                 Err(error)
-                    if error.failure().kind.is_resumable_request_boundary()
-                        && return_binding.output.is_none()
-                        && !error.partial_text.is_empty()
-                        && error.reasoning_summary.trim().is_empty()
-                        && error.provider_continuation.is_none() =>
-                {
-                    let provider_error = error.to_string();
-                    self.record_model_attempt_terminal_state(
-                        session_id,
-                        &model_attempt_id,
-                        "continued",
-                        Some(&provider_error),
-                    )
-                    .await?;
-                    interrupted_public_text.push_str(&error.partial_text);
-                    protocol_messages = base_protocol_messages.clone();
-                    protocol_messages.push(Message {
-                        role: "assistant".to_string(),
-                        content: interrupted_public_text.clone(),
-                        name: None,
-                        tool_call_id: None,
-                        tool_calls: None,
-                    });
-                    protocol_messages.push(Message {
-                        role: "user".to_string(),
-                        content: interrupted_text_continuation_prompt().to_string(),
-                        name: None,
-                        tool_call_id: None,
-                        tool_calls: None,
-                    });
-                    continue;
-                }
-                Err(error)
                     if (!error.reasoning_summary.trim().is_empty()
-                        || error.provider_continuation.is_some())
+                        || error.provider_continuation.is_some()
+                        || !error.partial_text.is_empty()
+                        || error.failure().kind == ModelFailureKind::OutputLimit)
                         && (error.partial_text.is_empty() || return_binding.output.is_none())
                         && (error.failure().kind.is_resumable_request_boundary()
                             || error.failure().kind == ModelFailureKind::EmptyResponse) =>
@@ -15450,18 +15497,22 @@ impl Orchestrator {
                     .await?;
                     reasoning_continuations = reasoning_continuations.saturating_add(1);
                     let reasoning_summary = error.reasoning_summary.trim().to_string();
-                    if previous_reasoning_summary.as_deref() == Some(reasoning_summary.as_str()) {
+                    let progress_key = continuation_progress_key(&reasoning_summary, error.provider_continuation.as_ref(), &error.partial_text);
+                    if previous_reasoning_summary.as_deref() == Some(progress_key.as_str()) {
                         stalled_reasoning_continuations =
                             stalled_reasoning_continuations.saturating_add(1);
                     } else {
                         stalled_reasoning_continuations = 0;
                     }
+                    previous_reasoning_summary = Some(progress_key);
                     let checkpoint = ReasoningContinuationCheckpoint {
                         continuation_count: reasoning_continuations,
                         reasoning_chars: reasoning_summary.chars().count(),
                         provider_error: &provider_error,
                         provider_continuation: error.provider_continuation.as_ref(),
                         model_alias: &request_policy.model_alias,
+                        partial_text: &error.partial_text,
+                        boundary_kind: error.failure().kind,
                     };
                     self.record_reasoning_continuation(session_id, &model_attempt_id, &checkpoint)
                         .await?;
@@ -15516,20 +15567,15 @@ impl Orchestrator {
                     // own terms. Replace older recovery prompts to avoid
                     // repeatedly inflating Context across retries.
                     if !reasoning_summary.is_empty() {
-                        previous_reasoning_summary = Some(reasoning_summary.clone());
                         reasoning_history.push(reasoning_summary);
                     }
-                    // Preserve the complete native Responses output-item
+                    // Preserve the complete native reasoning-item
                     // chain. If this boundary has no replayable item, discard
                     // the partial native chain and use every portable summary;
                     // a later item cannot fill the missing causal boundary.
                     if reasoning_provider_continuation_chain_complete {
                         match error.provider_continuation {
-                            Some(
-                                provider_continuation @ ProviderContinuation::OpenaiResponses {
-                                    ..
-                                },
-                            ) => {
+                            Some(provider_continuation) if replayable_reasoning(&provider_continuation) => {
                                 reasoning_provider_continuations.push(provider_continuation);
                             }
                             _ => {
@@ -15547,27 +15593,8 @@ impl Orchestrator {
                         &reasoning_provider_continuations,
                         reasoning_provider_continuation_chain_complete,
                         &reasoning_history,
+                        &interrupted_public_text,
                     )?;
-                    if !interrupted_public_text.is_empty() {
-                        let continuation_prompt = protocol_messages
-                            .pop()
-                            .ok_or("reasoning continuation prompt disappeared")?;
-                        protocol_messages.push(Message {
-                            role: "assistant".to_string(),
-                            content: interrupted_public_text.clone(),
-                            name: None,
-                            tool_call_id: None,
-                            tool_calls: None,
-                        });
-                        protocol_messages.push(Message {
-                            content: format!(
-                                "{}\n\n{}",
-                                continuation_prompt.content,
-                                interrupted_text_continuation_prompt()
-                            ),
-                            ..continuation_prompt
-                        });
-                    }
                     continue;
                 }
                 Err(error) if error.failure().kind == ModelFailureKind::SafetyRefusal => {
@@ -16519,6 +16546,8 @@ impl Orchestrator {
         checkpoint: &ReasoningContinuationCheckpoint<'_>,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
+        let reasoning_only = checkpoint.partial_text.is_empty()
+            && (checkpoint.reasoning_chars > 0 || checkpoint.provider_continuation.is_some());
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
@@ -16531,8 +16560,26 @@ impl Orchestrator {
                 "reasoning_chars".to_string(),
                 json!(checkpoint.reasoning_chars),
             ),
-            ("response_state".to_string(), json!("reasoning_only")),
-            ("reason".to_string(), json!(REASONING_ONLY_RESPONSE_REASON)),
+            (
+                "response_state".to_string(),
+                json!(if reasoning_only {
+                    "reasoning_only"
+                } else {
+                    "output_incomplete"
+                }),
+            ),
+            (
+                "reason".to_string(),
+                json!(if reasoning_only {
+                    REASONING_ONLY_RESPONSE_REASON
+                } else {
+                    "The physical request ended before a complete response was available"
+                }),
+            ),
+            (
+                "provider_boundary_kind".to_string(),
+                json!(checkpoint.boundary_kind),
+            ),
             (
                 "provider_error".to_string(),
                 json!(checkpoint.provider_error),
@@ -16544,6 +16591,9 @@ impl Orchestrator {
                 "provider_continuation".to_string(),
                 json!(provider_continuation),
             ));
+        }
+        if !checkpoint.partial_text.is_empty() {
+            payload.push(("partial_text".into(), json!(checkpoint.partial_text)));
         }
         self.append_activation_route(attempt_id, &mut payload);
         self.bus
@@ -26704,6 +26754,103 @@ mod tests {
         assert_eq!(restored.physical_continuations, 2);
         assert_eq!(restored.continuation_count, 1);
         assert_eq!(restored.summaries, ["new-summary"]);
+    }
+
+    #[test]
+    fn chat_output_limit_checkpoint_restores_private_progress_and_public_prefix() {
+        let checkpoint = |index: usize, reasoning: &str, text: &str| {
+            Event::new(
+            format!("chat-checkpoint-{index}"), "Runtime".into(), "runtime_control".into(),
+            "runtime/reasoning_continuation".into(),
+            json!({"attempt_id":format!("chat-attempt-{index}"),"continuation_count":index + 1,"model_alias":"chat-model","partial_text":text,"provider_continuation":ProviderContinuation::OpenaiChat { reasoning_content: reasoning.into() }}).as_object().unwrap().clone(),
+        )
+        };
+        let events = [
+            checkpoint(0, "private one", "public "),
+            checkpoint(1, "private two", "prefix"),
+        ];
+        let restored =
+            super::durable_reasoning_continuation_state_from_events("chat", &events).unwrap();
+        assert_eq!(restored.public_text, "public prefix");
+        assert_eq!(restored.physical_continuations, 2);
+        assert_eq!(restored.stalled_count, 0);
+        let mut messages = Vec::new();
+        super::append_reasoning_continuation_input(
+            &mut messages,
+            &restored.provider_continuations,
+            restored.provider_continuation_chain_complete,
+            &restored.summaries,
+            &restored.public_text,
+        )
+        .unwrap();
+        let assistants = messages
+            .iter()
+            .filter(|message| message.role == "assistant")
+            .collect::<Vec<_>>();
+        assert_eq!(assistants.len(), 2);
+        assert_eq!(assistants[0].content, "");
+        assert_eq!(assistants[1].content, "public prefix");
+        assert!(assistants
+            .iter()
+            .all(|message| message.tool_calls.is_none()));
+        assert!(!messages
+            .iter()
+            .filter(|message| message.role == "user")
+            .any(|message| message.content.contains("private one")
+                || message.content.contains("private two")));
+        let repeated = [
+            checkpoint(0, "same progress", ""),
+            checkpoint(1, "same progress", ""),
+            checkpoint(2, "same progress", ""),
+        ];
+        let stalled =
+            super::durable_reasoning_continuation_state_from_events("chat", &repeated).unwrap();
+        assert_eq!(
+            stalled.stalled_count, 2,
+            "opaque-only progress must not bypass the stalled-continuation fuse"
+        );
+    }
+
+    #[test]
+    fn output_limit_checkpoint_restores_text_or_a_bounded_empty_boundary() {
+        let checkpoint = |index: usize, text: &str| {
+            Event::new(
+            format!("length-{index}"), "Runtime".into(), "runtime_control".into(),
+            "runtime/reasoning_continuation".into(),
+            json!({"attempt_id":format!("length-attempt-{index}"),"continuation_count":index + 1,"model_alias":"chat-model","partial_text":text,"provider_boundary_kind":"output_limit"}).as_object().unwrap().clone(),
+        )
+        };
+        let restored = super::durable_reasoning_continuation_state_from_events(
+            "body",
+            &[checkpoint(0, "saved "), checkpoint(1, "prefix")],
+        )
+        .unwrap();
+        assert_eq!(restored.public_text, "saved prefix");
+        assert_eq!(restored.physical_continuations, 2);
+        let mut messages = Vec::new();
+        super::append_reasoning_continuation_input(
+            &mut messages,
+            &[],
+            false,
+            &[],
+            &restored.public_text,
+        )
+        .unwrap();
+        assert_eq!(messages[0].role, "assistant");
+        assert_eq!(messages[0].content, "saved prefix");
+        let empty = super::durable_reasoning_continuation_state_from_events(
+            "empty",
+            &[checkpoint(0, ""), checkpoint(1, ""), checkpoint(2, "")],
+        )
+        .unwrap();
+        assert_eq!(empty.stalled_count, 2);
+        assert_eq!(empty.physical_continuations, 3);
+        let mut invalid = checkpoint(0, "");
+        invalid.payload.remove("provider_boundary_kind");
+        assert!(
+            super::durable_reasoning_continuation_state_from_events("invalid", &[invalid]).is_err(),
+            "missing progress must have an explicit typed output-limit boundary"
+        );
     }
 
     #[derive(Default)]

@@ -88,13 +88,19 @@ struct BlockingClient;
 
 struct AsyncCancellationClient {
     dropped: Arc<AtomicBool>,
+    elapsed: Arc<Mutex<Option<std::time::Duration>>>,
 }
 
-struct CancellationDropProbe(Arc<AtomicBool>);
+struct CancellationDropProbe {
+    dropped: Arc<AtomicBool>,
+    elapsed: Arc<Mutex<Option<std::time::Duration>>>,
+    started: std::time::Instant,
+}
 
 impl Drop for CancellationDropProbe {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
+        *self.elapsed.lock().unwrap() = Some(self.started.elapsed());
+        self.dropped.store(true, Ordering::SeqCst);
     }
 }
 
@@ -761,7 +767,11 @@ impl Client for AsyncCancellationClient {
         _messages: Vec<Message>,
         _tools: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
-        let _drop_probe = CancellationDropProbe(Arc::clone(&self.dropped));
+        let _drop_probe = CancellationDropProbe {
+            dropped: Arc::clone(&self.dropped),
+            elapsed: Arc::clone(&self.elapsed),
+            started: std::time::Instant::now(),
+        };
         std::future::pending::<()>().await;
         unreachable!("orchestrator deadline must drop the cancellable client future")
     }
@@ -3137,12 +3147,204 @@ async fn test_plain_text_terminal_is_delivered_without_correction() {
 
     publish_user(&bus, session_id, "finish explicitly").await;
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
-    let errors = wait_for_topic(&store, "runtime/response_protocol_error", session_id).await;
+    // The terminal reply is already durable. Inspect the negative condition;
+    // do not wait a full timeout for the very error this test forbids.
+    let errors =
+        wait_for_topic_count(&store, "runtime/response_protocol_error", session_id, 0).await;
 
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0].payload.get("text"), Some(&json!("I am done")));
     assert!(errors.is_empty());
     assert_eq!(client.messages_seen().len(), 1);
+}
+
+#[tokio::test]
+async fn chat_output_limit_resumes_native_reasoning_without_executing_partial_tools() {
+    run_chat_output_limit_fixture("native").await;
+}
+
+#[tokio::test]
+async fn chat_output_limit_reissues_whole_tool_without_reasoning() {
+    run_chat_output_limit_fixture("tool").await;
+}
+
+#[tokio::test]
+async fn chat_output_limit_preserves_public_prefix_and_checkpoints_it() {
+    run_chat_output_limit_fixture("body").await;
+}
+
+#[tokio::test]
+async fn chat_output_limit_without_progress_stops_at_the_continuation_fuse() {
+    run_chat_output_limit_fixture("stalled").await;
+}
+
+async fn run_chat_output_limit_fixture(mode: &'static str) {
+    use axum::{body::Body, routing::post, Json, Router};
+    use morphz::config::{ModelProtocol, ProviderConfig};
+    let requests = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let captured = Arc::clone(&requests);
+    let server = Router::new().route("/chat/completions", post(move |Json(body): Json<serde_json::Value>| {
+        let captured = Arc::clone(&captured);
+        async move {
+            let index = { let mut requests = captured.lock().unwrap(); requests.push(body); requests.len() - 1 };
+            let choice = match (mode, index) {
+                ("native", 0) => json!({"delta":{"reasoning_content":"private progress one","tool_calls":[{"index":0,"id":"partial","function":{"name":"route_probe","arguments":"{\"value\":\"do not execute"}}]},"finish_reason":"length"}),
+                ("native", 1) => json!({"delta":{"reasoning_content":"private progress two"},"finish_reason":"length"}),
+                ("body", 0) => json!({"delta":{"content":"public prefix "},"finish_reason":"length"}),
+                ("tool", 0) | ("stalled", _) => json!({"delta":{"tool_calls":[{"index":0,"id":"partial","function":{"name":"route_probe","arguments":"{\"value\":\"do not execute"}}]},"finish_reason":"length"}),
+                ("native", 2) | ("tool", 1) => json!({"delta":{"reasoning_content":"private completed reasoning","tool_calls":[{"index":0,"id":"complete","function":{"name":"route_probe","arguments":"{\"value\":\"once\"}"}}]},"finish_reason":"tool_calls"}),
+                _ => json!({"delta":{"content":"finished once"},"finish_reason":"stop"}),
+            };
+            axum::response::Response::builder().header("content-type", "text/event-stream").body(Body::from(format!("data: {}\n\ndata: {}\n\ndata: [DONE]\n\n", json!({"choices":[choice]}), json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":8192,"completion_tokens_details":{"reasoning_tokens":7889}}})))).unwrap()
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+    let mut app = AppConfig::default();
+    app.llm.model = "length-replay".into();
+    app.llm.max_retries = 0;
+    app.providers.insert(
+        "local-wire".into(),
+        ProviderConfig {
+            protocol: ModelProtocol::OpenaiChat,
+            base_url: format!("http://{address}"),
+            ..Default::default()
+        },
+    );
+    let (client, _) =
+        morphz::provider::build_configured_client(&app, Some("local-wire"), None).unwrap();
+    let tmp = TempDir::new().unwrap();
+    let store = Arc::new(
+        SqliteStore::new(tmp.path().join("length.db").to_str().unwrap())
+            .await
+            .unwrap(),
+    );
+    let bus = Arc::new(InMemoryEventBus::new());
+    install_test_session_registry(&bus, &store);
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(RoutingProbeTool {
+        arguments: Arc::clone(&calls),
+        delay_ms: 0,
+        completion_gate: None,
+    }));
+    let config = morphz::config::OrchestratorConfig {
+        max_stalled_reasoning_continuations: 2,
+        ..Default::default()
+    };
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        client,
+        registry,
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+    let session = "chat-output-limit";
+    publish_user(&bus, session, "perform the probe once").await;
+    let replies = wait_for_topic(&store, "chat/reply", session).await;
+    if mode == "stalled" {
+        let exhausted =
+            wait_for_topic(&store, "runtime/reasoning_continuation_exhausted", session).await;
+        assert_eq!(exhausted.len(), 1);
+        assert!(calls.lock().unwrap().is_empty());
+    } else {
+        assert_eq!(
+            replies[0].payload["text"],
+            if mode == "body" {
+                "public prefix finished once"
+            } else {
+                "finished once"
+            }
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            if mode == "body" {
+                vec![]
+            } else {
+                vec![json!({"value":"once"})]
+            }
+        );
+    }
+    {
+        let requests = requests.lock().unwrap();
+        assert_eq!(
+            requests.len(),
+            match mode {
+                "native" => 4,
+                "body" => 2,
+                _ => 3,
+            },
+            "only task continuation requests; no health probe or completed-work replay"
+        );
+        if mode == "native" {
+            for index in [1, 2] {
+                let messages = requests[index]["messages"].as_array().unwrap();
+                assert!(messages.iter().any(|message| message["role"] == "assistant"
+                    && message["reasoning_content"] == "private progress one"));
+                assert!(!messages.iter().any(|message| message
+                    .get("tool_calls")
+                    .is_some_and(|calls| !calls.is_null())));
+                assert!(!messages.iter().any(|message| message["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("private progress")));
+            }
+            assert!(requests[2]["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message["reasoning_content"] == "private progress two"));
+        } else {
+            let messages = requests[1]["messages"].as_array().unwrap();
+            assert!(!messages.iter().any(|message| message
+                .get("tool_calls")
+                .is_some_and(|value| !value.is_null())));
+            if mode == "body" {
+                assert!(messages.iter().any(|message| message["role"] == "assistant"
+                    && message["content"] == "public prefix "));
+            }
+        }
+    }
+    assert!(store
+        .query(QueryFilter {
+            session_id: Some(session.into()),
+            topic: Some("runtime/provider_wait".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+    let checkpoint_count = match mode {
+        "native" => 2,
+        "stalled" => 3,
+        _ => 1,
+    };
+    let checkpoints = wait_for_topic_count(
+        &store,
+        "runtime/reasoning_continuation",
+        session,
+        checkpoint_count,
+    )
+    .await;
+    assert_eq!(checkpoints.len(), checkpoint_count);
+    assert!(checkpoints
+        .iter()
+        .all(|event| event.payload["provider_boundary_kind"] == "output_limit"));
+    if mode == "native" {
+        assert!(checkpoints
+            .iter()
+            .all(|event| event.payload["provider_continuation"]["protocol"] == "openai-chat"));
+    } else if mode == "body" {
+        assert_eq!(checkpoints[0].payload["partial_text"], "public prefix ");
+    }
+    server.abort();
 }
 
 #[tokio::test]
@@ -4318,11 +4520,13 @@ async fn test_orchestrator_deadline_cancels_hanging_client_and_replies() {
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
     let dropped = Arc::new(AtomicBool::new(false));
+    let cancellation_elapsed = Arc::new(Mutex::new(None));
     let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
         Arc::clone(&store),
         Arc::new(AsyncCancellationClient {
             dropped: Arc::clone(&dropped),
+            elapsed: Arc::clone(&cancellation_elapsed),
         }) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
@@ -4340,7 +4544,20 @@ async fn test_orchestrator_deadline_cancels_hanging_client_and_replies() {
         .filter(|event| event.payload.get("state") == Some(&json!("queued")))
         .collect::<Vec<_>>();
 
-    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    // The model deadline starts after scheduler/Context preparation, not at
+    // user publication, and ends when the future is actually dropped. Measuring
+    // through three later SQLite queries conflated queue/receipt latency with
+    // cancellation under parallel suite load. Keep the same bound on the
+    // actual cancellation and retain all durable reply/failure assertions.
+    let cancellation_elapsed = cancellation_elapsed
+        .lock()
+        .unwrap()
+        .expect("the client cancellation must record its duration");
+    assert!(
+        cancellation_elapsed < std::time::Duration::from_secs(3),
+        "client cancellation took {cancellation_elapsed:?}; total admission and receipts took {:?}",
+        started.elapsed()
+    );
     assert_eq!(replies.len(), 1);
     assert_eq!(failures.len(), 1);
     assert_eq!(starts.len(), 1);
