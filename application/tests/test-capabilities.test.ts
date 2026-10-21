@@ -165,6 +165,10 @@ const declarations = [
 ] as const;
 const darwin = [
   {
+    file: "desktop-bundle-native.test.ts",
+    name: "fresh macOS development bundle seals the actual engine and unchanged reopen preserves every signed byte",
+  },
+  {
     file: "desktop-identity.test.ts",
     name: "Morphz 系统身份覆盖主程序和所有 Helper，保留启动配置且重复打包不改写",
   },

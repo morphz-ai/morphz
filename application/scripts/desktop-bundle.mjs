@@ -1,9 +1,10 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import "./application-configuration.mjs";
 import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   utimesSync,
@@ -59,6 +60,72 @@ export function compatibleBootstrap(existing, config) {
   );
 }
 
+function metadataStamp(contents, name) {
+  const resource = join(contents, "Resources", name);
+  const prior = join(contents, name);
+  if (existsSync(resource) && existsSync(prior))
+    throw new Error("应用包存在两份元数据，不能猜测覆盖；请保留后重建。");
+  // Existing signed applications remain byte-for-byte unchanged on launch.
+  // Fresh bundles keep ordinary data in Resources, never a nested-code area.
+  return existsSync(prior) ? prior : resource;
+}
+
+function sealFreshDevelopmentFrameworks(frameworks) {
+  for (const entry of readdirSync(frameworks, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.endsWith(".framework")) continue;
+    const framework = join(frameworks, entry.name);
+    try {
+      execFileSync(
+        "/usr/bin/codesign",
+        ["--verify", "--deep", "--strict", framework],
+        {
+          stdio: "pipe",
+        },
+      );
+      continue; // Preserve a valid vendor signature; never replace its identity.
+    } catch (failure) {
+      const signature = spawnSync(
+        "/usr/bin/codesign",
+        ["--display", "--verbose=4", framework],
+        { encoding: "utf8" },
+      );
+      if (
+        signature.status !== 0 ||
+        !signature.stderr.includes("linker-signed") ||
+        !signature.stderr.includes("Signature=adhoc") ||
+        !signature.stderr.includes("Sealed Resources=none") ||
+        !signature.stderr.includes("TeamIdentifier=not set")
+      )
+        throw failure;
+      // Some development distributions contain valid Mach-O linker signatures
+      // but no bundle resource seal. Authenticate the code before adding that
+      // missing local ad-hoc seal, only in this newly copied development app.
+      // Invalid existing vendor signatures and installed apps are never repaired.
+      execFileSync(
+        "/usr/bin/codesign",
+        ["--verify", "--strict", "--ignore-resources", framework],
+        {
+          stdio: "pipe",
+        },
+      );
+      execFileSync(
+        "/usr/bin/codesign",
+        ["--force", "--sign", "-", "--timestamp=none", framework],
+        {
+          stdio: "pipe",
+        },
+      );
+      execFileSync(
+        "/usr/bin/codesign",
+        ["--verify", "--deep", "--strict", framework],
+        {
+          stdio: "pipe",
+        },
+      );
+    }
+  }
+}
+
 // A local development bundle, not a Developer ID signed/distributable release.
 // Give this application its own OS identity; never modify shared Electron.app,
 // move the existing user profile, or change the selected center as a brand edit.
@@ -101,8 +168,9 @@ export function prepareDesktop({
   const contents = join(bundle, "Contents");
   const resources = join(contents, "Resources");
   const version = require("electron/package.json").version;
-  const stamp = join(contents, "morphz-electron-version");
+  const stamp = metadataStamp(contents, "morphz-electron-version");
   let bundleChanged = false;
+  let freshBundle = false;
   const markChanged = () => {
     if (bundleChanged) return;
     const paths = existsSync(bundle)
@@ -140,6 +208,7 @@ export function prepareDesktop({
     // Framework links must stay relative and inside the copied bundle; resolving
     // them would point signing/loading back into the shared Electron installation.
     cpSync(source, bundle, { recursive: true, verbatimSymlinks: true });
+    freshBundle = true;
     writeGenerated(stamp, version);
   }
   const identity = applyMacBundleIdentity(bundle, markChanged);
@@ -147,7 +216,7 @@ export function prepareDesktop({
   const iconHash = createHash("sha256")
     .update(readFileSync(iconSource))
     .digest("hex");
-  const iconStamp = join(contents, "morphz-icon-sha256");
+  const iconStamp = metadataStamp(contents, "morphz-icon-sha256");
   if (
     !existsSync(iconStamp) ||
     readFileSync(iconStamp, "utf8") !== iconHash ||
@@ -207,6 +276,8 @@ export function prepareDesktop({
   )
     writeGenerated(bootstrapPath, bootstrap);
   if (bundleChanged) {
+    if (freshBundle)
+      sealFreshDevelopmentFrameworks(join(contents, "Frameworks"));
     // Sign changed nested application identities before the outer app, without
     // replacing the unmodified third-party framework's signature. Explicit IDs
     // prevent codesign from retaining the old com.github.Electron identifier.

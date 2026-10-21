@@ -153,6 +153,11 @@ const optionalTests = [
     "MORPHZ_TEST_NATIVE_FOCUS",
   ],
   [
+    "desktop-bundle-native.test.ts",
+    "fresh macOS development bundle seals the actual engine and unchanged reopen preserves every signed byte",
+    "darwin",
+  ],
+  [
     "desktop-identity.test.ts",
     "Morphz 系统身份覆盖主程序和所有 Helper，保留启动配置且重复打包不改写",
     "darwin",
