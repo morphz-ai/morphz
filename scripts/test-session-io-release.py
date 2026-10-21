@@ -57,7 +57,6 @@ def native_linux_sandbox(request, root, workspace):
         assert not secret.exists(), "protected file must be created after actual PTY admission"
         secret.write_text("synthetic release-only secret", encoding="utf-8")
         outside = root / "outside"
-        outside.mkdir()
         forbidden = outside / "must-not-exist"
         marker = "SANDBOX-" + secrets.token_hex(8)
         worker = (
@@ -65,6 +64,9 @@ def native_linux_sandbox(request, root, workspace):
             "try:\n    Path('.env').read_bytes()\n"
             "except OSError as error:\n    assert error.errno in (errno.EACCES, errno.EPERM), error\n"
             "else:\n    raise AssertionError('late protected read succeeded')\n"
+            # The outside path is explicitly readable, not merely hidden by
+            # the private HOME/tmp mounts. A missing mount is not write denial.
+            f"assert Path({str(outside / 'readable.txt')!r}).read_text() == 'read-only witness'\n"
             f"try:\n    Path({str(forbidden)!r}).write_text('must be denied')\n"
             "except OSError as error:\n    assert error.errno in (errno.EACCES, errno.EPERM, errno.EROFS), error\n"
             "else:\n    raise AssertionError('outside write succeeded')\n"
@@ -75,6 +77,7 @@ def native_linux_sandbox(request, root, workspace):
         wait_line(marker)
         assert (workspace / "allowed.txt").read_text() == "allowed packaged Runtime write"
         assert secret.read_text() == "synthetic release-only secret"
+        assert (outside / "readable.txt").read_text() == "read-only witness"
         assert not forbidden.exists(), "outside write changed the host"
         print("PASS: packaged Runtime admitted a real PTY; late protected read and outside write "
               "denied; allowed write persisted; zero model calls")
@@ -100,6 +103,12 @@ def main():
         root = Path(directory)
         workspace = root / "workspace"
         workspace.mkdir()
+        read_roots = []
+        if args.native_linux_sandbox:
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "readable.txt").write_text("read-only witness", encoding="utf-8")
+            read_roots.append(str(outside))
         token = secrets.token_hex(32)
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
@@ -113,6 +122,7 @@ def main():
             '[[models.fixture.targets]]\nservice="fixture"\naccount="fixture"\n'
             'physical_model="fixture"\ncapabilities=["tools"]\n'
             f'[permissions]\nworkspace_root={json.dumps(str(workspace))}\n'
+            f'read_roots={json.dumps(read_roots)}\n'
             f'[background_task]\nartifact_dir={json.dumps(str(root / "artifacts"))}\n',
             encoding="utf-8",
         )

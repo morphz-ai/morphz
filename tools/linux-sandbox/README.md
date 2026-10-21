@@ -100,6 +100,16 @@ adding the gate is not proof that it has passed; record its native result before
 claiming release installation works. The regular user installer does not auto-
 elevate, change global namespace settings or authorize its user-writable image.
 
+The first packaged gates in run `39583176446` admitted actual x86_64/ARM64
+terminals and denied the late-created protected read, but failed their outside-
+write fixture: its `/tmp/.../outside` directory was hidden by the intended private
+tmp mount, so the operation returned ENOENT rather than a permission denial.
+The probe now creates and explicitly grants **read-only** access to that sibling
+before admission, requires a successful witness read, and then requires the same
+strict write-denial errors. It does not accept ENOENT as protection evidence or
+change the implementation's mounts/permissions. Native rerun results remain
+required before this corrected probe can establish release installation success.
+
 The service accepts only the Runtime's typed, already-approved `SandboxPolicy`.
 It never accepts shell commands, arbitrary AppArmor source, or requested profile
 names. Registration must bind kernel peer identity, pidfd/start identity, actual
