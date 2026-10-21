@@ -198,7 +198,16 @@ def execute(args):
             "denied_read_patterns": [], "denied_write_patterns": [], "network": "deny",
         })
         compiled = compile_profiles(policy, uuid.uuid4().hex)
-        source.write_text(compiled.source)
+        stacking_rule = f"change_profile -> &{compiled.work},"
+        if compiled.source.count(stacking_rule) != 1:
+            raise AssertionError("compiler must grant exactly one stacking target")
+        # Retain the real failing predecessor as a single-character control.
+        # Ordinary replacement permission must NOT authorize stacking. No
+        # capabilities, proc access, NNP, worker or final policy differ here.
+        control_source = compiled.source.replace(stacking_rule,
+                                                  f"change_profile -> {compiled.work},")
+        (output / "replacement-only-control.apparmor").write_text(control_source)
+        source.write_text(control_source)
         record["policy_hash"] = compiled.policy_hash
         record["profiles"] = [compiled.bootstrap, compiled.work]
         parser("--add")
@@ -208,6 +217,23 @@ def execute(args):
             "/usr/bin/setpriv", "--reuid", str(args.uid), "--regid", str(args.gid), "--clear-groups",
             "--inh-caps=-all", "--ambient-caps=-all", "--bounding-set=-all", "--",
         ]
+        native_entry = identity + ["/usr/bin/aa-exec", "-p", compiled.bootstrap, "--",
+                                   str(trusted / "entry"), compiled.bootstrap, compiled.work,
+                                   str(trusted / "kernel_contract.py")]
+        control = subprocess.run(native_entry, text=True, input="", capture_output=True,
+                                 timeout=8, cwd=workspace,
+                                 env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
+        record["replacement_only_control"] = {"code": control.returncode, "stdout": control.stdout,
+                                                "stderr": control.stderr}
+        check("replacement-only permission cannot authorize stacking",
+              control.returncode == 78 and not control.stdout and
+              "aa_stack_profile (errno=13)" in control.stderr,
+              record["replacement_only_control"])
+        parser("--remove")
+        loaded = False
+        source.write_text(compiled.source)
+        parser("--add")
+        loaded = True
         fixed_worker = [
             "/usr/bin/python3", "-I", "-B", str(trusted / "kernel_contract.py"), "--worker",
             "--bootstrap", compiled.bootstrap, "--work", compiled.work,
@@ -225,9 +251,7 @@ def execute(args):
         save()
         # Use the already-reviewed exec entry, not an in-process label change
         # followed by manually restoring dumpability or weakening proc access.
-        process = subprocess.Popen(identity + ["/usr/bin/aa-exec", "-p", compiled.bootstrap, "--",
-                                               str(trusted / "entry"), compiled.bootstrap, compiled.work,
-                                               str(trusted / "kernel_contract.py")],
+        process = subprocess.Popen(native_entry,
             text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, bufsize=1,
             cwd=workspace, env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
         ready = receive()

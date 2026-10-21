@@ -201,7 +201,7 @@ profile {bootstrap} {{
   signal,
   ptrace (readby) peer=unconfined,
   unix (create, setopt, getopt) type=stream,
-{setup_network}  change_profile -> {work},
+{setup_network}  change_profile -> &{work},
 }}
 profile {work} flags=(mediate_deleted) {{
   / r,

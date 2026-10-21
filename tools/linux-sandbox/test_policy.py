@@ -139,6 +139,13 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(allowed.source.count("network inet,"), 2)
         self.assertEqual(allowed.source.count("network inet6,"), 2)
 
+    def test_bootstrap_can_only_stack_the_exact_work_profile(self):
+        result = compile_profiles(Policy.from_request(request()), "5" * 32)
+        transitions = [line.strip() for line in result.source.splitlines()
+                       if "change_profile" in line]
+        self.assertEqual(transitions, [f"change_profile -> &{result.work},"])
+        self.assertNotIn(f"change_profile -> {result.work},", result.source)
+
     def test_json_roundtrip_is_exact(self):
         original = request(cwd="/workspace/中文", denied_read_paths=['/workspace/"*\\?'])
         policy = Policy.from_request(decode_request(json.dumps(original).encode()))
