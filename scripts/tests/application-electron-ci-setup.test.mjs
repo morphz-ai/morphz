@@ -126,3 +126,30 @@ test("small macOS runner bounds file workers without narrowing the full test inv
   assert.match(desktop, /npm test -- --test-concurrency=1\s*\n/);
   assert.doesNotMatch(desktop, /npm test -- --test-concurrency=1.*\.test\.ts/);
 });
+
+test("complete macOS inventory leaves bounded room for native validation and cleanup", () => {
+  function verifyBudget(source) {
+    const desktop = jobSource(source, "desktop");
+    const minutes = Number(/^    timeout-minutes: (\d+)$/m.exec(desktop)?.[1]);
+    assert.ok(minutes >= 120 && minutes <= 150);
+    assert.match(desktop, /npm test -- --test-concurrency=1\s*\n/);
+    for (const command of [
+      "npm run test:embedded",
+      "npm run test:platform-embedded-desktop",
+      "npm run test:platform-desktop",
+      "npm run test:draft-restart",
+      "npm run test:reader-ocr",
+      "npm run test:reader-stability",
+    ])
+      assert.ok(desktop.includes(command), `missing ${command}`);
+  }
+  verifyBudget(workflow);
+  const desktop = jobSource(workflow, "desktop");
+  for (const changed of [
+    desktop.replace("timeout-minutes: 120", "timeout-minutes: 90"),
+    desktop.replace("timeout-minutes: 120", "timeout-minutes: 360"),
+    desktop.replace("npm run test:reader-stability", "echo omitted"),
+    desktop.replace("npm test -- --test-concurrency=1", "npm test -- tests/one.test.ts"),
+  ])
+    assert.throws(() => verifyBudget(workflow.replace(desktop, changed)));
+});

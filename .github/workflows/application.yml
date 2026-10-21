@@ -239,8 +239,10 @@ jobs:
   desktop:
     name: Embedded Desktop (macOS)
     runs-on: macos-latest
-    # Full Node tests precede real Electron and local OCR acceptance.
-    timeout-minutes: 90
+    # On the 7 GiB runner, the complete single-worker Node inventory took 84m20s.
+    # Native/OCR assertions also passed, but the old 90m budget cancelled final
+    # cleanup. Preserve every case and its own deadlines; budget the whole job.
+    timeout-minutes: 120
     defaults:
       run:
         working-directory: application
