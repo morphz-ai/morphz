@@ -13,9 +13,10 @@ import {
 } from "./reader-reads-contract.js";
 import { legacyConfirmationBlock } from "./local-input-delivery-32c52210.js";
 
-// Only the approved script-catalog publication fix. These literal seams were
-// independently compared with actual Git b20d4acdc19; ordinary CI needs no Git.
-// The old domain gates still check their original full Client hashes/rules.
+// The original script-catalog seams were compared with actual Git b20d4acdc19;
+// their historical values stay below. The current finite recipe also includes
+// 6196d986's original-body publication guard, independently covered by the real
+// mounted refresh/open race. Ordinary CI needs no Git or whole-Client snapshot.
 export const originalScriptPublicationClientSha =
   "109337c7773855727b8eb62e5dee7f9e75ccb155766ee9fd78e2de6bbac1b1f7";
 export const approvedScriptLibraryPublisher = `    publishScriptLibrary: (entries) => {
@@ -59,9 +60,12 @@ const approvedContentRegistration = legacyContentRegistration.replace(
   "    publishArtifact:",
   approvedScriptLibraryPublisher + "    publishArtifact:",
 );
-export const approvedScriptCatalogCapture = `        const readCatalogCache = catalogCache.current;
+export const originalScriptCatalogCapture = `        const readCatalogCache = catalogCache.current;
         const readCatalogValue = readCatalogCache?.value;
 `;
+export const approvedScriptCatalogCapture =
+  originalScriptCatalogCapture +
+  "        const readArtifacts = current.current?.workspace.artifacts;\n";
 const legacySelection = `          {
             scope: requestedScope,
             preferences: { ...preferences, contentScope },
@@ -94,12 +98,26 @@ export const originalScriptEpochSelectionGuard = `        if (
         )
           return false;
 `;
-export const approvedScriptCatalogCas = `        if (
+export const originalScriptCatalogCas = `        if (
           readCatalogCache &&
           catalogCache.current === readCatalogCache &&
           readCatalogCache.value !== readCatalogValue
         ) {
           // An explicit content read published a newer authorized projection.
+          // Re-read through the existing drain before any snapshot writes.
+          void refresh();
+          return false;
+        }
+`;
+export const approvedScriptCatalogCas = `        if (
+          (readCatalogCache &&
+            catalogCache.current === readCatalogCache &&
+            readCatalogCache.value !== readCatalogValue) ||
+          (readArtifacts &&
+            current.current?.workspace.artifacts !== readArtifacts)
+        ) {
+          // An explicit read may hydrate an original without changing catalog
+          // metadata. Neither newer projection can be erased by this snapshot.
           // Re-read through the existing drain before any snapshot writes.
           void refresh();
           return false;
@@ -188,6 +206,7 @@ export function inverseScriptCatalogPublicationFix(clientText: string) {
     "publishScriptLibrary",
     "readCatalogCache",
     "readCatalogValue",
+    "readArtifacts",
     "confirmedScriptContentIds",
   ].some((name) => clientText.includes(name));
   if (!hasFix) {
@@ -240,6 +259,7 @@ export function inverseScriptCatalogPublicationFix(clientText: string) {
   );
   const capturedCache = readerVariable(client, "readCatalogCache"),
     capturedValue = readerVariable(client, "readCatalogValue"),
+    capturedArtifacts = readerVariable(client, "readArtifacts"),
     savedProjection = readerVariable(client, "savedProjection");
   assert.equal(
     capturedCache.parent.parent.parent,
@@ -249,6 +269,11 @@ export function inverseScriptCatalogPublicationFix(clientText: string) {
   assert.equal(
     capturedValue.parent.parent.parent,
     capturedCache.parent.parent.parent,
+  );
+  assert.equal(
+    capturedArtifacts.parent.parent.parent,
+    capturedCache.parent.parent.parent,
+    "original-body capture belongs to the same authorized publication read",
   );
   once(
     clientText,
@@ -290,6 +315,7 @@ export function inverseScriptCatalogPublicationFix(clientText: string) {
       "publishScriptLibrary",
       "readCatalogCache",
       "readCatalogValue",
+      "readArtifacts",
       "confirmedScriptContentIds",
     ].some((name) => restored.includes(name)),
     "no partial or unknown script-publication seam after approved inverse",

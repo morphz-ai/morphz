@@ -7,6 +7,8 @@ import {
   approvedScriptCatalogCas,
   approvedScriptLibraryPublisher,
   inverseScriptCatalogPublicationFix,
+  originalScriptCatalogCapture,
+  originalScriptCatalogCas,
   originalScriptEpochSelectionGuard,
 } from "./fixtures/script-catalog-publication-fix.js";
 import { parseReaderSources } from "./fixtures/reader-reads-contract.js";
@@ -35,6 +37,7 @@ function validate(source = client) {
 test("approved script publication seams have a finite strictly idempotent inverse", () => {
   const original = validate();
   assert.equal(inverseScriptCatalogPublicationFix(original), original);
+  assert.ok(!original.includes("readArtifacts"));
 });
 test("unrelated Client type, export and independent React feature growth preserves script publication seams", () => {
   const source =
@@ -139,6 +142,14 @@ test("legal capture and selection variants reject snapshots, unsafe source scope
       "const readCatalogValue = readCatalogCache?.value;",
       "const readCatalogValue = catalogCache.current?.value;",
     ],
+    [
+      "const readArtifacts = current.current?.workspace.artifacts;",
+      "const readArtifacts = current.current?.workspace.artifacts.slice();",
+    ],
+    [
+      "const readArtifacts = current.current?.workspace.artifacts;",
+      "const readArtifacts = boot?.workspace.artifacts;",
+    ],
   ];
   for (const [before, after] of captures)
     assert.throws(
@@ -218,7 +229,7 @@ test("legal capture and selection variants reject snapshots, unsafe source scope
 
 test("legal refresh variants reject wrong CAS, lost invalidation, authority-order drift and partially reversed guards", () => {
   const variants: [string, string][] = [
-    ["          readCatalogCache &&", "          true &&"],
+    ["          (readCatalogCache &&", "          (true &&"],
     [
       "catalogCache.current === readCatalogCache",
       "catalogCache.current !== readCatalogCache",
@@ -226,6 +237,15 @@ test("legal refresh variants reject wrong CAS, lost invalidation, authority-orde
     [
       "readCatalogCache.value !== readCatalogValue",
       "readCatalogCache.value === readCatalogValue",
+    ],
+    [
+      "current.current?.workspace.artifacts !== readArtifacts",
+      "current.current?.workspace.artifacts === readArtifacts",
+    ],
+    ["(readArtifacts &&", "(true &&"],
+    [
+      " ||\n          (readArtifacts &&\n            current.current?.workspace.artifacts !== readArtifacts)",
+      "",
     ],
     ["void refresh();", "void Promise.resolve();"],
     ["return false;", "return true;"],
@@ -308,6 +328,34 @@ test("legal refresh variants reject wrong CAS, lost invalidation, authority-orde
     name: "AssertionError",
     message: /already-inverse original authority-before-confirmation position/,
   });
+});
+
+test("the current inverse rejects either half of the missing original-body refresh protection", () => {
+  assert.throws(
+    () =>
+      validate(
+        changed(
+          client,
+          approvedScriptCatalogCapture,
+          originalScriptCatalogCapture,
+        ),
+      ),
+    {
+      name: "AssertionError",
+      message:
+        /approved same-object\/value capture immediately before workspace read/,
+    },
+  );
+  assert.throws(
+    () =>
+      validate(
+        changed(client, approvedScriptCatalogCas, originalScriptCatalogCas),
+      ),
+    {
+      name: "AssertionError",
+      message: /complete approved same-object\/value CAS and drain/,
+    },
+  );
 });
 
 test("finite inverse preserves unapproved old Client mutations rather than erasing them or pretending equivalence", () => {
