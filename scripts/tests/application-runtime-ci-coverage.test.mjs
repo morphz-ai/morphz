@@ -110,7 +110,7 @@ test("an unset import flag or optional Runtime gate cannot disguise omitted inte
 });
 
 function verifyBrowserRuntime(source) {
-  const web = jobSource(source, "web");
+  const web = jobSource(source, "web-browser");
   const steps = web.split("\n      - ");
   const browser = steps.findIndex((step) => /npm run test:e2e/.test(step));
   const build = steps.findIndex((step) =>
@@ -132,7 +132,7 @@ test("the complete browser inventory builds its own actual Runtime prerequisite"
 });
 
 test("omitting or ignoring the browser Runtime build fails its prerequisite gate", () => {
-  const web = jobSource(workflow, "web");
+  const web = jobSource(workflow, "web-browser");
   const command =
     "../scripts/cargo-dev.sh build --locked --manifest-path ../Cargo.toml -p morphz --bin morphz";
   for (const changed of [
@@ -173,4 +173,37 @@ test("native foreground/background coverage is required rather than indefinitely
     workflow.replace("postgres,native-focus", "postgres"),
   ])
     assert.throws(() => verifyNativeFocus(changed));
+});
+
+function verifyCompleteWebPartitions(source) {
+  const node = jobSource(source, "web-node");
+  const browser = jobSource(source, "web-browser");
+  const required = jobSource(source, "web");
+  assert.match(node, /^          xvfb-run -a npm test\s*$/m);
+  assert.doesNotMatch(node, /npm run test:e2e/);
+  assert.doesNotMatch(browser, /\bnpm test\b/);
+  assert.match(browser, /fail-fast: false\s+matrix:\s+shard: \[1, 2\]/);
+  assert.doesNotMatch(browser, /(?:include|exclude):|continue-on-error|--grep|--last-failed/);
+  assert.match(browser, /npm run test:e2e -- --shard=\$\{\{ matrix.shard \}\}\/2 --forbid-only\s*$/m);
+  assert.match(browser, /name: application-web-failures-\$\{\{ matrix.shard \}\}/);
+  assert.match(required, /name: Shared application and Web\n/);
+  assert.match(required, /needs: \[web-node, web-browser\]/);
+  assert.match(required, /if: \$\{\{ always\(\) \}\}/);
+  for (const [variable, dependency] of [["NODE", "web-node"], ["BROWSER", "web-browser"]]) {
+    assert.ok(required.includes(`${variable}_RESULT: \${{ needs.${dependency}.result }}`));
+    assert.ok(required.includes(`test "$${variable}_RESULT" = success`));
+  }
+  assert.doesNotMatch(required, /continue-on-error|\|\|\s*true/);
+}
+
+test("full Node and complementary browser shards cannot be cancelled behind a green required check", () => {
+  verifyCompleteWebPartitions(workflow);
+  for (const [before, after] of [
+    ["shard: [1, 2]", "shard: [1]"],
+    ["fail-fast: false", "fail-fast: true"],
+    ["needs: [web-node, web-browser]", "needs: [web-node]"],
+    ['test "$BROWSER_RESULT" = success', "true"],
+    ["/2 --forbid-only", "/3 --forbid-only"],
+    ["/2 --forbid-only", "/2 --forbid-only --grep focused"],
+  ]) assert.throws(() => verifyCompleteWebPartitions(workflow.replace(before, after)));
 });

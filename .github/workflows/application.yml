@@ -51,12 +51,12 @@ permissions:
   contents: read
 
 jobs:
-  web:
-    name: Shared application and Web
+  web-node:
+    name: Shared application full Node inventory
     runs-on: ubuntu-latest
-    # This job includes the complete Node/PostgreSQL and browser inventories.
-    # Local full runs already exceed 30 minutes; keep every gate and allow
-    # installation/build time rather than cancelling the later regressions.
+    # Keep the full managed inventory, including PostgreSQL and skip auditing.
+    # Browser tests have independent runners: combining both inventories hit
+    # this budget while still progressing through the browser suite.
     timeout-minutes: 90
     defaults:
       run:
@@ -96,6 +96,42 @@ jobs:
           resource_observer=$!
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
           xvfb-run -a npm test
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() || cancelled()
+        with:
+          name: application-node-failures
+          path: application/test-results/
+          if-no-files-found: ignore
+
+  web-browser:
+    name: Complete Web browser inventory (${{ matrix.shard }}/2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - name: Select isolated cognitive dependency cache
+        run: printf 'MORPHZ_TEST_COGNITIVE_NPM_CACHE=%s/morphz-cognitive-npm-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Prepare pinned Electron before parallel test imports
+        run: node node_modules/electron/install.js
+      - name: Prepare exact independent SDK and author dependencies
+        run: npm exec --offline -- tsx scripts/prepare-cognitive-author-dependencies.ts
+      - run: sudo apt-get update && sudo apt-get install -y postgresql lsof xvfb xauth
+      - run: npx playwright install --with-deps chromium
       - run: npx playwright install --with-deps chrome
       # The full browser inventory includes actual Profile and Host notification
       # transports. Other jobs' target directories are not shared with this one.
@@ -107,13 +143,32 @@ jobs:
         run: ../scripts/cargo-dev.sh build --locked --manifest-path ../Cargo.toml -p morphz --bin morphz
       # The browser inventory also launches real cross-platform Electron
       # windows. Only the explicitly macOS-only cases skip on this runner.
-      - run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e
+      # Shards are complete complementary partitions, not selected files or
+      # retries. Keep one worker inside each isolated runner for native focus.
+      - run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- --shard=${{ matrix.shard }}/2 --forbid-only
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure() || cancelled()
         with:
-          name: application-web-failures
+          name: application-web-failures-${{ matrix.shard }}
           path: application/test-results/
           if-no-files-found: ignore
+
+  web:
+    # Preserve the existing required-check identity. Every Node case and both
+    # browser partitions must succeed; a cancelled/skipped dependency is red.
+    name: Shared application and Web
+    needs: [web-node, web-browser]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require all complete inventories
+        env:
+          NODE_RESULT: ${{ needs.web-node.result }}
+          BROWSER_RESULT: ${{ needs.web-browser.result }}
+        run: |
+          test "$NODE_RESULT" = success
+          test "$BROWSER_RESULT" = success
 
   storage-postgres:
     name: Application storage (PostgreSQL)

@@ -7,7 +7,8 @@ const workflow = readFileSync(
   "utf8",
 );
 const jobs = [
-  "web",
+  "web-node",
+  "web-browser",
   "storage-postgres",
   "desktop",
   "cognitive-runtime-contract",
@@ -33,7 +34,8 @@ function verify(source) {
     const command = installer(name);
     const prepare = job.indexOf(command);
     const dependencies = job.indexOf("npm ci");
-    const tests = job.search(/\bnpm(?: --prefix application)? test\b/);
+    const tests = name === "web-browser" ? job.indexOf("npm run test:e2e") :
+      job.search(/\bnpm(?: --prefix application)? test\b/);
     assert.ok(
       dependencies >= 0 && prepare > dependencies && tests > prepare,
       `${name}: install Electron after npm ci and before parallel test consumers`,
@@ -45,7 +47,7 @@ function verify(source) {
     );
     assert.doesNotMatch(step, /continue-on-error|\|\|\s*true/);
   }
-  for (const name of ["web", "storage-postgres"]) {
+  for (const name of ["web-node", "storage-postgres"]) {
     const job = jobSource(source, name);
     assert.match(job, /apt-get install[^\n]*\bxvfb\b[^\n]*\bxauth\b/);
     assert.match(job, /xvfb-run -a npm test/);
@@ -54,10 +56,10 @@ function verify(source) {
       `${name}: a virtual display must exist before the full native inventory`,
     );
   }
-  const web = jobSource(source, "web");
+  const web = jobSource(source, "web-browser");
   assert.match(
     web,
-    /^      - run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e\s*$/m,
+    /^      - run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- --shard=\$\{\{ matrix.shard \}\}\/2 --forbid-only\s*$/m,
     "the complete browser inventory needs an authenticated native display too",
   );
 }
@@ -78,7 +80,7 @@ for (const name of jobs) {
   });
 }
 
-for (const name of ["web", "storage-postgres"]) {
+for (const name of ["web-node", "storage-postgres"]) {
   test(`${name}: full Node inventory cannot silently lose its native display`, () => {
     const job = jobSource(workflow, name);
     for (const changed of [
@@ -90,7 +92,7 @@ for (const name of ["web", "storage-postgres"]) {
 }
 
 test("Web browser inventory keeps its display without filtering native or performance cases", () => {
-  const job = jobSource(workflow, "web");
+  const job = jobSource(workflow, "web-browser");
   const command = 'xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e';
   for (const replacement of [
     "npm run test:e2e",
