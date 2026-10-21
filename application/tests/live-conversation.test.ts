@@ -30,6 +30,77 @@ function projection() {
         : null,
   }));
 }
+test("模型阶段按同一输入的持久序号更新；终态、取消和断线清除，隐藏内容不成为回复", () => {
+  const p = projection();
+  const phase = (sequence: number, state: string, terminal = false) => ({
+    ...event("runtime/model_attempt_state", {
+      attempt_id: "model-a",
+      activation_id: "activation-a",
+      root_turn_id: "a",
+      thread_id: "thread-a",
+      state,
+      terminal,
+      text: "private reasoning must not appear",
+      detail: "request snapshot must not appear",
+    }),
+    sequence,
+    timestamp: `2026-10-21T00:00:${String(sequence).padStart(2, "0")}Z`,
+  });
+  p.consume(phase(1, "queued"));
+  p.consume(phase(2, "reasoning"));
+  p.consume(phase(1, "queued"));
+  assert.equal(p.snapshot().length, 1);
+  assert.equal(p.snapshot()[0]!.inputId, "input:a");
+  assert.equal(p.snapshot()[0]!.modelActivity, "reasoning");
+  assert.equal(p.snapshot()[0]!.kind, "progress");
+  assert.equal(p.snapshot()[0]!.text, "");
+  assert.doesNotMatch(
+    JSON.stringify(p.snapshot()),
+    /private reasoning|request snapshot/,
+  );
+  p.consume(phase(3, "completed", true));
+  p.consume(phase(2, "reasoning"));
+  assert.deepEqual(p.snapshot(), []);
+  p.consume(phase(4, "streaming"));
+  p.reconnect();
+  assert.deepEqual(p.snapshot(), []);
+  p.consume(phase(5, "reasoning"));
+  p.consume({
+    ...event("chat/reply", {
+      root_turn_id: "a",
+      thread_id: "thread-a",
+      text: "真正回答",
+    }),
+    sequence: 6,
+    timestamp: "2026-10-21T00:00:06Z",
+  });
+  p.consume(phase(5, "reasoning"));
+  assert.deepEqual(
+    p.snapshot().map((m) => m.text),
+    ["真正回答"],
+  );
+  p.consume(phase(7, "reasoning"));
+  p.consume(event("runtime/thread_cancelled", { root_turn_id: "a" }));
+  p.consume(phase(8, "reasoning"));
+  assert(!p.snapshot().some((m) => m.modelActivity));
+});
+
+test("未知状态、内部推理和无输入来源不能生成思考反馈", () => {
+  const p = projection();
+  for (const payload of [
+    { root_turn_id: "a", state: "invented", terminal: false },
+    { state: "reasoning", terminal: false },
+    {
+      root_turn_id: "a",
+      state: "reasoning",
+      terminal: false,
+      model_output_visibility: "internal",
+    },
+  ])
+    p.consume(event("runtime/model_attempt_state", payload));
+  assert(!p.snapshot().some((m) => m.modelActivity));
+});
+
 test("IO 完整草稿恢复不依赖 started，迟到开始与终态不会重置或复活正文", () => {
   const p = projection();
   const draft = sessionIoDraftSchema.parse({

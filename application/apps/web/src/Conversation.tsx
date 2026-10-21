@@ -403,6 +403,7 @@ export function Conversation({
         group.messages,
         connected,
         stopStates[delivery.inputId]?.pending,
+        runtime.activity,
       );
       return [[group.id, presentation] as const];
     }),

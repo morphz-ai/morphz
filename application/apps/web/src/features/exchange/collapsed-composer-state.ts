@@ -259,7 +259,13 @@ export function collapsedComposerState({
         ),
       })
     ) {
-      const waiting = responseWaitingPresentation(delivery, group, true);
+      const waiting = responseWaitingPresentation(
+        delivery,
+        group,
+        true,
+        false,
+        runtime.activity,
+      );
       const recovery = group
         .filter((message) => message.providerRecovery)
         .sort((a, b) =>

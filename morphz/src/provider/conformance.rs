@@ -179,6 +179,38 @@ fn openai_responses_replays_the_exact_reasoning_item_before_tool_protocol_items(
 }
 
 #[test]
+fn reasoning_activity_is_observable_without_disclosing_private_deltas() {
+    for protocol in [ModelProtocol::OpenaiChat, ModelProtocol::OpenaiResponses] {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut accumulator = StreamAccumulator::default();
+        for _ in 0..10 {
+            let event = if protocol == ModelProtocol::OpenaiChat {
+                json!({"choices":[{"delta":{"reasoning_content":"private reasoning"}}]})
+            } else {
+                json!({"type":"response.reasoning_text.delta","delta":"private reasoning"})
+            };
+            accumulator.apply(protocol, event, &tx).unwrap();
+        }
+        let observed = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(observed, vec![ModelStreamEvent::ReasoningStarted]);
+        assert!(!serde_json::to_string(&observed)
+            .unwrap()
+            .contains("private reasoning"));
+        accumulator.text("public answer", &tx);
+        let observed = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(
+            observed,
+            vec![
+                ModelStreamEvent::ReasoningCompleted,
+                ModelStreamEvent::TextDelta {
+                    text: "public answer".into()
+                }
+            ]
+        );
+    }
+}
+
+#[test]
 fn provider_continuation_state_is_not_promoted_to_public_text_or_summary() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut chat = StreamAccumulator::default();
@@ -429,12 +461,14 @@ fn openai_responses_streams_reasoning_summary_without_promoting_it_to_reply_text
     assert_eq!(
         events,
         vec![
+            ModelStreamEvent::ReasoningStarted,
             ModelStreamEvent::ReasoningSummaryDelta {
                 text: "Check the current state. ".to_string(),
             },
             ModelStreamEvent::ReasoningSummaryDelta {
                 text: "Then answer concisely.".to_string(),
             },
+            ModelStreamEvent::ReasoningCompleted,
             ModelStreamEvent::ReasoningSummaryCompleted,
             ModelStreamEvent::TextDelta {
                 text: "Public answer".to_string(),

@@ -3357,6 +3357,19 @@ async fn run_chat_output_limit_fixture(mode: &'static str) {
         assert!(checkpoints
             .iter()
             .all(|event| event.payload["provider_continuation"]["protocol"] == "openai-chat"));
+        let phases = store
+            .query(QueryFilter {
+                session_id: Some(session.into()),
+                topic: Some("runtime/model_attempt_state".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(phases.iter().filter(|event| event.payload["state"] == "reasoning").count(), 3,
+            "each real reasoning response must produce one observed phase, including output-limited responses");
+        assert!(!serde_json::to_string(&phases)
+            .unwrap()
+            .contains("private progress"));
     } else if mode == "body" {
         assert_eq!(checkpoints[0].payload["partial_text"], "public prefix ");
     }

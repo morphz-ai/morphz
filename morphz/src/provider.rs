@@ -3222,6 +3222,7 @@ struct StreamAccumulator {
     content: String,
     tools: BTreeMap<usize, StreamingToolCall>,
     chat_reasoning_content: String,
+    reasoning_active: bool,
     chat_output_limited: bool,
     responses_reasoning_items: BTreeMap<usize, Value>,
     responses_message_items: BTreeMap<usize, Value>,
@@ -3258,20 +3259,36 @@ struct StreamingToolCall {
 }
 
 impl StreamAccumulator {
+    fn begin_reasoning(&mut self, stream: &ModelStreamSender) {
+        if !self.reasoning_active {
+            self.reasoning_active = true;
+            let _ = stream.send(ModelStreamEvent::ReasoningStarted);
+        }
+    }
+
+    fn end_reasoning(&mut self, stream: &ModelStreamSender) {
+        if self.reasoning_active {
+            self.reasoning_active = false;
+            let _ = stream.send(ModelStreamEvent::ReasoningCompleted);
+        }
+    }
+
     fn text(&mut self, text: &str, stream: &ModelStreamSender) {
         if text.is_empty() {
             return;
         }
+        self.end_reasoning(stream);
         self.content.push_str(text);
         let _ = stream.send(ModelStreamEvent::TextDelta {
             text: text.to_string(),
         });
     }
 
-    fn reasoning_summary(&self, text: &str, stream: &ModelStreamSender) {
+    fn reasoning_summary(&mut self, text: &str, stream: &ModelStreamSender) {
         if text.is_empty() {
             return;
         }
+        self.begin_reasoning(stream);
         // Reasoning summaries are deliberately not accumulated into
         // `content`: they are an optional, ephemeral UI aid rather than part
         // of the model's final assistant message.
@@ -3318,6 +3335,7 @@ impl StreamAccumulator {
         };
 
         if let Some(started) = started {
+            self.end_reasoning(stream);
             let _ = stream.send(started);
         }
         if let Some(delta) = buffered_arguments {
@@ -3831,6 +3849,9 @@ impl StreamAccumulator {
             // value on the assistant tool-call message. It is deliberately
             // kept out of both public text and reasoning-summary UI events.
             self.chat_reasoning_content.push_str(reasoning_content);
+            if !reasoning_content.is_empty() {
+                self.begin_reasoning(stream);
+            }
         }
         if let Some(text) = delta.get("content").and_then(Value::as_str) {
             self.text(text, stream);
@@ -3920,12 +3941,25 @@ impl StreamAccumulator {
                     }
                 }
             }
+            "response.reasoning_text.delta" => {
+                if event
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| !text.is_empty())
+                {
+                    // Raw reasoning remains in the Provider's continuation
+                    // item. Only the observed phase crosses into presentation.
+                    self.begin_reasoning(stream);
+                }
+            }
+            "response.reasoning_text.done" => self.end_reasoning(stream),
             "response.reasoning_summary_text.delta" => {
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
                     self.reasoning_summary(delta, stream);
                 }
             }
             "response.reasoning_summary_text.done" => {
+                self.end_reasoning(stream);
                 let _ = stream.send(ModelStreamEvent::ReasoningSummaryCompleted);
             }
             "response.output_item.added" => {

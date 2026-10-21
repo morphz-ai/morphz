@@ -1886,7 +1886,10 @@ impl UiState {
                     attempt.reasoning_summary.push_str(&text);
                 }
             }
-            ModelStreamEvent::ReasoningSummaryCompleted => {
+            ModelStreamEvent::ReasoningStarted => {
+                self.status = self.tr("model reasoning", "模型正在思考").to_string();
+            }
+            ModelStreamEvent::ReasoningSummaryCompleted | ModelStreamEvent::ReasoningCompleted => {
                 self.status = self
                     .tr(
                         "reasoning complete · waiting for final output",

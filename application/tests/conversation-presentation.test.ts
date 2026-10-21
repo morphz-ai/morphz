@@ -38,6 +38,133 @@ const render = (children: string) =>
     }),
   );
 
+test("等待区只展示实际模型阶段；新工具和恢复状态按各自时间接替，公开进度精确归属", () => {
+  const delivery = {
+    inputId: "i",
+    state: "running" as const,
+    error: null,
+    retryable: false,
+  };
+  const base = {
+    projectId: "p",
+    conversationId: "c",
+    artifactId: null,
+    inputId: "i",
+    rootId: "r",
+    threadId: "t",
+    createdAt: "2026-10-21T00:00:02Z",
+  };
+  const model = {
+    ...base,
+    id: "phase",
+    text: "",
+    kind: "progress" as const,
+    modelActivity: "reasoning" as const,
+  };
+  for (const [phase, label] of [
+    ["queued", "模型请求排队中…"],
+    ["streaming", "等待模型输出…"],
+    ["reasoning", "正在思考…"],
+    ["waiting_final_output", "思考完成，等待输出…"],
+    ["streaming_text", "正在生成回复…"],
+    ["generating_tool_call", "正在准备工具调用…"],
+    ["settling", "正在处理响应…"],
+  ] as const)
+    assert.equal(
+      responseWaitingPresentation(
+        delivery,
+        [{ ...model, modelActivity: phase }],
+        true,
+      ).label,
+      label,
+    );
+  assert.equal(
+    responseWaitingPresentation(delivery, [], true).label,
+    "等待回复…",
+  );
+  assert.equal(
+    responseWaitingPresentation(
+      delivery,
+      [{ ...model, inputId: "other" }],
+      true,
+    ).label,
+    "等待回复…",
+  );
+  assert.equal(
+    responseWaitingPresentation(delivery, [model], false).label,
+    "连接中断，等待恢复",
+  );
+  const tool: LiveMessage = {
+    ...base,
+    id: "tool",
+    kind: "tool",
+    text: "",
+    createdAt: "2026-10-21T00:00:03Z",
+    tool: { name: "read", arguments: "{}", status: "running" },
+  };
+  assert.equal(
+    responseWaitingPresentation(delivery, [model, tool], true).label,
+    "正在执行工具…",
+  );
+  const recovery: LiveMessage = {
+    ...base,
+    id: "recovery",
+    kind: "progress",
+    text: "",
+    providerRecovery: {
+      phase: "waiting",
+      reason: "service",
+      startedAt: "2026-10-21T00:00:04Z",
+    },
+  };
+  assert.equal(
+    responseWaitingPresentation(delivery, [model, tool, recovery], true).label,
+    "模型服务暂时中断，自动重试中…",
+  );
+  assert.equal(
+    responseWaitingPresentation(
+      delivery,
+      [tool, recovery, { ...model, createdAt: "2026-10-21T00:00:05Z" }],
+      true,
+    ).label,
+    "正在思考…",
+  );
+  const thread = {
+    id: "t",
+    kind: "execution",
+    projectId: "p",
+    conversationId: "c",
+    inputId: "i",
+    rootId: "r",
+    sessionId: "s",
+    title: "read",
+    summary: "正在读取第二章原文",
+    annotationProtocol: "on" as const,
+    phase: "running",
+    lifecycle: "open",
+    revision: 1,
+    updatedAt: tool.createdAt,
+  };
+  const activity = { available: true, truncated: false, threads: [thread] };
+  assert.equal(
+    responseWaitingPresentation(delivery, [tool], true, false, activity).label,
+    "正在读取第二章原文",
+  );
+  for (const changed of [
+    { inputId: "other" },
+    { id: "other" },
+    { rootId: "other" },
+    { lifecycle: "completed" },
+  ])
+    assert.equal(
+      responseWaitingPresentation(delivery, [tool], true, false, {
+        ...activity,
+        threads: [{ ...thread, ...changed }],
+      }).label,
+      "正在执行工具…",
+    );
+});
+
 test("只有输入精确关联的持久恢复状态才显示重试；已有前缀不误判完成，终止与正常回复仍清除等待", () => {
   const base = {
     projectId: "p",
