@@ -21,6 +21,17 @@ async function profileMeasurement<T>(
   // Explicit diagnosis only: normal budget verification has no profiler
   // overhead. Keep the original workload, assertions and failure result.
   const session = await page.context().newCDPSession(page);
+  const timeline: unknown[] = [];
+  session.on("Tracing.dataCollected", ({ value }) => timeline.push(...value));
+  const traced = new Promise<void>((resolve) =>
+    session.once("Tracing.tracingComplete", () => resolve()),
+  );
+  await session.send("Tracing.start", {
+    categories:
+      process.env.MORPHZ_TEST_CONVERSATION_INVALIDATION_TRACE === "1"
+        ? "devtools.timeline,disabled-by-default-devtools.timeline.invalidationTracking"
+        : "devtools.timeline",
+  });
   await session.send("Profiler.enable");
   await session.send("Profiler.start");
   try {
@@ -29,6 +40,21 @@ async function profileMeasurement<T>(
     const { profile } = await session.send("Profiler.stop");
     await info.attach("conversation-render.cpuprofile", {
       body: JSON.stringify(profile),
+      contentType: "application/json",
+    });
+    await session.send("Tracing.end");
+    await Promise.race([
+      traced,
+      new Promise<never>((_resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("Browser timeline did not complete")),
+          5000,
+        );
+        timeout.unref();
+      }),
+    ]);
+    await info.attach("conversation-render.timeline.json", {
+      body: JSON.stringify({ traceEvents: timeline }),
       contentType: "application/json",
     });
     await session.detach();

@@ -32,9 +32,13 @@
 .app .composer:has(> .composer-reading-context) .composer-writing > textarea {
   padding-top: 0;
 }
-.app .composer:has(.composer-action-bar) > div:has(> .message-attachments) {
+.app
+  .composer:has(.composer-action-bar)
+  > .composer-attachment-slot:has(> .message-attachments) {
   /* Keep a single preview intact; long lists scroll inside this capped slot.
-     Let the writing area shrink first instead of painting over its first line. */
+     Let the writing area shrink first instead of painting over its first line.
+     Name the slot: a bare div after :has() invalidates unrelated history table
+     wrappers whenever streamed text mutates the shared application subtree. */
   flex: 0 0 auto;
   min-height: 0;
   max-height: min(112px, 20dvh);

@@ -3324,7 +3324,10 @@ function WorkspaceApp({
                       id="global-composer"
                       aria-label="AI 输入"
                     >
-                      <div ref={setAttachmentSlot} />
+                      <div
+                        className="composer-attachment-slot"
+                        ref={setAttachmentSlot}
+                      />
                       <div ref={setDictationSlot} />
                       {!!draft.textQuotes?.length && (
                         <TextQuoteDrafts
