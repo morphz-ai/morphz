@@ -36,38 +36,33 @@ export function ExchangePanel({
     const workspace = root.closest<HTMLElement>(".primary-panel");
     let floating: HTMLElement | null = null;
     let controls: HTMLElement | null = null;
-    const measure = () => {
-      const next = root.querySelector<HTMLElement>(".application-dock");
-      if (next !== floating) {
-        if (floating) observer.unobserve(floating);
-        floating = next;
-        if (floating) observer.observe(floating);
-      }
-      const nextControls = root.querySelector<HTMLElement>(
-        ".exchange-controls-slot",
-      );
-      if (nextControls !== controls) {
-        if (controls) observer.unobserve(controls);
-        controls = nextControls;
-        if (controls) observer.observe(controls);
-      }
+    const heights = new Map<Element, number>();
+    const publish = () => {
+      // ResizeObserver has already computed these border boxes in layout CSS
+      // pixels. Reading offsetHeight here would synchronously lay out the long
+      // conversation again after another observer/React commit changed it.
+      const panelHeight = heights.get(root);
+      if (
+        panelHeight === undefined ||
+        (floating && !heights.has(floating)) ||
+        (controls && !heights.has(controls))
+      )
+        return;
       const toolsHeight = Math.max(
-        floating?.offsetHeight ?? 0,
-        controls?.offsetHeight ?? 0,
+        floating ? heights.get(floating)! : 0,
+        controls ? heights.get(controls)! : 0,
       );
       const toolsValue = `${toolsHeight}px`;
-      // A streamed reply can cause another observation without changing the
-      // panel's geometry. Do not invalidate inherited custom properties for
-      // every token; real Dock/control changes still update before measuring
-      // the panel, whose padding uses this value.
+      // Read styles before writing either custom property. A genuine tools
+      // size change may resize the panel; its next border-box notification
+      // then publishes that real geometry, without a read/write/read flush.
+      const margin = parseFloat(getComputedStyle(root).marginBottom) || 0;
+      const overlayValue = `${Math.ceil(panelHeight + toolsHeight + margin)}px`;
       if (
         ((!floating && !controls) || toolsHeight > 0) &&
         root.style.getPropertyValue("--composer-tools-height") !== toolsValue
       )
         root.style.setProperty("--composer-tools-height", toolsValue);
-      // Input-only has no resize handle. Its real overlay still needs scroll
-      // clearance, and zoomed screen pixels must not become CSS padding.
-      const overlayValue = `${Math.ceil(root.offsetHeight + toolsHeight + parseFloat(getComputedStyle(root).marginBottom))}px`;
       if (
         workspace &&
         workspace.style.getPropertyValue("--exchange-overlay-height") !==
@@ -75,16 +70,49 @@ export function ExchangePanel({
       )
         workspace.style.setProperty("--exchange-overlay-height", overlayValue);
     };
-    const observer = new ResizeObserver(measure);
-    if (dock) observer.observe(dock);
-    observer.observe(root);
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const box = entry.borderBoxSize[0];
+        if (box) heights.set(entry.target, Math.round(box.blockSize));
+      }
+      publish();
+    });
+    const syncTargets = () => {
+      let changed = false;
+      const next = root.querySelector<HTMLElement>(".application-dock");
+      if (next !== floating) {
+        if (floating) {
+          observer.unobserve(floating);
+          heights.delete(floating);
+        }
+        floating = next;
+        if (floating) observer.observe(floating, { box: "border-box" });
+        changed = true;
+      }
+      const nextControls = root.querySelector<HTMLElement>(
+        ".exchange-controls-slot",
+      );
+      if (nextControls !== controls) {
+        if (controls) {
+          observer.unobserve(controls);
+          heights.delete(controls);
+        }
+        controls = nextControls;
+        if (controls) observer.observe(controls, { box: "border-box" });
+        changed = true;
+      }
+      // Draft text and live status mutate descendants without replacing these
+      // targets. Such mutations do not need another synchronous measurement.
+      if (changed) publish();
+    };
+    observer.observe(root, { box: "border-box" });
     // Draft navigation can replace the tool group without remounting the panel.
-    const children = new MutationObserver(measure);
+    const children = new MutationObserver(syncTargets);
     if (dock) children.observe(dock, { childList: true, subtree: true });
     // The stable exchange controls live beside the reading/writing content.
     // Observe only this root's direct mounts, not each streamed message node.
     children.observe(root, { childList: true });
-    measure();
+    syncTargets();
     return () => {
       observer.disconnect();
       children.disconnect();
