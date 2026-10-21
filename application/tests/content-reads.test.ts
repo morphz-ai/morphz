@@ -479,6 +479,8 @@ function clientPublicationContracts() {
         "catalogCache",
         "readCatalogValue",
         "refresh",
+        "readArtifacts = undefined",
+        "current = { current: undefined }",
         commit + "\nreturn true;",
       ) as (
         version: number,
