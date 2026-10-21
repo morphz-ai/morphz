@@ -54,13 +54,14 @@ Object.assign(window, { composeFixture: { run(action: string) { control(action);
 createRoot(document.getElementById('root')!).render(<StrictMode><Fixture/></StrictMode>);
 `;
 
-const frameHtml = `<!doctype html><html><body><script>
+const frameHtml = `<!doctype html><html><head><meta charset="utf-8"></head><body><button id="compose" disabled>准备输入</button><script>
 let channel; const pending = new Map(); window.ready = false;
 window.handshake = { initializations: 0, readyRequests: 0, responses: 0 };
 window.request = request => new Promise(resolve => { const requestId = crypto.randomUUID(); pending.set(requestId, resolve); parent.postMessage({ type: 'morphz-app:request', channel, requestId, request }, '*'); });
+document.getElementById('compose').onclick = () => window.request({ method: 'compose', text: '鼠标追加' });
 window.addEventListener('message', async event => {
  if (event.source !== parent) return;
- if (event.data.type === 'morphz-app:init') { window.handshake.initializations++; if (!channel) { channel = event.data.channel; window.handshake.readyRequests++; const reply = await window.request({ method: 'ready' }); window.ready = !reply.error; } return; }
+ if (event.data.type === 'morphz-app:init') { window.handshake.initializations++; if (!channel) { channel = event.data.channel; window.handshake.readyRequests++; const reply = await window.request({ method: 'ready' }); window.ready = !reply.error; document.getElementById('compose').disabled = !window.ready; } return; }
  if (event.data.type === 'morphz-app:response' && event.data.channel === channel) { window.handshake.responses++; const resolve = pending.get(event.data.requestId); if (resolve) { pending.delete(event.data.requestId); resolve(event.data); } }
 });
 </script></body></html>`;
@@ -83,7 +84,7 @@ const browserExecutable = process.env.MORPHZ_TEST_BROWSER_EXECUTABLE;
 test(
   "真实 Sandbox compose 桥保留最新回调、精确范围，并返回真实拒绝",
   {
-    // Nine independent real-browser cases share setup, not a single short
+    // Independent real-browser cases share setup, not a single short
     // readiness deadline. An unready frame must fail its own bounded probe
     // with evidence before cleanup closes the browser for all later cases.
     timeout: 150000,
@@ -139,11 +140,46 @@ test(
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
     const url = `http://127.0.0.1:${address.port}/__compose-fixture`;
-    async function fixture() {
+    async function fixture({ holdPaint = false } = {}) {
       const page = await browser.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       try {
+        if (holdPaint)
+          await page.addInitScript(() => {
+            if (window !== window.top) return;
+            // Model a non-painting host without replacing its DOM, iframe,
+            // postMessage transport or React lifecycle. Messaging must not
+            // depend on whether the compositor offers an animation frame.
+            const request = window.requestAnimationFrame.bind(window);
+            const cancel = window.cancelAnimationFrame.bind(window);
+            const pending = new Map<number, FrameRequestCallback>();
+            const state = { requested: 0, delivered: 0, released: false };
+            window.requestAnimationFrame = (callback) => {
+              const id = ++state.requested;
+              pending.set(id, callback);
+              return id;
+            };
+            window.cancelAnimationFrame = (id) => {
+              pending.delete(id);
+            };
+            Object.assign(window, {
+              fixturePaint: {
+                state,
+                release() {
+                  state.released = true;
+                  window.requestAnimationFrame = request;
+                  window.cancelAnimationFrame = cancel;
+                  for (const callback of pending.values())
+                    request((time) => {
+                      state.delivered++;
+                      callback(time);
+                    });
+                  pending.clear();
+                },
+              },
+            });
+          });
         await page.goto(url);
         const frame = page.frameLocator(
           'iframe[title="Compose fixture应用界面"]',
@@ -183,6 +219,7 @@ test(
                 readyState: document.readyState,
                 visibility: document.visibilityState,
                 report: (window as any).composeFixture?.report(),
+                paint: (window as any).fixturePaint?.state,
               }))
               .catch(() => null),
           }),
@@ -191,6 +228,33 @@ test(
         throw error;
       }
     }
+    await context.test(
+      "宿主没有绘制帧时仍完成真实握手，恢复绘制后单击可准备输入",
+      async () => {
+        const { page, frame, errors } = await fixture({ holdPaint: true });
+        try {
+          assert.deepEqual(
+            await page.evaluate(() => ({
+              delivered: (window as any).fixturePaint.state.delivered,
+              released: (window as any).fixturePaint.state.released,
+            })),
+            { delivered: 0, released: false },
+          );
+          assert.equal((await report(page)).callbacks.length, 0);
+          await page.evaluate(() => (window as any).fixturePaint.release());
+          const button = frame.getByRole("button", { name: "准备输入" });
+          await expect(button).toBeEnabled();
+          await button.click();
+          await expect.poll(async () => (await report(page)).body).toBe(
+            "读取前正文\n鼠标追加",
+          );
+          assert.equal((await report(page)).callbacks.length, 1);
+          assert.deepEqual(errors, []);
+        } finally {
+          await page.close();
+        }
+      },
+    );
     await context.test(
       "对象读取期间编辑正文和最高推理，不被旧 onCompose 回滚",
       async () => {

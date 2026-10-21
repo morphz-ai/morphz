@@ -691,7 +691,7 @@ function SandboxApplication({
   const frame = useRef<HTMLIFrameElement>(null),
     channel = useRef(crypto.randomUUID()),
     surfaceReady = useRef(false),
-    paintFrame = useRef(0);
+    listenerReady = useRef(false);
   const latest = useRef({
     client,
     instance,
@@ -771,7 +771,7 @@ function SandboxApplication({
     };
   }
   function initialize() {
-    if (!surfaceReady.current) return;
+    if (!surfaceReady.current || !listenerReady.current) return;
     frame.current?.contentWindow?.postMessage(
       {
         type: applicationMessagePrefix(latest.current.manifest.format) + "init",
@@ -782,19 +782,12 @@ function SandboxApplication({
     );
   }
   function surfaceLoaded() {
-    surfaceReady.current = false;
-    cancelAnimationFrame(paintFrame.current);
-    // The isolated frame's load event precedes compositor hit-test readiness.
-    // Offer the host connection after a paint, not while clicks still land on
-    // the outer iframe element instead of its own document.
-    paintFrame.current = requestAnimationFrame(() => {
-      paintFrame.current = requestAnimationFrame(() => {
-        surfaceReady.current = true;
-        initialize();
-      });
-    });
+    // Messaging readiness is independent of compositor/hit-test readiness.
+    // A background host may not paint at all. If load precedes the listener
+    // effect, that effect completes initialization after installing receive.
+    surfaceReady.current = true;
+    initialize();
   }
-  useEffect(() => () => cancelAnimationFrame(paintFrame.current), []);
   useEffect(() => {
     const receive = async (event: MessageEvent) => {
       if (
@@ -1067,7 +1060,12 @@ function SandboxApplication({
       }
     };
     window.addEventListener("message", receive);
-    return () => window.removeEventListener("message", receive);
+    listenerReady.current = true;
+    initialize();
+    return () => {
+      listenerReady.current = false;
+      window.removeEventListener("message", receive);
+    };
   }, []);
   useEffect(() => {
     initialize();

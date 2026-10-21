@@ -9,6 +9,8 @@ on:
       - .github/workflows/application-native-regressions.yml
       - application/apps/desktop/main.cjs
       - application/apps/desktop/preferences.cjs
+      - application/apps/web/src/ApplicationHost.tsx
+      - application/tests/application-compose-race.test.ts
       - application/tests/cognitive-document-native.test.ts
       - application/tests/storage-commit-notifications.test.ts
       - application/tests/fixtures/cognitive-document-native-entry.cjs
@@ -84,5 +86,5 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: brew install postgresql@16
       - run: npx playwright install chromium
-      - name: Check the actual unchanged opaque iframe with bounded diagnosis
+      - name: Check the actual opaque iframe with bounded diagnosis
         run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/application-compose-race.test.ts tests/task-run-panel-mounted.test.ts
