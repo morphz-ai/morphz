@@ -6,9 +6,11 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import postcss, { type Rule } from "postcss";
-import { API } from "typescript/unstable/sync";
-import { createVirtualFileSystem } from "typescript/unstable/fs";
 import type { Identifier } from "typescript/unstable/ast";
+import {
+  virtualTypeScriptResources,
+  virtualTypeScriptSnapshot,
+} from "./fixtures/virtual-typescript.js";
 import {
   topbarCarriers,
   topbarMainNeighbors,
@@ -70,29 +72,24 @@ function parsed<T>(
     compilerOptions: { noLib: true, noResolve: true, jsx: "preserve" },
     files: [...sources.modules.keys()],
   });
-  const api = new API({ cwd: base, fs: createVirtualFileSystem(files) });
+  const snapshot = virtualTypeScriptSnapshot(base, files, config);
   try {
-    const snapshot = api.updateSnapshot({ openProjects: [config] });
-    try {
-      const project = snapshot.getProject(config)!,
-        program = project.program;
-      assert.equal(
-        program.getSyntacticDiagnostics().length,
-        0,
-        "actual TS/JSX counterfactual must parse",
-      );
-      return consume(
-        [...sources.modules.keys()].map((file) => ({
-          file,
-          source: program.getSourceFile(base + "/" + file)!,
-        })),
-        (node) => !project.checker.getSymbolAtLocation([node])[0],
-      );
-    } finally {
-      snapshot.dispose();
-    }
+    const project = snapshot.getProject(config)!,
+      program = project.program;
+    assert.equal(
+      program.getSyntacticDiagnostics().length,
+      0,
+      "actual TS/JSX counterfactual must parse",
+    );
+    return consume(
+      [...sources.modules.keys()].map((file) => ({
+        file,
+        source: program.getSourceFile(base + "/" + file)!,
+      })),
+      (node) => !project.checker.getSymbolAtLocation([node])[0],
+    );
   } finally {
-    api.close();
+    snapshot.dispose();
   }
 }
 function violations(sources: Sources) {
@@ -214,6 +211,34 @@ function loadIntrinsic(
     ? 'import {} from "' + specifier + '";\n'
     : 'import "' + specifier + '";\n';
 }
+
+test("Topbar parser owns one compiler per unchanged layout and rereads every actual source mutation", () => {
+  const before = virtualTypeScriptResources();
+  assert.ok(
+    before.owned > 0,
+    "the initial actual-source parse must own a reusable compiler",
+  );
+  const read = (modules: Parameters<Parameters<typeof parsed>[1]>[0]) => {
+    const source = modules.find(({ file }) => file === "App.tsx")!.source;
+    return { source, text: source.text };
+  };
+  const original = parsed(actual, read);
+  const changed = clone();
+  append(
+    changed,
+    "App.tsx",
+    "// TEST current source freshness, not a retained AST",
+  );
+  const fresh = parsed(changed, read);
+  assert.notEqual(fresh.source, original.source);
+  assert.equal(fresh.text, changed.modules.get("App.tsx"));
+  assert.notEqual(fresh.text, original.text);
+  assert.deepEqual(
+    virtualTypeScriptResources(),
+    before,
+    "source mutations must not spawn a compiler per counterfactual",
+  );
+});
 
 test("Topbar original inventory is 65/172; 64/171 move while mixed counts retain their original refinement order", () => {
   assert.equal(topbarRecipes.length, 65);
