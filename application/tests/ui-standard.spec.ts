@@ -86,6 +86,9 @@ test("搜索是快速打开面板：焦点、键盘、选区恢复与小窗口�
     "快速打开验证",
     "搜索需要保持输入的连续性。",
   );
+  // This fixture writes through a separate test Host, not the running Host's
+  // commit bus. External SQLite auto-refresh is deliberately unsupported.
+  await page.reload();
   await page
     .locator(".artifact-card")
     .filter({ hasText: "快速打开验证" })
