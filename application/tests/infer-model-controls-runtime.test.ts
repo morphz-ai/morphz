@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { scriptStudioApplication } from "../packages/core/src/applications.js";
+import { sessionEvaluationSnapshotSchema } from "../packages/core/src/session-evaluation.js";
 import { profileActualTransportFixture } from "./profile-actual-transport-fixture.js";
 
 test(
@@ -41,6 +42,7 @@ test(
         )[0]!;
       let sessionId = "";
       let definitions: unknown;
+      const embedded = await f.embeddedClient();
       for (const explicit of [false, true]) {
         const inputId = randomUUID();
         const marker = "TEST_LIVE_MODEL_" + inputId;
@@ -84,7 +86,33 @@ test(
           model_alias: "fixture-alternate",
           reasoning_effort: explicit ? "low" : "high",
         };
-        await f.sessionEvaluationPolicy(sessionId, selection);
+        const scope = { projectId, conversationId };
+        const before = sessionEvaluationSnapshotSchema.parse(
+          await embedded.client.call(
+            "session-evaluation.read",
+            scope,
+            embedded.options,
+          ),
+        );
+        assert.equal(before.runtimeSessionId, sessionId);
+        const changed = sessionEvaluationSnapshotSchema.parse(
+          await embedded.client.call(
+            "session-evaluation.update",
+            {
+              ...scope,
+              defaults: {
+                model: selection.model_alias,
+                reasoningEffort: selection.reasoning_effort,
+              },
+              expectedFingerprint: before.fingerprint,
+            },
+            embedded.options,
+          ),
+        );
+        assert.deepEqual(changed.defaults, {
+          model: selection.model_alias,
+          reasoningEffort: selection.reasoning_effort,
+        });
         assert.equal(
           f.requests.length,
           start + 1,

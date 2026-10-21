@@ -197,6 +197,8 @@ export const applicationMethods = [
   "model-settings.update",
   "session-permissions.read",
   "session-permissions.update",
+  "session-evaluation.read",
+  "session-evaluation.update",
   "asset.add",
   "attachment.add",
   "pdf.import",

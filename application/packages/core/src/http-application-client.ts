@@ -748,6 +748,13 @@ export class HttpApplicationClient {
         path = "/api/session-permissions/update";
         post(params);
         break;
+      case "session-evaluation.read":
+        path = "/api/session-evaluation?" + query(fields(params));
+        break;
+      case "session-evaluation.update":
+        path = "/api/session-evaluation/update";
+        post(params);
+        break;
       case "connection.check":
         path = "/api/connection/check";
         post();

@@ -19,6 +19,8 @@ import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { WorkspaceStore } from "../packages/application/src/store.js";
 import { RuntimeBridge } from "../packages/application/src/runtime.js";
+import { Application } from "../packages/application/src/application.js";
+import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
 import {
   prepareHostTools,
   runtimeAgentTools,
@@ -564,6 +566,7 @@ export async function profileActualTransportFixture(
     Awaited<ReturnType<typeof openApplicationDomainsHost>> | undefined;
   let runtime: RuntimeBridge | undefined;
   let server: ReturnType<typeof createAppServer> | undefined;
+  let embedded: LocalApplicationConnection | undefined;
   const sql = <T>(query: string, ...parameters: (string | number)[]): T[] => {
     const db = new DatabaseSync(databasePath, { readOnly: true });
     try {
@@ -575,6 +578,7 @@ export async function profileActualTransportFixture(
   const close = async () => {
     for (const item of held.values()) item.response.destroy();
     held.clear();
+    embedded?.close();
     await runtime?.stop();
     if (server) {
       server.closeAllConnections();
@@ -751,7 +755,7 @@ export async function profileActualTransportFixture(
       ...(cognitiveApps ? { cognitiveApps } : {}),
     });
     const bindingAuthority = domains.bindRuntime(runtime);
-    server = createAppServer(store, {
+    const hostOptions = {
       port: hostPort,
       webRoot: resolve("dist/web"),
       runtime,
@@ -776,7 +780,8 @@ export async function profileActualTransportFixture(
         reader: domains.reader.service,
         cognitiveApps: domains.cognitiveApps.service,
       }),
-    });
+    };
+    server = createAppServer(store, hostOptions);
     await new Promise<void>((done) =>
       server!.listen(hostPort, "127.0.0.1", done),
     );
@@ -800,27 +805,19 @@ export async function profileActualTransportFixture(
       runtime,
       client,
       options: callOptions,
-      async sessionEvaluationPolicy(
-        sessionId: string,
-        selection: { model_alias: string; reasoning_effort: string },
-      ) {
-        const response = await fetch(
-          `${runtimeUrl}/api/sessions/${encodeURIComponent(sessionId)}`,
-          {
-            method: "PATCH",
-            headers: {
-              Authorization: "Bearer " + operator,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(selection),
-          },
+      /** Same isolated stores and real Host operations through the production
+       * embedded transport, not an HTTP write bypass or a second profile. */
+      async embeddedClient() {
+        embedded ??= new LocalApplicationConnection(
+          new Application(store, hostOptions),
         );
-        assert.equal(
-          response.status,
-          200,
-          "actual operator Session policy write",
-        );
-        return response.json();
+        const boot = (await embedded.call("platform.bootstrap")) as {
+          csrfToken: string;
+        };
+        return {
+          client: embedded,
+          options: { identityGeneration: boot.csrfToken },
+        };
       },
       workspaceFile: (
         jobId: string,
