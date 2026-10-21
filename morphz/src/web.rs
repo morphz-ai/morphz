@@ -241,6 +241,7 @@ struct CreateSessionRequest {
     parent_session_id: Option<String>,
     title: Option<String>,
     mount: Option<ContextMountRequest>,
+    initial_evaluation: Option<crate::memory::InitialSessionEvaluation>,
 }
 
 #[derive(serde::Deserialize)]
@@ -3670,6 +3671,7 @@ async fn handle_get_inference(
         "model_options": options,
         "reasoning_effort": state.runtime.effective_reasoning_effort().map(ReasoningEffort::as_str),
         "prompt_token_limit": state.runtime.model_context_capacity().prompt_token_limit,
+        "initial_session_evaluation": true,
     }))
     .into_response()
 }
@@ -7707,13 +7709,23 @@ async fn handle_create_session(
             return sdk_error_response(error);
         }
     }
+    // Validate only after identity and parent authorization, but before a new
+    // Context is mounted. A rejected selection cannot leave a container behind.
+    let evaluation = match state
+        .runtime
+        .validate_initial_session_evaluation(request.initial_evaluation.unwrap_or_default())
+        .await
+    {
+        Ok(evaluation) => evaluation,
+        Err(error) => return error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    };
     let mount = match resolve_context_mount(&state, request.agent_id, request.mount).await {
         Ok(mount) => mount,
         Err((status, error)) => return error_response(status, error),
     };
     match state
         .sdk
-        .create_session(
+        .create_session_with_evaluation(
             principal,
             NewSession {
                 id,
@@ -7723,6 +7735,7 @@ async fn handle_create_session(
                 title: bounded_title(request.title, "New Session"),
                 mount_kind: mount.mount_kind,
             },
+            evaluation,
         )
         .await
     {
@@ -11493,6 +11506,7 @@ mod tests {
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("retention-http-session".into()),
                 agent_id: None,
                 parent_session_id: None,
@@ -11813,6 +11827,7 @@ mod tests {
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("harness-http-session".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -12014,6 +12029,7 @@ mod tests {
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("registered-session".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -12833,6 +12849,10 @@ mod tests {
             gateway_headers(Some("principal-web-test")),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: Some(crate::memory::InitialSessionEvaluation {
+                    model_alias: Some("unknown-model-must-not-preempt-identity".into()),
+                    reasoning_effort: Some(ReasoningEffort::Max),
+                }),
                 id: Some("gateway-provider-conflict-session".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -12863,6 +12883,7 @@ mod tests {
             gateway_headers(Some("site-user-parent-owner")),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("gateway-owned-parent".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -12879,6 +12900,10 @@ mod tests {
             gateway_headers(Some("site-user-foreign-child")),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: Some(crate::memory::InitialSessionEvaluation {
+                    model_alias: Some("unknown-model-must-not-preempt-parent-auth".into()),
+                    reasoning_effort: Some(ReasoningEffort::Max),
+                }),
                 id: Some("gateway-foreign-child".to_string()),
                 agent_id: None,
                 parent_session_id: Some("gateway-owned-parent".to_string()),
@@ -12905,6 +12930,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_initial_evaluation_validates_before_mount_and_preserves_later_choices() {
+        let (_database, state, runtime) = test_state().await;
+        let capability = handle_get_inference(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(capability.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(capability.into_body(), 65536)
+            .await
+            .unwrap();
+        let capability: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(capability["initial_session_evaluation"], true);
+        let request = |id: &str, model: &str| CreateSessionRequest {
+            id: Some(id.into()),
+            agent_id: None,
+            parent_session_id: None,
+            title: Some("TEST initial evaluation".into()),
+            mount: Some(ContextMountRequest::NewBlankContext {
+                context_id: Some(format!("{id}-context")),
+                context_title: Some("TEST initial evaluation".into()),
+            }),
+            initial_evaluation: Some(crate::memory::InitialSessionEvaluation {
+                model_alias: Some(model.into()),
+                reasoning_effort: Some(ReasoningEffort::Max),
+            }),
+        };
+        let invalid = handle_create_session(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(request("initial-invalid", "unknown-fixture-model")),
+        )
+        .await
+        .into_response();
+        assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+        assert!(runtime
+            .get_session("initial-invalid")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(runtime
+            .get_context("initial-invalid-context")
+            .await
+            .unwrap()
+            .is_none());
+        let created = handle_create_session(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(request("initial-valid", "fixture-model")),
+        )
+        .await
+        .into_response();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(created.into_body(), 65536)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["model_alias"], "fixture-model");
+        assert_eq!(body["reasoning_effort"], "max");
+        assert!(runtime
+            .verify_session_principal("initial-valid", "principal-web-test")
+            .await
+            .unwrap());
+        runtime
+            .update_session(
+                "initial-valid",
+                SessionUpdate {
+                    model_alias: Some(None),
+                    reasoning_effort: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let retry = handle_create_session(
+            State(state),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(request("initial-valid", "fixture-model")),
+        )
+        .await
+        .into_response();
+        assert_eq!(retry.status(), StatusCode::CONFLICT);
+        let actual = runtime.get_session("initial-valid").await.unwrap().unwrap();
+        assert_eq!(actual.model_alias, None);
+        assert_eq!(actual.reasoning_effort, None);
+    }
+
+    #[tokio::test]
     async fn catalog_mutations_rename_and_archive_without_erasing_context_history() {
         let (_database, state, runtime) = test_state().await;
         let create_context = handle_create_context(
@@ -12926,6 +13044,7 @@ mod tests {
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("session-catalog-test".to_string()),
                 agent_id: Some("agent-test".to_string()),
                 parent_session_id: None,
@@ -13128,6 +13247,7 @@ mod tests {
             gateway_headers(None),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("gateway-missing-principal".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -13144,6 +13264,7 @@ mod tests {
             gateway_headers(Some("site-user-1")),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("gateway-session-a".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -13348,6 +13469,7 @@ mod tests {
             gateway_headers(Some("o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat")),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("gateway-session-wechat".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -13971,6 +14093,7 @@ mod tests {
             dashboard_headers(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("dashboard-session-in-trusted-mode".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -17714,6 +17837,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("attachment-stage-session".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -17961,6 +18085,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("api-session".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -17976,6 +18101,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("api-session-target".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -18226,6 +18352,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("stream-session".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -18461,6 +18588,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("summary-restart-session".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -18554,6 +18682,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("api-observability-session".to_string()),
                 agent_id: None,
                 parent_session_id: None,
@@ -20449,6 +20578,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("source-session".to_string()),
                 agent_id: Some("agent-test".to_string()),
                 parent_session_id: None,
@@ -20497,6 +20627,7 @@ account = "xai-account"
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateSessionRequest {
+                initial_evaluation: None,
                 id: Some("wrong-agent-session".to_string()),
                 agent_id: Some("agent-fresh".to_string()),
                 parent_session_id: None,

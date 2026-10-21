@@ -26,6 +26,7 @@ import {
   type SessionEvaluationScope,
   type SessionEvaluationUpdate,
   type SessionEvaluationSnapshot,
+  type SessionEvaluationDefaults,
 } from "../../core/src/session-evaluation.js";
 import { runtimeSchedulerSourceSchema } from "./runtime-thread-provenance.js";
 import {
@@ -363,6 +364,8 @@ const sessionSchema = z.object({
   context_id: z.string(),
 });
 const permissionSessionSchema = sessionSchema.extend({
+  model_alias: z.string().nullable().optional(),
+  reasoning_effort: z.string().nullable().optional(),
   permission_mode: sessionPermissionModeSchema.nullable().optional(),
   sandbox_mode: z
     .enum(["workspace-write", "danger-full-access"])
@@ -620,6 +623,8 @@ const storedSchema = z.object({
       // Missing on older records means the POST boundary cannot be proven.
       // A known false value proves a failed delivery stopped before POST.
       runtimePostAttempted: z.boolean().optional(),
+      // Frozen first-creation intent, not a task override or model authority.
+      initialSessionEvaluation: sessionEvaluationDefaultsSchema.optional(),
       request: z.record(z.string(), z.unknown()),
       resourceUploads: z
         .array(
@@ -6611,7 +6616,12 @@ export class RuntimeBridge {
   async enqueuePlatformInput(
     input: RecordedInput,
     newConversation?: { title: string },
+    rawInitialEvaluation?: SessionEvaluationDefaults,
   ) {
+    const initialEvaluation =
+      rawInitialEvaluation === undefined
+        ? undefined
+        : sessionEvaluationDefaultsSchema.parse(rawInitialEvaluation);
     // The new reference is an independent snapshot before any awaited policy.
     input = {
       ...input,
@@ -6636,6 +6646,19 @@ export class RuntimeBridge {
     )
       throw new DomainError("invalid", "补充不能指定另一个认知应用原件。");
     const actor = this.actor();
+    if (initialEvaluation) {
+      if (
+        this.teamIdentity ||
+        actor.principalId !== localAccess.principalId ||
+        actor.actantId !== localAccess.actantId
+      )
+        throw new DomainError("forbidden", "首建会话模型只能由本机本人选择。");
+      if (input.model || input.reasoningEffort || input.continuation)
+        throw new DomainError(
+          "invalid",
+          "首建会话默认不能与任务模型覆盖或定向补充混用。",
+        );
+    }
     if (
       input.author.principalId !== actor.principalId ||
       input.author.actantId !== actor.actantId ||
@@ -6886,6 +6909,11 @@ export class RuntimeBridge {
         : candidate;
     if (previous) {
       if (
+        (initialEvaluation !== undefined &&
+          !isDeepStrictEqual(
+            previous.initialSessionEvaluation,
+            initialEvaluation,
+          )) ||
         previous.platformSource?.projectId !== platformSource.projectId ||
         previous.platformSource.conversationId !==
           platformSource.conversationId ||
@@ -6992,6 +7020,9 @@ export class RuntimeBridge {
       cancelRequested: false,
       causalThreadIds: [],
       request,
+      ...(initialEvaluation
+        ? { initialSessionEvaluation: initialEvaluation }
+        : {}),
       ...(input.continuation?.mode === "supplement"
         ? { supplement: "pending" as const }
         : {}),
@@ -7100,10 +7131,18 @@ export class RuntimeBridge {
       .update(JSON.stringify(delivery.request))
       .digest("hex");
   }
-  private async ensureSession(id: string) {
-    return this.serialSessionPolicy(id, () => this.ensureSessionPolicy(id));
+  private async ensureSession(
+    id: string,
+    initialEvaluation?: SessionEvaluationDefaults,
+  ) {
+    return this.serialSessionPolicy(id, () =>
+      this.ensureSessionPolicy(id, initialEvaluation),
+    );
   }
-  private async ensureSessionPolicy(id: string) {
+  private async ensureSessionPolicy(
+    id: string,
+    initialEvaluation?: SessionEvaluationDefaults,
+  ) {
     const contextId = this.contextId(this.state.sessions[id]!.projectId);
     let session: z.infer<typeof permissionSessionSchema>;
     try {
@@ -7113,6 +7152,24 @@ export class RuntimeBridge {
     } catch (error) {
       if (!(error instanceof UpstreamError) || error.status !== 404)
         throw error;
+      if (initialEvaluation) {
+        const capability = z
+          .object({ initial_session_evaluation: z.literal(true) })
+          .safeParse(await this.request("/api/runtime/inference"));
+        if (!capability.success)
+          throw new DomainError(
+            "invalid",
+            "Runtime 尚不支持首建会话模型设置，请更新；原消息已保留。",
+          );
+      }
+      const initialPolicy = initialEvaluation
+        ? {
+            initial_evaluation: {
+              model_alias: initialEvaluation.model,
+              reasoning_effort: initialEvaluation.reasoningEffort,
+            },
+          }
+        : {};
       // Save before attempting creation, including a lost POST response. The
       // receipt survives restart; a later GET/409 cannot bypass initialization.
       this.state.sessions[id]!.permissionInitializationRequired = true;
@@ -7123,6 +7180,7 @@ export class RuntimeBridge {
             await this.request("/api/sessions", "POST", {
               id,
               title: "Morphz",
+              ...initialPolicy,
               mount: { type: "existing_context", context_id: contextId },
             }),
           );
@@ -7133,6 +7191,7 @@ export class RuntimeBridge {
             await this.request("/api/sessions", "POST", {
               id,
               title: "Morphz",
+              ...initialPolicy,
               mount: {
                 type: "new_blank_context",
                 context_id: contextId,
@@ -7141,6 +7200,16 @@ export class RuntimeBridge {
             }),
           );
         }
+        if (
+          initialEvaluation &&
+          ((session.model_alias ?? null) !== initialEvaluation.model ||
+            (session.reasoning_effort ?? null) !==
+              initialEvaluation.reasoningEffort)
+        )
+          throw new DomainError(
+            "conflict",
+            "首建会话模型设置未确认，未发送输入。",
+          );
       } catch (e) {
         if (e instanceof UpstreamError && e.status === 409)
           session = permissionSessionSchema.parse(
@@ -7875,7 +7944,10 @@ export class RuntimeBridge {
                 "Morphz 服务版本过旧，暂时无法发送。更新后可重试，消息已保留。",
               );
           }
-          await this.ensureSession(delivery.sessionId);
+          await this.ensureSession(
+            delivery.sessionId,
+            delivery.initialSessionEvaluation,
+          );
           // Establish observers before the model can emit its first text chunk.
           await Promise.all([...this.feeds].map((feed) => feed.sync()));
           if (!delivery.platformSource) throw new Error("原始输入不可用。");

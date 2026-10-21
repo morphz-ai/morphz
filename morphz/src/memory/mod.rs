@@ -1545,6 +1545,16 @@ pub struct NewSession {
     pub mount_kind: SessionMountKind,
 }
 
+/// Initial Session defaults, committed with its first Principal binding.
+/// These are not per-Thread overrides or an instruction to update an existing
+/// Session when a creation receipt is retried.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct InitialSessionEvaluation {
+    pub model_alias: Option<String>,
+    pub reasoning_effort: Option<crate::llm::ReasoningEffort>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SessionUpdate {
     pub title: Option<String>,
@@ -6677,6 +6687,14 @@ pub trait SessionDirectoryStore: Send + Sync {
         &self,
         session: NewSession,
         principal_id: &str,
+    ) -> Result<SessionRecord, Box<dyn std::error::Error + Send + Sync>>;
+    /// The Session, mount, Principal binding and initial evaluation defaults
+    /// become visible together. Existing IDs conflict without changing policy.
+    async fn create_session_for_principal_with_evaluation(
+        &self,
+        session: NewSession,
+        principal_id: &str,
+        evaluation: InitialSessionEvaluation,
     ) -> Result<SessionRecord, Box<dyn std::error::Error + Send + Sync>>;
     async fn ensure_session(
         &self,

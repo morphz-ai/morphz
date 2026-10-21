@@ -62,7 +62,13 @@ test(
               body: marker,
               targetActantId: "morphz-agent",
               ...(!sessionId
-                ? { newConversation: { title: "TEST 实时模型继承" } }
+                ? {
+                    newConversation: { title: "TEST 实时模型继承" },
+                    initialSessionEvaluation: {
+                      model: "profile-actual",
+                      reasoningEffort: "low",
+                    },
+                  }
                 : {}),
               ...(explicit
                 ? { model: "profile-actual", reasoningEffort: "none" }
@@ -78,6 +84,17 @@ test(
         assert.equal(thread.session_id, sessionId);
         assert.equal(thread.model_alias, explicit ? "profile-actual" : null);
         assert.equal(thread.reasoning_effort, explicit ? "none" : null);
+        if (!explicit) {
+          const initial = f.sql<{
+            model_alias: string;
+            reasoning_effort: string;
+          }>(
+            "SELECT model_alias,reasoning_effort FROM sessions WHERE id=?",
+            sessionId,
+          )[0]!;
+          assert.equal(initial.model_alias, "profile-actual");
+          assert.equal(initial.reasoning_effort, "low");
+        }
         assert.equal(first.model, "profile-actual");
         assert.equal(first.reasoning_effort, explicit ? "none" : "low");
         definitions ??= first.tools;
@@ -223,7 +240,15 @@ test(
         f.options,
       )) as { id: string };
       let definitions: unknown;
-      for (const effort of ["max", "none", "low", undefined] as const) {
+      const embedded = await f.embeddedClient();
+      for (const effort of [
+        "max",
+        "none",
+        "low",
+        undefined,
+        "session",
+      ] as const) {
+        const inherited = effort === "session";
         const marker = "TEST_INFER_CONTROLS_" + randomUUID();
         const conversationId =
           "conversation_" + randomUUID().replaceAll("-", "");
@@ -243,8 +268,17 @@ test(
               body: marker + " 只讨论一个创意，不创作、不保存。",
               targetActantId: "morphz-agent",
               newConversation: { title: marker },
-              model: "profile-actual",
-              ...(effort ? { reasoningEffort: effort } : {}),
+              ...(inherited
+                ? {
+                    initialSessionEvaluation: {
+                      model: "profile-actual",
+                      reasoningEffort: "max",
+                    },
+                  }
+                : {
+                    model: "profile-actual",
+                    ...(effort ? { reasoningEffort: effort } : {}),
+                  }),
               applicationInstanceId: app.id,
               application: {
                 id: scriptStudioApplication.id,
@@ -258,7 +292,7 @@ test(
         assert.equal(first.model, "profile-actual");
         assert.equal(
           first.reasoning_effort,
-          effort ?? "low",
+          inherited ? "max" : (effort ?? "low"),
           "Unspecified infer must inherit the parent task, not the low Runtime default",
         );
         definitions ??= first.tools;
@@ -266,26 +300,50 @@ test(
         const child = f.sql<{
           id: string;
           parent_thread_id: string;
-          model_alias: string;
+          session_id: string;
+          model_alias: string | null;
           reasoning_effort: string | null;
         }>(
-          "SELECT id,parent_thread_id,model_alias,reasoning_effort FROM threads WHERE executor_kind='plan_infer' ORDER BY rowid DESC LIMIT 1",
+          "SELECT id,parent_thread_id,session_id,model_alias,reasoning_effort FROM threads WHERE executor_kind='plan_infer' ORDER BY rowid DESC LIMIT 1",
         )[0]!;
         assert.ok(child.parent_thread_id);
         const parent = f.sql<{
           id: string;
           status: string;
-          model_alias: string;
+          model_alias: string | null;
           reasoning_effort: string | null;
         }>(
           "SELECT id,status,model_alias,reasoning_effort FROM threads WHERE id=?",
           child.parent_thread_id,
         )[0]!;
-        assert.equal(child.model_alias, "profile-actual");
+        assert.equal(child.model_alias, inherited ? null : "profile-actual");
         assert.equal(child.model_alias, parent.model_alias);
         assert.equal(child.reasoning_effort, parent.reasoning_effort);
-        if (effort !== undefined) assert.equal(parent.reasoning_effort, effort);
+        if (inherited) assert.equal(parent.reasoning_effort, null);
+        else if (effort !== undefined)
+          assert.equal(parent.reasoning_effort, effort);
         f.hold(marker);
+        if (inherited) {
+          const scope = { projectId, conversationId };
+          const before = sessionEvaluationSnapshotSchema.parse(
+            await embedded.client.call(
+              "session-evaluation.read",
+              scope,
+              embedded.options,
+            ),
+          );
+          assert.equal(before.runtimeSessionId, child.session_id);
+          await embedded.client.call(
+            "session-evaluation.update",
+            {
+              ...scope,
+              expectedFingerprint: before.fingerprint,
+              defaults: { model: "profile-actual", reasoningEffort: "high" },
+            },
+            embedded.options,
+          );
+          assert.equal(f.requests.length - start, 1);
+        }
         f.releaseWithMessages(marker, [
           {
             name: "host_morphz",
@@ -301,7 +359,10 @@ test(
         ]);
         const second = await f.waitRequest(marker, start + 1);
         assert.equal(second.model, "profile-actual");
-        assert.equal(second.reasoning_effort, effort ?? "low");
+        assert.equal(
+          second.reasoning_effort,
+          inherited ? "high" : (effort ?? "low"),
+        );
         assert.deepEqual(second.tools, definitions);
         f.releaseWithText(
           marker,
@@ -340,7 +401,7 @@ test(
               parent.id,
             )
             .map((row) => row.reasoning_effort),
-          [null],
+          [inherited ? "high" : null],
           "A task override must not mutate its Session default",
         );
         const states = f.sql<{ payload: string }>(
@@ -348,11 +409,13 @@ test(
           child.id,
         );
         assert.equal(states.length, 2);
-        for (const state of states)
-          assert.equal(
-            JSON.parse(state.payload).effective_reasoning_effort,
-            effort ?? "low",
-          );
+        assert.deepEqual(
+          states.map(
+            (state) => JSON.parse(state.payload).effective_reasoning_effort,
+          ),
+          inherited ? ["max", "high"] : [effort ?? "low", effort ?? "low"],
+          "Attempt receipts must record the effective effort of each physical request",
+        );
       }
     } finally {
       await f.close();

@@ -2156,6 +2156,21 @@ export class ApplicationSession {
       await runtime.as(this.access, () =>
         runtime.validateInference(op.model, op.reasoningEffort),
       );
+    if (op.initialSessionEvaluation) {
+      if (
+        this.options.identity ||
+        runtime.teamIdentity ||
+        this.access.principalId !== localAccess.principalId ||
+        this.access.actantId !== localAccess.actantId
+      )
+        throw new DomainError("forbidden", "首建会话模型只能由本机本人选择。");
+      await runtime.as(this.access, () =>
+        runtime.validateInference(
+          op.initialSessionEvaluation!.model ?? undefined,
+          op.initialSessionEvaluation!.reasoningEffort ?? undefined,
+        ),
+      );
+    }
     // A Client window ID is presentation state, not a Platform app-data
     // instance or an execution grant. Resolve the requested built-in app to
     // the Host's registered data authority before pinning its Harness.
@@ -2531,7 +2546,11 @@ export class ApplicationSession {
       });
     }
     const entityId = await runtime.as(this.access, () =>
-      runtime.enqueuePlatformInput(input, op.newConversation),
+      runtime.enqueuePlatformInput(
+        input,
+        op.newConversation,
+        op.initialSessionEvaluation,
+      ),
     );
     if (op.newConversation) {
       await this.work((service, actor) =>
