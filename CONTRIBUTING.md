@@ -68,6 +68,18 @@ one pull request. No application or mobile release is implied by a Runtime relea
 See [the integration record](application/docs/25-repository-integration.md) for history,
 compatibility, and original-profile acceptance requirements.
 
+## PostgreSQL Runtime test coverage
+
+Runtime's PostgreSQL library contracts are explicitly ignored in default local
+runs because they require an isolated database. CI must also run
+`python3 scripts/test_runtime_postgres_lib.py` with its job-owned
+`MORPHZ_TEST_POSTGRES_URL`; the runner requires exactly one executed test per
+contract, including the real PTY contract, and never accepts a zero-test pass.
+The separate Session IO workflow owns its PostgreSQL concurrency and fence
+cases. `scripts/tests/test_runtime_postgres_ci.py` checks these owners against
+the explicitly ignored PostgreSQL source inventory. A default-suite pass alone
+does not cover these cases. Never supply business database credentials.
+
 ## Source language
 
 Morphz uses English for identifiers, developer comments, doc comments, commit messages, raw

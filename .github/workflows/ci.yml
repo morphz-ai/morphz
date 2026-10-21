@@ -39,6 +39,8 @@ jobs:
         run: bash scripts/test_audit_rust_dependencies.sh
       - name: Verify cache retention and real Cargo lock boundaries
         run: python3 -m unittest discover -s scripts/tests -p test_prune_cargo_target.py -v
+      - name: Verify required PostgreSQL library coverage
+        run: python3 -m unittest discover -s scripts/tests -p test_runtime_postgres_ci.py -v
       - name: Audit Rust dependency advisories
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
@@ -110,6 +112,11 @@ jobs:
         # database-lock and wall-clock failures between otherwise isolated
         # harnesses. Tests that verify concurrency still spawn it internally.
         run: ./scripts/cargo-dev.sh test --all --verbose -- --test-threads=1
+      - name: Require ignored PostgreSQL approval, input and terminal contracts
+        # A default-suite failure must remain a failure without suppressing the
+        # independent database contracts. The runner rejects zero-test passes.
+        if: ${{ !cancelled() }}
+        run: python3 scripts/test_runtime_postgres_lib.py
 
   postgres-conformance:
     name: PostgreSQL Runtime Store
