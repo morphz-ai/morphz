@@ -93,12 +93,12 @@ async function setup(page: Page) {
       generation++;
       await presentation.refresh();
     },
-    async streamTool(status: string) {
+    async streamTool(status: string, threadId?: string) {
       await expect
         .poll(() => page.evaluate(() => (window as any).__waitingStreams.size))
         .toBeGreaterThan(0);
       await page.evaluate(
-        ({ scope, status }) => {
+        ({ scope, status, threadId }) => {
           for (const source of (window as any).__waitingStreams)
             source.onmessage?.({
               data: JSON.stringify({
@@ -111,6 +111,7 @@ async function setup(page: Page) {
                     ...scope,
                     inputId: "waiting-a",
                     rootId: "waiting-root",
+                    ...(threadId ? { threadId } : {}),
                     artifactId: null,
                     kind: "tool",
                     text: "",
@@ -121,7 +122,7 @@ async function setup(page: Page) {
               }),
             });
         },
-        { scope, status },
+        { scope, status, threadId },
       );
     },
     async stream(text: string, streaming = true, streamConnected = true) {
@@ -162,6 +163,69 @@ async function setup(page: Page) {
 
 const waiting = (page: Page, id = "waiting-a") =>
   page.locator(`[data-waiting-input-id="${id}"]`);
+
+test("真实思考阶段和公开工具进度在原等待区呈现；窄窗不溢出，草稿与另一输入不串线", async ({
+  page,
+}, testInfo) => {
+  const f = await setup(page);
+  const state = {
+    ...f.scope(),
+    id: "observed-model",
+    artifactId: null,
+    inputId: "waiting-a",
+    rootId: "waiting-root",
+    threadId: "observed-thread",
+    kind: "progress" as const,
+    text: "",
+    createdAt: new Date().toISOString(),
+    modelActivity: "reasoning" as const,
+  };
+  f.replies.push(state);
+  await f.update();
+  await expect(waiting(page).getByRole("status")).toHaveText("正在思考…");
+  await expect(waiting(page, "waiting-b")).toHaveCount(0);
+  await expect(page.locator(".execution-progress-entry")).toHaveCount(0);
+  await expect(f.composer).toHaveValue("TEST 保留未发送草稿");
+  await page.screenshot({
+    path: testInfo.outputPath("reasoning-desktop.png"),
+    fullPage: true,
+  });
+  f.replies.length = 0;
+  f.threads.push({
+    id: "observed-thread",
+    kind: "execution",
+    projectId: f.scope().projectId,
+    conversationId: f.scope().conversationId,
+    inputId: "waiting-a",
+    rootId: "waiting-root",
+    sessionId: "s",
+    title: "read",
+    summary: "正在读取第二章原文并核对已返回的段落范围",
+    annotationProtocol: "on",
+    phase: "running",
+    lifecycle: "open",
+    revision: 1,
+    updatedAt: new Date().toISOString(),
+  });
+  await f.update();
+  await f.streamTool("running", "observed-thread");
+  await expect(waiting(page).getByRole("status")).toHaveText(
+    "正在读取第二章原文并核对已返回的段落范围",
+  );
+  f.threads[0]!.summary =
+    "正在读取原文 " + "LongProviderProgressWithoutSpaces".repeat(8);
+  await f.update();
+  await page.setViewportSize({ width: 390, height: 700 });
+  await expect(waiting(page)).toBeVisible();
+  expect(
+    await waiting(page).evaluate((e) => e.scrollWidth <= e.clientWidth),
+  ).toBe(true);
+  await expect(f.composer).toHaveValue("TEST 保留未发送草稿");
+  await page.screenshot({
+    path: testInfo.outputPath("reasoning-narrow.png"),
+    fullPage: true,
+  });
+});
 
 test("认证、配置和额度问题不伪装成持续重试；同一输入的真实恢复清除旧状态，刷新不复活", async ({
   page,

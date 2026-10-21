@@ -776,6 +776,10 @@ pub enum ModelStreamEvent {
     /// Provider explicitly closed its reasoning-summary item, while the
     /// overall response may still be waiting for public text or tool calls.
     ReasoningSummaryCompleted,
+    /// Observed Provider reasoning activity, without private reasoning bytes.
+    /// Consumers may name the current phase but must not invent a summary.
+    ReasoningStarted,
+    ReasoningCompleted,
     /// Opaque protocol state needed to continue a Provider tool-call turn.
     /// The Orchestrator consumes this event internally; unlike a reasoning
     /// summary, it must never be published to presentation clients.

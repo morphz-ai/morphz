@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { executionModelSchema } from "./inference.js";
+import { modelActivitySchema } from "./model-activity.js";
 import { runtimeMessageFailureSchema } from "./runtime-message-failure.js";
 import {
   evaluationResultSchema,
@@ -192,6 +193,7 @@ export const conversationRuntimeSchema = z.object({
       modelAttemptId: z.string().optional(),
       threadId: z.string().optional(),
       providerRecovery: providerRecoverySchema.optional(),
+      modelActivity: modelActivitySchema.optional(),
       failure: runtimeMessageFailureSchema.optional(),
       incomplete: z.boolean().optional(),
       truncated: z.boolean().optional(),

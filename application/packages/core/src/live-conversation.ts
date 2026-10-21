@@ -4,6 +4,7 @@ import {
   runtimeMessageFailureFromEvent,
 } from "./runtime-message-failure.js";
 import { internalModelOutput } from "./model-publication.js";
+import { modelActivitySchema } from "./model-activity.js";
 import {
   evaluationResultSchema,
   evaluationSourceSchema,
@@ -41,6 +42,8 @@ export const liveMessageSchema = z.object({
   threadId: z.string().optional(),
   /** A durable Runtime provider_wait, not a failed physical HTTP stream. */
   providerRecovery: providerRecoverySchema.optional(),
+  /** An observed Runtime phase, never private reasoning or an inferred timer. */
+  modelActivity: modelActivitySchema.optional(),
   failure: runtimeMessageFailureSchema.optional(),
   tool: z
     .object({
@@ -121,6 +124,13 @@ export class LiveConversationProjection {
     { id: string; continuation: boolean; closed: boolean }
   >();
   private settledEvaluations = new Set<string>();
+  private modelStates = new Map<
+    string,
+    {
+      event: Pick<StreamEvent, "timestamp" | "sequence">;
+      message?: LiveMessage;
+    }
+  >();
   constructor(
     private route: (
       e: StreamEvent,
@@ -220,6 +230,7 @@ export class LiveConversationProjection {
     // prefix; only a new complete stream or its durable outcome may replace it.
     for (const attempt of this.attempts.values()) this.retainAttempt(attempt);
     this.attempts.clear();
+    this.modelStates.clear();
     for (const [id, message] of this.messages) {
       if (message.kind === "evaluation" && message.streaming)
         this.messages.set(id, {
@@ -300,9 +311,34 @@ export class LiveConversationProjection {
           str(p.model_attempt_id)) ||
         str(p.attempt_id),
       activation = str(p.activation_id) || attemptId;
+    if (
+      [
+        "chat/reply",
+        "chat/no_reply",
+        "chat/cancelled",
+        "chat/runtime_error",
+        "session/io_state",
+        "runtime/thread_result",
+      ].includes(e.topic)
+    ) {
+      for (const [key, state] of this.modelStates) {
+        if (
+          state.message?.rootId === str(p.root_turn_id) &&
+          (!str(p.thread_id) || state.message.threadId === str(p.thread_id)) &&
+          (state.event.sequence !== undefined && e.sequence !== undefined
+            ? e.sequence >= state.event.sequence
+            : e.timestamp >= state.event.timestamp)
+        )
+          this.modelStates.set(key, {
+            event: { timestamp: e.timestamp, sequence: e.sequence },
+          });
+      }
+    }
     if (e.topic === "runtime/thread_cancelled") {
       const root = str(p.root_turn_id);
       if (root) this.cancelledRoots.add(root);
+      for (const [id, state] of this.modelStates)
+        if (root && state.message?.rootId === root) this.modelStates.delete(id);
       for (const [id, a] of this.attempts)
         if (root && a.message.rootId === root) {
           this.cancelled.add(a.activation);
@@ -470,6 +506,39 @@ export class LiveConversationProjection {
       return;
     }
     if (e.topic === "runtime/model_attempt_state") {
+      const base = this.base(e);
+      const key = `${base.rootId ?? ""}:${base.threadId ?? activation}`;
+      const previous = this.modelStates.get(key);
+      const fresh =
+        !previous ||
+        (previous.event.sequence !== undefined && e.sequence !== undefined
+          ? e.sequence > previous.event.sequence
+          : e.timestamp > previous.event.timestamp);
+      if (
+        fresh &&
+        base.inputId &&
+        base.rootId &&
+        !this.cancelledRoots.has(base.rootId)
+      ) {
+        const phase = modelActivitySchema.safeParse(p.state);
+        this.modelStates.delete(key);
+        this.modelStates.set(key, {
+          event: { timestamp: e.timestamp, sequence: e.sequence },
+          ...(p.terminal === false && phase.success && phase.data !== undefined
+            ? {
+                message: {
+                  ...base,
+                  id: `model-state:${key}`,
+                  kind: "progress",
+                  text: "",
+                  modelActivity: phase.data,
+                },
+              }
+            : {}),
+        });
+        if (this.modelStates.size > 256)
+          this.modelStates.delete(this.modelStates.keys().next().value!);
+      }
       const a = this.attempts.get(attemptId);
       if (a && p.terminal === true) {
         a.message.streaming = false;
@@ -732,6 +801,8 @@ export class LiveConversationProjection {
   }
   snapshot(): LiveMessage[] {
     const result = new Map(this.messages);
+    for (const state of this.modelStates.values())
+      if (state.message) result.set(state.message.id, state.message);
     for (const a of this.attempts.values()) {
       if (a.message.text) result.set(a.message.id, a.message);
       for (const tool of a.tools.values())

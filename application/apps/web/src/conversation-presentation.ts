@@ -9,6 +9,7 @@ export function responseWaitingPresentation(
   messages: readonly LiveMessage[],
   connected: boolean,
   stopPending = false,
+  activity?: ConversationRuntime["activity"],
 ) {
   const waiting = (
     label: string,
@@ -49,6 +50,12 @@ export function responseWaitingPresentation(
         ["running", "generating", "pending"].includes(m.tool?.status ?? ""),
     )
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const model = messages
+    .filter((m) => m.inputId === delivery.inputId && m.modelActivity)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const latest = [active, model]
+    .filter((m) => m !== undefined)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
   const recoveryLabel =
     recovery?.providerRecovery?.reason === "credentials"
       ? "模型认证失败，等待修复"
@@ -70,13 +77,46 @@ export function responseWaitingPresentation(
     );
   if (
     recovery &&
-    (!active || active.createdAt <= recovery.providerRecovery!.startedAt)
+    (!latest || latest.createdAt <= recovery.providerRecovery!.startedAt)
   )
     return recoveryPresentation();
-  if (active?.tool?.status === "running") return waiting("正在执行工具…");
+  const modelPresentation = () =>
+    waiting(
+      {
+        queued: "模型请求排队中…",
+        streaming: "等待模型输出…",
+        reasoning: "正在思考…",
+        waiting_final_output: "思考完成，等待输出…",
+        streaming_text: "正在生成回复…",
+        generating_tool_call: "正在准备工具调用…",
+        settling: "正在处理响应…",
+      }[model!.modelActivity!],
+    );
+  if (model && latest === model) return modelPresentation();
+  if (active?.tool?.status === "running") {
+    const progress = activity?.available
+      ? activity.threads
+          .find(
+            (thread) =>
+              thread.id === active.threadId &&
+              thread.inputId === delivery.inputId &&
+              thread.rootId === active.rootId &&
+              thread.lifecycle === "open" &&
+              thread.annotationProtocol === "on",
+          )
+          ?.summary?.trim()
+      : undefined;
+    return waiting(
+      progress
+        ? [...progress].slice(0, 96).join("") +
+            ([...progress].length > 96 ? "…" : "")
+        : "正在执行工具…",
+    );
+  }
   if (active?.tool?.status === "generating")
     return waiting("正在生成工具调用…");
   if (active?.tool?.status === "pending") return waiting("工具调用等待执行…");
+  if (model) return modelPresentation();
   if (recovery) return recoveryPresentation();
   return waiting("等待回复…");
 }

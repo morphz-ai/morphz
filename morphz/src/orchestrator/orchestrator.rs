@@ -11516,6 +11516,7 @@ impl Orchestrator {
             let mut first_text_delta_ms = None;
             let mut provider_started_recorded = false;
             let mut first_output_recorded = false;
+            let mut observed_stream_phase = None;
             while let Some(stream_event) = stream_rx.recv().await {
                 let normalized = if let Some(native) = &mut native_stream {
                     let events = native.push(stream_event.clone());
@@ -11632,6 +11633,7 @@ impl Orchestrator {
                     let is_first_output = matches!(
                         &stream_event,
                         crate::llm::ModelStreamEvent::TextDelta { .. }
+                            | crate::llm::ModelStreamEvent::ReasoningStarted
                             | crate::llm::ModelStreamEvent::ReasoningSummaryDelta { .. }
                             | crate::llm::ModelStreamEvent::ToolCallStarted { .. }
                             | crate::llm::ModelStreamEvent::ToolArgumentsDelta { .. }
@@ -11653,6 +11655,45 @@ impl Orchestrator {
                                 "provider.first_output",
                                 "ok",
                             );
+                        }
+                    }
+                    let phase = match &stream_event {
+                        crate::llm::ModelStreamEvent::ReasoningStarted => Some("reasoning"),
+                        crate::llm::ModelStreamEvent::ReasoningSummaryDelta { text }
+                            if !text.is_empty() =>
+                        {
+                            Some("reasoning")
+                        }
+                        crate::llm::ModelStreamEvent::ReasoningCompleted
+                        | crate::llm::ModelStreamEvent::ReasoningSummaryCompleted => {
+                            Some("waiting_final_output")
+                        }
+                        crate::llm::ModelStreamEvent::TextDelta { text } if !text.is_empty() => {
+                            Some("streaming_text")
+                        }
+                        crate::llm::ModelStreamEvent::ToolCallStarted { .. } => {
+                            Some("generating_tool_call")
+                        }
+                        _ => None,
+                    };
+                    if let Some(phase) = phase.filter(|phase| observed_stream_phase != Some(*phase))
+                    {
+                        observed_stream_phase = Some(phase);
+                        if let Err(error) = persist_model_attempt_state(
+                            &forward_bus,
+                            &forward_context_id,
+                            &forward_session_id,
+                            &forward_attempt_id,
+                            &forward_route,
+                            phase,
+                            false,
+                            false,
+                            None,
+                            &[],
+                        )
+                        .await
+                        {
+                            tracing::warn!(event_code = "orchestrator.model_stream.phase_persist_failed", %error, "Failed to persist observed model phase");
                         }
                     }
                     match &stream_event {
@@ -11686,24 +11727,6 @@ impl Orchestrator {
                             reasoning_summary_chars =
                                 reasoning_summary_chars.saturating_add(text.chars().count());
                             forward_reasoning_summary.lock().await.text.push_str(text);
-                        }
-                        crate::llm::ModelStreamEvent::ReasoningSummaryCompleted => {
-                            if let Err(error) = persist_model_attempt_state(
-                                &forward_bus,
-                                &forward_context_id,
-                                &forward_session_id,
-                                &forward_attempt_id,
-                                &forward_route,
-                                "waiting_final_output",
-                                false,
-                                false,
-                                Some("provider reasoning item completed"),
-                                &[],
-                            )
-                            .await
-                            {
-                                tracing::warn!(event_code = "orchestrator.model_stream.reasoning_completion_persist_failed", %error, "Failed to persist reasoning-completion state");
-                            }
                         }
                         crate::llm::ModelStreamEvent::ProviderContinuation { continuation } => {
                             // This is opaque protocol state, not a presentation

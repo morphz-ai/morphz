@@ -848,6 +848,19 @@ body:has(dialog[open]) .cognitive-application-frame {
   align-items: center;
   gap: 8px;
 }
+.response-waiting {
+  min-width: 0;
+  max-width: 100%;
+}
+.response-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.response-dots {
+  flex-shrink: 0;
+}
 .response-elapsed {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
