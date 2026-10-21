@@ -98,14 +98,14 @@ function equalReferenceConfirmation() {
   }
   entry = existing;
 }
-function refreshCapture() {const readCatalogCache = catalogCache.current; const readCatalogValue = readCatalogCache?.value;}
+function refreshCapture() {const readCatalogCache = catalogCache.current; const readCatalogValue = readCatalogCache?.value; const readArtifacts = current.current?.workspace.artifacts;}
 function refreshCommit() {
   const finalNavigation = await source.navigationRuntime(signal,requestedScope);
   if (finalNavigation.revisions.access !== navigation.revisions.access) clearProtectedProjection();
   if (!navigationReadStillCurrent(navigation, finalNavigation))
     throw new RequestError(409,"目录在读取期间已更新，请重试。","navigation_changed");
   if (version !== epoch.current || !conversationHistory.isSelectionCurrent(requestedScope)) return false;
-  if (readCatalogCache && catalogCache.current === readCatalogCache && readCatalogCache.value !== readCatalogValue) {
+  if ((readCatalogCache && catalogCache.current === readCatalogCache && readCatalogCache.value !== readCatalogValue) || (readArtifacts && current.current?.workspace.artifacts !== readArtifacts)) {
     void refresh(); return false;
   }
   const savedProjection = localInputDelivery.confirmAndProject(workspace,source);
@@ -459,6 +459,8 @@ function violations(input = sources) {
       value = variable(client, "readCatalogValue");
     same(capture, variable(expected, "readCatalogCache"));
     same(value, variable(expected, "readCatalogValue"));
+    const artifacts = variable(client, "readArtifacts");
+    same(artifacts, variable(expected, "readArtifacts"));
     const block = capture.parent.parent.parent;
     assert.equal(block.kind, SyntaxKind.Block);
     const statements: Node[] = [];
@@ -468,8 +470,9 @@ function violations(input = sources) {
     const start = statements.indexOf(capture.parent.parent);
     assert.ok(start >= 0);
     assert.equal(statements[start + 1], value.parent.parent);
+    assert.equal(statements[start + 2], artifacts.parent.parent);
     assert.ok(
-      statements[start + 2]!.getText().includes("await readPlatformWorkspace("),
+      statements[start + 3]!.getText().includes("await readPlatformWorkspace("),
     );
     const confirm = variable(client, "savedProjection");
     assert.equal(confirm.parent.parent.parent, block);

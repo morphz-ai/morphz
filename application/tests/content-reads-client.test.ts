@@ -30,6 +30,7 @@ async function withClient(
     client: ActualMountedClient;
     contentId: string;
     objectId: string;
+    projectId: string;
     reads(): Promise<Read[]>;
     ownerCall(method: ApplicationMethod, params: unknown): Promise<unknown>;
   }) => Promise<void>,
@@ -115,6 +116,7 @@ async function withClient(
       client,
       contentId,
       objectId,
+      projectId: fixture.projectId,
       ownerCall,
       reads: async () =>
         (await mounted.control("reads")).map(
@@ -189,6 +191,67 @@ test("actual mounted Client reads history metadata without hydrating old bodies,
             .content as { markdown: string }
         ).markdown,
       "原件第一版正文",
+    );
+  });
+});
+
+test("actual mounted Client refresh cannot discard an original hydrated while its snapshot was in flight", async () => {
+  await withClient(async ({ client, contentId, projectId, ownerCall }) => {
+    let navigationReads = 0;
+    const finalNavigation = await client.holdWhere(
+      (url) =>
+        url.pathname.endsWith("/runtime-navigation") && ++navigationReads === 2,
+      () => {},
+    );
+    const identity = (await client.snapshot())!;
+    await ownerCall("projects.rename", {
+      commandId: randomUUID(),
+      projectId,
+      expectedRevision: identity.workspace.projects.find(
+        (value) => value.id === projectId,
+      )!.revision,
+      title: "TEST project change while opening existing content",
+    });
+    await client.page.evaluate(
+      ({ centerId, principalId, projectId }) => {
+        localStorage.setItem(
+          `morphz:${centerId}:${principalId}:preferences`,
+          JSON.stringify({ view: "projects", projectId, projectOpen: true }),
+        );
+      },
+      {
+        centerId: identity.centerId,
+        principalId: identity.principalId,
+        projectId,
+      },
+    );
+    const refreshing = await client.start("refresh");
+    await finalNavigation.reached();
+    try {
+      const opened = await client.call("resolveArtifact", [contentId, 1]);
+      assert.ok(opened);
+      assert.deepEqual(
+        opened.versions.map((value) => value.revision),
+        [1, 3],
+      );
+      assert.ok(
+        (await client.snapshot())!.workspace.artifacts.some(
+          (value) => value.id === contentId,
+        ),
+        "explicit open publishes the real authorized original",
+      );
+    } finally {
+      await finalNavigation.release();
+    }
+    await client.finish(refreshing);
+    await client.waitReady(reader.principalId);
+    const retained = (await client.snapshot())!.workspace.artifacts.find(
+      (value) => value.id === contentId,
+    );
+    assert.ok(retained, "an older refresh must not erase the explicit open");
+    assert.deepEqual(
+      retained.versions.map((value) => value.revision),
+      [1, 3],
     );
   });
 });

@@ -1063,6 +1063,7 @@ export function useWorkspace() {
         }
         const readCatalogCache = catalogCache.current;
         const readCatalogValue = readCatalogCache?.value;
+        const readArtifacts = current.current?.workspace.artifacts;
         const {
           workspace,
           runtime,
@@ -1132,11 +1133,14 @@ export function useWorkspace() {
         )
           return false;
         if (
-          readCatalogCache &&
-          catalogCache.current === readCatalogCache &&
-          readCatalogCache.value !== readCatalogValue
+          (readCatalogCache &&
+            catalogCache.current === readCatalogCache &&
+            readCatalogCache.value !== readCatalogValue) ||
+          (readArtifacts &&
+            current.current?.workspace.artifacts !== readArtifacts)
         ) {
-          // An explicit content read published a newer authorized projection.
+          // An explicit read may hydrate an original without changing catalog
+          // metadata. Neither newer projection can be erased by this snapshot.
           // Re-read through the existing drain before any snapshot writes.
           void refresh();
           return false;
