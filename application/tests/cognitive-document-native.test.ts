@@ -294,17 +294,34 @@ test(
       },
       { path, proof, protocol: cognitiveDocumentBootstrapProtocol },
     );
-    await owner.waitForFunction(
-      () =>
-        Reflect.get(window, "nativeDocumentHost")
-          .report()
-          .wires.some(
-            (packet: { type?: string; kind?: string }) =>
-              packet.type === "delivered" && packet.kind === "init",
-          ),
-      undefined,
-      { timeout: 10000 },
-    );
+    try {
+      await owner.waitForFunction(
+        () =>
+          Reflect.get(window, "nativeDocumentHost")
+            .report()
+            .wires.some(
+              (packet: { type?: string; kind?: string }) =>
+                packet.type === "delivered" && packet.kind === "init",
+            ),
+        undefined,
+        { timeout: 10000 },
+      );
+    } catch (error) {
+      console.error(
+        "[native document handshake]",
+        JSON.stringify({
+          report: await owner
+            .evaluate(() => Reflect.get(window, "nativeDocumentHost")?.report())
+            .catch(() => "owner unavailable"),
+          frames: owner.frames().map((frame) => frame.url()),
+          pageErrors: errors,
+          exitCode: nativeProcess.exitCode,
+          signalCode: nativeProcess.signalCode,
+          stderr: startupStderr,
+        }),
+      );
+      throw error;
+    }
     const native = await owner.evaluate(() =>
       Reflect.get(window, "nativeDocumentHost").report(),
     );

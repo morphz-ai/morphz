@@ -388,7 +388,7 @@ test("同一 canonical SQLite 的独立 Store 收到提交，重放不失效，c
   }
 });
 
-test("SQLite 真实文件监听跨进程以 data_version 校验提交，未提交和 rollback 不报变化", async () => {
+test("SQLite 真实文件监听跨进程以 data_version 校验提交，未提交和 rollback 不报变化", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "morphz-commit-process-"));
   const filename = join(directory, "external.sqlite"),
     db = new DatabaseSync(filename);
@@ -419,6 +419,10 @@ test("SQLite 真实文件监听跨进程以 data_version 校验提交，未提�
         ["--input-type=module", "-e", childScript, filename, String(id)],
         { stdio: ["ignore", "ignore", "pipe", "ipc"] },
       );
+      let childErrors = "";
+      child.stderr?.on("data", (chunk: Buffer) => {
+        childErrors = (childErrors + chunk.toString("utf8")).slice(-2000);
+      });
       try {
         await once(child, "message");
         await pause(80);
@@ -429,7 +433,12 @@ test("SQLite 真实文件监听跨进程以 data_version 校验提交，未提�
         );
         const exited = once(child, "exit");
         child.send(mode);
-        await exited;
+        const [exitCode, signal] = await exited;
+        assert.equal(
+          exitCode,
+          0,
+          `External ${mode} failed (${signal}): ${childErrors}`,
+        );
         if (mode === "commit")
           await until(() => hints.some((hint) => hint.reason === "commit"));
         else {
@@ -448,6 +457,25 @@ test("SQLite 真实文件监听跨进程以 data_version 校验提交，未提�
         .map((row) => row.id),
       [2],
     );
+  } catch (error) {
+    let committedIds: unknown;
+    try {
+      committedIds = db
+        .prepare("SELECT id FROM items")
+        .all()
+        .map((row) => row.id);
+    } catch {
+      committedIds = "diagnostic read unavailable";
+    }
+    t.diagnostic(
+      JSON.stringify({
+        stage: "actual-sqlite-cross-process-commit",
+        hints,
+        versionReads,
+        committedIds,
+      }),
+    );
+    throw error;
   } finally {
     await subscription.close();
     DatabaseSync.prototype.prepare = original;

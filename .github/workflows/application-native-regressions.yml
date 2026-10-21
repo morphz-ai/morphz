@@ -10,6 +10,7 @@ on:
       - application/apps/desktop/main.cjs
       - application/apps/desktop/preferences.cjs
       - application/tests/cognitive-document-native.test.ts
+      - application/tests/storage-commit-notifications.test.ts
       - application/tests/fixtures/cognitive-document-native-entry.cjs
       - application/tests/fixtures/native-test-environment.ts
   workflow_dispatch:
@@ -60,6 +61,7 @@ jobs:
             tests/script-workspace-controller-mounted.test.ts \
             tests/task-run-panel-mounted.test.ts \
             tests/execution-inspection-mounted.test.ts \
+            tests/storage-commit-notifications.test.ts \
             tests/cognitive-app-document-local.test.ts
 
   macos-compose-regressions:
@@ -83,4 +85,4 @@ jobs:
       - run: brew install postgresql@16
       - run: npx playwright install chromium
       - name: Check the actual unchanged opaque iframe with bounded diagnosis
-        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/application-compose-race.test.ts
+        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/application-compose-race.test.ts tests/task-run-panel-mounted.test.ts
