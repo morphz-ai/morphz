@@ -10,64 +10,64 @@ This bundle covers locked production npm dependencies and the Electron package u
 | Package | Declared license | Included texts |
 |---|---|---|
 | `@aws-sdk/checksums 3.1001.1` | `Apache-2.0` | L023 |
-| `@aws-sdk/client-s3 3.1141.0` | `Apache-2.0` | L107 |
-| `@aws-sdk/core 3.978.1` | `Apache-2.0` | L125 |
-| `@aws-sdk/credential-provider-env 3.972.72` | `Apache-2.0` | L107 |
-| `@aws-sdk/credential-provider-http 3.972.74` | `Apache-2.0` | L099 |
-| `@aws-sdk/credential-provider-ini 3.973.17` | `Apache-2.0` | L107 |
-| `@aws-sdk/credential-provider-login 3.972.79` | `Apache-2.0` | L099 |
-| `@aws-sdk/credential-provider-node 3.972.84` | `Apache-2.0` | L107 |
+| `@aws-sdk/client-s3 3.1141.0` | `Apache-2.0` | L106 |
+| `@aws-sdk/core 3.978.1` | `Apache-2.0` | L124 |
+| `@aws-sdk/credential-provider-env 3.972.72` | `Apache-2.0` | L106 |
+| `@aws-sdk/credential-provider-http 3.972.74` | `Apache-2.0` | L098 |
+| `@aws-sdk/credential-provider-ini 3.973.17` | `Apache-2.0` | L106 |
+| `@aws-sdk/credential-provider-login 3.972.79` | `Apache-2.0` | L098 |
+| `@aws-sdk/credential-provider-node 3.972.84` | `Apache-2.0` | L106 |
 | `@aws-sdk/credential-provider-process 3.972.72` | `Apache-2.0` | L023 |
 | `@aws-sdk/credential-provider-sso 3.973.16` | `Apache-2.0` | L023 |
 | `@aws-sdk/credential-provider-web-identity 3.972.78` | `Apache-2.0` | L023 |
 | `@aws-sdk/middleware-sdk-s3 3.972.77` | `Apache-2.0` | L023 |
-| `@aws-sdk/nested-clients 3.997.46` | `Apache-2.0` | L099 |
+| `@aws-sdk/nested-clients 3.997.46` | `Apache-2.0` | L098 |
 | `@aws-sdk/signature-v4-multi-region 3.996.47` | `Apache-2.0` | L023 |
-| `@aws-sdk/token-providers 3.1138.0` | `Apache-2.0` | L107 |
-| `@aws-sdk/types 3.974.6` | `Apache-2.0` | L107 |
-| `@aws-sdk/xml-builder 3.972.41` | `Apache-2.0` | L107 |
+| `@aws-sdk/token-providers 3.1138.0` | `Apache-2.0` | L106 |
+| `@aws-sdk/types 3.974.6` | `Apache-2.0` | L106 |
+| `@aws-sdk/xml-builder 3.972.41` | `Apache-2.0` | L106 |
 | `@aws/lambda-invoke-store 0.3.0` | `Apache-2.0` | L060 |
-| `@emnapi/runtime 1.11.3` | `MIT` | L128 |
-| `@img/colour 1.1.0` | `MIT` | L110 |
+| `@emnapi/runtime 1.11.3` | `MIT` | L127 |
+| `@img/colour 1.1.0` | `MIT` | L109 |
 | `@img/sharp-darwin-arm64 0.35.5` | `Apache-2.0` | L070, L077 |
-| `@img/sharp-darwin-x64 0.35.5` | `Apache-2.0` | L077, L103 |
+| `@img/sharp-darwin-x64 0.35.5` | `Apache-2.0` | L077, L102 |
 | `@img/sharp-freebsd-wasm32 0.35.5` | `Apache-2.0` | L059, L077 |
-| `@img/sharp-libvips-darwin-arm64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
-| `@img/sharp-libvips-darwin-x64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
-| `@img/sharp-libvips-linux-arm 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
-| `@img/sharp-libvips-linux-arm64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
-| `@img/sharp-libvips-linux-ppc64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
-| `@img/sharp-libvips-linux-riscv64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
-| `@img/sharp-libvips-linux-s390x 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
-| `@img/sharp-libvips-linux-x64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
-| `@img/sharp-libvips-linuxmusl-arm64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
-| `@img/sharp-libvips-linuxmusl-x64 1.3.4` | `LGPL-3.0-or-later` | L026, L087, L101 |
+| `@img/sharp-libvips-darwin-arm64 1.3.4` | `LGPL-3.0-or-later` | L026, L086, L100 |
+| `@img/sharp-libvips-darwin-x64 1.3.4` | `LGPL-3.0-or-later` | L026, L086, L100 |
+| `@img/sharp-libvips-linux-arm 1.3.4` | `LGPL-3.0-or-later` | L026, L086, L100 |
+| `@img/sharp-libvips-linux-arm64 1.3.4` | `LGPL-3.0-or-later` | L026, L086, L100 |
+| `@img/sharp-libvips-linux-ppc64 1.3.4` | `LGPL-3.0-or-later` | L026, L086, L100 |
+| `@img/sharp-libvips-linux-riscv64 1.3.4` | `LGPL-3.0-or-later` | L026, L086, L100 |
+| `@img/sharp-libvips-linux-s390x 1.3.4` | `LGPL-3.0-or-later` | L026, L086, L100 |
+| `@img/sharp-libvips-linux-x64 1.3.4` | `LGPL-3.0-or-later` | L026, L086, L100 |
+| `@img/sharp-libvips-linuxmusl-arm64 1.3.4` | `LGPL-3.0-or-later` | L026, L086, L100 |
+| `@img/sharp-libvips-linuxmusl-x64 1.3.4` | `LGPL-3.0-or-later` | L026, L086, L100 |
 | `@img/sharp-linux-arm 0.35.5` | `Apache-2.0` | L046, L077 |
-| `@img/sharp-linux-arm64 0.35.5` | `Apache-2.0` | L077, L129 |
-| `@img/sharp-linux-ppc64 0.35.5` | `Apache-2.0` | L077, L120 |
+| `@img/sharp-linux-arm64 0.35.5` | `Apache-2.0` | L077, L128 |
+| `@img/sharp-linux-ppc64 0.35.5` | `Apache-2.0` | L077, L119 |
 | `@img/sharp-linux-riscv64 0.35.5` | `Apache-2.0` | L052, L077 |
 | `@img/sharp-linux-s390x 0.35.5` | `Apache-2.0` | L033, L077 |
 | `@img/sharp-linux-x64 0.35.5` | `Apache-2.0` | L034, L077 |
-| `@img/sharp-linuxmusl-arm64 0.35.5` | `Apache-2.0` | L077, L094 |
-| `@img/sharp-linuxmusl-x64 0.35.5` | `Apache-2.0` | L077, L135 |
-| `@img/sharp-wasm32 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later AND MIT` | L014, L026, L038, L077, L084, L101 |
+| `@img/sharp-linuxmusl-arm64 0.35.5` | `Apache-2.0` | L077, L093 |
+| `@img/sharp-linuxmusl-x64 0.35.5` | `Apache-2.0` | L077, L134 |
+| `@img/sharp-wasm32 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later AND MIT` | L014, L026, L038, L077, L084, L100 |
 | `@img/sharp-webcontainers-wasm32 0.35.5` | `Apache-2.0` | L076, L077 |
-| `@img/sharp-win32-arm64 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L026, L077, L097, L101 |
-| `@img/sharp-win32-ia32 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L026, L043, L077, L101 |
-| `@img/sharp-win32-x64 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L026, L064, L077, L101 |
-| `@napi-rs/canvas 1.0.8` | `MIT` | L112 |
-| `@napi-rs/canvas-android-arm64 1.0.8` | `MIT` | L112 |
-| `@napi-rs/canvas-darwin-arm64 1.0.8` | `MIT` | L112 |
-| `@napi-rs/canvas-darwin-x64 1.0.8` | `MIT` | L112 |
-| `@napi-rs/canvas-linux-arm-gnueabihf 1.0.8` | `MIT` | L112 |
-| `@napi-rs/canvas-linux-arm64-gnu 1.0.8` | `MIT` | L112 |
-| `@napi-rs/canvas-linux-arm64-musl 1.0.8` | `MIT` | L112 |
-| `@napi-rs/canvas-linux-riscv64-gnu 1.0.8` | `MIT` | L112 |
-| `@napi-rs/canvas-linux-x64-gnu 1.0.8` | `MIT` | L112 |
-| `@napi-rs/canvas-linux-x64-musl 1.0.8` | `MIT` | L112 |
-| `@napi-rs/canvas-win32-arm64-msvc 1.0.8` | `MIT` | L112 |
-| `@napi-rs/canvas-win32-x64-msvc 1.0.8` | `MIT` | L112 |
-| `@paddleocr/paddleocr-js 0.4.2` | `Apache-2.0` | L104 |
+| `@img/sharp-win32-arm64 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L026, L077, L096, L100 |
+| `@img/sharp-win32-ia32 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L026, L043, L077, L100 |
+| `@img/sharp-win32-x64 0.35.5` | `Apache-2.0 AND LGPL-3.0-or-later` | L026, L064, L077, L100 |
+| `@napi-rs/canvas 1.0.8` | `MIT` | L111 |
+| `@napi-rs/canvas-android-arm64 1.0.8` | `MIT` | L111 |
+| `@napi-rs/canvas-darwin-arm64 1.0.8` | `MIT` | L111 |
+| `@napi-rs/canvas-darwin-x64 1.0.8` | `MIT` | L111 |
+| `@napi-rs/canvas-linux-arm-gnueabihf 1.0.8` | `MIT` | L111 |
+| `@napi-rs/canvas-linux-arm64-gnu 1.0.8` | `MIT` | L111 |
+| `@napi-rs/canvas-linux-arm64-musl 1.0.8` | `MIT` | L111 |
+| `@napi-rs/canvas-linux-riscv64-gnu 1.0.8` | `MIT` | L111 |
+| `@napi-rs/canvas-linux-x64-gnu 1.0.8` | `MIT` | L111 |
+| `@napi-rs/canvas-linux-x64-musl 1.0.8` | `MIT` | L111 |
+| `@napi-rs/canvas-win32-arm64-msvc 1.0.8` | `MIT` | L111 |
+| `@napi-rs/canvas-win32-x64-msvc 1.0.8` | `MIT` | L111 |
+| `@paddleocr/paddleocr-js 0.4.2` | `Apache-2.0` | L103 |
 | `@protobufjs/aspromise 1.1.2` | `BSD-3-Clause` | L039 |
 | `@protobufjs/base64 1.1.2` | `BSD-3-Clause` | L039 |
 | `@protobufjs/codegen 2.0.5` | `BSD-3-Clause` | L039 |
@@ -78,49 +78,48 @@ This bundle covers locked production npm dependencies and the Electron package u
 | `@protobufjs/pool 1.1.0` | `BSD-3-Clause` | L039 |
 | `@protobufjs/utf8 1.1.2` | `BSD-3-Clause` | L039 |
 | `@smithy/core 3.35.0` | `Apache-2.0` | L023 |
-| `@smithy/credential-provider-imds 4.5.2` | `Apache-2.0` | L107 |
-| `@smithy/fetch-http-handler 5.8.0` | `Apache-2.0` | L107 |
-| `@smithy/node-http-handler 4.12.1` | `Apache-2.0` | L107 |
-| `@smithy/signature-v4 5.7.4` | `Apache-2.0` | L107 |
+| `@smithy/credential-provider-imds 4.5.2` | `Apache-2.0` | L106 |
+| `@smithy/fetch-http-handler 5.8.0` | `Apache-2.0` | L106 |
+| `@smithy/node-http-handler 4.12.1` | `Apache-2.0` | L106 |
+| `@smithy/signature-v4 5.7.4` | `Apache-2.0` | L106 |
 | `@smithy/types 4.19.0` | `Apache-2.0` | L023 |
 | `@techstark/opencv-js 4.10.0-release.1` | `Apache-2.0` | L018 |
-| `@types/debug 4.1.13` | `MIT` | L138 |
-| `@types/estree 1.0.9` | `MIT` | L138 |
-| `@types/estree-jsx 1.0.5` | `MIT` | L138 |
-| `@types/hast 3.0.5` | `MIT` | L138 |
-| `@types/mdast 4.0.4` | `MIT` | L138 |
-| `@types/ms 2.1.0` | `MIT` | L138 |
-| `@types/node 24.13.3` | `MIT` | L138 |
-| `@types/react 19.2.18` | `MIT` | L138 |
-| `@types/unist 2.0.11` | `MIT` | L138 |
-| `@types/unist 3.0.3` | `MIT` | L138 |
+| `@types/debug 4.1.13` | `MIT` | L137 |
+| `@types/estree 1.0.9` | `MIT` | L137 |
+| `@types/estree-jsx 1.0.5` | `MIT` | L137 |
+| `@types/hast 3.0.5` | `MIT` | L137 |
+| `@types/mdast 4.0.4` | `MIT` | L137 |
+| `@types/ms 2.1.0` | `MIT` | L137 |
+| `@types/node 24.13.3` | `MIT` | L137 |
+| `@types/react 19.2.18` | `MIT` | L137 |
+| `@types/unist 2.0.11` | `MIT` | L137 |
+| `@types/unist 3.0.3` | `MIT` | L137 |
 | `@ungap/structured-clone 1.4.0` | `ISC` | L017 |
 | `@xmldom/xmldom 0.8.15` | `MIT` | L045 |
 | `@xmldom/xmldom 0.9.12` | `MIT` | L045 |
 | `@xterm/xterm 6.0.0` | `MIT` | L025 |
-| `Catppuccin palette snapshot-2026-10-16` | `MIT` | L106 |
+| `Catppuccin palette snapshot-2026-10-16` | `MIT` | L105 |
 | `argparse 2.0.1` | `Python-2.0` | L065 |
-| `bail 2.0.2` | `MIT` | L093 |
-| `base64-js 1.5.1` | `MIT` | L098 |
-| `bluebird 3.4.7` | `MIT` | L113 |
+| `bail 2.0.2` | `MIT` | L092 |
+| `base64-js 1.5.1` | `MIT` | L097 |
+| `bluebird 3.4.7` | `MIT` | L112 |
 | `bowser 2.14.1` | `MIT` | L001 |
-| `ccount 2.0.1` | `MIT` | L093 |
-| `character-entities 2.0.2` | `MIT` | L093 |
-| `character-entities-html4 2.1.0` | `MIT` | L093 |
-| `character-entities-legacy 3.0.0` | `MIT` | L093 |
-| `character-reference-invalid 2.0.1` | `MIT` | L093 |
+| `ccount 2.0.1` | `MIT` | L092 |
+| `character-entities 2.0.2` | `MIT` | L092 |
+| `character-entities-html4 2.1.0` | `MIT` | L092 |
+| `character-entities-legacy 3.0.0` | `MIT` | L092 |
+| `character-reference-invalid 2.0.1` | `MIT` | L092 |
 | `clipper-lib 6.4.2` | `BSL` | L022, L066 |
-| `comma-separated-tokens 2.0.3` | `MIT` | L108 |
+| `comma-separated-tokens 2.0.3` | `MIT` | L107 |
 | `core-util-is 1.0.3` | `MIT` | L067 |
 | `csstype 3.2.3` | `MIT` | L047 |
 | `dayjs 1.11.23` | `MIT` | L009 |
-| `debug 4.4.3` | `MIT` | L109 |
-| `decode-named-character-reference 1.3.0` | `MIT` | L124 |
-| `deepmerge 4.3.1` | `MIT` | L086 |
-| `dequal 2.0.3` | `MIT` | L102 |
+| `debug 4.4.3` | `MIT` | L108 |
+| `decode-named-character-reference 1.3.0` | `MIT` | L123 |
+| `dequal 2.0.3` | `MIT` | L101 |
 | `detect-libc 2.1.2` | `Apache-2.0` | L049 |
 | `devlop 1.1.0` | `MIT` | L012 |
-| `dingbat-to-unicode 1.0.2` | `BSD-2-Clause` | L131 |
+| `dingbat-to-unicode 1.0.2` | `BSD-2-Clause` | L130 |
 | `dom-serializer 3.1.1` | `MIT` | L074 |
 | `domelementtype 3.0.0` | `BSD-2-Clause` | L004 |
 | `domhandler 6.0.1` | `BSD-2-Clause` | L004 |
@@ -135,89 +134,89 @@ This bundle covers locked production npm dependencies and the Electron package u
 | `flatbuffers 25.9.23` | `Apache-2.0` | L018 |
 | `get-east-asian-width 1.6.0` | `MIT` | L008 |
 | `guid-typescript 1.0.9` | `ISC` | L061 |
-| `hast-util-to-html 9.0.5` | `MIT` | L124 |
-| `hast-util-to-jsx-runtime 2.3.6` | `MIT` | L124 |
-| `hast-util-whitespace 3.0.0` | `MIT` | L108 |
+| `hast-util-to-html 9.0.5` | `MIT` | L123 |
+| `hast-util-to-jsx-runtime 2.3.6` | `MIT` | L123 |
+| `hast-util-whitespace 3.0.0` | `MIT` | L107 |
 | `html-url-attributes 3.0.1` | `MIT` | L021 |
-| `html-void-elements 3.0.0` | `MIT` | L108 |
+| `html-void-elements 3.0.0` | `MIT` | L107 |
 | `htmlparser2 12.0.0` | `MIT` | L063 |
-| `immediate 3.0.6` | `MIT` | L130 |
+| `immediate 3.0.6` | `MIT` | L129 |
 | `inherits 2.0.4` | `ISC` | L028 |
 | `inline-style-parser 0.2.7` | `MIT` | L075 |
-| `is-alphabetical 2.0.1` | `MIT` | L108 |
-| `is-alphanumerical 2.0.1` | `MIT` | L108 |
-| `is-decimal 2.0.1` | `MIT` | L108 |
-| `is-hexadecimal 2.0.1` | `MIT` | L108 |
+| `is-alphabetical 2.0.1` | `MIT` | L107 |
+| `is-alphanumerical 2.0.1` | `MIT` | L107 |
+| `is-decimal 2.0.1` | `MIT` | L107 |
+| `is-hexadecimal 2.0.1` | `MIT` | L107 |
 | `is-plain-obj 4.1.0` | `MIT` | L008 |
 | `is-plain-object 5.1.0` | `MIT` | L007 |
-| `isarray 1.0.0` | `MIT` | L115 |
-| `js-yaml 4.3.2` | `MIT` | L090 |
+| `isarray 1.0.0` | `MIT` | L114 |
+| `js-yaml 4.3.2` | `MIT` | L089 |
 | `jszip 3.10.2` | `(MIT OR GPL-3.0-or-later)` | L044 |
-| `launder 1.7.2` | `MIT` | L096 |
+| `launder 1.7.2` | `MIT` | L095 |
 | `lie 3.3.0` | `MIT` | L002 |
 | `long 5.3.2` | `Apache-2.0` | L018 |
 | `longest-streak 3.1.0` | `MIT` | L035 |
 | `lop 0.4.2` | `BSD-2-Clause` | L072 |
-| `lucide-react 1.42.0` | `ISC` | L126 |
+| `lucide-react 1.42.0` | `ISC` | L125 |
 | `mammoth 1.12.3` | `BSD-2-Clause` | L072 |
-| `markdown-table 3.0.4` | `MIT` | L124 |
-| `mdast-util-find-and-replace 3.0.2` | `MIT` | L124 |
-| `mdast-util-from-markdown 2.0.3` | `MIT` | L124 |
-| `mdast-util-gfm 3.1.0` | `MIT` | L124 |
+| `markdown-table 3.0.4` | `MIT` | L123 |
+| `mdast-util-find-and-replace 3.0.2` | `MIT` | L123 |
+| `mdast-util-from-markdown 2.0.3` | `MIT` | L123 |
+| `mdast-util-gfm 3.1.0` | `MIT` | L123 |
 | `mdast-util-gfm-autolink-literal 2.0.1` | `MIT` | L006 |
-| `mdast-util-gfm-footnote 2.1.0` | `MIT` | L124 |
+| `mdast-util-gfm-footnote 2.1.0` | `MIT` | L123 |
 | `mdast-util-gfm-strikethrough 2.0.0` | `MIT` | L006 |
 | `mdast-util-gfm-table 2.0.0` | `MIT` | L006 |
 | `mdast-util-gfm-task-list-item 2.0.0` | `MIT` | L006 |
 | `mdast-util-mdx-expression 2.0.1` | `MIT` | L006 |
 | `mdast-util-mdx-jsx 3.2.0` | `MIT` | L006 |
 | `mdast-util-mdxjs-esm 2.0.1` | `MIT` | L006 |
-| `mdast-util-phrasing 4.1.0` | `MIT` | L116 |
-| `mdast-util-to-hast 13.2.1` | `MIT` | L108 |
-| `mdast-util-to-markdown 2.1.2` | `MIT` | L124 |
+| `mdast-util-phrasing 4.1.0` | `MIT` | L115 |
+| `mdast-util-to-hast 13.2.1` | `MIT` | L107 |
+| `mdast-util-to-markdown 2.1.2` | `MIT` | L123 |
 | `mdast-util-to-markdown-cjk-friendly 1.0.0` | `MIT` | L081 |
-| `mdast-util-to-string 4.0.0` | `MIT` | L093 |
-| `micromark 4.0.2` | `MIT` | L124 |
-| `micromark-core-commonmark 2.0.3` | `MIT` | L124 |
-| `micromark-extension-cjk-friendly 2.0.1` | `MIT` | L092 |
+| `mdast-util-to-string 4.0.0` | `MIT` | L092 |
+| `micromark 4.0.2` | `MIT` | L123 |
+| `micromark-core-commonmark 2.0.3` | `MIT` | L123 |
+| `micromark-extension-cjk-friendly 2.0.1` | `MIT` | L091 |
 | `micromark-extension-cjk-friendly-util 3.0.1` | `MIT` | L032 |
 | `micromark-extension-gfm 3.0.0` | `MIT` | L006 |
 | `micromark-extension-gfm-autolink-literal 2.1.0` | `MIT` | L006 |
 | `micromark-extension-gfm-footnote 2.1.0` | `MIT` | L040 |
 | `micromark-extension-gfm-strikethrough 2.1.0` | `MIT` | L006 |
-| `micromark-extension-gfm-table 2.1.1` | `MIT` | L124 |
+| `micromark-extension-gfm-table 2.1.1` | `MIT` | L123 |
 | `micromark-extension-gfm-tagfilter 2.0.0` | `MIT` | L006 |
 | `micromark-extension-gfm-task-list-item 2.1.0` | `MIT` | L006 |
-| `micromark-factory-destination 2.0.1` | `MIT` | L124 |
-| `micromark-factory-label 2.0.1` | `MIT` | L124 |
-| `micromark-factory-space 2.0.1` | `MIT` | L124 |
-| `micromark-factory-title 2.0.1` | `MIT` | L124 |
-| `micromark-factory-whitespace 2.0.1` | `MIT` | L124 |
-| `micromark-util-character 2.1.1` | `MIT` | L124 |
-| `micromark-util-chunked 2.0.1` | `MIT` | L124 |
-| `micromark-util-classify-character 2.0.1` | `MIT` | L124 |
-| `micromark-util-combine-extensions 2.0.1` | `MIT` | L124 |
-| `micromark-util-decode-numeric-character-reference 2.0.2` | `MIT` | L124 |
-| `micromark-util-decode-string 2.0.1` | `MIT` | L124 |
-| `micromark-util-encode 2.0.1` | `MIT` | L124 |
-| `micromark-util-html-tag-name 2.0.1` | `MIT` | L124 |
-| `micromark-util-normalize-identifier 2.0.1` | `MIT` | L124 |
-| `micromark-util-resolve-all 2.0.1` | `MIT` | L124 |
-| `micromark-util-sanitize-uri 2.0.1` | `MIT` | L124 |
-| `micromark-util-subtokenize 2.1.0` | `MIT` | L124 |
-| `micromark-util-symbol 2.0.1` | `MIT` | L124 |
-| `micromark-util-types 2.0.2` | `MIT` | L124 |
-| `ms 2.1.3` | `MIT` | L121 |
+| `micromark-factory-destination 2.0.1` | `MIT` | L123 |
+| `micromark-factory-label 2.0.1` | `MIT` | L123 |
+| `micromark-factory-space 2.0.1` | `MIT` | L123 |
+| `micromark-factory-title 2.0.1` | `MIT` | L123 |
+| `micromark-factory-whitespace 2.0.1` | `MIT` | L123 |
+| `micromark-util-character 2.1.1` | `MIT` | L123 |
+| `micromark-util-chunked 2.0.1` | `MIT` | L123 |
+| `micromark-util-classify-character 2.0.1` | `MIT` | L123 |
+| `micromark-util-combine-extensions 2.0.1` | `MIT` | L123 |
+| `micromark-util-decode-numeric-character-reference 2.0.2` | `MIT` | L123 |
+| `micromark-util-decode-string 2.0.1` | `MIT` | L123 |
+| `micromark-util-encode 2.0.1` | `MIT` | L123 |
+| `micromark-util-html-tag-name 2.0.1` | `MIT` | L123 |
+| `micromark-util-normalize-identifier 2.0.1` | `MIT` | L123 |
+| `micromark-util-resolve-all 2.0.1` | `MIT` | L123 |
+| `micromark-util-sanitize-uri 2.0.1` | `MIT` | L123 |
+| `micromark-util-subtokenize 2.1.0` | `MIT` | L123 |
+| `micromark-util-symbol 2.0.1` | `MIT` | L123 |
+| `micromark-util-types 2.0.2` | `MIT` | L123 |
+| `ms 2.1.3` | `MIT` | L120 |
 | `nanoid 3.3.18` | `MIT` | L024 |
-| `onnxruntime-common 1.30.0` | `MIT` | L122 |
-| `onnxruntime-web 1.30.0` | `MIT` | L089, L122 |
+| `onnxruntime-common 1.30.0` | `MIT` | L121 |
+| `onnxruntime-web 1.30.0` | `MIT` | L088, L121 |
 | `option 0.2.4` | `BSD-2-Clause` | L072 |
 | `pako 1.0.11` | `(MIT AND Zlib)` | L073 |
-| `parse-entities 4.0.2` | `MIT` | L095 |
+| `parse-entities 4.0.2` | `MIT` | L094 |
 | `parse-srcset 1.0.2` | `MIT` | L068 |
 | `parse5 8.0.1` | `MIT` | L020 |
 | `path-is-absolute 1.0.1` | `MIT` | L019 |
-| `pdfjs-dist 6.3.289` | `Apache-2.0` | L010, L011, L029, L031, L036, L041, L054, L071, L078, L105, L119 |
+| `pdfjs-dist 6.3.289` | `Apache-2.0` | L010, L011, L029, L031, L036, L041, L054, L071, L078, L104, L118 |
 | `pend 1.2.0` | `MIT` | L069 |
 | `pg 8.23.0` | `MIT` | L082 |
 | `pg-cloudflare 1.4.0` | `MIT` | L082 |
@@ -225,60 +224,60 @@ This bundle covers locked production npm dependencies and the Electron package u
 | `pg-int8 1.0.1` | `ISC` | L013 |
 | `pg-pool 3.14.0` | `MIT` | L050 |
 | `pg-protocol 1.16.0` | `MIT` | L082 |
-| `pg-types 2.2.0` | `MIT` | L115 |
-| `pgpass 1.0.5` | `MIT` | L115 |
-| `picocolors 1.1.1` | `ISC` | L134 |
+| `pg-types 2.2.0` | `MIT` | L114 |
+| `pgpass 1.0.5` | `MIT` | L114 |
+| `picocolors 1.1.1` | `ISC` | L133 |
 | `platform 1.3.6` | `MIT` | L053 |
 | `postcss 8.5.28` | `MIT` | L080 |
 | `postgres-array 2.0.0` | `MIT` | L055 |
 | `postgres-bytea 1.0.1` | `MIT` | L055 |
 | `postgres-date 1.0.7` | `MIT` | L055 |
 | `postgres-interval 1.2.0` | `MIT` | L055 |
-| `process-nextick-args 2.0.1` | `MIT` | L127 |
-| `property-information 7.2.0` | `MIT` | L095 |
+| `process-nextick-args 2.0.1` | `MIT` | L126 |
+| `property-information 7.2.0` | `MIT` | L094 |
 | `protobufjs 7.6.6` | `BSD-3-Clause` | L056 |
-| `react 19.2.8` | `MIT` | L100 |
-| `react-dom 19.2.8` | `MIT` | L100 |
-| `react-markdown 10.1.0` | `MIT` | L088 |
+| `react 19.2.8` | `MIT` | L099 |
+| `react-dom 19.2.8` | `MIT` | L099 |
+| `react-markdown 10.1.0` | `MIT` | L087 |
 | `readable-stream 2.3.8` | `MIT` | L037 |
 | `remark-cjk-friendly 2.3.1` | `MIT` | L081 |
-| `remark-gfm 4.0.1` | `MIT` | L124 |
-| `remark-parse 11.0.0` | `MIT` | L133 |
-| `remark-rehype 11.1.2` | `MIT` | L124 |
-| `remark-stringify 11.0.0` | `MIT` | L133 |
-| `safe-buffer 5.1.2` | `MIT` | L114 |
-| `sanitize-html 2.18.0` | `MIT` | L062 |
-| `scheduler 0.27.0` | `MIT` | L100 |
+| `remark-gfm 4.0.1` | `MIT` | L123 |
+| `remark-parse 11.0.0` | `MIT` | L132 |
+| `remark-rehype 11.1.2` | `MIT` | L123 |
+| `remark-stringify 11.0.0` | `MIT` | L132 |
+| `safe-buffer 5.1.2` | `MIT` | L113 |
+| `sanitize-html 2.18.1` | `MIT` | L062 |
+| `scheduler 0.27.0` | `MIT` | L099 |
 | `semver 7.8.5` | `ISC` | L003 |
-| `setimmediate 1.0.5` | `MIT` | L123 |
+| `setimmediate 1.0.5` | `MIT` | L122 |
 | `sharp 0.35.5` | `Apache-2.0` | L077 |
 | `source-map-js 1.2.2` | `BSD-3-Clause` | L051 |
-| `space-separated-tokens 2.0.2` | `MIT` | L108 |
+| `space-separated-tokens 2.0.2` | `MIT` | L107 |
 | `split2 4.2.0` | `ISC` | L083 |
 | `string_decoder 1.1.1` | `MIT` | L037 |
 | `stringify-entities 4.0.4` | `MIT` | L035 |
-| `style-to-js 1.1.21` | `MIT` | L091 |
+| `style-to-js 1.1.21` | `MIT` | L090 |
 | `style-to-object 1.0.14` | `MIT` | L015 |
 | `trim-lines 3.0.1` | `MIT` | L035 |
-| `trough 2.2.0` | `MIT` | L117 |
+| `trough 2.2.0` | `MIT` | L116 |
 | `tslib 2.8.1` | `0BSD` | L005, L057 |
 | `underscore 1.13.8` | `MIT` | L030 |
-| `undici-types 7.18.2` | `MIT` | L136 |
-| `unified 11.0.5` | `MIT` | L118 |
+| `undici-types 7.18.2` | `MIT` | L135 |
+| `unified 11.0.5` | `MIT` | L117 |
 | `unist-util-is 6.0.1` | `MIT` | L079 |
-| `unist-util-position 5.0.0` | `MIT` | L093 |
-| `unist-util-stringify-position 4.0.0` | `MIT` | L108 |
-| `unist-util-visit 5.1.0` | `MIT` | L093 |
-| `unist-util-visit-parents 6.0.2` | `MIT` | L108 |
-| `util-deprecate 1.0.2` | `MIT` | L137 |
-| `vfile 6.0.3` | `MIT` | L118 |
-| `vfile-message 4.0.3` | `MIT` | L124 |
+| `unist-util-position 5.0.0` | `MIT` | L092 |
+| `unist-util-stringify-position 4.0.0` | `MIT` | L107 |
+| `unist-util-visit 5.1.0` | `MIT` | L092 |
+| `unist-util-visit-parents 6.0.2` | `MIT` | L107 |
+| `util-deprecate 1.0.2` | `MIT` | L136 |
+| `vfile 6.0.3` | `MIT` | L117 |
+| `vfile-message 4.0.3` | `MIT` | L123 |
 | `ws 8.21.3` | `MIT` | L058 |
 | `xmlbuilder 10.1.1` | `MIT` | L048 |
 | `xtend 4.0.2` | `MIT` | L042 |
-| `yauzl 3.4.0` | `MIT` | L111 |
-| `zod 4.5.4` | `MIT` | L132 |
-| `zwitch 2.0.4` | `MIT` | L108 |
+| `yauzl 3.4.0` | `MIT` | L110 |
+| `zod 4.5.4` | `MIT` | L131 |
+| `zwitch 2.0.4` | `MIT` | L107 |
 
 ## License texts
 
@@ -4946,7 +4945,7 @@ PERFORMANCE OF THIS SOFTWARE.
 
 ### L062
 
-Applies to: `sanitize-html 2.18.0`
+Applies to: `sanitize-html 2.18.1`
 
 ~~~~text
 Copyright (c) 2013, 2014, 2015 P'unk Avenue LLC
@@ -6232,34 +6231,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ### L086
 
-Applies to: `deepmerge 4.3.1`
-
-~~~~text
-The MIT License (MIT)
-
-Copyright (c) 2012 James Halliday, Josh Duff, and other contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-~~~~
-
-### L087
-
 Applies to: `@img/sharp-libvips-darwin-arm64 1.3.4`, `@img/sharp-libvips-darwin-x64 1.3.4`, `@img/sharp-libvips-linux-arm 1.3.4`, `@img/sharp-libvips-linux-arm64 1.3.4`, `@img/sharp-libvips-linux-ppc64 1.3.4`, `@img/sharp-libvips-linux-riscv64 1.3.4`, `@img/sharp-libvips-linux-s390x 1.3.4`, `@img/sharp-libvips-linux-x64 1.3.4`, `@img/sharp-libvips-linuxmusl-arm64 1.3.4`, `@img/sharp-libvips-linuxmusl-x64 1.3.4`
 
 ~~~~text
@@ -6307,7 +6278,7 @@ Please report any errors or omissions via
 https://github.com/lovell/sharp-libvips/issues/new
 ~~~~
 
-### L088
+### L087
 
 Applies to: `react-markdown 10.1.0`
 
@@ -6335,7 +6306,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L089
+### L088
 
 Applies to: `onnxruntime-web 1.30.0`
 
@@ -12711,7 +12682,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L090
+### L089
 
 Applies to: `js-yaml 4.3.2`
 
@@ -12739,7 +12710,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L091
+### L090
 
 Applies to: `style-to-js 1.1.21`
 
@@ -12768,7 +12739,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L092
+### L091
 
 Applies to: `micromark-extension-cjk-friendly 2.0.1`
 
@@ -12803,7 +12774,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L093
+### L092
 
 Applies to: `bail 2.0.2`, `ccount 2.0.1`, `character-entities 2.0.2`, `character-entities-html4 2.1.0`, `character-entities-legacy 3.0.0`, `character-reference-invalid 2.0.1`, `mdast-util-to-string 4.0.0`, `unist-util-position 5.0.0`, `unist-util-visit 5.1.0`
 
@@ -12832,7 +12803,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L094
+### L093
 
 Applies to: `@img/sharp-linuxmusl-arm64 0.35.5`
 
@@ -12857,7 +12828,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L095
+### L094
 
 Applies to: `parse-entities 4.0.2`, `property-information 7.2.0`
 
@@ -12886,7 +12857,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L096
+### L095
 
 Applies to: `launder 1.7.2`
 
@@ -12900,7 +12871,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L097
+### L096
 
 Applies to: `@img/sharp-win32-arm64 0.35.5`
 
@@ -12966,7 +12937,7 @@ Please report any errors or omissions via
 https://github.com/lovell/sharp-libvips/issues/new
 ~~~~
 
-### L098
+### L097
 
 Applies to: `base64-js 1.5.1`
 
@@ -12994,7 +12965,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L099
+### L098
 
 Applies to: `@aws-sdk/credential-provider-http 3.972.74`, `@aws-sdk/credential-provider-login 3.972.79`, `@aws-sdk/nested-clients 3.997.46`
 
@@ -13202,7 +13173,7 @@ APPENDIX: How to apply the Apache License to your work.
    limitations under the License.
 ~~~~
 
-### L100
+### L099
 
 Applies to: `react 19.2.8`, `react-dom 19.2.8`, `scheduler 0.27.0`
 
@@ -13230,7 +13201,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L101
+### L100
 
 Applies to: `@img/sharp-libvips-darwin-arm64 1.3.4`, `@img/sharp-libvips-darwin-x64 1.3.4`, `@img/sharp-libvips-linux-arm 1.3.4`, `@img/sharp-libvips-linux-arm64 1.3.4`, `@img/sharp-libvips-linux-ppc64 1.3.4`, `@img/sharp-libvips-linux-riscv64 1.3.4`, `@img/sharp-libvips-linux-s390x 1.3.4`, `@img/sharp-libvips-linux-x64 1.3.4`, `@img/sharp-libvips-linuxmusl-arm64 1.3.4`, `@img/sharp-libvips-linuxmusl-x64 1.3.4`, `@img/sharp-wasm32 0.35.5`, `@img/sharp-win32-arm64 0.35.5`, `@img/sharp-win32-ia32 0.35.5`, `@img/sharp-win32-x64 0.35.5`
 
@@ -13402,7 +13373,7 @@ permanent authorization for you to choose that version for the
 Library.
 ~~~~
 
-### L102
+### L101
 
 Applies to: `dequal 2.0.3`
 
@@ -13430,7 +13401,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L103
+### L102
 
 Applies to: `@img/sharp-darwin-x64 0.35.5`
 
@@ -13455,7 +13426,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L104
+### L103
 
 Applies to: `@paddleocr/paddleocr-js 0.4.2`
 
@@ -13663,7 +13634,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L105
+### L104
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -14033,7 +14004,7 @@ library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.
 ~~~~
 
-### L106
+### L105
 
 Applies to: `Catppuccin palette snapshot-2026-10-16`
 
@@ -14061,7 +14032,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L107
+### L106
 
 Applies to: `@aws-sdk/client-s3 3.1141.0`, `@aws-sdk/credential-provider-env 3.972.72`, `@aws-sdk/credential-provider-ini 3.973.17`, `@aws-sdk/credential-provider-node 3.972.84`, `@aws-sdk/token-providers 3.1138.0`, `@aws-sdk/types 3.974.6`, `@aws-sdk/xml-builder 3.972.41`, `@smithy/credential-provider-imds 4.5.2`, `@smithy/fetch-http-handler 5.8.0`, `@smithy/node-http-handler 4.12.1`, `@smithy/signature-v4 5.7.4`
 
@@ -14269,7 +14240,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L108
+### L107
 
 Applies to: `comma-separated-tokens 2.0.3`, `hast-util-whitespace 3.0.0`, `html-void-elements 3.0.0`, `is-alphabetical 2.0.1`, `is-alphanumerical 2.0.1`, `is-decimal 2.0.1`, `is-hexadecimal 2.0.1`, `mdast-util-to-hast 13.2.1`, `space-separated-tokens 2.0.2`, `unist-util-stringify-position 4.0.0`, `unist-util-visit-parents 6.0.2`, `zwitch 2.0.4`
 
@@ -14298,7 +14269,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L109
+### L108
 
 Applies to: `debug 4.4.3`
 
@@ -14324,7 +14295,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN 
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L110
+### L109
 
 Applies to: `@img/colour 1.1.0`
 
@@ -14413,7 +14384,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L111
+### L110
 
 Applies to: `yauzl 3.4.0`
 
@@ -14441,7 +14412,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L112
+### L111
 
 Applies to: `@napi-rs/canvas 1.0.8`, `@napi-rs/canvas-android-arm64 1.0.8`, `@napi-rs/canvas-darwin-arm64 1.0.8`, `@napi-rs/canvas-darwin-x64 1.0.8`, `@napi-rs/canvas-linux-arm-gnueabihf 1.0.8`, `@napi-rs/canvas-linux-arm64-gnu 1.0.8`, `@napi-rs/canvas-linux-arm64-musl 1.0.8`, `@napi-rs/canvas-linux-riscv64-gnu 1.0.8`, `@napi-rs/canvas-linux-x64-gnu 1.0.8`, `@napi-rs/canvas-linux-x64-musl 1.0.8`, `@napi-rs/canvas-win32-arm64-msvc 1.0.8`, `@napi-rs/canvas-win32-x64-msvc 1.0.8`
 
@@ -14469,7 +14440,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L113
+### L112
 
 Applies to: `bluebird 3.4.7`
 
@@ -14497,7 +14468,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L114
+### L113
 
 Applies to: `safe-buffer 5.1.2`
 
@@ -14525,7 +14496,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L115
+### L114
 
 Applies to: `isarray 1.0.0`, `pg-types 2.2.0`, `pgpass 1.0.5`
 
@@ -14553,7 +14524,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L116
+### L115
 
 Applies to: `mdast-util-phrasing 4.1.0`
 
@@ -14583,7 +14554,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L117
+### L116
 
 Applies to: `trough 2.2.0`
 
@@ -14611,7 +14582,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L118
+### L117
 
 Applies to: `unified 11.0.5`, `vfile 6.0.3`
 
@@ -14639,7 +14610,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L119
+### L118
 
 Applies to: `pdfjs-dist 6.3.289`
 
@@ -14659,7 +14630,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L120
+### L119
 
 Applies to: `@img/sharp-linux-ppc64 0.35.5`
 
@@ -14684,7 +14655,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L121
+### L120
 
 Applies to: `ms 2.1.3`
 
@@ -14712,7 +14683,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L122
+### L121
 
 Applies to: `onnxruntime-common 1.30.0`, `onnxruntime-web 1.30.0`
 
@@ -14740,7 +14711,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L123
+### L122
 
 Applies to: `setimmediate 1.0.5`
 
@@ -14767,7 +14738,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L124
+### L123
 
 Applies to: `decode-named-character-reference 1.3.0`, `hast-util-to-html 9.0.5`, `hast-util-to-jsx-runtime 2.3.6`, `markdown-table 3.0.4`, `mdast-util-find-and-replace 3.0.2`, `mdast-util-from-markdown 2.0.3`, `mdast-util-gfm 3.1.0`, `mdast-util-gfm-footnote 2.1.0`, `mdast-util-to-markdown 2.1.2`, `micromark 4.0.2`, `micromark-core-commonmark 2.0.3`, `micromark-extension-gfm-table 2.1.1`, `micromark-factory-destination 2.0.1`, `micromark-factory-label 2.0.1`, `micromark-factory-space 2.0.1`, `micromark-factory-title 2.0.1`, `micromark-factory-whitespace 2.0.1`, `micromark-util-character 2.1.1`, `micromark-util-chunked 2.0.1`, `micromark-util-classify-character 2.0.1`, `micromark-util-combine-extensions 2.0.1`, `micromark-util-decode-numeric-character-reference 2.0.2`, `micromark-util-decode-string 2.0.1`, `micromark-util-encode 2.0.1`, `micromark-util-html-tag-name 2.0.1`, `micromark-util-normalize-identifier 2.0.1`, `micromark-util-resolve-all 2.0.1`, `micromark-util-sanitize-uri 2.0.1`, `micromark-util-subtokenize 2.1.0`, `micromark-util-symbol 2.0.1`, `micromark-util-types 2.0.2`, `remark-gfm 4.0.1`, `remark-rehype 11.1.2`, `vfile-message 4.0.3`
 
@@ -14796,7 +14767,7 @@ TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L125
+### L124
 
 Applies to: `@aws-sdk/core 3.978.1`
 
@@ -15004,7 +14975,7 @@ Apache License
    limitations under the License.
 ~~~~
 
-### L126
+### L125
 
 Applies to: `lucide-react 1.42.0`
 
@@ -15054,7 +15025,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L127
+### L126
 
 Applies to: `process-nextick-args 2.0.1`
 
@@ -15080,7 +15051,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.**
 ~~~~
 
-### L128
+### L127
 
 Applies to: `@emnapi/runtime 1.11.3`
 
@@ -15108,7 +15079,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L129
+### L128
 
 Applies to: `@img/sharp-linux-arm64 0.35.5`
 
@@ -15133,7 +15104,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L130
+### L129
 
 Applies to: `immediate 3.0.6`
 
@@ -15160,7 +15131,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L131
+### L130
 
 Applies to: `dingbat-to-unicode 1.0.2`
 
@@ -15189,7 +15160,7 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ~~~~
 
-### L132
+### L131
 
 Applies to: `zod 4.5.4`
 
@@ -15217,7 +15188,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L133
+### L132
 
 Applies to: `remark-parse 11.0.0`, `remark-stringify 11.0.0`
 
@@ -15245,7 +15216,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### L134
+### L133
 
 Applies to: `picocolors 1.1.1`
 
@@ -15267,7 +15238,7 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ~~~~
 
-### L135
+### L134
 
 Applies to: `@img/sharp-linuxmusl-x64 0.35.5`
 
@@ -15292,7 +15263,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### L136
+### L135
 
 Applies to: `undici-types 7.18.2`
 
@@ -15320,7 +15291,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### L137
+### L136
 
 Applies to: `util-deprecate 1.0.2`
 
@@ -15351,7 +15322,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### L138
+### L137
 
 Applies to: `@types/debug 4.1.13`, `@types/estree 1.0.9`, `@types/estree-jsx 1.0.5`, `@types/hast 3.0.5`, `@types/mdast 4.0.4`, `@types/ms 2.1.0`, `@types/node 24.13.3`, `@types/react 19.2.18`, `@types/unist 2.0.11`, `@types/unist 3.0.3`
 
