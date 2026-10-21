@@ -6,6 +6,31 @@
 > 适用范围：当前实现聚焦本地 Shell；接口未来可覆盖文件、网络、浏览器、MCP 及其他现实副作用工具
 > 相关文档：[`morphz_reality_constrained_epistemic_context.md`](morphz_reality_constrained_epistemic_context.md) 定义 Runtime 对现实约束的责任；[`morphz_sandbox_design.md`](morphz_sandbox_design.md) 和 [`sandbox_and_serverless_deep_dive.md`](sandbox_and_serverless_deep_dive.md) 保留早期 WASM、容器与远程沙箱研究。本文重新定义统一执行与审批边界，作为后续实现基线。
 
+### 2026-10-21 validation correction
+
+The September platform results below do not establish protection against every later
+discovered case. Two distinct defects were reproduced during the full regression audit:
+
+- Exact protected paths expressed through a filesystem alias could miss the same canonical
+  target. The literal permission comparison dates to `b722e0393` (September 5), and the
+  lexical-only missing-path fallback to `66a783a3c` (July 14); both predate this repair.
+  Permission checks and native deny-root compilation now resolve existing ancestors
+  while retaining the complete missing suffix; they never create missing paths or deny the
+  whole ancestor as a substitute. Dangling aliases fail closed. The original permission
+  regression fails before this change. Post-change tests cover existing and future targets,
+  both alias directions, and actual macOS denial after profile compilation while a public
+  sibling remains writable. The focused alias selection passed 23 tests. A controlled full
+  macOS library run passed 1,669 tests with 14 explicitly ignored capability cases. An earlier
+  run overlapped the full application suite and failed the existing one-second objective
+  lease test after multi-second SQLite stalls; the unchanged assertion passed in isolation
+  and in that controlled full run. Neither result establishes cross-platform coverage.
+  Cross-platform CI and original-app delivery remain separate gates.
+- Linux Bubblewrap's startup-time masking does not protect a previously absent secret created
+  by the host after a long-running command or PTY starts. The October terminal regression
+  remains a release blocker. The isolated AppArmor experiment is not production integration;
+  the proposed privileged policy service and restricted launcher still require review. The
+  alias fix above does not resolve or justify skipping this independent Linux failure.
+
 ## 1. 背景与结论
 
 Morphz 的 Agent 会读取文件、修改代码、执行命令、访问网络，并可能进一步控制浏览器、数据库、远程机器乃至现实设备。这些能力不能只依靠提示词约束，也不能让 Agent 自己决定自己拥有什么权限。

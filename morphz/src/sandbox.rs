@@ -355,23 +355,61 @@ fn canonical_roots(paths: &[PathBuf], kind: &str) -> Result<Vec<PathBuf>, Sandbo
 /// Allow roots must exist and be canonicalized: otherwise we cannot know what is being
 /// granted. Deny roots are different. A protected file may legitimately be removed by a
 /// concurrent process after discovery, and silently dropping that deny would allow a later
-/// recreation at the same path. In that case we retain the normalized absolute pathname.
+/// recreation at the same path. Resolve its existing ancestor (including aliases), but
+/// retain the entire missing suffix rather than denying the ancestor and its siblings.
 fn denied_roots(paths: &[PathBuf], kind: &str) -> Result<Vec<PathBuf>, SandboxError> {
     let mut roots = Vec::with_capacity(paths.len());
     for path in paths {
-        let resolved = match std::fs::canonicalize(path) {
-            Ok(canonical) => canonical,
-            Err(error) if error.kind() == ErrorKind::NotFound => absolute_lexical_path(path)?,
-            Err(error) => {
-                return Err(SandboxError::new(format!(
-                    "failed to resolve sandbox {kind} root '{}': {error}",
-                    path.display()
-                )));
-            }
-        };
-        push_unique(&mut roots, resolved);
+        push_unique(&mut roots, resolve_denied_path(path, kind)?);
     }
     Ok(roots)
+}
+
+pub(crate) fn resolve_denied_path(path: &Path, kind: &str) -> Result<PathBuf, SandboxError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| {
+                SandboxError::new(format!("failed to read the current directory: {error}"))
+            })?
+            .join(path)
+    };
+    let failure = |detail: &str| {
+        SandboxError::new(format!(
+            "failed to resolve sandbox {kind} root '{}': {detail}",
+            path.display()
+        ))
+    };
+    let mut ancestor = absolute.as_path();
+    loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(canonical) => {
+                let suffix = absolute
+                    .strip_prefix(ancestor)
+                    .map_err(|error| failure(&error.to_string()))?;
+                return absolute_lexical_path(&canonical.join(suffix));
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                // A dangling link is not a missing lexical component. Its future
+                // destination is unknown, so never silently drop its protection.
+                match std::fs::symlink_metadata(ancestor) {
+                    Ok(metadata) if metadata.is_symlink() => {
+                        return Err(failure("protected path contains a dangling symbolic link"));
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => return Err(failure(&error.to_string())),
+                }
+            }
+            Err(error) => {
+                return Err(failure(&error.to_string()));
+            }
+        }
+        ancestor = ancestor
+            .parent()
+            .ok_or_else(|| failure("no resolvable ancestor"))?;
+    }
 }
 
 fn absolute_lexical_path(path: &Path) -> Result<PathBuf, SandboxError> {
@@ -2368,7 +2406,77 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let protected = temp.path().join("ephemeral").join("checkpoint");
         let resolved = denied_roots(std::slice::from_ref(&protected), "denied read").unwrap();
-        assert_eq!(resolved, vec![protected]);
+        assert_eq!(
+            resolved,
+            vec![std::fs::canonicalize(temp.path())
+                .unwrap()
+                .join("ephemeral/checkpoint")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_deny_root_resolves_aliased_ancestor_without_denying_siblings() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let actual = std::fs::canonicalize(temp.path()).unwrap().join("actual");
+        std::fs::create_dir(&actual).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+        let protected = alias.join("missing/secret");
+        let resolved = denied_roots(&[protected], "denied read").unwrap();
+        assert_eq!(resolved, vec![actual.join("missing/secret")]);
+        assert!(!actual.join("missing").exists());
+        assert!(!resolved.contains(&actual));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_protected_alias_fails_closed_without_creating_its_target() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing = temp.path().join("missing");
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&missing, &alias).unwrap();
+        assert!(denied_roots(&[alias.join("secret")], "denied read").is_err());
+        assert!(!missing.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_backend_denies_future_aliased_file_without_denying_sibling() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = std::fs::canonicalize(temp.path())
+            .unwrap()
+            .join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let alias = temp.path().join("alias");
+        std::os::unix::fs::symlink(&workspace, &alias).unwrap();
+        let secret = workspace.join("future-secret");
+        let mut policy = SandboxPolicy::workspace(&workspace);
+        policy.deny_path(alias.join("future-secret"));
+        let prepared = NativeSandbox::for_current_platform().prepare_shell(&ShellRequest {
+            command: "cat future-secret >/dev/null 2>&1 && exit 41; printf changed > future-secret 2>/dev/null && exit 42; printf allowed > public.txt".to_string(),
+            cwd: workspace.clone(),
+            policy,
+        }).unwrap();
+        assert!(
+            !secret.exists(),
+            "compilation cannot materialize protected paths"
+        );
+        std::fs::write(&secret, "synthetic-secret").unwrap();
+        let status = std::process::Command::new(&prepared.program)
+            .args(&prepared.arguments)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "exact future alias denial must preserve sibling access: {status}"
+        );
+        assert_eq!(std::fs::read_to_string(secret).unwrap(), "synthetic-secret");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("public.txt")).unwrap(),
+            "allowed"
+        );
     }
 
     #[cfg(target_os = "macos")]

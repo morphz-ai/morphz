@@ -3,7 +3,7 @@ use crate::approval::{
     ApprovalRequest, ApprovalScope, CapabilityDelta,
 };
 use crate::memory::ApprovalStatus;
-use crate::sandbox::SandboxPathPattern;
+use crate::sandbox::{resolve_denied_path, SandboxPathPattern};
 use glob::{MatchOptions, Pattern};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1064,7 +1064,7 @@ fn resolve_existing_or_parent(path: &Path) -> Result<PathBuf, PermissionError> {
 fn path_matches_pattern(candidate: &Path, resolved: &Path, pattern: &str) -> bool {
     if !has_glob_metacharacters(pattern) {
         let protected = Path::new(pattern);
-        return [candidate, resolved].into_iter().any(|path| {
+        let literal_match = [candidate, resolved].into_iter().any(|path| {
             path.ancestors().any(|ancestor| {
                 if protected.is_absolute() {
                     ancestor == protected
@@ -1073,6 +1073,17 @@ fn path_matches_pattern(candidate: &Path, resolved: &Path, pattern: &str) -> boo
                 }
             })
         });
+        if literal_match || !protected.is_absolute() {
+            return literal_match;
+        }
+        return match (
+            resolve_denied_path(protected, "protected"),
+            resolve_denied_path(candidate, "candidate"),
+        ) {
+            (Ok(protected), Ok(candidate)) => candidate.starts_with(protected),
+            // A broken alias cannot become an authorization bypass.
+            _ => true,
+        };
     }
     let Ok(pattern) = Pattern::new(pattern) else {
         return true;
@@ -1265,6 +1276,60 @@ mod tests {
         assert!(profile
             .sandbox_protected_paths(&profile.read_roots)
             .contains(&profile.workspace_root.join("future-config.toml")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn protected_absolute_alias_denies_existing_and_future_targets() {
+        let root = TempDir::new().unwrap();
+        let actual = std::fs::canonicalize(root.path()).unwrap().join("actual");
+        std::fs::create_dir(&actual).unwrap();
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+        std::fs::write(actual.join("secret"), "synthetic").unwrap();
+        let config = PermissionConfig {
+            workspace_root: actual.to_string_lossy().into_owned(),
+            protected_paths: vec![
+                alias.join("secret").to_string_lossy().into_owned(),
+                alias.join("future/secret").to_string_lossy().into_owned(),
+            ],
+            ..PermissionConfig::default()
+        };
+        let profile = PermissionProfile::from_config(&config).unwrap();
+        for path in [actual.join("secret"), actual.join("future/secret")] {
+            for access in [FilesystemAccess::Read, FilesystemAccess::Write] {
+                assert!(
+                    matches!(
+                        profile
+                            .inspect_path(path.to_str().unwrap(), access)
+                            .unwrap(),
+                        PathDecision::Denied(_)
+                    ),
+                    "protected alias must cover {}",
+                    path.display()
+                );
+            }
+        }
+        assert!(profile.path_allowed(&actual.join("public"), FilesystemAccess::Write));
+        assert!(
+            !actual.join("future").exists(),
+            "checking cannot create denied paths"
+        );
+        let reverse = PermissionProfile::from_config(&PermissionConfig {
+            protected_paths: vec![actual.join("future/secret").to_string_lossy().into_owned()],
+            ..config
+        })
+        .unwrap();
+        assert!(matches!(
+            reverse
+                .inspect_path(
+                    alias.join("future/secret").to_str().unwrap(),
+                    FilesystemAccess::Write
+                )
+                .unwrap(),
+            PathDecision::Denied(_)
+        ));
+        assert!(reverse.path_allowed(&alias.join("future/public"), FilesystemAccess::Write));
     }
 
     #[test]
