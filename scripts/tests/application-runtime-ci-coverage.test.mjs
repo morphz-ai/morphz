@@ -109,6 +109,40 @@ test("an unset import flag or optional Runtime gate cannot disguise omitted inte
   );
 });
 
+function verifyBrowserRuntime(source) {
+  const web = jobSource(source, "web");
+  const steps = web.split("\n      - ");
+  const browser = steps.findIndex((step) => /npm run test:e2e/.test(step));
+  const build = steps.findIndex((step) =>
+    /\.\.\/scripts\/cargo-dev\.sh build --locked --manifest-path \.\.\/Cargo\.toml -p morphz --bin morphz/.test(
+      step,
+    ),
+  );
+  assert.ok(browser >= 0, "the complete browser inventory remains required");
+  assert.ok(
+    build >= 0 && build < browser,
+    "actual Runtime browser tests need a source-built binary in their own CI job",
+  );
+  assert.doesNotMatch(steps[build], /continue-on-error|\|\|\s*true/);
+  assert.match(web, /uses: dtolnay\/rust-toolchain@/);
+}
+
+test("the complete browser inventory builds its own actual Runtime prerequisite", () => {
+  verifyBrowserRuntime(workflow);
+});
+
+test("omitting or ignoring the browser Runtime build fails its prerequisite gate", () => {
+  const web = jobSource(workflow, "web");
+  const command =
+    "../scripts/cargo-dev.sh build --locked --manifest-path ../Cargo.toml -p morphz --bin morphz";
+  for (const changed of [
+    web.replace(command, "true"),
+    web.replace(command, `${command} || true`),
+  ]) {
+    assert.throws(() => verifyBrowserRuntime(workflow.replace(web, changed)));
+  }
+});
+
 function verifyNativeFocus(source) {
   const desktop = jobSource(source, "desktop");
   const step = desktop

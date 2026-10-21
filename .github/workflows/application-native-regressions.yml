@@ -17,6 +17,9 @@ on:
       - application/tests/cognitive-app-manager-mounted.test.ts
       - application/tests/cognitive-document-native.test.ts
       - application/tests/storage-commit-notifications.test.ts
+      - application/tests/shell-layout.spec.ts
+      - application/tests/subject-objectives-restore.spec.ts
+      - application/scripts/reader-ocr-model-fixture.mjs
       - application/tests/fixtures/cognitive-document-native-entry.cjs
       - application/tests/fixtures/native-test-environment.ts
   workflow_dispatch:
@@ -25,6 +28,78 @@ permissions:
   contents: read
 
 jobs:
+  remaining-browser-regressions:
+    name: Actual Runtime browser prerequisites and remaining interactions
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - run: ../scripts/cargo-dev.sh build --locked --manifest-path ../Cargo.toml -p morphz --bin morphz
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y xvfb xauth
+      - run: npx playwright install --with-deps chrome
+      - name: Reproduce every remaining full Web failure without retries
+        run: |
+          xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- \
+            tests/profile-actual-transport.spec.ts \
+            tests/workspace-panels-notifications.spec.ts \
+            tests/shell-layout.spec.ts \
+            tests/subject-objectives-restore.spec.ts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: remaining-browser-regressions
+          path: application/test-results/
+          if-no-files-found: ignore
+
+  macos-reader-regressions:
+    name: Public pinned OCR acquisition and real Desktop reader
+    runs-on: macos-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: application
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: application/package-lock.json
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - run: npm run build
+      - name: Acquire the exact public models with bounded failure diagnosis
+        run: node scripts/reader-ocr-model-fixture.mjs "$RUNNER_TEMP/reader-ocr-models" --download
+      - run: npm run test:reader-ocr -- "$RUNNER_TEMP/reader-ocr-models"
+      - run: npm run test:reader-stability -- "$RUNNER_TEMP/reader-ocr-models"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: isolated-reader-regressions
+          path: |
+            application/test-results/morphz-embedded-electron-*/reader-stability.json
+            application/test-results/morphz-embedded-electron-*/reader-stability-failure.png
+            application/test-results/morphz-embedded-electron-*/ocr-*.json
+            application/test-results/morphz-embedded-electron-*/reader-ocr-*.png
+          if-no-files-found: ignore
+
   linux-native-regressions:
     name: Isolated Linux native and timing regression diagnosis
     runs-on: ubuntu-latest

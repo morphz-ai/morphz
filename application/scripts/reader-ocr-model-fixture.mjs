@@ -49,10 +49,35 @@ for (const [index, model] of readingOcrModels.entries()) {
       credentials: "omit",
     },
   );
-  assert.ok(
-    response.ok && response.body,
-    `Model download failed: ${response.status}`,
-  );
+  if (!response.ok || !response.body) {
+    // This public, credential-free endpoint may reject a CI region while being
+    // reachable locally. Retain a bounded upstream diagnostic; do not silently
+    // retry, switch mirrors, skip OCR or weaken the pinned integrity check.
+    let diagnostic = "";
+    const reader = response.body?.getReader();
+    if (reader) {
+      try {
+        const chunks = [];
+        let length = 0;
+        while (length < 2048) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const part = value.subarray(0, 2048 - length);
+          chunks.push(part);
+          length += part.length;
+        }
+        diagnostic = Buffer.concat(chunks).toString("utf8");
+      } finally {
+        await reader.cancel().catch(() => {});
+      }
+    }
+    throw new Error(
+      `Model download failed for ${model.name}: HTTP ${response.status}; ` +
+        `content-type=${response.headers.get("content-type")}; ` +
+        `request-id=${response.headers.get("x-bce-request-id")}; ` +
+        `body=${JSON.stringify(diagnostic)}`,
+    );
+  }
   const chunks = [];
   let length = 0;
   for await (const chunk of response.body) {

@@ -1569,6 +1569,54 @@ test.describe("目标入口触控", () => {
     await dialog.evaluate((element) => {
       const events: string[] = [];
       Reflect.set(window, "__objectiveBackdropClicks", events);
+      const delivery: Record<string, unknown>[] = [];
+      Reflect.set(window, "__objectiveBackdropDelivery", delivery);
+      for (const type of [
+        "pointerdown",
+        "pointerup",
+        "pointercancel",
+        "touchstart",
+        "touchend",
+        "touchcancel",
+        "mousedown",
+        "mouseup",
+        "click",
+        "cancel",
+        "close",
+      ]) {
+        document.addEventListener(
+          type,
+          (event) => {
+            if (delivery.length >= 100) return;
+            const point =
+              event instanceof TouchEvent
+                ? event.changedTouches[0]
+                : event instanceof MouseEvent
+                  ? event
+                  : undefined;
+            const bounds = element.getBoundingClientRect();
+            const observation = {
+              type,
+              time: performance.now(),
+              target: (event.target as Element | null)?.nodeName,
+              targetIsDialog: event.target === element,
+              cancelable: event.cancelable,
+              preventedAtCapture: event.defaultPrevented,
+              preventedAfterDispatch: event.defaultPrevented,
+              open: (element as HTMLDialogElement).open,
+              closedBy: Reflect.get(element, "closedBy"),
+              x: point?.clientX,
+              y: point?.clientY,
+              bounds: bounds.toJSON(),
+            };
+            delivery.push(observation);
+            setTimeout(() => {
+              observation.preventedAfterDispatch = event.defaultPrevented;
+            }, 0);
+          },
+          { capture: true, passive: true },
+        );
+      }
       for (const type of ["mousedown", "mouseup", "click"]) {
         document.addEventListener(
           type,
@@ -1584,8 +1632,31 @@ test.describe("目标入口触控", () => {
       animations: "disabled",
     });
     const frame = (await dialog.boundingBox())!;
-    await page.touchscreen.tap(frame.x + frame.width / 2, frame.y - 8);
-    await expect(dialog).toHaveCount(0);
+    try {
+      await page.touchscreen.tap(frame.x + frame.width / 2, frame.y - 8);
+      await expect(dialog).toHaveCount(0);
+    } finally {
+      // Observe the same native event delivery in passing and failing browsers;
+      // never synthesize a replacement close or retry the dismissing gesture.
+      await info.attach("goal-touch-event-delivery", {
+        contentType: "application/json",
+        body: Buffer.from(
+          JSON.stringify(
+            await page.evaluate(() => ({
+              userAgent: navigator.userAgent,
+              viewport: {
+                width: innerWidth,
+                height: innerHeight,
+                scale: devicePixelRatio,
+              },
+              events: Reflect.get(window, "__objectiveBackdropDelivery"),
+            })),
+            null,
+            2,
+          ),
+        ),
+      });
+    }
     expect(
       await page.evaluate(() =>
         Reflect.get(window, "__objectiveBackdropClicks"),

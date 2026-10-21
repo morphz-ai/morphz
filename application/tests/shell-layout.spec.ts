@@ -1,9 +1,12 @@
 import { openSettings } from "./settings-helpers.js";
-import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { openLibrary } from "./application-helpers.js";
 import { randomUUID } from "node:crypto";
-import { conversationClient } from "./project-conversation-fixture.js";
+import {
+  test,
+  expect,
+  conversationClient,
+} from "./project-conversation-fixture.js";
 
 test("折叠按钮位于侧栏右缘，搜索始终按内容区居中", async ({ page }) => {
   await page.goto("/");

@@ -97,6 +97,14 @@ jobs:
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
           xvfb-run -a npm test
       - run: npx playwright install --with-deps chrome
+      # The full browser inventory includes actual Profile and Host notification
+      # transports. Other jobs' target directories are not shared with this one.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Build actual Runtime for the complete browser inventory
+        run: ../scripts/cargo-dev.sh build --locked --manifest-path ../Cargo.toml -p morphz --bin morphz
       # The browser inventory also launches real cross-platform Electron
       # windows. Only the explicitly macOS-only cases skip on this runner.
       - run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e
