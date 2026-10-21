@@ -1,5 +1,27 @@
 # 桌面能力实施记录
 
+## 2026-10-22 no_reply 自有元数据被当成控制参数
+
+原应用实际 DeepSeek/max 在工作后返回单个 `no_reply(mode=wait, wait_secs=90)`，
+同时包含 `_morphz.execution` 和 `intent`。原 native 投影排除了 no_reply，
+控制参数严格校验又没有拆出该字段，导致 `Unknown no_reply control parameters`
+并熔断整轮。实际记录正文为空；这是原应用已有的注解／控制衔接缺口，不是
+尚未部署的输入框设置修改造成，也不是额度或普通正文 JSON 解析失败。
+
+现在现有 no_reply 控制调用复用同一 `_morphz` 投影和拆分，不增加工具名字、
+注解专用调用或文本协议。开启／关闭注解的定义和摘要相同，原业务 schema
+不变。控制不产生工作步骤意图；适用的标题／进度仍可投影，坏显示字段只作
+诊断。mode、wait_secs、唯一调用、无正文和真实未完成工作等原控制约束不放松。
+旧冻结 carrier 未声明该投影时不重解释历史结果，不重放旧业务输入。
+
+解析与流式原有专项 20/20、完整 Runtime 注解集成 29/29 通过，零跳过。
+实际等待用例在注解开／关时都携带该字段，原工具只执行一次、模型恰好两次，
+真实排队 Schedule 与有限持久 Timer 保持，未知业务参数与错误模式仍拒绝。
+首轮新增测试直接比较了未实现 PartialEq 的 ToolDefinition，编译失败已保留；
+改为比较完整序列化定义及摘要后通过，未为测试新增产品 Eq 实现。
+此处测试是实际 Rust 与受控 Provider，不冒充真实 DeepSeek 或原应用已更新；
+后两项仍待记录部署与原窗口验证。
+
 ## 2026-10-22 Session 首建策略的原子准入
 
 Runtime 以有类型的可选 `initial_evaluation` 在原 Session／Principal／mount

@@ -117,7 +117,7 @@ fn fail(message: impl Into<String>) -> IoError {
 pub fn model_tools(tools: &[ToolDefinition]) -> IoResult<Vec<ToolDefinition>> {
     tools.iter().map(|original| {
         let mut tool = original.clone();
-        if matches!(tool.name.as_str(), "no_reply" | "deliver_message") {
+        if tool.name == "deliver_message" {
             return Ok(tool);
         }
         let root = tool.parameters.as_object_mut()
@@ -179,7 +179,7 @@ pub fn prepare_projected(
         return Err(fail("An admitted historical output must keep its original decoder; only a fresh candidate binding may select native v3"));
     }
     if tools.iter().any(|tool| {
-        !matches!(tool.name.as_str(), "no_reply" | "deliver_message")
+        tool.name != "deliver_message"
             && tool
                 .parameters
                 .get("properties")
@@ -226,7 +226,7 @@ pub fn prepare_projected(
         message_encoding,
         metadata_tools: tools
             .iter()
-            .filter(|tool| !matches!(tool.name.as_str(), "no_reply" | "deliver_message"))
+            .filter(|tool| tool.name != "deliver_message")
             .map(|tool| tool.name.clone())
             .collect(),
         tools_sha256: super::hash(&tools),
@@ -247,7 +247,7 @@ impl Binding {
             MessageEncoding::CallerJson => "When complete, return exactly the original caller JSON business value in the native message, matching caller.body_value_schema/declared type. No body/annotations wrapper, Markdown fences or text outside the value. When work is pending use native calls, not a premature typed result.",
         };
         let annotations = if self.caller.annotations_enabled {
-            "For actual work you MUST supply applicable display annotations in the SAME native call's _morphz field: intent describes that call; execution.title names the actual task at its start, progress describes truthful current work. Write display annotations in the user's language. observations may explain only exact refs supplied by Runtime for this Execution. Missing or invalid metadata is tolerated by Runtime, not an instruction to omit it. Ordinary no-work conversation needs no annotations. Never add work or another model request solely for metadata."
+            "For actual work you MUST supply applicable display annotations in the SAME native call's _morphz field: intent describes that work call; execution.title names the actual task at its start, progress describes truthful current work. no_reply is a control, not a work step: its advertised _morphz may carry applicable execution title/progress but never creates a work intent or a reply. Write display annotations in the user's language. observations may explain only exact refs supplied by Runtime for this Execution. Missing or invalid metadata is tolerated by Runtime, not an instruction to omit it. Ordinary no-work conversation needs no annotations. Never add work or another model request solely for metadata."
         } else {
             "Annotations are disabled: omit _morphz and do not generate display metadata. The tool definitions remain identical; Runtime ignores unexpected metadata without weakening business validation."
         };
@@ -317,10 +317,10 @@ pub fn decode(raw: &Response, binding: &Binding, attempt: &str) -> IoResult<Resp
                 continue;
             }
         };
-        // no_reply has no metadata projection, but its control arguments must
-        // pass the same strict syntax/object check before terminal semantics.
-        // Keep the exact original grammar and bytes; never strip extra keys.
-        if call.func_name == "no_reply" {
+        // An old frozen carrier did not advertise control metadata. Preserve
+        // that exact contract; only the current advertised projection may
+        // remove Runtime-owned metadata before strict control validation.
+        if call.func_name == "no_reply" && !binding.metadata_tools.contains(&call.func_name) {
             continue;
         }
         if call.func_name == "deliver_message" {
@@ -356,13 +356,18 @@ pub fn decode(raw: &Response, binding: &Binding, attempt: &str) -> IoResult<Resp
         // create a call. Association always uses this actual native call.
         fields.remove("calls");
         if let Some(intent) = fields.remove("intent") {
-            fields.insert(
-                "calls".into(),
-                Data::Array(vec![Data::Object(std::collections::BTreeMap::from([
-                    ("index".into(), Data::Number(index.to_string())),
-                    ("intent".into(), intent),
-                ]))]),
-            );
+            if call.func_name == "no_reply" {
+                diagnostics
+                    .push("no_reply display intent ignored: a control is not a work step".into());
+            } else {
+                fields.insert(
+                    "calls".into(),
+                    Data::Array(vec![Data::Object(std::collections::BTreeMap::from([
+                        ("index".into(), Data::Number(index.to_string())),
+                        ("intent".into(), intent),
+                    ]))]),
+                );
+            }
         }
         if !fields.is_empty() {
             annotation_messages.push(metadata_message(
