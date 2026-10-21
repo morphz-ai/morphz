@@ -1,4 +1,11 @@
-import { test, expect, type Page, type Route } from "@playwright/test";
+import {
+  test,
+  expect,
+  type Frame,
+  type Page,
+  type Request,
+  type Route,
+} from "@playwright/test";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
@@ -167,23 +174,31 @@ function observeReads(page: Page, artifactId: string) {
   const sent: string[] = [];
   const pending: Promise<void>[] = [];
   const observationErrors: string[] = [];
+  const eligible = new Set<Request>();
+  let navigating = false;
   page.on("request", (request) => {
     if (
       request.method() === "POST" &&
       /\/api\/(?:platform\/messages|messages)(?:\?|$)/.test(request.url())
     )
       sent.push(request.url());
-  });
-  // response only means headers arrived. Waiting for its body can outlive the
-  // old document after reload. Observe completed requests, not aborted reads;
-  // product visibility and durable-state assertions still cover the reload.
-  page.on("requestfinished", (request) => {
     const url = new URL(request.url());
     if (
-      url.searchParams.get("artifactId") !== artifactId ||
-      !["/api/reader/marks", "/api/reader/state"].includes(url.pathname)
+      !navigating &&
+      url.searchParams.get("artifactId") === artifactId &&
+      ["/api/reader/marks", "/api/reader/state"].includes(url.pathname)
     )
-      return;
+      eligible.add(request);
+  });
+  page.on("requestfailed", (request) => eligible.delete(request));
+  // Observe completed bodies only in their document's capture window. Merely
+  // waiting for requestfinished is insufficient: Chromium can evict that body
+  // if reload starts before response.json resolves. reload() below drains these
+  // exact completed reads before navigation and begins a new capture window at
+  // main-frame commit. In-flight old-document reads are not awaited or counted.
+  page.on("requestfinished", (request) => {
+    if (!eligible.delete(request)) return;
+    const url = new URL(request.url());
     pending.push(
       request
         .response()
@@ -208,6 +223,26 @@ function observeReads(page: Page, artifactId: string) {
     reads,
     states,
     sent,
+    async reload() {
+      navigating = true;
+      eligible.clear();
+      // No further old-document request can enter pending after this point.
+      await Promise.all(pending);
+      expect(
+        observationErrors,
+        "Completed reader responses must remain parseable",
+      ).toEqual([]);
+      const committed = (frame: Frame) => {
+        if (frame === page.mainFrame()) navigating = false;
+      };
+      page.on("framenavigated", committed);
+      try {
+        await page.reload();
+      } finally {
+        page.off("framenavigated", committed);
+        navigating = false;
+      }
+    },
     async assertBounded() {
       await Promise.all(pending);
       expect(
@@ -290,11 +325,31 @@ test("阅读响应观测：刷新后不等待旧文档未完成正文，完整�
       );
     }, artifactId);
     expect(partialResponses).toBe(2);
-    await page.reload();
+    await probe.reload();
     await expect(page).toHaveTitle("TEST reader response observation");
     await probe.assertBounded();
     expect(probe.reads).toHaveLength(1);
     expect(probe.states).toHaveLength(1);
+    // Completed responses and navigation can be adjacent in the real sidebar.
+    // Keep exercising both document windows; no completed response error is
+    // dropped and a new window must still capture valid reads after reload.
+    for (let index = 0; index < 3; index++) {
+      await page.evaluate(async (id) => {
+        await Promise.all(
+          ["marks", "state"].map(async (path) =>
+            (
+              await fetch(
+                `/api/reader/${path}?artifactId=${id}&revision=1&limit=50`,
+              )
+            ).json(),
+          ),
+        );
+      }, artifactId);
+      await probe.reload();
+      await probe.assertBounded();
+      expect(probe.reads).toHaveLength(index + 2);
+      expect(probe.states).toHaveLength(index + 2);
+    }
     // A completed malformed response must fail observation rather than being
     // silently discarded by the old catch-all while other responses pass.
     await page.evaluate(async (id) => {
@@ -814,11 +869,7 @@ test("分页侧栏：自然续页、零长书签、删除失败同命令重试�
     .poll(async () => (await position())?.location.sectionId)
     .toBe(second.id);
   expect((await position())?.location.start).toBe(0);
-  // Consume already completed response bodies before destroying their document;
-  // Chromium can evict those bodies during reload. Unfinished reads are not
-  // awaited, so this is not a network-idle requirement or a timeout extension.
-  await probe.assertBounded();
-  await page.reload();
+  await probe.reload();
   await expect(text(page)).toContainText("零长书签跳转到这里");
   await page.getByRole("button", { name: "书签与批注", exact: true }).click();
   await expect(panel.locator(".reader-mark")).toHaveCount(50);
