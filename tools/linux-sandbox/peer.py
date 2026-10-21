@@ -6,6 +6,7 @@ using a registration. A valid UID alone never authorizes a request.
 """
 
 from dataclasses import dataclass
+import array
 import errno
 import fcntl
 import os
@@ -273,6 +274,29 @@ def parse_single_id_map(raw, identity):
         raise PeerError("work namespace does not retain exactly the registered non-root identity")
 
 
+def authorize_work_namespace_chain(descriptor, parent_namespace, uid):
+    # Our fixed bwrap invocation uses --dev. bwrap 0.9 first maps the caller to
+    # namespace root to mount devpts, then creates a second namespace restoring
+    # the original UID/GID. Require that exact two-level chain, not any ancestor
+    # or a caller-provided depth. Both namespace owners must still be this UID.
+    # Linux NS_GET_PARENT / NS_GET_OWNER_UID are _IO(0xb7, 2 / 4).
+    current = os.dup(descriptor)
+    try:
+        for _ in range(2):
+            owner = array.array("I", [0])
+            fcntl.ioctl(current, 0xb704, owner, True)
+            if owner[0] != uid:
+                raise PeerError("work user namespace has a different owner")
+            parent = fcntl.ioctl(current, 0xb702)
+            os.close(current)
+            current = parent
+        info = os.fstat(current)
+        if (info.st_dev, info.st_ino) != parent_namespace:
+            raise PeerError("work user namespace is not the exact registered two-level bwrap child")
+    finally:
+        os.close(current)
+
+
 def authorize_namespace(directory, uid, gid, parent_namespace=None):
     descriptor = os.open("ns/user", os.O_RDONLY | os.O_CLOEXEC, dir_fd=directory)
     try:
@@ -283,15 +307,7 @@ def authorize_namespace(directory, uid, gid, parent_namespace=None):
             if actual != (expected.st_dev, expected.st_ino):
                 raise PeerError("caller is in a different user namespace")
         else:
-            # Linux UAPI NS_GET_PARENT = _IO(0xb7, 2). The kernel returns a
-            # CLOEXEC namespace FD, never a request-supplied parent identity.
-            parent = fcntl.ioctl(descriptor, 0xb702)
-            try:
-                info = os.fstat(parent)
-                if (info.st_dev, info.st_ino) != parent_namespace:
-                    raise PeerError("work user namespace is not the registered owner's direct child")
-            finally:
-                os.close(parent)
+            authorize_work_namespace_chain(descriptor, parent_namespace, uid)
             parse_single_id_map(read_bounded_at(directory, "uid_map"), uid)
             parse_single_id_map(read_bounded_at(directory, "gid_map"), gid)
         return actual

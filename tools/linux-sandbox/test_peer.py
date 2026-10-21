@@ -1,8 +1,11 @@
 """OS-independent parsing checks; real sender authorization is a Linux gate."""
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from peer import PeerError, parse_security_state, parse_single_id_map, parse_start_identity
+from peer import (PeerError, authorize_work_namespace_chain, parse_security_state,
+                  parse_single_id_map, parse_start_identity)
 
 
 def process_stat(pid=123, name="runtime", parent=55, start=991):
@@ -11,6 +14,34 @@ def process_stat(pid=123, name="runtime", parent=55, start=991):
 
 
 class PeerParsingTests(unittest.TestCase):
+    def test_actual_bwrap_namespace_chain_is_exact_and_every_owner_is_checked(self):
+        for owners, ancestor, accepted in (((1001, 1001), (4, 9), True),
+                                           ((0, 1001), (4, 9), False),
+                                           ((1001, 0), (4, 9), False),
+                                           ((1001, 1001), (4, 10), False)):
+            calls = []
+            def ioctl(fd, operation, *arguments):
+                calls.append((fd, operation))
+                if operation == 0xb704:
+                    arguments[0][0] = owners[fd - 90]
+                    return 0
+                self.assertEqual(operation, 0xb702)
+                return fd + 1
+            with self.subTest(owners=owners, ancestor=ancestor), \
+                    patch("peer.os.dup", return_value=90), patch("peer.os.close") as close, \
+                    patch("peer.fcntl.ioctl", side_effect=ioctl), \
+                    patch("peer.os.fstat", return_value=SimpleNamespace(st_dev=ancestor[0], st_ino=ancestor[1])):
+                if accepted:
+                    authorize_work_namespace_chain(80, (4, 9), 1001)
+                    self.assertEqual(calls, [(90, 0xb704), (90, 0xb702), (91, 0xb704), (91, 0xb702)])
+                    self.assertEqual([call.args[0] for call in close.call_args_list], [90, 91, 92])
+                else:
+                    with self.assertRaises(PeerError):
+                        authorize_work_namespace_chain(80, (4, 9), 1001)
+                    closed = [call.args[0] for call in close.call_args_list]
+                    self.assertEqual(len(closed), len(set(closed)))
+                    self.assertEqual(closed, list(range(90, 90 + len(closed))))
+
     def test_work_mapping_is_exactly_one_original_non_root_identity(self):
         parse_single_id_map("      1001       1001          1\n", 1001)
         for raw in ("0 1001 1\n", "1001 0 1\n", "1001 1001 2\n", "1001 1001 1\n1002 1002 1\n",
