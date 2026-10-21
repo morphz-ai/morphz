@@ -70,7 +70,14 @@ jobs:
           done
           test -S /run/morphz-sandbox/control.sock
       - name: Verify actual Runtime command admission and post-admission protected paths
-        run: /usr/local/libexec/morphz-runtime-ci/native --nocapture --test-threads=1
+        run: /usr/local/libexec/morphz-runtime-ci/native --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/native-admission.log"
+      - name: Preserve early admission failures before the full inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-admission-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-admission.log
+          retention-days: 7
       - name: Verify unchanged original late-created protected-file PTY regression
         run: /usr/local/libexec/morphz-runtime-ci/lib terminal::tests::terminal_sandbox_denies_outside_writes_and_protected_files --exact --nocapture --test-threads=1
       - name: Verify actual Runtime private PTY and ordinary command session boundaries

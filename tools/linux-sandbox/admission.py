@@ -85,7 +85,7 @@ def verify_mount_boundaries(raw, policy):
         mounts[path] = (flags, filesystem)
         if "rw" in flags and not any(contains(root, path) for root in
                                      (*policy.write_roots, "/dev", "/proc")):
-            raise PeerError("writable filesystem outside approved roots")
+            raise PeerError(f"writable filesystem outside approved roots: {path!r} ({filesystem})")
     if "/" not in mounts or ("/" not in policy.write_roots and "ro" not in mounts["/"][0]):
         raise PeerError("read-only host baseline is missing")
     for path in policy.hidden_roots:
