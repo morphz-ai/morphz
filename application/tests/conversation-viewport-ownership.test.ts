@@ -497,6 +497,59 @@ const reference = parse({
     fixedViewportSpans.returnLatest +
     ";",
 }).get("Reference")!;
+// Reviewed performance migration only: the immutable Git298 archive still
+// checks all registrations/actions and the other three effect phases. Actual
+// before-paint geometry/focus/read behavior is exercised with native RO in the
+// mounted suite, including StrictMode, prepend and quote navigation.
+const postLayoutReference = parse({
+  PostLayout: `function effects() {
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    if (previousPositionKey.current !== positionKey) {
+      initialized.current = false;
+      following.current = saved?.following ?? true;
+      revealed.current = saved?.revealed ?? revealInputId;
+      previousPositionKey.current = positionKey;
+    }
+    const commitPosition = !initialized.current ||
+      (!!revealInputId && revealed.current !== revealInputId);
+    if (!initialized.current && saved) el.scrollTop = saved.top;
+    if (revealInputId && revealed.current !== revealInputId)
+      following.current = true;
+    if (following.current && commitPosition) {
+      el.scrollTop = el.scrollHeight;
+    }
+    revealed.current = revealInputId;
+    initialized.current = true;
+    updateLatestIndicator();
+    if (commitPosition)
+      positions.set(positionKey, {
+        top: el.scrollTop,
+        following: following.current,
+        revealed: revealed.current,
+      });
+  }, [contentVersion, readVersion, revealInputId, positionKey, onRead]);
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      if (following.current) {
+        el.scrollTop = el.scrollHeight;
+        positions.set(positionKey, {
+          top: el.scrollTop,
+          following: true,
+          revealed: revealed.current,
+        });
+      }
+    });
+    observer.observe(el);
+    const content = el.querySelector(".conversation-messages");
+    if (content) observer.observe(content);
+    return () => observer.disconnect();
+  }, [contentVersion, positionKey]);
+}`,
+}).get("PostLayout")!;
 // The consumed cognitive focus and the user-approved all-exchanges default,
 // not a re-recorded viewport archive. The original viewport contract is intact.
 const cognitiveReference = parse({
@@ -807,7 +860,15 @@ function validate(sources: Sources) {
       imported(owner, name, "react"),
       "viewport-effect:" + index,
     );
-    same(actual, originalEffects[index]!, owner, "viewport-effect:" + index);
+    const postLayoutEffects = fn(postLayoutReference, "effects").body!
+      .statements;
+    const expected =
+      index === 0
+        ? postLayoutEffects[0]!
+        : index === 3
+          ? postLayoutEffects[1]!
+          : originalEffects[index]!;
+    same(actual, expected, owner, "viewport-effect:" + index);
   }
   for (const [index, name] of ["onScroll", "returnLatest"].entries()) {
     const actual = body[index + 10]!;
@@ -1739,6 +1800,19 @@ test("viewport commits preserve five effect phases/dependencies and quote cleanu
     "return () => {};",
     "viewport-effect:3",
   );
+  rejects(
+    "Owner",
+    "following.current && commitPosition",
+    "following.current",
+    "viewport-effect:0",
+  );
+  rejects(
+    "Owner",
+    "    if (content) observer.observe(content);",
+    "    void content;",
+    "viewport-effect:3",
+  );
+  rejects("Owner", "[contentVersion, positionKey]", "[]", "viewport-effect:3");
   rejects(
     "Owner",
     "[quoteReveal, focused, contentVersion, hasEarlierHistory]",

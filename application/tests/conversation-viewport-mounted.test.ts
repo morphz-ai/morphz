@@ -34,9 +34,15 @@ const historical=new URL(location.href).searchParams.get('lane')==='historical';
 const Component=historical?HistoricalConversation:CurrentConversation;
 const root=createRoot(document.getElementById('root'));
 const observers=[]; let serial=0,api,events=[],requests=[],positions,originalPositions,originalNode,originalMessage,controls,visible=true,focused=true;
+let geometryReads=0,commitGeometryReads=0;
+const scrollHeightDescriptor=Object.getOwnPropertyDescriptor(Element.prototype,'scrollHeight');
+Object.defineProperty(Element.prototype,'scrollHeight',{...scrollHeightDescriptor,get(){if(this.classList.contains('conversation'))geometryReads++;return scrollHeightDescriptor.get.call(this);}});
 Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>visible?'visible':'hidden'});
 Object.defineProperty(document,'hasFocus',{configurable:true,value:()=>focused});
-window.ResizeObserver=class { constructor(callback){this.callback=callback;this.active=true;observers.push(this);} observe(node){this.node=node;} disconnect(){this.active=false;} };
+// Keep real before-paint delivery: content growth, not a manually fired mock,
+// must drive the current viewport. Manual fireResize still tests size changes.
+const NativeResizeObserver=window.ResizeObserver;
+window.ResizeObserver=class { constructor(callback){this.callback=callback;this.active=true;this.observer=new NativeResizeObserver(entries=>{if(this.active)this.callback(entries);});observers.push(this);} observe(node){this.observer.observe(node);} disconnect(){this.active=false;this.observer.disconnect();} };
 function deferred(kind,label,id){let accept,reject;const promise=new Promise((a,b)=>{accept=a;reject=b;});requests.push({kind,label,id,accept,reject,settled:false});events.push([kind,label,id]);return promise;}
 function Fixture({initial}) {
  const [config,setConfig]=useState({scope:'conversation-A',focus:null,reveal:null,quote:null,earlier:false,composer:'focus',epoch:0,readEpoch:0,...initial});
@@ -56,10 +62,11 @@ function reset(initial={}) {
  flushSync(()=>root.render(<StrictMode><Fixture key={++serial} initial={initial}/></StrictMode>));
  originalNode=document.querySelector('.conversation');originalMessage=document.querySelector('[data-message-id="reply-0"]');
 }
-function run(action,value){flushSync(()=>api.run(action,value));}
+function run(action,value){const before=geometryReads;flushSync(()=>api.run(action,value));commitGeometryReads=geometryReads-before;}
 function report(){const el=document.querySelector('.conversation');return {top:el?.scrollTop??null,height:el?.scrollHeight??null,clientHeight:el?.clientHeight??null,positions:[...positions],sameMap:positions===originalPositions,sameNode:el===originalNode,sameMessage:document.querySelector('[data-message-id="reply-0"]')===originalMessage,events,requests:requests.map(({kind,label,id,settled})=>({kind,label,id,settled})),active:document.activeElement?.id||document.activeElement?.className||document.activeElement?.tagName,away:!!document.querySelector('.conversation-return'),older:document.querySelector('.conversation-load-older')?.textContent,olderDisabled:document.querySelector('.conversation-load-older')?.disabled??null,error:document.querySelector('.conversation-load-error')?.textContent??null,markers:[...document.querySelectorAll('[data-quote-revealed]')].map(n=>n.dataset.messageId),selected:window.getSelection()?.toString(),observerActive:observers.filter(o=>o.active).length,draft:document.getElementById('composer')?.value};}
 Object.assign(window,{viewportFixture:{reset,run,report,clear(){events=[];},scroll(top){const el=document.querySelector('.conversation');el.scrollTop=top;el.dispatchEvent(new Event('scroll'));},fireResize(){for(const o of observers)if(o.active)o.callback([]);},height(value){document.querySelector('.conversation').style.height=value+'px';},readGate(kind,value){if(kind==='visible')visible=value;else focused=value;document.dispatchEvent(new Event('visibilitychange'));window.dispatchEvent(new Event('focus'));},quote(id,token,text,createdAt){const message=api.messages.find(m=>m.id===id);const quote=viewportQuote(id,text);if(message)quote.source={...quote.source,inputId:message.inputId,createdAt:message.createdAt};else if(createdAt)quote.source={...quote.source,createdAt};run('config',{quote:{quote,token}});},nonMessageQuote(){const quote={...viewportQuote('reply-2'),source:{kind:'artifact',artifactId:'object-A',revision:1,projectId:'first-project',title:'Artifact'}};run('config',{quote:{quote,token:'artifact-token'}});},settle(index,result,error){const r=requests[index];if(!r||r.settled)throw Error('invalid deferred request');r.settled=true;if(error==='nonerror')r.reject('fixture rejection');else if(error)r.reject(Error(error));else r.accept(result);},rect(id){const el=document.querySelector('.conversation'),message=[...document.querySelectorAll('[data-message-id]')].find(n=>n.dataset.messageId===id);return {top:message.getBoundingClientRect().top-el.getBoundingClientRect().top,scroll:el.scrollTop};}}});
 reset();
+window.viewportFixture.commitGeometryReads=()=>commitGeometryReads;
 `;
 
 type Position = { top: number; following: boolean; revealed: string | null };
@@ -337,6 +344,14 @@ test(
             value.height! - value.clientHeight!,
             "content growth follows",
           );
+          if (lane === "current")
+            assert.equal(
+              await page.evaluate(() =>
+                Reflect.get(window, "viewportFixture").commitGeometryReads(),
+              ),
+              0,
+              "stream growth must not force scrollHeight during React commit",
+            );
           await page.locator("#outside").focus();
           value = await call(page, "height", 180);
           value = await call(page, "fireResize");
