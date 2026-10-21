@@ -11,8 +11,10 @@ on:
       - application/apps/desktop/preferences.cjs
       - application/apps/web/src/ApplicationHost.tsx
       - application/apps/web/src/Conversation.tsx
+      - application/apps/web/src/ExchangePanel.tsx
       - application/packages/core/src/evaluation-result.ts
       - application/tests/conversation-performance.spec.ts
+      - application/tests/exchange-resize.spec.ts
       - application/tests/application-compose-race.test.ts
       - application/tests/cognitive-app-manager-mounted.test.ts
       - application/tests/cognitive-document-native.test.ts
@@ -150,7 +152,9 @@ jobs:
           xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- \
             tests/browser-composer.spec.ts \
             tests/composer-tool-state.spec.ts \
-            tests/conversation-performance.spec.ts
+            tests/conversation-performance.spec.ts \
+            tests/exchange-resize.spec.ts \
+            tests/exchange-floating-controls.spec.ts
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: failure() || cancelled()
         with:

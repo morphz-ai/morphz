@@ -55,14 +55,25 @@ export function ExchangePanel({
         floating?.offsetHeight ?? 0,
         controls?.offsetHeight ?? 0,
       );
-      if ((!floating && !controls) || toolsHeight > 0)
-        root.style.setProperty("--composer-tools-height", `${toolsHeight}px`);
+      const toolsValue = `${toolsHeight}px`;
+      // A streamed reply can cause another observation without changing the
+      // panel's geometry. Do not invalidate inherited custom properties for
+      // every token; real Dock/control changes still update before measuring
+      // the panel, whose padding uses this value.
+      if (
+        ((!floating && !controls) || toolsHeight > 0) &&
+        root.style.getPropertyValue("--composer-tools-height") !== toolsValue
+      )
+        root.style.setProperty("--composer-tools-height", toolsValue);
       // Input-only has no resize handle. Its real overlay still needs scroll
       // clearance, and zoomed screen pixels must not become CSS padding.
-      workspace?.style.setProperty(
-        "--exchange-overlay-height",
-        `${Math.ceil(root.offsetHeight + toolsHeight + parseFloat(getComputedStyle(root).marginBottom))}px`,
-      );
+      const overlayValue = `${Math.ceil(root.offsetHeight + toolsHeight + parseFloat(getComputedStyle(root).marginBottom))}px`;
+      if (
+        workspace &&
+        workspace.style.getPropertyValue("--exchange-overlay-height") !==
+          overlayValue
+      )
+        workspace.style.setProperty("--exchange-overlay-height", overlayValue);
     };
     const observer = new ResizeObserver(measure);
     if (dock) observer.observe(dock);

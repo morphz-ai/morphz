@@ -45,6 +45,23 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
       return Reflect.apply(format, this, args);
     };
     (window as any).__messageTimeFormats = timeFormats;
+    const geometryWrites = { total: 0, redundant: 0 };
+    const setProperty = CSSStyleDeclaration.prototype.setProperty;
+    CSSStyleDeclaration.prototype.setProperty = function (
+      name,
+      value,
+      priority,
+    ) {
+      if (
+        name === "--composer-tools-height" ||
+        name === "--exchange-overlay-height"
+      ) {
+        geometryWrites.total++;
+        if (this.getPropertyValue(name) === value) geometryWrites.redundant++;
+      }
+      return Reflect.apply(setProperty, this, [name, value, priority]);
+    };
+    (window as any).__exchangeGeometryWrites = geometryWrites;
     const streams = new Set<any>();
     (window as any).__performanceStreams = streams;
     (window as any).EventSource = class {
@@ -135,6 +152,11 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
       const observer = new PerformanceObserver((list) => {
         longTasks.push(...list.getEntries().map((entry) => entry.duration));
       });
+      const geometryWrites = (window as any).__exchangeGeometryWrites as {
+        total: number;
+        redundant: number;
+      };
+      const beforeGeometry = { ...geometryWrites };
       observer.observe({ type: "longtask" });
       for (let n = 0; n < 12; n++) {
         await frame();
@@ -182,6 +204,9 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
         typing,
         streaming,
         longTasks,
+        exchangeGeometryWrites: geometryWrites.total - beforeGeometry.total,
+        redundantExchangeGeometryWrites:
+          geometryWrites.redundant - beforeGeometry.redundant,
         historyTimeCount: historyTimes.length,
         historyTimeReformats: historyTimes.reduce(
           (sum, time) =>
@@ -201,6 +226,7 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
   });
   expect(metrics.historyTimeCount).toBe(128);
   expect(metrics.historyTimeReformats).toBe(0);
+  expect(metrics.redundantExchangeGeometryWrites).toBe(0);
   const historyTime = page.locator(
     ".conversation-message .message-peek time[datetime]",
   );
