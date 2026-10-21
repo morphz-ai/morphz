@@ -65,6 +65,19 @@ jobs:
             tests/execution-inspection-mounted.test.ts \
             tests/storage-commit-notifications.test.ts \
             tests/cognitive-app-document-local.test.ts
+      - run: npx playwright install --with-deps chrome
+      - name: Check real Desktop browser cases and the unchanged rendering budget
+        run: |
+          xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- \
+            tests/browser-composer.spec.ts \
+            tests/composer-tool-state.spec.ts \
+            tests/conversation-performance.spec.ts
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: failure() || cancelled()
+        with:
+          name: isolated-linux-native-failures
+          path: application/test-results/
+          if-no-files-found: ignore
 
   macos-compose-regressions:
     name: Isolated macOS iframe initialization diagnosis

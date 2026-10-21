@@ -1,4 +1,4 @@
-import { expect } from "@playwright/test";
+import { expect, type Page, type TestInfo } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import type { PlatformHistory } from "../apps/web/src/platform-client.js";
 import { disconnectedRuntime } from "../packages/core/src/conversation.js";
@@ -10,6 +10,30 @@ import {
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "wait" });
 });
+
+async function profileMeasurement<T>(
+  page: Page,
+  info: TestInfo,
+  measure: () => Promise<T>,
+): Promise<T> {
+  if (process.env.MORPHZ_TEST_CONVERSATION_CPU_PROFILE !== "1")
+    return measure();
+  // Explicit diagnosis only: normal budget verification has no profiler
+  // overhead. Keep the original workload, assertions and failure result.
+  const session = await page.context().newCDPSession(page);
+  await session.send("Profiler.enable");
+  await session.send("Profiler.start");
+  try {
+    return await measure();
+  } finally {
+    const { profile } = await session.send("Profiler.stop");
+    await info.attach("conversation-render.cpuprofile", {
+      body: JSON.stringify(profile),
+      contentType: "application/json",
+    });
+    await session.detach();
+  }
+}
 
 test("长消息历史下输入和流式续写不反复阻塞主线程", async ({ page }, info) => {
   await page.addInitScript(() => {
@@ -74,71 +98,73 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
   const input = page.getByLabel("AI 输入内容");
   await expect(page.locator(".conversation-message")).toHaveCount(128);
   await input.focus();
-  const metrics = await page.evaluate(async (scope) => {
-    const field = document.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="AI 输入内容"]',
-    )!;
-    const setter = Object.getOwnPropertyDescriptor(
-      HTMLTextAreaElement.prototype,
-      "value",
-    )!.set!;
-    const frame = () =>
-      new Promise<void>((done) => requestAnimationFrame(() => done()));
-    const typing: number[] = [],
-      streaming: number[] = [];
-    const longTasks: number[] = [];
-    const observer = new PerformanceObserver((list) => {
-      longTasks.push(...list.getEntries().map((entry) => entry.duration));
-    });
-    observer.observe({ type: "longtask" });
-    for (let n = 0; n < 12; n++) {
-      await frame();
-      const start = performance.now();
-      setter.call(field, `TEST 保留草稿 ${"字".repeat(n + 1)}`);
-      field.dispatchEvent(new Event("input", { bubbles: true }));
-      await frame();
-      typing.push(performance.now() - start);
-    }
-    for (let n = 0; n < 12; n++) {
-      await frame();
-      const start = performance.now();
-      for (const source of (window as any).__performanceStreams) {
-        source.onmessage?.({
-          data: JSON.stringify({
-            connected: true,
-            reset: true,
-            removed: [],
-            messages: [
-              {
-                id: "performance-live",
-                ...scope,
-                artifactId: null,
-                inputId: "performance-input-63",
-                rootId: "root",
-                kind: "reply",
-                text: "TEST 实时新回复" + "继续。".repeat(n + 1),
-                streaming: true,
-                createdAt: "2026-09-21T03:00:00Z",
-              },
-            ],
-          }),
-        });
+  const metrics = await profileMeasurement(page, info, () =>
+    page.evaluate(async (scope) => {
+      const field = document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="AI 输入内容"]',
+      )!;
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!;
+      const frame = () =>
+        new Promise<void>((done) => requestAnimationFrame(() => done()));
+      const typing: number[] = [],
+        streaming: number[] = [];
+      const longTasks: number[] = [];
+      const observer = new PerformanceObserver((list) => {
+        longTasks.push(...list.getEntries().map((entry) => entry.duration));
+      });
+      observer.observe({ type: "longtask" });
+      for (let n = 0; n < 12; n++) {
+        await frame();
+        const start = performance.now();
+        setter.call(field, `TEST 保留草稿 ${"字".repeat(n + 1)}`);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        await frame();
+        typing.push(performance.now() - start);
+      }
+      for (let n = 0; n < 12; n++) {
+        await frame();
+        const start = performance.now();
+        for (const source of (window as any).__performanceStreams) {
+          source.onmessage?.({
+            data: JSON.stringify({
+              connected: true,
+              reset: true,
+              removed: [],
+              messages: [
+                {
+                  id: "performance-live",
+                  ...scope,
+                  artifactId: null,
+                  inputId: "performance-input-63",
+                  rootId: "root",
+                  kind: "reply",
+                  text: "TEST 实时新回复" + "继续。".repeat(n + 1),
+                  streaming: true,
+                  createdAt: "2026-09-21T03:00:00Z",
+                },
+              ],
+            }),
+          });
+        }
+        await frame();
+        streaming.push(performance.now() - start);
       }
       await frame();
-      streaming.push(performance.now() - start);
-    }
-    await frame();
-    observer.disconnect();
-    const median = (xs: number[]) =>
-      xs.toSorted((a, b) => a - b)[Math.floor(xs.length / 2)]!;
-    return {
-      typingMedianMs: median(typing),
-      streamingMedianMs: median(streaming),
-      typing,
-      streaming,
-      longTasks,
-    };
-  }, presentation.scope);
+      observer.disconnect();
+      const median = (xs: number[]) =>
+        xs.toSorted((a, b) => a - b)[Math.floor(xs.length / 2)]!;
+      return {
+        typingMedianMs: median(typing),
+        streamingMedianMs: median(streaming),
+        typing,
+        streaming,
+        longTasks,
+      };
+    }, presentation.scope),
+  );
   console.log("MESSAGE_PERFORMANCE", JSON.stringify(metrics));
   await info.attach("message-performance", {
     body: JSON.stringify(metrics, null, 2),

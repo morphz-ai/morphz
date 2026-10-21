@@ -54,6 +54,12 @@ function verify(source) {
       `${name}: a virtual display must exist before the full native inventory`,
     );
   }
+  const web = jobSource(source, "web");
+  assert.match(
+    web,
+    /^      - run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e\s*$/m,
+    "the complete browser inventory needs an authenticated native display too",
+  );
 }
 
 test("every managed application CI job prepares pinned Electron before parallel imports", () =>
@@ -82,6 +88,17 @@ for (const name of ["web", "storage-postgres"]) {
       assert.throws(() => verify(workflow.replace(job, changed)));
   });
 }
+
+test("Web browser inventory keeps its display without filtering native or performance cases", () => {
+  const job = jobSource(workflow, "web");
+  const command = 'xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e';
+  for (const replacement of [
+    "npm run test:e2e",
+    command + " -- tests/only-one.spec.ts",
+    command.replace("xvfb-run -a", "xvfb-run -a --server-args=-ac"),
+  ])
+    assert.throws(() => verify(workflow.replace(job, job.replace(command, replacement))));
+});
 
 test("Runtime's reusable source diagnostics never select an Electron lane from the caller event", () => {
   const source = readFileSync(new URL("../../.github/workflows/application-source-resources.yml", import.meta.url), "utf8");

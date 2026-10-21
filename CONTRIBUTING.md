@@ -58,7 +58,9 @@ downloads on first import, which is unsafe in parallel test workers. The test en
 the installed binary without importing, downloading or launching Electron; the full-test CI
 jobs perform this dependency preparation explicitly, including on Linux.
 The Linux full-inventory jobs use Xvfb for Electron's real native-window tests;
-headless Chromium alone does not provide a display for those cases.
+headless Chromium alone does not provide a display for those cases. Both the Node
+inventory and the browser inventory launch Electron, so each CI command needs
+its own authenticated Xvfb lifetime; a previous step's display does not persist.
 The application workflow checks Web, macOS Desktop, and actual Runtime contracts separately.
 Changes spanning an application contract and Runtime must include both sides and their tests in
 one pull request. No application or mobile release is implied by a Runtime release tag.

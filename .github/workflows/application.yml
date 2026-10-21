@@ -97,10 +97,11 @@ jobs:
           trap 'kill "$resource_observer" 2>/dev/null || true; wait "$resource_observer" 2>/dev/null || true' EXIT
           xvfb-run -a npm test
       - run: npx playwright install --with-deps chrome
-      # Native macOS cases explicitly skip here and run in the Desktop job.
-      - run: npm run test:e2e
+      # The browser inventory also launches real cross-platform Electron
+      # windows. Only the explicitly macOS-only cases skip on this runner.
+      - run: xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        if: failure() || cancelled()
         with:
           name: application-web-failures
           path: application/test-results/
