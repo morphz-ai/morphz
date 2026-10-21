@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer } from "node:http";
 import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 import { workInputRequest } from "../packages/application/src/session-io.js";
 import { localAccess, type RecordedInput } from "../packages/core/src/model.js";
@@ -13,7 +13,7 @@ type Ledger = {
   }[];
 };
 
-test("new input freezes the live Runtime default; command retries keep the admitted model", async () => {
+test("unspecified input keeps live Session inheritance; explicit choices and admitted retries remain immutable", async () => {
   let current = "sol";
   let statusCode = 200;
   let defaultReads = 0;
@@ -60,7 +60,12 @@ test("new input freezes the live Runtime default; command retries keep the admit
   try {
     const first = command();
     await fixture.session().platformMessage(first);
-    assert.equal(requestFor(first.commandId).activation.model_alias, "sol");
+    assert.equal(requestFor(first.commandId).activation.model_alias, undefined);
+    assert.equal(
+      defaultReads,
+      0,
+      "the Host never snapshots a default as a task override",
+    );
     const original = structuredClone(requestFor(first.commandId));
     const readsAtAdmission = defaultReads;
 
@@ -70,7 +75,11 @@ test("new input freezes the live Runtime default; command retries keep the admit
     assert.deepEqual(requestFor(first.commandId), original);
     const second = command();
     await fixture.session().platformMessage(second);
-    assert.equal(requestFor(second.commandId).activation.model_alias, "astra");
+    assert.equal(
+      requestFor(second.commandId).activation.model_alias,
+      undefined,
+    );
+    assert.equal(defaultReads, 0);
 
     const explicit = command("sol");
     statusCode = 503;
@@ -93,16 +102,22 @@ test("new input freezes the live Runtime default; command retries keep the admit
     assert.equal(defaultReads, readsBeforeRetry);
     assert.deepEqual(requestFor(first.commandId), original);
 
-    const beforeFailure = fixture.store.runtimeState();
-    await assert.rejects(fixture.session().platformMessage(command()));
-    assert.deepEqual(fixture.store.runtimeState(), beforeFailure);
+    const unavailableDefault = command();
+    await fixture.session().platformMessage(unavailableDefault);
+    assert.equal(
+      requestFor(unavailableDefault.commandId).activation.model_alias,
+      undefined,
+      "a failed operator-status preflight cannot prevent a valid inherited input",
+    );
     statusCode = 200;
     current = "";
-    await assert.rejects(
-      fixture.session().platformMessage(command()),
-      /无法确认默认模型.*草稿已保留/,
+    const unknownDefault = command();
+    await fixture.session().platformMessage(unknownDefault);
+    assert.equal(
+      requestFor(unknownDefault.commandId).activation.model_alias,
+      undefined,
     );
-    assert.deepEqual(fixture.store.runtimeState(), beforeFailure);
+    assert.equal(defaultReads, 0);
     fixture.assertNoLegacyData();
   } finally {
     await fixture.close();
@@ -110,9 +125,9 @@ test("new input freezes the live Runtime default; command retries keep the admit
   }
 });
 
-test("a retained request without a model alias retries unchanged", async () => {
-  // Seed a pre-fix envelope in an isolated Host ledger. Its unavailable Runtime
-  // makes any accidental attempt to acquire today's default fail this retry.
+test("retained requests with and without a model alias retry unchanged after restart", async () => {
+  // The pre-fix envelope may have frozen a default. Its original bytes remain
+  // immutable; the cutover affects new admissions, never transport retries.
   const fixture = await platformRuntimeHostFixture();
   try {
     const input: RecordedInput = {
@@ -129,36 +144,40 @@ test("a retained request without a model alias retries unchanged", async () => {
       model: "sol",
       createdAt: new Date().toISOString(),
     };
-    await fixture.runtime.as(localAccess, () =>
-      fixture.runtime.enqueuePlatformInput(input),
-    );
-    const state = fixture.store.runtimeState() as Ledger;
-    delete state.deliveries[0]!.request.activation.model_alias;
-    fixture.store.saveRuntimeState(state);
-    await fixture.reopen();
-    const previous = fixture.store.runtimeState();
-    delete input.model;
-    await fixture.runtime.as(localAccess, () =>
-      fixture.runtime.enqueuePlatformInput(input),
-    );
-    assert.deepEqual(fixture.store.runtimeState(), previous);
+    for (const retainedModel of ["sol", undefined]) {
+      const recorded = { ...input, id: randomUUID() };
+      await fixture.runtime.as(localAccess, () =>
+        fixture.runtime.enqueuePlatformInput(recorded),
+      );
+      const state = fixture.store.runtimeState() as Ledger;
+      const delivery = state.deliveries.find(
+        (value) => value.inputId === recorded.id,
+      )!;
+      if (retainedModel === undefined)
+        delete delivery.request.activation.model_alias;
+      fixture.store.saveRuntimeState(state);
+      await fixture.reopen();
+      const previous = fixture.store.runtimeState();
+      delete recorded.model;
+      await fixture.runtime.as(localAccess, () =>
+        fixture.runtime.enqueuePlatformInput(recorded),
+      );
+      assert.deepEqual(fixture.store.runtimeState(), previous);
+    }
     fixture.assertNoLegacyData();
   } finally {
     await fixture.close();
   }
 });
 
-test("concurrent command admission keeps the first frozen default and one delivery", async () => {
-  const responses: ServerResponse[] = [];
-  let bothRequested!: () => void;
-  const requested = new Promise<void>((resolve) => {
-    bothRequested = resolve;
-  });
+test("concurrent inherited command admission retains one unbound request without a default preflight", async () => {
+  let defaultReads = 0;
   const server = createServer((request, response) => {
     assert.equal(request.url, "/api/status");
+    defaultReads++;
     response.setHeader("Content-Type", "application/json");
-    responses.push(response);
-    if (responses.length === 2) bothRequested();
+    response.writeHead(503);
+    response.end("{}");
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const fixture = await platformRuntimeHostFixture({
@@ -181,19 +200,18 @@ test("concurrent command admission keeps the first frozen default and one delive
     };
     const first = fixture.session().platformMessage(command);
     const second = fixture.session().platformMessage(command);
-    await requested;
-    responses[0]!.end(JSON.stringify({ model: "sol" }));
     const receipt = await Promise.race([first, second]);
-    responses[1]!.end(JSON.stringify({ model: "astra" }));
     assert.deepEqual(await Promise.all([first, second]), [receipt, receipt]);
     const ledger = fixture.store.runtimeState() as Ledger;
     assert.equal(ledger.deliveries.length, 1);
-    assert.equal(ledger.deliveries[0]!.request.activation.model_alias, "sol");
+    assert.equal(
+      ledger.deliveries[0]!.request.activation.model_alias,
+      undefined,
+    );
+    assert.equal(defaultReads, 0);
     await fixture.reopen();
     assert.deepEqual(fixture.store.runtimeState(), ledger);
   } finally {
-    for (const response of responses)
-      if (!response.writableEnded) response.end();
     await fixture.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

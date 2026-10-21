@@ -103,7 +103,21 @@ async fn default_runtime_delivers_stable_io_without_experimental_configuration()
         .send_io_as_principal(input.clone(), &runtime.identity().principal_id)
         .await
         .unwrap();
+    for field in ["model_alias", "reasoning_effort"] {
+        assert!(
+            !accepted.payload.contains_key(field),
+            "an omitted {field} remains inherited, not an ingress default snapshot"
+        );
+        assert!(accepted.payload["session_io"]["binding"]["execution"][field].is_null());
+    }
     terminal(&runtime, &accepted.id).await;
+    let thread = runtime
+        .session_thread_by_root(session.id(), &accepted.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(thread.model_alias, None);
+    assert_eq!(thread.reasoning_effort, None);
     let retried = session
         .send_io_as_principal(input, &runtime.identity().principal_id)
         .await

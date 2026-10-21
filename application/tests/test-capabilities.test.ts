@@ -156,6 +156,12 @@ const declarations = [
     capability: "runtime",
     flag: "MORPHZ_READER_IMPORT_RUNTIME_E2E",
   },
+  {
+    file: "infer-model-controls-runtime.test.ts",
+    name: "actual Host inherited input follows a live Session switch only after the in-flight request, while an explicit task remains fixed",
+    capability: "runtime",
+    flag: "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
+  },
 ] as const;
 const darwin = [
   {

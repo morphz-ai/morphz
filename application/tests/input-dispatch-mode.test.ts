@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer } from "node:http";
 import { platformRuntimeHostFixture } from "./platform-runtime-host-fixture.js";
 import { workInputRequest } from "../packages/application/src/session-io.js";
 import { LocalApplicationConnection } from "../packages/application/src/local-connection.js";
+import { RuntimeBridge } from "../packages/application/src/runtime.js";
 import { createAppServer } from "../apps/service/src/http.js";
 import { HttpApplicationClient } from "../packages/core/src/http-application-client.js";
 import { PlatformClient } from "../apps/web/src/platform-client.js";
@@ -193,73 +194,128 @@ for (const retainedMode of ["parallel", undefined] as const)
     }
   });
 
-test("同ID并发不同mode只有一个不可变入站；不新增LLM/取消/权限请求", async () => {
-  const replies: ServerResponse[] = [];
-  const calls: string[] = [];
-  let ready!: () => void;
-  const both = new Promise<void>((resolve) => (ready = resolve));
-  const server = createServer((request, response) => {
-    calls.push(`${request.method} ${request.url}`);
-    response.setHeader("Content-Type", "application/json");
-    if (request.url !== "/api/status") {
+test(
+  "同ID并发不同mode只有一个不可变入站；不新增LLM/取消/权限请求",
+  { timeout: 20000 },
+  async (context) => {
+    const calls: string[] = [];
+    let prepared = 0;
+    let ready!: () => void;
+    const both = new Promise<void>((resolve) => (ready = resolve));
+    let release!: () => void;
+    const authorized = new Promise<void>((resolve) => (release = resolve));
+    const originalBind = RuntimeBridge.prototype.bindPlatformInputAuthority;
+    context.mock.method(
+      RuntimeBridge.prototype,
+      "bindPlatformInputAuthority",
+      function (
+        this: RuntimeBridge,
+        authorize: Parameters<typeof originalBind>[0],
+      ) {
+        originalBind.call(
+          this,
+          authorize &&
+            (async (source) => {
+              // Retain real authorization, then hold the existing admission boundary.
+              // A removed operator-default query is not a concurrency primitive.
+              const route = await authorize(source);
+              if (source.phase === "prepare" && prepared < 2) {
+                prepared++;
+                if (prepared === 2) ready();
+                await authorized;
+              }
+              return route;
+            }),
+        );
+      },
+    );
+    const bounded = async <T>(promise: Promise<T>): Promise<T> => {
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          promise,
+          new Promise<never>((_, reject) => {
+            deadline = setTimeout(
+              () =>
+                reject(
+                  Error(
+                    "concurrent admission did not reach its bounded boundary",
+                  ),
+                ),
+              5000,
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(deadline);
+      }
+    };
+    const server = createServer((request, response) => {
+      calls.push(`${request.method} ${request.url}`);
+      response.setHeader("Content-Type", "application/json");
       response.writeHead(500);
       response.end("{}");
-      return;
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const host = await platformRuntimeHostFixture({
+      url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+      token: "isolated-input-mode-test",
+      namespace: randomUUID(),
+    });
+    try {
+      const first = command("parallel");
+      const second = {
+        ...first,
+        operation: { ...first.operation, dispatchMode: "interrupt" as const },
+      };
+      const outcomes = Promise.allSettled([
+        host.session().platformMessage(first),
+        host.session().platformMessage(second),
+      ]);
+      await bounded(both);
+      assert.equal(prepared, 2);
+      release();
+      const results = await bounded(outcomes);
+      assert.equal(
+        results.filter((result) => result.status === "fulfilled").length,
+        1,
+      );
+      assert.equal(
+        results.filter((result) => result.status === "rejected").length,
+        1,
+      );
+      const index = results.findIndex(
+        (result) => result.status === "fulfilled",
+      );
+      const original = structuredClone(delivery(host, first.commandId));
+      assert.equal(
+        original.request.activation.dispatch_mode,
+        index === 0 ? "parallel" : "interrupt",
+      );
+      assert.equal((host.store.runtimeState() as Ledger).deliveries.length, 1);
+      assert.equal(original.cancelRequested, false);
+      assert.deepEqual(
+        calls,
+        [],
+        "inherited input admission has no operator-default preflight",
+      );
+      await host.reopen();
+      await host.session().platformMessage(index === 0 ? first : second);
+      assert.deepEqual(delivery(host, first.commandId), original);
+      assert.equal(
+        calls.length,
+        0,
+        "admitted retries do not add default/model requests",
+      );
+    } finally {
+      release();
+      await host.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-    replies.push(response);
-    if (replies.length === 2) ready();
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const host = await platformRuntimeHostFixture({
-    url: `http://127.0.0.1:${(server.address() as { port: number }).port}`,
-    token: "isolated-input-mode-test",
-    namespace: randomUUID(),
-  });
-  try {
-    const first = command("parallel");
-    const second = {
-      ...first,
-      operation: { ...first.operation, dispatchMode: "interrupt" as const },
-    };
-    const outcomes = Promise.allSettled([
-      host.session().platformMessage(first),
-      host.session().platformMessage(second),
-    ]);
-    await both;
-    for (const response of replies)
-      response.end(JSON.stringify({ model: "TEST-model" }));
-    const results = await outcomes;
-    assert.equal(
-      results.filter((result) => result.status === "fulfilled").length,
-      1,
-    );
-    assert.equal(
-      results.filter((result) => result.status === "rejected").length,
-      1,
-    );
-    const index = results.findIndex((result) => result.status === "fulfilled");
-    const original = structuredClone(delivery(host, first.commandId));
-    assert.equal(
-      original.request.activation.dispatch_mode,
-      index === 0 ? "parallel" : "interrupt",
-    );
-    assert.equal((host.store.runtimeState() as Ledger).deliveries.length, 1);
-    assert.equal(original.cancelRequested, false);
-    assert.deepEqual(calls, ["GET /api/status", "GET /api/status"]);
-    await host.reopen();
-    await host.session().platformMessage(index === 0 ? first : second);
-    assert.deepEqual(delivery(host, first.commandId), original);
-    assert.equal(
-      calls.length,
-      2,
-      "admitted retries do not add default/model requests",
-    );
-  } finally {
-    for (const response of replies) if (!response.writableEnded) response.end();
-    await host.close();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
-});
+  },
+);
 
 test("新输入先冻结mode；旧本机saved缺mode按parallel发送且原存储字节不改", () => {
   const values = new Map<string, string>();

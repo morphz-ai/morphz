@@ -145,7 +145,8 @@ export function profileFixtureObservationResult(
   tool: string,
 ): any {
   for (const message of [...request.messages].reverse()) {
-    if (message.role !== "tool" || typeof message.content !== "string") continue;
+    if (message.role !== "tool" || typeof message.content !== "string")
+      continue;
     const output = JSON.parse(message.content);
     if (output.tool_name !== tool) continue;
     return typeof output.result === "string"
@@ -257,6 +258,8 @@ export async function profileActualTransportFixture(
     /** Explicit eval tool allowlist for this isolated Runtime's config only.
      * This never changes the production default or bypasses Host authority. */
     evalCallableTools?: readonly string[];
+    /** Extra synthetic routes for live default-policy boundary tests only. */
+    additionalModels?: readonly string[];
     /** Trusted descriptor selection for this test-owned startup manifest only.
      * Omitting it preserves the canonical Host formats and all old fixtures. */
     inputFormats?: readonly (typeof workInputFormats)[number][];
@@ -285,6 +288,12 @@ export async function profileActualTransportFixture(
     options.inputFormats === undefined
       ? undefined
       : structuredClone(options.inputFormats);
+  const additionalModels = [...(options.additionalModels ?? [])];
+  assert.ok(additionalModels.length <= 2);
+  assert.equal(new Set(additionalModels).size, additionalModels.length);
+  for (const model of additionalModels)
+    assert.match(model, /^fixture-[a-z0-9-]{1,60}$/);
+  assert.ok(!options.realProvider || additionalModels.length === 0);
   const harnessPackages =
     options.harnessPackages === undefined
       ? undefined
@@ -529,10 +538,16 @@ export async function profileActualTransportFixture(
   const configFile = join(runtimeRoot, "morphz.toml");
   const model = options.realProvider?.model ?? "profile-actual";
   const protocol = options.realProvider?.protocol ?? "openai-chat";
+  const modelRoutes = [model, ...additionalModels]
+    .map(
+      (alias) =>
+        `[[models.${JSON.stringify(alias)}.targets]]\nservice="fixture"\naccount="fixture"\nphysical_model=${JSON.stringify(alias)}\ncapabilities=["tools"]\n`,
+    )
+    .join("");
   const evalConfiguration = `[orchestrator]\nresponse_annotations=${JSON.stringify(options.responseAnnotations ?? "on")}\n${options.evalCallableTools ? `eval_callable_tools=${JSON.stringify(options.evalCallableTools)}\n` : ""}`;
   writeFileSync(
     configFile,
-    `${evalConfiguration}[llm]\nmodel=${JSON.stringify(model)}\nreasoning_effort="low"\n[accounts.fixture]\nauth_adapter="credential"\ncredential_ref="fixture"\nprovider="fixture"\n[services.fixture]\nadapter="protocol-compatible"\nprotocol=${JSON.stringify(protocol)}\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["fixture"]\n[[models.${JSON.stringify(model)}.targets]]\nservice="fixture"\naccount="fixture"\nphysical_model=${JSON.stringify(model)}\ncapabilities=["tools"]\n[credentials.fixture]\nsource="env"\nname="PROFILE_ACTUAL_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeRoot)}\n`,
+    `${evalConfiguration}[llm]\nmodel=${JSON.stringify(model)}\nreasoning_effort="low"\n[accounts.fixture]\nauth_adapter="credential"\ncredential_ref="fixture"\nprovider="fixture"\n[services.fixture]\nadapter="protocol-compatible"\nprotocol=${JSON.stringify(protocol)}\nbase_url="http://127.0.0.1:${providerPort}/v1"\naccounts=["fixture"]\n${modelRoutes}[credentials.fixture]\nsource="env"\nname="PROFILE_ACTUAL_KEY"\n[permissions]\nworkspace_root=${JSON.stringify(runtimeRoot)}\n`,
     { mode: 0o600 },
   );
   let child: ChildProcess | undefined;
@@ -695,23 +710,39 @@ export async function profileActualTransportFixture(
       { method: "PUT", headers: { Authorization: "Bearer " + operator } },
     );
     assert.equal(binding.status, 200);
-    runtime = new RuntimeBridge(store, {
-      url: runtimeUrl,
-      token: operator,
-      namespace,
-    }, undefined, true, {
-      request: async (url, init) => {
-        const response = await fetch(url, init);
-        if (!options.realProvider && options.workspaceFiles && !response.ok &&
-            new URL(String(url)).pathname.endsWith("/workspace-file")) {
-          // Observe the original synthetic request only. No retry, alternate
-          // workspace, credentials or file bytes are exposed by this record.
-          const payload = await response.clone().json().catch(() => null);
-          workspaceReadFailures.push({ status: response.status, error: payload?.error ?? null });
-        }
-        return response;
+    runtime = new RuntimeBridge(
+      store,
+      {
+        url: runtimeUrl,
+        token: operator,
+        namespace,
       },
-    });
+      undefined,
+      true,
+      {
+        request: async (url, init) => {
+          const response = await fetch(url, init);
+          if (
+            !options.realProvider &&
+            options.workspaceFiles &&
+            !response.ok &&
+            new URL(String(url)).pathname.endsWith("/workspace-file")
+          ) {
+            // Observe the original synthetic request only. No retry, alternate
+            // workspace, credentials or file bytes are exposed by this record.
+            const payload = await response
+              .clone()
+              .json()
+              .catch(() => null);
+            workspaceReadFailures.push({
+              status: response.status,
+              error: payload?.error ?? null,
+            });
+          }
+          return response;
+        },
+      },
+    );
     const cognitiveApps = await options.cognitiveHost?.({
       directory,
       tenantId: await store.identity(),
@@ -769,6 +800,28 @@ export async function profileActualTransportFixture(
       runtime,
       client,
       options: callOptions,
+      async sessionEvaluationPolicy(
+        sessionId: string,
+        selection: { model_alias: string; reasoning_effort: string },
+      ) {
+        const response = await fetch(
+          `${runtimeUrl}/api/sessions/${encodeURIComponent(sessionId)}`,
+          {
+            method: "PATCH",
+            headers: {
+              Authorization: "Bearer " + operator,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(selection),
+          },
+        );
+        assert.equal(
+          response.status,
+          200,
+          "actual operator Session policy write",
+        );
+        return response.json();
+      },
       workspaceFile: (
         jobId: string,
         command: { tool_call_id: string; path: string; sha256?: string },

@@ -6625,27 +6625,10 @@ export class RuntimeBridge {
       sharedDefault: route.sharedDefault,
     };
     let model = input.model;
-    if (
-      !model &&
-      !previous &&
-      input.continuation?.mode !== "supplement" &&
-      !this.teamIdentity
-    ) {
-      // Freeze the local Runtime default before the durable outbox write.
-      // Omitting it would inherit an existing Session's older model. Gateway
-      // clients have no operator access to this setting; their Runtime owns it.
-      const current = z
-        .object({ model: z.string().trim().min(1).max(256) })
-        .safeParse(await this.request("/api/status"));
-      if (!current.success)
-        throw new DomainError(
-          "invalid",
-          "无法确认默认模型，请检查模型设置后重试；草稿已保留。",
-        );
-      model = current.data.model;
-    }
-    // Authorization, uploads and the default read can await another admission
-    // of this command. The first durable envelope still wins that race.
+    // Omission is the Runtime's live Session/default policy, not an explicit
+    // task override. Do not turn today's default into a sticky task choice.
+    // Authorization and uploads can await another admission of this command;
+    // the first durable envelope still wins that race.
     previous ??= this.state.deliveries.find((d) => d.inputId === input.id);
     if (previous && !input.model && input.continuation?.mode !== "supplement")
       // A retry belongs to its admitted request. Missing aliases stay missing

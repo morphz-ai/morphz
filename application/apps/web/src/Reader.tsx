@@ -366,7 +366,7 @@ function ReadingBook({
   } | null>(null);
   const [marks, setMarks] = useState<ReadingMark[]>([]);
   const sidebarRows = useRef(marks);
-  sidebarRows.current = marks;
+  const sidebarContinuation = useRef<(() => void) | null>(null);
   const [marksLoading, setMarksLoading] = useState(false);
   const [marksError, setMarksError] = useState("");
   const [marksRefresh, setMarksRefresh] = useState(0);
@@ -390,6 +390,13 @@ function ReadingBook({
   const [panel, setPanel] = useState<"contents" | "marks" | "settings" | null>(
     null,
   );
+  useLayoutEffect(() => {
+    // Pagination geometry belongs to the committed list, not a pending React
+    // state update. A frame/ResizeObserver can otherwise see the empty panel
+    // after page one resolves and consume page two before those rows exist.
+    sidebarRows.current = marks;
+    if (panel === "marks" && active) sidebarContinuation.current?.();
+  }, [marks, panel, active]);
   const [selected, setSelected] = useState<
       | (ReadingLocation & {
           x: number;
@@ -810,8 +817,11 @@ function ReadingBook({
       pending = false,
       initial = true,
       frame = 0;
+    let publishedRows: ReadingMark[] | null = null;
     const collected = new Map<string, ReadingMark>();
     const check = () => {
+      if (!live() || !publishedRows || sidebarRows.current !== publishedRows)
+        return;
       if (
         view.clientHeight &&
         view.scrollTop + view.clientHeight >= view.scrollHeight - 120
@@ -842,7 +852,8 @@ function ReadingBook({
           // Repaint/undo must not shrink a two-page list back to page one.
         } while (initial && collected.size < targetCount && !done);
         initial = false;
-        setMarks([...collected.values()]);
+        publishedRows = [...collected.values()];
+        setMarks(publishedRows);
         frame = requestAnimationFrame(check);
       } catch (e) {
         if (live()) setMarksError((e as Error).message);
@@ -852,6 +863,7 @@ function ReadingBook({
       }
     };
     const sizes = new ResizeObserver(check);
+    sidebarContinuation.current = check;
     sizes.observe(view);
     view.addEventListener("scroll", check, { passive: true });
     void load();
@@ -860,6 +872,8 @@ function ReadingBook({
       cancelAnimationFrame(frame);
       sizes.disconnect();
       view.removeEventListener("scroll", check);
+      if (sidebarContinuation.current === check)
+        sidebarContinuation.current = null;
     };
   }, [
     artifact.id,

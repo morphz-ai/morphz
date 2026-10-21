@@ -8503,10 +8503,42 @@ pub(crate) fn terminate_process_tree(process_group_id: i32) -> Result<bool, Stri
     ) {
         Ok(()) => Ok(true),
         Err(nix::errno::Errno::ESRCH) => Ok(false),
+        Err(nix::errno::Errno::EPERM)
+            if cfg!(target_os = "macos")
+                && exited_group_is_proven_after_denial(
+                    || crate::execution::local_process_tree_exists(process_group_id),
+                    std::thread::sleep,
+                ) =>
+        {
+            Ok(false)
+        }
         Err(error) => Err(format!(
             "failed to terminate managed process group {process_group_id}: {error}"
         )),
     }
+}
+
+/// Darwin can return EPERM while the last exited descendant's group is being
+/// retired, then ESRCH a few milliseconds later. Never turn EPERM itself into
+/// absence, retry the signal, or assume a timed-out probe means success. The
+/// bounded grace is only for an already-denied cleanup; an extant/inaccessible
+/// group still returns the original error. No steady-state polling is added.
+#[cfg(unix)]
+fn exited_group_is_proven_after_denial(
+    mut exists: impl FnMut() -> Result<bool, String>,
+    mut grace: impl FnMut(std::time::Duration),
+) -> bool {
+    for check in 0..3 {
+        match exists() {
+            Ok(false) => return true,
+            Ok(true) => {}
+            Err(_) => return false,
+        }
+        if check < 2 {
+            grace(std::time::Duration::from_millis(5));
+        }
+    }
+    false
 }
 
 #[cfg(windows)]
@@ -10757,6 +10789,44 @@ mod tests {
     #[cfg(target_os = "macos")]
     static MACOS_SANDBOX_EXEC_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static SECRET_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[cfg(unix)]
+    #[test]
+    fn denied_group_cleanup_requires_proven_absence_and_never_relaxes_live_or_unknown_groups() {
+        let mut checks = 0;
+        let mut delays = Vec::new();
+        assert!(exited_group_is_proven_after_denial(
+            || {
+                checks += 1;
+                Ok(checks < 3)
+            },
+            |delay| delays.push(delay),
+        ));
+        assert_eq!(checks, 3);
+        assert_eq!(delays, vec![std::time::Duration::from_millis(5); 2]);
+        checks = 0;
+        delays.clear();
+        assert!(!exited_group_is_proven_after_denial(
+            || {
+                checks += 1;
+                Ok(true)
+            },
+            |delay| delays.push(delay),
+        ));
+        assert_eq!(
+            checks, 3,
+            "a live or inaccessible group never becomes a successful cleanup"
+        );
+        assert_eq!(delays.len(), 2, "bounded checks are not an unending retry");
+        assert!(!exited_group_is_proven_after_denial(
+            || Err("inspection unavailable".into()),
+            |_| panic!("unknown inspection must fail closed immediately"),
+        ));
+        assert!(exited_group_is_proven_after_denial(
+            || Ok(false),
+            |_| panic!("proven absence needs no grace or signal retry"),
+        ));
+    }
 
     #[tokio::test]
     async fn observed_background_exit_retries_terminal_commit_until_durable() {
