@@ -15,7 +15,7 @@ added together or represented as production deployment acceptance.
 `ignored` means not executed by the default command, not a pass. Of the fourteen
 library cases, five PostgreSQL contracts execute explicitly in this workflow;
 two more belong to the required Session IO PostgreSQL workflow. The other seven
-are three provider/auth network checks, one private SSE replay and three manual
+are three provider/auth environment checks, one private SSE replay and three manual
 TUI/PTY checks; this workflow does not claim their execution. Full CI now also
 requires thirteen separately ignored PostgreSQL integration contracts (approval,
 cancellation and input provenance); all thirteen actually ran and passed in
@@ -107,8 +107,16 @@ tmp mount, so the operation returned ENOENT rather than a permission denial.
 The probe now creates and explicitly grants **read-only** access to that sibling
 before admission, requires a successful witness read, and then requires the same
 strict write-denial errors. It does not accept ENOENT as protection evidence or
-change the implementation's mounts/permissions. Native rerun results remain
-required before this corrected probe can establish release installation success.
+change the implementation's mounts/permissions. The corrected native gates both
+passed in [release run 39584810663](https://github.com/morphz-ai/morphz/actions/runs/39584810663)
+at `4d5a748f` (jobs `119175493022` and `119175493136`). Raw logs confirm actual
+packaged Runtime admission, a successful outside read before write rejection,
+late-created protected-file read denial, allowed live writes and zero model
+calls on x86_64 and ARM64. The entire release workflow also passed, including
+Windows/macOS artifacts, readiness, installed-service and Session IO gates.
+This proves first installation, not upgrade/uninstall acceptance or production
+deployment. Edge was installed/registered and version-checked, not exercised as
+an independent running Edge execution service by this probe.
 
 The service accepts only the Runtime's typed, already-approved `SandboxPolicy`.
 It never accepts shell commands, arbitrary AppArmor source, or requested profile
@@ -246,6 +254,19 @@ permits profile unloading. A still-open old descriptor cannot resurrect a
 removed group. UID/PID values saved to disk never restore authentication after
 service restart: recovery closes admissions and preserves protection while any
 descendant lives. There is no automatic task kill in this implementation.
+
+Durable records now bind the exact saved AppArmor source to the typed policy and
+unique launch identity with a domain-separated SHA-256 digest. Recovery checks
+that administrator-owned binding, not a recompilation under the newest rule
+generator. ABI-1 kernel names are derived separately from the stable typed policy
+identity. Pre-binding records migrate only if the current compiler reproduces
+their saved source exactly; unknown legacy source fails closed. No existing
+source/profile is replaced. Local deterministic checks pass (51 tests), including
+a regression that failed before this change. The expanded kernel fixture starts
+a genuinely separate service process with a changed compiler, checks old live
+descendants and new registrations together, and requires independent reclamation.
+Its native CI result and formal installer upgrade/uninstall are still pending;
+the local checks are not kernel or deployment evidence.
 
 The isolated lifetime gate uses distinct root-owned native fixture peers (not a
 trusted Python interpreter), an actual Unix control socket, actual cgroup joins,

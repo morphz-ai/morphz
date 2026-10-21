@@ -161,15 +161,25 @@ class CompiledPolicy:
     source: str
 
 
-def compile_profiles(policy: Policy, launch_id: str) -> CompiledPolicy:
+def profile_names(policy: Policy, launch_id: str) -> tuple[str, str]:
+    """Stable ABI-1 identities, independent of the current compiler's source.
+
+    Recovery must inspect/unload a saved generation without recompiling its
+    policy using a potentially newer rule generator.
+    """
     if not isinstance(launch_id, str) or not LAUNCH_ID.fullmatch(launch_id):
         raise PolicyError("service-generated launch identity must be 32 lowercase hex digits")
     # Re-validate even a directly constructed dataclass; callers cannot bypass
     # the typed decoder and smuggle source fragments into this privileged input.
     policy = Policy.from_request(json.loads(json.dumps(asdict(policy))))
+    prefix = f"morphz_sbox_v1_{launch_id}_{policy.digest()[:16]}"
+    return prefix + "_boot", prefix + "_work"
+
+
+def compile_profiles(policy: Policy, launch_id: str) -> CompiledPolicy:
+    bootstrap, work = profile_names(policy, launch_id)
+    policy = Policy.from_request(json.loads(json.dumps(asdict(policy))))
     digest = policy.digest()
-    prefix = f"morphz_sbox_v1_{launch_id}_{digest[:16]}"
-    bootstrap, work = prefix + "_boot", prefix + "_work"
     admission = f"/run/morphz-sandbox/admit-{launch_id}.sock"
     denials = set()
     for paths, access in ((policy.denied_read_paths, "rmx"),

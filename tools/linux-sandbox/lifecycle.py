@@ -9,6 +9,7 @@ from dataclasses import asdict
 import ctypes
 import errno
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ import subprocess
 import sys
 import uuid
 
-from policy import LAUNCH_ID, MAX_REQUEST_BYTES, Policy, compile_profiles, decode_request
+from policy import LAUNCH_ID, MAX_REQUEST_BYTES, Policy, compile_profiles, decode_request, profile_names
 
 
 class LifecycleError(RuntimeError):
@@ -28,6 +29,34 @@ def launch_name(value):
     if not isinstance(value, str) or not LAUNCH_ID.fullmatch(value):
         raise LifecycleError("invalid service-generated launch identity")
     return value
+
+
+def profile_binding(record, source):
+    """Bind the exact saved source to its immutable launch and typed policy.
+
+    This is corruption/mismatch detection inside administrator-owned state,
+    not a signature authorizing an untrusted caller to supply profile source.
+    """
+    launch = launch_name(record["launch"])
+    policy = Policy.from_request(record["policy"])
+    if not isinstance(source, bytes) or not 0 < len(source) <= MAX_REQUEST_BYTES * 8:
+        raise LifecycleError("saved policy source exceeds its bounded size")
+    return hashlib.sha256(b"morphz-sandbox-profile-v1\0" + launch.encode("ascii") + b"\0" +
+                          policy.digest().encode("ascii") + b"\0" + source).hexdigest()
+
+
+def verify_saved_profile(record, source):
+    binding = profile_binding(record, source)
+    if "profile_sha256" in record:
+        if record["profile_sha256"] != binding:
+            raise LifecycleError("saved policy source, launch or policy binding changed")
+    else:
+        # Pre-binding records can be migrated only while the exact original
+        # compiler is available. Never bless unknown source during an upgrade.
+        compiled = compile_profiles(Policy.from_request(record["policy"]), record["launch"])
+        if source != compiled.source.encode("utf-8"):
+            raise LifecycleError("unbound legacy policy differs from the current compiler")
+    return binding
 
 
 def privileged_linux():
@@ -127,12 +156,15 @@ class StateStore:
 
     def create(self, record, compiled):
         launch = launch_name(record["launch"])
+        source = compiled.source.encode("utf-8")
+        if record.get("profile_sha256") != profile_binding(record, source):
+            raise LifecycleError("new lease lacks its exact immutable profile binding")
         os.mkdir(launch, 0o700, dir_fd=self.directory)
         os.fsync(self.directory)
         descriptor = self._directory(launch)
         try:
             # No kernel resource exists until both immutable inputs are durable.
-            self._write(descriptor, "profile.apparmor", compiled.source.encode("utf-8"))
+            self._write(descriptor, "profile.apparmor", source)
             self._write(descriptor, "record.json", json.dumps(record, sort_keys=True).encode("ascii"))
         finally:
             os.close(descriptor)
@@ -163,9 +195,10 @@ class StateStore:
                     continue
                 if record.get("launch") != launch:
                     raise LifecycleError("lease filename and identity differ")
-                compiled = compile_profiles(Policy.from_request(record["policy"]), launch)
-                if read_file(descriptor, "profile.apparmor") != compiled.source.encode("utf-8"):
-                    raise LifecycleError("compiler ABI or immutable policy source changed")
+                binding = verify_saved_profile(record, read_file(descriptor, "profile.apparmor"))
+                if "profile_sha256" not in record:
+                    record["profile_sha256"] = binding
+                    self.save(record)  # fsync migration before any kernel operation
                 result.append(record)
             finally:
                 os.close(descriptor)
@@ -282,9 +315,8 @@ class Profiles:
                                  completed.stderr.decode("utf-8", errors="replace")[:4096])
 
     def loaded(self, record):
-        compiled = compile_profiles(Policy.from_request(record["policy"]), record["launch"])
+        names = profile_names(Policy.from_request(record["policy"]), record["launch"])
         actual = set(Path("/sys/kernel/security/apparmor/profiles").read_text().splitlines())
-        names = (compiled.bootstrap, compiled.work)
         for name in names:
             if any(line.startswith(name + " ") and line != name + " (enforce)" for line in actual):
                 raise LifecycleError("lease policy is not enforcing")
@@ -336,6 +368,7 @@ class Leases:
         compiled = compile_profiles(policy, launch)
         record = {"launch": launch, "policy": json.loads(json.dumps(asdict(policy))), "owner": owner,
                   "phase": "preparing", "cgroup": None}
+        record["profile_sha256"] = profile_binding(record, compiled.source.encode("utf-8"))
         # Reserve space for phase and cgroup metadata before creating anything.
         if len(json.dumps(record, sort_keys=True).encode("ascii")) + 128 > MAX_REQUEST_BYTES:
             raise LifecycleError("durable policy with kernel identity exceeds the registration bound")

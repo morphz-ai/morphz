@@ -59,6 +59,8 @@ def execute(args):
     output.mkdir(mode=0o755)
     unique = "morphz-sandbox-ci-" + uuid.uuid4().hex
     installed = Path("/usr/local/lib") / unique
+    upgraded = installed.with_name(unique + "-upgraded")
+    service_generation = installed
     state = Path("/var/lib") / unique
     endpoint_root = Path("/run") / unique
     group_root = Path("/sys/fs/cgroup") / unique
@@ -123,7 +125,7 @@ def execute(args):
         nonlocal service
         stderr = (output / f"service-{len(streams)}.stderr.log").open("wb")
         streams.append(stderr)
-        service = subprocess.Popen(["/usr/bin/python3", "-I", "-B", str(installed / "lifecycle_kernel_contract.py"),
+        service = subprocess.Popen(["/usr/bin/python3", "-I", "-B", str(service_generation / "lifecycle_kernel_contract.py"),
                                     "--service", str(installed / "config.json")],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=stderr,
                                    env={"PATH": "/usr/sbin:/usr/bin:/bin", "LANG": "C.UTF-8",
@@ -260,10 +262,54 @@ def execute(args):
         result = receive(peer.stdout)
         check("background work remains protected while service is absent", result.get("protected_denied")
               and result.get("allowed_write") and result.get("escape_denied"), result)
+
+        # An actual second service process imports a different rule generator.
+        # Only this isolated, root-owned fixture copy is changed. The old live
+        # source and kernel profiles must remain byte-for-byte untouched.
+        frozen_sources = {item: (state / item / "profile.apparmor").read_bytes()
+                          for item in (launch, newer_launch)}
+        shutil.copytree(installed, upgraded)
+        compiler_path = upgraded / "policy.py"
+        old_compiler = compiler_path.read_text()
+        marker = 'source = f"""abi <abi/4.0>,'
+        check("upgrade fixture changes exactly one compiler source template", old_compiler.count(marker) == 1)
+        compiler_path.write_text(old_compiler.replace(marker, marker + "\n# isolated second compiler generation"))
+        os.chmod(compiler_path, 0o444)
+        service_generation = upgraded
         start_service()
         check("restart preserves live generation and never revives admission",
               enforcing(launch) and enforcing(newer_launch) and
               launch_record(launch)["phase"] == launch_record(newer_launch)["phase"] == "closing")
+        check("new compiler recovery preserves both old immutable source files",
+              all((state / item / "profile.apparmor").read_bytes() == raw
+                  for item, raw in frozen_sources.items()))
+        peer.stdin.write(b"probe\n")
+        peer.stdin.flush()
+        result = receive(peer.stdout)
+        check("old descendant keeps real read denials and normal writes after compiler upgrade",
+              result.get("protected_denied") and result.get("allowed_write") and result.get("escape_denied"), result)
+
+        upgraded_peer, upgraded_ordinary, upgraded_protected = start_peer("background-upgraded")
+        upgraded_launch = receive(upgraded_peer.stdout)["registered"]
+        upgraded_ready = receive(upgraded_peer.stdout)
+        background.append(os.pidfd_open(upgraded_ready["pid"]))
+        check("new registrations use the new compiler while old generations stay enforcing",
+              upgraded_ready.get("ready") and upgraded_peer.wait(timeout=5) == 0 and
+              b"# isolated second compiler generation" in
+              (state / upgraded_launch / "profile.apparmor").read_bytes() and
+              enforcing(launch) and enforcing(newer_launch) and enforcing(upgraded_launch))
+        host_file(upgraded_protected, "upgraded-late-secret")
+        upgraded_peer.stdin.write(b"probe\n")
+        upgraded_peer.stdin.flush()
+        result = receive(upgraded_peer.stdout)
+        check("new generation still denies late files and preserves allowed live writes",
+              result.get("protected_denied") and result.get("allowed_write") and
+              result.get("escape_denied") and upgraded_ordinary.read_text() == "host\nworker\n", result)
+        upgraded_peer.stdin.write(b"exit\n")
+        upgraded_peer.stdin.flush()
+        check("new compiler generation cleans up without changing older live protections",
+              wait_until(lambda: launch_record(upgraded_launch)["phase"] == "removed") and
+              not enforcing(upgraded_launch) and enforcing(launch) and enforcing(newer_launch))
         peer.stdin.write(b"exit\n")
         peer.stdin.flush()
         check("only last descendant exit permits cgroup removal then policy unload",
@@ -357,6 +403,8 @@ def execute(args):
                 # service, user data, global sysctl or existing cgroup is touched.
                 group_root.rmdir()
                 shutil.rmtree(installed)
+                if upgraded.exists():
+                    shutil.rmtree(upgraded)
                 shutil.rmtree(state)
                 shutil.rmtree(endpoint_root)
             else:
