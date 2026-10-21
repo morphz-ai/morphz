@@ -3,17 +3,39 @@
 Implementation under the approved 2026-10-21 service/launcher plan. **Installed
 only in isolated Linux CI, not on user/production machines.**
 
-Latest measured result: `39568698033` passed the unchanged late-file PTY test,
+Latest measured result: [run 39571694668](https://github.com/morphz-ai/morphz/actions/runs/39571694668)
+at `fe0f17a5` passed both jobs, with raw logs checked: four actual Runtime native
+contracts, the unchanged late-file PTY regression, private-PTY/session separation,
 the complete Runtime library (1664 passed, zero failed, 14 default-ignored),
-and all five separately required PostgreSQL contracts. The mount and lifetime
-kernel gates also passed. Its new namespace-handle native case still failed;
+and all five separately required PostgreSQL library contracts. Compiler/kernel
+assertions (86), peer cases (6), object-pin assertions (18), native-mount assertions
+(49) and lifetime assertions (35) also passed. These different scopes are not
+added together or represented as production deployment acceptance.
+
+`ignored` means not executed by the default command, not a pass. Of the fourteen
+library cases, five PostgreSQL contracts execute explicitly in this workflow;
+two more belong to the required Session IO PostgreSQL workflow. The other seven
+are three provider/auth network checks, one private SSE replay and three manual
+TUI/PTY checks; this workflow does not claim their execution. Full CI now also
+requires thirteen separately ignored PostgreSQL integration contracts (approval,
+cancellation and input provenance); all thirteen actually ran and passed in
+job `119126357268` of run `39571445223`. They are not part of the fourteen library
+cases. Each required PostgreSQL invocation rejects zero-test or ignored-only
+success, and a source-inventory guard rejects a new unowned PostgreSQL case.
+
+Historical false-green result: `39568698033` passed the library and PostgreSQL
+cases but its new namespace-handle native case still failed;
 the CI page incorrectly reported success because the logging pipeline lacked
 `pipefail`. That green status is **not** accepted as a passing run. The step now
 uses explicit Bash with pipeline failure propagation, and a regression executes
 that exact workflow command with both failing and successful fixture producers.
 The namespace test correction records actual syscall errors and accepts only
 EPERM/EACCES rejection, never a successful namespace transition. The corrected
-native case and complete workflow still require fresh CI evidence.
+case passed in `39569588210` and again in the latest failure-propagating workflow.
+The Windows release's two native Cargo builds also use explicit Bash: a regression
+executes the actual workflow commands and requires a failed first build to stop
+before the successful second build could mask it. Full release validation is
+separate from this controlled exit-status test.
 
 Earlier progression: run `39560180501`
 at `50844520` passed the actual administrator-installed Runtime command and PTY
@@ -46,7 +68,7 @@ namespace-local SYS_ADMIN/SETPCAP; every capability set, including the bounding
 set, is zero before work-profile admission. The service verifies the resulting
 mount table, not a claimed setup result. Run `39568698033` passed 49 native mount
 assertions, 35 policy-lifetime assertions and the installed Runtime library;
-the separate native namespace-case failure above remains explicitly open.
+the separate native namespace-case failure was corrected and verified above.
 No data-filesystem allowlist or relaxed write check was added.
 Full CI, upgrade/uninstall and release
 integration remain separate acceptance gates.
@@ -95,8 +117,8 @@ must retain the pidfd and revalidate again before admission. The separate kernel
 fixture uses Python only as a **test** executable; a production registry must
 contain the installed Runtime/launcher, not a general interpreter. The controller
 now uses these checks for registration, object binding and private admission.
-The previously failing mount refusal is resolved in the measured library run;
-the remaining native case and complete CI must still pass.
+The previously failing mount refusal and namespace case are resolved in the
+measured installed Runtime run; the complete workspace CI remains a separate gate.
 
 `roots.py` pins actual directory objects under the caller's non-root identity,
 with no capabilities and without following root or ancestor symlinks. It retains
@@ -147,7 +169,8 @@ actual root-owned native Runtime test executables and the real service. Run
 `39560180501` passed two public execution tests, the original terminal regression,
 and real private-PTY versus ordinary-command session separation. The later
 full-library expansion passed in `39568698033`, but the failed native case
-prevents treating that entire run as successful.
+prevents treating that entire historical run as successful. The latest complete
+installed-service workflow above passes without that failure.
 
 Old direct-Bubblewrap integration cases now invoke the installed public Runtime
 path. Protected-read assertions open/read the actual file and require rejection,

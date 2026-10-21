@@ -318,7 +318,9 @@ jobs:
       - name: Cache Cargo registry
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build release binaries and sandbox helpers
-        shell: pwsh
+        # Explicit bash stops on either Cargo failure; PowerShell's final native
+        # exit code alone can hide a failed Runtime build behind successful helpers.
+        shell: bash
         run: |
           cargo build --locked --release -p morphz --bin morphz --bin morphz-edge --bin morphz-windows-sandbox-runner
           cargo build --locked --release -p morphz-windows-sandbox --bins

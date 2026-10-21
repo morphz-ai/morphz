@@ -6,6 +6,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import tempfile
+import textwrap
 import unittest
 
 from stage_runtime_tests import SANDBOX_TEST_TARGETS, selected_artifacts
@@ -18,6 +19,38 @@ def artifact(name, kind, test=True):
 
 
 class CiStagingTests(unittest.TestCase):
+    def test_windows_release_build_stops_after_the_first_native_failure(self):
+        release = (Path(__file__).resolve().parents[2] / ".github/workflows/release.yml").read_text()
+        step = release.split("      - name: Build release binaries and sandbox helpers\n", 1)[1].split(
+            "\n      - ", 1)[0]
+        self.assertIn("        shell: bash\n", step)
+        self.assertNotIn("continue-on-error", step)
+        command = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        self.assertEqual(command.count("cargo build --locked --release"), 2)
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "cargo"
+            executable.write_text(
+                '#!/bin/sh\n'
+                'if [ -f "$FIXTURE_TRACE" ]; then\n'
+                '  printf "helpers\\n" >> "$FIXTURE_TRACE"\n'
+                '  exit 0\n'
+                'fi\n'
+                'printf "runtime\\n" > "$FIXTURE_TRACE"\n'
+                'exit "$FIXTURE_EXIT"\n'
+            )
+            executable.chmod(0o700)
+            for code in (7, 0):
+                trace = Path(directory) / f"attempts-{code}"
+                result = subprocess.run(
+                    ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", command],
+                    env={**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"],
+                         "FIXTURE_TRACE": str(trace), "FIXTURE_EXIT": str(code)},
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual(trace.read_text().splitlines(),
+                                 ["runtime"] if code else ["runtime", "helpers"])
+
     def test_release_keeps_the_installed_runtime_and_real_kernel_gates(self):
         workflows = Path(__file__).resolve().parents[2] / ".github/workflows"
         release = (workflows / "release.yml").read_text()
