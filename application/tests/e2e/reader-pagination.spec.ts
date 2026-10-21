@@ -166,6 +166,7 @@ function observeReads(page: Page, artifactId: string) {
   const states: Array<Record<string, unknown>> = [];
   const sent: string[] = [];
   const pending: Promise<void>[] = [];
+  const observationErrors: string[] = [];
   page.on("request", (request) => {
     if (
       request.method() === "POST" &&
@@ -173,31 +174,35 @@ function observeReads(page: Page, artifactId: string) {
     )
       sent.push(request.url());
   });
-  page.on("response", (response) => {
-    const url = new URL(response.url());
-    if (url.searchParams.get("artifactId") !== artifactId || !response.ok())
+  // response only means headers arrived. Waiting for its body can outlive the
+  // old document after reload. Observe completed requests, not aborted reads;
+  // product visibility and durable-state assertions still cover the reload.
+  page.on("requestfinished", (request) => {
+    const url = new URL(request.url());
+    if (
+      url.searchParams.get("artifactId") !== artifactId ||
+      !["/api/reader/marks", "/api/reader/state"].includes(url.pathname)
+    )
       return;
-    if (url.pathname === "/api/reader/marks")
-      pending.push(
-        response
-          .json()
-          .then((result) => {
+    pending.push(
+      request
+        .response()
+        .then(async (response) => {
+          if (!response?.ok()) return;
+          const result = await response.json();
+          if (url.pathname === "/api/reader/marks") {
             reads.push({
               params: Object.fromEntries(url.searchParams),
               rows: result.marks.length,
             });
-          })
-          .catch(() => {}),
-      );
-    if (url.pathname === "/api/reader/state")
-      pending.push(
-        response
-          .json()
-          .then((result) => {
+          } else {
             states.push(result);
-          })
-          .catch(() => {}),
-      );
+          }
+        })
+        .catch((error: unknown) => {
+          observationErrors.push(`${url.pathname}: ${String(error)}`);
+        }),
+    );
   });
   return {
     reads,
@@ -205,6 +210,10 @@ function observeReads(page: Page, artifactId: string) {
     sent,
     async assertBounded() {
       await Promise.all(pending);
+      expect(
+        observationErrors,
+        "Completed reader responses must remain parseable",
+      ).toEqual([]);
       expect(reads.length).toBeGreaterThan(0);
       for (const read of reads) {
         expect(Number(read.params.limit)).toBeLessThanOrEqual(50);
@@ -219,6 +228,91 @@ function observeReads(page: Page, artifactId: string) {
     },
   };
 }
+
+test("阅读响应观测：刷新后不等待旧文档未完成正文，完整响应错误不被吞掉", async ({
+  page,
+}) => {
+  test.setTimeout(5000);
+  const artifactId = "test-reader-observer-navigation";
+  let partialResponses = 0;
+  const server = createServer((request, response) => {
+    const url = new URL(request.url!, "http://127.0.0.1");
+    if (url.pathname === "/") {
+      response.writeHead(200, { "Content-Type": "text/html" });
+      response.end(
+        "<!doctype html><title>TEST reader response observation</title>",
+      );
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "application/json" });
+    if (url.searchParams.has("invalid")) {
+      response.end('{"marks":');
+      return;
+    }
+    if (url.searchParams.has("partial")) {
+      partialResponses++;
+      response.flushHeaders();
+      response.write(
+        url.pathname.endsWith("marks") ? '{"marks":[' : '{"position":',
+      );
+      // Leave the real response unfinished across navigation. Chromium need
+      // not emit requestfailed for an old document after receiving headers.
+      return;
+    }
+    response.end(
+      url.pathname.endsWith("marks") ? '{"marks":[{}]}' : '{"position":null}',
+    );
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  expect(address && typeof address !== "string").toBeTruthy();
+  const base = `http://127.0.0.1:${(address as { port: number }).port}`;
+  try {
+    await page.goto(base);
+    const probe = observeReads(page, artifactId);
+    await page.evaluate(async (id) => {
+      for (const path of ["marks", "state"])
+        await (
+          await fetch(
+            `/api/reader/${path}?artifactId=${id}&revision=1&limit=50`,
+          )
+        ).json();
+    }, artifactId);
+    await probe.assertBounded();
+    await page.evaluate(async (id) => {
+      // fetch resolves on headers, while the observer's body is still pending.
+      await Promise.all(
+        ["marks", "state"].map((path) =>
+          fetch(
+            `/api/reader/${path}?artifactId=${id}&revision=1&limit=50&partial=1`,
+          ),
+        ),
+      );
+    }, artifactId);
+    expect(partialResponses).toBe(2);
+    await page.reload();
+    await expect(page).toHaveTitle("TEST reader response observation");
+    await probe.assertBounded();
+    expect(probe.reads).toHaveLength(1);
+    expect(probe.states).toHaveLength(1);
+    // A completed malformed response must fail observation rather than being
+    // silently discarded by the old catch-all while other responses pass.
+    await page.evaluate(async (id) => {
+      await (
+        await fetch(`/api/reader/marks?artifactId=${id}&invalid=1`)
+      ).text();
+    }, artifactId);
+    await expect(probe.assertBounded()).rejects.toThrow(
+      "Completed reader responses must remain parseable",
+    );
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 async function paintedMarks(page: Page) {
   return text(page).evaluate((root) =>
     [...(CSS as any).highlights.entries()]
@@ -720,6 +814,10 @@ test("分页侧栏：自然续页、零长书签、删除失败同命令重试�
     .poll(async () => (await position())?.location.sectionId)
     .toBe(second.id);
   expect((await position())?.location.start).toBe(0);
+  // Consume already completed response bodies before destroying their document;
+  // Chromium can evict those bodies during reload. Unfinished reads are not
+  // awaited, so this is not a network-idle requirement or a timeout extension.
+  await probe.assertBounded();
   await page.reload();
   await expect(text(page)).toContainText("零长书签跳转到这里");
   await page.getByRole("button", { name: "书签与批注", exact: true }).click();
