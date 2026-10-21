@@ -1,9 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+test("Electron dependency, lockfile and lifecycle approval use one exact version", () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  const lock = JSON.parse(
+    readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"),
+  );
+  const version = manifest.devDependencies.electron;
+  assert.match(version, /^\d+\.\d+\.\d+$/);
+  assert.equal(lock.packages[""].devDependencies.electron, version);
+  assert.equal(lock.packages["node_modules/electron"].version, version);
+  assert.deepEqual(
+    Object.entries(manifest.allowScripts).filter(([name]) =>
+      name.startsWith("electron@"),
+    ),
+    [[`electron@${version}`, true]],
+  );
+});
 
 test(
   "fresh macOS development bundle seals the actual engine and unchanged reopen preserves every signed byte",
