@@ -18,6 +18,7 @@ on:
       - "scripts/tests/application-cognitive-ci-setup.test.mjs"
       - "scripts/tests/application-electron-ci-setup.test.mjs"
       - "scripts/tests/application-runtime-ci-coverage.test.mjs"
+      - "scripts/tests/application-reader-ocr-smoke.test.mjs"
       - "scripts/prune-orphan-test-sqlite.mjs"
       - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
       - "scripts/observe-ci-resources.mjs"
@@ -40,6 +41,7 @@ on:
       - "scripts/tests/application-cognitive-ci-setup.test.mjs"
       - "scripts/tests/application-electron-ci-setup.test.mjs"
       - "scripts/tests/application-runtime-ci-coverage.test.mjs"
+      - "scripts/tests/application-reader-ocr-smoke.test.mjs"
       - "scripts/prune-orphan-test-sqlite.mjs"
       - "scripts/tests/prune-orphan-test-sqlite.test.mjs"
       - "scripts/observe-ci-resources.mjs"
@@ -281,6 +283,8 @@ jobs:
       - run: npm run test:draft-restart
       - run: npx playwright test tests/capture-window.spec.ts tests/sidebar-native.spec.ts
       # Real, checksum-pinned local OCR. No Runtime, paid provider or user books.
+      - name: Verify Reader OCR stage and failure-evidence contracts
+        run: node --test ../scripts/tests/application-reader-ocr-smoke.test.mjs
       - name: Prepare OCR models for isolated regression fixtures
         run: node scripts/reader-ocr-model-fixture.mjs "$RUNNER_TEMP/reader-ocr-models" --download
       - name: Reader OCR isolation and correction
@@ -295,6 +299,7 @@ jobs:
             application/test-results/morphz-embedded-electron-*/reader-stability.json
             application/test-results/morphz-embedded-electron-*/reader-stability-failure.png
             application/test-results/morphz-embedded-electron-*/ocr-*.json
+            application/test-results/morphz-embedded-electron-*/ocr-failure.png
             application/test-results/morphz-embedded-electron-*/reader-ocr-*.png
           if-no-files-found: ignore
           retention-days: 7

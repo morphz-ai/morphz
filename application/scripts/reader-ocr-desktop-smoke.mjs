@@ -40,6 +40,26 @@ const env = {
   MORPHZ_APP_EMBEDDED_FIXTURE: fixture,
 };
 delete env.ELECTRON_RUN_AS_NODE;
+// Import owns a 35s client request deadline; allow a separate, bounded 5s
+// refresh/onOpen settlement instead of charging import to a text assertion.
+const importReadyTimeout = 40_000;
+const pdfReadyTimeout = 20_000;
+const fixtureStarted = Date.now();
+const phaseTimings = [];
+let phase = "init";
+let phaseStarted = fixtureStarted;
+function beginPhase(next) {
+  const now = Date.now();
+  const timing = {
+    phase,
+    elapsedMilliseconds: now - phaseStarted,
+    completedAtMilliseconds: now - fixtureStarted,
+  };
+  phaseTimings.push(timing);
+  console.log(JSON.stringify({ kind: "reader-ocr-smoke-phase", ...timing }));
+  phase = next;
+  phaseStarted = now;
+}
 let app, page;
 try {
   app = await _electron.launch({
@@ -101,6 +121,7 @@ try {
     .getByRole("region", { name: "应用", exact: true })
     .getByRole("button", { name: "阅读 1.0.0" })
     .click();
+  beginPhase("import");
   const picker = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "导入读物", exact: true }).click();
   await (
@@ -111,8 +132,22 @@ try {
     buffer: readFileSync(resolve("tests/fixtures/reader.pdf")),
   });
   await expect(
+    page.getByRole("region", {
+      name: "阅读 TEST OCR 本地识别",
+      exact: true,
+    }),
+  ).toBeVisible({ timeout: importReadyTimeout });
+  beginPhase("pdf-ready");
+  // PdfPage sets aria-busy=false only after both canvas and text render finish.
+  await expect(page.locator(".reading-app:visible .pdf-page")).toHaveAttribute(
+    "aria-busy",
+    "false",
+    { timeout: pdfReadyTimeout },
+  );
+  await expect(
     page.locator(".reading-app:visible .pdf-text-layer"),
   ).toContainText("DESIGN NOTES");
+  beginPhase("ocr");
   await page.getByText("扫描文字识别", { exact: true }).click();
   await expect(
     page.getByRole("button", { name: "识别这一页", exact: true }),
@@ -150,6 +185,7 @@ try {
     /DESIGN\s*NOTES/,
     { timeout: 90000 },
   );
+  beginPhase("verification");
   const catalog = await bridge("content.list", {
     appIds: ["morphz.reader"],
     limit: 50,
@@ -389,6 +425,7 @@ try {
     Buffer.from(zoomCapture, "base64"),
   );
   assert.deepEqual(errors, []);
+  beginPhase("complete");
   const report = {
     ok: true,
     fixture,
@@ -398,6 +435,7 @@ try {
     restored: true,
     isolation,
     matrix,
+    phaseTimings,
   };
   writeFileSync(
     join(fixture, "ocr-result.json"),
@@ -410,7 +448,17 @@ try {
     .catch(() => {});
   writeFileSync(
     join(fixture, "ocr-failure.json"),
-    JSON.stringify({ error: error.stack ?? String(error) }, null, 2),
+    JSON.stringify(
+      {
+        error: error.stack ?? String(error),
+        phase,
+        phaseElapsedMilliseconds: Date.now() - phaseStarted,
+        elapsedMilliseconds: Date.now() - fixtureStarted,
+        phaseTimings,
+      },
+      null,
+      2,
+    ),
   );
   throw error;
 } finally {

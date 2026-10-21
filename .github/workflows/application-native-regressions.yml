@@ -27,6 +27,8 @@ on:
       - application/tests/subject-objectives-restore.spec.ts
       - application/tests/e2e/reader-pagination.spec.ts
       - application/scripts/reader-ocr-model-fixture.mjs
+      - application/scripts/reader-ocr-desktop-smoke.mjs
+      - scripts/tests/application-reader-ocr-smoke.test.mjs
       - application/tests/fixtures/cognitive-document-native-entry.cjs
       - application/tests/fixtures/native-test-environment.ts
   workflow_dispatch:
@@ -93,6 +95,8 @@ jobs:
       - run: npm ci
       - run: node node_modules/electron/install.js
       - run: npm run build
+      - name: Verify Reader OCR stage and failure-evidence contracts
+        run: node --test ../scripts/tests/application-reader-ocr-smoke.test.mjs
       - name: Acquire the exact public models with bounded failure diagnosis
         run: node scripts/reader-ocr-model-fixture.mjs "$RUNNER_TEMP/reader-ocr-models" --download
       - run: npm run test:reader-ocr -- "$RUNNER_TEMP/reader-ocr-models"
@@ -105,6 +109,7 @@ jobs:
             application/test-results/morphz-embedded-electron-*/reader-stability.json
             application/test-results/morphz-embedded-electron-*/reader-stability-failure.png
             application/test-results/morphz-embedded-electron-*/ocr-*.json
+            application/test-results/morphz-embedded-electron-*/ocr-failure.png
             application/test-results/morphz-embedded-electron-*/reader-ocr-*.png
           if-no-files-found: ignore
 
