@@ -103,6 +103,28 @@ test("菜单入场不移动命中区域，关闭立即失去交互，动效不�
   await page.keyboard.press("Escape");
   await openInput(page);
   await expect(input).toHaveValue("动画期间保留草稿");
+  // Capture the actual CSS entry animation when it starts. Waiting for a
+  // cross-process focus assertion first can outlast the 180ms animation on a
+  // loaded runner; getAnimations() then correctly contains no active motion.
+  // Pausing its clock does not delay dialog mounting or keyboard focus.
+  await page.evaluate(() => {
+    const capture = (event: AnimationEvent) => {
+      const element = event.target;
+      if (
+        !(element instanceof HTMLDialogElement) ||
+        element.getAttribute("aria-label") !== "搜索资料"
+      )
+        return;
+      const animation = element
+        .getAnimations()
+        .find((value) => value instanceof CSSAnimation);
+      if (!animation) return;
+      animation.pause();
+      animation.currentTime = 0;
+      document.removeEventListener("animationstart", capture);
+    };
+    document.addEventListener("animationstart", capture);
+  });
   await page.getByRole("button", { name: "搜索资料", exact: true }).click();
   const search = page.getByRole("dialog", { name: "搜索资料", exact: true });
   await expect(search.locator("input").first()).toBeFocused();
