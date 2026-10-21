@@ -21,10 +21,24 @@ type Snapshot = {
 };
 const equivalent =
   process.env.MORPHZ_TEST_APPLICATION_COMPOSE_EQUIVALENCE === "1";
+const caseOptions = { timeout: 30_000 };
 test(
   "real scoped draft writer preserves preparation ACK and publication in StrictMode",
-  { timeout: 45000 },
+  // One browser startup, seven independently bounded cases, then cleanup.
+  // A cold browser must not spend the later cases' entire shared deadline.
+  { timeout: 45_000 + 7 * caseOptions.timeout + 15_000 },
   async (context) => {
+    const started = performance.now();
+    const phase = (name: string, action?: string, lane?: string) =>
+      context.diagnostic(
+        JSON.stringify({
+          phase: name,
+          elapsedMs: Math.round(performance.now() - started),
+          action,
+          lane,
+        }),
+      );
+    phase("setup");
     const executable =
       process.env.MORPHZ_TEST_BROWSER_EXECUTABLE || chromium.executablePath();
     assert.ok(
@@ -66,12 +80,15 @@ test(
     let browser: Browser | undefined;
     try {
       await server.listen();
+      phase("server-listening");
       const address = server.httpServer!.address();
       assert.ok(address && typeof address !== "string");
       browser = await chromium.launch({
         headless: true,
         executablePath: executable,
+        timeout: 30_000,
       });
+      phase("browser-ready");
       const url = `http://127.0.0.1:${address.port}/__compose-preparation`;
       async function runCase(action: string, script = false) {
         const records: {
@@ -80,6 +97,7 @@ test(
           snapshot: Snapshot;
         }[] = [];
         for (const lane of equivalent ? ["fixed", "current"] : ["current"]) {
+          phase("case-start", action, lane);
           const isolated = await browser!.newContext();
           try {
             await isolated.addInitScript(() =>
@@ -99,6 +117,7 @@ test(
             await page.waitForFunction(
               () => !!Reflect.get(window, "applicationComposeFixture"),
             );
+            phase("fixture-ready", action, lane);
             if (script)
               await page.evaluate(() =>
                 Reflect.get(window, "applicationComposeFixture").run(
@@ -151,6 +170,7 @@ test(
             );
           } finally {
             await isolated.close();
+            phase("case-closed", action, lane);
           }
         }
         if (equivalent)
@@ -163,6 +183,7 @@ test(
       }
       await context.test(
         "queued latest artifact text/settings and quotes are published before success ACK",
+        caseOptions,
         async () => {
           const { result, snapshot } = await runCase("latest-artifact");
           assert.deepEqual(result, { ok: true });
@@ -190,6 +211,7 @@ test(
       for (const action of ["dedicated-refusal", "limit-refusal"])
         await context.test(
           action + " real executed updater produces a refusal and no reveal",
+          caseOptions,
           async () => {
             const { result, snapshot } = await runCase(action);
             assert.equal(result.ok, false);
@@ -210,6 +232,7 @@ test(
         );
       await context.test(
         "plain append deliberately consumes captured render, preserving quote map",
+        caseOptions,
         async () => {
           const { result, snapshot } = await runCase("captured-plain");
           assert.deepEqual(result, { ok: true });
@@ -225,6 +248,7 @@ test(
       );
       await context.test(
         "script captured conflict semantics do not become artifact latest guards",
+        caseOptions,
         async () => {
           const { result, snapshot } = await runCase("script-captured", true);
           assert.deepEqual(result, { ok: true });
@@ -245,6 +269,7 @@ test(
       );
       await context.test(
         "original storage failure notice retains prepared React state and true ACK",
+        caseOptions,
         async () => {
           const { result, snapshot } = await runCase("storage-failure");
           assert.deepEqual(result, { ok: true });
@@ -267,6 +292,7 @@ test(
       );
       await context.test(
         "borrowed replacement origin port retirement remains outside preparation policy",
+        caseOptions,
         async () => {
           const { result, snapshot } = await runCase("retired-replace-port");
           assert.deepEqual(result, { ok: true });
@@ -281,6 +307,7 @@ test(
         },
       );
     } finally {
+      phase("cleanup");
       try {
         await browser?.close();
       } finally {
@@ -288,6 +315,7 @@ test(
           await server.close();
         } finally {
           rmSync(cache, { recursive: true, force: true });
+          phase("closed");
         }
       }
     }
