@@ -1,10 +1,13 @@
 # Linux continuous-path sandbox service
 
-Implementation in progress under the approved 2026-10-21 service/launcher plan.
-This directory is **not yet installed on user/production machines or a completed
-Runtime fix**. The new Runtime hookup and installer are under isolated CI validation.
-The old strict terminal failure remains open until the actual Runtime path and
-original CI test pass; this compiler cannot replace that acceptance.
+Implementation under the approved 2026-10-21 service/launcher plan. **Installed
+only in isolated Linux CI, not on user/production machines.** Run `39560180501`
+at `50844520` passed the actual administrator-installed Runtime command and PTY
+path, including the unchanged original late-created protected-file terminal
+regression. It also passed the separate compiler/kernel gates. This establishes
+that the Runtime fix works for those cases, not that full CI or deployment is
+complete. Full Runtime inventory, upgrade/uninstall and release integration
+remain separate acceptance gates.
 
 The service accepts only the Runtime's typed, already-approved `SandboxPolicy`.
 It never accepts shell commands, arbitrary AppArmor source, or requested profile
@@ -92,11 +95,21 @@ Only the service writes its one-byte success receipt, after actual admission;
 refusal/service loss is EOF, never a success marker. The work command receives
 neither end, and command stdout cannot impersonate it. Current isolated native
 peers verify success and refusal receipts alongside actual Bubblewrap admission.
-Rust PreparedCommand/PreparedPty now retain this private receipt. Exec metadata
-and terminal readiness remain pending until it succeeds. The new isolated job
-installs actual root-owned native Runtime test executables and the real service,
-then runs the original terminal regression unchanged. No passing result has yet
-been recorded for that hookup; the earlier component gates are not its proof.
+Rust PreparedCommand/PreparedPty retain this private receipt. Exec metadata and
+terminal readiness remain pending until it succeeds. The isolated job installs
+actual root-owned native Runtime test executables and the real service. Run
+`39560180501` passed two public execution tests, the original terminal regression,
+and real private-PTY versus ordinary-command session separation. The later
+full-library expansion must pass independently; the component gates are not a
+substitute for it.
+
+Old direct-Bubblewrap integration cases now invoke the installed public Runtime
+path. Protected-read assertions open/read the actual file and require rejection,
+instead of relying on the old `/dev/null` snapshot mask's zero-length metadata.
+The old public shell test also now uses `set -e`: a failed intermediate check can
+no longer be hidden by a successful final command. Writes, allowed siblings,
+HOME grants and unchanged host bytes remain asserted; no test is ignored to
+make this migration pass. The original terminal late-file test stays unchanged.
 
 `launcher.c` is a static, non-setuid executable. User environment is frozen into
 a sealed private handoff; distribution Bubblewrap receives a fixed clean

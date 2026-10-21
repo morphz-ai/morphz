@@ -9226,7 +9226,8 @@ impl Tool for ExecuteCommandTool {
         if let Some(receipt) = startup_receipt {
             let admitted = tokio::task::spawn_blocking(move || receipt.wait())
                 .await
-                .map_err(|error| format!("Linux sandbox admission task terminated: {error}"))?;
+                .map_err(|error| format!("Linux sandbox admission task terminated: {error}"))
+                .and_then(|result| result.map_err(|error| error.to_string()));
             if let Err(error) = admitted {
                 let _ = child.kill().await;
                 if let Some((scheduler, reserved)) = reserved_background {

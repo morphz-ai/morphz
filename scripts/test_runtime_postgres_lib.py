@@ -41,12 +41,12 @@ def run_tests(run=subprocess.run, environment=None):
     failed = []
     for case in CASES:
         print(f"[PostgreSQL library contract] {case}", flush=True)
+        installed = environment.get("MORPHZ_TEST_RUNTIME_LIB", "")
+        arguments = ([installed, case] if installed else [
+            str(ROOT / "scripts/cargo-dev.sh"), "test", "--locked", "-p", "morphz", "--lib", case, "--",
+        ])
         result = run(
-            [
-                str(ROOT / "scripts/cargo-dev.sh"),
-                "test", "--locked", "-p", "morphz", "--lib", case,
-                "--", "--exact", "--ignored", "--test-threads=1", "--nocapture",
-            ],
+            [*arguments, "--exact", "--ignored", "--test-threads=1", "--nocapture"],
             cwd=ROOT,
             env=environment,
             text=True,

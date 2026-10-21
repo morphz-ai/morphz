@@ -10,6 +10,7 @@ on:
       - morphz/src/terminal.rs
       - morphz/src/tool.rs
       - morphz/tests/native_sandbox_contract.rs
+      - scripts/test_runtime_postgres_lib.py
       - .github/workflows/linux-sandbox-service.yml
   workflow_dispatch:
 
@@ -25,9 +26,24 @@ jobs:
     name: Installed service and actual Runtime exec / PTY
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: morphz
+          POSTGRES_PASSWORD: morphz
+          POSTGRES_DB: morphz_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U morphz -d morphz_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       CARGO_BUILD_JOBS: 2
       MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"
+      MORPHZ_TEST_POSTGRES_URL: postgres://morphz:morphz@127.0.0.1:5432/morphz_test
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -59,6 +75,14 @@ jobs:
         run: /usr/local/libexec/morphz-runtime-ci/lib terminal::tests::terminal_sandbox_denies_outside_writes_and_protected_files --exact --nocapture --test-threads=1
       - name: Verify actual Runtime private PTY and ordinary command session boundaries
         run: /usr/local/libexec/morphz-runtime-ci/lib sandbox::linux::tests::native_bubblewrap_only_private_pty_retains_controlling_terminal --exact --nocapture --test-threads=1
+      - name: Run the complete Runtime library inventory through the installed implementation
+        if: ${{ !cancelled() }}
+        run: /usr/local/libexec/morphz-runtime-ci/lib --test-threads=1
+      - name: Require real PostgreSQL approval, input and PTY contracts even after another failure
+        if: ${{ !cancelled() }}
+        env:
+          MORPHZ_TEST_RUNTIME_LIB: /usr/local/libexec/morphz-runtime-ci/lib
+        run: python3 scripts/test_runtime_postgres_lib.py
       - name: Preserve actual service diagnostics
         if: always()
         run: |

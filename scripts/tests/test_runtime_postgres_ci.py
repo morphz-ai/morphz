@@ -137,6 +137,18 @@ class PostgresCiTests(unittest.TestCase):
                 "--", "--exact", "--ignored", "--test-threads=1", "--nocapture",
             ])
 
+    def test_administrator_installed_binary_preserves_every_exact_case_and_summary_check(self):
+        calls = []
+        environment = {"MORPHZ_TEST_POSTGRES_URL": "postgresql://catalog.invalid/not-connected",
+                       "MORPHZ_TEST_RUNTIME_LIB": "/installed/native-test"}
+        def controlled_run(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, "test result: ok. 1 passed; 0 failed; 0 ignored;\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(runner.run_tests(controlled_run, environment), 0)
+        self.assertEqual(calls, [["/installed/native-test", case, "--exact", "--ignored",
+                                 "--test-threads=1", "--nocapture"] for case in runner.CASES])
+
 
 if __name__ == "__main__":
     unittest.main()
