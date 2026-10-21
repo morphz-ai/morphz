@@ -1,0 +1,45 @@
+name: Isolated Linux sandbox service implementation
+
+on:
+  push:
+    branches: [fix/full-application-regressions-20261021]
+    paths:
+      - tools/linux-sandbox/**
+      - .github/workflows/linux-sandbox-service.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-sandbox-service-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compiler-kernel:
+    name: Typed compiler and actual AppArmor literal paths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install distribution AppArmor without changing global security settings
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes apparmor apparmor-utils libapparmor1
+      - name: Verify strict typed policy and deterministic compilation
+        run: python3 -B -m unittest discover -s tools/linux-sandbox -p 'test_*.py' -v
+      - name: Verify generated policy against real enforcing kernel paths
+        run: |
+          sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B \
+            tools/linux-sandbox/kernel_contract.py --uid "$(id -u)" --gid "$(id -g)" \
+            --output "${{ runner.temp }}/linux-sandbox-compiler-kernel"
+      - name: Preserve failed and successful kernel evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: linux-sandbox-compiler-kernel-${{ github.run_id }}
+          path: ${{ runner.temp }}/linux-sandbox-compiler-kernel/
+          if-no-files-found: warn
+          retention-days: 7
