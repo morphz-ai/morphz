@@ -3,9 +3,10 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { mountedFixtureObservation } from "./fixtures/mounted-fixture-observation.js";
 import { chromium } from "@playwright/test";
 import react from "@vitejs/plugin-react";
-import { createServer, transformWithOxc } from "vite";
+import { createLogger, createServer, transformWithOxc } from "vite";
 
 // Existing private React/Vite framework. Real Host/origin, draft hooks/storage,
 // work-surface derivation and the three registrations run under StrictMode.
@@ -121,12 +122,51 @@ test(
       : "install the existing Playwright Chromium capability or set MORPHZ_TEST_BROWSER_EXECUTABLE for isolated actual React mounting",
   },
   async (context) => {
+    const observation = mountedFixtureObservation(context, "private-scope");
     const cacheDir = mkdtempSync(join(tmpdir(), "morphz-private-scope-vite-"));
-    context.after(() => rmSync(cacheDir, { recursive: true, force: true }));
+    let closeBrowser = async () => {};
+    let closeServer = async () => {};
+    // Register after the first acquisition, before setup can fail. Never remove
+    // the owned cache while a failed close leaves its browser/server unresolved.
+    context.after(async () => {
+      const errors: unknown[] = [];
+      try {
+        observation.stage("cleanup.browser.begin");
+        await closeBrowser();
+        observation.stage("cleanup.browser.end");
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        observation.stage("cleanup.vite.begin");
+        await closeServer();
+        observation.stage("cleanup.vite.end");
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length)
+        throw new AggregateError(
+          errors,
+          "Fixture cleanup failed; retained " + cacheDir,
+        );
+      observation.stage("cleanup.cache.begin");
+      rmSync(cacheDir, { recursive: true, force: true });
+      observation.stage("cleanup.cache.end");
+    });
+    const compileErrors: string[] = [];
+    const logger = createLogger();
+    observation.stage("vite.create.begin");
     const server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
+      customLogger: {
+        ...logger,
+        error(message, options) {
+          compileErrors.push(message);
+          logger.error(message, options);
+        },
+      },
       plugins: [
         react(),
         {
@@ -154,20 +194,39 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
-    context.after(() => server.close());
+    closeServer = () => server.close();
+    observation.stage("vite.listen.begin");
     await server.listen();
+    observation.stage("vite.listen.end");
+    // Prepare this virtual fixture's real imports, without executing its module.
+    observation.stage("vite.compile.begin");
+    assert.ok(
+      await server.environments.client!.transformRequest(
+        "/__private-scope.tsx",
+      ),
+    );
+    await server.environments.client!.waitForRequestsIdle();
+    assert.deepEqual(
+      compileErrors,
+      [],
+      "Private-scope fixture compilation failed",
+    );
+    observation.stage("vite.compile.end");
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
+    observation.stage("browser.launch.begin");
     const browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(() => browser.close());
+    closeBrowser = () => browser.close();
+    observation.stage("browser.launch.end");
     const page = await browser.newPage(),
       errors: string[] = [],
       queries: string[] = [];
     let phase = "mount",
       complete = false;
+    observation.observe(page, "fixed-and-production");
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("request", (request) => {
       if (
@@ -180,8 +239,16 @@ test(
       if (!complete)
         context.diagnostic(JSON.stringify({ phase, errors, queries }));
     });
-    await page.goto(`http://127.0.0.1:${address.port}/__private-scope`);
+    observation.stage("goto.begin");
+    await page
+      .goto(`http://127.0.0.1:${address.port}/__private-scope`)
+      .catch((error) => {
+        observation.report("goto.failed");
+        throw error;
+      });
+    observation.stage("goto.end");
     await page.waitForSelector("#private-production");
+    observation.stage("fixture.ready");
     const read = () =>
       page.evaluate(() =>
         Reflect.get(window, "privateScopeFixture").report(),
@@ -379,5 +446,6 @@ test(
     assert.deepEqual(errors, []);
     assert.deepEqual(queries, []);
     complete = true;
+    observation.complete();
   },
 );

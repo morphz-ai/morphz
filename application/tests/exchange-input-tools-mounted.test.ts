@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { mountedFixtureObservation } from "./fixtures/mounted-fixture-observation.js";
 import react from "@vitejs/plugin-react";
 import {
   chromium,
@@ -73,11 +74,15 @@ async function capture(page: Page, hideWindow = false) {
     .poll(async () => (await report(page)).domain.captureRequests.length)
     .toBe(previous + 1);
 }
+const observedMicrophone = new WeakMap<Page, (phase: string) => void>();
 async function microphone(page: Page) {
+  observedMicrophone.get(page)?.("microphone.click.begin");
   await page.getByRole("button", { name: "语音输入", exact: true }).click();
   const allow = page.getByRole("button", { name: "允许并开始听写" });
   if (await allow.isVisible()) await allow.click();
+  observedMicrophone.get(page)?.("microphone.recording.wait.begin");
   await expect.poll(async () => (await report(page)).recording).toBe(true);
+  observedMicrophone.get(page)?.("microphone.recording.wait.end");
 }
 
 test(
@@ -89,11 +94,18 @@ test(
     timeout: 60_000,
   },
   async (context) => {
+    const observation = mountedFixtureObservation(
+      context,
+      "exchange-input-tools",
+    );
     const scratch = mkdtempSync(join(tmpdir(), "morphz-input-tools-mount-"));
+    const fixture = resolve("tests/fixtures/exchange-input-tools-mounted.ts");
+    observation.stage("vite.create.begin");
     const server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: join(scratch, "vite-cache"),
+      optimizeDeps: { entries: [fixture] },
       plugins: [
         react(),
         {
@@ -110,7 +122,7 @@ test(
               response.end(
                 await vite.transformIndexHtml(
                   request.url,
-                  `<!doctype html><html><head><style>body{margin:0}.workspace{padding:20px}.exchange-panel{position:relative;width:600px}.composer{display:flex;flex-wrap:wrap;gap:8px}textarea{width:560px;height:90px}button{min-height:28px}svg{width:16px;height:16px}.hidden-file{display:none}</style></head><body><div id="root"></div><script type="module">import {mountInputToolsFixture} from '/@fs/${resolve("tests/fixtures/exchange-input-tools-mounted.ts")}';mountInputToolsFixture('${mode}');</script></body></html>`,
+                  `<!doctype html><html><head><style>body{margin:0}.workspace{padding:20px}.exchange-panel{position:relative;width:600px}.composer{display:flex;flex-wrap:wrap;gap:8px}textarea{width:560px;height:90px}button{min-height:28px}svg{width:16px;height:16px}.hidden-file{display:none}</style></head><body><div id="root"></div><script type="module">import {mountInputToolsFixture} from '/@fs/${fixture}';mountInputToolsFixture('${mode}');</script></body></html>`,
                 ),
               );
             });
@@ -119,6 +131,7 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
+    observation.stage("vite.create.end");
     const pages: Page[] = [],
       contexts: BrowserContext[] = [],
       errors: string[] = [],
@@ -127,6 +140,7 @@ test(
       phase = "mount",
       complete = false;
     context.after(async () => {
+      observation.stage("cleanup.begin: " + phase);
       try {
         if (!complete) {
           context.diagnostic(
@@ -147,21 +161,31 @@ test(
         context.diagnostic("Private fixture evidence: " + scratch);
       } finally {
         try {
+          observation.stage("cleanup.contexts.begin");
           await Promise.all(contexts.map((value) => value.close()));
+          observation.stage("cleanup.contexts.end");
         } finally {
           try {
+            observation.stage("cleanup.browser.begin");
             await browser?.close();
+            observation.stage("cleanup.browser.end");
           } finally {
+            observation.stage("cleanup.vite.begin");
             await server.close();
+            observation.stage("cleanup.vite.end");
           }
         }
       }
     });
+    observation.stage("browser.launch.begin");
     browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
+    observation.stage("browser.launch.end");
+    observation.stage("vite.listen.begin");
     await server.listen();
+    observation.stage("vite.listen.end");
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
     for (const mode of ["fixed", "production"] as const) {
@@ -169,6 +193,10 @@ test(
       contexts.push(browserContext);
       const page = await browserContext.newPage();
       pages.push(page);
+      observation.observe(page, mode);
+      observedMicrophone.set(page, (step) =>
+        observation.stage(mode + ": " + step),
+      );
       page.on("pageerror", (error) => errors.push(mode + ": " + error.message));
       await page.route("**/api/**", (route) => {
         if (
@@ -215,9 +243,14 @@ test(
           return destination.stream;
         };
       });
-      await page.goto(
-        `http://127.0.0.1:${address.port}/__input-tools?mode=${mode}`,
-      );
+      observation.stage(mode + ": goto.begin");
+      await page
+        .goto(`http://127.0.0.1:${address.port}/__input-tools?mode=${mode}`)
+        .catch((error) => {
+          observation.report(mode + ": goto.failed");
+          throw error;
+        });
+      observation.stage(mode + ": goto.end");
       await expect(
         page.getByRole("button", { name: "授权 Agent 读写目录" }),
       ).toBeEnabled();
@@ -227,6 +260,7 @@ test(
     }
     async function parity(name: string) {
       phase = name;
+      observation.stage("parity: " + name);
       const [fixed, production] = await Promise.all(pages.map(report));
       assert.deepEqual(production, fixed, name);
       assert.deepEqual(production!.stable, {
@@ -541,5 +575,6 @@ test(
       "unmount cancels acquired synthetic tracks and keeps original cleanup parity",
     );
     complete = true;
+    observation.complete();
   },
 );

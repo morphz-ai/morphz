@@ -3,15 +3,20 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
+import { mountedFixtureObservation } from "./fixtures/mounted-fixture-observation.js";
 import react from "@vitejs/plugin-react";
 import { _electron, expect } from "@playwright/test";
-import { createServer } from "vite";
+import { createLogger, createServer } from "vite";
 import { nativeTestEnvironment } from "./fixtures/native-test-environment.js";
 
 test(
   "actual Electron page zoom 1/2 at 760px keeps + mouse-hit and popover reachable; controlled transport only",
   { timeout: 60_000 },
   async (t) => {
+    const observation = mountedFixtureObservation(
+      t,
+      "composer-creation-native",
+    );
     const cacheDir = await mkdtemp(
       resolve(tmpdir(), "morphz-creation-native-vite-"),
     );
@@ -25,10 +30,14 @@ test(
     let closeServer = async () => {};
     t.after(async () => {
       try {
+        observation.stage("cleanup.desktop.begin");
         await closeDesktop();
+        observation.stage("cleanup.desktop.end");
       } finally {
         try {
+          observation.stage("cleanup.vite.begin");
           await closeServer();
+          observation.stage("cleanup.vite.end");
         } finally {
           await Promise.all([
             rm(cacheDir, { recursive: true, force: true }),
@@ -40,10 +49,20 @@ test(
     const fixture = resolve(
       "tests/fixtures/cognitive-application-choice-app-mounted.tsx",
     );
+    const compileErrors: string[] = [];
+    const logger = createLogger();
+    observation.stage("vite.create.begin");
     const server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir,
+      customLogger: {
+        ...logger,
+        error(message, options) {
+          compileErrors.push(message);
+          logger.error(message, options);
+        },
+      },
       optimizeDeps: {
         entries: [fixture],
         include: ["react", "react-dom/client", "react/jsx-runtime"],
@@ -70,10 +89,26 @@ test(
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
     closeServer = () => server.close();
+    observation.stage("vite.listen.begin");
     await server.listen();
+    observation.stage("vite.listen.end");
+    // The same fixture's browser test prepares this exact dynamic App graph.
+    // Transform only; transport installation and App execution still occur in Electron.
+    observation.stage("vite.compile.begin");
+    const client = server.environments.client!;
+    assert.ok(await client.transformRequest(`/@fs/${fixture}`));
+    assert.ok(await client.transformRequest("/src/App.tsx"));
+    await client.waitForRequestsIdle();
+    assert.deepEqual(
+      compileErrors,
+      [],
+      "Native creation App compilation failed",
+    );
+    observation.stage("vite.compile.end");
     const address = server.httpServer!.address();
     assert(address && typeof address !== "string");
     const url = `http://127.0.0.1:${address.port}/__new-menu-native?mode=fresh`;
+    observation.stage("electron.launch.begin");
     const desktop = await _electron.launch({
       args: [resolve("tests/fixtures/composer-creation-native-entry.cjs")],
       env: {
@@ -84,14 +119,24 @@ test(
     });
     // Close owned Electron before removing its private profile and Vite cache.
     closeDesktop = () => desktop.close();
+    observation.stage("electron.launch.end");
     const ownedElectronPid = await desktop.evaluate(() => process.pid);
     const page = await desktop.firstWindow();
+    // Native fixture starts navigation before firstWindow; earlier network events
+    // may be absent and are not inferred from this post-attachment observation.
+    observation.observe(page, "native-post-firstWindow");
+    observation.stage("textbox.wait.begin");
     page.setDefaultTimeout(5_000);
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page
       .getByRole("textbox", { name: "AI 输入内容", exact: true })
-      .waitFor({ timeout: 15_000 });
+      .waitFor({ timeout: 15_000 })
+      .catch((error) => {
+        observation.report("textbox.wait.failed");
+        throw error;
+      });
+    observation.stage("textbox.wait.end");
     await page.waitForFunction(
       () =>
         Reflect.get(window, "cognitiveChoiceAppFixture")
@@ -279,5 +324,6 @@ test(
       await expect(menu).not.toBeVisible();
     }
     assert.deepEqual(errors, []);
+    observation.complete();
   },
 );
