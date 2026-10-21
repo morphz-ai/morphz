@@ -17,7 +17,6 @@ import sys
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from policy import ABI, Policy, compile_profiles  # noqa: E402
 
 
 def worker():
@@ -57,6 +56,9 @@ def execute(args):
     if (sys.platform != "linux" or os.getuid() != 0 or args.uid <= 0 or args.gid <= 0 or
             os.environ.get("MORPHZ_LINUX_SANDBOX_TEST") != "1"):
         raise PermissionError("explicit isolated Linux administrator invocation required")
+    # The copied unprivileged worker does not carry or use the privileged-side
+    # policy compiler. Import it only in the administrator fixture branch.
+    from policy import ABI, Policy, compile_profiles
     output = args.output.absolute()
     if output.parent.resolve(strict=True) != output.parent:
         raise ValueError("evidence parent must be a real existing directory")
