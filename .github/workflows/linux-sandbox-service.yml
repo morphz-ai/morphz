@@ -41,13 +41,21 @@ jobs:
           sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B \
             tools/linux-sandbox/peer_kernel_contract.py --uid "$(id -u)" --gid "$(id -g)" \
             --output "${{ runner.temp }}/linux-sandbox-peer-kernel"
+      - name: Archive literal filenames without removing boundary cases
+        if: always()
+        run: |
+          mkdir -p "${{ runner.temp }}/linux-sandbox-evidence"
+          for component in linux-sandbox-compiler-kernel linux-sandbox-peer-kernel; do
+            if [ -d "${{ runner.temp }}/$component" ]; then
+              tar -czf "${{ runner.temp }}/linux-sandbox-evidence/$component.tar.gz" \
+                -C "${{ runner.temp }}" "$component"
+            fi
+          done
       - name: Preserve failed and successful kernel evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: linux-sandbox-compiler-kernel-${{ github.run_id }}
-          path: |
-            ${{ runner.temp }}/linux-sandbox-compiler-kernel/
-            ${{ runner.temp }}/linux-sandbox-peer-kernel/
+          path: ${{ runner.temp }}/linux-sandbox-evidence/*.tar.gz
           if-no-files-found: warn
           retention-days: 7
