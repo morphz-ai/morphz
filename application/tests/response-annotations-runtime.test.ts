@@ -11,9 +11,36 @@ import {
   profileActualTransportFixture,
   profileFixtureAnnotationsMessage,
   profileFixtureReturnBinding,
+  profileFixtureCurrentRootId,
   profileFixtureObservationResult,
   fixtureAnnotationsMessage,
 } from "./profile-actual-transport-fixture.js";
+
+test("fixture takes only the actual kernel activation root, not another observation or row order", () => {
+  const request = {
+    messages: [
+      {
+        role: "user",
+        content:
+          '(context (observation (current-activation (root-turn (id wrong-observation)))) (kernel (current-activation (root-turn (id "actual-root")))))',
+      },
+    ],
+  };
+  assert.equal(profileFixtureCurrentRootId(request), "actual-root");
+  assert.throws(
+    () =>
+      profileFixtureCurrentRootId({
+        messages: [
+          {
+            role: "user",
+            content:
+              "(context (observation (current-activation (root-turn (id wrong-observation)))))",
+          },
+        ],
+      }),
+    /Actual request lacks kernel/,
+  );
+});
 
 test("fixture reads the latest actual native tool continuation before frozen Context", () => {
   const messages = [
@@ -192,11 +219,31 @@ test(
         f.sql<{ n: number }>("SELECT count(*) n FROM execution_jobs")[0]!.n,
         0,
       );
+      const rootId = profileFixtureCurrentRootId(f.requests[0]!);
       assert.equal(
-        f.sql<{ status: string }>(
-          "SELECT status FROM threads ORDER BY rowid LIMIT 1",
-        )[0]!.status,
+        reply.rootId,
+        rootId,
+        "Host reply must belong to the actual request",
+      );
+      let threads: Array<{ id: string; status: string }> = [];
+      for (let i = 0; i < 300; i++) {
+        threads = f.sql<{ id: string; status: string }>(
+          "SELECT id,status FROM threads WHERE root_turn_id = ?",
+          rootId,
+        );
+        assert.equal(
+          threads.length,
+          1,
+          "the exact request has one logical Thread",
+        );
+        if (threads[0]!.status !== "open") break;
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      assert.equal(threads[0]!.id, rejection.payload.thread_id);
+      assert.equal(
+        threads[0]!.status,
         "completed",
+        "actual corrected Thread must reach its durable terminal state",
       );
 
       // The actual rejection still exists in live execution evidence, but is
@@ -283,9 +330,10 @@ test(
         },
         f.options,
       );
-      await f.waitRequest(marker);
+      const request = await f.waitRequest(marker);
       const thread = f.sql<{ id: string }>(
-        "SELECT id FROM threads ORDER BY rowid DESC LIMIT 1",
+        "SELECT id FROM threads WHERE root_turn_id = ?",
+        profileFixtureCurrentRootId(request),
       )[0]!;
       // A real invalid outcome: display-only metadata cannot stand in for an
       // answer. The existing business guard must still reject it, once.
@@ -435,9 +483,10 @@ test(
         },
         f.options,
       );
-      await f.waitRequest(marker);
+      const request = await f.waitRequest(marker);
       const thread = f.sql<{ id: string; session_id: string }>(
-        "SELECT id,session_id FROM threads ORDER BY rowid DESC LIMIT 1",
+        "SELECT id,session_id FROM threads WHERE root_turn_id = ?",
+        profileFixtureCurrentRootId(request),
       )[0]!;
       const producing = f.beginHeldTextStream(marker, prefix);
       let runtimePrefix = false;
@@ -603,7 +652,8 @@ test(
       const marker = "TEST_SETTING_ACTIVE_" + randomUUID();
       const activeRequest = await send(marker);
       const active = f.sql<{ id: string; response_annotations: string }>(
-        "SELECT id,response_annotations FROM threads ORDER BY rowid DESC LIMIT 1",
+        "SELECT id,response_annotations FROM threads WHERE root_turn_id = ?",
+        profileFixtureCurrentRootId(activeRequest),
       )[0]!;
       assert.equal(active.response_annotations, "on");
       // Remote HTTP deliberately lacks local admin capabilities. Use the
@@ -647,7 +697,8 @@ test(
         "Setting does not mutate schemas or order",
       );
       const next = f.sql<{ id: string; response_annotations: string }>(
-        "SELECT id,response_annotations FROM threads ORDER BY rowid DESC LIMIT 1",
+        "SELECT id,response_annotations FROM threads WHERE root_turn_id = ?",
+        profileFixtureCurrentRootId(nextRequest),
       )[0]!;
       assert.equal(next.response_annotations, "off");
       f.releaseWithText(nextMarker, "TEST OFF BODY");

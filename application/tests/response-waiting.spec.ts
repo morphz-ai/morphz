@@ -1,4 +1,6 @@
 import { expect, type Page } from "@playwright/test";
+import { createHash } from "node:crypto";
+import { expectRenderedFrameChange } from "./fixtures/rendered-animation.js";
 import {
   disconnectedRuntime,
   type ConversationRuntime,
@@ -391,6 +393,31 @@ test("后续输入的回复不冒充前条完成；前条收到取消终态后�
   await expect(reply).toHaveCount(1);
 });
 
+test("视觉采样允许周期重合，但持续静止的画面必须失败", async () => {
+  const frames = [
+    Buffer.from("same"),
+    Buffer.from("same"),
+    Buffer.from("changed"),
+  ];
+  let captures = 0;
+  await expectRenderedFrameChange(
+    async () => frames[Math.min(captures++, frames.length - 1)]!,
+    { timeout: 500, intervals: [5] },
+  );
+  expect(captures).toBe(3);
+  let staticCaptures = 0;
+  await expect(
+    expectRenderedFrameChange(
+      async () => {
+        staticCaptures++;
+        return Buffer.from("never changes");
+      },
+      { timeout: 100, intervals: [5] },
+    ),
+  ).rejects.toThrow("must change actual rendered pixels");
+  expect(staticCaptures).toBeGreaterThan(2);
+});
+
 test("首字前的真实输入等待带动Logo，不被长期提醒遮住；首字接替、终态与减少动态正确", async ({
   page,
 }, info) => {
@@ -435,22 +462,43 @@ test("首字前的真实输入等待带动Logo，不被长期提醒遮住；首�
   await expect
     .poll(async () => (await animation()).transform)
     .not.toBe(before.transform);
-  // Capture two actual, freely advancing rendered frames: no CSS clock seeking,
-  // animation pause or synthetic working flag in this regression.
+  // A breathing animation revisits the same pixels: elapsed time alone cannot
+  // guarantee that an arbitrary pair differs. Keep the actual-pixel assertion,
+  // sampling across complete natural cycles without seeking or pausing CSS.
   const bounds = (await logo.boundingBox())!;
-  const first = await page.screenshot({
-    clip: bounds,
-    path: info.outputPath("pending-first.png"),
-  });
-  const sample = await animation();
-  await expect
-    .poll(async () => (await animation()).time)
-    .toBeGreaterThan(sample.time + 350);
-  const second = await page.screenshot({
-    clip: bounds,
-    path: info.outputPath("pending-later.png"),
-  });
-  expect(second.equals(first)).toBe(false);
+  const duration = await mark.evaluate((node) =>
+    Number(node.getAnimations()[0]!.effect!.getTiming().duration),
+  );
+  expect(duration).toBeGreaterThan(0);
+  expect(duration).toBeLessThanOrEqual(10_000);
+  const samples: Array<
+    Awaited<ReturnType<typeof animation>> & { sha256: string }
+  > = [];
+  try {
+    await expectRenderedFrameChange(
+      async () => {
+        const observed = await animation();
+        const frame = await page.screenshot({
+          animations: "allow",
+          clip: bounds,
+          path: info.outputPath(
+            samples.length ? "pending-later.png" : "pending-first.png",
+          ),
+        });
+        samples.push({
+          ...observed,
+          sha256: createHash("sha256").update(frame).digest("hex"),
+        });
+        return frame;
+      },
+      { timeout: duration * 2 + 1000 },
+    );
+  } finally {
+    await info.attach("pending-rendered-frame-samples", {
+      body: JSON.stringify(samples),
+      contentType: "application/json",
+    });
+  }
   await page.emulateMedia({ reducedMotion: "reduce" });
   await expect(mark).toHaveCSS("animation-name", "none");
   await expect(logo).toHaveAttribute("data-state", "processing");

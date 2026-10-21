@@ -5,9 +5,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { gunzipSync } from "node:zlib";
 import test from "node:test";
+import { mountedFixtureObservation } from "./fixtures/mounted-fixture-observation.js";
 import react from "@vitejs/plugin-react";
 import { chromium, type Page, type BrowserContext } from "@playwright/test";
-import { createServer, transformWithOxc } from "vite";
+import { createLogger, createServer, transformWithOxc } from "vite";
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
 import {
@@ -162,13 +163,52 @@ test(
       : "set MORPHZ_TEST_BROWSER_EXECUTABLE or install existing Playwright Chromium capability",
   },
   async (context) => {
+    const observation = mountedFixtureObservation(context, "popup-surface");
     const cache = mkdtempSync(join(tmpdir(), "morphz-popup-mounted-cache-"));
+    let closeBrowser = async () => {};
+    let closeServer = async () => {};
+    // Compile failures occur before browser acquisition and still own this cache/server.
+    context.after(async () => {
+      const errors: unknown[] = [];
+      try {
+        observation.stage("cleanup.browser.begin");
+        await closeBrowser();
+        observation.stage("cleanup.browser.end");
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        observation.stage("cleanup.vite.begin");
+        await closeServer();
+        observation.stage("cleanup.vite.end");
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length)
+        throw new AggregateError(
+          errors,
+          "Fixture cleanup failed; retained " + cache,
+        );
+      observation.stage("cleanup.cache.begin");
+      rmSync(cache, { recursive: true, force: true });
+      observation.stage("cleanup.cache.end");
+    });
     const entry = (lane: string) =>
       `import '/__popup-${lane}.css';import {mountPopupSurfaceFixture} from '/@fs/${fixture}';mountPopupSurfaceFixture(new URL(location.href).searchParams.has('compatibility'));`;
+    const compileErrors: string[] = [];
+    const logger = createLogger();
+    observation.stage("vite.create.begin");
     const server = await createServer({
       configFile: false,
       root: resolve("apps/web"),
       cacheDir: cache,
+      customLogger: {
+        ...logger,
+        error(message, options) {
+          compileErrors.push(message);
+          logger.error(message, options);
+        },
+      },
       optimizeDeps: { entries: [fixture] },
       plugins: [
         {
@@ -207,25 +247,30 @@ test(
       ],
       server: { host: "127.0.0.1", port: 0, fs: { allow: [resolve(".")] } },
     });
+    closeServer = () => server.close();
+    observation.stage("vite.listen.begin");
     await server.listen();
+    observation.stage("vite.listen.end");
+    observation.stage("vite.compile.begin");
+    for (const lane of equivalence ? ["old", "actual"] : ["actual"])
+      assert.ok(
+        await server.environments.client!.transformRequest(
+          `/__popup-${lane}.tsx`,
+        ),
+      );
+    await server.environments.client!.waitForRequestsIdle();
+    assert.deepEqual(compileErrors, [], "Popup fixture compilation failed");
+    observation.stage("vite.compile.end");
     const address = server.httpServer!.address();
     assert.ok(address && typeof address !== "string");
     const url = `http://127.0.0.1:${address.port}/__popup`;
+    observation.stage("browser.launch.begin");
     const browser = await chromium.launch({
       headless: true,
       executablePath: executable || undefined,
     });
-    context.after(async () => {
-      try {
-        await browser.close();
-      } finally {
-        try {
-          await server.close();
-        } finally {
-          rmSync(cache, { recursive: true, force: true });
-        }
-      }
-    });
+    closeBrowser = () => browser.close();
+    observation.stage("browser.launch.end");
     const errors: string[] = [],
       businessReads: string[] = [];
     const coverage: unknown[] = [];
@@ -260,6 +305,8 @@ test(
           `Object.defineProperty(crypto,'randomUUID',{value:()=> '11111111-1111-4111-8111-111111111111'});window.focusCalls=[];const original=HTMLElement.prototype.focus;HTMLElement.prototype.focus=function(options){window.focusCalls.push({id:this.id,label:this.getAttribute('aria-label'),options:options??null});original.call(this,options);};`,
         );
         const page = await isolated.newPage();
+        observation.observe(page, phase + ":" + lane);
+        observation.stage(phase + ": " + lane + ": goto.begin");
         page.setDefaultTimeout(10000);
         page.setDefaultNavigationTimeout(60_000);
         page.on("pageerror", (error) => errors.push(error.message));
@@ -270,19 +317,27 @@ test(
           )
             businessReads.push(request.url());
         });
-        await page.goto(
-          url +
-            "?lane=" +
-            lane +
-            (options.compatibility ? "&compatibility" : ""),
-        );
+        await page
+          .goto(
+            url +
+              "?lane=" +
+              lane +
+              (options.compatibility ? "&compatibility" : ""),
+          )
+          .catch((error) => {
+            observation.report(phase + ": " + lane + ": goto.failed");
+            throw error;
+          });
+        observation.stage(phase + ": " + lane + ": goto.end");
         await page
           .waitForFunction(() => !!Reflect.get(window, "popupFixture"))
           .catch((error) => {
+            observation.report(phase + ": " + lane + ": fixture.wait.failed");
             context.diagnostic(JSON.stringify({ phase, lane, errors }));
             throw error;
           });
         await page.evaluate(() => Reflect.get(window, "popupFixture").settle());
+        observation.stage(phase + ": " + lane + ": fixture.ready");
         pages.push(page);
       }
       context.after(() => Promise.all(contexts.map((item) => item.close())));
@@ -880,5 +935,6 @@ test(
         assert.deepEqual(businessReads, []);
       },
     );
+    observation.complete();
   },
 );

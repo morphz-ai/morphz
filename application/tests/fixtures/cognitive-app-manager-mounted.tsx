@@ -454,7 +454,10 @@ const trace: Array<{
   preview: string;
   notice: string;
 }> = [];
-function Owner() {
+// The fixture entry has a real React Refresh boundary. An unexported root
+// component makes plugin-react invalidate the entire Document after the module
+// is re-evaluated, which is a reload, not the hot-replacement contract below.
+export function Owner() {
   const workspace = useWorkspace();
   latest = workspace;
   const [open, setOpen] = useState(false);
@@ -605,6 +608,10 @@ function report() {
     trace: structuredClone(trace),
     rendererErrors: structuredClone(rendererErrors),
     entryEvidence: structuredClone(entryEvidence),
+    documentTimeOrigin: performance.timeOrigin,
+    completedHotUpdates: Number(
+      Reflect.get(window, "cognitiveManagerHotUpdates") ?? 0,
+    ),
     actualGrantRuns: structuredClone(actualGrantRuns),
     actualConnectRuns: structuredClone(actualConnectRuns),
     fileReads: fileReads.length,
@@ -821,8 +828,16 @@ root.render(
 // own root/listeners and instrumentation before running the entry again. It
 // deliberately retains same-window persistent attempts; page reload is still
 // a separate tested lifecycle. No production warning is filtered or ignored.
-if (import.meta.hot)
+if (import.meta.hot) {
+  const completed = () =>
+    Reflect.set(
+      window,
+      "cognitiveManagerHotUpdates",
+      Number(Reflect.get(window, "cognitiveManagerHotUpdates") ?? 0) + 1,
+    );
+  import.meta.hot.on("vite:afterUpdate", completed);
   import.meta.hot.dispose(() => {
+    import.meta.hot!.off("vite:afterUpdate", completed);
     mounted = false;
     root.unmount();
     listeners.clear();
@@ -832,3 +847,4 @@ if (import.meta.hot)
     crypto.subtle.digest = originalDigest;
     crypto.randomUUID = originalRandomUUID;
   });
+}

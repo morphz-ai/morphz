@@ -1572,7 +1572,8 @@ test(
         try {
           await unknownConnect(page);
           checkpoint("unknown-connection-recorded", page);
-          const stored = (await report(page)).connectionRetryRecords;
+          const beforeReplacement = await report(page);
+          const stored = beforeReplacement.connectionRetryRecords;
           const module = server.moduleGraph.getModuleById(fixture);
           assert.ok(
             module,
@@ -1583,9 +1584,16 @@ test(
           checkpoint("after-module-reload", page);
           const replaced = await wait(
             page,
-            (r) => r.entryEvidence.length === 2,
+            (r) =>
+              r.entryEvidence.length === 2 &&
+              r.completedHotUpdates > beforeReplacement.completedHotUpdates,
           );
           checkpoint("replacement-observed", page);
+          assert.equal(
+            replaced.documentTimeOrigin,
+            beforeReplacement.documentTimeOrigin,
+            "hot replacement must not invalidate and navigate the entire Document",
+          );
           assert.equal(
             replaced.entryEvidence[1]?.existingChildren,
             0,

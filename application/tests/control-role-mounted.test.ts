@@ -178,7 +178,12 @@ test(
       logLevel: "error",
       optimizeDeps: {
         entries: [],
-        include: ["react", "react-dom", "react-dom/client", "react/jsx-runtime"],
+        include: [
+          "react",
+          "react-dom",
+          "react-dom/client",
+          "react/jsx-runtime",
+        ],
       },
       plugins: [
         {
@@ -312,9 +317,27 @@ test(
             await settle(page);
             const value = await snapshot(page);
             snapshots.push(value);
-            assert.equal(value.media.coarse, configuration.coarse);
-            assert.equal(value.media.reduced, configuration.reduced);
-            assert.equal(value.media.contrast, configuration.contrast);
+            const mediaContext = JSON.stringify({
+              lane,
+              phase,
+              configuration,
+              media: value.media,
+            });
+            assert.equal(
+              value.media.coarse,
+              configuration.coarse,
+              mediaContext,
+            );
+            assert.equal(
+              value.media.reduced,
+              configuration.reduced,
+              mediaContext,
+            );
+            assert.equal(
+              value.media.contrast,
+              configuration.contrast,
+              mediaContext,
+            );
             if (!configuration.outside)
               assert.equal(value.facts.accent, configuration.accent);
             images.push(await page.screenshot());

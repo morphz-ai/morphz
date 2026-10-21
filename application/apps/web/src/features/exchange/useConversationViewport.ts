@@ -112,7 +112,7 @@ type ConversationViewportCommitOptions = {
   client: Pick<WorkspaceClient, "loadHistoryUntil">;
 };
 
-/** Commit the original effects after the renderer's content/read versions. */
+/** Commit reading/navigation state; observe content geometry after layout. */
 export function useConversationViewportCommit(
   viewport: ConversationViewportState,
   {
@@ -203,20 +203,28 @@ export function useConversationViewportCommit(
       revealed.current = saved?.revealed ?? revealInputId;
       previousPositionKey.current = positionKey;
     }
+    // Initial restore and explicit navigation must settle before paint. Normal
+    // stream growth follows in ResizeObserver, after the browser lays it out;
+    // reading scrollHeight here forces the whole message DOM to lay out during
+    // each React commit, including the nested read-receipt commit.
+    const commitPosition =
+      !initialized.current ||
+      (!!revealInputId && revealed.current !== revealInputId);
     if (!initialized.current && saved) el.scrollTop = saved.top;
     if (revealInputId && revealed.current !== revealInputId)
       following.current = true;
-    if (following.current) {
+    if (following.current && commitPosition) {
       el.scrollTop = el.scrollHeight;
     }
     revealed.current = revealInputId;
     initialized.current = true;
     updateLatestIndicator();
-    positions.set(positionKey, {
-      top: el.scrollTop,
-      following: following.current,
-      revealed: revealed.current,
-    });
+    if (commitPosition)
+      positions.set(positionKey, {
+        top: el.scrollTop,
+        following: following.current,
+        revealed: revealed.current,
+      });
   }, [contentVersion, readVersion, revealInputId, positionKey, onRead]);
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -247,11 +255,20 @@ export function useConversationViewportCommit(
     const el = scroller.current;
     if (!el) return;
     const observer = new ResizeObserver(() => {
-      if (following.current) el.scrollTop = el.scrollHeight;
+      if (following.current) {
+        el.scrollTop = el.scrollHeight;
+        positions.set(positionKey, {
+          top: el.scrollTop,
+          following: true,
+          revealed: revealed.current,
+        });
+      }
     });
     observer.observe(el);
+    const content = el.querySelector(".conversation-messages");
+    if (content) observer.observe(content);
     return () => observer.disconnect();
-  }, []);
+  }, [contentVersion, positionKey]);
   useLayoutEffect(() => {
     if (!quoteReveal || revealedQuote.current === quoteReveal.token) return;
     const quote = quoteReveal.quote.source;

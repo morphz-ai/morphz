@@ -150,6 +150,20 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
       })),
     },
   }));
+  // Explicit diagnosis only: compare a fresh test center with the unrelated
+  // project rows accumulated before this case in the complete CI inventory.
+  // Ordinary validation keeps its original workload and <50ms assertions.
+  const extraProjects = process.env.MORPHZ_TEST_CONVERSATION_EXTRA_PROJECTS;
+  if (extraProjects !== undefined) {
+    expect(process.env.MORPHZ_TEST_CONVERSATION_CPU_PROFILE).toBe("1");
+    expect(["0", "21"]).toContain(extraProjects);
+    for (let index = 0; index < Number(extraProjects); index++)
+      await presentation.client.createProject(
+        `TEST 性能诊断项目 ${index}`,
+        randomUUID(),
+        randomUUID(),
+      );
+  }
   inputs.push(
     ...Array.from({ length: 64 }, (_, i) =>
       presentation.input(
@@ -166,6 +180,11 @@ test("长消息历史下输入和流式续写不反复阻塞主线程", async ({
     .click();
   const input = page.getByLabel("AI 输入内容");
   await expect(page.locator(".conversation-message")).toHaveCount(128);
+  if (extraProjects !== undefined)
+    console.log(
+      "MESSAGE_PERFORMANCE_PROJECT_ROWS",
+      await page.locator(".sidebar-project").count(),
+    );
   await input.focus();
   const metrics = await profileMeasurement(page, info, () =>
     page.evaluate(async (scope) => {

@@ -125,7 +125,7 @@ This bundle covers locked production npm dependencies and the Electron package u
 | `domhandler 6.0.1` | `BSD-2-Clause` | L004 |
 | `domutils 4.0.2` | `BSD-2-Clause` | L004 |
 | `duck 0.1.12` | `BSD` | L072 |
-| `electron 44.2.0` | `MIT` | L027 |
+| `electron 44.9.3` | `MIT` | L027 |
 | `entities 8.1.0` | `BSD-2-Clause` | L004 |
 | `escape-string-regexp 4.0.0` | `MIT` | L008 |
 | `escape-string-regexp 5.0.0` | `MIT` | L008 |
@@ -2585,7 +2585,7 @@ Public License instead of this License.  But first, please read
 
 ### L027
 
-Applies to: `electron 44.2.0`
+Applies to: `electron 44.9.3`
 
 ~~~~text
 Copyright (c) Electron contributors

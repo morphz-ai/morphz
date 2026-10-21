@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import * as ts from "typescript/unstable/ast";
+import { virtualTypeScriptSnapshot } from "./fixtures/virtual-typescript.js";
 type Plan = {
   env: NodeJS.ProcessEnv;
   files: Set<string> | null;
@@ -77,6 +80,12 @@ const declarations = [
     name: "real Rust Runtime HTTP: actual Agent tool persists Profile and next Thread Context uses name/personality; historical retry stays idempotent",
     capability: "runtime",
     flag: "MORPHZ_PROFILE_RUNTIME_E2E",
+  },
+  {
+    file: "response-annotations-runtime.test.ts",
+    name: "actual Runtime + Host: rejected empty wait is corrected once, delivered and never presented as a failed reply",
+    capability: "runtime",
+    flag: "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
   },
   {
     file: "response-annotations-runtime.test.ts",
@@ -165,6 +174,10 @@ const declarations = [
 ] as const;
 const darwin = [
   {
+    file: "desktop-bundle-native.test.ts",
+    name: "fresh macOS development bundle seals the actual engine and unchanged reopen preserves every signed byte",
+  },
+  {
     file: "desktop-identity.test.ts",
     name: "Morphz 系统身份覆盖主程序和所有 Helper，保留启动配置且重复打包不改写",
   },
@@ -191,6 +204,15 @@ const data = ({ file, name }: { file: string; name: string }) => ({
   name,
   skip: true,
 });
+function declared(file: string) {
+  const matches = declarations.filter((item) => item.file === file);
+  assert.equal(
+    matches.length,
+    1,
+    `${file} needs an unambiguous fixture identity`,
+  );
+  return matches[0]!;
+}
 function plan(
   env: NodeJS.ProcessEnv = {},
   options: { files?: string[] | null; platform?: NodeJS.Platform } = {},
@@ -201,6 +223,110 @@ function plan(
     ...options,
   });
 }
+
+function assertLiteralEnvironmentGatesRegistered(
+  file: string,
+  syntax: ts.SourceFile,
+) {
+  let checked = 0;
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "test" &&
+      node.arguments[0] &&
+      (ts.isStringLiteral(node.arguments[0]) ||
+        ts.isNoSubstitutionTemplateLiteral(node.arguments[0])) &&
+      node.arguments[1] &&
+      ts.isObjectLiteralExpression(node.arguments[1])
+    ) {
+      const name = node.arguments[0].text;
+      for (const property of node.arguments[1].properties) {
+        if (
+          !ts.isPropertyAssignment(property) ||
+          property.name.getText() !== "skip"
+        )
+          continue;
+        const condition = property.initializer;
+        if (
+          !ts.isBinaryExpression(condition) ||
+          condition.operatorToken.kind !==
+            ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+          !ts.isStringLiteral(condition.right) ||
+          condition.right.text !== "1" ||
+          !ts.isPropertyAccessExpression(condition.left) ||
+          condition.left.expression.getText() !== "process.env"
+        )
+          continue;
+        const flag = condition.left.name.text;
+        const item = data({ file, name });
+        assert.equal(
+          classifySkippedTest(item, plan({}, { platform: "darwin" }))
+            .capability,
+          "runtime",
+        );
+        assert.throws(
+          () =>
+            classifySkippedTest(
+              item,
+              plan(
+                { [flag]: "1", MORPHZ_APP_RUNTIME_BINARY: "/fixture/runtime" },
+                { files: [file], platform: "darwin" },
+              ),
+            ),
+          /Required or prepared test was skipped/,
+          `${file}: ${name} must not opt out after ${flag} is enabled`,
+        );
+        checked++;
+      }
+    }
+    node.forEachChild(visit);
+  };
+  visit(syntax);
+  return checked;
+}
+
+test("literal environment-gated tests have exact capability ownership before the full inventory runs", () => {
+  const cwd = "/test-capability-inventory";
+  const config = `${cwd}/tsconfig.json`;
+  const files: Record<string, string> = {};
+  for (const file of readdirSync(testsRoot)) {
+    if (!file.endsWith(".test.ts")) continue;
+    const source = readFileSync(join(testsRoot, file), "utf8");
+    if (!source.includes("skip: process.env.")) continue;
+    files[`${cwd}/${file}`] = source;
+  }
+  files[`${cwd}/counterfactual.test.ts`] =
+    'test("TEST unregistered Runtime case", { skip: process.env.MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E !== "1" }, () => {});';
+  files[config] = JSON.stringify({
+    compilerOptions: { noLib: true, noResolve: true },
+    files: Object.keys(files),
+  });
+  const snapshot = virtualTypeScriptSnapshot(cwd, files, config);
+  try {
+    const project = snapshot.getProject(config)!;
+    assert.deepEqual(project.program.getSyntacticDiagnostics(), []);
+    let checked = 0;
+    for (const path of Object.keys(files)) {
+      if (path === config || path.endsWith("/counterfactual.test.ts")) continue;
+      checked += assertLiteralEnvironmentGatesRegistered(
+        path.slice(cwd.length + 1),
+        project.program.getSourceFile(path)!,
+      );
+    }
+    assert.ok(checked > 0, "the real opt-in inventory must be inspected");
+    assert.throws(
+      () =>
+        assertLiteralEnvironmentGatesRegistered(
+          "response-annotations-runtime.test.ts",
+          project.program.getSourceFile(`${cwd}/counterfactual.test.ts`)!,
+        ),
+      /Unexpected skipped test/,
+    );
+  } finally {
+    snapshot.dispose();
+  }
+});
 
 test("default test planning requires a prepared PostgreSQL connection, never a skip fallback", () => {
   for (const value of [undefined, "", " "]) {
@@ -256,9 +382,15 @@ test("unknown, copied-name, misspelled and unselected skips cannot use an allow-
       file: "platform-storage.test.ts",
       name: "Platform PostgreSQL：身份、成员和会话与 SQLite 同事务语义",
     },
-    { file: "unrelated.test.ts", name: declarations[0].name },
-    { file: declarations[0].file, name: declarations[0].name + " changed" },
-    { name: declarations[0].name },
+    {
+      file: "unrelated.test.ts",
+      name: declared("cloud-artifact-host.test.ts").name,
+    },
+    {
+      file: declared("cloud-artifact-host.test.ts").file,
+      name: declared("cloud-artifact-host.test.ts").name + " changed",
+    },
+    { name: declared("cloud-artifact-host.test.ts").name },
   ]) {
     assert.throws(
       () => classifySkippedTest(value, actual),
@@ -268,7 +400,7 @@ test("unknown, copied-name, misspelled and unselected skips cannot use an allow-
   assert.throws(
     () =>
       classifySkippedTest(
-        data(declarations[0]),
+        data(declared("cloud-artifact-host.test.ts")),
         plan({}, { files: ["test-capabilities.test.ts"] }),
       ),
     /Unexpected skipped test/,
@@ -276,7 +408,7 @@ test("unknown, copied-name, misspelled and unselected skips cannot use an allow-
 });
 
 test("optional identities preserve actual absolute and supported relative paths without basename collisions", () => {
-  const item = declarations[0];
+  const item = declared("cloud-artifact-host.test.ts");
   const absolute = join(testsRoot, item.file);
   const aliases = [
     item.file,
@@ -298,7 +430,7 @@ test("optional identities preserve actual absolute and supported relative paths 
 });
 
 test("nested, wrong-workspace and dot-segment escaping files cannot borrow the same optional title", () => {
-  const item = declarations[0];
+  const item = declared("cloud-artifact-host.test.ts");
   const unrelated = [
     join(testsRoot, "copied", item.file),
     `copied/${item.file}`,
@@ -323,7 +455,7 @@ test("nested, wrong-workspace and dot-segment escaping files cannot borrow the s
   }
 });
 
-test("four Darwin-specific cases and the single Windows exclusion are platform-exact", () => {
+test("Darwin-specific cases and the single Windows exclusion are platform-exact", () => {
   for (const item of darwin) {
     assert.equal(
       classifySkippedTest(data(item), plan({}, { platform: "linux" })).reason,
@@ -352,7 +484,7 @@ test("four Darwin-specific cases and the single Windows exclusion are platform-e
 });
 
 test("selected S3 configuration or requirement must be complete before test execution", () => {
-  const selected = { files: [declarations[0].file] };
+  const selected = { files: [declared("cloud-artifact-host.test.ts").file] };
   const cloud = {
     MORPHZ_TEST_S3_ENDPOINT: "http://fixture.invalid:4566",
     MORPHZ_TEST_PG_DUMP: "/fixture/pg_dump",
@@ -369,11 +501,16 @@ test("selected S3 configuration or requirement must be complete before test exec
   const ready = plan(cloud, selected);
   assert.equal(ready.cloud, true);
   assert.throws(
-    () => classifySkippedTest(data(declarations[0]), ready),
+    () =>
+      classifySkippedTest(data(declared("cloud-artifact-host.test.ts")), ready),
     /Required or prepared test was skipped/,
   );
   assert.throws(
-    () => classifySkippedTest(data(declarations[2]), plan(cloud)),
+    () =>
+      classifySkippedTest(
+        data(declared("cloud-deployment-backup.test.ts")),
+        plan(cloud),
+      ),
     /Required or prepared test was skipped/,
   );
   // An unselected cloud family must not acquire capabilities or start services.
@@ -416,7 +553,11 @@ test("required Runtime checks only selected files and all corresponding exact fl
     /Required or prepared test was skipped/,
   );
   assert.throws(
-    () => classifySkippedTest(data(declarations[4]), actual),
+    () =>
+      classifySkippedTest(
+        data(declared("profile-agent-update.test.ts")),
+        actual,
+      ),
     /Required or prepared test was skipped/,
   );
   assert.throws(
@@ -434,7 +575,7 @@ test("actual cognitive Runtime opt-in is exact, cannot borrow Profile's flag, an
     MORPHZ_APP_RUNTIME_BINARY: "/fixture/runtime",
     MORPHZ_PROFILE_RUNTIME_E2E: "1",
   };
-  const item = declarations[9];
+  const item = declared("cognitive-app-actual-runtime.test.ts");
   const selection = { files: [item.file] };
   assert.throws(
     () => plan(runtime, selection),
@@ -452,7 +593,7 @@ test("actual cognitive Runtime opt-in is exact, cannot borrow Profile's flag, an
 });
 
 test("scheduled cognitive infer opt-in cannot borrow the input-only flag or excuse a prepared skip", () => {
-  const item = declarations[10];
+  const item = declared("cognitive-app-actual-runtime-sources.test.ts");
   const selection = { files: [item.file] };
   const runtime = {
     MORPHZ_TEST_REQUIRED_CAPABILITIES: "runtime",
@@ -475,7 +616,10 @@ test("scheduled cognitive infer opt-in cannot borrow the input-only flag or excu
 });
 
 test("exact-original IO10 Runtime cases cannot borrow other cognitive flags or excuse either prepared skip", () => {
-  const items = declarations.slice(11, 13);
+  const items = declarations.filter(
+    (item) => item.file === "cognitive-app-input-actual-runtime.test.ts",
+  );
+  assert.equal(items.length, 2);
   assert.equal(items.length, 2);
   const selection = { files: [items[0]!.file] };
   const runtime = {
@@ -581,7 +725,7 @@ test("enabled Runtime cases require the canonical existing binary even without a
 });
 
 test("native-focus opt-out never excuses missing Chromium, and enabled focus cannot skip", () => {
-  const item = declarations[8],
+  const item = declared("exchange-read-receipts-mounted.test.ts"),
     selected = { files: [item.file] };
   assert.throws(
     () =>

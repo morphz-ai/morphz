@@ -5,8 +5,10 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import postcss, { type Rule } from "postcss";
-import { API } from "typescript/unstable/sync";
-import { createVirtualFileSystem } from "typescript/unstable/fs";
+import {
+  virtualTypeScriptResources,
+  virtualTypeScriptSnapshot,
+} from "./fixtures/virtual-typescript.js";
 import type { Identifier } from "typescript/unstable/ast";
 import {
   windowFrameBaseline,
@@ -68,29 +70,24 @@ function parsed<T>(
     compilerOptions: { noLib: true, noResolve: true, jsx: "preserve" },
     files: [...sources.modules.keys()],
   });
-  const api = new API({ cwd: base, fs: createVirtualFileSystem(files) });
+  const snapshot = virtualTypeScriptSnapshot(base, files, config);
   try {
-    const snapshot = api.updateSnapshot({ openProjects: [config] });
-    try {
-      const project = snapshot.getProject(config)!,
-        program = project.program;
-      assert.equal(
-        program.getSyntacticDiagnostics().length,
-        0,
-        "actual TS/JSX counterfactual must parse",
-      );
-      return consume(
-        [...sources.modules.keys()].map((file) => ({
-          file,
-          source: program.getSourceFile(base + "/" + file)!,
-        })),
-        (node) => !project.checker.getSymbolAtLocation([node])[0],
-      );
-    } finally {
-      snapshot.dispose();
-    }
+    const project = snapshot.getProject(config)!,
+      program = project.program;
+    assert.equal(
+      program.getSyntacticDiagnostics().length,
+      0,
+      "actual TS/JSX counterfactual must parse",
+    );
+    return consume(
+      [...sources.modules.keys()].map((file) => ({
+        file,
+        source: program.getSourceFile(base + "/" + file)!,
+      })),
+      (node) => !project.checker.getSymbolAtLocation([node])[0],
+    );
   } finally {
-    api.close();
+    snapshot.dispose();
   }
 }
 function violations(sources: Sources) {
@@ -227,6 +224,34 @@ function mountFeature(
     '<div className="sidebar-header">\n<FutureFeature />',
   );
 }
+test("WindowFrame parser owns one compiler per unchanged layout and rereads every actual source mutation", () => {
+  const before = virtualTypeScriptResources();
+  assert.ok(
+    before.owned > 0,
+    "the initial actual-source parse must own a reusable compiler",
+  );
+  const read = (modules: Parameters<Parameters<typeof parsed>[1]>[0]) => {
+    const source = modules.find(({ file }) => file === "App.tsx")!.source;
+    return { source, text: source.text };
+  };
+  const original = parsed(actual, read);
+  const changed = clone();
+  append(
+    changed,
+    "App.tsx",
+    "// TEST current source freshness, not a retained AST",
+  );
+  const fresh = parsed(changed, read);
+  assert.notEqual(fresh.source, original.source);
+  assert.equal(fresh.text, changed.modules.get("App.tsx"));
+  assert.notEqual(fresh.text, original.text);
+  assert.deepEqual(
+    virtualTypeScriptResources(),
+    before,
+    "source mutations must not spawn a compiler per counterfactual",
+  );
+});
+
 test("WindowFrame accepted finite inventory has 26 whole rules/83 declarations and two actual carriers", () => {
   assert.equal(windowFrameBaseline, "9a10f743b65650ddd2fd2b09a7c4cc6cac3a6dda");
   assert.equal(windowFrameRecipes.length, 26);
