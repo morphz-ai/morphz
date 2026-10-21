@@ -36,6 +36,145 @@ fn call(id: &str, arguments: &str) -> ToolCallRepr {
     }
 }
 
+fn control_prepared(enabled: bool) -> Prepared {
+    let mut directory = tools();
+    directory.push(ToolDefinition {
+        name: "no_reply".into(),
+        description: "Finite waiting or intentional silence".into(),
+        parameters: json!({"type":"object","properties":{"mode":{"type":"string","enum":["silent","wait"]},"wait_secs":{"type":"integer","minimum":1}},"required":["mode"],"additionalProperties":false}),
+    });
+    let caller = ReturnBinding::new("execution", 1, "activation", enabled).with_native_output();
+    prepare(&caller, &[], &directory).unwrap()
+}
+
+#[test]
+fn native_no_reply_runtime_metadata_is_separate_from_strict_control_arguments() {
+    let on = control_prepared(true);
+    let off = control_prepared(false);
+    assert_eq!(
+        serde_json::to_value(&on.tools).unwrap(),
+        serde_json::to_value(&off.tools).unwrap(),
+        "Annotation switch never changes the control directory"
+    );
+    assert_eq!(on.binding.tools_sha256, off.binding.tools_sha256);
+    assert!(on.binding.metadata_tools.contains(&"no_reply".into()));
+    assert_eq!(
+        on.tools
+            .iter()
+            .find(|tool| tool.name == "no_reply")
+            .unwrap()
+            .parameters["additionalProperties"],
+        false
+    );
+    for enabled in [true, false] {
+        let binding = control_prepared(enabled).binding;
+        for args in [
+            json!({"mode":"silent"}),
+            json!({"mode":"wait"}),
+            json!({"mode":"wait","wait_secs":90}),
+        ] {
+            for metadata in [
+                json!({"execution":{"title":"等待后台评估","progress":"等待后台结果"},"intent":"等待后台工作"}),
+                json!({"execution":null,"observations_note":null}),
+                Value::Null,
+                json!("invalid display metadata"),
+            ] {
+                let mut wire = args.clone();
+                wire[METADATA_KEY] = metadata;
+                let response = Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        func_name: "no_reply".into(),
+                        ..call("wait", &wire.to_string())
+                    }],
+                };
+                let normalized = normalize(&response, &binding, &context(&binding)).unwrap();
+                assert_eq!(normalized.raw_response.tool_calls, response.tool_calls);
+                assert_eq!(
+                    serde_json::from_str::<Value>(
+                        &normalized.execution_response.tool_calls[0].arguments
+                    )
+                    .unwrap(),
+                    args
+                );
+                assert!(matches!(
+                    normalized.terminal_decision,
+                    Some(TerminalDecision::NoReply(_))
+                ));
+                assert!(
+                    normalized
+                        .records
+                        .iter()
+                        .all(|record| record.kind != AnnotationKind::Intent),
+                    "A control never becomes an executed work step"
+                );
+                if !enabled {
+                    assert!(normalized.records.is_empty());
+                }
+                if args["mode"] == "wait" {
+                    let explicit = args.get("wait_secs").is_some();
+                    assert_eq!(
+                        normalized.terminal_decision,
+                        Some(TerminalDecision::NoReply(
+                            crate::response_annotations::NoReplyMode::Wait {
+                                wait_secs: if explicit { 90 } else { 60 },
+                                explicitly_requested: explicit
+                            }
+                        ))
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn no_reply_metadata_never_relaxes_mode_wait_exclusivity_or_a_frozen_unadvertised_contract() {
+    for enabled in [true, false] {
+        let binding = control_prepared(enabled).binding;
+        for mut args in [
+            json!({"mode":"wait","wait_secs":0}),
+            json!({"mode":"wait","wait_secs":-1}),
+            json!({"mode":"wait","wait_secs":1.5}),
+            json!({"mode":"silent","wait_secs":90}),
+            json!({"mode":"unknown"}),
+            json!({"mode":"wait","business_extra":true}),
+        ] {
+            args[METADATA_KEY] = json!({"execution":{"progress":"等待后台结果"}});
+            let response = Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    func_name: "no_reply".into(),
+                    ..call("control", &args.to_string())
+                }],
+            };
+            assert!(normalize(&response, &binding, &context(&binding)).is_err());
+        }
+        let response = Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                func_name: "no_reply".into(),
+                ..call(
+                    "control",
+                    r#"{"mode":"wait","wait_secs":90,"_morphz":{"execution":{"progress":"等待后台结果"}}}"#,
+                )
+            }],
+        };
+        let mut with_body = response.clone();
+        with_body.content = "不能一边等待一边最终回复".into();
+        assert!(normalize(&with_body, &binding, &context(&binding)).is_err());
+        let mut mixed = response.clone();
+        mixed.tool_calls.push(call("work", r#"{"path":"file"}"#));
+        assert!(normalize(&mixed, &binding, &context(&binding)).is_err());
+        let mut frozen = binding.clone();
+        frozen.metadata_tools.retain(|name| name != "no_reply");
+        assert!(
+            normalize(&response, &frozen, &context(&frozen)).is_err(),
+            "Never reinterpret an old physical carrier that did not advertise metadata"
+        );
+    }
+}
+
 #[test]
 fn malformed_native_tool_arguments_survive_metadata_decoding_for_per_call_rejection() {
     for enabled in [false, true] {

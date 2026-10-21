@@ -547,9 +547,20 @@ impl ScriptClient {
         let control = tools.iter().find(|tool| tool.name == "no_reply").unwrap();
         assert_eq!(control.parameters["additionalProperties"], false);
         let properties = control.parameters["properties"].as_object().unwrap();
-        assert_eq!(properties.len(), 2);
+        assert_eq!(
+            properties.len(),
+            if Self::return_binding(messages).is_native() {
+                3
+            } else {
+                2
+            }
+        );
         assert!(properties.contains_key("mode") && properties.contains_key("wait_secs"));
         assert!(!properties.contains_key("_annotations"));
+        assert_eq!(
+            properties.contains_key("_morphz"),
+            Self::return_binding(messages).is_native()
+        );
         if morphz::session_io::unified::selected(&Self::return_binding(messages)) {
             assert!(messages
                 .iter()
@@ -836,7 +847,13 @@ impl Client for ScriptClient {
             }
             (Scenario::NoReplyWait(annotated), 1) => {
                 Self::assert_lifecycle_receipt(&messages, &tools, annotated);
-                Self::no_reply(json!({"mode":"wait","wait_secs":86_400}))
+                let mut arguments = json!({"mode":"wait","wait_secs":86_400});
+                if Self::return_binding(&messages).is_native() {
+                    // Same extra Runtime-owned field as the actual DeepSeek
+                    // failure; test it even when display annotations are off.
+                    arguments["_morphz"] = json!({"execution":{"title":"检查后选择生命周期边界","progress":"等待合成后续结果"},"intent":"等待后台工作"});
+                }
+                Self::no_reply(arguments)
             }
             (Scenario::CompletionRejected(annotated), 0) => {
                 // A real unbound Objective control call is rejected by the
@@ -3776,9 +3793,12 @@ async fn actual_no_reply_wait_uses_real_pending_work_and_does_not_finalize_or_re
                 value["effects"][0]["arguments"],
                 json!({"mode":"wait","wait_secs":86_400})
             );
-            assert!(records_from_authorized_event(&waiting, &scope)
-                .unwrap()
-                .is_empty());
+            let control_records = records_from_authorized_event(&waiting, &scope).unwrap();
+            assert_eq!(control_records.len(), 2);
+            assert!(control_records.iter().all(|record| matches!(
+                record.kind,
+                AnnotationKind::Title | AnnotationKind::Progress
+            )));
             let work = events
                 .iter()
                 .find(|event| {
@@ -3799,7 +3819,7 @@ async fn actual_no_reply_wait_uses_real_pending_work_and_does_not_finalize_or_re
             .unwrap();
             assert_eq!(projection.status, "open");
             assert_eq!(projection.title.as_deref(), Some("检查后选择生命周期边界"));
-            assert_eq!(projection.progress.as_deref(), Some("读取合成系统"));
+            assert_eq!(projection.progress.as_deref(), Some("等待合成后续结果"));
             assert!(projection.result.is_none(), "waiting is not terminal, even when the earlier work response included a candidate result");
         } else {
             assert!(events.iter().all(has_no_annotation_records));
