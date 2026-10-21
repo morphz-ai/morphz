@@ -197,6 +197,7 @@ class Admission:
             self.outer(launch)
             require_live(frame)
             self.registration.leases.mark_admitted(launch)
+            self.registration.signal_admitted(launch)
             return {"ok": True, "launch": launch, "admitted": True}
         finally:
             if source >= 0:

@@ -13,6 +13,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,16 +87,30 @@ int main(int argc, char **argv) {
         puts("{\"rejected\":true}");
         return !strcmp(argv[4], "rogue") ? 0 : 78;
     }
-    if (descriptor != -1 || !strcmp(argv[4], "rogue")) fail("registration authority");
+    if (descriptor < 0 || !strcmp(argv[4], "rogue")) fail("registration authority");
+    struct stat receipt;
+    if (fstat(descriptor, &receipt) || !S_ISFIFO(receipt.st_mode) || receipt.st_uid != 0 ||
+        (fcntl(descriptor, F_GETFL) & O_ACCMODE) != O_RDONLY) fail("one-way root-owned startup receipt");
     const char *launch = string(reply, "launch");
     printf("{\"registered\":\"%s\"}\n", launch);
     fflush(stdout);
     pid_t child = fork();
     if (child < 0) fail("launcher fork");
     if (!child) {
+        close(descriptor);
         execl(argv[3], argv[3], argv[1], launch, argv[4], argv[5], argv[6], argv[7], (char *)NULL);
         fail("fixed launcher exec");
     }
+    if (!strncmp(argv[4], "mounted-", 8)) {
+        struct pollfd pending = {.fd = descriptor, .events = POLLIN | POLLHUP};
+        if (poll(&pending, 1, 8000) != 1) fail("private startup receipt timeout");
+        unsigned char byte = 0;
+        ssize_t size = read(descriptor, &byte, 1);
+        if (!strcmp(argv[4], "mounted-normal") ? size != 1 || byte != 1 : size != 0)
+            fail("service receipt does not match real admission outcome");
+        fprintf(stderr, "private startup receipt verified: %s\n", size == 1 ? "admitted" : "refused");
+    }
+    close(descriptor);
     int status;
     if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) fail("launcher exit");
     return WEXITSTATUS(status);

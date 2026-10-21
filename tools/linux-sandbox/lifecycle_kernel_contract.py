@@ -212,6 +212,10 @@ def execute(args):
                 mounted.stdin.write(b"exit\n")
                 mounted.stdin.flush()
                 check("mounted work and trusted ancestors exit normally", mounted.wait(timeout=5) == 0)
+            receipt = "admitted" if mode == "mounted-normal" else "refused"
+            check(mode + ": Runtime checks the root-owned private receipt, not command output",
+                  "private startup receipt verified: " + receipt in
+                  (output / f"{mode}.stderr.log").read_text())
             check(mode + ": final exit reclaims only this lease",
                   wait_until(lambda: launch_record(mounted_launch)["phase"] == "removed") and
                   not enforcing(mounted_launch))

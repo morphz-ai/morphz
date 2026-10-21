@@ -26,11 +26,15 @@ class Registration:
         self.launcher_executables = launcher_executables
         self.owners = {}
         self.launchers = {}
+        self.startup = {}
         self.admission = Admission(self)
 
     def close(self):
         # Closing the service is NOT permission to unload active protection.
         self.admission.close()
+        for descriptor in self.startup.values():
+            os.close(descriptor)
+        self.startup.clear()
         for bindings in (self.owners, self.launchers):
             for frame, _identity in bindings.values():
                 frame.close()
@@ -44,6 +48,20 @@ class Registration:
             raise PeerError("registered Runtime identity changed")
         return identity
 
+    def signal_admitted(self, launch):
+        # A one-way, kernel-passed descriptor belongs only to the authenticated
+        # Runtime registration. No command stdout, child-provided 'ready', PID
+        # file or model data is accepted as evidence. One byte means the service
+        # has checked actual admission; EOF means no such confirmation exists.
+        descriptor = self.startup.pop(launch, None)
+        if descriptor is None:
+            raise PeerError("launch has no unconsumed private startup receipt")
+        try:
+            if os.write(descriptor, b"\x01") != 1:
+                raise PeerError("private startup confirmation was not delivered")
+        finally:
+            os.close(descriptor)
+
     def handle(self, frame):
         request = decode_request(frame.body)
         operation = request.get("op")
@@ -52,18 +70,24 @@ class Registration:
             policy = Policy.from_request(request["policy"])
             retained = hold(frame)
             launch = None
+            reader = writer = -1
             try:
                 launch = self.leases.register(policy, asdict(identity))
                 if authorize(frame, self.runtime_executables) != identity:
                     raise PeerError("Runtime changed during policy registration")
+                reader, writer = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
                 self.owners[launch] = (retained, identity)
+                self.startup[launch] = writer
             except BaseException:
                 retained.close()
+                for descriptor in (reader, writer):
+                    if descriptor >= 0:
+                        os.close(descriptor)
                 if launch is not None:
                     self.leases.close_admission(launch)
                     self.leases.collect(launch)
                 raise
-            return {"ok": True, "launch": launch}, None
+            return {"ok": True, "launch": launch}, reader
         if operation == "claim" and set(request) == {"op", "launch"}:
             launch = launch_name(request["launch"])
             identity = authorize(frame, self.launcher_executables)
@@ -104,6 +128,9 @@ class Registration:
         raise PolicyError("unregistered control operation or extra fields")
 
     def reap_bindings(self):
+        for launch in list(self.startup):
+            if launch not in self.leases.records or self.leases.records[launch]["phase"] == "closing":
+                os.close(self.startup.pop(launch))
         for launch in list(self.admission.pins):
             if launch not in self.leases.records:
                 self.admission.close(launch)
