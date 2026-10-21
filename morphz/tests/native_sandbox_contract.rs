@@ -18,7 +18,7 @@ mod linux {
         let directory = tempfile::tempdir().unwrap();
         let script = format!(
             r#"python3 - <<'PY'
-import ctypes, errno, fcntl, os, stat
+import ctypes, errno, fcntl, os, stat, sys
 path = {}
 original = os.readlink('/proc/self/ns/net')
 fd = os.open(path, os.O_RDONLY)
@@ -38,8 +38,13 @@ else:
     os.close(writable)
     raise AssertionError('namespace handle accepted writable access')
 libc = ctypes.CDLL(None, use_errno=True)
-assert libc.setns(fd, 0x40000000) == -1 and ctypes.get_errno() == errno.EPERM
-assert libc.unshare(0x10000000) == -1 and ctypes.get_errno() == errno.EPERM
+for name, args in (('setns', (fd, 0x40000000)), ('unshare', (0x10000000,))):
+    result = getattr(libc, name)(*args)
+    failure = ctypes.get_errno()
+    print(name, result, failure, file=sys.stderr)
+    # Kernel capability checks use EPERM; AppArmor userns denial uses EACCES.
+    # Both must be actual denied syscalls, never a successful transition.
+    assert result == -1 and failure in (errno.EPERM, errno.EACCES), (name, result, failure)
 assert os.readlink('/proc/self/ns/net') == original
 os.close(fd)
 print('namespace-authority-preserved')
@@ -62,6 +67,7 @@ PY"#,
             .unwrap();
         prepared.startup_receipt.as_ref().unwrap().wait().unwrap();
         let output = child.wait_with_output().unwrap();
+        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
         assert!(
             output.status.success(),
             "{}",
