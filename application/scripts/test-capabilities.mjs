@@ -132,6 +132,7 @@ const optionalTests = [
     "MORPHZ_RESPONSE_ANNOTATIONS_RUNTIME_E2E",
   ],
   ...[
+    "actual Runtime + Host: rejected empty wait is corrected once, delivered and never presented as a failed reply",
     "actual Runtime + Host history: terminal failure restores its exact cause without response captures or another infer",
     "actual Runtime + Host IO: late subscription restores the complete prefix, streams before completion and settles once",
   ].map((name) => [
