@@ -22,6 +22,8 @@ type Policy = {
   context_id: string;
   model_alias: string | null;
   reasoning_effort: string | null;
+  permission_mode?: string | null;
+  sandbox_mode?: string | null;
 };
 async function fixture() {
   const f = await platformRuntimeHostFixture();
@@ -31,59 +33,103 @@ async function fixture() {
     state: {
       namespace: string;
       sessions: Record<string, { runtimePrincipalId: string | null }>;
+      deliveries: Array<{
+        inputId: string;
+        sessionId: string;
+        request: Record<string, any>;
+        initialSessionEvaluation?: SessionEvaluationDefaults;
+      }>;
     };
     runtimeFetch(url: string, init: RequestInit): Promise<Response>;
+    ensureSession(
+      id: string,
+      initial?: SessionEvaluationDefaults,
+    ): Promise<void>;
   };
   const records = new Map<string, Policy>();
   const calls: { path: string; method: string; body: any }[] = [];
   let patch: "normal" | "fail" | "ignore" | "lost" | "overwrite" = "normal";
   let principal = "isolated-principal";
   let onCatalog: (() => void) | undefined;
-  internal.runtimeFetch = async (url, init) => {
-    const path = new URL(url).pathname;
-    const method = init.method ?? "GET";
-    const body = typeof init.body === "string" ? JSON.parse(init.body) : null;
-    calls.push({ path, method, body });
-    if (path === "/api/runtime/inference") {
-      onCatalog?.();
-      return Response.json({
-        model: "isolated-model",
-        reasoning_effort: "low",
-        model_options: [
-          {
-            id: "isolated-model",
-            label: "First",
-            supported_reasoning_efforts: ["none", "low", "high", "max"],
-          },
-          {
-            id: "alternate-model",
-            label: "Alternate",
-            supported_reasoning_efforts: ["none", "high"],
-          },
-        ],
-      });
-    }
-    const id = path.split("/")[3]!;
-    const record = records.get(id);
-    if (!record) return Response.json({}, { status: 404 });
-    if (path.endsWith("/principal"))
-      return Response.json({
-        principal_id: principal,
-        session_id: id,
-        context_id: record.context_id,
-      });
-    if (method === "PATCH") {
-      assert.deepEqual(Object.keys(body), ["model_alias", "reasoning_effort"]);
-      if (patch === "fail") return Response.json({}, { status: 503 });
-      if (patch !== "ignore") {
-        record.model_alias = body.model_alias || null;
-        record.reasoning_effort = body.reasoning_effort || null;
+  let initialCapability = true;
+  let loseCreation = false;
+  const attach = () => {
+    (f.runtime as unknown as typeof internal).runtimeFetch = async (
+      url,
+      init,
+    ) => {
+      const path = new URL(url).pathname;
+      const method = init.method ?? "GET";
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : null;
+      calls.push({ path, method, body });
+      if (path === "/api/runtime/inference") {
+        onCatalog?.();
+        return Response.json({
+          model: "isolated-model",
+          reasoning_effort: "low",
+          initial_session_evaluation: initialCapability,
+          model_options: [
+            {
+              id: "isolated-model",
+              label: "First",
+              supported_reasoning_efforts: ["none", "low", "high", "max"],
+            },
+            {
+              id: "alternate-model",
+              label: "Alternate",
+              supported_reasoning_efforts: ["none", "high"],
+            },
+          ],
+        });
       }
-      if (patch === "lost") throw new Error("isolated lost PATCH receipt");
-      if (patch === "overwrite") record.reasoning_effort = "none";
-    }
-    return Response.json(record);
+      if (path === "/api/sessions" && method === "POST") {
+        const record: Policy = {
+          id: body.id,
+          context_id: body.mount.context_id,
+          model_alias: body.initial_evaluation?.model_alias ?? null,
+          reasoning_effort: body.initial_evaluation?.reasoning_effort ?? null,
+          permission_mode: null,
+          sandbox_mode: null,
+        };
+        records.set(record.id, record);
+        if (loseCreation) {
+          loseCreation = false;
+          throw new Error("isolated lost atomic creation response");
+        }
+        return Response.json(record, { status: 201 });
+      }
+      const id = path.split("/")[3]!;
+      const record = records.get(id);
+      if (!record) return Response.json({}, { status: 404 });
+      if (path.endsWith("/principal"))
+        return Response.json({
+          principal_id: principal,
+          session_id: id,
+          context_id: record.context_id,
+        });
+      if (method === "PATCH") {
+        if (body.permission_mode) {
+          assert.deepEqual(Object.keys(body), ["permission_mode"]);
+          record.permission_mode = body.permission_mode;
+          record.sandbox_mode = null;
+          return Response.json(record);
+        }
+        assert.deepEqual(Object.keys(body), [
+          "model_alias",
+          "reasoning_effort",
+        ]);
+        if (patch === "fail") return Response.json({}, { status: 503 });
+        if (patch !== "ignore") {
+          record.model_alias = body.model_alias || null;
+          record.reasoning_effort = body.reasoning_effort || null;
+        }
+        if (patch === "lost") throw new Error("isolated lost PATCH receipt");
+        if (patch === "overwrite") record.reasoning_effort = "none";
+      }
+      return Response.json(record);
+    };
   };
+  attach();
   const { dialogueId } = await f.session().ensurePlatformSpaces();
   const scope = { projectId: f.projectId, conversationId: dialogueId };
   const read = (target = scope) => f.session().readSessionEvaluation(target);
@@ -115,13 +161,22 @@ async function fixture() {
   };
   return {
     f,
-    internal,
+    get internal() {
+      return f.runtime as unknown as typeof internal;
+    },
+    attach,
     scope,
     records,
     calls,
     read,
     seed,
     update,
+    set initialCapability(value: boolean) {
+      initialCapability = value;
+    },
+    set loseCreation(value: boolean) {
+      loseCreation = value;
+    },
     set patch(value: typeof patch) {
       patch = value;
     },
@@ -137,6 +192,169 @@ const denied = (e: unknown) =>
   e instanceof DomainError && e.code === "forbidden";
 const conflicted = (e: unknown) =>
   e instanceof DomainError && e.code === "conflict";
+
+async function queueInitial(t: Awaited<ReturnType<typeof fixture>>) {
+  const command = {
+    commandId: randomUUID(),
+    operation: {
+      type: "record-input" as const,
+      ...t.scope,
+      artifactId: null,
+      artifactRevision: null,
+      selection: "",
+      body: "TEST 首建模型不固化为任务设置",
+      targetActantId: "morphz-agent",
+      initialSessionEvaluation: {
+        model: "alternate-model",
+        reasoningEffort: "high" as const,
+      },
+    },
+  };
+  await t.f.session().platformMessage(command);
+  const delivery = t.internal.state.deliveries.find(
+    (d) => d.inputId === command.commandId,
+  )!;
+  assert.ok(delivery);
+  assert.equal(delivery.request.activation.model_alias, undefined);
+  assert.equal(delivery.request.activation.reasoning_effort, undefined);
+  return { command, delivery };
+}
+
+test("首建模型收据跨Host重启保留，Runtime原子创建而不变成任务覆盖，同ID不同设置拒绝", async () => {
+  const t = await fixture();
+  try {
+    const { command, delivery } = await queueInitial(t);
+    const envelope = structuredClone(delivery.request);
+    await assert.rejects(
+      t.f.session().platformMessage({
+        ...command,
+        operation: {
+          ...command.operation,
+          initialSessionEvaluation: {
+            model: "alternate-model",
+            reasoningEffort: "none",
+          },
+        },
+      }),
+      conflicted,
+    );
+    await t.f.reopen();
+    t.attach();
+    const retained = t.internal.state.deliveries.find(
+      (d) => d.inputId === command.commandId,
+    )!;
+    assert.deepEqual(retained.request, envelope);
+    assert.deepEqual(
+      retained.initialSessionEvaluation,
+      command.operation.initialSessionEvaluation,
+    );
+    await t.f.session().platformMessage(command);
+    await t.internal.ensureSession(
+      retained.sessionId,
+      retained.initialSessionEvaluation,
+    );
+    const record = t.records.get(retained.sessionId)!;
+    assert.equal(record.model_alias, "alternate-model");
+    assert.equal(record.reasoning_effort, "high");
+    assert.equal(record.permission_mode, "request_approval");
+    const creates = t.calls.filter(
+      (c) => c.path === "/api/sessions" && c.method === "POST",
+    );
+    assert.equal(creates.length, 1);
+    assert.deepEqual(creates[0]!.body.initial_evaluation, {
+      model_alias: "alternate-model",
+      reasoning_effort: "high",
+    });
+    assert.ok(
+      t.calls
+        .filter((c) => c.method === "PATCH")
+        .every((c) => Object.keys(c.body).join() === "permission_mode"),
+    );
+    assert.deepEqual(retained.request, envelope);
+  } finally {
+    await t.f.close();
+  }
+});
+
+test("首建响应丢失后尊重Runtime后续选择，重启不PATCH旧模型、不重复创建", async () => {
+  const t = await fixture();
+  try {
+    const { command, delivery } = await queueInitial(t);
+    const envelope = structuredClone(delivery.request);
+    t.loseCreation = true;
+    await assert.rejects(
+      t.internal.ensureSession(
+        delivery.sessionId,
+        delivery.initialSessionEvaluation,
+      ),
+      /lost atomic creation response/,
+    );
+    const record = t.records.get(delivery.sessionId)!;
+    assert.equal(record.model_alias, "alternate-model");
+    assert.equal(record.reasoning_effort, "high");
+    record.model_alias = null;
+    record.reasoning_effort = null;
+    record.permission_mode = "auto_review";
+    await t.f.reopen();
+    t.attach();
+    const retained = t.internal.state.deliveries.find(
+      (d) => d.inputId === command.commandId,
+    )!;
+    await t.internal.ensureSession(
+      retained.sessionId,
+      retained.initialSessionEvaluation,
+    );
+    assert.equal(record.model_alias, null);
+    assert.equal(record.reasoning_effort, null);
+    assert.equal(record.permission_mode, "auto_review");
+    assert.equal(t.calls.filter((c) => c.method === "POST").length, 1);
+    assert.ok(!t.calls.some((c) => c.method === "PATCH"));
+    assert.deepEqual(retained.request, envelope);
+  } finally {
+    await t.f.close();
+  }
+});
+
+test("后来的输入首建收据不重置既有Session的模型、强度或权限", async () => {
+  const t = await fixture();
+  try {
+    const record = await t.seed();
+    record.model_alias = "isolated-model";
+    record.reasoning_effort = "none";
+    record.permission_mode = "full_access";
+    const { delivery } = await queueInitial(t);
+    await t.internal.ensureSession(
+      delivery.sessionId,
+      delivery.initialSessionEvaluation,
+    );
+    assert.equal(record.model_alias, "isolated-model");
+    assert.equal(record.reasoning_effort, "none");
+    assert.equal(record.permission_mode, "full_access");
+    assert.ok(t.calls.every((c) => c.method === "GET"));
+  } finally {
+    await t.f.close();
+  }
+});
+
+test("旧Runtime未声明原子首建能力就停止，不静默忽略设置或退回任务固定模型", async () => {
+  const t = await fixture();
+  try {
+    const { delivery } = await queueInitial(t);
+    t.initialCapability = false;
+    await assert.rejects(
+      t.internal.ensureSession(
+        delivery.sessionId,
+        delivery.initialSessionEvaluation,
+      ),
+      /尚不支持首建会话模型设置/,
+    );
+    assert.equal(t.records.size, 0);
+    assert.ok(t.calls.every((c) => c.method === "GET"));
+    assert.equal(delivery.request.activation.model_alias, undefined);
+  } finally {
+    await t.f.close();
+  }
+});
 
 test("会话模型读取未开始范围不创建Session、Host账本或输入；写入不伪造首建", async () => {
   const t = await fixture();

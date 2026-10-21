@@ -1,5 +1,30 @@
 # 桌面能力实施记录
 
+## 2026-10-22 Session 首建策略的原子准入
+
+Runtime 以有类型的可选 `initial_evaluation` 在原 Session／Principal／mount
+事务中保存首选模型和强度，不增列、不增表，不用 POST 后 PATCH。模型组合
+在挂载 Context 前验证，身份和父级权限仍先验证；旧调用默认继承，相同 ID
+保持冲突，不因丢失响应而重置已存在的选择。SQLite／PostgreSQL 同一语义，
+新能力显式公布；旧 Runtime 不会因宽松 JSON 忽略字段而冒充保存成功。
+
+Host 的 `initialSessionEvaluation` 仅属于原持久 outbox 收据，不进入实际
+激活的任务覆盖；不同同命令选择冲突，重开、已存在 Session、丢失创建响应、
+人的后续清除和审批方式均保留。未发送草稿、读取和打开菜单不创建会话。
+
+首建专项 SQLite／PostgreSQL 及 HTTP 共 4 项显式执行通过、零跳过。Host
+模型／权限／输入与实际 Rust 专项通过 46/46，零失败／跳过；补充的实际
+Harness Session 继承场景也通过：首请求 max 在途不改，后续请求 high，根和
+infer 子线程仍无显式覆盖；原 max／none／low／默认场景保留。
+首轮新增测试把场景名 session 误当作强度断言，已修成逐请求 max/high 的
+独立预期，未修改产品来取绿。Runtime 全库为 1676 通过、0 失败、14 项默认
+不执行；冻结 Rust 源的 all-targets clippy 通过。新专项的 PG 默认 ignored
+在 CI 中明确执行，不把标签本身计为通过。
+
+本段只记录首建准入，不代表输入框完整接线、历史任务修正、后续新发现的
+no_reply 元数据报错、真实 DeepSeek 或原应用更新已交付。UI 接线正在另行
+回归，当前报错先独立修复，不以已有绿色测试掩盖实际失败。
+
 ## 2026-10-22 持续模型设置的 Host 边界
 
 已增加共享有类型 `session-evaluation.read/update`，唯一权威是 Runtime

@@ -151,6 +151,8 @@ jobs:
         run: cargo test -p morphz --test runtime_store_conformance -- --nocapture
       - name: Verify typed interrupt delivery on SQLite and PostgreSQL
         run: cargo test --locked -p morphz --test typed_io_interrupt -- --include-ignored --nocapture
+      - name: Verify atomic initial Session evaluation on SQLite and PostgreSQL
+        run: cargo test --locked -p morphz --test session_initial_evaluation -- --include-ignored --nocapture
 
   native-sandbox-macos:
     name: Native Sandbox (macOS)

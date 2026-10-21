@@ -4666,12 +4666,26 @@ impl MorphzSdk {
         principal: PrincipalAssertion,
         session: NewSession,
     ) -> SdkResult<SessionRecord> {
+        self.create_session_with_evaluation(
+            principal,
+            session,
+            crate::memory::InitialSessionEvaluation::default(),
+        )
+        .await
+    }
+
+    pub async fn create_session_with_evaluation(
+        &self,
+        principal: PrincipalAssertion,
+        session: NewSession,
+        evaluation: crate::memory::InitialSessionEvaluation,
+    ) -> SdkResult<SessionRecord> {
         if let Some(parent_session_id) = session.parent_session_id.as_deref() {
             self.authorize_session(&principal.principal_id, parent_session_id)
                 .await?;
         }
         self.runtime
-            .create_session_for_principal(session, principal)
+            .create_session_for_principal_with_evaluation(session, principal, evaluation)
             .await
             .map_err(|error| SdkError::new(SdkErrorCode::Conflict, error.to_string()))
     }

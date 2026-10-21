@@ -6601,11 +6601,49 @@ impl MorphzRuntime {
         session: NewSession,
         assertion: PrincipalAssertion,
     ) -> Result<SessionRecord, RuntimeError> {
+        self.create_session_for_principal_with_evaluation(
+            session,
+            assertion,
+            crate::memory::InitialSessionEvaluation::default(),
+        )
+        .await
+    }
+
+    pub async fn validate_initial_session_evaluation(
+        &self,
+        evaluation: crate::memory::InitialSessionEvaluation,
+    ) -> Result<crate::memory::InitialSessionEvaluation, RuntimeError> {
+        let selection = self
+            .validate_task_model_selection(
+                crate::model_selection::ModelSelection {
+                    model: evaluation.model_alias,
+                    reasoning_effort: evaluation
+                        .reasoning_effort
+                        .map(|effort| effort.as_str().to_string()),
+                },
+                None,
+            )
+            .await?;
+        Ok(crate::memory::InitialSessionEvaluation {
+            model_alias: selection.model,
+            reasoning_effort: evaluation.reasoning_effort,
+        })
+    }
+
+    /// No Session is visible without its selected defaults and Principal.
+    /// Duplicate creation never updates an existing Session's live policy.
+    pub async fn create_session_for_principal_with_evaluation(
+        &self,
+        session: NewSession,
+        assertion: PrincipalAssertion,
+        evaluation: crate::memory::InitialSessionEvaluation,
+    ) -> Result<SessionRecord, RuntimeError> {
         let principal = self.ensure_principal(assertion).await?;
+        let evaluation = self.validate_initial_session_evaluation(evaluation).await?;
         let session = self
             .inner
             .store
-            .create_session_for_principal(session, &principal.id)
+            .create_session_for_principal_with_evaluation(session, &principal.id, evaluation)
             .await?;
         self.inner
             .orchestrator

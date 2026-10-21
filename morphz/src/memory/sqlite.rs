@@ -11267,6 +11267,20 @@ impl SessionDirectoryStore for SqliteStore {
         session: NewSession,
         principal_id: &str,
     ) -> Result<SessionRecord, Box<dyn std::error::Error + Send + Sync>> {
+        self.create_session_for_principal_with_evaluation(
+            session,
+            principal_id,
+            crate::memory::InitialSessionEvaluation::default(),
+        )
+        .await
+    }
+
+    async fn create_session_for_principal_with_evaluation(
+        &self,
+        session: NewSession,
+        principal_id: &str,
+        evaluation: crate::memory::InitialSessionEvaluation,
+    ) -> Result<SessionRecord, Box<dyn std::error::Error + Send + Sync>> {
         if self.get_principal(principal_id).await?.is_none() {
             return Err(format!("Principal '{principal_id}' 不存在").into());
         }
@@ -11359,8 +11373,8 @@ impl SessionDirectoryStore for SqliteStore {
         }
         sqlx::query(
             r#"INSERT INTO sessions
-               (id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, last_activity_at)
-               VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)"#,
+               (id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, last_activity_at, model_alias, reasoning_effort)
+               VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)"#,
         )
         .bind(&session.id)
         .bind(&session.agent_id)
@@ -11370,6 +11384,8 @@ impl SessionDirectoryStore for SqliteStore {
         .bind(&now)
         .bind(&now)
         .bind(&now)
+        .bind(evaluation.model_alias.as_deref())
+        .bind(evaluation.reasoning_effort.map(|effort| effort.as_str()))
         .execute(&mut *tx)
         .await?;
         sqlx::query(

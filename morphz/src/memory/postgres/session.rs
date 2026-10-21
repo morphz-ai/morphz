@@ -829,6 +829,20 @@ impl SessionDirectoryStore for PostgresStore {
         session: NewSession,
         principal_id: &str,
     ) -> Result<SessionRecord, StoreError> {
+        self.create_session_for_principal_with_evaluation(
+            session,
+            principal_id,
+            crate::memory::InitialSessionEvaluation::default(),
+        )
+        .await
+    }
+
+    async fn create_session_for_principal_with_evaluation(
+        &self,
+        session: NewSession,
+        principal_id: &str,
+        evaluation: crate::memory::InitialSessionEvaluation,
+    ) -> Result<SessionRecord, StoreError> {
         if self.get_principal(principal_id).await?.is_none() {
             return Err(format!("Principal '{principal_id}' 不存在").into());
         }
@@ -911,8 +925,8 @@ impl SessionDirectoryStore for PostgresStore {
         let row = sqlx::query(&format!(
             "INSERT INTO sessions \
              (id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, \
-              last_activity_at, attention_state, attention_revision, mount_kind) \
-             VALUES ($1, $2, $3, $4, $5, 'active', $6, $6, $6, 'active', 0, $7) \
+              last_activity_at, attention_state, attention_revision, mount_kind, model_alias, reasoning_effort) \
+             VALUES ($1, $2, $3, $4, $5, 'active', $6, $6, $6, 'active', 0, $7, $8, $9) \
              RETURNING {SESSION_COLUMNS}"
         ))
         .bind(&session.id)
@@ -922,6 +936,8 @@ impl SessionDirectoryStore for PostgresStore {
         .bind(&session.title)
         .bind(&now)
         .bind(session.mount_kind.as_str())
+        .bind(evaluation.model_alias.as_deref())
+        .bind(evaluation.reasoning_effort.map(|effort| effort.as_str()))
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query(

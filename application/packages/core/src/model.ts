@@ -8,6 +8,7 @@ import {
   scriptProductionSchema,
 } from "./script-studio.js";
 import { reasoningEffortSchema } from "./inference.js";
+import { sessionEvaluationDefaultsSchema } from "./session-evaluation.js";
 import { inputIntentSchema } from "./input-intent.js";
 import { continuationSchema } from "./continuation.js";
 import {
@@ -675,6 +676,7 @@ export const operationSchema = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("record-input"),
+      initialSessionEvaluation: sessionEvaluationDefaultsSchema.optional(),
       cognitiveObject: cognitiveAppObjectLocatorSchema.optional(),
       cognitiveApplication: cognitiveAppApplicationTargetSchema.optional(),
       reading: readingInputSchema.optional(),
@@ -709,6 +711,12 @@ export const operationSchema = z.discriminatedUnion("type", [
     })
     .strict()
     .refine(coherentCognitiveAppInput, "认知应用原件不能混用其他原件范围。")
+    .refine(
+      (value) =>
+        !value.initialSessionEvaluation ||
+        (!value.model && !value.reasoningEffort && !value.continuation),
+      "首建会话默认不能与任务模型覆盖或定向补充混用。",
+    )
     .refine(
       coherentCognitiveAppApplicationInput,
       "认知应用目标与输入范围不一致。",
