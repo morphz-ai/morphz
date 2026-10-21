@@ -1689,4 +1689,116 @@ test.describe("目标入口触控", () => {
     await expect(await openInput(page)).toHaveValue(f.draft);
     expect(f.writes).toEqual([]);
   });
+
+  test("内部触摸、向外拖动及取消不误关，下一次外部轻触仍可关闭", async ({
+    page,
+  }) => {
+    const f = await prepare(page);
+    const view = f.panel
+      .locator('[data-objective-id="TEST-related-goal"]')
+      .getByRole("button", { name: "查看目标", exact: true });
+    await view.tap();
+    const dialog = page.getByRole("dialog", { name: "目标", exact: true });
+    const body = dialog.getByRole("region", { name: "完整目标" });
+    await body.tap();
+    await expect(dialog).toBeVisible();
+    const frame = (await dialog.boundingBox())!;
+    const text = (await body.boundingBox())!;
+    const outside = { x: frame.x + frame.width / 2, y: frame.y - 8 };
+    const input = await page.context().newCDPSession(page);
+    try {
+      await input.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ x: text.x + 12, y: text.y + 12, id: 0 }],
+      });
+      await input.send("Input.dispatchTouchEvent", {
+        type: "touchMove",
+        touchPoints: [{ ...outside, id: 0 }],
+      });
+      await input.send("Input.dispatchTouchEvent", {
+        type: "touchEnd",
+        touchPoints: [],
+      });
+      await expect(dialog).toBeVisible();
+      await input.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ ...outside, id: 0 }],
+      });
+      await input.send("Input.dispatchTouchEvent", {
+        type: "touchCancel",
+        touchPoints: [],
+      });
+      await expect(dialog).toBeVisible();
+    } finally {
+      await input.detach();
+    }
+    await page.touchscreen.tap(outside.x, outside.y);
+    await expect(dialog).toHaveCount(0);
+    await expect(view).toBeFocused();
+    await expect(await openInput(page)).toHaveValue(f.draft);
+    expect(f.writes).toEqual([]);
+  });
+
+  test("外部触摸不关闭编辑、记录、删除确认或处理中状态", async ({ page }) => {
+    const f = await prepare(page);
+    const target = f.runtime.activity.objectives[0]!;
+    await f.panel
+      .locator('[data-objective-id="TEST-related-goal"]')
+      .getByRole("button", { name: "查看目标", exact: true })
+      .tap();
+    const dialog = page.getByRole("dialog");
+    const outside = async () => {
+      const frame = (await dialog.boundingBox())!;
+      await page.touchscreen.tap(frame.x + frame.width / 2, frame.y - 8);
+      await expect(dialog).toBeVisible();
+      await expect(dialog).toHaveAttribute("closedby", "closerequest");
+    };
+    await (await goalOption(dialog, "编辑目标")).tap();
+    const editor = dialog.getByRole("textbox", {
+      name: "目标内容",
+      exact: true,
+    });
+    await editor.fill("TEST 触摸外部必须保留未保存草稿");
+    await outside();
+    await expect(editor).toHaveValue("TEST 触摸外部必须保留未保存草稿");
+    await dialog.getByRole("button", { name: "取消", exact: true }).tap();
+    await (await goalOption(dialog, "执行记录")).tap();
+    await outside();
+    await expect(dialog).toHaveAccessibleName("执行记录");
+    await dialog.getByRole("button", { name: "返回目标", exact: true }).tap();
+    await (await goalOption(dialog, "删除目标")).tap();
+    await outside();
+    await expect(dialog).toHaveAccessibleName("删除这个目标？");
+    await dialog.getByRole("button", { name: "保留目标", exact: true }).tap();
+    expect(f.writes).toEqual([]);
+    let release!: () => void;
+    const response = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/objectives/control", async (route) => {
+      await response;
+      target.status = "paused";
+      target.revision!++;
+      await route.fulfill({
+        json: { objectiveId: target.id, action: "pause" },
+      });
+    });
+    try {
+      await dialog.getByRole("button", { name: "暂停", exact: true }).tap();
+      await expect(dialog).toHaveAttribute("aria-busy", "true");
+      await outside();
+      await expect(
+        dialog.getByRole("button", { name: "关闭目标", exact: true }),
+      ).toBeDisabled();
+    } finally {
+      release();
+    }
+    await expect(dialog.getByRole("status")).toHaveText("已暂停");
+    await expect(dialog).toHaveAttribute("closedby", "any");
+    const frame = (await dialog.boundingBox())!;
+    await page.touchscreen.tap(frame.x + frame.width / 2, frame.y - 8);
+    await expect(dialog).toHaveCount(0);
+    await expect(await openInput(page)).toHaveValue(f.draft);
+    expect(f.writes).toHaveLength(1);
+  });
 });
