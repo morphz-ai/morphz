@@ -38,7 +38,8 @@ import {
 } from "./fixtures/reader-reads-contract.js";
 import { fixedOperationDelivery } from "./fixtures/operation-delivery-618fc8b9.js";
 
-// Five borrowed values, bounded execute/classifier/class and actual consumption.
+// Five borrowed durable ports, bounded algorithms, and the explicit view-CAS
+// sequencing edge before the public execute reference. Other delivery is unchanged.
 // No whole Client hash/inverse, module-wide purity theorem or UI/HTTP authority.
 const clientText = readFileSync("apps/web/src/client.ts", "utf8");
 const ownerText = readFileSync(
@@ -588,6 +589,75 @@ function verify(clientSource = clientText, ownerSource = ownerText) {
     false,
     "operation-current-retirement",
   );
+  const viewBinding = readerVariable(host, "applicationViewDelivery");
+  assert.ok(
+    viewBinding.initializer && isCallExpression(viewBinding.initializer),
+    "operation-view-delivery-constructor",
+  );
+  symbol(
+    client,
+    viewBinding.initializer.expression,
+    imported(
+      client,
+      "./data/application-view-delivery.js",
+      "createApplicationViewDelivery",
+      true,
+    ),
+    "operation-view-delivery-constructor",
+  );
+  const viewPorts = viewBinding.initializer.arguments[0]!;
+  assert.ok(
+    viewBinding.initializer.arguments.length === 1 &&
+      isObjectLiteralExpression(viewPorts) &&
+      viewPorts.properties.length === 3,
+    "operation-view-delivery-ports",
+  );
+  symbol(
+    client,
+    valueProperty(viewPorts, "current", "operation-view-delivery-ports"),
+    current,
+    "operation-view-delivery-ports",
+  );
+  const viewExecute = bare(
+    valueProperty(viewPorts, "execute", "operation-view-delivery-ports"),
+  );
+  assert.ok(
+    isPropertyAccessExpression(viewExecute) &&
+      viewExecute.name.text === "execute",
+    "operation-view-delivery-ports",
+  );
+  symbol(
+    client,
+    viewExecute.expression,
+    binding.name,
+    "operation-view-delivery-ports",
+  );
+  const viewPending = bare(
+    valueProperty(viewPorts, "pending", "operation-view-delivery-ports"),
+  );
+  assert.ok(
+    isPropertyAccessExpression(viewPending) &&
+      viewPending.name.text === "current",
+    "operation-view-delivery-ports",
+  );
+  const viewQueue = readerVariable(host, "applicationViewWrites");
+  symbol(
+    client,
+    viewPending.expression,
+    viewQueue.name,
+    "operation-view-delivery-ports",
+  );
+  assert.ok(
+    viewQueue.initializer && isCallExpression(viewQueue.initializer),
+    "operation-view-pending-ref",
+  );
+  symbol(
+    client,
+    viewQueue.initializer.expression,
+    imported(client, "react", "useRef", true),
+    "operation-view-pending-ref",
+  );
+  assert.ok(viewQueue.end < binding.pos, "operation-view-pending-ref");
   const publicReturn = one(
     workspace.body.statements.filter(isReturnStatement),
     "operation-direct-execute-reference",
@@ -607,7 +677,7 @@ function verify(clientSource = clientText, ownerSource = ownerText) {
   symbol(
     client,
     direct.expression,
-    binding.name,
+    viewBinding.name,
     "operation-direct-execute-reference",
   );
   assert.equal(
@@ -799,11 +869,21 @@ test("parse-valid Client variants reject actual import, borrowed refs, wrapper, 
     [
       "    execute: operationDelivery.execute,",
       "    execute: (...args) => operationDelivery.execute(...args),",
+      "operation-view-delivery-ports",
+    ],
+    [
+      "    execute: applicationViewDelivery.execute,",
+      "    execute: (...args) => applicationViewDelivery.execute(...args),",
       "operation-direct-execute-reference",
     ],
     [
-      "    localInputDelivery,\n    executePlatformOperation,\n    refreshAfterMutation,\n  });\n  const executionInteractions",
-      "    localInputDelivery: {recordInput:localInputDelivery.recordInput},\n    executePlatformOperation,\n    refreshAfterMutation,\n  });\n  const executionInteractions",
+      "    execute: applicationViewDelivery.execute,",
+      "    execute: operationDelivery.execute,",
+      "operation-direct-execute-reference",
+    ],
+    [
+      "    localInputDelivery,\n    executePlatformOperation,",
+      "    localInputDelivery: {recordInput:localInputDelivery.recordInput},\n    executePlatformOperation,",
       "operation-borrowed-inert-ports",
     ],
     [
@@ -873,19 +953,11 @@ test("real import/local aliases, static types and consumed unrelated Client or m
   );
   client = changed(
     client,
-    "  const executionInteractions =",
-    "  const borrowedDelivery = operationDelivery;\n  const executionInteractions =",
+    "  const applicationViewDelivery =",
+    "  const borrowedDelivery = operationDelivery;\n  const applicationViewDelivery =",
   );
-  // Alias is separate from the original constructor slot, never a wrapper.
-  client = client
-    .replace(
-      "  const borrowedDelivery = operationDelivery;\n  const executionInteractions =",
-      "  const executionInteractions =",
-    )
-    .replace(
-      "  return {\n    notifications:",
-      "  const borrowedDelivery = operationDelivery;\n  return {\n    notifications:",
-    );
+  // The alias is consumed by the view sequencer after durable construction,
+  // without wrapping or changing that durable owner's algorithms.
   assert.equal(verify(client), true);
   const owner = ownerText
     .replace(
@@ -935,8 +1007,8 @@ test("real import/local aliases, static types and consumed unrelated Client or m
       "    setContentCounts([]);",
       "    setContentCounts([]); independent.current.clear();",
     ),
-    "    execute: operationDelivery.execute,",
-    "    execute: operationDelivery.execute, future,futureAction,",
+    "    execute: applicationViewDelivery.execute,",
+    "    execute: applicationViewDelivery.execute, future,futureAction,",
   );
   assert.equal(
     verify(

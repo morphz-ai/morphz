@@ -3,6 +3,38 @@ import { expect, test } from "@playwright/test";
 test("浏览器状态由push更新，空闲零IPC读取，旧guest/乱序和迟到恢复不能覆盖当前页面", async ({
   page,
 }) => {
+  let holdRecoverySave = false;
+  let heldRecoverySave = false;
+  let releaseRecoverySave!: () => void;
+  const recoverySaveGate = new Promise<void>((resolve) => {
+    releaseRecoverySave = resolve;
+  });
+  let closeRequests = 0;
+  const failedViewMutations: number[] = [];
+  page.on("close", () => releaseRecoverySave());
+  page.on("request", (request) => {
+    if (request.url().endsWith("/api/platform/app-views/close"))
+      closeRequests++;
+  });
+  page.on("response", (response) => {
+    if (
+      /\/api\/platform\/app-views\/(?:save|close)$/.test(response.url()) &&
+      !response.ok()
+    )
+      failedViewMutations.push(response.status());
+  });
+  await page.route("**/api/platform/app-views/save", async (route) => {
+    if (
+      holdRecoverySave &&
+      !heldRecoverySave &&
+      route.request().postDataJSON().state?.url ===
+        "https://example.test/recovered"
+    ) {
+      heldRecoverySave = true;
+      await recoverySaveGate;
+    }
+    await route.continue();
+  });
   await page.addInitScript(() => {
     let current: any = null,
       sequence = 0,
@@ -131,6 +163,7 @@ test("浏览器状态由push更新，空闲零IPC读取，旧guest/乱序和迟�
   );
   await page.evaluate(() => (window as any).__browserRelease());
   await expect(address).toHaveValue("https://example.test/latest");
+  holdRecoverySave = true;
   await page.evaluate(() => {
     (window as any).__browserChange("https://example.test/recovered", {
       silent: true,
@@ -138,6 +171,7 @@ test("浏览器状态由push更新，空闲零IPC读取，旧guest/乱序和迟�
     window.dispatchEvent(new Event("focus"));
   });
   await expect(address).toHaveValue("https://example.test/recovered");
+  await expect.poll(() => heldRecoverySave).toBe(true);
   const beforeHostClose = await page.evaluate(() =>
     (window as any).__browserEvidence(),
   );
@@ -159,11 +193,19 @@ test("浏览器状态由push更新，空闲零IPC读取，旧guest/乱序和迟�
   await page
     .getByRole("button", { name: "关闭应用 浏览器", exact: true })
     .click();
+  // Keep the real address save in flight while Close is selected. A newer
+  // local close must wait for its confirmed CAS, not send a stale revision.
+  expect(closeRequests).toBe(0);
+  releaseRecoverySave();
+  await expect(
+    page.getByRole("button", { name: "关闭应用 浏览器", exact: true }),
+  ).toHaveCount(0);
   await expect
     .poll(() =>
       page.evaluate(() => (window as any).__browserEvidence().listeners),
     )
     .toBe(0);
+  expect(failedViewMutations).toEqual([]);
   const ended = await page.evaluate(() => (window as any).__browserEvidence());
   await page.waitForTimeout(750);
   expect(

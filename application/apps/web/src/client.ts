@@ -69,6 +69,10 @@ import {
   UnsentOperationError,
 } from "./data/operation-delivery.js";
 export { operationMayCommitBeforeError } from "./data/operation-delivery.js";
+import {
+  createApplicationViewDelivery,
+  type ApplicationViewWrite,
+} from "./data/application-view-delivery.js";
 import { createExecutionInteractions } from "./data/execution-interactions.js";
 import { createTerminalInteractions } from "./data/terminal-interactions.js";
 import {
@@ -751,6 +755,7 @@ export async function executePlatformOperation(
 }
 
 export function useWorkspace() {
+  const applicationViewWrites = useRef(new Map<string, ApplicationViewWrite>());
   const scriptEditorModels = useRef(
     new Map<string, { identity: string; value: ScriptEditorProduction }>(),
   );
@@ -915,6 +920,11 @@ export function useWorkspace() {
     localInputDelivery,
     executePlatformOperation,
     refreshAfterMutation,
+  });
+  const applicationViewDelivery = createApplicationViewDelivery({
+    current,
+    pending: applicationViewWrites.current,
+    execute: operationDelivery.execute,
   });
   const executionInteractions = createExecutionInteractions({
     current,
@@ -1779,7 +1789,7 @@ export function useWorkspace() {
     readScriptOverview,
     listObjectAnnotations: objectInteractions.listObjectAnnotations,
     workRelationsFor: objectInteractions.workRelationsFor,
-    execute: operationDelivery.execute,
+    execute: applicationViewDelivery.execute,
     bookmarkList: bookmarkInteractions.bookmarkList,
     bookmarkCommand: bookmarkInteractions.bookmarkCommand,
     upload,

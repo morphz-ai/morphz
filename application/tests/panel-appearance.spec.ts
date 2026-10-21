@@ -19,6 +19,9 @@ test("搜索与通知在四主题亮暗模式下保持清爽中性色、可读�
     "整理品牌与产品资料",
     "整理产品资料，核对文档、设计方案和本周工作安排。人和 Agent 围绕同一份内容协作。",
   );
+  // Test-only external seeding is setup, not a supported cross-process push.
+  // Read the committed fixture explicitly before exercising search behavior.
+  await page.reload();
   await page
     .locator(".artifact-card")
     .filter({ hasText: "整理品牌与产品资料" })
