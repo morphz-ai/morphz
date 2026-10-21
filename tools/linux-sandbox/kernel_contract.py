@@ -264,6 +264,12 @@ def execute(args):
                               text=True, capture_output=True, check=False, timeout=15)
         record["kernel_denials"] = [line for line in logs.stdout.splitlines()
                                     if "apparmor=" in line and "morphz_sbox_v1_" in line]
+        direct = subprocess.run(["/usr/bin/dmesg", "--color=never"], text=True,
+                                capture_output=True, check=False, timeout=15)
+        record["kernel_log_readers"] = {"journal_code": logs.returncode, "journal_stderr": logs.stderr,
+                                        "dmesg_code": direct.returncode, "dmesg_stderr": direct.stderr}
+        record["kernel_denials"].extend(line for line in direct.stdout.splitlines()
+                                         if "morphz_sbox_v1_" in line)
         # This fixed worker never forks. This is not the production service's
         # cgroup-based lifetime proof and cannot be substituted for that gate.
         if loaded and (process is None or process.poll() is not None):
