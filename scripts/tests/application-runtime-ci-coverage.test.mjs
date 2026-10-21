@@ -68,6 +68,16 @@ test("macOS acceptance uses a commit-fenced, checksummed artifact only after nat
   ]) assert.throws(() => verifyNativeRuntimeArtifact(runtimeWorkflow.replace(before, after)));
 });
 
+test("optional render profiling cannot replace or disable the normal Runtime CI inventory", () => {
+  const source = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.match(source, /conversation_profile:\s+description:[^\n]+\s+required: false\s+default: false\s+type: boolean/);
+  const profile = jobSource(source, "conversation-profile");
+  assert.ok(profile.includes("if: ${{ github.event_name == 'workflow_dispatch' && inputs.conversation_profile }}"));
+  assert.match(profile, /uses: \.\/.github\/workflows\/conversation-performance-diagnostics.yml/);
+  for (const name of ["application-source-resources", "session-io", "check", "test", "postgres-conformance", "native-sandbox-macos", "native-sandbox-linux", "native-sandbox-windows", "build", "dashboard", "website"])
+    assert.doesNotMatch(jobSource(source, name), /inputs\.conversation_profile|needs:.*conversation-profile/);
+});
+
 function runtimeStep(source) {
   const job = jobSource(source, "runtime-contract");
   const step = job

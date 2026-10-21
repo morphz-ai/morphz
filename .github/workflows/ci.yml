@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      conversation_profile:
+        description: Capture additional isolated conversation render profiles
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -15,6 +21,13 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
+  conversation-profile:
+    # New branch-only workflows cannot be dispatched by filename until they
+    # exist on the default branch. An explicit option on this existing entry
+    # calls the same-ref diagnostic workflow; all ordinary CI jobs still run.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.conversation_profile }}
+    uses: ./.github/workflows/conversation-performance-diagnostics.yml
+
   application-source-resources:
     uses: ./.github/workflows/application-source-resources.yml
 
