@@ -20,6 +20,7 @@ on:
       - application/tests/application-compose-race.test.ts
       - application/tests/cognitive-app-manager-mounted.test.ts
       - application/tests/control-role-mounted.test.ts
+      - application/tests/workspace-navigation-app-mounted.test.ts
       - application/tests/cognitive-document-native.test.ts
       - application/tests/storage-commit-notifications.test.ts
       - application/tests/shell-layout.spec.ts
@@ -193,7 +194,7 @@ jobs:
       - run: node node_modules/electron/install.js
       - run: brew install postgresql@16
       - run: npx playwright install chromium
-      - name: Check the actual opaque iframe with bounded diagnosis
+      - name: Check actual iframe and application mounts with bounded diagnosis
         env:
           MORPHZ_TEST_DIAGNOSE_MANAGER_REPLACEMENT: "1"
-        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/application-compose-race.test.ts tests/task-run-panel-mounted.test.ts tests/cognitive-app-manager-mounted.test.ts tests/control-role-mounted.test.ts
+        run: MORPHZ_TEST_POSTGRES_BIN_DIR="$(brew --prefix postgresql@16)/bin" npm test -- --test-concurrency=1 tests/application-compose-race.test.ts tests/task-run-panel-mounted.test.ts tests/cognitive-app-manager-mounted.test.ts tests/control-role-mounted.test.ts tests/workspace-navigation-app-mounted.test.ts
