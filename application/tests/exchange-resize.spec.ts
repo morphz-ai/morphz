@@ -51,6 +51,36 @@ async function resizeTo(page: Page, height: number) {
   await page.mouse.up();
 }
 
+async function expectOverlayClearance(page: Page) {
+  await expect
+    .poll(() =>
+      page.locator(".exchange-panel").evaluate((root: HTMLElement) => {
+        const toolsHeight = Math.max(
+          root.querySelector<HTMLElement>(".application-dock")?.offsetHeight ??
+            0,
+          root.querySelector<HTMLElement>(".exchange-controls-slot")
+            ?.offsetHeight ?? 0,
+        );
+        const workspace = root.closest<HTMLElement>(".primary-panel")!;
+        return {
+          toolsDifference:
+            parseFloat(root.style.getPropertyValue("--composer-tools-height")) -
+            toolsHeight,
+          overlayDifference:
+            parseFloat(
+              workspace.style.getPropertyValue("--exchange-overlay-height"),
+            ) -
+            Math.ceil(
+              root.offsetHeight +
+                toolsHeight +
+                parseFloat(getComputedStyle(root).marginBottom),
+            ),
+        };
+      }),
+    )
+    .toEqual({ toolsDifference: 0, overlayDifference: 0 });
+}
+
 test.afterEach(async ({ page }, info) => {
   if (info.status === info.expectedStatus) return;
   await info.attach("exchange-failure-geometry", {
@@ -138,6 +168,7 @@ test("拖动连续调高低且只在松开时保存；阈值收起和展开不�
   const dockBox = await page.locator(".application-dock-slot").boundingBox();
   const prefs = await preferences(page);
   const height = (await panel(page).boundingBox())!.height;
+  await expectOverlayClearance(page);
   await startDrag(page, 160);
   await expect(panel(page)).toHaveAttribute("data-resizing", "");
   await expect
@@ -147,6 +178,7 @@ test("拖动连续调高低且只在松开时保存；阈值收起和展开不�
   expect(await canvas.boundingBox()).toEqual(canvasBox);
   await page.mouse.up();
   await mode(page, "recent");
+  await expectOverlayClearance(page);
   await expect(panel(page)).not.toHaveAttribute("data-resizing");
   const saved = await preferences(page);
   expect(Object.values(saved.exchangeHeights)).toHaveLength(1);
@@ -160,6 +192,7 @@ test("拖动连续调高低且只在松开时保存；阈值收起和展开不�
   );
   await page.mouse.up();
   await mode(page, "input");
+  await expectOverlayClearance(page);
   await expect(page.locator(".conversation")).toHaveCount(0);
   await expect(handle(page)).toHaveCount(0);
   await expect(page.locator(".exchange-panel-header")).toHaveCount(0);
@@ -172,6 +205,7 @@ test("拖动连续调高低且只在松开时保存；阈值收起和展开不�
   const max = Number(await handle(page).getAttribute("aria-valuemax"));
   await resizeTo(page, max - 20);
   await mode(page, "history");
+  await expectOverlayClearance(page);
   await expect(canvas).toBeHidden();
   await resizeTo(page, 260);
   await mode(page, "recent");
