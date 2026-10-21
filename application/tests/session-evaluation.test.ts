@@ -193,6 +193,30 @@ const denied = (e: unknown) =>
 const conflicted = (e: unknown) =>
   e instanceof DomainError && e.code === "conflict";
 
+test("全局会话模型由对话所有者读取，跨工作页面的授权项目仍指向同一Runtime设置", async () => {
+  const t = await fixture();
+  try {
+    await t.seed();
+    const owner = {
+      projectId: t.scope.conversationId,
+      conversationId: t.scope.conversationId,
+    };
+    const a = await t.read(),
+      b = await t.read(owner);
+    assert.equal(a.runtimeSessionId, b.runtimeSessionId);
+    assert.equal(b.scope.kind, "global");
+    const settings = {
+      model: "alternate-model",
+      reasoningEffort: "high" as const,
+    };
+    await t.update(settings, owner);
+    assert.deepEqual((await t.read()).defaults, settings);
+    assert.deepEqual((await t.read(owner)).defaults, settings);
+  } finally {
+    await t.f.close();
+  }
+});
+
 async function queueInitial(t: Awaited<ReturnType<typeof fixture>>) {
   const command = {
     commandId: randomUUID(),

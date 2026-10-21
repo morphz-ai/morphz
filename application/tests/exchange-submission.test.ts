@@ -311,6 +311,78 @@ function readingSurface(
   };
 }
 
+test("Session-aware ordinary admission waits for settings and omits stale per-task draft overrides", async () => {
+  for (const initial of [
+    undefined,
+    { model: "session-b", reasoningEffort: "none" as const },
+  ]) {
+    const f = fixture(),
+      gate = deferred<void>(),
+      entered = deferred<void>();
+    f.ports.evaluation = {
+      async prepareInput() {
+        entered.resolve();
+        await gate.promise;
+        return initial;
+      },
+    };
+    const pending = submitExchangeDraft(
+      draft({ model: "stale-a", reasoningEffort: "max" }),
+      false,
+      "parallel",
+      context(),
+      f.ports,
+    );
+    await entered.promise;
+    assert.equal(f.calls.length, 0);
+    gate.resolve();
+    await pending;
+    const operation = onlyCall(f)[0];
+    assert.equal(operation.type, "record-input");
+    assert.equal(Object.hasOwn(operation, "model"), false);
+    assert.equal(Object.hasOwn(operation, "reasoningEffort"), false);
+    assert.deepEqual(
+      operation.type === "record-input"
+        ? operation.initialSessionEvaluation
+        : undefined,
+      initial,
+    );
+    assert.equal(
+      operation.type === "record-input" ? operation.dispatchMode : undefined,
+      "parallel",
+    );
+  }
+});
+
+test("uncertain Session settings or navigation during their save never submit the captured body", async () => {
+  const f = fixture();
+  f.ports.evaluation = {
+    async prepareInput() {
+      throw new Error("Model write unconfirmed");
+    },
+  };
+  await submitExchangeDraft(draft(), false, "interrupt", context(), f.ports);
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.errors.length, 1);
+  assert.match(String(f.errors[0]), /unconfirmed/);
+  const moved = fixture();
+  moved.ports.evaluation = {
+    async prepareInput() {
+      moved.state.current = false;
+      return undefined;
+    },
+  };
+  await submitExchangeDraft(
+    draft(),
+    false,
+    "interrupt",
+    context(),
+    moved.ports,
+  );
+  assert.equal(moved.calls.length, 0);
+  assert.match(String(moved.errors[0]), /工作范围已切换/);
+});
+
 test("normal send holds Profile before assert/current/build and executes the captured envelope once", async () => {
   const flush = deferred<void>();
   const execute = deferred<Receipt>();

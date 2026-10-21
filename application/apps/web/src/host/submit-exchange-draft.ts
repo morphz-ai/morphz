@@ -23,6 +23,7 @@ import {
 } from "../../../../packages/core/src/cognitive-app-application-target.js";
 import { parseWireJson } from "../../../../packages/cognitive-app-sdk/src/protocol.js";
 import { parseDomainAuthority } from "../../../../packages/cognitive-app-sdk/src/domain-wire.js";
+import type { SessionEvaluationDefaults } from "../../../../packages/core/src/session-evaluation.js";
 import {
   cognitiveWorkSurfaceKey,
   type CognitiveWorkSurface,
@@ -63,6 +64,9 @@ export type ExchangeSubmissionPorts = {
   profile: {
     flush(): Promise<void>;
     assertCurrentScope(): void;
+  };
+  evaluation?: {
+    prepareInput(): Promise<SessionEvaluationDefaults | undefined>;
   };
   isCurrentSurface(): boolean;
   originalInput(id: string): RecordedInput | undefined;
@@ -320,6 +324,7 @@ export async function submitExchangeDraft(
         );
       // Only a new root drains current Profile; supplements retain their binding.
       await ports.profile.flush();
+      const initialSessionEvaluation = await ports.evaluation?.prepareInput();
       ports.profile.assertCurrentScope();
       if (!ports.isCurrentSurface())
         throw new Error("工作范围已切换，草稿已保留，请回到原处发送。");
@@ -327,10 +332,16 @@ export async function submitExchangeDraft(
         {
           type: "record-input",
           dispatchMode,
-          ...(captured.model ? { model: captured.model } : {}),
-          ...(captured.reasoningEffort
-            ? { reasoningEffort: captured.reasoningEffort }
-            : {}),
+          ...(ports.evaluation
+            ? initialSessionEvaluation
+              ? { initialSessionEvaluation }
+              : {}
+            : {
+                ...(captured.model ? { model: captured.model } : {}),
+                ...(captured.reasoningEffort
+                  ? { reasoningEffort: captured.reasoningEffort }
+                  : {}),
+              }),
           projectId,
           conversationId,
           ...(firstConversation

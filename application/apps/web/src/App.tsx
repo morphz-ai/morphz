@@ -54,6 +54,7 @@ import { ConnectionDetails } from "./ConnectionDetails.js";
 import { SettingsDialog, type SettingsSection } from "./SettingsDialog.js";
 import { ProfileMenu } from "./ProfileMenu.js";
 import { useProfile } from "./useProfile.js";
+import { useSessionEvaluation } from "./useSessionEvaluation.js";
 import { AppearanceMenu } from "./AppearanceControls.js";
 import { inputDispatchMode } from "./interface-preferences.js";
 import {
@@ -1155,6 +1156,32 @@ function WorkspaceApp({
     drafts,
     emptyDraft,
   );
+  const sessionEvaluation = useSessionEvaluation({
+    enabled:
+      !!client.boot?.capabilities.modelSettings &&
+      !!window.morphzDesktop?.application,
+    online: client.online && !!client.boot?.runtime.connected,
+    identityGeneration: client.boot?.csrfToken ?? "",
+    draftKey: contextKey,
+    scope:
+      project && !selectedDraft
+        ? { projectId: conversationProjectId, conversationId }
+        : undefined,
+    seed: {
+      model: draft.model ?? null,
+      reasoningEffort: draft.reasoningEffort ?? null,
+    },
+    onLocalDraft: ({ model, reasoningEffort }) =>
+      updateDraft(
+        contextKey,
+        (current) => ({
+          ...current,
+          model: model ?? undefined,
+          reasoningEffort: reasoningEffort ?? undefined,
+        }),
+        surfaceDraft,
+      ),
+  });
   const mac = /Mac|iPhone|iPad/.test(navigator.platform),
     shortcut = mac ? "⌘J" : "Ctrl+J";
   function prefer(change: Partial<Preferences>) {
@@ -2320,6 +2347,9 @@ function WorkspaceApp({
     },
     client,
     profile,
+    evaluation: sessionEvaluation.enabled
+      ? { prepareInput: sessionEvaluation.prepareInput }
+      : undefined,
     feedback: {
       sendPending,
       currentContext,
@@ -3943,8 +3973,30 @@ function WorkspaceApp({
                           <ComposerExecutionSettings
                             sessionIdentity={client.boot!.csrfToken}
                             current={client.boot!.runtime.model}
-                            model={draft.model}
-                            reasoning={draft.reasoningEffort}
+                            model={
+                              sessionEvaluation.enabled
+                                ? (sessionEvaluation.defaults.model ??
+                                  undefined)
+                                : draft.model
+                            }
+                            reasoning={
+                              sessionEvaluation.enabled
+                                ? (sessionEvaluation.defaults.reasoningEffort ??
+                                  undefined)
+                                : draft.reasoningEffort
+                            }
+                            evaluation={
+                              sessionEvaluation.enabled
+                                ? {
+                                    ...sessionEvaluation,
+                                    scopeKind:
+                                      sessionEvaluation.snapshot?.source ===
+                                      "runtime"
+                                        ? sessionEvaluation.snapshot.scope.kind
+                                        : "not_started",
+                                  }
+                                : undefined
+                            }
                             continuation={!!draft.continuation}
                             sessionScope={
                               selectedDraft
@@ -3972,7 +4024,13 @@ function WorkspaceApp({
                               !!draft.annotation ||
                               !!draft.taskResult
                             }
-                            onModelChange={(model) =>
+                            onModelChange={(model) => {
+                              if (sessionEvaluation.enabled) {
+                                sessionEvaluation.edit({
+                                  model: model || null,
+                                });
+                                return;
+                              }
                               updateDraft(
                                 contextKey,
                                 (current) => ({
@@ -3980,9 +4038,15 @@ function WorkspaceApp({
                                   model: model || undefined,
                                 }),
                                 surfaceDraft,
-                              )
-                            }
-                            onReasoningChange={(reasoningEffort) =>
+                              );
+                            }}
+                            onReasoningChange={(reasoningEffort) => {
+                              if (sessionEvaluation.enabled) {
+                                sessionEvaluation.edit({
+                                  reasoningEffort: reasoningEffort ?? null,
+                                });
+                                return;
+                              }
                               updateDraft(
                                 contextKey,
                                 (current) => ({
@@ -3990,8 +4054,8 @@ function WorkspaceApp({
                                   reasoningEffort,
                                 }),
                                 surfaceDraft,
-                              )
-                            }
+                              );
+                            }}
                             permissionControls={
                               canAuthorizeDirectories ? (
                                 <AgentDirectories

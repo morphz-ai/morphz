@@ -12,6 +12,7 @@ import { LocalFiles } from "../packages/application/src/local-files.js";
 import { RuntimeBridge } from "../packages/application/src/runtime.js";
 import { WorkspaceStore } from "../packages/application/src/store.js";
 import type { workInputRequest } from "../packages/application/src/session-io.js";
+import type { SessionEvaluationDefaults } from "../packages/core/src/session-evaluation.js";
 import {
   localAccess,
   type AccessContext,
@@ -192,6 +193,7 @@ export async function platformMessageFixture(
     sessionId: string;
     platformSource: Omit<RecordedInput, "id" | "status">;
     request: ReturnType<typeof workInputRequest>;
+    initialSessionEvaluation?: SessionEvaluationDefaults;
   };
   const deliveries = () => {
     const state = store.runtimeState() as { deliveries: Delivery[] } | null;

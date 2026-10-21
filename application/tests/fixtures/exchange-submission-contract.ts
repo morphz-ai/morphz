@@ -119,16 +119,26 @@ type SubmissionProfile = "historical" | "cognitive";
 // explicitly selected cognitive profile adds its one trusted surface capture.
 const captureText =
   "function createExchangeSubmissionCommands({ render, client, profile, feedback, dictationControls, drafts: draftPorts, exchange, inspector, onNotice: setNotice, focusAfterSupplement }: ExchangeSubmissionCommandOptions) {\nconst { project, selectedConversation, selectedDraft, draft, sending, uploadingDrafts, contextKey, conversationId, workspace: state, emptyDraft, artifact, activeInstance, browserPage, readingExpected, currentReading, canAuthorizeDirectories, directoryScope, directoryState, rightInspector } = render;\nconst { sendPending, currentContext, setSending, setInputErrors, setRevealedInputs, setAnnotationRefresh } = feedback;\nconst { replace: setDraft, update: updateDraft } = draftPorts;\nconst { setMobileCollaboration, showSentInput, requestSentInputFocus, showInput } = exchange;\nconst { openCollaboration, closeInspector } = inspector;\nreturn { send, supplement };\n}";
-const cognitiveCaptureText = captureText.replace(
-  "currentReading, canAuthorizeDirectories",
-  "currentReading, cognitiveSurface, canAuthorizeDirectories",
-);
+const cognitiveCaptureText = captureText
+  .replace(
+    "currentReading, canAuthorizeDirectories",
+    "currentReading, cognitiveSurface, canAuthorizeDirectories",
+  )
+  .replace(
+    "client, profile, feedback",
+    "client, profile, evaluation, feedback",
+  );
 export const submissionAppAdapter =
   "const { send, supplement } = createExchangeSubmissionCommands({\nrender: { project, selectedConversation, selectedDraft, draft, sending, uploadingDrafts, contextKey, conversationId, workspace: state, emptyDraft, artifact, activeInstance, browserPage, readingExpected, currentReading, canAuthorizeDirectories, directoryScope, directoryState, rightInspector },\nclient, profile,\nfeedback: { sendPending, currentContext, setSending, setInputErrors, setRevealedInputs, setAnnotationRefresh },\ndictationControls,\ndrafts: { replace: setDraft, update: updateDraft },\nexchange: { setMobileCollaboration, showSentInput, requestSentInputFocus, showInput },\ninspector: { openCollaboration, closeInspector },\nonNotice: setNotice,\nfocusAfterSupplement: () => requestAnimationFrame(() => input.current?.focus({ preventScroll: true })),\n});";
-export const cognitiveSubmissionAppAdapter = submissionAppAdapter.replace(
-  "currentReading, canAuthorizeDirectories",
-  "currentReading, cognitiveSurface, canAuthorizeDirectories",
-);
+export const cognitiveSubmissionAppAdapter = submissionAppAdapter
+  .replace(
+    "currentReading, canAuthorizeDirectories",
+    "currentReading, cognitiveSurface, canAuthorizeDirectories",
+  )
+  .replace(
+    "client, profile,",
+    "client, profile, evaluation: sessionEvaluation.enabled ? { prepareInput: sessionEvaluation.prepareInput } : undefined,",
+  );
 const cognitiveSlotGuard = `function expectedGuard() {
   try {
     guardCognitiveAppInputCommand({ operation: draft });
@@ -312,6 +322,14 @@ export function verifySubmissionCommands(
             isIdentifier(node.name) && node.name.text === "cognitiveSurface",
         );
       assert.equal(carries.length, 1, "one exact cognitive source carry");
+      const evaluations = candidate.nodes
+        .filter(isShorthandPropertyAssignment)
+        .filter((node) => node.name.getText() === "evaluation");
+      assert.equal(
+        evaluations.length,
+        1,
+        "one optional Session evaluation admission port",
+      );
       const submissions = candidate.nodes
         .filter(isCallExpression)
         .filter((node) => node.expression.getText() === "submitExchangeDraft");
@@ -320,6 +338,16 @@ export function verifySubmissionCommands(
         submissions[0]!.arguments[3]!.getStart() < carries[0]!.getStart() &&
           submissions[0]!.arguments[3]!.end > carries[0]!.end,
         "source only carried in captured submit context",
+      );
+      assert.ok(
+        submissions[0]!.arguments[4]!.getStart() < evaluations[0]!.getStart() &&
+          submissions[0]!.arguments[4]!.end > evaluations[0]!.end,
+        "Session settings are only drained through the supplied submission port",
+      );
+      assert.equal(
+        source[evaluations[0]!.end],
+        ",",
+        "Session port original tuple separator",
       );
       assert.equal(
         source[carries[0]!.end],
@@ -333,6 +361,7 @@ export function verifySubmissionCommands(
         })),
         { start: guards[0]!.getStart(), end: guards[0]!.end },
         { start: carries[0]!.getStart(), end: carries[0]!.end + 1 },
+        { start: evaluations[0]!.getStart(), end: evaluations[0]!.end + 1 },
       ];
       for (const edit of edits.sort((a, b) => b.start - a.start))
         source = source.slice(0, edit.start) + source.slice(edit.end);
