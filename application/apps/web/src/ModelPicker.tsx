@@ -17,6 +17,7 @@ export function ModelPicker({
   onChange,
   disabled = false,
   label = "本次输入模型",
+  description,
   compact = false,
   menu = false,
   current,
@@ -27,6 +28,7 @@ export function ModelPicker({
   onChange: (id: string) => void;
   disabled?: boolean;
   label?: string;
+  description?: string;
   compact?: boolean;
   /** Inline rows for the composer popover, not a second settings form. */
   menu?: boolean;
@@ -97,11 +99,13 @@ export function ModelPicker({
         ? "正在读取模型设置…"
         : !catalog.reasoning
           ? "当前运行服务不支持推理强度设置。"
-          : reasoning?.label
-            ? "用于这件事项的后续执行；默认沿用模型设置，不改变其他事项。"
-            : menu
-              ? "用于后续新输入，不改变已提交工作；默认沿用模型设置。实际支持以所选模型为准。"
-              : "仅用于下一次发送；默认沿用模型设置。实际支持以所选模型为准。";
+          : description
+            ? description
+            : reasoning?.label
+              ? "用于这件事项的后续执行；默认沿用模型设置，不改变其他事项。"
+              : menu
+                ? "用于后续新输入，不改变已提交工作；默认沿用模型设置。实际支持以所选模型为准。"
+                : "仅用于下一次发送；默认沿用模型设置。实际支持以所选模型为准。";
   useEffect(() => {
     onSummaryChange?.(
       composerSettingsSummary({
@@ -125,7 +129,7 @@ export function ModelPicker({
           aria-label={label}
           title={
             compact || menu
-              ? `${selected ? modelLabel(selected) : value || defaultLabel} · ${value ? "明确指定" : "跟随默认"}，${menu ? "用于后续新输入，不改变已提交工作" : "仅用于下一次发送"}`
+              ? `${selected ? modelLabel(selected) : value || defaultLabel} · ${value ? "明确指定" : "跟随默认"}，${description ?? (menu ? "用于后续新输入，不改变已提交工作" : "仅用于下一次发送")}`
               : undefined
           }
           value={value}

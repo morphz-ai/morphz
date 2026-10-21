@@ -8,7 +8,10 @@ import type { InputContinuation } from "../../../../packages/core/src/continuati
 import type { WorkspaceClient } from "../client.js";
 import type { useProfile } from "../useProfile.js";
 import type { ConversationDraft, InputDraft } from "./exchange-drafts.js";
-import type { ExchangeSubmissionContext } from "./submit-exchange-draft.js";
+import type {
+  ExchangeSubmissionContext,
+  ExchangeSubmissionPorts,
+} from "./submit-exchange-draft.js";
 import type { CognitiveWorkSurface } from "./work-surface.js";
 import { consumeComposerDraft } from "../composer-drafts.js";
 import { RequestError } from "../application-transport.js";
@@ -43,6 +46,7 @@ export type ExchangeSubmissionCommandOptions = {
   };
   client: Pick<WorkspaceClient, "boot" | "execute">;
   profile: Pick<ReturnType<typeof useProfile>, "flush" | "assertCurrentScope">;
+  evaluation?: ExchangeSubmissionPorts["evaluation"];
   feedback: {
     sendPending: RefObject<boolean>;
     currentContext: RefObject<string>;
@@ -75,6 +79,7 @@ export function createExchangeSubmissionCommands({
   render,
   client,
   profile,
+  evaluation,
   feedback,
   dictationControls,
   drafts: draftPorts,
@@ -220,6 +225,7 @@ export function createExchangeSubmissionCommands({
           flush: profile.flush,
           assertCurrentScope: profile.assertCurrentScope,
         },
+        evaluation,
         isCurrentSurface: () => currentContext.current === key,
         originalInput: (id) => state!.inputs.find((input) => input.id === id),
         persistSupplement: (command) =>

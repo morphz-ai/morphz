@@ -67,6 +67,7 @@ const context = {
 const ports = {
   execute: client.execute,
   profile: { flush: profile.flush, assertCurrentScope: profile.assertCurrentScope },
+  evaluation,
   isCurrentSurface: () => currentContext.current === key,
   originalInput: (id) => state!.inputs.find((input) => input.id === id),
   persistSupplement: (command) => updateDraft(key, (old) => ({ ...old, pendingSupplement: command, continuationFailure: undefined })),
@@ -105,7 +106,12 @@ const sourceFields = { continuation: captured.continuation, projectId: original.
 function finalCallbacks() {
   try { ports.onResolved(result); } catch (error) { ports.onRejected(error); } finally { ports.onSettled(); }
 }
-function profileOrder() { await ports.profile.flush(); ports.profile.assertCurrentScope(); if (!ports.isCurrentSurface()) throw new Error("工作范围已切换，草稿已保留，请回到原处发送。"); }
+function profileOrder() { await ports.profile.flush(); const initialSessionEvaluation = await ports.evaluation?.prepareInput(); ports.profile.assertCurrentScope(); if (!ports.isCurrentSurface()) throw new Error("工作范围已切换，草稿已保留，请回到原处发送。"); }
+const evaluationFields = {
+  ...(ports.evaluation
+    ? initialSessionEvaluation ? { initialSessionEvaluation } : {}
+    : { ...(captured.model ? { model: captured.model } : {}), ...(captured.reasoningEffort ? { reasoningEffort: captured.reasoningEffort } : {}) }),
+};
 const cognitiveFields = {
   // Reviewed builtin extension: only its selected resource reference, never a screen or authority.
   ...(inputApplicationReference(activeInstance, cognitive) ? { application: inputApplicationReference(activeInstance, cognitive) } : {}),
@@ -235,6 +241,12 @@ function properties(node: Node | undefined) {
   return result;
 }
 function operationFields(node: Node | undefined): string[] {
+  if (node && isParenthesizedExpression(node))
+    return operationFields(node.expression);
+  if (node && isConditionalExpression(node))
+    return operationFields(node.whenTrue).concat(
+      operationFields(node.whenFalse),
+    );
   if (!node || !isObjectLiteralExpression(node)) return [];
   return node.properties.flatMap((prop) => {
     if (isPropertyAssignment(prop) || isShorthandPropertyAssignment(prop))
@@ -363,6 +375,7 @@ function ownership(
     "../../../../packages/core/src/local-files.js",
     "../reading-context-model.js",
     "./exchange-drafts.js",
+    "../../../../packages/core/src/session-evaluation.js",
   ]);
   for (const statement of owner.source.statements) {
     check(
@@ -498,7 +511,7 @@ function ownership(
       "type,continuation,projectId,conversationId,artifactId,artifactRevision,selection,body,textQuotes,targetActantId,attachments",
       "type,taskId,expectedRevision,body",
       "type,artifactId,artifactRevision,quote,page,body",
-      "type,dispatchMode,model,reasoningEffort,projectId,conversationId,newConversation,application,artifactId,artifactRevision,selection,cognitiveObject,cognitiveApplication,reading,body,textQuotes,scriptGeneration,directories,attachments,browser,intent,targetActantId",
+      "type,dispatchMode,initialSessionEvaluation,model,reasoningEffort,projectId,conversationId,newConversation,application,artifactId,artifactRevision,selection,cognitiveObject,cognitiveApplication,reading,body,textQuotes,scriptGeneration,directories,attachments,browser,intent,targetActantId",
     ];
     branches.forEach((branch, index) => {
       const execute = calls(branch, "ports.execute");
@@ -568,6 +581,20 @@ function ownership(
           "supplement-persist-before-transport-no-staging-unlock",
         );
       } else if (index === 3) {
+        check(
+          !!operation &&
+            isObjectLiteralExpression(operation) &&
+            isObjectLiteralExpression(expected("evaluationFields")) &&
+            same(
+              operation.properties[2],
+              (
+                expected(
+                  "evaluationFields",
+                ) as import("typescript/unstable/ast").ObjectLiteralExpression
+              ).properties[0],
+            ),
+          "session-default-admission-never-copies-draft-task-bindings",
+        );
         const cognitiveFields = expected("cognitiveFields");
         check(
           isObjectLiteralExpression(cognitiveFields),
@@ -605,14 +632,18 @@ function ownership(
             );
           }
         const flush = calls(branch, "ports.profile.flush"),
+          evaluation = calls(branch, "ports.evaluation?.prepareInput"),
           scope = calls(branch, "ports.profile.assertCurrentScope"),
           surface = calls(branch, "ports.isCurrentSurface");
         check(
           flush.length === 1 &&
+            evaluation.length === 1 &&
             scope.length === 1 &&
             surface.length === 1 &&
             isAwaitExpression(owner.parents.get(flush[0]!)!) &&
-            flush[0]!.pos < scope[0]!.pos &&
+            isAwaitExpression(owner.parents.get(evaluation[0]!)!) &&
+            flush[0]!.pos < evaluation[0]!.pos &&
+            evaluation[0]!.pos < scope[0]!.pos &&
             scope[0]!.pos < surface[0]!.pos &&
             surface[0]!.pos < execute[0]!.pos &&
             operation!.pos > surface[0]!.pos,
@@ -622,7 +653,7 @@ function ownership(
         if (isBlock(branch))
           check(
             branch.statements
-              .slice(1, 4)
+              .slice(1, 5)
               .every((statement, offset) => same(statement, original[offset])),
             "profile-await-and-current-surface-denial-not-ignored",
           );
@@ -698,6 +729,7 @@ function ownership(
     "ports.persistSupplement",
     "ports.execute",
     "ports.profile.flush",
+    "ports.evaluation?.prepareInput",
     "ports.profile.assertCurrentScope",
     "ports.isCurrentSurface",
     "ports.onResolved",
@@ -793,7 +825,7 @@ function ownership(
   // Include the three UI callbacks after the shared ports, with no defaults.
   check(
     [...suppliedPorts.keys()].join(",") ===
-      "execute,profile,isCurrentSurface,originalInput,persistSupplement,onInputStaged,onResolved,onRejected,onSettled",
+      "execute,profile,evaluation,isCurrentSurface,originalInput,persistSupplement,onInputStaged,onResolved,onRejected,onSettled",
     "complete-named-semantic-ports",
   );
   for (const [name, value] of properties(expected("ports")))
@@ -934,14 +966,24 @@ test("submission gate rejects branch order, Profile ordering and frozen suppleme
       "four-exclusive-submission-branches-original-priority",
     ],
     [
-      "      await ports.profile.flush();\n      ports.profile.assertCurrentScope();",
-      "      ports.profile.assertCurrentScope();\n      await ports.profile.flush();",
+      "      await ports.profile.flush();\n      const initialSessionEvaluation = await ports.evaluation?.prepareInput();\n      ports.profile.assertCurrentScope();",
+      "      ports.profile.assertCurrentScope();\n      await ports.profile.flush();\n      const initialSessionEvaluation = await ports.evaluation?.prepareInput();",
       "normal-profile-flush-assert-current-before-operation-construction",
     ],
     [
       "      await ports.profile.flush();",
       "      void ports.profile.flush();",
       "normal-profile-flush-assert-current-before-operation-construction",
+    ],
+    [
+      "const initialSessionEvaluation = await ports.evaluation?.prepareInput();",
+      "const initialSessionEvaluation = ports.evaluation?.prepareInput();",
+      "normal-profile-flush-assert-current-before-operation-construction",
+    ],
+    [
+      "          ...(ports.evaluation",
+      "          ...(false && ports.evaluation",
+      "session-default-admission-never-copies-draft-task-bindings",
     ],
     [
       "      if (!ports.isCurrentSurface())",
