@@ -119,6 +119,17 @@ The service checks the full mount table as well as individual approved objects.
 changes global sysctl settings. It refuses implicit upgrade/overwrite. Formal
 upgrade/uninstall lifecycle and full Runtime CI still remain acceptance gates.
 
+Full workspace CI uses `stage_runtime_tests.py --workspace` to install an explicit
+seven-image native test inventory, not every executable produced by Cargo.
+`run_runtime_test.py` redirects only those exact images and verifies the current
+Cargo artifact and installed executable against the root-owned manifest digest;
+unlisted tests still run normally without policy-service authority. Neither
+Python nor Cargo nor a user-writable checkout becomes a trusted Runtime. The
+production registry remains bounded at 16 exact administrator-installed images.
+The full suite retains all targets and doctests, continues collecting failures,
+and separately requires the five PostgreSQL library cases. The other two IO
+PostgreSQL cases retain their existing independent workflow owner.
+
 `lifecycle.py` owns durable, immutable per-launch records, enforcing AppArmor
 generations and administrator-owned cgroup v2 lifetime subtrees. The launcher
 receives a root-opened `cgroup.procs` capability and writes literal `0`, joining

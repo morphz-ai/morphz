@@ -41,6 +41,8 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p test_prune_cargo_target.py -v
       - name: Verify required PostgreSQL library coverage
         run: python3 -m unittest discover -s scripts/tests -p test_runtime_postgres_ci.py -v
+      - name: Verify deterministic Linux policy and exact installed-test inventory
+        run: python3 -B -m unittest discover -s tools/linux-sandbox -p 'test_*.py' -v
       - name: Audit Rust dependency advisories
         run: |
           cargo install cargo-audit --version 0.22.2 --locked
@@ -66,7 +68,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
@@ -87,6 +89,7 @@ jobs:
       # The full workspace includes PostgreSQL lifecycle conformance. Give it
       # an owned job-local database instead of skipping it or borrowing state.
       MORPHZ_TEST_POSTGRES_URL: postgres://morphz:morphz@127.0.0.1:5432/morphz_test
+      MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -95,28 +98,42 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.97.1
-      - name: Install Bubblewrap for sandboxed integration tests
+      - name: Install native sandbox dependencies without global security changes
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap
-          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --ro-bind / / --dev /dev --unshare-user --unshare-pid --proc /proc -- /bin/true
+          sudo apt-get install --yes bubblewrap apparmor apparmor-utils libapparmor-dev libjson-c-dev gcc
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Compile the whole workspace and install exact sandbox test images
+        run: |
+          cargo test --locked --all --no-run --message-format=json > "$RUNNER_TEMP/workspace-test-artifacts.jsonl"
+          sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/workspace-test-artifacts.jsonl" --workspace --install-service
+          sudo systemctl daemon-reload
+          sudo systemctl start morphz-sandbox.service
+          for attempt in $(seq 1 100); do
+            if [ -S /run/morphz-sandbox/control.sock ]; then break; fi
+            sleep 0.1
+          done
+          test -S /run/morphz-sandbox/control.sock
       - name: Run tests
         # Runtime tests exercise real SQLite transactions, timers, sockets,
         # and process groups. Compile in parallel above, but run test cases in
         # a deterministic order so hosted-runner scheduling cannot manufacture
         # database-lock and wall-clock failures between otherwise isolated
         # harnesses. Tests that verify concurrency still spawn it internally.
-        run: ./scripts/cargo-dev.sh test --all --verbose -- --test-threads=1
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: /usr/bin/python3 -I -B ${{ github.workspace }}/tools/linux-sandbox/run_runtime_test.py
+        run: ./scripts/cargo-dev.sh test --locked --all --verbose --no-fail-fast -- --test-threads=1
       - name: Require ignored PostgreSQL approval, input and terminal contracts
         # A default-suite failure must remain a failure without suppressing the
         # independent database contracts. The runner rejects zero-test passes.
         if: ${{ !cancelled() }}
+        env:
+          MORPHZ_TEST_RUNTIME_LIB: /usr/local/libexec/morphz-runtime-ci/lib
         run: python3 scripts/test_runtime_postgres_lib.py
+      - name: Preserve installed sandbox diagnostics
+        if: failure()
+        run: sudo journalctl -u morphz-sandbox.service --no-pager
 
   postgres-conformance:
     name: PostgreSQL Runtime Store
@@ -178,7 +195,9 @@ jobs:
 
   native-sandbox-linux:
     name: Native Sandbox (Linux)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -187,25 +206,28 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: 1.97.1
-      - name: Install Bubblewrap
+      - name: Install native sandbox dependencies without global security changes
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap
-          # ubuntu-latest uses Ubuntu 24.04, whose AppArmor default blocks the
-          # unprivileged user namespace that Bubblewrap needs. This is an
-          # ephemeral dedicated runner; enable the kernel facility so the job
-          # exercises Morphz's real mount/network/process boundary.
-          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --ro-bind / / --dev /dev --unshare-user --unshare-pid --proc /proc -- /bin/true
+          sudo apt-get install --yes bubblewrap apparmor apparmor-utils libapparmor-dev libjson-c-dev gcc
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-      - name: Verify native Bubblewrap execution contract
-        # Keep the platform probe small and real: compiling every unit test into
-        # one lib-test executable can require several GiB before this Linux-only
-        # boundary runs. The workspace test job above still runs the full suite.
-        run: cargo test -p morphz --test native_sandbox_contract -- --nocapture
+      - name: Install actual Runtime tests and native policy service
+        run: |
+          cargo test --locked -p morphz --lib --test native_sandbox_contract --no-run --message-format=json > "$RUNNER_TEMP/native-test-artifacts.jsonl"
+          sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/native-test-artifacts.jsonl" --install-service
+          sudo systemctl daemon-reload
+          sudo systemctl start morphz-sandbox.service
+          for attempt in $(seq 1 100); do
+            if [ -S /run/morphz-sandbox/control.sock ]; then break; fi
+            sleep 0.1
+          done
+          test -S /run/morphz-sandbox/control.sock
+      - name: Verify installed native execution and unchanged terminal protection contracts
+        run: |
+          /usr/local/libexec/morphz-runtime-ci/native --nocapture --test-threads=1
+          /usr/local/libexec/morphz-runtime-ci/lib terminal::tests::terminal_sandbox_denies_outside_writes_and_protected_files --exact --nocapture --test-threads=1
+          /usr/local/libexec/morphz-runtime-ci/lib terminal::tests::terminal_interrupt_keeps_shell_and_resize_is_real --exact --nocapture --test-threads=1
 
   native-sandbox-windows:
     name: Native Sandbox (Windows)
