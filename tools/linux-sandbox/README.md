@@ -1,7 +1,21 @@
 # Linux continuous-path sandbox service
 
 Implementation under the approved 2026-10-21 service/launcher plan. **Installed
-only in isolated Linux CI, not on user/production machines.** Run `39560180501`
+only in isolated Linux CI, not on user/production machines.**
+
+Latest measured result: `39568698033` passed the unchanged late-file PTY test,
+the complete Runtime library (1664 passed, zero failed, 14 default-ignored),
+and all five separately required PostgreSQL contracts. The mount and lifetime
+kernel gates also passed. Its new namespace-handle native case still failed;
+the CI page incorrectly reported success because the logging pipeline lacked
+`pipefail`. That green status is **not** accepted as a passing run. The step now
+uses explicit Bash with pipeline failure propagation, and a regression executes
+that exact workflow command with both failing and successful fixture producers.
+The namespace test correction records actual syscall errors and accepts only
+EPERM/EACCES rejection, never a successful namespace transition. The corrected
+native case and complete workflow still require fresh CI evidence.
+
+Earlier progression: run `39560180501`
 at `50844520` passed the actual administrator-installed Runtime command and PTY
 path, including the unchanged original late-created protected-file terminal
 regression. It also passed the separate compiler/kernel gates. This establishes
@@ -30,8 +44,10 @@ Existing read-only children stay read-only, including inside a writable grant;
 host mount propagation is disabled. Only the static bootstrap temporarily keeps
 namespace-local SYS_ADMIN/SETPCAP; every capability set, including the bounding
 set, is zero before work-profile admission. The service verifies the resulting
-mount table, not a claimed setup result. Linux validation of this correction is
-pending; no data-filesystem allowlist or relaxed write check was added.
+mount table, not a claimed setup result. Run `39568698033` passed 49 native mount
+assertions, 35 policy-lifetime assertions and the installed Runtime library;
+the separate native namespace-case failure above remains explicitly open.
+No data-filesystem allowlist or relaxed write check was added.
 Full CI, upgrade/uninstall and release
 integration remain separate acceptance gates.
 
@@ -78,8 +94,9 @@ writable; names, request JSON and the UID alone confer no authority. Registratio
 must retain the pidfd and revalidate again before admission. The separate kernel
 fixture uses Python only as a **test** executable; a production registry must
 contain the installed Runtime/launcher, not a general interpreter. The controller
-now uses these checks for registration, object binding and private admission;
-the expanded actual-Runtime gate remains open because of the mount refusal above.
+now uses these checks for registration, object binding and private admission.
+The previously failing mount refusal is resolved in the measured library run;
+the remaining native case and complete CI must still pass.
 
 `roots.py` pins actual directory objects under the caller's non-root identity,
 with no capabilities and without following root or ancestor symlinks. It retains
@@ -129,8 +146,8 @@ terminal readiness remain pending until it succeeds. The isolated job installs
 actual root-owned native Runtime test executables and the real service. Run
 `39560180501` passed two public execution tests, the original terminal regression,
 and real private-PTY versus ordinary-command session separation. The later
-full-library expansion currently fails as recorded above; the component gates
-are not a substitute for it.
+full-library expansion passed in `39568698033`, but the failed native case
+prevents treating that entire run as successful.
 
 Old direct-Bubblewrap integration cases now invoke the installed public Runtime
 path. Protected-read assertions open/read the actual file and require rejection,

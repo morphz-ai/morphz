@@ -76,6 +76,8 @@ jobs:
           done
           test -S /run/morphz-sandbox/control.sock
       - name: Verify actual Runtime command admission and post-admission protected paths
+        # Explicit bash adds pipefail; tee must never turn a failed native test green.
+        shell: bash
         run: /usr/local/libexec/morphz-runtime-ci/native --nocapture --test-threads=1 2>&1 | tee "$RUNNER_TEMP/native-admission.log"
       - name: Preserve early admission failures before the full inventory
         if: always()

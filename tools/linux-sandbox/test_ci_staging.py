@@ -1,7 +1,10 @@
 """Pure inventory/hash checks; installation and execution need isolated Linux."""
 import hashlib
 import json
+import os
 from pathlib import Path
+import shlex
+import subprocess
 import tempfile
 import unittest
 
@@ -15,6 +18,34 @@ def artifact(name, kind, test=True):
 
 
 class CiStagingTests(unittest.TestCase):
+    def test_logged_native_failure_fails_the_actual_workflow_command(self):
+        workflow = (Path(__file__).resolve().parents[2] /
+                    ".github/workflows/linux-sandbox-service.yml").read_text()
+        step = workflow.split(
+            "      - name: Verify actual Runtime command admission and post-admission protected paths\n", 1
+        )[1].split("\n      - ", 1)[0]
+        self.assertIn("        shell: bash\n", step)
+        self.assertNotIn("continue-on-error", step)
+        command = step.split("        run: ", 1)[1].strip()
+        native = "/usr/local/libexec/morphz-runtime-ci/native"
+        self.assertEqual(command.count(native), 1)
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "native-test-fixture"
+            executable.write_text('#!/bin/sh\nprintf "native fixture output\\n"\nexit "$FIXTURE_EXIT"\n')
+            executable.chmod(0o700)
+            for code in (7, 0):
+                # This is GitHub's explicit `shell: bash` invocation, not the
+                # implicit bash -e shell that loses the producer's exit status.
+                result = subprocess.run(
+                    ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c",
+                     command.replace(native, shlex.quote(str(executable)))],
+                    env={**os.environ, "RUNNER_TEMP": directory, "FIXTURE_EXIT": str(code)},
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual((Path(directory) / "native-admission.log").read_text(),
+                                 "native fixture output\n")
+
     def test_only_exact_native_test_targets_are_selected(self):
         original = [artifact("morphz", "lib"), artifact("native_sandbox_contract", "test")]
         self.assertEqual(set(selected_artifacts(original)), {"lib", "native"})
