@@ -4,6 +4,7 @@
 #include "mounts.h"
 #include <json-c/json.h>
 #include <sys/apparmor.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -93,6 +94,11 @@ int main(int argc, char **argv) {
     return WEXITSTATUS(status);
 }
 #else
+static struct json_object *field(struct json_object *object, const char *key, enum json_type kind) {
+    struct json_object *value = NULL;
+    if (!json_object_object_get_ex(object, key, &value) || !json_object_is_type(value, kind)) fail(key);
+    return value;
+}
 static void exact_label(const char *boot, const char *work) {
     char actual[512], expected[512], reverse[512];
     FILE *stream = fopen("/proc/self/attr/current", "re");
@@ -116,10 +122,116 @@ static int extras(void) {
     closedir(directory);
     return result;
 }
+static void mounted_outer(char **argv, struct json_object *claim) {
+    struct json_object *policy = field(claim, "policy", json_type_object);
+    struct morphz_mounts mounts = {.cwd = string(policy, "cwd")};
+    struct json_object *descriptors = json_object_new_array();
+    for (int writable = 0; writable < 2; writable++) {
+        struct json_object *paths = field(policy, writable ? "write_roots" : "read_roots", json_type_array);
+        for (size_t i = 0; i < json_object_array_length(paths); ++i) {
+            if (mounts.count >= MORPHZ_MAX_ROOTS) fail("mounted root bound");
+            struct json_object *path = json_object_array_get_idx(paths, i);
+            if (!json_object_is_type(path, json_type_string)) fail("root path");
+            mounts.roots[mounts.count++] = (struct morphz_root){
+                .path = json_object_get_string(path), .writable = writable, .fd = -1};
+        }
+    }
+    if (morphz_pin_roots(&mounts)) fail("non-root object pins");
+    for (size_t i = 0; i < mounts.count; ++i)
+        json_object_array_add(descriptors, json_object_new_int(mounts.roots[i].fd));
+    struct json_object *bind = request("bind_roots", argv[2]);
+    json_object_object_add(bind, "descriptors", descriptors);
+    int unexpected;
+    struct json_object *bound = exchange(argv[1], bind, &unexpected);
+    if (!succeeded(bound) || unexpected != -1) fail("service object binding");
+    struct json_object *manifest = json_object_new_object();
+    json_object_object_add(manifest, "roots", json_object_get(field(bound, "roots", json_type_array)));
+    json_object_object_add(manifest, "bootstrap", json_object_get(field(claim, "bootstrap", json_type_string)));
+    json_object_object_add(manifest, "work", json_object_get(field(claim, "work", json_type_string)));
+    json_object_object_add(manifest, "cwd", json_object_get(field(policy, "cwd", json_type_string)));
+    json_object_object_add(manifest, "mode", json_object_new_string(argv[3]));
+    int source = memfd_create("morphz-admission-contract", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    const char *raw = json_object_to_json_string_ext(manifest, JSON_C_TO_STRING_PLAIN);
+    if (source < 0 || write(source, raw, strlen(raw)) != (ssize_t)strlen(raw) ||
+        fcntl(source, F_ADD_SEALS, F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL))
+        fail("sealed handoff");
+    pid_t child = fork();
+    if (child < 0) fail("mounted child");
+    if (child == 0) {
+        const char *hidden[] = {"/home", "/tmp"};
+        struct morphz_argv arguments = {0};
+        if (morphz_build_bwrap(&mounts, hidden, 2, 0, 0, &arguments)) fail("actual namespace arguments");
+        char handoff[32];
+        snprintf(handoff, sizeof(handoff), "%d", source);
+        const char *inner[] = {"--", argv[0], string(claim, "admission_socket"), argv[2],
+                              "mounted-inner", handoff, argv[5], argv[6]};
+        for (size_t i = 0; i < sizeof(inner) / sizeof(inner[0]); ++i)
+            if (morphz_arg(&arguments, inner[i])) fail("fixed inner entry");
+        for (size_t i = 0; i < mounts.count; ++i)
+            if (fcntl(mounts.roots[i].fd, F_SETFD, 0)) fail("root handoff");
+        if (fcntl(source, F_SETFD, 0) || aa_change_profile(string(claim, "bootstrap")) ||
+            prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) fail("trusted setup boundary");
+        execv(arguments.values[0], arguments.values);
+        fail("distribution bwrap");
+    }
+    close(source);
+    int status;
+    if (waitpid(child, &status, 0) != child || !WIFEXITED(status)) fail("mounted entry exit");
+    morphz_close_roots(&mounts);
+    exit(WEXITSTATUS(status));
+}
+static struct json_object *mounted_inner(char **argv) {
+    char *end;
+    long source = strtol(argv[4], &end, 10);
+    if (!*argv[4] || *end || source < 3 || source >= 1048576 ||
+        fcntl((int)source, F_GET_SEALS) != (F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL))
+        fail("immutable inner handoff");
+    struct stat metadata;
+    if (fstat((int)source, &metadata) || metadata.st_size <= 0 || metadata.st_size > 262144)
+        fail("bounded manifest");
+    char *raw = calloc((size_t)metadata.st_size + 1, 1);
+    if (!raw || pread((int)source, raw, (size_t)metadata.st_size, 0) != metadata.st_size) fail("handoff read");
+    struct json_object *manifest = json_tokener_parse(raw);
+    free(raw);
+    if (!manifest) fail("handoff syntax");
+    struct json_object *roots = field(manifest, "roots", json_type_array);
+    struct morphz_mounts mounts = {.cwd = string(manifest, "cwd"), .count = json_object_array_length(roots)};
+    if (mounts.count > MORPHZ_MAX_ROOTS) fail("inner root bound");
+    for (size_t i = 0; i < mounts.count; ++i) {
+        struct json_object *root = json_object_array_get_idx(roots, i);
+        mounts.roots[i] = (struct morphz_root){.path = string(root, "path"), .fd = -1,
+            .writable = json_object_get_boolean(field(root, "writable", json_type_boolean)),
+            .device = (dev_t)json_object_get_uint64(field(root, "device", json_type_int)),
+            .inode = (ino_t)json_object_get_uint64(field(root, "inode", json_type_int))};
+    }
+    const char *mode = string(manifest, "mode");
+    if (morphz_verify_mounted_roots(&mounts)) fail("inner actual object identity");
+    if (strcmp(mode, "mounted-no-stack") && aa_stack_profile(string(manifest, "work"))) fail("work stacking");
+    if (morphz_close_extra_fds(!strcmp(mode, "mounted-leak") ? (int)source : -1)) fail("inner closure");
+    int descriptor;
+    struct json_object *reply = exchange(argv[1], request("admit", argv[2]), &descriptor);
+    if (!succeeded(reply)) {
+        fprintf(stderr, "admission result: %s\n", json_object_to_json_string_ext(reply, JSON_C_TO_STRING_PLAIN));
+        puts("{\"admission_rejected\":true}");
+        exit(!strcmp(mode, "mounted-normal") ? 78 : 0);
+    }
+    if (descriptor != -1 || strcmp(mode, "mounted-normal")) fail("negative work unexpectedly admitted");
+    // Point the fixed worker at the protected path in the frozen workspace.
+    char *protected = NULL;
+    if (asprintf(&protected, "%s/future.env", mounts.cwd) < 0) fail("protected fixture path");
+    argv[4] = protected;
+    return manifest;
+}
 int main(int argc, char **argv) {
     if (argc != 7 || morphz_unprivileged()) fail("fixed launcher arguments");
     int descriptor;
-    struct json_object *reply = exchange(argv[1], request("claim", argv[2]), &descriptor);
+    int mounted = !strcmp(argv[3], "mounted-inner");
+    struct json_object *reply;
+    if (mounted) {
+        reply = mounted_inner(argv);
+        goto admitted;
+    }
+    reply = exchange(argv[1], request("claim", argv[2]), &descriptor);
     if (!succeeded(reply) || descriptor < 0) fail("one-use claim");
     if (!strcmp(argv[3], "held") || !strcmp(argv[3], "held-restart")) {
         printf("{\"held\":true,\"pid\":%ld}\n", (long)getpid());
@@ -137,12 +249,17 @@ int main(int argc, char **argv) {
      * zero identifies the writing thread group atomically, never a stale PID. */
     if (write(descriptor, "0", 1) != 1) fail("self cgroup join");
     close(descriptor);
+    if (!strncmp(argv[3], "mounted-", 8)) mounted_outer(argv, reply);
     const char *boot = string(reply, "bootstrap"), *work = string(reply, "work");
     if (aa_change_profile(boot) || prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) || aa_stack_profile(work))
         fail("fixed synthetic work entry");
     exact_label(boot, work);
     if (morphz_unprivileged() || morphz_close_extra_fds(-1)) fail("pre-work closure");
-    pid_t background = fork();
+admitted:
+    ;
+    const char *active_boot = string(reply, "bootstrap"), *active_work = string(reply, "work");
+    exact_label(active_boot, active_work);
+    pid_t background = mounted ? 0 : fork();
     if (background < 0) fail("fixed background child");
     if (background) return 0;  /* both launcher and Runtime now exit */
     printf("{\"ready\":true,\"pid\":%ld,\"extra_fds\":%d}\n", (long)getpid(), extras());
@@ -161,7 +278,7 @@ int main(int argc, char **argv) {
         int escape = open(argv[6], O_WRONLY | O_CLOEXEC);
         int escape_error = errno;
         if (escape >= 0) close(escape);
-        exact_label(boot, work);
+        exact_label(active_boot, active_work);
         printf("{\"protected_denied\":%s,\"errno\":%d,\"allowed_write\":%s,"
                "\"escape_denied\":%s,\"extra_fds\":%d}\n",
                secret < 0 && (problem == EACCES || problem == EPERM) ? "true" : "false", problem,

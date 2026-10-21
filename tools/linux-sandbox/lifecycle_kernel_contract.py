@@ -6,14 +6,12 @@ kernel authentication, durable leases and reclamation are the implementation
 components; the native work fixture has no arbitrary command interface.
 """
 import argparse
-import array
 import json
 import os
 from pathlib import Path
 import select
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
@@ -21,8 +19,9 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lifecycle import Cgroups, Leases, Profiles, StateStore  # noqa: E402
-from peer import TrustedExecutables, configure_listener, receive_frame  # noqa: E402
+from peer import TrustedExecutables  # noqa: E402
 from registration import Registration  # noqa: E402
+from server import ServiceLoop  # noqa: E402
 
 
 def serve(config_path):
@@ -36,44 +35,18 @@ def serve(config_path):
     with TrustedExecutables([config["runtime"]]) as runtimes, \
             TrustedExecutables([config["launcher"]]) as launchers:
         registration = Registration(leases, runtimes, launchers)
-        endpoint = Path(config["socket"])
-        # Fixture restart owns this unique root-owned endpoint directory.
-        endpoint.unlink(missing_ok=True)
-        with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as listener:
-            configure_listener(listener)
-            listener.bind(str(endpoint))
-            os.chmod(endpoint, 0o666)
-            listener.listen(16)
-            listener.settimeout(0.1)
+        loop = ServiceLoop(registration, config["socket"])
+        try:
             print(json.dumps({"service_ready": True, "recovered": len(leases.records)}), flush=True)
             try:
                 while True:
-                    registration.collect_exited()
-                    try:
-                        connection, _ = listener.accept()
-                    except TimeoutError:
-                        continue
-                    with connection:
-                        connection.settimeout(2)
-                        descriptor = None
-                        try:
-                            with receive_frame(connection) as frame:
-                                reply, descriptor = registration.handle(frame)
-                        except (ValueError, PermissionError, RuntimeError, KeyError) as error:
-                            reply = {"ok": False, "error": type(error).__name__, "detail": str(error)}
-                        try:
-                            ancillary = [] if descriptor is None else [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
-                                                                        array.array("i", [descriptor]))]
-                            connection.sendmsg([json.dumps(reply).encode()], ancillary)
-                        except (BrokenPipeError, ConnectionResetError):
-                            pass  # no disconnect-driven profile unload
-                        finally:
-                            if descriptor is not None:
-                                os.close(descriptor)
+                    loop.step()
             finally:
                 registration.close()
                 groups.close()
                 store.close()
+        finally:
+            loop.close()
 
 
 def execute(args):
@@ -187,7 +160,8 @@ def execute(args):
         return peer, ordinary, protected
 
     try:
-        for name in ("policy.py", "peer.py", "lifecycle.py", "registration.py", "lifecycle_kernel_contract.py"):
+        for name in ("policy.py", "peer.py", "lifecycle.py", "registration.py", "admission.py", "server.py",
+                     "lifecycle_kernel_contract.py"):
             shutil.copyfile(Path(__file__).parent / name, installed / name)
             os.chmod(installed / name, 0o444)
         for binary, flags in (("runtime", ["-DMORPHZ_TEST_RUNTIME"]), ("launcher", [])):
@@ -214,6 +188,33 @@ def execute(args):
         rogue, _, _ = start_peer("rogue", "rogue")
         check("same UID and same binary bytes do not authorize an unregistered executable object",
               receive(rogue.stdout) == {"rejected": True} and rogue.wait(timeout=5) == 0)
+
+        for mode in ("mounted-normal", "mounted-leak", "mounted-no-stack"):
+            mounted, ordinary, protected = start_peer(mode)
+            mounted_launch = receive(mounted.stdout)["registered"]
+            ready = receive(mounted.stdout)
+            if mode != "mounted-normal":
+                check(mode + ": service refuses before any work or readiness",
+                      ready == {"admission_rejected": True} and mounted.wait(timeout=5) == 0, ready)
+            else:
+                check("actual bwrap work is admitted only after service verifies objects, namespaces and exact stack",
+                      ready.get("ready") and ready.get("extra_fds") == 0 and
+                      launch_record(mounted_launch)["phase"] == "admitted", ready)
+                check("protected file is absent at authenticated mounted-work readiness", not protected.exists())
+                host_file(protected, "late-mounted-secret")
+                mounted.stdin.write(b"probe\n")
+                mounted.stdin.flush()
+                result = receive(mounted.stdout)
+                check("authenticated mounted work denies new protected files and preserves ordinary live writes",
+                      result.get("protected_denied") and result.get("allowed_write") and
+                      result.get("escape_denied") and result.get("extra_fds") == 0 and
+                      ordinary.read_text() == "host\nworker\n", result)
+                mounted.stdin.write(b"exit\n")
+                mounted.stdin.flush()
+                check("mounted work and trusted ancestors exit normally", mounted.wait(timeout=5) == 0)
+            check(mode + ": final exit reclaims only this lease",
+                  wait_until(lambda: launch_record(mounted_launch)["phase"] == "removed") and
+                  not enforcing(mounted_launch))
 
         peer, ordinary, protected = start_peer("background")
         launch = receive(peer.stdout)["registered"]

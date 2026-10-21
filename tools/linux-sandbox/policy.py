@@ -166,7 +166,7 @@ def compile_profiles(policy: Policy, launch_id: str) -> CompiledPolicy:
     digest = policy.digest()
     prefix = f"morphz_sbox_v1_{launch_id}_{digest[:16]}"
     bootstrap, work = prefix + "_boot", prefix + "_work"
-    admission = f"/run/morphz-sandbox/launches/{launch_id}/admit.sock"
+    admission = f"/run/morphz-sandbox/admit-{launch_id}.sock"
     denials = set()
     for paths, access in ((policy.denied_read_paths, "rmx"),
                           (policy.denied_write_paths, "wlk")):
@@ -203,6 +203,7 @@ profile {bootstrap} flags=(attach_disconnected) {{
   signal,
   ptrace (readby) peer=unconfined,
   unix (create, setopt, getopt) type=stream,
+  unix (create, setopt, getopt) type=seqpacket,
 {setup_network}  change_profile -> &{work},
 }}
 profile {work} flags=(mediate_deleted) {{
@@ -211,6 +212,7 @@ profile {work} flags=(mediate_deleted) {{
   signal,
   ptrace (readby) peer=unconfined,
 {network}  unix (create, setopt, getopt) type=stream,
+  unix (create, setopt, getopt) type=seqpacket,
   {quoted_path(admission)} rw,
   audit deny /run/morphz-sandbox/control.sock rw,
   audit deny /var/lib/morphz-sandbox/** rwklmx,

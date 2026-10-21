@@ -2,7 +2,7 @@
 
 import unittest
 
-from peer import PeerError, parse_security_state, parse_start_identity
+from peer import PeerError, parse_security_state, parse_single_id_map, parse_start_identity
 
 
 def process_stat(pid=123, name="runtime", parent=55, start=991):
@@ -11,6 +11,13 @@ def process_stat(pid=123, name="runtime", parent=55, start=991):
 
 
 class PeerParsingTests(unittest.TestCase):
+    def test_work_mapping_is_exactly_one_original_non_root_identity(self):
+        parse_single_id_map("      1001       1001          1\n", 1001)
+        for raw in ("0 1001 1\n", "1001 0 1\n", "1001 1001 2\n", "1001 1001 1\n1002 1002 1\n",
+                    "1001 1001\n", "invalid", "", "1001 1001 1\n\n"):
+            with self.subTest(raw=raw), self.assertRaises(PeerError):
+                parse_single_id_map(raw, 1001)
+
     def test_start_time_is_kernel_field_22_not_a_command_name_token(self):
         for name in ("runtime", "spaces in name", "close)paren", "name\nwith) newlines("):
             with self.subTest(name=name):

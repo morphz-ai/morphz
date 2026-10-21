@@ -7,6 +7,7 @@ using a registration. A valid UID alone never authorizes a request.
 
 from dataclasses import dataclass
 import errno
+import fcntl
 import os
 from pathlib import PurePosixPath
 import select
@@ -256,7 +257,43 @@ class PeerIdentity:
     user_namespace: tuple
 
 
-def authorize(frame, executables, labels=("unconfined",)):
+def parse_single_id_map(raw, identity):
+    """The launcher maps only its original non-root ID, not an ID range."""
+    try:
+        rows = [tuple(int(part) for part in line.split()) for line in raw.splitlines()]
+    except ValueError as error:
+        raise PeerError("invalid kernel identity mapping") from error
+    if rows != [(identity, identity, 1)]:
+        raise PeerError("work namespace does not retain exactly the registered non-root identity")
+
+
+def authorize_namespace(directory, uid, gid, parent_namespace=None):
+    descriptor = os.open("ns/user", os.O_RDONLY | os.O_CLOEXEC, dir_fd=directory)
+    try:
+        info = os.fstat(descriptor)
+        actual = (info.st_dev, info.st_ino)
+        if parent_namespace is None:
+            expected = os.stat("/proc/self/ns/user")
+            if actual != (expected.st_dev, expected.st_ino):
+                raise PeerError("caller is in a different user namespace")
+        else:
+            # Linux UAPI NS_GET_PARENT = _IO(0xb7, 2). The kernel returns a
+            # CLOEXEC namespace FD, never a request-supplied parent identity.
+            parent = fcntl.ioctl(descriptor, 0xb702)
+            try:
+                info = os.fstat(parent)
+                if (info.st_dev, info.st_ino) != parent_namespace:
+                    raise PeerError("work user namespace is not the registered owner's direct child")
+            finally:
+                os.close(parent)
+            parse_single_id_map(read_bounded_at(directory, "uid_map"), uid)
+            parse_single_id_map(read_bounded_at(directory, "gid_map"), gid)
+        return actual
+    finally:
+        os.close(descriptor)
+
+
+def authorize(frame, executables, labels=("unconfined",), *, parent_namespace=None, no_new_privs=False):
     """Re-read all authority-bearing state; do not cache this across requests."""
     require_live(frame)
     directory = os.open(f"/proc/{frame.pid}", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
@@ -264,11 +301,9 @@ def authorize(frame, executables, labels=("unconfined",)):
     try:
         parent, start = parse_start_identity(read_bounded_at(directory, "stat"), frame.pid)
         security = parse_security_state(read_bounded_at(directory, "status"), frame.uid, frame.gid)
-        namespace = os.stat("ns/user", dir_fd=directory)
-        expected_namespace = os.stat("/proc/self/ns/user")
-        namespace_key = (namespace.st_dev, namespace.st_ino)
-        if namespace_key != (expected_namespace.st_dev, expected_namespace.st_ino):
-            raise PeerError("caller is in a different user namespace")
+        if no_new_privs and security[1] != 1:
+            raise PeerError("work entry has not committed NoNewPrivs")
+        namespace_key = authorize_namespace(directory, frame.uid, frame.gid, parent_namespace)
         label = read_bounded_at(directory, "attr/current").strip()
         if label not in labels:
             raise PeerError("caller is not in the exact registered role label")
@@ -282,7 +317,7 @@ def authorize(frame, executables, labels=("unconfined",)):
                 read_bounded_at(directory, "attr/current").strip() != label or
                 parse_start_identity(read_bounded_at(directory, "stat"), frame.pid) != (parent, start) or
                 parse_security_state(read_bounded_at(directory, "status"), frame.uid, frame.gid) != security or
-                (lambda item: (item.st_dev, item.st_ino))(os.stat("ns/user", dir_fd=directory)) != namespace_key):
+                authorize_namespace(directory, frame.uid, frame.gid, parent_namespace) != namespace_key):
             raise PeerError("caller identity changed during authentication")
         require_live(frame)
         return PeerIdentity(frame.pid, frame.uid, frame.gid, parent, start, label, key, namespace_key)

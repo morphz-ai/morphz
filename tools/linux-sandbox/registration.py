@@ -7,6 +7,7 @@ policy source, credentials, descriptor numbers, or a chosen profile name.
 from dataclasses import asdict
 import os
 
+from admission import Admission
 from lifecycle import launch_name
 from peer import PeerError, PeerFrame, authorize, require_live
 from policy import Policy, PolicyError, compile_profiles, decode_request
@@ -25,9 +26,11 @@ class Registration:
         self.launcher_executables = launcher_executables
         self.owners = {}
         self.launchers = {}
+        self.admission = Admission(self)
 
     def close(self):
         # Closing the service is NOT permission to unload active protection.
+        self.admission.close()
         for bindings in (self.owners, self.launchers):
             for frame, _identity in bindings.values():
                 frame.close()
@@ -86,6 +89,10 @@ class Registration:
                     self.leases.close_admission(launch)
                     self.leases.collect(launch)
                 raise
+        if operation == "bind_roots" and set(request) == {"op", "launch", "descriptors"}:
+            launch = launch_name(request["launch"])
+            roots = self.admission.pin(launch, frame, request["descriptors"])
+            return {"ok": True, "launch": launch, "roots": roots}, None
         if operation == "release" and set(request) == {"op", "launch"}:
             launch = launch_name(request["launch"])
             if authorize(frame, self.runtime_executables) != self._owner(launch):
@@ -97,6 +104,9 @@ class Registration:
         raise PolicyError("unregistered control operation or extra fields")
 
     def reap_bindings(self):
+        for launch in list(self.admission.pins):
+            if launch not in self.leases.records:
+                self.admission.close(launch)
         for bindings in (self.owners, self.launchers):
             for launch in list(bindings):
                 if launch not in self.leases.records:
