@@ -1,7 +1,8 @@
 # Linux continuous-path sandbox service
 
 Implementation in progress under the approved 2026-10-21 service/launcher plan.
-This directory is **not yet installed, enabled, or a completed Runtime fix**.
+This directory is **not yet installed on user/production machines or a completed
+Runtime fix**. The new Runtime hookup and installer are under isolated CI validation.
 The old strict terminal failure remains open until the actual Runtime path and
 original CI test pass; this compiler cannot replace that acceptance.
 
@@ -91,8 +92,19 @@ Only the service writes its one-byte success receipt, after actual admission;
 refusal/service loss is EOF, never a success marker. The work command receives
 neither end, and command stdout cannot impersonate it. Current isolated native
 peers verify success and refusal receipts alongside actual Bubblewrap admission.
-This has not yet been wired into Rust PreparedCommand/PreparedPty, so it does not
-complete the actual Runtime acceptance.
+Rust PreparedCommand/PreparedPty now retain this private receipt. Exec metadata
+and terminal readiness remain pending until it succeeds. The new isolated job
+installs actual root-owned native Runtime test executables and the real service,
+then runs the original terminal regression unchanged. No passing result has yet
+been recorded for that hookup; the earlier component gates are not its proof.
+
+`launcher.c` is a static, non-setuid executable. User environment is frozen into
+a sealed private handoff; distribution Bubblewrap receives a fixed clean
+environment, and the user's environment becomes active only after admission.
+The service checks the full mount table as well as individual approved objects.
+`install.py` requires explicit root invocation and never starts a service or
+changes global sysctl settings. It refuses implicit upgrade/overwrite. Formal
+upgrade/uninstall lifecycle and full Runtime CI still remain acceptance gates.
 
 `lifecycle.py` owns durable, immutable per-launch records, enforcing AppArmor
 generations and administrator-owned cgroup v2 lifetime subtrees. The launcher

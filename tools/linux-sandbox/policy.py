@@ -19,7 +19,7 @@ MAX_PATHS = 256
 LAUNCH_ID = re.compile(r"[a-f0-9]{32}\Z")
 POLICY_KEYS = frozenset({
     "abi", "mode", "cwd", "read_roots", "write_roots", "denied_read_paths",
-    "denied_write_paths", "denied_read_patterns", "denied_write_patterns", "network",
+    "denied_write_paths", "denied_read_patterns", "denied_write_patterns", "network", "hidden_roots",
 })
 
 
@@ -90,6 +90,7 @@ class Policy:
     denied_read_patterns: tuple
     denied_write_patterns: tuple
     network: str
+    hidden_roots: tuple[str, ...]
 
     @classmethod
     def from_request(cls, value: dict) -> "Policy":
@@ -103,6 +104,9 @@ class Policy:
             if value[key] != []:
                 raise PolicyError("symbolic protected-path globs remain unsupported; use exact paths")
         reads, writes = path_list(value["read_roots"]), path_list(value["write_roots"])
+        hidden = path_list(value["hidden_roots"])
+        if len(hidden) > 8 or "/" in hidden:
+            raise PolicyError("hidden roots must be bounded non-root directories")
         cwd = literal_path(value["cwd"])
         if not writes:
             raise PolicyError("workspace sandbox requires at least one write root")
@@ -110,7 +114,7 @@ class Policy:
             raise PolicyError("cwd is outside the approved roots")
         return cls(ABI, value["mode"], cwd, reads, writes,
                    path_list(value["denied_read_paths"]),
-                   path_list(value["denied_write_paths"]), (), (), value["network"])
+                   path_list(value["denied_write_paths"]), (), (), value["network"], hidden)
 
     def digest(self) -> str:
         return hashlib.sha256(json.dumps(asdict(self), ensure_ascii=True, sort_keys=True,

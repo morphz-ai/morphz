@@ -16,6 +16,7 @@ def request(**changes):
         "denied_read_paths": ["/workspace/.env", "/workspace/.morphz/config.toml"],
         "denied_write_paths": ["/workspace/.env", "/workspace/.morphz/config.toml"],
         "denied_read_patterns": [], "denied_write_patterns": [], "network": "deny",
+        "hidden_roots": ["/home/example", "/tmp"],
         **changes,
     }
 
@@ -46,7 +47,8 @@ class PolicyTests(unittest.TestCase):
                         {"denied_read_paths": [True]},
                         {"denied_read_paths": ["/x"] * (MAX_PATHS + 1)},
                         {"denied_read_patterns": ["**/.env"]},
-                        {"denied_write_patterns": None}):
+                        {"denied_write_patterns": None}, {"hidden_roots": ["/"]},
+                        {"hidden_roots": ["/x" + str(i) for i in range(9)]}):
             with self.subTest(changes=changes), self.assertRaises(PolicyError):
                 Policy.from_request(request(**changes))
 
@@ -76,7 +78,7 @@ class PolicyTests(unittest.TestCase):
         for changes in ({"network": "allow"}, {"mode": "pty"},
                         {"write_roots": ["/workspace", "/reference"]},
                         {"denied_read_paths": []}, {"denied_write_paths": []},
-                        {"cwd": "/workspace/child"}):
+                        {"cwd": "/workspace/child"}, {"hidden_roots": ["/tmp"]}):
             with self.subTest(changes=changes):
                 self.assertNotEqual(policy.digest(), Policy.from_request(request(**changes)).digest())
 

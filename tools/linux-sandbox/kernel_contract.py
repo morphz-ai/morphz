@@ -196,6 +196,7 @@ def execute(args):
             "denied_read_paths": [str(path) for path in (*protected, read_denied, nested)],
             "denied_write_paths": [str(path) for path in (*protected, write_denied, nested)],
             "denied_read_patterns": [], "denied_write_patterns": [], "network": "deny",
+            "hidden_roots": [],
         })
         compiled = compile_profiles(policy, uuid.uuid4().hex)
         stacking_rule = f"change_profile -> &{compiled.work},"

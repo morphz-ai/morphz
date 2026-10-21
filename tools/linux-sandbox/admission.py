@@ -7,6 +7,7 @@ model field nor a 'ready' string is accepted as proof of these kernel facts.
 """
 from dataclasses import dataclass
 import os
+import re
 import stat
 
 from lifecycle import launch_name
@@ -38,13 +39,15 @@ def namespace_key(directory, name):
 
 
 def directory_in_process(directory, path):
-    """Walk the actual process root, refusing symlinked target components."""
+    """Walk the actual process root; only the final component may be a file."""
     literal_path(path)
     descriptor = os.open("root", os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=directory)
     try:
-        for part in path.split("/")[1:]:
+        parts = path.split("/")[1:]
+        for index, part in enumerate(parts):
             if part:
-                child = os.open(part, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                child = os.open(part, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC |
+                                (os.O_DIRECTORY if index < len(parts) - 1 else 0),
                                 dir_fd=descriptor)
                 os.close(descriptor)
                 descriptor = child
@@ -57,9 +60,43 @@ def directory_in_process(directory, path):
 
 def object_key(descriptor):
     info = os.fstat(descriptor)
-    if not stat.S_ISDIR(info.st_mode):
-        raise PeerError("root capability is not a directory")
+    if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+        raise PeerError("root capability is not a regular file or directory")
     return info.st_dev, info.st_ino
+
+
+def verify_mount_boundaries(raw, policy):
+    """Check the whole mount table, not only destinations of positive grants."""
+    mounts = {}
+    for line in raw.splitlines():
+        fields = line.split()
+        try:
+            separator = fields.index("-")
+            if separator < 6 or len(fields) < separator + 4:
+                raise ValueError("short mount entry")
+            path = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), fields[4])
+            literal_path(path)
+            flags = set(fields[5].split(","))
+            filesystem = fields[separator + 1]
+            if not ({"ro", "rw"} & flags) or {"ro", "rw"}.issubset(flags):
+                raise ValueError("ambiguous mount access")
+        except (ValueError, IndexError) as error:
+            raise PeerError("incomplete mounted filesystem evidence") from error
+        mounts[path] = (flags, filesystem)
+        if "rw" in flags and not any(contains(root, path) for root in
+                                     (*policy.write_roots, "/dev", "/proc")):
+            raise PeerError("writable filesystem outside approved roots")
+    if "/" not in mounts or ("/" not in policy.write_roots and "ro" not in mounts["/"][0]):
+        raise PeerError("read-only host baseline is missing")
+    for path in policy.hidden_roots:
+        # Explicit grants mounted after a private root may intentionally expose
+        # that root again. The initial '/' read baseline is not such a grant.
+        if any(root != "/" and contains(root, path)
+               for root in (*policy.read_roots, *policy.write_roots)):
+            continue
+        flags, filesystem = mounts.get(path, (set(), ""))
+        if filesystem != "tmpfs" or "ro" not in flags:
+            raise PeerError("unapproved home or temporary directory was not hidden read-only")
 
 
 def require_closed_capabilities(directory):
@@ -119,7 +156,7 @@ class Admission:
         pins = []
         try:
             for (path, writable), number in zip(specifications, numbers):
-                descriptor = os.open(f"fd/{number}", os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC,
+                descriptor = os.open(f"fd/{number}", os.O_PATH | os.O_CLOEXEC,
                                      dir_fd=directory)
                 try:
                     identity = object_key(descriptor)
@@ -173,10 +210,11 @@ class Admission:
             original_groups, _ = parse_security_state(read_bounded_at(source, "status"), owner.uid, owner.gid)
             if not set(groups).issubset(original_groups):
                 raise PeerError("work entry gained supplementary groups")
+            verify_mount_boundaries(read_bounded_at(directory, "mountinfo", 4 * 1024 * 1024), policy)
             for pin in self.pins[launch]:
                 # The outer keeps the exact original object alive, even if a
                 # host subsequently renames/replaces the source pathname.
-                current = os.open(f"fd/{pin.source_fd}", os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC,
+                current = os.open(f"fd/{pin.source_fd}", os.O_PATH | os.O_CLOEXEC,
                                   dir_fd=source)
                 mounted = -1
                 try:

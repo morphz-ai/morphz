@@ -965,7 +965,7 @@ impl TerminalManager {
                 sandbox_status: if profile.sandbox_mode == SandboxMode::DangerFullAccess {
                     "disabled"
                 } else {
-                    "enforced"
+                    "pending"
                 }
                 .into(),
                 network_enabled: profile.network,
@@ -1111,12 +1111,20 @@ impl TerminalManager {
                 Ok(live) => live,
                 Err(error) => {
                     record.status = TerminalStatus::Lost;
+                    if record.sandbox_status == "pending" {
+                        record.sandbox_status = "unavailable".into();
+                    }
                     record.updated_at = now();
                     let _ = self.store.compare_terminal(1, &record).await;
                     return Err(error);
                 }
             };
             record.status = TerminalStatus::Open;
+            if record.sandbox_status == "pending" {
+                // PreparedPty::spawn has consumed the service's private receipt
+                // on Linux; other native wrappers have spawned successfully.
+                record.sandbox_status = "enforced".into();
+            }
             if !self.store.compare_terminal(1, &record).await? {
                 live.stop();
                 return Err("terminal creation ownership changed; spawned process stopped".into());

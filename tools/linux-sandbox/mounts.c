@@ -63,7 +63,7 @@ int morphz_literal_path(const char *path) {
     return 0;
 }
 
-int morphz_open_directory(const char *path) {
+int morphz_open_object(const char *path) {
     if (morphz_literal_path(path)) return -1;
     int fd = open("/", O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) return -1;
@@ -74,13 +74,25 @@ int morphz_open_directory(const char *path) {
         if (size > NAME_MAX) { close(fd); errno = ENAMETOOLONG; return -1; }
         memcpy(part, at, size);
         part[size] = 0;
-        int next = openat(fd, part, O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        int next = openat(fd, part, O_PATH | O_NOFOLLOW | O_CLOEXEC |
+                          (at[size] ? O_DIRECTORY : 0));
         int failure = errno;
         close(fd);
         if (next < 0) { errno = failure; return -1; }
         fd = next;
         at += size;
         if (*at) ++at;
+    }
+    return fd;
+}
+
+int morphz_open_directory(const char *path) {
+    int fd = morphz_open_object(path);
+    struct stat info;
+    if (fd < 0) return -1;
+    if (fstat(fd, &info) || !S_ISDIR(info.st_mode)) {
+        close(fd);
+        return refuse();
     }
     return fd;
 }
@@ -109,9 +121,10 @@ int morphz_pin_roots(struct morphz_mounts *mounts) {
             goto failed;
         writable |= root->writable;
         cwd_allowed |= contains(root->path, mounts->cwd);
-        root->fd = morphz_open_directory(root->path);
+        root->fd = morphz_open_object(root->path);
         struct stat info;
-        if (root->fd < 0 || fstat(root->fd, &info)) goto failed;
+        if (root->fd < 0 || fstat(root->fd, &info) ||
+            (!S_ISDIR(info.st_mode) && !S_ISREG(info.st_mode))) goto failed;
         /* Registration pins the object actually opened by the non-root
          * launcher. The service freezes these identities for inner admission. */
         root->device = info.st_dev;
@@ -186,7 +199,8 @@ int morphz_build_bwrap(const struct morphz_mounts *mounts,
         const struct morphz_root *root = ordered[i];
         struct stat info;
         if (morphz_literal_path(root->path) || fstat(root->fd, &info) ||
-            !S_ISDIR(info.st_mode) || info.st_dev != root->device || info.st_ino != root->inode)
+            (!S_ISDIR(info.st_mode) && !S_ISREG(info.st_mode)) ||
+            info.st_dev != root->device || info.st_ino != root->inode)
             goto failed;
         if (!root->writable && !strcmp(root->path, "/")) continue;
         char source[64];
@@ -215,7 +229,7 @@ int morphz_verify_mounted_roots(const struct morphz_mounts *mounts) {
         morphz_unprivileged()) return refuse();
     for (size_t i = 0; i < mounts->count; ++i) {
         const struct morphz_root *root = &mounts->roots[i];
-        int descriptor = morphz_open_directory(root->path);
+        int descriptor = morphz_open_object(root->path);
         struct stat info;
         struct statvfs filesystem;
         if (descriptor < 0) return -1;

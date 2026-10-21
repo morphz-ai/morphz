@@ -144,7 +144,7 @@ def execute(args):
         policy = {"abi": 1, "mode": "exec", "cwd": str(workspace), "read_roots": [],
                   "write_roots": [str(workspace)], "denied_read_paths": [str(protected)],
                   "denied_write_paths": [str(protected)], "denied_read_patterns": [],
-                  "denied_write_patterns": [], "network": "deny"}
+                  "denied_write_patterns": [], "network": "deny", "hidden_roots": ["/home", "/tmp"]}
         policy_path = installed / (mode + ".json")
         policy_path.write_text(json.dumps(policy))
         os.chmod(policy_path, 0o444)

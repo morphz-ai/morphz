@@ -9016,7 +9016,7 @@ impl Tool for ExecuteCommandTool {
             "Prepared the operating-system execution boundary for exec"
         );
         let sandbox_backend = prepared.report.backend.as_str().to_string();
-        let sandbox_status =
+        let mut sandbox_status =
             if runtime_managed_ssh || profile.sandbox_mode == SandboxMode::DangerFullAccess {
                 // This is an intentional permission-mode choice, not a broken or
                 // missing native sandbox. Keeping it distinct prevents callers
@@ -9026,11 +9026,13 @@ impl Tool for ExecuteCommandTool {
             } else {
                 match prepared.report.status {
                     EnforcementStatus::Enforced => "enforced",
+                    EnforcementStatus::Pending => "pending",
                     EnforcementStatus::Unavailable => "unavailable",
                 }
             }
             .to_string();
         let startup_stdin = prepared.startup_stdin.clone();
+        let startup_receipt = prepared.startup_receipt.clone();
         let mut cmd = prepared.into_tokio_command();
         cmd.current_dir(&exec_cwd)
             .env("TMPDIR", &sandbox_tmp)
@@ -9221,6 +9223,21 @@ impl Tool for ExecuteCommandTool {
                 return Err(error.into());
             }
         };
+        if let Some(receipt) = startup_receipt {
+            let admitted = tokio::task::spawn_blocking(move || receipt.wait())
+                .await
+                .map_err(|error| format!("Linux sandbox admission task terminated: {error}"))?;
+            if let Err(error) = admitted {
+                let _ = child.kill().await;
+                if let Some((scheduler, reserved)) = reserved_background {
+                    scheduler
+                        .fail_reserved_execution(reserved, error.to_string())
+                        .await?;
+                }
+                return Err(error.into());
+            }
+            sandbox_status = "enforced".into();
+        }
         let raw_pid = child.id().ok_or("Failed to obtain process ID")?;
         #[cfg(windows)]
         let outer_job = match outer_job {
@@ -15159,7 +15176,7 @@ Body
                     "unexpected exec result: {output}"
                 );
             }
-            EnforcementStatus::Unavailable => {
+            EnforcementStatus::Pending | EnforcementStatus::Unavailable => {
                 let message = result.unwrap_err().to_string();
                 assert!(
                     message.contains("Bubblewrap"),

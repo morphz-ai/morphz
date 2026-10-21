@@ -5,6 +5,11 @@ on:
     branches: [fix/full-application-regressions-20261021]
     paths:
       - tools/linux-sandbox/**
+      - morphz/src/sandbox/**
+      - morphz/src/sandbox.rs
+      - morphz/src/terminal.rs
+      - morphz/src/tool.rs
+      - morphz/tests/native_sandbox_contract.rs
       - .github/workflows/linux-sandbox-service.yml
   workflow_dispatch:
 
@@ -16,6 +21,57 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  runtime-admission:
+    name: Installed service and actual Runtime exec / PTY
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: 2
+      MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - name: Install distribution dependencies without changing global security settings
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes apparmor apparmor-utils libapparmor-dev libjson-c-dev bubblewrap gcc
+      - name: Compile actual Runtime library and native contract tests
+        run: cargo test --locked -p morphz --lib --test native_sandbox_contract --no-run --message-format=json > "$RUNNER_TEMP/runtime-test-artifacts.jsonl"
+      - name: Install native test executables and real service using administrator setup
+        run: |
+          sudo env MORPHZ_LINUX_SANDBOX_TEST=1 /usr/bin/python3 -I -B tools/linux-sandbox/stage_runtime_tests.py "$RUNNER_TEMP/runtime-test-artifacts.jsonl"
+          sudo /usr/bin/python3 -I -B tools/linux-sandbox/install.py --runtime /usr/local/libexec/morphz-runtime-ci/lib --runtime /usr/local/libexec/morphz-runtime-ci/native
+          sudo systemctl daemon-reload
+          sudo systemctl start morphz-sandbox.service
+          for attempt in $(seq 1 100); do
+            if [ -S /run/morphz-sandbox/control.sock ]; then break; fi
+            sleep 0.1
+          done
+          test -S /run/morphz-sandbox/control.sock
+      - name: Verify actual Runtime command admission and post-admission protected paths
+        run: /usr/local/libexec/morphz-runtime-ci/native --nocapture --test-threads=1
+      - name: Verify unchanged original late-created protected-file PTY regression
+        run: /usr/local/libexec/morphz-runtime-ci/lib terminal::tests::terminal_sandbox_denies_outside_writes_and_protected_files --exact --nocapture --test-threads=1
+      - name: Verify actual Runtime private PTY and ordinary command session boundaries
+        run: /usr/local/libexec/morphz-runtime-ci/lib sandbox::linux::tests::native_bubblewrap_only_private_pty_retains_controlling_terminal --exact --nocapture --test-threads=1
+      - name: Preserve actual service diagnostics
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/installed-sandbox-evidence"
+          sudo journalctl -u morphz-sandbox.service --no-pager > "$RUNNER_TEMP/installed-sandbox-evidence/service.log"
+          sudo dmesg | tail -300 > "$RUNNER_TEMP/installed-sandbox-evidence/kernel.log" || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: installed-runtime-sandbox-${{ github.run_id }}
+          path: ${{ runner.temp }}/installed-sandbox-evidence/
+          retention-days: 7
+
   compiler-kernel:
     name: Typed compiler and actual AppArmor literal paths
     runs-on: ubuntu-24.04

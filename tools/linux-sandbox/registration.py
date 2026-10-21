@@ -65,6 +65,9 @@ class Registration:
     def handle(self, frame):
         request = decode_request(frame.body)
         operation = request.get("op")
+        if request == {"op": "probe"}:
+            authorize(frame, self.runtime_executables)
+            return {"ok": True, "abi": 1}, None
         if operation == "register" and set(request) == {"op", "policy"}:
             identity = authorize(frame, self.runtime_executables)
             policy = Policy.from_request(request["policy"])

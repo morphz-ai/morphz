@@ -4321,6 +4321,7 @@ fn doctor(
     let native_sandbox = NativeSandbox::for_current_platform().report();
     let native_status = match native_sandbox.status {
         EnforcementStatus::Enforced => "ok",
+        EnforcementStatus::Pending => "pending",
         EnforcementStatus::Unavailable => "missing",
     };
     let (provider_status, provider_summary) =

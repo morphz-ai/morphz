@@ -47,7 +47,8 @@ def execute(output):
             "abi": ABI, "mode": "exec", "cwd": str(root),
             "read_roots": [str(root)], "write_roots": [str(root)],
             "denied_read_paths": [], "denied_write_paths": [],
-            "denied_read_patterns": [], "denied_write_patterns": [], "network": "deny", **changes,
+            "denied_read_patterns": [], "denied_write_patterns": [], "network": "deny",
+            "hidden_roots": [], **changes,
         })
 
     def read_at(pin, name):

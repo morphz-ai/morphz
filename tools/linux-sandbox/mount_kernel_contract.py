@@ -101,6 +101,7 @@ def execute(args):
             "read_roots": [str(reference), str(trusted)], "write_roots": [str(workspace)],
             "denied_read_paths": [str(protected)], "denied_write_paths": [str(protected)],
             "denied_read_patterns": [], "denied_write_patterns": [], "network": "deny",
+            "hidden_roots": ["/home", "/tmp"],
         })
         compiled = compile_profiles(policy, uuid.uuid4().hex)
         source = stage / "profile.apparmor"

@@ -32,6 +32,7 @@ struct morphz_argv {
 int morphz_unprivileged(void);
 int morphz_literal_path(const char *path);
 int morphz_open_directory(const char *path);
+int morphz_open_object(const char *path);
 int morphz_pin_roots(struct morphz_mounts *mounts);
 void morphz_close_roots(struct morphz_mounts *mounts);
 int morphz_verify_mounted_roots(const struct morphz_mounts *mounts);
