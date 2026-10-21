@@ -347,16 +347,19 @@ test("工作动作在气泡外同一 footer：简短图标、真实状态、保�
   }
 });
 
-test("四主题亮暗 hover、按下与键盘保持可读，不再强外框；触控直接可发现", async ({
-  page,
-}, info) => {
-  const f = await prepare(page),
-    observations = [];
-  // Waiting still needs a truthful status. Removing only the redundant running
-  // action must not hide paused/waiting/unknown work or its keyboard access.
-  await f.update({ phase: "waiting" });
-  for (const mode of ["亮色", "暗色"])
-    for (const accent of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"]) {
+// Each independent appearance case keeps the standard per-test deadline.
+// Putting all eight palettes and a second touch browser into one test made the
+// full CI inventory time out despite every preceding appearance assertion passing.
+for (const mode of ["亮色", "暗色"])
+  for (const accent of ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"])
+    test(`${mode} · ${accent} hover、按下与键盘保持可读，不再强外框`, async ({
+      page,
+    }, info) => {
+      const f = await prepare(page),
+        observations = [];
+      // Waiting still needs a truthful status. Removing only the redundant running
+      // action must not hide paused/waiting/unknown work or its keyboard access.
+      await f.update({ phase: "waiting" });
       const settings = await openSettings(page, "外观");
       await settings.getByRole("button", { name: mode, exact: true }).click();
       await settings.getByRole("button", { name: accent, exact: true }).click();
@@ -399,21 +402,22 @@ test("四主题亮暗 hover、按下与键盘保持可读，不再强外框；�
       await page.screenshot({
         path: info.outputPath(`footer-${mode}-${accent}.png`),
       });
-    }
-  await info.attach("footer-appearance", {
-    body: JSON.stringify(observations, null, 2),
-    contentType: "application/json",
-  });
-  expect(f.sent).toHaveLength(0);
-  const touch = await page
-    .context()
-    .browser()!
-    .newContext({
-      baseURL: "http://127.0.0.1:65421",
-      viewport: { width: 390, height: 844 },
-      hasTouch: true,
-      isMobile: true,
+      await info.attach("footer-appearance", {
+        body: JSON.stringify(observations, null, 2),
+        contentType: "application/json",
+      });
+      expect(f.sent).toHaveLength(0);
     });
+
+test("触控直接可发现活动与补充入口，不改变草稿或卡片尺寸", async ({
+  browser,
+}) => {
+  const touch = await browser.newContext({
+    baseURL: "http://127.0.0.1:65421",
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
   try {
     const touchPage = await touch.newPage(),
       t = await prepare(touchPage);

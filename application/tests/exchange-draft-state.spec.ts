@@ -142,6 +142,18 @@ let fixtureUrl: string;
 test.beforeAll(async () => {
   server = await createServer({
     configFile: false,
+    // Other real-build fixtures can leave NODE_ENV=production in this worker.
+    // StrictMode replay belongs to development React, regardless of test order.
+    // Bind both application transforms and the prebundled React dependencies;
+    // Vite's mode alone does not override an inherited NODE_ENV.
+    define: { "process.env.NODE_ENV": JSON.stringify("development") },
+    optimizeDeps: {
+      rolldownOptions: {
+        transform: {
+          define: { "process.env.NODE_ENV": JSON.stringify("development") },
+        },
+      },
+    },
     cacheDir: resolve(tmpdir(), `morphz-exchange-draft-vite-${process.pid}`),
     root: resolve("apps/web"),
     plugins: [

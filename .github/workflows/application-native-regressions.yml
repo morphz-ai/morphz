@@ -14,6 +14,8 @@ on:
       - application/apps/web/src/ExchangePanel.tsx
       - application/packages/core/src/evaluation-result.ts
       - application/tests/conversation-performance.spec.ts
+      - application/tests/exchange-draft-state.spec.ts
+      - application/tests/message-work-footer.spec.ts
       - application/tests/exchange-resize.spec.ts
       - application/tests/application-compose-race.test.ts
       - application/tests/cognitive-app-manager-mounted.test.ts
@@ -150,15 +152,21 @@ jobs:
             tests/cognitive-app-document-local.test.ts
       - run: npx playwright install --with-deps chrome
       - name: Check real Desktop browser cases and the unchanged rendering budget
+        env:
+          # This isolated workflow retains profiler overhead and the original
+          # assertions. The full Application gate still measures uninstrumented.
+          MORPHZ_TEST_CONVERSATION_CPU_PROFILE: "1"
         run: |
           xvfb-run -a --server-args="-screen 0 1920x1200x24" npm run test:e2e -- \
             tests/browser-composer.spec.ts \
             tests/composer-tool-state.spec.ts \
             tests/conversation-performance.spec.ts \
+            tests/exchange-draft-state.spec.ts \
+            tests/message-work-footer.spec.ts \
             tests/exchange-resize.spec.ts \
-            tests/exchange-floating-controls.spec.ts
+            tests/exchange-floating-controls.spec.ts --trace on
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: failure() || cancelled()
+        if: always()
         with:
           name: isolated-linux-native-failures
           path: application/test-results/
