@@ -72,6 +72,33 @@ user-namespace/proc setup. The retained work layer has no such flag or setup
 capabilities; both layers still have to permit any work access. The existing
 continuous-denial and exact-stack kernel gates remain mandatory.
 
+`registration.py` now authenticates typed registration and a single-use claim
+using separate installed Runtime/launcher executable registries, retained kernel
+pidfds, exact identities and the live parent relationship. A disconnected socket
+does not revoke running work. There is **no public admission operation** here:
+the mounted-root and final label gate still must be connected before this can be
+used to launch general work through the Runtime.
+
+`lifecycle.py` owns durable, immutable per-launch records, enforcing AppArmor
+generations and administrator-owned cgroup v2 lifetime subtrees. The launcher
+receives a root-opened `cgroup.procs` capability and writes literal `0`, joining
+itself without a numeric-PID lookup/move race. It must close that descriptor
+before work. Admission is closed before kernel `rmdir` of the cgroup; only a
+successful removal (no live processes/descendants and no future joins possible)
+permits profile unloading. A still-open old descriptor cannot resurrect a
+removed group. UID/PID values saved to disk never restore authentication after
+service restart: recovery closes admissions and preserves protection while any
+descendant lives. There is no automatic task kill in this implementation.
+
+The isolated lifetime gate uses distinct root-owned native fixture peers (not a
+trusted Python interpreter), an actual Unix control socket, actual cgroup joins,
+background descendants and a real `SIGKILL`/restart of the fixture service. It
+tests late protected-file creation, allowed writes, capability-FD closure,
+same-UID impostors and a held/stale join capability. It does not claim that
+general-work admission, private PTY integration or the original Runtime test has
+passed. Fixture cleanup kills only synthetic processes in its unique recorded
+cgroups; neither the service core nor a Mac/production node does so.
+
 Mandatory next gates: authenticated service; pinned-object mount handoff;
 exact enforcing-stack/UID/
 capability/NoNewPrivs confirmation before command execution; inherited-FD closure;
