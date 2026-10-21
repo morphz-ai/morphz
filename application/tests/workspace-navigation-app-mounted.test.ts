@@ -309,7 +309,8 @@ test(
     ) {
       const page = await browser!.newPage(),
         errors: string[] = [],
-        queries: string[] = [];
+        queries: string[] = [],
+        failedRequests: string[] = [];
       page.setDefaultNavigationTimeout(60_000);
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
@@ -318,6 +319,15 @@ test(
       page.on("request", (request) => {
         if (["fetch", "xhr"].includes(request.resourceType()))
           queries.push(request.url());
+      });
+      page.on("requestfailed", (request) =>
+        failedRequests.push(
+          `${request.url()}: ${request.failure()?.errorText}`,
+        ),
+      );
+      page.on("response", (response) => {
+        if (response.status() >= 400)
+          failedRequests.push(`${response.status()} ${response.url()}`);
       });
       try {
         await page.goto(url);
@@ -351,6 +361,19 @@ test(
         await run(action, report, submit);
         assert.deepEqual(errors, []);
         assert.deepEqual(queries, []);
+      } catch (cause) {
+        // A failed mount previously discarded its console/module-load cause
+        // and reported only '#private' timing out. Keep the original failure
+        // and the synthetic page diagnostics; never retry or relax assertions.
+        throw new Error(
+          `App navigation mount failed: ${JSON.stringify({
+            errors,
+            failedRequests,
+            queries,
+            url: page.url(),
+          })}`,
+          { cause },
+        );
       } finally {
         await page.close();
       }
