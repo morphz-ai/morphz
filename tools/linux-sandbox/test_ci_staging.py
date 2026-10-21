@@ -18,6 +18,25 @@ def artifact(name, kind, test=True):
 
 
 class CiStagingTests(unittest.TestCase):
+    def test_release_keeps_the_installed_runtime_and_real_kernel_gates(self):
+        workflows = Path(__file__).resolve().parents[2] / ".github/workflows"
+        release = (workflows / "release.yml").read_text()
+        self.assertNotIn("sysctl -w", release)
+        self.assertIn("    uses: ./.github/workflows/linux-sandbox-service.yml", release)
+        self.assertIn("  workflow_call:\n", (workflows / "linux-sandbox-service.yml").read_text())
+        self.assertIn("needs: [release-readiness, session-io, linux-sandbox,", release)
+        readiness = release.split("\n  release-readiness:\n", 1)[1].split("\n  linux-bundles:\n", 1)[0]
+        self.assertIn("MORPHZ_REQUIRE_LINUX_SANDBOX_ATTACK_TEST: \"1\"", readiness)
+        self.assertIn("MORPHZ_LINUX_SANDBOX_TEST=1", readiness)
+        self.assertIn("stage_runtime_tests.py", readiness)
+        self.assertIn("--install-service", readiness)
+        self.assertIn("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:", readiness)
+        self.assertIn("run_runtime_test.py", readiness)
+        targets = "--lib --bin morphz --test session_io --test native_sandbox_contract"
+        self.assertIn(targets + " --no-run --message-format=json", readiness)
+        self.assertIn(targets + " --no-fail-fast -- --test-threads=1", readiness)
+        self.assertNotIn("continue-on-error", readiness)
+
     def test_logged_native_failure_fails_the_actual_workflow_command(self):
         workflow = (Path(__file__).resolve().parents[2] /
                     ".github/workflows/linux-sandbox-service.yml").read_text()
