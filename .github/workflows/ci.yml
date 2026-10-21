@@ -173,6 +173,7 @@ jobs:
       - name: Verify typed interrupt delivery on SQLite and PostgreSQL
         run: cargo test --locked -p morphz --test typed_io_interrupt -- --include-ignored --nocapture
       - name: Verify atomic initial Session evaluation on SQLite and PostgreSQL
+        if: ${{ !cancelled() }}
         run: cargo test --locked -p morphz --test session_initial_evaluation -- --include-ignored --nocapture
       - name: Require ignored PostgreSQL ownership and recovery integration contracts
         if: ${{ !cancelled() }}

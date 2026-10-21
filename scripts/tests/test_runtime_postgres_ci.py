@@ -76,10 +76,15 @@ class PostgresCiTests(unittest.TestCase):
         verify_coverage(self.cases, self.workflow, self.io_workflow)
 
     def test_ignored_integration_inventory_has_required_ci_owners(self):
-        cases = postgres_source_cases("morphz/tests")
+        self.assert_integration_inventory(self.workflow)
+
+    def assert_integration_inventory(self, workflow, cases=None):
+        if cases is None:
+            cases = postgres_source_cases("morphz/tests")
         other_owners = {name for name, source in cases.items() if source in {
             "morphz/tests/session_io.rs", "morphz/tests/session_io_fence_legacy.rs",
             "morphz/tests/typed_io_interrupt.rs",
+            "morphz/tests/session_initial_evaluation.rs",
         }}
         owned = {case.rsplit("::", 1)[-1] for _target, case in runner.INTEGRATION_CASES}
         self.assertEqual(set(cases), owned | other_owners)
@@ -89,7 +94,7 @@ class PostgresCiTests(unittest.TestCase):
             self.assertTrue(cases[case.rsplit("::", 1)[-1]].startswith(
                 f"morphz/tests/{target}.rs") or cases[case.rsplit("::", 1)[-1]].startswith(
                     f"morphz/tests/{target}/"))
-        job = job_source(self.workflow, "postgres-conformance")
+        job = job_source(workflow, "postgres-conformance")
         steps = [step for step in job.split("\n      - ")
                  if "python3 scripts/test_runtime_postgres_lib.py --integration" in step]
         self.assertEqual(len(steps), 1)
@@ -98,6 +103,34 @@ class PostgresCiTests(unittest.TestCase):
         self.assertIn("--test typed_io_interrupt -- --include-ignored", job)
         self.assertIn("--test session_io -- --include-ignored", self.io_workflow)
         self.assertIn("--test session_io_fence_legacy -- --include-ignored", self.io_workflow)
+        initial_command = "cargo test --locked -p morphz --test session_initial_evaluation -- --include-ignored --nocapture"
+        initial_steps = [step for step in job.split("\n      - ")
+                         if "--test session_initial_evaluation" in step]
+        self.assertEqual(len(initial_steps), 1)
+        self.assertIn(initial_command, initial_steps[0])
+        self.assertIn("if: ${{ !cancelled() }}", initial_steps[0])
+        self.assertNotRegex(initial_steps[0], r"continue-on-error|\|\|\s*true")
+
+    def test_initial_evaluation_owner_cannot_be_missing_optional_or_ignored(self):
+        command = "cargo test --locked -p morphz --test session_initial_evaluation -- --include-ignored --nocapture"
+        for changed in [
+            self.workflow.replace(command, "echo omitted"),
+            self.workflow.replace(command, command.replace(" --include-ignored", "")),
+            self.workflow.replace(f"run: {command}", f"continue-on-error: true\n        run: {command}"),
+            self.workflow.replace(f"run: {command}", f"run: {command} || true"),
+            self.workflow.replace(f"if: ${{{{ !cancelled() }}}}\n        run: {command}",
+                                  f"if: success()\n        run: {command}"),
+        ]:
+            with self.subTest(changed=changed != self.workflow):
+                self.assertNotEqual(changed, self.workflow)
+                with self.assertRaises(AssertionError):
+                    self.assert_integration_inventory(changed)
+
+    def test_new_unowned_postgres_integration_case_is_rejected(self):
+        cases = {**postgres_source_cases("morphz/tests"),
+                 "postgres_new_contract": "morphz/tests/unowned.rs"}
+        with self.assertRaises(AssertionError):
+            self.assert_integration_inventory(self.workflow, cases)
 
     def test_integration_runner_keeps_exact_targets_and_collects_every_failure(self):
         calls = []
