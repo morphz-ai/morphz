@@ -51,7 +51,7 @@ test.beforeEach(async ({ page }) => {
 
 test("粘贴多文件和图片成为当前草稿附件，不插入路径、不发送或创建内容", async ({
   page,
-}) => {
+}, info) => {
   const source = await PlatformClient.connect(
     new HttpApplicationClient("http://127.0.0.1:65421"),
   );
@@ -66,6 +66,11 @@ test("粘贴多文件和图片成为当前草稿附件，不插入路径、不�
   });
   const input = page.getByLabel("AI 输入内容");
   await input.fill("保留原有文字");
+  const slot = page.locator(".composer > .composer-attachment-slot");
+  await expect(slot).toHaveCount(1);
+  expect(
+    await slot.evaluate((node) => node.getBoundingClientRect().height),
+  ).toBe(0);
   // File selection and paste use the same uploader and preview list.
   const choosing = page.waitForEvent("filechooser");
   await openComposerMedia(page);
@@ -94,6 +99,38 @@ test("粘贴多文件和图片成为当前草稿附件，不插入路径、不�
   await expect(
     attachments.getByRole("button", { name: /^移除附件/ }),
   ).toHaveCount(3);
+  expect(
+    await slot.evaluate((node) => {
+      const original = document.querySelectorAll(
+        ".app .composer:has(.composer-action-bar) > div:has(> .message-attachments)",
+      );
+      const style = getComputedStyle(node);
+      return {
+        sameTarget: original.length === 1 && original[0] === node,
+        grow: style.flexGrow,
+        shrink: style.flexShrink,
+        overflow: style.overflow,
+        limit: parseFloat(style.maxHeight),
+        height: node.getBoundingClientRect().height,
+      };
+    }),
+  ).toMatchObject({
+    sameTarget: true,
+    grow: "0",
+    shrink: "0",
+    overflow: "auto",
+    limit: 112,
+  });
+  await page.screenshot({
+    path: info.outputPath("composer-attachments-wide.png"),
+  });
+  const originalViewport = page.viewportSize()!;
+  await page.setViewportSize({ width: 390, height: 700 });
+  await expect(slot).toBeVisible();
+  await page.screenshot({
+    path: info.outputPath("composer-attachments-narrow.png"),
+  });
+  await page.setViewportSize(originalViewport);
   await expect(input).toHaveValue("保留原有文字");
   await input.focus();
   await expect(input).toBeFocused();
