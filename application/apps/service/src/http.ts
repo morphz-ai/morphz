@@ -497,9 +497,17 @@ export function createAppServer(
         }
         if (url.pathname === "/api/profile/avatar") {
           const query = platformQuery(url, ["subject", "revision", "variant"]);
-          const file = await business.readProfileAvatar({ subject: query.value("subject"), revision: query.number("revision"), variant: query.value("variant") });
+          const file = await business.readProfileAvatar({
+            subject: query.value("subject"),
+            revision: query.number("revision"),
+            variant: query.value("variant"),
+          });
           assertIdentity();
-          res.writeHead(200, { "Content-Type": file.mime, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" });
+          res.writeHead(200, {
+            "Content-Type": file.mime,
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+          });
           res.end(file.bytes);
           return;
         }
@@ -1202,6 +1210,21 @@ export function createAppServer(
           });
           return;
         }
+        if (url.pathname === "/api/session-evaluation") {
+          const query = platformQuery(url, ["projectId", "conversationId"]);
+          const result = await business.readSessionEvaluation({
+            projectId: query.value("projectId"),
+            conversationId: query.value("conversationId"),
+          });
+          json(res, 200, {
+            ...result,
+            canUpdate: false,
+            readOnlyReason: result.canUpdate
+              ? "local_only"
+              : result.readOnlyReason,
+          });
+          return;
+        }
         if (url.pathname === "/api/executions") {
           json(res, 200, await business.executionSnapshot(executionScope(url)));
           return;
@@ -1375,7 +1398,11 @@ export function createAppServer(
             dispose?.();
             if (!res.destroyed && !res.writableEnded) {
               if (res.headersSent) res.end();
-              else json(res, 503, { code: "unavailable", message: "变化通知暂不可用，请重新连接。" });
+              else
+                json(res, 503, {
+                  code: "unavailable",
+                  message: "变化通知暂不可用，请重新连接。",
+                });
             }
           };
           // Transport keepalive only: no query, snapshot or state polling.
@@ -1401,7 +1428,11 @@ export function createAppServer(
             res.write(`data: ${JSON.stringify(value)}\n\n`);
           };
           try {
-            dispose = await business.observeWorkspaceChanges(send, close, controller.signal);
+            dispose = await business.observeWorkspaceChanges(
+              send,
+              close,
+              controller.signal,
+            );
             if (closed) dispose();
           } catch (error) {
             clearInterval(heartbeat);
@@ -1573,6 +1604,11 @@ export function createAppServer(
           throw new DomainError(
             "forbidden",
             "审批方式只能由本机本人调整；团队与远端会话暂为只读。",
+          );
+        if (url.pathname === "/api/session-evaluation/update")
+          throw new DomainError(
+            "forbidden",
+            "会话模型只能由本机本人调整；团队与远端暂为只读。",
           );
         if (scriptEditor) {
           if (req.headers["content-type"] !== "application/json") {
@@ -2204,17 +2240,38 @@ export function createAppServer(
         }
         if (url.pathname === "/api/profile") {
           platformQuery(url, []);
-          json(res, 200, await business.updateProfile(await jsonBody(req, 8192)));
+          json(
+            res,
+            200,
+            await business.updateProfile(await jsonBody(req, 8192)),
+          );
           return;
         }
         if (url.pathname === "/api/profile/avatar/clear") {
           platformQuery(url, []);
-          json(res, 200, await business.clearProfileAvatar(await jsonBody(req, 1024)));
+          json(
+            res,
+            200,
+            await business.clearProfileAvatar(await jsonBody(req, 1024)),
+          );
           return;
         }
         if (url.pathname === "/api/profile/avatar") {
-          const query = platformQuery(url, ["subject", "commandId", "expectedRevision"]);
-          json(res, 200, await business.setProfileAvatar({ subject: query.value("subject"), commandId: query.value("commandId"), expectedRevision: query.number("expectedRevision"), data: await body(req, 4 * 1024 * 1024) }));
+          const query = platformQuery(url, [
+            "subject",
+            "commandId",
+            "expectedRevision",
+          ]);
+          json(
+            res,
+            200,
+            await business.setProfileAvatar({
+              subject: query.value("subject"),
+              commandId: query.value("commandId"),
+              expectedRevision: query.number("expectedRevision"),
+              data: await body(req, 4 * 1024 * 1024),
+            }),
+          );
           return;
         }
       }
@@ -2266,7 +2323,9 @@ export function createAppServer(
       json(res, failure.status, {
         code: failure.code,
         message: failure.message,
-        ...(failure.commandId === undefined ? {} : { commandId: failure.commandId }),
+        ...(failure.commandId === undefined
+          ? {}
+          : { commandId: failure.commandId }),
       });
     }
   });

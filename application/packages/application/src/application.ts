@@ -26,6 +26,10 @@ import {
 } from "../../../packages/core/src/model.js";
 import { unconfiguredConnection } from "../../core/src/connection.js";
 import {
+  sessionEvaluationScopeSchema,
+  sessionEvaluationUpdateSchema,
+} from "../../core/src/session-evaluation.js";
+import {
   sessionPermissionsReadSchema,
   sessionPermissionsUpdateSchema,
 } from "../../core/src/session-permissions.js";
@@ -2848,6 +2852,48 @@ export class ApplicationSession {
     this.active();
     return result;
   }
+  async readSessionEvaluation(raw: unknown) {
+    this.active();
+    const scope = sessionEvaluationScopeSchema.parse(raw);
+    const runtime = this.runtime();
+    const result = await runtime.as(this.access, () =>
+      runtime.readSessionEvaluation(scope, this.access, () => this.active()),
+    );
+    this.active();
+    return result;
+  }
+  async updateSessionEvaluation(raw: unknown) {
+    this.active();
+    const request = sessionEvaluationUpdateSchema.parse(raw);
+    const runtime = this.runtime();
+    if (
+      this.options.identity ||
+      runtime.teamIdentity ||
+      this.access.principalId !== localAccess.principalId ||
+      this.access.actantId !== localAccess.actantId
+    )
+      throw new DomainError(
+        "forbidden",
+        "会话模型只能由本机本人调整；团队与远端暂为只读。",
+      );
+    const authorizeWrite = async () => {
+      this.active();
+      await this.work((service, actor) =>
+        service.authorizeLocalDirectory(
+          actor,
+          request.projectId,
+          request.conversationId,
+          true,
+        ),
+      );
+      this.active();
+    };
+    const result = await runtime.as(this.access, () =>
+      runtime.updateSessionEvaluation(request, this.access, authorizeWrite),
+    );
+    this.active();
+    return result;
+  }
   async asset(raw: unknown, attachment = false, rawSource?: unknown) {
     this.active();
     const id = z
@@ -4072,6 +4118,10 @@ export function invokeApplication(
       return session.readSessionPermissions(params);
     case "session-permissions.update":
       return session.updateSessionPermissions(params);
+    case "session-evaluation.read":
+      return session.readSessionEvaluation(params);
+    case "session-evaluation.update":
+      return session.updateSessionEvaluation(params);
     case "asset.add":
       return session.addAsset(params);
     case "attachment.add":

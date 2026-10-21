@@ -18,6 +18,15 @@ import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { executionModelSchema } from "../../core/src/inference.js";
+import {
+  sessionEvaluationScopeSchema,
+  sessionEvaluationDefaultsSchema,
+  sessionEvaluationUpdateSchema,
+  sessionEvaluationSnapshotSchema,
+  type SessionEvaluationScope,
+  type SessionEvaluationUpdate,
+  type SessionEvaluationSnapshot,
+} from "../../core/src/session-evaluation.js";
 import { runtimeSchedulerSourceSchema } from "./runtime-thread-provenance.js";
 import {
   conversationSearchRequestSchema,
@@ -1124,6 +1133,180 @@ export class RuntimeBridge {
         throw new DomainError(
           "conflict",
           "审批方式写入结果未确认，请重新读取；未报告成功。",
+        );
+      return after;
+    });
+  }
+  async readSessionEvaluation(
+    raw: SessionEvaluationScope,
+    access: AccessContext,
+    active: () => void = () => {},
+  ) {
+    const scope = sessionEvaluationScopeSchema.parse(raw);
+    active();
+    const route = await this.permissionScope(scope, access);
+    return this.serialSessionPolicy(route.id, async () => {
+      active();
+      const result = await this.readEvaluationPolicy(scope, access, route);
+      active();
+      return result;
+    });
+  }
+  private async readEvaluationPolicy(
+    scope: SessionEvaluationScope,
+    access: AccessContext,
+    route: { id: string; shared: boolean },
+  ): Promise<SessionEvaluationSnapshot> {
+    const verify = async () => {
+      const current = await this.permissionScope(scope, access);
+      if (current.id !== route.id || current.shared !== route.shared)
+        throw new DomainError("forbidden", "模型设置范围已变化，请重新读取。");
+    };
+    await verify();
+    const resultScope = {
+      ...scope,
+      kind: route.shared ? ("global" as const) : ("conversation" as const),
+    };
+    const runtimeSchema = sessionSchema.extend({
+      model_alias: sessionEvaluationDefaultsSchema.shape.model.optional(),
+      reasoning_effort:
+        sessionEvaluationDefaultsSchema.shape.reasoningEffort.optional(),
+    });
+    let session: z.infer<typeof runtimeSchema>;
+    try {
+      session = runtimeSchema.parse(
+        await this.request(
+          `/api/sessions/${route.id}`,
+          "GET",
+          undefined,
+          access,
+        ),
+      );
+    } catch (error) {
+      if (!(error instanceof UpstreamError) || error.status !== 404)
+        throw error;
+      await verify();
+      return {
+        scope: resultScope,
+        runtimeSessionId: null,
+        defaults: { model: null, reasoningEffort: null },
+        source: "not_started",
+        canUpdate: false,
+        readOnlyReason: "not_started",
+        fingerprint: null,
+      };
+    }
+    if (
+      session.id !== route.id ||
+      session.context_id !==
+        this.contextId(route.shared ? scope.conversationId : scope.projectId)
+    )
+      throw new DomainError(
+        "forbidden",
+        "Runtime 会话绑定不匹配，无法读取模型设置。",
+      );
+    const knownPrincipal = this.state.sessions[route.id]?.runtimePrincipalId;
+    if (knownPrincipal) {
+      const principal = z
+        .object({
+          principal_id: z.literal(knownPrincipal),
+          session_id: z.literal(route.id),
+          context_id: z.literal(session.context_id),
+        })
+        .safeParse(
+          await this.request(
+            `/api/sessions/${route.id}/principal`,
+            "GET",
+            undefined,
+            access,
+          ),
+        );
+      if (!principal.success)
+        throw new DomainError(
+          "forbidden",
+          "Runtime 会话身份发生变化，不能调整模型设置。",
+        );
+    }
+    const defaults = {
+      model: session.model_alias ?? null,
+      reasoningEffort: session.reasoning_effort ?? null,
+    };
+    const canUpdate =
+      !this.teamIdentity &&
+      access.principalId === localAccess.principalId &&
+      access.actantId === localAccess.actantId;
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify([route.id, session.context_id, defaults]))
+      .digest("hex");
+    await verify();
+    return sessionEvaluationSnapshotSchema.parse({
+      scope: resultScope,
+      runtimeSessionId: route.id,
+      defaults,
+      source: "runtime",
+      canUpdate,
+      readOnlyReason: canUpdate ? null : "team_managed",
+      fingerprint,
+    });
+  }
+  async updateSessionEvaluation(
+    raw: SessionEvaluationUpdate,
+    access: AccessContext,
+    authorizeWrite: () => Promise<void>,
+  ) {
+    const request = sessionEvaluationUpdateSchema.parse(raw);
+    if (
+      this.teamIdentity ||
+      access.principalId !== localAccess.principalId ||
+      access.actantId !== localAccess.actantId
+    )
+      throw new DomainError("forbidden", "会话模型只能由本机本人调整。");
+    const scope = {
+      projectId: request.projectId,
+      conversationId: request.conversationId,
+    };
+    await authorizeWrite();
+    const route = await this.permissionScope(scope, access);
+    return this.serialSessionPolicy(route.id, async () => {
+      await authorizeWrite();
+      const before = await this.readEvaluationPolicy(scope, access, route);
+      if (!before.canUpdate || !before.runtimeSessionId)
+        throw new DomainError(
+          "conflict",
+          "会话尚未建立，模型选择仍应保留在草稿中。",
+        );
+      if (before.fingerprint !== request.expectedFingerprint)
+        throw new DomainError("conflict", "模型设置已变化，请重新读取后调整。");
+      await this.validateInference(
+        request.defaults.model ?? undefined,
+        request.defaults.reasoningEffort ?? undefined,
+      );
+      await authorizeWrite();
+      // Recheck binding and the observed policy after awaited catalog loading.
+      // This does not claim an atomic CAS against direct Runtime clients.
+      const checked = await this.readEvaluationPolicy(scope, access, route);
+      if (checked.fingerprint !== request.expectedFingerprint)
+        throw new DomainError("conflict", "模型设置已变化，未覆盖新的选择。");
+      await authorizeWrite();
+      await this.request(
+        `/api/sessions/${route.id}`,
+        "PATCH",
+        {
+          model_alias: request.defaults.model ?? "",
+          reasoning_effort: request.defaults.reasoningEffort ?? "",
+        },
+        access,
+      );
+      const after = await this.readEvaluationPolicy(scope, access, route);
+      await authorizeWrite();
+      if (
+        !after.canUpdate ||
+        after.source !== "runtime" ||
+        !isDeepStrictEqual(after.defaults, request.defaults)
+      )
+        throw new DomainError(
+          "conflict",
+          "模型设置写入结果未确认，请重新读取。",
         );
       return after;
     });
