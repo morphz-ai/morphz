@@ -82,6 +82,20 @@ service_token_env = "MORPHZ_APP_GATEWAY_TOKEN"
 
 已配置 Runtime 的 Desktop 内嵌宿主生成私有 `host-tools-desktop.json`，通过本地 Unix socket 回调；Web HTTP 宿主使用 `host-tools.json`。Runtime 开发构建启动时以 `MORPHZ_HOST_TOOLS_FILE` 指向相应清单的绝对路径，界面刷新不会重新加载它。单用户绑定精确 Context；团队绑定该中心独有、带分隔符的 Context 命名空间，应用还会校验真实 Session、项目成员及身份撤销状态。模型不能修改注册清单或扩展项目范围。
 
+每项 Host 工具注册可配置 `transport_timeout_secs`，取整数 1–300 秒，未配置
+时为 20 秒。它与 `endpoint`／`ipc_path` 同层，不放在 `definition.parameters`
+或模型参数中。HTTP 和本地 IPC 共用这个总通信期限，覆盖连接、发送和完整响应
+正文；收到响应头并不会重新计时。业务处理预算应短于 Host 通信期限，通信期限
+又应短于外层 `orchestrator.tool_timeout_secs`，给结果保存和回传留出余量。
+仅增大外层工具超时不能覆盖较短的 Host 通信期限。
+
+例如确需较长视觉处理的独立 Host，可经授权显式配置业务 180 秒、Host 210 秒、
+外层工具 240 秒；这不是所有工具的新默认值，也不是当前 Desktop 已启用的值。
+使用这个注册字段需要配套支持它的 Runtime；修改清单后须正常重启相应 Runtime。
+超时或响应正文中断代表结果未知，不代表远端没有执行；必须先核对原命令回执，
+未声明安全幂等的 `AtMostOnce` 操作不能自动重试。此设置不改变身份、Context、
+权限、响应大小或既有幂等策略。普通应用生成的清单未因此自动加长等待。
+
 工具注册可通过 `idempotent_requests` 声明可安全重放的具体操作：每条规则是 JSON Pointer
 到字符串的精确匹配，规则内部为 AND，多条规则为 OR。它只存在于私有注册清单，
 不是模型参数或通用重试开关；未声明操作默认仍为 `AtMostOnce`。当前应用只声明

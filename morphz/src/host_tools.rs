@@ -21,6 +21,10 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 const MAX_MANIFEST: u64 = 256 * 1024;
 const MAX_RESPONSE: usize = 2 * 1024 * 1024;
 
+fn default_transport_timeout_secs() -> u64 {
+    20
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
@@ -43,6 +47,9 @@ struct Registration {
     #[serde(default)]
     ipc_path: Option<String>,
     token: String,
+    /// Total request and response deadline set by the trusted Host, not the model.
+    #[serde(default = "default_transport_timeout_secs")]
+    transport_timeout_secs: u64,
     context_ids: Vec<String>,
     #[serde(default)]
     context_id_prefixes: Vec<String>,
@@ -72,6 +79,9 @@ impl Registration {
         }
     }
     fn validate_transport(&self) -> Result<(), Error> {
+        if !(1..=300).contains(&self.transport_timeout_secs) {
+            return Err("host tool transport timeout must be between 1 and 300 seconds".into());
+        }
         if let Some(_path) = &self.ipc_path {
             if !self.endpoint.is_empty() {
                 return Err("host tool must select exactly one transport".into());
@@ -181,14 +191,17 @@ impl HostTool {
             }
             Ok(result)
         };
-        let result = tokio::time::timeout(Duration::from_secs(20), operation)
-            .await
-            .map_err(|_| {
-                "host tool IPC timed out; result is unknown, reconcile before repeating a write"
-            })?
-            .map_err(|_| {
-                "host tool IPC failed; result is unknown, reconcile before repeating a write"
-            })?;
+        let result = tokio::time::timeout(
+            Duration::from_secs(self.registration.transport_timeout_secs),
+            operation,
+        )
+        .await
+        .map_err(|_| {
+            "host tool IPC timed out; result is unknown, reconcile before repeating a write"
+        })?
+        .map_err(|_| {
+            "host tool IPC failed; result is unknown, reconcile before repeating a write"
+        })?;
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Reply {
@@ -400,6 +413,9 @@ impl Tool for HostTool {
         let mut response = self
             .client
             .post(&self.registration.endpoint)
+            .timeout(Duration::from_secs(
+                self.registration.transport_timeout_secs,
+            ))
             .bearer_auth(&self.registration.token)
             .json(&envelope)
             .send()
@@ -416,11 +432,9 @@ impl Tool for HostTool {
             .into());
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| "host tool response interrupted")?
-        {
+        while let Some(chunk) = response.chunk().await.map_err(|_| {
+            "host tool response interrupted; result is unknown, reconcile before repeating a write"
+        })? {
             if bytes.len() + chunk.len() > MAX_RESPONSE {
                 return Err("host tool response exceeds limit".into());
             }
@@ -440,6 +454,7 @@ mod tests {
             endpoint: "http://127.0.0.1:65420/api/host-tools/call".into(),
             ipc_path: None,
             token: "x".repeat(64),
+            transport_timeout_secs: default_transport_timeout_secs(),
             context_ids: vec!["work-context".into()],
             context_id_prefixes: vec![],
             idempotent_requests: vec![],
@@ -449,6 +464,40 @@ mod tests {
                 parameters: json!({"type":"object"}),
             },
         }
+    }
+    #[test]
+    fn transport_deadline_is_bounded_host_configuration() {
+        let defaults = json!({
+            "endpoint": "http://127.0.0.1:65420/api/host-tools/call",
+            "token": "x".repeat(64), "context_ids": ["work-context"],
+            "definition": {"name":"host_work", "description":"test", "parameters":{"type":"object"}}
+        });
+        let implicit: Registration = serde_json::from_value(defaults.clone()).unwrap();
+        assert_eq!(implicit.transport_timeout_secs, 20);
+        for seconds in [1, 20, 210, 300] {
+            let mut value = defaults.clone();
+            value["transport_timeout_secs"] = json!(seconds);
+            let registration: Registration = serde_json::from_value(value).unwrap();
+            assert!(registration.validate_transport().is_ok());
+            assert_eq!(registration.transport_timeout_secs, seconds);
+            assert_eq!(registration.definition.parameters, json!({"type":"object"}));
+        }
+        for seconds in [0, 301] {
+            let mut value = defaults.clone();
+            value["transport_timeout_secs"] = json!(seconds);
+            let registration: Registration = serde_json::from_value(value).unwrap();
+            assert!(registration.validate_transport().is_err());
+        }
+        for invalid in [json!(-1), json!(1.5), json!("210"), Value::Null] {
+            let mut value = defaults.clone();
+            value["transport_timeout_secs"] = invalid;
+            assert!(serde_json::from_value::<Registration>(value).is_err());
+        }
+        assert_eq!(
+            implicit.retry_safety_for_arguments(r#"{"transport_timeout_secs":300,"op":"write"}"#),
+            ExecutionRetrySafety::AtMostOnce
+        );
+        assert_eq!(implicit.transport_timeout_secs, 20);
     }
     #[test]
     fn replay_policy_is_host_owned_and_matches_every_exact_discriminator() {
