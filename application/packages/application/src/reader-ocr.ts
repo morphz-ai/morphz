@@ -19,21 +19,11 @@ import {
 } from "../../core/src/reader-ocr.js";
 import type { PlatformActor } from "../../platform/src/store.js";
 import type { ReaderService } from "./reader-service.js";
-
-const origin =
-  "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/";
-export const readingOcrModels = [
-  {
-    name: "PP-OCRv6_small_det",
-    size: 9_891_840,
-    sha256: "d218f6fbf0f1c23d2161bd6ac7f5eaa6104fa89955c09290497e31008e2618e4",
-  },
-  {
-    name: "PP-OCRv6_small_rec",
-    size: 21_319_680,
-    sha256: "d267ab077a44a0eedb1ea8f8c542d263f211de8e9d7a029bf9fcfff7e5a88fb1",
-  },
-] as const;
+import {
+  readingOcrModels,
+  downloadReadingOcrModel,
+} from "./reader-ocr-models.js";
+export { readingOcrModels } from "./reader-ocr-models.js";
 export type ReadingOcrEngine = (
   request: { pdf: Uint8Array; page: number; models: Uint8Array[] },
   signal: AbortSignal,
@@ -130,32 +120,7 @@ export class ReaderOcr {
     const models: Uint8Array[] = [];
     for (const model of readingOcrModels) {
       signal.throwIfAborted();
-      const response = await this.fetcher(
-        `${origin}${model.name}_onnx_infer.tar`,
-        {
-          signal: AbortSignal.any([signal, AbortSignal.timeout(60_000)]),
-          redirect: "error",
-          credentials: "omit",
-        },
-      );
-      if (!response.ok || !response.body)
-        throw new Error("下载模型失败，请检查网络后重试。");
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
-        size += chunk.length;
-        if (size > model.size) {
-          await response.body.cancel().catch(() => {});
-          throw new Error("模型大小与固定版本不符，已拒绝加载。");
-        }
-        chunks.push(chunk);
-      }
-      const bytes = Buffer.concat(chunks);
-      if (
-        size !== model.size ||
-        createHash("sha256").update(bytes).digest("hex") !== model.sha256
-      )
-        throw new Error("模型完整性校验失败，已拒绝加载。");
+      const bytes = await downloadReadingOcrModel(model, signal, this.fetcher);
       signal.throwIfAborted();
       const temporary = this.modelPath(model) + "." + randomUUID();
       try {
