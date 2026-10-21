@@ -4,7 +4,10 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Application } from "../packages/application/src/application.js";
-import { ReaderOcr } from "../packages/application/src/reader-ocr.js";
+import {
+  ReaderOcr,
+  readingOcrModels,
+} from "../packages/application/src/reader-ocr.js";
 import type { PlatformActor } from "../packages/platform/src/store.js";
 import { localAccess } from "../packages/core/src/model.js";
 import {
@@ -391,9 +394,9 @@ test("OCR 不自动下载、不上传文档；Agent 不得确认安装，取消�
     },
     async (url, init) => {
       fetched++;
-      assert.match(
+      assert.equal(
         String(url),
-        /^https:\/\/paddle-model-ecology\.bj\.bcebos\.com\//,
+        `https://huggingface.co/PaddlePaddle/${readingOcrModels[0].name}_onnx/resolve/${readingOcrModels[0].revision}/inference.onnx`,
       );
       assert.equal(init?.method, undefined);
       assert.equal(init?.body, undefined);
